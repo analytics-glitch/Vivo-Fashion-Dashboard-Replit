@@ -985,6 +985,84 @@ def cover_snapshot_delta():
             "basic": basic,
         }
 
+@fabric_router.get("/api/fabric/cover-snapshot/dates")
+def cover_snapshot_dates():
+    """All available capture dates in the fabric_cover_snapshot table, sorted
+    ascending. Used by the Historical Snapshot picker to set a min-date and to
+    tell the frontend the earliest available snapshot date."""
+    with _get_conn() as conn:
+        _ensure_cover_snapshot_table(conn)
+        rows = q(conn, """
+            SELECT capture_date
+            FROM fabric_cover_snapshot
+            ORDER BY capture_date ASC
+        """)
+    dates = [r["capture_date"].isoformat() for r in rows]
+    return {"dates": dates, "earliest": dates[0] if dates else None, "count": len(dates)}
+
+
+@fabric_router.get("/api/fabric/cover-snapshot")
+def cover_snapshot_lookup(date: str = Query(default=None)):
+    """Point-in-time SOH + Months-of-Cover summary for a chosen date.
+
+    Returns the most-recent snapshot whose capture_date is <= the requested
+    date. When the exact date has no snapshot the nearest earlier one is used
+    and `actual_capture_date` will differ from the requested date. Returns
+    status='no_data' when no snapshots exist, and status='before_earliest'
+    when the requested date precedes the earliest available snapshot."""
+    import datetime as _dt
+    today_eat = _dt.datetime.now(_dt.timezone.utc).astimezone(
+        ZoneInfo("Africa/Nairobi")).date()
+    if date:
+        try:
+            req_date = _dt.date.fromisoformat(date)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid date format — use YYYY-MM-DD")
+    else:
+        req_date = today_eat
+    with _get_conn() as conn:
+        _ensure_cover_snapshot_table(conn)
+        earliest_rows = q(conn, "SELECT MIN(capture_date) AS d FROM fabric_cover_snapshot")
+        earliest = earliest_rows[0]["d"] if earliest_rows else None
+        if earliest is None:
+            return {"status": "no_data"}
+        if req_date < earliest:
+            return {
+                "status": "before_earliest",
+                "earliest_date": earliest.isoformat(),
+                "requested_date": req_date.isoformat(),
+            }
+        rows = q(conn, """
+            SELECT capture_date,
+                   rmat_stock_kg,
+                   avg_monthly_consumption_kg,
+                   months_of_cover,
+                   basic_stock_kg,
+                   basic_avg_monthly_consumption_kg,
+                   basic_months_of_cover
+            FROM fabric_cover_snapshot
+            WHERE capture_date <= %s
+            ORDER BY capture_date DESC
+            LIMIT 1
+        """, (req_date,))
+    if not rows:
+        return {"status": "no_data"}
+    r = rows[0]
+    actual = r["capture_date"]
+    return {
+        "status": "ok",
+        "requested_date": req_date.isoformat(),
+        "actual_capture_date": actual.isoformat(),
+        "date_differs": actual != req_date,
+        "rmat_stock_kg": float(r["rmat_stock_kg"]) if r["rmat_stock_kg"] is not None else None,
+        "avg_monthly_consumption_kg": float(r["avg_monthly_consumption_kg"]) if r["avg_monthly_consumption_kg"] is not None else None,
+        "months_of_cover": float(r["months_of_cover"]) if r["months_of_cover"] is not None else None,
+        "basic_stock_kg": float(r["basic_stock_kg"]) if r["basic_stock_kg"] is not None else None,
+        "basic_avg_monthly_consumption_kg": float(r["basic_avg_monthly_consumption_kg"]) if r["basic_avg_monthly_consumption_kg"] is not None else None,
+        "basic_months_of_cover": float(r["basic_months_of_cover"]) if r["basic_months_of_cover"] is not None else None,
+    }
+
+
 # ── Summary cards ──────────────────────────────────────────
 @fabric_router.get("/api/fabric/summary")
 def summary(location: str = Query(default="RMAT/Stock"),

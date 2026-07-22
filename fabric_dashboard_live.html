@@ -664,6 +664,20 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
       <div id="color-insights" class="color-insights"></div>
      </div>
     </div>
+    <!-- Historical Snapshot card — date-picker point-in-time lookup -->
+    <div class="card" id="hist-snap-card" style="margin-top:1.1rem;">
+     <div class="section-head">
+      <h3>Historical Snapshot</h3>
+      <span class="muted">SOH &amp; cover as at any chosen date</span>
+     </div>
+     <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:1rem;">
+      <label class="muted" for="hist-snap-date" style="font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;">Date</label>
+      <input type="date" id="hist-snap-date" style="width:160px;" onchange="histSnapOnChange()">
+      <button class="btn" id="hist-snap-btn" onclick="loadHistSnap()">Load</button>
+      <span id="hist-snap-hint" class="muted" style="font-size:12px;"></span>
+     </div>
+     <div id="hist-snap-result"></div>
+    </div>
    </section>
 
    <!-- SUPPORT FABRICS (Lining + Interfacing only) -->
@@ -3314,10 +3328,110 @@ async function supportMixExport(kind){
   else if(kind==='actions')exportFabricMixActions(d,prefix,mixSupport.supplier);
 }
 
+// ── Historical Snapshot ──
+// Initialises the date picker on FIRST load only — sets today as the default
+// and kicks off an auto-load. On subsequent calls (auto-refresh) the picker
+// already has a value so we leave it alone, preserving any user-chosen date.
+async function loadHistSnapDates(){
+  const inp=document.getElementById('hist-snap-date');
+  if(!inp)return;
+  const todayStr=new Date().toLocaleDateString('sv-SE',{timeZone:'Africa/Nairobi'});
+  // Always keep the max cap at today so users can't pick a future date.
+  inp.max=todayStr;
+  const isFirstLoad=!inp.value;
+  if(isFirstLoad)inp.value=todayStr;
+  try{
+    const d=await apiFetch('/api/fabric/cover-snapshot/dates');
+    if(d&&d.earliest)inp.min=d.earliest;
+  }catch(e){/* non-fatal — picker still usable without min */}
+  // Auto-load silently only on the very first initialisation; subsequent
+  // overview reloads (auto-refresh) must not overwrite a user-selected date.
+  const res=document.getElementById('hist-snap-result');
+  if(isFirstLoad&&res&&!res.innerHTML.trim())loadHistSnap(true);
+}
+
+// Called when the date input changes — clears any stale result and hint.
+function histSnapOnChange(){
+  const hint=document.getElementById('hist-snap-hint');
+  const res=document.getElementById('hist-snap-result');
+  if(hint)hint.textContent='';
+  if(res)res.innerHTML='';
+}
+
+// Render the two-row summary table from a snapshot response.
+function renderHistSnap(d){
+  const res=document.getElementById('hist-snap-result');
+  const hint=document.getElementById('hist-snap-hint');
+  if(!res)return;
+  if(d.status==='no_data'){
+    res.innerHTML='<p class="muted" style="font-size:13px;margin:0;">No snapshot data available yet. Snapshots are captured daily by the sync.</p>';
+    return;
+  }
+  if(d.status==='before_earliest'){
+    if(hint)hint.textContent='No data before '+esc(d.earliest_date)+'.';
+    res.innerHTML='';
+    return;
+  }
+  if(d.status!=='ok'){
+    res.innerHTML='<p class="muted" style="font-size:13px;margin:0;">Could not load snapshot.</p>';
+    return;
+  }
+  const fmt1=v=>(v==null?'—':(+v).toLocaleString('en-KE',{minimumFractionDigits:0,maximumFractionDigits:0})+' kg');
+  const fmtMoc=v=>(v==null?'—':(+v).toFixed(1)+' mo');
+  const dateDiffNote=d.date_differs
+    ?'<span class="muted" style="font-size:11.5px;margin-left:6px;">Nearest available: '+esc(d.actual_capture_date)+'</span>'
+    :'';
+  res.innerHTML=
+    '<p style="font-size:12px;color:var(--muted);margin:0 0 .7rem;">Captured '+esc(d.actual_capture_date)+dateDiffNote+'</p>'
+    +'<div class="tbl-wrap"><table class="data" style="width:100%;min-width:0;">'
+    +'<thead><tr>'
+    +'<th style="text-align:left;">Fabric type</th>'
+    +'<th class="r">SOH (kg)</th>'
+    +'<th class="r">Monthly run-rate (kg)</th>'
+    +'<th class="r">Months of cover</th>'
+    +'</tr></thead>'
+    +'<tbody>'
+    +'<tr>'
+    +'<td>RMAT/Stock (NOOS)</td>'
+    +'<td class="r num">'+esc(fmt1(d.rmat_stock_kg))+'</td>'
+    +'<td class="r num">'+esc(fmt1(d.avg_monthly_consumption_kg))+'</td>'
+    +'<td class="r num">'+esc(fmtMoc(d.months_of_cover))+'</td>'
+    +'</tr>'
+    +'<tr>'
+    +'<td>Basic Fabrics</td>'
+    +'<td class="r num">'+esc(fmt1(d.basic_stock_kg))+'</td>'
+    +'<td class="r num">'+esc(fmt1(d.basic_avg_monthly_consumption_kg))+'</td>'
+    +'<td class="r num">'+esc(fmtMoc(d.basic_months_of_cover))+'</td>'
+    +'</tr>'
+    +'</tbody></table></div>';
+}
+
+async function loadHistSnap(silent){
+  const inp=document.getElementById('hist-snap-date');
+  const btn=document.getElementById('hist-snap-btn');
+  const hint=document.getElementById('hist-snap-hint');
+  const res=document.getElementById('hist-snap-result');
+  if(!inp)return;
+  const dateVal=inp.value;
+  if(!dateVal){if(hint)hint.textContent='Pick a date first.';return;}
+  if(hint)hint.textContent='';
+  if(res&&!silent)res.innerHTML='<div class="loading">Loading…</div>';
+  if(btn&&!silent){btn.disabled=true;btn.textContent='Loading…';}
+  try{
+    const d=await apiFetch('/api/fabric/cover-snapshot?date='+encodeURIComponent(dateVal));
+    renderHistSnap(d);
+  }catch(e){
+    if(res)res.innerHTML='<p class="muted" style="font-size:13px;margin:0;">Could not load snapshot — please try again.</p>';
+  }finally{
+    if(btn&&!silent){btn.disabled=false;btn.textContent='Load';}
+  }
+}
+
 // ── Overview ──
 let ovCache=null;
 async function loadOverview(){
   loadColorMix();   // colour breakdown is fetched independently (own date window)
+  loadHistSnapDates().catch(()=>null);  // initialise date picker; non-fatal
   try{
     const [d,cat,split,mpg,coverDelta]=await Promise.all([
       apiFetch('/api/fabric/summary?location='+encodeURIComponent(loc())),
