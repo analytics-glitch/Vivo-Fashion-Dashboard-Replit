@@ -1356,6 +1356,50 @@ def sync_odoo_customers_incremental(conn):
     log.info("Odoo customer sync: upserted %d rows into all_customers", len(ac_rows))
 
 
+def sync_shopping_bags(cur, conn):
+    """Sync shopping bag stock from Odoo into shopping_bags table."""
+    import xmlrpc.client
+    ODOO_URL = os.environ["ODOO_URL"]; ODOO_DB = os.environ["ODOO_DB"]
+    ODOO_USER = os.environ["ODOO_USER"]; ODOO_PW = os.environ["ODOO_PASSWORD"]
+    from psycopg2.extras import execute_values
+    common = xmlrpc.client.ServerProxy(f"{ODOO_URL}/xmlrpc/2/common")
+    uid = common.authenticate(ODOO_DB, ODOO_USER, ODOO_PW, {})
+    models = xmlrpc.client.ServerProxy(f"{ODOO_URL}/xmlrpc/2/object")
+
+    quants = models.execute_kw(ODOO_DB, uid, ODOO_PW, "stock.quant", "search_read",
+        [[["product_id.name", "ilike", "shopping bag"],
+          ["location_id.usage", "=", "internal"],
+          ["quantity", ">", 0]]],
+        {"fields": ["product_id", "location_id", "quantity", "reserved_quantity"]})
+
+    now = datetime.utcnow()
+    rows = []
+    for q in quants:
+        raw = q["product_id"][1]
+        sku = raw.split("]")[0].replace("[", "").strip() if "]" in raw else ""
+        pname = raw.split("] ")[-1] if "] " in raw else raw
+        loc_name = q["location_id"][1]
+        loc_code = loc_name.split("/")[0]
+        # Map location code to store name
+        store = LOCATION_COUNTRY_MAP.get(loc_code, (loc_name, ""))[0]                 if loc_code in LOCATION_COUNTRY_MAP else loc_name
+        # Fix known unmapped codes
+        store = {"SARIT": "Vivo Sarit", "TMALL": "Vivo T- Mall",
+                 "HUB": "Vivo Hub", "ACHO": "Vivo Acacia"}.get(loc_code, store)
+        size = "S" if "S)" in pname else "M" if "M)" in pname else "L" if "L)" in pname else ""
+        brand = "Safari" if "SAF" in sku else "Zoya" if "ZB" in sku else "Vivo"
+        qty = float(q["quantity"]); res = float(q["reserved_quantity"])
+        rows.append((sku, pname, size, brand, loc_code, store, qty, res, qty - res, now))
+
+    cur.execute("DELETE FROM shopping_bags")
+    if rows:
+        execute_values(cur, """
+            INSERT INTO shopping_bags (sku, product_name, size, brand, location_code,
+                pos_location_name, qty_on_hand, qty_reserved, qty_available, _synced_at)
+            VALUES %s""", rows)
+    conn.commit()
+    log.info("✅ shopping_bags: %d rows synced", len(rows))
+    return len(rows)
+
 def sync_footfall(cur, now):
     FOOTFALL_URL = "https://v9.footfallcam.com"
     CUBE_URL = "https://cube.footfallcam.com/API/v1"
@@ -1929,6 +1973,11 @@ def main():
 
     try:
         sync_footfall(cur, now)
+        # Shopping bags stock sync
+        try:
+            sync_shopping_bags(cur, conn)
+        except Exception as e:
+            log.error("Shopping bags sync error: %s", e)
         conn.commit()
         write_heartbeat(conn, "footfall")
     except Exception as e:
