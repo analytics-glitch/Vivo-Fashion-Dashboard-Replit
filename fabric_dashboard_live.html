@@ -4636,7 +4636,17 @@ async function buildReceivingSheetBody(d){
     dataCell('Fabric title',clean(s.fabric_name)||clean(f.name)),
     dataCell('Source',source),
     dataCell('Fabric Supplier Name',clean(f.fabric_supplier_name)),
-    dataCell('Fabric code',clean(f.supplier_fabric_code)),
+    (()=>{
+      const rawSfc=clean(f.supplier_fabric_code);
+      if(rawSfc)return dataCell('Fabric code',rawSfc);
+      const fname=clean(f.name)||clean(s.fabric_name)||'';
+      const di=fname.lastIndexOf(' - ');
+      if(di>=0){
+        const dc=fname.slice(0,di).trim();
+        return `<div class="cell"><span class="lbl">Fabric code:</span><span class="val">${esc(dc)}</span><span class="hint" style="margin-left:4px;">derived</span></div>`;
+      }
+      return `<div class="cell"><span class="lbl">Fabric code:</span><span class="blank"></span><span class="hint" style="margin-left:4px;color:#b00020;">no code — name has no colour separator</span></div>`;
+    })(),
     dataCell('Fabric colour',clean(f.odoo_fabric_color)),
     dataCell('Fabric barcode',bc),
     dataCell('Fabric category',clean(f.fabric_category)),
@@ -5908,7 +5918,9 @@ function renderRecvPoPricing(){
   const rows=groups.map((g,gi)=>{
     const it=recvPoBatch.pricingForm.items[g.price_key];
     const label=g.code
-      ?('<b>'+esc(g.code)+'</b><div class="muted" style="font-size:11px;">Supplier fabric code · '+g.products.length+' fabric'+(g.products.length===1?'':'s')+'</div>')
+      ?(g.is_derived
+        ?('<b>'+esc(g.code)+'</b><div class="muted" style="font-size:11px;"><span style="background:#f3f4f6;border:1px solid #d1d5db;border-radius:3px;padding:0 3px;font-size:10px;font-weight:600;letter-spacing:.02em;">derived from name</span> · '+g.products.length+' fabric'+(g.products.length===1?'':'s')+'</div>')
+        :('<b>'+esc(g.code)+'</b><div class="muted" style="font-size:11px;">Supplier fabric code · '+g.products.length+' fabric'+(g.products.length===1?'':'s')+'</div>'))
       :('<b>'+esc((g.products[0]&&g.products[0].fabric_name)||'—')+'</b><div class="muted" style="font-size:11px;">no supplier code — priced per product</div>');
     const prods=g.products.map((p,pi)=>
       '<div style="font-size:12px;margin-top:2px;display:flex;gap:.6rem;justify-content:space-between;">'

@@ -6845,6 +6845,19 @@ def _recv_po_pricing(conn, po_id):
                   for r in item_rows},
     }
 
+def _derive_supplier_code(product_name: str):
+    """Extract a supplier fabric code from a product name when Odoo has none
+    set.  Convention: '<supplier> <code> - <colour>'; split on the LAST ' - '
+    and return the trimmed left part as the derived code.  Returns None when
+    no ' - ' separator is present (name cannot be parsed)."""
+    if not product_name:
+        return None
+    idx = product_name.rfind(" - ")
+    if idx < 0:
+        return None
+    return product_name[:idx].strip() or None
+
+
 def _recv_pricing_groups(plan):
     """Group the plan's products by price key for the pricing form: products
     sharing a Supplier Fabric Code share one Yuan price row; code-less fabrics
@@ -6856,8 +6869,11 @@ def _recv_pricing_groups(plan):
             continue
         g = groups.get(key)
         if g is None:
+            sfc = e.get("supplier_fabric_code")
+            dc  = e.get("derived_code")
             g = {"price_key": key,
-                 "code": e.get("supplier_fabric_code"),
+                 "code": sfc or dc,
+                 "is_derived": not sfc and bool(dc),
                  "yuan_price": e.get("yuan_price"),
                  "quote_unit": e.get("quote_unit") or "kg",
                  "products": []}
@@ -6871,6 +6887,7 @@ def _recv_pricing_groups(plan):
             "line_kind": _po_uom_kind(e.get("line_uom")),
             "kg_per_mtr": e.get("kg_per_mtr"),
             "action": e.get("action"),
+            "no_code_no_dash": e.get("no_code_no_dash", False),
         })
     return [groups[k] for k in order]
 
@@ -6940,6 +6957,15 @@ def _recv_po_plan(conn, odoo, po_id):
         kpm = float(kpm) if kpm not in (None, "") and float(kpm) > 0 else None
         mtrs = round(kg / kpm, 1) if kpm else None
         sfc = t.get("supplier_fabric_code") or None
+        derived_code = None
+        no_code_no_dash = False
+        if sfc is None:
+            derived_code = _derive_supplier_code(t.get("fabric_name") or "")
+            if derived_code is None:
+                no_code_no_dash = True
+        price_key = (f"code:{sfc}" if sfc
+                     else (f"derived:{derived_code}" if derived_code
+                           else f"product:{pid}"))
         e = {"product_id": pid,
              "fabric_name": t.get("fabric_name"),
              "barcode": t.get("barcode"),
@@ -6947,7 +6973,9 @@ def _recv_po_plan(conn, odoo, po_id):
              "total_kg": kg, "total_mtrs": mtrs,
              "kg_per_mtr": kpm,
              "supplier_fabric_code": sfc,
-             "price_key": f"code:{sfc}" if sfc else f"product:{pid}",
+             "derived_code": derived_code,
+             "no_code_no_dash": no_code_no_dash,
+             "price_key": price_key,
              "yuan_price": None, "quote_unit": "kg",
              "push_price": None, "price_missing": False,
              "action": None, "flags": [],
@@ -7144,7 +7172,8 @@ def receiving_po_batches():
                 SELECT s.po_id, s.product_id,
                        SUM(s.total_kg) as total_kg,
                        MAX(p.kg_per_mtr_eff) as kg_per_mtr,
-                       MAX(NULLIF(BTRIM(p.supplier_fabric_code),'')) as supplier_fabric_code
+                       MAX(NULLIF(BTRIM(p.supplier_fabric_code),'')) as supplier_fabric_code,
+                       MAX(COALESCE(p.name, s.fabric_name)) as fabric_name
                 FROM fabric_receiving_sheets s
                 LEFT JOIN raw_fabric_products p ON p.id = s.product_id
                 WHERE s.po_id = ANY(%s) AND s.deleted_at IS NULL
@@ -7196,7 +7225,11 @@ def receiving_po_batches():
                         total_kes += float(pu) * kg
                     # Yuan
                     sfc = pt.get("supplier_fabric_code") or None
-                    pkey = f"code:{sfc}" if sfc else f"product:{pid}"
+                    if sfc:
+                        pkey = f"code:{sfc}"
+                    else:
+                        _dc = _derive_supplier_code(pt.get("fabric_name") or "")
+                        pkey = f"derived:{_dc}" if _dc else f"product:{pid}"
                     it = items.get(pkey) or {}
                     yp = _recv_po_num(it.get("yuan_price"))
                     qu = it.get("quote_unit") if it.get("quote_unit") in _PO_QUOTE_UNITS else "kg"
@@ -7407,7 +7440,12 @@ def receiving_po_batch_detail(po_id: str = Query(default="")):
         pu = detail_price_units.get(pid)
         g["value_kes"] = float(pu) * kg if pu is not None else None
         sfc = detail_sfc.get(pid)
-        pkey = f"code:{sfc}" if sfc else (f"product:{pid}" if pid else None)
+        if not sfc:
+            _dc = _derive_supplier_code(g.get("fabric_name") or "")
+            pkey = (f"derived:{_dc}" if _dc
+                    else (f"product:{pid}" if pid else None))
+        else:
+            pkey = f"code:{sfc}"
         it = (detail_pricing.get(pkey) or {}) if pkey else {}
         yp = _recv_po_num(it.get("yuan_price"))
         qu = it.get("quote_unit") if it.get("quote_unit") in _PO_QUOTE_UNITS else "kg"
@@ -7491,7 +7529,8 @@ def receiving_po_pricing_save(po_id: int, request: Request,
             raise HTTPException(status_code=400,
                                 detail=f"pricing row {i}: invalid entry")
         key = str(it.get("price_key") or "").strip()
-        if not (key.startswith("code:") or key.startswith("product:")):
+        if not (key.startswith("code:") or key.startswith("product:")
+                or key.startswith("derived:")):
             raise HTTPException(status_code=400,
                                 detail=f"pricing row {i}: bad price key")
         qu = str(it.get("quote_unit") or "kg").strip().lower()
