@@ -6467,6 +6467,20 @@ def get_orders_summary(
     }
 
 
+@app.get("/api/orders/locations")
+def get_orders_locations(request: Request):
+    """Distinct POS location names seen on Shopify orders — for the store filter."""
+    rows = run_query(
+        "SELECT DISTINCT pos_location_name AS location"
+        " FROM all_sales"
+        " WHERE pos_location_name IS NOT NULL AND pos_location_name <> ''"
+        "   AND sale_kind IN ('sale','order')"
+        " ORDER BY 1",
+        ttl=300,
+    )
+    return {"locations": [r["location"] for r in rows]}
+
+
 @app.get("/api/orders/list")
 def get_orders_list(
     request:            Request,
@@ -6474,6 +6488,7 @@ def get_orders_list(
     date_to:            str  = Query(default=str(date.today())),
     financial_status:   str  = Query(default=None),
     fulfillment_status: str  = Query(default=None),
+    pos_location:       str  = Query(default=None),
     search:             str  = Query(default=None),
     limit:              int  = Query(default=50),
     after_id:           str  = Query(default=None),
@@ -6512,6 +6527,15 @@ def get_orders_list(
             f"(rso.customer_first_name ILIKE '%{q}%' OR rso.customer_last_name ILIKE '%{q}%'"
             f" OR rso.customer_email ILIKE '%{q}%' OR rso.name ILIKE '%{q}%')"
         )
+    if pos_location:
+        loc = pos_location.replace("'", "").strip()
+        if loc:
+            conds.append(
+                f"EXISTS (SELECT 1 FROM all_sales s2"
+                f" WHERE s2.order_id = rso.id::text"
+                f"   AND s2.sale_kind IN ('sale','order')"
+                f"   AND s2.pos_location_name = '{loc}')"
+            )
     if after_id:
         try:
             aid = str(int(after_id.strip()))

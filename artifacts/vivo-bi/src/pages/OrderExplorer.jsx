@@ -159,7 +159,7 @@ function Select({ label, options, value, onChange }) {
   );
 }
 
-function FilterBar({ filters, onChange, onSearch, loading }) {
+function FilterBar({ filters, onChange, onSearch, loading, locations }) {
   const [localSearch, setLocalSearch] = useState(filters.search || "");
   const handleKey = (e) => { if (e.key === "Enter") onSearch(localSearch); };
 
@@ -221,11 +221,26 @@ function FilterBar({ filters, onChange, onSearch, loading }) {
         onChange={(v) => onChange({ fulfillmentStatus: v })}
       />
 
+      {/* store / POS location */}
+      <div className="flex flex-col gap-0.5">
+        <label className="text-[10px] text-stone-400 uppercase tracking-wider">Store</label>
+        <select
+          value={filters.posLocation || ""}
+          onChange={(e) => onChange({ posLocation: e.target.value })}
+          className="border border-stone-200 rounded-md px-2 py-1.5 text-xs text-stone-700 bg-white focus:outline-none focus:ring-1 focus:ring-green-700 max-w-[160px]"
+        >
+          <option value="">All stores</option>
+          {(locations || []).map((loc) => (
+            <option key={loc} value={loc}>{loc}</option>
+          ))}
+        </select>
+      </div>
+
       {/* reset */}
       <button
         onClick={() => {
           setLocalSearch("");
-          onChange({ search: "", financialStatus: "", fulfillmentStatus: "" });
+          onChange({ search: "", financialStatus: "", fulfillmentStatus: "", posLocation: "" });
           onSearch("");
         }}
         className="text-xs text-stone-400 hover:text-stone-600 self-end pb-1.5"
@@ -821,8 +836,17 @@ export default function OrderExplorer() {
     dateTo: today,
     financialStatus: "",
     fulfillmentStatus: "",
+    posLocation: "",
   });
   const [committedSearch, setCommittedSearch] = useState("");
+
+  // store list for the location filter dropdown
+  const [storeLocations, setStoreLocations] = useState([]);
+  useEffect(() => {
+    api.get("/orders/locations")
+      .then((res) => setStoreLocations(res.data?.locations || []))
+      .catch(() => {});
+  }, []);
 
   // orders list state
   const [orders, setOrders] = useState([]);
@@ -851,6 +875,7 @@ export default function OrderExplorer() {
     if (filters.dateTo)           p.date_to = filters.dateTo;
     if (filters.financialStatus)  p.financial_status = filters.financialStatus;
     if (filters.fulfillmentStatus) p.fulfillment_status = filters.fulfillmentStatus;
+    if (filters.posLocation)      p.pos_location = filters.posLocation;
     const q = (search ?? committedSearch).trim();
     if (q)                        p.search = q;
     return p;
@@ -900,12 +925,12 @@ export default function OrderExplorer() {
   // auto-reload when date/status filters change (not search — that's commit-on-enter)
   const prevFilterRef = useRef(null);
   useEffect(() => {
-    const sig = `${filters.dateFrom}|${filters.dateTo}|${filters.financialStatus}|${filters.fulfillmentStatus}`;
+    const sig = `${filters.dateFrom}|${filters.dateTo}|${filters.financialStatus}|${filters.fulfillmentStatus}|${filters.posLocation}`;
     if (prevFilterRef.current === null) { prevFilterRef.current = sig; return; }
     if (prevFilterRef.current === sig) return;
     prevFilterRef.current = sig;
     loadOrders();
-  }, [filters.dateFrom, filters.dateTo, filters.financialStatus, filters.fulfillmentStatus, loadOrders]);
+  }, [filters.dateFrom, filters.dateTo, filters.financialStatus, filters.fulfillmentStatus, filters.posLocation, loadOrders]);
 
   // load order detail
   const selectOrder = useCallback((order) => {
@@ -982,6 +1007,7 @@ export default function OrderExplorer() {
         onChange={handleFilterChange}
         onSearch={handleSearch}
         loading={loading}
+        locations={storeLocations}
       />
 
       {/* main content: list + optional detail */}
