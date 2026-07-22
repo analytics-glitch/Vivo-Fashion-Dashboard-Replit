@@ -97,13 +97,12 @@ def main():
             now,                # last_synced
         ))
 
-    # Insert Odoo-only customers (not in Shopify)
-    shopify_ids_seen = {str(c[0]) for c in shopify_customers}
+    # Insert Odoo customers keyed by their Odoo partner_id.
+    # all_sales stores Kenya POS customer_id = Odoo partner_id, so we MUST
+    # key by Odoo ID here — not shopify_user_id — or the join never matches.
+    # Shopify customers that also exist in Odoo are already inserted above under
+    # their Shopify ID; these Odoo rows give a second lookup path by Odoo ID.
     for odoo_id, r in odoo_customers.items():
-        shopify_id = str(r[1]) if r[1] else None
-        if shopify_id and shopify_id in shopify_ids_seen:
-            continue  # Already covered by Shopify record
-
         (oid, shopify_uid, email, name, phone, mobile,
          street, city, state_name, country_name, store_id) = r
 
@@ -112,8 +111,9 @@ def main():
         first   = parts[0] if parts else None
         last    = parts[1] if len(parts) > 1 else None
 
+        # Always insert under the Odoo ID (what all_sales uses for POS orders)
         rows.append((
-            str(shopify_uid) if shopify_uid else str(oid),
+            str(oid),
             store_id or 'vivofashiongroup',
             first, last, email,
             phone or mobile,
@@ -137,6 +137,39 @@ def main():
             total_spend_kes = EXCLUDED.total_spend_kes,
             last_synced = EXCLUDED.last_synced
     """, rows, page_size=1000)
+
+    # ── Backfill order stats for Odoo-keyed customers from all_sales ───────────
+    # Shopify customers already have accurate stats from raw_shopify_customers.
+    # Odoo rows were inserted with 0/NULL stats; compute them from all_sales now.
+    log.info("Backfilling order stats for Odoo customers from all_sales...")
+    cur.execute("""
+        UPDATE all_customers ac
+        SET
+            total_orders        = agg.order_count,
+            total_spend_kes     = agg.total_kes,
+            avg_order_value_kes = CASE WHEN agg.order_count > 0
+                                       THEN ROUND(agg.total_kes / agg.order_count, 2)
+                                       ELSE 0 END,
+            first_order_date    = agg.first_date,
+            last_order_date     = agg.last_date,
+            customer_type       = CASE WHEN agg.order_count > 1 THEN 'Returning' ELSE 'New' END
+        FROM (
+            SELECT
+                s.customer_id,
+                COUNT(DISTINCT s.order_id)    AS order_count,
+                ROUND(SUM(s.total_sales_kes)::numeric, 2) AS total_kes,
+                MIN(s.sale_date)              AS first_date,
+                MAX(s.sale_date)              AS last_date
+            FROM all_sales s
+            WHERE s.customer_id IS NOT NULL
+              AND s.sale_kind IN ('sale','order')
+              AND s.store_id   = 'vivofashiongroup'
+            GROUP BY s.customer_id
+        ) agg
+        WHERE ac.customer_id = agg.customer_id
+          AND ac.store_id    = 'vivofashiongroup'
+    """)
+    log.info("Updated %d Odoo customer stat rows", cur.rowcount)
 
     conn.commit()
 
