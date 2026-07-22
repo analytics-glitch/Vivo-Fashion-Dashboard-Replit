@@ -6992,12 +6992,15 @@ def _recv_pricing_groups(plan):
             dc  = e.get("derived_code")
             g = {"price_key": key,
                  "code": sfc or dc,
-                 "is_derived": not sfc and bool(dc),
+                 "_all_derived": not sfc and bool(dc),
                  "yuan_price": e.get("yuan_price"),
                  "quote_unit": e.get("quote_unit") or "kg",
                  "products": []}
             groups[key] = g
             order.append(key)
+        else:
+            if e.get("supplier_fabric_code"):
+                g["_all_derived"] = False
         g["products"].append({
             "product_id": e.get("product_id"),
             "fabric_name": e.get("fabric_name"),
@@ -7008,7 +7011,12 @@ def _recv_pricing_groups(plan):
             "action": e.get("action"),
             "no_code_no_dash": e.get("no_code_no_dash", False),
         })
-    return [groups[k] for k in order]
+    out = []
+    for k in order:
+        g = groups[k]
+        g["is_derived"] = g.pop("_all_derived")
+        out.append(g)
+    return out
 
 def _recv_po_plan(conn, odoo, po_id):
     """Build the per-product upload plan for a PO batch: summed sheet totals
@@ -7083,7 +7091,7 @@ def _recv_po_plan(conn, odoo, po_id):
             if derived_code is None:
                 no_code_no_dash = True
         price_key = (f"code:{sfc}" if sfc
-                     else (f"derived:{derived_code}" if derived_code
+                     else (f"code:{derived_code}" if derived_code
                            else f"product:{pid}"))
         e = {"product_id": pid,
              "fabric_name": t.get("fabric_name"),
@@ -7100,7 +7108,11 @@ def _recv_po_plan(conn, odoo, po_id):
              "action": None, "flags": [],
              "line_id": None, "line_qty": None, "line_uom": None,
              "push_qty": None, "push_uom": None}
-        it = pricing["items"].get(e["price_key"]) or {}
+        _pkey = e["price_key"]
+        it = pricing["items"].get(_pkey)
+        if it is None and _pkey.startswith("code:"):
+            it = pricing["items"].get("derived:" + _pkey[5:])
+        it = it or {}
         e["yuan_price"] = it.get("yuan_price")
         e["quote_unit"] = it.get("quote_unit") or "kg"
         matches = by_product.get(pid, [])
@@ -7348,8 +7360,11 @@ def receiving_po_batches():
                         pkey = f"code:{sfc}"
                     else:
                         _dc = _derive_supplier_code(pt.get("fabric_name") or "")
-                        pkey = f"derived:{_dc}" if _dc else f"product:{pid}"
-                    it = items.get(pkey) or {}
+                        pkey = f"code:{_dc}" if _dc else f"product:{pid}"
+                    it = items.get(pkey)
+                    if it is None and pkey.startswith("code:"):
+                        it = items.get("derived:" + pkey[5:])
+                    it = it or {}
                     yp = _recv_po_num(it.get("yuan_price"))
                     qu = it.get("quote_unit") if it.get("quote_unit") in _PO_QUOTE_UNITS else "kg"
                     if yp is None:
@@ -7561,11 +7576,17 @@ def receiving_po_batch_detail(po_id: str = Query(default="")):
         sfc = detail_sfc.get(pid)
         if not sfc:
             _dc = _derive_supplier_code(g.get("fabric_name") or "")
-            pkey = (f"derived:{_dc}" if _dc
+            pkey = (f"code:{_dc}" if _dc
                     else (f"product:{pid}" if pid else None))
         else:
             pkey = f"code:{sfc}"
-        it = (detail_pricing.get(pkey) or {}) if pkey else {}
+        if pkey:
+            it = detail_pricing.get(pkey)
+            if it is None and pkey.startswith("code:"):
+                it = detail_pricing.get("derived:" + pkey[5:])
+            it = it or {}
+        else:
+            it = {}
         yp = _recv_po_num(it.get("yuan_price"))
         qu = it.get("quote_unit") if it.get("quote_unit") in _PO_QUOTE_UNITS else "kg"
         if yp is None:
@@ -7648,8 +7669,9 @@ def receiving_po_pricing_save(po_id: int, request: Request,
             raise HTTPException(status_code=400,
                                 detail=f"pricing row {i}: invalid entry")
         key = str(it.get("price_key") or "").strip()
-        if not (key.startswith("code:") or key.startswith("product:")
-                or key.startswith("derived:")):
+        if key.startswith("derived:"):
+            key = "code:" + key[8:]
+        if not (key.startswith("code:") or key.startswith("product:")):
             raise HTTPException(status_code=400,
                                 detail=f"pricing row {i}: bad price key")
         qu = str(it.get("quote_unit") or "kg").strip().lower()
