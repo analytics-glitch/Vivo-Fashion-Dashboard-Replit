@@ -144,11 +144,11 @@ const FULFIL_OPTIONS = [
 function Select({ label, options, value, onChange }) {
   return (
     <div className="flex flex-col gap-0.5">
-      <label className="text-[10px] text-stone-400 uppercase tracking-wider">{label}</label>
+      <label className="text-xs text-stone-400 uppercase tracking-wider font-medium">{label}</label>
       <select
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="border border-stone-200 rounded-md px-2 py-1.5 text-xs text-stone-700 bg-white focus:outline-none focus:ring-1 focus:ring-green-700"
+        className="border border-stone-200 rounded-md px-2.5 py-1.5 text-sm text-stone-700 bg-white focus:outline-none focus:ring-1 focus:ring-green-700"
       >
         <option value="">All</option>
         {options.map((o) => (
@@ -164,10 +164,10 @@ function FilterBar({ filters, onChange, onSearch, loading, locations }) {
   const handleKey = (e) => { if (e.key === "Enter") onSearch(localSearch); };
 
   return (
-    <div className="flex-shrink-0 bg-white border-b border-stone-200 px-4 py-3 flex flex-wrap items-end gap-3">
+    <div className="flex-shrink-0 bg-white border-b border-stone-200 px-4 py-2.5 flex flex-wrap items-end gap-3">
       {/* search */}
-      <div className="flex flex-col gap-0.5 flex-1 min-w-[180px] max-w-xs">
-        <label className="text-[10px] text-stone-400 uppercase tracking-wider">Search</label>
+      <div className="flex flex-col gap-0.5 flex-1 min-w-[200px] max-w-xs">
+        <label className="text-xs text-stone-400 uppercase tracking-wider font-medium">Search</label>
         <div className="flex gap-1">
           <input
             type="text"
@@ -175,12 +175,12 @@ function FilterBar({ filters, onChange, onSearch, loading, locations }) {
             onChange={(e) => setLocalSearch(e.target.value)}
             onKeyDown={handleKey}
             placeholder="Customer name, email, order #…"
-            className="flex-1 border border-stone-200 rounded-md px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-green-700"
+            className="flex-1 border border-stone-200 rounded-md px-2.5 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-green-700"
           />
           <button
             onClick={() => onSearch(localSearch)}
             disabled={loading}
-            className="px-3 py-1.5 bg-green-700 text-white text-xs rounded-md hover:bg-green-800 disabled:opacity-50 flex items-center gap-1"
+            className="px-4 py-1.5 bg-green-700 text-white text-sm font-medium rounded-md hover:bg-green-800 disabled:opacity-50 flex items-center gap-1"
           >
             {loading ? <Spinner size="sm" /> : "Search"}
           </button>
@@ -189,21 +189,21 @@ function FilterBar({ filters, onChange, onSearch, loading, locations }) {
 
       {/* date range */}
       <div className="flex flex-col gap-0.5">
-        <label className="text-[10px] text-stone-400 uppercase tracking-wider">From</label>
+        <label className="text-xs text-stone-400 uppercase tracking-wider font-medium">From</label>
         <input
           type="date"
           value={filters.dateFrom || ""}
           onChange={(e) => onChange({ dateFrom: e.target.value })}
-          className="border border-stone-200 rounded-md px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-green-700"
+          className="border border-stone-200 rounded-md px-2.5 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-green-700"
         />
       </div>
       <div className="flex flex-col gap-0.5">
-        <label className="text-[10px] text-stone-400 uppercase tracking-wider">To</label>
+        <label className="text-xs text-stone-400 uppercase tracking-wider font-medium">To</label>
         <input
           type="date"
           value={filters.dateTo || ""}
           onChange={(e) => onChange({ dateTo: e.target.value })}
-          className="border border-stone-200 rounded-md px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-green-700"
+          className="border border-stone-200 rounded-md px-2.5 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-green-700"
         />
       </div>
 
@@ -214,20 +214,13 @@ function FilterBar({ filters, onChange, onSearch, loading, locations }) {
         value={filters.financialStatus || ""}
         onChange={(v) => onChange({ financialStatus: v })}
       />
-      <Select
-        label="Fulfillment"
-        options={FULFIL_OPTIONS}
-        value={filters.fulfillmentStatus || ""}
-        onChange={(v) => onChange({ fulfillmentStatus: v })}
-      />
-
       {/* store / POS location */}
       <div className="flex flex-col gap-0.5">
-        <label className="text-[10px] text-stone-400 uppercase tracking-wider">Store</label>
+        <label className="text-xs text-stone-400 uppercase tracking-wider font-medium">Store</label>
         <select
           value={filters.posLocation || ""}
           onChange={(e) => onChange({ posLocation: e.target.value })}
-          className="border border-stone-200 rounded-md px-2 py-1.5 text-xs text-stone-700 bg-white focus:outline-none focus:ring-1 focus:ring-green-700 max-w-[160px]"
+          className="border border-stone-200 rounded-md px-2.5 py-1.5 text-sm text-stone-700 bg-white focus:outline-none focus:ring-1 focus:ring-green-700 max-w-[180px]"
         >
           <option value="">All stores</option>
           {(locations || []).map((loc) => (
@@ -243,7 +236,7 @@ function FilterBar({ filters, onChange, onSearch, loading, locations }) {
           onChange({ search: "", financialStatus: "", fulfillmentStatus: "", posLocation: "" });
           onSearch("");
         }}
-        className="text-xs text-stone-400 hover:text-stone-600 self-end pb-1.5"
+        className="text-sm text-stone-400 hover:text-stone-600 self-end pb-1.5"
       >
         Clear
       </button>
@@ -262,17 +255,16 @@ function OrdersTable({ orders, selectedId, onSelect, hasMore, nextCursor, onLoad
             <p className="text-xs mt-1">Try adjusting your filters</p>
           </div>
         ) : (
-          <table className="w-full text-xs border-collapse">
+          <table className="w-full text-sm border-collapse">
             <thead className="sticky top-0 z-10 bg-stone-50 border-b border-stone-200">
               <tr>
-                <th className="text-left px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-stone-500 whitespace-nowrap">Order</th>
-                <th className="text-left px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-stone-500 whitespace-nowrap">Date</th>
-                <th className="text-left px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-stone-500 whitespace-nowrap">Customer</th>
-                <th className="text-left px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-stone-500 whitespace-nowrap">Location</th>
-                <th className="text-left px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-stone-500 whitespace-nowrap">Payment</th>
-                <th className="text-left px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-stone-500 whitespace-nowrap">Fulfillment</th>
-                <th className="text-right px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-stone-500 whitespace-nowrap">Items</th>
-                <th className="text-right px-3 py-2 text-[10px] font-semibold uppercase tracking-wider text-stone-500 whitespace-nowrap">Total</th>
+                <th className="text-left px-3 py-2.5 text-xs font-semibold uppercase tracking-wider text-stone-500 whitespace-nowrap">Order</th>
+                <th className="text-left px-3 py-2.5 text-xs font-semibold uppercase tracking-wider text-stone-500 whitespace-nowrap">Date</th>
+                <th className="text-left px-3 py-2.5 text-xs font-semibold uppercase tracking-wider text-stone-500 whitespace-nowrap">Customer</th>
+                <th className="text-left px-3 py-2.5 text-xs font-semibold uppercase tracking-wider text-stone-500 whitespace-nowrap">Location</th>
+                <th className="text-left px-3 py-2.5 text-xs font-semibold uppercase tracking-wider text-stone-500 whitespace-nowrap">Payment</th>
+                <th className="text-right px-3 py-2.5 text-xs font-semibold uppercase tracking-wider text-stone-500 whitespace-nowrap">Items</th>
+                <th className="text-right px-3 py-2.5 text-xs font-semibold uppercase tracking-wider text-stone-500 whitespace-nowrap">Total</th>
               </tr>
             </thead>
             <tbody>
@@ -288,33 +280,30 @@ function OrdersTable({ orders, selectedId, onSelect, hasMore, nextCursor, onLoad
                         : "hover:bg-stone-50"
                     }`}
                   >
-                    <td className="px-3 py-2.5">
+                    <td className="px-3 py-3">
                       <span className="font-semibold text-green-800">{order.name || order.id}</span>
                     </td>
-                    <td className="px-3 py-2.5 whitespace-nowrap text-stone-600">
+                    <td className="px-3 py-3 whitespace-nowrap text-stone-600">
                       {fmtShortDate(order.created_at)}
                     </td>
-                    <td className="px-3 py-2.5 max-w-[160px]">
+                    <td className="px-3 py-3 max-w-[200px]">
                       <p className="font-medium text-stone-800 truncate">
                         {order.customer_name || "(no name)"}
                       </p>
-                      <p className="text-[10px] text-stone-400 truncate">{order.customer_email || ""}</p>
+                      <p className="text-xs text-stone-400 truncate">{order.customer_email || ""}</p>
                     </td>
-                    <td className="px-3 py-2.5 max-w-[130px]">
+                    <td className="px-3 py-3 max-w-[150px]">
                       <span className="truncate block text-stone-600" title={order.pos_location || ""}>
                         {order.pos_location || <span className="text-stone-300">—</span>}
                       </span>
                     </td>
-                    <td className="px-3 py-2.5">
+                    <td className="px-3 py-3">
                       <PayBadge status={order.financial_status} />
                     </td>
-                    <td className="px-3 py-2.5">
-                      <FulfilBadge status={order.fulfillment_status} />
-                    </td>
-                    <td className="px-3 py-2.5 text-right text-stone-700 tabular-nums">
+                    <td className="px-3 py-3 text-right text-stone-700 tabular-nums">
                       {order.item_count != null ? order.item_count : <span className="text-stone-300">—</span>}
                     </td>
-                    <td className="px-3 py-2.5 text-right font-semibold text-stone-800 whitespace-nowrap">
+                    <td className="px-3 py-3 text-right font-semibold text-stone-800 whitespace-nowrap">
                       {KES(order.total_price)}
                     </td>
                   </tr>
@@ -1011,20 +1000,19 @@ export default function OrderExplorer() {
         />
       )}
 
-      {/* page title */}
-      <div className="flex-shrink-0 px-4 pt-3 pb-0">
-        <h1 className="text-xl font-bold text-stone-800">Order Explorer</h1>
-        <p className="text-xs text-stone-400 mt-0.5">Browse, filter, and inspect Shopify orders</p>
+      {/* sticky header: title + filter bar */}
+      <div className="flex-shrink-0 sticky top-0 z-20 bg-[#fdf8f4]">
+        <div className="px-4 pt-3 pb-1">
+          <h1 className="text-xl font-bold text-stone-800">Order Explorer</h1>
+        </div>
+        <FilterBar
+          filters={filters}
+          onChange={handleFilterChange}
+          onSearch={handleSearch}
+          loading={loading}
+          locations={storeLocations}
+        />
       </div>
-
-      {/* filter bar */}
-      <FilterBar
-        filters={filters}
-        onChange={handleFilterChange}
-        onSearch={handleSearch}
-        loading={loading}
-        locations={storeLocations}
-      />
 
       {/* main content: list + optional detail */}
       <div className="flex flex-1 min-h-0 overflow-hidden">
