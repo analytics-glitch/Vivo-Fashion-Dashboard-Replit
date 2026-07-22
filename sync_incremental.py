@@ -377,6 +377,11 @@ _LAST_X_SYNC = None
 # the inbox on the first cycle.
 _LAST_TIKTOK_SYNC = None
 _LAST_GREVIEWS_SYNC = None
+# Guards the incremental Odoo customer sync (extract_odoo_customers.py by
+# write_date + gap-fill for partner IDs in all_sales not yet in
+# raw_odoo_customers) to once per hour. None on boot so the first cycle
+# picks up any customers missed since the last full rebuild immediately.
+_LAST_ODOO_CUSTOMER_SYNC = None
 # Guards the inventory extracts (Odoo + Shopify + Shop Zetu stock levels feeding
 # all_inventory). Was once-a-day at midnight EAT, which left shelf stock up to
 # ~24h stale — so the replenishment engine could recommend moving a unit that had
@@ -1166,6 +1171,191 @@ def sync_odoo(cur, now, rates):
     return len(rows)
 
 
+def sync_odoo_customers_incremental(conn):
+    """
+    Two-step incremental Odoo customer sync:
+    1. Run extract_odoo_customers.py (write_date-based incremental) to pick up
+       new/updated partners since the last sync.
+    2. Gap-fill: find Odoo partner IDs (small integers ≤ 8 digits) that already
+       appear in all_sales but are still missing from raw_odoo_customers — these
+       are customers linked to POS orders whose partner record was never captured
+       (e.g. created before the first rebuild with customer_rank=0 at the time).
+       Fetch them directly from Odoo and upsert.
+    3. Upsert both groups into all_customers and backfill order stats from
+       all_sales so LTV / order counts are correct immediately.
+    """
+    import xmlrpc.client
+    import sys as _sys
+    from datetime import datetime, timezone
+    from psycopg2.extras import execute_values
+
+    now_utc = datetime.now(timezone.utc)
+
+    # Step 1 — incremental extract (write_date ≥ MAX(_synced_at) in table)
+    run_subprocess_with_heartbeat(
+        [_sys.executable, "/home/runner/workspace/extract_odoo_customers.py"],
+        "odoo_customer_extract",
+    )
+
+    # Step 2 — gap-fill: Odoo partner IDs in all_sales not in raw_odoo_customers
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT DISTINCT s.customer_id::bigint
+            FROM all_sales s
+            WHERE s.customer_id ~ '^[0-9]{1,8}$'
+              AND NOT EXISTS (
+                  SELECT 1 FROM raw_odoo_customers r
+                  WHERE r.id = s.customer_id::bigint
+              )
+            LIMIT 2000
+        """)
+        missing_ids = [row[0] for row in cur.fetchall()]
+
+    if missing_ids:
+        log.info("Odoo customer gap-fill: fetching %d missing partner IDs...", len(missing_ids))
+        try:
+            odoo_url = os.environ["ODOO_URL"]
+            odoo_db = os.environ["ODOO_DB"]
+            odoo_user = os.environ["ODOO_USER"]
+            odoo_password = os.environ["ODOO_PASSWORD"]
+            common = xmlrpc.client.ServerProxy(f"{odoo_url}/xmlrpc/2/common")
+            uid = common.authenticate(odoo_db, odoo_user, odoo_password, {})
+            models = xmlrpc.client.ServerProxy(f"{odoo_url}/xmlrpc/2/object")
+            fields = [
+                "id", "name", "email", "phone", "mobile",
+                "street", "city", "state_id", "country_id",
+                "x_studio_shopify_user_id", "write_date",
+            ]
+            gap_rows = []
+            for i in range(0, len(missing_ids), 200):
+                batch = missing_ids[i : i + 200]
+                records = models.execute_kw(
+                    odoo_db, uid, odoo_password,
+                    "res.partner", "read",
+                    [batch], {"fields": fields},
+                )
+                for r in records:
+                    shopify_id = r.get("x_studio_shopify_user_id") or None
+                    state_name = (
+                        r["state_id"][1] if isinstance(r.get("state_id"), list) else None
+                    )
+                    country_name = (
+                        r["country_id"][1] if isinstance(r.get("country_id"), list) else None
+                    )
+                    gap_rows.append((
+                        r["id"],
+                        r.get("name"),
+                        r.get("email") or None,
+                        r.get("phone") or None,
+                        r.get("mobile") or None,
+                        r.get("street") or None,
+                        r.get("city") or None,
+                        state_name,
+                        country_name,
+                        int(shopify_id) if shopify_id else None,
+                        "vivofashiongroup",
+                        r.get("write_date"),
+                        now_utc,
+                    ))
+            if gap_rows:
+                with conn.cursor() as cur:
+                    execute_values(cur, """
+                        INSERT INTO raw_odoo_customers (
+                            id, name, email, phone, mobile,
+                            street, city, state_name, country_name,
+                            shopify_user_id, store_id,
+                            write_date, _synced_at
+                        ) VALUES %s
+                        ON CONFLICT (id) DO UPDATE SET
+                            name           = EXCLUDED.name,
+                            email          = EXCLUDED.email,
+                            phone          = EXCLUDED.phone,
+                            mobile         = EXCLUDED.mobile,
+                            shopify_user_id = EXCLUDED.shopify_user_id,
+                            write_date     = EXCLUDED.write_date,
+                            _synced_at     = EXCLUDED._synced_at
+                    """, gap_rows)
+                conn.commit()
+                log.info("Odoo customer gap-fill: upserted %d rows into raw_odoo_customers", len(gap_rows))
+        except Exception as e:
+            log.error("Odoo customer gap-fill error: %s", e)
+
+    # Step 3 — upsert any raw_odoo_customers updated in this sync cycle into
+    # all_customers, then backfill order stats from all_sales.
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT id, name, email, phone, mobile, city, country_name
+            FROM raw_odoo_customers
+            WHERE _synced_at >= NOW() - INTERVAL '25 hours'
+        """)
+        recent = cur.fetchall()
+
+    if not recent:
+        return
+
+    ac_rows = []
+    new_ids = []
+    for (oid, name, email, phone, mobile, city, country) in recent:
+        name = (name or "").strip()
+        parts = name.split(" ", 1)
+        first = parts[0] if parts else ""
+        last = parts[1] if len(parts) > 1 else ""
+        ac_rows.append((
+            str(oid), "vivofashiongroup", first, last,
+            email, phone or mobile,
+            city, country,
+            now_utc,
+        ))
+        new_ids.append(str(oid))
+
+    with conn.cursor() as cur:
+        execute_values(cur, """
+            INSERT INTO all_customers (
+                customer_id, store_id, first_name, last_name,
+                email, phone,
+                city, country,
+                last_synced
+            ) VALUES %s
+            ON CONFLICT (customer_id, store_id) DO UPDATE SET
+                first_name  = EXCLUDED.first_name,
+                last_name   = EXCLUDED.last_name,
+                email       = COALESCE(EXCLUDED.email, all_customers.email),
+                phone       = COALESCE(EXCLUDED.phone, all_customers.phone),
+                city        = COALESCE(EXCLUDED.city, all_customers.city),
+                country     = COALESCE(EXCLUDED.country, all_customers.country),
+                last_synced = EXCLUDED.last_synced
+        """, ac_rows)
+
+        # Backfill order stats from all_sales for these customer IDs
+        cur.execute("""
+            UPDATE all_customers c
+            SET
+                total_orders       = sub.cnt,
+                total_spend_kes    = sub.spend,
+                avg_order_value_kes = sub.aov,
+                first_order_date   = sub.first_dt::text,
+                last_order_date    = sub.last_dt::text,
+                customer_type      = CASE WHEN sub.cnt > 1 THEN 'returning' ELSE 'new' END
+            FROM (
+                SELECT
+                    customer_id,
+                    COUNT(DISTINCT order_id)                             AS cnt,
+                    SUM(net_sales_kes)                                   AS spend,
+                    SUM(net_sales_kes) / NULLIF(COUNT(DISTINCT order_id), 0) AS aov,
+                    MIN(sale_date::date)                                 AS first_dt,
+                    MAX(sale_date::date)                                 AS last_dt
+                FROM all_sales
+                WHERE sale_kind   = 'order'
+                  AND customer_id = ANY(%s)
+                GROUP BY customer_id
+            ) sub
+            WHERE c.customer_id = sub.customer_id
+        """, (new_ids,))
+
+    conn.commit()
+    log.info("Odoo customer sync: upserted %d rows into all_customers", len(ac_rows))
+
+
 def sync_footfall(cur, now):
     FOOTFALL_URL = "https://v9.footfallcam.com"
     CUBE_URL = "https://cube.footfallcam.com/API/v1"
@@ -1802,6 +1992,26 @@ def main():
             log.info("\u2705 Product master sync complete")
     except Exception as e:
         log.error("Product master sync error: %s", e)
+    # ---- Odoo customer incremental sync + gap-fill ----
+    # Runs hourly. Calls extract_odoo_customers.py (write_date incremental) to
+    # pick up new/updated partners, then fills any gaps where a partner_id
+    # appears in all_sales but was never synced into raw_odoo_customers (e.g.
+    # newly-linked POS customers whose customer_rank was 0 at rebuild time).
+    # Finally upserts results into all_customers with stats backfilled from
+    # all_sales so LTV/order-counts are correct immediately.
+    global _LAST_ODOO_CUSTOMER_SYNC
+    odoo_customer_sync_due = (
+        _LAST_ODOO_CUSTOMER_SYNC is None
+        or (now_utc - _LAST_ODOO_CUSTOMER_SYNC).total_seconds() >= 3600
+    )
+    if odoo_customer_sync_due:
+        _LAST_ODOO_CUSTOMER_SYNC = now_utc
+        try:
+            log.info("Running incremental Odoo customer sync...")
+            sync_odoo_customers_incremental(conn)
+            log.info("✅ Odoo customer sync complete")
+        except Exception as e:
+            log.error("Odoo customer sync error: %s", e)
     # ---- Stock transfers (Odoo incoming pickings -> stock_transfers) ----
     # Runs hourly. Extract is TRUNCATE+reload (small: ~600 pickings), so nothing
     # goes stale between runs; the interval alone gates it. Store managers see
