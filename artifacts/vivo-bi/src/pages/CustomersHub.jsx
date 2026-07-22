@@ -17,6 +17,7 @@ const CUST_TABS = [
   { id: "customers", label: "Customers", pageId: "customers", el: CustomersTab },
   { id: "details", label: "Customer Details", pageId: "customer-details", el: CustomerDetailsTab },
   { id: "crm", label: "CRM", pageId: "crm", external: "/crm/" },
+  { id: "crm-desk", label: "CRM Desk", pageId: "crm", external: "https://crm.vivofashionbrands.com" },
 ];
 
 const CustomersHubPage = () => {
