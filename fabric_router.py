@@ -2508,6 +2508,8 @@ def register(
     plain_print: str = Query(default=None),
     weight_range: str = Query(default=None),
     fabric_color: str = Query(default=None),
+    supplier: str = Query(default=None),
+    structure: str = Query(default=None),
     location: str = Query(default="RMAT/Stock"),
     search: str = Query(default=None),
     min_qty: float = Query(default=0),
@@ -2555,6 +2557,10 @@ def register(
             where.append("p.weight_range = %s"); params.append(weight_range)
         if fabric_color:
             where.append("UPPER(BTRIM(p.fabric_color)) = UPPER(BTRIM(%s))"); params.append(fabric_color)
+        if supplier:
+            where.append("NULLIF(BTRIM(p.fabric_supplier_name),'') = %s"); params.append(supplier)
+        if structure:
+            where.append("p.fabric_structure = %s"); params.append(structure)
         if search:
             where.append("(p.name ILIKE %s OR p.default_code ILIKE %s OR p.barcode ILIKE %s)")
             params.extend([f"%{search}%", f"%{search}%", f"%{search}%"])
@@ -3154,7 +3160,8 @@ def fabric_mix(
                   p.id, p.name, p.default_code, p.barcode, p.fabric_category, p.fabric_subcategory,
                   p.fabric_structure, p.plain_print, p.weight_range, p.gsm,
                   p.width_m, p.kg_per_mtr_eff as kg_per_mtr, p.kg_per_mtr_src, p.fiber_content, p.fabric_type,
-                  p.supplier, p.supplier_fabric_code, p.active, p.primary_color, p.source_city, p.source_country,
+                  COALESCE(NULLIF(BTRIM(p.fabric_supplier_name),''), p.supplier) as supplier,
+                  p.supplier_fabric_code, p.active, p.primary_color, p.source_city, p.source_country,
                   INITCAP(BTRIM(p.fabric_color)) as fabric_color,
                   NULLIF(BTRIM(p.fabric_name),'') as fabric_name,
                   NULLIF(BTRIM(p.fabric_supplier_name),'') as fabric_supplier_name,
@@ -4329,6 +4336,21 @@ def supplier_source_cities(supplier: str = Query(...),
         """, (supplier,))
 
 # ── Filter options ──────────────────────────────────────────
+@fabric_router.get("/api/fabric/suppliers/names")
+def fabric_supplier_names():
+    """Return a sorted, deduplicated list of non-blank fabric_supplier_name values
+    from raw_fabric_products. Used to populate supplier dropdowns across all
+    Fabric tabs (QC, Mix, Support, Register) with the dedicated Odoo product field
+    rather than PO partner names."""
+    with _get_conn() as conn:
+        rows = q(conn, """
+            SELECT DISTINCT NULLIF(BTRIM(fabric_supplier_name),'') AS name
+            FROM raw_fabric_products
+            WHERE fabric_supplier_name IS NOT NULL AND BTRIM(fabric_supplier_name) != ''
+            ORDER BY 1
+        """)
+        return {"suppliers": [r["name"] for r in rows if r["name"]]}
+
 @fabric_router.get("/api/fabric/filters")
 def filters(scope: str = Query(default="main")):
     with _get_conn() as conn:
@@ -4349,11 +4371,16 @@ def filters(scope: str = Query(default="main")):
             SELECT DISTINCT INITCAP(BTRIM(fabric_color)) as value FROM raw_fabric_products
             WHERE fabric_color IS NOT NULL AND btrim(fabric_color) <> '' ORDER BY 1
         """)
+        structs = q(conn, """
+            SELECT DISTINCT NULLIF(BTRIM(fabric_structure),'') as value FROM raw_fabric_products
+            WHERE fabric_structure IS NOT NULL AND BTRIM(fabric_structure) != '' ORDER BY 1
+        """)
         return {
             "categories": [r['value'] for r in cats],
             "subcategories": subcats,
             "locations": [r['value'] for r in locs],
             "fabric_colors": [r['value'] for r in colors],
+            "structures": [r['value'] for r in structs if r['value']],
             "plain_print": ["Solid", "Print"],
             "weight_range": ["Light", "Medium", "Heavy"],
         }
@@ -8647,11 +8674,7 @@ def fabric_qc_report(date_from: str = Query(default=""),
                    s.id as sheet_id, s.fabric_name, s.barcode, s.po_name,
                    COALESCE(s.po_date, (s.created_at AT TIME ZONE 'Africa/Nairobi')::date) as recv_date,
                    p.width_m as expected_width_m,
-                   COALESCE(
-                     (SELECT MAX(NULLIF(po.supplier,''))
-                        FROM raw_fabric_purchase_orders po
-                       WHERE po.po_name = s.po_name AND s.po_name IS NOT NULL),
-                     'No PO / unknown') as supplier
+                   COALESCE(NULLIF(BTRIM(p.fabric_supplier_name),''), 'No PO / unknown') as supplier
             FROM fabric_receiving_rolls r
             JOIN fabric_receiving_sheets s ON s.id = r.sheet_id
             LEFT JOIN raw_fabric_products p ON p.id = s.product_id
@@ -8662,13 +8685,10 @@ def fabric_qc_report(date_from: str = Query(default=""),
         # one supplier never empties the other dropdowns.
         opts = q(conn, """
             SELECT DISTINCT
-                   COALESCE(
-                     (SELECT MAX(NULLIF(po.supplier,''))
-                        FROM raw_fabric_purchase_orders po
-                       WHERE po.po_name = s.po_name AND s.po_name IS NOT NULL),
-                     'No PO / unknown') as supplier,
+                   COALESCE(NULLIF(BTRIM(p.fabric_supplier_name),''), 'No PO / unknown') as supplier,
                    s.fabric_name
             FROM fabric_receiving_sheets s
+            LEFT JOIN raw_fabric_products p ON p.id = s.product_id
             WHERE s.deleted_at IS NULL
         """)
     if sup:

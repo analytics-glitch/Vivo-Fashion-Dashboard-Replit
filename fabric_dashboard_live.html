@@ -739,6 +739,8 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
      <select id="reg-print" onchange="loadRegister(0)"><option value="">Solid &amp; print</option><option value="Solid">Solid</option><option value="Print">Print</option></select>
      <select id="reg-weight" onchange="loadRegister(0)"><option value="">All weights</option><option value="Light">Light</option><option value="Medium">Medium</option><option value="Heavy">Heavy</option></select>
      <select id="reg-color" onchange="loadRegister(0)"><option value="">All colors</option></select>
+     <select id="reg-supplier" onchange="loadRegister(0)"><option value="">All suppliers</option></select>
+     <select id="reg-structure" onchange="loadRegister(0)"><option value="">All structures</option></select>
      <div class="seg" id="reg-cover-seg" title="Switch the Covers column between weekly and monthly basis">
       <button class="unit-btn active" data-cov="weeks" onclick="setRegCover('weeks')">Weeks</button>
       <button class="unit-btn" data-cov="months" onclick="setRegCover('months')">Months</button>
@@ -1897,13 +1899,13 @@ async function loadFabricQC(){
     const qs=qcParams();
     const d=await apiFetch('/api/fabric/qc/report'+(qs?('?'+qs):''));
     qcData=d;
-    // Repopulate the supplier dropdown from the unfiltered universe, keeping
-    // the current selection.
+    // Populate the QC supplier dropdown from the shared fabric_supplier_name list
+    // (fabric_supplier_name from the Odoo product record) plus the "No PO / unknown"
+    // fallback for rolls whose sheet has no product_id link. Preserves selection.
     const sel=document.getElementById('qc-supplier');
     const cur=sel.value;
-    sel.innerHTML='<option value="">All suppliers</option>'+
-      ((d.options&&d.options.suppliers)||[]).map(s=>`<option value="${esc(s)}">${esc(s)}</option>`).join('');
-    sel.value=cur;
+    const names=await getFabSupplierNames();
+    _setSupplierOpts(sel,names,cur,'<option value="No PO / unknown">No PO / unknown</option>');
     renderQcKpis(d);
     renderQcRule(d);
     renderQcBars(d);
@@ -2237,18 +2239,40 @@ function onMixSupplier(ctxKey){
   ctx.supplier=(el&&el.value)||'';
   renderMix(ctx);
 }
-// (Re)build the supplier dropdown from the product details in the current tree,
-// preserving the active selection. Suppliers sorted A→Z; blank/"false" skipped.
-function populateMixSupplierOptions(ctx){
+// ── Shared Fabric Supplier Names ─────────────────────────────────────────────
+// Single fetch of /api/fabric/suppliers/names (fabric_supplier_name from the
+// Odoo product record), cached for the page lifetime. Used by the Mix, Support,
+// QC, and Register supplier dropdowns so they all show the same unified list.
+let _fabSupNames=null;
+let _fabSupNamesPromise=null;
+async function getFabSupplierNames(){
+  if(_fabSupNames!==null)return _fabSupNames;
+  if(!_fabSupNamesPromise){
+    _fabSupNamesPromise=apiFetch('/api/fabric/suppliers/names')
+      .then(d=>{_fabSupNames=(d&&d.suppliers)||[];return _fabSupNames;})
+      .catch(()=>{_fabSupNamesPromise=null;return [];});
+  }
+  return _fabSupNamesPromise;
+}
+// Populate a supplier <select> from the cached names list, preserving selection.
+// The browser silently ignores el.value assignments that don't match an option,
+// so we can unconditionally set cur and it will land on '' when not found.
+function _setSupplierOpts(el,names,cur,extraTop){
+  if(!el)return;
+  el.innerHTML='<option value="">All suppliers</option>'
+    +(extraTop||'')
+    +names.map(s=>`<option value="${esc(s)}">${esc(s)}</option>`).join('');
+  if(cur)el.value=cur;
+}
+// (Re)build the supplier dropdown using the shared fabric_supplier_name list,
+// preserving the active selection. Replaces the old product-detail derivation.
+async function populateMixSupplierOptions(ctx){
   ctx=ctx||mixMain;
   const el=document.getElementById(ctx.ids.supplier);if(!el)return;
-  const set=new Set();
-  Object.values(ctx.detailById||{}).forEach(d=>{const s=fabricClean(d&&d.supplier);if(s)set.add(s);});
+  const names=await getFabSupplierNames();
   const cur=ctx.supplier;
-  const opts=['<option value="">All suppliers</option>']
-    .concat(Array.from(set).sort((a,b)=>a.localeCompare(b)).map(s=>`<option value="${esc(s)}">${esc(s)}</option>`));
-  el.innerHTML=opts.join('');
-  if(cur&&set.has(cur)){el.value=cur;}else if(cur){ctx.supplier='';el.value='';}
+  _setSupplierOpts(el,names,cur,'');
+  if(cur&&!names.includes(cur))ctx.supplier='';
 }
 // Does a product row match the active search? Matches name, barcode (default_code)
 // and the detail's name/default_code so a barcode typed in still finds it.
@@ -3921,6 +3945,8 @@ async function loadRegister(offset){
   const p=document.getElementById('reg-print').value;if(p)params.set('plain_print',p);
   const w=document.getElementById('reg-weight').value;if(w)params.set('weight_range',w);
   const fc=document.getElementById('reg-color').value;if(fc)params.set('fabric_color',fc);
+  const sup=document.getElementById('reg-supplier').value;if(sup)params.set('supplier',sup);
+  const str=document.getElementById('reg-structure').value;if(str)params.set('structure',str);
   try{
     const [d]=await Promise.all([apiFetch('/api/fabric/register?'+params),loadFabImgIndex()]);
     regTotal=d.total;lastRegItems=d.items;
@@ -6211,6 +6237,8 @@ async function exportRegister(btn){
   const p=document.getElementById('reg-print').value;if(p)params.set('plain_print',p);
   const w=document.getElementById('reg-weight').value;if(w)params.set('weight_range',w);
   const fc=document.getElementById('reg-color').value;if(fc)params.set('fabric_color',fc);
+  const sup=document.getElementById('reg-supplier').value;if(sup)params.set('supplier',sup);
+  const str=document.getElementById('reg-structure').value;if(str)params.set('structure',str);
   const orig=btn?btn.textContent:'';
   if(btn){btn.disabled=true;btn.textContent='Exporting…';}
   try{
@@ -7288,6 +7316,13 @@ async function init(){
     catSel.innerHTML='<option value="">All categories</option>'+f.categories.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('');
     const colSel=document.getElementById('reg-color');
     if(colSel&&Array.isArray(f.fabric_colors))colSel.innerHTML='<option value="">All colors</option>'+f.fabric_colors.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('');
+    // Supplier + Structure dropdowns (Register tab)
+    const strSel=document.getElementById('reg-structure');
+    if(strSel&&Array.isArray(f.structures))strSel.innerHTML='<option value="">All structures</option>'+f.structures.map(s=>`<option value="${esc(s)}">${esc(s)}</option>`).join('');
+    getFabSupplierNames().then(names=>{
+      const supSel=document.getElementById('reg-supplier');
+      if(supSel)supSel.innerHTML='<option value="">All suppliers</option>'+names.map(s=>`<option value="${esc(s)}">${esc(s)}</option>`).join('');
+    });
     // Rolls tab shares the same category/color vocabulary as the Register.
     const rCatSel=document.getElementById('rolls-category');
     if(rCatSel)rCatSel.innerHTML='<option value="">All categories</option>'+f.categories.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join('');
