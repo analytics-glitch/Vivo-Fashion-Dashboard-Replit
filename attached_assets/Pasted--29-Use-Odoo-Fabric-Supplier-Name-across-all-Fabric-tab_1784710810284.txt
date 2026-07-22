@@ -1,0 +1,33 @@
+#29 - Use Odoo Fabric Supplier Name across all Fabric tabs
+What & Why
+Every supplier dropdown on the /fabric page currently draws names from different sources — the QC tab reads PO partner names (giving "No PO / unknown" as a fallback), while the Mix and Support tabs derive supplier names client-side from a different Odoo attribute. The buying team wants all dropdowns to show the dedicated Fabric Supplier Name field from the Odoo product record, which is already synced into raw_fabric_products.fabric_supplier_name. This unifies naming across tabs and eliminates the "No PO / unknown" clutter in QC.
+
+Done looks like
+A new backend endpoint (GET /api/fabric/suppliers/names) returns a sorted, deduplicated list of non-blank fabric_supplier_name values from raw_fabric_products — queried live on each page load
+The Fabric QC tab supplier dropdown is populated from this list; filtering logic looks up the receiving sheet's product_id → raw_fabric_products.fabric_supplier_name (not the PO partner)
+The Stock Mix tab supplier dropdown is populated from the same list (replacing the current client-side derivation from raw_fabric_products.supplier)
+The Support Fabrics tab supplier dropdown is populated from the same list (same replacement)
+The Fabric Register tab gains a Supplier dropdown (and a Structure dropdown per the original scope of this task), both sourced from the same endpoint/field
+All filters use exact-match on fabric_supplier_name, consistent with how the fabric color filter works
+Out of scope
+Changing the Vendors tab (which shows PO-level supplier exposure — PO partner names are correct there)
+Renaming or migrating the supplier column in raw_fabric_products
+Backfilling historical QC rows that have no product_id
+Steps
+Backend: new /api/fabric/suppliers/names endpoint — query SELECT DISTINCT NULLIF(BTRIM(fabric_supplier_name),'') FROM raw_fabric_products WHERE fabric_supplier_name IS NOT NULL AND BTRIM(fabric_supplier_name) != '' ORDER BY 1 and return { suppliers: [...] }. Serve it live (no SWR cache layer needed given the small result set).
+
+Backend: update QC filtering — In fabric_qc_report, join raw_fabric_products via s.product_id to get fabric_supplier_name for each roll. Replace the current PO-partner supplier derivation in both the main query and the options query. Filter on fabric_supplier_name instead of PO supplier when the supplier param is set. Keep "No PO / unknown" only as a fallback for rolls whose sheet has no product_id link.
+
+Frontend: QC dropdown — On loadFabricQC(), fetch /api/fabric/suppliers/names and populate #qc-supplier from the result (instead of relying on d.options.suppliers from the report response). Preserve the existing "All suppliers" + "No PO / unknown" options at the top.
+
+Frontend: Mix and Support dropdowns — Replace populateMixSupplierOptions() (which derives names from cached product detail) with a fetch of /api/fabric/suppliers/names called once on first tab load. Populate both #mix-supplier and #support-supplier from the shared list. The onMixSupplier() filter logic stays unchanged — it already does exact-match against detail.supplier; update the detail shape to surface fabric_supplier_name as the canonical supplier field in the mix/support API response.
+
+Backend: Mix/Support detail field — In the mix/support endpoint(s) that return per-product detail, ensure fabric_supplier_name is included and preferred over the raw supplier attribute. The JS filter in mixProdMatches reads dc.supplier; align the returned field key so the filter works without JS changes.
+
+Backend + Frontend: Fabric Register — Add supplier and structure filter params to the register() endpoint and exportRegister(). Add WHERE clauses on NULLIF(BTRIM(p.fabric_supplier_name),'') and p.fabric_structure respectively. In the HTML, add the two dropdowns to the register filter bar and wire them into loadRegister() and exportRegister(), populated from /api/fabric/suppliers/names and a distinct structure list from /api/fabric/filters.
+
+Relevant files
+fabric_router.py — fabric_qc_report (line ~8329), fabric_suppliers (line ~4204), mix/support detail endpoints, register() endpoint, filters() endpoint
+fabric_dashboard_live.html — #qc-supplier dropdown (line ~811), loadFabricQC() (~line 1862), populateMixSupplierOptions() (~line 2227), #mix-supplier / #support-supplier dropdowns (lines ~602, ~679), register filter bar (~line 1145), loadRegister(), exportRegister()
+extract_fabric.py — confirms fabric_supplier_name = Odoo product property "Fabric Supplier Name" (line ~264)
+
