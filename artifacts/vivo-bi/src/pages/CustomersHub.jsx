@@ -39,7 +39,7 @@ const CustomersHubPage = () => {
             key={t.id}
             type="button"
             onClick={() => {
-              if (t.external) window.location.assign(t.external);
+              if (t.external) window.open(t.external, '_blank', 'noopener,noreferrer');
               else setTab(t.id);
             }}
             data-testid={`cust-tab-${t.id}`}
