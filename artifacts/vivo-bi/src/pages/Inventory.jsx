@@ -1015,7 +1015,9 @@ const Inventory = ({ onSeeAgedStock }) => {
               const woc = unitsPrevMonth > 0 ? (kpiTotal / unitsPrevMonth) * 4.3 : null;
               const sub = woc == null
                 ? "Not enough sales data for previous month"
-                : `Stores ${fmtNum(kpiStore)} · Warehouse ${fmtNum(kpiWarehouse)} · Online ${fmtNum(kpiOnline)}`;
+                : woc < 2 ? "Undercover — stockout risk, restock"
+                : woc <= 4 ? "Low cover — monitor, plan re-order"
+                : "Healthy cover (ideal ~12 weeks)";
               return (
                 <KPICard
                   testId="inv-kpi-weeks-of-cover"
