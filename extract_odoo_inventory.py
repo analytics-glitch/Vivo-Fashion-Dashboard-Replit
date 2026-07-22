@@ -219,6 +219,9 @@ def main():
             # Skip carrier/shopping bags — not sellable inventory (mirrors sales BASE_FILTERS)
             if "shopping bag" in (name or "").lower():
                 continue
+            # Skip third-party brands — not Vivo Group stock, excluded from all inventory metrics
+            if brand == "Third Party Brands":
+                continue
             # Skip excluded internal locations
             if any(exc.lower() in location.lower() for exc in EXCLUDED_LOCATIONS):
                 continue
