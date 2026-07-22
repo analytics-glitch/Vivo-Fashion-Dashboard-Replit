@@ -4495,7 +4495,7 @@ async function deleteFabricSection(btn){
 // ── Quality / edit modal ──
 // Any signed-in fabric user records per-roll QUALITY (status + notes); editing
 // the rolls/quantities themselves is admin-only (also enforced server-side).
-let recvEditState={id:null,rolls:[],kpm:null,isAdmin:false};
+let recvEditState={id:null,rolls:[],kpm:null,isAdmin:false,canEditWidth:false};
 const RECV_Q_OPTS=['','Pass','Fail','Pending'];
 // ── Structured shrinkage (fixed 35cm gauge square, re-measured after wash) ──
 // shrink_cm = 35 − entered_cm; inches = shrink_cm / 2.54; pct = shrink_cm/35×100.
@@ -4523,6 +4523,7 @@ async function openReceivingEdit(id){
     const s=d.sheet||{}, kpm=(s.kg_per_mtr!=null&&s.kg_per_mtr!==''&&Number(s.kg_per_mtr)>0)?Number(s.kg_per_mtr):null;
     recvEditState={
       id:id, kpm:kpm, isAdmin:!!(rt&&rt.admin),
+      canEditWidth:!!(rt&&(rt.admin||rt.can_edit_width)),
       rolls:(d.rolls||[]).map(r=>({
         roll_id:r.roll_id, roll_no:r.roll_no, qty_kg:r.qty_kg, qty_mtrs:r.qty_mtrs,
         quality_status:r.quality_status||'', quality_notes:r.quality_notes||'',
@@ -4586,7 +4587,9 @@ function renderReceivingEditRows(){
       <td class="r"><input type="number" min="0" step="any" data-ei="${i}" data-ek="shw" value="${esc(String(r.after_wash_width_cm??''))}" placeholder="cm" title="After-wash width of the 35cm gauge square" style="width:64px;text-align:right;"><div class="muted" id="recv-edit-shw-${i}" style="font-size:10px;white-space:nowrap;${shrinkHigh(r.after_wash_width_cm)?'color:#b45309;font-weight:700;':''}">${esc(shrinkPreviewTxt(r.after_wash_width_cm))}${(r.after_wash_width_cm===''&&r.after_wash_length_cm===''&&r.shrinkage_inches!=='')?'legacy '+esc(fmt2(r.shrinkage_inches))+'\u2033':''}</div></td>
       <td class="r"><input type="number" min="0" step="any" data-ei="${i}" data-ek="shl" value="${esc(String(r.after_wash_length_cm??''))}" placeholder="cm" title="After-wash length of the 35cm gauge square" style="width:64px;text-align:right;"><div class="muted" id="recv-edit-shl-${i}" style="font-size:10px;white-space:nowrap;${shrinkHigh(r.after_wash_length_cm)?'color:#b45309;font-weight:700;':''}">${esc(shrinkPreviewTxt(r.after_wash_length_cm))}</div></td>
       <td><input type="text" data-ei="${i}" data-ek="bld" value="${esc(String(r.bleeding_test||''))}" placeholder="e.g. No bleed" style="width:110px;"></td>
-      <td class="r"><input type="number" min="0" step="any" data-ei="${i}" data-ek="wid" value="${esc(String(r.width_measured_m??''))}" placeholder="m" style="width:64px;text-align:right;"></td>
+      <td class="r">${recvEditState.canEditWidth
+        ? `<input type="number" min="0" step="any" data-ei="${i}" data-ek="wid" value="${esc(String(r.width_measured_m??''))}" placeholder="m" style="width:64px;text-align:right;">`
+        : (r.width_measured_m!=null&&r.width_measured_m!==''?'<span class="muted" style="font-size:12px;">'+esc(fmt2(r.width_measured_m))+' m</span>':'<span class="muted">\u2014</span>')}</td>
       <td><select data-ei="${i}" data-ek="status" style="width:110px;">${opts}</select></td>
       <td><input type="text" data-ei="${i}" data-ek="notes" value="${esc(String(r.quality_notes||''))}" placeholder="optional" style="width:100%;min-width:140px;"></td>
       ${admin?`<td><button class="btn" data-ei="${i}" data-ek="del" title="Remove roll" style="padding:2px 8px;font-size:12px;">&times;</button></td>`:''}
@@ -5049,7 +5052,8 @@ function renderRecvPoDetail(box,det,poKey){
         if(r.bleeding_test)measBits.push('bleed: '+esc(r.bleeding_test));
         if(r.width_measured_m!=null&&r.width_measured_m!=='')measBits.push('width '+fmt2(r.width_measured_m)+' m');
         const measHtml=measBits.length?'<div class="muted" style="font-size:11px;">'+measBits.join(' · ')+'</div>':'';
-        return `<tr><td>${esc(String(r.roll_no))}</td><td class="r">${fmt2(r.qty_kg)}</td><td class="r">${r.qty_mtrs!=null?fmt1(r.qty_mtrs):'<span class="muted">—</span>'}</td><td>${q}${inspBadge}${measHtml}${r.quality_notes?'<div class="muted" style="font-size:11px;">'+esc(r.quality_notes)+'</div>':''}</td><td style="white-space:nowrap;">${racts}</td></tr>`;
+        const widCm=r.width_measured_m!=null&&r.width_measured_m!==''?((parseFloat(r.width_measured_m)*100).toFixed(1)+' cm'):'—';
+        return `<tr><td>${esc(String(r.roll_no))}</td><td class="r">${fmt2(r.qty_kg)}</td><td class="r">${r.qty_mtrs!=null?fmt1(r.qty_mtrs):'<span class="muted">—</span>'}</td><td class="r">${widCm==='—'?'<span class="muted">—</span>':esc(widCm)}</td><td>${q}${inspBadge}${measHtml}${r.quality_notes?'<div class="muted" style="font-size:11px;">'+esc(r.quality_notes)+'</div>':''}</td><td style="white-space:nowrap;">${racts}</td></tr>`;
       }).join('');
       const metaBits=(g.sheets||[]).map(s=>{
         const edited=s.updated_at?` · edited ${esc(s.updated_at)}${s.updated_by_name?' by '+esc(s.updated_by_name):''}`:'';
@@ -5057,9 +5061,10 @@ function renderRecvPoDetail(box,det,poKey){
       }).join(' · ');
       body=`<div style="border:1px solid var(--border,#d7d7de);border-top:none;border-radius:0 0 8px 8px;background:#fff;padding:.55rem .7rem;">
         <div class="muted" style="font-size:12px;">${metaBits}</div>
-        <table class="data" style="margin-top:5px;max-width:680px;">
-          <thead><tr><th style="width:90px;">Roll No.</th><th class="r">Kgs</th><th class="r">Mtrs</th><th>Quality</th><th style="width:150px;"></th></tr></thead>
-          <tbody>${rollRows||'<tr><td colspan="5" class="muted">No rolls recorded.</td></tr>'}</tbody>
+        ${(()=>{const wVals=allRolls.map(r=>r.width_measured_m!=null&&r.width_measured_m!==''?parseFloat(r.width_measured_m):null).filter(v=>v!=null);return wVals.length?'<div class="muted" style="font-size:12px;margin-top:4px;"><b>Min width:</b> '+(Math.min(...wVals)*100).toFixed(1)+' cm</div>':''})()}
+        <table class="data" style="margin-top:5px;max-width:780px;">
+          <thead><tr><th style="width:90px;">Roll No.</th><th class="r">Kgs</th><th class="r">Mtrs</th><th class="r" style="white-space:nowrap;">Width (cm)</th><th>Quality</th><th style="width:150px;"></th></tr></thead>
+          <tbody>${rollRows||'<tr><td colspan="6" class="muted">No rolls recorded.</td></tr>'}</tbody>
         </table>
       </div>`;
     }
@@ -5210,7 +5215,7 @@ function renderInspTicket(pop,ctx,box,rollId){
     +'<div>'+lbl('Roll no.')+ro(roll.roll_no)+'</div>'
     +'<div>'+lbl('Roll weight (kg)')+ro(roll.qty_kg!=null?fmt2(roll.qty_kg):null)+'</div>'
     +'<div>'+lbl('Roll yardage (yds)')+ro(roll.length_yards!=null?fmt2(roll.length_yards):null)+'</div>'
-    +'<div>'+lbl('Width (in)'+(res.width?'':' <span class="muted" style="font-weight:400;">(fill in)</span>'))+(res.width?ro(roll.width_inches):num('insp-width',widthIn,'inches'))+'</div>'
+    +'<div>'+lbl('Width'+(res.width?'':' <span class="muted" style="font-weight:400;">(in — fill in)</span>'))+(res.width?('<div style="padding:5px 7px;font-size:13px;background:rgba(0,0,0,.035);border:1px solid var(--border,#e2e2e8);border-radius:6px;min-height:29px;">'+(roll.width_measured_m!=null&&roll.width_measured_m!==''?esc((roll.width_measured_m*100).toFixed(1)+' cm / '+fmt2(roll.width_measured_m*39.37)+' in'):'<span class="muted">—</span>')+'</div>'):num('insp-width',widthIn,'inches'))+'</div>'
     +'</div>'
     +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:.5rem;margin-top:.55rem;">'
     +attr('style_article','Style / Article','insp-style')

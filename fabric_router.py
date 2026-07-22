@@ -5360,6 +5360,19 @@ def _recv_is_admin(request):
 # server-side in every receiving write endpoint; the UI hides the controls.
 _RECV_QUALITY_ONLY_EMAILS = {"costing@vivofashiongroup.com"}
 
+# The one non-admin buyer allowed to write the width_measured_m field on rolls
+# (in addition to full admins). All other quality-only users may record
+# status/notes/shrinkage but NOT the roll's measured width.
+_RECV_WIDTH_EDITOR_EMAIL = "hagai@vivofashiongroup.com"
+
+def _recv_can_edit_width(request):
+    """True when this user may write `width_measured_m` on a roll: either a
+    full admin, OR the one designated buyer email."""
+    u = getattr(request.state, "user", None) or {}
+    if _fabric_full_admin(u):
+        return True
+    return (u.get("email") or "").strip().lower() == _RECV_WIDTH_EDITOR_EMAIL
+
 def _recv_quality_only(request):
     """True when this user is restricted to quality-only receiving edits.
     A full fabric admin is never quality-only (admin wins)."""
@@ -5386,7 +5399,8 @@ def receiving_rights(request: Request):
     can_approve_delivery: True for fabric_quality_supervisor + admin roles."""
     return {"admin": _recv_is_admin(request),
             "quality_only": _recv_quality_only(request),
-            "can_approve_delivery": _insp_can_approve(request)}
+            "can_approve_delivery": _insp_can_approve(request),
+            "can_edit_width": _recv_can_edit_width(request)}
 
 
 @fabric_router.post("/api/fabric/receiving/po/{po_id}/approve-delivery")
@@ -8192,6 +8206,7 @@ def receiving_update_quality(sheet_id: int, request: Request, body: dict = Body(
     if not isinstance(items, list) or not items:
         raise HTTPException(status_code=400, detail="rolls list is required")
     _uid, name = _fabric_actor(request)
+    can_edit_width = _recv_can_edit_width(request)
     with _get_conn() as conn:
         _ensure_receiving_tables(conn)
         exists = q(conn, "SELECT id, fabric_name, po_id "
@@ -8212,6 +8227,12 @@ def receiving_update_quality(sheet_id: int, request: Request, body: dict = Body(
                         detail=f"status must be one of {', '.join(_RECV_QUALITY_STATUSES)}")
                 notes = (str(it.get("notes") or "").strip() or None)
                 meas = _recv_parse_measurements(it)
+                # width_measured_m is a restricted field — only admin and the
+                # designated buyer email may change it.  For all other users,
+                # silently preserve the stored value so their quality save
+                # never wipes or overwrites the width.
+                if not can_edit_width:
+                    meas["width_measured_m"] = None  # placeholder; replaced below
                 roll_id = it.get("roll_id")
                 roll_no = it.get("roll_no")
                 # Look up the current values first so we can (a) skip no-op
@@ -8238,6 +8259,12 @@ def receiving_update_quality(sheet_id: int, request: Request, body: dict = Body(
                 if not old:
                     continue
                 o = old[0]
+                # Restore the stored width for users who can't edit it, so
+                # their quality save is a no-op for that field.
+                if not can_edit_width:
+                    stored_w = o.get("width_measured_m")
+                    meas["width_measured_m"] = (
+                        float(stored_w) if stored_w not in (None, "") else None)
                 if (o.get("quality_status") or None) == status and \
                    (o.get("quality_notes") or None) == notes and \
                    not _recv_meas_changed(o, meas):
