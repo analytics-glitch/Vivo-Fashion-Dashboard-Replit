@@ -1,6 +1,6 @@
 kind = "web"
 previewPath = "/loyalty/"
-title = "Vivo Loyalty"
+title = "Vivo SZ CRM"
 version = "1.0.0"
 id = "artifacts/vivo-loyalty"
 router = "path"
