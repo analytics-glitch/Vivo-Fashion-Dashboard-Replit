@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import { createPortal } from "react-dom";
 import { api, fmtKES, fmtNum } from "@/lib/api";
 import { usePiiReveal, piiHeaders } from "@/lib/usePiiReveal";
 
@@ -63,6 +64,13 @@ const TIER_COLORS = {
   Silver: "bg-stone-100 text-stone-600 border-stone-300",
   Gold:   "bg-amber-100 text-amber-700 border-amber-300",
   VIP:    "bg-purple-100 text-purple-700 border-purple-300",
+};
+
+const COUNTRY_COLORS = {
+  Kenya:  "#1a5c38",
+  Uganda: "#d97706",
+  Rwanda: "#00c853",
+  Online: "#4b7bec",
 };
 
 function StatusBadge({ status, map, colors, labels }) {
@@ -308,8 +316,288 @@ function OrdersTable({ orders, selectedId, onSelect, hasMore, nextCursor, onLoad
   );
 }
 
+// ── Image lightbox (portal to body — avoids stacking context issues) ───────────
+function ImageLightbox({ src, alt, onClose }) {
+  useEffect(() => {
+    const fn = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", fn);
+    return () => window.removeEventListener("keydown", fn);
+  }, [onClose]);
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[9999] bg-black/85 flex items-center justify-center p-8"
+      onClick={onClose}
+    >
+      <img
+        src={src}
+        alt={alt || "Product image"}
+        className="max-w-full max-h-full object-contain rounded-lg shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      />
+      <button
+        onClick={onClose}
+        className="absolute top-4 right-4 w-9 h-9 flex items-center justify-center bg-white/20 hover:bg-white/40 text-white rounded-full text-xl leading-none transition-colors font-light"
+      >
+        ×
+      </button>
+    </div>,
+    document.body
+  );
+}
+
+// ── Product detail drawer (portal to body) ────────────────────────────────────
+function ProductDetailDrawer({ sku, detail, loading, onClose, onImageExpand }) {
+  useEffect(() => {
+    const fn = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", fn);
+    return () => window.removeEventListener("keydown", fn);
+  }, [onClose]);
+
+  const product  = detail?.product   || {};
+  const stock    = detail?.stock     || [];
+  const velocity = detail?.velocity  || {};
+  const imageUrl = detail?.image_url || "";
+  const sohStores = detail?.soh_stores   ?? 0;
+  const sohWh     = detail?.soh_warehouse ?? 0;
+
+  const stockRows = stock.filter((s) => Number(s.available) > 0);
+
+  return createPortal(
+    <div className="fixed inset-0 z-[9998]">
+      {/* backdrop */}
+      <div className="absolute inset-0 bg-black/30" onClick={onClose} />
+
+      {/* drawer panel */}
+      <div className="absolute right-0 top-0 h-full w-[440px] max-w-full bg-white shadow-2xl flex flex-col overflow-hidden">
+
+        {/* header: image + name + close */}
+        <div className="flex-shrink-0 border-b border-stone-200 px-4 py-3 flex items-start gap-3">
+          {imageUrl ? (
+            <img
+              src={imageUrl}
+              alt={product.style_name || sku}
+              className="w-16 h-16 object-cover rounded cursor-zoom-in hover:opacity-80 transition-opacity flex-shrink-0 bg-stone-100"
+              onClick={() => onImageExpand(imageUrl, product.style_name || sku)}
+              onError={(e) => { e.target.style.display = "none"; }}
+            />
+          ) : (
+            <div className="w-16 h-16 rounded bg-stone-100 flex-shrink-0" />
+          )}
+          <div className="flex-1 min-w-0 pt-0.5">
+            <p className="font-semibold text-sm text-stone-900 leading-snug">
+              {product.style_name || sku}
+            </p>
+            {(product.color_print || product.size) && (
+              <p className="text-[10px] text-stone-500 mt-0.5">
+                {[product.color_print, product.size].filter(Boolean).join(" · ")}
+              </p>
+            )}
+            <p className="text-[10px] font-mono text-stone-400 mt-0.5 truncate">{sku}</p>
+          </div>
+          <button
+            onClick={onClose}
+            className="flex-shrink-0 w-7 h-7 flex items-center justify-center text-stone-400 hover:text-stone-700 rounded hover:bg-stone-100 transition-colors text-base font-medium mt-0.5"
+          >
+            ×
+          </button>
+        </div>
+
+        {/* body */}
+        {loading ? (
+          <div className="flex-1 flex items-center justify-center">
+            <Spinner />
+          </div>
+        ) : !detail ? (
+          <div className="flex-1 flex items-center justify-center text-xs text-stone-400 italic">
+            Product not found
+          </div>
+        ) : (
+          <div className="flex-1 overflow-y-auto p-4 space-y-5">
+
+            {/* Properties */}
+            <div>
+              <SectionLabel>Properties</SectionLabel>
+              <div className="grid grid-cols-2 gap-x-6 gap-y-3">
+                {product.brand        && <Field label="Brand"        value={product.brand} />}
+                {product.category     && <Field label="Category"     value={product.category} />}
+                {product.sub_category && <Field label="Sub-category" value={product.sub_category} />}
+                {product.product_type && <Field label="Product type" value={product.product_type} />}
+                {product.collection   && <Field label="Collection"   value={product.collection} />}
+                {product.gender       && <Field label="Gender"       value={product.gender} />}
+                {product.status       && <Field label="Status"       value={product.status} />}
+                {product.tier         && <Field label="Tier"         value={product.tier} />}
+                {Number(product.price) > 0 && (
+                  <Field label="Price" value={KES(product.price)} />
+                )}
+                {product.style_launch_date && (
+                  <Field label="Launch date" value={fmtShortDate(product.style_launch_date)} />
+                )}
+                {product.is_noos && <Field label="NOOS" value="Yes" />}
+              </div>
+            </div>
+
+            {/* Stock by location */}
+            <div>
+              <div className="flex items-baseline justify-between mb-2">
+                <SectionLabel>Stock on Hand</SectionLabel>
+                <div className="flex gap-3 text-[10px] text-stone-500 -mt-0.5">
+                  <span>Stores <strong className="text-stone-800 font-semibold ml-0.5">{sohStores}</strong></span>
+                  <span>Warehouse <strong className="text-stone-800 font-semibold ml-0.5">{sohWh}</strong></span>
+                  <span>Total <strong className="text-stone-800 font-semibold ml-0.5">{sohStores + sohWh}</strong></span>
+                </div>
+              </div>
+              {stockRows.length === 0 ? (
+                <p className="text-xs text-stone-400 italic">No stock recorded</p>
+              ) : (
+                <div className="rounded-lg border border-stone-200 overflow-hidden">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="bg-stone-50 border-b border-stone-200">
+                        <th className="px-3 py-1.5 text-left font-medium text-stone-500">Location</th>
+                        <th className="px-3 py-1.5 text-right font-medium text-stone-500">Units</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {stockRows.map((s, i) => (
+                        <tr key={i} className={`border-t border-stone-100 ${i % 2 === 1 ? "bg-stone-50/50" : ""}`}>
+                          <td className="px-3 py-1.5 text-stone-700">
+                            <div className="flex items-center gap-1.5">
+                              <span
+                                className="w-2 h-2 rounded-full flex-shrink-0 inline-block"
+                                style={{ background: COUNTRY_COLORS[s.country] || "#aaa" }}
+                              />
+                              {s.location}
+                            </div>
+                          </td>
+                          <td className="px-3 py-1.5 text-right font-mono font-semibold text-stone-800">
+                            {NUM(s.available)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            {/* 30-day velocity */}
+            {(Number(velocity.units_30d) > 0 || Number(velocity.revenue_30d) > 0) && (
+              <div>
+                <SectionLabel>Last 30 Days</SectionLabel>
+                <div className="grid grid-cols-2 gap-x-6 gap-y-3">
+                  <Field label="Units sold" value={NUM(velocity.units_30d)} />
+                  <Field label="Revenue" value={KES(velocity.revenue_30d)} />
+                </div>
+              </div>
+            )}
+
+          </div>
+        )}
+      </div>
+    </div>,
+    document.body
+  );
+}
+
+// ── Line item row — clickable for product drawer, image click for lightbox ─────
+function LineItemRow({ item, isReturn, onImageExpand, onProductClick }) {
+  const hasSku = !!item.sku;
+  return (
+    <div
+      className={`flex items-start gap-2 rounded-lg p-2 transition-colors ${
+        isReturn
+          ? "bg-red-50 border border-red-100"
+          : "bg-white border border-stone-100"
+      } ${hasSku ? "cursor-pointer hover:border-green-200 hover:bg-stone-50/50" : ""}`}
+      onClick={hasSku ? () => onProductClick && onProductClick(item) : undefined}
+    >
+      {/* product image — click expands to lightbox, stops row-click propagation */}
+      <div
+        className={`flex-shrink-0 ${item.image_url ? "cursor-zoom-in" : ""}`}
+        onClick={
+          item.image_url
+            ? (e) => {
+                e.stopPropagation();
+                onImageExpand && onImageExpand(item.image_url, item.product_title);
+              }
+            : undefined
+        }
+      >
+        {item.image_url ? (
+          <img
+            src={item.image_url}
+            alt={item.product_title}
+            className="w-12 h-12 object-cover rounded bg-stone-100 hover:opacity-75 transition-opacity"
+            onError={(e) => { e.target.style.display = "none"; }}
+          />
+        ) : (
+          <div className="w-12 h-12 rounded bg-stone-100 flex-shrink-0" />
+        )}
+      </div>
+
+      <div className="flex-1 min-w-0">
+        <p className="text-xs font-medium text-stone-800 truncate">
+          {item.product_title || item.sku || "—"}
+        </p>
+        <p className="text-[10px] text-stone-500 mt-0.5">
+          {[item.colour, item.size].filter(Boolean).join(" · ") || ""}
+        </p>
+        {hasSku && (
+          <p className="text-[10px] font-mono text-stone-400 mt-0.5 truncate">{item.sku}</p>
+        )}
+      </div>
+
+      <div className="text-right flex-shrink-0">
+        <p className="text-xs text-stone-700">{NUM(item.quantity)} × {KES(item.unit_price)}</p>
+        {Number(item.discount) > 0 && (
+          <p className="text-[10px] text-stone-400">−{KES(item.discount)} disc.</p>
+        )}
+        <p className={`text-xs font-semibold mt-0.5 ${isReturn ? "text-red-600" : "text-stone-900"}`}>
+          {isReturn ? `− ${KES(item.line_total)}` : KES(item.line_total)}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function PriceLine({ label, value, dimmed, bold }) {
+  return (
+    <div className="flex items-center justify-between">
+      <span className={`text-xs ${dimmed ? "text-stone-400" : bold ? "font-semibold text-stone-800" : "text-stone-600"}`}>
+        {label}
+      </span>
+      <span className={`text-xs ${dimmed ? "text-stone-400" : bold ? "font-semibold text-stone-800" : "text-stone-700"}`}>
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function TimelineStep({ label, time, done, pending }) {
+  return (
+    <div className="flex items-start gap-2">
+      <div className={`mt-0.5 w-3 h-3 rounded-full border-2 flex-shrink-0 ${done ? "bg-green-700 border-green-700" : "bg-white border-stone-300"}`} />
+      <div>
+        <p className={`text-xs font-medium ${done ? "text-stone-800" : "text-stone-400"}`}>{label}</p>
+        {time && <p className="text-[10px] text-stone-400 mt-0.5">{time}</p>}
+      </div>
+    </div>
+  );
+}
+
+// ── debounce hook ─────────────────────────────────────────────────────────────
+function useDebounce(value, delay) {
+  const [d, setD] = useState(value);
+  useEffect(() => {
+    const t = setTimeout(() => setD(value), delay);
+    return () => clearTimeout(t);
+  }, [value, delay]);
+  return d;
+}
+
 // ── Order detail panel ────────────────────────────────────────────────────────
-function OrderDetail({ detail, loadingDetail, onClose, revealToken, openModal }) {
+function OrderDetail({ detail, loadingDetail, onClose, revealToken, openModal, onProductClick, onImageExpand }) {
   if (loadingDetail) {
     return (
       <div className="h-full flex items-center justify-center">
@@ -418,7 +706,12 @@ function OrderDetail({ detail, loadingDetail, onClose, revealToken, openModal })
           ) : (
             <div className="space-y-2">
               {saleLine.map((item, i) => (
-                <LineItemRow key={i} item={item} />
+                <LineItemRow
+                  key={i}
+                  item={item}
+                  onImageExpand={onImageExpand}
+                  onProductClick={onProductClick}
+                />
               ))}
             </div>
           )}
@@ -428,7 +721,13 @@ function OrderDetail({ detail, loadingDetail, onClose, revealToken, openModal })
               <p className="text-[10px] font-semibold uppercase tracking-wider text-red-400 mb-2">Returns</p>
               <div className="space-y-2">
                 {retLines.map((item, i) => (
-                  <LineItemRow key={i} item={item} isReturn />
+                  <LineItemRow
+                    key={i}
+                    item={item}
+                    isReturn
+                    onImageExpand={onImageExpand}
+                    onProductClick={onProductClick}
+                  />
                 ))}
               </div>
             </div>
@@ -499,74 +798,6 @@ function OrderDetail({ detail, loadingDetail, onClose, revealToken, openModal })
   );
 }
 
-function LineItemRow({ item, isReturn }) {
-  return (
-    <div className={`flex items-start gap-2 rounded-lg p-2 ${isReturn ? "bg-red-50 border border-red-100" : "bg-white border border-stone-100"}`}>
-      {/* product image */}
-      {item.image_url ? (
-        <img
-          src={item.image_url}
-          alt={item.product_title}
-          className="w-10 h-10 object-cover rounded flex-shrink-0 bg-stone-100"
-          onError={(e) => { e.target.style.display = "none"; }}
-        />
-      ) : (
-        <div className="w-10 h-10 rounded bg-stone-100 flex-shrink-0" />
-      )}
-      <div className="flex-1 min-w-0">
-        <p className="text-xs font-medium text-stone-800 truncate">{item.product_title || item.sku || "—"}</p>
-        <p className="text-[10px] text-stone-500 mt-0.5">
-          {[item.colour, item.size].filter(Boolean).join(" · ") || item.sku || ""}
-        </p>
-      </div>
-      <div className="text-right flex-shrink-0">
-        <p className="text-xs text-stone-700">{NUM(item.quantity)} × {KES(item.unit_price)}</p>
-        {Number(item.discount) > 0 && (
-          <p className="text-[10px] text-stone-400">−{KES(item.discount)} disc.</p>
-        )}
-        <p className={`text-xs font-semibold mt-0.5 ${isReturn ? "text-red-600" : "text-stone-900"}`}>
-          {isReturn ? `− ${KES(item.line_total)}` : KES(item.line_total)}
-        </p>
-      </div>
-    </div>
-  );
-}
-
-function PriceLine({ label, value, dimmed, bold }) {
-  return (
-    <div className="flex items-center justify-between">
-      <span className={`text-xs ${dimmed ? "text-stone-400" : bold ? "font-semibold text-stone-800" : "text-stone-600"}`}>
-        {label}
-      </span>
-      <span className={`text-xs ${dimmed ? "text-stone-400" : bold ? "font-semibold text-stone-800" : "text-stone-700"}`}>
-        {value}
-      </span>
-    </div>
-  );
-}
-
-function TimelineStep({ label, time, done, pending }) {
-  return (
-    <div className="flex items-start gap-2">
-      <div className={`mt-0.5 w-3 h-3 rounded-full border-2 flex-shrink-0 ${done ? "bg-green-700 border-green-700" : "bg-white border-stone-300"}`} />
-      <div>
-        <p className={`text-xs font-medium ${done ? "text-stone-800" : "text-stone-400"}`}>{label}</p>
-        {time && <p className="text-[10px] text-stone-400 mt-0.5">{time}</p>}
-      </div>
-    </div>
-  );
-}
-
-// ── debounce hook ─────────────────────────────────────────────────────────────
-function useDebounce(value, delay) {
-  const [d, setD] = useState(value);
-  useEffect(() => {
-    const t = setTimeout(() => setD(value), delay);
-    return () => clearTimeout(t);
-  }, [value, delay]);
-  return d;
-}
-
 // ── main page ─────────────────────────────────────────────────────────────────
 export default function OrderExplorer() {
   const { revealToken, openModal, modal } = usePiiReveal();
@@ -590,10 +821,18 @@ export default function OrderExplorer() {
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
 
-  // detail state
+  // order detail state
   const [selectedOrder, setSelectedOrder] = useState(null);
   const [orderDetail, setOrderDetail] = useState(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
+
+  // image lightbox state
+  const [lightbox, setLightbox] = useState(null); // { src, alt }
+
+  // product detail drawer state
+  const [prodDrawerItem, setProdDrawerItem] = useState(null); // line item object
+  const [prodDetail, setProdDetail] = useState(null);
+  const [loadingProd, setLoadingProd] = useState(false);
 
   // build API params from filters
   const buildParams = useCallback((search) => {
@@ -671,6 +910,23 @@ export default function OrderExplorer() {
       .finally(() => setLoadingDetail(false));
   }, [revealToken]);
 
+  // open product drawer
+  const openProductDrawer = useCallback((item) => {
+    if (!item.sku) return;
+    setProdDrawerItem(item);
+    setProdDetail(null);
+    setLoadingProd(true);
+    api.get(`/orders/product-detail/${encodeURIComponent(item.sku)}`)
+      .then((res) => setProdDetail(res.data))
+      .catch(() => setProdDetail(null))
+      .finally(() => setLoadingProd(false));
+  }, []);
+
+  const closeProdDrawer = useCallback(() => {
+    setProdDrawerItem(null);
+    setProdDetail(null);
+  }, []);
+
   const handleFilterChange = (patch) => setFilters((f) => ({ ...f, ...patch }));
 
   const handleSearch = (q) => {
@@ -683,6 +939,26 @@ export default function OrderExplorer() {
   return (
     <div className="flex flex-col h-full min-h-0 overflow-hidden">
       {modal}
+
+      {/* image lightbox portal */}
+      {lightbox && (
+        <ImageLightbox
+          src={lightbox.src}
+          alt={lightbox.alt}
+          onClose={() => setLightbox(null)}
+        />
+      )}
+
+      {/* product detail drawer portal */}
+      {prodDrawerItem && (
+        <ProductDetailDrawer
+          sku={prodDrawerItem.sku}
+          detail={prodDetail}
+          loading={loadingProd}
+          onClose={closeProdDrawer}
+          onImageExpand={(src, alt) => setLightbox({ src, alt })}
+        />
+      )}
 
       {/* page title */}
       <div className="flex-shrink-0 px-4 pt-3 pb-0">
@@ -729,6 +1005,8 @@ export default function OrderExplorer() {
               onClose={() => { setSelectedOrder(null); setOrderDetail(null); }}
               revealToken={revealToken}
               openModal={openModal}
+              onProductClick={openProductDrawer}
+              onImageExpand={(src, alt) => setLightbox({ src, alt })}
             />
           </div>
         )}

@@ -6638,6 +6638,99 @@ def get_order_detail_v2(order_id: str, request: Request):
     return {"header": header, "lines": lines, "customer": customer, "pricing": pricing}
 
 
+@app.get("/api/orders/product-detail/{sku:path}")
+def get_order_product_detail(sku: str, request: Request):
+    """Product master data + stock by location + 30-day velocity.
+    Used by the Order Explorer product detail drawer."""
+    sku = (sku or "").strip().replace("'", "")
+    if not sku:
+        raise HTTPException(status_code=404, detail="SKU required")
+
+    # ── product master ───────────────────────────────────────────────────────
+    prod_rows = run_query(f"""
+        SELECT
+            p.sku, p.style_name, p.color_print, p.size,
+            p.brand, p.category, p.product_type, p.collection,
+            p.gender, p.season,
+            ROUND(COALESCE(p.price::numeric, 0), 0) AS price,
+            p.status, p.tier, p.is_noos,
+            p.style_launch_date,
+            COALESCE(inv.sub_category, '') AS sub_category
+        FROM all_products_clean p
+        LEFT JOIN LATERAL (
+            SELECT sub_category FROM all_inventory
+            WHERE sku = '{sku}' AND sub_category IS NOT NULL AND sub_category <> ''
+            LIMIT 1
+        ) inv ON TRUE
+        WHERE p.sku = '{sku}'
+        LIMIT 1
+    """)
+    if not prod_rows:
+        raise HTTPException(status_code=404, detail="Product not found")
+    product = prod_rows[0]
+
+    # ── image ────────────────────────────────────────────────────────────────
+    img_rows = run_query(f"""
+        SELECT CASE WHEN i.image_512 IS NOT NULL AND i.image_512 <> ''
+                    THEN 'data:image/png;base64,' || i.image_512
+                    ELSE '' END AS image_url
+        FROM product_image_map m
+        JOIN product_images i ON i.tmpl_id = m.tmpl_id
+        WHERE m.sku = '{sku}' AND i.image_512 IS NOT NULL AND i.image_512 <> ''
+        LIMIT 1
+    """)
+    image_url = img_rows[0]["image_url"] if img_rows else ""
+
+    # ── stock by location (all with any available) ───────────────────────────
+    stock_rows = run_query(f"""
+        SELECT
+            pos_location_name AS location,
+            country,
+            SUM(available)::int AS available
+        FROM all_inventory
+        WHERE sku = '{sku}'
+        GROUP BY pos_location_name, country
+        ORDER BY SUM(available) DESC, pos_location_name
+    """)
+
+    # ── SOH summary: stores vs warehouse ─────────────────────────────────────
+    soh_rows = run_query(f"""
+        SELECT
+            COALESCE(SUM(CASE WHEN pos_location_name IN ({WAREHOUSE_LOCATIONS})
+                              THEN available ELSE 0 END), 0)::int AS soh_warehouse,
+            COALESCE(SUM(CASE WHEN pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})
+                              THEN available ELSE 0 END), 0)::int AS soh_stores
+        FROM all_inventory
+        WHERE sku = '{sku}'
+    """)
+    soh = soh_rows[0] if soh_rows else {"soh_warehouse": 0, "soh_stores": 0}
+
+    # ── 30-day velocity (BASE_FILTERS uses s. alias) ──────────────────────────
+    vel_rows = run_query(f"""
+        SELECT
+            COALESCE(SUM(s.ordered_item_quantity), 0) AS units_30d,
+            ROUND(COALESCE(SUM(
+                s.total_sales_kes::numeric - COALESCE(s.discounts_kes::numeric, 0)
+            ), 0), 0) AS revenue_30d
+        FROM all_sales s
+        WHERE s.variant_sku = '{sku}'
+          AND s.sale_kind IN ('sale', 'order')
+          AND s.sale_date::date >= CURRENT_DATE - INTERVAL '30 days'
+          AND {BASE_FILTERS}
+    """)
+    velocity = vel_rows[0] if vel_rows else {"units_30d": 0, "revenue_30d": 0}
+
+    return {
+        "product": product,
+        "image_url": image_url,
+        "stock": stock_rows,
+        "soh_stores":    int(soh.get("soh_stores")    or 0),
+        "soh_warehouse": int(soh.get("soh_warehouse") or 0),
+        "soh_total":     int((soh.get("soh_stores") or 0) + (soh.get("soh_warehouse") or 0)),
+        "velocity": velocity,
+    }
+
+
 @app.get("/api/stock-to-sales")
 def get_stock_to_sales(
     date_from: str = Query(default=str(date.today().replace(day=1))),
