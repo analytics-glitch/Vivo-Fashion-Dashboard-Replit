@@ -1864,6 +1864,412 @@ def metres_per_garment_xlsx(days: int = Query(default=30)):
     )
 
 
+# ── Avg metres / garment: distinct garment categories in Done-DPS MOs ────────
+# Returns the sorted list of garment categories (from all_products_clean.category
+# joined on style_name) that appear in qualifying Done-DPS MOs in the rolling
+# window. Used to populate the by-category card's dropdown.
+@fabric_router.get("/api/fabric/metres-per-garment-categories")
+def metres_per_garment_categories(days: int = Query(default=30)):
+    days = max(1, min(int(days or 30), 730))
+    with _get_conn() as conn:
+        rows = q(conn, """
+            SELECT DISTINCT apc.category
+            FROM mo_fabric_consumption c
+            JOIN (
+                SELECT DISTINCT ON (lower(trim(style_name)))
+                    lower(trim(style_name)) AS style_key,
+                    category
+                FROM all_products_clean
+                WHERE category IS NOT NULL AND trim(category) != ''
+                ORDER BY lower(trim(style_name)), category
+            ) apc ON lower(trim(c.style_name)) = apc.style_key
+            WHERE c.done_date >= CURRENT_DATE - (%s || ' days')::interval
+            ORDER BY apc.category
+        """, [days])
+    return {"categories": [r["category"] for r in rows], "window_days": days}
+
+
+# ── Avg metres / garment: by garment category ────────────────────────────────
+# When `category` is supplied: returns the same shape as /metres-per-garment
+# but scoped to that garment category only.
+# When `category` is omitted: returns a ranked list of all categories with
+# their avg m/garment and MO count, sorted by avg desc — used as the default
+# state of the by-category card on the dashboard.
+# The fallback kg/m logic (and MO inclusion/exclusion rules) mirror the global
+# endpoint exactly so the ranked totals reconcile to the global card.
+@fabric_router.get("/api/fabric/metres-per-garment-by-category")
+def metres_per_garment_by_category(
+    days: int = Query(default=30),
+    category: str = Query(default=None),
+):
+    days = max(1, min(int(days or 30), 730))
+    with _get_conn() as conn:
+        fb = q(conn, """
+            SELECT AVG(kg_per_mtr_eff)::float AS avg_kpm
+            FROM raw_fabric_products
+            WHERE kg_per_mtr_eff > 0
+        """)[0]
+        fallback_kpm = float(fb["avg_kpm"]) if fb and fb["avg_kpm"] else None
+
+        # Build optional category filter; applied after the LEFT JOIN so
+        # NULL-category MOs are excluded when a specific category is chosen.
+        extra_where = ""
+        params = [days]
+        if category:
+            extra_where = "AND lower(trim(apc.category)) = lower(trim(%s))"
+            params.append(category)
+
+        rows = q(conn, """
+            SELECT c.odoo_mo_id,
+                   c.produced_qty,
+                   c.consumed_qty,
+                   lower(coalesce(c.uom,'')) AS uom,
+                   p.kg_per_mtr_eff AS kpm,
+                   apc.category
+            FROM mo_fabric_consumption c
+            LEFT JOIN raw_fabric_products p ON p.id = c.component_id
+            LEFT JOIN (
+                SELECT DISTINCT ON (lower(trim(style_name)))
+                    lower(trim(style_name)) AS style_key,
+                    category
+                FROM all_products_clean
+                WHERE category IS NOT NULL AND trim(category) != ''
+                ORDER BY lower(trim(style_name)), category
+            ) apc ON lower(trim(c.style_name)) = apc.style_key
+            WHERE c.done_date >= CURRENT_DATE - (%s || ' days')::interval
+            """ + extra_where, params)
+
+    M_UOMS = {"m", "metre", "meter", "mtr", "metres", "meters", "metre(s)"}
+
+    if category:
+        # Single-category path: same aggregation logic as the global card.
+        mos = {}
+        for r in rows:
+            d = mos.setdefault(
+                r["odoo_mo_id"],
+                {"produced": float(r["produced_qty"] or 0), "metres": 0.0,
+                 "has_fabric": False, "used_fallback": False},
+            )
+            d["has_fabric"] = True
+            qty = float(r["consumed_qty"] or 0)
+            u = r["uom"]
+            kpm = r["kpm"]
+            if u in M_UOMS:
+                d["metres"] += qty
+            else:
+                kg = qty / 1000.0 if u == "g" else qty
+                if kpm and float(kpm) > 0:
+                    d["metres"] += kg / float(kpm)
+                elif fallback_kpm:
+                    d["metres"] += kg / fallback_kpm
+                    d["used_fallback"] = True
+        total_metres = total_garments = 0.0
+        n_mos = fallback_mos = 0
+        for d in mos.values():
+            if d["produced"] <= 0 or not d["has_fabric"]:
+                continue
+            total_metres += d["metres"]
+            total_garments += d["produced"]
+            n_mos += 1
+            if d["used_fallback"]:
+                fallback_mos += 1
+        value = round(total_metres / total_garments, 2) if total_garments > 0 else None
+        return {
+            "category": category,
+            "metres_per_garment": value,
+            "total_metres": round(total_metres, 1),
+            "garments": round(total_garments),
+            "mos": n_mos,
+            "mos_using_fallback": fallback_mos,
+            "fallback_kg_per_mtr": round(fallback_kpm, 4) if fallback_kpm else None,
+            "window_days": days,
+        }
+    else:
+        # No-category path: fold per-MO → per-category ranked list.
+        # An MO is assigned to its style's category (NULL-category MOs are
+        # omitted from the ranked list; they are NOT double-counted).
+        cat_mos = {}
+        for r in rows:
+            cat = r["category"]
+            if not cat:
+                continue  # style has no category in all_products_clean
+            d = cat_mos.setdefault(cat, {}).setdefault(
+                r["odoo_mo_id"],
+                {"produced": float(r["produced_qty"] or 0), "metres": 0.0,
+                 "has_fabric": False, "used_fallback": False},
+            )
+            d["has_fabric"] = True
+            qty = float(r["consumed_qty"] or 0)
+            u = r["uom"]
+            kpm = r["kpm"]
+            if u in M_UOMS:
+                d["metres"] += qty
+            else:
+                kg = qty / 1000.0 if u == "g" else qty
+                if kpm and float(kpm) > 0:
+                    d["metres"] += kg / float(kpm)
+                elif fallback_kpm:
+                    d["metres"] += kg / fallback_kpm
+                    d["used_fallback"] = True
+
+        out = []
+        for cat, mos_dict in cat_mos.items():
+            total_m = total_g = 0.0
+            n = 0
+            for d in mos_dict.values():
+                if d["produced"] <= 0 or not d["has_fabric"]:
+                    continue
+                total_m += d["metres"]
+                total_g += d["produced"]
+                n += 1
+            if total_g > 0:
+                out.append({
+                    "category": cat,
+                    "metres_per_garment": round(total_m / total_g, 2),
+                    "mos": n,
+                })
+        out.sort(key=lambda x: x["metres_per_garment"], reverse=True)
+        return {
+            "categories": out,
+            "window_days": days,
+            "fallback_kg_per_mtr": round(fallback_kpm, 4) if fallback_kpm else None,
+        }
+
+
+# ── Avg metres / garment by category: downloadable .xlsx audit trail ─────────
+# Mirrors /metres-per-garment.xlsx with an added category join + optional filter.
+# The per-MO exclusion / kg→metre conversion logic is identical to the by-category
+# JSON endpoint so the workbook reconciles to the on-screen figure.
+@fabric_router.get("/api/fabric/metres-per-garment-by-category.xlsx")
+def metres_per_garment_by_category_xlsx(
+    days: int = Query(default=30),
+    category: str = Query(default=None),
+):
+    from fastapi.responses import Response
+    import io
+    import openpyxl
+    from openpyxl.styles import Font, Alignment, PatternFill
+
+    days = max(1, min(int(days or 30), 730))
+
+    with _get_conn() as conn:
+        fb = q(conn, """
+            SELECT AVG(kg_per_mtr_eff)::float AS avg_kpm
+            FROM raw_fabric_products
+            WHERE kg_per_mtr_eff > 0
+        """)[0]
+        fallback_kpm = float(fb["avg_kpm"]) if fb and fb["avg_kpm"] else None
+
+        extra_where = ""
+        params = [days]
+        if category:
+            extra_where = "AND lower(trim(apc.category)) = lower(trim(%s))"
+            params.append(category)
+
+        rows = q(conn, """
+            SELECT c.odoo_mo_id,
+                   c.mo_ref,
+                   c.dps_ref,
+                   c.done_date,
+                   c.produced_qty,
+                   c.style_name,
+                   c.finished_sku,
+                   c.component_id,
+                   c.fabric_sku,
+                   c.fabric_name,
+                   c.consumed_qty,
+                   lower(coalesce(c.uom,'')) AS uom,
+                   p.kg_per_mtr_eff AS kpm,
+                   p.kg_per_mtr AS kpm_stored,
+                   p.width_m,
+                   p.gsm,
+                   p.supplier,
+                   apc.category
+            FROM mo_fabric_consumption c
+            LEFT JOIN raw_fabric_products p ON p.id = c.component_id
+            LEFT JOIN (
+                SELECT DISTINCT ON (lower(trim(style_name)))
+                    lower(trim(style_name)) AS style_key,
+                    category
+                FROM all_products_clean
+                WHERE category IS NOT NULL AND trim(category) != ''
+                ORDER BY lower(trim(style_name)), category
+            ) apc ON lower(trim(c.style_name)) = apc.style_key
+            WHERE c.done_date >= CURRENT_DATE - (%s || ' days')::interval
+            """ + extra_where + """
+            ORDER BY c.done_date DESC, c.odoo_mo_id, c.fabric_sku
+        """, params)
+
+    M_UOMS = {"m", "metre", "meter", "mtr", "metres", "meters", "metre(s)"}
+
+    # Fold component rows → per-MO (same maths as the JSON endpoint).
+    mos = {}
+    components = []
+    for r in rows:
+        d = mos.setdefault(
+            r["odoo_mo_id"],
+            {"mo_ref": r["mo_ref"], "dps_ref": r["dps_ref"],
+             "done_date": r["done_date"],
+             "style": (r["style_name"] or "").strip() or None,
+             "category": r["category"],
+             "finished_sku": r["finished_sku"],
+             "produced": float(r["produced_qty"] or 0), "metres": 0.0,
+             "has_fabric": False, "used_fallback": False},
+        )
+        d["has_fabric"] = True
+        qty = float(r["consumed_qty"] or 0)
+        u = r["uom"]
+        kpm = r["kpm"]
+        comp = {
+            "odoo_mo_id": r["odoo_mo_id"], "mo_ref": r["mo_ref"],
+            "component_id": r["component_id"],
+            "fabric_sku": r["fabric_sku"], "fabric_name": r["fabric_name"],
+            "supplier": r["supplier"],
+            "width_m": r["width_m"], "gsm": r["gsm"], "kpm_stored": r["kpm_stored"],
+            "uom": r["uom"], "consumed_qty": qty,
+            "kpm_used": None, "used_fallback": False, "metres": 0.0,
+        }
+        if u in M_UOMS:
+            d["metres"] += qty
+            comp["metres"] = qty
+        else:
+            kg = qty / 1000.0 if u == "g" else qty
+            if kpm and float(kpm) > 0:
+                m = kg / float(kpm)
+                d["metres"] += m
+                comp["kpm_used"] = float(kpm)
+                comp["metres"] = m
+            elif fallback_kpm:
+                m = kg / fallback_kpm
+                d["metres"] += m
+                d["used_fallback"] = True
+                comp["kpm_used"] = fallback_kpm
+                comp["used_fallback"] = True
+                comp["metres"] = m
+        components.append(comp)
+
+    per_mo = []
+    qualifying_mo_ids = set()
+    for mo_id, d in mos.items():
+        if d["produced"] <= 0 or not d["has_fabric"]:
+            continue
+        qualifying_mo_ids.add(mo_id)
+        per_mo.append({
+            "odoo_mo_id": mo_id, "mo_ref": d["mo_ref"], "dps_ref": d["dps_ref"],
+            "done_date": d["done_date"], "style": d["style"],
+            "category": d["category"],
+            "finished_sku": d["finished_sku"], "garments": d["produced"],
+            "total_metres": d["metres"],
+            "metres_per_garment": (d["metres"] / d["produced"]) if d["produced"] > 0 else None,
+            "used_fallback": d["used_fallback"],
+        })
+    per_mo.sort(key=lambda x: (x["done_date"] is None, x["done_date"], x["odoo_mo_id"]), reverse=True)
+
+    # Summary totals (mirrors the JSON endpoint logic).
+    total_m = sum(m["total_metres"] for m in per_mo)
+    total_g = sum(m["garments"] for m in per_mo)
+    n_mos = len(per_mo)
+    n_fb = sum(1 for m in per_mo if m["used_fallback"])
+    avg_mpg = round(total_m / total_g, 2) if total_g > 0 else None
+
+    # ── Build workbook ───────────────────────────────────────────────────────
+    wb = openpyxl.Workbook()
+    HEAD = Font(bold=True, color="FFFFFF")
+    HEAD_FILL = PatternFill("solid", fgColor="1A5C38")
+    TITLE = Font(bold=True, size=13)
+    LBL = Font(bold=True)
+
+    def _style_header(ws, ncols):
+        for c in range(1, ncols + 1):
+            cell = ws.cell(row=1, column=c)
+            cell.font = HEAD
+            cell.fill = HEAD_FILL
+
+    # Summary sheet
+    ws = wb.active
+    ws.title = "Summary"
+    cat_label = category if category else "All categories"
+    ws["A1"] = "Avg metres / garment by category — %s" % cat_label
+    ws["A1"].font = TITLE
+    srows = [
+        ("Category filter", cat_label),
+        ("Rolling window (days)", days),
+        ("Avg metres / garment", avg_mpg),
+        ("Total main-fabric metres", round(total_m, 1)),
+        ("Total garments", round(total_g)),
+        ("MOs counted", n_mos),
+        ("MOs using fallback conversion", n_fb),
+        ("Fallback kg per metre", round(fallback_kpm, 4) if fallback_kpm else None),
+        ("Basis", "Done DPS manufacturing orders, main-fabric components only"),
+    ]
+    r0 = 3
+    for i, (label, val) in enumerate(srows):
+        ws.cell(row=r0 + i, column=1, value=label).font = LBL
+        ws.cell(row=r0 + i, column=2, value=val)
+    ws.column_dimensions["A"].width = 34
+    ws.column_dimensions["B"].width = 56
+
+    # Per-MO sheet (includes Category column)
+    ws2 = wb.create_sheet("Per-MO")
+    mo_cols = ["MO ref", "DPS ref", "Done date", "Finished style", "Category",
+               "Finished SKU", "Garments produced", "Total metres",
+               "Metres / garment", "Used fallback conversion"]
+    ws2.append(mo_cols)
+    _style_header(ws2, len(mo_cols))
+    for m in per_mo:
+        ws2.append([
+            m["mo_ref"], m["dps_ref"],
+            (m["done_date"].isoformat() if hasattr(m["done_date"], "isoformat") else m["done_date"]),
+            m["style"], m["category"], m["finished_sku"],
+            round(m["garments"], 2),
+            round(m["total_metres"], 3),
+            (round(m["metres_per_garment"], 3) if m["metres_per_garment"] is not None else None),
+            "Yes" if m["used_fallback"] else "No",
+        ])
+    for col, w in zip("ABCDEFGHIJ", [16, 22, 12, 34, 16, 16, 16, 14, 16, 22]):
+        ws2.column_dimensions[col].width = w
+
+    # Per-component sheet
+    ws3 = wb.create_sheet("Per-component")
+    comp_cols = ["MO ref", "Fabric SKU", "Fabric name", "UoM",
+                 "Consumed qty", "Kg per metre used", "Used fallback",
+                 "Metres contributed", "Open in Odoo"]
+    ws3.append(comp_cols)
+    _style_header(ws3, len(comp_cols))
+    LINK = Font(color="1A5C38", underline="single")
+    for c in components:
+        if c["odoo_mo_id"] not in qualifying_mo_ids:
+            continue
+        ws3.append([
+            c["mo_ref"], c["fabric_sku"], c["fabric_name"], c["uom"],
+            round(c["consumed_qty"], 3),
+            (round(c["kpm_used"], 4) if c["kpm_used"] is not None else None),
+            "Yes" if c["used_fallback"] else "No",
+            round(c["metres"], 3),
+            None,
+        ])
+        if c["used_fallback"]:
+            url = _odoo_product_url(c["component_id"])
+            if url:
+                cell = ws3.cell(row=ws3.max_row, column=len(comp_cols))
+                cell.value = "Open in Odoo"
+                cell.hyperlink = url
+                cell.font = LINK
+    for col, w in zip("ABCDEFGHI", [16, 18, 40, 8, 14, 18, 14, 18, 14]):
+        ws3.column_dimensions[col].width = w
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    data = buf.getvalue()
+    safe_cat = (category or "all-categories").replace(" ", "-").lower()
+    fname = "avg-metres-per-garment-%s-%dd.xlsx" % (safe_cat, days)
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="%s"' % fname},
+    )
+
+
 # ── Basic Fabrics — Months of Cover: downloadable .xlsx calculations report ──
 # The full audit trail behind the "Basic Fabrics — Months of Cover" Overview KPI:
 # every curated (vendor, fabric-code) pairing and whether it matched a product,

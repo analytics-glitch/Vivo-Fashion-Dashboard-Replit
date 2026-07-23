@@ -3584,6 +3584,7 @@ async function loadOverview(){
 function renderOverviewCached(){
   if(!ovCache)return;
   renderKpis(ovCache.d,ovCache.mpg,ovCache.coverDelta);
+  initMpgCatCard();
   renderCategories(ovCache.cat);
   renderPrintDonut(ovCache.split.plain_print);
   renderStructure('split-structure',ovCache.split.structure,FX.structureValue);
@@ -3602,6 +3603,108 @@ async function downloadMpgXlsx(){
     const a=document.createElement('a');
     a.href=URL.createObjectURL(blob);
     a.download='avg-metres-per-garment-30d.xlsx';
+    document.body.appendChild(a);a.click();a.remove();
+    setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+  }catch(e){alert('Could not generate the Excel report. Please try again.');}
+}
+// ── Avg metres / garment · by Category card ─────────────────────────────────
+// State: persists across re-renders (overview refreshes) so the selection and
+// loaded category list survive a periodic data reload.
+let _mpgCatSelected='';          // '' = all categories
+let _mpgCatList=[];              // populated on first call, stable across renders
+let _mpgCatListLoaded=false;
+// initMpgCatCard: called after every renderKpis() — repopulates the select
+// (restoring the current selection) and, on the very first call, fetches the
+// categories list and the default ranked view.
+async function initMpgCatCard(){
+  const sel=document.getElementById('mpg-cat-select');
+  if(!sel)return;
+  // On first load fetch the category list; on subsequent re-renders reuse it.
+  if(!_mpgCatListLoaded){
+    try{
+      const r=await apiFetch('/api/fabric/metres-per-garment-categories?days=30');
+      _mpgCatList=(r&&r.categories)||[];
+      _mpgCatListLoaded=true;
+    }catch(e){_mpgCatList=[];_mpgCatListLoaded=true;}
+  }
+  // Re-render the <select> options, restoring the previous selection.
+  sel.innerHTML='<option value="">All categories</option>'+
+    _mpgCatList.map(c=>`<option value="${esc(c)}"${c===_mpgCatSelected?' selected':''}>${esc(c)}</option>`).join('');
+  // Always (re-)fetch the card body so it matches the current selection.
+  await _fetchAndRenderMpgCat(_mpgCatSelected);
+}
+// Fired when the user changes the dropdown.
+async function onMpgCatChange(){
+  const sel=document.getElementById('mpg-cat-select');
+  if(!sel)return;
+  _mpgCatSelected=sel.value||'';
+  await _fetchAndRenderMpgCat(_mpgCatSelected);
+}
+// Core fetch + render for the card body.
+async function _fetchAndRenderMpgCat(cat){
+  const body=document.getElementById('mpg-cat-body');
+  const action=document.getElementById('mpg-cat-action');
+  if(!body)return;
+  body.innerHTML='<span style="color:#9ca3af;font-size:.8rem;">Loading&hellip;</span>';
+  if(action)action.innerHTML='';
+  try{
+    const url='/api/fabric/metres-per-garment-by-category?days=30'+(cat?('&category='+encodeURIComponent(cat)):'');
+    const data=await apiFetch(url);
+    if(cat){
+      // Single-category view: headline KPI + footnote.
+      const v=data.metres_per_garment;
+      const vStr=v!=null?v.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}):'&mdash;';
+      let sub=`rolling 30d &middot; ${fmt(data.mos||0)} Done-DPS MOs`;
+      const fbn=data.mos_using_fallback;
+      if(fbn){const fk=data.fallback_kg_per_mtr;
+        sub+=` &middot; <span class="amber" title="${esc(fmt(fbn)+' MOs converted via the overall fabric-average Kg/Mtr'+(fk!=null?(' ('+fk+' kg/m)'):'')+' — no own conversion in Odoo.')}">${fmt(fbn)} via fallback kg/m</span>`;}
+      body.innerHTML=`<div style="display:flex;align-items:baseline;gap:.3rem;margin:.1rem 0 .25rem;">
+        <span style="font-size:1.6rem;font-weight:700;color:#111827;line-height:1;">${vStr}</span>
+        ${v!=null?'<span style="font-size:.85rem;color:#6b7280;">m</span>':''}
+      </div>
+      <div style="font-size:.76rem;color:#6b7280;">${sub}</div>`;
+      if(action&&v!=null)action.innerHTML=`<button class="btn ghost" onclick="downloadMpgCatXlsx()" title="Download the calculation audit trail for ${esc(cat)} (every qualifying Done-DPS MO and its fabric components) as an Excel workbook">&#11015; Download (Excel)</button>`;
+    }else{
+      // Default ranked-list view.
+      const cats=(data.categories)||[];
+      if(!cats.length){body.innerHTML='<span style="color:#9ca3af;font-size:.8rem;">No data in the last 30 days.</span>';return;}
+      const topN=cats.slice(0,8);
+      const maxV=topN[0]?topN[0].metres_per_garment:1;
+      const rows=topN.map(c=>{
+        const pct=maxV>0?Math.round(c.metres_per_garment/maxV*100):0;
+        return `<tr>
+          <td style="font-size:.78rem;color:#374151;padding:.15rem .3rem .15rem 0;white-space:nowrap;max-width:100px;overflow:hidden;text-overflow:ellipsis;" title="${esc(c.category)}">${esc(c.category)}</td>
+          <td style="padding:.15rem .3rem;min-width:60px;">
+            <div style="display:flex;align-items:center;gap:.35rem;">
+              <div style="flex:1;height:5px;background:#f3f4f6;border-radius:3px;min-width:28px;">
+                <div style="width:${pct}%;height:100%;background:#1a5c38;border-radius:3px;"></div>
+              </div>
+              <span style="font-size:.78rem;font-weight:600;color:#111827;white-space:nowrap;">${c.metres_per_garment.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})} m</span>
+            </div>
+          </td>
+          <td style="font-size:.72rem;color:#9ca3af;padding:.15rem 0 .15rem .15rem;white-space:nowrap;">${fmt(c.mos)} MOs</td>
+        </tr>`;
+      }).join('');
+      body.innerHTML=`<table style="width:100%;border-collapse:collapse;">${rows}</table>
+        ${cats.length>8?`<div style="font-size:.72rem;color:#9ca3af;margin-top:.25rem;">Showing top 8 of ${cats.length} categories &mdash; select one above for detail.</div>`:''}`;
+      if(action)action.innerHTML=`<button class="btn ghost" onclick="downloadMpgCatXlsx()" title="Download the calculation audit trail for all categories as an Excel workbook">&#11015; Download (Excel)</button>`;
+    }
+  }catch(e){if(body)body.innerHTML='<span style="color:#ef4444;font-size:.78rem;">Could not load by-category data.</span>';}
+}
+// Download the by-category Excel workbook, filtered to the currently-selected
+// category (or all categories when none is selected), matching the card figure.
+async function downloadMpgCatXlsx(){
+  try{
+    const url='/api/fabric/metres-per-garment-by-category.xlsx?days=30'+
+      (_mpgCatSelected?('&category='+encodeURIComponent(_mpgCatSelected)):'');
+    const r=await fetch(url,{credentials:'include',headers:vivoAuthHeaders()});
+    if(r.status===401||r.status===403){alert('Your session has expired. Sign in to Vivo BI and try again.');return;}
+    if(!r.ok)throw new Error('http '+r.status);
+    const blob=await r.blob();
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    const safe=(_mpgCatSelected||'all-categories').toLowerCase().replace(/\s+/g,'-');
+    a.download='avg-metres-per-garment-'+safe+'-30d.xlsx';
     document.body.appendChild(a);a.click();a.remove();
     setTimeout(()=>URL.revokeObjectURL(a.href),1000);
   }catch(e){alert('Could not generate the Excel report. Please try again.');}
@@ -3846,6 +3949,13 @@ function renderKpis(d,mpg,coverDelta){
        sub+=` &middot; <span class="amber" title="${esc(fmt(fbn)+' of these MOs use a fabric with no kg→metre conversion in Odoo, converted via the overall fabric-average Kg/Mtr'+(fk!=null?(' ('+fk+' kg/m)'):'')+' so they are still counted.')}">${fmt(fbn)} via fallback kg/m</span>`;}
      const dl=(v!=null)?`<button class="btn ghost" onclick="downloadMpgXlsx()" title="Download the full calculation audit trail (every Done-DPS MO, its fabric components and the kg→metre conversion) as an Excel workbook">&#11015; Download (Excel)</button>`:'';
      return KpiCard({reserveAction:true,label:'Avg metres / garment',value:v!=null?v.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}):null,unit:v!=null?'m':'',valueAttrs:fx(FX.metresPerGarment),footnote:sub,action:dl});})(),
+    // By-category card — shell only; body is populated by initMpgCatCard() after render.
+    `<div class="kpi-card" id="mpg-cat-card" style="min-width:200px;flex:1 1 200px;display:flex;flex-direction:column;gap:0;">
+      <div style="font-size:.72rem;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:#6b7280;margin-bottom:.35rem;">Avg metres / garment <span style="font-weight:400;color:#9ca3af;">&middot; by Category</span></div>
+      <select id="mpg-cat-select" onchange="onMpgCatChange()" style="width:100%;font-size:.8rem;padding:.22rem .4rem;border:1px solid #d1d5db;border-radius:.3rem;background:#fff;color:#111827;margin-bottom:.45rem;cursor:pointer;"></select>
+      <div id="mpg-cat-body" style="flex:1;min-height:2rem;"><span style="color:#9ca3af;font-size:.8rem;">Loading&hellip;</span></div>
+      <div id="mpg-cat-action" style="margin-top:.5rem;"></div>
+    </div>`,
     (()=>{
      // Headline value: number when computable, capped "12+" when overstocked
      // (stock but no recent use), "—" only when there is genuinely no data.
