@@ -78,3 +78,9 @@ id = "fIwVLqeA7NMTBe_px-Mno"
 uri = "file://exports/Tier_and_Retirement_Rules.docx"
 type = "word_document"
 title = "Tier & Retirement Rules — Current Application"
+
+[[outputs]]
+id = "ZuKIzAaRE1KdcXcLIsHos"
+uri = "file://attached_assets/product_variants_by_style.xlsx"
+type = "table"
+title = "Product Variants by Style (Odoo)"
