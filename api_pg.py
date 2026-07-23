@@ -2293,7 +2293,7 @@ WAREHOUSE_LOCATIONS = (
     "'Sew/Stock/A','Sew/Stock/B','Sew/Stock/C','Sew/Stock/D','Sew/Stock/E'"
 )
 # SOH 3-way split definition (user-mandated):
-#   soh_warehouse = 'Finished Goods Production' ONLY (dispatch-ready finished goods).
+#   soh_warehouse = 'Warehouse Finished Goods' ONLY (physical warehouse shelf stock).
 #   soh_pipeline  = IN WAREHOUSE_LOCATIONS AND != 'Finished Goods Production'
 #                   (in-transit, holding, WIP, raw materials, Sew/Stock, etc.).
 #   soh_stores    = NOT IN WAREHOUSE_LOCATIONS (retail stores).
