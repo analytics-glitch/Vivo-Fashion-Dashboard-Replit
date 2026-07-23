@@ -243,6 +243,7 @@ SITE_LOCATION_MAP = {
 # odoo_locations.py so api_pg.py can import it without importing this module
 # (which reads SHOPIFY_*/DATABASE_URL env vars at import time).
 from odoo_locations import ODOO_LOCATION_MAP
+from extract_odoo_inventory import LOCATION_COUNTRY_MAP
 
 UGANDA_VAT_LOCATIONS = {"The Oasis Mall", "Vivo Acacia"}
 RWANDA_VAT_LOCATIONS = {"Vivo Kigali Heights", "Vivo M-peace Plaza"}
