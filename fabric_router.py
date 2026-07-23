@@ -5001,6 +5001,12 @@ def _ensure_receiving_tables(conn):
                 revoked_at  TIMESTAMPTZ,
                 UNIQUE (user_id, field_name)
             )""")
+        # Defective yards: the number of yards in a roll found to be defective
+        # during QC inspection (e.g. 15 out of 80 yards). Okay yards are
+        # derived server-side as length_yards - defective_yards. Informational
+        # only — does not affect stock or weeks-of-cover figures.
+        cur.execute("ALTER TABLE fabric_receiving_rolls "
+                    "ADD COLUMN IF NOT EXISTS defective_yards NUMERIC")
         # 4-Point (American system) inspection tickets, one or more VERSIONS
         # per roll. Keyed by (sheet_id, roll_no) — NOT roll_id — because the
         # admin sheet PUT deletes + reinserts rolls (new ids); roll_no is the
@@ -6444,6 +6450,64 @@ def receiving_roll_edit(roll_id: int, request: Request,
                     f"{float(ctx['qty_kg'] or 0)}→{kg} kg",
             "status": "edited"}, request)
     return {"ok": True}
+
+@fabric_router.patch("/api/fabric/receiving/roll/{roll_id}/defective-yards")
+def receiving_roll_patch_defective(roll_id: int, request: Request,
+                                   body: dict = Body(...)):
+    """Set or clear the defective_yards field on a single roll. Any
+    authenticated fabric QC user may call this (same permission as quality
+    grading — no extra admin gate). Body: {"defective_yards": <number|null>}.
+    Validates: defective_yards <= length_yards when length_yards is known.
+    Returns: {ok, defective_yards, okay_yards}."""
+    raw = body.get("defective_yards")
+    if raw in (None, ""):
+        defective = None
+    else:
+        try:
+            defective = float(raw)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400,
+                                detail="defective_yards must be a number")
+        if defective < 0:
+            raise HTTPException(status_code=400,
+                                detail="defective_yards cannot be negative")
+        defective = round(defective, 3)
+    _uid, name = _fabric_actor(request)
+    with _get_conn() as conn:
+        _ensure_receiving_tables(conn)
+        rows = q(conn,
+                 "SELECT id, length_yards, defective_yards "
+                 "FROM fabric_receiving_rolls "
+                 "WHERE id=%s AND deleted_at IS NULL", (roll_id,))
+        if not rows:
+            raise HTTPException(status_code=404, detail="roll not found")
+        length = rows[0].get("length_yards")
+        if defective is not None and length not in (None, ""):
+            try:
+                ly = float(length)
+            except (TypeError, ValueError):
+                ly = None
+            if ly is not None and defective > ly:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Defective yards ({defective}) cannot exceed "
+                           f"roll length ({ly} yds)")
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE fabric_receiving_rolls "
+                "SET defective_yards=%s, quality_updated_at=now(), "
+                "    quality_updated_by=%s "
+                "WHERE id=%s AND deleted_at IS NULL",
+                (defective, name, roll_id))
+        conn.commit()
+    okay = None
+    if defective is not None and length not in (None, ""):
+        try:
+            okay = round(float(length) - defective, 3)
+        except (TypeError, ValueError):
+            pass
+    return {"ok": True, "defective_yards": defective, "okay_yards": okay}
+
 
 @fabric_router.delete("/api/fabric/receiving/roll/{roll_id}")
 def receiving_roll_delete(roll_id: int, request: Request):
@@ -8673,6 +8737,9 @@ def receiving_fetch(sheet_id: int):
                    length_yards, shrinkage_inches,
                    bleeding_test, width_measured_m,
                    after_wash_width_cm, after_wash_length_cm,
+                   defective_yards,
+                   CASE WHEN length_yards IS NOT NULL AND defective_yards IS NOT NULL
+                        THEN length_yards - defective_yards END AS okay_yards,
                    to_char(quality_updated_at AT TIME ZONE 'Africa/Nairobi',
                            'DD Mon YYYY, HH24:MI') as quality_updated_at
             FROM fabric_receiving_rolls
@@ -8759,7 +8826,7 @@ def receiving_update_quality(sheet_id: int, request: Request, body: dict = Body(
                 _q_cols = ("id, roll_no, quality_status, quality_notes, "
                            "length_yards, shrinkage_inches, bleeding_test, "
                            "width_measured_m, after_wash_width_cm, "
-                           "after_wash_length_cm")
+                           "after_wash_length_cm, defective_yards")
                 if roll_id not in (None, ""):
                     old = q(conn, f"SELECT {_q_cols} "
                                   "FROM fabric_receiving_rolls "
@@ -8790,9 +8857,40 @@ def receiving_update_quality(sheet_id: int, request: Request, body: dict = Body(
                 stored_w_cm = o.get("after_wash_width_cm")
                 meas["after_wash_width_cm"] = (
                     float(stored_w_cm) if stored_w_cm not in (None, "") else None)
+                # Parse and validate defective_yards (kept separate from
+                # _RECV_MEAS_NUM because its upper bound depends on the
+                # effective length_yards — either the new value or the stored one).
+                raw_def = it.get("defective_yards")
+                if raw_def in (None, ""):
+                    def_yds = None
+                else:
+                    try:
+                        def_yds = round(float(raw_def), 3)
+                    except (TypeError, ValueError):
+                        raise HTTPException(status_code=400,
+                                            detail="defective_yards must be a number")
+                    if def_yds < 0:
+                        raise HTTPException(status_code=400,
+                                            detail="defective_yards cannot be negative")
+                    eff_ly = meas.get("length_yards")
+                    if eff_ly is None:
+                        stored_ly = o.get("length_yards")
+                        eff_ly = float(stored_ly) if stored_ly not in (None, "") else None
+                    if eff_ly is not None and def_yds > eff_ly:
+                        raise HTTPException(status_code=422,
+                            detail=f"defective_yards ({def_yds:.2f} yd) cannot exceed "
+                                   f"length_yards ({eff_ly:.2f} yd)")
+                stored_def = o.get("defective_yards")
+                stored_def = round(float(stored_def), 3) if stored_def not in (None, "") else None
+                def_yds_changed = ("defective_yards" in it) and (stored_def != def_yds)
+                if not ("defective_yards" in it):
+                    # Key absent from payload — preserve stored value so existing
+                    # callers (e.g. quality modal) never accidentally clear it.
+                    def_yds = stored_def
                 if (o.get("quality_status") or None) == status and \
                    (o.get("quality_notes") or None) == notes and \
-                   not _recv_meas_changed(o, meas):
+                   not _recv_meas_changed(o, meas) and \
+                   not def_yds_changed:
                     continue  # no actual change: no write, no audit row
                 # Changing the status of a roll that already has a SUBMITTED
                 # 4-Point inspection ticket OVERRIDES the ticket's auto-set
@@ -8819,12 +8917,14 @@ def receiving_update_quality(sheet_id: int, request: Request, body: dict = Body(
                            length_yards=%s, shrinkage_inches=%s,
                            bleeding_test=%s, width_measured_m=%s,
                            after_wash_width_cm=%s, after_wash_length_cm=%s,
+                           defective_yards=%s,
                            quality_updated_at=now(), quality_updated_by=%s
                      WHERE id=%s AND sheet_id=%s
                 """, (status, notes,
                       meas["length_yards"], meas["shrinkage_inches"],
                       meas["bleeding_test"], meas["width_measured_m"],
                       meas["after_wash_width_cm"], meas["after_wash_length_cm"],
+                      def_yds,
                       name, o["id"], sheet_id))
                 updated += cur.rowcount
                 if po_id is not None:
@@ -9090,7 +9190,8 @@ def receiving_edit(sheet_id: int, request: Request, body: dict = Body(...)):
         if not isinstance(r, dict) or "roll_no" not in r:
             continue
         if "status" not in r and "notes" not in r and \
-           not any(k in r for k in _RECV_MEAS_NUM) and "bleeding_test" not in r:
+           not any(k in r for k in _RECV_MEAS_NUM) and "bleeding_test" not in r and \
+           "defective_yards" not in r:
             continue  # roll carries no explicit quality edit → fall back to prev
         try:
             rn = int(r.get("roll_no"))
@@ -9100,9 +9201,26 @@ def receiving_edit(sheet_id: int, request: Request, body: dict = Body(...)):
         if st is not None and st not in _RECV_QUALITY_STATUSES:
             raise HTTPException(status_code=400,
                 detail=f"status must be one of {', '.join(_RECV_QUALITY_STATUSES)}")
+        # Parse defective_yards for this roll (upper-bound validated later when
+        # length_yards is known from the measurement block or the stored row).
+        _def_yds_set = "defective_yards" in r
+        _raw_def = r.get("defective_yards")
+        if _def_yds_set and _raw_def not in (None, ""):
+            try:
+                _def_yds_val = round(float(_raw_def), 3)
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400,
+                                    detail="defective_yards must be a number")
+            if _def_yds_val < 0:
+                raise HTTPException(status_code=400,
+                                    detail="defective_yards cannot be negative")
+        else:
+            _def_yds_val = None
         q_in[rn] = {"status": st,
                     "notes": (str(r.get("notes") or "").strip() or None),
-                    "meas": _recv_parse_measurements(r)}
+                    "meas": _recv_parse_measurements(r),
+                    "defective_yards": _def_yds_val,
+                    "defective_yards_set": _def_yds_set}
     # Optional PO re-link: pass "po_id": <id> to link/relink (re-validated LIVE
     # in Odoo as a draft) or "po_id": null/"" to unlink. Omitting the key
     # leaves the current link untouched.
@@ -9130,7 +9248,7 @@ def receiving_edit(sheet_id: int, request: Request, body: dict = Body(...)):
                        "quality_updated_by, quality_updated_at, "
                        "length_yards, shrinkage_inches, bleeding_test, "
                        "width_measured_m, after_wash_width_cm, "
-                       "after_wash_length_cm "
+                       "after_wash_length_cm, defective_yards "
                        "FROM fabric_receiving_rolls "
                        "WHERE sheet_id=%s AND deleted_at IS NULL", (sheet_id,))
         qmap = {r["roll_no"]: r for r in prev}
@@ -9158,6 +9276,22 @@ def receiving_edit(sheet_id: int, request: Request, body: dict = Body(...)):
                        (pq is None and any(v is not None for v in q_meas.values())):
                         quality_changes.append(
                             (roll_no, old_status, q_status, old_notes, q_notes))
+                    # defective_yards: use explicit value if key was in payload;
+                    # otherwise fall back to the stored value.
+                    if edit.get("defective_yards_set"):
+                        q_def = edit["defective_yards"]
+                        # Cross-field upper-bound check: now that length_yards is known
+                        eff_ly = q_meas.get("length_yards")
+                        if eff_ly is None and pq:
+                            stored_ly = pq.get("length_yards")
+                            eff_ly = float(stored_ly) if stored_ly not in (None, "") else None
+                        if q_def is not None and eff_ly is not None and q_def > eff_ly:
+                            raise HTTPException(status_code=422,
+                                detail=f"defective_yards ({q_def:.2f} yd) cannot exceed "
+                                       f"length_yards ({eff_ly:.2f} yd)")
+                    else:
+                        q_def = pq.get("defective_yards") if pq else None
+                        q_def = round(float(q_def), 3) if q_def not in (None, "") else None
                 else:
                     q_status = pq.get("quality_status") if pq else None
                     q_notes = pq.get("quality_notes") if pq else None
@@ -9169,6 +9303,8 @@ def receiving_edit(sheet_id: int, request: Request, body: dict = Body(...)):
                               "after_wash_length_cm": pq.get("after_wash_length_cm") if pq else None}
                     q_by = pq.get("quality_updated_by") if pq else None
                     q_at = pq.get("quality_updated_at") if pq else None
+                    stored_def = pq.get("defective_yards") if pq else None
+                    q_def = round(float(stored_def), 3) if stored_def not in (None, "") else None
                 cur.execute("""
                     INSERT INTO fabric_receiving_rolls
                       (sheet_id, roll_no, qty_kg, qty_mtrs,
@@ -9176,8 +9312,9 @@ def receiving_edit(sheet_id: int, request: Request, body: dict = Body(...)):
                        length_yards, shrinkage_inches,
                        bleeding_test, width_measured_m,
                        after_wash_width_cm, after_wash_length_cm,
+                       defective_yards,
                        quality_updated_by, quality_updated_at)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
                             COALESCE(%s, CASE WHEN %s THEN now() ELSE NULL END))
                 """, (sheet_id, roll_no, qty_kg,
                       round(qty_kg / kpm, 2) if kpm else None,
@@ -9185,6 +9322,7 @@ def receiving_edit(sheet_id: int, request: Request, body: dict = Body(...)):
                       q_meas["length_yards"], q_meas["shrinkage_inches"],
                       q_meas["bleeding_test"], q_meas["width_measured_m"],
                       q_meas["after_wash_width_cm"], q_meas["after_wash_length_cm"],
+                      q_def,
                       q_by, q_at, edit is not None))
             cur.execute("""
                 UPDATE fabric_receiving_sheets
@@ -9380,10 +9518,11 @@ def fabric_qc_report(date_from: str = Query(default=""),
     with _get_conn() as conn:
         _ensure_receiving_tables(conn)
         rows = q(conn, f"""
-            SELECT r.roll_no, r.qty_kg, r.quality_status, r.quality_notes,
+            SELECT r.id as roll_id, r.roll_no, r.qty_kg, r.quality_status, r.quality_notes,
                    r.quality_updated_by, r.quality_updated_at,
                    r.length_yards, r.shrinkage_inches, r.bleeding_test,
                    r.width_measured_m, r.after_wash_width_cm, r.after_wash_length_cm,
+                   r.defective_yards,
                    s.id as sheet_id, s.fabric_name, s.barcode, s.po_name,
                    COALESCE(s.po_date, (s.created_at AT TIME ZONE 'Africa/Nairobi')::date) as recv_date,
                    p.width_m as expected_width_m,
@@ -9480,7 +9619,12 @@ def fabric_qc_report(date_from: str = Query(default=""),
             if bo == "fail":
                 g["bleed_fail"] += 1
         if len(detail) < 1000:
+            ly = float(r["length_yards"]) if r.get("length_yards") not in (None, "") else None
+            def_yds_raw = r.get("defective_yards")
+            def_yds = float(def_yds_raw) if def_yds_raw not in (None, "") else None
+            okay_yds = round(ly - def_yds, 3) if (ly is not None and def_yds is not None) else None
             detail.append({
+                "roll_id": r.get("roll_id"),
                 "sheet_id": r.get("sheet_id"),
                 "po_name": r.get("po_name"),
                 "supplier": r.get("supplier"),
@@ -9490,7 +9634,9 @@ def fabric_qc_report(date_from: str = Query(default=""),
                 "recv_date": rd_iso,
                 "status": stt,
                 "qty_kg": float(r["qty_kg"]) if r.get("qty_kg") is not None else None,
-                "length_yards": float(r["length_yards"]) if r.get("length_yards") not in (None, "") else None,
+                "length_yards": ly,
+                "defective_yards": def_yds,
+                "okay_yards": okay_yds,
                 "width_measured_m": float(wm) if wm not in (None, "") else None,
                 "expected_width_m": float(we) if we not in (None, "") else None,
                 "width_diff_cm": round(wdiff, 1) if wdiff is not None else None,

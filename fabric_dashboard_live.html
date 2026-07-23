@@ -865,10 +865,11 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
       <table class="data">
        <thead><tr>
         <th>Date</th><th>PO</th><th>Supplier</th><th>Fabric</th><th class="r">Roll</th>
-        <th>Status</th><th class="r">Kg</th><th class="r">Width (m)</th><th class="r">Shrink</th>
+        <th>Status</th><th class="r">Kg</th><th class="r">Defective Yds</th><th class="r">Okay Yds</th>
+        <th class="r">Width (m)</th><th class="r">Shrink</th>
         <th>Bleeding</th><th>Notes</th><th>Inspected by</th><th></th>
        </tr></thead>
-       <tbody id="qc-detail-body"><tr><td colspan="13" class="loading">Loading…</td></tr></tbody>
+       <tbody id="qc-detail-body"><tr><td colspan="15" class="loading">Loading…</td></tr></tbody>
       </table>
      </div>
     </div>
@@ -1213,6 +1214,7 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
         <th class="r" title="Re-measured size of the 35cm gauge square after wash, along the LENGTH (in cm)">After-wash L (cm)</th>
         <th title="Bleeding / colour-fastness test result">Bleeding test</th>
         <th class="r" title="Measured fabric width in metres">Width (m)</th>
+        <th class="r">Defective Yds</th><th class="r">Okay Yds</th>
         <th style="width:1%;">Quality</th><th>Quality notes</th><th id="recv-edit-remove-h" style="width:1%;"></th>
        </tr></thead>
        <tbody id="recv-edit-body"></tbody>
@@ -2030,6 +2032,18 @@ function qcStatusPill(s){
   if(s==='Fail')return '<span style="color:var(--danger);font-weight:700;">Fail</span>';
   return '<span class="muted">Pending</span>';
 }
+function qcDefYdsCell(r){
+  /* Inline-editable "Defective Yds" cell. Shows "—" for null/zero, otherwise the value.
+     Clicking anywhere on the cell opens a small number input; blur/Enter saves.
+     data-roll-id and data-length-yards are used by the save handler. */
+  const rid=r.roll_id!=null?String(r.roll_id):'';
+  const ly=r.length_yards!=null?String(r.length_yards):'';
+  const cur=(r.defective_yards!=null&&r.defective_yards!==0)?fmt2(r.defective_yards):null;
+  const display=cur!=null?cur:'<span class="muted">—</span>';
+  return `<td class="r qc-def-cell" style="cursor:pointer;white-space:nowrap;" `+
+    `data-roll-id="${esc(rid)}" data-length-yards="${esc(ly)}" `+
+    `title="Click to edit defective yards">${display}</td>`;
+}
 function renderQcDetail(d){
   const rows=d.detail||[];
   document.getElementById('qc-detail-sub').textContent='· '+fmt(rows.length)+' rolls'+(d.detail_truncated?' (showing first 1,000 — narrow the filters or use the CSV export)':'');
@@ -2037,15 +2051,81 @@ function renderQcDetail(d){
     const w=(r.width_measured_m!=null?fmt2(r.width_measured_m):'—')+(r.width_diff_cm!=null?` <span class="${Math.abs(r.width_diff_cm)>d.width_tol_cm?'':'muted'}"${Math.abs(r.width_diff_cm)>d.width_tol_cm?' style="color:var(--danger);font-weight:700;"':''}>(${r.width_diff_cm>0?'+':''}${esc(r.width_diff_cm)} cm)</span>`:'');
     const sk=r.shrink_pct==null?'<span class="muted">—</span>':`<span${r.high_shrink?' style="color:#b45309;font-weight:700;"':''}>${esc(r.shrink_pct)}%${r.high_shrink?' \u26a0':''}</span>`;
     const bo=r.bleeding_outcome==='fail'?' style="color:var(--danger);font-weight:700;"':'';
+    const okayYds=r.okay_yards!=null?fmt2(r.okay_yards):'<span class="muted">—</span>';
     return `<tr><td>${esc(r.recv_date||'')}</td><td>${esc(r.po_name||'—')}</td><td>${esc(r.supplier||'')}</td>`+
       `<td title="${esc(fabricClean(r.barcode))}">${esc(r.fabric_name||'')}</td><td class="r">${esc(r.roll_no)}</td>`+
       `<td>${qcStatusPill(r.status)}</td><td class="r">${r.qty_kg==null?'—':fmt1(r.qty_kg)}</td>`+
+      qcDefYdsCell(r)+
+      `<td class="r qc-okay-cell">${okayYds}</td>`+
       `<td class="r">${w}</td><td class="r">${sk}</td>`+
       `<td${bo} title="${esc(r.bleeding_test||'')}">${esc(r.bleeding_test||'—')}</td>`+
       `<td title="${esc(r.notes||'')}">${esc((r.notes||'—').length>40?(r.notes||'').slice(0,40)+'…':(r.notes||'—'))}</td>`+
       `<td>${esc(r.inspected_by||'—')}${r.inspected_at?`<div class="muted" style="font-size:10px;">${esc(r.inspected_at)}</div>`:''}</td>`+
       `<td><button class="btn" style="font-size:11px;" data-qc-open="${esc(r.sheet_id)}" title="Open this roll\u2019s receiving sheet (quality &amp; edit)">Open sheet</button></td></tr>`;
-  }).join(''):'<tr><td colspan="13" class="muted" style="text-align:center;padding:14px;">No rolls match the current filters.</td></tr>';
+  }).join(''):'<tr><td colspan="15" class="muted" style="text-align:center;padding:14px;">No rolls match the current filters.</td></tr>';
+}
+function qcDefYdsSave(cell,rollId,lengthYards,newVal){
+  /* PATCH the defective_yards value to the backend; update the cell + the Okay Yds
+     sibling on success; highlight red with a tooltip on validation error. */
+  const row=cell.closest('tr');
+  const okayCell=row&&row.querySelector('.qc-okay-cell');
+  const numVal=newVal===''?null:Number(newVal);
+  cell.style.outline='';
+  cell.title='Click to edit defective yards';
+  fetch('/api/fabric/receiving/roll/'+encodeURIComponent(rollId)+'/defective-yards',{
+    method:'PATCH',
+    headers:{'Content-Type':'application/json','Authorization':'Bearer '+(localStorage.getItem('vivo_token')||'')},
+    body:JSON.stringify({defective_yards:numVal}),
+  }).then(res=>res.json().then(j=>({ok:res.ok,status:res.status,j}))).then(({ok,status,j})=>{
+    if(!ok){
+      cell.style.outline='2px solid var(--danger)';
+      const msg=j&&j.detail?j.detail:'Error saving defective yards';
+      cell.title=msg;
+      cell.innerHTML=numVal!=null?esc(String(numVal)):'<span class="muted">—</span>';
+      return;
+    }
+    const d=j.defective_yards;
+    const ok2=j.okay_yards;
+    cell.innerHTML=(d!=null&&d!==0)?fmt2(d):'<span class="muted">—</span>';
+    if(okayCell)okayCell.innerHTML=ok2!=null?fmt2(ok2):'<span class="muted">—</span>';
+  }).catch(()=>{
+    cell.style.outline='2px solid var(--danger)';
+    cell.title='Network error — could not save';
+    cell.innerHTML=numVal!=null?esc(String(numVal)):'<span class="muted">—</span>';
+  });
+}
+function qcDefYdsActivate(cell){
+  /* Replace the cell content with an inline number input. */
+  const rollId=cell.dataset.rollId;
+  const lengthYards=cell.dataset.lengthYards;
+  if(!rollId)return;
+  const current=cell.textContent.trim()==='—'?'':cell.textContent.trim().replace(/,/g,'');
+  cell.innerHTML=`<input type="number" min="0" step="any" value="${esc(current)}" `+
+    `style="width:68px;text-align:right;height:26px;padding:0 4px;font-size:12px;" `+
+    `title="${lengthYards?'Max '+fmt2(Number(lengthYards))+' yds':''}" data-qc-def-inp>`;
+  const inp=cell.querySelector('input');
+  inp.focus();inp.select();
+  const okayCell=cell.closest('tr')&&cell.closest('tr').querySelector('.qc-okay-cell');
+  const lyCurrent=lengthYards?parseFloat(lengthYards):null;
+  inp.addEventListener('input',()=>{
+    const v=inp.value.trim();
+    const def=v===''?null:parseFloat(v);
+    if(okayCell){
+      if(def!=null&&!isNaN(def)&&lyCurrent!=null)okayCell.innerHTML=fmt2(lyCurrent-def);
+      else okayCell.innerHTML='<span class="muted">—</span>';
+    }
+  });
+  const save=()=>{
+    const v=inp.value.trim();
+    const d=v===''?null:parseFloat(v);
+    cell.innerHTML=(d!=null&&d!==0)?fmt2(d):'<span class="muted">—</span>';
+    qcDefYdsSave(cell,rollId,lengthYards,v);
+  };
+  inp.addEventListener('blur',save,{once:true});
+  inp.addEventListener('keydown',e=>{
+    if(e.key==='Enter'){e.preventDefault();inp.blur();}
+    if(e.key==='Escape'){inp.removeEventListener('blur',save);cell.innerHTML=current?fmt2(Number(current)):'<span class="muted">—</span>';if(okayCell&&lyCurrent!=null){const cd=current?Number(current):null;okayCell.innerHTML=cd!=null?fmt2(lyCurrent-cd):'<span class="muted">—</span>';}}
+  });
 }
 function qcBindOnce(){
   if(qcBound)return; qcBound=true;
@@ -2058,6 +2138,8 @@ function qcBindOnce(){
       if(qcSort.key===k)qcSort.dir*=-1; else qcSort={key:k,dir:k==='supplier'?1:-1};
       renderQcScore();
     }
+    const defCell=e.target.closest('.qc-def-cell');
+    if(defCell&&!defCell.querySelector('input')){qcDefYdsActivate(defCell);}
   });
 }
 function qcMeta(){
@@ -2078,6 +2160,7 @@ function qcExportDetail(){
   const cols=[['Date',r=>r.recv_date],['PO',r=>r.po_name],['Supplier',r=>r.supplier],
     ['Fabric',r=>r.fabric_name],['Barcode',r=>r.barcode],['Roll',r=>r.roll_no],
     ['Status',r=>r.status],['Kg',r=>r.qty_kg],['Length (yd)',r=>r.length_yards],
+    ['Defective Yds',r=>r.defective_yards],['Okay Yds',r=>r.okay_yards],
     ['Width measured (m)',r=>r.width_measured_m],['Width expected (m)',r=>r.expected_width_m],
     ['Width diff (cm)',r=>r.width_diff_cm],['Shrink %',r=>r.shrink_pct],
     ['High shrink',r=>r.high_shrink?'yes':''],['Bleeding test',r=>r.bleeding_test],
@@ -4667,7 +4750,8 @@ async function openReceivingEdit(id){
         after_wash_width_cm:r.after_wash_width_cm==null?'':r.after_wash_width_cm,
         after_wash_length_cm:r.after_wash_length_cm==null?'':r.after_wash_length_cm,
         bleeding_test:r.bleeding_test||'',
-        width_measured_m:r.width_measured_m==null?'':r.width_measured_m
+        width_measured_m:r.width_measured_m==null?'':r.width_measured_m,
+        defective_yards:r.defective_yards==null?'':r.defective_yards
       }))
     };
     document.getElementById('recv-edit-err').innerHTML='';
@@ -4760,6 +4844,8 @@ function renderReceivingEditRows(){
       <td class="r">${recvEditState.canEditWidth
         ? `<input type="number" min="0" step="any" data-ei="${i}" data-ek="wid" value="${esc(String(r.width_measured_m??''))}" placeholder="m" style="width:64px;text-align:right;">`
         : (r.width_measured_m!=null&&r.width_measured_m!==''?'<span class="muted" style="font-size:12px;">'+esc(fmt2(r.width_measured_m))+' m</span>':'<span class="muted">\u2014</span>')}</td>
+      <td class="r"><input type="number" min="0" step="any" data-ei="${i}" data-ek="def" value="${esc(String(r.defective_yards??''))}" placeholder="yds" title="${r.length_yards!==''?'Max '+fmt2(Number(r.length_yards))+' yds':''}" style="width:72px;text-align:right;"></td>
+      <td class="r muted" id="recv-edit-okay-${i}" style="font-size:12px;">${(r.length_yards!==''&&r.defective_yards!==''&&r.length_yards!=null&&r.defective_yards!=null)?fmt2(Number(r.length_yards)-Number(r.defective_yards)):'—'}</td>
       <td><select data-ei="${i}" data-ek="status" style="width:110px;">${opts}</select></td>
       <td><input type="text" data-ei="${i}" data-ek="notes" value="${esc(String(r.quality_notes||''))}" placeholder="optional" style="width:100%;min-width:140px;"></td>
       ${admin?`<td><button class="btn" data-ei="${i}" data-ek="del" title="Remove roll" style="padding:2px 8px;font-size:12px;">&times;</button></td>`:''}
@@ -4772,7 +4858,8 @@ function renderReceivingEditRows(){
     if(k==='no')r.roll_no=el.value;
     else if(k==='kg'){r.qty_kg=el.value;r.qty_mtrs=recvEditDerived(el.value);const c=document.getElementById('recv-edit-m-'+i);if(c)c.innerHTML=r.qty_mtrs!=null?fmt1(r.qty_mtrs):(recvEditState.kpm?'—':'<span style="color:var(--danger);">Missing Width/GSM</span>');}
     else if(k==='notes')r.quality_notes=el.value;
-    else if(k==='len')r.length_yards=el.value;
+    else if(k==='len'){r.length_yards=el.value;const ly=el.value!==''?parseFloat(el.value):null;const def=r.defective_yards!==''?parseFloat(r.defective_yards):null;const ok=document.getElementById('recv-edit-okay-'+i);if(ok)ok.textContent=(ly!=null&&def!=null&&!isNaN(ly)&&!isNaN(def))?fmt2(ly-def):'—';}
+    else if(k==='def'){r.defective_yards=el.value;const ly=r.length_yards!==''?parseFloat(r.length_yards):null;const def=el.value!==''?parseFloat(el.value):null;const ok=document.getElementById('recv-edit-okay-'+i);if(ok)ok.textContent=(ly!=null&&def!=null&&!isNaN(ly)&&!isNaN(def))?fmt2(ly-def):'—';}
     else if(k==='shw'||k==='shl'){
       if(k==='shw')r.after_wash_width_cm=el.value;else r.after_wash_length_cm=el.value;
       const p=document.getElementById('recv-edit-'+k+'-'+i);
@@ -4820,7 +4907,7 @@ function recvEditAddRoll(){
   if(!recvEditState.isAdmin)return;
   if(recvEditState.rolls.length>=50){document.getElementById('recv-edit-err').innerHTML='<div class="banner banner-err">A sheet holds at most 50 rolls.</div>';return;}
   const maxNo=recvEditState.rolls.reduce((m,r)=>Math.max(m,parseInt(r.roll_no,10)||0),0);
-  recvEditState.rolls.push({roll_id:null,roll_no:String(maxNo+1),qty_kg:'',qty_mtrs:null,quality_status:'',quality_notes:'',length_yards:'',shrinkage_inches:'',after_wash_width_cm:'',after_wash_length_cm:'',bleeding_test:'',width_measured_m:''});
+  recvEditState.rolls.push({roll_id:null,roll_no:String(maxNo+1),qty_kg:'',qty_mtrs:null,quality_status:'',quality_notes:'',length_yards:'',shrinkage_inches:'',after_wash_width_cm:'',after_wash_length_cm:'',bleeding_test:'',width_measured_m:'',defective_yards:''});
   renderReceivingEditRows();
 }
 async function saveReceivingQuality(){
@@ -4832,7 +4919,8 @@ async function saveReceivingQuality(){
               shrinkage_inches:r.shrinkage_inches===''?null:r.shrinkage_inches,
               after_wash_length_cm:r.after_wash_length_cm===''?null:r.after_wash_length_cm,
               bleeding_test:r.bleeding_test||'',
-              width_measured_m:r.width_measured_m===''?null:r.width_measured_m}));
+              width_measured_m:r.width_measured_m===''?null:r.width_measured_m,
+              defective_yards:r.defective_yards===''?null:Number(r.defective_yards)}));
   if(!rolls.length){document.getElementById('recv-edit-err').innerHTML='<div class="banner banner-err">Nothing to save — save roll changes first for newly added rolls.</div>';return;}
   try{
     const r=await fetch('/api/fabric/receiving/'+encodeURIComponent(recvEditState.id)+'/quality',{method:'POST',credentials:'include',headers:vivoAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({rolls})});
@@ -4862,6 +4950,7 @@ async function saveReceivingEdit(){
     rolls[i].after_wash_length_cm=x.after_wash_length_cm===''?null:x.after_wash_length_cm;
     rolls[i].bleeding_test=x.bleeding_test||'';
     rolls[i].width_measured_m=x.width_measured_m===''?null:x.width_measured_m;
+    rolls[i].defective_yards=x.defective_yards===''?null:x.defective_yards;
   }});
   const note=document.getElementById('recv-edit-note').value.trim();
   const payload={rolls,note};
