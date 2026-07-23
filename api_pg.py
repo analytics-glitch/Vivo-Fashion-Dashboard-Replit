@@ -5564,7 +5564,7 @@ def product_detail(sku: str = Query(default=""), barcode: str = Query(default=""
             "SELECT "
             "COALESCE(SUM(available) FILTER (WHERE pos_location_name NOT IN ("
             + WAREHOUSE_LOCATIONS + ")),0) AS soh_stores, "
-            "COALESCE(SUM(available) FILTER (WHERE pos_location_name = 'Finished Goods Production'),0) AS soh_warehouse, "
+            "COALESCE(SUM(available) FILTER (WHERE pos_location_name = 'Warehouse Finished Goods'),0) AS soh_warehouse, "
             "COALESCE(SUM(available) FILTER (WHERE pos_location_name IN ("
             + WAREHOUSE_LOCATIONS + ") AND pos_location_name <> 'Finished Goods Production'),0) AS soh_pipeline "
             "FROM all_inventory WHERE sku = %s",
@@ -7829,7 +7829,7 @@ def analytics_sor_all_styles(
         stock AS (
             SELECT COALESCE(m.style_name, i.style_name) AS style_name,
                 COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)), 0) AS soh_stores,
-                COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name = 'Finished Goods Production'), 0) AS soh_warehouse,
+                COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name = 'Warehouse Finished Goods'), 0) AS soh_warehouse,
                 COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name IN (""" + WAREHOUSE_LOCATIONS + """) AND i.pos_location_name <> 'Finished Goods Production'), 0) AS soh_pipeline
             FROM all_inventory i
             LEFT JOIN """ + SKU_STYLE_MAP + """ m ON m.sku = i.sku
@@ -7988,7 +7988,7 @@ def analytics_sor_style_colors(
         stock AS (
             SELECT k.color,
                 COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)), 0) AS soh_stores,
-                COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name = 'Finished Goods Production'), 0) AS soh_warehouse,
+                COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name = 'Warehouse Finished Goods'), 0) AS soh_warehouse,
                 COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name IN (""" + WAREHOUSE_LOCATIONS + """) AND i.pos_location_name <> 'Finished Goods Production'), 0) AS soh_pipeline
             FROM skus k
             JOIN all_inventory i ON i.sku = k.sku
@@ -8132,7 +8132,7 @@ def analytics_sor_style_sizes(
         stock AS (
             SELECT k.size,
                 COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)), 0) AS soh_stores,
-                COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name = 'Finished Goods Production'), 0) AS soh_warehouse,
+                COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name = 'Warehouse Finished Goods'), 0) AS soh_warehouse,
                 COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name IN (""" + WAREHOUSE_LOCATIONS + """) AND i.pos_location_name <> 'Finished Goods Production'), 0) AS soh_pipeline
             FROM skus k
             JOIN all_inventory i ON i.sku = k.sku
@@ -8769,7 +8769,7 @@ def analytics_product_analysis(
         "stock AS ("
         " SELECT COALESCE(m.style_name, i.style_name) AS style_name" + stock_dim_sel + stock_pos_sel + ","
         " COALESCE(SUM(i.available) FILTER (WHERE " + current_loc_clause + "),0) AS soh_current,"
-        " COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name = 'Finished Goods Production'),0) AS soh_warehouse,"
+        " COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name = 'Warehouse Finished Goods'),0) AS soh_warehouse,"
         " COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name IN (" + WAREHOUSE_LOCATIONS + ") AND i.pos_location_name <> 'Finished Goods Production'),0) AS soh_pipeline,"
         " COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name NOT IN (" + WAREHOUSE_LOCATIONS + ")),0) AS soh_stores,"
         " string_agg(DISTINCT i.pos_location_name, ', ' ORDER BY i.pos_location_name)"
@@ -10505,7 +10505,7 @@ def analytics_aged_stock(
         wh AS (
             SELECT sku, SUM(available) AS soh_warehouse
             FROM all_inventory
-            WHERE pos_location_name = 'Finished Goods Production'
+            WHERE pos_location_name = 'Warehouse Finished Goods'
             GROUP BY sku
         )
         SELECT i.pos_location_name AS pos_location,
@@ -10605,7 +10605,7 @@ def analytics_warehouse_return_candidates(
         wh AS (
             SELECT sku, SUM(available) AS soh_warehouse
             FROM all_inventory
-            WHERE pos_location_name = 'Finished Goods Production'
+            WHERE pos_location_name = 'Warehouse Finished Goods'
             GROUP BY sku
         ),
         marked AS (
@@ -15593,7 +15593,7 @@ def _es_stock_mix(sold_from, sold_to, window_days, country):
     sales_country = ("AND s.country IN (" + csv_to_sql(country) + ")") if country else ""
     inv = run_query("""
         SELECT p.product_type AS subcategory,
-            SUM(CASE WHEN i.pos_location_name = 'Finished Goods Production' THEN i.available ELSE 0 END) AS wh_units,
+            SUM(CASE WHEN i.pos_location_name = 'Warehouse Finished Goods' THEN i.available ELSE 0 END) AS wh_units,
             SUM(CASE WHEN i.pos_location_name IN (""" + WAREHOUSE_LOCATIONS + """) AND i.pos_location_name <> 'Finished Goods Production' THEN i.available ELSE 0 END) AS pipeline_units,
             SUM(CASE WHEN i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """) THEN i.available ELSE 0 END) AS st_units
         FROM all_inventory i
@@ -17206,7 +17206,7 @@ def analytics_replenish_gaps(
             wh_soh AS (
                 SELECT i.sku, SUM(i.available) AS soh_wh
                 FROM all_inventory i
-                WHERE i.pos_location_name = 'Finished Goods Production'
+                WHERE i.pos_location_name = 'Warehouse Finished Goods'
                 GROUP BY i.sku
             )
             SELECT sold.pos_location, sold.sku, COALESCE(NULLIF(p.product_name, ''), sold.product_name) AS product_name, sold.units_sold, sold.last_sale,
@@ -17251,7 +17251,7 @@ def analytics_replenish_gaps(
             wh_soh AS (
                 SELECT i.sku, SUM(i.available) AS soh_wh
                 FROM all_inventory i
-                WHERE i.pos_location_name = 'Finished Goods Production'
+                WHERE i.pos_location_name = 'Warehouse Finished Goods'
                 GROUP BY i.sku
             )
             SELECT sold.sku, COALESCE(NULLIF(p.product_name, ''), sold.product_name) AS product_name, sold.units_sold, sold.last_sale,

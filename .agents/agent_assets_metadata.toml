@@ -84,3 +84,9 @@ id = "ZuKIzAaRE1KdcXcLIsHos"
 uri = "file://attached_assets/product_variants_by_style.xlsx"
 type = "table"
 title = "Product Variants with External ID"
+
+[[outputs]]
+id = "R31C51EVKUFRiqhhQEobp"
+uri = "file://attached_assets/aged_stock_by_store.xlsx"
+type = "table"
+title = "Aged Stock by Store (90+ Days No Sale)"
