@@ -5051,6 +5051,12 @@ def _ensure_receiving_tables(conn):
             )""")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_fabric_insp_sheet_roll "
                     "ON fabric_inspection_tickets(sheet_id, roll_no)")
+        # Inspector-entered after-wash width (cm) stored directly on the ticket.
+        # Distinct from fabric_receiving_rolls.after_wash_width_cm (set by the
+        # width_edit grantee on the receiving sheet); this column captures the
+        # QC inspector's own post-wash measurement taken during inspection.
+        cur.execute("ALTER TABLE fabric_inspection_tickets "
+                    "ADD COLUMN IF NOT EXISTS after_wash_width_cm NUMERIC")
         # One-time markers for receiving data migrations (idempotent — prod is
         # a separate DB and picks these up on first touch after publish).
         cur.execute("""
@@ -5705,16 +5711,10 @@ def _insp_score(total_points, width_in, yards):
     return round(float(total_points) * 3600.0 / (float(width_in) * float(yards)), 2)
 
 def _insp_enforce_source_width(ctx, fields):
-    """When the roll has a recorded after_wash_width_cm, the ticket's
-    width is a READ-ONLY prefill from that value (cm ÷ 2.54 = inches).
-    width_measured_m is NOT used as a fallback — if after_wash_width_cm
-    is absent the width is 'not measured' and scoring is not computable."""
-    w_cm = ctx.get("after_wash_width_cm")
-    if w_cm not in (None, ""):
-        try:
-            fields["width_inches"] = round(float(w_cm) / 2.54, 1)
-        except (TypeError, ValueError):
-            pass
+    """Formerly pre-filled width_inches from the receiving roll's
+    after_wash_width_cm. Now a no-op: the inspector supplies their own
+    after_wash_width_cm directly on the inspection form and
+    _insp_collect_fields already converts it to width_inches."""
     return fields
 
 def _insp_roll_ctx(conn, roll_id):
@@ -5750,7 +5750,15 @@ def _insp_collect_fields(body):
         raise HTTPException(status_code=400,
                             detail="face_back must be Face, Back or Both")
     f["yards_inspected"] = _insp_num(body.get("yards_inspected"), "yards inspected")
-    f["width_inches"] = _insp_num(body.get("width_inches"), "width (inches)")
+    # Inspector enters after_wash_width_cm (cm); width_inches is derived from it.
+    # The receiving sheet's after_wash_width_cm is no longer the authoritative
+    # source for the inspection ticket — the inspector measures it themselves.
+    f["after_wash_width_cm"] = _insp_num(body.get("after_wash_width_cm"), "after-wash width (cm)")
+    w_cm = f["after_wash_width_cm"]
+    if w_cm is not None and w_cm > 0:
+        f["width_inches"] = round(float(w_cm) / 2.54, 1)
+    else:
+        f["width_inches"] = None
     lim = _insp_num(body.get("acceptable_limit"), "acceptable limit")
     f["acceptable_limit"] = lim if lim and lim > 0 else 40
     d = str(body.get("inspection_date") or "").strip()
@@ -5771,8 +5779,8 @@ def _insp_ticket_row(t):
         out[k] = v.astimezone().strftime("%d %b %Y, %H:%M") if v is not None else None
     v = out.get("inspection_date")
     out["inspection_date"] = v.strftime("%Y-%m-%d") if v is not None else None
-    for k in ("yards_inspected", "width_inches", "acceptable_limit",
-              "total_points", "points_per_100"):
+    for k in ("yards_inspected", "width_inches", "after_wash_width_cm",
+              "acceptable_limit", "total_points", "points_per_100"):
         if out.get(k) is not None:
             out[k] = float(out[k])
     return out
@@ -5812,25 +5820,37 @@ def inspection_context(request: Request, roll_id: int = Query(...)):
     color = prod.get("odoo_fabric_color") or None
     construction = (prod.get("fiber_content") or
                     prod.get("fabric_subcategory") or None)
-    # Derive width_in exclusively from after_wash_width_cm (cm ÷ 2.54 = inches).
-    # width_measured_m is NOT used — if after_wash_width_cm is absent the
-    # score cannot be computed until a width_edit grantee/admin records it on
-    # the receiving sheet.
-    w_cm = ctx.get("after_wash_width_cm")
-    if w_cm not in (None, ""):
-        try:
-            width_in = round(float(w_cm) / 2.54, 1)
-        except (TypeError, ValueError):
-            width_in = None
-    else:
-        width_in = None
+    # The inspector now enters after_wash_width_cm directly on the inspection
+    # form; it is saved on the ticket (not the roll). Pre-fill from the latest
+    # ticket when one exists so re-opened tickets show the original measurement.
+    # The receiving-roll's after_wash_width_cm is no longer used as the
+    # authoritative source for the 4-point score calculation.
+    latest_ticket = tickets[0] if tickets else None
+    ticket_w_cm = None
+    if latest_ticket:
+        raw = latest_ticket.get("after_wash_width_cm")
+        if raw not in (None, ""):
+            try:
+                ticket_w_cm = float(raw)
+            except (TypeError, ValueError):
+                pass
+        # Backward-compatible fallback: tickets created before the cm column
+        # existed only have width_inches — back-derive cm = in × 2.54 so
+        # re-opened old tickets still pre-fill the inspector's original entry.
+        if ticket_w_cm is None:
+            raw_in = latest_ticket.get("width_inches")
+            if raw_in not in (None, ""):
+                try:
+                    ticket_w_cm = round(float(raw_in) * 2.54, 1)
+                except (TypeError, ValueError):
+                    pass
     kg = float(ctx["qty_kg"]) if ctx.get("qty_kg") is not None else None
     yards = float(ctx["length_yards"]) if ctx.get("length_yards") not in (None, "") else None
     u = getattr(request.state, "user", None) or {}
     return {
         "roll": {"roll_id": ctx["roll_id"], "sheet_id": ctx["sheet_id"],
                  "roll_no": ctx["roll_no"], "qty_kg": kg,
-                 "length_yards": yards, "width_inches": width_in,
+                 "length_yards": yards,
                  "quality_status": ctx.get("quality_status"),
                  "quality_notes": ctx.get("quality_notes"),
                  "shrinkage_inches": (float(ctx["shrinkage_inches"])
@@ -5838,16 +5858,14 @@ def inspection_context(request: Request, roll_id: int = Query(...)):
                  "bleeding_test": ctx.get("bleeding_test"),
                  "width_measured_m": (float(ctx["width_measured_m"])
                                       if ctx.get("width_measured_m") not in (None, "") else None),
-                 "after_wash_width_cm": (float(ctx["after_wash_width_cm"])
-                                         if ctx.get("after_wash_width_cm") not in (None, "") else None),
                  "after_wash_length_cm": (float(ctx["after_wash_length_cm"])
-                                          if ctx.get("after_wash_length_cm") not in (None, "") else None)},
+                                          if ctx.get("after_wash_length_cm") not in (None, "") else None),
+                 "ticket_after_wash_width_cm": ticket_w_cm},
         "po": {"po_id": ctx.get("po_id"), "po_name": ctx.get("po_name")},
         "fabric": {"name": ctx.get("fabric_name"), "barcode": ctx.get("barcode")},
         "prefill": {"supplier": supplier, "supplier_source": supplier_src,
                     "color": color},
         "resolved": {"supplier": bool(supplier), "color": bool(color),
-                     "width": width_in is not None,
                      "yards": yards is not None},
         "defaults": {"inspector_name": u.get("name") or u.get("email") or "",
                      "acceptable_limit": 40,
@@ -5939,6 +5957,7 @@ def _insp_upsert_draft(conn, ctx, fields, defects, total_points, actor,
         latest = cur.fetchone()
         common = (fields["color"],
                   fields["yards_inspected"], fields["width_inches"],
+                  fields.get("after_wash_width_cm"),
                   fields["inspector_name"], fields["inspection_date"],
                   fields["face_back"],
                   psycopg2.extras.Json(defects), limit,
@@ -5948,7 +5967,8 @@ def _insp_upsert_draft(conn, ctx, fields, defects, total_points, actor,
             cur.execute("""
                 UPDATE fabric_inspection_tickets SET
                     color=%s, yards_inspected=%s,
-                    width_inches=%s, inspector_name=%s, inspection_date=%s,
+                    width_inches=%s, after_wash_width_cm=%s,
+                    inspector_name=%s, inspection_date=%s,
                     face_back=%s, defects=%s, acceptable_limit=%s,
                     remarks=%s, discrepancy_note=%s, total_points=%s,
                     points_per_100=%s, grade=%s, updated_at=now()
@@ -5961,11 +5981,12 @@ def _insp_upsert_draft(conn, ctx, fields, defects, total_points, actor,
                 INSERT INTO fabric_inspection_tickets
                     (sheet_id, po_id, roll_no, roll_id, version, ticket_no,
                      status, color, yards_inspected, width_inches,
+                     after_wash_width_cm,
                      inspector_name, inspection_date, face_back, defects,
                      acceptable_limit, remarks, discrepancy_note,
                      total_points, points_per_100, grade, created_by)
                 VALUES (%s,%s,%s,%s,%s,%s,'Draft',
-                        %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 RETURNING *
             """, (ctx["sheet_id"], ctx.get("po_id"), ctx["roll_no"],
                   ctx["roll_id"], version, ticket_no) + common + (actor,))

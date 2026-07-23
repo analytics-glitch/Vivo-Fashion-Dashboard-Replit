@@ -5608,7 +5608,7 @@ function renderInspTicket(pop,ctx,box,rollId){
   // Prefill-vs-fillable: resolved attributes render read-only, unresolved
   // ones render as inputs on the ticket (no new upstream columns).
   const attr=(key,label,cls)=>'<div>'+lbl(label+(res[key]?'':' <span class="muted" style="font-weight:400;">(fill in)</span>'))+(res[key]?ro(pre[key]):inp(cls,seed[key]||'',label))+'</div>';
-  const widthIn=V(seed.width_inches,roll.width_inches,'');
+  const afterWashWidthCm=V(seed.after_wash_width_cm,roll.ticket_after_wash_width_cm,'');
   const yards=V(seed.yards_inspected,roll.length_yards,'');
   const defects=Array.isArray(seed.defects)?seed.defects:[];
   const fb=seed.face_back||'Both';
@@ -5636,16 +5636,13 @@ function renderInspTicket(pop,ctx,box,rollId){
     +'<div>'+lbl('Roll no.')+ro(roll.roll_no)+'</div>'
     +'<div>'+lbl('Roll weight (kg)')+ro(roll.qty_kg!=null?fmt2(roll.qty_kg):null)+'</div>'
     +'<div>'+lbl('Roll yardage (yds)')+ro(roll.length_yards!=null?fmt2(roll.length_yards):null)+'</div>'
-    +'<div>'+lbl('Width')+'<div style="padding:5px 7px;font-size:13px;background:rgba(0,0,0,.035);border:1px solid var(--border,#e2e2e8);border-radius:6px;min-height:29px;">'+(roll.after_wash_width_cm!=null&&roll.after_wash_width_cm!==''?esc(fmt2(roll.after_wash_width_cm)+' cm / '+fmt2(roll.after_wash_width_cm/2.54)+' in (post-wash)'):'<span class="muted">\u2014 not measured</span>')+'</div><div class="muted" style="font-size:10.5px;">Set on receiving sheet by width_edit grantee or admin.</div></div>'
+    +'<div>'+lbl('Width (receiving sheet)')+ro(roll.width_measured_m!=null&&roll.width_measured_m!==''?fmt2(roll.width_measured_m)+' m':null)+'</div>'
     +'</div>'
     +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:.5rem;margin-top:.55rem;">'
     +attr('color','Color','insp-color')
     +'</div>'
     +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:.5rem;margin-top:.55rem;">'
     +'<div>'+lbl('Yards inspected')+num('insp-yards',yards,'yards')+'</div>'
-    // When the roll's measured width exists it is a READ-ONLY prefill (shown
-    // in the header grid); a hidden input feeds the live score calculation.
-    +(res.width?'<input type="hidden" class="insp-width" value="'+esc(String(roll.width_inches==null?'':roll.width_inches))+'">':'')
     +'<div>'+lbl('Inspector')+inp('insp-inspector',V(seed.inspector_name,null,dft.inspector_name),'name')+'</div>'
     +'<div>'+lbl('Date')+'<input type="date" class="insp-date" value="'+esc(V(seed.inspection_date,null,dft.inspection_date))+'" style="width:100%;padding:5px 7px;font-size:13px;border:1px solid var(--border,#d7d7de);border-radius:6px;"></div>'
     +'<div>'+lbl('Side inspected')+'<select class="insp-face" style="width:100%;padding:5px 7px;font-size:13px;border:1px solid var(--border,#d7d7de);border-radius:6px;">'+['Face','Back','Both'].map(o=>'<option'+(fb===o?' selected':'')+'>'+o+'</option>').join('')+'</select></div>'
@@ -5654,7 +5651,7 @@ function renderInspTicket(pop,ctx,box,rollId){
     +'<div style="margin-top:.7rem;"><div style="font-weight:700;font-size:12.5px;">Measurements &amp; wash tests</div>'
     +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:.5rem;margin-top:4px;">'
     +'<div>'+lbl('Roll length (yds)')+num('insp-m-len',roll.length_yards==null?'':roll.length_yards,'yards')+'</div>'
-    +'<div>'+lbl('After-wash W (cm) <span class="muted" style="font-weight:400;" title="Re-measured size of the 35cm gauge square after wash, along the WIDTH">(gauge 35)</span>')+'<div style="padding:5px 7px;font-size:13px;background:rgba(0,0,0,.035);border:1px solid var(--border,#e2e2e8);border-radius:6px;min-height:29px;">'+(roll.after_wash_width_cm!=null&&roll.after_wash_width_cm!==''?esc(fmt2(roll.after_wash_width_cm)+' cm')+'<span class="muted" style="font-size:10.5px;margin-left:4px;">'+esc(shrinkPreviewTxt(roll.after_wash_width_cm))+'</span>':'<span class="muted">\u2014 not measured</span>')+'</div><div class="muted" style="font-size:10.5px;">Set on receiving sheet by width_edit grantee or admin.</div></div>'
+    +'<div>'+lbl('After-wash W (cm) <span class="muted" style="font-weight:400;" title="Re-measured size of the 35cm gauge square after wash, along the WIDTH">(gauge 35)</span>')+num('insp-m-shw',afterWashWidthCm,'cm')+'<div class="insp-m-shw-p muted" style="font-size:10.5px;min-height:13px;white-space:nowrap;"></div></div>'
     +'<div>'+lbl('After-wash L (cm) <span class="muted" style="font-weight:400;" title="Re-measured size of the 35cm gauge square after wash, along the LENGTH">(gauge 35)</span>')+num('insp-m-shl',roll.after_wash_length_cm==null?'':roll.after_wash_length_cm,'cm')+'<div class="insp-m-shl-p muted" style="font-size:10.5px;min-height:13px;white-space:nowrap;"></div></div>'
     +'<div>'+lbl('Bleeding test')+inp('insp-m-bld',roll.bleeding_test||'','e.g. No bleed')+'</div>'
     +'</div>'
@@ -5740,7 +5737,7 @@ function renderInspTicket(pop,ctx,box,rollId){
       tr.querySelector('.d-pts').textContent=String(pts);
       total+=pts;
     });
-    const w=parseFloat(gv('.insp-width')),y=parseFloat(gv('.insp-yards')),lim=parseFloat(gv('.insp-limit'))||40;
+    const w=parseFloat(gv('.insp-m-shw'))/2.54,y=parseFloat(gv('.insp-yards')),lim=parseFloat(gv('.insp-limit'))||40;
     const sc=pop.querySelector('.insp-score');
     let scoreTxt,badge='';
     if(!isNaN(w)&&w>0&&!isNaN(y)&&y>0){
@@ -5750,14 +5747,14 @@ function renderInspTicket(pop,ctx,box,rollId){
       badge='<span style="padding:2px 12px;border-radius:11px;font-weight:800;font-size:13px;'+(pass?'color:#0a7d33;background:rgba(10,125,51,.1);border:1px solid rgba(10,125,51,.4);':'color:var(--danger);background:rgba(200,50,50,.08);border:1px solid rgba(200,50,50,.4);')+'">'+(pass?'PASS':'REJECT')+'</span>';
       sc.style.borderColor=pass?'rgba(10,125,51,.4)':'rgba(200,50,50,.4)';
     }else{
-      scoreTxt='<span class="muted">Enter width (in) and yards inspected to compute the score.</span> Total points so far: <b>'+total+'</b>';
+      scoreTxt='<span class="muted">Enter after-wash width (cm) and yards inspected to compute the score.</span> Total points so far: <b>'+total+'</b>';
       sc.style.borderColor='';
     }
     sc.innerHTML='<span>'+scoreTxt+'</span><span style="margin-left:auto;">limit '+fmt2(lim)+' '+badge+'</span>';
   }
   (defects.length?defects:[]).forEach(addDefectRow);
   pop.querySelector('.insp-add-defect').addEventListener('click',()=>{addDefectRow();recalc();});
-  ['.insp-width','.insp-yards','.insp-limit'].forEach(sel=>{const el=pop.querySelector(sel);if(el)el.addEventListener('input',recalc);});
+  ['.insp-m-shw','.insp-yards','.insp-limit'].forEach(sel=>{const el=pop.querySelector(sel);if(el)el.addEventListener('input',recalc);});
   recalc();
   const cleanChk=pop.querySelector('.insp-clean-roll'),cleanLbl=pop.querySelector('.insp-clean-label'),defectWrap=pop.querySelector('.insp-defect-wrap'),addDefBtn=pop.querySelector('.insp-add-defect');
   function applyCleanRoll(){const c=cleanChk.checked;addDefBtn.disabled=c;cleanLbl.style.display=c?'':'none';defectWrap.style.display=c?'none':'';if(c){while(tb.firstChild)tb.removeChild(tb.firstChild);recalc();}}
@@ -5767,7 +5764,7 @@ function renderInspTicket(pop,ctx,box,rollId){
       roll_id:rollId,
       color:res.color?'':gv('.insp-color'),
       yards_inspected:gv('.insp-yards')||null,
-      width_inches:gv('.insp-width')||null,
+      after_wash_width_cm:gv('.insp-m-shw')||null,
       inspector_name:gv('.insp-inspector'),
       inspection_date:gv('.insp-date'),
       face_back:gv('.insp-face'),
@@ -5803,6 +5800,7 @@ function renderInspTicket(pop,ctx,box,rollId){
     catch(e){b.disabled=false;b.innerHTML='Submit &amp; sign off';alert('Could not submit the ticket: '+e.message);}
   });
   const wireShrinkPrev=(inpSel,prevSel)=>{const el=pop.querySelector(inpSel),p=pop.querySelector(prevSel);if(!el||!p)return;const upd=()=>{const v=el.value.trim();p.textContent=shrinkPreviewTxt(v);const hi=shrinkHigh(v);p.style.color=hi?'#b45309':'';p.style.fontWeight=hi?'700':'';};el.addEventListener('input',upd);upd();};
+  wireShrinkPrev('.insp-m-shw','.insp-m-shw-p');
   wireShrinkPrev('.insp-m-shl','.insp-m-shl-p');
   const ovrBtn=pop.querySelector('.insp-ovr-apply');
   if(ovrBtn)ovrBtn.addEventListener('click',async ()=>{
