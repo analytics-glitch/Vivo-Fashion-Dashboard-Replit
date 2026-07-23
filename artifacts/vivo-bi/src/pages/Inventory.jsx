@@ -29,6 +29,7 @@ import {
   Cube,
   Gauge,
   Globe,
+  Archive,
 } from "@phosphor-icons/react";
 import {
   BarChart,
@@ -63,6 +64,12 @@ const isPipelineLocation = (loc) =>
   /fabric trimming|finished goods production|sew\/stock/.test(
     (loc || "").toLowerCase()
   );
+
+// Retired stock — end-of-life units held at the Retired Stock location.
+// Excluded from Total Available (same as pipeline). Checked BEFORE the store
+// fallback so it doesn't inflate store stock counts.
+const isRetiredLocation = (loc) =>
+  (loc || "").toLowerCase() === "retired stock";
 
 const Inventory = ({ onSeeAgedStock }) => {
   const { applied, touchLastUpdated } = useFilters();
@@ -439,13 +446,15 @@ const Inventory = ({ onSeeAgedStock }) => {
     let warehouse = 0;
     let online = 0;
     let pipeline = 0;
+    let retired = 0;
     for (const r of filteredInv) {
       if (isPipelineLocation(r.location_name)) pipeline += r.available || 0;
+      else if (isRetiredLocation(r.location_name)) retired += r.available || 0;
       else if (isOnlineLocation(r.location_name)) online += r.available || 0;
       else if (isWarehouseLocation(r.location_name)) warehouse += r.available || 0;
       else store += r.available || 0;
     }
-    return { store, warehouse, online, pipeline };
+    return { store, warehouse, online, pipeline, retired };
   }, [filteredInv]);
 
   // Store vs Warehouse split from the backend by_location aggregate, used for
@@ -456,13 +465,15 @@ const Inventory = ({ onSeeAgedStock }) => {
     let warehouse = 0;
     let online = 0;
     let pipeline = 0;
+    let retired = 0;
     for (const r of summary?.by_location || []) {
       if (isPipelineLocation(r.location)) pipeline += r.units || 0;
+      else if (isRetiredLocation(r.location)) retired += r.units || 0;
       else if (isOnlineLocation(r.location)) online += r.units || 0;
       else if (isWarehouseLocation(r.location)) warehouse += r.units || 0;
       else store += r.units || 0;
     }
-    return { store, warehouse, online, pipeline };
+    return { store, warehouse, online, pipeline, retired };
   }, [summary]);
 
   const lowStockByStyle = useMemo(() => {
@@ -736,7 +747,10 @@ const Inventory = ({ onSeeAgedStock }) => {
   const kpiPipeline = useSummaryKpis
     ? summaryStoreWarehouse.pipeline
     : storeVsWarehouse.pipeline;
-  // Total SOH = Stores + Warehouse + Online — pipeline (WIP) always excluded.
+  const kpiRetired = useSummaryKpis
+    ? summaryStoreWarehouse.retired
+    : storeVsWarehouse.retired;
+  // Total Available = Stores + Warehouse + Online — pipeline and retired always excluded.
   const kpiTotal = kpiStore + kpiWarehouse + kpiOnline;
 
   // ─── Active-styles KPI row ────────────────────────────────────────────────
@@ -761,9 +775,10 @@ const Inventory = ({ onSeeAgedStock }) => {
     [filteredInv, activeStyleNames]
   );
   const activeKpis = useMemo(() => {
-    let store = 0, warehouse = 0, online = 0, pipeline = 0;
+    let store = 0, warehouse = 0, online = 0, pipeline = 0, retired = 0;
     for (const r of activeInv) {
       if (isPipelineLocation(r.location_name)) pipeline += r.available || 0;
+      else if (isRetiredLocation(r.location_name)) retired += r.available || 0;
       else if (isOnlineLocation(r.location_name)) online += r.available || 0;
       else if (isWarehouseLocation(r.location_name)) warehouse += r.available || 0;
       else store += r.available || 0;
@@ -801,7 +816,7 @@ const Inventory = ({ onSeeAgedStock }) => {
     const subcatTotal = activeSubcats.length;
     const understockedPct = subcatTotal > 0 ? (understockedCount / subcatTotal) * 100 : 0;
     return {
-      store, warehouse, online, pipeline, total, woc, lowStock,
+      store, warehouse, online, pipeline, retired, total, woc, lowStock,
       soldLastMonth, understockedCount, subcatTotal, understockedPct,
     };
   }, [activeInv, activeWocRows, filteredSubcatSS]);
@@ -951,7 +966,7 @@ const Inventory = ({ onSeeAgedStock }) => {
 
       {!loading && !error && summary && (
         <>
-          <div className="grid grid-cols-2 lg:grid-cols-8 gap-3">
+          <div className="grid grid-cols-2 lg:grid-cols-9 gap-3">
             <KPICard
               testId="inv-kpi-units"
               accent
@@ -995,6 +1010,15 @@ const Inventory = ({ onSeeAgedStock }) => {
               value={fmtNum(kpiPipeline)}
               icon={Cube}
               showDelta={false}
+            />
+            <KPICard
+              testId="inv-kpi-retired-stock"
+              label="Retired Stock"
+              sub="End-of-life units — excluded from Total Available"
+              value={fmtNum(kpiRetired)}
+              icon={Archive}
+              showDelta={false}
+              higherIsBetter={false}
             />
             {(() => {
               // Overall Weeks of Cover. Use the chain-wide summary from
