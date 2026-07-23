@@ -20849,6 +20849,7 @@ def _seed_fabric_field_grants():
     INITIAL_GRANTS = [
         ("hagai@vivofashiongroup.com",  "width_edit"),
         ("bedan@vivofashiongroup.com",  "roll_no_edit"),
+        ("bedan@vivofashiongroup.com",  "width_edit"),
     ]
     try:
         from fabric_router import _ensure_receiving_tables, _get_conn
