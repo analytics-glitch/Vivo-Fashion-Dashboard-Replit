@@ -452,7 +452,7 @@ export default function ProductionOverview({ onOpenReport }) {
     const end = new Date(ws); end.setDate(ws.getDate() - 1);
     return toISO(end);
   });
-  const [activePreset, setActivePreset] = useState("lastWeek");
+  const [activePreset, setActivePreset] = useState("thisWeek");
 
   const applyPreset = useCallback((preset) => {
     const today = new Date();
