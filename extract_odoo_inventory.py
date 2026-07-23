@@ -68,6 +68,7 @@ LOCATION_COUNTRY_MAP = {
     "SAFAR":  ("Safari Sarit",         "Kenya"),
     "FTRIM":  ("Fabric Trimming",           "Kenya"),
     "FGPRD":  ("Finished Goods Production",  "Kenya"),
+    "Retir":  ("Retired Stock",         "Kenya"),
     "STPUR":  ("Staff purchases",      "Kenya"),
     "WHFIN":  ("Warehouse Finished Goods", "Kenya"),
     "ZOYA":   ("Zoya Sarit",           "Kenya"),
@@ -93,7 +94,7 @@ EXCLUDED_LOCATIONS = {
     'Finishing',
     'PDACC', 'RMAT', 'PROD', 'SZONL', 'Dead/Stock Fabric',
     'INTRA', 'HWHFN', 'WHREC', 'KIHOL', 'OAHOL', 'GALHO',
-    'OASIS', 'KIGAL', 'Buyin', 'Retir', 'WND', 'Wash', 'CUTT',
+    'OASIS', 'KIGAL', 'Buyin', 'WND', 'Wash', 'CUTT',
     'RCALL', 'Studi', 'PDDEV', 'Repai', 'Samp', 'SALE', 'FABPR',
     'Archv', 'Wholesale', 'Defects', 'HQ/Stock', 'ACCHO', 'ACHO',
 }
