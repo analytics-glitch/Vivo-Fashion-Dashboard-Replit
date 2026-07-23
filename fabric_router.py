@@ -6613,11 +6613,14 @@ def receiving_recovery_purge(request: Request, body: dict = Body(...)):
 # ── Receiving sheet downloads (PDF / Excel per PO batch) ─────────────
 
 def _recv_download_data(conn, po_id):
-    """All live sheets + rolls of one PO, ordered for the printable sheet."""
+    """All live sheets + rolls of one PO, ordered for the printable sheet.
+    Also returns the PO-level pricing (FX rates + per-price-key yuan prices)."""
     sheets = q(conn, """
         SELECT s.id,
+               s.product_id,
                COALESCE(p.name, s.fabric_name) AS fabric_name,
                COALESCE(NULLIF(BTRIM(p.barcode),''), NULLIF(BTRIM(p.default_code),''), s.barcode) AS barcode,
+               NULLIF(BTRIM(p.supplier_fabric_code), '') AS supplier_fabric_code,
                s.kg_per_mtr,
                s.total_kg, s.total_mtrs, s.rolls_count, s.note,
                s.po_id, s.po_name,
@@ -6646,11 +6649,12 @@ def _recv_download_data(conn, po_id):
     by_sheet = {}
     for r in rolls:
         by_sheet.setdefault(r["sheet_id"], []).append(r)
-    return sheets, by_sheet
+    pricing = _recv_po_pricing(conn, po_id)
+    return sheets, by_sheet, pricing
 
-_RECV_DL_HEADERS = ["Roll #", "Kgs", "Metres", "Length (yds)",
-                    "Shrink W", "Shrink L", "Bleeding test", "Width (m)",
-                    "Quality", "Notes"]
+_RECV_DL_HEADERS = ["Roll #", "Kgs", "Metres", "Value (Yuan)", "Value (Kes)",
+                    "Length (yds)", "Shrink W", "Shrink L", "Bleeding test",
+                    "Width (m)", "Quality", "Notes"]
 
 def _recv_dl_shrink_cells(r):
     """(W, L) shrinkage export cells: inches + percent derived from the raw
@@ -6665,17 +6669,49 @@ def _recv_dl_shrink_cells(r):
         return ("", "")
     return (w or "", l or "")
 
-def _recv_dl_row(r):
+def _recv_roll_value(r, item, yuan_to_usd, usd_to_kes):
+    """Return (value_yuan, value_kes) rounded to 2 dp, or (None, None) when any
+    required pricing field is absent.  yuan_to_usd is Yuan-per-USD (e.g. 7.9998)."""
+    if not item:
+        return None, None
+    yp = item.get("yuan_price")
+    qu = item.get("quote_unit") or "kg"
+    if yp is None or yuan_to_usd is None or usd_to_kes is None:
+        return None, None
+    raw_qty = r.get("qty_kg") if qu == "kg" else r.get("qty_mtrs")
+    if raw_qty is None:
+        return None, None
+    try:
+        qty = float(raw_qty)
+    except (TypeError, ValueError):
+        return None, None
+    value_yuan = round(yp * qty, 2)
+    value_kes = round(value_yuan / yuan_to_usd * usd_to_kes, 2)
+    return value_yuan, value_kes
+
+def _recv_sheet_price_key(s):
+    """Derive the fabric_po_pricing_items price_key for a receiving sheet row."""
+    sfc = s.get("supplier_fabric_code") or None
+    pid = s.get("product_id")
+    if sfc:
+        return f"code:{sfc}"
+    derived = _derive_supplier_code(s.get("fabric_name") or "")
+    if derived:
+        return f"code:{derived}"
+    return f"product:{pid}" if pid else None
+
+def _recv_dl_row(r, value_yuan=None, value_kes=None):
     def _n(v):
         return float(v) if v not in (None, "") else None
     sw, sl = _recv_dl_shrink_cells(r)
     return [int(r["roll_no"]), _n(r["qty_kg"]), _n(r["qty_mtrs"]),
+            value_yuan, value_kes,
             _n(r.get("length_yards")), sw, sl,
             (r.get("bleeding_test") or ""), _n(r.get("width_measured_m")),
             (r.get("quality_status") or "Pending"),
             (r.get("quality_notes") or "")]
 
-def _recv_build_xlsx(sheets, by_sheet):
+def _recv_build_xlsx(sheets, by_sheet, pricing):
     from openpyxl import Workbook
     from openpyxl.styles import Font
     from openpyxl.utils import get_column_letter
@@ -6688,6 +6724,8 @@ def _recv_build_xlsx(sheets, by_sheet):
     ws["A1"].font = Font(bold=True, size=14)
     ws.append([f"PO date: {sheets[0].get('po_date') or '—'}"])
     ws.append([])
+    y2u = pricing.get("yuan_to_usd")
+    u2k = pricing.get("usd_to_kes")
     for s in sheets:
         ws.append([f"{s.get('fabric_name') or ''}"
                    + (f"  [{s.get('barcode')}]" if s.get("barcode") else "")])
@@ -6698,16 +6736,31 @@ def _recv_build_xlsx(sheets, by_sheet):
         ws.append(_RECV_DL_HEADERS)
         for c in range(1, len(_RECV_DL_HEADERS) + 1):
             ws.cell(row=ws.max_row, column=c).font = bold
+        pkey = _recv_sheet_price_key(s)
+        item = pricing["items"].get(pkey) if pkey else None
+        if item is None and pkey and pkey.startswith("code:"):
+            item = pricing["items"].get("derived:" + pkey[5:])
         total_kg = 0.0
+        total_yuan = 0.0
+        total_kes = 0.0
+        has_value = False
         for r in by_sheet.get(s["id"], []):
-            ws.append(_recv_dl_row(r))
+            vy, vk = _recv_roll_value(r, item, y2u, u2k)
+            ws.append(_recv_dl_row(r, vy, vk))
             total_kg += float(r["qty_kg"] or 0)
+            if vy is not None:
+                total_yuan += vy
+                total_kes += vk
+                has_value = True
+        tm = s.get("total_mtrs")
         ws.append(["Total", round(total_kg, 3),
-                   float(s["total_mtrs"]) if s.get("total_mtrs") not in (None, "") else None])
+                   float(tm) if tm not in (None, "") else None,
+                   round(total_yuan, 2) if has_value else None,
+                   round(total_kes, 2) if has_value else None])
         ws.cell(row=ws.max_row, column=1).font = bold
         ws.cell(row=ws.max_row, column=2).font = bold
         ws.append([])
-    widths = [8, 10, 10, 13, 16, 16, 16, 10, 10, 30]
+    widths = [8, 10, 10, 14, 14, 13, 16, 16, 16, 10, 10, 30]
     for i, w in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(i)].width = w
     import io
@@ -6715,7 +6768,7 @@ def _recv_build_xlsx(sheets, by_sheet):
     wb.save(buf)
     return buf.getvalue()
 
-def _recv_build_pdf(sheets, by_sheet):
+def _recv_build_pdf(sheets, by_sheet, pricing):
     import io
     from reportlab.lib.pagesizes import A4, landscape
     from reportlab.lib import colors
@@ -6738,6 +6791,8 @@ def _recv_build_pdf(sheets, by_sheet):
     story = [Paragraph(f"Fabric Receiving Sheet — {po_name}", h1),
              Paragraph(f"PO date: {sheets[0].get('po_date') or '—'}", small),
              Spacer(1, 4*mm)]
+    y2u = pricing.get("yuan_to_usd")
+    u2k = pricing.get("usd_to_kes")
     for s in sheets:
         title = (s.get("fabric_name") or "") + \
                 (f"  [{s.get('barcode')}]" if s.get("barcode") else "")
@@ -6746,20 +6801,35 @@ def _recv_build_pdf(sheets, by_sheet):
             f"Received by {s.get('created_by_name') or '—'} on "
             f"{s.get('created_at') or '—'}"
             + (f" — note: {s.get('note')}" if s.get("note") else ""), small))
+        pkey = _recv_sheet_price_key(s)
+        item = pricing["items"].get(pkey) if pkey else None
+        if item is None and pkey and pkey.startswith("code:"):
+            item = pricing["items"].get("derived:" + pkey[5:])
         data = [_RECV_DL_HEADERS]
         total_kg = 0.0
+        total_yuan = 0.0
+        total_kes = 0.0
+        has_value = False
         for r in by_sheet.get(s["id"], []):
-            row = _recv_dl_row(r)
+            vy, vk = _recv_roll_value(r, item, y2u, u2k)
+            row = _recv_dl_row(r, vy, vk)
             row[-1] = Paragraph(str(row[-1]), cell)
             data.append(["" if v is None else v for v in row])
             total_kg += float(r["qty_kg"] or 0)
+            if vy is not None:
+                total_yuan += vy
+                total_kes += vk
+                has_value = True
         tm = s.get("total_mtrs")
         data.append(["Total", round(total_kg, 3),
                      "" if tm in (None, "") else float(tm),
+                     round(total_yuan, 2) if has_value else "",
+                     round(total_kes, 2) if has_value else "",
                      "", "", "", "", "", "", ""])
         t = Table(data, repeatRows=1,
-                  colWidths=[15*mm, 17*mm, 17*mm, 21*mm, 27*mm, 27*mm,
-                             30*mm, 17*mm, 19*mm, 78*mm])
+                  colWidths=[12*mm, 15*mm, 15*mm, 22*mm, 22*mm,
+                             18*mm, 22*mm, 22*mm, 25*mm, 15*mm,
+                             16*mm, 69*mm])
         t.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1a5c38")),
             ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
@@ -6784,17 +6854,17 @@ def receiving_po_batch_download(po_id: int = Query(...),
         raise HTTPException(status_code=400, detail="fmt must be pdf or xlsx")
     with _get_conn() as conn:
         _ensure_receiving_tables(conn)
-        sheets, by_sheet = _recv_download_data(conn, po_id)
+        sheets, by_sheet, pricing = _recv_download_data(conn, po_id)
     po_name = (sheets[0].get("po_name") or f"PO-{po_id}").replace("/", "-")
     safe = re.sub(r"[^A-Za-z0-9._-]+", "_", po_name)
     try:
         if fmt == "xlsx":
-            payload = _recv_build_xlsx(sheets, by_sheet)
+            payload = _recv_build_xlsx(sheets, by_sheet, pricing)
             media = ("application/vnd.openxmlformats-officedocument"
                      ".spreadsheetml.sheet")
             fname = f"receiving_{safe}.xlsx"
         else:
-            payload = _recv_build_pdf(sheets, by_sheet)
+            payload = _recv_build_pdf(sheets, by_sheet, pricing)
             media = "application/pdf"
             fname = f"receiving_{safe}.pdf"
     except ModuleNotFoundError as e:
