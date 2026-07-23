@@ -126,6 +126,7 @@ const SOPs = () => {
       )}
 
       {isAdmin && <AdminGrantsPanel departments={departments || []} onChanged={loadDepartments} />}
+      {isAdmin && <FabricFieldGrantsPanel />}
     </div>
   );
 };
@@ -380,6 +381,177 @@ const FolderView = ({ dept, onBack, onChanged }) => {
           </div>
         )}
       </div>
+    </div>
+  );
+};
+
+const FIELD_LABELS = {
+  width_edit: "After-wash Width (cm)",
+  roll_no_edit: "Roll Number",
+};
+
+const FabricFieldGrantsPanel = () => {
+  const [open, setOpen] = useState(false);
+  const [grants, setGrants] = useState(null);
+  const [users, setUsers] = useState(null);
+  const [error, setError] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [selUser, setSelUser] = useState("");
+  const [selField, setSelField] = useState("");
+
+  const load = useCallback(() => {
+    Promise.all([
+      api.get("/admin/fabric-field-grants", { forceFresh: true }),
+      api.get("/admin/users", { forceFresh: true }),
+    ])
+      .then(([g, u]) => {
+        setGrants(Array.isArray(g.data) ? g.data : (g.data?.data || []));
+        const list = Array.isArray(u.data) ? u.data : (u.data?.users || []);
+        setUsers(list.filter((x) => (x.status || "") === "active"));
+        setError(null);
+      })
+      .catch((e) => setError(e?.response?.data?.detail || e.message));
+  }, []);
+
+  useEffect(() => { if (open) load(); }, [open, load]);
+
+  const addGrant = async () => {
+    if (!selUser || !selField) return;
+    setSaving(true);
+    try {
+      await api.post("/admin/fabric-field-grants", { user_id: selUser, field_name: selField });
+      setSelField("");
+      load();
+    } catch (e) {
+      setError(e?.response?.data?.detail || e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const removeGrant = async (g) => {
+    setSaving(true);
+    try {
+      await api.delete(`/admin/fabric-field-grants?user_id=${encodeURIComponent(g.user_id)}&field_name=${encodeURIComponent(g.field_name)}`);
+      load();
+    } catch (e) {
+      setError(e?.response?.data?.detail || e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="rounded-xl border bg-card">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center gap-2 p-4 text-left"
+      >
+        <ShieldCheck size={20} weight="duotone" className="text-primary" />
+        <div>
+          <div className="font-medium">Fabric receiving — field edit rights</div>
+          <div className="text-xs text-muted-foreground">
+            Grant specific users the right to edit After-wash Width or Roll Number on receiving sheets they created (admins can always edit everything).
+          </div>
+        </div>
+        <span className="ml-auto text-xs text-muted-foreground">{open ? "Hide" : "Show"}</span>
+      </button>
+
+      {open && (
+        <div className="border-t p-4 space-y-4">
+          {error && <ErrorBox message={error} />}
+          {(!grants || !users) && !error && <Loading label="Loading grants…" />}
+          {grants && users && (
+            <>
+              <div className="flex flex-wrap items-end gap-2">
+                <label className="text-sm">
+                  <div className="text-xs text-muted-foreground mb-1">User</div>
+                  <select
+                    value={selUser}
+                    onChange={(e) => setSelUser(e.target.value)}
+                    className="rounded-lg border bg-background px-2.5 py-1.5 text-sm min-w-[220px]"
+                  >
+                    <option value="">Select a user…</option>
+                    {users.map((u) => (
+                      <option key={u.user_id} value={u.user_id}>
+                        {u.name ? `${u.name} — ${u.email}` : u.email}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="text-sm">
+                  <div className="text-xs text-muted-foreground mb-1">Field</div>
+                  <select
+                    value={selField}
+                    onChange={(e) => setSelField(e.target.value)}
+                    className="rounded-lg border bg-background px-2.5 py-1.5 text-sm min-w-[200px]"
+                  >
+                    <option value="">Select a field…</option>
+                    {Object.entries(FIELD_LABELS).map(([k, v]) => (
+                      <option key={k} value={k}>{v}</option>
+                    ))}
+                  </select>
+                </label>
+                <button
+                  type="button"
+                  onClick={addGrant}
+                  disabled={saving || !selUser || !selField}
+                  className="rounded-lg bg-primary text-primary-foreground text-sm px-3 py-1.5 hover:opacity-90 disabled:opacity-50"
+                >
+                  Grant access
+                </button>
+              </div>
+
+              {grants.length === 0 ? (
+                <Empty label="No field-edit grants yet — only admins can edit all fields." />
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-left text-xs uppercase tracking-wide text-muted-foreground border-b">
+                        <th className="py-2 pr-3 font-medium">User</th>
+                        <th className="py-2 pr-3 font-medium">Field</th>
+                        <th className="py-2 pr-3 font-medium">Granted by</th>
+                        <th className="py-2 pr-3 font-medium">Granted</th>
+                        <th className="py-2 font-medium text-right">Revoke</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {grants.map((g) => (
+                        <tr key={`${g.user_id}|${g.field_name}`} className="border-b last:border-0">
+                          <td className="py-2 pr-3">
+                            <div className="truncate max-w-[260px]">{g.name || g.email || g.user_id}</div>
+                            {g.email && g.name && (
+                              <div className="text-xs text-muted-foreground truncate max-w-[260px]">{g.email}</div>
+                            )}
+                          </td>
+                          <td className="py-2 pr-3 whitespace-nowrap">{FIELD_LABELS[g.field_name] || g.field_name}</td>
+                          <td className="py-2 pr-3 whitespace-nowrap text-muted-foreground">{g.granted_by || "—"}</td>
+                          <td className="py-2 pr-3 whitespace-nowrap text-muted-foreground">{fmtDate(g.granted_at)}</td>
+                          <td className="py-2">
+                            <div className="flex justify-end">
+                              <button
+                                type="button"
+                                title="Revoke"
+                                disabled={saving}
+                                onClick={() => removeGrant(g)}
+                                className="rounded-md p-1.5 hover:bg-red-50 text-muted-foreground hover:text-red-600 disabled:opacity-50"
+                              >
+                                <X size={16} />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 };

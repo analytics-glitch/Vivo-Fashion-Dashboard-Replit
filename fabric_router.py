@@ -4971,6 +4971,21 @@ def _ensure_receiving_tables(conn):
                     "ADD COLUMN IF NOT EXISTS after_wash_width_cm NUMERIC")
         cur.execute("ALTER TABLE fabric_receiving_rolls "
                     "ADD COLUMN IF NOT EXISTS after_wash_length_cm NUMERIC")
+        # Per-user field-level edit grants: controls who may write
+        # after_wash_width_cm (width_edit) and who may renumber rolls
+        # (roll_no_edit). Soft-revocable via revoked_at (NULL = active).
+        # Admin panel (BI app) manages entries. Unique per (user, field).
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS fabric_field_grants (
+                id          SERIAL PRIMARY KEY,
+                user_id     TEXT NOT NULL,
+                field_name  TEXT NOT NULL
+                    CHECK (field_name IN ('width_edit','roll_no_edit')),
+                granted_by  TEXT,
+                granted_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+                revoked_at  TIMESTAMPTZ,
+                UNIQUE (user_id, field_name)
+            )""")
         # 4-Point (American system) inspection tickets, one or more VERSIONS
         # per roll. Keyed by (sheet_id, roll_no) — NOT roll_id — because the
         # admin sheet PUT deletes + reinserts rolls (new ids); roll_no is the
@@ -5387,18 +5402,41 @@ def _recv_is_admin(request):
 # server-side in every receiving write endpoint; the UI hides the controls.
 _RECV_QUALITY_ONLY_EMAILS = {"costing@vivofashiongroup.com"}
 
-# The one non-admin buyer allowed to write the width_measured_m field on rolls
-# (in addition to full admins). All other quality-only users may record
-# status/notes/shrinkage but NOT the roll's measured width.
-_RECV_WIDTH_EDITOR_EMAIL = "hagai@vivofashiongroup.com"
+def _fabric_field_grants_for_user(user_id):
+    """Return the set of active field_names granted to this user_id.
+    Empty set when the user has no grants or on any DB error."""
+    if not user_id:
+        return set()
+    try:
+        with _get_conn() as conn:
+            rows = q(conn, """
+                SELECT field_name FROM fabric_field_grants
+                WHERE user_id = %s AND revoked_at IS NULL
+            """, (user_id,))
+            return {r["field_name"] for r in rows}
+    except Exception:
+        return set()
+
 
 def _recv_can_edit_width(request):
-    """True when this user may write `width_measured_m` on a roll: either a
-    full admin, OR the one designated buyer email."""
+    """True when this user may write width_measured_m / after_wash_width_cm
+    on a roll: either a full admin, OR the user has an active width_edit
+    grant in fabric_field_grants."""
     u = getattr(request.state, "user", None) or {}
     if _fabric_full_admin(u):
         return True
-    return (u.get("email") or "").strip().lower() == _RECV_WIDTH_EDITOR_EMAIL
+    user_id = str(u.get("user_id") or "")
+    return "width_edit" in _fabric_field_grants_for_user(user_id)
+
+
+def _recv_can_roll_no_edit(request):
+    """True when this user may renumber rolls on a sheet: either a full
+    admin, OR the user has an active roll_no_edit grant."""
+    u = getattr(request.state, "user", None) or {}
+    if _fabric_full_admin(u):
+        return True
+    user_id = str(u.get("user_id") or "")
+    return "roll_no_edit" in _fabric_field_grants_for_user(user_id)
 
 def _recv_quality_only(request):
     """True when this user is restricted to quality-only receiving edits.
@@ -5423,11 +5461,17 @@ def receiving_rights(request: Request):
     uses this instead of checking role==='admin' client-side so the email
     allowance shows the same controls the server actually permits.
     quality_only marks users who may ONLY record quality results.
-    can_approve_delivery: True for fabric_quality_supervisor + admin roles."""
+    can_approve_delivery: True for fabric_quality_supervisor + admin roles.
+    can_edit_width: True for admin or active width_edit grantees.
+    can_roll_no_edit: True for admin or active roll_no_edit grantees.
+    user_id: the signed-in user's id (for client-side sheet-ownership checks)."""
+    u = getattr(request.state, "user", None) or {}
     return {"admin": _recv_is_admin(request),
             "quality_only": _recv_quality_only(request),
             "can_approve_delivery": _insp_can_approve(request),
-            "can_edit_width": _recv_can_edit_width(request)}
+            "can_edit_width": _recv_can_edit_width(request),
+            "can_roll_no_edit": _recv_can_roll_no_edit(request),
+            "user_id": str(u.get("user_id") or "")}
 
 
 @fabric_router.post("/api/fabric/receiving/po/{po_id}/approve-delivery")
@@ -5620,13 +5664,14 @@ def _insp_score(total_points, width_in, yards):
     return round(float(total_points) * 3600.0 / (float(width_in) * float(yards)), 2)
 
 def _insp_enforce_source_width(ctx, fields):
-    """When the roll has a measured width at source, the ticket's width is a
-    READ-ONLY prefill: ignore any client-sent value and use the source width
-    (width_measured_m × 39.37 in). Width stays fillable only when absent."""
-    w_m = ctx.get("width_measured_m")
-    if w_m not in (None, ""):
+    """When the roll has a recorded after_wash_width_cm, the ticket's
+    width is a READ-ONLY prefill from that value (cm ÷ 2.54 = inches).
+    width_measured_m is NOT used as a fallback — if after_wash_width_cm
+    is absent the width is 'not measured' and scoring is not computable."""
+    w_cm = ctx.get("after_wash_width_cm")
+    if w_cm not in (None, ""):
         try:
-            fields["width_inches"] = round(float(w_m) * 39.37, 1)
+            fields["width_inches"] = round(float(w_cm) / 2.54, 1)
         except (TypeError, ValueError):
             pass
     return fields
@@ -5727,8 +5772,18 @@ def inspection_context(request: Request, roll_id: int = Query(...)):
     color = prod.get("odoo_fabric_color") or None
     construction = (prod.get("fiber_content") or
                     prod.get("fabric_subcategory") or None)
-    width_m = ctx.get("width_measured_m")
-    width_in = round(float(width_m) * 39.37, 1) if width_m not in (None, "") else None
+    # Derive width_in exclusively from after_wash_width_cm (cm ÷ 2.54 = inches).
+    # width_measured_m is NOT used — if after_wash_width_cm is absent the
+    # score cannot be computed until a width_edit grantee/admin records it on
+    # the receiving sheet.
+    w_cm = ctx.get("after_wash_width_cm")
+    if w_cm not in (None, ""):
+        try:
+            width_in = round(float(w_cm) / 2.54, 1)
+        except (TypeError, ValueError):
+            width_in = None
+    else:
+        width_in = None
     kg = float(ctx["qty_kg"]) if ctx.get("qty_kg") is not None else None
     yards = float(ctx["length_yards"]) if ctx.get("length_yards") not in (None, "") else None
     u = getattr(request.state, "user", None) or {}
@@ -5787,12 +5842,12 @@ def _insp_apply_measurements(conn, ctx, body, actor):
         cur.execute("""
             UPDATE fabric_receiving_rolls
                SET length_yards=%s, shrinkage_inches=%s, width_measured_m=%s,
-                   after_wash_width_cm=%s, after_wash_length_cm=%s,
+                   after_wash_length_cm=%s,
                    bleeding_test=%s, quality_notes=%s,
                    quality_updated_at=now(), quality_updated_by=%s
              WHERE id=%s AND deleted_at IS NULL
         """, (meas["length_yards"], meas["shrinkage_inches"],
-              meas["width_measured_m"], meas["after_wash_width_cm"],
+              meas["width_measured_m"],
               meas["after_wash_length_cm"], meas["bleeding_test"], notes,
               actor, ctx["roll_id"]))
         if cur.rowcount:
@@ -5807,6 +5862,8 @@ def _insp_apply_measurements(conn, ctx, body, actor):
                          "measurements": {k: (float(v) if isinstance(v, (int, float)) else v)
                                           for k, v in meas.items()}}, actor)
     for k in _INSP_MEAS_KEYS:
+        if k == "after_wash_width_cm":
+            continue  # read-only in inspection; preserved from DB context
         ctx[k] = meas[k]
     ctx["quality_notes"] = notes
 
@@ -6003,6 +6060,25 @@ def _recv_po_locked(conn, po_id):
     rows = q(conn, "SELECT 1 FROM fabric_po_uploads "
                    "WHERE po_id=%s AND status='success' LIMIT 1", (po_id,))
     return bool(rows)
+
+def _fabric_log_activity(request, method, path, detail):
+    """Best-effort write to app_activity_log for fabric field-grant / width /
+    renumber actions. Never raises — a log failure must not fail the action."""
+    try:
+        u = getattr(request.state, "user", None) or {}
+        with _get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO app_activity_log "
+                    "(user_id, email, method, path, query, status_code) "
+                    "VALUES (%s, %s, %s, %s, %s, %s)",
+                    (u.get("user_id"), u.get("email"),
+                     (method or "")[:10], (path or "")[:300],
+                     (detail or "")[:500], 200))
+            conn.commit()
+    except Exception as exc:
+        log.warning("fabric activity log write failed: %s", exc)
+
 
 def _recv_audit(cur, po_id, sheet_id, fabric_name, action, details, actor):
     cur.execute("""
@@ -8417,7 +8493,7 @@ def receiving_fetch(sheet_id: int):
         sheets = q(conn, """
             SELECT s.id, s.product_id, s.barcode, s.fabric_name,
                    s.kg_per_mtr, s.total_kg, s.total_mtrs, s.rolls_count,
-                   s.note, s.created_by_name, s.updated_by_name,
+                   s.note, s.created_by, s.created_by_name, s.updated_by_name,
                    s.po_id, s.po_name,
                    to_char(s.po_date, 'DD Mon YYYY') as po_date,
                    COALESCE(to_char(s.po_date, 'DD Mon YYYY'),
@@ -8469,14 +8545,22 @@ def receiving_update_quality(sheet_id: int, request: Request, body: dict = Body(
         raise HTTPException(status_code=400, detail="rolls list is required")
     _uid, name = _fabric_actor(request)
     can_edit_width = _recv_can_edit_width(request)
+    is_admin = _recv_is_admin(request)
+    u_req = getattr(request.state, "user", None) or {}
+    req_user_id = str(u_req.get("user_id") or "")
     with _get_conn() as conn:
         _ensure_receiving_tables(conn)
-        exists = q(conn, "SELECT id, fabric_name, po_id "
+        exists = q(conn, "SELECT id, fabric_name, po_id, created_by "
                          "FROM fabric_receiving_sheets "
                          "WHERE id=%s AND deleted_at IS NULL", (sheet_id,))
         if not exists:
             raise HTTPException(status_code=404, detail="receiving sheet not found")
         po_id = exists[0].get("po_id")
+        sheet_created_by = exists[0].get("created_by")
+        # For after_wash_width_cm: width_edit grant is required AND the user
+        # must have received (created) this specific sheet.  Admins bypass both.
+        can_edit_width_cm = is_admin or (
+            can_edit_width and sheet_created_by == req_user_id)
         after_upload = _recv_po_locked(conn, po_id)
         updated = 0
         with conn.cursor() as cur:
@@ -8489,12 +8573,15 @@ def receiving_update_quality(sheet_id: int, request: Request, body: dict = Body(
                         detail=f"status must be one of {', '.join(_RECV_QUALITY_STATUSES)}")
                 notes = (str(it.get("notes") or "").strip() or None)
                 meas = _recv_parse_measurements(it)
-                # width_measured_m is a restricted field — only admin and the
-                # designated buyer email may change it.  For all other users,
-                # silently preserve the stored value so their quality save
-                # never wipes or overwrites the width.
+                # width_measured_m and after_wash_width_cm are restricted fields
+                # — silently preserve the stored value for users without
+                # permission so their quality save never wipes the width.
                 if not can_edit_width:
                     meas["width_measured_m"] = None  # placeholder; replaced below
+                # after_wash_width_cm is managed exclusively via PATCH
+                # /api/fabric/rolls/{id}/width — quality save never touches it.
+                # Unconditionally set placeholder so it's always restored from DB.
+                meas["after_wash_width_cm"] = None  # always overwritten from stored below
                 roll_id = it.get("roll_id")
                 roll_no = it.get("roll_no")
                 # Look up the current values first so we can (a) skip no-op
@@ -8521,12 +8608,18 @@ def receiving_update_quality(sheet_id: int, request: Request, body: dict = Body(
                 if not old:
                     continue
                 o = old[0]
-                # Restore the stored width for users who can't edit it, so
-                # their quality save is a no-op for that field.
+                # Restore the stored width / after-wash width for users who
+                # can't edit them, so their quality save is a no-op for those
+                # fields.
                 if not can_edit_width:
                     stored_w = o.get("width_measured_m")
                     meas["width_measured_m"] = (
                         float(stored_w) if stored_w not in (None, "") else None)
+                # Always restore after_wash_width_cm from DB — it is ONLY
+                # written by PATCH /api/fabric/rolls/{id}/width (never quality save).
+                stored_w_cm = o.get("after_wash_width_cm")
+                meas["after_wash_width_cm"] = (
+                    float(stored_w_cm) if stored_w_cm not in (None, "") else None)
                 if (o.get("quality_status") or None) == status and \
                    (o.get("quality_notes") or None) == notes and \
                    not _recv_meas_changed(o, meas):
@@ -8594,6 +8687,221 @@ def receiving_update_quality(sheet_id: int, request: Request, body: dict = Body(
             "note": "quality results", "status": "quality",
         }, request)
     return {"ok": True, "updated": updated}
+
+@fabric_router.patch("/api/fabric/rolls/{roll_id}/width")
+async def roll_update_width(roll_id: int, request: Request):
+    """Write after_wash_width_cm on a single roll. Requires the width_edit
+    grant AND sheet ownership (created_by == caller) — or admin.
+    Body: {"width_cm": <number>}"""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    width_cm = body.get("width_cm")
+    if width_cm is None:
+        raise HTTPException(status_code=400, detail="width_cm is required")
+    try:
+        width_cm = float(width_cm)
+        if width_cm <= 0 or width_cm > 500:
+            raise ValueError
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=400,
+            detail="width_cm must be a positive number (0–500)")
+    _uid, name = _fabric_actor(request)
+    is_admin = _recv_is_admin(request)
+    can_edit_width = _recv_can_edit_width(request)
+    u_req = getattr(request.state, "user", None) or {}
+    req_user_id = str(u_req.get("user_id") or "")
+    with _get_conn() as conn:
+        _ensure_receiving_tables(conn)
+        rolls = q(conn, """
+            SELECT r.id, r.sheet_id, r.roll_no, r.after_wash_width_cm,
+                   s.created_by, s.fabric_name, s.po_id
+            FROM fabric_receiving_rolls r
+            JOIN fabric_receiving_sheets s ON s.id = r.sheet_id
+            WHERE r.id = %s AND r.deleted_at IS NULL AND s.deleted_at IS NULL
+        """, (roll_id,))
+        if not rolls:
+            raise HTTPException(status_code=404, detail="roll not found")
+        roll = rolls[0]
+        sheet_created_by = roll.get("created_by")
+        can_edit = is_admin or (can_edit_width and sheet_created_by == req_user_id)
+        if not can_edit:
+            raise HTTPException(
+                status_code=403,
+                detail="You need the width_edit grant and must have "
+                       "received this sheet to edit its width")
+        po_id = roll.get("po_id")
+        if _recv_po_locked(conn, po_id) and not is_admin:
+            raise HTTPException(
+                status_code=403,
+                detail="This PO is locked after delivery approval")
+        old_w = roll.get("after_wash_width_cm")
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE fabric_receiving_rolls
+                SET after_wash_width_cm = %s,
+                    updated_by      = %s,
+                    updated_by_name = %s,
+                    updated_at      = now()
+                WHERE id = %s
+            """, (width_cm, _uid, name, roll_id))
+            _recv_audit(cur, po_id, roll["sheet_id"], roll.get("fabric_name"),
+                        "width_updated",
+                        {"roll_no": roll["roll_no"],
+                         "old_cm": float(old_w) if old_w is not None else None,
+                         "new_cm": width_cm},
+                        name)
+        conn.commit()
+    _fabric_log_activity(request, "PATCH",
+                         f"/api/fabric/rolls/{roll_id}/width",
+                         f"after_wash_width_cm: {old_w} -> {width_cm} cm")
+    return {"ok": True, "roll_id": roll_id,
+            "roll_no": roll["roll_no"],
+            "after_wash_width_cm": width_cm}
+
+
+@fabric_router.post("/api/fabric/sheets/{sheet_id}/renumber")
+async def sheet_renumber_rolls(sheet_id: int, request: Request):
+    """Renumber all non-deleted rolls on a sheet sequentially starting from
+    `start_from` (default 1), ordered by current roll_no then id. Requires
+    an active roll_no_edit grant OR admin. Does NOT require sheet ownership.
+    Body: {"start_from": 1}"""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    start_from = int(body.get("start_from") or 1)
+    if start_from < 1:
+        raise HTTPException(status_code=400, detail="start_from must be >= 1")
+    _uid, name = _fabric_actor(request)
+    if not _recv_can_roll_no_edit(request):
+        raise HTTPException(
+            status_code=403,
+            detail="You need the roll_no_edit grant to renumber rolls")
+    with _get_conn() as conn:
+        _ensure_receiving_tables(conn)
+        exists = q(conn, """
+            SELECT id, fabric_name, po_id
+            FROM fabric_receiving_sheets
+            WHERE id = %s AND deleted_at IS NULL
+        """, (sheet_id,))
+        if not exists:
+            raise HTTPException(
+                status_code=404, detail="receiving sheet not found")
+        po_id = exists[0].get("po_id")
+        rolls = q(conn, """
+            SELECT id, roll_no FROM fabric_receiving_rolls
+            WHERE sheet_id = %s AND deleted_at IS NULL
+            ORDER BY roll_no, id
+        """, (sheet_id,))
+        if not rolls:
+            return {"ok": True, "renumbered": 0}
+        old_first = rolls[0]["roll_no"]
+        with conn.cursor() as cur:
+            for i, r in enumerate(rolls):
+                cur.execute(
+                    "UPDATE fabric_receiving_rolls "
+                    "SET roll_no = %s, updated_by = %s, "
+                    "    updated_by_name = %s, updated_at = now() "
+                    "WHERE id = %s",
+                    (start_from + i, _uid, name, r["id"]))
+            _recv_audit(cur, po_id, sheet_id, exists[0].get("fabric_name"),
+                        "rolls_renumbered",
+                        {"rolls": len(rolls),
+                         "old_first_roll_no": old_first,
+                         "new_first_roll_no": start_from},
+                        name)
+        conn.commit()
+    _fabric_log_activity(request, "POST",
+                         f"/api/fabric/sheets/{sheet_id}/renumber",
+                         f"renumbered {len(rolls)} rolls: roll_no {old_first} -> {start_from}")
+    return {"ok": True, "renumbered": len(rolls)}
+
+
+@fabric_router.get("/api/admin/fabric-field-grants")
+def fabric_field_grants_list(request: Request):
+    """List all active fabric field-edit grants (admin only)."""
+    with _get_conn() as conn:
+        _ensure_receiving_tables(conn)
+        rows = q(conn, """
+            SELECT g.id, g.user_id, g.field_name,
+                   g.granted_by, g.granted_at,
+                   u.name, u.email
+            FROM fabric_field_grants g
+            LEFT JOIN app_users u ON u.user_id = g.user_id
+            WHERE g.revoked_at IS NULL
+            ORDER BY g.field_name, g.granted_at
+        """)
+    return [dict(r) for r in rows]
+
+
+@fabric_router.post("/api/admin/fabric-field-grants")
+async def fabric_field_grants_add(request: Request):
+    """Grant a user a fabric field-edit right (admin only).
+    Body: {"user_id": "…", "field_name": "width_edit"|"roll_no_edit"}"""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    user_id    = str(body.get("user_id")    or "").strip()
+    field_name = str(body.get("field_name") or "").strip()
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id is required")
+    if field_name not in ("width_edit", "roll_no_edit"):
+        raise HTTPException(
+            status_code=400,
+            detail="field_name must be width_edit or roll_no_edit")
+    u = getattr(request.state, "user", None) or {}
+    granted_by = str(
+        u.get("email") or u.get("name") or u.get("user_id") or "admin")
+    with _get_conn() as conn:
+        _ensure_receiving_tables(conn)
+        users_check = q(conn,
+            "SELECT user_id FROM app_users WHERE user_id = %s", (user_id,))
+        if not users_check:
+            raise HTTPException(status_code=404, detail="user not found")
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO fabric_field_grants
+                  (user_id, field_name, granted_by, granted_at)
+                VALUES (%s, %s, %s, now())
+                ON CONFLICT (user_id, field_name) DO UPDATE
+                  SET revoked_at = NULL,
+                      granted_by = EXCLUDED.granted_by,
+                      granted_at = EXCLUDED.granted_at
+            """, (user_id, field_name, granted_by))
+        conn.commit()
+    _fabric_log_activity(request, "POST",
+                         "/api/admin/fabric-field-grants",
+                         f"grant: user_id={user_id} field={field_name}")
+    return {"ok": True}
+
+
+@fabric_router.delete("/api/admin/fabric-field-grants")
+def fabric_field_grants_revoke(request: Request,
+                               user_id: str = Query(...),
+                               field_name: str = Query(...)):
+    """Revoke a fabric field-edit grant (admin only)."""
+    if field_name not in ("width_edit", "roll_no_edit"):
+        raise HTTPException(
+            status_code=400,
+            detail="field_name must be width_edit or roll_no_edit")
+    with _get_conn() as conn:
+        _ensure_receiving_tables(conn)
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE fabric_field_grants
+                SET revoked_at = now()
+                WHERE user_id = %s AND field_name = %s AND revoked_at IS NULL
+            """, (user_id, field_name))
+        conn.commit()
+    _fabric_log_activity(request, "DELETE",
+                         "/api/admin/fabric-field-grants",
+                         f"revoke: user_id={user_id} field={field_name}")
+    return {"ok": True}
+
 
 @fabric_router.put("/api/fabric/receiving/{sheet_id}")
 def receiving_edit(sheet_id: int, request: Request, body: dict = Body(...)):
@@ -9173,21 +9481,24 @@ def receiving_scoresheet(sheet_id: int):
             raise HTTPException(status_code=400,
                                 detail="no rolls recorded on this sheet")
         rolls = q(conn, """
-            SELECT roll_no, length_yards
+            SELECT roll_no, length_yards, after_wash_width_cm
             FROM fabric_receiving_rolls
             WHERE sheet_id = %s AND deleted_at IS NULL
             ORDER BY roll_no, id
         """, (sheet_id,))
 
-    # Build roll rows — all scoring columns blank for hand-filling;
-    # pre-fill Length (yards) if already measured, otherwise blank too.
+    # Build roll rows — scoring columns blank for hand-filling; pre-fill
+    # Length (yards) and Width (cm post-wash) from stored measurements.
     roll_rows = []
     for r in rolls:
         yds = "" if r.get("length_yards") is None else str(r["length_yards"])
+        raw_w = r.get("after_wash_width_cm")
+        wid_cm = "\u2014 not measured" if raw_w is None else str(round(float(raw_w), 1))
         roll_rows.append(
             "<tr>"
             "<td class=\"c\">" + _e(str(r["roll_no"])) + "</td>"
             "<td>" + _e(yds) + "</td>"
+            "<td class=\"c\">" + _e(wid_cm) + "</td>"
             "<td></td><td></td><td></td><td></td>"
             "<td></td><td></td><td class=\"c\"></td><td></td>"
             "</tr>"
@@ -9196,7 +9507,7 @@ def receiving_scoresheet(sheet_id: int):
     for _ in range(max(0, 5 - len(rolls))):
         roll_rows.append(
             "<tr>"
-            "<td></td><td></td><td></td><td></td><td></td>"
+            "<td></td><td></td><td></td><td></td><td></td><td></td>"
             "<td></td><td></td><td></td><td></td><td></td>"
             "</tr>"
         )
@@ -9311,6 +9622,7 @@ table.score tfoot td{background:#f0f0f0;font-weight:700;font-size:10px;padding:4
         "    <tr>\n"
         "      <th rowspan=\"2\">Roll No.</th>\n"
         "      <th rowspan=\"2\">Length<br>(yards)</th>\n"
+        "      <th rowspan=\"2\">Width<br>(cm)</th>\n"
         "      <th colspan=\"4\" class=\"grp\">Defect Points (circle applicable)</th>\n"
         "      <th rowspan=\"2\">Total<br>Points</th>\n"
         "      <th rowspan=\"2\">Pts /100 yd</th>\n"
@@ -9329,7 +9641,7 @@ table.score tfoot td{background:#f0f0f0;font-weight:700;font-size:10px;padding:4
         "  </tbody>\n"
         "  <tfoot>\n"
         "    <tr>\n"
-        "      <td colspan=\"6\" style=\"text-align:right;\">TOTALS</td>\n"
+        "      <td colspan=\"7\" style=\"text-align:right;\">TOTALS</td>\n"
         "      <td></td><td></td><td></td><td></td>\n"
         "    </tr>\n"
         "  </tfoot>\n"

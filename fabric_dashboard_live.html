@@ -1226,8 +1226,9 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
        <span class="muted" style="font-size:11px;">link / unlink this sheet's draft PO (re-validated in Odoo on save)</span>
       </div>
      </div>
-     <div class="flex" style="margin-top:14px;gap:.6rem;justify-content:flex-end;">
+     <div class="flex" style="margin-top:14px;gap:.6rem;justify-content:flex-end;flex-wrap:wrap;">
       <button class="btn" onclick="closeReceivingEdit()">Cancel</button>
+      <button class="btn" id="recv-edit-renumber-btn" style="display:none;" title="Renumber rolls sequentially starting from 1 (or a custom number)">Renumber rolls…</button>
       <button class="btn btn-primary" id="recv-edit-save-quality" onclick="saveReceivingQuality()">Save quality</button>
       <button class="btn btn-primary" id="recv-edit-save-all" style="display:none;" onclick="saveReceivingEdit()">Save roll changes (admin)</button>
      </div>
@@ -4649,9 +4650,12 @@ async function openReceivingEdit(id){
       apiFetch('/api/fabric/receiving/rights').catch(()=>null)
     ]);
     const s=d.sheet||{}, kpm=(s.kg_per_mtr!=null&&s.kg_per_mtr!==''&&Number(s.kg_per_mtr)>0)?Number(s.kg_per_mtr):null;
+    const sheetCreatedBy=(d.sheet||{}).created_by||'';
     recvEditState={
       id:id, kpm:kpm, isAdmin:!!(rt&&rt.admin),
       canEditWidth:!!(rt&&(rt.admin||rt.can_edit_width)),
+      canEditWidthCm:!!(rt&&(rt.admin||(rt.can_edit_width&&sheetCreatedBy===(rt.user_id||'')))),
+      canRollNoEdit:!!(rt&&(rt.admin||rt.can_roll_no_edit)),
       rolls:(d.rolls||[]).map(r=>({
         roll_id:r.roll_id, roll_no:r.roll_no, qty_kg:r.qty_kg, qty_mtrs:r.qty_mtrs,
         quality_status:r.quality_status||'', quality_notes:r.quality_notes||'',
@@ -4671,9 +4675,41 @@ async function openReceivingEdit(id){
     document.getElementById('recv-edit-admin-actions').style.display=admin?'':'none';
     document.getElementById('recv-edit-save-all').style.display=admin?'':'none';
     document.getElementById('recv-edit-remove-h').style.display=admin?'':'none';
+    const canRollNoEdit=recvEditState.canRollNoEdit;
+    const renumBtn=document.getElementById('recv-edit-renumber-btn');
+    renumBtn.style.display=canRollNoEdit?'':'none';
+    renumBtn.onclick=async function(){
+      const raw=prompt('Renumber rolls sequentially.\n\nStart from roll number:','1');
+      if(raw===null)return;
+      const startFrom=parseInt(raw,10);
+      if(!isFinite(startFrom)||startFrom<1){alert('Please enter a whole number \u2265 1.');return;}
+      if(!confirm('Renumber all rolls on this sheet starting from '+startFrom+'? (roll order stays the same, numbers change)'))return;
+      renumBtn.disabled=true;renumBtn.textContent='Renumbering\u2026';
+      try{
+        const _rr=await fetch('/api/fabric/sheets/'+encodeURIComponent(id)+'/renumber',{method:'POST',credentials:'include',headers:vivoAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({start_from:startFrom})});
+        if(!_rr.ok){let d={};try{d=await _rr.json();}catch(_){}throw new Error(d.detail||('HTTP '+_rr.status));}
+        const res=await _rr.json();
+        const [fresh]=await Promise.all([apiFetch('/api/fabric/receiving/'+encodeURIComponent(id))]);
+        recvEditState.rolls=(fresh.rolls||[]).map(r=>({
+          roll_id:r.roll_id,roll_no:r.roll_no,qty_kg:r.qty_kg,qty_mtrs:r.qty_mtrs,
+          quality_status:r.quality_status||'',quality_notes:r.quality_notes||'',
+          length_yards:r.length_yards==null?'':r.length_yards,
+          shrinkage_inches:r.shrinkage_inches==null?'':r.shrinkage_inches,
+          after_wash_width_cm:r.after_wash_width_cm==null?'':r.after_wash_width_cm,
+          after_wash_length_cm:r.after_wash_length_cm==null?'':r.after_wash_length_cm,
+          bleeding_test:r.bleeding_test||'',width_measured_m:r.width_measured_m==null?'':r.width_measured_m
+        }));
+        renderReceivingEditRows();
+        document.getElementById('recv-edit-err').innerHTML='<div class="ok-msg" style="color:green;font-size:12px;">Rolls renumbered from '+startFrom+' ('+((res&&res.renumbered)||0)+' updated).</div>';
+      }catch(e){
+        document.getElementById('recv-edit-err').innerHTML='<div class="err-msg" style="color:red;font-size:12px;">Renumber failed: '+esc(e.message)+'</div>';
+      }finally{renumBtn.disabled=false;renumBtn.textContent='Renumber rolls\u2026';}
+    };
     document.getElementById('recv-edit-adminnote').textContent=admin
       ? 'You are an admin: you may edit roll numbers and kgs (timestamped). Metres re-derive from this sheet\u2019s saved conversion. Quality is fillable by any fabric user.'
-      : 'Record the inspection / testing result for each roll. Roll numbers and quantities can only be changed by an admin.';
+      : canRollNoEdit
+        ? 'Record the inspection / testing result for each roll. You may also renumber rolls sequentially using the button below. Quantities can only be changed by an admin.'
+        : 'Record the inspection / testing result for each roll. Roll numbers and quantities can only be changed by an admin.';
     if(admin){
       // PO link selector: "__keep" leaves the link untouched; "" unlinks; a
       // po_id re-links (the backend re-validates it is still a draft in Odoo).
@@ -4712,7 +4748,10 @@ function renderReceivingEditRows(){
       <td class="r">${kgCell}</td>
       <td class="r" id="recv-edit-m-${i}">${m}</td>
       <td class="r"><input type="number" min="0" step="any" data-ei="${i}" data-ek="len" value="${esc(String(r.length_yards??''))}" placeholder="yds" style="width:72px;text-align:right;"></td>
-      <td class="r"><input type="number" min="0" step="any" data-ei="${i}" data-ek="shw" value="${esc(String(r.after_wash_width_cm??''))}" placeholder="cm" title="After-wash width of the 35cm gauge square" style="width:64px;text-align:right;"><div class="muted" id="recv-edit-shw-${i}" style="font-size:10px;white-space:nowrap;${shrinkHigh(r.after_wash_width_cm)?'color:#b45309;font-weight:700;':''}">${esc(shrinkPreviewTxt(r.after_wash_width_cm))}${(r.after_wash_width_cm===''&&r.after_wash_length_cm===''&&r.shrinkage_inches!=='')?'legacy '+esc(fmt2(r.shrinkage_inches))+'\u2033':''}</div></td>
+      <td class="r">${recvEditState.canEditWidthCm
+        ? `<input type="number" min="0" step="any" data-ei="${i}" data-ek="shw" value="${esc(String(r.after_wash_width_cm??''))}" placeholder="cm" title="After-wash width of the 35cm gauge square" style="width:64px;text-align:right;"><div class="muted" id="recv-edit-shw-${i}" style="font-size:10px;white-space:nowrap;${shrinkHigh(r.after_wash_width_cm)?'color:#b45309;font-weight:700;':''}">${esc(shrinkPreviewTxt(r.after_wash_width_cm))}${(r.after_wash_width_cm===''&&r.after_wash_length_cm===''&&r.shrinkage_inches!=='')?'legacy '+esc(fmt2(r.shrinkage_inches))+'\u2033':''}</div>`
+        : (r.after_wash_width_cm!=null&&r.after_wash_width_cm!==''?'<span class="muted" style="font-size:12px;">'+esc(fmt2(r.after_wash_width_cm))+' cm<\/span>':'<span class="muted">\u2014<\/span>')
+      }</td>
       <td class="r"><input type="number" min="0" step="any" data-ei="${i}" data-ek="shl" value="${esc(String(r.after_wash_length_cm??''))}" placeholder="cm" title="After-wash length of the 35cm gauge square" style="width:64px;text-align:right;"><div class="muted" id="recv-edit-shl-${i}" style="font-size:10px;white-space:nowrap;${shrinkHigh(r.after_wash_length_cm)?'color:#b45309;font-weight:700;':''}">${esc(shrinkPreviewTxt(r.after_wash_length_cm))}</div></td>
       <td><input type="text" data-ei="${i}" data-ek="bld" value="${esc(String(r.bleeding_test||''))}" placeholder="e.g. No bleed" style="width:110px;"></td>
       <td class="r">${recvEditState.canEditWidth
@@ -4741,6 +4780,38 @@ function renderReceivingEditRows(){
   };
   body.onchange=e=>{const el=e.target.closest('[data-ek="status"]');if(!el)return;const i=Number(el.dataset.ei);if(recvEditState.rolls[i])recvEditState.rolls[i].quality_status=el.value;};
   body.onclick=e=>{const el=e.target.closest('[data-ek="del"]');if(!el)return;recvEditState.rolls.splice(Number(el.dataset.ei),1);renderReceivingEditRows();};
+  /* Width PATCH: fire on blur / Enter for after_wash_width_cm (data-ek="shw") */
+  if(body._shwFocusout)body.removeEventListener('focusout',body._shwFocusout);
+  body._shwFocusout=async function(ev){
+    const el=ev.target;if(!el.dataset||el.dataset.ek!=='shw')return;
+    const i=Number(el.dataset.ei),r=recvEditState.rolls[i];
+    if(!r||r.roll_id==null)return;
+    const newCm=el.value.trim()===''?null:parseFloat(el.value);
+    const prevCm=r.after_wash_width_cm===''?null:(parseFloat(r.after_wash_width_cm)||null);
+    if(newCm===prevCm)return;
+    const shwDiv=document.getElementById('recv-edit-shw-'+i);
+    const errDiv=document.getElementById('recv-edit-err');
+    if(shwDiv){shwDiv.textContent='Saving\u2026';shwDiv.style.color='#888';shwDiv.style.fontWeight='';}
+    try{
+      const resp=await fetch('/api/fabric/rolls/'+encodeURIComponent(r.roll_id)+'/width',{method:'PATCH',credentials:'include',headers:vivoAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({width_cm:newCm})});
+      if(!resp.ok){let d={};try{d=await resp.json();}catch(_){}throw new Error(d.detail||('HTTP '+resp.status));}
+      const data=await resp.json();
+      r.after_wash_width_cm=data.after_wash_width_cm==null?'':String(data.after_wash_width_cm);
+      el.value=r.after_wash_width_cm;
+      if(shwDiv){
+        shwDiv.textContent='\u2713 saved '+shrinkPreviewTxt(r.after_wash_width_cm);
+        shwDiv.style.color='#166534';shwDiv.style.fontWeight='700';
+        setTimeout(()=>{if(shwDiv){shwDiv.textContent=shrinkPreviewTxt(r.after_wash_width_cm);shwDiv.style.color=shrinkHigh(r.after_wash_width_cm)?'#b45309':'';shwDiv.style.fontWeight=shrinkHigh(r.after_wash_width_cm)?'700':'';}},2500);
+      }
+    }catch(err){
+      if(shwDiv){shwDiv.textContent='\u26a0 '+esc(err.message);shwDiv.style.color='#b91c1c';shwDiv.style.fontWeight='';}
+      errDiv.innerHTML='<div class="banner banner-err">Width save failed: '+esc(err.message)+'</div>';
+    }
+  };
+  body.addEventListener('focusout',body._shwFocusout);
+  if(body._shwKeydown)body.removeEventListener('keydown',body._shwKeydown);
+  body._shwKeydown=function(ev){if(ev.key!=='Enter')return;const el=ev.target;if(!el.dataset||el.dataset.ek!=='shw')return;ev.preventDefault();el.blur();};
+  body.addEventListener('keydown',body._shwKeydown);
 }
 function recvEditAddRoll(){
   if(!recvEditState.isAdmin)return;
@@ -4756,7 +4827,6 @@ async function saveReceivingQuality(){
     .map(r=>({roll_id:r.roll_id,status:r.quality_status||'',notes:r.quality_notes||'',
               length_yards:r.length_yards===''?null:r.length_yards,
               shrinkage_inches:r.shrinkage_inches===''?null:r.shrinkage_inches,
-              after_wash_width_cm:r.after_wash_width_cm===''?null:r.after_wash_width_cm,
               after_wash_length_cm:r.after_wash_length_cm===''?null:r.after_wash_length_cm,
               bleeding_test:r.bleeding_test||'',
               width_measured_m:r.width_measured_m===''?null:r.width_measured_m}));
@@ -5346,7 +5416,7 @@ function renderInspTicket(pop,ctx,box,rollId){
     +'<div>'+lbl('Roll no.')+ro(roll.roll_no)+'</div>'
     +'<div>'+lbl('Roll weight (kg)')+ro(roll.qty_kg!=null?fmt2(roll.qty_kg):null)+'</div>'
     +'<div>'+lbl('Roll yardage (yds)')+ro(roll.length_yards!=null?fmt2(roll.length_yards):null)+'</div>'
-    +'<div>'+lbl('Width'+(res.width?'':' <span class="muted" style="font-weight:400;">(in — fill in)</span>'))+(res.width?('<div style="padding:5px 7px;font-size:13px;background:rgba(0,0,0,.035);border:1px solid var(--border,#e2e2e8);border-radius:6px;min-height:29px;">'+(roll.width_measured_m!=null&&roll.width_measured_m!==''?esc((roll.width_measured_m*100).toFixed(1)+' cm / '+fmt2(roll.width_measured_m*39.37)+' in'):'<span class="muted">—</span>')+'</div>'):num('insp-width',widthIn,'inches'))+'</div>'
+    +'<div>'+lbl('Width')+'<div style="padding:5px 7px;font-size:13px;background:rgba(0,0,0,.035);border:1px solid var(--border,#e2e2e8);border-radius:6px;min-height:29px;">'+(roll.after_wash_width_cm!=null&&roll.after_wash_width_cm!==''?esc(fmt2(roll.after_wash_width_cm)+' cm / '+fmt2(roll.after_wash_width_cm/2.54)+' in (post-wash)'):'<span class="muted">\u2014 not measured</span>')+'</div><div class="muted" style="font-size:10.5px;">Set on receiving sheet by width_edit grantee or admin.</div></div>'
     +'</div>'
     +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:.5rem;margin-top:.55rem;">'
     +attr('style_article','Style / Article','insp-style')
@@ -5368,10 +5438,9 @@ function renderInspTicket(pop,ctx,box,rollId){
     +'<div style="margin-top:.7rem;"><div style="font-weight:700;font-size:12.5px;">Measurements &amp; wash tests</div>'
     +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:.5rem;margin-top:4px;">'
     +'<div>'+lbl('Roll length (yds)')+num('insp-m-len',roll.length_yards==null?'':roll.length_yards,'yards')+'</div>'
-    +'<div>'+lbl('After-wash W (cm) <span class="muted" style="font-weight:400;" title="Re-measured size of the 35cm gauge square after wash, along the WIDTH">(gauge 35)</span>')+num('insp-m-shw',roll.after_wash_width_cm==null?'':roll.after_wash_width_cm,'cm')+'<div class="insp-m-shw-p muted" style="font-size:10.5px;min-height:13px;white-space:nowrap;"></div></div>'
+    +'<div>'+lbl('After-wash W (cm) <span class="muted" style="font-weight:400;" title="Re-measured size of the 35cm gauge square after wash, along the WIDTH">(gauge 35)</span>')+'<div style="padding:5px 7px;font-size:13px;background:rgba(0,0,0,.035);border:1px solid var(--border,#e2e2e8);border-radius:6px;min-height:29px;">'+(roll.after_wash_width_cm!=null&&roll.after_wash_width_cm!==''?esc(fmt2(roll.after_wash_width_cm)+' cm')+'<span class="muted" style="font-size:10.5px;margin-left:4px;">'+esc(shrinkPreviewTxt(roll.after_wash_width_cm))+'</span>':'<span class="muted">\u2014 not measured</span>')+'</div><div class="muted" style="font-size:10.5px;">Set on receiving sheet by width_edit grantee or admin.</div></div>'
     +'<div>'+lbl('After-wash L (cm) <span class="muted" style="font-weight:400;" title="Re-measured size of the 35cm gauge square after wash, along the LENGTH">(gauge 35)</span>')+num('insp-m-shl',roll.after_wash_length_cm==null?'':roll.after_wash_length_cm,'cm')+'<div class="insp-m-shl-p muted" style="font-size:10.5px;min-height:13px;white-space:nowrap;"></div></div>'
     +'<div>'+lbl('Bleeding test')+inp('insp-m-bld',roll.bleeding_test||'','e.g. No bleed')+'</div>'
-    +'<div>'+lbl('Width (m)')+num('insp-m-wid',roll.width_measured_m==null?'':roll.width_measured_m,'metres')+'</div>'
     +'</div>'
     +(roll.shrinkage_inches!=null?'<div class="muted" style="font-size:11px;margin-top:2px;">Legacy single shrinkage: '+esc(fmt2(roll.shrinkage_inches))+' in</div>':'')
     +'<div style="margin-top:.4rem;">'+lbl('Quality notes')+'<textarea class="insp-m-notes" rows="2" placeholder="Inspection notes (optional)" style="width:100%;padding:5px 7px;font-size:13px;border:1px solid var(--border,#d7d7de);border-radius:6px;resize:vertical;">'+esc(roll.quality_notes||'')+'</textarea></div>'
@@ -5491,10 +5560,8 @@ function renderInspTicket(pop,ctx,box,rollId){
       defects:collectDefects(),
       length_yards:gv('.insp-m-len')||null,
       shrinkage_inches:roll.shrinkage_inches==null?null:roll.shrinkage_inches,
-      after_wash_width_cm:gv('.insp-m-shw')||null,
       after_wash_length_cm:gv('.insp-m-shl')||null,
       bleeding_test:gv('.insp-m-bld')||'',
-      width_measured_m:gv('.insp-m-wid')||null,
       quality_notes:gv('.insp-m-notes'),
     };
   }
@@ -5519,7 +5586,6 @@ function renderInspTicket(pop,ctx,box,rollId){
     catch(e){b.disabled=false;b.innerHTML='Submit &amp; sign off';alert('Could not submit the ticket: '+e.message);}
   });
   const wireShrinkPrev=(inpSel,prevSel)=>{const el=pop.querySelector(inpSel),p=pop.querySelector(prevSel);if(!el||!p)return;const upd=()=>{const v=el.value.trim();p.textContent=shrinkPreviewTxt(v);const hi=shrinkHigh(v);p.style.color=hi?'#b45309':'';p.style.fontWeight=hi?'700':'';};el.addEventListener('input',upd);upd();};
-  wireShrinkPrev('.insp-m-shw','.insp-m-shw-p');
   wireShrinkPrev('.insp-m-shl','.insp-m-shl-p');
   const ovrBtn=pop.querySelector('.insp-ovr-apply');
   if(ovrBtn)ovrBtn.addEventListener('click',async ()=>{

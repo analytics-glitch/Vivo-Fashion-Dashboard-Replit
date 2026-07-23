@@ -7013,6 +7013,19 @@ def auth_me(request: Request):
         u["hidden_pages"] = _hidden_pages()
         u["allowed_pages"] = _effective_pages_for_role(u.get("role"))
         _apply_crm_admin_grants(u)
+        user_id = str(u.get("user_id") or "")
+        if user_id:
+            try:
+                grants = _users_exec(
+                    "SELECT field_name FROM fabric_field_grants "
+                    "WHERE user_id = %s AND revoked_at IS NULL",
+                    (user_id,), fetch=True)
+                u["fabric_field_grants"] = [
+                    g["field_name"] for g in (grants or [])]
+            except Exception:
+                u["fabric_field_grants"] = []
+        else:
+            u["fabric_field_grants"] = []
     return u
 
 
@@ -20824,6 +20837,40 @@ def _init_sop_tables():
         _ensure_sop_tables()
     except Exception as e:
         log.error("SOP tables ensure failed: %s", e)
+
+
+@_deferred_startup
+def _seed_fabric_field_grants():
+    """Seed the initial named fabric field-edit grantees.  Idempotent:
+    uses ON CONFLICT DO NOTHING and skips any email not yet in app_users.
+    Must run AFTER the DB-touching startup steps so fabric_field_grants
+    already exists (created by _ensure_receiving_tables on first request
+    OR by whatever startup step runs the fabric schema)."""
+    INITIAL_GRANTS = [
+        ("hagai@vivofashiongroup.com",  "width_edit"),
+        ("bedan@vivofashiongroup.com",  "roll_no_edit"),
+    ]
+    try:
+        from fabric_router import _ensure_receiving_tables, _get_conn
+        with _get_conn() as conn:
+            _ensure_receiving_tables(conn)
+            with conn.cursor() as cur:
+                for email, field_name in INITIAL_GRANTS:
+                    cur.execute(
+                        "SELECT user_id FROM app_users "
+                        "WHERE email = %s LIMIT 1",
+                        (email,))
+                    row = cur.fetchone()
+                    if row:
+                        cur.execute("""
+                            INSERT INTO fabric_field_grants
+                              (user_id, field_name, granted_by, granted_at)
+                            VALUES (%s, %s, 'system (initial seed)', now())
+                            ON CONFLICT (user_id, field_name) DO NOTHING
+                        """, (row[0], field_name))
+            conn.commit()
+    except Exception as e:
+        log.error("seed_fabric_field_grants failed: %s", e)
 
 
 def _sop_user_grants(user_id):
