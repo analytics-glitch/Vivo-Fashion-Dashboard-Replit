@@ -242,6 +242,8 @@ select:focus,input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(26
 .section-head{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap;}
 .section-head h3{margin:0;font-size:15.5px;font-weight:700;letter-spacing:-.01em;}
 .muted{font-size:12px;color:var(--muted);}
+.variance-neg{color:var(--danger,#dc2626);font-weight:600;}
+.variance-ok{color:var(--muted,#888);}
 
 .kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-bottom:1.2rem;align-items:stretch;}
 .fig-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:.6rem;margin-top:.8rem;}
@@ -4470,7 +4472,7 @@ async function saveReceivingSheet(alsoPrint){
     if(alsoPrint&&res.sheet_id)reprintReceivingSheet(res.sheet_id);
   }catch(e){showRecvErr(e.message==='auth'?'Your session has expired. Sign in again.':('Could not save: '+e.message));}
 }
-let recvIsAdmin=false, recvQualityOnly=false, recvCanApproveDelivery=false, recvPoMeta={};
+let recvIsAdmin=false, recvQualityOnly=false, recvCanApproveDelivery=false, recvCanInvoice=false, recvPoMeta={};
 window._fabricPricingAdmin=false;
 async function loadReceivingBatches(){
   recvBindOnce();
@@ -4482,8 +4484,9 @@ async function loadReceivingBatches(){
     recvIsAdmin=!!(rt&&rt.admin);
     recvQualityOnly=!!(rt&&rt.quality_only);
     recvCanApproveDelivery=!!(rt&&rt.can_approve_delivery);
+    recvCanInvoice=!!(rt&&rt.can_invoice);
     window._fabricPricingAdmin=!!(rt&&rt.admin);
-  }catch(_){recvIsAdmin=false;recvQualityOnly=false;window._fabricPricingAdmin=false;}
+  }catch(_){recvIsAdmin=false;recvQualityOnly=false;recvCanInvoice=false;window._fabricPricingAdmin=false;}
   // Quality-only users (costing) record inspection results but cannot add
   // new rolls — hide the entry form (also enforced server-side).
   const entry=document.getElementById('recv-entry-card');
@@ -5164,6 +5167,31 @@ async function loadRecvPoBatches(){
         if(ed){openReceivingEdit(ed.dataset.edit);return;}
         const del=e.target.closest('button[data-del]');
         if(del){deleteReceivingSheet(del.dataset.del);return;}
+        // Invoice status toggle (Credit Note / Back Order flag per delivery).
+        // A second click on the active status clears it back to null.
+        const isb=e.target.closest('button.recv-inv-status-btn');
+        if(isb){
+          const poId=Number(isb.dataset.poId);
+          const newStatus=isb.dataset.status;
+          // Toggle: if already active, clear it; otherwise set it.
+          const current=isb.classList.contains('btn-primary')?newStatus:null;
+          const send=(current===newStatus)?null:newStatus;
+          isb.disabled=true;
+          apiFetch('/api/fabric/receiving/po-sheet/'+poId+'/invoice-status',
+                   {method:'PUT',headers:{'Content-Type':'application/json'},
+                    body:JSON.stringify({status:send})})
+            .then(()=>{
+              const box=isb.closest('.recv-po-detail');
+              if(box&&box.dataset.cached){
+                const det=JSON.parse(box.dataset.cached);
+                if(det&&det.po_sheet)det.po_sheet.invoice_status=send||null;
+                box.dataset.cached=JSON.stringify(det);
+                renderRecvPoDetail(box,det,box.dataset.poDetail);
+              }
+            })
+            .catch(err=>{isb.disabled=false;alert('Could not update invoice status: '+err.message);});
+          return;
+        }
         const f=e.target.closest('[data-fab-toggle]');
         if(f){
           const fk=f.dataset.fabToggle;
@@ -5172,6 +5200,57 @@ async function loadRecvPoBatches(){
           if(box&&box.dataset.cached){renderRecvPoDetail(box,JSON.parse(box.dataset.cached),box.dataset.poDetail);}
           return;
         }
+      });
+      // Save invoiced-quantity inputs on blur (focusout bubbles).
+      body.addEventListener('focusout',e=>{
+        const inp=e.target.closest('input.recv-inv-input');
+        if(!inp)return;
+        const rollId=Number(inp.dataset.rollId);
+        const field=inp.dataset.field;
+        if(!rollId||!field)return;
+        const raw=inp.value.trim();
+        const val=raw===''?null:parseFloat(raw);
+        if(raw!==''&&(isNaN(val)||val<0)){inp.style.borderColor='var(--danger,#dc2626)';return;}
+        inp.style.borderColor='';
+        // Build payload from both inv_kg and inv_mtrs inputs in the same row.
+        const tr=inp.closest('tr');
+        if(!tr)return;
+        const payload={};
+        tr.querySelectorAll('input.recv-inv-input').forEach(i=>{
+          const v=i.value.trim();
+          payload[i.dataset.field]=v===''?null:parseFloat(v);
+        });
+        inp.style.opacity='0.6';
+        apiFetch('/api/fabric/receiving/roll/'+rollId+'/invoiced',
+                 {method:'PUT',headers:{'Content-Type':'application/json'},
+                  body:JSON.stringify(payload)})
+          .then(res=>{
+            inp.style.opacity='';
+            inp.style.borderColor='var(--accent,#1a5c38)';
+            setTimeout(()=>{if(inp)inp.style.borderColor='';},1500);
+            // Patch the cached detail so variance cells update without a full reload.
+            const box=inp.closest('.recv-po-detail');
+            if(box&&box.dataset.cached){
+              const det=JSON.parse(box.dataset.cached);
+              (det.fabrics||[]).forEach(g=>{
+                (g.sheets||[]).forEach(s=>{
+                  (s.rolls||[]).forEach(r=>{
+                    if(Number(r.roll_id)===rollId){
+                      r.inv_kg=res.inv_kg; r.inv_mtrs=res.inv_mtrs;
+                      r.delta_kg=res.delta_kg; r.delta_mtrs=res.delta_mtrs;
+                    }
+                  });
+                });
+              });
+              box.dataset.cached=JSON.stringify(det);
+              renderRecvPoDetail(box,det,box.dataset.poDetail);
+            }
+          })
+          .catch(err=>{
+            inp.style.opacity='';
+            inp.style.borderColor='var(--danger,#dc2626)';
+            alert('Could not save invoiced quantity: '+err.message);
+          });
       });
     }
     // Load every expanded group's drill-down (Postgres-only endpoint).
@@ -5254,7 +5333,26 @@ function renderRecvPoDetail(box,det,poKey){
         if(r.width_measured_m!=null&&r.width_measured_m!=='')measBits.push('width '+fmt2(r.width_measured_m)+' m');
         const measHtml=measBits.length?'<div class="muted" style="font-size:11px;">'+measBits.join(' · ')+'</div>':'';
         const widCm=r.width_measured_m!=null&&r.width_measured_m!==''?((parseFloat(r.width_measured_m)*100).toFixed(1)+' cm'):'—';
-        return `<tr><td>${esc(String(r.roll_no))}</td><td class="r">${fmt2(r.qty_kg)}</td><td class="r">${r.qty_mtrs!=null?fmt1(r.qty_mtrs):'<span class="muted">—</span>'}</td><td class="r">${widCm==='—'?'<span class="muted">—</span>':esc(widCm)}</td><td>${q}${inspBadge}${measHtml}${r.quality_notes?'<div class="muted" style="font-size:11px;">'+esc(r.quality_notes)+'</div>':''}</td><td style="white-space:nowrap;">${racts}</td></tr>`;
+        // Invoiced-quantity cells (bedan only sees editable inputs; all others
+        // see read-only text). Variances are colour-coded: zero/null = muted,
+        // non-zero = danger (red) so a discrepancy is immediately visible.
+        const invKgDisplay=r.inv_kg!=null?fmt2(r.inv_kg):'<span class="muted">—</span>';
+        const invMtrDisplay=r.inv_mtrs!=null?fmt1(r.inv_mtrs):'<span class="muted">—</span>';
+        const dKg=r.delta_kg;
+        const dMtr=r.delta_mtrs;
+        const dKgHtml=dKg!=null
+          ?`<span class="${dKg!==0?'variance-neg':'variance-ok'}" title="Received KGs − Invoiced KGs">${dKg>=0?'+':''}${fmt2(dKg)}</span>`
+          :'<span class="muted">—</span>';
+        const dMtrHtml=dMtr!=null
+          ?`<span class="${dMtr!==0?'variance-neg':'variance-ok'}" title="Received Mtrs − Invoiced Mtrs">${dMtr>=0?'+':''}${fmt1(dMtr)}</span>`
+          :'<span class="muted">—</span>';
+        const invKgCell=recvCanInvoice
+          ?`<input type="number" step="0.01" min="0" class="recv-inv-input" data-roll-id="${Number(r.roll_id)}" data-field="inv_kg" value="${r.inv_kg!=null?r.inv_kg:''}" placeholder="—" style="width:62px;padding:2px 4px;font-size:12px;border:1px solid var(--border,#d7d7de);border-radius:4px;text-align:right;">`
+          :invKgDisplay;
+        const invMtrCell=recvCanInvoice
+          ?`<input type="number" step="0.1" min="0" class="recv-inv-input" data-roll-id="${Number(r.roll_id)}" data-field="inv_mtrs" value="${r.inv_mtrs!=null?r.inv_mtrs:''}" placeholder="—" style="width:62px;padding:2px 4px;font-size:12px;border:1px solid var(--border,#d7d7de);border-radius:4px;text-align:right;">`
+          :invMtrDisplay;
+        return `<tr><td>${esc(String(r.roll_no))}</td><td class="r">${fmt2(r.qty_kg)}</td><td class="r">${r.qty_mtrs!=null?fmt1(r.qty_mtrs):'<span class="muted">—</span>'}</td><td class="r">${invKgCell}</td><td class="r">${dKgHtml}</td><td class="r">${invMtrCell}</td><td class="r">${dMtrHtml}</td><td class="r">${widCm==='—'?'<span class="muted">—</span>':esc(widCm)}</td><td>${q}${inspBadge}${measHtml}${r.quality_notes?'<div class="muted" style="font-size:11px;">'+esc(r.quality_notes)+'</div>':''}</td><td style="white-space:nowrap;">${racts}</td></tr>`;
       }).join('');
       const metaBits=(g.sheets||[]).map(s=>{
         const edited=s.updated_at?` · edited ${esc(s.updated_at)}${s.updated_by_name?' by '+esc(s.updated_by_name):''}`:'';
@@ -5263,10 +5361,42 @@ function renderRecvPoDetail(box,det,poKey){
       body=`<div style="border:1px solid var(--border,#d7d7de);border-top:none;border-radius:0 0 8px 8px;background:#fff;padding:.55rem .7rem;">
         <div class="muted" style="font-size:12px;">${metaBits}</div>
         ${(()=>{const wVals=allRolls.map(r=>r.width_measured_m!=null&&r.width_measured_m!==''?parseFloat(r.width_measured_m):null).filter(v=>v!=null);return wVals.length?'<div class="muted" style="font-size:12px;margin-top:4px;"><b>Min width:</b> '+(Math.min(...wVals)*100).toFixed(1)+' cm</div>':''})()}
-        <table class="data" style="margin-top:5px;max-width:780px;">
-          <thead><tr><th style="width:90px;">Roll No.</th><th class="r">Kgs</th><th class="r">Mtrs</th><th class="r" style="white-space:nowrap;">Width (cm)</th><th>Quality</th><th style="width:150px;"></th></tr></thead>
-          <tbody>${rollRows||'<tr><td colspan="6" class="muted">No rolls recorded.</td></tr>'}</tbody>
+        <table class="data" style="margin-top:5px;max-width:1040px;">
+          <thead><tr>
+            <th style="width:90px;">Roll No.</th>
+            <th class="r">Kgs</th>
+            <th class="r">Mtrs</th>
+            <th class="r" style="white-space:nowrap;color:#6366f1;" title="Invoiced KGs from the supplier invoice">Inv KGs</th>
+            <th class="r" style="white-space:nowrap;color:#6366f1;" title="Received KGs − Invoiced KGs">&#916; KGs</th>
+            <th class="r" style="white-space:nowrap;color:#6366f1;" title="Invoiced Metres from the supplier invoice">Inv Mtrs</th>
+            <th class="r" style="white-space:nowrap;color:#6366f1;" title="Received Mtrs − Invoiced Mtrs">&#916; Mtrs</th>
+            <th class="r" style="white-space:nowrap;">Width (cm)</th>
+            <th>Quality</th>
+            <th style="width:150px;"></th>
+          </tr></thead>
+          <tbody>${rollRows||'<tr><td colspan="10" class="muted">No rolls recorded.</td></tr>'}</tbody>
         </table>
+        ${(()=>{
+          // Delivery-level invoice status flag — visible to all, writable by bedan only.
+          // poKey is the Odoo PO id (the {po_id} path param the PUT endpoint expects);
+          // ps.id is the po_sheet ROW id — do NOT use that here.
+          const ps=det&&det.po_sheet;
+          if(!ps||poKey==='none')return '';
+          const st=ps.invoice_status;
+          const poIdNum=Number(poKey);
+          const statusBadge=st==='credit_note'
+            ?'<span style="display:inline-block;padding:2px 10px;border-radius:10px;font-size:12px;font-weight:700;background:rgba(220,38,38,.1);border:1px solid rgba(220,38,38,.4);color:#dc2626;">Credit Note Raised</span>'
+            :st==='back_order'
+            ?'<span style="display:inline-block;padding:2px 10px;border-radius:10px;font-size:12px;font-weight:700;background:rgba(217,119,6,.1);border:1px solid rgba(217,119,6,.4);color:#d97706;">Back Order Raised</span>'
+            :'<span class="muted" style="font-size:12px;">None</span>';
+          const btns=recvCanInvoice
+            ?`<button class="btn recv-inv-status-btn ${st==='credit_note'?'btn-primary':''}" data-po-id="${Number(poIdNum)}" data-status="credit_note" style="padding:3px 10px;font-size:12px;margin-left:6px;" title="${st==='credit_note'?'Click to clear':'Mark this delivery as Credit Note Raised'}">Credit Note</button><button class="btn recv-inv-status-btn ${st==='back_order'?'btn-primary':''}" data-po-id="${Number(poIdNum)}" data-status="back_order" style="padding:3px 10px;font-size:12px;margin-left:4px;" title="${st==='back_order'?'Click to clear':'Mark this delivery as Back Order Raised'}">Back Order</button>`
+            :'';
+          return `<div style="display:flex;align-items:center;gap:.5rem;margin-top:6px;padding:4px 2px;">
+            <span style="font-size:12px;color:#6366f1;font-weight:600;">Invoice Status:</span>
+            ${statusBadge}${btns}
+          </div>`;
+        })()}
       </div>`;
     }
     return `<div style="margin:.25rem 0;">${head}${body}</div>`;

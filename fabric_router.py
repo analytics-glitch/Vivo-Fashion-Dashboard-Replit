@@ -4880,6 +4880,12 @@ def _ensure_receiving_tables(conn):
                     "ADD COLUMN IF NOT EXISTS delivery_approved_by_email TEXT")
         cur.execute("ALTER TABLE fabric_receiving_po_sheets "
                     "ADD COLUMN IF NOT EXISTS delivery_approved_at TIMESTAMPTZ")
+        # Credit / back-order status for the delivery: NULL (not set),
+        # 'credit_note' (Credit Note Raised) or 'back_order' (Back Order Raised).
+        # Toggled exclusively by bedan@vivofashiongroup.com via the invoice-status
+        # endpoint; a second click on the active flag clears it back to NULL.
+        cur.execute("ALTER TABLE fabric_receiving_po_sheets "
+                    "ADD COLUMN IF NOT EXISTS invoice_status TEXT")
         cur.execute("ALTER TABLE fabric_receiving_sheets "
                     "ADD COLUMN IF NOT EXISTS po_sheet_id INTEGER")
         # Audit of every "Upload to Odoo PO" push: who pushed, when, to which
@@ -4971,6 +4977,15 @@ def _ensure_receiving_tables(conn):
                     "ADD COLUMN IF NOT EXISTS after_wash_width_cm NUMERIC")
         cur.execute("ALTER TABLE fabric_receiving_rolls "
                     "ADD COLUMN IF NOT EXISTS after_wash_length_cm NUMERIC")
+        # Invoiced-quantity columns: manually entered by bedan@vivofashiongroup.com
+        # after reconciling the physical delivery against the supplier's invoice.
+        # NULL = not yet entered (blank dash in the UI). The variance (Received −
+        # Invoiced) is derived on the fly; positive = over-invoiced, negative =
+        # under-invoiced.
+        cur.execute("ALTER TABLE fabric_receiving_rolls "
+                    "ADD COLUMN IF NOT EXISTS inv_kg NUMERIC")
+        cur.execute("ALTER TABLE fabric_receiving_rolls "
+                    "ADD COLUMN IF NOT EXISTS inv_mtrs NUMERIC")
         # Per-user field-level edit grants: controls who may write
         # after_wash_width_cm (width_edit) and who may renumber rolls
         # (roll_no_edit). Soft-revocable via revoked_at (NULL = active).
@@ -5446,6 +5461,25 @@ def _recv_quality_only(request):
         return False
     return (u.get("email") or "").strip().lower() in _RECV_QUALITY_ONLY_EMAILS
 
+# The one user allowed to write invoiced quantities and set the credit /
+# back-order delivery status flag. Strictly email-gated (not role-based)
+# so the privilege is narrow and explicit.
+_INVOICE_EMAIL = "bedan@vivofashiongroup.com"
+
+def _recv_is_bedan(request):
+    """True when the signed-in user is bedan@vivofashiongroup.com (the only
+    person authorised to enter invoiced quantities and toggle the
+    Credit Note / Back Order delivery flag)."""
+    u = getattr(request.state, "user", None) or {}
+    return (u.get("email") or "").strip().lower() == _INVOICE_EMAIL
+
+def _recv_block_non_bedan_invoice(request):
+    """403 any invoice-quantity or invoice-status write from a non-bedan user."""
+    if not _recv_is_bedan(request):
+        raise HTTPException(status_code=403,
+            detail="Only bedan@vivofashiongroup.com may enter invoiced "
+                   "quantities or set the credit / back-order status")
+
 def _recv_block_quality_only(request):
     """403 any roll/sheet write from a quality-only user."""
     if _recv_quality_only(request):
@@ -5471,6 +5505,7 @@ def receiving_rights(request: Request):
             "can_approve_delivery": _insp_can_approve(request),
             "can_edit_width": _recv_can_edit_width(request),
             "can_roll_no_edit": _recv_can_roll_no_edit(request),
+            "can_invoice": _recv_is_bedan(request),
             "user_id": str(u.get("user_id") or "")}
 
 
@@ -6452,6 +6487,99 @@ def receiving_roll_delete(roll_id: int, request: Request):
                     + (" (sheet emptied & removed)" if remaining == 0 else ""),
             "status": "deleted"}, request)
     return {"ok": True, "sheet_removed": remaining == 0}
+
+@fabric_router.put("/api/fabric/receiving/roll/{roll_id}/invoiced")
+def receiving_roll_invoiced(roll_id: int, request: Request,
+                            body: dict = Body(...)):
+    """Write invoiced-quantity (KGs and/or Mtrs) for one roll.
+    Gated to bedan@vivofashiongroup.com only — any other user gets 403.
+    Accepts {"inv_kg": <number|null>, "inv_mtrs": <number|null>}.
+    Returns the updated roll including the computed variances
+    (delta_kg = qty_kg − inv_kg, delta_mtrs = qty_mtrs − inv_mtrs)."""
+    _recv_block_non_bedan_invoice(request)
+
+    def _parse_opt_num(key):
+        v = body.get(key)
+        if v in (None, ""):
+            return None
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400,
+                                detail=f"{key} must be a number or null")
+        if f < 0:
+            raise HTTPException(status_code=400,
+                                detail=f"{key} cannot be negative")
+        return round(f, 3)
+
+    inv_kg = _parse_opt_num("inv_kg")
+    inv_mtrs = _parse_opt_num("inv_mtrs")
+
+    with _get_conn() as conn:
+        _ensure_receiving_tables(conn)
+        ctx = _recv_roll_ctx(conn, roll_id)
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE fabric_receiving_rolls
+                   SET inv_kg=%s, inv_mtrs=%s
+                 WHERE id=%s
+            """, (inv_kg, inv_mtrs, roll_id))
+        conn.commit()
+        updated = q(conn,
+                    "SELECT id as roll_id, roll_no, qty_kg, qty_mtrs, "
+                    "inv_kg, inv_mtrs "
+                    "FROM fabric_receiving_rolls WHERE id=%s", (roll_id,))
+    row = updated[0] if updated else {}
+    qty_kg = float(row.get("qty_kg") or 0)
+    qty_mtrs = row.get("qty_mtrs")
+    inv_kg_v = row.get("inv_kg")
+    inv_mtrs_v = row.get("inv_mtrs")
+    delta_kg = (round(qty_kg - float(inv_kg_v), 3)
+                if inv_kg_v is not None else None)
+    delta_mtrs = (round(float(qty_mtrs) - float(inv_mtrs_v), 3)
+                  if (qty_mtrs is not None and inv_mtrs_v is not None) else None)
+    return {"ok": True,
+            "roll_id": row.get("roll_id"),
+            "inv_kg": inv_kg_v,
+            "inv_mtrs": inv_mtrs_v,
+            "delta_kg": delta_kg,
+            "delta_mtrs": delta_mtrs}
+
+_INVOICE_STATUSES = {"credit_note", "back_order"}
+
+@fabric_router.put("/api/fabric/receiving/po-sheet/{po_id}/invoice-status")
+def receiving_invoice_status(po_id: int, request: Request,
+                             body: dict = Body(...)):
+    """Set (or clear) the credit-note / back-order flag on a PO's delivery.
+    Gated to bedan@vivofashiongroup.com only — any other user gets 403.
+    Accepts {"status": "credit_note" | "back_order" | null}.
+    A second PUT with the currently-active status clears it back to null
+    (the toggle is enforced client-side; the server accepts any valid value)."""
+    _recv_block_non_bedan_invoice(request)
+    raw = body.get("status")
+    if raw in (None, "", "null"):
+        status = None
+    else:
+        status = str(raw).strip().lower()
+        if status not in _INVOICE_STATUSES:
+            raise HTTPException(status_code=400,
+                detail="status must be 'credit_note', 'back_order', or null")
+    with _get_conn() as conn:
+        _ensure_receiving_tables(conn)
+        rows = q(conn,
+                 "SELECT id FROM fabric_receiving_po_sheets WHERE po_id=%s",
+                 (po_id,))
+        if not rows:
+            raise HTTPException(status_code=404,
+                detail="No receiving sheet found for this PO")
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE fabric_receiving_po_sheets
+                   SET invoice_status=%s
+                 WHERE po_id=%s
+            """, (status, po_id))
+        conn.commit()
+    return {"ok": True, "invoice_status": status}
 
 @fabric_router.get("/api/fabric/receiving")
 def receiving_list(search: str = Query(default=""),
@@ -7733,6 +7861,7 @@ def receiving_po_batch_detail(po_id: str = Query(default="")):
             rolls = q(conn, """
                 SELECT r.sheet_id, r.id as roll_id, r.roll_no,
                        r.qty_kg, r.qty_mtrs,
+                       r.inv_kg, r.inv_mtrs,
                        r.quality_status, r.quality_notes,
                        r.length_yards, r.shrinkage_inches,
                        r.bleeding_test, r.width_measured_m,
@@ -7764,6 +7893,7 @@ def receiving_po_batch_detail(po_id: str = Query(default="")):
                 SELECT id, po_name,
                        to_char(po_date, 'DD Mon YYYY') as po_date,
                        created_by_name,
+                       invoice_status,
                        to_char(created_at AT TIME ZONE 'Africa/Nairobi',
                                'DD Mon YYYY, HH24:MI') as created_at
                 FROM fabric_receiving_po_sheets WHERE po_id=%s
@@ -7816,14 +7946,33 @@ def receiving_po_batch_detail(po_id: str = Query(default="")):
                 detail_sfc[r["product_id"]] = r.get("supplier_fabric_code")
     rolls_by_sheet = {}
     for r in rolls:
-        rolls_by_sheet.setdefault(r["sheet_id"], []).append(
-            {k: r[k] for k in ("roll_id", "roll_no", "qty_kg", "qty_mtrs",
-                               "quality_status", "quality_notes",
-                               "length_yards", "shrinkage_inches",
-                               "bleeding_test", "width_measured_m",
-                               "after_wash_width_cm", "after_wash_length_cm",
-                               "insp_grade", "insp_version", "insp_points",
-                               "insp_approved")})
+        qty_kg_v = r.get("qty_kg")
+        qty_mtrs_v = r.get("qty_mtrs")
+        inv_kg_v = r.get("inv_kg")
+        inv_mtrs_v = r.get("inv_mtrs")
+        try:
+            delta_kg_v = (round(float(qty_kg_v) - float(inv_kg_v), 3)
+                          if (qty_kg_v is not None and inv_kg_v is not None)
+                          else None)
+        except (TypeError, ValueError):
+            delta_kg_v = None
+        try:
+            delta_mtrs_v = (round(float(qty_mtrs_v) - float(inv_mtrs_v), 3)
+                            if (qty_mtrs_v is not None and inv_mtrs_v is not None)
+                            else None)
+        except (TypeError, ValueError):
+            delta_mtrs_v = None
+        row = {k: r[k] for k in ("roll_id", "roll_no", "qty_kg", "qty_mtrs",
+                                  "inv_kg", "inv_mtrs",
+                                  "quality_status", "quality_notes",
+                                  "length_yards", "shrinkage_inches",
+                                  "bleeding_test", "width_measured_m",
+                                  "after_wash_width_cm", "after_wash_length_cm",
+                                  "insp_grade", "insp_version", "insp_points",
+                                  "insp_approved")}
+        row["delta_kg"] = delta_kg_v
+        row["delta_mtrs"] = delta_mtrs_v
+        rolls_by_sheet.setdefault(r["sheet_id"], []).append(row)
     fabrics, order = {}, []
     for s in sheets:
         key = (s["product_id"], s.get("barcode") or "")
@@ -7920,12 +8069,18 @@ def receiving_po_batch(po_id: int):
             FROM fabric_po_uploads WHERE po_id=%s
             ORDER BY id DESC LIMIT 1
         """, (po_id,))
+        # Invoice status for this PO's delivery (bedan-only write, all can read).
+        po_sheet_rows = q(conn,
+                          "SELECT invoice_status FROM fabric_receiving_po_sheets "
+                          "WHERE po_id=%s LIMIT 1", (po_id,))
+        invoice_status = po_sheet_rows[0].get("invoice_status") if po_sheet_rows else None
     for e in plan:  # strip create-only internals from the response
         e.pop("_uom_id", None); e.pop("_price", None); e.pop("_odoo_name", None)
     pricing["groups"] = _recv_pricing_groups(plan)
     pricing.pop("items", None)  # the groups carry the saved values
     return {"po": po, "plan": plan, "lines": po_lines, "sheets": sheets,
-            "pricing": pricing, "last_upload": last[0] if last else None}
+            "pricing": pricing, "last_upload": last[0] if last else None,
+            "invoice_status": invoice_status}
 
 @fabric_router.post("/api/fabric/receiving/po-batch/{po_id}/pricing")
 def receiving_po_pricing_save(po_id: int, request: Request,
@@ -8513,6 +8668,7 @@ def receiving_fetch(sheet_id: int):
         sheet = sheets[0]
         rolls = q(conn, """
             SELECT id as roll_id, roll_no, qty_kg, qty_mtrs,
+                   inv_kg, inv_mtrs,
                    quality_status, quality_notes, quality_updated_by,
                    length_yards, shrinkage_inches,
                    bleeding_test, width_measured_m,
@@ -8527,6 +8683,20 @@ def receiving_fetch(sheet_id: int):
             "id": sheet["product_id"], "name": sheet["fabric_name"],
             "default_code": sheet["barcode"], "kg_per_mtr": sheet["kg_per_mtr"],
         }
+    # Derive variance columns from the invoiced quantities (delta = received − invoiced).
+    for r in rolls:
+        qkg = r.get("qty_kg")
+        qmt = r.get("qty_mtrs")
+        ikg = r.get("inv_kg")
+        imt = r.get("inv_mtrs")
+        try:
+            r["delta_kg"] = round(float(qkg) - float(ikg), 3) if (qkg is not None and ikg is not None) else None
+        except (TypeError, ValueError):
+            r["delta_kg"] = None
+        try:
+            r["delta_mtrs"] = round(float(qmt) - float(imt), 3) if (qmt is not None and imt is not None) else None
+        except (TypeError, ValueError):
+            r["delta_mtrs"] = None
     return {"sheet": sheet, "rolls": rolls, "fabric": prod,
             "quality_summary": _recv_quality_summary(rolls),
             "missing_conversion": sheet.get("kg_per_mtr") in (None, "")}
