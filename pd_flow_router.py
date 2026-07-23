@@ -126,6 +126,37 @@ def ensure_pd_tables():
             uploaded_at  TIMESTAMPTZ NOT NULL DEFAULT now()
         )""", fetch=False)
 
+    # One-time data seed: if pd_styles_seed.json is present, upsert any styles
+    # that don't yet exist in this DB (ON CONFLICT DO NOTHING preserves prod data).
+    # Runs on every boot but is fully idempotent — existing rows are never touched.
+    import os as _os, json as _json
+    _seed_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "pd_styles_seed.json")
+    if _os.path.exists(_seed_path):
+        try:
+            with open(_seed_path) as _sf:
+                _seed = _json.load(_sf)
+            _rows = _seed.get("pd_styles", [])
+            _COLS = ["id","style_name","brand","category","status","outcome","current_stage",
+                     "stage_entered_at","assignee_user_id","assignee_name","created_by_email",
+                     "created_by_name","created_at","completed_at","style_number","sub_category",
+                     "lifecycle_type","adoption_date","target_order_week","fabric_type","fabric_name",
+                     "sample_colour","theme","print_solid","pattern_maker","order_date","sample_approval_date"]
+            for _r in _rows:
+                _vals = tuple(_r.get(c) for c in _COLS)
+                _placeholders = ",".join(["%s"] * len(_COLS))
+                _db(
+                    f"INSERT INTO pd_styles ({','.join(_COLS)}) VALUES ({_placeholders}) "
+                    f"ON CONFLICT (id) DO NOTHING",
+                    _vals, fetch=False)
+            # Advance the sequence past the highest seeded ID to avoid PK collisions
+            _max_id = max((r.get("id") or 0) for r in _rows) if _rows else 0
+            if _max_id:
+                _db("SELECT setval('pd_styles_id_seq', GREATEST(nextval('pd_styles_id_seq'), %s))",
+                    (_max_id + 1,), fetch=True)
+            log.info("pd_styles seed: %d rows processed, max_id=%d", len(_rows), _max_id)
+        except Exception as _e:
+            log.warning("pd_styles seed failed (non-fatal): %s", _e)
+
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
