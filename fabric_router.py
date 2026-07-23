@@ -5735,8 +5735,7 @@ def _insp_roll_ctx(conn, roll_id):
         raise HTTPException(status_code=404, detail="roll not found")
     return rows[0]
 
-_INSP_TEXT_FIELDS = ("style_article", "construction", "color", "lot_batch",
-                     "buyer", "inspector_name", "face_back", "remarks",
+_INSP_TEXT_FIELDS = ("color", "inspector_name", "face_back", "remarks",
                      "discrepancy_note")
 
 def _insp_collect_fields(body):
@@ -5846,12 +5845,9 @@ def inspection_context(request: Request, roll_id: int = Query(...)):
         "po": {"po_id": ctx.get("po_id"), "po_name": ctx.get("po_name")},
         "fabric": {"name": ctx.get("fabric_name"), "barcode": ctx.get("barcode")},
         "prefill": {"supplier": supplier, "supplier_source": supplier_src,
-                    "color": color, "construction": construction,
-                    "style_article": None, "lot_batch": None, "buyer": None},
+                    "color": color},
         "resolved": {"supplier": bool(supplier), "color": bool(color),
-                     "construction": bool(construction),
-                     "style_article": False, "lot_batch": False,
-                     "buyer": False, "width": width_in is not None,
+                     "width": width_in is not None,
                      "yards": yards is not None},
         "defaults": {"inspector_name": u.get("name") or u.get("email") or "",
                      "acceptable_limit": 40,
@@ -5941,8 +5937,7 @@ def _insp_upsert_draft(conn, ctx, fields, defects, total_points, actor,
             FOR UPDATE
         """, (ctx["sheet_id"], ctx["roll_no"]))
         latest = cur.fetchone()
-        common = (fields["style_article"], fields["construction"],
-                  fields["color"], fields["lot_batch"], fields["buyer"],
+        common = (fields["color"],
                   fields["yards_inspected"], fields["width_inches"],
                   fields["inspector_name"], fields["inspection_date"],
                   fields["face_back"],
@@ -5952,8 +5947,7 @@ def _insp_upsert_draft(conn, ctx, fields, defects, total_points, actor,
         if latest and latest["status"] == "Draft":
             cur.execute("""
                 UPDATE fabric_inspection_tickets SET
-                    style_article=%s, construction=%s, color=%s,
-                    lot_batch=%s, buyer=%s, yards_inspected=%s,
+                    color=%s, yards_inspected=%s,
                     width_inches=%s, inspector_name=%s, inspection_date=%s,
                     face_back=%s, defects=%s, acceptable_limit=%s,
                     remarks=%s, discrepancy_note=%s, total_points=%s,
@@ -5966,13 +5960,12 @@ def _insp_upsert_draft(conn, ctx, fields, defects, total_points, actor,
             cur.execute("""
                 INSERT INTO fabric_inspection_tickets
                     (sheet_id, po_id, roll_no, roll_id, version, ticket_no,
-                     status, style_article, construction, color, lot_batch,
-                     buyer, yards_inspected, width_inches, inspector_name,
-                     inspection_date, face_back, defects, acceptable_limit,
-                     remarks, discrepancy_note, total_points, points_per_100,
-                     grade, created_by)
+                     status, color, yards_inspected, width_inches,
+                     inspector_name, inspection_date, face_back, defects,
+                     acceptable_limit, remarks, discrepancy_note,
+                     total_points, points_per_100, grade, created_by)
                 VALUES (%s,%s,%s,%s,%s,%s,'Draft',
-                        %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 RETURNING *
             """, (ctx["sheet_id"], ctx.get("po_id"), ctx["roll_no"],
                   ctx["roll_id"], version, ticket_no) + common + (actor,))

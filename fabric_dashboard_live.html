@@ -5639,11 +5639,7 @@ function renderInspTicket(pop,ctx,box,rollId){
     +'<div>'+lbl('Width')+'<div style="padding:5px 7px;font-size:13px;background:rgba(0,0,0,.035);border:1px solid var(--border,#e2e2e8);border-radius:6px;min-height:29px;">'+(roll.after_wash_width_cm!=null&&roll.after_wash_width_cm!==''?esc(fmt2(roll.after_wash_width_cm)+' cm / '+fmt2(roll.after_wash_width_cm/2.54)+' in (post-wash)'):'<span class="muted">\u2014 not measured</span>')+'</div><div class="muted" style="font-size:10.5px;">Set on receiving sheet by width_edit grantee or admin.</div></div>'
     +'</div>'
     +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:.5rem;margin-top:.55rem;">'
-    +attr('style_article','Style / Article','insp-style')
-    +attr('construction','Construction','insp-constr')
     +attr('color','Color','insp-color')
-    +attr('lot_batch','Lot / Batch','insp-lot')
-    +attr('buyer','Buyer / Brand','insp-buyer')
     +'</div>'
     +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:.5rem;margin-top:.55rem;">'
     +'<div>'+lbl('Yards inspected')+num('insp-yards',yards,'yards')+'</div>'
@@ -5666,9 +5662,11 @@ function renderInspTicket(pop,ctx,box,rollId){
     +'<div style="margin-top:.4rem;">'+lbl('Quality notes')+'<textarea class="insp-m-notes" rows="2" placeholder="Inspection notes (optional)" style="width:100%;padding:5px 7px;font-size:13px;border:1px solid var(--border,#d7d7de);border-radius:6px;resize:vertical;">'+esc(roll.quality_notes||'')+'</textarea></div>'
     +'<div class="muted" style="font-size:11px;margin-top:2px;">Saved onto the roll together with the ticket (Save draft or Submit).</div>'
     +'</div>'
-    +'<div style="margin-top:.7rem;"><div style="display:flex;align-items:center;gap:.6rem;"><div style="font-weight:700;font-size:12.5px;">Defect log <span class="muted" style="font-weight:400;">(4-point rule: \u22643in=1 · 3\u20136=2 · 6\u20139=3 · &gt;9in or hole=4)</span></div>'
-    +'<button class="btn insp-add-defect" style="margin-left:auto;padding:2px 10px;font-size:12px;">+ Add defect</button></div>'
-    +'<div style="overflow-x:auto;"><table class="data" style="margin-top:4px;width:100%;min-width:480px;"><thead><tr><th style="width:80px;">At (yd)</th><th>Defect</th><th style="width:90px;">Size (in)</th><th style="width:80px;">Side</th><th style="width:52px;" class="r">Pts</th><th style="width:36px;"></th></tr></thead>'
+    +'<div style="margin-top:.7rem;"><div style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;"><div style="font-weight:700;font-size:12.5px;">Defect log <span class="muted" style="font-weight:400;">(4-point rule: \u22643in=1 · 3\u20136=2 · 6\u20139=3 · &gt;9in or hole=4)</span></div>'
+    +'<label style="display:flex;align-items:center;gap:.35rem;font-size:12.5px;font-weight:600;cursor:pointer;margin-left:auto;"><input type="checkbox" class="insp-clean-roll" style="width:15px;height:15px;cursor:pointer;"> Clean Roll \u2014 No Defects</label>'
+    +'<button class="btn insp-add-defect" style="padding:2px 10px;font-size:12px;">+ Add defect</button></div>'
+    +'<div class="insp-clean-label" style="display:none;padding:6px 10px;margin-top:4px;background:rgba(10,125,51,.07);border:1px solid rgba(10,125,51,.3);border-radius:6px;font-weight:700;color:#0a7d33;font-size:13px;">Clean Roll \u2014 No Defects</div>'
+    +'<div class="insp-defect-wrap" style="overflow-x:auto;"><table class="data" style="margin-top:4px;width:100%;min-width:480px;"><thead><tr><th style="width:80px;">At (yd)</th><th>Defect</th><th style="width:90px;">Size (in)</th><th style="width:80px;">Side</th><th style="width:52px;" class="r">Pts</th><th style="width:36px;"></th></tr></thead>'
     +'<tbody class="insp-defects"></tbody></table></div></div>'
     +'<div class="insp-score" style="margin-top:.6rem;padding:.55rem .7rem;border-radius:8px;border:1px solid var(--border,#d7d7de);display:flex;gap:1rem;flex-wrap:wrap;align-items:center;font-size:13px;"></div>'
     +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:.5rem;margin-top:.55rem;">'
@@ -5761,14 +5759,13 @@ function renderInspTicket(pop,ctx,box,rollId){
   pop.querySelector('.insp-add-defect').addEventListener('click',()=>{addDefectRow();recalc();});
   ['.insp-width','.insp-yards','.insp-limit'].forEach(sel=>{const el=pop.querySelector(sel);if(el)el.addEventListener('input',recalc);});
   recalc();
+  const cleanChk=pop.querySelector('.insp-clean-roll'),cleanLbl=pop.querySelector('.insp-clean-label'),defectWrap=pop.querySelector('.insp-defect-wrap'),addDefBtn=pop.querySelector('.insp-add-defect');
+  function applyCleanRoll(){const c=cleanChk.checked;addDefBtn.disabled=c;cleanLbl.style.display=c?'':'none';defectWrap.style.display=c?'none':'';if(c){while(tb.firstChild)tb.removeChild(tb.firstChild);recalc();}}
+  cleanChk.addEventListener('change',applyCleanRoll);
   function payload(){
     return {
       roll_id:rollId,
-      style_article:res.style_article?'':gv('.insp-style'),
-      construction:res.construction?'':gv('.insp-constr'),
       color:res.color?'':gv('.insp-color'),
-      lot_batch:gv('.insp-lot'),
-      buyer:gv('.insp-buyer'),
       yards_inspected:gv('.insp-yards')||null,
       width_inches:gv('.insp-width')||null,
       inspector_name:gv('.insp-inspector'),
