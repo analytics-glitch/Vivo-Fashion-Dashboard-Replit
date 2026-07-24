@@ -10516,6 +10516,808 @@ table.score tfoot td{background:#f0f0f0;font-weight:700;font-size:10px;padding:4
     return Response(content=html, media_type="text/html; charset=utf-8")
 
 
+# ═════════════════════════════════════════════════════════════════════════════
+# Create Products in Odoo — bulk fabric product creation with preview/confirm.
+#
+# The fabric/buying team enters rows in an editable grid (or uploads the .xlsx
+# template). Rows are STAGED in Postgres and validated read-only against live
+# Odoo (required fields, numerics, duplicate SKU/barcode lookup). Nothing is
+# written to Odoo until the user reviews the preview and explicitly confirms;
+# duplicates are ALWAYS skipped, never overwritten. Every batch and per-row
+# outcome is audited to app_activity_log.
+#
+# Access is deliberately narrow: admin role OR the explicit allow-list below —
+# ONE helper (_product_create_allowed), enforced on every endpoint, mirroring
+# the _insp_can_approve pattern (no scattered checks).
+# ═════════════════════════════════════════════════════════════════════════════
+
+_PRODUCT_CREATE_EMAILS = {"bedan@vivofashiongroup.com"}
+
+
+def _product_create_allowed(request):
+    """True when the signed-in user may use the Create Products feature:
+    admin role OR an explicitly allow-listed email. THE single gate."""
+    u = getattr(request.state, "user", None) or {}
+    if (u.get("role") or "").strip().lower() == "admin":
+        return True
+    return (u.get("email") or "").strip().lower() in _PRODUCT_CREATE_EMAILS
+
+
+def _require_product_create(request):
+    if not _product_create_allowed(request):
+        raise HTTPException(status_code=403,
+                            detail="Product creation is restricted")
+
+
+_PC_TABLES_READY = False
+
+
+def _ensure_pc_tables(conn):
+    global _PC_TABLES_READY
+    if _PC_TABLES_READY:
+        return
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS fabric_product_batches (
+                id               SERIAL PRIMARY KEY,
+                created_by       TEXT,
+                created_by_email TEXT,
+                status           TEXT NOT NULL DEFAULT 'preview',
+                created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+                confirmed_at     TIMESTAMPTZ,
+                summary          JSONB
+            )""")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS fabric_product_batch_rows (
+                id            SERIAL PRIMARY KEY,
+                batch_id      INTEGER NOT NULL,
+                row_no        INTEGER NOT NULL,
+                data          JSONB NOT NULL,
+                status        TEXT NOT NULL,
+                message       TEXT,
+                existing_odoo TEXT,
+                odoo_id       BIGINT
+            )""")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_fabric_pc_rows_batch "
+                    "ON fabric_product_batch_rows(batch_id)")
+    conn.commit()
+    _PC_TABLES_READY = True
+
+
+# Grid/template columns. kind: 'text' | 'num'. Required: product_name + sku.
+# Order here IS the template column order and the grid column order.
+_PC_FIELDS = [
+    ("product_name",         "Product Name",          "text", True),
+    ("sku",                  "SKU (default_code)",    "text", True),
+    ("barcode",              "Barcode (blank = SKU)", "text", False),
+    ("sales_price",          "Sales Price (per kg)",  "num",  False),
+    ("cost",                 "Cost (per kg)",         "num",  False),
+    ("fabric_name",          "Fabric Name",           "text", False),
+    ("fabric_status",        "Fabric Status",         "text", False),
+    ("fabric_colour",        "Fabric Colour",         "text", False),
+    ("fabric_supplier_name", "Fabric Supplier Name",  "text", False),
+    ("plain_print",          "Plain/Print",           "text", False),
+    ("source_country",       "Source Country",        "text", False),
+    ("source_city",          "Source City",           "text", False),
+    ("fabric_structure",     "Fabric Structure",      "text", False),
+    ("fabric_category",      "Fabric Category",       "text", False),
+    ("fabric_subcategory",   "Fabric Sub-Category",   "text", False),
+    ("width_m",              "Width (m)",             "num",  False),
+    ("primary_color",        "Primary Color",         "text", False),
+    ("supplier_fabric_code", "Supplier Fabric Code",  "text", False),
+    ("gsm",                  "GSM",                   "num",  False),
+    ("fiber_content",        "Fiber Content %",       "text", False),
+    ("noos_fabric",          "NOOS Fabric (yes/no)",  "text", False),
+]
+_PC_KEYS = [f[0] for f in _PC_FIELDS]
+_PC_LABEL_TO_KEY = {f[1].strip().lower(): f[0] for f in _PC_FIELDS}
+# Also accept the bare key as a header when re-uploading edited files.
+_PC_LABEL_TO_KEY.update({f[0]: f[0] for f in _PC_FIELDS})
+
+# Odoo custom attribute columns (same mapping extract_fabric.py reads).
+# Each is a many2one to an options model; values are resolved by name and
+# created when missing.
+_PC_ATTR_FIELDS = {
+    "plain_print":          "x_vivo_attr_100",
+    "fabric_structure":     "x_vivo_attr_101",
+    "fabric_category":      "x_vivo_attr_102",
+    "fabric_subcategory":   "x_vivo_attr_103",
+    "width_m":              "x_vivo_attr_25",
+    "gsm":                  "x_vivo_attr_38",
+    "primary_color":        "x_vivo_attr_48",
+    "supplier_fabric_code": "x_vivo_attr_43",
+    "fiber_content":        "x_vivo_attr_46",
+    "source_city":          "x_vivo_attr_124",
+    "source_country":       "x_vivo_attr_125",
+    "fabric_supplier_name": "x_vivo_attr_42",   # Vendor/Supplier attribute
+}
+
+# Fields that live in the `product_properties` properties bag (matched by the
+# property definition's display label, case-insensitive substring).
+_PC_PROPERTY_LABELS = {
+    "fabric_name":          ("fabric name",),
+    "fabric_supplier_name": ("fabric supplier name",),
+    "fabric_colour":        ("fabric colour", "fabric color"),
+    "fabric_status":        ("fabric status",),
+    "noos_fabric":          ("noos",),
+}
+
+_PC_FIXED_DEFAULTS = {
+    "purchase_ok": True,
+    "sale_ok": False,
+}
+
+
+def _pc_num(v):
+    """Parse a numeric cell; returns (float_or_None, error_or_None)."""
+    if v in (None, ""):
+        return None, None
+    try:
+        f = float(str(v).replace(",", "").strip())
+    except (TypeError, ValueError):
+        return None, "not a number"
+    if f < 0:
+        return None, "cannot be negative"
+    return f, None
+
+
+def _pc_clean_rows(raw_rows):
+    """Normalize incoming grid rows → list of {key: str} dicts + per-row errors.
+    Returns (rows, None) where each row dict carries _errors: [msgs]."""
+    if not isinstance(raw_rows, list):
+        raise HTTPException(status_code=400, detail="rows must be a list")
+    if len(raw_rows) > 500:
+        raise HTTPException(status_code=400,
+                            detail="at most 500 rows per batch")
+    out = []
+    for i, r in enumerate(raw_rows, start=1):
+        if not isinstance(r, dict):
+            raise HTTPException(status_code=400, detail=f"row {i}: invalid")
+        row, errs = {}, []
+        for key, label, kind, required in _PC_FIELDS:
+            v = r.get(key)
+            if v is None:
+                v = ""
+            v = str(v).strip()
+            if kind == "num" and v:
+                f, err = _pc_num(v)
+                if err:
+                    errs.append(f"{label}: {err}")
+                else:
+                    v = ("%g" % f)
+            row[key] = v[:300]
+            if required and not row[key]:
+                errs.append(f"{label} is required")
+        if not row.get("barcode"):
+            row["barcode"] = row.get("sku", "")
+        if not row.get("fabric_status"):
+            row["fabric_status"] = "Active"
+        row["_errors"] = errs
+        out.append(row)
+    # Intra-batch duplicate SKUs/barcodes (first occurrence wins)
+    seen = {}
+    for i, row in enumerate(out):
+        for k in ("sku", "barcode"):
+            v = (row.get(k) or "").lower()
+            if not v:
+                continue
+            if v in seen and seen[v] != i:
+                row["_errors"].append(
+                    f"duplicate {k.upper()} within this batch (row {seen[v]+1})")
+            else:
+                seen.setdefault(v, i)
+    return out
+
+
+def _pc_find_existing(odoo, rows):
+    """Read-only duplicate lookup against live Odoo. Returns
+    {lowercased code: 'name [default_code]'} for every SKU/barcode that
+    already exists on any product.product."""
+    codes = set()
+    for r in rows:
+        for k in ("sku", "barcode"):
+            v = (r.get(k) or "").strip()
+            if v:
+                codes.add(v)
+    if not codes:
+        return {}
+    db, uid, pwd, models = odoo
+    codes_l = sorted(codes)
+    hits = _odoo_kw(models, db, uid, pwd, "product.product", "search_read",
+                    [["|", ["default_code", "in", codes_l],
+                          ["barcode", "in", codes_l]]],
+                    {"fields": ["id", "name", "default_code", "barcode"],
+                     "limit": 2000})
+    existing = {}
+    for h in hits:
+        ident = "%s (Odoo id %s, SKU %s)" % (
+            h.get("name") or "?", h.get("id"), h.get("default_code") or "—")
+        for k in ("default_code", "barcode"):
+            v = (h.get(k) or "").strip().lower()
+            if v:
+                existing[v] = ident
+    return existing
+
+
+def _pc_apply_dup_status(rows, existing):
+    """Set per-row preview status from validation errors + duplicate lookup."""
+    for r in rows:
+        errs = r.get("_errors") or []
+        dup = None
+        for k in ("sku", "barcode"):
+            v = (r.get(k) or "").strip().lower()
+            if v and v in existing:
+                dup = existing[v]
+                break
+        if errs:
+            r["_status"], r["_message"], r["_existing"] = \
+                "error", "; ".join(errs)[:500], None
+        elif dup:
+            r["_status"] = "duplicate"
+            r["_message"] = "Already exists in Odoo — will be skipped"
+            r["_existing"] = dup[:300]
+        else:
+            r["_status"], r["_message"], r["_existing"] = "will_create", "", None
+    return rows
+
+
+def _pc_summary(rows, key="_status"):
+    s = {}
+    for r in rows:
+        s[r.get(key) or "?"] = s.get(r.get(key) or "?", 0) + 1
+    return s
+
+
+@fabric_router.get("/api/fabric/products/rights")
+def pc_rights(request: Request):
+    return {"allowed": _product_create_allowed(request)}
+
+
+@fabric_router.get("/api/fabric/products/template")
+def pc_template(request: Request):
+    _require_product_create(request)
+    import io
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Products"
+    head_fill = PatternFill("solid", fgColor="1A5C38")
+    for c, (_key, label, kind, required) in enumerate(_PC_FIELDS, start=1):
+        cell = ws.cell(row=1, column=c, value=label + (" *" if required else ""))
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = head_fill
+        cell.alignment = Alignment(vertical="center")
+        ws.column_dimensions[cell.column_letter].width = max(len(label) + 4, 14)
+    ws.freeze_panes = "A2"
+    ex = ["AL SAWAE Linen - Beige", "ALSW-LIN-BEI", "", "950", "620",
+          "AL SAWAE Linen", "Active", "Beige", "Al Sawae Textiles", "Plain",
+          "China", "Guangzhou", "Woven", "Linen", "Linen Blend", "1.45",
+          "Beige", "ALS-889", "180", "55% Linen 45% Viscose", "no"]
+    for c, v in enumerate(ex, start=1):
+        ws.cell(row=2, column=c, value=v).font = Font(italic=True, color="888888")
+    notes = wb.create_sheet("Instructions")
+    notes["A1"] = "Create Products in Odoo — template"
+    notes["A1"].font = Font(bold=True)
+    for i, t in enumerate([
+        "Columns marked * are required (Product Name, SKU).",
+        "Barcode defaults to the SKU when left blank.",
+        "Sales Price / Cost / Width (m) / GSM must be numbers.",
+        "Row 2 of the Products sheet is an EXAMPLE — replace or delete it.",
+        "Fixed values applied automatically: Purchase=on, Sales & POS=off, "
+        "Product Type=Goods (tracked), Unit=kg, Category=02. Raw Materials-Fabric.",
+        "Duplicate SKUs/barcodes already in Odoo are SKIPPED, never overwritten.",
+    ], start=3):
+        notes.cell(row=i, column=1, value="• " + t)
+    buf = io.BytesIO()
+    wb.save(buf)
+    return Response(
+        content=buf.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument"
+                   ".spreadsheetml.sheet",
+        headers={"Content-Disposition":
+                 'attachment; filename="create_products_template.xlsx"'})
+
+
+@fabric_router.post("/api/fabric/products/upload")
+async def pc_upload(request: Request):
+    """Parse an uploaded .xlsx/.csv (raw body; filename via X-Filename header)
+    into grid rows. Nothing is staged — the client loads these into the grid
+    for review and then calls /stage."""
+    _require_product_create(request)
+    import io
+    fname = (request.headers.get("x-filename") or "upload.xlsx").lower()
+    body = await request.body()
+    if not body:
+        raise HTTPException(status_code=400, detail="Empty file")
+    if len(body) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="File too large (max 5 MB)")
+    grid = []
+    try:
+        if fname.endswith(".csv"):
+            import csv
+            text = body.decode("utf-8-sig", errors="replace")
+            grid = [row for row in csv.reader(io.StringIO(text))]
+        else:
+            import openpyxl
+            wb = openpyxl.load_workbook(io.BytesIO(body), read_only=True,
+                                        data_only=True)
+            ws = wb["Products"] if "Products" in wb.sheetnames else wb.active
+            for row in ws.iter_rows(values_only=True):
+                grid.append(["" if v is None else str(v) for v in row])
+            wb.close()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400,
+                            detail=f"Could not read the file: {e}")
+    if not grid:
+        raise HTTPException(status_code=400, detail="The file has no rows")
+    # Map headers → keys (accept label with/without trailing " *", or raw key)
+    hdr = [str(h or "").strip().rstrip("*").strip().lower() for h in grid[0]]
+    col_keys = [_PC_LABEL_TO_KEY.get(h) for h in hdr]
+    if not any(col_keys):
+        raise HTTPException(status_code=400,
+            detail="No recognizable columns — download the template and "
+                   "keep its header row")
+    rows = []
+    for raw in grid[1:]:
+        if not any(str(v or "").strip() for v in raw):
+            continue
+        row = {}
+        for idx, key in enumerate(col_keys):
+            if key and idx < len(raw):
+                row[key] = str(raw[idx] or "").strip()
+        # Drop the untouched example row from the template
+        if row.get("sku") == "ALSW-LIN-BEI" and \
+           row.get("product_name") == "AL SAWAE Linen - Beige":
+            continue
+        rows.append(row)
+    if len(rows) > 500:
+        raise HTTPException(status_code=400,
+                            detail="at most 500 rows per batch")
+    return {"rows": rows, "count": len(rows)}
+
+
+@fabric_router.post("/api/fabric/products/stage")
+def pc_stage(request: Request, body: dict = Body(...)):
+    """Stage a batch: normalize + validate rows, run the READ-ONLY duplicate
+    lookup against live Odoo, persist the batch + per-row preview statuses,
+    and return the preview. Nothing is written to Odoo here."""
+    _require_product_create(request)
+    rows = _pc_clean_rows(body.get("rows"))
+    if not rows:
+        raise HTTPException(status_code=400, detail="No rows to stage")
+    existing = _pc_find_existing(_odoo_connect(), rows)
+    _pc_apply_dup_status(rows, existing)
+    u = getattr(request.state, "user", None) or {}
+    summary = _pc_summary(rows)
+    with _get_conn() as conn:
+        _ensure_pc_tables(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO fabric_product_batches "
+                "(created_by, created_by_email, status, summary) "
+                "VALUES (%s,%s,'preview',%s) RETURNING id",
+                (str(u.get("user_id") or ""), u.get("email"),
+                 psycopg2.extras.Json(summary)))
+            bid = cur.fetchone()[0]
+            for i, r in enumerate(rows, start=1):
+                data = {k: r.get(k, "") for k in _PC_KEYS}
+                cur.execute(
+                    "INSERT INTO fabric_product_batch_rows "
+                    "(batch_id, row_no, data, status, message, existing_odoo) "
+                    "VALUES (%s,%s,%s,%s,%s,%s)",
+                    (bid, i, psycopg2.extras.Json(data), r["_status"],
+                     r.get("_message") or None, r.get("_existing")))
+        conn.commit()
+    _fabric_log_activity(
+        request, "POST", "/api/fabric/products/stage",
+        f"Staged product batch #{bid}: {len(rows)} rows — "
+        f"{summary.get('will_create', 0)} will create, "
+        f"{summary.get('duplicate', 0)} duplicates, "
+        f"{summary.get('error', 0)} errors")
+    return {"batch_id": bid, "summary": summary,
+            "rows": [{"row_no": i + 1,
+                      "data": {k: r.get(k, "") for k in _PC_KEYS},
+                      "status": r["_status"],
+                      "message": r.get("_message") or "",
+                      "existing_odoo": r.get("_existing")}
+                     for i, r in enumerate(rows)]}
+
+
+def _pc_odoo_field_meta(odoo):
+    """Introspect product.template fields once per confirm via fields_get
+    (the integration user is NOT allowed to read ir.model.fields).
+    Returns ({field_name: {ttype, relation, string}}, core_field_names,
+    noos_field_meta_or_None)."""
+    db, uid, pwd, models = odoo
+    try:
+        fg = models.execute_kw(db, uid, pwd, "product.template", "fields_get",
+                               [], {"attributes": ["string", "type",
+                                                   "relation"]})
+    except Exception as e:
+        raise HTTPException(status_code=502,
+                            detail=f"Odoo field introspection failed: {e}")
+    by_name = {}
+    for name, meta in fg.items():
+        by_name[name] = {"name": name,
+                         "ttype": meta.get("type"),
+                         "relation": meta.get("relation"),
+                         "string": meta.get("string") or ""}
+    core_names = {n for n in ("is_storable", "detailed_type",
+                              "available_in_pos") if n in fg}
+    # NOOS lives in a custom attribute field discovered by its label
+    # (x_vivo_attr_45 today, but never hardcode a studio field id).
+    noos_field = None
+    for name in sorted(by_name):
+        if name.startswith("x_vivo_attr_") and \
+                "noos" in by_name[name]["string"].lower():
+            noos_field = by_name[name]
+            break
+    if noos_field is None:
+        for name in sorted(by_name):
+            if name.startswith("x_") and \
+                    "noos" in by_name[name]["string"].lower():
+                noos_field = by_name[name]
+                break
+    return by_name, core_names, noos_field
+
+
+_PC_ATTR_ID_RE = re.compile(r"^x_vivo_attr_(\d+)$")
+
+
+def _pc_attr_scope(field_name):
+    """x_vivo_attr_<N> fields point at vivo.product.attribute.value rows that
+    are SCOPED to vivo.product.attribute id N (option names repeat across
+    attributes, so an unscoped name lookup can bind the wrong attribute)."""
+    m = _PC_ATTR_ID_RE.match(field_name or "")
+    return int(m.group(1)) if m else None
+
+
+def _pc_lookup_one(odoo, model, domain, fields):
+    db, uid, pwd, models = odoo
+    rows = _odoo_kw(models, db, uid, pwd, model, "search_read",
+                    [domain], {"fields": fields, "limit": 1})
+    return rows[0] if rows else None
+
+
+def _pc_resolve_option(odoo, relation, value, cache, attr_id=None):
+    """Resolve a many2one option value by name, creating it when missing.
+    For vivo.product.attribute.value the lookup/create is SCOPED to the
+    owning attribute (attr_id) — option names repeat across attributes.
+    Cached per (relation, attr_id, lowercased value)."""
+    val = str(value).strip()
+    key = (relation, attr_id, val.lower())
+    if key in cache:
+        return cache[key]
+    db, uid, pwd, models = odoo
+    domain = [["name", "=ilike", val]]
+    if attr_id is not None:
+        domain.insert(0, ["attribute_id", "=", attr_id])
+    hit = _pc_lookup_one(odoo, relation, domain, ["id"])
+    if hit:
+        cache[key] = hit["id"]
+        return hit["id"]
+    vals = {"name": val}
+    if attr_id is not None:
+        vals["attribute_id"] = attr_id
+    new_id = _odoo_kw(models, db, uid, pwd, relation, "create", [vals])
+    cache[key] = new_id
+    return new_id
+
+
+def _pc_set_properties(odoo, template_id, row, warnings):
+    """Best-effort write of the product_properties bag (Fabric Name / Supplier
+    Name / Colour / Status / NOOS) by matching each definition's label. A
+    failure here never fails the row — the product exists; we warn instead."""
+    db, uid, pwd, models = odoo
+    try:
+        recs = _odoo_kw(models, db, uid, pwd, "product.template", "read",
+                        [[template_id], ["product_properties"]])
+        props = (recs[0] if recs else {}).get("product_properties")
+        if not isinstance(props, list) or not props:
+            return
+        changed = False
+        for p in props:
+            if not isinstance(p, dict):
+                continue
+            label = str(p.get("string") or "").strip().lower()
+            for key, needles in _PC_PROPERTY_LABELS.items():
+                val = (row.get(key) or "").strip()
+                if not val or not any(n in label for n in needles):
+                    continue
+                ptype = p.get("type")
+                if ptype == "boolean":
+                    p["value"] = val.lower() in ("yes", "y", "true", "1", "on")
+                elif ptype in ("char", "text", None):
+                    p["value"] = val
+                elif ptype == "selection":
+                    opts = p.get("selection") or []
+                    match = next((o[0] for o in opts
+                                  if str(o[1]).strip().lower() == val.lower()),
+                                 None)
+                    if match is None:
+                        warnings.append(
+                            f"property '{p.get('string')}': no option '{val}'")
+                        continue
+                    p["value"] = match
+                elif ptype == "many2one":
+                    rel = p.get("comodel")
+                    if not rel:
+                        warnings.append(
+                            f"property '{p.get('string')}': cannot resolve")
+                        continue
+                    oid = _pc_lookup_one(odoo, rel,
+                                         [["name", "=ilike", val]], ["id"])
+                    if not oid:
+                        oid_new = _odoo_kw(models, db, uid, pwd, rel,
+                                           "create", [{"name": val}])
+                        p["value"] = oid_new
+                    else:
+                        p["value"] = oid["id"]
+                else:
+                    warnings.append(
+                        f"property '{p.get('string')}': unsupported type "
+                        f"{ptype}")
+                    continue
+                changed = True
+        if changed:
+            _odoo_kw(models, db, uid, pwd, "product.template", "write",
+                     [[template_id], {"product_properties": props}])
+    except HTTPException as e:
+        warnings.append(f"properties not set: {e.detail}")
+    except Exception as e:
+        warnings.append(f"properties not set: {e}")
+
+
+@fabric_router.post("/api/fabric/products/batch/{bid}/confirm")
+def pc_confirm(bid: int, request: Request):
+    """The EXPLICIT write step. Re-checks duplicates against live Odoo (not
+    just preview time), then creates product.template records row by row with
+    the fixed defaults + custom attributes. Per-row outcome recorded; the
+    batch summary + every outcome class is audited."""
+    _require_product_create(request)
+    with _get_conn() as conn:
+        _ensure_pc_tables(conn)
+        with conn.cursor() as cur:
+            # Single-shot guard: only a 'preview' batch can be confirmed.
+            cur.execute("UPDATE fabric_product_batches SET status='confirming' "
+                        "WHERE id=%s AND status='preview' RETURNING id", (bid,))
+            if not cur.fetchone():
+                conn.rollback()
+                raise HTTPException(status_code=409,
+                    detail="Batch not found or already confirmed")
+        conn.commit()
+        db_rows = q(conn, "SELECT id, row_no, data, status FROM "
+                          "fabric_product_batch_rows WHERE batch_id=%s "
+                          "ORDER BY row_no", (bid,))
+
+    # Batch setup (connect, re-check duplicates, introspect fields, shared
+    # lookups). A failure HERE must release the 'confirming' guard so the
+    # batch can be retried — nothing has been written to Odoo yet.
+    try:
+        odoo = _odoo_connect(timeout=60)
+        db, uid, pwd, models = odoo
+        rows_data = [dict(r["data"]) for r in db_rows]
+        existing = _pc_find_existing(odoo, rows_data)
+
+        # Shared lookups resolved once per batch
+        fmeta, core_names, noos_field = _pc_odoo_field_meta(odoo)
+        uom = (_pc_lookup_one(odoo, "uom.uom",
+                              [["name", "=ilike", "kg"]], ["id"])
+               or _pc_lookup_one(odoo, "uom.uom",
+                                 [["name", "ilike", "kg"]], ["id"]))
+        if not uom:
+            raise HTTPException(status_code=502,
+                                detail="Could not find the 'kg' unit in Odoo")
+        cat = (_pc_lookup_one(odoo, "product.category",
+                              [["name", "ilike", "Raw Materials-Fabric"]],
+                              ["id"])
+               or {"id": 18})
+    except Exception:
+        try:
+            with _get_conn() as conn2:
+                with conn2.cursor() as cur2:
+                    cur2.execute("UPDATE fabric_product_batches SET "
+                                 "status='preview' WHERE id=%s AND "
+                                 "status='confirming'", (bid,))
+                conn2.commit()
+        except Exception:
+            pass
+        raise
+    opt_cache = {}
+    results = []
+
+    for r in db_rows:
+        row = dict(r["data"])
+        row_no = r["row_no"]
+        prev_status = r["status"]
+        sku = (row.get("sku") or "").strip()
+        bc = (row.get("barcode") or sku).strip()
+        outcome = {"row_id": r["id"], "row_no": row_no, "sku": sku}
+
+        if prev_status == "error":
+            outcome.update(status="failed",
+                           message="Validation errors — not sent to Odoo")
+            results.append(outcome)
+            continue
+        dup = existing.get(sku.lower()) or existing.get(bc.lower())
+        if dup:
+            outcome.update(status="skipped",
+                           message="Duplicate in Odoo — skipped",
+                           existing=dup[:300])
+            results.append(outcome)
+            continue
+
+        warnings = []
+        vals = dict(_PC_FIXED_DEFAULTS)
+        vals.update({
+            "name": row.get("product_name"),
+            "default_code": sku,
+            "barcode": bc or False,
+            "uom_id": uom["id"], "uom_po_id": uom["id"],
+            "categ_id": cat["id"],
+        })
+        if "available_in_pos" in core_names:
+            vals["available_in_pos"] = False
+        # Product Type = Goods, tracked — field names differ across versions
+        if "is_storable" in core_names:
+            vals["type"] = "consu"
+            vals["is_storable"] = True
+        elif "detailed_type" in core_names:
+            vals["detailed_type"] = "product"
+        else:
+            vals["type"] = "product"
+        sp, _ = _pc_num(row.get("sales_price"))
+        cp, _ = _pc_num(row.get("cost"))
+        if sp is not None:
+            vals["list_price"] = sp
+        # NOTE: standard_price (cost) is written AFTER create, best-effort —
+        # with automated valuation a cost write posts a journal entry, which
+        # this integration user may not be allowed to do. That must not fail
+        # the product creation itself.
+        st = (row.get("fabric_status") or "Active").strip().lower()
+        vals["active"] = st not in ("inactive", "archived", "retired")
+
+        try:
+            # Custom many2one attribute columns
+            for key, fname in _PC_ATTR_FIELDS.items():
+                val = (row.get(key) or "").strip()
+                if not val:
+                    continue
+                meta = fmeta.get(fname)
+                if not meta:
+                    warnings.append(f"{fname} not found in Odoo — "
+                                    f"'{key}' not set")
+                    continue
+                if meta.get("ttype") == "many2one" and meta.get("relation"):
+                    vals[fname] = _pc_resolve_option(
+                        odoo, meta["relation"], val, opt_cache,
+                        attr_id=_pc_attr_scope(fname))
+                elif meta.get("ttype") in ("char", "text"):
+                    vals[fname] = val
+                elif meta.get("ttype") in ("float", "integer"):
+                    f, err = _pc_num(val)
+                    if err:
+                        warnings.append(f"{key}: {err} — not set")
+                    else:
+                        vals[fname] = f
+                else:
+                    warnings.append(f"{key}: unsupported field type "
+                                    f"{meta.get('ttype')} — not set")
+            # NOOS flag (introspected — no stable field id known)
+            noos_val = (row.get("noos_fabric") or "").strip().lower()
+            if noos_val and noos_field:
+                truthy = noos_val in ("yes", "y", "true", "1", "on")
+                if noos_field.get("ttype") == "boolean":
+                    vals[noos_field["name"]] = truthy
+                elif noos_field.get("ttype") == "many2one" and \
+                        noos_field.get("relation"):
+                    vals[noos_field["name"]] = _pc_resolve_option(
+                        odoo, noos_field["relation"],
+                        "Yes" if truthy else "No", opt_cache,
+                        attr_id=_pc_attr_scope(noos_field["name"]))
+            elif noos_val and not noos_field:
+                warnings.append("NOOS field not found in Odoo — not set")
+
+            new_id = _odoo_kw(models, db, uid, pwd, "product.template",
+                              "create", [vals])
+            if cp is not None:
+                try:
+                    _odoo_kw(models, db, uid, pwd, "product.template",
+                             "write", [[new_id], {"standard_price": cp}])
+                except Exception as ce:
+                    warnings.append(
+                        "cost not set (Odoo valuation restriction): "
+                        + str(ce)[:120])
+            _pc_set_properties(odoo, new_id, row, warnings)
+            msg = ("Created" + ("; " + "; ".join(warnings) if warnings else ""))
+            outcome.update(status="created", odoo_id=new_id, message=msg[:500])
+            # Guard against a same-batch row reusing this SKU/barcode
+            ident = "%s (Odoo template %s, SKU %s)" % (
+                row.get("product_name") or "?", new_id, sku or "—")
+            for c in (sku, bc):
+                if c:
+                    existing[c.lower()] = ident
+        except HTTPException as e:
+            outcome.update(status="failed", message=str(e.detail)[:500])
+        except Exception as e:
+            outcome.update(status="failed", message=str(e)[:500])
+        results.append(outcome)
+
+    summary = _pc_summary(results, key="status")
+    with _get_conn() as conn:
+        with conn.cursor() as cur:
+            for o in results:
+                cur.execute(
+                    "UPDATE fabric_product_batch_rows SET status=%s, "
+                    "message=%s, odoo_id=%s, existing_odoo=COALESCE(%s, "
+                    "existing_odoo) WHERE id=%s",
+                    (o["status"], o.get("message"), o.get("odoo_id"),
+                     o.get("existing"), o["row_id"]))
+            cur.execute(
+                "UPDATE fabric_product_batches SET status='done', "
+                "confirmed_at=now(), summary=%s WHERE id=%s",
+                (psycopg2.extras.Json(summary), bid))
+        conn.commit()
+
+    def _skus(status):
+        s = ", ".join(o["sku"] or "?" for o in results if o["status"] == status)
+        return s[:400]
+    _fabric_log_activity(
+        request, "POST", f"/api/fabric/products/batch/{bid}/confirm",
+        f"Batch #{bid} confirmed: {summary.get('created', 0)} created, "
+        f"{summary.get('skipped', 0)} skipped, {summary.get('failed', 0)} failed")
+    for status in ("created", "skipped", "failed"):
+        if summary.get(status):
+            _fabric_log_activity(
+                request, "POST", f"/api/fabric/products/batch/{bid}/confirm",
+                f"Batch #{bid} {status} SKUs: {_skus(status)}")
+    return {"batch_id": bid, "summary": summary,
+            "rows": [{k: v for k, v in o.items() if k != "row_id"}
+                     for o in results]}
+
+
+@fabric_router.get("/api/fabric/products/batches")
+def pc_batches(request: Request, limit: int = Query(20, ge=1, le=100)):
+    _require_product_create(request)
+    with _get_conn() as conn:
+        _ensure_pc_tables(conn)
+        rows = q(conn, """
+            SELECT id, created_by_email, status, created_at, confirmed_at,
+                   summary,
+                   (SELECT COUNT(*) FROM fabric_product_batch_rows r
+                     WHERE r.batch_id = b.id) AS row_count
+            FROM fabric_product_batches b
+            ORDER BY id DESC LIMIT %s""", (limit,))
+    for r in rows:
+        r["created_at"] = r["created_at"].isoformat() if r["created_at"] else None
+        r["confirmed_at"] = (r["confirmed_at"].isoformat()
+                             if r["confirmed_at"] else None)
+    return {"batches": rows}
+
+
+@fabric_router.get("/api/fabric/products/batch/{bid}")
+def pc_batch_detail(bid: int, request: Request):
+    _require_product_create(request)
+    with _get_conn() as conn:
+        _ensure_pc_tables(conn)
+        batches = q(conn, "SELECT id, created_by_email, status, created_at, "
+                          "confirmed_at, summary FROM fabric_product_batches "
+                          "WHERE id=%s", (bid,))
+        if not batches:
+            raise HTTPException(status_code=404, detail="Batch not found")
+        rows = q(conn, "SELECT row_no, data, status, message, existing_odoo, "
+                       "odoo_id FROM fabric_product_batch_rows "
+                       "WHERE batch_id=%s ORDER BY row_no", (bid,))
+    b = batches[0]
+    b["created_at"] = b["created_at"].isoformat() if b["created_at"] else None
+    b["confirmed_at"] = (b["confirmed_at"].isoformat()
+                         if b["confirmed_at"] else None)
+    return {"batch": b, "rows": rows}
+
+
 if __name__ == "__main__":
     # Standalone one-time backfill of the Months-of-Cover daily snapshot. The
     # writer is idempotent (upserts on today's EAT capture date), so this is safe

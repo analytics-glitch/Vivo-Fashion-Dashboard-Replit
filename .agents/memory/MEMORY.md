@@ -144,3 +144,4 @@
 - [PA vs RM style universe parity](pa-rm-style-universe.md) — PA activity_where must use soh_stores > 0 OR soh_warehouse > 0 (not soh_current) to match RM's universe and exclude pipeline-only styles.
 - [Customer endpoint universe alignment](customer-endpoint-universe.md) — /customer-frequency and /customer-details must add LOWER(s.customer_type) IN ('new','returning','registered') to match /customers' identified-customer gate, or cross-surface checks fire with a ~15-customer gap.
 - [Async LLM endpoint + BASE_FILTERS alias patterns](retail-desk-ai-analyst-bugs.md) — asyncio.to_thread for blocking LLM calls in async handlers; all_sales must be aliased s when using BASE_FILTERS; JSON schema field order = priority order; HAIKU = claude-haiku-4-5.
+- [Odoo product-create quirks](odoo-product-create-quirks.md) — no ir.model.fields read (use fields_get); x_vivo_attr_N options scoped to attribute_id=N; cost write blocked by auto-valuation (post-create best-effort).

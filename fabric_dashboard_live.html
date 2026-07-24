@@ -551,6 +551,7 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
      <ul class="nav-cluster-items">
       <li><button type="button" class="nav-item" data-page="rolls"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg><span>Rolls</span></button></li>
       <li><button type="button" class="nav-item" data-page="receiving"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"></polyline><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"></path></svg><span>Receiving</span></button></li>
+      <li><button type="button" class="nav-item" data-page="createprod" style="display:none;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="16"></line><line x1="8" y1="12" x2="16" y2="12"></line></svg><span>Create Products</span></button></li>
      </ul>
     </li>
     <li class="nav-more-li" id="nav-more-li">
@@ -1190,6 +1191,71 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
        <tbody id="recv-po-body"><tr><td colspan="11" class="loading">Loading…</td></tr></tbody>
       </table>
      </div>
+    </div>
+   </section>
+
+   <section id="page-createprod" style="display:none;">
+    <div class="card">
+     <div class="section-head"><h3>New products</h3><span class="muted">enter rows below or upload the Excel template — nothing is written to Odoo until you review the preview and click Confirm. Fixed values applied automatically: Purchase on, Sales &amp; POS off, Product Type Goods (tracked), Unit kg, Category 02. Raw Materials-Fabric</span></div>
+     <div id="pc-form-err"></div>
+     <div class="flex" style="flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:10px;">
+      <button class="btn" onclick="pcDownloadTemplate()">Download template (.xlsx)</button>
+      <label class="btn" style="cursor:pointer;">Upload filled template<input type="file" id="pc-file" accept=".xlsx,.csv" style="display:none;" onchange="pcUploadFile(this)"></label>
+      <span style="margin-left:auto;"></span>
+      <button class="btn" onclick="pcAddRow()">+ Add row</button>
+      <button class="btn" onclick="pcClearGrid()">Clear grid</button>
+      <button class="btn btn-primary" id="pc-stage-btn" onclick="pcStage()">Validate &amp; preview</button>
+     </div>
+     <div class="tbl-wrap" style="max-height:420px;overflow:auto;">
+      <table class="data" id="pc-grid" style="min-width:2400px;">
+       <thead><tr id="pc-grid-head"></tr></thead>
+       <tbody id="pc-grid-body"></tbody>
+      </table>
+     </div>
+     <p class="muted" style="font-size:12px;margin-top:6px;">Product Name and SKU are required. Barcode defaults to the SKU. You can paste a block of cells copied from Excel straight into the grid.</p>
+    </div>
+
+    <div class="card" id="pc-preview-card" style="display:none;margin-top:1rem;">
+     <div class="section-head"><h3>Validation preview</h3><span class="muted" id="pc-preview-sub"></span></div>
+     <div id="pc-preview-summary" style="margin-bottom:8px;"></div>
+     <div class="tbl-wrap" style="max-height:380px;overflow:auto;">
+      <table class="data">
+       <thead><tr><th>#</th><th>Status</th><th>Product Name</th><th>SKU</th><th>Barcode</th><th>Details</th></tr></thead>
+       <tbody id="pc-preview-body"></tbody>
+      </table>
+     </div>
+     <div class="flex" style="gap:10px;margin-top:12px;align-items:center;">
+      <button class="btn btn-primary" id="pc-confirm-btn" onclick="pcConfirm()">Confirm — create in Odoo</button>
+      <button class="btn" onclick="pcCancelPreview()">Back to editing</button>
+      <span class="muted" id="pc-confirm-note" style="font-size:12px;"></span>
+     </div>
+    </div>
+
+    <div class="card" id="pc-result-card" style="display:none;margin-top:1rem;">
+     <div class="section-head"><h3>Completion summary</h3><span class="muted" id="pc-result-sub"></span></div>
+     <div id="pc-result-summary" style="margin-bottom:8px;"></div>
+     <div class="tbl-wrap" style="max-height:380px;overflow:auto;">
+      <table class="data">
+       <thead><tr><th>#</th><th>Outcome</th><th>SKU</th><th>Odoo ID</th><th>Details</th></tr></thead>
+       <tbody id="pc-result-body"></tbody>
+      </table>
+     </div>
+     <div class="flex" style="gap:10px;margin-top:12px;">
+      <button class="btn" onclick="pcExportResults('skipped')">Export skipped (CSV)</button>
+      <button class="btn" onclick="pcExportResults('failed')">Export failed (CSV)</button>
+      <button class="btn" onclick="pcStartOver()">Start a new batch</button>
+     </div>
+    </div>
+
+    <div class="card" style="margin-top:1rem;">
+     <div class="section-head"><h3>Recent upload batches</h3><span class="muted">who staged what, when, and the per-row outcomes — every batch is also written to the admin Activity Logs</span></div>
+     <div class="tbl-wrap">
+      <table class="data">
+       <thead><tr><th>Batch</th><th>When</th><th>By</th><th>Status</th><th class="r">Rows</th><th>Summary</th><th></th></tr></thead>
+       <tbody id="pc-batches-body"><tr><td colspan="7" class="muted" style="padding:.8rem;">Loading…</td></tr></tbody>
+      </table>
+     </div>
+     <div id="pc-batch-detail" style="display:none;margin-top:10px;"></div>
     </div>
    </section>
 
@@ -2171,8 +2237,8 @@ function qcExportDetail(){
 }
 
 // ── Navigation ──
-const LOADERS={dashboard:loadFabricMixFirst,register:()=>loadRegister(0),deadstock:loadDeadStock,defects:loadFabricQC,dataquality:loadDataQuality,support:loadSupport,movement:initTrendBuilder,pos:loadPOsPage,suppliers:loadSuppliers,reservations:loadReservations,rolls:()=>loadRolls(0),receiving:loadReceivingBatches};
-const DESCS={dashboard:'Stock Mix — each category\'s share of consumption vs share of available stock',overview:'Fabric stock, value and health across the warehouse',register:'',ageing:'Stock ageing analysis — coming soon',deadstock:'Fabric that has been sitting without movement',defects:'Roll-level quality results from the Receiving tab — pass rates, shrinkage, bleeding and width checks by supplier, fabric and month',dataquality:'Fabrics missing a kg-per-metre conversion — stock or usage that can only be shown in kg',support:'Lining, interfacing & support overrides — excluded from the main dashboard',movement:'Build your own KPI-over-time panels — fabric metrics in metres, page-local date range',pos:'Inbound purchase orders and delivery performance',suppliers:'Outstanding exposure by supplier',reservations:'Earmark fabric for a style, track how long it has been held, then mark it used',rolls:'Physical roll counts recorded by hand per fabric per location, shown next to the Odoo quantity',receiving:'Record the rolls of an arriving fabric delivery, then print the Fabric Receiving Information Sheet'};
+const LOADERS={dashboard:loadFabricMixFirst,register:()=>loadRegister(0),deadstock:loadDeadStock,defects:loadFabricQC,dataquality:loadDataQuality,support:loadSupport,movement:initTrendBuilder,pos:loadPOsPage,suppliers:loadSuppliers,reservations:loadReservations,rolls:()=>loadRolls(0),receiving:loadReceivingBatches,createprod:loadCreateProducts};
+const DESCS={dashboard:'Stock Mix — each category\'s share of consumption vs share of available stock',overview:'Fabric stock, value and health across the warehouse',register:'',ageing:'Stock ageing analysis — coming soon',deadstock:'Fabric that has been sitting without movement',defects:'Roll-level quality results from the Receiving tab — pass rates, shrinkage, bleeding and width checks by supplier, fabric and month',dataquality:'Fabrics missing a kg-per-metre conversion — stock or usage that can only be shown in kg',support:'Lining, interfacing & support overrides — excluded from the main dashboard',movement:'Build your own KPI-over-time panels — fabric metrics in metres, page-local date range',pos:'Inbound purchase orders and delivery performance',suppliers:'Outstanding exposure by supplier',reservations:'Earmark fabric for a style, track how long it has been held, then mark it used',rolls:'Physical roll counts recorded by hand per fabric per location, shown next to the Odoo quantity',receiving:'Record the rolls of an arriving fabric delivery, then print the Fabric Receiving Information Sheet',createprod:'Bulk-create fabric products in Odoo — enter or upload rows, review the validation preview, then confirm. Duplicates are always skipped'};
 const loadedOnce={};
 
 // Bind ONLY real page tabs ([data-page]) — the "More ▾" trigger is also a
@@ -7818,9 +7884,215 @@ async function gateDataQuality(){
   if(sec)sec.style.display='none';
   delete LOADERS.dataquality;
 }
+// ── Create Products in Odoo ──────────────────────────────────────────────────
+// Editable grid + xlsx template + staged preview/confirm flow. The nav tab is
+// HIDDEN by default in the markup and only revealed when the server-side rights
+// endpoint confirms access (admin or the allow-listed email) — fails closed.
+// All interpolated text goes through esc() (XSS rule for this file).
+const PC_COLS=[
+  ['product_name','Product Name *',220],['sku','SKU *',130],['barcode','Barcode',130],
+  ['sales_price','Sales Price/kg',100],['cost','Cost/kg',100],
+  ['fabric_name','Fabric Name',160],['fabric_status','Fabric Status',100],
+  ['fabric_colour','Fabric Colour',110],['fabric_supplier_name','Fabric Supplier Name',160],
+  ['plain_print','Plain/Print',100],['source_country','Source Country',110],
+  ['source_city','Source City',110],['fabric_structure','Fabric Structure',120],
+  ['fabric_category','Fabric Category',120],['fabric_subcategory','Fabric Sub-Category',130],
+  ['width_m','Width (m)',80],['primary_color','Primary Color',110],
+  ['supplier_fabric_code','Supplier Fabric Code',130],['gsm','GSM',70],
+  ['fiber_content','Fiber Content %',140],['noos_fabric','NOOS (yes/no)',90]];
+let pcRows=[], pcBatch=null, pcResults=null, pcBusy=false;
+function pcBlankRow(){const r={};PC_COLS.forEach(c=>r[c[0]]='');r.fabric_status='Active';return r;}
+function pcRenderGrid(){
+  const head=document.getElementById('pc-grid-head');
+  const body=document.getElementById('pc-grid-body');
+  if(!head||!body)return;
+  head.innerHTML='<th style="width:34px;">#</th>'+PC_COLS.map(c=>`<th style="min-width:${c[2]}px;">${esc(c[1])}</th>`).join('')+'<th style="width:36px;"></th>';
+  if(!pcRows.length)pcRows.push(pcBlankRow());
+  body.innerHTML=pcRows.map((r,i)=>
+    `<tr><td class="muted">${i+1}</td>`+
+    PC_COLS.map(c=>`<td style="padding:2px;"><input class="pc-cell" data-i="${i}" data-k="${c[0]}" value="${esc(r[c[0]]||'')}" style="width:100%;min-width:${c[2]-14}px;font-size:12.5px;padding:4px 6px;border:1px solid var(--border,#ddd);border-radius:4px;"></td>`).join('')+
+    `<td><button class="btn" style="padding:2px 8px;" title="Remove row" onclick="pcDelRow(${i})">&times;</button></td></tr>`).join('');
+}
+function pcBindGrid(){
+  const body=document.getElementById('pc-grid-body');
+  if(!body||body._pcBound)return; body._pcBound=true;
+  body.addEventListener('input',e=>{
+    const el=e.target.closest('.pc-cell'); if(!el)return;
+    const i=+el.dataset.i, k=el.dataset.k;
+    if(pcRows[i])pcRows[i][k]=el.value;
+  });
+  // Excel-style block paste: TSV rows/cells fill right+down from the focused cell.
+  body.addEventListener('paste',e=>{
+    const el=e.target.closest('.pc-cell'); if(!el)return;
+    const txt=(e.clipboardData||window.clipboardData).getData('text')||'';
+    if(!/\t|\n/.test(txt))return;              // single value → default behaviour
+    e.preventDefault();
+    const startI=+el.dataset.i, startC=PC_COLS.findIndex(c=>c[0]===el.dataset.k);
+    const lines=txt.replace(/\r/g,'').split('\n').filter(l=>l.length);
+    lines.forEach((line,ri)=>{
+      const i=startI+ri;
+      while(pcRows.length<=i)pcRows.push(pcBlankRow());
+      line.split('\t').forEach((v,ci)=>{
+        const col=PC_COLS[startC+ci];
+        if(col)pcRows[i][col[0]]=v.trim();
+      });
+    });
+    pcRenderGrid();
+  });
+}
+function pcAddRow(){pcRows.push(pcBlankRow());pcRenderGrid();}
+function pcDelRow(i){pcRows.splice(i,1);pcRenderGrid();}
+function pcClearGrid(){if(pcRows.some(r=>PC_COLS.some(c=>c[0]!=='fabric_status'&&(r[c[0]]||'').trim()))&&!confirm('Clear all rows from the grid?'))return;pcRows=[pcBlankRow()];pcRenderGrid();}
+function pcErr(msg){const el=document.getElementById('pc-form-err');if(el)el.innerHTML=msg?('<div class="banner banner-err">'+msg+'</div>'):'';}
+async function pcDownloadTemplate(){
+  try{
+    const r=await fetch('/api/fabric/products/template',{credentials:'include',headers:vivoAuthHeaders()});
+    if(!r.ok)throw new Error('http '+r.status);
+    const blob=await r.blob();
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);a.download='create_products_template.xlsx';
+    document.body.appendChild(a);a.click();a.remove();
+    setTimeout(()=>URL.revokeObjectURL(a.href),4000);
+  }catch(e){pcErr('Could not download the template. Please try again.');}
+}
+async function pcUploadFile(input){
+  const f=input.files&&input.files[0]; input.value='';
+  if(!f)return;
+  pcErr('');
+  try{
+    const r=await fetch('/api/fabric/products/upload',{method:'POST',credentials:'include',
+      headers:vivoAuthHeaders({'X-Filename':encodeURIComponent(f.name),'Content-Type':'application/octet-stream'}),body:f});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok)throw new Error(d.detail||('http '+r.status));
+    pcRows=(d.rows&&d.rows.length)?d.rows.map(x=>Object.assign(pcBlankRow(),x)):[pcBlankRow()];
+    pcRenderGrid();
+    pcCancelPreview();
+    pcErr('');
+  }catch(e){pcErr('Upload failed: '+esc(e.message||'unknown error'));}
+}
+const PC_BADGE={will_create:['Will create','#1a5c38'],duplicate:['Duplicate — skipped','#d97706'],error:['Error','#c0392b'],created:['Created','#1a5c38'],skipped:['Skipped (duplicate)','#d97706'],failed:['Failed','#c0392b']};
+function pcBadge(s){const b=PC_BADGE[s]||[s,'#666'];return `<span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:11.5px;font-weight:700;color:#fff;background:${b[1]}">${esc(b[0])}</span>`;}
+function pcSummaryHtml(sm){
+  const parts=[];
+  [['will_create','will create'],['created','created'],['duplicate','duplicates (skipped)'],['skipped','skipped (duplicates)'],['error','with errors'],['failed','failed']].forEach(p=>{
+    if(sm&&sm[p[0]])parts.push('<b>'+sm[p[0]]+'</b> '+esc(p[1]));
+  });
+  return parts.join(' &middot; ')||'—';
+}
+async function pcStage(){
+  if(pcBusy)return;
+  const rows=pcRows.filter(r=>PC_COLS.some(c=>c[0]!=='fabric_status'&&(r[c[0]]||'').trim()));
+  if(!rows.length){pcErr('Add at least one row first.');return;}
+  pcErr(''); pcBusy=true;
+  const btn=document.getElementById('pc-stage-btn');
+  if(btn){btn.disabled=true;btn.textContent='Validating…';}
+  try{
+    const d=await fetch('/api/fabric/products/stage',{method:'POST',credentials:'include',
+      headers:vivoAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({rows})});
+    const j=await d.json().catch(()=>({}));
+    if(!d.ok)throw new Error(j.detail||('http '+d.status));
+    pcBatch=j; pcResults=null;
+    document.getElementById('pc-result-card').style.display='none';
+    const card=document.getElementById('pc-preview-card');
+    card.style.display='';
+    document.getElementById('pc-preview-sub').textContent='Batch #'+j.batch_id+' — read-only check against live Odoo. Nothing has been created yet.';
+    document.getElementById('pc-preview-summary').innerHTML=pcSummaryHtml(j.summary);
+    document.getElementById('pc-preview-body').innerHTML=j.rows.map(r=>
+      `<tr><td>${r.row_no}</td><td>${pcBadge(r.status)}</td><td>${esc(r.data.product_name||'')}</td><td>${esc(r.data.sku||'')}</td><td>${esc(r.data.barcode||'')}</td><td style="font-size:12px;">${esc(r.message||'')}${r.existing_odoo?(' — exists as '+esc(r.existing_odoo)):''}</td></tr>`).join('');
+    const n=(j.summary&&j.summary.will_create)||0;
+    const cbtn=document.getElementById('pc-confirm-btn');
+    cbtn.disabled=!n;
+    document.getElementById('pc-confirm-note').textContent=n?('Confirm will create '+n+' product'+(n===1?'':'s')+' in LIVE Odoo. Duplicates and error rows are never sent.'):'No creatable rows — fix the errors above and validate again.';
+    card.scrollIntoView({behavior:'smooth',block:'start'});
+  }catch(e){pcErr('Validation failed: '+esc(e.message||'unknown error'));}
+  finally{pcBusy=false;if(btn){btn.disabled=false;btn.textContent='Validate & preview';}}
+}
+function pcCancelPreview(){pcBatch=null;const c=document.getElementById('pc-preview-card');if(c)c.style.display='none';}
+async function pcConfirm(){
+  if(pcBusy||!pcBatch)return;
+  const n=(pcBatch.summary&&pcBatch.summary.will_create)||0;
+  if(!confirm('Create '+n+' product'+(n===1?'':'s')+' in LIVE Odoo now? Duplicates will be skipped.'))return;
+  pcBusy=true;
+  const btn=document.getElementById('pc-confirm-btn');
+  if(btn){btn.disabled=true;btn.textContent='Creating in Odoo…';}
+  try{
+    const d=await fetch('/api/fabric/products/batch/'+pcBatch.batch_id+'/confirm',{method:'POST',credentials:'include',headers:vivoAuthHeaders()});
+    const j=await d.json().catch(()=>({}));
+    if(!d.ok)throw new Error(j.detail||('http '+d.status));
+    pcResults=j;
+    document.getElementById('pc-preview-card').style.display='none';
+    const card=document.getElementById('pc-result-card');
+    card.style.display='';
+    document.getElementById('pc-result-sub').textContent='Batch #'+j.batch_id;
+    document.getElementById('pc-result-summary').innerHTML=pcSummaryHtml(j.summary);
+    document.getElementById('pc-result-body').innerHTML=j.rows.map(r=>
+      `<tr><td>${r.row_no}</td><td>${pcBadge(r.status)}</td><td>${esc(r.sku||'')}</td><td>${r.odoo_id?esc(String(r.odoo_id)):'—'}</td><td style="font-size:12px;">${esc(r.message||'')}${r.existing?(' — '+esc(r.existing)):''}</td></tr>`).join('');
+    card.scrollIntoView({behavior:'smooth',block:'start'});
+    loadPcBatches();
+  }catch(e){pcErr('Create failed: '+esc(e.message||'unknown error'));}
+  finally{pcBusy=false;if(btn){btn.disabled=false;btn.textContent='Confirm — create in Odoo';}}
+}
+function pcExportResults(kind){
+  if(!pcResults)return;
+  const rows=pcResults.rows.filter(r=>r.status===kind);
+  if(!rows.length){alert('No '+kind+' rows in this batch.');return;}
+  const lines=[['Row','SKU','Status','Details','Existing Odoo product'].join(',')];
+  rows.forEach(r=>lines.push([r.row_no,JSON.stringify(r.sku||''),r.status,JSON.stringify(r.message||''),JSON.stringify(r.existing||'')].join(',')));
+  const blob=new Blob([lines.join('\n')],{type:'text/csv'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);a.download='batch-'+pcResults.batch_id+'-'+kind+'.csv';
+  document.body.appendChild(a);a.click();a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href),4000);
+}
+function pcStartOver(){
+  pcRows=[pcBlankRow()];pcBatch=null;pcResults=null;
+  pcRenderGrid();
+  document.getElementById('pc-preview-card').style.display='none';
+  document.getElementById('pc-result-card').style.display='none';
+  pcErr('');
+}
+async function loadPcBatches(){
+  const body=document.getElementById('pc-batches-body'); if(!body)return;
+  try{
+    const d=await apiFetch('/api/fabric/products/batches');
+    const bs=d.batches||[];
+    body.innerHTML=bs.length?bs.map(b=>
+      `<tr><td>#${b.id}</td><td>${esc(fmtNairobi(b.created_at)||'')}</td><td>${esc(b.created_by_email||'—')}</td><td>${pcBadge(b.status==='done'?'created':b.status)||esc(b.status)}</td><td class="r">${b.row_count}</td><td style="font-size:12px;">${pcSummaryHtml(b.summary)}</td><td><button class="btn" style="padding:2px 10px;font-size:12px;" onclick="pcOpenBatch(${b.id})">View rows</button></td></tr>`).join('')
+      :'<tr><td colspan="7" class="muted" style="padding:.8rem;">No batches yet.</td></tr>';
+  }catch(e){body.innerHTML='<tr><td colspan="7" style="padding:.8rem;color:var(--danger);">'+errHtml(e)+'</td></tr>';}
+}
+async function pcOpenBatch(id){
+  const box=document.getElementById('pc-batch-detail'); if(!box)return;
+  box.style.display='';box.innerHTML='<p class="muted">Loading batch #'+id+'…</p>';
+  try{
+    const d=await apiFetch('/api/fabric/products/batch/'+id);
+    box.innerHTML='<div class="section-head"><h3 style="font-size:14px;">Batch #'+id+' rows</h3><span style="margin-left:auto;"></span><button class="btn" style="padding:2px 10px;font-size:12px;" onclick="document.getElementById(\'pc-batch-detail\').style.display=\'none\'">Close</button></div>'+
+      '<div class="tbl-wrap" style="max-height:320px;overflow:auto;"><table class="data"><thead><tr><th>#</th><th>Status</th><th>Product Name</th><th>SKU</th><th>Odoo ID</th><th>Details</th></tr></thead><tbody>'+
+      (d.rows||[]).map(r=>`<tr><td>${r.row_no}</td><td>${pcBadge(r.status)}</td><td>${esc((r.data&&r.data.product_name)||'')}</td><td>${esc((r.data&&r.data.sku)||'')}</td><td>${r.odoo_id?esc(String(r.odoo_id)):'—'}</td><td style="font-size:12px;">${esc(r.message||'')}${r.existing_odoo?(' — '+esc(r.existing_odoo)):''}</td></tr>`).join('')+
+      '</tbody></table></div>';
+  }catch(e){box.innerHTML='<div class="banner banner-err">'+errHtml(e)+'</div>';}
+}
+function loadCreateProducts(){
+  pcRenderGrid();pcBindGrid();loadPcBatches();
+}
+// Fails closed: the tab stays hidden unless the rights endpoint says allowed.
+async function gateCreateProducts(){
+  let ok=false;
+  try{const rt=await apiFetch('/api/fabric/products/rights');ok=!!(rt&&rt.allowed);}catch(e){ok=false;}
+  const tab=document.querySelector('.nav-item[data-page="createprod"]');
+  if(ok){ if(tab)tab.style.display=''; }
+  else{
+    if(tab)tab.style.display='none';
+    const sec=document.getElementById('page-createprod');
+    if(sec)sec.style.display='none';
+    delete LOADERS.createprod;
+  }
+}
 async function init(){
   // Restrict the admin-only Data Quality tab before wiring anything else up.
   await gateDataQuality();
+  // Reveal the Create Products tab only for permitted users (non-blocking).
+  gateCreateProducts();
   // Column picker + close-on-outside-click
   buildColPicker();
   document.addEventListener('click',e=>{
