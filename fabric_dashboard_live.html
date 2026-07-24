@@ -4666,7 +4666,7 @@ async function saveReceivingSheet(alsoPrint){
     if(alsoPrint&&res.sheet_id)reprintReceivingSheet(res.sheet_id);
   }catch(e){showRecvErr(e.message==='auth'?'Your session has expired. Sign in again.':('Could not save: '+e.message));}
 }
-let recvIsAdmin=false, recvQualityOnly=false, recvCanApproveDelivery=false, recvCanInvoice=false, recvPoMeta={};
+let recvIsAdmin=false, recvQualityOnly=false, recvCanApproveDelivery=false, recvCanInvoice=false, recvCanInlineWidth=false, recvPoMeta={};
 window._fabricPricingAdmin=false;
 async function loadReceivingBatches(){
   recvBindOnce();
@@ -4679,8 +4679,9 @@ async function loadReceivingBatches(){
     recvQualityOnly=!!(rt&&rt.quality_only);
     recvCanApproveDelivery=!!(rt&&rt.can_approve_delivery);
     recvCanInvoice=!!(rt&&rt.can_invoice);
+    recvCanInlineWidth=!!(rt&&rt.can_inline_width);
     window._fabricPricingAdmin=!!(rt&&rt.admin);
-  }catch(_){recvIsAdmin=false;recvQualityOnly=false;recvCanInvoice=false;window._fabricPricingAdmin=false;}
+  }catch(_){recvIsAdmin=false;recvQualityOnly=false;recvCanInvoice=false;recvCanInlineWidth=false;window._fabricPricingAdmin=false;}
   // Quality-only users (costing) record inspection results but cannot add
   // new rolls — hide the entry form (also enforced server-side).
   const entry=document.getElementById('recv-entry-card');
@@ -5452,6 +5453,52 @@ async function loadRecvPoBatches(){
             alert('Could not save invoiced quantity: '+err.message);
           });
       });
+      // Inline Width (CM) inputs — bedan/hagai only (server-enforced too).
+      // Enter commits by blurring; save fires on focusout.
+      body.addEventListener('keydown',e=>{
+        if(e.key==='Enter'&&e.target.closest('input.recv-width-input'))e.target.blur();
+      });
+      body.addEventListener('focusout',e=>{
+        const inp=e.target.closest('input.recv-width-input');
+        if(!inp)return;
+        const rollId=Number(inp.dataset.rollId);
+        if(!rollId)return;
+        const raw=inp.value.trim();
+        const val=raw===''?null:parseFloat(raw);
+        if(raw!==''&&(isNaN(val)||val<=0||val>500)){inp.style.borderColor='var(--danger,#dc2626)';return;}
+        inp.style.borderColor='';
+        // Skip no-op saves (compare at 0.1cm precision).
+        const prev=inp.defaultValue.trim()===''?null:parseFloat(inp.defaultValue);
+        if((val==null&&prev==null)||(val!=null&&prev!=null&&Math.abs(val-prev)<0.05))return;
+        inp.style.opacity='0.6';
+        apiFetch('/api/fabric/receiving/roll/'+rollId+'/width-inline',
+                 {method:'PUT',headers:{'Content-Type':'application/json'},
+                  body:JSON.stringify({width_cm:val})})
+          .then(res=>{
+            inp.style.opacity='';
+            inp.style.borderColor='var(--accent,#1a5c38)';
+            setTimeout(()=>{if(inp)inp.style.borderColor='';},1500);
+            // Patch the cached detail so the Min width line updates on re-render.
+            const box=inp.closest('.recv-po-detail');
+            if(box&&box.dataset.cached){
+              const det=JSON.parse(box.dataset.cached);
+              (det.fabrics||[]).forEach(g=>{
+                (g.sheets||[]).forEach(s=>{
+                  (s.rolls||[]).forEach(r=>{
+                    if(Number(r.roll_id)===rollId)r.width_measured_m=res.width_measured_m;
+                  });
+                });
+              });
+              box.dataset.cached=JSON.stringify(det);
+              renderRecvPoDetail(box,det,box.dataset.poDetail);
+            }
+          })
+          .catch(err=>{
+            inp.style.opacity='';
+            inp.style.borderColor='var(--danger,#dc2626)';
+            alert('Could not save width: '+err.message);
+          });
+      });
     }
     // Load every expanded group's drill-down (Postgres-only endpoint).
     recvPoExpanded.forEach(async k=>{
@@ -5552,7 +5599,7 @@ function renderRecvPoDetail(box,det,poKey){
         const invMtrCell=recvCanInvoice
           ?`<input type="number" step="0.1" min="0" class="recv-inv-input" data-roll-id="${Number(r.roll_id)}" data-field="inv_mtrs" value="${r.inv_mtrs!=null?r.inv_mtrs:''}" placeholder="—" style="width:62px;padding:2px 4px;font-size:12px;border:1px solid var(--border,#d7d7de);border-radius:4px;text-align:right;">`
           :invMtrDisplay;
-        return `<tr><td>${esc(String(r.roll_no))}</td><td class="r">${fmt2(r.qty_kg)}</td><td class="r">${r.qty_mtrs!=null?fmt1(r.qty_mtrs):'<span class="muted">—</span>'}</td><td class="r">${invKgCell}</td><td class="r">${dKgHtml}</td><td class="r">${invMtrCell}</td><td class="r">${dMtrHtml}</td><td class="r">${widCm==='—'?'<span class="muted">—</span>':esc(widCm)}</td><td>${q}${inspBadge}${measHtml}${r.quality_notes?'<div class="muted" style="font-size:11px;">'+esc(r.quality_notes)+'</div>':''}</td><td style="white-space:nowrap;">${racts}</td></tr>`;
+        return `<tr><td>${esc(String(r.roll_no))}</td><td class="r">${fmt2(r.qty_kg)}</td><td class="r">${r.qty_mtrs!=null?fmt1(r.qty_mtrs):'<span class="muted">—</span>'}</td><td class="r">${invKgCell}</td><td class="r">${dKgHtml}</td><td class="r">${invMtrCell}</td><td class="r">${dMtrHtml}</td><td class="r">${recvCanInlineWidth?`<input type="number" step="0.1" min="0" max="500" class="recv-width-input" data-roll-id="${Number(r.roll_id)}" value="${r.width_measured_m!=null&&r.width_measured_m!==''?(parseFloat(r.width_measured_m)*100).toFixed(1):''}" placeholder="—" style="width:62px;padding:2px 4px;font-size:12px;border:1px solid var(--border,#d7d7de);border-radius:4px;text-align:right;">`:(widCm==='—'?'<span class="muted">—</span>':esc(widCm))}</td><td>${q}${inspBadge}${measHtml}${r.quality_notes?'<div class="muted" style="font-size:11px;">'+esc(r.quality_notes)+'</div>':''}</td><td style="white-space:nowrap;">${racts}</td></tr>`;
       }).join('');
       const metaBits=(g.sheets||[]).map(s=>{
         const edited=s.updated_at?` · edited ${esc(s.updated_at)}${s.updated_by_name?' by '+esc(s.updated_by_name):''}`:'';
@@ -5611,7 +5658,7 @@ function recvAuditHtml(audit){
   const LABELS={rolls_added:'Rolls added',roll_edited:'Roll edited',roll_deleted:'Roll deleted',
                 sheet_edited:'Sheet edited (admin)',sheet_deleted:'Sheet deleted',odoo_upload:'Odoo upload',
                 landed_cost_created:'Landed cost draft created',quality_updated:'Quality updated',
-                delivery_approved:'Delivery approved'};
+                delivery_approved:'Delivery approved',width_inline_updated:'Width updated'};
   const lines=audit.map(a=>{
     const dd=a.details||{};
     let what='';
@@ -5622,6 +5669,7 @@ function recvAuditHtml(audit){
     else if(a.action==='sheet_deleted')what=fmt(dd.rolls)+' rolls · '+fmt2(dd.total_kg)+' kg';
     else if(a.action==='odoo_upload')what=String(dd.status||'');
     else if(a.action==='landed_cost_created')what=(dd.lc_name?String(dd.lc_name)+' · ':'')+fmt2(dd.total_kes)+' KES · '+(dd.pickings||[]).join(', ');
+    else if(a.action==='width_inline_updated')what='roll '+dd.roll_no+': '+(dd.old_cm!=null?fmt1(dd.old_cm):'—')+' → '+(dd.new_cm!=null?fmt1(dd.new_cm):'(cleared)')+' cm';
     else if(a.action==='quality_updated'){
       what='roll '+dd.roll_no+': '+(dd.old_status||'Pending')+' → '+(dd.new_status||'Pending');
       if((dd.new_notes||'')!==(dd.old_notes||''))what+=' · notes: '+(dd.new_notes||'(cleared)');

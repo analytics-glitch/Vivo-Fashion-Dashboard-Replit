@@ -5884,6 +5884,27 @@ def _recv_quality_only(request):
 # so the privilege is narrow and explicit.
 _INVOICE_EMAIL = "bedan@vivofashiongroup.com"
 
+# Users allowed to type measured widths directly into the Receiving table's
+# Width (CM) column (inline edit path). Strictly email-gated like the
+# invoice fields — narrow and explicit, independent of the width_edit
+# grant system used by the inspection form.
+_INLINE_WIDTH_EMAILS = {"bedan@vivofashiongroup.com",
+                        "hagai@vivofashiongroup.com"}
+
+def _recv_can_inline_width(request):
+    """True when the signed-in user may edit measured width inline on the
+    Receiving table (bedan@ and hagai@ only)."""
+    u = getattr(request.state, "user", None) or {}
+    return (u.get("email") or "").strip().lower() in _INLINE_WIDTH_EMAILS
+
+def _recv_block_non_inline_width(request):
+    """403 any inline width write from a user outside the allowlist."""
+    if not _recv_can_inline_width(request):
+        raise HTTPException(status_code=403,
+            detail="Only bedan@vivofashiongroup.com and "
+                   "hagai@vivofashiongroup.com may edit widths inline "
+                   "on the Receiving table")
+
 def _recv_is_bedan(request):
     """True when the signed-in user is bedan@vivofashiongroup.com (the only
     person authorised to enter invoiced quantities and toggle the
@@ -5924,6 +5945,7 @@ def receiving_rights(request: Request):
             "can_edit_width": _recv_can_edit_width(request),
             "can_roll_no_edit": _recv_can_roll_no_edit(request),
             "can_invoice": _recv_is_bedan(request),
+            "can_inline_width": _recv_can_inline_width(request),
             "user_id": str(u.get("user_id") or "")}
 
 
@@ -7028,6 +7050,70 @@ def receiving_roll_invoiced(roll_id: int, request: Request,
             "inv_mtrs": inv_mtrs_v,
             "delta_kg": delta_kg,
             "delta_mtrs": delta_mtrs}
+
+@fabric_router.put("/api/fabric/receiving/roll/{roll_id}/width-inline")
+def receiving_roll_width_inline(roll_id: int, request: Request,
+                                body: dict = Body(...)):
+    """Inline Width (CM) edit from the Receiving table. Writes the roll's
+    measured width (width_measured_m — the SAME field the inspection form
+    writes), taking centimetres in and storing metres.
+    Gated to bedan@ and hagai@vivofashiongroup.com only — any other user
+    gets 403. Accepts {"width_cm": <number|null>} (null clears the value).
+    Audited to fabric_recv_audit with old/new cm values."""
+    _recv_block_non_inline_width(request)
+    raw = body.get("width_cm")
+    if raw in (None, ""):
+        width_cm = None
+    else:
+        try:
+            width_cm = float(raw)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400,
+                detail="width_cm must be a number")
+        if not (0 < width_cm <= 500):
+            raise HTTPException(status_code=400,
+                detail="width_cm must be a positive number (0–500)")
+        width_cm = round(width_cm, 1)
+    _uid, name = _fabric_actor(request)
+    with _get_conn() as conn:
+        _ensure_receiving_tables(conn)
+        rolls = q(conn, """
+            SELECT r.id, r.sheet_id, r.roll_no, r.width_measured_m,
+                   s.fabric_name, s.po_id
+            FROM fabric_receiving_rolls r
+            JOIN fabric_receiving_sheets s ON s.id = r.sheet_id
+            WHERE r.id=%s AND r.deleted_at IS NULL AND s.deleted_at IS NULL
+        """, (roll_id,))
+        if not rolls:
+            raise HTTPException(status_code=404, detail="roll not found")
+        roll = rolls[0]
+        old_m = roll.get("width_measured_m")
+        old_cm = (round(float(old_m) * 100, 1)
+                  if old_m not in (None, "") else None)
+        new_m = (round(width_cm / 100.0, 4)
+                 if width_cm is not None else None)
+        po_id = roll.get("po_id")
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE fabric_receiving_rolls
+                   SET width_measured_m=%s
+                 WHERE id=%s
+            """, (new_m, roll_id))
+            _recv_audit(cur, po_id, roll["sheet_id"], roll.get("fabric_name"),
+                        "width_inline_updated",
+                        {"roll_no": roll["roll_no"],
+                         "old_cm": old_cm,
+                         "new_cm": width_cm},
+                        name)
+        conn.commit()
+    _fabric_log_activity(request, "PUT",
+                         f"/api/fabric/receiving/roll/{roll_id}/width-inline",
+                         f"width_measured_m: {old_cm} -> {width_cm} cm")
+    return {"ok": True, "roll_id": roll_id,
+            "roll_no": roll["roll_no"],
+            "width_measured_m": new_m,
+            "width_cm": width_cm}
+
 
 _INVOICE_STATUSES = {"credit_note", "back_order"}
 
