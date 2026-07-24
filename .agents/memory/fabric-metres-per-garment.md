@@ -27,6 +27,9 @@ KPI on the Fabric Overview = Σ(main-fabric metres consumed across qualifying Do
 - Odoo product link = `f"{ODOO_URL}/web#id={component_id}&model=product.product&view_type=form"` — `component_id` (mo_fabric_consumption) == `raw_fabric_products.id` == Odoo product.product id. Helper `_odoo_product_url` returns None when ODOO_URL unset (omit link, don't render a broken one).
 - The endpoint still returns the field `mos_excluded_missing_conversion`, but that count is now "MOs that fell back" (the KPI no longer drops them); keep the field name for the frontend even though the user-facing wording says "fell back".
 
+## By-category breakdown join rule
+Garment category (Margin Analysis taxonomy: Dresses/Bottoms/Tops/Outerwear/Skirts…) must be looked up via `all_products_clean.sku = mo_fabric_consumption.finished_sku` — NEVER via style_name: MO style names embed fabric + colour ("… in Rib - Dark Olive") and match 0 product-master styles. Shared `_MPG_CATEGORY_SUBQ` + `_mpg_category_where` in fabric_router; MOs with no SKU match go to an explicit "Uncategorised" bucket so the breakdown reconciles to the headline (user-confirmed choice).
+
 ## SQL three-valued-logic trap (why the flagging is in Python, not SQL)
 A naive `bool_or(NOT ((uom IN kg AND kpm>0) OR uom IN metres))` SILENTLY MISSES rows where `kpm IS NULL` (fabric not in raw_fabric_products): `kpm>0` is NULL → the whole NOT is NULL → `bool_or` ignores NULL, so those MOs are wrongly treated as fully-convertible. The endpoint loops in Python and treats `kpm` None/0 as "bad" — this is why 90-day shows ~332 excluded MOs that a SQL bool_or reported as 0.
 **Why:** preserves the "skip/flag components with no usable conversion" requirement. **How to apply:** any future aggregate that flags "missing conversion" must treat NULL kpm as missing explicitly, not rely on bool_or over a NULL-producing comparison.

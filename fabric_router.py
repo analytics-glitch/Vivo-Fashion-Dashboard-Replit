@@ -1864,29 +1864,51 @@ def metres_per_garment_xlsx(days: int = Query(default=30)):
     )
 
 
+# ── Avg metres / garment: category lookup shared by the by-category endpoints ─
+# Category comes from all_products_clean.category joined on the MO's finished
+# garment SKU (finished_sku = apc.sku). NOT on style_name: MO style names embed
+# fabric + colour ("… in Rib - Dark Olive") and never match the product master.
+# MOs whose finished SKU is missing from the product master fall into an
+# explicit "Uncategorised" bucket so the breakdown reconciles to the headline.
+_MPG_CATEGORY_SUBQ = """
+    SELECT DISTINCT ON (sku) sku, category
+    FROM all_products_clean
+    WHERE category IS NOT NULL AND trim(category) != ''
+    ORDER BY sku, category
+"""
+_MPG_UNCATEGORISED = "Uncategorised"
+
+
+def _mpg_category_where(category, params):
+    """WHERE fragment for an optional category filter (handles Uncategorised)."""
+    if not category:
+        return ""
+    if category.strip().lower() == _MPG_UNCATEGORISED.lower():
+        return "AND apc.category IS NULL"
+    params.append(category)
+    return "AND lower(trim(apc.category)) = lower(trim(%s))"
+
+
 # ── Avg metres / garment: distinct garment categories in Done-DPS MOs ────────
-# Returns the sorted list of garment categories (from all_products_clean.category
-# joined on style_name) that appear in qualifying Done-DPS MOs in the rolling
-# window. Used to populate the by-category card's dropdown.
+# Returns the sorted list of garment categories that appear in qualifying
+# Done-DPS MOs in the rolling window (+ "Uncategorised" when applicable).
+# Used to populate the by-category card's dropdown.
 @fabric_router.get("/api/fabric/metres-per-garment-categories")
 def metres_per_garment_categories(days: int = Query(default=30)):
     days = max(1, min(int(days or 30), 730))
     with _get_conn() as conn:
         rows = q(conn, """
-            SELECT DISTINCT apc.category
+            SELECT apc.category, COUNT(*) FILTER (WHERE apc.category IS NULL) AS n_uncat
             FROM mo_fabric_consumption c
-            JOIN (
-                SELECT DISTINCT ON (lower(trim(style_name)))
-                    lower(trim(style_name)) AS style_key,
-                    category
-                FROM all_products_clean
-                WHERE category IS NOT NULL AND trim(category) != ''
-                ORDER BY lower(trim(style_name)), category
-            ) apc ON lower(trim(c.style_name)) = apc.style_key
-            WHERE c.done_date >= CURRENT_DATE - (%s || ' days')::interval
+            LEFT JOIN (%s) apc ON apc.sku = c.finished_sku
+            WHERE c.done_date >= CURRENT_DATE - (%%s || ' days')::interval
+            GROUP BY apc.category
             ORDER BY apc.category
-        """, [days])
-    return {"categories": [r["category"] for r in rows], "window_days": days}
+        """ % _MPG_CATEGORY_SUBQ, [days])
+    cats = sorted({r["category"] for r in rows if r["category"]})
+    if any(r["category"] is None for r in rows):
+        cats.append(_MPG_UNCATEGORISED)
+    return {"categories": cats, "window_days": days}
 
 
 # ── Avg metres / garment: by garment category ────────────────────────────────
@@ -1911,15 +1933,12 @@ def metres_per_garment_by_category(
         """)[0]
         fallback_kpm = float(fb["avg_kpm"]) if fb and fb["avg_kpm"] else None
 
-        # Build optional category filter; applied after the LEFT JOIN so
-        # NULL-category MOs are excluded when a specific category is chosen.
-        extra_where = ""
+        # Optional category filter; "Uncategorised" selects MOs whose finished
+        # SKU has no category in the product master.
         params = [days]
-        if category:
-            extra_where = "AND lower(trim(apc.category)) = lower(trim(%s))"
-            params.append(category)
+        extra_where = _mpg_category_where(category, params)
 
-        rows = q(conn, """
+        rows = q(conn, ("""
             SELECT c.odoo_mo_id,
                    c.produced_qty,
                    c.consumed_qty,
@@ -1928,16 +1947,9 @@ def metres_per_garment_by_category(
                    apc.category
             FROM mo_fabric_consumption c
             LEFT JOIN raw_fabric_products p ON p.id = c.component_id
-            LEFT JOIN (
-                SELECT DISTINCT ON (lower(trim(style_name)))
-                    lower(trim(style_name)) AS style_key,
-                    category
-                FROM all_products_clean
-                WHERE category IS NOT NULL AND trim(category) != ''
-                ORDER BY lower(trim(style_name)), category
-            ) apc ON lower(trim(c.style_name)) = apc.style_key
-            WHERE c.done_date >= CURRENT_DATE - (%s || ' days')::interval
-            """ + extra_where, params)
+            LEFT JOIN (%s) apc ON apc.sku = c.finished_sku
+            WHERE c.done_date >= CURRENT_DATE - (%%s || ' days')::interval
+            """ % _MPG_CATEGORY_SUBQ) + extra_where, params)
 
     M_UOMS = {"m", "metre", "meter", "mtr", "metres", "meters", "metre(s)"}
 
@@ -1986,13 +1998,12 @@ def metres_per_garment_by_category(
         }
     else:
         # No-category path: fold per-MO → per-category ranked list.
-        # An MO is assigned to its style's category (NULL-category MOs are
-        # omitted from the ranked list; they are NOT double-counted).
+        # An MO is assigned to its finished SKU's category; MOs with no match
+        # in the product master go into an explicit "Uncategorised" bucket so
+        # the breakdown reconciles to the headline KPI.
         cat_mos = {}
         for r in rows:
-            cat = r["category"]
-            if not cat:
-                continue  # style has no category in all_products_clean
+            cat = r["category"] or _MPG_UNCATEGORISED
             d = cat_mos.setdefault(cat, {}).setdefault(
                 r["odoo_mo_id"],
                 {"produced": float(r["produced_qty"] or 0), "metres": 0.0,
@@ -2060,13 +2071,10 @@ def metres_per_garment_by_category_xlsx(
         """)[0]
         fallback_kpm = float(fb["avg_kpm"]) if fb and fb["avg_kpm"] else None
 
-        extra_where = ""
         params = [days]
-        if category:
-            extra_where = "AND lower(trim(apc.category)) = lower(trim(%s))"
-            params.append(category)
+        extra_where = _mpg_category_where(category, params)
 
-        rows = q(conn, """
+        rows = q(conn, ("""
             SELECT c.odoo_mo_id,
                    c.mo_ref,
                    c.dps_ref,
@@ -2087,16 +2095,9 @@ def metres_per_garment_by_category_xlsx(
                    apc.category
             FROM mo_fabric_consumption c
             LEFT JOIN raw_fabric_products p ON p.id = c.component_id
-            LEFT JOIN (
-                SELECT DISTINCT ON (lower(trim(style_name)))
-                    lower(trim(style_name)) AS style_key,
-                    category
-                FROM all_products_clean
-                WHERE category IS NOT NULL AND trim(category) != ''
-                ORDER BY lower(trim(style_name)), category
-            ) apc ON lower(trim(c.style_name)) = apc.style_key
-            WHERE c.done_date >= CURRENT_DATE - (%s || ' days')::interval
-            """ + extra_where + """
+            LEFT JOIN (%s) apc ON apc.sku = c.finished_sku
+            WHERE c.done_date >= CURRENT_DATE - (%%s || ' days')::interval
+            """ % _MPG_CATEGORY_SUBQ) + extra_where + """
             ORDER BY c.done_date DESC, c.odoo_mo_id, c.fabric_sku
         """, params)
 
@@ -2111,7 +2112,7 @@ def metres_per_garment_by_category_xlsx(
             {"mo_ref": r["mo_ref"], "dps_ref": r["dps_ref"],
              "done_date": r["done_date"],
              "style": (r["style_name"] or "").strip() or None,
-             "category": r["category"],
+             "category": r["category"] or _MPG_UNCATEGORISED,
              "finished_sku": r["finished_sku"],
              "produced": float(r["produced_qty"] or 0), "metres": 0.0,
              "has_fabric": False, "used_fallback": False},
