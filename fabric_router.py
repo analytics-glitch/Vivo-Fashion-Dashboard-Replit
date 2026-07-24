@@ -5463,6 +5463,14 @@ def _ensure_receiving_tables(conn):
         # QC inspector's own post-wash measurement taken during inspection.
         cur.execute("ALTER TABLE fabric_inspection_tickets "
                     "ADD COLUMN IF NOT EXISTS after_wash_width_cm NUMERIC")
+        # Score-width source: the receiving sheet's width_measured_m (metres,
+        # auto-converted to inches) feeds the 4-Point score; manual_width_cm
+        # is the inspector's fallback used ONLY when the sheet width is blank.
+        # width_source records which one fed width_inches ('sheet'|'manual').
+        cur.execute("ALTER TABLE fabric_inspection_tickets "
+                    "ADD COLUMN IF NOT EXISTS manual_width_cm NUMERIC")
+        cur.execute("ALTER TABLE fabric_inspection_tickets "
+                    "ADD COLUMN IF NOT EXISTS width_source TEXT")
         # One-time markers for receiving data migrations (idempotent — prod is
         # a separate DB and picks these up on first touch after publish).
         cur.execute("""
@@ -5473,6 +5481,7 @@ def _ensure_receiving_tables(conn):
     conn.commit()
     _migrate_recv_one_sheet_per_po(conn)
     _migrate_recv_fix_false_barcodes(conn)
+    _migrate_insp_score_width_from_sheet(conn)
     _RECEIVING_TABLES_READY = True
 
 def _migrate_recv_one_sheet_per_po(conn):
@@ -5604,6 +5613,78 @@ def _migrate_recv_fix_false_barcodes(conn):
         """)
         cur.execute("INSERT INTO fabric_recv_migrations(key) VALUES (%s)",
                     ("fix_false_barcodes_v1",))
+    conn.commit()
+
+
+def _migrate_insp_score_width_from_sheet(conn):
+    """One-time recalculation of ALL 4-Point inspection tickets (any status,
+    incl. Submitted/Approved): the score width now comes from the roll's
+    receiving-sheet width (width_measured_m, metres → inches) instead of the
+    inspector-typed after-wash width. Tickets whose roll has no sheet width
+    (and no manual fallback — none exist historically) get a BLANK score and
+    grade. after_wash_width_cm columns stay untouched (shrinkage-only now).
+    Idempotent via the fabric_recv_migrations marker table."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT 1 FROM fabric_recv_migrations WHERE key=%s",
+                    ("insp_score_width_from_sheet_v1",))
+        if cur.fetchone():
+            return
+        cur.execute("SELECT pg_advisory_xact_lock(hashtext('fabric_recv_migrate'))")
+        cur.execute("SELECT 1 FROM fabric_recv_migrations WHERE key=%s",
+                    ("insp_score_width_from_sheet_v1",))
+        if cur.fetchone():
+            conn.commit()
+            return
+        # Tickets join their roll on (sheet_id, roll_no) — the stable identity
+        # (admin sheet edits delete + reinsert rolls with new ids).
+        cur.execute("""
+            WITH w AS (
+                SELECT t.id AS ticket_id,
+                       (SELECT r.width_measured_m
+                          FROM fabric_receiving_rolls r
+                         WHERE r.sheet_id = t.sheet_id
+                           AND r.roll_no = t.roll_no
+                           AND r.deleted_at IS NULL
+                         ORDER BY r.id DESC LIMIT 1) AS width_m,
+                       t.total_points, t.yards_inspected,
+                       COALESCE(t.acceptable_limit, 40) AS lim
+                FROM fabric_inspection_tickets t
+            ), calc AS (
+                SELECT ticket_id,
+                       CASE WHEN width_m IS NOT NULL AND width_m > 0
+                            THEN ROUND((width_m / 0.0254)::numeric, 1) END
+                           AS new_w,
+                       total_points, yards_inspected, lim
+                FROM w
+            ), scored AS (
+                SELECT ticket_id, new_w,
+                       CASE WHEN new_w > 0 AND yards_inspected > 0
+                                 AND total_points IS NOT NULL
+                            THEN ROUND((total_points * 3600.0
+                                        / (new_w * yards_inspected))::numeric, 2)
+                       END AS pp, lim
+                FROM calc
+            )
+            UPDATE fabric_inspection_tickets t
+               SET width_inches   = s.new_w,
+                   width_source   = CASE WHEN s.new_w IS NOT NULL
+                                         THEN 'sheet' END,
+                   points_per_100 = s.pp,
+                   grade          = CASE WHEN s.pp IS NULL THEN NULL
+                                         WHEN s.pp <= s.lim THEN 'Pass'
+                                         ELSE 'Reject' END,
+                   updated_at     = now()
+              FROM scored s
+             WHERE t.id = s.ticket_id
+               AND (t.width_inches   IS DISTINCT FROM s.new_w
+                 OR t.points_per_100 IS DISTINCT FROM s.pp)
+        """)
+        n = cur.rowcount
+        cur.execute("INSERT INTO fabric_recv_migrations(key) VALUES (%s)",
+                    ("insp_score_width_from_sheet_v1",))
+        import logging
+        logging.getLogger(__name__).info(
+            "inspection score-width migration: recalculated %s tickets", n)
     conn.commit()
 
 
@@ -6139,10 +6220,26 @@ def _insp_score(total_points, width_in, yards):
     return round(float(total_points) * 3600.0 / (float(width_in) * float(yards)), 2)
 
 def _insp_enforce_source_width(ctx, fields):
-    """Formerly pre-filled width_inches from the receiving roll's
-    after_wash_width_cm. Now a no-op: the inspector supplies their own
-    after_wash_width_cm directly on the inspection form and
-    _insp_collect_fields already converts it to width_inches."""
+    """Resolve the SCORE width server-side: the roll's receiving-sheet width
+    (width_measured_m, metres → inches) is authoritative; the inspector's
+    manual_width_cm is used ONLY when the sheet width is blank. The after-wash
+    measurements never feed the score (shrinkage-only)."""
+    w_m = ctx.get("width_measured_m")
+    try:
+        w_m = float(w_m) if w_m not in (None, "") else None
+    except (TypeError, ValueError):
+        w_m = None
+    if w_m and w_m > 0:
+        fields["width_inches"] = round(w_m / 0.0254, 1)
+        fields["width_source"] = "sheet"
+        # A manual width is ignored (and not stored) when the sheet has one.
+        fields["manual_width_cm"] = None
+    elif fields.get("manual_width_cm") and fields["manual_width_cm"] > 0:
+        fields["width_inches"] = round(float(fields["manual_width_cm"]) / 2.54, 1)
+        fields["width_source"] = "manual"
+    else:
+        fields["width_inches"] = None
+        fields["width_source"] = None
     return fields
 
 def _insp_roll_ctx(conn, roll_id):
@@ -6178,15 +6275,13 @@ def _insp_collect_fields(body):
         raise HTTPException(status_code=400,
                             detail="face_back must be Face, Back or Both")
     f["yards_inspected"] = _insp_num(body.get("yards_inspected"), "yards inspected")
-    # Inspector enters after_wash_width_cm (cm); width_inches is derived from it.
-    # The receiving sheet's after_wash_width_cm is no longer the authoritative
-    # source for the inspection ticket — the inspector measures it themselves.
+    # After-wash width (cm) is a SHRINKAGE-ONLY measurement (vs the 35 cm
+    # gauge square) — it no longer feeds the score. The score width comes
+    # from the receiving sheet (metres → inches) in _insp_enforce_source_width;
+    # manual_width_cm is the inspector's fallback when the sheet width is blank.
     f["after_wash_width_cm"] = _insp_num(body.get("after_wash_width_cm"), "after-wash width (cm)")
-    w_cm = f["after_wash_width_cm"]
-    if w_cm is not None and w_cm > 0:
-        f["width_inches"] = round(float(w_cm) / 2.54, 1)
-    else:
-        f["width_inches"] = None
+    f["manual_width_cm"] = _insp_num(body.get("manual_width_cm"), "manual width (cm)")
+    f["width_inches"] = None  # resolved server-side from ctx
     lim = _insp_num(body.get("acceptable_limit"), "acceptable limit")
     f["acceptable_limit"] = lim if lim and lim > 0 else 40
     d = str(body.get("inspection_date") or "").strip()
@@ -6208,6 +6303,7 @@ def _insp_ticket_row(t):
     v = out.get("inspection_date")
     out["inspection_date"] = v.strftime("%Y-%m-%d") if v is not None else None
     for k in ("yards_inspected", "width_inches", "after_wash_width_cm",
+              "manual_width_cm",
               "acceptable_limit", "total_points", "points_per_100"):
         if out.get(k) is not None:
             out[k] = float(out[k])
@@ -6322,6 +6418,13 @@ def _insp_apply_measurements(conn, ctx, body, actor):
     if "length_yards" not in body:
         ov = ctx.get("length_yards")
         meas["length_yards"] = round(float(ov), 3) if ov not in (None, "") else None
+    # The ticket never carries width_measured_m (the receiving-sheet width is
+    # read-only on the inspection form and now feeds the SCORE) — preserve the
+    # roll's stored value when the payload omits the key so a ticket save can
+    # never wipe the score-width source.
+    if "width_measured_m" not in body:
+        ov = ctx.get("width_measured_m")
+        meas["width_measured_m"] = round(float(ov), 3) if ov not in (None, "") else None
     notes = str(body.get("quality_notes") or "").strip() or None \
         if "quality_notes" in body else (ctx.get("quality_notes") or None)
     if not _recv_meas_changed(ctx, meas) and \
@@ -6374,7 +6477,8 @@ def _insp_upsert_draft(conn, ctx, fields, defects, total_points, actor,
                 detail="Total yards inspected is required to submit")
         if fields.get("width_inches") in (None, 0):
             raise HTTPException(status_code=400,
-                detail="Fabric width (inches) is required to submit")
+                detail="No width available for scoring — the receiving sheet "
+                       "has no width for this roll; enter a manual width (cm)")
         if not fields.get("inspector_name"):
             raise HTTPException(status_code=400,
                 detail="Inspector name is required to submit")
@@ -6392,6 +6496,7 @@ def _insp_upsert_draft(conn, ctx, fields, defects, total_points, actor,
         common = (fields["color"],
                   fields["yards_inspected"], fields["width_inches"],
                   fields.get("after_wash_width_cm"),
+                  fields.get("manual_width_cm"), fields.get("width_source"),
                   fields["inspector_name"], fields["inspection_date"],
                   fields["face_back"],
                   psycopg2.extras.Json(defects), limit,
@@ -6402,6 +6507,7 @@ def _insp_upsert_draft(conn, ctx, fields, defects, total_points, actor,
                 UPDATE fabric_inspection_tickets SET
                     color=%s, yards_inspected=%s,
                     width_inches=%s, after_wash_width_cm=%s,
+                    manual_width_cm=%s, width_source=%s,
                     inspector_name=%s, inspection_date=%s,
                     face_back=%s, defects=%s, acceptable_limit=%s,
                     remarks=%s, discrepancy_note=%s, total_points=%s,
@@ -6415,12 +6521,12 @@ def _insp_upsert_draft(conn, ctx, fields, defects, total_points, actor,
                 INSERT INTO fabric_inspection_tickets
                     (sheet_id, po_id, roll_no, roll_id, version, ticket_no,
                      status, color, yards_inspected, width_inches,
-                     after_wash_width_cm,
+                     after_wash_width_cm, manual_width_cm, width_source,
                      inspector_name, inspection_date, face_back, defects,
                      acceptable_limit, remarks, discrepancy_note,
                      total_points, points_per_100, grade, created_by)
                 VALUES (%s,%s,%s,%s,%s,%s,'Draft',
-                        %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 RETURNING *
             """, (ctx["sheet_id"], ctx.get("po_id"), ctx["roll_no"],
                   ctx["roll_id"], version, ticket_no) + common + (actor,))
