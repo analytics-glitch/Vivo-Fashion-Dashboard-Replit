@@ -5800,7 +5800,7 @@ function renderInspTicket(pop,ctx,box,rollId){
     +attr('color','Color','insp-color')
     +'</div>'
     +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:.5rem;margin-top:.55rem;">'
-    +'<div>'+lbl('Yards inspected')+num('insp-yards',yards,'yards')+'</div>'
+    +'<div>'+lbl('Roll Length/Inspected (Yards)')+num('insp-yards',yards,'yards')+'</div>'
     +'<div>'+lbl('Inspector')+inp('insp-inspector',V(seed.inspector_name,null,dft.inspector_name),'name')+'</div>'
     +'<div>'+lbl('Date')+'<input type="date" class="insp-date" value="'+esc(V(seed.inspection_date,null,dft.inspection_date))+'" style="width:100%;padding:5px 7px;font-size:13px;border:1px solid var(--border,#d7d7de);border-radius:6px;"></div>'
     +'<div>'+lbl('Side inspected')+'<select class="insp-face" style="width:100%;padding:5px 7px;font-size:13px;border:1px solid var(--border,#d7d7de);border-radius:6px;">'+['Face','Back','Both'].map(o=>'<option'+(fb===o?' selected':'')+'>'+o+'</option>').join('')+'</select></div>'
@@ -5808,7 +5808,6 @@ function renderInspTicket(pop,ctx,box,rollId){
     +'</div>'
     +'<div style="margin-top:.7rem;"><div style="font-weight:700;font-size:12.5px;">Measurements &amp; wash tests</div>'
     +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:.5rem;margin-top:4px;">'
-    +'<div>'+lbl('Roll length (yds)')+num('insp-m-len',roll.length_yards==null?'':roll.length_yards,'yards')+'</div>'
     +'<div>'+lbl('After-wash W (cm) <span class="muted" style="font-weight:400;" title="Re-measured size of the 35cm gauge square after wash, along the WIDTH">(gauge 35)</span>')+num('insp-m-shw',afterWashWidthCm,'cm')+'<div class="insp-m-shw-p muted" style="font-size:10.5px;min-height:13px;white-space:nowrap;"></div></div>'
     +'<div>'+lbl('After-wash L (cm) <span class="muted" style="font-weight:400;" title="Re-measured size of the 35cm gauge square after wash, along the LENGTH">(gauge 35)</span>')+num('insp-m-shl',roll.after_wash_length_cm==null?'':roll.after_wash_length_cm,'cm')+'<div class="insp-m-shl-p muted" style="font-size:10.5px;min-height:13px;white-space:nowrap;"></div></div>'
     +'<div>'+lbl('Bleeding test')+inp('insp-m-bld',roll.bleeding_test||'','e.g. No bleed')+'</div>'
@@ -5821,7 +5820,7 @@ function renderInspTicket(pop,ctx,box,rollId){
     +'<label style="display:flex;align-items:center;gap:.35rem;font-size:12.5px;font-weight:600;cursor:pointer;margin-left:auto;"><input type="checkbox" class="insp-clean-roll" style="width:15px;height:15px;cursor:pointer;"> Clean Roll \u2014 No Defects</label>'
     +'<button class="btn insp-add-defect" style="padding:2px 10px;font-size:12px;">+ Add defect</button></div>'
     +'<div class="insp-clean-label" style="display:none;padding:6px 10px;margin-top:4px;background:rgba(10,125,51,.07);border:1px solid rgba(10,125,51,.3);border-radius:6px;font-weight:700;color:#0a7d33;font-size:13px;">Clean Roll \u2014 No Defects</div>'
-    +'<div class="insp-defect-wrap" style="overflow-x:auto;"><table class="data" style="margin-top:4px;width:100%;min-width:480px;"><thead><tr><th style="width:80px;">At (yd)</th><th>Defect</th><th style="width:90px;">Size (in)</th><th style="width:80px;">Side</th><th style="width:52px;" class="r">Pts</th><th style="width:36px;"></th></tr></thead>'
+    +'<div class="insp-defect-wrap" style="overflow-x:auto;"><table class="data" style="margin-top:4px;width:100%;min-width:420px;"><thead><tr><th>Defect</th><th style="width:90px;">Size (in)</th><th style="width:80px;">Side</th><th style="width:52px;" class="r">Pts</th><th style="width:36px;"></th></tr></thead>'
     +'<tbody class="insp-defects"></tbody></table></div></div>'
     +'<div class="insp-score" style="margin-top:.6rem;padding:.55rem .7rem;border-radius:8px;border:1px solid var(--border,#d7d7de);display:flex;gap:1rem;flex-wrap:wrap;align-items:center;font-size:13px;"></div>'
     +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:.5rem;margin-top:.55rem;">'
@@ -5870,8 +5869,7 @@ function renderInspTicket(pop,ctx,box,rollId){
   function addDefectRow(d){
     d=d||{};
     const tr=document.createElement('tr');
-    tr.innerHTML='<td><input type="number" min="0" step="any" class="d-loc" value="'+esc(String(d.location_yd==null?'':d.location_yd))+'" style="width:100%;padding:3px 5px;font-size:12.5px;border:1px solid var(--border,#d7d7de);border-radius:5px;"></td>'
-      +'<td><select class="d-type" style="width:100%;padding:3px 5px;font-size:12.5px;border:1px solid var(--border,#d7d7de);border-radius:5px;">'+INSP_DEFECT_TYPES.map(t=>'<option'+((d.defect_type||'Slub')===t?' selected':'')+'>'+t+'</option>').join('')+'</select></td>'
+    tr.innerHTML='<td><select class="d-type" style="width:100%;padding:3px 5px;font-size:12.5px;border:1px solid var(--border,#d7d7de);border-radius:5px;">'+INSP_DEFECT_TYPES.map(t=>'<option'+((d.defect_type||'Slub')===t?' selected':'')+'>'+t+'</option>').join('')+'</select></td>'
       +'<td><input type="number" min="0" step="any" class="d-size" value="'+esc(String(d.size_in==null?'':d.size_in))+'" style="width:100%;padding:3px 5px;font-size:12.5px;border:1px solid var(--border,#d7d7de);border-radius:5px;"></td>'
       +'<td><select class="d-side" style="width:100%;padding:3px 5px;font-size:12.5px;border:1px solid var(--border,#d7d7de);border-radius:5px;"><option value=""></option><option'+(d.side==='Face'?' selected':'')+'>Face</option><option'+(d.side==='Back'?' selected':'')+'>Back</option></select></td>'
       +'<td class="r d-pts" style="font-weight:700;"></td>'
@@ -5882,7 +5880,6 @@ function renderInspTicket(pop,ctx,box,rollId){
   }
   function collectDefects(){
     return Array.from(tb.querySelectorAll('tr')).map(tr=>({
-      location_yd:tr.querySelector('.d-loc').value.trim()||null,
       defect_type:tr.querySelector('.d-type').value,
       size_in:tr.querySelector('.d-size').value.trim()||null,
       side:tr.querySelector('.d-side').value,
@@ -5930,7 +5927,6 @@ function renderInspTicket(pop,ctx,box,rollId){
       remarks:gv('.insp-remarks'),
       discrepancy_note:gv('.insp-disc'),
       defects:collectDefects(),
-      length_yards:gv('.insp-m-len')||null,
       shrinkage_inches:roll.shrinkage_inches==null?null:roll.shrinkage_inches,
       after_wash_length_cm:gv('.insp-m-shl')||null,
       bleeding_test:gv('.insp-m-bld')||'',
@@ -5970,7 +5966,7 @@ function renderInspTicket(pop,ctx,box,rollId){
         status:gv('.insp-ovr-status'),
         notes:p.quality_notes,
         override_comment:gv('.insp-ovr-comment'),
-        length_yards:p.length_yards,shrinkage_inches:p.shrinkage_inches,
+        length_yards:roll.length_yards==null?null:roll.length_yards,shrinkage_inches:p.shrinkage_inches,
         after_wash_width_cm:p.after_wash_width_cm,after_wash_length_cm:p.after_wash_length_cm,
         bleeding_test:p.bleeding_test,width_measured_m:p.width_measured_m,
       }]});

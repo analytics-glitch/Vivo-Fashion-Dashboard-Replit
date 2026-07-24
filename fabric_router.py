@@ -6316,6 +6316,12 @@ def _insp_apply_measurements(conn, ctx, body, actor):
     if not any(k in body for k in _INSP_MEAS_KEYS + ("quality_notes",)):
         return
     meas = _recv_parse_measurements(body)
+    # The inspection ticket no longer collects a separate roll length —
+    # preserve the roll's stored length_yards when the payload omits the key
+    # (a blank value in an explicit key still clears, matching old behavior).
+    if "length_yards" not in body:
+        ov = ctx.get("length_yards")
+        meas["length_yards"] = round(float(ov), 3) if ov not in (None, "") else None
     notes = str(body.get("quality_notes") or "").strip() or None \
         if "quality_notes" in body else (ctx.get("quality_notes") or None)
     if not _recv_meas_changed(ctx, meas) and \
