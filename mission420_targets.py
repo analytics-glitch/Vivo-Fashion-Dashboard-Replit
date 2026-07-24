@@ -11,10 +11,10 @@ from datetime import date
 import psycopg2
 
 MISSION_420 = {
-    "Kenya - Retail": 335_000_000,
-    "Rwanda":          12_000_000,
-    "Uganda":          31_000_000,
-    "Kenya - Online":  42_000_000,
+    "Kenya - Retail": 335_432_219.74,
+    "Rwanda":          11_356_643.08,
+    "Uganda":          31_211_137.18,
+    "Kenya - Online":  42_000_000.00,
 }
 REGION_COUNTRY = {
     "Kenya - Retail": "Kenya",
