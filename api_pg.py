@@ -13853,6 +13853,73 @@ async def admin_validation_done_all(request: Request):
             conn.close()
         except Exception:
             pass
+@app.post("/api/admin/apply-q3-targets")
+async def admin_apply_q3_targets(request: Request):
+    """Upsert the Q3 2026 Mission 420 regional targets into targets_monthly.
+    Admin-only, idempotent. Runs the same logic as mission420_targets.py but
+    uses the live server connection so no separate DATABASE_URL is needed."""
+    _MISSION_420 = {
+        "Kenya - Retail": 335_432_219.74,
+        "Rwanda":          11_356_643.08,
+        "Uganda":          31_211_137.18,
+        "Kenya - Online":  42_000_000.00,
+    }
+    _REGION_COUNTRY = {
+        "Kenya - Retail": "Kenya", "Rwanda": "Rwanda",
+        "Uganda": "Uganda", "Kenya - Online": "Online",
+    }
+    _MONTHLY_DAYS = {7: 31, 8: 31, 9: 30}
+    _TOTAL_DAYS = 92
+    UPSERT = (
+        "INSERT INTO targets_monthly (scope, name, country, month, target_kes, source) "
+        "VALUES (%s,%s,%s,%s,%s,'budget') "
+        "ON CONFLICT (scope, name, month, source) DO UPDATE SET "
+        "target_kes = EXCLUDED.target_kes, updated_at = now()"
+    )
+    conn = get_conn()
+    try:
+        conn.autocommit = False
+        cur = conn.cursor()
+        n = 0
+        for bucket, q3_total in _MISSION_420.items():
+            for month_num, days in _MONTHLY_DAYS.items():
+                val = round(q3_total * days / _TOTAL_DAYS)
+                cur.execute(UPSERT, (
+                    "region", bucket, _REGION_COUNTRY[bucket],
+                    f"2026-{month_num:02d}-01", val,
+                ))
+                n += 1
+        conn.commit()
+        # Read back the Q3 totals to confirm
+        cur.execute(
+            "SELECT name, SUM(target_kes)::numeric AS tot "
+            "FROM targets_monthly "
+            "WHERE scope='region' AND source='budget' "
+            "AND month BETWEEN '2026-07-01' AND '2026-09-30' "
+            "GROUP BY name ORDER BY name"
+        )
+        rows = cur.fetchall()
+        totals = {r[0]: float(r[1]) for r in rows}
+        grand = sum(totals.values())
+        return {
+            "ok": True,
+            "rows_upserted": n,
+            "q3_totals_kes": totals,
+            "q3_grand_total_kes": round(grand),
+            "q3_grand_total_M": round(grand / 1_000_000, 1),
+        }
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+    finally:
+        try:
+            conn.autocommit = True
+            conn.close()
+        except Exception:
+            pass
 @app.get("/api/admin/replenishment-config")
 def admin_replenishment_config():
     return {"owners": _replen_owners()}
