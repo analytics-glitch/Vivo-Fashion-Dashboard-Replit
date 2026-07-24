@@ -524,6 +524,7 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
      <ul class="nav-cluster-items">
       <li><button type="button" class="nav-item active" data-page="overview" aria-current="page"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg><span>Overview</span></button></li>
       <li><button type="button" class="nav-item" data-page="movement"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline><polyline points="17 6 23 6 23 12"></polyline></svg><span>Trends</span></button></li>
+      <li><button type="button" class="nav-item" data-page="buyingpd"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.83z"></path><line x1="7" y1="7" x2="7.01" y2="7"></line></svg><span>Buying &amp; PD</span></button></li>
      </ul>
     </li>
     <li class="nav-groupli">
@@ -681,6 +682,11 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
      </div>
      <div id="hist-snap-result"></div>
     </div>
+   </section>
+
+   <!-- BUYING & PD — garment fabric-efficiency KPIs (Avg metres/garment) -->
+   <section id="page-buyingpd" style="display:none;">
+    <div id="bpd-kpi-cards" class="kpi-grid"><div class="loading">Loading&hellip;</div></div>
    </section>
 
    <!-- SUPPORT FABRICS (Lining + Interfacing only) -->
@@ -2237,8 +2243,8 @@ function qcExportDetail(){
 }
 
 // ── Navigation ──
-const LOADERS={dashboard:loadFabricMixFirst,register:()=>loadRegister(0),deadstock:loadDeadStock,defects:loadFabricQC,dataquality:loadDataQuality,support:loadSupport,movement:initTrendBuilder,pos:loadPOsPage,suppliers:loadSuppliers,reservations:loadReservations,rolls:()=>loadRolls(0),receiving:loadReceivingBatches,createprod:loadCreateProducts};
-const DESCS={dashboard:'Stock Mix — each category\'s share of consumption vs share of available stock',overview:'Fabric stock, value and health across the warehouse',register:'',ageing:'Stock ageing analysis — coming soon',deadstock:'Fabric that has been sitting without movement',defects:'Roll-level quality results from the Receiving tab — pass rates, shrinkage, bleeding and width checks by supplier, fabric and month',dataquality:'Fabrics missing a kg-per-metre conversion — stock or usage that can only be shown in kg',support:'Lining, interfacing & support overrides — excluded from the main dashboard',movement:'Build your own KPI-over-time panels — fabric metrics in metres, page-local date range',pos:'Inbound purchase orders and delivery performance',suppliers:'Outstanding exposure by supplier',reservations:'Earmark fabric for a style, track how long it has been held, then mark it used',rolls:'Physical roll counts recorded by hand per fabric per location, shown next to the Odoo quantity',receiving:'Record the rolls of an arriving fabric delivery, then print the Fabric Receiving Information Sheet',createprod:'Bulk-create fabric products in Odoo — enter or upload rows, review the validation preview, then confirm. Duplicates are always skipped'};
+const LOADERS={buyingpd:loadBuyingPD,dashboard:loadFabricMixFirst,register:()=>loadRegister(0),deadstock:loadDeadStock,defects:loadFabricQC,dataquality:loadDataQuality,support:loadSupport,movement:initTrendBuilder,pos:loadPOsPage,suppliers:loadSuppliers,reservations:loadReservations,rolls:()=>loadRolls(0),receiving:loadReceivingBatches,createprod:loadCreateProducts};
+const DESCS={buyingpd:'Buying & Product Development — garment fabric-efficiency KPIs from Done-DPS manufacturing orders',dashboard:'Stock Mix — each category\'s share of consumption vs share of available stock',overview:'Fabric stock, value and health across the warehouse',register:'',ageing:'Stock ageing analysis — coming soon',deadstock:'Fabric that has been sitting without movement',defects:'Roll-level quality results from the Receiving tab — pass rates, shrinkage, bleeding and width checks by supplier, fabric and month',dataquality:'Fabrics missing a kg-per-metre conversion — stock or usage that can only be shown in kg',support:'Lining, interfacing & support overrides — excluded from the main dashboard',movement:'Build your own KPI-over-time panels — fabric metrics in metres, page-local date range',pos:'Inbound purchase orders and delivery performance',suppliers:'Outstanding exposure by supplier',reservations:'Earmark fabric for a style, track how long it has been held, then mark it used',rolls:'Physical roll counts recorded by hand per fabric per location, shown next to the Odoo quantity',receiving:'Record the rolls of an arriving fabric delivery, then print the Fabric Receiving Information Sheet',createprod:'Bulk-create fabric products in Odoo — enter or upload rows, review the validation preview, then confirm. Duplicates are always skipped'};
 const loadedOnce={};
 
 // Bind ONLY real page tabs ([data-page]) — the "More ▾" trigger is also a
@@ -3632,25 +3638,22 @@ async function loadOverview(){
   loadColorMix();   // colour breakdown is fetched independently (own date window)
   loadHistSnapDates().catch(()=>null);  // initialise date picker; non-fatal
   try{
-    const [d,cat,split,mpg,coverDelta]=await Promise.all([
+    const [d,cat,split,coverDelta]=await Promise.all([
       apiFetch('/api/fabric/summary?location='+encodeURIComponent(loc())),
       apiFetch('/api/fabric/by-category?location='+encodeURIComponent(loc())),
       apiFetch('/api/fabric/attribute-split?location='+encodeURIComponent(loc())),
-      // Auxiliary KPI — never let a failure break the rest of the overview.
-      apiFetch('/api/fabric/metres-per-garment?days=30').catch(()=>null),
       // Day-over-day Months-of-Cover change — auxiliary; a failure just hides the
       // "vs yesterday" sub-line, never breaks the overview.
       apiFetch('/api/fabric/cover-snapshot-delta').catch(()=>null),
     ]);
-    ovCache={d,cat,split,mpg,coverDelta};
+    ovCache={d,cat,split,coverDelta};
     renderOverviewCached();
     applyFabricFreshness(d);
   }catch(e){showErr('kpi-cards',e);['category-bars','split-print','split-structure'].forEach(id=>{const el=document.getElementById(id);if(el&&el.querySelector('.loading'))el.innerHTML='';});}
 }
 function renderOverviewCached(){
   if(!ovCache)return;
-  renderKpis(ovCache.d,ovCache.mpg,ovCache.coverDelta);
-  initMpgCatCard();
+  renderKpis(ovCache.d,ovCache.coverDelta);
   renderCategories(ovCache.cat);
   renderPrintDonut(ovCache.split.plain_print);
   renderStructure('split-structure',ovCache.split.structure,FX.structureValue);
@@ -3673,13 +3676,46 @@ async function downloadMpgXlsx(){
     setTimeout(()=>URL.revokeObjectURL(a.href),1000);
   }catch(e){alert('Could not generate the Excel report. Please try again.');}
 }
+// ── Buying & PD page ─────────────────────────────────────────────────────────
+// Garment fabric-efficiency KPIs moved out of the Overview: the "Avg metres /
+// garment" headline card + its by-Category companion card.
+async function loadBuyingPD(){
+  try{
+    const mpg=await apiFetch('/api/fabric/metres-per-garment?days=30');
+    renderBpdKpis(mpg);
+  }catch(e){
+    renderBpdKpis(null);
+  }
+  initMpgCatCard();
+}
+function renderBpdKpis(mpg){
+  const el=document.getElementById('bpd-kpi-cards');
+  if(!el)return;
+  const cards=[
+    (()=>{const v=(mpg&&mpg.metres_per_garment!=null)?mpg.metres_per_garment:null;
+     let sub=(mpg&&mpg.mos)?('rolling 30d &middot; <span'+fx(FX.mpgSubMos)+'>'+fmt(mpg.mos)+' Done-DPS MOs</span>'):'rolling 30d &middot; Done-DPS';
+     const fbn=mpg&&mpg.mos_using_fallback;
+     if(fbn){const fk=(mpg.fallback_kg_per_mtr!=null)?mpg.fallback_kg_per_mtr:null;
+       sub+=` &middot; <span class="amber" title="${esc(fmt(fbn)+' of these MOs use a fabric with no kg→metre conversion in Odoo, converted via the overall fabric-average Kg/Mtr'+(fk!=null?(' ('+fk+' kg/m)'):'')+' so they are still counted.')}">${fmt(fbn)} via fallback kg/m</span>`;}
+     const dl=(v!=null)?`<button class="btn ghost" onclick="downloadMpgXlsx()" title="Download the full calculation audit trail (every Done-DPS MO, its fabric components and the kg→metre conversion) as an Excel workbook">&#11015; Download (Excel)</button>`:'';
+     return KpiCard({reserveAction:true,label:'Avg metres / garment',value:v!=null?v.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}):null,unit:v!=null?'m':'',valueAttrs:fx(FX.metresPerGarment),footnote:sub,action:dl});})(),
+    // By-category card — shell only; body is populated by initMpgCatCard() after render.
+    `<div class="kpi-card" id="mpg-cat-card" style="min-width:200px;flex:1 1 200px;display:flex;flex-direction:column;gap:0;">
+      <div style="font-size:.72rem;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:#6b7280;margin-bottom:.35rem;">Avg metres / garment <span style="font-weight:400;color:#9ca3af;">&middot; by Category</span></div>
+      <select id="mpg-cat-select" onchange="onMpgCatChange()" style="width:100%;font-size:.8rem;padding:.22rem .4rem;border:1px solid #d1d5db;border-radius:.3rem;background:#fff;color:#111827;margin-bottom:.45rem;cursor:pointer;"></select>
+      <div id="mpg-cat-body" style="flex:1;min-height:2rem;"><span style="color:#9ca3af;font-size:.8rem;">Loading&hellip;</span></div>
+      <div id="mpg-cat-action" style="margin-top:.5rem;"></div>
+    </div>`,
+  ];
+  el.innerHTML=cards.join('');
+}
 // ── Avg metres / garment · by Category card ─────────────────────────────────
 // State: persists across re-renders (overview refreshes) so the selection and
 // loaded category list survive a periodic data reload.
 let _mpgCatSelected='';          // '' = all categories
 let _mpgCatList=[];              // populated on first call, stable across renders
 let _mpgCatListLoaded=false;
-// initMpgCatCard: called after every renderKpis() — repopulates the select
+// initMpgCatCard: called after every renderBpdKpis() (Buying & PD page) — repopulates the select
 // (restoring the current selection) and, on the very first call, fetches the
 // categories list and the default ranked view.
 async function initMpgCatCard(){
@@ -3952,7 +3988,7 @@ function renderColorMerged(d){
     </tr>`;
   }).join('')+'</tbody></table></div>';
 }
-function renderKpis(d,mpg,coverDelta){
+function renderKpis(d,coverDelta){
   // Total fabric value = stock value for the SELECTED scope (All = RMAT + Dead).
   const totalVal=d.fabric_stock_value||0;
   // Dead-stock % uses the stable RMAT + Dead grand total so it doesn't swing with scope.
@@ -4008,20 +4044,6 @@ function renderKpis(d,mpg,coverDelta){
     KpiCard(Object.assign({reserveAction:true,label:'Avg cost / metre',qualifier:'Purchases',prefix:'KES',value:acpmNum(acpmP),unit:'/m',valueAttrs:fx(FX.avgCostMetrePurchases),cardAttrs:` title="${acpmTitle('Average purchase cost per metre across all received POs, per metre regardless of the kg/m unit toggle.',acpmPExc)}"`},acpmOpts('received &middot; all POs',acpmPExc,'purchases'))),
     KpiCard({reserveAction:true,label:'Consumed today',value:fmt(UNIT==='kg'?d.consumption_today_kg:d.consumption_today_metres),unit:unitLabel(),valueAttrs:fx(FX.consumedToday),footnote:`${consumedTodaySub(d)}${consumptionSourcesLink('main')}`}),
     KpiCard({reserveAction:true,label:'Consumed 30d',value:fmt(UNIT==='kg'?d.consumption_30d_kg:d.consumption_30d_metres),unit:unitLabel(),valueAttrs:fx(FX.consumed30d),footnote:'net of returns'}),
-    (()=>{const v=(mpg&&mpg.metres_per_garment!=null)?mpg.metres_per_garment:null;
-     let sub=(mpg&&mpg.mos)?('rolling 30d &middot; <span'+fx(FX.mpgSubMos)+'>'+fmt(mpg.mos)+' Done-DPS MOs</span>'):'rolling 30d &middot; Done-DPS';
-     const fbn=mpg&&mpg.mos_using_fallback;
-     if(fbn){const fk=(mpg.fallback_kg_per_mtr!=null)?mpg.fallback_kg_per_mtr:null;
-       sub+=` &middot; <span class="amber" title="${esc(fmt(fbn)+' of these MOs use a fabric with no kg→metre conversion in Odoo, converted via the overall fabric-average Kg/Mtr'+(fk!=null?(' ('+fk+' kg/m)'):'')+' so they are still counted.')}">${fmt(fbn)} via fallback kg/m</span>`;}
-     const dl=(v!=null)?`<button class="btn ghost" onclick="downloadMpgXlsx()" title="Download the full calculation audit trail (every Done-DPS MO, its fabric components and the kg→metre conversion) as an Excel workbook">&#11015; Download (Excel)</button>`:'';
-     return KpiCard({reserveAction:true,label:'Avg metres / garment',value:v!=null?v.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}):null,unit:v!=null?'m':'',valueAttrs:fx(FX.metresPerGarment),footnote:sub,action:dl});})(),
-    // By-category card — shell only; body is populated by initMpgCatCard() after render.
-    `<div class="kpi-card" id="mpg-cat-card" style="min-width:200px;flex:1 1 200px;display:flex;flex-direction:column;gap:0;">
-      <div style="font-size:.72rem;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:#6b7280;margin-bottom:.35rem;">Avg metres / garment <span style="font-weight:400;color:#9ca3af;">&middot; by Category</span></div>
-      <select id="mpg-cat-select" onchange="onMpgCatChange()" style="width:100%;font-size:.8rem;padding:.22rem .4rem;border:1px solid #d1d5db;border-radius:.3rem;background:#fff;color:#111827;margin-bottom:.45rem;cursor:pointer;"></select>
-      <div id="mpg-cat-body" style="flex:1;min-height:2rem;"><span style="color:#9ca3af;font-size:.8rem;">Loading&hellip;</span></div>
-      <div id="mpg-cat-action" style="margin-top:.5rem;"></div>
-    </div>`,
     (()=>{
      // Headline value: number when computable, capped "12+" when overstocked
      // (stock but no recent use), "—" only when there is genuinely no data.
