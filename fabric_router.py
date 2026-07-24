@@ -79,6 +79,11 @@ def _ensure_fabric_tables(conn):
                 used_at          TIMESTAMPTZ,
                 used_by          TEXT
             )""")
+        # style_number: the garment style's identifier from the BI product
+        # master, captured when the reservation is created via the strict style
+        # picker. Nullable — legacy free-text reservations have no number.
+        cur.execute("ALTER TABLE fabric_reservations "
+                    "ADD COLUMN IF NOT EXISTS style_number TEXT")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_fabric_resv_product "
                     "ON fabric_reservations(product_id)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_fabric_resv_status "
@@ -239,7 +244,7 @@ def _log_fabric_change(action, resv, request):
 def _resv_for_log(conn, resv_id):
     """Reservation row enriched with the fabric product name, for the audit log."""
     rows = q(conn, """
-        SELECT r.id, r.qty, r.uom, r.style_name, r.note, r.status,
+        SELECT r.id, r.qty, r.uom, r.style_name, r.style_number, r.note, r.status,
                p.name AS product
         FROM fabric_reservations r
         LEFT JOIN raw_fabric_products p ON p.id = r.product_id
@@ -4821,6 +4826,65 @@ def product_search(q_: str = Query(default="", alias="q"), limit: int = Query(de
             LIMIT %s
         """, params + [limit])
 
+# ── Garment style picker (own styles from the BI product master) ────────────
+# The reservation form's Style field is a STRICT typeahead over the deduplicated
+# own-style universe in all_products_clean: partner brands excluded (row-level,
+# before GROUP BY, per the style-universe brand-filter rule), retired styles
+# INCLUDED. Served from api_pg.run_query with a short TTL so it stays live but
+# cheap; search filtering happens in-process over the ~3.5k cached rows.
+_STYLE_UNIVERSE_SQL = """
+    SELECT style_name,
+           mode() WITHIN GROUP (ORDER BY style_number) AS style_number,
+           MAX(brand) AS brand
+    FROM all_products_clean
+    WHERE style_name IS NOT NULL AND style_name <> ''
+      AND COALESCE(brand, '') NOT ILIKE '%third party%'
+    GROUP BY style_name
+    ORDER BY style_name
+"""
+
+
+def _own_styles():
+    """Deduplicated own-style list (live, 300s-cached via api_pg.run_query)."""
+    import importlib
+    api = importlib.import_module('api_pg')
+    return api.run_query(_STYLE_UNIVERSE_SQL, ttl=300)
+
+
+def _match_style(style_name):
+    """Exact (case-insensitive, trimmed) match of a posted style against the
+    allowed universe. Returns the canonical row or None."""
+    want = (style_name or "").strip().lower()
+    if not want:
+        return None
+    for s in _own_styles():
+        if (s.get("style_name") or "").strip().lower() == want:
+            return s
+    return None
+
+
+@fabric_router.get("/api/fabric/style-search")
+def style_search(q_: str = Query(default="", alias="q"),
+                 limit: int = Query(default=20)):
+    """Strict style picker for the reservation form: matches on style name OR
+    style number, returns name + number + brand."""
+    term = (q_ or "").strip().lower()
+    limit = max(1, min(int(limit or 20), 50))
+    out = []
+    for s in _own_styles():
+        if term:
+            name = (s.get("style_name") or "").lower()
+            num = (s.get("style_number") or "").lower()
+            if term not in name and term not in num:
+                continue
+        out.append({"style_name": s.get("style_name"),
+                    "style_number": s.get("style_number"),
+                    "brand": s.get("brand")})
+        if len(out) >= limit:
+            break
+    return out
+
+
 @fabric_router.get("/api/fabric/reservations")
 def list_reservations(status: str = Query(default="active"), search: str = Query(default=None)):
     with _get_conn() as conn:
@@ -4839,7 +4903,7 @@ def list_reservations(status: str = Query(default="active"), search: str = Query
               FROM raw_fabric_inventory
               GROUP BY product_id
             )
-            SELECT r.id, r.product_id, r.qty, r.uom, r.qty_kg, r.style_name, r.note,
+            SELECT r.id, r.product_id, r.qty, r.uom, r.qty_kg, r.style_name, r.style_number, r.note,
               r.status, r.reserved_by_name, r.reserved_at::date as reserved_on,
               r.used_at::date as used_on, r.used_by,
               p.name as fabric_name, p.default_code, p.kg_per_mtr_eff as kg_per_mtr,
@@ -4876,6 +4940,15 @@ def create_reservation(request: Request, body: dict = Body(...)):
         raise HTTPException(status_code=400, detail="uom must be 'm' or 'kg'")
     if not style_name:
         raise HTTPException(status_code=400, detail="style_name is required")
+    # STRICT style picker: the posted style must exist in the own-style universe
+    # (all_products_clean, partner brands excluded, retired included). The
+    # canonical name + style number come from the matched row, never the client.
+    style_row = _match_style(style_name)
+    if not style_row:
+        raise HTTPException(status_code=400,
+            detail="style not recognised — pick a style from the suggestions list")
+    style_name = (style_row.get("style_name") or "").strip()
+    style_number = (style_row.get("style_number") or "").strip() or None
     uid, name = _fabric_actor(request)
     with _get_conn() as conn:
         _ensure_fabric_tables(conn)
@@ -4894,14 +4967,15 @@ def create_reservation(request: Request, body: dict = Body(...)):
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute("""
                 INSERT INTO fabric_reservations
-                  (product_id, qty, uom, qty_kg, style_name, note, reserved_by, reserved_by_name)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id
-            """, (product_id, qty, uom, round(qty_kg, 3), style_name, note, uid, name))
+                  (product_id, qty, uom, qty_kg, style_name, style_number, note, reserved_by, reserved_by_name)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id
+            """, (product_id, qty, uom, round(qty_kg, 3), style_name, style_number, note, uid, name))
             new_id = cur.fetchone()["id"]
         conn.commit()
         _log_fabric_change("Created", {
             "id": new_id, "product": prod[0].get("name"),
-            "style_name": style_name, "qty": qty, "uom": uom,
+            "style_name": style_name, "style_number": style_number,
+            "qty": qty, "uom": uom,
             "note": note, "status": "active",
         }, request)
         return {"id": new_id, "ok": True}

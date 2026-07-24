@@ -1054,9 +1054,10 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
        <label class="rsv-lbl">Unit</label>
        <select id="resv-uom" style="width:90px;"><option value="m">metres</option><option value="kg">kg</option></select>
       </div>
-      <div>
+      <div style="position:relative;">
        <label class="rsv-lbl">Style name</label>
-       <input id="resv-style" placeholder="e.g. SS26 Wrap Dress" style="width:220px;">
+       <input id="resv-style" placeholder="Search style name or number…" autocomplete="off" style="width:220px;" oninput="onStyleInput()" onfocus="debouncedStyleSearch()">
+       <div id="resv-style-list" class="resv-dropdown" style="display:none;"></div>
       </div>
       <div>
        <label class="rsv-lbl">Note (optional)</label>
@@ -7707,6 +7708,34 @@ async function runProductSearch(){
     box.style.display='';
   }catch(e){box.innerHTML='<div class="resv-opt muted">Could not search.</div>';box.style.display='';}
 }
+// Strict style picker: suggestions come live from the BI product master (own
+// styles only, retired included). The user MUST pick one — free-typed text that
+// doesn't match a suggestion is rejected here and again server-side.
+let styleTimer, pickedStyle=null;
+function debouncedStyleSearch(){clearTimeout(styleTimer);styleTimer=setTimeout(runStyleSearch,250);}
+function onStyleInput(){
+  const v=document.getElementById('resv-style').value.trim();
+  if(!pickedStyle||pickedStyle.name!==v)pickedStyle=null;
+  debouncedStyleSearch();
+}
+async function runStyleSearch(){
+  const term=document.getElementById('resv-style').value.trim();
+  const box=document.getElementById('resv-style-list');
+  try{
+    const rows=await apiFetch('/api/fabric/style-search?q='+encodeURIComponent(term));
+    if(!rows.length){box.innerHTML='<div class="resv-opt muted">No matching style.</div>';box.style.display='';return;}
+    box.innerHTML=rows.map(r=>{
+      const sub=[r.style_number?('#'+esc(r.style_number)):'',r.brand?esc(r.brand):''].filter(Boolean).join(' · ');
+      return `<div class="resv-opt" data-style="1" data-name="${esc(r.style_name||'')}" data-num="${esc(r.style_number||'')}">${esc(r.style_name||'—')}${sub?`<div class="ro-code">${sub}</div>`:''}</div>`;
+    }).join('');
+    box.style.display='';
+  }catch(e){box.innerHTML='<div class="resv-opt muted">Could not search styles.</div>';box.style.display='';}
+}
+function pickStyle(el){
+  pickedStyle={name:el.dataset.name,number:el.dataset.num||null};
+  document.getElementById('resv-style').value=el.dataset.name;
+  document.getElementById('resv-style-list').style.display='none';
+}
 function pickFabric(el){
   document.getElementById('resv-product-id').value=el.dataset.id;
   document.getElementById('resv-fabric-search').value=el.dataset.name;
@@ -7724,7 +7753,7 @@ async function createReservation(){
   const note=document.getElementById('resv-note').value.trim();
   if(!pid){errEl.innerHTML='<div class="banner banner-err">Pick a fabric from the list first.</div>';return;}
   if(!(qty>0)){errEl.innerHTML='<div class="banner banner-err">Enter a quantity greater than zero.</div>';return;}
-  if(!style){errEl.innerHTML='<div class="banner banner-err">Enter the style name this fabric is reserved for.</div>';return;}
+  if(!style||!pickedStyle||pickedStyle.name!==style){errEl.innerHTML='<div class="banner banner-err">Pick a style from the suggestions list — free-typed style names are not accepted.</div>';return;}
   try{
     const r=await fetch('/api/fabric/reservations',{method:'POST',credentials:'include',headers:vivoAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({product_id:Number(pid),qty,uom,style_name:style,note})});
     if(!r.ok){let d={};try{d=await r.json();}catch(_){}throw new Error(d.detail||('http '+r.status));}
@@ -7733,6 +7762,7 @@ async function createReservation(){
     document.getElementById('resv-fabric-search').value='';
     document.getElementById('resv-qty').value='';
     document.getElementById('resv-style').value='';
+    pickedStyle=null;
     document.getElementById('resv-note').value='';
     document.getElementById('resv-fabric-hint').textContent='';
     loadedOnce.register=false; // register reserved column will refresh on next visit
@@ -7773,7 +7803,7 @@ function renderReservations(items){
     const soh=r.soh_kg!=null?(fmt1(r.soh_kg)+' kg'+(r.soh_metres!=null?' · '+fmt1(r.soh_metres)+' m':'')):'—';
     return `<tr>
       <td style="max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(r.fabric_name||'')}">${fab}</td>
-      <td title="${esc(r.note||'')}">${esc(r.style_name||'—')}</td>
+      <td title="${esc(r.note||'')}">${esc(r.style_name||'—')}${r.style_number?` <span class="muted" style="font-size:11px;">#${esc(r.style_number)}</span>`:''}</td>
       <td class="r" style="font-weight:600;white-space:nowrap;"${fx(FX.resvReserved)}>${qtyTxt}</td>
       <td class="r" style="white-space:nowrap;color:var(--text-sub);"${fx(FX.resvSoh)}>${soh}</td>
       <td style="white-space:nowrap;color:var(--muted);font-size:12px;">${esc(r.reserved_on||'—')}</td>
@@ -8140,6 +8170,11 @@ async function init(){
     if(opt&&opt.dataset.id){pickFabric(opt);return;}
     const box=document.getElementById('resv-fabric-list');
     if(box&&box.style.display!=='none'&&!e.target.closest('#resv-fabric-search')&&!e.target.closest('#resv-fabric-list'))box.style.display='none';
+    // Reservations style dropdown: pick / close-on-outside
+    const sopt=e.target.closest('#resv-style-list .resv-opt');
+    if(sopt&&sopt.dataset.style){pickStyle(sopt);return;}
+    const sbox=document.getElementById('resv-style-list');
+    if(sbox&&sbox.style.display!=='none'&&!e.target.closest('#resv-style')&&!e.target.closest('#resv-style-list'))sbox.style.display='none';
   });
   // Register barcode → open the per-fabric detail view (delegated; survives table
   // re-renders). The barcode is a td link, so it never triggers column sorting.

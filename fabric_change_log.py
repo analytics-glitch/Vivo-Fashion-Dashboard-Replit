@@ -38,7 +38,7 @@ _EAT = timezone(timedelta(hours=3))
 
 HEADER = ["Timestamp (EAT)", "User name", "User email", "Action",
           "Reservation ID", "Fabric / product", "Style", "Qty", "UoM",
-          "Note", "Resulting status"]
+          "Note", "Resulting status", "Style number"]
 
 _append_lock = threading.Lock()
 
@@ -77,6 +77,8 @@ def _append_row(action, resv, actor_name, actor_email):
         resv.get("uom") or "",
         resv.get("note") or "",
         resv.get("status") or "",
+        # Style number added later, appended LAST so existing sheets stay aligned.
+        resv.get("style_number") or "",
     ]
     with _append_lock:
         _ensure_header()
