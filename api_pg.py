@@ -4521,7 +4521,8 @@ def get_kpis_customer_type_split(
             -- ±1 KES from /api/kpis' ROUND(total); Python below rounds ONCE.
             (SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN (s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric) ELSE 0 END)
                 - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END)) AS total_sales,
-            COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END) AS orders
+            COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END) AS orders,
+            COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.customer_id END) AS unique_customers
         FROM all_sales s
         LEFT JOIN first_purchase fp ON fp.customer_id = s.customer_id
         WHERE """ + where + """
@@ -4530,9 +4531,12 @@ def get_kpis_customer_type_split(
     """, date_to=date_to)
     raw = {"New": 0, "Returning": 0, "Walk-in": 0}
     orders = {"New": 0, "Returning": 0, "Walk-in": 0}
+    customers = {"New": 0, "Returning": 0, "Walk-in": 0}
     for r in rows or []:
-        raw[r["customer_segment"]] = float(r["total_sales"] or 0)
-        orders[r["customer_segment"]] = r["orders"] or 0
+        seg = r["customer_segment"]
+        raw[seg] = float(r["total_sales"] or 0)
+        orders[seg] = r["orders"] or 0
+        customers[seg] = r["unique_customers"] or 0
     # Round the way Postgres ROUND(numeric, 0) does (half-away-from-zero) so
     # new + returning + walk-in lands on the SAME rounded figure /api/kpis shows.
     def _pg_round(x):
@@ -4540,6 +4544,12 @@ def get_kpis_customer_type_split(
     total = _pg_round(raw["New"] + raw["Returning"] + raw["Walk-in"])
     new = _pg_round(raw["New"])
     walkin = _pg_round(raw["Walk-in"])
+    # Walk-in customers: anonymous orders have no customer_id so use order
+    # count (1 order = 1 anonymous customer), matching the /customers/walk-ins
+    # endpoint convention.
+    walk_in_cust = orders["Walk-in"]
+    new_cust = customers["New"]
+    ret_cust = customers["Returning"]
     return {
         "new_sales": new,
         "returning_sales": total - new - walkin,
@@ -4547,6 +4557,10 @@ def get_kpis_customer_type_split(
         "new_orders": orders["New"],
         "returning_orders": orders["Returning"],
         "walk_in_orders": orders["Walk-in"],
+        "new_customers": new_cust,
+        "returning_customers": ret_cust,
+        "walk_in_customers": walk_in_cust,
+        "total_customers": new_cust + ret_cust + walk_in_cust,
     }
 
 @app.get("/api/country-summary")

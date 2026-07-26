@@ -717,12 +717,20 @@ const Overview = () => {
   const ctSeg = useMemo(() => {
     const pick = (d, k) => (d == null ? null : Number(d[k] || 0));
     return {
-      newSales:      pick(ctSpend, "new_sales"),
-      retSales:      pick(ctSpend, "returning_sales"),
-      walkInSales:   pick(ctSpend, "walk_in_sales"),
-      newSalesPrev:  pick(ctSpendPrev, "new_sales"),
-      retSalesPrev:  pick(ctSpendPrev, "returning_sales"),
-      walkInSalesPrev: pick(ctSpendPrev, "walk_in_sales"),
+      newSales:           pick(ctSpend, "new_sales"),
+      retSales:           pick(ctSpend, "returning_sales"),
+      walkInSales:        pick(ctSpend, "walk_in_sales"),
+      newSalesPrev:       pick(ctSpendPrev, "new_sales"),
+      retSalesPrev:       pick(ctSpendPrev, "returning_sales"),
+      walkInSalesPrev:    pick(ctSpendPrev, "walk_in_sales"),
+      newCustomers:       pick(ctSpend, "new_customers"),
+      retCustomers:       pick(ctSpend, "returning_customers"),
+      walkInCustomers:    pick(ctSpend, "walk_in_customers"),
+      totalCustomers:     pick(ctSpend, "total_customers"),
+      newCustomersPrev:   pick(ctSpendPrev, "new_customers"),
+      retCustomersPrev:   pick(ctSpendPrev, "returning_customers"),
+      walkInCustomersPrev: pick(ctSpendPrev, "walk_in_customers"),
+      totalCustomersPrev: pick(ctSpendPrev, "total_customers"),
     };
   }, [ctSpend, ctSpendPrev]);
   // Share of Total Sales each bucket represents (they sum to 100%).
@@ -1463,14 +1471,16 @@ const Overview = () => {
               prefetch={pf("/exports")} />
           </div>
 
-          {/* Sales by Customer Type — New / Returning / Walk-in, shown at the end
-              so the primary headline KPIs lead. % of Revenue is the big number;
-              KES amount shown as subtitle. Three buckets sum to Total Sales. */}
-          <div className="grid grid-cols-3 gap-3">
+          {/* Sales by Customer Type — New / Returning / Walk-in + Total,
+              shown at the end so primary headline KPIs lead. % of Revenue is
+              the big number; KES amount + customer count shown as subtitle.
+              Three revenue buckets sum to Total Sales. */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <KPICard testId="kpi-new-customer-revenue" label="New Customers"
               value={ctShare.newPct == null ? "\u2014" : `${ctShare.newPct.toFixed(1)}%`}
               valueFull={ctSeg.newSales == null ? "\u2014" : fmtKESLong(ctSeg.newSales)}
-              sub={ctSeg.newSales == null ? "of Revenue" : `of Revenue · ${kfmt(ctSeg.newSales)}`}
+              sub={ctSeg.newSales == null ? "of Revenue"
+                : `of Revenue · ${kfmt(ctSeg.newSales)}${ctSeg.newCustomers != null ? ` · ${fmtNum(ctSeg.newCustomers)} cust.` : ""}`}
               icon={UserPlus}
               formula="Share of Total Sales from customers whose first-ever purchase happened in this period. New + Returning + Walk-in adds up to 100% of Total Sales."
               delta={compareMode !== "none" && ctSeg.newSalesPrev ? pctDelta(ctSeg.newSales, ctSeg.newSalesPrev) : null}
@@ -1482,7 +1492,8 @@ const Overview = () => {
             <KPICard testId="kpi-returning-customer-revenue" label="Returning Customers"
               value={ctShare.retPct == null ? "\u2014" : `${ctShare.retPct.toFixed(1)}%`}
               valueFull={ctSeg.retSales == null ? "\u2014" : fmtKESLong(ctSeg.retSales)}
-              sub={ctSeg.retSales == null ? "of Revenue" : `of Revenue · ${kfmt(ctSeg.retSales)}`}
+              sub={ctSeg.retSales == null ? "of Revenue"
+                : `of Revenue · ${kfmt(ctSeg.retSales)}${ctSeg.retCustomers != null ? ` · ${fmtNum(ctSeg.retCustomers)} cust.` : ""}`}
               icon={UsersThree}
               formula="Share of Total Sales from repeat identified customers. Walk-in/anonymous revenue is shown separately."
               delta={compareMode !== "none" && ctSeg.retSalesPrev ? pctDelta(ctSeg.retSales, ctSeg.retSalesPrev) : null}
@@ -1494,12 +1505,26 @@ const Overview = () => {
             <KPICard testId="kpi-walkin-revenue" label="Walk-in"
               value={ctShare.walkInPct == null ? "\u2014" : `${ctShare.walkInPct.toFixed(1)}%`}
               valueFull={ctSeg.walkInSales == null ? "\u2014" : fmtKESLong(ctSeg.walkInSales)}
-              sub={ctSeg.walkInSales == null ? "of Revenue" : `of Revenue · ${kfmt(ctSeg.walkInSales)}`}
+              sub={ctSeg.walkInSales == null ? "of Revenue"
+                : `of Revenue · ${kfmt(ctSeg.walkInSales)}${ctSeg.walkInCustomers != null ? ` · ${fmtNum(ctSeg.walkInCustomers)} cust.` : ""}`}
               icon={PersonSimpleWalk}
-              formula="Share of Total Sales from anonymous / walk-in customers (no customer_id or customer_type not in new/returning/registered)."
+              formula="Share of Total Sales from anonymous / walk-in customers (no customer_id or customer_type not in new/returning/registered). Each walk-in order counts as one customer."
               delta={compareMode !== "none" && ctSeg.walkInSalesPrev ? pctDelta(ctSeg.walkInSales, ctSeg.walkInSalesPrev) : null}
               deltaLabel={compareLbl} deltaMuted={deltaMuted} deltaMutedNote={deltaMutedNote}
               prevValue={compareMode !== "none" && ctSeg.walkInSalesPrev != null ? kfmt(ctSeg.walkInSalesPrev) : null}
+              showDelta={compareMode !== "none"}
+              action={{ label: "Customer breakdown", to: "/customers" }}
+              prefetch={pf("/customers")} />
+            <KPICard testId="kpi-total-customers" label="Total Customers"
+              value={ctSeg.totalCustomers == null ? "\u2014" : fmtNum(ctSeg.totalCustomers)}
+              valueFull={ctSeg.totalCustomers == null ? "\u2014" : `${fmtNum(ctSeg.totalCustomers)} customers`}
+              sub={ctSeg.totalCustomers == null ? "New + Returning + Walk-in"
+                : `New ${fmtNum(ctSeg.newCustomers || 0)} · Ret. ${fmtNum(ctSeg.retCustomers || 0)} · Walk-in ${fmtNum(ctSeg.walkInCustomers || 0)}`}
+              icon={UsersThree}
+              formula="Total unique customers transacting in this period: identified new customers + identified returning customers + anonymous walk-in orders (1 order = 1 walk-in)."
+              delta={compareMode !== "none" && ctSeg.totalCustomersPrev ? pctDelta(ctSeg.totalCustomers, ctSeg.totalCustomersPrev) : null}
+              deltaLabel={compareLbl} deltaMuted={deltaMuted} deltaMutedNote={deltaMutedNote}
+              prevValue={compareMode !== "none" && ctSeg.totalCustomersPrev != null ? fmtNum(ctSeg.totalCustomersPrev) : null}
               showDelta={compareMode !== "none"}
               action={{ label: "Customer breakdown", to: "/customers" }}
               prefetch={pf("/customers")} />
