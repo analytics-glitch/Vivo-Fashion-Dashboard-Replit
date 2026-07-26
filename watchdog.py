@@ -575,6 +575,28 @@ def main():
             return
         log.warning("Rebuild-on-boot result: ok")
 
+        # Immediately refresh the BI sales rollups so exec-summary and the
+        # Customers page use first-purchase classifications derived from the
+        # freshly rebuilt all_sales, not the pre-rebuild ones.  Without this
+        # the rollup stays stale (now > 2h threshold) and falls back to the
+        # live unified-first-purchase CTE — correct but slow (~18s per exec-
+        # summary load) until the sync loop's next hourly refresh fires.
+        log.info("Rebuild-on-boot: refreshing BI sales rollups...")
+        try:
+            _rollup_proc = subprocess.Popen(
+                [sys.executable, os.path.join(ROOT, "build_sales_rollups.py")],
+                cwd=ROOT
+            )
+            rc_rollup = _rollup_proc.wait(timeout=600)
+            if rc_rollup == 0:
+                log.info("Rebuild-on-boot: rollup refresh complete")
+            else:
+                log.warning("Rebuild-on-boot: rollup refresh exited %s — "
+                            "will self-heal on next sync cycle", rc_rollup)
+        except Exception as _re:
+            log.warning("Rebuild-on-boot: rollup refresh failed (%s) — "
+                        "will self-heal on next sync cycle", _re)
+
     spawn("sync")
 
     threading.Thread(target=supervise_loop, daemon=True).start()

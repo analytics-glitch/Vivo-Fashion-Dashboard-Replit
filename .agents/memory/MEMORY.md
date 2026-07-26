@@ -1,3 +1,4 @@
+- [Rollup customer consistency rules](rollup-customer-consistency.md) — 5 invariants: 2h max age, rebuild rollup after REBUILD_ON_BOOT, unified-FP bridge in stale fallback, pseudo excl on all surfaces, never raw MIN(sale_date) for new/returning.
 - [RBAC last-admin & bootstrap concurrency](rbac-last-admin-toctou.md) — admin role/status/delete + first-login bootstrap must run in one advisory-locked tx, or concurrent requests can leave zero admins.
 - [Clerk prod "Checking session…" blank](clerk-prod-blank-checking-session.md) — published app stuck on auth-loading (dev fine) = Python Clerk proxy relays Brotli the browser can't decode; force Accept-Encoding gzip/deflate.
 - [Sync watchdog heartbeat](sync-watchdog-heartbeat.md) — sync health must key off a loop heartbeat, NOT all_sales.loaded_at (quiet periods = false failures); recovery backfill must suspend the supervised sync to avoid overlap.

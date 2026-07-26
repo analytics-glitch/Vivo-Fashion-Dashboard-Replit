@@ -3636,7 +3636,10 @@ def _country_channel_filter(country=None, channel=None):
 #     CURRENT_DATE arithmetic stays correct at read time regardless of rollup age;
 #     the per-style window columns (30d/180d/…) are baked at refresh time, so the
 #     freshness gate bounds their drift to one refresh interval.
-ROLLUP_MAX_AGE_SEC = 25 * 3600   # rollups older than this → fall back to live
+ROLLUP_MAX_AGE_SEC = 2 * 3600    # rollups older than this → fall back to live
+# 2h matches the hourly refresh cadence with a 1-cycle grace margin. 25h was too
+# wide: a failed sync or a REBUILD_ON_BOOT with no immediate rollup refresh could
+# serve stale new/returning classifications all day before falling back to live.
 # Fixed key for the session advisory lock that serialises rollup refreshes (so a
 # manual run and the hourly sync subprocess never collide on the <table>_stage
 # tables). Arbitrary but stable; isolated from other advisory-lock keys.
@@ -4503,14 +4506,15 @@ def get_kpis_customer_type_split(
             CASE
                 WHEN fp.first_purchase_date BETWEEN '""" + date_from + """'::date AND '""" + date_to + """'::date
                      THEN 'New'
-                -- Shared counter accounts (e.g. "Sarit Walk in") have a real
-                -- customer_id tagged as 'returning' but their name reveals they
-                -- are anonymous walk-in placeholders.
+                -- Shared counter accounts (e.g. "Sarit Walk in") and
+                -- email-domain pseudo-accounts have a real customer_id but are
+                -- anonymous placeholders. Use _WALKIN_PSEUDO_COND (name regex
+                -- OR email regex) so this bucket matches exactly what
+                -- _not_walkin_pseudo_sql excludes on /api/customers.
                 WHEN s.customer_id IN (
                          SELECT ac.customer_id FROM all_customers ac
                          WHERE ac.customer_id IS NOT NULL
-                         AND (COALESCE(ac.first_name,'') || ' ' || COALESCE(ac.last_name,''))
-                             ~* 'walk[- ]?in'
+                         AND """ + _WALKIN_PSEUDO_COND + """
                      )
                      THEN 'Walk-in'
                 WHEN COALESCE(LOWER(s.customer_type), '') NOT IN ('new', 'returning', 'registered')
@@ -15426,27 +15430,38 @@ def _es_customer_windows(span_from, span_to, windows, country):
     # column compares against the same quoted literals with the same ordering.
     # The rollup is built from _unified_first_purchase_ctes (Kenya id bridge),
     # matching the get_customers canon. Fall back to the live scan when stale.
+    #
+    # IMPORTANT: the stale fallback MUST use _unified_first_purchase_ctes too —
+    # not a raw MIN(sale_date). The bridge collapses post-2026-03-20 Odoo IDs
+    # onto their legacy Shopify IDs, so a returning Kenya shopper appearing under
+    # a new Odoo ID after the cutover is not mislabelled "New". The old MIN()
+    # fallback lacked the bridge and diverged from the rollup's classification.
     if _rollup_fresh("customer_first_purchase"):
+        prefix_ctes = ""
         at_cte = """at AS (
             SELECT customer_id, first_purchase_date AS first_ever
             FROM rollup_customer_first_purchase
         )"""
     else:
+        prefix_ctes = _unified_first_purchase_ctes() + ","
         at_cte = """at AS (
-            SELECT customer_id, MIN(sale_date) AS first_ever
-            FROM all_sales
-            WHERE sale_kind IN ('sale','order') AND customer_id IS NOT NULL
-            GROUP BY customer_id
+            SELECT customer_id, first_purchase_date AS first_ever
+            FROM first_purchase
         )"""
+    # Exclude walk-in / pseudo-accounts so exec-summary customer counts match
+    # the Customers page universe (_not_walkin_pseudo_sql mirrors the same gate
+    # applied in get_customers). Without this, pseudo-accounts with a customer_id
+    # inflated exec-summary totals vs the Customers page for the same period.
+    pseudo_excl = "AND " + _not_walkin_pseudo_sql("s")
     rows = run_query("""
-        WITH """ + at_cte + """,
+        WITH """ + prefix_ctes + at_cte + """,
         pc AS (
             SELECT s.customer_id, """ + ",\n".join(pc_cols) + """
             FROM all_sales s
             WHERE s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL
               AND s.customer_id NOT IN ('None','null','')
               AND s.sale_date BETWEEN '""" + span_from + """' AND '""" + span_to + """'
-              AND """ + BASE_FILTERS + " " + country_filter + """
+              AND """ + BASE_FILTERS + " " + country_filter + " " + pseudo_excl + """
             GROUP BY s.customer_id
         )
         SELECT """ + ",\n".join(sel) + """
