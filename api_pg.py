@@ -6252,12 +6252,21 @@ def get_new_customer_products(
 ):
     where = build_filters(date_from, date_to, country, channel,
         extra="s.sale_kind IN ('sale','order') AND s.ordered_item_quantity > 0 AND p.style_name IS NOT NULL")
+    # new_customers uses _unified_first_purchase_ctes (Kenya Odoo/Shopify ID
+    # bridge) so a post-cutover customer whose prior Shopify history exists is
+    # not mis-labelled "new". Raw MIN(sale_date) GROUP BY customer_id lacks the
+    # bridge and treated every Odoo-era ID as new regardless of history.
+    # Pseudo-accounts (walk-in placeholders) are also excluded so the product
+    # list isn't polluted by counter-account purchases.
     return run_query("""
-        WITH new_customers AS (
-            SELECT customer_id FROM all_sales
-            WHERE sale_kind IN ('sale','order') AND customer_id IS NOT NULL
-            GROUP BY customer_id
-            HAVING MIN(sale_date) BETWEEN '""" + date_from + """' AND '""" + date_to + """'
+        WITH """ + _unified_first_purchase_ctes() + """,
+        new_customers AS (
+            SELECT customer_id FROM first_purchase
+            WHERE first_purchase_date BETWEEN '""" + date_from + """'::date AND '""" + date_to + """'::date
+              AND customer_id NOT IN (
+                  SELECT ac.customer_id FROM all_customers ac
+                  WHERE ac.customer_id IS NOT NULL AND """ + _WALKIN_PSEUDO_COND + """
+              )
         )
         SELECT p.style_name, p.product_type AS subcategory, p.brand,
             SUM(s.ordered_item_quantity) AS units_sold,
@@ -15523,21 +15532,26 @@ def _es_countries(cur_from, cur_to, ly_from, ly_to, country, days_cur, days_ly, 
 def _es_store_targets(ytd_ly_from, ytd_ly_to, year_ly):
     # Per-channel targets via the prior-year-actual + 15% stretch convention:
     # target_ytd = prior-year same YTD period; target_annual = prior full year.
+    # Revenue basis MUST match get_sales_summary (total − discounts − returns,
+    # VAT-inclusive) so that actuals and targets use the same denominator and
+    # the attainment % is meaningful. The old net_sales_kes column is ex-VAT
+    # (reads ~15% lower) and made store-level attainment look systematically
+    # inflated when actuals came from get_sales_summary's canonical formula.
     growth = 1.15
     ytd_rows = run_query("""
         SELECT s.pos_location_name AS channel,
-            ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.net_sales_kes::numeric ELSE 0 END)) AS net
+            ROUND(""" + _TARGET_REVENUE + """) AS net
         FROM all_sales s
         WHERE s.sale_date BETWEEN '""" + ytd_ly_from + """' AND '""" + ytd_ly_to + """'
-          AND s.sale_kind IN ('sale','order') AND """ + BASE_FILTERS + """
+          AND s.sale_kind IN ('sale','order','return') AND """ + BASE_FILTERS + """
         GROUP BY s.pos_location_name
     """, date_to=ytd_ly_to)
     ann_rows = run_query("""
         SELECT s.pos_location_name AS channel,
-            ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.net_sales_kes::numeric ELSE 0 END)) AS net
+            ROUND(""" + _TARGET_REVENUE + """) AS net
         FROM all_sales s
         WHERE s.sale_date BETWEEN '""" + str(year_ly) + """-01-01' AND '""" + str(year_ly) + """-12-31'
-          AND s.sale_kind IN ('sale','order') AND """ + BASE_FILTERS + """
+          AND s.sale_kind IN ('sale','order','return') AND """ + BASE_FILTERS + """
         GROUP BY s.pos_location_name
     """)
     out = {}
