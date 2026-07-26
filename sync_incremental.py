@@ -1921,6 +1921,71 @@ def main():
         log.error("Kenya pre-cutover fix error: %s", e)
         conn.rollback()
 
+    # ---- One-time data fix: Shop Zetu historical customer_id backfill ----
+    # The incremental ShopifyQL sync only covers the last ~4 days, so production's
+    # pre-recent Shop Zetu rows have NULL customer_id (the historical backfill ran
+    # only in dev; publishing ships code, not data). This block detects >100 NULL
+    # customer_id rows older than 10 days and re-extracts 2023-01-01 → (today-10d)
+    # once. extract_shopzetu_shopifyql.py is idempotent (DELETE + INSERT per date
+    # range), so a partial run that gets retried the next cycle is safe.
+    # run_subprocess_with_heartbeat keeps the watchdog heartbeat fresh while the
+    # ShopifyQL API walk runs (can take several minutes for 2+ years of history).
+    try:
+        import subprocess, sys as _sys
+
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS app_config (
+                key        TEXT PRIMARY KEY,
+                value      JSONB,
+                updated_at TIMESTAMPTZ DEFAULT now()
+            )""")
+        cur.execute(
+            "SELECT 1 FROM app_config WHERE key='data_fix_shopzetu_customer_id_backfill_v1'"
+        )
+        if cur.fetchone() is None:
+            _cutoff = (datetime.now(timezone.utc).date() - timedelta(days=10)).isoformat()
+            cur.execute(
+                "SELECT COUNT(*) FROM all_sales "
+                "WHERE store_id = 'shop-zetu' "
+                "  AND customer_id IS NULL "
+                "  AND sale_date::date < %s",
+                (_cutoff,),
+            )
+            _missing = cur.fetchone()[0]
+            if _missing > 100:
+                log.info(
+                    "Shop Zetu customer_id backfill: %d historical rows missing — "
+                    "re-extracting 2023-01-01 → %s",
+                    _missing, _cutoff,
+                )
+                run_subprocess_with_heartbeat(
+                    [_sys.executable,
+                     "/home/runner/workspace/extract_shopzetu_shopifyql.py",
+                     "--since", "2023-01-01",
+                     "--until", _cutoff],
+                    status="shopzetu_customer_id_backfill",
+                )
+                log.info("Shop Zetu customer_id backfill complete")
+            else:
+                log.info("Shop Zetu customer_id backfill: coverage OK (%d missing), skipping", _missing)
+            cur.execute(
+                """
+                INSERT INTO app_config (key, value, updated_at)
+                VALUES ('data_fix_shopzetu_customer_id_backfill_v1',
+                        jsonb_build_object('missing_rows', %s::int,
+                                           'cutoff', %s,
+                                           'applied_at', now()::text),
+                        now())
+                ON CONFLICT (key) DO NOTHING
+                """,
+                (_missing if _missing > 100 else 0, _cutoff),
+            )
+            conn.commit()
+        conn.commit()
+    except Exception as e:
+        log.error("Shop Zetu customer_id backfill error: %s", e)
+        conn.rollback()
+
     # Load exchange rates once per sync cycle
     rates = get_exchange_rates(cur)
     log.info("Exchange rates: %s", rates)
