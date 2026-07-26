@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/lib/auth";
+import { homePageFor } from "@/lib/permissions";
 
 const AuthCallback = () => {
   const { completeGoogleLogin } = useAuth();
@@ -37,8 +38,9 @@ const AuthCallback = () => {
         // Clear the hash so a reload doesn't re-process the token.
         window.history.replaceState(null, "", "/");
         // Pending/rejected users still land in the app — ProtectedRoute
-        // routes them to the awaiting-approval screen.
-        navigate("/", { replace: true });
+        // routes them to the awaiting-approval screen. Store managers go
+        // directly to Overview; everyone else lands on the Home tile grid.
+        navigate(homePageFor(u), { replace: true });
         if (!u) setError("Could not verify your account. Please try again.");
       } catch (err) {
         setError(err?.response?.data?.detail || "Google sign-in failed");

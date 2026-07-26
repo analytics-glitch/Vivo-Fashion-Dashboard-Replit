@@ -19,7 +19,7 @@ const VIEWER = ["overview", "exec-summary", "locations", "footfall", "trend-anal
 const PRODUCT_DEVELOPMENT = ["product-analysis", "range-mgmt", "catalogue", "gallery", "inventory", "size-health", "data-quality", "fabric", "exports", "production", "production-report", "style-tracker", "pd-flow", "partner-brands", "sops"];
 const RETAIL = ["store-flow", "overview", "exec-summary", "locations", "footfall", "trend-analysis", "customers", "product-analysis", "gallery", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "exports", "partner-brands", "sops", "ask"];
 const WAREHOUSE = ["store-flow", "inventory", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "re-order", "allocations", "data-quality", "exports", "sops"];
-const STORE_MANAGER = ["store-flow", "locations", "footfall", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "sops"];
+const STORE_MANAGER = ["overview", "store-flow", "locations", "footfall", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "sops"];
 // "finance" (the Finance Reports Suite) is a leadership + admin surface, so it
 // lives in LEADERSHIP (ADMIN spreads LEADERSHIP). The server /api/finance gate
 // independently restricts the underlying API to leadership + admin.
@@ -128,7 +128,11 @@ export const canAccessPage = (user, pageId) => {
  */
 export const homePageFor = (user) => {
   if (!user) return "/login";
-  // Everyone lands on the Home landing page (route "/"), which renders only the
-  // tiles the user can actually access — so this is always a safe redirect target.
+  const role = (user.role || "").toLowerCase();
+  // Store managers land directly on Overview pre-filtered to their store (the
+  // filter seeding happens in FiltersProvider using user.pos_location_name).
+  if (role === "store_manager") return "/overview";
+  // Everyone else lands on the Home landing page (route "/"), which renders
+  // only the tiles the user can actually access.
   return "/";
 };

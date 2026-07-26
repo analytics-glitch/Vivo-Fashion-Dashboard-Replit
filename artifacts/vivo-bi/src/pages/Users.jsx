@@ -17,6 +17,8 @@ const Users = () => {
   // Custom admin-created groups (from Group Access) so they're assignable here
   // too. { custom: [slug], labels: {slug: label} } — non-fatal if unavailable.
   const [groupMeta, setGroupMeta] = useState({ custom: [], labels: {} });
+  // Retail POS location list — used for the Home Store dropdown on store_manager rows.
+  const [posLocations, setPosLocations] = useState([]);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -29,6 +31,13 @@ const Users = () => {
         custom: Array.isArray(r.data?.custom) ? r.data.custom : [],
         labels: r.data?.labels || {},
       }))
+      .catch(() => {});
+    api.get("/bootstrap")
+      .then((r) => {
+        const all = (r.data?.active_pos || []).map((l) => l.channel).filter(Boolean);
+        // Retail-only: exclude online channels.
+        setPosLocations(all.filter((c) => !/online/i.test(c)).sort());
+      })
       .catch(() => {});
   }, []);
 
@@ -90,6 +99,13 @@ const Users = () => {
   const toggleCrmAdmin = async (u) => {
     try {
       await api.patch(`/admin/users/${u.user_id}`, { crm_admin: !u.crm_admin });
+      load();
+    } catch (e) { alert(e?.response?.data?.detail || e.message); }
+  };
+
+  const updateHomeStore = async (u, pos_location_name) => {
+    try {
+      await api.patch(`/admin/users/${u.user_id}`, { pos_location_name: pos_location_name || null });
       load();
     } catch (e) { alert(e?.response?.data?.detail || e.message); }
   };
@@ -236,6 +252,29 @@ const Users = () => {
                 label: "Last Login",
                 align: "left",
                 render: (r) => r.last_login_at ? fmtDate(r.last_login_at) : "—",
+              },
+              {
+                key: "pos_location_name",
+                label: "Home Store",
+                align: "left",
+                sortable: false,
+                render: (r) => {
+                  if (r.role !== "store_manager") return <span className="text-muted text-[11px]">—</span>;
+                  return (
+                    <select
+                      className="text-[11px] px-1.5 py-1 rounded border border-border max-w-[160px]"
+                      value={r.pos_location_name || ""}
+                      onChange={(e) => updateHomeStore(r, e.target.value)}
+                      data-testid={`home-store-${r.user_id}`}
+                      title="Home store — pre-filters Overview to this POS when the user logs in"
+                    >
+                      <option value="">— unset —</option>
+                      {posLocations.map((loc) => (
+                        <option key={loc} value={loc}>{loc}</option>
+                      ))}
+                    </select>
+                  );
+                },
               },
               {
                 key: "actions",

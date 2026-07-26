@@ -153,6 +153,23 @@ export const FiltersProvider = ({ children }) => {
     return () => { cancelled = true; };
   }, [user]);
 
+  // Personalisation: store managers with an assigned home store get that POS
+  // pre-selected as their channel filter on first load (no URL override needed).
+  // We apply this exactly once per session (ref guard) after the user resolves.
+  const appliedHomeStoreRef = useRef(false);
+  useEffect(() => {
+    if (appliedHomeStoreRef.current) return;
+    if (!user) return;
+    appliedHomeStoreRef.current = true; // mark regardless so we only run once
+    const role = (user.role || "").toLowerCase();
+    if (role !== "store_manager") return;
+    const homeStore = (user.pos_location_name || "").trim();
+    if (!homeStore) return;
+    // Don't clobber an explicit URL-supplied channel.
+    if (urlParams?.ch) return;
+    setChannels([homeStore]);
+  }, [user]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Track which URL filters we validated-and-dropped so we toast the user
   // exactly once after the real location list comes back.
   const urlValidatedRef = useRef(false);

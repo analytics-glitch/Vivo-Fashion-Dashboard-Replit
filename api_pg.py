@@ -693,7 +693,7 @@ DEFAULT_ROLE_PAGES = {
     "product_development": ["product-analysis", "range-mgmt", "catalogue", "gallery", "inventory", "size-health", "data-quality", "fabric", "exports", "production", "production-report", "style-tracker", "pd-flow", "partner-brands", "sops"],
     "retail": ["store-flow", "overview", "exec-summary", "locations", "footfall", "trend-analysis", "customers", "product-analysis", "gallery", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "exports", "partner-brands", "sops", "ask"],
     "warehouse": ["store-flow", "inventory", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "re-order", "allocations", "data-quality", "exports", "sops"],
-    "store_manager": ["store-flow", "locations", "footfall", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "sops"],
+    "store_manager": ["overview", "store-flow", "locations", "footfall", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "sops"],
     "leadership": _LEADERSHIP_PAGES,
     # SMT (Senior Management Team) — everything SLT (leadership) sees EXCEPT the
     # Finance Reports Suite. The /api/finance gate below also excludes "smt".
@@ -883,6 +883,10 @@ def _ensure_users_table():
     # CRM admin flag: grants manager-level access in the standalone CRM UI without
     # elevating to platform admin. Managed via the Users admin panel.
     _users_exec("ALTER TABLE app_users ADD COLUMN IF NOT EXISTS crm_admin BOOLEAN NOT NULL DEFAULT FALSE")
+    # The POS location name this store manager is assigned to. Seeded by
+    # admins on the Users page; surfaced via /auth/me so the BI frontend
+    # can auto-apply the right channel filter when the user first logs in.
+    _users_exec("ALTER TABLE app_users ADD COLUMN IF NOT EXISTS pos_location_name TEXT")
     # One-time seed: promote any existing hardcoded CRM_ADMIN_EMAILS entries into
     # the DB flag so the column immediately reflects the intended state.
     try:
@@ -927,7 +931,7 @@ def _ensure_users_table():
 
 def _resolve_app_user_db(sub, email, name, picture=None):
     rows = _users_exec(
-        "SELECT user_id, email, name, role, status, crm_admin FROM app_users WHERE user_id=%s",
+        "SELECT user_id, email, name, role, status, crm_admin, pos_location_name FROM app_users WHERE user_id=%s",
         (sub,), fetch=True)
     if rows:
         rec = rows[0]
@@ -950,7 +954,7 @@ def _resolve_app_user_db(sub, email, name, picture=None):
     # account instead of creating a duplicate. (A blind insert would also violate
     # the email UNIQUE constraint and error, since ON CONFLICT only covers user_id.)
     erows = _users_exec(
-        "SELECT user_id, email, name, role, status, crm_admin FROM app_users WHERE email=%s",
+        "SELECT user_id, email, name, role, status, crm_admin, pos_location_name FROM app_users WHERE email=%s",
         (email,), fetch=True) if email else None
     if erows:
         rec = erows[0]
@@ -13298,7 +13302,7 @@ def admin_store_clusters(forceFresh: bool = Query(default=False)):
 @app.get("/api/admin/users")
 def admin_users_list():
     rows = _users_exec(
-        "SELECT user_id, email, name, role, status, auth_method, crm_admin, "
+        "SELECT user_id, email, name, role, status, auth_method, crm_admin, pos_location_name, "
         "created_at, approved_at, approved_by, last_login_at, "
         "(status='active') AS active "
         "FROM app_users ORDER BY created_at DESC", fetch=True) or []
@@ -22393,6 +22397,11 @@ async def admin_users_update(user_id: str, request: Request):
                     params.append(acting.get("email") or acting.get("id"))
             if new_crm_admin is not None:
                 sets.append("crm_admin=%s"); params.append(new_crm_admin)
+            # pos_location_name: admin can set or clear it (pass null to unset).
+            if "pos_location_name" in body:
+                val = body["pos_location_name"]
+                sets.append("pos_location_name=%s")
+                params.append(str(val).strip() if val else None)
             if not sets:
                 return {"ok": True}
             params.append(user_id)

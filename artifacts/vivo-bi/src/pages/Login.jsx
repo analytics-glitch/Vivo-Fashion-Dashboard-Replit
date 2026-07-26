@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
 import { useAuth } from "@/lib/auth";
+import { homePageFor } from "@/lib/permissions";
 import { GoogleLogo, Envelope, Lock, SignIn, Warning } from "@phosphor-icons/react";
 import { api, API } from "@/lib/api";
 
@@ -44,8 +45,8 @@ const Login = () => {
         setError("Please enter both email and password.");
         return;
       }
-      await loginWithPassword(em, pw);
-      navigate("/", { replace: true });
+      const loggedInUser = await loginWithPassword(em, pw);
+      navigate(homePageFor(loggedInUser), { replace: true });
     } catch (err) {
       // Surface the ACTUAL failure cause so iOS Safari issues are debuggable
       // instead of a generic "Login failed". Pick the most specific source
