@@ -143,6 +143,46 @@ def is_gift_voucher(name):
     return 'gift voucher' in n or 'gift card' in n
 
 
+_INSERT_SQL = """
+    INSERT INTO all_products_clean (
+        sku, product_name, barcode, price, cost,
+        brand, vendor, color_print, style_number,
+        collection, style_name, print_plain,
+        product_type, category, gender, season, size,
+        stock_on_hand, stock_available, active, product_id, ever_sold,
+        status, tier
+    ) VALUES %s
+    ON CONFLICT (sku) DO UPDATE SET
+        product_name    = EXCLUDED.product_name,
+        price           = EXCLUDED.price,
+        cost            = EXCLUDED.cost,
+        active          = EXCLUDED.active
+"""
+
+_INSERT_SQL_NOOP = """
+    INSERT INTO all_products_clean (
+        sku, product_name, barcode, price, cost,
+        brand, vendor, color_print, style_number,
+        collection, style_name, print_plain,
+        product_type, category, gender, season, size,
+        stock_on_hand, stock_available, active, product_id, ever_sold,
+        status, tier
+    ) VALUES %s
+    ON CONFLICT (sku) DO NOTHING
+"""
+
+_BATCH = 1000  # rows flushed per commit — keeps Python heap bounded
+
+
+def _flush(cur, conn, rows, sql=_INSERT_SQL):
+    """Write accumulated rows to DB, commit, and clear the list in-place."""
+    if not rows:
+        return
+    execute_values(cur, sql, rows, page_size=_BATCH)
+    conn.commit()
+    rows.clear()
+
+
 def main():
     conn = psycopg2.connect(DATABASE_URL)
     cur  = conn.cursor()
@@ -150,8 +190,11 @@ def main():
 
     log.info("Building all_products_clean...")
     cur.execute("TRUNCATE all_products_clean")
+    conn.commit()  # release the exclusive lock immediately; subsequent inserts use row locks only
 
     # ── Sales enrichment data ────────────────────────────────────────────────
+    # This is a grouped aggregate (one row per unique SKU), so it's much
+    # smaller than the raw sales table — safe to load into a dict in one shot.
     cur.execute("""
         SELECT variant_sku,
             MAX(product_vendor) AS vendor,
@@ -163,26 +206,6 @@ def main():
     """)
     sales_data = {r[0]: r for r in cur.fetchall()}
     log.info("Sales enrichment data: %d SKUs", len(sales_data))
-
-    # ── Odoo products ────────────────────────────────────────────────────────
-    cur.execute("""
-        SELECT DISTINCT ON (default_code)
-            id, name, default_code, barcode,
-            list_price, standard_price, categ_name,
-            sub_category, style_name, style_number,
-            collection, color, brand, vendor,
-            category, gender, season, status, tier, active,
-            write_date
-        FROM raw_odoo_products
-        WHERE default_code IS NOT NULL
-        AND categ_name IN ('2. Finished Goods Inventory', '01. Finished Goods Inventory', '2. Finished Goods Inventory ')
-        AND LOWER(name) NOT LIKE '%shopping bag%'
-        AND LOWER(name) NOT LIKE '%gift voucher%'
-        AND LOWER(name) NOT LIKE '%gift card%'
-        ORDER BY default_code, write_date DESC
-    """)
-    odoo_products = cur.fetchall()
-    log.info("Odoo products: %d", len(odoo_products))
 
     # ── Dominant subcat per style name from Odoo ─────────────────────────────
     cur.execute("""
@@ -205,81 +228,114 @@ def main():
             subcat_counts[sn] = (sc, freq)
     style_subcat = {k: v[0] for k, v in subcat_counts.items()}
 
-    rows = []
+    # ── Odoo products — streamed via server-side cursor ──────────────────────
+    # Use a named cursor so Postgres streams rows to us in _BATCH-sized chunks
+    # instead of loading all 20k+ rows into Python memory at once.
     seen_skus = set()
+    rows      = []
+    total_odoo = 0
 
-    for p in odoo_products:
-        (pid, name, sku, barcode, price, cost, categ_name,
-         sub_category, style_name, style_number, collection,
-         color, brand, vendor, category, gender, season,
-         status, tier, active, write_date) = p
+    with conn.cursor(name="odoo_products_cursor") as sc:
+        sc.itersize = _BATCH
+        sc.execute("""
+            SELECT DISTINCT ON (default_code)
+                id, name, default_code, barcode,
+                list_price, standard_price, categ_name,
+                sub_category, style_name, style_number,
+                collection, color, brand, vendor,
+                category, gender, season, status, tier, active,
+                write_date
+            FROM raw_odoo_products
+            WHERE default_code IS NOT NULL
+            AND categ_name IN ('2. Finished Goods Inventory', '01. Finished Goods Inventory', '2. Finished Goods Inventory ')
+            AND LOWER(name) NOT LIKE '%%shopping bag%%'
+            AND LOWER(name) NOT LIKE '%%gift voucher%%'
+            AND LOWER(name) NOT LIKE '%%gift card%%'
+            ORDER BY default_code, write_date DESC
+        """)
 
-        if sku in seen_skus:
-            continue
-        seen_skus.add(sku)
+        for p in sc:
+            (pid, name, sku, barcode, price, cost, categ_name,
+             sub_category, style_name, style_number, collection,
+             color, brand, vendor, category, gender, season,
+             status, tier, active, write_date) = p
 
-        s = sales_data.get(sku)
+            if sku in seen_skus:
+                continue
+            seen_skus.add(sku)
 
-        # Style name and color
-        # The Odoo source style_name is corrupt for some styles (e.g. 32 unrelated
-        # styles all stamped "Vivo Knee Length Kaftan in Satin"). The product name
-        # is authoritative, so always derive style_name from it rather than trusting
-        # the source. (Post-processing then canonicalises one name per style_number.)
-        sname = extract_style_name(name)
-        clr   = color or extract_color_from_name(name)
-        if clr:
-            clr = clr.title()
+            s = sales_data.get(sku)
 
-        # Product name
-        product_name = name  # use Odoo name directly — reconstruction from sname+clr introduced wrong colors
+            # Style name and color
+            # The Odoo source style_name is corrupt for some styles (e.g. 32 unrelated
+            # styles all stamped "Vivo Knee Length Kaftan in Satin"). The product name
+            # is authoritative, so always derive style_name from it rather than trusting
+            # the source. (Post-processing then canonicalises one name per style_number.)
+            sname = extract_style_name(name)
+            clr   = color or extract_color_from_name(name)
+            if clr:
+                clr = clr.title()
 
-        # Brand
-        br   = brand or guess_brand(name)
-        # The Odoo source style_number is reliable when present and well-formed,
-        # but ~187 rows carry a garbage single-letter "V" that, if trusted,
-        # collapses many unrelated styles into one bucket and corrupts style_name.
-        # Only trust a source value that looks like a real style number; else derive.
-        snum = style_number if (style_number and re.match(r'^[A-Za-z]?\d{6,8}$', str(style_number).strip())) else extract_style_number(sku, name)
-        size = extract_size(sku)
+            # Product name
+            product_name = name  # use Odoo name directly — reconstruction from sname+clr introduced wrong colors
 
-        # Subcategory
-        if is_gift_voucher(name):
-            subcat = 'Gift Vouchers'
-        elif is_sample(name, sku):
-            subcat = 'Sample & Sale Items'
-        elif sub_category and sub_category in VALID_SUBCATS:
-            subcat = sub_category
-        elif style_subcat.get(sname):
-            subcat = style_subcat[sname]
-        else:
-            subcat = None
+            # Brand
+            br   = brand or guess_brand(name)
+            # The Odoo source style_number is reliable when present and well-formed,
+            # but ~187 rows carry a garbage single-letter "V" that, if trusted,
+            # collapses many unrelated styles into one bucket and corrupts style_name.
+            # Only trust a source value that looks like a real style number; else derive.
+            snum = style_number if (style_number and re.match(r'^[A-Za-z]?\d{6,8}$', str(style_number).strip())) else extract_style_number(sku, name)
+            size = extract_size(sku)
 
-        cat = CATEGORY_MAP.get(subcat)
+            # Subcategory
+            if is_gift_voucher(name):
+                subcat = 'Gift Vouchers'
+            elif is_sample(name, sku):
+                subcat = 'Sample & Sale Items'
+            elif sub_category and sub_category in VALID_SUBCATS:
+                subcat = sub_category
+            elif style_subcat.get(sname):
+                subcat = style_subcat[sname]
+            else:
+                subcat = None
 
-        # Print/plain
-        name_upper = (name or '').upper()
-        clr_upper  = (clr or '').upper()
-        if 'PRINT' in clr_upper or 'PRINT' in name_upper or \
-           'ANKARA' in name_upper or 'KITENGE' in name_upper or \
-           'TIE DYE' in name_upper:
-            print_plain = 'Print'
-        else:
-            print_plain = 'Plain'
+            cat = CATEGORY_MAP.get(subcat)
 
-        rows.append((
-            sku, product_name, str(barcode) if barcode else None,
-            float(price or 0), float(cost or 0),
-            br, vendor,
-            clr, snum, collection, sname,
-            print_plain, subcat, cat,
-            gender, season, size,
-            0, 0,
-            bool(active), pid,
-            s is not None,
-            status, tier,
-        ))
+            # Print/plain
+            name_upper = (name or '').upper()
+            clr_upper  = (clr or '').upper()
+            if 'PRINT' in clr_upper or 'PRINT' in name_upper or \
+               'ANKARA' in name_upper or 'KITENGE' in name_upper or \
+               'TIE DYE' in name_upper:
+                print_plain = 'Print'
+            else:
+                print_plain = 'Plain'
+
+            rows.append((
+                sku, product_name, str(barcode) if barcode else None,
+                float(price or 0), float(cost or 0),
+                br, vendor,
+                clr, snum, collection, sname,
+                print_plain, subcat, cat,
+                gender, season, size,
+                0, 0,
+                bool(active), pid,
+                s is not None,
+                status, tier,
+            ))
+            total_odoo += 1
+
+            # Flush every _BATCH rows so the accumulator never holds the full set
+            if len(rows) >= _BATCH:
+                _flush(cur, conn, rows)
+                log.info("  %d Odoo products inserted so far…", total_odoo)
+
+    _flush(cur, conn, rows)  # final partial batch
+    log.info("Odoo products inserted: %d", total_odoo)
 
     # ── SKUs from sales not in Odoo ──────────────────────────────────────────
+    sales_only = 0
     for sku, s in sales_data.items():
         if sku in seen_skus:
             continue
@@ -317,24 +373,14 @@ def main():
             None, None,
         ))
         seen_skus.add(sku)
+        sales_only += 1
 
-    log.info("Total products to insert: %d", len(rows))
+        if len(rows) >= _BATCH:
+            _flush(cur, conn, rows)
 
-    execute_values(cur, """
-        INSERT INTO all_products_clean (
-            sku, product_name, barcode, price, cost,
-            brand, vendor, color_print, style_number,
-            collection, style_name, print_plain,
-            product_type, category, gender, season, size,
-            stock_on_hand, stock_available, active, product_id, ever_sold,
-            status, tier
-        ) VALUES %s
-        ON CONFLICT (sku) DO UPDATE SET
-            product_name    = EXCLUDED.product_name,
-            price           = EXCLUDED.price,
-            cost            = EXCLUDED.cost,
-            active          = EXCLUDED.active
-    """, rows, page_size=1000)
+    _flush(cur, conn, rows)
+    log.info("Sales-only SKUs inserted: %d", sales_only)
+    log.info("Total products inserted: %d", total_odoo + sales_only)
 
     cur.execute("SELECT COUNT(*) FROM all_products_clean")
     log.info("✅ all_products_clean before inventory: %d rows", cur.fetchone()[0])
@@ -375,19 +421,13 @@ def main():
             None, None,
         ))
 
-    if inv_insert:
-        execute_values(cur, """
-            INSERT INTO all_products_clean (
-                sku, product_name, barcode, price, cost,
-                brand, vendor, color_print, style_number,
-                collection, style_name, print_plain,
-                product_type, category, gender, season, size,
-                stock_on_hand, stock_available, active, product_id, ever_sold,
-                status, tier
-            ) VALUES %s
-            ON CONFLICT (sku) DO NOTHING
-        """, inv_insert, page_size=500)
-        log.info("✅ Added %d inventory SKUs", len(inv_insert))
+        if len(inv_insert) >= _BATCH:
+            _flush(cur, conn, inv_insert, sql=_INSERT_SQL_NOOP)
+
+    inv_added = len(inv_rows)
+    _flush(cur, conn, inv_insert, sql=_INSERT_SQL_NOOP)
+    if inv_added:
+        log.info("✅ Added %d inventory SKUs", inv_added)
 
     # ── Re-derive style_name from product_name (AUTHORITATIVE) ───────────────
     # The upstream style_name source was corrupting whole styles (e.g. 32
