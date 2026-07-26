@@ -200,6 +200,14 @@ const CountryCard = ({ ytd, mtd, targets, selected, onClick }) => {
           <CountryMetricRow label="Footfall"                cur={ytd?.footfall?.cur}   ly={ytd?.footfall?.ly}   delta={ytd?.footfall?.delta_pct} />
           <CountryMetricRow label="Basket"   fmt={fmtKES}  cur={ytd?.avg_basket?.cur} ly={ytd?.avg_basket?.ly} delta={ytd?.avg_basket?.delta_pct} />
           <CountryMetricRow label="ASP"      fmt={fmtKES}  cur={ytd?.asp?.cur}        ly={ytd?.asp?.ly}        delta={ytd?.asp?.delta_pct} />
+          {ytd?.customers?.cur > 0 && (
+            <div className="mt-2 pt-2 border-t border-border/60 space-y-0.5">
+              <div className="text-[9px] uppercase font-bold text-muted tracking-widest mb-1">Customers</div>
+              <CountryMetricRow label="Total"     cur={ytd?.customers?.cur}          ly={ytd?.customers?.ly}          delta={ytd?.customers?.delta_pct} />
+              <CountryMetricRow label="New"       cur={ytd?.new_customers?.cur}      ly={ytd?.new_customers?.ly}      delta={ytd?.new_customers?.delta_pct} />
+              <CountryMetricRow label="Returning" cur={ytd?.returning_customers?.cur} ly={ytd?.returning_customers?.ly} delta={ytd?.returning_customers?.delta_pct} />
+            </div>
+          )}
         </div>
         {/* Iter 89r — visually distinguish MTD from YTD using an
             amber/warm accent (not blue) per leadership pref so MTD
@@ -219,6 +227,14 @@ const CountryCard = ({ ytd, mtd, targets, selected, onClick }) => {
           <CountryMetricRow label="Footfall"                cur={mtd?.footfall?.cur}   ly={mtd?.footfall?.ly}   delta={mtd?.footfall?.delta_pct} />
           <CountryMetricRow label="Basket"   fmt={fmtKES}  cur={mtd?.avg_basket?.cur} ly={mtd?.avg_basket?.ly} delta={mtd?.avg_basket?.delta_pct} />
           <CountryMetricRow label="ASP"      fmt={fmtKES}  cur={mtd?.asp?.cur}        ly={mtd?.asp?.ly}        delta={mtd?.asp?.delta_pct} />
+          {mtd?.customers?.cur > 0 && (
+            <div className="mt-2 pt-2 border-t border-amber-200/80 space-y-0.5">
+              <div className="text-[9px] uppercase font-bold text-amber-700/70 tracking-widest mb-1">Customers</div>
+              <CountryMetricRow label="Total"     cur={mtd?.customers?.cur}          ly={mtd?.customers?.ly}          delta={mtd?.customers?.delta_pct} />
+              <CountryMetricRow label="New"       cur={mtd?.new_customers?.cur}      ly={mtd?.new_customers?.ly}      delta={mtd?.new_customers?.delta_pct} />
+              <CountryMetricRow label="Returning" cur={mtd?.returning_customers?.cur} ly={mtd?.returning_customers?.ly} delta={mtd?.returning_customers?.delta_pct} />
+            </div>
+          )}
         </div>
       </div>
     </button>
@@ -1993,7 +2009,7 @@ const ExecutiveSummary = () => {
           title="By Country"
           subtitle={
             <span>
-              Revenue · Orders · Footfall · Avg Basket per country (Kenya, Uganda, Rwanda, Online) vs same period last year.
+              Revenue · Orders · Footfall · Avg Basket · Customers (Total / New / Returning) per country (Kenya, Uganda, Rwanda, Online) vs same period last year.
               <span className="ml-1.5 text-[11px] font-semibold text-brand">Click a card to filter the Store Performance + Category sections below.</span>
             </span>
           }

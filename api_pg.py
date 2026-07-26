@@ -15481,6 +15481,58 @@ def _es_customer_windows(span_from, span_to, windows, country):
                 "new": float(r.get("new_" + k) or 0),
                 "returning": float(r.get("ret_" + k) or 0)} for k in windows}
 
+def _es_customer_by_country(span_from, span_to, windows, country):
+    # Same logic as _es_customer_windows but grouped by s.country so
+    # each country card can show Total / New / Returning customers with a
+    # vs-LY delta. A customer who bought in two countries in the same
+    # period appears in both — that's correct for "who shopped in Kenya".
+    country_filter = ("AND s.country IN (" + csv_to_sql(country) + ")") if country else ""
+    pc_cols, sel = [], []
+    for k, (a, b) in windows.items():
+        pc_cols.append("COUNT(DISTINCT s.order_id) FILTER (WHERE s.sale_date BETWEEN '"
+                       + a + "' AND '" + b + "') AS oc_" + k)
+        sel.append("COUNT(*) FILTER (WHERE oc_" + k + " > 0) AS total_" + k)
+        sel.append("COUNT(*) FILTER (WHERE oc_" + k + " > 0 AND a.first_ever BETWEEN '"
+                   + a + "' AND '" + b + "') AS new_" + k)
+        sel.append("COUNT(*) FILTER (WHERE oc_" + k + " > 0 AND a.first_ever < '"
+                   + a + "') AS ret_" + k)
+    if _rollup_fresh("customer_first_purchase"):
+        prefix_ctes = ""
+        at_cte = """at AS (
+            SELECT customer_id, first_purchase_date AS first_ever
+            FROM rollup_customer_first_purchase
+        )"""
+    else:
+        prefix_ctes = _unified_first_purchase_ctes() + ","
+        at_cte = """at AS (
+            SELECT customer_id, first_purchase_date AS first_ever
+            FROM first_purchase
+        )"""
+    pseudo_excl = "AND " + _not_walkin_pseudo_sql("s")
+    rows = run_query("""
+        WITH """ + prefix_ctes + at_cte + """,
+        pc AS (
+            SELECT s.customer_id, s.country, """ + ",\n".join(pc_cols) + """
+            FROM all_sales s
+            WHERE s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL
+              AND s.customer_id NOT IN ('None','null','')
+              AND s.sale_date BETWEEN '""" + span_from + """' AND '""" + span_to + """'
+              AND """ + BASE_FILTERS + " " + country_filter + " " + pseudo_excl + """
+            GROUP BY s.customer_id, s.country
+        )
+        SELECT pc.country, """ + ",\n".join(sel) + """
+        FROM pc JOIN at a ON pc.customer_id = a.customer_id
+        GROUP BY pc.country
+    """, date_to=span_to)
+    result = {}
+    for r in rows:
+        c = r.get("country") or "Unknown"
+        result[c] = {k: {"total": float(r.get("total_" + k) or 0),
+                         "new":   float(r.get("new_"   + k) or 0),
+                         "returning": float(r.get("ret_" + k) or 0)}
+                     for k in windows}
+    return result
+
 def _es_kpi_block(frm, to, country, days, footfall, cust):
     # Raw headline scalars for one window. revenue/units/basket/ASP come from
     # get_kpis; footfall + customer counts are precomputed and passed in.
@@ -15501,7 +15553,8 @@ def _es_kpi_block(frm, to, country, days, footfall, cust):
 def _es_kpis(cur_blk, ly_blk):
     return {key: _es_cmp(cur_blk[key], ly_blk[key]) for key in _ES_KPI_KEYS}
 
-def _es_countries(cur_from, cur_to, ly_from, ly_to, country, days_cur, days_ly, ff_cur, ff_ly):
+def _es_countries(cur_from, cur_to, ly_from, ly_to, country, days_cur, days_ly, ff_cur, ff_ly,
+                  cust_cur=None, cust_ly=None):
     cur = {r["country"]: r for r in _country_summary_q(cur_from, cur_to, country)}
     ly = {r["country"]: r for r in _country_summary_q(ly_from, ly_to, country)}
     names = [c for c in ["Kenya", "Uganda", "Rwanda", "Online"] if c in cur or c in ly]
@@ -15517,6 +15570,8 @@ def _es_countries(cur_from, cur_to, ly_from, ly_to, country, days_cur, days_ly, 
         ff_c = float(ff_cur.get(c, 0)); ff_l = float(ff_ly.get(c, 0))
         apd = _es_cmp(rev_c / days_cur if days_cur else 0, rev_l / days_ly if days_ly else 0)
         apd["days"] = days_cur
+        cc = (cust_cur or {}).get(c, {})
+        cl = (cust_ly or {}).get(c, {})
         out.append({
             "country": c,
             "revenue": _es_cmp(rev_c, rev_l),
@@ -15526,6 +15581,9 @@ def _es_countries(cur_from, cur_to, ly_from, ly_to, country, days_cur, days_ly, 
             "footfall": _es_cmp(ff_c, ff_l),
             "avg_basket": _es_cmp(rev_c / o_c if o_c else 0, rev_l / o_l if o_l else 0),
             "asp": _es_cmp(rev_c / u_c if u_c else 0, rev_l / u_l if u_l else 0),
+            "customers":          _es_cmp(cc.get("total", 0),     cl.get("total", 0)),
+            "new_customers":      _es_cmp(cc.get("new", 0),       cl.get("new", 0)),
+            "returning_customers":_es_cmp(cc.get("returning", 0), cl.get("returning", 0)),
         })
     return out
 
@@ -15864,9 +15922,12 @@ def exec_summary(
     ff_total = {k: _es_footfall_total(v, country) for k, v in ff.items()}
 
     # total/new/returning customers for all four windows in a single query span.
-    cust = _es_customer_windows(ytd_ly_s[0], ytd_cur_s[1], {
-        "yc": ytd_cur_s, "yl": ytd_ly_s, "mc": mtd_cur_s, "ml": mtd_ly_s,
-    }, country)
+    _cust_wins = {"yc": ytd_cur_s, "yl": ytd_ly_s, "mc": mtd_cur_s, "ml": mtd_ly_s}
+    cust = _es_customer_windows(ytd_ly_s[0], ytd_cur_s[1], _cust_wins, country)
+    # Per-country customer breakdown (same windows, grouped by s.country).
+    cust_ctry = _es_customer_by_country(ytd_ly_s[0], ytd_cur_s[1], _cust_wins, country)
+    def _cust_win(win_key):
+        return {c: v.get(win_key, {}) for c, v in cust_ctry.items()}
 
     ytd_kpis = _es_kpis(
         _es_kpi_block(ytd_cur_s[0], ytd_cur_s[1], country, days_ytd, ff_total["yc"], cust["yc"]),
@@ -15893,13 +15954,13 @@ def exec_summary(
         },
         "ytd": {
             "kpis": ytd_kpis,
-            "countries": _es_countries(ytd_cur_s[0], ytd_cur_s[1], ytd_ly_s[0], ytd_ly_s[1], country, days_ytd, days_ytd_ly, ff["yc"], ff["yl"]),
+            "countries": _es_countries(ytd_cur_s[0], ytd_cur_s[1], ytd_ly_s[0], ytd_ly_s[1], country, days_ytd, days_ytd_ly, ff["yc"], ff["yl"], _cust_win("yc"), _cust_win("yl")),
             "stores": _es_stores(ytd_cur_s[0], ytd_cur_s[1], ytd_ly_s[0], ytd_ly_s[1], country, store_targets),
             "categories": _es_categories(ytd_cur_s[0], ytd_cur_s[1], ytd_ly_s[0], ytd_ly_s[1], country),
         },
         "mtd": {
             "kpis": mtd_kpis,
-            "countries": _es_countries(mtd_cur_s[0], mtd_cur_s[1], mtd_ly_s[0], mtd_ly_s[1], country, days_mtd, days_mtd_ly, ff["mc"], ff["ml"]),
+            "countries": _es_countries(mtd_cur_s[0], mtd_cur_s[1], mtd_ly_s[0], mtd_ly_s[1], country, days_mtd, days_mtd_ly, ff["mc"], ff["ml"], _cust_win("mc"), _cust_win("ml")),
             "stores": _es_stores(mtd_cur_s[0], mtd_cur_s[1], mtd_ly_s[0], mtd_ly_s[1], country, store_targets),
             "categories": _es_categories(mtd_cur_s[0], mtd_cur_s[1], mtd_ly_s[0], mtd_ly_s[1], country),
         },
