@@ -27,6 +27,7 @@ tables = [
         sub_category TEXT, style_name TEXT, style_number TEXT,
         collection TEXT, color TEXT, brand TEXT, vendor TEXT,
         category TEXT, gender TEXT, season TEXT, active BOOLEAN,
+        fabric_structure TEXT,
         write_date TEXT, _synced_at TIMESTAMP
     )""",
     """CREATE TABLE IF NOT EXISTS raw_odoo_customers (

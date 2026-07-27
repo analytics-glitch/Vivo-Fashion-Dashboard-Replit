@@ -1833,6 +1833,20 @@ def _ensure_ibt_lifecycle_startup():
         log.warning("ibt lifecycle startup ensure skipped: %s", e)
 
 
+@_deferred_startup
+def _ensure_fabric_structure_columns():
+    # Fabric Structure (x_vivo_attr_101) is now extracted from garment products
+    # and stored on both raw_odoo_products and all_products_clean.  Add the
+    # columns idempotently so existing prod DBs gain them on first deploy.
+    try:
+        _users_exec("ALTER TABLE raw_odoo_products "
+                    "ADD COLUMN IF NOT EXISTS fabric_structure TEXT")
+        _users_exec("ALTER TABLE all_products_clean "
+                    "ADD COLUMN IF NOT EXISTS fabric_structure TEXT")
+    except Exception as e:
+        log.warning("fabric_structure column migration skipped: %s", e)
+
+
 @app.on_event("startup")
 def _cap_threadpool():
     # Sync endpoints run in Starlette's thread pool (default 40). Each can hold a
@@ -31999,8 +32013,11 @@ def production_summary():
         prod_attrs AS (
             SELECT
                 style_number,
-                MAX(category)     AS category,
-                MAX(product_type) AS product_type,
+                MAX(category)          AS category,
+                MAX(product_type)      AS product_type,
+                -- Fabric Structure: take the first non-NULL value across SKUs for
+                -- the style.  NULL means it hasn't been filled in Odoo yet.
+                MAX(fabric_structure)  AS fabric_structure,
                 CASE WHEN bool_or(print_plain = 'Print') THEN 'Print'
                      ELSE 'Plain' END AS print_plain
             FROM all_products_clean
@@ -32044,11 +32061,14 @@ def production_summary():
                pa.category,
                pa.product_type,
                pa.print_plain,   -- NULL when style not in product master
-               -- Knit vs Woven: BOM-derived fabric_structure (from the Odoo fabric
-               -- product attribute x_vivo_attr_101 via raw_fabric_products) takes
-               -- priority.  Falls back to product_type / style_name keywords for
-               -- styles that have no BOM entries yet.
+               -- Knit vs Woven priority:
+               --  1. Fabric Structure attribute on the garment product itself
+               --     (x_vivo_attr_101, Fabric Details tab in Odoo) — most direct.
+               --  2. BOM-derived: modal fabric_structure across BOM components.
+               --  3. product_type / style_name keyword heuristic — last resort.
                CASE
+                   WHEN pa.fabric_structure IN ('Knit','Woven','Non-Woven')
+                       THEN pa.fabric_structure
                    WHEN bs.fabric_structure IS NOT NULL THEN bs.fabric_structure
                    WHEN COALESCE(pa.product_type, '') ILIKE ANY(ARRAY[
                        '%sweater%','%poncho%','%hoodie%','%sweatshirt%',

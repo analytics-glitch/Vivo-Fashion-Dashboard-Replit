@@ -150,12 +150,13 @@ _INSERT_SQL = """
         collection, style_name, print_plain,
         product_type, category, gender, season, size,
         stock_on_hand, stock_available, active, product_id, ever_sold,
-        status, tier
+        status, tier, fabric_structure
     ) VALUES %s
     ON CONFLICT (sku) DO UPDATE SET
         product_name    = EXCLUDED.product_name,
         price           = EXCLUDED.price,
         cost            = EXCLUDED.cost,
+        fabric_structure = EXCLUDED.fabric_structure,
         active          = EXCLUDED.active
 """
 
@@ -166,7 +167,7 @@ _INSERT_SQL_NOOP = """
         collection, style_name, print_plain,
         product_type, category, gender, season, size,
         stock_on_hand, stock_available, active, product_id, ever_sold,
-        status, tier
+        status, tier, fabric_structure
     ) VALUES %s
     ON CONFLICT (sku) DO NOTHING
 """
@@ -248,6 +249,7 @@ def main():
                 sub_category, style_name, style_number,
                 collection, color, brand, vendor,
                 category, gender, season, status, tier, active,
+                fabric_structure,
                 write_date
             FROM raw_odoo_products
             WHERE default_code IS NOT NULL
@@ -262,7 +264,7 @@ def main():
             (pid, name, sku, barcode, price, cost, categ_name,
              sub_category, style_name, style_number, collection,
              color, brand, vendor, category, gender, season,
-             status, tier, active, write_date) = p
+             status, tier, active, fabric_structure, write_date) = p
 
             if sku in seen_skus:
                 continue
@@ -327,6 +329,7 @@ def main():
                 bool(active), pid,
                 s is not None,
                 status, tier,
+                fabric_structure or None,
             ))
             total_odoo += 1
 
@@ -374,7 +377,7 @@ def main():
             print_plain, subcat, cat,
             None, None, size, 0, 0,
             None, None, True,
-            None, None,
+            None, None, None,  # fabric_structure
         ))
         seen_skus.add(sku)
         sales_only += 1
@@ -422,7 +425,7 @@ def main():
             print_plain, subcat, cat,
             None, None, size, 0, 0,
             None, None, s is not None,
-            None, None,
+            None, None, None,  # fabric_structure
         ))
 
         if len(inv_insert) >= _BATCH:

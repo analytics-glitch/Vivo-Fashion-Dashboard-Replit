@@ -38,6 +38,7 @@ def main():
         "x_vivo_attr_92",   # Season
         "x_vivo_attr_97",   # Status  (Active / Retired)
         "x_vivo_attr_99",   # Tier    (Core Performer / New / NOOS / Recent Performer / N/A / Retired)
+        "x_vivo_attr_101",  # Fabric Structure (Knit / Woven) — Fabric Details tab
         "x_vivo_collection",
         "x_vivo_color",
         "x_vivo_categories",
@@ -91,6 +92,7 @@ def main():
                 get_m2o_name(r.get("x_vivo_attr_92")),  # season
                 get_m2o_name(r.get("x_vivo_attr_97")),  # status
                 get_m2o_name(r.get("x_vivo_attr_99")),  # tier
+                get_m2o_name(r.get("x_vivo_attr_101")), # fabric_structure
                 bool(r.get("active")),
                 r.get("write_date"),
                 now,
@@ -102,13 +104,15 @@ def main():
                 list_price, standard_price, categ_name,
                 sub_category, style_name, style_number,
                 collection, color, brand, vendor,
-                category, gender, season, status, tier, active,
+                category, gender, season, status, tier,
+                fabric_structure, active,
                 write_date, _synced_at
             ) VALUES %s
             ON CONFLICT (id) DO UPDATE SET
                 name = EXCLUDED.name,
                 list_price = EXCLUDED.list_price,
                 standard_price = EXCLUDED.standard_price,
+                fabric_structure = EXCLUDED.fabric_structure,
                 active = EXCLUDED.active,
                 write_date = EXCLUDED.write_date,
                 _synced_at = EXCLUDED._synced_at
