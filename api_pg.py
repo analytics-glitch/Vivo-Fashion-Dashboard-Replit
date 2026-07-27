@@ -32114,7 +32114,9 @@ def production_summary():
         "WHERE order_qty > 0", fetch=True)
     dim_rows = _users_exec("""
         SELECT DISTINCT ON (style_name) style_name, style_number,
-               category, product_type
+               category, product_type,
+               -- Print flag: TRUE when ANY SKU in this style carries a print variant
+               bool_or(print_plain = 'Print') OVER (PARTITION BY style_name) AS has_print
         FROM all_products_clean
         WHERE style_name IS NOT NULL
         ORDER BY style_name,
@@ -32146,13 +32148,55 @@ def production_summary():
                     return d
         return None
 
-    # Backfill category/product_type onto the orders rows via the same fuzzy
-    # matcher (the old SQL cat join was exact-style_name only AND pathological
-    # for the planner; matching in memory is both faster and more complete).
+    # Knit product_type keywords — same set used in the SQL prod_attrs CTE so
+    # both paths agree.
+    _KNIT_PT_KEYWORDS = (
+        "sweater", "poncho", "hoodie", "sweatshirt",
+        "t-shirt", "tank top", "legging", "bodysuit", "knit",
+    )
+    _KNIT_SN_KEYWORDS = (
+        "jersey", " rib ", "ponte", "spandex", "lycra", " knit", "fleece",
+    )
+
+    def _fabric_construction(product_type, style_name):
+        pt = (product_type or "").lower()
+        sn = (style_name or "").lower()
+        if any(k in pt for k in _KNIT_PT_KEYWORDS):
+            return "Knit"
+        if any(k in sn for k in _KNIT_SN_KEYWORDS):
+            return "Knit"
+        return "Woven"
+
+    # Backfill category/product_type/print_plain/fabric_construction onto the
+    # order rows via the same fuzzy matcher (the old SQL cat join was
+    # exact-style_name only AND pathological for the planner; matching in
+    # memory is both faster and more complete).
     for o in orders:
         m = _match(o) or {}
-        o["category"] = m.get("category") or "Unspecified"
-        o["product_type"] = m.get("product_type") or "Unspecified"
+        cat = m.get("category") or "Unspecified"
+        pt  = m.get("product_type") or "Unspecified"
+        o["category"]     = cat
+        o["product_type"] = pt
+        # print_plain: "Print" when:
+        #   a) the product master shows any print SKU in this style, OR
+        #   b) the style_number carries a PR/PR2/PR3… suffix (fuzzy-match may
+        #      have resolved to the plain base style, e.g. PR5→base=plain, so
+        #      always OR-in the suffix check), OR
+        #   c) no match at all → fall back to style_name keyword.
+        _sn = o.get("style_number") or ""
+        _sm = o.get("style_name") or ""
+        _pr_suffix = bool(_re.search(r'PR\d*$', _sn, _re.I))
+        if m:
+            o["print_plain"] = "Print" if (m.get("has_print") or _pr_suffix) else "Plain"
+        elif not o.get("print_plain"):
+            o["print_plain"] = ("Print"
+                                if (_pr_suffix or "print" in _sm.lower())
+                                else "Plain")
+        # fabric_construction: derive from matched product_type + style_name.
+        # Overrides the SQL value (same logic, but fuzzy-match covers more
+        # orders than the style_number-exact SQL CTE join).
+        o["fabric_construction"] = _fabric_construction(
+            pt if pt != "Unspecified" else None, o.get("style_name"))
 
     cat_agg, ptype_agg = {}, {}
     for po in po_rows:
