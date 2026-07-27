@@ -3692,6 +3692,7 @@ async function loadBuyingPD(){
     renderBpdKpis(null);
   }
   initMpgCatCard();
+  initMinWidthCard();
 }
 function renderBpdKpis(mpg){
   const el=document.getElementById('bpd-kpi-cards');
@@ -3711,8 +3712,90 @@ function renderBpdKpis(mpg){
       <div id="mpg-cat-body" style="flex:1;min-height:2rem;"><span style="color:#9ca3af;font-size:.8rem;">Loading&hellip;</span></div>
       <div id="mpg-cat-action" style="margin-top:.5rem;"></div>
     </div>`,
+    // Minimum received roll width card — shell only; body is populated by
+    // initMinWidthCard() after render.
+    `<div class="kpi-card" id="min-width-card" style="min-width:220px;flex:1 1 220px;display:flex;flex-direction:column;gap:0;">
+      <div style="font-size:.72rem;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:#6b7280;margin-bottom:.35rem;" title="Narrowest MEASURED width received per supplier fabric code + colour. Per roll: inspector's cuttable width first, else the inspector's manual width, else the width recorded on the receiving roll. The receiving sheet's reference width never counts as a measurement.">Min roll width <span style="font-weight:400;color:#9ca3af;">&middot; by Fabric code + Colour</span></div>
+      <select id="min-width-select" onchange="onMinWidthChange()" style="width:100%;font-size:.8rem;padding:.22rem .4rem;border:1px solid #d1d5db;border-radius:.3rem;background:#fff;color:#111827;margin-bottom:.45rem;cursor:pointer;"></select>
+      <div id="min-width-body" style="flex:1;min-height:2rem;"><span style="color:#9ca3af;font-size:.8rem;">Loading&hellip;</span></div>
+    </div>`,
   ];
   el.innerHTML=cards.join('');
+}
+// ── Min roll width · by Fabric code + Colour card ────────────────────────────
+// State persists across re-renders (overview refreshes) like the by-category
+// card, so the selection and loaded list survive a periodic data reload.
+let _mwSelected='';        // '' = ranked default view
+let _mwList=[];            // combinations from /api/fabric/min-roll-width
+let _mwListLoaded=false;
+const _MW_SOURCE_LABEL={cuttable:"inspector's cuttable width",manual:"inspector's manual width",roll:'receiving roll measurement'};
+function _mwWidthStr(v){return v!=null?v.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2}):null;}
+async function initMinWidthCard(){
+  const sel=document.getElementById('min-width-select');
+  if(!sel)return;
+  if(!_mwListLoaded){
+    try{
+      const r=await apiFetch('/api/fabric/min-roll-width');
+      _mwList=(r&&r.combinations)||[];
+      _mwListLoaded=true;
+    }catch(e){_mwList=[];_mwListLoaded=true;}
+  }
+  sel.innerHTML='<option value="">All combinations (narrowest first)</option>'+
+    _mwList.map(c=>`<option value="${esc(c.label)}"${c.label===_mwSelected?' selected':''}>${esc(c.label)}</option>`).join('');
+  _renderMinWidthBody();
+}
+function onMinWidthChange(){
+  const sel=document.getElementById('min-width-select');
+  if(!sel)return;
+  _mwSelected=sel.value||'';
+  _renderMinWidthBody();
+}
+function _renderMinWidthBody(){
+  const body=document.getElementById('min-width-body');
+  if(!body)return;
+  if(!_mwList.length){body.innerHTML='<span style="color:#9ca3af;font-size:.8rem;">No received rolls yet.</span>';return;}
+  if(_mwSelected){
+    const c=_mwList.find(x=>x.label===_mwSelected);
+    if(!c){body.innerHTML='<span style="color:#9ca3af;font-size:.8rem;">Combination not found.</span>';return;}
+    if(c.min_width_m==null){
+      body.innerHTML=`<div style="font-size:1.05rem;font-weight:600;color:#9ca3af;margin:.2rem 0 .25rem;">No data</div>
+        <div style="font-size:.76rem;color:#6b7280;">No measured widths yet &middot; ${fmt(c.rolls_total)} roll${c.rolls_total===1?'':'s'} received</div>`;
+      return;
+    }
+    const srcTxt=_MW_SOURCE_LABEL[c.min_width_source]||'measured';
+    body.innerHTML=`<div style="display:flex;align-items:baseline;gap:.3rem;margin:.1rem 0 .25rem;">
+      <span style="font-size:1.6rem;font-weight:700;color:#111827;line-height:1;">${_mwWidthStr(c.min_width_m)}</span>
+      <span style="font-size:.85rem;color:#6b7280;">m</span>
+    </div>
+    <div style="font-size:.76rem;color:#6b7280;">min across <span title="${esc('Rolls with a measured width, out of '+fmt(c.rolls_total)+' received. Narrowest came from the '+srcTxt+'.')}">${fmt(c.rolls_measured)} of ${fmt(c.rolls_total)} rolls measured</span></div>`;
+    return;
+  }
+  // Default ranked view: narrowest measured combinations first.
+  const measured=_mwList.filter(c=>c.min_width_m!=null);
+  const noData=_mwList.length-measured.length;
+  if(!measured.length){
+    body.innerHTML=`<span style="color:#9ca3af;font-size:.8rem;">No measured roll widths yet${noData?(' &mdash; '+fmt(noData)+' combination'+(noData===1?'':'s')+' with no data'):''}.</span>`;
+    return;
+  }
+  const topN=measured.slice(0,8);
+  const maxV=Math.max(...topN.map(c=>c.min_width_m))||1;
+  const rowsHtml=topN.map(c=>{
+    const pct=maxV>0?Math.round(c.min_width_m/maxV*100):0;
+    return `<tr>
+      <td style="font-size:.78rem;color:#374151;padding:.15rem .3rem .15rem 0;white-space:nowrap;max-width:120px;overflow:hidden;text-overflow:ellipsis;" title="${esc(c.label)}">${esc(c.label)}</td>
+      <td style="padding:.15rem .3rem;min-width:60px;">
+        <div style="display:flex;align-items:center;gap:.35rem;">
+          <div style="flex:1;height:5px;background:#f3f4f6;border-radius:3px;min-width:28px;">
+            <div style="width:${pct}%;height:100%;background:#1a5c38;border-radius:3px;"></div>
+          </div>
+          <span style="font-size:.78rem;font-weight:600;color:#111827;white-space:nowrap;">${_mwWidthStr(c.min_width_m)} m</span>
+        </div>
+      </td>
+      <td style="font-size:.72rem;color:#9ca3af;padding:.15rem 0 .15rem .15rem;white-space:nowrap;">${fmt(c.rolls_measured)}/${fmt(c.rolls_total)} rolls</td>
+    </tr>`;
+  }).join('');
+  body.innerHTML=`<table style="width:100%;border-collapse:collapse;">${rowsHtml}</table>
+    <div style="font-size:.72rem;color:#9ca3af;margin-top:.25rem;">${measured.length>8?('Narrowest 8 of '+fmt(measured.length)+' measured combinations'):'Narrowest first'}${noData?(' &middot; '+fmt(noData)+' with no measured widths'):''} &mdash; select one above for detail.</div>`;
 }
 // ── Avg metres / garment · by Category card ─────────────────────────────────
 // State: persists across re-renders (overview refreshes) so the selection and

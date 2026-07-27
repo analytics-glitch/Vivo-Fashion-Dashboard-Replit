@@ -2301,6 +2301,101 @@ def metres_per_garment_by_category_xlsx(
     )
 
 
+# ── Minimum received roll width per supplier fabric code + colour ────────────
+# Buying & PD card: the narrowest MEASURED width received per (supplier fabric
+# code, effective colour) combination, so buyers/PD know the minimum usable
+# width they can plan markers against.
+#
+# A roll's measured width (priority order, per the 4-Point inspection
+# convention — the receiving-sheet reference width NEVER counts):
+#   1. the inspector's cuttable (usable) width from the latest inspection
+#      ticket for that roll (cuttable_width_cm),
+#   2. else the inspector's manual full width (manual_width_cm),
+#   3. else the width captured on the receiving roll itself (width_measured_m,
+#      the width_edit grantee's per-roll measurement).
+# Combinations whose rolls have NO measured width return min_width_m = null so
+# the UI can show "no data" instead of a misleading zero.
+@fabric_router.get("/api/fabric/min-roll-width")
+def min_roll_width(search: str = Query(default=None)):
+    with _get_conn() as conn:
+        _ensure_receiving_tables(conn)
+        rows = q(conn, """
+            WITH insp AS (
+                SELECT DISTINCT ON (sheet_id, roll_no)
+                       sheet_id, roll_no, cuttable_width_cm, manual_width_cm
+                FROM fabric_inspection_tickets
+                ORDER BY sheet_id, roll_no, id DESC
+            )
+            SELECT r.id AS roll_id,
+                   r.width_measured_m,
+                   i.cuttable_width_cm,
+                   i.manual_width_cm,
+                   s.product_id,
+                   COALESCE(NULLIF(BTRIM(p.name),''), s.fabric_name) AS fabric_name,
+                   NULLIF(BTRIM(p.supplier_fabric_code),'') AS supplier_fabric_code,
+                   NULLIF(BTRIM(p.odoo_fabric_color),'')    AS odoo_fabric_color,
+                   p.fabric_color
+            FROM fabric_receiving_rolls r
+            JOIN fabric_receiving_sheets s ON s.id = r.sheet_id
+            LEFT JOIN insp i ON i.sheet_id = r.sheet_id AND i.roll_no = r.roll_no
+            LEFT JOIN raw_fabric_products p ON p.id = s.product_id
+            WHERE r.deleted_at IS NULL AND s.deleted_at IS NULL
+        """)
+
+    def _roll_width(r):
+        """(width_m, source) for one roll, or (None, None) when unmeasured."""
+        for col, src, div in (("cuttable_width_cm", "cuttable", 100.0),
+                              ("manual_width_cm", "manual", 100.0),
+                              ("width_measured_m", "roll", 1.0)):
+            v = r.get(col)
+            try:
+                if v is not None and float(v) > 0:
+                    return float(v) / div, src
+            except (TypeError, ValueError):
+                pass
+        return None, None
+
+    combos = {}
+    for r in rows:
+        code = r.get("supplier_fabric_code") or (r.get("fabric_name") or "Unknown fabric")
+        # Effective colour: Odoo fabric colour first, else the shared
+        # name/fabric_color parser (same rule as fabric_color_effective).
+        color = r.get("odoo_fabric_color")
+        if not color:
+            fc, _pc = _derive_fabric_colors(r.get("fabric_name"), r.get("fabric_color"))
+            color = fc
+        key = (code, color or "")
+        c = combos.setdefault(key, {
+            "fabric_code": code,
+            "color": color,
+            "label": code + " - " + (color or "No colour"),
+            "min_width_m": None,
+            "min_width_source": None,
+            "rolls_total": 0,
+            "rolls_measured": 0,
+        })
+        c["rolls_total"] += 1
+        w, src = _roll_width(r)
+        if w is not None:
+            c["rolls_measured"] += 1
+            if c["min_width_m"] is None or w < c["min_width_m"]:
+                c["min_width_m"] = w
+                c["min_width_source"] = src
+
+    out = list(combos.values())
+    if search:
+        needle = search.strip().lower()
+        out = [c for c in out if needle in c["label"].lower()]
+    # Narrowest measured combinations first; unmeasured ("no data") last.
+    out.sort(key=lambda c: (c["min_width_m"] is None,
+                            c["min_width_m"] if c["min_width_m"] is not None else 0,
+                            c["label"].lower()))
+    for c in out:
+        if c["min_width_m"] is not None:
+            c["min_width_m"] = round(c["min_width_m"], 2)
+    return {"combinations": out, "total": len(out)}
+
+
 # ── Basic Fabrics — Months of Cover: downloadable .xlsx calculations report ──
 # The full audit trail behind the "Basic Fabrics — Months of Cover" Overview KPI:
 # every curated (vendor, fabric-code) pairing and whether it matched a product,
