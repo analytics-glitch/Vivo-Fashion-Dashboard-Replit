@@ -199,9 +199,6 @@ def extract(uid, models, cur, since_str, now):
             finished[p["id"]] = p
 
     move_ids = list(move_to_mo.keys())
-    if not move_ids:
-        log.info("No raw component moves found — nothing to write.")
-        return 0
 
     # Read all raw component moves (done qty + UoM + product).
     moves = []
@@ -308,10 +305,45 @@ def extract(uid, models, cur, since_str, now):
             )
         )
 
-    if not rows:
-        log.info("No fabric/accessory components on the in-window MOs — nothing to write.")
-        return 0
+    if rows:
+        _upsert_rows(cur, rows)
+        log.info("✅ mo_fabric_consumption: upserted %d (MO, fabric) rows", len(rows))
+    else:
+        log.info("No fabric/accessory components on the in-window MOs — nothing to upsert.")
 
+    # Prune stale rows in the refreshed window so the table mirrors Odoo
+    # exactly: a component removed from an MO, or an MO that lost its Done/DPS
+    # status, must not linger (the Costing tab builds a DPS's component list
+    # strictly from these rows). Only rows whose done_date falls inside the
+    # window we just re-fetched are candidates — history outside the window is
+    # never touched. This runs even when the fresh read yielded zero rows: by
+    # this point every Odoo read completed successfully (any failure raises
+    # and aborts before commit), so "zero rows" means Odoo genuinely has no
+    # in-window Done/DPS consumption and lingering rows are stale.
+    since_date = since_str[:10]
+    keep = list(agg.keys())
+    cur.execute("CREATE TEMP TABLE IF NOT EXISTS _mfc_keep (odoo_mo_id BIGINT, component_id BIGINT)")
+    cur.execute("TRUNCATE _mfc_keep")
+    if keep:
+        execute_values(cur, "INSERT INTO _mfc_keep (odoo_mo_id, component_id) VALUES %s",
+                       keep, page_size=1000)
+    cur.execute(
+        """
+        DELETE FROM mo_fabric_consumption t
+        WHERE t.done_date >= %s::date
+          AND NOT EXISTS (SELECT 1 FROM _mfc_keep k
+                          WHERE k.odoo_mo_id = t.odoo_mo_id
+                            AND k.component_id = t.component_id)
+        """,
+        (since_date,),
+    )
+    if cur.rowcount:
+        log.info("🧹 pruned %d stale in-window rows no longer on Odoo's Done DPS MOs",
+                 cur.rowcount)
+    return len(rows)
+
+
+def _upsert_rows(cur, rows):
     execute_values(
         cur,
         """
@@ -347,8 +379,6 @@ def extract(uid, models, cur, since_str, now):
         rows,
         page_size=500,
     )
-    log.info("✅ mo_fabric_consumption: upserted %d (MO, fabric) rows", len(rows))
-    return len(rows)
 
 
 def main():

@@ -12525,8 +12525,9 @@ def _ensure_costing_tables(conn):
             );
             CREATE INDEX IF NOT EXISTS idx_fab_costing_hist_sheet
                 ON fabric_costing_history(sheet_id, changed_at DESC);
-            -- The Done DPS the sheet's auto-suggestions were built from
-            -- (NULL = 365-day Done-DPS average, today's default behaviour).
+            -- The Done DPS the sheet's auto-suggestions were built from.
+            -- Mandatory on new sheets; NULL only on legacy sheets created
+            -- before DPS selection became required.
             ALTER TABLE fabric_costing_sheets
                 ADD COLUMN IF NOT EXISTS dps_ref TEXT;
         """)
@@ -12553,30 +12554,46 @@ def _style_selling_price(conn, style_name):
     return float(p) if p else None
 
 
+def _require_style_dps(conn, canon_style, dps_ref):
+    """The DPS must belong to this style (finished_sku match rule) — 404s
+    otherwise. Shared by the suggest endpoint and sheet create."""
+    chk = q(conn, """
+        SELECT 1 FROM mo_fabric_consumption c
+        WHERE c.dps_ref = %s
+          AND c.finished_sku IN (
+                SELECT sku FROM all_products_clean
+                WHERE lower(style_name) = lower(%s))
+        LIMIT 1
+    """, [dps_ref, canon_style])
+    if not chk:
+        raise HTTPException(status_code=404,
+                            detail="No Done DPS with that reference for this style")
+
+
 _KG_UOMS = {"kg", "g"}
 _M_UOMS = {"m", "metre", "meter", "mtr", "metres", "meters", "metre(s)"}
 
 
-def _costing_style_facts(conn, style_name, days=365, dps_ref=None):
-    """Auto-suggestion facts for a style from Done-DPS consumption:
+def _costing_style_facts(conn, style_name, dps_ref):
+    """Auto-suggestion facts for a style from ONE Done DPS's consumption:
     metres per garment, weighted labour cost per garment, the fabrics used AND
     the accessories/trims components consumed. Fabric cost/metre suggestions
     use the fabric master's CURRENT cost/metre (standard_price ×
     kg_per_mtr_eff — the modal's Cost/Metre figure) first, falling back to the
     cost recorded on the DPS/MO consumption, then the latest PO price.
     Accessories keep the DPS/MO recorded cost only — never latest-PO
-    pricing. When `dps_ref` is given, every suggestion (fabric, accessories,
-    labour) is scoped to that single Done DPS instead of the trailing window.
+    pricing. Every suggestion (fabric, accessories, labour) is scoped strictly
+    to the selected Done DPS — the old 365-day trailing-window average is gone
+    (DPS selection is mandatory).
     MOs are matched to the BI style via finished_sku = all_products_clean.sku
     — NOT on style_name: MO style names embed fabric + colour ("… in Jersey -
     Dark Red") and never match the product master (same rule as the
     metres-per-garment category breakdown above)."""
-    if dps_ref:
-        scope_sql = "AND c.dps_ref = %s"
-        scope_params = [dps_ref]
-    else:
-        scope_sql = "AND c.done_date >= CURRENT_DATE - (%s || ' days')::interval"
-        scope_params = [days]
+    if not dps_ref:
+        raise HTTPException(status_code=400,
+                            detail="dps_ref is required — pick a DPS # for the style")
+    scope_sql = "AND c.dps_ref = %s"
+    scope_params = [dps_ref]
     style_sql = """c.finished_sku IN (
                 SELECT sku FROM all_products_clean
                 WHERE lower(style_name) = lower(%s))"""
@@ -12744,7 +12761,6 @@ def _costing_style_facts(conn, style_name, days=365, dps_ref=None):
         "labour_available": lab_units > 0,
         "fabric_cost_per_metre": fabric_cpm,
         "fabrics": fab_list[:10],
-        "window_days": days,
     }
 
 
@@ -12788,28 +12804,49 @@ def costing_styles(q_: str = Query(default="", alias="q"),
 
 @fabric_router.get("/api/fabric/costing/fabrics")
 def costing_fabric_search(q_: str = Query(default="", alias="q"),
+                          dps_ref: str = Query(default=None),
                           limit: int = Query(default=20)):
-    """Fabric typeahead for costing fabric lines — searches the fabric master
-    and returns each fabric's CURRENT cost/metre (standard_price ×
-    kg_per_mtr_eff, the popup modal's Cost/Metre figure) so picking a fabric
-    prefills the line's Unit Cost. cost_per_metre is NULL when the fabric has
-    no standard price or kg/mtr conversion."""
+    """Component typeahead for costing lines — restricted to the components
+    (main fabrics AND accessories/trims) actually consumed on the selected
+    DPS's Done MOs; the whole-fabric-master search is gone. `dps_ref` is
+    required. Fabrics return the master's CURRENT cost/metre (standard_price ×
+    kg_per_mtr_eff, the popup modal's Cost/Metre figure); accessories return
+    the DPS/MO recorded unit cost (consumed-qty-weighted, never latest-PO).
+    cost_per_metre / unit_cost are NULL when unknown."""
     term = (q_ or "").strip()
+    dps = (dps_ref or "").strip()
+    if not dps:
+        raise HTTPException(status_code=400,
+                            detail="dps_ref is required — component search is scoped to the sheet's DPS")
     limit = max(1, min(int(limit or 20), 50))
     with _get_conn() as conn:
         rows = q(conn, """
-            SELECT p.id, p.default_code AS sku, p.name,
-                   ROUND(CASE WHEN p.kg_per_mtr_eff > 0 AND p.standard_price > 0
-                              THEN p.standard_price * p.kg_per_mtr_eff
-                              ELSE NULL END::numeric, 2) AS cost_per_metre
-            FROM raw_fabric_products p
-            WHERE (%s = '' OR p.name ILIKE %s OR p.default_code ILIKE %s)
-            ORDER BY p.name
+            SELECT c.component_id AS id,
+                   MAX(c.fabric_sku)  AS sku,
+                   MAX(c.fabric_name) AS name,
+                   bool_or(c.is_main_fabric) AS is_main_fabric,
+                   ROUND(MAX(CASE WHEN p.kg_per_mtr_eff > 0 AND p.standard_price > 0
+                             THEN p.standard_price * p.kg_per_mtr_eff
+                             ELSE NULL END)::numeric, 2) AS cost_per_metre,
+                   ROUND((SUM(c.unit_cost_mo * c.consumed_qty)
+                              FILTER (WHERE c.unit_cost_mo > 0 AND c.consumed_qty > 0)
+                          / NULLIF(SUM(c.consumed_qty)
+                              FILTER (WHERE c.unit_cost_mo > 0 AND c.consumed_qty > 0), 0)
+                         )::numeric, 2) AS unit_cost
+            FROM mo_fabric_consumption c
+            LEFT JOIN raw_fabric_products p ON p.id = c.component_id
+            WHERE c.dps_ref = %s
+              AND (%s = '' OR c.fabric_name ILIKE %s OR c.fabric_sku ILIKE %s)
+            GROUP BY c.component_id
+            ORDER BY bool_or(c.is_main_fabric) DESC, MAX(c.fabric_name)
             LIMIT %s
-        """, [term, f"%{term}%", f"%{term}%", limit])
+        """, [dps, term, f"%{term}%", f"%{term}%", limit])
     return [{"id": r["id"], "sku": r["sku"], "name": r["name"],
+             "is_main_fabric": bool(r["is_main_fabric"]),
              "cost_per_metre": (float(r["cost_per_metre"])
-                                if r["cost_per_metre"] is not None else None)}
+                                if r["cost_per_metre"] is not None else None),
+             "unit_cost": (float(r["unit_cost"])
+                           if r["unit_cost"] is not None else None)}
             for r in rows]
 
 
@@ -12855,20 +12892,11 @@ def costing_suggest(style_name: str = Query(...),
         raise HTTPException(status_code=404, detail="Unknown style")
     canon = style_row.get("style_name")
     dps_ref = (dps_ref or "").strip() or None
+    if not dps_ref:
+        raise HTTPException(status_code=400,
+                            detail="dps_ref is required — pick a DPS # for the style")
     with _get_conn() as conn:
-        if dps_ref:
-            # The DPS must belong to this style (same finished-sku match rule).
-            chk = q(conn, """
-                SELECT 1 FROM mo_fabric_consumption c
-                WHERE c.dps_ref = %s
-                  AND c.finished_sku IN (
-                        SELECT sku FROM all_products_clean
-                        WHERE lower(style_name) = lower(%s))
-                LIMIT 1
-            """, [dps_ref, canon])
-            if not chk:
-                raise HTTPException(status_code=404,
-                                    detail="No Done DPS with that reference for this style")
+        _require_style_dps(conn, canon, dps_ref)
         facts = _costing_style_facts(conn, canon, dps_ref=dps_ref)
         sp = _style_selling_price(conn, canon)
     facts["style_name"] = canon
@@ -13205,8 +13233,13 @@ def costing_sheet_create(request: Request, body: dict = Body(...)):
         raise HTTPException(status_code=400, detail="selling_price must be ≥ 0")
     uid, uname = _costing_user(request)
     canon = style_row.get("style_name")
+    dps_ref = (str(body.get("dps_ref") or "").strip())[:100] or None
+    if not dps_ref:
+        raise HTTPException(status_code=400,
+                            detail="Pick a DPS # for the style — costing sheets are built from one Done DPS")
     with _get_conn() as conn:
         _ensure_costing_tables(conn)
+        _require_style_dps(conn, canon, dps_ref)
         dup = q(conn, "SELECT id FROM fabric_costing_sheets WHERE lower(style_name)=lower(%s)",
                 (canon,))
         if dup:
@@ -13221,7 +13254,7 @@ def costing_sheet_create(request: Request, body: dict = Body(...)):
             """, (canon, style_row.get("style_number"), sp,
                   bool(body.get("selling_price_is_auto")),
                   (str(body.get("notes") or "").strip())[:1000] or None,
-                  (str(body.get("dps_ref") or "").strip())[:100] or None,
+                  dps_ref,
                   uid, uname, uid, uname))
             sheet_id = cur.fetchone()[0]
             for ln in lines:
