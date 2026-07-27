@@ -690,6 +690,19 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
    <!-- BUYING & PD — garment fabric-efficiency KPIs (Avg metres/garment) -->
    <section id="page-buyingpd" style="display:none;">
     <div id="bpd-kpi-cards" class="kpi-grid"><div class="loading">Loading&hellip;</div></div>
+    <div class="card" style="padding:0;margin-top:1.1rem;">
+     <div class="section-head" style="padding:.9rem 1.1rem 0;flex-wrap:wrap;gap:.5rem;">
+      <h3 title="Worst after-wash shrinkage per supplier fabric code + colour. W and L are computed independently per axis (they may come from different rolls). Modern gauge-square rolls: % = (35cm − after-wash cm) ÷ 35. Legacy single-figure rolls: inches converted against the 13.78&quot; gauge, shown in both columns.">Shrinkage Report <span class="muted" style="font-weight:400;">&middot; by Fabric code + Colour</span></h3>
+      <div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;margin-left:auto;">
+       <label class="muted" style="font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;">Received</label>
+       <input type="date" id="shrink-date-from" style="width:145px;" onchange="loadShrinkReport()">
+       <span class="muted" style="font-size:12px;">to</span>
+       <input type="date" id="shrink-date-to" style="width:145px;" onchange="loadShrinkReport()">
+       <button class="btn ghost" onclick="downloadShrinkCsv()" title="Download this report (current date filter) as CSV">&#11015; Download (CSV)</button>
+      </div>
+     </div>
+     <div id="shrink-report-body" style="padding:.6rem 1.1rem 1rem;"><div class="loading">Loading&hellip;</div></div>
+    </div>
    </section>
 
    <!-- SUPPORT FABRICS (Lining + Interfacing only) -->
@@ -3753,6 +3766,132 @@ async function loadBuyingPD(){
   initMpgCatCard();
   initMinWidthCard();
   initMinCuttableCard();
+  loadShrinkReport();
+}
+// ── Shrinkage Report · by Fabric code + Colour ───────────────────────────────
+// Worst per-axis (W/L independent) after-wash shrinkage per supplier fabric
+// code + colour. Legacy single-figure rolls show the same converted % in
+// both axes with a "legacy" badge and are editable (admin / quality
+// supervisor) with a viewable audit log. Rows over the 14.3% threshold on
+// either axis are highlighted.
+let _shrinkData=null;      // last payload from /api/fabric/shrinkage-report
+let _shrinkOpen={};        // label -> bool (drill-in expanded)
+function _shrinkAxisStr(a){
+  if(!a)return '<span style="color:#9ca3af;">&mdash;</span>';
+  const over=a.pct>((_shrinkData&&_shrinkData.flag_pct)||14.3);
+  return `<span style="font-weight:600;color:${over?'#b91c1c':'#111827'};white-space:nowrap;">${esc(a.in.toFixed(2))}&Prime; <span style="font-weight:500;color:${over?'#b91c1c':'#6b7280'};">(${esc(a.pct.toFixed(1))}%)</span></span>`;
+}
+function _shrinkSrcStr(a){
+  if(!a)return '';
+  const src=(a.po_name?a.po_name:('Sheet #'+a.sheet_id))+' roll '+a.roll_no+(a.recv_date?(' &middot; '+esc(a.recv_date)):'');
+  return `<span style="font-size:.72rem;color:#9ca3af;white-space:nowrap;">${esc(a.po_name?a.po_name:('Sheet #'+a.sheet_id))} roll ${esc(String(a.roll_no??''))}${a.recv_date?(' &middot; '+esc(a.recv_date)):''}</span>`;
+}
+async function loadShrinkReport(){
+  const body=document.getElementById('shrink-report-body');
+  if(!body)return;
+  const df=(document.getElementById('shrink-date-from')||{}).value||'';
+  const dt=(document.getElementById('shrink-date-to')||{}).value||'';
+  body.innerHTML='<div class="loading">Loading&hellip;</div>';
+  try{
+    _shrinkData=await apiFetch('/api/fabric/shrinkage-report?date_from='+encodeURIComponent(df)+'&date_to='+encodeURIComponent(dt));
+  }catch(e){
+    body.innerHTML='<span style="color:#b91c1c;font-size:.85rem;">Could not load the shrinkage report. Please try again.</span>';
+    return;
+  }
+  _renderShrinkReport();
+}
+function _renderShrinkReport(){
+  const body=document.getElementById('shrink-report-body');
+  if(!body||!_shrinkData)return;
+  const list=_shrinkData.combinations||[];
+  const flagPct=_shrinkData.flag_pct||14.3;
+  if(!list.length){
+    body.innerHTML='<span style="color:#9ca3af;font-size:.85rem;">No rolls with shrinkage measurements in this date range.</span>';
+    return;
+  }
+  const rowsHtml=list.map(c=>{
+    const open=!!_shrinkOpen[c.label];
+    const legacyBadge=c.legacy_rolls>0?` <span style="font-size:.66rem;font-weight:700;letter-spacing:.03em;background:#fef3c7;color:#92400e;border-radius:.25rem;padding:.06rem .3rem;" title="${esc(fmt(c.legacy_rolls)+' roll'+(c.legacy_rolls===1?'':'s')+' with only a legacy single shrinkage figure (no W/L split) — the converted % is shown in both columns.')}">LEGACY${c.legacy_rolls>1?(' ×'+fmt(c.legacy_rolls)):''}</span>`:'';
+    const flagBadge=c.flagged?` <span style="font-size:.66rem;font-weight:700;letter-spacing:.03em;background:#fee2e2;color:#b91c1c;border-radius:.25rem;padding:.06rem .3rem;" title="Worst shrinkage exceeds ${esc(String(flagPct))}% on at least one axis">&gt;${esc(String(flagPct))}%</span>`:'';
+    let html=`<tr style="${c.flagged?'background:#fef2f2;':''}border-top:1px solid #f3f4f6;">
+      <td style="font-size:.8rem;color:#374151;padding:.35rem .4rem;white-space:nowrap;max-width:220px;overflow:hidden;text-overflow:ellipsis;" title="${esc(c.label)}">${esc(c.label)}${legacyBadge}${flagBadge}</td>
+      <td style="padding:.35rem .4rem;">${_shrinkAxisStr(c.worst_w)}<div>${_shrinkSrcStr(c.worst_w)}</div></td>
+      <td style="padding:.35rem .4rem;">${_shrinkAxisStr(c.worst_l)}<div>${_shrinkSrcStr(c.worst_l)}</div></td>
+      <td style="font-size:.76rem;color:#6b7280;padding:.35rem .4rem;white-space:nowrap;">${fmt(c.rolls_measured)}/${fmt(c.rolls_total)}</td>
+      <td style="padding:.35rem .4rem;text-align:right;white-space:nowrap;">
+        <button class="btn ghost" style="font-size:.72rem;padding:.15rem .45rem;" onclick="toggleShrinkRow(this)" data-label="${esc(c.label)}">${open?'Hide rolls':'Rolls'}</button>
+      </td>
+    </tr>`;
+    if(open){
+      const detailRows=(c.rolls||[]).map(r=>{
+        const editBtn=r.legacy?` <button class="btn ghost" style="font-size:.68rem;padding:.1rem .35rem;" onclick="editLegacyShrink(this)" data-rollid="${esc(String(r.roll_id))}" data-cur="${esc(String(r.shrinkage_inches??''))}" title="Correct this legacy roll's shrinkage figure (admin / quality supervisor only)">Edit</button> <button class="btn ghost" style="font-size:.68rem;padding:.1rem .35rem;" onclick="viewShrinkLog(this)" data-rollid="${esc(String(r.roll_id))}" title="View the edit history for this roll">Log</button>`:'';
+        return `<tr style="background:#fafafa;">
+          <td style="font-size:.74rem;color:#6b7280;padding:.2rem .4rem .2rem 1.2rem;white-space:nowrap;">${esc(r.po_name?r.po_name:('Sheet #'+r.sheet_id))} roll ${esc(String(r.roll_no??''))} &middot; ${esc(r.recv_date||'')}${r.legacy?' <span style="font-size:.62rem;font-weight:700;background:#fef3c7;color:#92400e;border-radius:.25rem;padding:.04rem .25rem;">LEGACY</span>':''}</td>
+          <td style="font-size:.74rem;padding:.2rem .4rem;">${r.w_pct!=null?(esc(r.w_in.toFixed(2))+'&Prime; ('+esc(r.w_pct.toFixed(1))+'%)'):'&mdash;'}</td>
+          <td style="font-size:.74rem;padding:.2rem .4rem;">${r.l_pct!=null?(esc(r.l_in.toFixed(2))+'&Prime; ('+esc(r.l_pct.toFixed(1))+'%)'):'&mdash;'}</td>
+          <td></td>
+          <td style="padding:.2rem .4rem;text-align:right;">${editBtn}</td>
+        </tr>`;
+      }).join('');
+      html+=detailRows;
+    }
+    return html;
+  }).join('');
+  body.innerHTML=`<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;">
+    <thead><tr>
+      <th style="font-size:.7rem;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:#6b7280;text-align:left;padding:.25rem .4rem;">Fabric code &middot; Colour</th>
+      <th style="font-size:.7rem;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:#6b7280;text-align:left;padding:.25rem .4rem;" title="Worst width-axis shrinkage across measured rolls: inches lost on the 13.78&quot; (35 cm) gauge + %">W &middot; worst</th>
+      <th style="font-size:.7rem;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:#6b7280;text-align:left;padding:.25rem .4rem;" title="Worst length-axis shrinkage across measured rolls (independent of W — may be a different roll)">L &middot; worst</th>
+      <th style="font-size:.7rem;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:#6b7280;text-align:left;padding:.25rem .4rem;">Rolls measured</th>
+      <th></th>
+    </tr></thead><tbody>${rowsHtml}</tbody></table></div>
+    <div style="font-size:.72rem;color:#9ca3af;margin-top:.4rem;">W and L are worst-case per axis and may come from different rolls. Rows over ${esc(String(flagPct))}% on either axis are highlighted. Legacy rolls carry one converted figure in both columns.</div>`;
+}
+function toggleShrinkRow(btn){
+  const label=btn.getAttribute('data-label')||'';
+  _shrinkOpen[label]=!_shrinkOpen[label];
+  _renderShrinkReport();
+}
+async function editLegacyShrink(btn){
+  const rollId=btn.getAttribute('data-rollid');
+  const cur=btn.getAttribute('data-cur')||'';
+  const raw=prompt('Corrected shrinkage for this legacy roll, in INCHES lost on the 13.78" gauge (blank to clear):',cur);
+  if(raw===null)return;
+  const v=raw.trim();
+  if(v!==''&&(isNaN(parseFloat(v))||parseFloat(v)<0)){alert('Please enter a number of inches (0 or more).');return;}
+  try{
+    const r=await fetch('/api/fabric/receiving/roll/'+encodeURIComponent(rollId)+'/legacy-shrinkage',{
+      method:'PUT',credentials:'include',
+      headers:Object.assign({'Content-Type':'application/json'},vivoAuthHeaders()),
+      body:JSON.stringify({shrinkage_inches:v===''?null:parseFloat(v)})});
+    if(r.status===403){alert('Only admins or fabric quality supervisors may edit legacy shrinkage figures.');return;}
+    if(!r.ok){const d=await r.json().catch(()=>({}));alert(d.detail||('Could not save (http '+r.status+').'));return;}
+    await loadShrinkReport();
+  }catch(e){alert('Could not save the correction. Please try again.');}
+}
+async function viewShrinkLog(btn){
+  const rollId=btn.getAttribute('data-rollid');
+  try{
+    const r=await apiFetch('/api/fabric/shrinkage-audit?roll_id='+encodeURIComponent(rollId));
+    const es=(r&&r.entries)||[];
+    if(!es.length){alert('No edits recorded for this roll yet.');return;}
+    alert('Legacy shrinkage edit history:\n\n'+es.map(e=>`${e.at} — ${e.actor||'unknown'}: ${e.old_inches==null?'(blank)':e.old_inches+'"'} → ${e.new_inches==null?'(blank)':e.new_inches+'"'}`).join('\n'));
+  }catch(e){alert('Could not load the edit history.');}
+}
+async function downloadShrinkCsv(){
+  try{
+    const df=(document.getElementById('shrink-date-from')||{}).value||'';
+    const dt=(document.getElementById('shrink-date-to')||{}).value||'';
+    const r=await fetch('/api/fabric/shrinkage-report.csv?date_from='+encodeURIComponent(df)+'&date_to='+encodeURIComponent(dt),{credentials:'include',headers:vivoAuthHeaders()});
+    if(r.status===401||r.status===403){alert('Your session has expired. Sign in to Vivo BI and try again.');return;}
+    if(!r.ok)throw new Error('http '+r.status);
+    const blob=await r.blob();
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download='shrinkage-report.csv';
+    document.body.appendChild(a);a.click();a.remove();
+    setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+  }catch(e){alert('Could not generate the CSV report. Please try again.');}
 }
 function renderBpdKpis(mpg){
   const el=document.getElementById('bpd-kpi-cards');

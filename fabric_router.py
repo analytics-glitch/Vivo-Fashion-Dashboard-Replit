@@ -2474,6 +2474,295 @@ def min_cuttable_width(search: str = Query(default=None)):
             "rolls_total": rolls_total, "rolls_with_cuttable": rolls_with}
 
 
+# ── Shrinkage Report · by supplier fabric code + colour (Buying & PD) ────────
+# Worst after-wash shrinkage per (supplier fabric code, effective colour), so
+# buyers/PD can adjust patterns and supplier decisions. Per axis (W and L),
+# INDEPENDENTLY: the worst shrinkage across all measured rolls of the combo —
+# W and L may come from different rolls.
+#   Modern gauge-square rolls: pct = (35 − after-wash cm) / 35 × 100;
+#   inches lost = (35 − after-wash cm) / 2.54 against the 13.78" gauge.
+#   Legacy rolls (single shrinkage_inches, no axis split): pct ≈
+#   inches × 2.54 / 35 × 100, shown in BOTH axes and flagged legacy.
+# Combos exceeding the 14.3% action threshold on either axis are flagged.
+_SHRINK_FLAG_PCT = 14.3
+_SHRINK_GAUGE_IN = 35.0 / 2.54  # 13.78"
+
+_SHRINK_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+def _shrink_axis_from_cm(v):
+    """(inches_lost, pct) for one gauge-square axis measurement, or None."""
+    try:
+        c = float(v)
+    except (TypeError, ValueError):
+        return None
+    if c <= 0:
+        return None
+    lost_cm = 35.0 - c
+    return (lost_cm / 2.54, lost_cm / 35.0 * 100.0)
+
+def _shrink_legacy(v):
+    """(inches_lost, pct) for a legacy single shrinkage_inches figure."""
+    try:
+        inches = float(v)
+    except (TypeError, ValueError):
+        return None
+    return (inches, inches * 2.54 / 35.0 * 100.0)
+
+def _shrinkage_report_data(date_from=None, date_to=None, search=None):
+    """Shared builder for the shrinkage report endpoint and its export.
+    Receiving-date window = PO date, falling back to the sheet's EAT save
+    date (same rule as the QC report)."""
+    where, params = [], []
+    if date_from:
+        where.append("COALESCE(s.po_date, (s.created_at AT TIME ZONE 'Africa/Nairobi')::date) >= %s::date")
+        params.append(date_from)
+    if date_to:
+        where.append("COALESCE(s.po_date, (s.created_at AT TIME ZONE 'Africa/Nairobi')::date) <= %s::date")
+        params.append(date_to)
+    extra = (" AND " + " AND ".join(where)) if where else ""
+    with _get_conn() as conn:
+        _ensure_receiving_tables(conn)
+        rows = q(conn, f"""
+            SELECT r.id AS roll_id, r.roll_no,
+                   r.after_wash_width_cm, r.after_wash_length_cm,
+                   r.shrinkage_inches,
+                   s.id AS sheet_id, s.po_name,
+                   COALESCE(s.po_date, (s.created_at AT TIME ZONE 'Africa/Nairobi')::date)::text AS recv_date,
+                   COALESCE(NULLIF(BTRIM(p.name),''), s.fabric_name) AS fabric_name,
+                   NULLIF(BTRIM(p.supplier_fabric_code),'') AS supplier_fabric_code,
+                   NULLIF(BTRIM(p.odoo_fabric_color),'')    AS odoo_fabric_color,
+                   p.fabric_color
+            FROM fabric_receiving_rolls r
+            JOIN fabric_receiving_sheets s ON s.id = r.sheet_id
+            LEFT JOIN raw_fabric_products p ON p.id = s.product_id
+            WHERE r.deleted_at IS NULL AND s.deleted_at IS NULL{extra}
+            ORDER BY s.id, r.roll_no
+        """, tuple(params) if params else None)
+
+    combos = {}
+    for r in rows:
+        code = r.get("supplier_fabric_code") or (r.get("fabric_name") or "Unknown fabric")
+        # Effective colour — same rule as min-roll-width / min-cuttable-width
+        # so all Buying & PD combination lists agree.
+        color = r.get("odoo_fabric_color")
+        if not color:
+            fc, _pc = _derive_fabric_colors(r.get("fabric_name"), r.get("fabric_color"))
+            color = fc
+        key = (code, color or "")
+        c = combos.setdefault(key, {
+            "fabric_code": code,
+            "color": color,
+            "label": code + " - " + (color or "No colour"),
+            "worst_w": None,   # {"in","pct","sheet_id","po_name","recv_date","roll_no","legacy"}
+            "worst_l": None,
+            "rolls_total": 0,
+            "rolls_measured": 0,
+            "legacy_rolls": 0,
+            "flagged": False,
+            "rolls": [],
+        })
+        c["rolls_total"] += 1
+        aw = _shrink_axis_from_cm(r.get("after_wash_width_cm"))
+        al = _shrink_axis_from_cm(r.get("after_wash_length_cm"))
+        legacy = None
+        if aw is None and al is None:
+            legacy = _shrink_legacy(r.get("shrinkage_inches"))
+            if legacy is not None:
+                aw = al = legacy
+        if aw is None and al is None:
+            continue
+        c["rolls_measured"] += 1
+        is_legacy = legacy is not None
+        if is_legacy:
+            c["legacy_rolls"] += 1
+        meta = {"sheet_id": r["sheet_id"], "po_name": r.get("po_name"),
+                "recv_date": r.get("recv_date"), "roll_no": r.get("roll_no"),
+                "legacy": is_legacy}
+        detail = dict(meta)
+        detail.update({
+            "roll_id": r["roll_id"],
+            "w_in": round(aw[0], 2) if aw else None,
+            "w_pct": round(aw[1], 1) if aw else None,
+            "l_in": round(al[0], 2) if al else None,
+            "l_pct": round(al[1], 1) if al else None,
+            "shrinkage_inches": (float(r["shrinkage_inches"])
+                                 if is_legacy and r.get("shrinkage_inches") is not None else None),
+        })
+        c["rolls"].append(detail)
+        for axis, val in (("worst_w", aw), ("worst_l", al)):
+            if val is None:
+                continue
+            cur = c[axis]
+            if cur is None or val[1] > cur["pct"]:
+                c[axis] = dict(meta, **{"in": round(val[0], 2),
+                                        "pct": round(val[1], 1)})
+
+    out = []
+    for c in combos.values():
+        if not c["rolls_measured"]:
+            continue  # nothing measured in this window — no row
+        worst = max((a["pct"] for a in (c["worst_w"], c["worst_l"]) if a),
+                    default=None)
+        c["worst_pct"] = worst
+        c["flagged"] = worst is not None and worst > _SHRINK_FLAG_PCT
+        out.append(c)
+    if search:
+        needle = search.strip().lower()
+        out = [c for c in out if needle in c["label"].lower()]
+    # Worst shrinkers first.
+    out.sort(key=lambda c: (-(c["worst_pct"] or 0), c["label"].lower()))
+    return out
+
+@fabric_router.get("/api/fabric/shrinkage-report")
+def shrinkage_report(date_from: str = Query(default=""),
+                     date_to: str = Query(default=""),
+                     search: str = Query(default=None)):
+    df = date_from.strip() if date_from and _SHRINK_DATE_RE.match(date_from.strip()) else None
+    dt_ = date_to.strip() if date_to and _SHRINK_DATE_RE.match(date_to.strip()) else None
+    out = _shrinkage_report_data(df, dt_, search)
+    return {"combinations": out, "total": len(out),
+            "flag_pct": _SHRINK_FLAG_PCT,
+            "gauge_in": round(_SHRINK_GAUGE_IN, 2)}
+
+@fabric_router.get("/api/fabric/shrinkage-report.csv")
+def shrinkage_report_csv(date_from: str = Query(default=""),
+                         date_to: str = Query(default="")):
+    """CSV export of the shrinkage report, honouring the active date filter."""
+    from fastapi.responses import Response
+    import csv as _csv
+    import io
+    df = date_from.strip() if date_from and _SHRINK_DATE_RE.match(date_from.strip()) else None
+    dt_ = date_to.strip() if date_to and _SHRINK_DATE_RE.match(date_to.strip()) else None
+    out = _shrinkage_report_data(df, dt_)
+    buf = io.StringIO()
+    w = _csv.writer(buf)
+    w.writerow(["Fabric code", "Colour",
+                "Worst W (in lost on 13.78\" gauge)", "Worst W (%)",
+                "Worst W source (sheet / date)",
+                "Worst L (in lost on 13.78\" gauge)", "Worst L (%)",
+                "Worst L source (sheet / date)",
+                "Rolls measured", "Rolls total", "Legacy rolls",
+                "Flagged (> %s%% either axis)" % _SHRINK_FLAG_PCT])
+    def _src(a):
+        if not a:
+            return ""
+        s = "%s roll %s · %s" % (a.get("po_name") or ("Sheet #%s" % a["sheet_id"]),
+                                 a.get("roll_no"), a.get("recv_date") or "")
+        return s + (" (legacy)" if a.get("legacy") else "")
+    for c in out:
+        ww, wl = c["worst_w"], c["worst_l"]
+        w.writerow([c["fabric_code"], c["color"] or "No colour",
+                    ww["in"] if ww else "", ww["pct"] if ww else "", _src(ww),
+                    wl["in"] if wl else "", wl["pct"] if wl else "", _src(wl),
+                    c["rolls_measured"], c["rolls_total"], c["legacy_rolls"],
+                    "YES" if c["flagged"] else ""])
+    fname = "shrinkage-report"
+    if df or dt_:
+        fname += "_%s_to_%s" % (df or "start", dt_ or "today")
+    return Response(
+        content=buf.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="%s.csv"' % fname},
+    )
+
+@fabric_router.put("/api/fabric/receiving/roll/{roll_id}/legacy-shrinkage")
+def receiving_roll_legacy_shrinkage(roll_id: int, request: Request,
+                                    body: dict = Body(...)):
+    """Correct a LEGACY roll's single shrinkage figure (inches) from the
+    Buying & PD shrinkage report. Only rolls WITHOUT gauge-square after-wash
+    measurements are editable here (modern measurements stay read-only).
+    Gated to the same authority as receiving-sheet QC sign-off (admin or
+    fabric_quality_supervisor). Every edit is audited to fabric_recv_audit
+    (who, when, old → new)."""
+    if not _insp_can_approve(request):
+        raise HTTPException(status_code=403,
+            detail="Only admins or fabric quality supervisors may edit legacy shrinkage figures")
+    raw = body.get("shrinkage_inches")
+    if raw in (None, ""):
+        new_v = None
+    else:
+        try:
+            new_v = float(raw)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400,
+                detail="shrinkage_inches must be a number")
+        if not (0 <= new_v <= _SHRINK_GAUGE_IN):
+            raise HTTPException(status_code=400,
+                detail="shrinkage_inches must be between 0 and 13.78 (the gauge width)")
+        new_v = round(new_v, 2)
+    _uid, name = _fabric_actor(request)
+    with _get_conn() as conn:
+        _ensure_receiving_tables(conn)
+        rolls = q(conn, """
+            SELECT r.id, r.sheet_id, r.roll_no, r.shrinkage_inches,
+                   r.after_wash_width_cm, r.after_wash_length_cm,
+                   s.fabric_name, s.po_id
+            FROM fabric_receiving_rolls r
+            JOIN fabric_receiving_sheets s ON s.id = r.sheet_id
+            WHERE r.id=%s AND r.deleted_at IS NULL AND s.deleted_at IS NULL
+        """, (roll_id,))
+        if not rolls:
+            raise HTTPException(status_code=404, detail="roll not found")
+        roll = rolls[0]
+        if roll.get("after_wash_width_cm") is not None or roll.get("after_wash_length_cm") is not None:
+            raise HTTPException(status_code=409,
+                detail="This roll has gauge-square measurements — only legacy single-figure entries are editable here")
+        old_v = roll.get("shrinkage_inches")
+        old_v = float(old_v) if old_v is not None else None
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE fabric_receiving_rolls
+                   SET shrinkage_inches=%s
+                 WHERE id=%s
+            """, (new_v, roll_id))
+            _recv_audit(cur, roll.get("po_id"), roll["sheet_id"],
+                        roll.get("fabric_name"), "legacy_shrinkage_updated",
+                        {"roll_id": roll_id,
+                         "roll_no": roll["roll_no"],
+                         "old_inches": old_v,
+                         "new_inches": new_v},
+                        name)
+        conn.commit()
+    _fabric_log_activity(request, "PUT",
+                         f"/api/fabric/receiving/roll/{roll_id}/legacy-shrinkage",
+                         f"shrinkage_inches: {old_v} -> {new_v}")
+    return {"ok": True, "roll_id": roll_id, "roll_no": roll["roll_no"],
+            "shrinkage_inches": new_v}
+
+@fabric_router.get("/api/fabric/shrinkage-audit")
+def shrinkage_audit(roll_id: int = Query(default=None),
+                    limit: int = Query(default=100)):
+    """Edit history for legacy shrinkage corrections (who, when, old → new).
+    Optionally filtered to one roll."""
+    limit = max(1, min(int(limit or 100), 500))
+    where = "action='legacy_shrinkage_updated'"
+    params = []
+    if roll_id is not None:
+        where += " AND (details->>'roll_id')::bigint = %s"
+        params.append(roll_id)
+    with _get_conn() as conn:
+        _ensure_receiving_tables(conn)
+        rows = q(conn, f"""
+            SELECT id, sheet_id, fabric_name, details, actor_name,
+                   to_char(at AT TIME ZONE 'Africa/Nairobi',
+                           'DD Mon YYYY HH24:MI') AS at
+            FROM fabric_recv_audit
+            WHERE {where}
+            ORDER BY id DESC
+            LIMIT {limit}
+        """, tuple(params) if params else None)
+    out = []
+    for r in rows:
+        d = r.get("details") or {}
+        out.append({"id": r["id"], "sheet_id": r.get("sheet_id"),
+                    "fabric_name": r.get("fabric_name"),
+                    "roll_id": d.get("roll_id"), "roll_no": d.get("roll_no"),
+                    "old_inches": d.get("old_inches"),
+                    "new_inches": d.get("new_inches"),
+                    "actor": r.get("actor_name"), "at": r.get("at")})
+    return {"entries": out, "total": len(out)}
+
+
 # ── Basic Fabrics — Months of Cover: downloadable .xlsx calculations report ──
 # The full audit trail behind the "Basic Fabrics — Months of Cover" Overview KPI:
 # every curated (vendor, fabric-code) pairing and whether it matched a product,
