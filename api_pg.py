@@ -32006,6 +32006,26 @@ def production_summary():
             FROM all_products_clean
             WHERE style_number IS NOT NULL
             GROUP BY style_number
+        ),
+        -- Fabric structure (Knit / Woven) sourced directly from the Odoo fabric
+        -- product attributes (x_vivo_attr_101) via the BOM: for each garment
+        -- variant name that appears in the BOM we look up the component fabric's
+        -- fabric_structure in raw_fabric_products, then take the modal value per
+        -- style_number.  This is the primary source; keyword heuristics are the
+        -- fallback for styles that have no BOM entries yet.
+        bom_structure AS (
+            SELECT
+                apc.style_number,
+                mode() WITHIN GROUP (ORDER BY rfp.fabric_structure) AS fabric_structure
+            FROM raw_fabric_boms rfb
+            JOIN raw_fabric_products rfp
+                ON rfp.id = rfb.component_id
+               AND rfp.fabric_structure IN ('Knit', 'Woven', 'Non-Woven')
+            JOIN all_products_clean apc
+                ON apc.product_name = rfb.finished_product_name
+            WHERE rfb.finished_product_name IS NOT NULL
+              AND rfp.fabric_structure IS NOT NULL
+            GROUP BY apc.style_number
         )
         SELECT po.order_ref, po.style_number, po.style_name, po.product_name,
                po.buyer, po.order_qty, po.date_ordered, po.expected_delivery_date,
@@ -32024,9 +32044,12 @@ def production_summary():
                pa.category,
                pa.product_type,
                pa.print_plain,   -- NULL when style not in product master
-               -- Knit vs Woven: product_type keywords take precedence; fall back
-               -- to style_name fabric keywords for styles not yet in product master.
+               -- Knit vs Woven: BOM-derived fabric_structure (from the Odoo fabric
+               -- product attribute x_vivo_attr_101 via raw_fabric_products) takes
+               -- priority.  Falls back to product_type / style_name keywords for
+               -- styles that have no BOM entries yet.
                CASE
+                   WHEN bs.fabric_structure IS NOT NULL THEN bs.fabric_structure
                    WHEN COALESCE(pa.product_type, '') ILIKE ANY(ARRAY[
                        '%sweater%','%poncho%','%hoodie%','%sweatshirt%',
                        '%t-shirt%','%tank top%','%legging%','%bodysuit%','%knit%'
@@ -32038,11 +32061,12 @@ def production_summary():
                    THEN 'Knit' ELSE 'Woven'
                END AS fabric_construction
         FROM production_orders po
-        LEFT JOIN line_rollup lr ON lr.order_ref = po.order_ref
-        LEFT JOIN var_rollup  vr ON vr.order_ref = po.order_ref
-        LEFT JOIN bal            ON bal.order_ref = po.order_ref
-        LEFT JOIN sew            ON sew.order_ref = po.order_ref
-        LEFT JOIN prod_attrs  pa ON pa.style_number = po.style_number
+        LEFT JOIN line_rollup   lr ON lr.order_ref = po.order_ref
+        LEFT JOIN var_rollup    vr ON vr.order_ref = po.order_ref
+        LEFT JOIN bal              ON bal.order_ref = po.order_ref
+        LEFT JOIN sew              ON sew.order_ref = po.order_ref
+        LEFT JOIN prod_attrs    pa ON pa.style_number = po.style_number
+        LEFT JOIN bom_structure bs ON bs.style_number = po.style_number
         ORDER BY po.date_ordered DESC NULLS LAST, po.order_ref DESC""", fetch=True)
 
     # Load now sitting in the Sewing stage, split by the line each piece ran on
