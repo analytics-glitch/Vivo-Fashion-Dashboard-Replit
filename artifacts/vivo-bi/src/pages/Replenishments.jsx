@@ -117,7 +117,9 @@ const Replenishments = () => {
   const [distLoading, setDistLoading] = useState(false);
   const [distSaving, setDistSaving] = useState(false);
   const [batchSavingKey, setBatchSavingKey] = useState(null);
-  const [scorecardDay, setScorecardDay] = useState(
+  const [scorecardFrom, setScorecardFrom] = useState(
+    () => new Date(Date.now() + 3 * 3600 * 1000).toISOString().slice(0, 10));
+  const [scorecardTo, setScorecardTo] = useState(
     () => new Date(Date.now() + 3 * 3600 * 1000).toISOString().slice(0, 10));
 
   const liveSort = useTableSort();
@@ -489,7 +491,7 @@ const Replenishments = () => {
   //  • Outstanding (all open) / units → the running backlog across ALL open batches (day-independent).
   const dayScorecard = useMemo(() => {
     // Batch created_at is a TIMESTAMPTZ; bucket it to its East-Africa (UTC+3) calendar
-    // day so "allocated today" lines up with the done_day_eat the backend already emits.
+    // day so "allocated" range lines up with the done_day_eat the backend already emits.
     const eatDay = (iso) => {
       if (!iso) return null;
       try {
@@ -500,9 +502,11 @@ const Replenishments = () => {
         return null;
       }
     };
+    const inRange = (day) => day && day >= scorecardFrom && day <= scorecardTo;
     const byOwner = new Map();
     for (const b of distributions.batches || []) {
-      const allocatedToday = eatDay(b.created_at) === scorecardDay;
+      const batchDay = eatDay(b.created_at);
+      const allocatedInRange = inRange(batchDay);
       for (const ln of b.lines || []) {
         const owner = ln.owner || "Unassigned";
         const e = byOwner.get(owner) || {
@@ -510,7 +514,7 @@ const Replenishments = () => {
           allocUnitsDay: 0, allocDoneUnitsDay: 0,
         };
         if (ln.done) {
-          if (ln.done_day_eat === scorecardDay) {
+          if (inRange(ln.done_day_eat)) {
             e.doneDay += 1;
             e.doneUnitsDay += Number(ln.done_units || 0);
           }
@@ -518,7 +522,7 @@ const Replenishments = () => {
           e.outstanding += 1;
           e.outstandingUnits += Number(ln.suggested_units || 0);
         }
-        if (allocatedToday) {
+        if (allocatedInRange) {
           e.allocUnitsDay += Number(ln.suggested_units || 0);
           // Actual picked units on a finished line (defaults to suggested at mark-done
           // time). Same basis as the "Units done" column — a legitimate 0 stays 0.
@@ -534,7 +538,7 @@ const Replenishments = () => {
         : null;
     }
     return rows.sort((a, b) => a.owner.localeCompare(b.owner));
-  }, [distributions, scorecardDay]);
+  }, [distributions, scorecardFrom, scorecardTo]);
 
   return (
     <div className="space-y-5" data-testid="replenishments-page">
@@ -1006,9 +1010,33 @@ const Replenishments = () => {
         <div className="card-white p-4 sm:p-5" data-testid="replen-day-scorecard">
           <SectionTitle
             title={<span className="inline-flex items-center gap-2 text-[14px]"><CalendarBlank size={16} weight="duotone" className="text-brand-deep" /> Picker scorecard by day</span>}
-            subtitle="Pick a day to see how many units each picker marked done that day (EAT). Outstanding units is every not-yet-done unit across all open batches, regardless of day — what each picker still owes."
+            subtitle="Pick a date range to see units each picker marked done in that period (EAT). Outstanding units is every not-yet-done unit across all open batches, regardless of day — what each picker still owes."
             action={
-              <input type="date" value={scorecardDay} onChange={(e) => setScorecardDay(e.target.value)} className="text-[12px] border border-border rounded-md px-2 py-1.5 bg-white" data-testid="replen-scorecard-day" />
+              <div className="flex items-center gap-1.5 flex-wrap justify-end" data-testid="replen-scorecard-range">
+                {[
+                  { label: "Today", days: 0 },
+                  { label: "7D", days: 6 },
+                  { label: "30D", days: 29 },
+                ].map(({ label, days }) => {
+                  const pad = (n) => String(n).padStart(2, "0");
+                  const toD = new Date(Date.now() + 3 * 3600 * 1000);
+                  const todayStr = `${toD.getFullYear()}-${pad(toD.getMonth() + 1)}-${pad(toD.getDate())}`;
+                  const fromD = new Date(Date.now() + 3 * 3600 * 1000 - days * 86400000);
+                  const fromStr = `${fromD.getFullYear()}-${pad(fromD.getMonth() + 1)}-${pad(fromD.getDate())}`;
+                  const active = scorecardFrom === fromStr && scorecardTo === todayStr;
+                  return (
+                    <button
+                      key={label}
+                      type="button"
+                      onClick={() => { setScorecardFrom(fromStr); setScorecardTo(todayStr); }}
+                      className={`px-2 py-1 rounded-md border text-[11px] font-semibold ${active ? "border-brand-deep bg-brand-deep/10 text-brand-deep" : "border-border bg-white text-muted hover:text-fg"}`}
+                    >{label}</button>
+                  );
+                })}
+                <input type="date" value={scorecardFrom} onChange={(e) => setScorecardFrom(e.target.value)} className="text-[12px] border border-border rounded-md px-2 py-1.5 bg-white" data-testid="replen-scorecard-from" />
+                <span className="text-muted text-[11px]">→</span>
+                <input type="date" value={scorecardTo} onChange={(e) => setScorecardTo(e.target.value)} className="text-[12px] border border-border rounded-md px-2 py-1.5 bg-white" data-testid="replen-scorecard-to" />
+              </div>
             }
           />
           {dayScorecard.length === 0 ? (
@@ -1019,8 +1047,8 @@ const Replenishments = () => {
                 <thead className="bg-panel">
                   <tr className="text-left">
                     <th className="px-3 py-2 font-semibold whitespace-nowrap">Picker</th>
-                    <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">Units done · {scorecardDay}</th>
-                    <th className="px-3 py-2 font-semibold text-right whitespace-nowrap" title="Units in batches handed out (created) on the selected day">Allocated today</th>
+                    <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">Units done · {scorecardFrom === scorecardTo ? scorecardFrom : `${scorecardFrom} → ${scorecardTo}`}</th>
+                    <th className="px-3 py-2 font-semibold text-right whitespace-nowrap" title="Units in batches handed out (created) within the selected range">Allocated in range</th>
                     <th className="px-3 py-2 font-semibold text-right whitespace-nowrap" title="Units of today's handout that are now finished">Finished</th>
                     <th className="px-3 py-2 font-semibold text-right whitespace-nowrap" title="Finished ÷ Allocated today (units)">% complete</th>
                     <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">Outstanding units</th>
