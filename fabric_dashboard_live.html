@@ -1621,7 +1621,7 @@ const FX={
   metresPerGarment:'Avg metres / garment = total main-fabric metres consumed ÷ total garments produced, across Done DPS manufacturing orders completed in the last 30 days. Fabric kg is converted to metres via each fabric\u2019s kg-per-metre; a fabric that has no kg-per-metre (no Width and/or GSM to derive it) is converted using the overall fabric-average as a fallback, so its order is still counted. An MO is counted as long as it produced at least one garment.',
   monthsCover:'Months of cover = stock on hand (kg) ÷ average monthly consumption (kg), using the average net run-rate over the last 6 fully completed months (the in-progress month is excluded). Consumption is net of production returns (fabric only).',
   monthsCoverPrevMonth:'Months of cover (prev month) = stock on hand (kg) ÷ the net consumption (kg) of the previous full calendar month (M-1) only. A more reactive signal than the 6-month average — it reflects the most recent month\u2019s usage. Consumption is net of production returns (fabric only).',
-  basicMonthsCover:'Basic Fabrics — months of cover = combined cover across only the curated set of core staple fabrics the buying team always keeps in stock (a fixed vendor + fabric-code list). Same formula as Months of cover — RMAT/Stock on-hand kg ÷ average net monthly consumption over the last 6 fully completed months (net of production returns) — but restricted to the curated fabrics. The sub-line shows how many of the curated fabrics were found in the data.',
+  basicMonthsCover:'NOOS Fabrics — months of cover = combined cover across only the curated set of core staple fabrics the buying team always keeps in stock (a fixed vendor + fabric-code list). Same formula as Months of cover — RMAT/Stock on-hand kg ÷ average net monthly consumption over the last 6 fully completed months (net of production returns) — but restricted to the curated fabrics. The sub-line shows how many of the curated fabrics were found in the data.',
   deadStock:'Dead stock = value of fabric parked in the Dead/Stock location (KES).',
   deadPct:'% of value = dead-stock value ÷ total fabric value.',
   outstandingPOs:'Outstanding POs = purchase orders not yet fully received (excludes cancelled).',
@@ -3667,7 +3667,7 @@ function renderHistSnap(d){
     +'<td class="r num">'+esc(fmtMoc(d.months_of_cover))+'</td>'
     +'</tr>'
     +'<tr>'
-    +'<td>Basic Fabrics</td>'
+    +'<td>NOOS Fabrics</td>'
     +'<td class="r num">'+esc(fmt1(d.basic_stock_kg))+'</td>'
     +'<td class="r num">'+esc(fmt1(d.basic_avg_monthly_consumption_kg))+'</td>'
     +'<td class="r num">'+esc(fmtMoc(d.basic_months_of_cover))+'</td>'
@@ -4051,7 +4051,7 @@ async function downloadMpgCatXlsx(){
     setTimeout(()=>URL.revokeObjectURL(a.href),1000);
   }catch(e){alert('Could not generate the Excel report. Please try again.');}
 }
-// Basic Fabrics — Months of Cover calculations workbook (curated pairings,
+// NOOS Fabrics — Months of Cover calculations workbook (curated pairings,
 // matched products + stock, and the 6-month net consumption run-rate). Same
 // curated set the KPI card uses, so a fresh download always reconciles to it.
 async function downloadBasicCoverXlsx(){
@@ -4062,7 +4062,7 @@ async function downloadBasicCoverXlsx(){
     const blob=await r.blob();
     const a=document.createElement('a');
     a.href=URL.createObjectURL(blob);
-    a.download='basic-fabrics-months-of-cover.xlsx';
+    a.download='noos-fabrics-months-of-cover.xlsx';
     document.body.appendChild(a);a.click();a.remove();
     setTimeout(()=>URL.revokeObjectURL(a.href),1000);
   }catch(e){alert('Could not generate the Excel report. Please try again.');}
@@ -4317,6 +4317,36 @@ function renderKpis(d,coverDelta){
      else{pval='&mdash;';}
      const pdl=(pcover!=null)?`<button class="btn ghost" onclick="downloadMonthsCoverPrevMonthXlsx()" title="Download the calculation audit trail (fabric stock on hand and the previous full calendar month's net consumption behind this cover figure) as an Excel workbook">&#11015; Download (Excel)</button>`:'';
      return KpiCard({reserveAction:true,label:'Months of cover',qualifier:'Prev Month Consump.',value:pval,valueClass:pcls,valueAttrs:fx(FX.monthsCoverPrevMonth),cardAttrs:` title="${ptip}"`,footnote:pnote,action:pdl});})(),
+    (()=>{
+     // NOOS Fabrics cover: same 6-month method, restricted to the curated
+     // staple-fabric set. Degrades per backend status: overstocked (stock, no
+     // recent use), no_match (curated pairings matched nothing), no_data.
+     const bcover=(d.basic_months_of_cover!=null)?d.basic_months_of_cover:null;
+     const bstatus=d.basic_months_of_cover_status||(bcover!=null?'ok':'no_data');
+     const bkg=(d.basic_fabrics_stock_kg!=null)?d.basic_fabrics_stock_kg:null;
+     const bmatched=(d.basic_fabrics_matched!=null)?d.basic_fabrics_matched:null;
+     const btotal=(d.basic_fabrics_total!=null)?d.basic_fabrics_total:null;
+     const bmatchTxt=(bmatched!=null&&btotal!=null)?`${fmt(bmatched)} of ${fmt(btotal)} curated fabrics matched`:'';
+     const bnote=(bstatus==='overstocked')
+         ?`overstocked &middot; no recent use${bkg!=null?` &middot; ${fmt(bkg)} kg on hand`:''}${bmatchTxt?` &middot; ${bmatchTxt}`:''}`
+         :(bstatus==='no_match')
+           ?'no curated fabrics matched'
+           :(bstatus==='no_data')
+             ?`no stock or recent usage${bmatchTxt?` &middot; ${bmatchTxt}`:''}`
+             :bmatchTxt;
+     const btip=(bstatus==='overstocked')
+         ?esc(`Curated NOOS fabric stock is on hand but there was no consumption of these fabrics over the last 6 completed months, so months-of-cover cannot be divided. Cover is effectively very high (shown as 12+).`)
+         :(bstatus==='no_match')
+           ?esc('None of the curated NOOS fabric pairings matched a product in the data (e.g. mid-rebuild), so there is nothing to compute.')
+           :(bstatus==='no_data')
+             ?esc('No stock and no recent consumption across the curated NOOS fabrics, so there is nothing to compute.')
+             :esc(FX.basicMonthsCover);
+     let bval,bcls='';
+     if(bstatus==='overstocked'){bval='12+';}
+     else if(bstatus==='ok'&&bcover!=null){bval=coverFmt(bcover);bcls=bcover<1?'amber':'';}
+     else{bval='&mdash;';}
+     const bdl=(bcover!=null)?`<button class="btn ghost" onclick="downloadBasicCoverXlsx()" title="Download the NOOS Fabrics cover calculations (curated pairings, matched products + stock, and the 6-month net consumption run-rate) as an Excel workbook">&#11015; Download (Excel)</button>`:'';
+     return KpiCard({reserveAction:true,label:'NOOS Fabrics',qualifier:'Months of Cover',value:bval,valueClass:bcls,valueAttrs:fx(FX.basicMonthsCover),cardAttrs:` title="${btip}"`,footnote:bnote,action:bdl});})(),
   ];
   document.getElementById('kpi-cards').innerHTML=cards.join('');
 }
