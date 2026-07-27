@@ -12560,9 +12560,12 @@ _M_UOMS = {"m", "metre", "meter", "mtr", "metres", "meters", "metre(s)"}
 def _costing_style_facts(conn, style_name, days=365, dps_ref=None):
     """Auto-suggestion facts for a style from Done-DPS consumption:
     metres per garment, weighted labour cost per garment, the fabrics used AND
-    the accessories/trims components consumed (each with a suggested unit cost
-    from the cost recorded on the DPS/MO consumption itself — never latest-PO
-    pricing). When `dps_ref` is given, every suggestion (fabric, accessories,
+    the accessories/trims components consumed. Fabric cost/metre suggestions
+    use the fabric master's CURRENT cost/metre (standard_price ×
+    kg_per_mtr_eff — the modal's Cost/Metre figure) first, falling back to the
+    cost recorded on the DPS/MO consumption, then the latest PO price.
+    Accessories keep the DPS/MO recorded cost only — never latest-PO
+    pricing. When `dps_ref` is given, every suggestion (fabric, accessories,
     labour) is scoped to that single Done DPS instead of the trailing window.
     MOs are matched to the BI style via finished_sku = all_products_clean.sku
     — NOT on style_name: MO style names embed fabric + colour ("… in Jersey -
@@ -12640,11 +12643,14 @@ def _costing_style_facts(conn, style_name, days=365, dps_ref=None):
             lab_cost += d["labour_pu"] * d["produced"]
             lab_units += d["produced"]
 
-    # Suggested cost per metre for each fabric: PRIMARY basis is the cost
-    # recorded on the DPS/MO consumption itself (unit_cost_mo, per UoM unit →
-    # per metre via kg_per_mtr_eff when the MO consumed in kg/g). Only when no
-    # MO-recorded cost exists do we fall back to the latest PO price, then the
-    # fabric master's standard_price.
+    # Suggested cost per metre for each fabric: PRIMARY basis is the fabric
+    # master's CURRENT cost/metre — standard_price × kg_per_mtr_eff — the same
+    # figure the fabric popup modal shows as Cost/Metre, so cost sheets
+    # reflect today's fabric cost. When that can't be computed (missing
+    # standard price or kg/mtr conversion) we fall back to the cost recorded
+    # on the DPS/MO consumption itself (unit_cost_mo, per UoM unit → per metre
+    # via kg_per_mtr_eff when the MO consumed in kg/g), then the latest PO
+    # price as a last resort.
     fab_list = sorted(fabrics.values(), key=lambda f: -f["metres"])
     ids = [f["component_id"] for f in fab_list if f["component_id"]]
     po_price = {}
@@ -12659,7 +12665,9 @@ def _costing_style_facts(conn, style_name, days=365, dps_ref=None):
             po_price[r["product_id"]] = r
     for f in fab_list:
         cpm = src = None
-        if f["mo_cost_qty"] > 0:
+        if f["standard_price"] and f["kpm"]:
+            cpm, src = f["standard_price"] * f["kpm"], "fabric master cost/metre (current)"
+        if cpm is None and f["mo_cost_qty"] > 0:
             per_unit = f["mo_cost_amt"] / f["mo_cost_qty"]
             u = f["mo_cost_uom"]
             if u in _M_UOMS:
@@ -12675,8 +12683,6 @@ def _costing_style_facts(conn, style_name, days=365, dps_ref=None):
                     cpm, src = pu, "latest PO price (per metre)"
                 elif f["kpm"]:
                     cpm, src = pu * f["kpm"], "latest PO price (per kg × kg/m)"
-        if cpm is None and f["standard_price"] and f["kpm"]:
-            cpm, src = f["standard_price"] * f["kpm"], "fabric master cost (per kg × kg/m)"
         f["cost_per_metre"] = round(cpm, 2) if cpm else None
         f["cost_source"] = src
         f["metres"] = round(f["metres"], 1)
@@ -12778,6 +12784,33 @@ def costing_styles(q_: str = Query(default="", alias="q"),
         if len(out) >= limit:
             break
     return out
+
+
+@fabric_router.get("/api/fabric/costing/fabrics")
+def costing_fabric_search(q_: str = Query(default="", alias="q"),
+                          limit: int = Query(default=20)):
+    """Fabric typeahead for costing fabric lines — searches the fabric master
+    and returns each fabric's CURRENT cost/metre (standard_price ×
+    kg_per_mtr_eff, the popup modal's Cost/Metre figure) so picking a fabric
+    prefills the line's Unit Cost. cost_per_metre is NULL when the fabric has
+    no standard price or kg/mtr conversion."""
+    term = (q_ or "").strip()
+    limit = max(1, min(int(limit or 20), 50))
+    with _get_conn() as conn:
+        rows = q(conn, """
+            SELECT p.id, p.default_code AS sku, p.name,
+                   ROUND(CASE WHEN p.kg_per_mtr_eff > 0 AND p.standard_price > 0
+                              THEN p.standard_price * p.kg_per_mtr_eff
+                              ELSE NULL END::numeric, 2) AS cost_per_metre
+            FROM raw_fabric_products p
+            WHERE (%s = '' OR p.name ILIKE %s OR p.default_code ILIKE %s)
+            ORDER BY p.name
+            LIMIT %s
+        """, [term, f"%{term}%", f"%{term}%", limit])
+    return [{"id": r["id"], "sku": r["sku"], "name": r["name"],
+             "cost_per_metre": (float(r["cost_per_metre"])
+                                if r["cost_per_metre"] is not None else None)}
+            for r in rows]
 
 
 @fabric_router.get("/api/fabric/costing/dps")

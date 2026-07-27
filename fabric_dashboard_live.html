@@ -8780,7 +8780,7 @@ function costRenderLines(){
     `<tr><td><select class="cost-cell" data-i="${i}" data-k="kind" style="width:110px;">`+
     Object.keys(COST_KINDS).map(k=>`<option value="${k}"${l.kind===k?' selected':''}>${esc(COST_KINDS[k])}</option>`).join('')+
     `</select></td>`+
-    `<td style="padding:2px;"><input class="cost-cell" data-i="${i}" data-k="label" value="${esc(l.label||'')}" style="width:100%;padding:4px 6px;"></td>`+
+    `<td style="padding:2px;position:relative;"><input class="cost-cell" data-i="${i}" data-k="label" value="${esc(l.label||'')}" autocomplete="off" style="width:100%;padding:4px 6px;"${l.kind==='fabric'?' placeholder="Type to search fabrics…"':''}>${l.kind==='fabric'?`<div class="resv-dropdown cost-fab-dd" data-dd="${i}" style="display:none;left:2px;right:2px;width:auto;"></div>`:''}</td>`+
     `<td style="padding:2px;"><input class="cost-cell r" data-i="${i}" data-k="qty" type="number" min="0" step="any" value="${esc(l.qty==null?'':l.qty)}" style="width:100%;text-align:right;padding:4px 6px;"></td>`+
     `<td style="padding:2px;"><input class="cost-cell r" data-i="${i}" data-k="unit_cost" type="number" min="0" step="any" value="${esc(l.unit_cost==null?'':l.unit_cost)}" style="width:100%;text-align:right;padding:4px 6px;"></td>`+
     `<td class="r">${fmtKES2((Number(l.qty)||0)*(Number(l.unit_cost)||0))}</td>`+
@@ -8811,6 +8811,9 @@ function costBindEditor(){
     // Editing an auto-suggested value flips the line to MANUAL.
     if(l.is_auto&&(k==='qty'||k==='unit_cost')){l.is_auto=false;l.source=null;costRenderLines();return;}
     if(k==='kind'){costRenderLines();return;}
+    // Fabric lines: the label doubles as a fabric-master typeahead — picking
+    // a fabric prefills Unit Cost with its CURRENT cost/metre (modal figure).
+    if(k==='label'&&l.kind==='fabric'){costFabSearch(i,el);return;}
     if(k==='qty'||k==='unit_cost'){
       // Update the line-total cell in place without a full re-render (keeps focus).
       const row=el.closest('tr');if(row)row.cells[4].textContent=fmtKES2((Number(l.qty)||0)*(Number(l.unit_cost)||0));
@@ -8829,6 +8832,38 @@ function costAddLine(kind){
   costRenderLines();
 }
 function costDelLine(i){if(!costEdit)return;costEdit.lines.splice(i,1);costRenderLines();}
+// ── Fabric typeahead on fabric-kind cost lines ──
+// Searches the fabric master (/api/fabric/costing/fabrics) and, on pick,
+// prefills the line's Unit Cost with the fabric's current Cost/Metre — the
+// same standard_price × kg/mtr figure the fabric popup modal shows. The cost
+// stays fully editable (editing flips the line to MANUAL as usual).
+let costFabTimer=null;
+function costFabSearch(i,el){
+  clearTimeout(costFabTimer);
+  costFabTimer=setTimeout(async()=>{
+    const dd=document.querySelector('.cost-fab-dd[data-dd="'+i+'"]');if(!dd)return;
+    const term=(el.value||'').trim();
+    if(term.length<2){dd.style.display='none';return;}
+    try{
+      const rows=await apiFetch('/api/fabric/costing/fabrics?q='+encodeURIComponent(term));
+      dd.innerHTML=(rows||[]).map(r=>
+        `<div class="resv-opt" data-costfab="${i}" data-fabname="${esc(r.name||r.sku||'')}" data-fabcpm="${r.cost_per_metre==null?'':r.cost_per_metre}">`+
+        `<strong>${esc(r.name||r.sku||'')}</strong> <span class="muted" style="font-size:11px;">${r.cost_per_metre!=null?fmtKES2(r.cost_per_metre)+'/m':'no cost/metre'}</span></div>`).join('')
+        ||'<div class="resv-opt muted">No matching fabric</div>';
+      dd.style.display='';
+    }catch(_){dd.style.display='none';}
+  },250);
+}
+function costPickFabric(i,name,cpm){
+  if(!costEdit)return;const l=costEdit.lines[i];if(!l)return;
+  l.label=name;
+  if(cpm!==''&&cpm!=null&&!isNaN(Number(cpm))){
+    l.unit_cost=Number(cpm);l.is_auto=true;l.source='Fabric master cost/metre (current)';
+  }else{
+    l.is_auto=false;l.source='fabric has no cost/metre — enter cost manually';
+  }
+  costRenderLines();
+}
 function costNewSheet(){
   costEdit={id:null,style_name:null,style_number:null,dps_ref:null,lines:[],sp_auto:true,history:[]};
   costDpsReset(true);
@@ -8898,6 +8933,9 @@ document.addEventListener('click',e=>{
   if(opt&&opt.dataset.coststyle){costPickStyle(opt.dataset.coststyle,opt.dataset.stylenum);return;}
   const box=document.getElementById('cost-style-list');
   if(box&&box.style.display!=='none'&&!e.target.closest('#cost-style-search')&&!e.target.closest('#cost-style-list'))box.style.display='none';
+  const fopt=e.target.closest('.cost-fab-dd .resv-opt');
+  if(fopt&&fopt.dataset.costfab!=null&&fopt.dataset.fabname){costPickFabric(+fopt.dataset.costfab,fopt.dataset.fabname,fopt.dataset.fabcpm);return;}
+  if(!e.target.closest('.cost-fab-dd'))document.querySelectorAll('.cost-fab-dd').forEach(d=>{d.style.display='none';});
   const dopt=e.target.closest('#cost-dps-list .resv-opt');
   if(dopt&&dopt.dataset.costdps){costPickDps(dopt.dataset.costdps);return;}
   const dbox=document.getElementById('cost-dps-list');
