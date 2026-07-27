@@ -5489,6 +5489,12 @@ def _ensure_receiving_tables(conn):
         # only — does not affect stock or weeks-of-cover figures.
         cur.execute("ALTER TABLE fabric_receiving_rolls "
                     "ADD COLUMN IF NOT EXISTS defective_yards NUMERIC")
+        # Lot-level (delivery average) acceptance limit for the 4-Point
+        # standard: average pts/100 sq.yd across the sheet's submitted
+        # tickets. NULL = the default (20). Configurable per sheet by the
+        # QC supervisor / admin.
+        cur.execute("ALTER TABLE fabric_receiving_sheets "
+                    "ADD COLUMN IF NOT EXISTS lot_acceptable_limit NUMERIC")
         # 4-Point (American system) inspection tickets, one or more VERSIONS
         # per roll. Keyed by (sheet_id, roll_no) — NOT roll_id — because the
         # admin sheet PUT deletes + reinserts rolls (new ids); roll_no is the
@@ -6164,6 +6170,27 @@ def approve_delivery(po_id: int, request: Request):
                 detail=f"{len(pending_rolls)} roll(s) still have a Pending quality "
                        "status and no approved 4-Point inspection ticket. "
                        "Complete or approve all inspections before signing off the delivery.")
+        # Lot-level (delivery average) 4-Point summary per fabric sheet —
+        # surfaced in the signoff response and frozen into the audit trail.
+        lot_sheets = q(conn, """
+            SELECT s.id, COALESCE(NULLIF(BTRIM(p.name),''), s.fabric_name)
+                       AS fabric_name
+            FROM fabric_receiving_sheets s
+            LEFT JOIN raw_fabric_products p ON p.id = s.product_id
+            WHERE s.po_id = %s AND s.deleted_at IS NULL
+            ORDER BY s.id
+        """, (po_id,))
+        lot_map = _insp_lot_summaries(conn, [r["id"] for r in lot_sheets])
+        lots = []
+        for r in lot_sheets:
+            lot = lot_map.get(int(r["id"])) or {}
+            lots.append({"sheet_id": int(r["id"]),
+                         "fabric_name": r.get("fabric_name"),
+                         "lot_avg_pp100": lot.get("lot_avg_pp100"),
+                         "lot_limit": lot.get("lot_limit",
+                                              _INSP_LOT_LIMIT_DEFAULT),
+                         "lot_rolls_scored": lot.get("lot_rolls_scored", 0),
+                         "lot_pass": lot.get("lot_pass")})
         with conn.cursor() as cur:
             cur.execute("""
                 UPDATE fabric_receiving_po_sheets
@@ -6178,7 +6205,8 @@ def approve_delivery(po_id: int, request: Request):
                 VALUES (%s, NULL, 'delivery_approved',
                         %s::jsonb, %s)
             """, (po_id,
-                  json.dumps({"po_name": sheet.get("po_name") or ""}),
+                  json.dumps({"po_name": sheet.get("po_name") or "",
+                              "lots": lots}),
                   actor_name))
         conn.commit()
         updated = q(conn,
@@ -6198,6 +6226,7 @@ def approve_delivery(po_id: int, request: Request):
             "delivery_approved_by":       row.get("delivery_approved_by"),
             "delivery_approved_by_email": row.get("delivery_approved_by_email"),
             "delivery_approved_at":       at_fmt,
+            "lots":                       lots,
         }
 
 # ── 4-Point fabric inspection tickets ───────────────────────────────────────
@@ -6217,10 +6246,16 @@ def _insp_can_approve(request):
     return (u.get("role") or "").strip().lower() in ("admin", "fabric_quality_supervisor")
 
 # 4-point rule: points per defect from its measured length in inches.
-# <= 3in = 1pt, 3–6 = 2, 6–9 = 3, > 9in OR any hole = 4. Max 4 pts/defect.
+# <= 3in = 1pt, 3–6 = 2, 6–9 = 3, > 9in = 4. Holes split by size per the
+# ASTM D5430 convention: <= 1in = 2 pts, > 1in OR unsized = 4 pts
+# (conservative when no size is entered). Max 4 pts/defect.
 def _insp_defect_points(size_in, is_hole):
     if is_hole:
-        return 4
+        try:
+            s = float(size_in)
+        except (TypeError, ValueError):
+            s = None
+        return 2 if (s is not None and s <= 1) else 4
     try:
         s = float(size_in)
     except (TypeError, ValueError):
@@ -6232,6 +6267,28 @@ def _insp_defect_points(size_in, is_hole):
     if s > 3:
         return 2
     return 1
+
+def _insp_run_span(run_yards, location_yd, yards_inspected):
+    """Number of whole linear yards a RUNNING defect saturates (>=1), capped
+    so the span never extends past the roll's inspected yardage. A running
+    defect scores 4 points for EACH yard it crosses."""
+    try:
+        n = int(math.ceil(float(run_yards)))
+    except (TypeError, ValueError):
+        n = 1
+    n = max(1, n)
+    if yards_inspected:
+        try:
+            total_yds = int(math.ceil(float(yards_inspected)))
+        except (TypeError, ValueError):
+            total_yds = None
+        if total_yds and total_yds > 0:
+            if location_yd is not None:
+                start = int(math.floor(float(location_yd)))
+                n = max(1, min(n, total_yds - min(start, total_yds - 1)))
+            else:
+                n = max(1, min(n, total_yds))
+    return n
 
 _INSP_DEFECT_TYPES = {"Hole", "Slub", "Stain", "Shade variation", "Misweave",
                       "Broken pick", "Knot", "Barre", "Crease", "Dye spot",
@@ -6248,6 +6305,13 @@ def _insp_parse_defects(body):
     if len(rows_in) > 200:
         raise HTTPException(status_code=400,
                             detail="at most 200 defect rows per ticket")
+    # The roll's inspected yardage caps how far a RUNNING defect can score.
+    try:
+        yards_inspected = float(body.get("yards_inspected"))
+        if yards_inspected <= 0:
+            yards_inspected = None
+    except (TypeError, ValueError):
+        yards_inspected = None
     out = []
     for i, r in enumerate(rows_in, start=1):
         if not isinstance(r, dict):
@@ -6275,19 +6339,57 @@ def _insp_parse_defects(body):
                 raise HTTPException(status_code=400,
                     detail=f"defect {i}: size cannot be negative")
         is_hole = dtype.lower() == "hole" or bool(r.get("is_hole"))
-        pts = _insp_defect_points(size, is_hole)
+        is_running = bool(r.get("is_running"))
+        selvedge = bool(r.get("selvedge"))
+        run_yards = None
+        if is_running:
+            rv = r.get("run_yards")
+            if rv not in (None, ""):
+                try:
+                    run_yards = float(rv)
+                except (TypeError, ValueError):
+                    raise HTTPException(status_code=400,
+                        detail=f"defect {i}: yards run must be a number")
+                if run_yards < 0:
+                    raise HTTPException(status_code=400,
+                        detail=f"defect {i}: yards run cannot be negative")
+        if selvedge:
+            # Selvedge/uncuttable-zone defect: logged for the record but
+            # EXCLUDED from the point total (zone is outside cuttable width).
+            pts = 0
+        elif is_running:
+            pts = 4 * _insp_run_span(run_yards, loc, yards_inspected)
+        else:
+            pts = _insp_defect_points(size, is_hole)
         out.append({"location_yd": loc, "defect_type": dtype,
-                    "size_in": size, "side": side, "points": pts})
-    return out, _insp_total_points(out)
+                    "size_in": size, "side": side, "points": pts,
+                    "is_running": is_running,
+                    "run_yards": run_yards, "selvedge": selvedge})
+    return out, _insp_total_points(out, yards_inspected)
 
-def _insp_total_points(defect_rows):
+def _insp_total_points(defect_rows, yards_inspected=None):
     """Total penalty points with the 4-Point standard's max-4-points-per-
     linear-yard cap: defects sharing the same linear yard (floor(location_yd))
     contribute at most 4 points together. Defects WITHOUT a location keep
-    plain per-defect scoring (no cap can be applied without a position)."""
+    plain per-defect scoring (no cap can be applied without a position).
+    Selvedge-flagged rows carry 0 points (excluded). RUNNING defects
+    saturate (4 pts) each linear yard they cross, capped at the inspected
+    yardage; without a location their full run total is added directly."""
     per_yard, total = {}, 0
     for d in defect_rows:
-        loc, pts = d.get("location_yd"), int(d.get("points") or 0)
+        if d.get("selvedge"):
+            continue
+        loc = d.get("location_yd")
+        if d.get("is_running"):
+            n = _insp_run_span(d.get("run_yards"), loc, yards_inspected)
+            if loc is None:
+                total += 4 * n
+            else:
+                start = int(math.floor(float(loc)))
+                for yd in range(start, start + n):
+                    per_yard[yd] = per_yard.get(yd, 0) + 4
+            continue
+        pts = int(d.get("points") or 0)
         if loc is None:
             total += pts
         else:
@@ -6308,6 +6410,91 @@ def _insp_num(v, name, required=False):
     if f < 0:
         raise HTTPException(status_code=400, detail=f"{name} cannot be negative")
     return f
+
+# Default LOT (delivery-average) acceptance limit: average pts/100 sq.yd
+# across a receiving sheet's submitted tickets. Configurable per sheet via
+# fabric_receiving_sheets.lot_acceptable_limit (NULL = this default).
+_INSP_LOT_LIMIT_DEFAULT = 20.0
+
+def _insp_lot_summaries(conn, sheet_ids):
+    """Lot-level 4-Point summary per receiving sheet: the average pts/100
+    sq.yd over the LATEST Submitted ticket of each roll, the sheet's lot
+    limit (default 20) and the lot Pass/Fail. Returns {sheet_id: {...}} for
+    every requested sheet (sheets with no scored tickets get lot_avg None)."""
+    ids = [int(s) for s in sheet_ids]
+    if not ids:
+        return {}
+    rows = q(conn, """
+        WITH latest AS (
+            SELECT DISTINCT ON (t.sheet_id, t.roll_no)
+                   t.sheet_id, t.points_per_100
+            FROM fabric_inspection_tickets t
+            WHERE t.sheet_id = ANY(%s) AND t.status = 'Submitted'
+            ORDER BY t.sheet_id, t.roll_no, t.version DESC, t.id DESC
+        )
+        SELECT s.id AS sheet_id, s.lot_acceptable_limit,
+               COUNT(l.points_per_100)      AS rolls_scored,
+               AVG(l.points_per_100)        AS avg_pp100
+        FROM fabric_receiving_sheets s
+        LEFT JOIN latest l ON l.sheet_id = s.id
+                          AND l.points_per_100 IS NOT NULL
+        WHERE s.id = ANY(%s)
+        GROUP BY s.id, s.lot_acceptable_limit
+    """, (ids, ids))
+    out = {}
+    for r in rows:
+        lim = (float(r["lot_acceptable_limit"])
+               if r.get("lot_acceptable_limit") not in (None, "")
+               else _INSP_LOT_LIMIT_DEFAULT)
+        avg = (round(float(r["avg_pp100"]), 2)
+               if r.get("avg_pp100") is not None else None)
+        out[int(r["sheet_id"])] = {
+            "lot_avg_pp100": avg,
+            "lot_limit": lim,
+            "lot_rolls_scored": int(r.get("rolls_scored") or 0),
+            "lot_pass": (avg <= lim) if avg is not None else None,
+        }
+    return out
+
+@fabric_router.post("/api/fabric/receiving/{sheet_id}/lot-limit")
+def receiving_set_lot_limit(sheet_id: int, request: Request,
+                            body: dict = Body(...)):
+    """Set (or reset) the lot acceptance limit for one receiving sheet.
+    Gated to QC supervisors + admins; blank/null resets to the default
+    (20 pts/100 sq.yd). Audited."""
+    if not _insp_can_approve(request):
+        raise HTTPException(status_code=403,
+            detail="Only the QC supervisor or a fabric admin may change the "
+                   "lot acceptance limit")
+    lim = _insp_num(body.get("lot_limit"), "lot limit")
+    if lim is not None and lim <= 0:
+        raise HTTPException(status_code=400,
+                            detail="lot limit must be greater than zero")
+    _uid, name = _fabric_actor(request)
+    with _get_conn() as conn:
+        _ensure_receiving_tables(conn)
+        rows = q(conn, "SELECT id, po_id, fabric_name, lot_acceptable_limit "
+                       "FROM fabric_receiving_sheets "
+                       "WHERE id=%s AND deleted_at IS NULL", (sheet_id,))
+        if not rows:
+            raise HTTPException(status_code=404,
+                                detail="receiving sheet not found")
+        sh = rows[0]
+        with conn.cursor() as cur:
+            cur.execute("UPDATE fabric_receiving_sheets "
+                        "SET lot_acceptable_limit=%s WHERE id=%s",
+                        (lim, sheet_id))
+            _recv_audit(cur, sh.get("po_id"), sheet_id, sh.get("fabric_name"),
+                        "lot_limit_updated",
+                        {"old": (float(sh["lot_acceptable_limit"])
+                                 if sh.get("lot_acceptable_limit") is not None
+                                 else None),
+                         "new": lim,
+                         "effective": lim if lim is not None
+                                      else _INSP_LOT_LIMIT_DEFAULT}, name)
+        conn.commit()
+        lot = _insp_lot_summaries(conn, [sheet_id]).get(int(sheet_id))
+    return {"ok": True, "lot": lot}
 
 def _insp_score(total_points, width_in, yards):
     """Points per 100 sq.yd = points × 3600 ÷ (width_in × yards). None when
@@ -8307,6 +8494,8 @@ def receiving_po_batches():
                    to_char(ps.delivery_approved_at AT TIME ZONE 'Africa/Nairobi',
                            'DD Mon YYYY, HH24:MI') as delivery_approved_at,
                    COALESCE(pq.q_pending, 0) as q_pending,
+                   COALESCE(lots.lots_scored, 0) as lots_scored,
+                   COALESCE(lots.lots_failed, 0) as lots_failed,
                    lu.status           as last_upload_status,
                    lu.uploaded_by_name as last_uploaded_by,
                    to_char(lu.uploaded_at AT TIME ZONE 'Africa/Nairobi',
@@ -8328,6 +8517,30 @@ def receiving_po_batches():
                         AND t2.roll_no  = r2.roll_no
                         AND t2.status   = 'Approved')
             ) pq ON true
+            LEFT JOIN LATERAL (
+                -- Lot (delivery-average) 4-Point acceptance per sheet:
+                -- avg pts/100 sq.yd over each roll's latest Submitted ticket
+                -- vs the sheet's lot limit (NULL = default 20).
+                SELECT COUNT(*) AS lots_scored,
+                       COUNT(*) FILTER (
+                           WHERE l.avg_pp > COALESCE(l.lot_lim, 20)
+                       ) AS lots_failed
+                FROM (
+                    SELECT s3.id, s3.lot_acceptable_limit AS lot_lim,
+                           (SELECT AVG(x.points_per_100) FROM (
+                                SELECT DISTINCT ON (t3.roll_no)
+                                       t3.points_per_100
+                                FROM fabric_inspection_tickets t3
+                                WHERE t3.sheet_id = s3.id
+                                  AND t3.status = 'Submitted'
+                                ORDER BY t3.roll_no, t3.version DESC,
+                                         t3.id DESC
+                            ) x WHERE x.points_per_100 IS NOT NULL) AS avg_pp
+                    FROM fabric_receiving_sheets s3
+                    WHERE s3.po_id = g.po_id AND s3.deleted_at IS NULL
+                ) l
+                WHERE l.avg_pp IS NOT NULL
+            ) lots ON true
             LEFT JOIN LATERAL (
                 SELECT status, uploaded_by_name, uploaded_at
                 FROM fabric_po_uploads u
@@ -8613,6 +8826,7 @@ def receiving_po_batch_detail(po_id: str = Query(default="")):
                    COALESCE(NULLIF(BTRIM(p.barcode),''), NULLIF(BTRIM(p.default_code),''), s.barcode)     AS barcode,
                    COALESCE(p.name,    s.fabric_name) AS fabric_name,
                    s.total_kg, s.total_mtrs, s.rolls_count, s.note,
+                   s.lot_acceptable_limit,
                    s.created_by_name, s.updated_by_name,
                    COALESCE(to_char(s.po_date, 'DD Mon YYYY'),
                             to_char(s.created_at AT TIME ZONE 'Africa/Nairobi',
@@ -8754,6 +8968,10 @@ def receiving_po_batch_detail(po_id: str = Query(default="")):
         row["delta_kg"] = delta_kg_v
         row["delta_mtrs"] = delta_mtrs_v
         rolls_by_sheet.setdefault(r["sheet_id"], []).append(row)
+    # Lot-level (delivery average) 4-Point summary, one per sheet.
+    with _get_conn() as conn2:
+        lot_by_sheet = _insp_lot_summaries(conn2,
+                                           [int(s["id"]) for s in sheets])
     fabrics, order = {}, []
     for s in sheets:
         key = (s["product_id"], s.get("barcode") or "")
@@ -8781,7 +8999,12 @@ def receiving_po_batch_detail(po_id: str = Query(default="")):
             g["total_mtrs"] += float(s["total_mtrs"])
         sd = dict(s)
         sd["rolls"] = rolls_by_sheet.get(s["id"], [])
+        sd["lot"] = lot_by_sheet.get(int(s["id"]))
         g["sheets"].append(sd)
+        # 1 sheet per (PO, fabric) is guaranteed by the migration, so the
+        # fabric group carries its (only) sheet's lot summary for the header.
+        if g.get("lot") is None:
+            g["lot"] = sd["lot"]
     out = []
     for key in order:
         g = fabrics[key]
@@ -10534,6 +10757,7 @@ def receiving_scoresheet(sheet_id: int):
             "<td class=\"c\">" + _e(wid_cm) + "</td>"
             "<td></td>"
             "<td></td><td></td><td></td><td></td>"
+            "<td></td><td></td>"
             "<td></td>"
             "<td></td><td></td><td class=\"c\"></td><td></td>"
             "</tr>"
@@ -10543,7 +10767,8 @@ def receiving_scoresheet(sheet_id: int):
         roll_rows.append(
             "<tr>"
             "<td></td><td></td><td></td><td></td><td></td><td></td>"
-            "<td></td><td></td><td></td><td></td><td></td><td></td><td></td>"
+            "<td></td><td></td><td></td><td></td><td></td><td></td>"
+            "<td></td><td></td><td></td>"
             "</tr>"
         )
     roll_rows_html = "\n".join(roll_rows)
@@ -10660,6 +10885,8 @@ table.score tfoot td{background:#f0f0f0;font-weight:700;font-size:10px;padding:4
         "      <th rowspan=\"2\">Width<br>(cm)</th>\n"
         "      <th rowspan=\"2\">Cuttable<br>Width (cm)</th>\n"
         "      <th colspan=\"4\" class=\"grp\">Defect Points (circle applicable)</th>\n"
+        "      <th rowspan=\"2\">Running<br>(yds run)</th>\n"
+        "      <th rowspan=\"2\">Selvedge<br>(excl.)</th>\n"
         "      <th rowspan=\"2\">Defects<br>At (yd)</th>\n"
         "      <th rowspan=\"2\">Total<br>Points</th>\n"
         "      <th rowspan=\"2\">Pts /100 yd</th>\n"
@@ -10670,7 +10897,7 @@ table.score tfoot td{background:#f0f0f0;font-weight:700;font-size:10px;padding:4
         "      <th>&#x2264;3&Prime; defect<br>&times;1 pt</th>\n"
         "      <th>3&ndash;6&Prime; defect<br>&times;2 pts</th>\n"
         "      <th>6&ndash;9&Prime; defect<br>&times;3 pts</th>\n"
-        "      <th>&gt;9&Prime; defect<br>&times;4 pts</th>\n"
+        "      <th>&gt;9&Prime; defect<br>&times;4 pts<br>hole &gt;1&Prime;=4 / &#x2264;1&Prime;=2</th>\n"
         "    </tr>\n"
         "  </thead>\n"
         "  <tbody>\n"
@@ -10678,7 +10905,7 @@ table.score tfoot td{background:#f0f0f0;font-weight:700;font-size:10px;padding:4
         "  </tbody>\n"
         "  <tfoot>\n"
         "    <tr>\n"
-        "      <td colspan=\"9\" style=\"text-align:right;\">TOTALS</td>\n"
+        "      <td colspan=\"11\" style=\"text-align:right;\">TOTALS</td>\n"
         "      <td></td><td></td><td></td><td></td>\n"
         "    </tr>\n"
         "  </tfoot>\n"
@@ -10695,8 +10922,16 @@ table.score tfoot td{background:#f0f0f0;font-weight:700;font-size:10px;padding:4
         "    <div class=\"legend-row\"><span class=\"legend-pt\">3 pts</span>"
         "<span>Defect over 6&Prime; up to 9&Prime; (22.5 cm) in length</span></div>\n"
         "    <div class=\"legend-row\"><span class=\"legend-pt\">4 pts</span>"
-        "<span>Defect over 9&Prime; (22.5 cm) in length &mdash; "
-        "any hole, regardless of size</span></div>\n"
+        "<span>Defect over 9&Prime; (22.5 cm) in length</span></div>\n"
+        "    <div class=\"legend-row\"><span class=\"legend-pt\">Holes</span>"
+        "<span>Hole &#x2264; 1&Prime; = <b>2 pts</b>; hole &gt; 1&Prime; "
+        "(or size not measured) = <b>4 pts</b></span></div>\n"
+        "    <div class=\"legend-row\"><span class=\"legend-pt\">Run</span>"
+        "<span>RUNNING defect = <b>4 pts per yard</b> it runs "
+        "(note yards run in the Running column)</span></div>\n"
+        "    <div class=\"legend-row\"><span class=\"legend-pt\">Selv.</span>"
+        "<span>Selvedge / uncuttable-zone defects: tick Selvedge and "
+        "<b>exclude from the point total</b> (logged for the record)</span></div>\n"
         "  </div>\n"
         "  <div class=\"threshold\">\n"
         "    Formula: <b>Pts / 100 yd = (Total Points &divide; Roll Length in yards)"
@@ -10704,6 +10939,12 @@ table.score tfoot td{background:#f0f0f0;font-weight:700;font-size:10px;padding:4
         "Pass threshold: <b>&#x2264; 40 points per 100 yards</b>"
         " &nbsp;&nbsp; Max 4 penalty points per linear yard regardless of"
         " defect count.\n"
+        "  </div>\n"
+        "  <div class=\"threshold\">\n"
+        "    Lot acceptance: <b>average Pts/100 sq.yd across the delivery's"
+        " rolls &#x2264; 20</b> (or the sheet's configured lot limit) &mdash;"
+        " the lot fails even when individual rolls pass if the average"
+        " exceeds the limit.\n"
         "  </div>\n"
         "</div>\n"
         "\n"

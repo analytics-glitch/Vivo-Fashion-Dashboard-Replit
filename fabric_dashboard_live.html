@@ -5385,6 +5385,15 @@ async function loadRecvPoBatches(){
         : esc(r.po_name||('PO #'+r.po_id));
       const alreadyApproved=!!(r.delivery_approved_at);
       const pendingRolls=Number(r.q_pending||0);
+      // Lot (delivery average) 4-Point acceptance across this PO's fabric
+      // sheets: avg pts/100 sq.yd per sheet vs its lot limit (default 20).
+      const lotsScored=Number(r.lots_scored||0);
+      const lotsFailed=Number(r.lots_failed||0);
+      const lotBadge=(!isNoPo&&lotsScored>0)
+        ?(lotsFailed>0
+          ?` <span title="${lotsFailed} of ${lotsScored} fabric lot${lotsScored===1?'':'s'} exceed the lot average limit (avg pts/100 sq.yd over submitted rolls) — expand the PO for per-fabric lot averages" style="display:inline-block;padding:0 7px;border-radius:9px;font-size:10.5px;font-weight:700;color:var(--danger);background:rgba(200,50,50,.06);border:1px solid rgba(200,50,50,.45);">Lot Fail ${lotsFailed}/${lotsScored}</span>`
+          :` <span title="All ${lotsScored} scored fabric lot${lotsScored===1?'':'s'} pass the lot average limit (avg pts/100 sq.yd over submitted rolls)" style="display:inline-block;padding:0 7px;border-radius:9px;font-size:10.5px;font-weight:700;color:#0a7d33;background:rgba(10,125,51,.07);border:1px solid rgba(10,125,51,.45);">Lot Pass ${lotsScored}/${lotsScored}</span>`)
+        :'';
       // Delivery approval badge/button — visible to all users, interactive for supervisors+admin.
       let approveBtn='';
       if(!isNoPo){
@@ -5399,6 +5408,7 @@ async function loadRecvPoBatches(){
         } else {
           approveBtn=`<span style="color:#9a9a9a;font-size:12px;" title="Awaiting delivery approval by a Quality Supervisor">Pending signoff</span>`;
         }
+        approveBtn+=lotBadge;
       }
       const action=isNoPo?'':`<button class="btn" data-po-print="${esc(key)}" title="Print the full PO receiving sheet (all fabrics &amp; rolls)" style="padding:4px 10px;font-size:12px;">Print</button> <button class="btn" data-po-dl="${Number(r.po_id)}" data-dl-fmt="pdf" title="Download this PO's full receiving sheet as a PDF" style="padding:4px 10px;font-size:12px;">PDF</button> <button class="btn" data-po-dl="${Number(r.po_id)}" data-dl-fmt="xlsx" title="Download this PO's full receiving sheet as an Excel workbook" style="padding:4px 10px;font-size:12px;">Excel</button>${(recvQualityOnly||!window._fabricPricingAdmin)?'':` <button class="btn btn-primary" data-po-open="${Number(r.po_id)}" style="padding:4px 10px;font-size:12px;">Review &amp; upload</button> <button class="btn" data-po-lc="${Number(r.po_id)}" title="Attach clearing, duty &amp; freight charges to this PO's receipt as a draft landed cost in Odoo" style="padding:4px 10px;font-size:12px;">Landed cost</button>`} ${approveBtn}`;
       const vKES=window._fabricPricingAdmin?(r.value_kes!=null?fmtKES(r.value_kes):'<span class="muted">—</span>'):'';
@@ -5482,6 +5492,12 @@ async function loadRecvPoBatches(){
               }
             })
             .catch(err=>{isb.disabled=false;alert('Could not update invoice status: '+err.message);});
+          return;
+        }
+        const lotEl=e.target.closest('[data-lot-limit]');
+        if(lotEl){
+          e.stopPropagation();
+          recvEditLotLimit(Number(lotEl.dataset.lotLimit),lotEl.dataset.lotCur);
           return;
         }
         const f=e.target.closest('[data-fab-toggle]');
@@ -5603,6 +5619,35 @@ async function loadRecvPoBatches(){
     });
   }catch(e){rowErr('recv-po-body',11,e);}
 }
+// Lot (delivery average) 4-Point badge for one fabric section: average
+// pts/100 sq.yd over the sheet's submitted tickets vs the lot limit
+// (default 20). Supervisors/admins can click it to change the limit.
+function recvLotBadge(lot,sheetId){
+  if(!lot||lot.lot_avg_pp100==null)return '';
+  const pass=!!lot.lot_pass;
+  const editable=recvCanApproveDelivery&&sheetId!=null;
+  const style=pass
+    ?'color:#0a7d33;background:rgba(10,125,51,.07);border:1px solid rgba(10,125,51,.45);'
+    :'color:var(--danger);background:rgba(200,50,50,.06);border:1px solid rgba(200,50,50,.45);';
+  const tip='Lot (delivery average) acceptance: '+fmt2(lot.lot_avg_pp100)+' pts/100 sq.yd averaged over '
+    +fmt(lot.lot_rolls_scored)+' scored roll'+(lot.lot_rolls_scored===1?'':'s')
+    +' vs the lot limit of '+fmt2(lot.lot_limit)
+    +(editable?' \u2014 click to change the lot limit':'');
+  return ' \u00b7 <span '+(editable?'data-lot-limit="'+Number(sheetId)+'" data-lot-cur="'+esc(String(lot.lot_limit))+'" ':'')
+    +'title="'+esc(tip)+'" style="display:inline-block;padding:0 7px;border-radius:9px;font-size:10.5px;font-weight:700;'+style+(editable?'cursor:pointer;':'')+'">'
+    +'Lot '+(pass?'Pass':'Fail')+' \u00b7 avg '+fmt2(lot.lot_avg_pp100)+' / '+fmt2(lot.lot_limit)+'</span>';
+}
+async function recvEditLotLimit(sheetId,cur){
+  const v=prompt('Lot acceptance limit (average pts/100 sq.yd) for this delivery\u2019s fabric.\nBlank resets to the default (20).',cur==null?'':String(cur));
+  if(v===null)return;
+  try{
+    const r=await fetch('/api/fabric/receiving/'+encodeURIComponent(sheetId)+'/lot-limit',
+      {method:'POST',credentials:'include',headers:vivoAuthHeaders({'Content-Type':'application/json'}),
+       body:JSON.stringify({lot_limit:v.trim()===''?null:v.trim()})});
+    if(!r.ok){let d={};try{d=await r.json();}catch(_){}throw new Error(d.detail||('HTTP '+r.status));}
+    loadRecvPoBatches();
+  }catch(e){alert('Could not update the lot limit: '+e.message);}
+}
 // Renders one PO group's drill-down: fabric rows (summed totals) → sheets
 // with actions → rolls. All ERP-sourced text goes through esc().
 function renderRecvPoDetail(box,det,poKey){
@@ -5640,7 +5685,7 @@ function renderRecvPoDetail(box,det,poKey){
         (g.q_pass||g.q_fail)
           ? `<span style="color:#0a7d33;font-weight:700;">${fmt(g.q_pass)} pass</span>${g.q_fail?' / <span style="color:var(--danger);font-weight:700;">'+fmt(g.q_fail)+' fail</span>':''}${g.q_pending?' / <span class="muted">'+fmt(g.q_pending)+' pending</span>':''}`
           : '<span class="muted">quality pending</span>'
-      }</span>
+      }${recvLotBadge(g.lot,s0?s0.id:null)}</span>
       ${acts}
     </div>`;
     // Expanded: one merged rolls table for the fabric (rolls are numbered
@@ -5787,6 +5832,16 @@ async function approveDelivery(poId){
       alert('Could not approve delivery: '+(d.detail||('HTTP '+r.status)));
       return;
     }
+    // Surface the lot (delivery average) 4-Point result on the signoff.
+    try{
+      const res=await r.json();
+      const scored=(res.lots||[]).filter(l=>l.lot_avg_pp100!=null);
+      if(scored.length){
+        const lines=scored.map(l=>'· '+(l.fabric_name||('Sheet #'+l.sheet_id))+': avg '+Number(l.lot_avg_pp100).toFixed(1)+' pts/100 sq.yd (limit '+Number(l.lot_limit).toFixed(0)+') — '+(l.lot_pass?'LOT PASS':'LOT FAIL'));
+        const fails=scored.filter(l=>l.lot_pass===false).length;
+        alert('Delivery approved.\n\nLot (delivery average) 4-Point result:\n'+lines.join('\n')+(fails?'\n\n⚠ '+fails+' lot'+(fails===1?'':'s')+' exceed the lot average limit — consider a supplier claim.':''));
+      }
+    }catch(_){/* summary is informational only */}
     loadRecvPoBatches();
   }catch(e){alert('Could not approve delivery: '+e.message);}
 }
@@ -5818,13 +5873,26 @@ async function recvRollDeleteFromBtn(btn){
 // quality status) and supervisor approval. All interpolated text → esc().
 const INSP_DEFECT_TYPES=['Hole','Slub','Stain','Shade variation','Misweave','Broken pick','Knot','Barre','Crease','Dye spot','Selvage defect','Snag','Other'];
 function inspDefectPoints(sizeIn,type){
-  if(String(type||'').toLowerCase()==='hole')return 4;
   const s=parseFloat(sizeIn);
+  // Holes split by size (ASTM convention): <=1in = 2 pts, >1in or unsized = 4 (conservative).
+  if(String(type||'').toLowerCase()==='hole')return (!isNaN(s)&&s<=1)?2:4;
   if(isNaN(s))return 1;
   if(s>9)return 4;
   if(s>6)return 3;
   if(s>3)return 2;
   return 1;
+}
+// Whole yards a RUNNING defect saturates (>=1), capped at the inspected yardage (mirrors the server).
+function inspRunSpan(runYards,locYd,yardsInspected){
+  let n=Math.ceil(parseFloat(runYards));
+  if(isNaN(n)||n<1)n=1;
+  const tot=Math.ceil(parseFloat(yardsInspected));
+  if(!isNaN(tot)&&tot>0){
+    const loc=parseFloat(locYd);
+    if(!isNaN(loc)){const start=Math.floor(loc);n=Math.max(1,Math.min(n,tot-Math.min(start,tot-1)));}
+    else{n=Math.max(1,Math.min(n,tot));}
+  }
+  return n;
 }
 async function openInspectionTicket(btn){
   const box=btn.closest('.recv-po-detail');
@@ -5917,11 +5985,11 @@ function renderInspTicket(pop,ctx,box,rollId){
     +'<div style="margin-top:.4rem;">'+lbl('Quality notes')+'<textarea class="insp-m-notes" rows="2" placeholder="Inspection notes (optional)" style="width:100%;padding:5px 7px;font-size:13px;border:1px solid var(--border,#d7d7de);border-radius:6px;resize:vertical;">'+esc(roll.quality_notes||'')+'</textarea></div>'
     +'<div class="muted" style="font-size:11px;margin-top:2px;">Saved onto the roll together with the ticket (Save draft or Submit).</div>'
     +'</div>'
-    +'<div style="margin-top:.7rem;"><div style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;"><div style="font-weight:700;font-size:12.5px;">Defect log <span class="muted" style="font-weight:400;">(4-point rule: \u22643in=1 · 3\u20136=2 · 6\u20139=3 · &gt;9in or hole=4)</span></div>'
+    +'<div style="margin-top:.7rem;"><div style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;"><div style="font-weight:700;font-size:12.5px;">Defect log <span class="muted" style="font-weight:400;" title="Length rule: \u22643in=1 \u00b7 3\u20136in=2 \u00b7 6\u20139in=3 \u00b7 >9in=4. Holes: \u22641in=2 pts, >1in or no size=4 pts. Running defects score 4 pts per yard they run. Selvedge-zone defects stay logged but are excluded from the total.">(\u22643in=1 · 3\u20136=2 · 6\u20139=3 · &gt;9in=4 · hole \u22641in=2 / &gt;1in=4 · running=4/yd · selvedge excluded)</span></div>'
     +'<label style="display:flex;align-items:center;gap:.35rem;font-size:12.5px;font-weight:600;cursor:pointer;margin-left:auto;"><input type="checkbox" class="insp-clean-roll" style="width:15px;height:15px;cursor:pointer;"> Clean Roll \u2014 No Defects</label>'
     +'<button class="btn insp-add-defect" style="padding:2px 10px;font-size:12px;">+ Add defect</button></div>'
     +'<div class="insp-clean-label" style="display:none;padding:6px 10px;margin-top:4px;background:rgba(10,125,51,.07);border:1px solid rgba(10,125,51,.3);border-radius:6px;font-weight:700;color:#0a7d33;font-size:13px;">Clean Roll \u2014 No Defects</div>'
-    +'<div class="insp-defect-wrap" style="overflow-x:auto;"><table class="data" style="margin-top:4px;width:100%;min-width:420px;"><thead><tr><th style="width:78px;">At (yd)</th><th>Defect</th><th style="width:90px;">Size (in)</th><th style="width:80px;">Side</th><th style="width:52px;" class="r">Pts</th><th style="width:36px;"></th></tr></thead>'
+    +'<div class="insp-defect-wrap" style="overflow-x:auto;"><table class="data" style="margin-top:4px;width:100%;min-width:560px;"><thead><tr><th style="width:70px;">At (yd)</th><th>Defect</th><th style="width:78px;">Size (in)</th><th style="width:74px;">Side</th><th style="width:96px;" title="Running defect \u2014 scores 4 points per yard it runs">Run (yds)</th><th style="width:46px;" title="Selvedge / uncuttable-zone defect \u2014 logged but excluded from the point total">Selv.</th><th style="width:52px;" class="r">Pts</th><th style="width:36px;"></th></tr></thead>'
     +'<tbody class="insp-defects"></tbody></table></div></div>'
     +'<div class="insp-score" style="margin-top:.6rem;padding:.55rem .7rem;border-radius:8px;border:1px solid var(--border,#d7d7de);display:flex;gap:1rem;flex-wrap:wrap;align-items:center;font-size:13px;"></div>'
     +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:.5rem;margin-top:.55rem;">'
@@ -5974,9 +6042,15 @@ function renderInspTicket(pop,ctx,box,rollId){
       +'<td><select class="d-type" style="width:100%;padding:3px 5px;font-size:12.5px;border:1px solid var(--border,#d7d7de);border-radius:5px;">'+INSP_DEFECT_TYPES.map(t=>'<option'+((d.defect_type||'Slub')===t?' selected':'')+'>'+t+'</option>').join('')+'</select></td>'
       +'<td><input type="number" min="0" step="any" class="d-size" value="'+esc(String(d.size_in==null?'':d.size_in))+'" style="width:100%;padding:3px 5px;font-size:12.5px;border:1px solid var(--border,#d7d7de);border-radius:5px;"></td>'
       +'<td><select class="d-side" style="width:100%;padding:3px 5px;font-size:12.5px;border:1px solid var(--border,#d7d7de);border-radius:5px;"><option value=""></option><option'+(d.side==='Face'?' selected':'')+'>Face</option><option'+(d.side==='Back'?' selected':'')+'>Back</option></select></td>'
+      +'<td style="white-space:nowrap;"><label style="display:inline-flex;align-items:center;gap:3px;cursor:pointer;" title="Running defect \u2014 scores 4 pts per yard it runs (capped at the inspected yardage)"><input type="checkbox" class="d-run"'+(d.is_running?' checked':'')+' style="cursor:pointer;"></label><input type="number" min="0" step="any" class="d-run-yds" title="Yards the defect runs" placeholder="yds" value="'+esc(String(d.run_yards==null?'':d.run_yards))+'" style="width:52px;margin-left:3px;padding:3px 5px;font-size:12.5px;border:1px solid var(--border,#d7d7de);border-radius:5px;'+(d.is_running?'':'display:none;')+'"></td>'
+      +'<td class="c"><input type="checkbox" class="d-selv"'+(d.selvedge?' checked':'')+' title="Selvedge / uncuttable-zone defect \u2014 kept on the ticket but excluded from the point total" style="cursor:pointer;"></td>'
       +'<td class="r d-pts" style="font-weight:700;"></td>'
       +'<td><button class="btn d-del" title="Remove this defect row" style="padding:1px 7px;font-size:11px;">&times;</button></td>';
     tr.querySelector('.d-del').addEventListener('click',()=>{tr.remove();recalc();});
+    tr.querySelector('.d-run').addEventListener('change',()=>{
+      tr.querySelector('.d-run-yds').style.display=tr.querySelector('.d-run').checked?'':'none';
+      recalc();
+    });
     tr.querySelectorAll('input,select').forEach(el=>el.addEventListener('input',recalc));
     tb.appendChild(tr);
   }
@@ -5986,6 +6060,9 @@ function renderInspTicket(pop,ctx,box,rollId){
       defect_type:tr.querySelector('.d-type').value,
       size_in:tr.querySelector('.d-size').value.trim()||null,
       side:tr.querySelector('.d-side').value,
+      is_running:tr.querySelector('.d-run').checked,
+      run_yards:tr.querySelector('.d-run-yds').value.trim()||null,
+      selvedge:tr.querySelector('.d-selv').checked,
     }));
   }
   function recalc(){
@@ -5993,10 +6070,32 @@ function renderInspTicket(pop,ctx,box,rollId){
     // located defects group by floor(At yd) and cap at 4 per yard; defects
     // without a location keep plain per-defect points (mirrors the server).
     let total=0;const perYard={};
+    const yardsInsp=gv('.insp-yards');
     tb.querySelectorAll('tr').forEach(tr=>{
+      const selv=tr.querySelector('.d-selv').checked;
+      const running=tr.querySelector('.d-run').checked;
+      const locRaw=tr.querySelector('.d-loc').value;
+      const loc=parseFloat(locRaw);
+      const ptsCell=tr.querySelector('.d-pts');
+      if(selv){
+        // Selvedge/uncuttable zone: logged for the record, excluded from the total.
+        ptsCell.textContent='0';
+        tr.style.opacity='.55';
+        ptsCell.title='Selvedge-zone defect \u2014 excluded from the point total';
+        return;
+      }
+      tr.style.opacity='';
+      ptsCell.title='';
+      if(running){
+        const n=inspRunSpan(tr.querySelector('.d-run-yds').value,locRaw,yardsInsp);
+        ptsCell.textContent=String(4*n);
+        // A running defect saturates (4 pts) every yard it crosses.
+        if(isNaN(loc)){total+=4*n;}
+        else{const start=Math.floor(loc);for(let yd=start;yd<start+n;yd++)perYard[yd]=(perYard[yd]||0)+4;}
+        return;
+      }
       const pts=inspDefectPoints(tr.querySelector('.d-size').value,tr.querySelector('.d-type').value);
-      tr.querySelector('.d-pts').textContent=String(pts);
-      const loc=parseFloat(tr.querySelector('.d-loc').value);
+      ptsCell.textContent=String(pts);
       if(isNaN(loc)){total+=pts;}
       else{const yd=Math.floor(loc);perYard[yd]=(perYard[yd]||0)+pts;}
     });
