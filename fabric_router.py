@@ -85,6 +85,30 @@ def _ensure_fabric_tables(conn):
         # picker. Nullable — legacy free-text reservations have no number.
         cur.execute("ALTER TABLE fabric_reservations "
                     "ADD COLUMN IF NOT EXISTS style_number TEXT")
+        # Aging/expiry bookkeeping: aging_notified_at stamps the one-time
+        # 14-day "still open" bell notification; expired_at stamps the lazy
+        # auto-expiry (status flips to 'expired' and the qty frees up again).
+        cur.execute("ALTER TABLE fabric_reservations "
+                    "ADD COLUMN IF NOT EXISTS aging_notified_at TIMESTAMPTZ")
+        cur.execute("ALTER TABLE fabric_reservations "
+                    "ADD COLUMN IF NOT EXISTS expired_at TIMESTAMPTZ")
+        # Per-user persisted bell notifications (read by /api/notifications in
+        # api_pg). dedupe_key makes every notify idempotent — re-running a sweep
+        # can never double-notify (INSERT ... ON CONFLICT DO NOTHING).
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS user_notifications (
+                id          SERIAL PRIMARY KEY,
+                user_id     TEXT NOT NULL,
+                type        TEXT NOT NULL,
+                title       TEXT NOT NULL,
+                message     TEXT,
+                link        TEXT,
+                dedupe_key  TEXT UNIQUE,
+                created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+                read_at     TIMESTAMPTZ
+            )""")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_user_notif_user "
+                    "ON user_notifications(user_id, read_at)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_fabric_resv_product "
                     "ON fabric_reservations(product_id)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_fabric_resv_status "
@@ -4886,42 +4910,182 @@ def style_search(q_: str = Query(default="", alias="q"),
     return out
 
 
+# ── Reservation aging + expiry thresholds (the ONE place to tune them) ──
+# A still-open reservation gets a one-time bell notification to the reserver
+# after _RESV_AGING_NOTICE_DAYS, and auto-expires (status='expired', quantity
+# freed) _RESV_EXPIRE_GRACE_DAYS after that notice (21 days total by default).
+_RESV_AGING_NOTICE_DAYS = 14
+_RESV_EXPIRE_GRACE_DAYS = 7
+
+def _notify_user(conn, user_id, ntype, title, message, dedupe_key, link="/fabric"):
+    """Insert a persisted bell notification for one user. Idempotent via the
+    UNIQUE dedupe_key (ON CONFLICT DO NOTHING) — safe to call from a sweep that
+    may re-run. Skips rows with no real user to notify."""
+    if not user_id or user_id == "system":
+        return
+    with conn.cursor() as cur:
+        cur.execute("""
+            INSERT INTO user_notifications (user_id, type, title, message, link, dedupe_key)
+            VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT (dedupe_key) DO NOTHING
+        """, (user_id, ntype, title, message, link, dedupe_key))
+
+def _resv_available_kg(conn, product_id):
+    """Available-to-reserve (kg) for one fabric = RMAT/Stock on-hand − ERP
+    reserved on RMAT/Stock (raw_fabric_inventory.reserved_qty, already synced)
+    − sum of OPEN app reservations. Can go negative when over-reserved."""
+    rows = q(conn, """
+        SELECT
+          COALESCE((SELECT SUM(quantity - reserved_qty) FROM raw_fabric_inventory
+                    WHERE product_id=%s AND location_name=%s), 0) AS free_kg,
+          COALESCE((SELECT SUM(qty_kg) FROM fabric_reservations
+                    WHERE product_id=%s AND status='active'), 0) AS open_kg
+    """, (product_id, STOCK_LOC, product_id))
+    r = rows[0]
+    return float(r["free_kg"] or 0) - float(r["open_kg"] or 0)
+
+def _sweep_reservations(conn, request=None):
+    """Lazy, idempotent aging/expiry sweep, run on every reservations-list read.
+
+    1) Auto-expire: open reservations older than notice+grace days flip to
+       status='expired' (quantity immediately counts as available again — every
+       availability reader filters status='active'), the reserver is notified,
+       and the change is audit-logged like other status changes.
+    2) 14-day notice: open reservations older than the notice window get a
+       one-time bell notification to the reserver (aging_notified_at stamp +
+       dedupe_key make re-runs no-ops).
+    Never raises — a broken sweep must not take down the list endpoint."""
+    try:
+        expire_days = _RESV_AGING_NOTICE_DAYS + _RESV_EXPIRE_GRACE_DAYS
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                UPDATE fabric_reservations r
+                SET status='expired', expired_at=now()
+                WHERE r.status='active'
+                  AND r.reserved_at < now() - make_interval(days => %s)
+                RETURNING r.id, r.product_id, r.qty, r.uom, r.qty_kg, r.style_name,
+                          r.style_number, r.note, r.reserved_by, r.reserved_by_name,
+                          (SELECT name FROM raw_fabric_products p WHERE p.id=r.product_id) AS product
+            """, (expire_days,))
+            expired = [dict(x) for x in cur.fetchall()]
+            cur.execute("""
+                UPDATE fabric_reservations r
+                SET aging_notified_at=now()
+                WHERE r.status='active' AND r.aging_notified_at IS NULL
+                  AND r.reserved_at < now() - make_interval(days => %s)
+                RETURNING r.id, r.qty, r.uom, r.reserved_by,
+                          (SELECT name FROM raw_fabric_products p WHERE p.id=r.product_id) AS product
+            """, (_RESV_AGING_NOTICE_DAYS,))
+            aging = [dict(x) for x in cur.fetchall()]
+        for e in expired:
+            qty_txt = f"{float(e['qty']):g} {e['uom']}"
+            _notify_user(conn, e.get("reserved_by"), "fabric_resv_expired",
+                "Fabric reservation expired",
+                (f"Your reservation of {qty_txt} of {e.get('product') or 'a fabric'} "
+                 f"for {e.get('style_name') or '—'} was open for over {expire_days} days "
+                 "and has expired — the quantity is available to others again. "
+                 "Re-reserve it if you still need the fabric."),
+                f"fabric_resv_expired:{e['id']}")
+        for a in aging:
+            qty_txt = f"{float(a['qty']):g} {a['uom']}"
+            _notify_user(conn, a.get("reserved_by"), "fabric_resv_aging",
+                "Fabric reservation still open",
+                (f"Your reservation of {qty_txt} of {a.get('product') or 'a fabric'} has been "
+                 f"open for over {_RESV_AGING_NOTICE_DAYS} days. Mark it used or delete it — "
+                 f"it will auto-expire {_RESV_EXPIRE_GRACE_DAYS} days from now."),
+                f"fabric_resv_aging:{a['id']}")
+        conn.commit()
+        for e in expired:
+            e["status"] = "expired"
+            _log_fabric_change("Expired", e, request)
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+
 @fabric_router.get("/api/fabric/reservations")
-def list_reservations(status: str = Query(default="active"), search: str = Query(default=None)):
+def list_reservations(request: Request, status: str = Query(default="active"), search: str = Query(default=None)):
     with _get_conn() as conn:
         _ensure_fabric_tables(conn)
+        _sweep_reservations(conn, request)
         where = ["1=1"]
         params = []
-        if status and status.lower() != "all":
-            where.append("r.status = %s"); params.append(status.lower())
+        status = (status or "").lower()
+        if status == "aging":
+            # Open reservations held over the notice window.
+            where.append("r.status='active'")
+            where.append("r.reserved_at < now() - make_interval(days => %s)")
+            params.append(_RESV_AGING_NOTICE_DAYS)
+        elif status and status != "all":
+            where.append("r.status = %s"); params.append(status)
         if search:
             where.append("(p.name ILIKE %s OR p.default_code ILIKE %s OR r.style_name ILIKE %s)")
             params += [f"%{search}%", f"%{search}%", f"%{search}%"]
         # `soh` = current total stock on hand (kg) per fabric across all locations.
+        # `rmat` = RMAT/Stock on-hand minus the ERP (Odoo) reserved qty there.
+        # `appr` = sum of OPEN app reservations per fabric.
+        # available_kg = rmat.free_kg − appr.open_kg (all open reservations
+        # subtracted — the same figure the create endpoint enforces against).
+        # over_stock flags an OPEN row whose qty now exceeds availability when
+        # every OTHER open reservation is honoured (⇔ open total > free stock).
         rows = q(conn, f"""
             WITH soh AS (
               SELECT product_id, SUM(quantity) as soh_kg
               FROM raw_fabric_inventory
               GROUP BY product_id
+            ), rmat AS (
+              SELECT product_id, SUM(quantity - reserved_qty) as free_kg
+              FROM raw_fabric_inventory
+              WHERE location_name = %s
+              GROUP BY product_id
+            ), appr AS (
+              SELECT product_id, SUM(qty_kg) as open_kg
+              FROM fabric_reservations
+              WHERE status='active'
+              GROUP BY product_id
             )
             SELECT r.id, r.product_id, r.qty, r.uom, r.qty_kg, r.style_name, r.style_number, r.note,
               r.status, r.reserved_by_name, r.reserved_at::date as reserved_on,
-              r.used_at::date as used_on, r.used_by,
+              r.used_at::date as used_on, r.used_by, r.expired_at::date as expired_on,
               p.name as fabric_name, p.default_code, p.kg_per_mtr_eff as kg_per_mtr,
               ROUND(CASE WHEN p.kg_per_mtr_eff>0 THEN r.qty_kg/p.kg_per_mtr_eff ELSE NULL END::numeric,1) as qty_metres,
               ROUND(COALESCE(s.soh_kg,0)::numeric,2) as soh_kg,
               ROUND(CASE WHEN p.kg_per_mtr_eff>0 THEN COALESCE(s.soh_kg,0)/p.kg_per_mtr_eff ELSE NULL END::numeric,1) as soh_metres,
+              ROUND((COALESCE(rm.free_kg,0) - COALESCE(ap.open_kg,0))::numeric,2) as available_kg,
+              ROUND(CASE WHEN p.kg_per_mtr_eff>0
+                    THEN (COALESCE(rm.free_kg,0) - COALESCE(ap.open_kg,0))/p.kg_per_mtr_eff
+                    END::numeric,1) as available_metres,
+              (r.status='active' AND r.qty_kg >
+                 COALESCE(rm.free_kg,0) - (COALESCE(ap.open_kg,0) - r.qty_kg) + 0.001) as over_stock,
               (CURRENT_DATE - r.reserved_at::date) as days_reserved,
               CASE WHEN r.used_at IS NOT NULL
                    THEN (r.used_at::date - r.reserved_at::date) END as days_to_use
             FROM fabric_reservations r
             LEFT JOIN raw_fabric_products p ON p.id = r.product_id
             LEFT JOIN soh s ON s.product_id = r.product_id
+            LEFT JOIN rmat rm ON rm.product_id = r.product_id
+            LEFT JOIN appr ap ON ap.product_id = r.product_id
             WHERE {' AND '.join(where)}
             ORDER BY (r.status='active') DESC, r.reserved_at DESC
             LIMIT 500
-        """, params)
-        return {"items": rows}
+        """, [STOCK_LOC] + params)
+        return {"items": rows, "aging_days": _RESV_AGING_NOTICE_DAYS,
+                "expire_days": _RESV_AGING_NOTICE_DAYS + _RESV_EXPIRE_GRACE_DAYS}
+
+@fabric_router.get("/api/fabric/reservations/availability")
+def reservation_availability(product_id: int = Query(...)):
+    """'Available to reserve' for one fabric, shown on the reservation form
+    before the user commits. Same computation the create endpoint enforces."""
+    with _get_conn() as conn:
+        _ensure_fabric_tables(conn)
+        avail_kg = _resv_available_kg(conn, product_id)
+        prod = q(conn, "SELECT kg_per_mtr_eff FROM raw_fabric_products WHERE id=%s",
+                 (product_id,))
+        kgm = float(prod[0].get("kg_per_mtr_eff") or 0) if prod else 0
+        return {"product_id": product_id,
+                "available_kg": round(avail_kg, 2),
+                "available_metres": round(avail_kg / kgm, 1) if kgm > 0 else None,
+                "kg_per_mtr": kgm or None}
 
 @fabric_router.post("/api/fabric/reservations")
 def create_reservation(request: Request, body: dict = Body(...)):
@@ -4965,6 +5129,18 @@ def create_reservation(request: Request, body: dict = Body(...)):
                 raise HTTPException(status_code=400,
                     detail="this fabric has no kg/m factor; reserve it in kg instead")
             qty_kg = qty * float(kg_per_mtr)
+        # Stock cap: never let a new reservation exceed what's truly available
+        # at RMAT/Stock (on-hand − ERP reserved − other open app reservations).
+        avail_kg = _resv_available_kg(conn, product_id)
+        if qty_kg > avail_kg + 1e-6:
+            if uom == "m" and kg_per_mtr and float(kg_per_mtr) > 0:
+                avail_txt = f"{max(avail_kg, 0) / float(kg_per_mtr):.1f} m"
+            else:
+                avail_txt = f"{max(avail_kg, 0):.1f} kg"
+            raise HTTPException(status_code=400,
+                detail=(f"only {avail_txt} of this fabric is available to reserve "
+                        "(RMAT stock minus Odoo allocations and other open "
+                        "reservations) — reduce the quantity"))
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute("""
                 INSERT INTO fabric_reservations

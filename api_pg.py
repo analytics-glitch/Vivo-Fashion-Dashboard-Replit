@@ -19166,15 +19166,71 @@ def _social_token_alerts():
                     "error": err, "since": since or None})
     return out
 
+_USER_NOTIF_READY = False
+
+def _ensure_user_notifications():
+    """Lazy-create the persisted per-user bell notifications store. Written by
+    module sweeps (e.g. the fabric reservation aging sweep in fabric_router)
+    and read here; both sides ensure it so either can run first on a fresh DB."""
+    global _USER_NOTIF_READY
+    if _USER_NOTIF_READY:
+        return
+    _users_exec("""
+        CREATE TABLE IF NOT EXISTS user_notifications (
+            id          SERIAL PRIMARY KEY,
+            user_id     TEXT NOT NULL,
+            type        TEXT NOT NULL,
+            title       TEXT NOT NULL,
+            message     TEXT,
+            link        TEXT,
+            dedupe_key  TEXT UNIQUE,
+            created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+            read_at     TIMESTAMPTZ
+        )""")
+    _users_exec("CREATE INDEX IF NOT EXISTS idx_user_notif_user "
+                "ON user_notifications(user_id, read_at)")
+    _USER_NOTIF_READY = True
+
+def _user_notification_items(user, limit=50):
+    """The signed-in user's persisted bell notifications (any role), newest
+    first, in the same shape the bell renders. event_id 'un:<id>' routes the
+    per-item mark-read back to the stored row."""
+    uid = (user or {}).get("user_id") or (user or {}).get("id")
+    if not uid:
+        return []
+    try:
+        _ensure_user_notifications()
+        rows = _users_exec(
+            "SELECT id, type, title, message, link, created_at, read_at "
+            "FROM user_notifications WHERE user_id=%s "
+            "ORDER BY created_at DESC LIMIT %s", (uid, int(limit)), fetch=True) or []
+    except Exception:
+        return []
+    return [{
+        "event_id": "un:" + str(r["id"]),
+        "type": r.get("type") or "info",
+        "title": r.get("title") or "",
+        "message": r.get("message") or "",
+        "link": r.get("link"),
+        # Persisted notifications may come from non-SPA surfaces (e.g. the
+        # /fabric static page), so navigate the whole window.
+        "external": True,
+        "created_at": r["created_at"].isoformat() if r.get("created_at") else None,
+        "read": r.get("read_at") is not None,
+    } for r in rows]
+
 @app.get("/api/notifications")
 def notifications_list(request: Request):
     # Surface pending access requests (app_users.status='pending') to admins so
-    # they get a real, actionable inbox item linking to the Users page. Other
-    # users see an empty inbox. Items are derived live (not stored), so they stay
-    # visible until the admin approves/rejects the user.
+    # they get a real, actionable inbox item linking to the Users page. Those
+    # items are derived live (not stored), so they stay visible until the admin
+    # approves/rejects the user. EVERY signed-in user additionally sees their
+    # own persisted notifications (e.g. fabric reservation aging/expiry).
     user = getattr(request.state, "user", None)
-    if not user or user.get("role") != "admin":
+    if not user:
         return []
+    if user.get("role") != "admin":
+        return _user_notification_items(user)
     rows = _users_exec(
         "SELECT user_id, email, name, created_at FROM app_users "
         "WHERE status='pending' ORDER BY created_at DESC", fetch=True) or []
@@ -19214,6 +19270,7 @@ def notifications_list(request: Request):
             "created_at": since,
             "read": False,
         })
+    out.extend(_user_notification_items(user))
     return out
 @app.get("/api/recommendations")
 def get_recommendations(item_type: str = Query(default=None)):
@@ -21516,14 +21573,27 @@ def _ibt_late_count_compute(memo):
         return {"count": 0}
 @app.get("/api/notifications/unread-count")
 def notifications_unread_count(request: Request):
-    # Badge count = number of pending access requests, admins only.
+    # Badge count = pending access requests + social alerts (admins only) plus
+    # the user's own unread persisted notifications (any role).
     user = getattr(request.state, "user", None)
-    if not user or user.get("role") != "admin":
+    if not user:
         return {"unread": 0}
-    rows = _users_exec(
-        "SELECT COUNT(*) AS n FROM app_users WHERE status='pending'", fetch=True) or []
-    n = int(rows[0]["n"]) if rows else 0
-    n += len(_social_token_alerts())
+    n = 0
+    if user.get("role") == "admin":
+        rows = _users_exec(
+            "SELECT COUNT(*) AS n FROM app_users WHERE status='pending'", fetch=True) or []
+        n = int(rows[0]["n"]) if rows else 0
+        n += len(_social_token_alerts())
+    uid = user.get("user_id") or user.get("id")
+    if uid:
+        try:
+            _ensure_user_notifications()
+            rows = _users_exec(
+                "SELECT COUNT(*) AS n FROM user_notifications "
+                "WHERE user_id=%s AND read_at IS NULL", (uid,), fetch=True) or []
+            n += int(rows[0]["n"]) if rows else 0
+        except Exception:
+            pass
     return {"unread": n}
 @app.get("/api/leaderboard/store-of-the-week")
 def stub_leaderboard_store_of_the_week(): return {}
@@ -23018,11 +23088,35 @@ def ibt_nightly_reconcile():
 
 
 @app.post("/api/notifications/read-all")
-async def stub_notifications_read_all(request: Request): return {"ok": True}
+async def notifications_read_all(request: Request):
+    # Derived items (access requests, social alerts) have no read state by
+    # design; persisted per-user notifications DO get marked read here.
+    user = getattr(request.state, "user", None) or {}
+    uid = user.get("user_id") or user.get("id")
+    if uid:
+        try:
+            _ensure_user_notifications()
+            _users_exec("UPDATE user_notifications SET read_at=now() "
+                        "WHERE user_id=%s AND read_at IS NULL", (uid,))
+        except Exception:
+            pass
+    return {"ok": True}
 @app.post("/api/notifications/refresh")
 async def stub_notifications_refresh(request: Request): return {"ok": True}
 @app.post("/api/notifications/{event_id}/read")
-async def stub_notifications_read(event_id: str, request: Request): return {"ok": True}
+async def notifications_read(event_id: str, request: Request):
+    # Only persisted rows ('un:<id>') carry read state; others are no-ops.
+    user = getattr(request.state, "user", None) or {}
+    uid = user.get("user_id") or user.get("id")
+    if uid and event_id.startswith("un:"):
+        try:
+            nid = int(event_id[3:])
+            _ensure_user_notifications()
+            _users_exec("UPDATE user_notifications SET read_at=now() "
+                        "WHERE id=%s AND user_id=%s AND read_at IS NULL", (nid, uid))
+        except Exception:
+            pass
+    return {"ok": True}
 @app.post("/api/marketing/weekly-report/send")
 async def stub_marketing_weekly_report_send(request: Request): return {"ok": True}
 @app.post("/api/range-mgmt/overrides/bulk-promote")

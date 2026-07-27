@@ -1070,7 +1070,9 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
     <div class="flex" style="margin-bottom:1.1rem;gap:10px;">
      <select id="resv-status" onchange="loadReservations()">
       <option value="active">Open reservations</option>
+      <option value="aging">Open &gt; 14 days</option>
       <option value="used">Used</option>
+      <option value="expired">Expired</option>
       <option value="all">All</option>
      </select>
      <input id="resv-search" placeholder="Filter fabric / style…" oninput="debouncedResvSearch()" style="width:240px;">
@@ -1079,10 +1081,10 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
      <div class="tbl-wrap">
       <table class="data">
        <thead><tr>
-        <th>Fabric</th><th>Style</th><th class="r">Reserved</th><th class="r">Current SOH</th><th>Reserved on</th>
+        <th>Fabric</th><th>Style</th><th class="r">Reserved</th><th class="r">Current SOH</th><th class="r">Available</th><th>Reserved on</th>
         <th class="r">Days held</th><th>By</th><th>Status</th><th></th>
        </tr></thead>
-       <tbody id="resv-body"><tr><td colspan="9" class="loading">Loading…</td></tr></tbody>
+       <tbody id="resv-body"><tr><td colspan="10" class="loading">Loading…</td></tr></tbody>
       </table>
      </div>
     </div>
@@ -7848,12 +7850,27 @@ function pickStyle(el){
   document.getElementById('resv-style').value=el.dataset.name;
   document.getElementById('resv-style-list').style.display='none';
 }
+let resvAvail=null; // {product_id, available_kg, available_metres} for the picked fabric
 function pickFabric(el){
   document.getElementById('resv-product-id').value=el.dataset.id;
   document.getElementById('resv-fabric-search').value=el.dataset.name;
   document.getElementById('resv-fabric-list').style.display='none';
   const kgm=Number(el.dataset.kgm)||0;
-  document.getElementById('resv-fabric-hint').textContent=kgm>0?('Conversion: '+kgm+' kg per metre'):'No kg/metre factor on this fabric — reserve it in kg.';
+  const hint=document.getElementById('resv-fabric-hint');
+  hint.textContent=kgm>0?('Conversion: '+kgm+' kg per metre'):'No kg/metre factor on this fabric — reserve it in kg.';
+  resvAvail=null;
+  loadResvAvailability(el.dataset.id,kgm);
+}
+async function loadResvAvailability(pid,kgm){
+  const hint=document.getElementById('resv-fabric-hint');
+  try{
+    const a=await apiFetch('/api/fabric/reservations/availability?product_id='+encodeURIComponent(pid));
+    if(document.getElementById('resv-product-id').value!==String(pid))return; // user picked another fabric meanwhile
+    resvAvail=a;
+    const parts=['Available to reserve: '+fmt1(Math.max(a.available_kg,0))+' kg'+(a.available_metres!=null?' · '+fmt1(Math.max(a.available_metres,0))+' m':'')];
+    parts.push(kgm>0?('Conversion: '+kgm+' kg per metre'):'No kg/metre factor — reserve in kg.');
+    hint.textContent=parts.join('  ·  ');
+  }catch(e){/* hint only — the server still enforces the cap */}
 }
 async function createReservation(){
   const errEl=document.getElementById('resv-form-err');
@@ -7866,6 +7883,11 @@ async function createReservation(){
   if(!pid){errEl.innerHTML='<div class="banner banner-err">Pick a fabric from the list first.</div>';return;}
   if(!(qty>0)){errEl.innerHTML='<div class="banner banner-err">Enter a quantity greater than zero.</div>';return;}
   if(!style||!pickedStyle||pickedStyle.name!==style){errEl.innerHTML='<div class="banner banner-err">Pick a style from the suggestions list — free-typed style names are not accepted.</div>';return;}
+  // Client-side hint only — the server re-checks and is the enforcement.
+  if(resvAvail&&String(resvAvail.product_id)===String(pid)){
+    const cap=uom==='kg'?resvAvail.available_kg:resvAvail.available_metres;
+    if(cap!=null&&qty>cap+0.0001){errEl.innerHTML='<div class="banner banner-err">Only '+fmt1(Math.max(cap,0))+' '+(uom==='kg'?'kg':'m')+' of this fabric is available to reserve (RMAT stock minus Odoo allocations and other open reservations).</div>';return;}
+  }
   try{
     const r=await fetch('/api/fabric/reservations',{method:'POST',credentials:'include',headers:vivoAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({product_id:Number(pid),qty,uom,style_name:style,note})});
     if(!r.ok){let d={};try{d=await r.json();}catch(_){}throw new Error(d.detail||('http '+r.status));}
@@ -7877,6 +7899,7 @@ async function createReservation(){
     pickedStyle=null;
     document.getElementById('resv-note').value='';
     document.getElementById('resv-fabric-hint').textContent='';
+    resvAvail=null;
     loadedOnce.register=false; // register reserved column will refresh on next visit
     loadReservations();
   }catch(e){errEl.innerHTML='<div class="banner banner-err">'+esc(e.message==='auth'?'Your session has expired. Sign in again.':('Could not reserve: '+e.message))+'</div>';}
@@ -7898,26 +7921,34 @@ async function loadReservations(){
   try{
     const d=await apiFetch('/api/fabric/reservations?'+params);
     renderReservations(d.items||[]);
-  }catch(e){rowErr('resv-body',8,e);}
+  }catch(e){rowErr('resv-body',10,e);}
 }
 function renderReservations(items){
   const body=document.getElementById('resv-body');
-  if(!items.length){body.innerHTML='<tr><td colspan="8" class="muted" style="padding:1rem;">No reservations.</td></tr>';return;}
+  if(!items.length){body.innerHTML='<tr><td colspan="10" class="muted" style="padding:1rem;">No reservations.</td></tr>';return;}
   body.innerHTML=items.map(r=>{
     const qtyTxt=r.uom==='kg'?(fmt1(r.qty_kg)+' kg'):(fmt1(r.qty)+' m');
     const isActive=r.status==='active';
-    const stPill=isActive?'<span class="pill pill-amber">Open</span>':(r.status==='used'?'<span class="pill pill-green">Used</span>':'<span class="pill pill-neutral">'+esc(r.status)+'</span>');
-    const held=isActive?(r.days_reserved!=null?fmt(r.days_reserved)+'d':'—'):(r.days_to_use!=null?fmt(r.days_to_use)+'d to use':'—');
+    const stPill=isActive?'<span class="pill pill-amber">Open</span>':(r.status==='used'?'<span class="pill pill-green">Used</span>':(r.status==='expired'?'<span class="pill pill-red" title="Auto-expired after being held too long — the quantity is available again.">Expired</span>':'<span class="pill pill-neutral">'+esc(r.status)+'</span>'));
+    const aging=isActive&&r.days_reserved!=null&&r.days_reserved>=14;
+    const agingBadge=aging?' <span class="pill pill-amber" title="Held over 14 days — will auto-expire if left open.">14d+</span>':'';
+    const held=isActive?((r.days_reserved!=null?fmt(r.days_reserved)+'d':'—')+agingBadge):(r.status==='expired'?(r.days_reserved!=null?fmt(r.days_reserved)+'d, expired':'expired'):(r.days_to_use!=null?fmt(r.days_to_use)+'d to use':'—'));
     const act=isActive
       ? `<button class="btn btn-primary" data-use="${r.id}" style="padding:4px 10px;font-size:12px;">Mark used</button>${window._fabricPricingAdmin?` <button class="btn" data-del="${r.id}" style="padding:4px 8px;font-size:12px;">Delete</button>`:''}`
       : (window._fabricPricingAdmin?`<button class="btn" data-del="${r.id}" style="padding:4px 8px;font-size:12px;">Delete</button>`:'');
     const fab=esc(r.fabric_name||'—')+(r.default_code?` <span class="muted" style="font-size:11px;">#${esc(r.default_code)}</span>`:'');
     const soh=r.soh_kg!=null?(fmt1(r.soh_kg)+' kg'+(r.soh_metres!=null?' · '+fmt1(r.soh_metres)+' m':'')):'—';
+    const over=r.over_stock===true;
+    const avail=r.available_kg!=null?(fmt1(r.available_kg)+' kg'+(r.available_metres!=null?' · '+fmt1(r.available_metres)+' m':'')):'—';
+    const availCell=over
+      ?`<span style="color:#991b1b;font-weight:600;" title="This open reservation now exceeds what's available at RMAT/Stock (after Odoo allocations and other open reservations).">⚠ ${avail}</span>`
+      :avail;
     return `<tr>
       <td style="max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(r.fabric_name||'')}">${fab}</td>
       <td title="${esc(r.note||'')}">${esc(r.style_name||'—')}${r.style_number?` <span class="muted" style="font-size:11px;">#${esc(r.style_number)}</span>`:''}</td>
-      <td class="r" style="font-weight:600;white-space:nowrap;"${fx(FX.resvReserved)}>${qtyTxt}</td>
+      <td class="r" style="font-weight:600;white-space:nowrap;"${fx(FX.resvReserved)}>${qtyTxt}${over?' <span class="pill pill-red" title="Exceeds available stock — review or release.">over stock</span>':''}</td>
       <td class="r" style="white-space:nowrap;color:var(--text-sub);"${fx(FX.resvSoh)}>${soh}</td>
+      <td class="r" style="white-space:nowrap;color:var(--text-sub);">${availCell}</td>
       <td style="white-space:nowrap;color:var(--muted);font-size:12px;">${esc(r.reserved_on||'—')}</td>
       <td class="r" style="white-space:nowrap;"${fx(FX.resvDaysHeld)}>${held}</td>
       <td style="font-size:12px;color:var(--text-sub);">${esc(r.reserved_by_name||'—')}</td>
