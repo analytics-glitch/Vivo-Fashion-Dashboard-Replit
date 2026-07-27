@@ -35,6 +35,7 @@ import {
   RocketLaunch,
   Storefront,
   Kanban,
+  Medal,
 } from "@phosphor-icons/react";
 
 /**
@@ -139,6 +140,7 @@ export const PRIMARY_NAV = [
       { pageId: "style-tracker",     label: "Weekly Style Tracker" },
     ],
   },
+  { to: "/quality", label: "Quality", icon: Medal, id: "quality", group: "Operations & Production", desc: "Production quality dashboard — repairs, defect rates, complaints and washing trackers" },
 
   // Catalogues & others
   { to: "/ask", label: "Ask the Dashboard", icon: Sparkle, id: "ask", group: "Tools", desc: "Ask questions about today's sales, footfall, and performance — answered from live business data by AI" },

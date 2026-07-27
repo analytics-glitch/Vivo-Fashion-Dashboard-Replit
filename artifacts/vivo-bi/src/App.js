@@ -52,6 +52,7 @@ const ProductionDesk   = React.lazy(() => import("@/pages/ProductionDesk"));
 const TheChair         = React.lazy(() => import("@/pages/TheChair"));
 const PartnerBrandsReport = React.lazy(() => import("@/pages/PartnerBrandsReport"));
 const OrderExplorer = React.lazy(() => import("@/pages/OrderExplorer"));
+const Quality = React.lazy(() => import("@/pages/Quality"));
 const Login = React.lazy(() => import("@/pages/Login"));
 const AuthCallback = React.lazy(() => import("@/pages/AuthCallback"));
 
@@ -224,6 +225,7 @@ function App() {
                 <Route path="/ibt" element={<Navigate to="/retail?tab=ibt" replace />} />
                 <Route path="/production" element={<ProtectedShell anyOfPageIds={["production", "production-report", "style-tracker"]}><Production /></ProtectedShell>} />
                 <Route path="/production-report" element={<Navigate to="/production?tab=report" replace />} />
+                <Route path="/quality" element={<ProtectedShell pageId="quality"><Quality /></ProtectedShell>} />
                 <Route path="/pd-flow" element={<Navigate to="/product-analysis?tab=pd-flow" replace />} />
                 <Route path="/style-tracker" element={<Navigate to="/product-analysis?tab=tracker" replace />} />
                 <Route path="/data-quality" element={<ProtectedShell pageId="data-quality"><DataQuality /></ProtectedShell>} />
