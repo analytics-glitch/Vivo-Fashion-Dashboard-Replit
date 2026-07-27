@@ -6563,7 +6563,13 @@ def _insp_run_span(run_yards, location_yd, yards_inspected):
 
 _INSP_DEFECT_TYPES = {"Hole", "Slub", "Stain", "Shade variation", "Misweave",
                       "Broken pick", "Knot", "Barre", "Crease", "Dye spot",
-                      "Selvage defect", "Snag", "Other"}
+                      "Selvage defect", "Snag", "Thick place", "Thin place",
+                      "Neps", "Missing yarn", "Broken end",
+                      "Double yarn / doubled end", "Loose yarn (slack end)",
+                      "Tight yarn", "Yarn contamination (foreign fiber)",
+                      "Count variation", "Coarse yarn", "Crossed ends",
+                      "Snarls", "Hairiness", "Fuzz balls / pilling",
+                      "Uneven twist", "Yarn slippage", "Other"}
 
 def _insp_parse_defects(body):
     """Validate + normalize the defects payload; points are ALWAYS recomputed

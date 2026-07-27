@@ -6015,7 +6015,7 @@ async function recvRollDeleteFromBtn(btn){
 // log with automatic 4-point rule points, a LIVE points-per-100-sq.yd score
 // + Pass/Reject indicator, draft save, submit (locks + auto-fills the roll's
 // quality status) and supervisor approval. All interpolated text → esc().
-const INSP_DEFECT_TYPES=['Hole','Slub','Stain','Shade variation','Misweave','Broken pick','Knot','Barre','Crease','Dye spot','Selvage defect','Snag','Other'];
+const INSP_DEFECT_TYPES=['Hole','Slub','Stain','Shade variation','Misweave','Broken pick','Knot','Barre','Crease','Dye spot','Selvage defect','Snag','Thick place','Thin place','Neps','Missing yarn','Broken end','Double yarn / doubled end','Loose yarn (slack end)','Tight yarn','Yarn contamination (foreign fiber)','Count variation','Coarse yarn','Crossed ends','Snarls','Hairiness','Fuzz balls / pilling','Uneven twist','Yarn slippage','Other'];
 function inspDefectPoints(sizeIn,type){
   const s=parseFloat(sizeIn);
   // Holes split by size (ASTM convention): <=1in = 2 pts, >1in or unsized = 4 (conservative).
