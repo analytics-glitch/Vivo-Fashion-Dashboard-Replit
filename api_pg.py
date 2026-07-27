@@ -22401,6 +22401,25 @@ async def allocations_runs_fulfil(run_id: str, request: Request):
     run["fulfilled_at"] = date.today().isoformat() + "T00:00"
     _alloc_update(run)
     return run
+@app.post("/api/admin/warehouse-bins-refresh")
+async def admin_warehouse_bins_refresh(request: Request):
+    """Force a synchronous refresh of warehouse_bins from the Google Sheet."""
+    import warehouse_bins as _wb
+    conn = _get_conn()
+    try:
+        status = _wb.refresh(conn, force=True)
+        with conn.cursor() as cur:
+            cur.execute("SELECT row_count, refreshed_at, status FROM warehouse_bins_meta WHERE id=1")
+            row = cur.fetchone()
+        return {"ok": True, "status": status,
+                "row_count": row[0] if row else 0,
+                "refreshed_at": row[1].isoformat() if row and row[1] else None,
+                "detail": row[2] if row else None}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    finally:
+        conn.close()
+
 @app.post("/api/admin/cache-clear")
 async def admin_cache_clear(request: Request):
     n = len(_cache)
