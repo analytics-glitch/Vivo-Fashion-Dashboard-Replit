@@ -150,13 +150,25 @@ _INSERT_SQL = """
         collection, style_name, print_plain,
         product_type, category, gender, season, size,
         stock_on_hand, stock_available, active, product_id, ever_sold,
-        status, tier, fabric_structure
+        status, tier, fabric_structure,
+        plain_print, source_country, source_city, fabric_category, fabric_subcategory,
+        fabric_width, gsm, supplier_fabric_code, noos_fabric, fiber_content
     ) VALUES %s
     ON CONFLICT (sku) DO UPDATE SET
         product_name    = EXCLUDED.product_name,
         price           = EXCLUDED.price,
         cost            = EXCLUDED.cost,
         fabric_structure = EXCLUDED.fabric_structure,
+        plain_print = EXCLUDED.plain_print,
+        source_country = EXCLUDED.source_country,
+        source_city = EXCLUDED.source_city,
+        fabric_category = EXCLUDED.fabric_category,
+        fabric_subcategory = EXCLUDED.fabric_subcategory,
+        fabric_width = EXCLUDED.fabric_width,
+        gsm = EXCLUDED.gsm,
+        supplier_fabric_code = EXCLUDED.supplier_fabric_code,
+        noos_fabric = EXCLUDED.noos_fabric,
+        fiber_content = EXCLUDED.fiber_content,
         active          = EXCLUDED.active
 """
 
@@ -167,7 +179,9 @@ _INSERT_SQL_NOOP = """
         collection, style_name, print_plain,
         product_type, category, gender, season, size,
         stock_on_hand, stock_available, active, product_id, ever_sold,
-        status, tier, fabric_structure
+        status, tier, fabric_structure,
+        plain_print, source_country, source_city, fabric_category, fabric_subcategory,
+        fabric_width, gsm, supplier_fabric_code, noos_fabric, fiber_content
     ) VALUES %s
     ON CONFLICT (sku) DO NOTHING
 """
@@ -337,6 +351,10 @@ def main():
                 s is not None,
                 status, tier,
                 fabric_structure or None,
+                plain_print or None, source_country or None, source_city or None,
+                fabric_category or None, fabric_subcategory or None,
+                fabric_width or None, gsm or None,
+                supplier_fabric_code or None, noos_fabric or None, fiber_content or None,
             ))
             total_odoo += 1
 
@@ -384,6 +402,7 @@ def main():
             print_plain, subcat, cat,
             None, None, size, 0, 0,
             None, None, True,
+            None, None,  # status, tier
             None, None, None, None, None, None, None, None, None, None, None,  # fabric fields
         ))
         seen_skus.add(sku)
@@ -432,6 +451,7 @@ def main():
             print_plain, subcat, cat,
             None, None, size, 0, 0,
             None, None, s is not None,
+            None, None,  # status, tier
             None, None, None, None, None, None, None, None, None, None, None,  # fabric fields
         ))
 
