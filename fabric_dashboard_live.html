@@ -1320,6 +1320,11 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
        <label class="rsv-lbl">Selling price (KES) <span id="cost-sp-badge"></span></label>
        <input id="cost-selling-price" type="number" min="0" step="any" style="width:140px;" oninput="costSpManual()">
       </div>
+      <div style="position:relative;">
+       <label class="rsv-lbl">DPS # (optional)</label>
+       <input id="cost-dps-search" placeholder="Blank = 365-day average" autocomplete="off" style="width:220px;" disabled oninput="costDpsInput()" onfocus="costDpsFocus()">
+       <div id="cost-dps-list" class="resv-dropdown" style="display:none;"></div>
+      </div>
      </div>
      <div id="cost-suggest-note" class="muted" style="font-size:12px;margin-bottom:8px;"></div>
      <div class="tbl-wrap">
@@ -8721,7 +8726,7 @@ async function gateCosting(){
   }
 }
 const COST_KINDS={fabric:'Fabric',trim:'Trim / accessory',cmt:'CMT / labour',overhead:'Overhead / other'};
-let costSheets=[],costEdit=null; // costEdit = {id|null, style_name, style_number, lines:[], sp_auto, history:[]}
+let costSheets=[],costEdit=null; // costEdit = {id|null, style_name, style_number, dps_ref|null, lines:[], sp_auto, history:[]}
 const fmtKES2=n=>n==null||isNaN(n)?'—':'KES '+Number(n).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
 async function loadCosting(){
   const body=document.getElementById('cost-list-body');
@@ -8825,7 +8830,8 @@ function costAddLine(kind){
 }
 function costDelLine(i){if(!costEdit)return;costEdit.lines.splice(i,1);costRenderLines();}
 function costNewSheet(){
-  costEdit={id:null,style_name:null,style_number:null,lines:[],sp_auto:true,history:[]};
+  costEdit={id:null,style_name:null,style_number:null,dps_ref:null,lines:[],sp_auto:true,history:[]};
+  costDpsReset(true);
   document.getElementById('cost-editor-title').textContent='New costing sheet';
   document.getElementById('cost-style-search').value='';
   document.getElementById('cost-style-search').disabled=false;
@@ -8844,9 +8850,14 @@ function costCloseEditor(){costEdit=null;document.getElementById('cost-editor').
 async function costOpenSheet(id){
   try{
     const s=await apiFetch('/api/fabric/costing/sheets/'+encodeURIComponent(id));
-    costEdit={id:s.id,style_name:s.style_name,style_number:s.style_number,
+    costEdit={id:s.id,style_name:s.style_name,style_number:s.style_number,dps_ref:s.dps_ref||null,
       lines:(s.lines||[]).map(l=>({kind:l.kind,label:l.label,qty:l.qty,unit_cost:l.unit_cost,is_auto:!!l.is_auto,source:l.source})),
       sp_auto:!!s.selling_price_is_auto,history:s.history||[]};
+    // Show which Done DPS the sheet's suggestions were built from (editable
+    // again via re-suggest is out of scope for saved sheets; display only).
+    const dpsEl=document.getElementById('cost-dps-search');
+    if(dpsEl){dpsEl.value=s.dps_ref||'';dpsEl.disabled=true;dpsEl.placeholder=s.dps_ref?'':'365-day average';}
+    const dpsBox=document.getElementById('cost-dps-list');if(dpsBox)dpsBox.style.display='none';
     document.getElementById('cost-editor-title').textContent='Edit costing sheet — '+s.style_name;
     const st=document.getElementById('cost-style-search');st.value=s.style_name;st.disabled=true;
     document.getElementById('cost-style-number').value=s.style_number||'';
@@ -8887,6 +8898,10 @@ document.addEventListener('click',e=>{
   if(opt&&opt.dataset.coststyle){costPickStyle(opt.dataset.coststyle,opt.dataset.stylenum);return;}
   const box=document.getElementById('cost-style-list');
   if(box&&box.style.display!=='none'&&!e.target.closest('#cost-style-search')&&!e.target.closest('#cost-style-list'))box.style.display='none';
+  const dopt=e.target.closest('#cost-dps-list .resv-opt');
+  if(dopt&&dopt.dataset.costdps){costPickDps(dopt.dataset.costdps);return;}
+  const dbox=document.getElementById('cost-dps-list');
+  if(dbox&&dbox.style.display!=='none'&&!e.target.closest('#cost-dps-search')&&!e.target.closest('#cost-dps-list'))dbox.style.display='none';
 });
 async function costPickStyle(style,num){
   if(!costEdit)return;
@@ -8894,31 +8909,94 @@ async function costPickStyle(style,num){
   document.getElementById('cost-style-search').value=style;
   document.getElementById('cost-style-number').value=num||'';
   document.getElementById('cost-style-list').style.display='none';
+  costDpsReset(false); // new style → clear any chosen DPS, enable the picker
+  await costLoadSuggest();
+}
+// Load auto-suggestions for the picked style, scoped to costEdit.dps_ref when
+// one is chosen (else the 365-day Done-DPS average — today's behaviour).
+async function costLoadSuggest(){
+  if(!costEdit||!costEdit.style_name)return;
   const note=document.getElementById('cost-suggest-note');
   note.textContent='Loading auto-suggestions…';
   try{
-    const s=await apiFetch('/api/fabric/costing/suggest?style_name='+encodeURIComponent(style));
+    let url='/api/fabric/costing/suggest?style_name='+encodeURIComponent(costEdit.style_name);
+    if(costEdit.dps_ref)url+='&dps_ref='+encodeURIComponent(costEdit.dps_ref);
+    const s=await apiFetch(url);
     // Selling price (auto from the product master's modal SKU price).
     const spEl=document.getElementById('cost-selling-price');
     if(s.selling_price!=null){spEl.value=s.selling_price;costEdit.sp_auto=true;document.getElementById('cost-sp-badge').innerHTML=costBadge(true);}
+    const basis=costEdit.dps_ref?('DPS '+costEdit.dps_ref):'Done DPS avg';
     const lines=[];
     if(s.metres_per_garment!=null&&s.fabric_cost_per_metre!=null){
-      lines.push({kind:'fabric',label:'Main fabric ('+(s.fabrics&&s.fabrics[0]?s.fabrics[0].name||'':'')+')',qty:s.metres_per_garment,unit_cost:s.fabric_cost_per_metre,is_auto:true,source:'Done DPS avg × '+((s.fabrics&&s.fabrics[0]&&s.fabrics[0].cost_source)||'fabric price')});
+      lines.push({kind:'fabric',label:'Main fabric ('+(s.fabrics&&s.fabrics[0]?s.fabrics[0].name||'':'')+')',qty:s.metres_per_garment,unit_cost:s.fabric_cost_per_metre,is_auto:true,source:basis+' × '+((s.fabrics&&s.fabrics[0]&&s.fabrics[0].cost_source)||'fabric price')});
     }else if(s.metres_per_garment!=null){
-      lines.push({kind:'fabric',label:'Main fabric',qty:s.metres_per_garment,unit_cost:0,is_auto:true,source:'metres/garment from Done DPS — enter cost/metre'});
+      lines.push({kind:'fabric',label:'Main fabric',qty:s.metres_per_garment,unit_cost:0,is_auto:true,source:'metres/garment from '+basis+' — enter cost/metre'});
     }
+    // One editable Trim/accessory line per accessories/trims component
+    // consumed on the scoped Done-DPS MOs (qty per garment + DPS-recorded cost).
+    (s.accessories||[]).forEach(a=>{
+      lines.push({kind:'trim',label:(a.name||a.sku||'Accessory')+(a.uom?' ('+a.uom+'/garment)':''),
+        qty:a.qty_per_garment,unit_cost:a.unit_cost!=null?a.unit_cost:0,is_auto:true,
+        source:a.unit_cost!=null?(basis+' × '+(a.cost_source||'DPS/MO recorded cost')):('qty from '+basis+' — enter unit cost')});
+    });
     if(s.labour_per_garment!=null){
-      lines.push({kind:'cmt',label:'CMT / labour (actual, Done DPS)',qty:1,unit_cost:s.labour_per_garment,is_auto:true,source:'Done DPS labour ÷ '+(s.labour_garments||0)+' garments'});
+      lines.push({kind:'cmt',label:'CMT / labour (actual, Done DPS)',qty:1,unit_cost:s.labour_per_garment,is_auto:true,source:basis+' labour ÷ '+(s.labour_garments||0)+' garments'});
     }
     costEdit.lines=lines;
     const bits=[];
-    bits.push(s.metres_per_garment!=null?('Metres/garment: '+s.metres_per_garment+' (from '+s.metres_mos+' Done-DPS MOs, last '+s.window_days+' days)'):'No Done-DPS fabric consumption found for this style — enter fabric usage manually');
+    if(costEdit.dps_ref)bits.push('Scoped to DPS '+costEdit.dps_ref);
+    bits.push(s.metres_per_garment!=null?('Metres/garment: '+s.metres_per_garment+(costEdit.dps_ref?(' (from '+s.metres_mos+' MO(s) of this DPS)'):(' (from '+s.metres_mos+' Done-DPS MOs, last '+s.window_days+' days)'))):'No Done-DPS fabric consumption found — enter fabric usage manually');
     bits.push(s.fabric_cost_per_metre!=null?('Fabric cost/metre: '+fmtKES2(s.fabric_cost_per_metre)):'No fabric price found — enter cost/metre manually');
-    bits.push(s.labour_per_garment!=null?('Labour/garment: '+fmtKES2(s.labour_per_garment)+' (Done DPS summary)'):(costLabourAvailable?'No DPS labour cost for this style — enter CMT manually':'DPS labour data not synced yet — enter CMT manually'));
+    bits.push((s.accessories&&s.accessories.length)?('Accessories: '+s.accessories.length+' component(s) auto-added'):'No accessories/trims found on the Done-DPS MOs');
+    bits.push(s.labour_per_garment!=null?('Labour/garment: '+fmtKES2(s.labour_per_garment)+' (Done DPS)'):(costLabourAvailable?'No DPS labour cost — enter CMT manually':'DPS labour data not synced yet — enter CMT manually'));
     bits.push(s.selling_price!=null?('Selling price: '+fmtKES2(s.selling_price)+' (product master)'):'No selling price in the product master — enter manually');
     note.textContent=bits.join(' · ');
     costRenderLines();
   }catch(e){note.textContent='Could not load suggestions — enter values manually.';costRenderLines();}
+}
+// ── DPS # picker (style-scoped typeahead over the style's Done DPS list) ──
+let costDpsCache=null; // {style, list:[...]} for the currently picked style
+function costDpsReset(disable){
+  if(costEdit)costEdit.dps_ref=null;
+  costDpsCache=null;
+  const el=document.getElementById('cost-dps-search');
+  if(el){el.value='';el.disabled=!!disable||!(costEdit&&costEdit.style_name);el.placeholder='Blank = 365-day average';}
+  const box=document.getElementById('cost-dps-list');if(box)box.style.display='none';
+}
+async function costDpsFetch(){
+  if(!costEdit||!costEdit.style_name)return [];
+  if(costDpsCache&&costDpsCache.style===costEdit.style_name)return costDpsCache.list;
+  const d=await apiFetch('/api/fabric/costing/dps?style_name='+encodeURIComponent(costEdit.style_name));
+  costDpsCache={style:costEdit.style_name,list:d.dps||[]};
+  return costDpsCache.list;
+}
+async function costDpsRender(){
+  const inp=document.getElementById('cost-dps-search'),box=document.getElementById('cost-dps-list');
+  if(!inp||inp.disabled||!box)return;
+  const term=inp.value.trim().toLowerCase();
+  try{
+    const list=(await costDpsFetch()).filter(d=>!term||String(d.dps_ref||'').toLowerCase().includes(term));
+    box.innerHTML=list.slice(0,30).map(d=>
+      `<div class="resv-opt" data-costdps="${esc(d.dps_ref)}"><strong>${esc(d.dps_ref)}</strong> <span class="muted">${esc(d.done_date||'')} · ${esc(d.produced_qty)} pcs · ${esc(d.mo_count)} MO(s)</span></div>`).join('')
+      ||'<div class="resv-opt muted">No Done DPS found for this style</div>';
+    box.style.display='';
+  }catch(e){box.style.display='none';}
+}
+function costDpsFocus(){costDpsRender();}
+let costDpsTimer=null;
+function costDpsInput(){
+  clearTimeout(costDpsTimer);
+  const inp=document.getElementById('cost-dps-search');
+  // Clearing the box reverts to the 365-day average behaviour.
+  if(costEdit&&costEdit.dps_ref&&(!inp||inp.value.trim()==='')){costEdit.dps_ref=null;costLoadSuggest();}
+  costDpsTimer=setTimeout(costDpsRender,200);
+}
+async function costPickDps(ref){
+  if(!costEdit)return;
+  costEdit.dps_ref=ref||null;
+  const inp=document.getElementById('cost-dps-search');if(inp)inp.value=ref||'';
+  const box=document.getElementById('cost-dps-list');if(box)box.style.display='none';
+  await costLoadSuggest();
 }
 async function costSaveSheet(){
   if(!costEdit)return;
@@ -8927,6 +9005,7 @@ async function costSaveSheet(){
   if(!costEdit.lines.length){err.innerHTML='<div class="banner banner-err">Add at least one cost line.</div>';return;}
   const spEl=document.getElementById('cost-selling-price');
   const payload={style_name:costEdit.style_name,
+    dps_ref:costEdit.dps_ref||null,
     selling_price:spEl.value===''?null:Number(spEl.value),
     selling_price_is_auto:!!costEdit.sp_auto,
     lines:costEdit.lines.map(l=>({kind:l.kind,label:l.label,qty:Number(l.qty)||0,unit_cost:Number(l.unit_cost)||0,is_auto:!!l.is_auto,source:l.source}))};

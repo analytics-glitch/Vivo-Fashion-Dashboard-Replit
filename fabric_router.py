@@ -286,12 +286,41 @@ def _get_conn():
     api = importlib.import_module('api_pg')
     return api.get_conn()
 
+_MO_CONS_COLS_READY = False
+
+def _ensure_mo_cons_cols():
+    """Lazily add the accessories-support columns to mo_fabric_consumption
+    (idempotent, once per process, own pooled connection). Readers filter on
+    is_main_fabric, so the column must exist even on a DB whose extract has
+    not yet re-run with the widened schema. ALTER TABLE IF EXISTS makes this
+    a no-op on a fresh DB where the extract hasn't created the table at all."""
+    global _MO_CONS_COLS_READY
+    if _MO_CONS_COLS_READY:
+        return
+    conn = _get_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                ALTER TABLE IF EXISTS mo_fabric_consumption
+                    ADD COLUMN IF NOT EXISTS is_main_fabric BOOLEAN NOT NULL DEFAULT TRUE;
+                ALTER TABLE IF EXISTS mo_fabric_consumption
+                    ADD COLUMN IF NOT EXISTS unit_cost_mo NUMERIC;
+            """)
+        conn.commit()
+        _MO_CONS_COLS_READY = True
+    except Exception:
+        conn.rollback()
+    finally:
+        conn.close()
+
 def q(conn, sql, params=()):
     # Every fabric read funnels through here, so this is the one choke point
     # where the support-override table can be lazily ensured before any query
     # that embeds _scope_sql (which subselects from it) runs. Uses its OWN
     # pooled connection so it never disturbs the caller's transaction.
     _ensure_support_overrides()
+    if "mo_fabric_consumption" in sql:
+        _ensure_mo_cons_cols()
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(sql, params)
         return [dict(r) for r in cur.fetchall()]
@@ -1559,6 +1588,7 @@ def metres_per_garment(days: int = Query(default=30)):
             FROM mo_fabric_consumption c
             LEFT JOIN raw_fabric_products p ON p.id = c.component_id
             WHERE c.done_date >= CURRENT_DATE - (%s || ' days')::interval
+              AND c.is_main_fabric
         """, [days])
 
     M_UOMS = {"m", "metre", "meter", "mtr", "metres", "meters", "metre(s)"}
@@ -1666,6 +1696,7 @@ def metres_per_garment_xlsx(days: int = Query(default=30)):
             FROM mo_fabric_consumption c
             LEFT JOIN raw_fabric_products p ON p.id = c.component_id
             WHERE c.done_date >= CURRENT_DATE - (%s || ' days')::interval
+              AND c.is_main_fabric
             ORDER BY c.done_date DESC, c.odoo_mo_id, c.fabric_sku
         """, [days])
 
@@ -1932,6 +1963,7 @@ def metres_per_garment_categories(days: int = Query(default=30)):
             FROM mo_fabric_consumption c
             LEFT JOIN (%s) apc ON apc.sku = c.finished_sku
             WHERE c.done_date >= CURRENT_DATE - (%%s || ' days')::interval
+              AND c.is_main_fabric
             GROUP BY apc.category
             ORDER BY apc.category
         """ % _MPG_CATEGORY_SUBQ, [days])
@@ -1979,6 +2011,7 @@ def metres_per_garment_by_category(
             LEFT JOIN raw_fabric_products p ON p.id = c.component_id
             LEFT JOIN (%s) apc ON apc.sku = c.finished_sku
             WHERE c.done_date >= CURRENT_DATE - (%%s || ' days')::interval
+              AND c.is_main_fabric
             """ % _MPG_CATEGORY_SUBQ) + extra_where, params)
 
     M_UOMS = {"m", "metre", "meter", "mtr", "metres", "meters", "metre(s)"}
@@ -2127,6 +2160,7 @@ def metres_per_garment_by_category_xlsx(
             LEFT JOIN raw_fabric_products p ON p.id = c.component_id
             LEFT JOIN (%s) apc ON apc.sku = c.finished_sku
             WHERE c.done_date >= CURRENT_DATE - (%%s || ' days')::interval
+              AND c.is_main_fabric
             """ % _MPG_CATEGORY_SUBQ) + extra_where + """
             ORDER BY c.done_date DESC, c.odoo_mo_id, c.fabric_sku
         """, params)
@@ -3189,6 +3223,7 @@ def mo_missing_conversion(days: int = Query(default=90)):
             FROM mo_fabric_consumption c
             LEFT JOIN raw_fabric_products p ON p.id = c.component_id
             WHERE c.done_date >= CURRENT_DATE - (%s || ' days')::interval
+              AND c.is_main_fabric
         """, [days])
 
     KG_UOMS = {"kg", "g"}
@@ -3302,6 +3337,7 @@ def metres_per_garment_by_style(days: int = Query(default=90),
             FROM mo_fabric_consumption c
             LEFT JOIN raw_fabric_products p ON p.id = c.component_id
             WHERE c.done_date >= CURRENT_DATE - (%s || ' days')::interval
+              AND c.is_main_fabric
         """, [days])
 
     KG_UOMS = {"kg", "g"}
@@ -5021,7 +5057,7 @@ def trend_series(
                        lower(coalesce(c.uom,'')) AS uom, p.kg_per_mtr_eff AS kpm
                 FROM mo_fabric_consumption c
                 LEFT JOIN raw_fabric_products p ON p.id = c.component_id
-                WHERE c.done_date BETWEEN %s AND %s {scope_sql}
+                WHERE c.done_date BETWEEN %s AND %s AND c.is_main_fabric {scope_sql}
             """, [since, until] + list(scope_params))
             M_UOMS = {"m", "metre", "meter", "mtr", "metres", "meters", "metre(s)"}
             by_bucket = {}
@@ -12489,6 +12525,10 @@ def _ensure_costing_tables(conn):
             );
             CREATE INDEX IF NOT EXISTS idx_fab_costing_hist_sheet
                 ON fabric_costing_history(sheet_id, changed_at DESC);
+            -- The Done DPS the sheet's auto-suggestions were built from
+            -- (NULL = 365-day Done-DPS average, today's default behaviour).
+            ALTER TABLE fabric_costing_sheets
+                ADD COLUMN IF NOT EXISTS dps_ref TEXT;
         """)
     conn.commit()
     _COSTING_TABLES_READY = True
@@ -12517,27 +12557,38 @@ _KG_UOMS = {"kg", "g"}
 _M_UOMS = {"m", "metre", "meter", "mtr", "metres", "meters", "metre(s)"}
 
 
-def _costing_style_facts(conn, style_name, days=365):
+def _costing_style_facts(conn, style_name, days=365, dps_ref=None):
     """Auto-suggestion facts for a style from Done-DPS consumption:
-    metres per garment, weighted labour cost per garment, and the fabrics
-    used (with a suggested cost per metre from PO prices / fabric master).
+    metres per garment, weighted labour cost per garment, the fabrics used AND
+    the accessories/trims components consumed (each with a suggested unit cost
+    from the cost recorded on the DPS/MO consumption itself — never latest-PO
+    pricing). When `dps_ref` is given, every suggestion (fabric, accessories,
+    labour) is scoped to that single Done DPS instead of the trailing window.
     MOs are matched to the BI style via finished_sku = all_products_clean.sku
     — NOT on style_name: MO style names embed fabric + colour ("… in Jersey -
     Dark Red") and never match the product master (same rule as the
     metres-per-garment category breakdown above)."""
-    rows = q(conn, """
+    if dps_ref:
+        scope_sql = "AND c.dps_ref = %s"
+        scope_params = [dps_ref]
+    else:
+        scope_sql = "AND c.done_date >= CURRENT_DATE - (%s || ' days')::interval"
+        scope_params = [days]
+    style_sql = """c.finished_sku IN (
+                SELECT sku FROM all_products_clean
+                WHERE lower(style_name) = lower(%s))"""
+    rows = q(conn, f"""
         SELECT c.odoo_mo_id, c.produced_qty, c.consumed_qty,
                lower(coalesce(c.uom,'')) AS uom,
                c.component_id, c.fabric_sku, c.fabric_name,
-               c.dps_cost_per_unit,
+               c.dps_cost_per_unit, c.unit_cost_mo,
                p.kg_per_mtr_eff AS kpm, p.standard_price
         FROM mo_fabric_consumption c
         LEFT JOIN raw_fabric_products p ON p.id = c.component_id
-        WHERE c.finished_sku IN (
-                SELECT sku FROM all_products_clean
-                WHERE lower(style_name) = lower(%s))
-          AND c.done_date >= CURRENT_DATE - (%s || ' days')::interval
-    """, [style_name, days])
+        WHERE {style_sql}
+          {scope_sql}
+          AND c.is_main_fabric
+    """, [style_name] + scope_params)
 
     mos, fabrics = {}, {}
     for r in rows:
@@ -12563,9 +12614,17 @@ def _costing_style_facts(conn, style_name, days=365):
             "name": r["fabric_name"], "metres": 0.0,
             "kpm": float(kpm) if kpm else None,
             "standard_price": float(r["standard_price"]) if r["standard_price"] else None,
+            "mo_cost_amt": 0.0, "mo_cost_qty": 0.0, "mo_cost_uom": None,
         })
         if metres is not None:
             f["metres"] += metres
+        # DPS/MO-recorded cost basis: unit_cost_mo is per UoM unit as valued
+        # on the MO move; accumulate consumed-qty-weighted for a per-unit avg.
+        mc = r["unit_cost_mo"]
+        if mc is not None and float(mc) > 0 and qty > 0:
+            f["mo_cost_amt"] += float(mc) * qty
+            f["mo_cost_qty"] += qty
+            f["mo_cost_uom"] = u
 
     tot_m = tot_g = 0.0
     lab_cost = lab_units = 0.0
@@ -12581,9 +12640,11 @@ def _costing_style_facts(conn, style_name, days=365):
             lab_cost += d["labour_pu"] * d["produced"]
             lab_units += d["produced"]
 
-    # Suggested cost per metre for each fabric: most recent PO unit price
-    # (per kg → per metre via kg_per_mtr_eff), else the fabric master's
-    # standard_price (per kg) converted the same way.
+    # Suggested cost per metre for each fabric: PRIMARY basis is the cost
+    # recorded on the DPS/MO consumption itself (unit_cost_mo, per UoM unit →
+    # per metre via kg_per_mtr_eff when the MO consumed in kg/g). Only when no
+    # MO-recorded cost exists do we fall back to the latest PO price, then the
+    # fabric master's standard_price.
     fab_list = sorted(fabrics.values(), key=lambda f: -f["metres"])
     ids = [f["component_id"] for f in fab_list if f["component_id"]]
     po_price = {}
@@ -12598,18 +12659,29 @@ def _costing_style_facts(conn, style_name, days=365):
             po_price[r["product_id"]] = r
     for f in fab_list:
         cpm = src = None
-        po = po_price.get(f["component_id"])
-        if po:
-            pu = float(po["price_unit"] or 0)
-            if po["uom"] in _M_UOMS:
-                cpm, src = pu, "latest PO price (per metre)"
-            elif f["kpm"]:
-                cpm, src = pu * f["kpm"], "latest PO price (per kg × kg/m)"
+        if f["mo_cost_qty"] > 0:
+            per_unit = f["mo_cost_amt"] / f["mo_cost_qty"]
+            u = f["mo_cost_uom"]
+            if u in _M_UOMS:
+                cpm, src = per_unit, "DPS/MO recorded cost (per metre)"
+            elif u in _KG_UOMS and f["kpm"]:
+                per_kg = per_unit * 1000.0 if u == "g" else per_unit
+                cpm, src = per_kg * f["kpm"], "DPS/MO recorded cost (per kg × kg/m)"
+        if cpm is None:
+            po = po_price.get(f["component_id"])
+            if po:
+                pu = float(po["price_unit"] or 0)
+                if po["uom"] in _M_UOMS:
+                    cpm, src = pu, "latest PO price (per metre)"
+                elif f["kpm"]:
+                    cpm, src = pu * f["kpm"], "latest PO price (per kg × kg/m)"
         if cpm is None and f["standard_price"] and f["kpm"]:
             cpm, src = f["standard_price"] * f["kpm"], "fabric master cost (per kg × kg/m)"
         f["cost_per_metre"] = round(cpm, 2) if cpm else None
         f["cost_source"] = src
         f["metres"] = round(f["metres"], 1)
+        for k in ("mo_cost_amt", "mo_cost_qty", "mo_cost_uom"):
+            f.pop(k, None)
 
     # Weighted-average cost/metre across the style's fabrics (by metres used).
     wm = [(f["metres"], f["cost_per_metre"]) for f in fab_list
@@ -12617,7 +12689,48 @@ def _costing_style_facts(conn, style_name, days=365):
     fabric_cpm = (round(sum(m * c for m, c in wm) / sum(m for m, _ in wm), 2)
                   if wm else None)
 
+    # Accessories & Trims components (is_main_fabric = FALSE) consumed on the
+    # same scoped Done-DPS MOs. Per component: qty per garment = Σ consumed ÷
+    # Σ produced over the MOs where the component appears; unit cost = the
+    # consumed-qty-weighted average of the cost recorded on the MO consumption
+    # itself (unit_cost_mo) — DPS cost only, never latest-PO pricing.
+    acc_rows = q(conn, f"""
+        SELECT c.component_id, c.fabric_sku AS sku, c.fabric_name AS name,
+               coalesce(c.uom,'') AS uom,
+               SUM(c.consumed_qty) AS consumed,
+               SUM(c.produced_qty) AS produced,
+               SUM(c.unit_cost_mo * c.consumed_qty)
+                   FILTER (WHERE c.unit_cost_mo > 0 AND c.consumed_qty > 0) AS cost_amt,
+               SUM(c.consumed_qty)
+                   FILTER (WHERE c.unit_cost_mo > 0 AND c.consumed_qty > 0) AS cost_qty
+        FROM mo_fabric_consumption c
+        WHERE {style_sql}
+          {scope_sql}
+          AND NOT c.is_main_fabric
+        GROUP BY c.component_id, c.fabric_sku, c.fabric_name, coalesce(c.uom,'')
+        ORDER BY SUM(c.consumed_qty) DESC
+    """, [style_name] + scope_params)
+    accessories = []
+    for r in acc_rows[:25]:
+        consumed = float(r["consumed"] or 0)
+        produced = float(r["produced"] or 0)
+        if consumed <= 0 or produced <= 0:
+            continue
+        unit_cost = None
+        if r["cost_qty"] and float(r["cost_qty"]) > 0:
+            unit_cost = round(float(r["cost_amt"]) / float(r["cost_qty"]), 2)
+        accessories.append({
+            "component_id": r["component_id"],
+            "sku": r["sku"], "name": r["name"], "uom": r["uom"],
+            "qty_per_garment": round(consumed / produced, 4),
+            "unit_cost": unit_cost,
+            "cost_source": ("DPS/MO recorded cost" if unit_cost is not None
+                            else None),
+        })
+
     return {
+        "dps_ref": dps_ref,
+        "accessories": accessories,
         "metres_per_garment": round(tot_m / tot_g, 2) if tot_g > 0 else None,
         "metres_mos": n_mos,
         "labour_per_garment": round(lab_cost / lab_units, 2) if lab_units > 0 else None,
@@ -12667,14 +12780,63 @@ def costing_styles(q_: str = Query(default="", alias="q"),
     return out
 
 
-@fabric_router.get("/api/fabric/costing/suggest")
-def costing_suggest(style_name: str = Query(...)):
+@fabric_router.get("/api/fabric/costing/dps")
+def costing_dps_list(style_name: str = Query(...)):
+    """Done DPS list for a style (DPS ref, latest done date, produced garments,
+    MO count) — feeds the DPS # picker on the new-sheet form. Produced qty is
+    summed over the DPS's MOs at the MO grain (component rows would repeat it)."""
     style_row = _match_style(style_name)
     if not style_row:
         raise HTTPException(status_code=404, detail="Unknown style")
     canon = style_row.get("style_name")
     with _get_conn() as conn:
-        facts = _costing_style_facts(conn, canon)
+        rows = q(conn, """
+            WITH mo AS (
+                SELECT DISTINCT c.dps_ref, c.odoo_mo_id, c.produced_qty, c.done_date
+                FROM mo_fabric_consumption c
+                WHERE c.finished_sku IN (
+                        SELECT sku FROM all_products_clean
+                        WHERE lower(style_name) = lower(%s))
+                  AND c.dps_ref IS NOT NULL
+            )
+            SELECT dps_ref, MAX(done_date) AS done_date,
+                   SUM(produced_qty) AS produced_qty,
+                   COUNT(*) AS mo_count
+            FROM mo GROUP BY dps_ref
+            ORDER BY MAX(done_date) DESC NULLS LAST, dps_ref DESC
+            LIMIT 100
+        """, [canon])
+    return {"style_name": canon, "dps": [{
+        "dps_ref": r["dps_ref"],
+        "done_date": r["done_date"].isoformat() if r["done_date"] else None,
+        "produced_qty": round(float(r["produced_qty"] or 0)),
+        "mo_count": r["mo_count"],
+    } for r in rows]}
+
+
+@fabric_router.get("/api/fabric/costing/suggest")
+def costing_suggest(style_name: str = Query(...),
+                    dps_ref: str = Query(default=None)):
+    style_row = _match_style(style_name)
+    if not style_row:
+        raise HTTPException(status_code=404, detail="Unknown style")
+    canon = style_row.get("style_name")
+    dps_ref = (dps_ref or "").strip() or None
+    with _get_conn() as conn:
+        if dps_ref:
+            # The DPS must belong to this style (same finished-sku match rule).
+            chk = q(conn, """
+                SELECT 1 FROM mo_fabric_consumption c
+                WHERE c.dps_ref = %s
+                  AND c.finished_sku IN (
+                        SELECT sku FROM all_products_clean
+                        WHERE lower(style_name) = lower(%s))
+                LIMIT 1
+            """, [dps_ref, canon])
+            if not chk:
+                raise HTTPException(status_code=404,
+                                    detail="No Done DPS with that reference for this style")
+        facts = _costing_style_facts(conn, canon, dps_ref=dps_ref)
         sp = _style_selling_price(conn, canon)
     facts["style_name"] = canon
     facts["style_number"] = style_row.get("style_number")
@@ -12786,7 +12948,7 @@ def costing_sheets_list():
         _ensure_costing_tables(conn)
         rows = q(conn, """
             SELECT s.id, s.style_name, s.style_number, s.selling_price,
-                   s.updated_by_name, s.updated_at,
+                   s.dps_ref, s.updated_by_name, s.updated_at,
                    COALESCE(SUM(l.total),0) AS total_cost,
                    COUNT(l.id) AS line_count
             FROM fabric_costing_sheets s
@@ -12801,6 +12963,7 @@ def costing_sheets_list():
         out.append({
             "id": r["id"], "style_name": r["style_name"],
             "style_number": r["style_number"], "selling_price": sp,
+            "dps_ref": r["dps_ref"],
             "total_cost": tc,
             "margin": round(sp - tc, 2) if sp is not None else None,
             "margin_pct": round((sp - tc) / sp * 100, 1) if sp else None,
@@ -13020,11 +13183,12 @@ def costing_sheet_create(request: Request, body: dict = Body(...)):
             cur.execute("""
                 INSERT INTO fabric_costing_sheets
                     (style_name, style_number, selling_price, selling_price_is_auto,
-                     notes, created_by, created_by_name, updated_by, updated_by_name)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id
+                     notes, dps_ref, created_by, created_by_name, updated_by, updated_by_name)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id
             """, (canon, style_row.get("style_number"), sp,
                   bool(body.get("selling_price_is_auto")),
                   (str(body.get("notes") or "").strip())[:1000] or None,
+                  (str(body.get("dps_ref") or "").strip())[:100] or None,
                   uid, uname, uid, uname))
             sheet_id = cur.fetchone()[0]
             for ln in lines:
@@ -13067,10 +13231,12 @@ def costing_sheet_update(sheet_id: int, request: Request, body: dict = Body(...)
             cur.execute("""
                 UPDATE fabric_costing_sheets
                 SET selling_price=%s, selling_price_is_auto=%s, notes=%s,
+                    dps_ref=%s,
                     updated_by=%s, updated_by_name=%s, updated_at=now()
                 WHERE id=%s
             """, (sp, bool(body.get("selling_price_is_auto")),
                   (str(body.get("notes") or "").strip())[:1000] or None,
+                  (str(body.get("dps_ref") or "").strip())[:100] or None,
                   uid, uname, sheet_id))
             cur.execute("DELETE FROM fabric_costing_lines WHERE sheet_id=%s", (sheet_id,))
             for ln in lines:

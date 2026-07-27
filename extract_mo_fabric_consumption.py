@@ -45,9 +45,14 @@ ODOO_USER = os.environ["ODOO_USER"]
 ODOO_PASSWORD = os.environ["ODOO_PASSWORD"]
 DATABASE_URL = os.environ["DATABASE_URL"]
 
-# Main fabric only — categ_id 18 ("Raw Materials-Fabric") = FABRIC_CATS[0] in
-# extract_fabric.py. Trims/accessories (19) and other categories are excluded.
+# categ_id 18 ("Raw Materials-Fabric") = FABRIC_CATS[0] in extract_fabric.py.
+# categ_id 19 ("03. Accessories & Trims") — captured too (flagged
+# is_main_fabric=FALSE) for the Product Costing accessory suggestions. Other
+# categories stay excluded. Existing fabric-only readers filter on
+# is_main_fabric so they are unaffected by the accessory rows.
 MAIN_FABRIC_CATEG = 18
+ACCESSORIES_CATEG = 19
+KEEP_CATEGS = {MAIN_FABRIC_CATEG, ACCESSORIES_CATEG}
 
 # Default trailing window (days, by MO completion date). The KPI itself is a
 # rolling 90 days; we extract a wider window so a 90-day read always has full
@@ -103,6 +108,14 @@ def create_table(cur):
         ALTER TABLE mo_fabric_consumption ADD COLUMN IF NOT EXISTS dps_labour_cost    NUMERIC;
         ALTER TABLE mo_fabric_consumption ADD COLUMN IF NOT EXISTS dps_total_cost     NUMERIC;
         ALTER TABLE mo_fabric_consumption ADD COLUMN IF NOT EXISTS dps_cost_per_unit  NUMERIC;
+        -- Accessories & Trims support (Product Costing): non-fabric component
+        -- rows are flagged is_main_fabric=FALSE so every pre-existing
+        -- fabric-only reader (which filters on the flag) stays unchanged.
+        -- unit_cost_mo = the component cost as valued on the MO move
+        -- (stock.move.price_unit, per UoM unit) — the DPS-recorded cost basis
+        -- for costing suggestions (never latest-PO pricing).
+        ALTER TABLE mo_fabric_consumption ADD COLUMN IF NOT EXISTS is_main_fabric BOOLEAN NOT NULL DEFAULT TRUE;
+        ALTER TABLE mo_fabric_consumption ADD COLUMN IF NOT EXISTS unit_cost_mo   NUMERIC;
         """
     )
 
@@ -200,7 +213,7 @@ def extract(uid, models, cur, since_str, now):
             "stock.move",
             "read",
             [chunk],
-            {"fields": ["product_id", "quantity", "product_uom"]},
+            {"fields": ["product_id", "quantity", "product_uom", "price_unit"]},
         )
 
     # Resolve product categories so we can keep only main fabric (categ 18).
@@ -214,13 +227,18 @@ def extract(uid, models, cur, since_str, now):
             "product.product",
             "read",
             [chunk],
-            {"fields": ["default_code", "categ_id", "name"]},
+            {"fields": ["default_code", "categ_id", "name", "standard_price"]},
         ):
             prods[p["id"]] = p
 
-    # Aggregate consumed qty per (MO, fabric component) — sum across multiple moves
-    # of the same fabric in one MO so the (odoo_mo_id, component_id) PK holds.
-    agg = defaultdict(lambda: {"qty": 0.0, "uom": None, "name": None, "sku": None})
+    # Aggregate consumed qty per (MO, component) — sum across multiple moves
+    # of the same component in one MO so the (odoo_mo_id, component_id) PK
+    # holds. Keeps main fabric (18) AND accessories/trims (19); the flag says
+    # which. unit_cost_mo = consumed-qty-weighted average of the moves'
+    # price_unit (the cost the MO valued the component at).
+    agg = defaultdict(lambda: {"qty": 0.0, "uom": None, "name": None,
+                               "sku": None, "is_fabric": True,
+                               "cost_amt": 0.0, "cost_qty": 0.0})
     for mv in moves:
         if not mv.get("product_id"):
             continue
@@ -229,18 +247,29 @@ def extract(uid, models, cur, since_str, now):
         if not prod:
             continue
         categ_id = prod["categ_id"][0] if prod.get("categ_id") else None
-        if categ_id != MAIN_FABRIC_CATEG:
-            continue  # main fabric only
+        if categ_id not in KEEP_CATEGS:
+            continue  # main fabric + accessories/trims only
         mo_id = move_to_mo.get(mv["id"])
         if mo_id is None:
             continue
         key = (mo_id, pid)
         rec = agg[key]
-        rec["qty"] += mv.get("quantity") or 0.0
+        qty = mv.get("quantity") or 0.0
+        rec["qty"] += qty
+        # Cost as valued on the MO consumption: stock.move.price_unit when the
+        # move carries one (it is 0.0 across this Odoo — valuation layers are
+        # not exposed to the API user), else the component's average/standard
+        # cost (product.standard_price) — the unit cost Odoo values MO
+        # consumption at under average costing. Never latest-PO pricing.
+        pu = mv.get("price_unit") or prod.get("standard_price")
+        if pu and qty > 0:
+            rec["cost_amt"] += float(pu) * qty
+            rec["cost_qty"] += qty
         if mv.get("product_uom"):
             rec["uom"] = mv["product_uom"][1]
         rec["name"] = prod.get("name")
         rec["sku"] = prod.get("default_code")
+        rec["is_fabric"] = categ_id == MAIN_FABRIC_CATEG
 
     rows = []
     for (mo_id, pid), rec in agg.items():
@@ -273,12 +302,14 @@ def extract(uid, models, cur, since_str, now):
                 dc.get("total_labour_cost"),
                 dc.get("total_production_cost"),
                 dc.get("cost_per_unit"),
+                rec["is_fabric"],
+                (rec["cost_amt"] / rec["cost_qty"]) if rec["cost_qty"] > 0 else None,
                 now,
             )
         )
 
     if not rows:
-        log.info("No main-fabric components on the in-window MOs — nothing to write.")
+        log.info("No fabric/accessory components on the in-window MOs — nothing to write.")
         return 0
 
     execute_values(
@@ -289,7 +320,7 @@ def extract(uid, models, cur, since_str, now):
              component_id, fabric_sku, fabric_name, consumed_qty, uom,
              finished_product_id, finished_sku, finished_name, finished_tmpl_id,
              style_name, dps_odoo_id, dps_labour_cost, dps_total_cost,
-             dps_cost_per_unit, _loaded_at)
+             dps_cost_per_unit, is_main_fabric, unit_cost_mo, _loaded_at)
         VALUES %s
         ON CONFLICT (odoo_mo_id, component_id) DO UPDATE SET
             mo_ref=EXCLUDED.mo_ref,
@@ -309,6 +340,8 @@ def extract(uid, models, cur, since_str, now):
             dps_labour_cost=EXCLUDED.dps_labour_cost,
             dps_total_cost=EXCLUDED.dps_total_cost,
             dps_cost_per_unit=EXCLUDED.dps_cost_per_unit,
+            is_main_fabric=EXCLUDED.is_main_fabric,
+            unit_cost_mo=EXCLUDED.unit_cost_mo,
             _loaded_at=EXCLUDED._loaded_at
         """,
         rows,
