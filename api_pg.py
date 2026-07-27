@@ -7811,6 +7811,62 @@ def analytics_sell_through_by_location(
             r["health"] = "no_stock_data"
     return rows
 
+def _dedup_raw_by_style_number(raw, sum_fields, max_fields, min_fields, keep_fields):
+    """Merge raw DB rows that share the same non-null style_number into one row.
+
+    Rule: One Style Number → One Style Name.  When Odoo has two slightly
+    different names for the same style_number (e.g. a mid-season rename),
+    both come back as separate rows from the GROUP-BY-style_name query.
+    This helper collapses them before any Python-side computation runs.
+
+    Canon name selection: most rows → shorter name (as tiebreak) so the
+    cleaner, shorter name wins over a verbose variant.
+
+    Args:
+        raw:         list of dict rows from run_query.
+        sum_fields:  field names to add together across merged rows.
+        max_fields:  field names to take MAX of (e.g. last_sale).
+        min_fields:  field names to take MIN of (e.g. first_sale).
+        keep_fields: field names taken from the row whose style_name is the
+                     canonical name (brand, price, etc.).
+    Returns:
+        list of merged dicts, unordered within each merged group.
+    """
+    from collections import defaultdict, Counter
+    groups = defaultdict(list)
+    for r in raw:
+        sn = (r.get("style_number") or "").strip()
+        # Only collapse when a real, non-empty style_number is present
+        key = ("sn", sn) if sn else ("nm", r.get("style_name", ""))
+        groups[key].append(r)
+
+    merged = []
+    for _key, rows in groups.items():
+        if len(rows) == 1:
+            merged.append(dict(rows[0]))
+            continue
+        # Pick canonical name: most SKU rows → tie-break by shortest name
+        name_counts = Counter(r.get("style_name", "") for r in rows)
+        canon_name = max(name_counts,
+                         key=lambda n: (name_counts[n], -len(n)))
+        base = dict(rows[0])
+        base["style_name"] = canon_name
+        for f in sum_fields:
+            base[f] = sum((r.get(f) or 0) for r in rows)
+        for f in max_fields:
+            vals = [r[f] for r in rows if r.get(f) is not None]
+            base[f] = max(vals) if vals else None
+        for f in min_fields:
+            vals = [r[f] for r in rows if r.get(f) is not None]
+            base[f] = min(vals) if vals else None
+        canon_row = next(
+            (r for r in rows if r.get("style_name") == canon_name), rows[0])
+        for f in keep_fields:
+            base[f] = canon_row.get(f)
+        merged.append(base)
+    return merged
+
+
 def _sor_selected_period(date_from, date_to):
     """Validate the optional custom period for the SOR report's
     "Selected Period" columns. Defaults to the trailing 180 days so the
@@ -7911,6 +7967,17 @@ def analytics_sor_all_styles(
           AND (sa.units_6m IS NOT NULL OR st.soh_stores > 0 OR st.soh_warehouse > 0)
         """
     ) or []
+    # One Style Number → One Style Name: collapse rows that share the same
+    # style_number (e.g. mid-season Odoo renames) before computing metrics.
+    raw = _dedup_raw_by_style_number(
+        raw,
+        sum_fields=["units_6m", "sales_6m", "units_3w", "units_30d", "units_6w",
+                    "units_since_launch", "units_sel", "sales_sel",
+                    "soh_stores", "soh_warehouse", "soh_pipeline"],
+        max_fields=["last_sale"],
+        min_fields=["first_sale"],
+        keep_fields=["brand", "category", "collection", "subcategory", "original_price"],
+    )
     status = (style_status or "all").strip().lower()
     today = date.today()
     out = []
@@ -19483,6 +19550,19 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
         WHERE (COALESCE(st.soh_stores, 0) > 0 OR COALESCE(st.soh_warehouse, 0) > 0)
           AND COALESCE(p.brand, '') NOT ILIKE '%third party%'
     """, ttl=HEAVY_DASH_TTL)
+    # One Style Number → One Style Name: collapse rows that share the same
+    # style_number (e.g. mid-season Odoo renames) before computing tiers.
+    raw = _dedup_raw_by_style_number(
+        raw,
+        sum_fields=["units_life", "sales_life", "units_6m", "sales_6m",
+                    "units_30d", "units_14d", "units_prior_30d",
+                    "units_online", "units_stores",
+                    "soh_stores", "soh_warehouse", "soh_pipeline",
+                    "months_active_12"],
+        max_fields=["last_sale"],
+        min_fields=["first_sale", "launch_date"],
+        keep_fields=["brand", "subcategory", "price"],
+    )
     today = date.today()
     active, retired, pipeline, candidates = [], [], [], []
     for r in raw:
