@@ -574,12 +574,19 @@ export default function ProductionOverview({ onOpenReport }) {
       if (o.style_name) styleSet.add(o.style_name);
       if (lc === "New" && o.style_name) newStyleSet.add(o.style_name);
 
-      // Print: style_number ends in PR, PR2, PR3... OR style_name has "print"
-      const isPrint = /PR\d*$/i.test(o.style_number || "") || /\bprint\b/i.test(o.style_name || "");
+      // Print: use backend print_plain field when available; fall back to
+      // style_number / style_name keyword heuristics for orders not yet in
+      // the product master.
+      const isPrint = o.print_plain
+        ? o.print_plain === "Print"
+        : /PR\d*$/i.test(o.style_number || "") || /\bprint\b/i.test(o.style_name || "");
       if (isPrint) printUnits += qty;
 
-      // Knit: jersey, ponte, rib, sweater, knit fabric keywords in style name
-      const isKnit = /\b(jersey|ponte|rib\b|ribbed|sweater|knit|spandex|lycra|fleece)\b/i.test(o.style_name || "");
+      // Knit: use backend fabric_construction when available; fall back to
+      // style_name keyword heuristics for styles missing from product master.
+      const isKnit = o.fabric_construction
+        ? o.fabric_construction === "Knit"
+        : /\b(jersey|ponte|rib\b|ribbed|sweater|knit|spandex|lycra|fleece)\b/i.test(o.style_name || "");
       if (isKnit) knitUnits += qty;
 
       // Dresses
@@ -703,8 +710,10 @@ export default function ProductionOverview({ onOpenReport }) {
     },
     { key: "style_number", label: "Style No.", render: (r) => <span className="font-mono text-[12px] text-muted">{r.style_number || "—"}</span>, csv: (r) => r.style_number || "" },
     { key: "lifecycle", label: "Type", render: (r) => r.lifecycle || "—" },
-    { key: "category", label: "Category" },
-    { key: "product_type", label: "Subcategory" },
+    { key: "category", label: "Category", render: (r) => r.category || "Unspecified" },
+    { key: "product_type", label: "Subcategory", render: (r) => r.product_type || "Unspecified" },
+    { key: "fabric_construction", label: "Knit/Woven", render: (r) => r.fabric_construction || "—" },
+    { key: "print_plain", label: "Print/Plain", render: (r) => r.print_plain || "—" },
     { key: "order_qty", label: "Qty", numeric: true, render: (r) => fmtQty(r.order_qty), csv: (r) => r.order_qty },
     { key: "date_ordered", label: "Date Ordered", render: (r) => fmtDate(r.date_ordered), csv: (r) => r.date_ordered || "" },
     { key: "expected_delivery_date", label: "Expected Delivery", render: (r) => fmtDate(r.expected_delivery_date), csv: (r) => r.expected_delivery_date || "" },

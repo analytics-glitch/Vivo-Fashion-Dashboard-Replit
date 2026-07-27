@@ -31971,6 +31971,23 @@ def production_summary():
             WHERE to_stage = 'sewing' AND sewing_line IS NOT NULL
             GROUP BY order_ref
         )
+        -- Product master attributes per style_number: category, sub-category,
+        -- print/plain flag, and Knit vs Woven derivation.
+        -- print_plain: style is 'Print' when ANY SKU carries a Print variant.
+        -- fabric_construction: derived from product_type keywords first, then
+        --   style_name keywords as fallback — covers cases where product_type
+        --   isn't set yet in Odoo.
+        prod_attrs AS (
+            SELECT
+                style_number,
+                MAX(category)     AS category,
+                MAX(product_type) AS product_type,
+                CASE WHEN bool_or(print_plain = 'Print') THEN 'Print'
+                     ELSE 'Plain' END AS print_plain
+            FROM all_products_clean
+            WHERE style_number IS NOT NULL
+            GROUP BY style_number
+        )
         SELECT po.order_ref, po.style_number, po.style_name, po.product_name,
                po.buyer, po.order_qty, po.date_ordered, po.expected_delivery_date,
                po.production_type,
@@ -31981,12 +31998,32 @@ def production_summary():
                COALESCE(vr.variants, 0) AS variants,
                COALESCE(bal.units_in_progress, 0) AS units_in_progress,
                bal.stage_qty,
-               COALESCE(sew.sewing_lines, ARRAY[]::text[]) AS sewing_lines
+               COALESCE(sew.sewing_lines, ARRAY[]::text[]) AS sewing_lines,
+               -- Category / sub-category from product master.  NULL means the
+               -- style isn't in the product master yet; the frontend falls back
+               -- to its own heuristics for print_plain when this is NULL.
+               pa.category,
+               pa.product_type,
+               pa.print_plain,   -- NULL when style not in product master
+               -- Knit vs Woven: product_type keywords take precedence; fall back
+               -- to style_name fabric keywords for styles not yet in product master.
+               CASE
+                   WHEN COALESCE(pa.product_type, '') ILIKE ANY(ARRAY[
+                       '%sweater%','%poncho%','%hoodie%','%sweatshirt%',
+                       '%t-shirt%','%tank top%','%legging%','%bodysuit%','%knit%'
+                   ])
+                   OR po.style_name ILIKE ANY(ARRAY[
+                       '%jersey%','% rib %','%ponte%','%spandex%','%lycra%',
+                       '% knit%','%fleece%'
+                   ])
+                   THEN 'Knit' ELSE 'Woven'
+               END AS fabric_construction
         FROM production_orders po
         LEFT JOIN line_rollup lr ON lr.order_ref = po.order_ref
         LEFT JOIN var_rollup  vr ON vr.order_ref = po.order_ref
         LEFT JOIN bal            ON bal.order_ref = po.order_ref
         LEFT JOIN sew            ON sew.order_ref = po.order_ref
+        LEFT JOIN prod_attrs  pa ON pa.style_number = po.style_number
         ORDER BY po.date_ordered DESC NULLS LAST, po.order_ref DESC""", fetch=True)
 
     # Load now sitting in the Sewing stage, split by the line each piece ran on
