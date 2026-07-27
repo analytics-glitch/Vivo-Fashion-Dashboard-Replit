@@ -346,6 +346,51 @@ const RangeManagement = () => {
   const candidates = data?.tier3_graduation_candidates || [];
   const transitions = data?.tier_transitions || [];
 
+  const exportRetirementCsv = () => {
+    const cols = [
+      ["style_name",                  "Style Name"],
+      ["style_number",                "Style Number"],
+      ["brand",                       "Brand"],
+      ["subcategory",                 "Subcategory"],
+      ["style_age_weeks",             "Age (weeks)"],
+      ["lifetime_sor_pct",            "Lifetime SOR %"],
+      ["sor_6m",                      "SOR (6m) %"],
+      ["current_stock",               "Remaining Stock"],
+      ["soh_stores",                  "SOH Stores"],
+      ["soh_warehouse",               "SOH Warehouse"],
+      ["woc",                         "WOC"],
+      ["weekly_avg",                  "Weekly Avg"],
+      ["last_sale_days",              "Last Sale (days)"],
+      ["units_since_launch",          "Units Since Launch"],
+      ["sales_since_launch",          "Revenue Since Launch (KES)"],
+      ["units_6m",                    "Units (6m)"],
+      ["sales_6m",                    "Revenue (6m, KES)"],
+      ["original_price",              "Full Price (KES)"],
+      ["avg_price_since_launch",      "Avg Price (KES)"],
+      ["full_price_pct",              "Full Price %"],
+      ["reorder_count",               "Reorder Count"],
+      ["recommended_retirement_date", "Recommended Retire Date"],
+      ["outlet_discount_date",        "Outlet Discount Date"],
+      ["reason",                      "Reason"],
+    ];
+    const esc = (v) => {
+      if (v === null || v === undefined) return "";
+      const s = String(v);
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const lines = [cols.map(([, h]) => h).join(",")];
+    for (const r of retirement) lines.push(cols.map(([k]) => esc(r[k])).join(","));
+    const blob = new Blob([`\ufeff${lines.join("\n")}`], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `styles-to-retire-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   // Age distribution (computed from active rows, no new endpoint needed)
   const ageDist = useMemo(() => {
     const buckets = [
@@ -681,6 +726,19 @@ const RangeManagement = () => {
             <SectionTitle
               title={`Styles to Retire · ${fmtNum(retirement.length)} of ${fmtNum(summary.flagged_for_retirement)} flagged`}
               subtitle="Styles that failed their SOP performance gate and still hold stock to clear. Retire in Odoo once markdown is complete. Outlet discount date follows the 4-week gap rule from the SOP."
+              action={
+                retirement.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={exportRetirementCsv}
+                    className="btn-secondary flex items-center gap-1.5"
+                    data-testid="retirement-export-btn"
+                  >
+                    <DownloadSimple size={14} weight="bold" />
+                    Export CSV
+                  </button>
+                )
+              }
             />
             {retirement.length === 0 ? (
               <Empty label="No flagged styles with remaining stock to clear — range is clean." />
