@@ -7866,6 +7866,7 @@ def analytics_sor_all_styles(
                 ROUND(SUM(s.net_sales_kes::numeric) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '""" + str(win) + """ days')) AS sales_6m,
                 SUM(s.net_quantity) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '21 days') AS units_3w,
                 SUM(s.net_quantity) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '30 days') AS units_30d,
+                SUM(s.net_quantity) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '42 days') AS units_6w,
                 -- Lifetime ("since launch") totals: no date filter, so they
                 -- cover the style's full history (matches the report's "Units
                 -- Since Launch" / "SOR Since Launch" columns). Still scoped by
@@ -7941,8 +7942,10 @@ def analytics_sor_all_styles(
         denom = units_6m + soh_total
         # Lifetime ("since launch") sell-through: lifetime net units over
         # lifetime units + current stock-on-hand, mirroring the 6m SOR formula.
+        units_6w = int(r["units_6w"] or 0)
         units_since_launch = int(r["units_since_launch"] or 0)
         life_denom = units_since_launch + soh_total
+        denom_6w = units_6w + soh_total
         age_days = (today - first_sale).days if first_sale else None
         original_price = r["original_price"]
         units_sel = int(r["units_sel"] or 0)
@@ -7975,6 +7978,7 @@ def analytics_sor_all_styles(
             "original_price": round(float(original_price)) if original_price is not None else None,
             "days_since_last_sale": (today - last_sale).days if last_sale else None,
             "sor_6m": round(100.0 * units_6m / denom, 1) if denom > 0 else None,
+            "sor_6w": round(100.0 * units_6w / denom_6w, 1) if denom_6w > 0 else None,
             "sor_since_launch": round(100.0 * units_since_launch / life_denom, 1) if life_denom > 0 else None,
             "units_sel": units_sel,
             "sales_sel": round(sales_sel),

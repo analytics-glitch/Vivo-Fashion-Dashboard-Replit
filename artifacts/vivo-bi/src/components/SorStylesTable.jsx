@@ -290,6 +290,18 @@ const SorStylesTable = ({
     }
     cols.push(
       {
+        key: "sor_6w", label: "6W SOR", numeric: true,
+        headerTitle: "6-week sell-through rate: units sold in last 42 days ÷ (units sold + SOH)",
+        render: (r) => {
+          if (r._is_variant) return <span className="text-muted">—</span>;
+          const s = r.sor_6w;
+          if (s == null) return <span className="text-muted">—</span>;
+          const cls = s >= 50 ? "pill-green" : s >= 25 ? "pill-amber" : "pill-red";
+          return <span className={cls}>{s.toFixed(1)}%</span>;
+        },
+        csv: (r) => r.sor_6w ?? "",
+      },
+      {
         key: "sor_6m", label: "6M SOR", numeric: true,
         render: (r) => {
           const s = r.sor_6m || 0;
