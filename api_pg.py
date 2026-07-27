@@ -31970,7 +31970,7 @@ def production_summary():
             FROM stage_movements
             WHERE to_stage = 'sewing' AND sewing_line IS NOT NULL
             GROUP BY order_ref
-        )
+        ),
         -- Product master attributes per style_number: category, sub-category,
         -- print/plain flag, and Knit vs Woven derivation.
         -- print_plain: style is 'Print' when ANY SKU carries a Print variant.
