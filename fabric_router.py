@@ -12039,6 +12039,505 @@ def pc_batch_detail(bid: int, request: Request):
     return {"batch": b, "rows": rows}
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Product Costing (per-style cost sheets)
+# ═══════════════════════════════════════════════════════════════════════════
+# Per-style cost sheets (fabric, trims, CMT/labour, overheads) with margin vs
+# the style's current selling price. Access is STRICTLY email-allowlisted —
+# enforced server-side for every /api/fabric/costing path in api_pg's auth
+# middleware via _fabric_costing_allowed below (the tab is also hidden in the
+# UI for everyone else, but the middleware is the enforcement).
+_FABRIC_COSTING_EMAILS = {
+    "bedan@vivofashiongroup.com",
+    "stephen@vivofashiongroup.com",
+    "kevinl@vivofashiongroup.com",
+}
+
+
+def _fabric_costing_allowed(user):
+    """True when this user dict may use the Product Costing tab/API."""
+    u = user or {}
+    return (u.get("email") or "").strip().lower() in _FABRIC_COSTING_EMAILS
+
+
+_COSTING_TABLES_READY = False
+_COSTING_LINE_KINDS = ("fabric", "trim", "cmt", "overhead")
+
+
+def _ensure_costing_tables(conn):
+    """Lazily create the costing tables (idempotent, once per process).
+    Prod is a separate DB, so tables appear there on first use."""
+    global _COSTING_TABLES_READY
+    if _COSTING_TABLES_READY:
+        return
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS fabric_costing_sheets (
+                id            SERIAL PRIMARY KEY,
+                style_name    TEXT NOT NULL,
+                style_number  TEXT,
+                selling_price NUMERIC,
+                selling_price_is_auto BOOLEAN DEFAULT TRUE,
+                notes         TEXT,
+                created_by    TEXT,
+                created_by_name TEXT,
+                created_at    TIMESTAMPTZ DEFAULT now(),
+                updated_by    TEXT,
+                updated_by_name TEXT,
+                updated_at    TIMESTAMPTZ DEFAULT now()
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_fab_costing_style
+                ON fabric_costing_sheets (lower(style_name));
+            CREATE TABLE IF NOT EXISTS fabric_costing_lines (
+                id        SERIAL PRIMARY KEY,
+                sheet_id  INTEGER NOT NULL REFERENCES fabric_costing_sheets(id)
+                          ON DELETE CASCADE,
+                kind      TEXT NOT NULL,
+                label     TEXT,
+                qty       NUMERIC,
+                unit_cost NUMERIC,
+                total     NUMERIC,
+                is_auto   BOOLEAN DEFAULT FALSE,
+                source    TEXT,
+                position  INTEGER DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_fab_costing_lines_sheet
+                ON fabric_costing_lines(sheet_id);
+            CREATE TABLE IF NOT EXISTS fabric_costing_history (
+                id         SERIAL PRIMARY KEY,
+                sheet_id   INTEGER NOT NULL REFERENCES fabric_costing_sheets(id)
+                           ON DELETE CASCADE,
+                action     TEXT NOT NULL,
+                changed_by TEXT,
+                changed_by_name TEXT,
+                changed_at TIMESTAMPTZ DEFAULT now(),
+                summary    TEXT,
+                snapshot   JSONB
+            );
+            CREATE INDEX IF NOT EXISTS idx_fab_costing_hist_sheet
+                ON fabric_costing_history(sheet_id, changed_at DESC);
+        """)
+    conn.commit()
+    _COSTING_TABLES_READY = True
+
+
+def _costing_user(request):
+    u = getattr(request.state, "user", None) or {}
+    return (str(u.get("user_id") or u.get("id") or ""),
+            u.get("name") or u.get("email") or "unknown")
+
+
+def _style_selling_price(conn, style_name):
+    """Modal (most common) SKU price for the style from the product master —
+    per the style-full-price rule (modal, never MAX). None when unknown."""
+    rows = q(conn, """
+        SELECT mode() WITHIN GROUP (ORDER BY price) AS price
+        FROM all_products_clean
+        WHERE lower(style_name) = lower(%s)
+          AND price IS NOT NULL AND price > 0
+    """, [style_name])
+    p = rows[0]["price"] if rows else None
+    return float(p) if p else None
+
+
+_KG_UOMS = {"kg", "g"}
+_M_UOMS = {"m", "metre", "meter", "mtr", "metres", "meters", "metre(s)"}
+
+
+def _costing_style_facts(conn, style_name, days=365):
+    """Auto-suggestion facts for a style from Done-DPS consumption:
+    metres per garment, weighted labour cost per garment, and the fabrics
+    used (with a suggested cost per metre from PO prices / fabric master).
+    MOs are matched to the BI style via finished_sku = all_products_clean.sku
+    — NOT on style_name: MO style names embed fabric + colour ("… in Jersey -
+    Dark Red") and never match the product master (same rule as the
+    metres-per-garment category breakdown above)."""
+    rows = q(conn, """
+        SELECT c.odoo_mo_id, c.produced_qty, c.consumed_qty,
+               lower(coalesce(c.uom,'')) AS uom,
+               c.component_id, c.fabric_sku, c.fabric_name,
+               c.dps_cost_per_unit,
+               p.kg_per_mtr_eff AS kpm, p.standard_price
+        FROM mo_fabric_consumption c
+        LEFT JOIN raw_fabric_products p ON p.id = c.component_id
+        WHERE c.finished_sku IN (
+                SELECT sku FROM all_products_clean
+                WHERE lower(style_name) = lower(%s))
+          AND c.done_date >= CURRENT_DATE - (%s || ' days')::interval
+    """, [style_name, days])
+
+    mos, fabrics = {}, {}
+    for r in rows:
+        d = mos.setdefault(r["odoo_mo_id"], {
+            "produced": float(r["produced_qty"] or 0), "metres": 0.0,
+            "bad": False,
+            "labour_pu": float(r["dps_cost_per_unit"]) if r["dps_cost_per_unit"] is not None else None,
+        })
+        qty = float(r["consumed_qty"] or 0)
+        u, kpm = r["uom"], r["kpm"]
+        metres = None
+        if u in _M_UOMS:
+            metres = qty
+        elif u in _KG_UOMS and kpm and float(kpm) > 0:
+            kg = qty / 1000.0 if u == "g" else qty
+            metres = kg / float(kpm)
+        if metres is None:
+            d["bad"] = True
+        else:
+            d["metres"] += metres
+        f = fabrics.setdefault(r["component_id"], {
+            "component_id": r["component_id"], "sku": r["fabric_sku"],
+            "name": r["fabric_name"], "metres": 0.0,
+            "kpm": float(kpm) if kpm else None,
+            "standard_price": float(r["standard_price"]) if r["standard_price"] else None,
+        })
+        if metres is not None:
+            f["metres"] += metres
+
+    tot_m = tot_g = 0.0
+    lab_cost = lab_units = 0.0
+    n_mos = 0
+    for d in mos.values():
+        if d["produced"] <= 0:
+            continue
+        if not d["bad"]:
+            tot_m += d["metres"]
+            tot_g += d["produced"]
+            n_mos += 1
+        if d["labour_pu"] is not None and d["labour_pu"] > 0:
+            lab_cost += d["labour_pu"] * d["produced"]
+            lab_units += d["produced"]
+
+    # Suggested cost per metre for each fabric: most recent PO unit price
+    # (per kg → per metre via kg_per_mtr_eff), else the fabric master's
+    # standard_price (per kg) converted the same way.
+    fab_list = sorted(fabrics.values(), key=lambda f: -f["metres"])
+    ids = [f["component_id"] for f in fab_list if f["component_id"]]
+    po_price = {}
+    if ids:
+        for r in q(conn, """
+            SELECT DISTINCT ON (product_id) product_id, price_unit,
+                   lower(coalesce(uom,'')) AS uom, order_date
+            FROM raw_fabric_purchase_orders
+            WHERE product_id = ANY(%s) AND price_unit > 0
+            ORDER BY product_id, order_date DESC NULLS LAST
+        """, [ids]):
+            po_price[r["product_id"]] = r
+    for f in fab_list:
+        cpm = src = None
+        po = po_price.get(f["component_id"])
+        if po:
+            pu = float(po["price_unit"] or 0)
+            if po["uom"] in _M_UOMS:
+                cpm, src = pu, "latest PO price (per metre)"
+            elif f["kpm"]:
+                cpm, src = pu * f["kpm"], "latest PO price (per kg × kg/m)"
+        if cpm is None and f["standard_price"] and f["kpm"]:
+            cpm, src = f["standard_price"] * f["kpm"], "fabric master cost (per kg × kg/m)"
+        f["cost_per_metre"] = round(cpm, 2) if cpm else None
+        f["cost_source"] = src
+        f["metres"] = round(f["metres"], 1)
+
+    # Weighted-average cost/metre across the style's fabrics (by metres used).
+    wm = [(f["metres"], f["cost_per_metre"]) for f in fab_list
+          if f["cost_per_metre"] and f["metres"] > 0]
+    fabric_cpm = (round(sum(m * c for m, c in wm) / sum(m for m, _ in wm), 2)
+                  if wm else None)
+
+    return {
+        "metres_per_garment": round(tot_m / tot_g, 2) if tot_g > 0 else None,
+        "metres_mos": n_mos,
+        "labour_per_garment": round(lab_cost / lab_units, 2) if lab_units > 0 else None,
+        "labour_garments": round(lab_units),
+        "labour_available": lab_units > 0,
+        "fabric_cost_per_metre": fabric_cpm,
+        "fabrics": fab_list[:10],
+        "window_days": days,
+    }
+
+
+@fabric_router.get("/api/fabric/costing/access")
+def costing_access(request: Request):
+    """Reachable only through the middleware allowlist gate — the dashboard
+    uses it to decide whether to reveal the Product Costing tab (fails closed).
+    labour_available reports whether the DPS labour-cost columns are populated
+    at all, so the UI can explain a manual-only labour fallback."""
+    with _get_conn() as conn:
+        _ensure_costing_tables(conn)
+        try:
+            r = q(conn, """SELECT COUNT(dps_cost_per_unit) AS n
+                           FROM mo_fabric_consumption""")
+            lab = bool(r and r[0]["n"])
+        except Exception:
+            lab = False
+    return {"allowed": True, "labour_data_available": lab}
+
+
+@fabric_router.get("/api/fabric/costing/styles")
+def costing_styles(q_: str = Query(default="", alias="q"),
+                   limit: int = Query(default=20)):
+    """Searchable style list for the sheet creator — same strict own-style
+    universe as the reservation picker, plus the modal selling price."""
+    term = (q_ or "").strip().lower()
+    limit = max(1, min(int(limit or 20), 50))
+    out = []
+    for s in _own_styles():
+        if term:
+            name = (s.get("style_name") or "").lower()
+            num = (s.get("style_number") or "").lower()
+            if term not in name and term not in num:
+                continue
+        out.append({"style_name": s.get("style_name"),
+                    "style_number": s.get("style_number")})
+        if len(out) >= limit:
+            break
+    return out
+
+
+@fabric_router.get("/api/fabric/costing/suggest")
+def costing_suggest(style_name: str = Query(...)):
+    style_row = _match_style(style_name)
+    if not style_row:
+        raise HTTPException(status_code=404, detail="Unknown style")
+    canon = style_row.get("style_name")
+    with _get_conn() as conn:
+        facts = _costing_style_facts(conn, canon)
+        sp = _style_selling_price(conn, canon)
+    facts["style_name"] = canon
+    facts["style_number"] = style_row.get("style_number")
+    facts["selling_price"] = sp
+    return facts
+
+
+def _clean_costing_lines(lines):
+    """Validate + normalise posted cost lines; totals are recomputed
+    server-side (never trusted from the client)."""
+    out = []
+    if not isinstance(lines, list) or not lines:
+        raise HTTPException(status_code=400, detail="At least one cost line is required")
+    if len(lines) > 100:
+        raise HTTPException(status_code=400, detail="Too many lines")
+    for i, ln in enumerate(lines):
+        if not isinstance(ln, dict):
+            raise HTTPException(status_code=400, detail="Bad line")
+        kind = (ln.get("kind") or "").strip().lower()
+        if kind not in _COSTING_LINE_KINDS:
+            raise HTTPException(status_code=400,
+                                detail=f"Line {i+1}: kind must be one of {_COSTING_LINE_KINDS}")
+        try:
+            qty = float(ln.get("qty") if ln.get("qty") not in (None, "") else 1)
+            unit_cost = float(ln.get("unit_cost") if ln.get("unit_cost") not in (None, "") else 0)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail=f"Line {i+1}: qty/unit cost must be numbers")
+        if qty < 0 or unit_cost < 0:
+            raise HTTPException(status_code=400, detail=f"Line {i+1}: negative values not allowed")
+        out.append({
+            "kind": kind,
+            "label": (str(ln.get("label") or "").strip())[:200],
+            "qty": round(qty, 4),
+            "unit_cost": round(unit_cost, 4),
+            "total": round(qty * unit_cost, 2),
+            "is_auto": bool(ln.get("is_auto")),
+            "source": (str(ln.get("source") or "").strip())[:200] or None,
+            "position": i,
+        })
+    return out
+
+
+def _sheet_payload(conn, sheet_id, with_history=True):
+    sheets = q(conn, "SELECT * FROM fabric_costing_sheets WHERE id=%s", (sheet_id,))
+    if not sheets:
+        raise HTTPException(status_code=404, detail="Sheet not found")
+    s = dict(sheets[0])
+    lines = [dict(l) for l in q(conn, """
+        SELECT id, kind, label, qty, unit_cost, total, is_auto, source, position
+        FROM fabric_costing_lines WHERE sheet_id=%s ORDER BY position, id
+    """, (sheet_id,))]
+    for l in lines:
+        for k in ("qty", "unit_cost", "total"):
+            l[k] = float(l[k]) if l[k] is not None else None
+    total = round(sum(l["total"] or 0 for l in lines), 2)
+    sp = float(s["selling_price"]) if s["selling_price"] is not None else None
+    s["selling_price"] = sp
+    for k in ("created_at", "updated_at"):
+        s[k] = s[k].isoformat() if s.get(k) else None
+    s["lines"] = lines
+    s["total_cost"] = total
+    s["margin"] = round(sp - total, 2) if sp is not None else None
+    s["margin_pct"] = round((sp - total) / sp * 100, 1) if sp else None
+    if with_history:
+        hist = [dict(h) for h in q(conn, """
+            SELECT action, changed_by_name, changed_at, summary
+            FROM fabric_costing_history WHERE sheet_id=%s
+            ORDER BY changed_at DESC, id DESC LIMIT 50
+        """, (sheet_id,))]
+        for h in hist:
+            h["changed_at"] = h["changed_at"].isoformat() if h.get("changed_at") else None
+        s["history"] = hist
+    return s
+
+
+def _costing_history_write(conn, sheet_id, action, uid, uname, summary, snapshot):
+    with conn.cursor() as cur:
+        cur.execute("""
+            INSERT INTO fabric_costing_history
+                (sheet_id, action, changed_by, changed_by_name, summary, snapshot)
+            VALUES (%s,%s,%s,%s,%s,%s)
+        """, (sheet_id, action, uid, uname, summary,
+              json.dumps(snapshot, default=str)))
+
+
+def _costing_change_summary(old, new_lines, old_sp, new_sp):
+    """Human-readable what-changed summary for the history trail."""
+    bits = []
+    old_total = round(sum(float(l["total"] or 0) for l in old), 2)
+    new_total = round(sum(l["total"] for l in new_lines), 2)
+    if old_total != new_total:
+        bits.append(f"total cost {old_total:,.2f} → {new_total:,.2f}")
+    if (old_sp or None) != (new_sp or None):
+        bits.append(f"selling price {old_sp or 0:,.2f} → {new_sp or 0:,.2f}")
+    if len(old) != len(new_lines):
+        bits.append(f"lines {len(old)} → {len(new_lines)}")
+    else:
+        changed = sum(1 for a, b in zip(old, new_lines)
+                      if (a["kind"], a["label"], float(a["qty"] or 0), float(a["unit_cost"] or 0))
+                      != (b["kind"], b["label"], b["qty"], b["unit_cost"]))
+        if changed:
+            bits.append(f"{changed} line(s) edited")
+    return "; ".join(bits) or "saved (no value changes)"
+
+
+@fabric_router.get("/api/fabric/costing/sheets")
+def costing_sheets_list():
+    with _get_conn() as conn:
+        _ensure_costing_tables(conn)
+        rows = q(conn, """
+            SELECT s.id, s.style_name, s.style_number, s.selling_price,
+                   s.updated_by_name, s.updated_at,
+                   COALESCE(SUM(l.total),0) AS total_cost,
+                   COUNT(l.id) AS line_count
+            FROM fabric_costing_sheets s
+            LEFT JOIN fabric_costing_lines l ON l.sheet_id = s.id
+            GROUP BY s.id
+            ORDER BY s.updated_at DESC
+        """)
+    out = []
+    for r in rows:
+        sp = float(r["selling_price"]) if r["selling_price"] is not None else None
+        tc = round(float(r["total_cost"] or 0), 2)
+        out.append({
+            "id": r["id"], "style_name": r["style_name"],
+            "style_number": r["style_number"], "selling_price": sp,
+            "total_cost": tc,
+            "margin": round(sp - tc, 2) if sp is not None else None,
+            "margin_pct": round((sp - tc) / sp * 100, 1) if sp else None,
+            "line_count": r["line_count"],
+            "updated_by_name": r["updated_by_name"],
+            "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
+        })
+    return {"sheets": out}
+
+
+@fabric_router.get("/api/fabric/costing/sheets/{sheet_id}")
+def costing_sheet_get(sheet_id: int):
+    with _get_conn() as conn:
+        _ensure_costing_tables(conn)
+        return _sheet_payload(conn, sheet_id)
+
+
+@fabric_router.post("/api/fabric/costing/sheets")
+def costing_sheet_create(request: Request, body: dict = Body(...)):
+    style_row = _match_style(body.get("style_name"))
+    if not style_row:
+        raise HTTPException(status_code=400,
+                            detail="Pick a style from the list — free-typed styles are not allowed")
+    lines = _clean_costing_lines(body.get("lines"))
+    sp = body.get("selling_price")
+    try:
+        sp = float(sp) if sp not in (None, "") else None
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="selling_price must be a number")
+    if sp is not None and sp < 0:
+        raise HTTPException(status_code=400, detail="selling_price must be ≥ 0")
+    uid, uname = _costing_user(request)
+    canon = style_row.get("style_name")
+    with _get_conn() as conn:
+        _ensure_costing_tables(conn)
+        dup = q(conn, "SELECT id FROM fabric_costing_sheets WHERE lower(style_name)=lower(%s)",
+                (canon,))
+        if dup:
+            raise HTTPException(status_code=409,
+                                detail=f"A costing sheet for this style already exists (#{dup[0]['id']}) — edit it instead")
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO fabric_costing_sheets
+                    (style_name, style_number, selling_price, selling_price_is_auto,
+                     notes, created_by, created_by_name, updated_by, updated_by_name)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id
+            """, (canon, style_row.get("style_number"), sp,
+                  bool(body.get("selling_price_is_auto")),
+                  (str(body.get("notes") or "").strip())[:1000] or None,
+                  uid, uname, uid, uname))
+            sheet_id = cur.fetchone()[0]
+            for ln in lines:
+                cur.execute("""
+                    INSERT INTO fabric_costing_lines
+                        (sheet_id, kind, label, qty, unit_cost, total, is_auto, source, position)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                """, (sheet_id, ln["kind"], ln["label"], ln["qty"], ln["unit_cost"],
+                      ln["total"], ln["is_auto"], ln["source"], ln["position"]))
+        _costing_history_write(conn, sheet_id, "created", uid, uname,
+                               f"sheet created with {len(lines)} line(s)",
+                               {"lines": lines, "selling_price": sp})
+        conn.commit()
+        return _sheet_payload(conn, sheet_id)
+
+
+@fabric_router.put("/api/fabric/costing/sheets/{sheet_id}")
+def costing_sheet_update(sheet_id: int, request: Request, body: dict = Body(...)):
+    lines = _clean_costing_lines(body.get("lines"))
+    sp = body.get("selling_price")
+    try:
+        sp = float(sp) if sp not in (None, "") else None
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="selling_price must be a number")
+    if sp is not None and sp < 0:
+        raise HTTPException(status_code=400, detail="selling_price must be ≥ 0")
+    uid, uname = _costing_user(request)
+    with _get_conn() as conn:
+        _ensure_costing_tables(conn)
+        sheets = q(conn, "SELECT * FROM fabric_costing_sheets WHERE id=%s", (sheet_id,))
+        if not sheets:
+            raise HTTPException(status_code=404, detail="Sheet not found")
+        old_sp = float(sheets[0]["selling_price"]) if sheets[0]["selling_price"] is not None else None
+        old_lines = q(conn, """
+            SELECT kind, label, qty, unit_cost, total, is_auto, source
+            FROM fabric_costing_lines WHERE sheet_id=%s ORDER BY position, id
+        """, (sheet_id,))
+        summary = _costing_change_summary(old_lines, lines, old_sp, sp)
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE fabric_costing_sheets
+                SET selling_price=%s, selling_price_is_auto=%s, notes=%s,
+                    updated_by=%s, updated_by_name=%s, updated_at=now()
+                WHERE id=%s
+            """, (sp, bool(body.get("selling_price_is_auto")),
+                  (str(body.get("notes") or "").strip())[:1000] or None,
+                  uid, uname, sheet_id))
+            cur.execute("DELETE FROM fabric_costing_lines WHERE sheet_id=%s", (sheet_id,))
+            for ln in lines:
+                cur.execute("""
+                    INSERT INTO fabric_costing_lines
+                        (sheet_id, kind, label, qty, unit_cost, total, is_auto, source, position)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                """, (sheet_id, ln["kind"], ln["label"], ln["qty"], ln["unit_cost"],
+                      ln["total"], ln["is_auto"], ln["source"], ln["position"]))
+        _costing_history_write(conn, sheet_id, "updated", uid, uname, summary,
+                               {"lines": lines, "selling_price": sp})
+        conn.commit()
+        return _sheet_payload(conn, sheet_id)
+
+
 if __name__ == "__main__":
     # Standalone one-time backfill of the Months-of-Cover daily snapshot. The
     # writer is idempotent (upserts on today's EAT capture date), so this is safe

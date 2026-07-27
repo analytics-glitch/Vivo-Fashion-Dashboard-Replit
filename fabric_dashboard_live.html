@@ -555,6 +555,7 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
       <li><button type="button" class="nav-item" data-page="rolls"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg><span>Rolls</span></button></li>
       <li><button type="button" class="nav-item" data-page="receiving"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"></polyline><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"></path></svg><span>Receiving</span></button></li>
       <li><button type="button" class="nav-item" data-page="createprod" style="display:none;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="16"></line><line x1="8" y1="12" x2="16" y2="12"></line></svg><span>Create Products</span></button></li>
+      <li><button type="button" class="nav-item" data-page="costing" style="display:none;" id="nav-costing"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="1" x2="12" y2="23"></line><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path></svg><span>Product Costing</span></button></li>
      </ul>
     </li>
     <li class="nav-more-li" id="nav-more-li">
@@ -1267,6 +1268,62 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
       </table>
      </div>
      <div id="pc-batch-detail" style="display:none;margin-top:10px;"></div>
+    </div>
+   </section>
+
+   <!-- PRODUCT COSTING (email-allowlisted; tab hidden by default, server-gated) -->
+   <section id="page-costing" style="display:none;">
+    <div id="cost-labour-note"></div>
+    <div class="card">
+     <div class="section-head"><h3>Costing sheets</h3><span class="muted">per-style cost build-up vs current selling price</span>
+      <button class="btn btn-primary" style="margin-left:auto;" onclick="costNewSheet()">+ New costing sheet</button>
+     </div>
+     <div id="cost-list-err"></div>
+     <div class="tbl-wrap">
+      <table class="data">
+       <thead><tr><th>Style</th><th>Style #</th><th class="r">Total cost / garment</th><th class="r">Selling price</th><th class="r">Margin</th><th class="r">Margin %</th><th class="r">Lines</th><th>Last edited</th><th></th></tr></thead>
+       <tbody id="cost-list-body"><tr><td colspan="9" class="loading">Loading…</td></tr></tbody>
+      </table>
+     </div>
+    </div>
+    <div class="card" id="cost-editor" style="display:none;">
+     <div class="section-head"><h3 id="cost-editor-title">New costing sheet</h3>
+      <button class="btn" style="margin-left:auto;" onclick="costCloseEditor()">Close</button>
+     </div>
+     <div id="cost-editor-err"></div>
+     <div class="flex" style="flex-wrap:wrap;gap:12px;align-items:flex-end;margin-bottom:10px;">
+      <div style="position:relative;">
+       <label class="rsv-lbl">Style (from BI product master)</label>
+       <input id="cost-style-search" placeholder="Search style name or number…" autocomplete="off" style="width:280px;" oninput="costDebouncedStyleSearch()" onfocus="costDebouncedStyleSearch()">
+       <div id="cost-style-list" class="resv-dropdown" style="display:none;"></div>
+      </div>
+      <div>
+       <label class="rsv-lbl">Style number</label>
+       <input id="cost-style-number" disabled style="width:130px;background:var(--bg,#f5f5f5);">
+      </div>
+      <div>
+       <label class="rsv-lbl">Selling price (KES) <span id="cost-sp-badge"></span></label>
+       <input id="cost-selling-price" type="number" min="0" step="any" style="width:140px;" oninput="costSpManual()">
+      </div>
+     </div>
+     <div id="cost-suggest-note" class="muted" style="font-size:12px;margin-bottom:8px;"></div>
+     <div class="tbl-wrap">
+      <table class="data">
+       <thead><tr><th style="width:120px;">Type</th><th>Description</th><th class="r" style="width:110px;">Qty</th><th class="r" style="width:130px;">Unit cost (KES)</th><th class="r" style="width:120px;">Line total</th><th style="width:120px;">Source</th><th style="width:36px;"></th></tr></thead>
+       <tbody id="cost-lines-body"></tbody>
+       <tfoot><tr style="font-weight:700;"><td colspan="4" style="text-align:right;">Total cost per garment</td><td class="r" id="cost-total-cell">—</td><td colspan="2"></td></tr>
+        <tr style="font-weight:700;"><td colspan="4" style="text-align:right;">Margin vs selling price</td><td class="r" id="cost-margin-cell">—</td><td colspan="2" id="cost-margin-pct-cell"></td></tr></tfoot>
+      </table>
+     </div>
+     <div class="flex" style="gap:8px;margin-top:10px;flex-wrap:wrap;">
+      <button class="btn" onclick="costAddLine('trim')">+ Trim / accessory</button>
+      <button class="btn" onclick="costAddLine('cmt')">+ CMT / labour</button>
+      <button class="btn" onclick="costAddLine('overhead')">+ Overhead / other</button>
+      <button class="btn" onclick="costAddLine('fabric')">+ Fabric</button>
+      <span style="margin-left:auto;"></span>
+      <button class="btn btn-primary" id="cost-save-btn" onclick="costSaveSheet()">Save sheet</button>
+     </div>
+     <div id="cost-history" style="margin-top:14px;"></div>
     </div>
    </section>
 
@@ -2248,8 +2305,8 @@ function qcExportDetail(){
 }
 
 // ── Navigation ──
-const LOADERS={buyingpd:loadBuyingPD,dashboard:loadFabricMixFirst,register:()=>loadRegister(0),deadstock:loadDeadStock,defects:loadFabricQC,dataquality:loadDataQuality,support:loadSupport,movement:initTrendBuilder,pos:loadPOsPage,suppliers:loadSuppliers,reservations:loadReservations,rolls:()=>loadRolls(0),receiving:loadReceivingBatches,createprod:loadCreateProducts};
-const DESCS={buyingpd:'Buying & Product Development — garment fabric-efficiency KPIs from Done-DPS manufacturing orders',dashboard:'Stock Mix — each category\'s share of consumption vs share of available stock',overview:'Fabric stock, value and health across the warehouse',register:'',ageing:'Stock ageing analysis — coming soon',deadstock:'Fabric that has been sitting without movement',defects:'Roll-level quality results from the Receiving tab — pass rates, shrinkage, bleeding and width checks by supplier, fabric and month',dataquality:'Fabrics missing a kg-per-metre conversion — stock or usage that can only be shown in kg',support:'Lining, interfacing & support overrides — excluded from the main dashboard',movement:'Build your own KPI-over-time panels — fabric metrics in metres, page-local date range',pos:'Inbound purchase orders and delivery performance',suppliers:'Outstanding exposure by supplier',reservations:'Earmark fabric for a style, track how long it has been held, then mark it used',rolls:'Physical roll counts recorded by hand per fabric per location, shown next to the Odoo quantity',receiving:'Record the rolls of an arriving fabric delivery, then print the Fabric Receiving Information Sheet',createprod:'Bulk-create fabric products in Odoo — enter or upload rows, review the validation preview, then confirm. Duplicates are always skipped'};
+const LOADERS={buyingpd:loadBuyingPD,dashboard:loadFabricMixFirst,register:()=>loadRegister(0),deadstock:loadDeadStock,defects:loadFabricQC,dataquality:loadDataQuality,support:loadSupport,movement:initTrendBuilder,pos:loadPOsPage,suppliers:loadSuppliers,reservations:loadReservations,rolls:()=>loadRolls(0),receiving:loadReceivingBatches,createprod:loadCreateProducts,costing:loadCosting};
+const DESCS={buyingpd:'Buying & Product Development — garment fabric-efficiency KPIs from Done-DPS manufacturing orders',dashboard:'Stock Mix — each category\'s share of consumption vs share of available stock',overview:'Fabric stock, value and health across the warehouse',register:'',ageing:'Stock ageing analysis — coming soon',deadstock:'Fabric that has been sitting without movement',defects:'Roll-level quality results from the Receiving tab — pass rates, shrinkage, bleeding and width checks by supplier, fabric and month',dataquality:'Fabrics missing a kg-per-metre conversion — stock or usage that can only be shown in kg',support:'Lining, interfacing & support overrides — excluded from the main dashboard',movement:'Build your own KPI-over-time panels — fabric metrics in metres, page-local date range',pos:'Inbound purchase orders and delivery performance',suppliers:'Outstanding exposure by supplier',reservations:'Earmark fabric for a style, track how long it has been held, then mark it used',rolls:'Physical roll counts recorded by hand per fabric per location, shown next to the Odoo quantity',receiving:'Record the rolls of an arriving fabric delivery, then print the Fabric Receiving Information Sheet',createprod:'Bulk-create fabric products in Odoo — enter or upload rows, review the validation preview, then confirm. Duplicates are always skipped',costing:'Per-style cost sheets — fabric, trims, CMT/labour and overheads vs the current selling price, with auto-suggestions from fabric data and Done DPS'};
 const loadedOnce={};
 
 // Bind ONLY real page tabs ([data-page]) — the "More ▾" trigger is also a
@@ -8381,11 +8438,229 @@ async function gateCreateProducts(){
     delete LOADERS.createprod;
   }
 }
+// ── Product Costing ─────────────────────────────────────────────────────────
+// Email-allowlisted per-style cost sheets. The nav tab is HIDDEN by default in
+// the markup; gateCosting() reveals it only when the server-side allowlist gate
+// lets /api/fabric/costing/access through (fails closed — the middleware in
+// api_pg.py is the real enforcement). All interpolated text goes through esc().
+let costLabourAvailable=false;
+async function gateCosting(){
+  let ok=false;
+  try{const a=await apiFetch('/api/fabric/costing/access');ok=!!(a&&a.allowed);costLabourAvailable=!!(a&&a.labour_data_available);}catch(e){ok=false;}
+  const tab=document.getElementById('nav-costing');
+  if(ok){ if(tab)tab.style.display=''; }
+  else{
+    if(tab)tab.style.display='none';
+    const sec=document.getElementById('page-costing');
+    if(sec)sec.style.display='none';
+    delete LOADERS.costing;
+  }
+}
+const COST_KINDS={fabric:'Fabric',trim:'Trim / accessory',cmt:'CMT / labour',overhead:'Overhead / other'};
+let costSheets=[],costEdit=null; // costEdit = {id|null, style_name, style_number, lines:[], sp_auto, history:[]}
+const fmtKES2=n=>n==null||isNaN(n)?'—':'KES '+Number(n).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+async function loadCosting(){
+  const body=document.getElementById('cost-list-body');
+  const note=document.getElementById('cost-labour-note');
+  if(note)note.innerHTML=costLabourAvailable?'' :
+    '<div class="banner" style="margin-bottom:.9rem;">No labour-cost data has been synced from the Done DPS summary yet — CMT/labour will not auto-suggest and must be entered manually. It will appear after the next fabric-consumption sync.</div>';
+  try{
+    const d=await apiFetch('/api/fabric/costing/sheets');
+    costSheets=d.sheets||[];
+    if(!costSheets.length){body.innerHTML='<tr><td colspan="9" class="muted" style="padding:.8rem;">No costing sheets yet — click “New costing sheet” to build the first one.</td></tr>';return;}
+    body.innerHTML=costSheets.map(s=>{
+      const mCls=s.margin==null?'':(s.margin<0?' style="color:var(--danger);font-weight:700;"':' style="color:var(--ok,#0a7d33);font-weight:700;"');
+      return `<tr><td>${esc(s.style_name)}</td><td>${esc(s.style_number||'—')}</td>`+
+        `<td class="r">${fmtKES2(s.total_cost)}</td><td class="r">${fmtKES2(s.selling_price)}</td>`+
+        `<td class="r"${mCls}>${fmtKES2(s.margin)}</td><td class="r"${mCls}>${s.margin_pct==null?'—':esc(s.margin_pct)+'%'}</td>`+
+        `<td class="r">${esc(s.line_count)}</td>`+
+        `<td><span>${esc(s.updated_by_name||'—')}</span><br><span class="muted" style="font-size:11px;">${esc(fmtNairobi(s.updated_at)||'')}</span></td>`+
+        `<td><button class="btn" onclick="costOpenSheet(${Number(s.id)})">Edit</button></td></tr>`;
+    }).join('');
+  }catch(e){rowErr('cost-list-body',9,e);}
+}
+function costBadge(auto){return auto?'<span style="background:var(--accent,#2563eb);color:#fff;border-radius:4px;font-size:10px;padding:1px 6px;">AUTO</span>':'<span style="background:var(--border,#999);color:#fff;border-radius:4px;font-size:10px;padding:1px 6px;">MANUAL</span>';}
+function costRenderLines(){
+  const body=document.getElementById('cost-lines-body');
+  if(!costEdit){body.innerHTML='';return;}
+  body.innerHTML=costEdit.lines.map((l,i)=>
+    `<tr><td><select class="cost-cell" data-i="${i}" data-k="kind" style="width:110px;">`+
+    Object.keys(COST_KINDS).map(k=>`<option value="${k}"${l.kind===k?' selected':''}>${esc(COST_KINDS[k])}</option>`).join('')+
+    `</select></td>`+
+    `<td style="padding:2px;"><input class="cost-cell" data-i="${i}" data-k="label" value="${esc(l.label||'')}" style="width:100%;padding:4px 6px;"></td>`+
+    `<td style="padding:2px;"><input class="cost-cell r" data-i="${i}" data-k="qty" type="number" min="0" step="any" value="${esc(l.qty==null?'':l.qty)}" style="width:100%;text-align:right;padding:4px 6px;"></td>`+
+    `<td style="padding:2px;"><input class="cost-cell r" data-i="${i}" data-k="unit_cost" type="number" min="0" step="any" value="${esc(l.unit_cost==null?'':l.unit_cost)}" style="width:100%;text-align:right;padding:4px 6px;"></td>`+
+    `<td class="r">${fmtKES2((Number(l.qty)||0)*(Number(l.unit_cost)||0))}</td>`+
+    `<td>${costBadge(!!l.is_auto)}${l.source?`<div class="muted" style="font-size:10px;">${esc(l.source)}</div>`:''}</td>`+
+    `<td><button class="btn" style="padding:2px 8px;" title="Remove line" onclick="costDelLine(${i})">&times;</button></td></tr>`).join('')
+    ||'<tr><td colspan="7" class="muted" style="padding:.8rem;">No lines — add cost lines below.</td></tr>';
+  costRenderTotals();
+}
+function costRenderTotals(){
+  const total=(costEdit?costEdit.lines:[]).reduce((s,l)=>s+(Number(l.qty)||0)*(Number(l.unit_cost)||0),0);
+  const spEl=document.getElementById('cost-selling-price');
+  const sp=spEl&&spEl.value!==''?Number(spEl.value):null;
+  document.getElementById('cost-total-cell').textContent=fmtKES2(total);
+  const mCell=document.getElementById('cost-margin-cell'),pCell=document.getElementById('cost-margin-pct-cell');
+  if(sp==null||isNaN(sp)){mCell.textContent='—';pCell.textContent='';return;}
+  const m=sp-total;
+  mCell.textContent=fmtKES2(m);
+  mCell.style.color=m<0?'var(--danger)':'var(--ok,#0a7d33)';
+  pCell.textContent=sp>0?(m/sp*100).toFixed(1)+'% of selling price':'';
+}
+function costBindEditor(){
+  const body=document.getElementById('cost-lines-body');
+  if(!body||body._costBound)return;body._costBound=true;
+  body.addEventListener('input',e=>{
+    const el=e.target.closest('.cost-cell');if(!el||!costEdit)return;
+    const i=+el.dataset.i,k=el.dataset.k,l=costEdit.lines[i];if(!l)return;
+    l[k]=el.value;
+    // Editing an auto-suggested value flips the line to MANUAL.
+    if(l.is_auto&&(k==='qty'||k==='unit_cost')){l.is_auto=false;l.source=null;costRenderLines();return;}
+    if(k==='kind'){costRenderLines();return;}
+    if(k==='qty'||k==='unit_cost'){
+      // Update the line-total cell in place without a full re-render (keeps focus).
+      const row=el.closest('tr');if(row)row.cells[4].textContent=fmtKES2((Number(l.qty)||0)*(Number(l.unit_cost)||0));
+      costRenderTotals();
+    }
+  });
+}
+function costSpManual(){
+  if(costEdit)costEdit.sp_auto=false;
+  const b=document.getElementById('cost-sp-badge');if(b)b.innerHTML=costBadge(false);
+  costRenderTotals();
+}
+function costAddLine(kind){
+  if(!costEdit)return;
+  costEdit.lines.push({kind:kind||'trim',label:'',qty:1,unit_cost:0,is_auto:false,source:null});
+  costRenderLines();
+}
+function costDelLine(i){if(!costEdit)return;costEdit.lines.splice(i,1);costRenderLines();}
+function costNewSheet(){
+  costEdit={id:null,style_name:null,style_number:null,lines:[],sp_auto:true,history:[]};
+  document.getElementById('cost-editor-title').textContent='New costing sheet';
+  document.getElementById('cost-style-search').value='';
+  document.getElementById('cost-style-search').disabled=false;
+  document.getElementById('cost-style-number').value='';
+  document.getElementById('cost-selling-price').value='';
+  document.getElementById('cost-sp-badge').innerHTML='';
+  document.getElementById('cost-suggest-note').textContent='Pick a style to load auto-suggestions (fabric cost, metres per garment, labour per garment).';
+  document.getElementById('cost-editor-err').innerHTML='';
+  document.getElementById('cost-history').innerHTML='';
+  document.getElementById('cost-editor').style.display='';
+  costRenderLines();costBindEditor();
+  document.getElementById('cost-style-search').focus();
+}
+function costCloseEditor(){costEdit=null;document.getElementById('cost-editor').style.display='none';}
+async function costOpenSheet(id){
+  try{
+    const s=await apiFetch('/api/fabric/costing/sheets/'+encodeURIComponent(id));
+    costEdit={id:s.id,style_name:s.style_name,style_number:s.style_number,
+      lines:(s.lines||[]).map(l=>({kind:l.kind,label:l.label,qty:l.qty,unit_cost:l.unit_cost,is_auto:!!l.is_auto,source:l.source})),
+      sp_auto:!!s.selling_price_is_auto,history:s.history||[]};
+    document.getElementById('cost-editor-title').textContent='Edit costing sheet — '+s.style_name;
+    const st=document.getElementById('cost-style-search');st.value=s.style_name;st.disabled=true;
+    document.getElementById('cost-style-number').value=s.style_number||'';
+    document.getElementById('cost-selling-price').value=s.selling_price==null?'':s.selling_price;
+    document.getElementById('cost-sp-badge').innerHTML=costBadge(costEdit.sp_auto);
+    document.getElementById('cost-suggest-note').textContent='';
+    document.getElementById('cost-editor-err').innerHTML='';
+    costRenderHistory();
+    document.getElementById('cost-editor').style.display='';
+    costRenderLines();costBindEditor();
+    document.getElementById('cost-editor').scrollIntoView({behavior:'smooth'});
+  }catch(e){showErr('cost-list-err',e);}
+}
+function costRenderHistory(){
+  const el=document.getElementById('cost-history');
+  const h=(costEdit&&costEdit.history)||[];
+  el.innerHTML=h.length?'<div class="section-head"><h3 style="font-size:14px;">Change history</h3></div>'+
+    '<table class="data"><thead><tr><th>When</th><th>Who</th><th>Action</th><th>What changed</th></tr></thead><tbody>'+
+    h.map(x=>`<tr><td>${esc(fmtNairobi(x.changed_at)||'')}</td><td>${esc(x.changed_by_name||'—')}</td><td>${esc(x.action)}</td><td>${esc(x.summary||'')}</td></tr>`).join('')+
+    '</tbody></table>':'';
+}
+let costStyleTimer=null;
+function costDebouncedStyleSearch(){clearTimeout(costStyleTimer);costStyleTimer=setTimeout(costRunStyleSearch,250);}
+async function costRunStyleSearch(){
+  const inp=document.getElementById('cost-style-search'),box=document.getElementById('cost-style-list');
+  if(!inp||inp.disabled)return;
+  const term=inp.value.trim();
+  try{
+    const rows=await apiFetch('/api/fabric/costing/styles?q='+encodeURIComponent(term));
+    box.innerHTML=(rows||[]).map(r=>`<div class="resv-opt" data-coststyle="${esc(r.style_name)}" data-stylenum="${esc(r.style_number||'')}"><strong>${esc(r.style_name)}</strong>${r.style_number?` <span class="muted">${esc(r.style_number)}</span>`:''}</div>`).join('')
+      ||'<div class="resv-opt muted">No matching style</div>';
+    box.style.display='';
+  }catch(e){box.style.display='none';}
+}
+document.addEventListener('click',e=>{
+  const opt=e.target.closest('#cost-style-list .resv-opt');
+  if(opt&&opt.dataset.coststyle){costPickStyle(opt.dataset.coststyle,opt.dataset.stylenum);return;}
+  const box=document.getElementById('cost-style-list');
+  if(box&&box.style.display!=='none'&&!e.target.closest('#cost-style-search')&&!e.target.closest('#cost-style-list'))box.style.display='none';
+});
+async function costPickStyle(style,num){
+  if(!costEdit)return;
+  costEdit.style_name=style;costEdit.style_number=num||null;
+  document.getElementById('cost-style-search').value=style;
+  document.getElementById('cost-style-number').value=num||'';
+  document.getElementById('cost-style-list').style.display='none';
+  const note=document.getElementById('cost-suggest-note');
+  note.textContent='Loading auto-suggestions…';
+  try{
+    const s=await apiFetch('/api/fabric/costing/suggest?style_name='+encodeURIComponent(style));
+    // Selling price (auto from the product master's modal SKU price).
+    const spEl=document.getElementById('cost-selling-price');
+    if(s.selling_price!=null){spEl.value=s.selling_price;costEdit.sp_auto=true;document.getElementById('cost-sp-badge').innerHTML=costBadge(true);}
+    const lines=[];
+    if(s.metres_per_garment!=null&&s.fabric_cost_per_metre!=null){
+      lines.push({kind:'fabric',label:'Main fabric ('+(s.fabrics&&s.fabrics[0]?s.fabrics[0].name||'':'')+')',qty:s.metres_per_garment,unit_cost:s.fabric_cost_per_metre,is_auto:true,source:'Done DPS avg × '+((s.fabrics&&s.fabrics[0]&&s.fabrics[0].cost_source)||'fabric price')});
+    }else if(s.metres_per_garment!=null){
+      lines.push({kind:'fabric',label:'Main fabric',qty:s.metres_per_garment,unit_cost:0,is_auto:true,source:'metres/garment from Done DPS — enter cost/metre'});
+    }
+    if(s.labour_per_garment!=null){
+      lines.push({kind:'cmt',label:'CMT / labour (actual, Done DPS)',qty:1,unit_cost:s.labour_per_garment,is_auto:true,source:'Done DPS labour ÷ '+(s.labour_garments||0)+' garments'});
+    }
+    costEdit.lines=lines;
+    const bits=[];
+    bits.push(s.metres_per_garment!=null?('Metres/garment: '+s.metres_per_garment+' (from '+s.metres_mos+' Done-DPS MOs, last '+s.window_days+' days)'):'No Done-DPS fabric consumption found for this style — enter fabric usage manually');
+    bits.push(s.fabric_cost_per_metre!=null?('Fabric cost/metre: '+fmtKES2(s.fabric_cost_per_metre)):'No fabric price found — enter cost/metre manually');
+    bits.push(s.labour_per_garment!=null?('Labour/garment: '+fmtKES2(s.labour_per_garment)+' (Done DPS summary)'):(costLabourAvailable?'No DPS labour cost for this style — enter CMT manually':'DPS labour data not synced yet — enter CMT manually'));
+    bits.push(s.selling_price!=null?('Selling price: '+fmtKES2(s.selling_price)+' (product master)'):'No selling price in the product master — enter manually');
+    note.textContent=bits.join(' · ');
+    costRenderLines();
+  }catch(e){note.textContent='Could not load suggestions — enter values manually.';costRenderLines();}
+}
+async function costSaveSheet(){
+  if(!costEdit)return;
+  const err=document.getElementById('cost-editor-err');err.innerHTML='';
+  if(!costEdit.style_name){err.innerHTML='<div class="banner banner-err">Pick a style from the list first.</div>';return;}
+  if(!costEdit.lines.length){err.innerHTML='<div class="banner banner-err">Add at least one cost line.</div>';return;}
+  const spEl=document.getElementById('cost-selling-price');
+  const payload={style_name:costEdit.style_name,
+    selling_price:spEl.value===''?null:Number(spEl.value),
+    selling_price_is_auto:!!costEdit.sp_auto,
+    lines:costEdit.lines.map(l=>({kind:l.kind,label:l.label,qty:Number(l.qty)||0,unit_cost:Number(l.unit_cost)||0,is_auto:!!l.is_auto,source:l.source}))};
+  const btn=document.getElementById('cost-save-btn');btn.disabled=true;btn.textContent='Saving…';
+  try{
+    const url=costEdit.id?'/api/fabric/costing/sheets/'+encodeURIComponent(costEdit.id):'/api/fabric/costing/sheets';
+    const r=await fetch(url,{method:costEdit.id?'PUT':'POST',credentials:'include',headers:vivoAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(payload)});
+    if(!r.ok){let d={};try{d=await r.json();}catch(_){ }throw new Error(d.detail||('http '+r.status));}
+    const s=await r.json();
+    costEdit.id=s.id;costEdit.history=s.history||[];
+    costRenderHistory();
+    err.innerHTML='<div class="banner" style="background:var(--ok-bg,#e8f7ee);">Saved.</div>';
+    loadCosting();
+  }catch(e){err.innerHTML='<div class="banner banner-err">Could not save: '+esc(e.message)+'</div>';}
+  finally{btn.disabled=false;btn.textContent='Save sheet';}
+}
+
 async function init(){
   // Restrict the admin-only Data Quality tab before wiring anything else up.
   await gateDataQuality();
   // Reveal the Create Products tab only for permitted users (non-blocking).
   gateCreateProducts();
+  // Reveal Product Costing only for the allow-listed emails (non-blocking).
+  gateCosting();
   // Column picker + close-on-outside-click
   buildColPicker();
   document.addEventListener('click',e=>{

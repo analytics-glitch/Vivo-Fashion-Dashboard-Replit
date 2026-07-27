@@ -95,6 +95,14 @@ def create_table(cur):
         ALTER TABLE mo_fabric_consumption ADD COLUMN IF NOT EXISTS finished_tmpl_id    BIGINT;
         ALTER TABLE mo_fabric_consumption ADD COLUMN IF NOT EXISTS style_name          TEXT;
         CREATE INDEX IF NOT EXISTS idx_mo_fab_cons_style ON mo_fabric_consumption(style_name);
+        -- DPS labour-cost columns (added for the Product Costing tab). The DPS
+        -- (mrp.production.day) carries the day's total labour cost and a cost
+        -- per unit; stored per MO row (DPS-level values, repeated per component)
+        -- so labour cost per garment can be derived per style at read time.
+        ALTER TABLE mo_fabric_consumption ADD COLUMN IF NOT EXISTS dps_odoo_id        BIGINT;
+        ALTER TABLE mo_fabric_consumption ADD COLUMN IF NOT EXISTS dps_labour_cost    NUMERIC;
+        ALTER TABLE mo_fabric_consumption ADD COLUMN IF NOT EXISTS dps_total_cost     NUMERIC;
+        ALTER TABLE mo_fabric_consumption ADD COLUMN IF NOT EXISTS dps_cost_per_unit  NUMERIC;
         """
     )
 
@@ -126,19 +134,41 @@ def extract(uid, models, cur, since_str, now):
     move_to_mo = {}
     mo_meta = {}
     finished_pids = set()
+    dps_ids = set()
     for mo in mos:
         fpid = mo["product_id"][0] if mo.get("product_id") else None
         if fpid:
             finished_pids.add(fpid)
+        dps_id = mo["dps_id"][0] if mo.get("dps_id") else None
+        if dps_id:
+            dps_ids.add(dps_id)
         mo_meta[mo["id"]] = {
             "mo_ref": mo.get("name"),
             "dps_ref": mo["dps_id"][1] if mo.get("dps_id") else None,
+            "dps_id": dps_id,
             "done_date": (mo.get("date_finished") or "")[:10] or None,
             "produced_qty": mo.get("qty_produced") or 0,
             "finished_product_id": fpid,
         }
         for mid in mo.get("move_raw_ids") or []:
             move_to_mo[mid] = mo["id"]
+
+    # Read each referenced DPS (mrp.production.day) once for its labour-cost
+    # summary. Best-effort: a missing field or read error leaves the labour
+    # columns NULL (the Costing tab then falls back to manual entry).
+    dps_cost = {}
+    try:
+        for chunk in _chunks(sorted(dps_ids), 500):
+            for d in models.execute_kw(
+                ODOO_DB, uid, ODOO_PASSWORD,
+                "mrp.production.day", "read", [chunk],
+                {"fields": ["total_labour_cost", "total_production_cost",
+                            "cost_per_unit"]},
+            ):
+                dps_cost[d["id"]] = d
+    except Exception as e:  # noqa: BLE001 — labour cost is optional enrichment
+        log.warning("DPS labour-cost read failed (labour columns stay NULL): %s", e)
+        dps_cost = {}
 
     # Resolve finished products -> sku/name + template (the style: variants in
     # different sizes/colours share one product.template).
@@ -221,6 +251,7 @@ def extract(uid, models, cur, since_str, now):
         # Style = finished-product template name (its variants in different sizes /
         # colours share one template); fall back to the variant name if unset.
         style = (tmpl[1] if tmpl else None) or fp.get("name")
+        dc = dps_cost.get(meta.get("dps_id")) or {}
         rows.append(
             (
                 mo_id,
@@ -238,6 +269,10 @@ def extract(uid, models, cur, since_str, now):
                 fp.get("name"),
                 tmpl_id,
                 style,
+                meta.get("dps_id"),
+                dc.get("total_labour_cost"),
+                dc.get("total_production_cost"),
+                dc.get("cost_per_unit"),
                 now,
             )
         )
@@ -253,7 +288,8 @@ def extract(uid, models, cur, since_str, now):
             (odoo_mo_id, mo_ref, dps_ref, done_date, produced_qty,
              component_id, fabric_sku, fabric_name, consumed_qty, uom,
              finished_product_id, finished_sku, finished_name, finished_tmpl_id,
-             style_name, _loaded_at)
+             style_name, dps_odoo_id, dps_labour_cost, dps_total_cost,
+             dps_cost_per_unit, _loaded_at)
         VALUES %s
         ON CONFLICT (odoo_mo_id, component_id) DO UPDATE SET
             mo_ref=EXCLUDED.mo_ref,
@@ -269,6 +305,10 @@ def extract(uid, models, cur, since_str, now):
             finished_name=EXCLUDED.finished_name,
             finished_tmpl_id=EXCLUDED.finished_tmpl_id,
             style_name=EXCLUDED.style_name,
+            dps_odoo_id=EXCLUDED.dps_odoo_id,
+            dps_labour_cost=EXCLUDED.dps_labour_cost,
+            dps_total_cost=EXCLUDED.dps_total_cost,
+            dps_cost_per_unit=EXCLUDED.dps_cost_per_unit,
             _loaded_at=EXCLUDED._loaded_at
         """,
         rows,

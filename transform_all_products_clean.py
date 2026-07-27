@@ -235,7 +235,11 @@ def main():
     rows      = []
     total_odoo = 0
 
-    with conn.cursor(name="odoo_products_cursor") as sc:
+    # withhold=True: _flush() commits on this same connection every _BATCH
+    # rows, and a commit closes a plain named cursor mid-iteration
+    # ("named cursor isn't valid anymore" — truncated all_products_clean to
+    # 1000 rows). WITH HOLD keeps the server-side cursor alive across commits.
+    with conn.cursor(name="odoo_products_cursor", withhold=True) as sc:
         sc.itersize = _BATCH
         sc.execute("""
             SELECT DISTINCT ON (default_code)

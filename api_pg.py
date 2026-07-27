@@ -1273,6 +1273,17 @@ async def clerk_auth_gate(request: Request, call_next):
         if not _fabric_full_admin(user):
             return JSONResponse({"detail": "Admin access required"}, status_code=403)
 
+    # Product Costing (per-style cost sheets): STRICTLY email-allowlisted —
+    # every /api/fabric/costing path (read AND write) is limited to the three
+    # named emails in fabric_router._FABRIC_COSTING_EMAILS (single source of
+    # truth). The dashboard hides the tab for everyone else; this gate is the
+    # actual enforcement, so direct API calls are rejected too.
+    if path.startswith("/api/fabric/costing"):
+        from fabric_router import _fabric_costing_allowed
+        if not _fabric_costing_allowed(user):
+            return JSONResponse({"detail": "Costing access restricted"},
+                                status_code=403)
+
     # Support-scope overrides: viewing the rule list is broadly accessible (the
     # Support tab surfaces the active rules), but ADDING/REMOVING a rule is
     # admin-only — same server-side pattern as the rolls write gate above.
