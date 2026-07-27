@@ -67,6 +67,8 @@ const metricColumns = (selDays = 180) => [
       const cls = d > 60 ? "text-rose-600 font-bold" : d > 30 ? "text-amber-600" : "";
       return <span className={cls}>{d}d</span>;
     } },
+  { key: "sor_6w", label: "SOR 6W", sortable: true, align: "right",
+    render: (r) => <SorPct v={r.sor_6w} /> },
   { key: "sor_6m", label: "SOR 6M", sortable: true, align: "right",
     render: (r) => <SorPct v={r.sor_6m} /> },
   { key: "sor_since_launch", label: "SOR Life", sortable: true, align: "right",
@@ -318,7 +320,7 @@ const SORReport = () => {
       "Weekly Average", "Units Since Launch", "SOH", "SOH Warehouse",
       "SOH Pipeline",
       "Weeks of Cover", "% In WH", "ASP 6 Months", "Full Price",
-      "Days Since Last Sale", "6 Months SOR", "SOR Since Launch",
+      "Days Since Last Sale", "6 Weeks SOR", "6 Months SOR", "SOR Since Launch",
       "SOR (Selected Period)", "ASP (Selected Period)", "Price % of Full Price",
       "Style Launch Date", "Style Age (Weeks)",
       "Category", "Sub Category",
@@ -331,7 +333,7 @@ const SORReport = () => {
         r.weekly_avg ?? "", r.units_since_launch ?? "", r.soh_total ?? "", r.soh_wh ?? "",
         r.soh_pipeline ?? 0,
         r.woc ?? "", r.pct_in_wh ?? "", r.asp_6m ?? "", r.original_price ?? "",
-        r.days_since_last_sale ?? "", r.sor_6m ?? "", r.sor_since_launch ?? "",
+        r.days_since_last_sale ?? "", r.sor_6w ?? "", r.sor_6m ?? "", r.sor_since_launch ?? "",
         r.sor_sel ?? "", r.asp_sel ?? "", r.pct_of_full ?? "",
         r.launch_date || "", r.style_age_weeks ?? "",
         r.category || "", r.subcategory || "",

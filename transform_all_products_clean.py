@@ -250,6 +250,9 @@ def main():
                 collection, color, brand, vendor,
                 category, gender, season, status, tier, active,
                 fabric_structure,
+                plain_print, source_country, source_city,
+                fabric_category, fabric_subcategory, fabric_width, gsm,
+                supplier_fabric_code, noos_fabric, fiber_content,
                 write_date
             FROM raw_odoo_products
             WHERE default_code IS NOT NULL
@@ -264,7 +267,11 @@ def main():
             (pid, name, sku, barcode, price, cost, categ_name,
              sub_category, style_name, style_number, collection,
              color, brand, vendor, category, gender, season,
-             status, tier, active, fabric_structure, write_date) = p
+             status, tier, active, fabric_structure,
+             plain_print, source_country, source_city,
+             fabric_category, fabric_subcategory, fabric_width, gsm,
+             supplier_fabric_code, noos_fabric, fiber_content,
+             write_date) = p
 
             if sku in seen_skus:
                 continue

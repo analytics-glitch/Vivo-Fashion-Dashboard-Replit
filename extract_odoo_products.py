@@ -39,6 +39,16 @@ def main():
         "x_vivo_attr_97",   # Status  (Active / Retired)
         "x_vivo_attr_99",   # Tier    (Core Performer / New / NOOS / Recent Performer / N/A / Retired)
         "x_vivo_attr_101",  # Fabric Structure (Knit / Woven) — Fabric Details tab
+        "x_vivo_attr_100",  # Plain/Print
+        "x_vivo_attr_125",  # Source Country
+        "x_vivo_attr_124",  # Source City
+        "x_vivo_attr_102",  # Fabric Category
+        "x_vivo_attr_103",  # Fabric Sub-Category
+        "x_vivo_attr_25",   # Width (m)
+        "x_vivo_attr_38",   # GSM
+        "x_vivo_attr_43",   # Supplier Fabric Code
+        "x_vivo_attr_45",   # NOOS Fabric
+        "x_vivo_attr_46",   # Fiber Content %
         "x_vivo_collection",
         "x_vivo_color",
         "x_vivo_categories",
@@ -93,6 +103,16 @@ def main():
                 get_m2o_name(r.get("x_vivo_attr_97")),  # status
                 get_m2o_name(r.get("x_vivo_attr_99")),  # tier
                 get_m2o_name(r.get("x_vivo_attr_101")), # fabric_structure
+                get_m2o_name(r.get("x_vivo_attr_100")), # plain_print
+                get_m2o_name(r.get("x_vivo_attr_125")), # source_country
+                get_m2o_name(r.get("x_vivo_attr_124")), # source_city
+                get_m2o_name(r.get("x_vivo_attr_102")), # fabric_category
+                get_m2o_name(r.get("x_vivo_attr_103")), # fabric_subcategory
+                get_m2o_name(r.get("x_vivo_attr_25")),  # fabric_width
+                get_m2o_name(r.get("x_vivo_attr_38")),  # gsm
+                get_m2o_name(r.get("x_vivo_attr_43")),  # supplier_fabric_code
+                get_m2o_name(r.get("x_vivo_attr_45")),  # noos_fabric
+                get_m2o_name(r.get("x_vivo_attr_46")),  # fiber_content
                 bool(r.get("active")),
                 r.get("write_date"),
                 now,
@@ -105,7 +125,9 @@ def main():
                 sub_category, style_name, style_number,
                 collection, color, brand, vendor,
                 category, gender, season, status, tier,
-                fabric_structure, active,
+                fabric_structure, plain_print, source_country, source_city,
+                fabric_category, fabric_subcategory, fabric_width, gsm,
+                supplier_fabric_code, noos_fabric, fiber_content, active,
                 write_date, _synced_at
             ) VALUES %s
             ON CONFLICT (id) DO UPDATE SET
@@ -113,6 +135,16 @@ def main():
                 list_price = EXCLUDED.list_price,
                 standard_price = EXCLUDED.standard_price,
                 fabric_structure = EXCLUDED.fabric_structure,
+                plain_print = EXCLUDED.plain_print,
+                source_country = EXCLUDED.source_country,
+                source_city = EXCLUDED.source_city,
+                fabric_category = EXCLUDED.fabric_category,
+                fabric_subcategory = EXCLUDED.fabric_subcategory,
+                fabric_width = EXCLUDED.fabric_width,
+                gsm = EXCLUDED.gsm,
+                supplier_fabric_code = EXCLUDED.supplier_fabric_code,
+                noos_fabric = EXCLUDED.noos_fabric,
+                fiber_content = EXCLUDED.fiber_content,
                 active = EXCLUDED.active,
                 write_date = EXCLUDED.write_date,
                 _synced_at = EXCLUDED._synced_at
