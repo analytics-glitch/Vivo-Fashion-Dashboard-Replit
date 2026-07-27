@@ -1276,7 +1276,8 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
     <div id="cost-labour-note"></div>
     <div class="card">
      <div class="section-head"><h3>Costing sheets</h3><span class="muted">per-style cost build-up vs current selling price</span>
-      <button class="btn btn-primary" style="margin-left:auto;" onclick="costNewSheet()">+ New costing sheet</button>
+      <button class="btn" style="margin-left:auto;" onclick="costExportAll()">Export all (.xlsx)</button>
+      <button class="btn btn-primary" onclick="costNewSheet()">+ New costing sheet</button>
      </div>
      <div id="cost-list-err"></div>
      <div class="tbl-wrap">
@@ -1288,7 +1289,8 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
     </div>
     <div class="card" id="cost-editor" style="display:none;">
      <div class="section-head"><h3 id="cost-editor-title">New costing sheet</h3>
-      <button class="btn" style="margin-left:auto;" onclick="costCloseEditor()">Close</button>
+      <button class="btn" id="cost-export-btn" style="margin-left:auto;display:none;" onclick="costExportSheet()">Export sheet (.xlsx)</button>
+      <button class="btn" onclick="costCloseEditor()">Close</button>
      </div>
      <div id="cost-editor-err"></div>
      <div class="flex" style="flex-wrap:wrap;gap:12px;align-items:flex-end;margin-bottom:10px;">
@@ -8479,6 +8481,30 @@ async function loadCosting(){
     }).join('');
   }catch(e){rowErr('cost-list-body',9,e);}
 }
+// Costing exports — credentialed blob fetch (same pattern as downloadMpgXlsx)
+// so auth is honoured and failures surface instead of a blank tab. The
+// endpoints live under /api/fabric/costing/, so the server-side email
+// allowlist gate covers them exactly like every other costing call.
+async function costDownloadXlsx(url,fallbackName){
+  try{
+    const r=await fetch(url,{credentials:'include',headers:vivoAuthHeaders()});
+    if(r.status===401||r.status===403){alert('Your session has expired or you do not have costing access.');return;}
+    if(!r.ok)throw new Error('http '+r.status);
+    const cd=r.headers.get('Content-Disposition')||'';
+    const m=cd.match(/filename="([^"]+)"/);
+    const blob=await r.blob();
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(blob);
+    a.download=(m&&m[1])||fallbackName;
+    document.body.appendChild(a);a.click();a.remove();
+    setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+  }catch(e){alert('Could not generate the Excel export. Please try again.');}
+}
+function costExportAll(){costDownloadXlsx('/api/fabric/costing/export.xlsx','costing-sheets-summary.xlsx');}
+function costExportSheet(){
+  if(!costEdit||!costEdit.id){alert('Save the sheet first, then export it.');return;}
+  costDownloadXlsx('/api/fabric/costing/sheets/'+encodeURIComponent(costEdit.id)+'/export.xlsx','costing-sheet.xlsx');
+}
 function costBadge(auto){return auto?'<span style="background:var(--accent,#2563eb);color:#fff;border-radius:4px;font-size:10px;padding:1px 6px;">AUTO</span>':'<span style="background:var(--border,#999);color:#fff;border-radius:4px;font-size:10px;padding:1px 6px;">MANUAL</span>';}
 function costRenderLines(){
   const body=document.getElementById('cost-lines-body');
@@ -8547,6 +8573,7 @@ function costNewSheet(){
   document.getElementById('cost-suggest-note').textContent='Pick a style to load auto-suggestions (fabric cost, metres per garment, labour per garment).';
   document.getElementById('cost-editor-err').innerHTML='';
   document.getElementById('cost-history').innerHTML='';
+  document.getElementById('cost-export-btn').style.display='none';
   document.getElementById('cost-editor').style.display='';
   costRenderLines();costBindEditor();
   document.getElementById('cost-style-search').focus();
@@ -8566,6 +8593,7 @@ async function costOpenSheet(id){
     document.getElementById('cost-suggest-note').textContent='';
     document.getElementById('cost-editor-err').innerHTML='';
     costRenderHistory();
+    document.getElementById('cost-export-btn').style.display='';
     document.getElementById('cost-editor').style.display='';
     costRenderLines();costBindEditor();
     document.getElementById('cost-editor').scrollIntoView({behavior:'smooth'});

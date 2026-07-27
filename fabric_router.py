@@ -12445,6 +12445,181 @@ def costing_sheet_get(sheet_id: int):
         return _sheet_payload(conn, sheet_id)
 
 
+# ── Costing exports (.xlsx) ─────────────────────────────────────────────
+# Both live under /api/fabric/costing/... so api_pg's email-allowlist
+# middleware gate covers them exactly like every other costing path.
+# Numbers are produced by the SAME code paths the screen uses
+# (costing_sheets_list rows / _sheet_payload), so the export always matches
+# the on-screen figures.
+
+_COSTING_XLSX_MIME = ("application/vnd.openxmlformats-officedocument"
+                      ".spreadsheetml.sheet")
+
+
+def _costing_wb_styles():
+    import openpyxl
+    from openpyxl.styles import Font, Alignment, PatternFill
+    return openpyxl, {
+        "HEAD": Font(bold=True, color="FFFFFF"),
+        "HEAD_FILL": PatternFill("solid", fgColor="1A5C38"),
+        "TITLE": Font(bold=True, size=13),
+        "LBL": Font(bold=True),
+        "R": Alignment(horizontal="right"),
+    }
+
+
+def _costing_fname_safe(s):
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", (s or "").strip()).strip("-") or "sheet"
+
+
+@fabric_router.get("/api/fabric/costing/export.xlsx")
+def costing_export_all_xlsx():
+    """All-sheets summary workbook: one row per costing sheet, mirroring the
+    on-screen list (same query/rounding as costing_sheets_list)."""
+    import io
+    openpyxl, st = _costing_wb_styles()
+    sheets = costing_sheets_list()["sheets"]
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Costing sheets"
+    ws["A1"] = "Product Costing — all sheets summary"
+    ws["A1"].font = st["TITLE"]
+    ws["A2"] = ("Generated " +
+                datetime.datetime.now(ZoneInfo("Africa/Nairobi"))
+                .strftime("%d %b %Y %H:%M") + " EAT · all amounts in KES")
+    cols = ["Style", "Style number", "Total cost / garment", "Selling price",
+            "Margin", "Margin %", "Cost lines", "Last edited by", "Last edited at"]
+    ws.append([])
+    ws.append(cols)
+    hdr_row = 4
+    for c in range(1, len(cols) + 1):
+        cell = ws.cell(row=hdr_row, column=c)
+        cell.font = st["HEAD"]
+        cell.fill = st["HEAD_FILL"]
+    for s in sheets:
+        ua = s["updated_at"]
+        if ua:
+            try:
+                ua = (datetime.datetime.fromisoformat(ua)
+                      .astimezone(ZoneInfo("Africa/Nairobi"))
+                      .strftime("%d %b %Y %H:%M"))
+            except Exception:
+                pass
+        ws.append([
+            s["style_name"], s["style_number"],
+            s["total_cost"], s["selling_price"],
+            s["margin"], s["margin_pct"],
+            s["line_count"], s["updated_by_name"], ua,
+        ])
+    for col, w in zip("ABCDEFGHI", [34, 14, 20, 14, 12, 10, 10, 24, 20]):
+        ws.column_dimensions[col].width = w
+    for row in ws.iter_rows(min_row=hdr_row + 1, min_col=3, max_col=7):
+        for cell in row:
+            cell.alignment = st["R"]
+            if cell.column <= 5 and cell.value is not None:
+                cell.number_format = "#,##0.00"
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    fname = ("costing-sheets-summary-" +
+             datetime.date.today().isoformat() + ".xlsx")
+    return Response(
+        content=buf.getvalue(), media_type=_COSTING_XLSX_MIME,
+        headers={"Content-Disposition": 'attachment; filename="%s"' % fname})
+
+
+@fabric_router.get("/api/fabric/costing/sheets/{sheet_id}/export.xlsx")
+def costing_export_sheet_xlsx(sheet_id: int):
+    """Detailed workbook for ONE costing sheet: a header/summary block plus one
+    row per cost line with its Auto/Manual flag and source. Uses the same
+    _sheet_payload the editor loads, so numbers match the screen exactly."""
+    import io
+    openpyxl, st = _costing_wb_styles()
+    with _get_conn() as conn:
+        _ensure_costing_tables(conn)
+        s = _sheet_payload(conn, sheet_id, with_history=False)
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Cost sheet"
+    ws["A1"] = "Costing sheet — " + (s["style_name"] or "")
+    ws["A1"].font = st["TITLE"]
+
+    def _eat(ts):
+        if not ts:
+            return None
+        try:
+            return (datetime.datetime.fromisoformat(ts)
+                    .astimezone(ZoneInfo("Africa/Nairobi"))
+                    .strftime("%d %b %Y %H:%M"))
+        except Exception:
+            return ts
+
+    srows = [
+        ("Style", s["style_name"]),
+        ("Style number", s["style_number"]),
+        ("Total cost / garment (KES)", s["total_cost"]),
+        ("Selling price (KES)", s["selling_price"]),
+        ("Selling price basis",
+         "Auto (modal SKU price)" if s.get("selling_price_is_auto") else "Manual"),
+        ("Margin (KES)", s["margin"]),
+        ("Margin %", s["margin_pct"]),
+        ("Notes", s.get("notes")),
+        ("Last edited by", s.get("updated_by_name")),
+        ("Last edited at", _eat(s.get("updated_at")) or None),
+        ("Created by", s.get("created_by_name")),
+        ("Created at", _eat(s.get("created_at")) or None),
+    ]
+    r0 = 3
+    for i, (label, val) in enumerate(srows):
+        ws.cell(row=r0 + i, column=1, value=label).font = st["LBL"]
+        c = ws.cell(row=r0 + i, column=2, value=val)
+        if label.startswith(("Total cost", "Selling price (", "Margin (")):
+            c.number_format = "#,##0.00"
+    ws.column_dimensions["A"].width = 28
+    ws.column_dimensions["B"].width = 44
+
+    # Cost-lines detail sheet — one row per line, Auto/Manual flag + source.
+    ws2 = wb.create_sheet("Cost lines")
+    cols = ["#", "Kind", "Label", "Qty", "Unit cost (KES)",
+            "Line total (KES)", "Auto/Manual", "Source"]
+    ws2.append(cols)
+    for c in range(1, len(cols) + 1):
+        cell = ws2.cell(row=1, column=c)
+        cell.font = st["HEAD"]
+        cell.fill = st["HEAD_FILL"]
+    kind_lbl = {"fabric": "Fabric", "trim": "Trim",
+                "cmt": "CMT / Labour", "overhead": "Overhead"}
+    for i, l in enumerate(s["lines"], 1):
+        ws2.append([
+            i, kind_lbl.get(l["kind"], l["kind"]), l["label"],
+            l["qty"], l["unit_cost"], l["total"],
+            "Auto" if l["is_auto"] else "Manual",
+            l["source"],
+        ])
+    ws2.append([])
+    tr = ws2.max_row + 1
+    ws2.cell(row=tr, column=3, value="Total cost / garment").font = st["LBL"]
+    tc = ws2.cell(row=tr, column=6, value=s["total_cost"])
+    tc.font = st["LBL"]
+    tc.number_format = "#,##0.00"
+    for col, w in zip("ABCDEFGH", [5, 14, 40, 10, 16, 16, 13, 34]):
+        ws2.column_dimensions[col].width = w
+    for row in ws2.iter_rows(min_row=2, max_row=ws2.max_row, min_col=4, max_col=6):
+        for cell in row:
+            cell.alignment = st["R"]
+            if cell.value is not None and cell.column >= 5:
+                cell.number_format = "#,##0.00"
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    fname = "costing-%s.xlsx" % _costing_fname_safe(s["style_name"])
+    return Response(
+        content=buf.getvalue(), media_type=_COSTING_XLSX_MIME,
+        headers={"Content-Disposition": 'attachment; filename="%s"' % fname})
+
+
 @fabric_router.post("/api/fabric/costing/sheets")
 def costing_sheet_create(request: Request, body: dict = Body(...)):
     style_row = _match_style(body.get("style_name"))
