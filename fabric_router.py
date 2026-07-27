@@ -7,6 +7,7 @@ import base64
 import datetime
 from zoneinfo import ZoneInfo
 import json
+import math
 import os
 import re
 from urllib.parse import quote
@@ -5546,6 +5547,12 @@ def _ensure_receiving_tables(conn):
                     "ADD COLUMN IF NOT EXISTS manual_width_cm NUMERIC")
         cur.execute("ALTER TABLE fabric_inspection_tickets "
                     "ADD COLUMN IF NOT EXISTS width_source TEXT")
+        # Cuttable (usable) width in cm — the ASTM/industry 4-Point standard
+        # scores on usable width, not full width. When the inspector fills it,
+        # it takes PRIORITY over the sheet/manual width for the score
+        # (width_source='cuttable'); sheet/manual stay the fallback.
+        cur.execute("ALTER TABLE fabric_inspection_tickets "
+                    "ADD COLUMN IF NOT EXISTS cuttable_width_cm NUMERIC")
         # One-time markers for receiving data migrations (idempotent — prod is
         # a separate DB and picks these up on first touch after publish).
         cur.execute("""
@@ -6241,7 +6248,7 @@ def _insp_parse_defects(body):
     if len(rows_in) > 200:
         raise HTTPException(status_code=400,
                             detail="at most 200 defect rows per ticket")
-    out, total = [], 0
+    out = []
     for i, r in enumerate(rows_in, start=1):
         if not isinstance(r, dict):
             raise HTTPException(status_code=400,
@@ -6269,10 +6276,25 @@ def _insp_parse_defects(body):
                     detail=f"defect {i}: size cannot be negative")
         is_hole = dtype.lower() == "hole" or bool(r.get("is_hole"))
         pts = _insp_defect_points(size, is_hole)
-        total += pts
         out.append({"location_yd": loc, "defect_type": dtype,
                     "size_in": size, "side": side, "points": pts})
-    return out, total
+    return out, _insp_total_points(out)
+
+def _insp_total_points(defect_rows):
+    """Total penalty points with the 4-Point standard's max-4-points-per-
+    linear-yard cap: defects sharing the same linear yard (floor(location_yd))
+    contribute at most 4 points together. Defects WITHOUT a location keep
+    plain per-defect scoring (no cap can be applied without a position)."""
+    per_yard, total = {}, 0
+    for d in defect_rows:
+        loc, pts = d.get("location_yd"), int(d.get("points") or 0)
+        if loc is None:
+            total += pts
+        else:
+            yd = int(math.floor(float(loc)))
+            per_yard[yd] = per_yard.get(yd, 0) + pts
+    total += sum(min(v, 4) for v in per_yard.values())
+    return total
 
 def _insp_num(v, name, required=False):
     if v in (None, ""):
@@ -6295,20 +6317,17 @@ def _insp_score(total_points, width_in, yards):
     return round(float(total_points) * 3600.0 / (float(width_in) * float(yards)), 2)
 
 def _insp_enforce_source_width(ctx, fields):
-    """Resolve the SCORE width server-side: the roll's receiving-sheet width
-    (width_measured_m, metres → inches) is authoritative; the inspector's
-    manual_width_cm is used ONLY when the sheet width is blank. The after-wash
-    measurements never feed the score (shrinkage-only)."""
-    w_m = ctx.get("width_measured_m")
-    try:
-        w_m = float(w_m) if w_m not in (None, "") else None
-    except (TypeError, ValueError):
-        w_m = None
-    if w_m and w_m > 0:
-        fields["width_inches"] = round(w_m / 0.0254, 1)
-        fields["width_source"] = "sheet"
-        # A manual width is ignored (and not stored) when the sheet has one.
-        fields["manual_width_cm"] = None
+    """Resolve the SCORE width server-side from the INSPECTOR'S OWN
+    measurements only: the CUTTABLE width (cm → inches) takes priority when
+    entered — the 4-Point standard scores on usable width — otherwise the
+    inspector's manual full width (cm). The receiving sheet's width is shown
+    as a reference on the ticket but NEVER feeds the score (the inspection
+    measures the roll independently). The after-wash measurements never feed
+    the score either (shrinkage-only)."""
+    cut = fields.get("cuttable_width_cm")
+    if cut and cut > 0:
+        fields["width_inches"] = round(float(cut) / 2.54, 1)
+        fields["width_source"] = "cuttable"
     elif fields.get("manual_width_cm") and fields["manual_width_cm"] > 0:
         fields["width_inches"] = round(float(fields["manual_width_cm"]) / 2.54, 1)
         fields["width_source"] = "manual"
@@ -6351,11 +6370,13 @@ def _insp_collect_fields(body):
                             detail="face_back must be Face, Back or Both")
     f["yards_inspected"] = _insp_num(body.get("yards_inspected"), "yards inspected")
     # After-wash width (cm) is a SHRINKAGE-ONLY measurement (vs the 35 cm
-    # gauge square) — it no longer feeds the score. The score width comes
-    # from the receiving sheet (metres → inches) in _insp_enforce_source_width;
-    # manual_width_cm is the inspector's fallback when the sheet width is blank.
+    # gauge square) — it never feeds the score. The score width comes from
+    # the inspector's own measurements in _insp_enforce_source_width:
+    # cuttable_width_cm (priority) or manual_width_cm (full width).
     f["after_wash_width_cm"] = _insp_num(body.get("after_wash_width_cm"), "after-wash width (cm)")
     f["manual_width_cm"] = _insp_num(body.get("manual_width_cm"), "manual width (cm)")
+    f["cuttable_width_cm"] = _insp_num(body.get("cuttable_width_cm"),
+                                       "cuttable width (cm)")
     f["width_inches"] = None  # resolved server-side from ctx
     lim = _insp_num(body.get("acceptable_limit"), "acceptable limit")
     f["acceptable_limit"] = lim if lim and lim > 0 else 40
@@ -6378,7 +6399,7 @@ def _insp_ticket_row(t):
     v = out.get("inspection_date")
     out["inspection_date"] = v.strftime("%Y-%m-%d") if v is not None else None
     for k in ("yards_inspected", "width_inches", "after_wash_width_cm",
-              "manual_width_cm",
+              "manual_width_cm", "cuttable_width_cm",
               "acceptable_limit", "total_points", "points_per_100"):
         if out.get(k) is not None:
             out[k] = float(out[k])
@@ -6552,8 +6573,8 @@ def _insp_upsert_draft(conn, ctx, fields, defects, total_points, actor,
                 detail="Total yards inspected is required to submit")
         if fields.get("width_inches") in (None, 0):
             raise HTTPException(status_code=400,
-                detail="No width available for scoring — the receiving sheet "
-                       "has no width for this roll; enter a manual width (cm)")
+                detail="No width available for scoring — enter the measured "
+                       "cuttable width (cm) or a manual full width (cm)")
         if not fields.get("inspector_name"):
             raise HTTPException(status_code=400,
                 detail="Inspector name is required to submit")
@@ -6572,6 +6593,7 @@ def _insp_upsert_draft(conn, ctx, fields, defects, total_points, actor,
                   fields["yards_inspected"], fields["width_inches"],
                   fields.get("after_wash_width_cm"),
                   fields.get("manual_width_cm"), fields.get("width_source"),
+                  fields.get("cuttable_width_cm"),
                   fields["inspector_name"], fields["inspection_date"],
                   fields["face_back"],
                   psycopg2.extras.Json(defects), limit,
@@ -6583,6 +6605,7 @@ def _insp_upsert_draft(conn, ctx, fields, defects, total_points, actor,
                     color=%s, yards_inspected=%s,
                     width_inches=%s, after_wash_width_cm=%s,
                     manual_width_cm=%s, width_source=%s,
+                    cuttable_width_cm=%s,
                     inspector_name=%s, inspection_date=%s,
                     face_back=%s, defects=%s, acceptable_limit=%s,
                     remarks=%s, discrepancy_note=%s, total_points=%s,
@@ -6597,11 +6620,12 @@ def _insp_upsert_draft(conn, ctx, fields, defects, total_points, actor,
                     (sheet_id, po_id, roll_no, roll_id, version, ticket_no,
                      status, color, yards_inspected, width_inches,
                      after_wash_width_cm, manual_width_cm, width_source,
+                     cuttable_width_cm,
                      inspector_name, inspection_date, face_back, defects,
                      acceptable_limit, remarks, discrepancy_note,
                      total_points, points_per_100, grade, created_by)
                 VALUES (%s,%s,%s,%s,%s,%s,'Draft',
-                        %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 RETURNING *
             """, (ctx["sheet_id"], ctx.get("po_id"), ctx["roll_no"],
                   ctx["roll_id"], version, ticket_no) + common + (actor,))
@@ -10508,7 +10532,9 @@ def receiving_scoresheet(sheet_id: int):
             "<td class=\"c\">" + _e(str(r["roll_no"])) + "</td>"
             "<td>" + _e(yds) + "</td>"
             "<td class=\"c\">" + _e(wid_cm) + "</td>"
+            "<td></td>"
             "<td></td><td></td><td></td><td></td>"
+            "<td></td>"
             "<td></td><td></td><td class=\"c\"></td><td></td>"
             "</tr>"
         )
@@ -10517,7 +10543,7 @@ def receiving_scoresheet(sheet_id: int):
         roll_rows.append(
             "<tr>"
             "<td></td><td></td><td></td><td></td><td></td><td></td>"
-            "<td></td><td></td><td></td><td></td><td></td>"
+            "<td></td><td></td><td></td><td></td><td></td><td></td><td></td>"
             "</tr>"
         )
     roll_rows_html = "\n".join(roll_rows)
@@ -10632,7 +10658,9 @@ table.score tfoot td{background:#f0f0f0;font-weight:700;font-size:10px;padding:4
         "      <th rowspan=\"2\">Roll No.</th>\n"
         "      <th rowspan=\"2\">Length<br>(yards)</th>\n"
         "      <th rowspan=\"2\">Width<br>(cm)</th>\n"
+        "      <th rowspan=\"2\">Cuttable<br>Width (cm)</th>\n"
         "      <th colspan=\"4\" class=\"grp\">Defect Points (circle applicable)</th>\n"
+        "      <th rowspan=\"2\">Defects<br>At (yd)</th>\n"
         "      <th rowspan=\"2\">Total<br>Points</th>\n"
         "      <th rowspan=\"2\">Pts /100 yd</th>\n"
         "      <th rowspan=\"2\">Pass / Fail<br>(&#x2264;40 pts)</th>\n"
@@ -10650,7 +10678,7 @@ table.score tfoot td{background:#f0f0f0;font-weight:700;font-size:10px;padding:4
         "  </tbody>\n"
         "  <tfoot>\n"
         "    <tr>\n"
-        "      <td colspan=\"7\" style=\"text-align:right;\">TOTALS</td>\n"
+        "      <td colspan=\"9\" style=\"text-align:right;\">TOTALS</td>\n"
         "      <td></td><td></td><td></td><td></td>\n"
         "    </tr>\n"
         "  </tfoot>\n"

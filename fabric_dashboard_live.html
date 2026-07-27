@@ -5863,6 +5863,7 @@ function renderInspTicket(pop,ctx,box,rollId){
   // a manual width (cm) is offered ONLY when the sheet has no width for the roll.
   const sheetWidthIn=(roll.width_measured_m!=null&&roll.width_measured_m!==''&&parseFloat(roll.width_measured_m)>0)?parseFloat(roll.width_measured_m)/0.0254:null;
   const manualWidthCm=V(seed.manual_width_cm,null,'');
+  const cuttableWidthCm=V(seed.cuttable_width_cm,null,'');
   const defects=Array.isArray(seed.defects)?seed.defects:[];
   const fb=seed.face_back||'Both';
   const readOnly=false;
@@ -5903,9 +5904,8 @@ function renderInspTicket(pop,ctx,box,rollId){
     +'</div>'
     +'<div style="margin-top:.7rem;"><div style="font-weight:700;font-size:12.5px;">Scoring width</div>'
     +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:.5rem;margin-top:4px;">'
-    +(sheetWidthIn!=null
-      ?'<div>'+lbl('Width used for score <span class="muted" style="font-weight:400;" title="From the receiving sheet — auto-converted to inches. This width feeds the points-per-100-sq.yd score.">(receiving sheet)</span>')+ro(fmt2(roll.width_measured_m)+' m = '+fmt2(sheetWidthIn)+' in')+'</div>'
-      :'<div>'+lbl('Manual width (cm) <span class="muted" style="font-weight:400;" title="The receiving sheet has no width for this roll — enter the fabric width here; it feeds the score.">(sheet width missing)</span>')+num('insp-manual-w',manualWidthCm,'cm')+'<div class="insp-manual-w-p muted" style="font-size:10.5px;min-height:13px;white-space:nowrap;"></div></div>')
+    +'<div>'+lbl('Cuttable width (cm) <span class="muted" style="font-weight:400;" title="Usable width excluding selvedges — the 4-Point standard scores on cuttable width. Takes priority for the score when filled.">(preferred for score)</span>')+num('insp-cuttable-w',cuttableWidthCm,'cm')+'</div>'
+    +'<div>'+lbl('Measured full width (cm) <span class="muted" style="font-weight:400;" title="The inspector\u2019s own full-width measurement — feeds the score only when no cuttable width is entered. The receiving-sheet width above is reference only and never used for scoring.">(fallback)</span>')+num('insp-manual-w',manualWidthCm,'cm')+'<div class="insp-manual-w-p muted" style="font-size:10.5px;min-height:13px;white-space:nowrap;"></div></div>'
     +'</div></div>'
     +'<div style="margin-top:.7rem;"><div style="font-weight:700;font-size:12.5px;">Measurements &amp; wash tests <span class="muted" style="font-weight:400;font-size:11px;">(shrinkage only — not used for the score)</span></div>'
     +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:.5rem;margin-top:4px;">'
@@ -5921,7 +5921,7 @@ function renderInspTicket(pop,ctx,box,rollId){
     +'<label style="display:flex;align-items:center;gap:.35rem;font-size:12.5px;font-weight:600;cursor:pointer;margin-left:auto;"><input type="checkbox" class="insp-clean-roll" style="width:15px;height:15px;cursor:pointer;"> Clean Roll \u2014 No Defects</label>'
     +'<button class="btn insp-add-defect" style="padding:2px 10px;font-size:12px;">+ Add defect</button></div>'
     +'<div class="insp-clean-label" style="display:none;padding:6px 10px;margin-top:4px;background:rgba(10,125,51,.07);border:1px solid rgba(10,125,51,.3);border-radius:6px;font-weight:700;color:#0a7d33;font-size:13px;">Clean Roll \u2014 No Defects</div>'
-    +'<div class="insp-defect-wrap" style="overflow-x:auto;"><table class="data" style="margin-top:4px;width:100%;min-width:420px;"><thead><tr><th>Defect</th><th style="width:90px;">Size (in)</th><th style="width:80px;">Side</th><th style="width:52px;" class="r">Pts</th><th style="width:36px;"></th></tr></thead>'
+    +'<div class="insp-defect-wrap" style="overflow-x:auto;"><table class="data" style="margin-top:4px;width:100%;min-width:420px;"><thead><tr><th style="width:78px;">At (yd)</th><th>Defect</th><th style="width:90px;">Size (in)</th><th style="width:80px;">Side</th><th style="width:52px;" class="r">Pts</th><th style="width:36px;"></th></tr></thead>'
     +'<tbody class="insp-defects"></tbody></table></div></div>'
     +'<div class="insp-score" style="margin-top:.6rem;padding:.55rem .7rem;border-radius:8px;border:1px solid var(--border,#d7d7de);display:flex;gap:1rem;flex-wrap:wrap;align-items:center;font-size:13px;"></div>'
     +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:.5rem;margin-top:.55rem;">'
@@ -5970,7 +5970,8 @@ function renderInspTicket(pop,ctx,box,rollId){
   function addDefectRow(d){
     d=d||{};
     const tr=document.createElement('tr');
-    tr.innerHTML='<td><select class="d-type" style="width:100%;padding:3px 5px;font-size:12.5px;border:1px solid var(--border,#d7d7de);border-radius:5px;">'+INSP_DEFECT_TYPES.map(t=>'<option'+((d.defect_type||'Slub')===t?' selected':'')+'>'+t+'</option>').join('')+'</select></td>'
+    tr.innerHTML='<td><input type="number" min="0" step="any" class="d-loc" title="Distance from the roll start (yards) where the defect sits — enables the max-4-points-per-yard cap" value="'+esc(String(d.location_yd==null?'':d.location_yd))+'" style="width:100%;padding:3px 5px;font-size:12.5px;border:1px solid var(--border,#d7d7de);border-radius:5px;"></td>'
+      +'<td><select class="d-type" style="width:100%;padding:3px 5px;font-size:12.5px;border:1px solid var(--border,#d7d7de);border-radius:5px;">'+INSP_DEFECT_TYPES.map(t=>'<option'+((d.defect_type||'Slub')===t?' selected':'')+'>'+t+'</option>').join('')+'</select></td>'
       +'<td><input type="number" min="0" step="any" class="d-size" value="'+esc(String(d.size_in==null?'':d.size_in))+'" style="width:100%;padding:3px 5px;font-size:12.5px;border:1px solid var(--border,#d7d7de);border-radius:5px;"></td>'
       +'<td><select class="d-side" style="width:100%;padding:3px 5px;font-size:12.5px;border:1px solid var(--border,#d7d7de);border-radius:5px;"><option value=""></option><option'+(d.side==='Face'?' selected':'')+'>Face</option><option'+(d.side==='Back'?' selected':'')+'>Back</option></select></td>'
       +'<td class="r d-pts" style="font-weight:700;"></td>'
@@ -5981,38 +5982,49 @@ function renderInspTicket(pop,ctx,box,rollId){
   }
   function collectDefects(){
     return Array.from(tb.querySelectorAll('tr')).map(tr=>({
+      location_yd:tr.querySelector('.d-loc').value.trim()||null,
       defect_type:tr.querySelector('.d-type').value,
       size_in:tr.querySelector('.d-size').value.trim()||null,
       side:tr.querySelector('.d-side').value,
     }));
   }
   function recalc(){
-    let total=0;
+    // Total with the 4-Point standard's max-4-points-per-linear-yard cap:
+    // located defects group by floor(At yd) and cap at 4 per yard; defects
+    // without a location keep plain per-defect points (mirrors the server).
+    let total=0;const perYard={};
     tb.querySelectorAll('tr').forEach(tr=>{
       const pts=inspDefectPoints(tr.querySelector('.d-size').value,tr.querySelector('.d-type').value);
       tr.querySelector('.d-pts').textContent=String(pts);
-      total+=pts;
+      const loc=parseFloat(tr.querySelector('.d-loc').value);
+      if(isNaN(loc)){total+=pts;}
+      else{const yd=Math.floor(loc);perYard[yd]=(perYard[yd]||0)+pts;}
     });
-    const w=sheetWidthIn!=null?sheetWidthIn:(parseFloat(gv('.insp-manual-w'))/2.54);
+    Object.values(perYard).forEach(v=>{total+=Math.min(v,4);});
+    // Score width comes ONLY from the inspector's own measurements —
+    // cuttable width first, else the measured full width. The receiving
+    // sheet's width is reference-only and never feeds the score.
+    const cutW=parseFloat(gv('.insp-cuttable-w'));
+    const w=(!isNaN(cutW)&&cutW>0)?cutW/2.54:(parseFloat(gv('.insp-manual-w'))/2.54);
     const y=parseFloat(gv('.insp-yards')),lim=parseFloat(gv('.insp-limit'))||40;
     const sc=pop.querySelector('.insp-score');
     let scoreTxt,badge='';
     if(!isNaN(w)&&w>0&&!isNaN(y)&&y>0){
       const pp=total*3600/(w*y);
       const pass=pp<=lim;
-      const wSrc=sheetWidthIn!=null?'receiving-sheet width':'manual width';
+      const wSrc=(!isNaN(cutW)&&cutW>0)?'cuttable width':'measured full width';
       scoreTxt='<b>'+fmt2(pp)+'</b> pts / 100 sq.yd <span class="muted">(= '+total+' pts \u00d7 3600 \u00f7 ('+fmt2(w)+' in ['+wSrc+'] \u00d7 '+fmt2(y)+' yd))</span>';
       badge='<span style="padding:2px 12px;border-radius:11px;font-weight:800;font-size:13px;'+(pass?'color:#0a7d33;background:rgba(10,125,51,.1);border:1px solid rgba(10,125,51,.4);':'color:var(--danger);background:rgba(200,50,50,.08);border:1px solid rgba(200,50,50,.4);')+'">'+(pass?'PASS':'REJECT')+'</span>';
       sc.style.borderColor=pass?'rgba(10,125,51,.4)':'rgba(200,50,50,.4)';
     }else{
-      scoreTxt='<span class="muted">'+(sheetWidthIn!=null?'Enter yards inspected to compute the score.':'The receiving sheet has no width for this roll \u2014 enter a manual width (cm) and yards inspected to compute the score.')+'</span> Total points so far: <b>'+total+'</b>';
+      scoreTxt='<span class="muted">Enter the cuttable width (or measured full width) and yards inspected to compute the score.</span> Total points so far: <b>'+total+'</b>';
       sc.style.borderColor='';
     }
     sc.innerHTML='<span>'+scoreTxt+'</span><span style="margin-left:auto;">limit '+fmt2(lim)+' '+badge+'</span>';
   }
   (defects.length?defects:[]).forEach(addDefectRow);
   pop.querySelector('.insp-add-defect').addEventListener('click',()=>{addDefectRow();recalc();});
-  ['.insp-manual-w','.insp-yards','.insp-limit'].forEach(sel=>{const el=pop.querySelector(sel);if(el)el.addEventListener('input',recalc);});
+  ['.insp-manual-w','.insp-cuttable-w','.insp-yards','.insp-limit'].forEach(sel=>{const el=pop.querySelector(sel);if(el)el.addEventListener('input',recalc);});
   recalc();
   const cleanChk=pop.querySelector('.insp-clean-roll'),cleanLbl=pop.querySelector('.insp-clean-label'),defectWrap=pop.querySelector('.insp-defect-wrap'),addDefBtn=pop.querySelector('.insp-add-defect');
   function applyCleanRoll(){const c=cleanChk.checked;addDefBtn.disabled=c;cleanLbl.style.display=c?'':'none';defectWrap.style.display=c?'none':'';if(c){while(tb.firstChild)tb.removeChild(tb.firstChild);recalc();}}
@@ -6023,7 +6035,8 @@ function renderInspTicket(pop,ctx,box,rollId){
       color:res.color?'':gv('.insp-color'),
       yards_inspected:gv('.insp-yards')||null,
       after_wash_width_cm:gv('.insp-m-shw')||null,
-      manual_width_cm:sheetWidthIn!=null?null:(gv('.insp-manual-w')||null),
+      manual_width_cm:gv('.insp-manual-w')||null,
+      cuttable_width_cm:gv('.insp-cuttable-w')||null,
       inspector_name:gv('.insp-inspector'),
       inspection_date:gv('.insp-date'),
       face_back:gv('.insp-face'),

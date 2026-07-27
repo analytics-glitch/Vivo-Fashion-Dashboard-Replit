@@ -133,6 +133,7 @@
 - [Cold-start query latency](cold-start-latency.md) — after restart both app SWR cache + PG shared_buffers go cold; fix = PG warmup queries + KPI prewarm targets + smart_ttl 300s today.
 - [Topbar poll endpoints must be cheap](topbar-poll-endpoint-cost.md) — ~60s/user polls × full scans/global solves = constant load; index MAX(loaded_at), run_query ttl= override, single-flight memo for late-count.
 - [stock_transfers history retention](stock-transfers-history-retention.md) — never TRUNCATE stock_transfers; done rows accumulate (upsert on move_id), in-flight rows refresh; source window is only ~7 days.
+- [4-Point inspection score width](fabric-inspection-score-width.md) — score width = inspector's cuttable else manual width ONLY; receiving-sheet width is reference, never scores; 4 pts/yard cap.
 - [Fabric receiving quality + edit](fabric-receiving-quality.md) — per-roll quality by any user, rolls/qty admin-only; roll_no MUST be unique per sheet (carry-over keys on it, app-enforced not DB); admin PUT writes rolls+quality atomically.
 - [Velocity vs WOC consensus check](velocity-woc-consensus-check.md) — velocity calls the weekly rate rate_of_sale (1dp) not weekly_units; universes differ per style, so reconcile by median-gap consensus (2% tol), never per-style equality.
 - [Employee self-signup fence](employee-self-signup-fence.md) — Google self-signups auto-approve to minimal "employee" role; enforcement is a middleware allowlist fence (salary-advances only), client gating is UX only.
