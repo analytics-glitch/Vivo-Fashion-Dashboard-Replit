@@ -102,7 +102,7 @@ const RepairsByLine = () => {
     setErr(null);
     try {
       const res = await api(`/quality/repairs?period=${period}`);
-      setData(res);
+      setData(res.data);
     } catch (e) {
       setErr(e.message || "Failed to load");
     } finally {
@@ -197,7 +197,7 @@ const OverallRepairs = () => {
     setErr(null);
     try {
       const res = await api(`/quality/overall-repairs?period=${period}`);
-      setData(res);
+      setData(res.data);
     } catch (e) {
       setErr(e.message || "Failed to load");
     } finally {
@@ -275,7 +275,7 @@ const Complaints = () => {
 
   useEffect(() => {
     api("/quality/complaints")
-      .then(setData)
+      .then((r) => setData(r.data))
       .catch((e) => setErr(e.message || "Failed to load"))
       .finally(() => setLoading(false));
   }, []);
@@ -327,7 +327,7 @@ const Washing = () => {
 
   useEffect(() => {
     api("/quality/washing")
-      .then(setData)
+      .then((r) => setData(r.data))
       .catch((e) => setErr(e.message || "Failed to load"))
       .finally(() => setLoading(false));
   }, []);

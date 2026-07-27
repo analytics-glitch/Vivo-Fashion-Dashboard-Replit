@@ -934,6 +934,59 @@ def _ensure_users_table():
         pass
 
 
+def _derive_pos_from_email(email: str):
+    """Infer a POS location name from a store-manager email address.
+
+    Pattern: vivo.kileleshwa@vivofashiongroup.com  →  'Vivo Kileleshwa'
+             vivo.gardencity@vivofashiongroup.com  →  'Vivo Garden City'
+
+    Strips a leading 'vivo.' / 'vivo-' / 'store.' prefix from the local
+    part, collapses the remainder to lowercase alphanumeric, then fuzzy-
+    matches against every POS location that has appeared in all_sales in
+    the last 30 days.  Returns None when no confident match is found.
+    """
+    if not email:
+        return None
+    local = email.split("@")[0].lower()
+    for pfx in ("vivo.", "vivo-", "store.", "pos."):
+        if local.startswith(pfx):
+            local = local[len(pfx):]
+            break
+    slug = re.sub(r"[^a-z0-9]", "", local)
+    if len(slug) < 3:
+        return None
+    try:
+        rows = run_query(
+            "SELECT DISTINCT pos_location_name AS store FROM all_sales "
+            "WHERE pos_location_name IS NOT NULL "
+            "  AND COALESCE(pos_location_name,'') <> '' "
+            "  AND pos_location_name NOT ILIKE '%%online%%' "
+            "  AND sale_date::date >= CURRENT_DATE - INTERVAL '60 days'",
+            ttl=3600) or []
+    except Exception:
+        return None
+    best, best_score = None, 0
+    for r in rows:
+        store = r["store"]
+        # Normalise: drop "Vivo " prefix, keep alphanumeric lower
+        norm = re.sub(r"[^a-z0-9]", "", store.lower())
+        # Also try without leading "vivo"
+        norm_bare = norm[4:] if norm.startswith("vivo") else norm
+        slug_bare = slug[4:] if slug.startswith("vivo") else slug
+        # Exact match wins immediately
+        if slug == norm or slug_bare == norm_bare:
+            return store
+        # Prefix match: give a score proportional to overlap length
+        for a, b in [(slug_bare, norm_bare), (slug, norm)]:
+            if b.startswith(a) or a.startswith(b):
+                score = len(min(a, b, key=len))
+                if score > best_score:
+                    best_score = score
+                    best = store
+    # Require at least 4 matching characters to avoid false positives
+    return best if best_score >= 4 else None
+
+
 def _resolve_app_user_db(sub, email, name, picture=None):
     rows = _users_exec(
         "SELECT user_id, email, name, role, status, crm_admin, pos_location_name FROM app_users WHERE user_id=%s",
@@ -7100,6 +7153,15 @@ def auth_me(request: Request):
                 u["fabric_field_grants"] = []
         else:
             u["fabric_field_grants"] = []
+        # For store managers whose pos_location_name was never manually set,
+        # derive it from the email (e.g. vivo.kileleshwa@vivofashiongroup.com
+        # → "Vivo Kileleshwa") so the Dashboard POS filter pre-selects their
+        # store on first load without any admin action required.
+        if (u.get("role") == "store_manager"
+                and not (u.get("pos_location_name") or "").strip()):
+            derived = _derive_pos_from_email(u.get("email", ""))
+            if derived:
+                u["pos_location_name"] = derived
     return u
 
 
