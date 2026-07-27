@@ -2396,6 +2396,84 @@ def min_roll_width(search: str = Query(default=None)):
     return {"combinations": out, "total": len(out)}
 
 
+# ── Minimum CUTTABLE width per supplier fabric code + colour ─────────────────
+# Buying & PD card: strict variant of min-roll-width. Per roll, ONLY the
+# inspector's cuttable (usable) width from the latest 4-Point inspection
+# ticket counts — no manual-width or receiving-roll fallback — so buyers/PD
+# can plan markers against a strictly inspected usable width. Combinations
+# with no cuttable widths return min_cuttable_m = null ("no data", never a
+# misleading zero); rolls_total / rolls_with_cuttable let the UI flag rolls
+# still pending inspection input.
+@fabric_router.get("/api/fabric/min-cuttable-width")
+def min_cuttable_width(search: str = Query(default=None)):
+    with _get_conn() as conn:
+        _ensure_receiving_tables(conn)
+        rows = q(conn, """
+            WITH insp AS (
+                SELECT DISTINCT ON (sheet_id, roll_no)
+                       sheet_id, roll_no, cuttable_width_cm
+                FROM fabric_inspection_tickets
+                ORDER BY sheet_id, roll_no, id DESC
+            )
+            SELECT i.cuttable_width_cm,
+                   s.product_id,
+                   COALESCE(NULLIF(BTRIM(p.name),''), s.fabric_name) AS fabric_name,
+                   NULLIF(BTRIM(p.supplier_fabric_code),'') AS supplier_fabric_code,
+                   NULLIF(BTRIM(p.odoo_fabric_color),'')    AS odoo_fabric_color,
+                   p.fabric_color
+            FROM fabric_receiving_rolls r
+            JOIN fabric_receiving_sheets s ON s.id = r.sheet_id
+            LEFT JOIN insp i ON i.sheet_id = r.sheet_id AND i.roll_no = r.roll_no
+            LEFT JOIN raw_fabric_products p ON p.id = s.product_id
+            WHERE r.deleted_at IS NULL AND s.deleted_at IS NULL
+        """)
+
+    combos = {}
+    for r in rows:
+        code = r.get("supplier_fabric_code") or (r.get("fabric_name") or "Unknown fabric")
+        # Same effective-colour rule as min-roll-width so both cards agree on
+        # the combination list.
+        color = r.get("odoo_fabric_color")
+        if not color:
+            fc, _pc = _derive_fabric_colors(r.get("fabric_name"), r.get("fabric_color"))
+            color = fc
+        key = (code, color or "")
+        c = combos.setdefault(key, {
+            "fabric_code": code,
+            "color": color,
+            "label": code + " - " + (color or "No colour"),
+            "min_cuttable_m": None,
+            "rolls_total": 0,
+            "rolls_with_cuttable": 0,
+        })
+        c["rolls_total"] += 1
+        v = r.get("cuttable_width_cm")
+        try:
+            w = float(v) / 100.0 if v is not None and float(v) > 0 else None
+        except (TypeError, ValueError):
+            w = None
+        if w is not None:
+            c["rolls_with_cuttable"] += 1
+            if c["min_cuttable_m"] is None or w < c["min_cuttable_m"]:
+                c["min_cuttable_m"] = w
+
+    out = list(combos.values())
+    if search:
+        needle = search.strip().lower()
+        out = [c for c in out if needle in c["label"].lower()]
+    # Narrowest inspected combinations first; no-data last.
+    out.sort(key=lambda c: (c["min_cuttable_m"] is None,
+                            c["min_cuttable_m"] if c["min_cuttable_m"] is not None else 0,
+                            c["label"].lower()))
+    rolls_total = sum(c["rolls_total"] for c in out)
+    rolls_with = sum(c["rolls_with_cuttable"] for c in out)
+    for c in out:
+        if c["min_cuttable_m"] is not None:
+            c["min_cuttable_m"] = round(c["min_cuttable_m"], 2)
+    return {"combinations": out, "total": len(out),
+            "rolls_total": rolls_total, "rolls_with_cuttable": rolls_with}
+
+
 # ── Basic Fabrics — Months of Cover: downloadable .xlsx calculations report ──
 # The full audit trail behind the "Basic Fabrics — Months of Cover" Overview KPI:
 # every curated (vendor, fabric-code) pairing and whether it matched a product,

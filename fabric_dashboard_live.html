@@ -3752,6 +3752,7 @@ async function loadBuyingPD(){
   }
   initMpgCatCard();
   initMinWidthCard();
+  initMinCuttableCard();
 }
 function renderBpdKpis(mpg){
   const el=document.getElementById('bpd-kpi-cards');
@@ -3777,6 +3778,13 @@ function renderBpdKpis(mpg){
       <div style="font-size:.72rem;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:#6b7280;margin-bottom:.35rem;" title="Narrowest MEASURED width received per supplier fabric code + colour. Per roll: inspector's cuttable width first, else the inspector's manual width, else the width recorded on the receiving roll. The receiving sheet's reference width never counts as a measurement.">Min roll width <span style="font-weight:400;color:#9ca3af;">&middot; by Fabric code + Colour</span></div>
       <select id="min-width-select" onchange="onMinWidthChange()" style="width:100%;font-size:.8rem;padding:.22rem .4rem;border:1px solid #d1d5db;border-radius:.3rem;background:#fff;color:#111827;margin-bottom:.45rem;cursor:pointer;"></select>
       <div id="min-width-body" style="flex:1;min-height:2rem;"><span style="color:#9ca3af;font-size:.8rem;">Loading&hellip;</span></div>
+    </div>`,
+    // Minimum CUTTABLE width card — shell only; body is populated by
+    // initMinCuttableCard() after render.
+    `<div class="kpi-card" id="min-cut-card" style="min-width:220px;flex:1 1 220px;display:flex;flex-direction:column;gap:0;">
+      <div style="font-size:.72rem;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:#6b7280;margin-bottom:.35rem;" title="Narrowest INSPECTED cuttable (usable) width per supplier fabric code + colour. Counts ONLY the inspector's cuttable width from 4-Point inspection tickets — no manual-width or receiving-roll fallback — so markers can be planned against a strictly inspected usable width. Rolls without a cuttable width are flagged as pending inspection.">Min cuttable width <span style="font-weight:400;color:#9ca3af;">&middot; by Fabric code + Colour</span></div>
+      <select id="min-cut-select" onchange="onMinCutChange()" style="width:100%;font-size:.8rem;padding:.22rem .4rem;border:1px solid #d1d5db;border-radius:.3rem;background:#fff;color:#111827;margin-bottom:.45rem;cursor:pointer;"></select>
+      <div id="min-cut-body" style="flex:1;min-height:2rem;"><span style="color:#9ca3af;font-size:.8rem;">Loading&hellip;</span></div>
     </div>`,
   ];
   el.innerHTML=cards.join('');
@@ -3855,6 +3863,91 @@ function _renderMinWidthBody(){
   }).join('');
   body.innerHTML=`<table style="width:100%;border-collapse:collapse;">${rowsHtml}</table>
     <div style="font-size:.72rem;color:#9ca3af;margin-top:.25rem;">${measured.length>8?('Narrowest 8 of '+fmt(measured.length)+' measured combinations'):'Narrowest first'}${noData?(' &middot; '+fmt(noData)+' with no measured widths'):''} &mdash; select one above for detail.</div>`;
+}
+// ── Min cuttable width · by Fabric code + Colour card ────────────────────────
+// Strict variant of the Min roll width card: ONLY the inspector's cuttable
+// width from 4-Point inspection tickets counts (no fallback). State persists
+// across re-renders (overview refreshes) like the neighbouring cards.
+let _mcSelected='';        // '' = ranked default view
+let _mcList=[];            // combinations from /api/fabric/min-cuttable-width
+let _mcListLoaded=false;
+let _mcTotals={rolls_total:0,rolls_with_cuttable:0};
+function _mcPendingStr(c){
+  const pending=c.rolls_total-c.rolls_with_cuttable;
+  return `${fmt(c.rolls_with_cuttable)} of ${fmt(c.rolls_total)} roll${c.rolls_total===1?'':'s'} have cuttable width${pending>0?(' &middot; '+fmt(pending)+' pending inspection'):''}`;
+}
+async function initMinCuttableCard(){
+  const sel=document.getElementById('min-cut-select');
+  if(!sel)return;
+  if(!_mcListLoaded){
+    try{
+      const r=await apiFetch('/api/fabric/min-cuttable-width');
+      _mcList=(r&&r.combinations)||[];
+      _mcTotals={rolls_total:(r&&r.rolls_total)||0,rolls_with_cuttable:(r&&r.rolls_with_cuttable)||0};
+      _mcListLoaded=true;
+    }catch(e){_mcList=[];_mcListLoaded=true;}
+  }
+  sel.innerHTML='<option value="">All combinations (narrowest first)</option>'+
+    _mcList.map(c=>`<option value="${esc(c.label)}"${c.label===_mcSelected?' selected':''}>${esc(c.label)}</option>`).join('');
+  _renderMinCutBody();
+}
+function onMinCutChange(){
+  const sel=document.getElementById('min-cut-select');
+  if(!sel)return;
+  _mcSelected=sel.value||'';
+  _renderMinCutBody();
+}
+function _renderMinCutBody(){
+  const body=document.getElementById('min-cut-body');
+  if(!body)return;
+  if(!_mcList.length){body.innerHTML='<span style="color:#9ca3af;font-size:.8rem;">No received rolls yet.</span>';return;}
+  if(_mcSelected){
+    const c=_mcList.find(x=>x.label===_mcSelected);
+    if(!c){body.innerHTML='<span style="color:#9ca3af;font-size:.8rem;">Combination not found.</span>';return;}
+    if(c.min_cuttable_m==null){
+      body.innerHTML=`<div style="font-size:1.05rem;font-weight:600;color:#9ca3af;margin:.2rem 0 .25rem;">No data</div>
+        <div style="font-size:.76rem;color:#b45309;">${_mcPendingStr(c)}</div>`;
+      return;
+    }
+    const pending=c.rolls_total-c.rolls_with_cuttable;
+    body.innerHTML=`<div style="display:flex;align-items:baseline;gap:.3rem;margin:.1rem 0 .25rem;">
+      <span style="font-size:1.6rem;font-weight:700;color:#111827;line-height:1;">${_mwWidthStr(c.min_cuttable_m)}</span>
+      <span style="font-size:.85rem;color:#6b7280;">m</span>
+    </div>
+    <div style="font-size:.76rem;color:${pending>0?'#b45309':'#6b7280'};" title="${esc("Min across rolls with an inspector's cuttable width, out of "+fmt(c.rolls_total)+' received.')}">${_mcPendingStr(c)}</div>`;
+    return;
+  }
+  // Default ranked view: narrowest inspected combinations first.
+  const inspected=_mcList.filter(c=>c.min_cuttable_m!=null);
+  const noData=_mcList.length-inspected.length;
+  const totPending=_mcTotals.rolls_total-_mcTotals.rolls_with_cuttable;
+  const totLine=`${fmt(_mcTotals.rolls_with_cuttable)} of ${fmt(_mcTotals.rolls_total)} rolls have cuttable width${totPending>0?(' &middot; '+fmt(totPending)+' pending inspection'):''}`;
+  if(!inspected.length){
+    body.innerHTML=`<span style="color:#9ca3af;font-size:.8rem;">No inspected cuttable widths yet${noData?(' &mdash; '+fmt(noData)+' combination'+(noData===1?'':'s')+' with no data'):''}.</span>
+      <div style="font-size:.72rem;color:#b45309;margin-top:.25rem;">${totLine}</div>`;
+    return;
+  }
+  const topN=inspected.slice(0,8);
+  const maxV=Math.max(...topN.map(c=>c.min_cuttable_m))||1;
+  const rowsHtml=topN.map(c=>{
+    const pct=maxV>0?Math.round(c.min_cuttable_m/maxV*100):0;
+    const pending=c.rolls_total-c.rolls_with_cuttable;
+    return `<tr>
+      <td style="font-size:.78rem;color:#374151;padding:.15rem .3rem .15rem 0;white-space:nowrap;max-width:120px;overflow:hidden;text-overflow:ellipsis;" title="${esc(c.label)}">${esc(c.label)}</td>
+      <td style="padding:.15rem .3rem;min-width:60px;">
+        <div style="display:flex;align-items:center;gap:.35rem;">
+          <div style="flex:1;height:5px;background:#f3f4f6;border-radius:3px;min-width:28px;">
+            <div style="width:${pct}%;height:100%;background:#1a5c38;border-radius:3px;"></div>
+          </div>
+          <span style="font-size:.78rem;font-weight:600;color:#111827;white-space:nowrap;">${_mwWidthStr(c.min_cuttable_m)} m</span>
+        </div>
+      </td>
+      <td style="font-size:.72rem;color:${pending>0?'#b45309':'#9ca3af'};padding:.15rem 0 .15rem .15rem;white-space:nowrap;" title="${esc(_mcPendingStr(c).replace(/&middot;/g,'\u00b7'))}">${fmt(c.rolls_with_cuttable)}/${fmt(c.rolls_total)} rolls${pending>0?(' &middot; '+fmt(pending)+' pending'):''}</td>
+    </tr>`;
+  }).join('');
+  body.innerHTML=`<table style="width:100%;border-collapse:collapse;">${rowsHtml}</table>
+    <div style="font-size:.72rem;color:#9ca3af;margin-top:.25rem;">${inspected.length>8?('Narrowest 8 of '+fmt(inspected.length)+' inspected combinations'):'Narrowest first'}${noData?(' &middot; '+fmt(noData)+' with no cuttable widths'):''} &mdash; select one above for detail.</div>
+    <div style="font-size:.72rem;color:${totPending>0?'#b45309':'#9ca3af'};margin-top:.15rem;">${totLine}</div>`;
 }
 // ── Avg metres / garment · by Category card ─────────────────────────────────
 // State: persists across re-renders (overview refreshes) so the selection and
