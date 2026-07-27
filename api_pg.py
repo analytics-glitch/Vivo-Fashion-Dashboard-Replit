@@ -7897,6 +7897,7 @@ def analytics_sor_all_styles(
             p.style_number, p.original_price,
             COALESCE(sa.units_6m, 0) AS units_6m, COALESCE(sa.sales_6m, 0) AS sales_6m,
             COALESCE(sa.units_3w, 0) AS units_3w, COALESCE(sa.units_30d, 0) AS units_30d,
+            COALESCE(sa.units_6w, 0) AS units_6w,
             COALESCE(sa.units_since_launch, 0) AS units_since_launch,
             COALESCE(sa.units_sel, 0) AS units_sel,
             COALESCE(sa.sales_sel, 0) AS sales_sel,

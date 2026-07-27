@@ -384,7 +384,7 @@ def main():
             print_plain, subcat, cat,
             None, None, size, 0, 0,
             None, None, True,
-            None, None, None,  # fabric_structure
+            None, None, None, None, None, None, None, None, None, None, None,  # fabric fields
         ))
         seen_skus.add(sku)
         sales_only += 1
@@ -432,7 +432,7 @@ def main():
             print_plain, subcat, cat,
             None, None, size, 0, 0,
             None, None, s is not None,
-            None, None, None,  # fabric_structure
+            None, None, None, None, None, None, None, None, None, None, None,  # fabric fields
         ))
 
         if len(inv_insert) >= _BATCH:
