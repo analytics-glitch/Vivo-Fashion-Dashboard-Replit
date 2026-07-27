@@ -517,6 +517,8 @@ app = FastAPI(title="Vivo Fashion Group BI API")
 # Fabric BI routes
 from fabric_router import fabric_router
 app.include_router(fabric_router)
+from quality_router import quality_router
+app.include_router(quality_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -582,7 +584,7 @@ _DATE_QUERY_PARAMS = ("date_from", "date_to", "compare_from", "compare_to")
 VALID_ROLES = (
     "product_development", "retail", "warehouse", "store_manager",
     "leadership", "smt", "production", "fabric_warehouse",
-    "fabric_quality_supervisor",
+    "fabric_quality_supervisor", "quality",
     "customer_service", "marketing", "hr", "admin", "employee",
 )
 # Human-readable labels for the built-in groups (mirrors ROLE_OPTIONS in
@@ -596,6 +598,7 @@ BUILTIN_GROUP_LABELS = {
     "production": "Production",
     "fabric_warehouse": "Fabric Warehouse",
     "fabric_quality_supervisor": "Fabric Quality Supervisor",
+    "quality": "Quality Department",
     "leadership": "SLT (Senior Leadership Team)",
     "smt": "SMT (Senior Management Team)",
     "customer_service": "Customer Service",
@@ -687,7 +690,7 @@ _VIEWER_PAGES = ["overview", "exec-summary", "locations", "footfall", "trend-ana
 # it lives in _LEADERSHIP_PAGES below (and therefore in ALL_PAGE_IDS, so admins
 # can also grant it to other groups via Group Access). The server-side
 # /api/finance gate independently restricts the API to leadership + admin.
-_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "quarter-scorecard", "product-analysis", "range-mgmt", "size-health", "inventory", "warehouse-returns", "excess-inventory", "rebalancing", "store-flow", "marketing", "social", "crm", "order-explorer", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "style-tracker", "pd-flow", "partner-brands", "finance", "margin", "l10", "rota", "growth", "retail-desk", "product-desk", "workforce-desk", "customer-desk", "marketing-desk", "supply-chain-desk", "production-desk", "the-chair"])
+_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "quarter-scorecard", "product-analysis", "range-mgmt", "size-health", "inventory", "warehouse-returns", "excess-inventory", "rebalancing", "store-flow", "marketing", "social", "crm", "order-explorer", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "style-tracker", "pd-flow", "partner-brands", "finance", "margin", "l10", "rota", "growth", "retail-desk", "product-desk", "workforce-desk", "customer-desk", "marketing-desk", "supply-chain-desk", "production-desk", "the-chair", "quality"])
 
 DEFAULT_ROLE_PAGES = {
     "product_development": ["product-analysis", "range-mgmt", "catalogue", "gallery", "inventory", "size-health", "data-quality", "fabric", "exports", "production", "production-report", "style-tracker", "pd-flow", "partner-brands", "sops"],
@@ -699,12 +702,14 @@ DEFAULT_ROLE_PAGES = {
     # Finance Reports Suite. The /api/finance gate below also excludes "smt".
     "smt": [p for p in _LEADERSHIP_PAGES if p not in ("finance", "margin")],
     # Production department — manufacturing board + report, style tracker, fabric warehouse view.
-    "production": ["production", "production-report", "style-tracker", "pd-flow", "fabric", "sops"],
+    "production": ["production", "production-report", "style-tracker", "pd-flow", "fabric", "quality", "sops"],
     # Fabric Warehouse department — fabric stock + general inventory.
     "fabric_warehouse": ["fabric", "inventory", "sops"],
     # Fabric Quality Supervisor — fabric dashboard only (QC approvals + delivery signoff).
     # Carries no extra BI page grants beyond the fabric surface by design.
-    "fabric_quality_supervisor": ["fabric", "sops"],
+    "fabric_quality_supervisor": ["fabric", "quality", "sops"],
+    # Quality department — production quality trackers (repairs, complaints, washing).
+    "quality": ["quality", "sops"],
     "customer_service": ["customers", "customer-details", "crm", "order-explorer", "footfall", "sops"],
     "marketing": ["marketing", "social", "crm", "order-explorer", "customers", "customer-details", "product-analysis", "footfall", "trend-analysis", "sops", "ask"],
     "hr": ["hr", "sops", "rota"],
@@ -1332,6 +1337,19 @@ async def clerk_auth_gate(request: Request, call_next):
         "product_development", "production", "leadership", "smt", "admin"
     ):
         return JSONResponse({"detail": "Product Development Flow access requires a production, product development, leadership or admin role"}, status_code=403)
+
+    # Quality dashboard (/api/quality/*) — repairs, complaints and washing data.
+    # Accessible to quality dept, production, fabric_quality_supervisor,
+    # leadership, smt and admin. Enforced server-side so the page grant alone
+    # cannot be bypassed via direct API calls.
+    if path.startswith("/api/quality") and user.get("role") not in (
+        "quality", "production", "fabric_quality_supervisor",
+        "leadership", "smt", "admin"
+    ):
+        return JSONResponse(
+            {"detail": "Quality dashboard access requires a quality, production, leadership or admin role"},
+            status_code=403,
+        )
 
     # HR attendance dashboard (/api/hr/*) is a staff surface. Leadership + admin
     # get the executive/HR-manager view; store managers map to branch managers
@@ -33768,6 +33786,30 @@ async def serve_fabric_page():
 @app.get("/fabric/{sub_path:path}")
 async def serve_fabric_subpath(sub_path: str):
     return _serve_fabric_page()
+
+
+def _serve_quality_page():
+    from fastapi.responses import HTMLResponse
+    here = pathlib.Path(__file__).parent
+    quality = here / "quality_dashboard.html"
+    if not quality.exists():
+        return JSONResponse({"detail": "Quality dashboard not available"}, status_code=404)
+    html = quality.read_text(encoding="utf-8")
+    resp = HTMLResponse(content=html)
+    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Expires"] = "0"
+    return resp
+
+
+@app.get("/quality")
+async def serve_quality_page():
+    return _serve_quality_page()
+
+
+@app.get("/quality/{sub_path:path}")
+async def serve_quality_subpath(sub_path: str):
+    return _serve_quality_page()
 
 
 # Standalone Odoo Reconciliation cockpit, served full-page at /reconcile — the

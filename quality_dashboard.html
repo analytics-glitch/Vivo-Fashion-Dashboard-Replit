@@ -1,0 +1,605 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vivo Quality Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#F7F5F2;--card:#ffffff;--border:#E8E2DC;--border-strong:#d1c8bf;
+  --text:#1a1a1a;--text-sub:#4b5563;--muted:#6b7280;
+  --accent:#EE5A0E;--accent-deep:#C2410C;--ok:#15803d;--danger:#dc2626;--amber:#d97706;
+  --header-bg:#FAF8F4;--header-line:#ECE6E1;
+  --bar-a:#EE5A0E;--bar-b:#1a5c38;--bar-c:#2563eb;--bar-d:#9333ea;--bar-e:#d97706;
+  --bar-prod:#94a3b8;
+  --radius:10px;
+}
+*{box-sizing:border-box;}
+html,body{margin:0;padding:0;}
+body{background:var(--bg);color:var(--text);font-family:"Plus Jakarta Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased;line-height:1.5;}
+a{color:inherit;}
+
+/* ── Header ─────────────────────────────────────────────────────────── */
+.q-header{position:sticky;top:0;z-index:40;border-top:3px solid var(--accent);background:var(--header-bg);border-bottom:1px solid var(--header-line);}
+.q-strip{display:flex;align-items:center;gap:14px;padding:10px 20px;}
+.q-brand{display:flex;align-items:center;gap:10px;margin-right:auto;}
+.q-brandname{font-size:13px;font-weight:800;color:#fff;background:var(--accent);padding:4px 9px;border-radius:6px;}
+.q-brandtitle{font-size:14px;font-weight:800;color:var(--text);}
+.q-brandsub{font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;}
+.q-back{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;border:1px solid var(--border);border-radius:7px;background:#fff;color:var(--muted);text-decoration:none;transition:color .12s,border-color .12s;}
+.q-back:hover{color:var(--text);border-color:var(--text);}
+
+/* Period toggle */
+.period-bar{display:flex;align-items:center;gap:8px;padding:8px 20px;border-top:1px solid var(--header-line);}
+.period-label{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);}
+.seg{display:inline-flex;border:1px solid var(--border);border-radius:7px;overflow:hidden;background:#fff;}
+.seg-btn{padding:5px 13px;font-size:12.5px;font-weight:600;border:none;background:transparent;color:var(--muted);cursor:pointer;font-family:inherit;transition:background .12s,color .12s;}
+.seg-btn.active{background:var(--accent);color:#fff;}
+.seg-btn:hover:not(.active){background:#f3ede8;color:var(--text);}
+
+/* ── Layout ─────────────────────────────────────────────────────────── */
+.content{padding:1.4rem;max-width:1400px;margin:0 auto;}
+.section-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:1.2rem 1.4rem;margin-bottom:1.4rem;box-shadow:0 1px 2px rgba(0,0,0,.04);}
+.section-head{display:flex;align-items:center;gap:12px;margin-bottom:1.1rem;flex-wrap:wrap;}
+.section-title{font-size:15.5px;font-weight:700;letter-spacing:-.01em;margin:0;}
+.section-sub{font-size:12px;color:var(--muted);margin-left:auto;}
+.loading-placeholder{padding:2rem;text-align:center;color:var(--muted);font-size:13px;}
+.error-banner{padding:.75rem 1rem;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;color:var(--danger);font-size:13px;}
+.no-data{padding:1rem;font-size:13px;color:var(--muted);text-align:center;}
+
+/* Legend */
+.chart-legend{display:flex;flex-wrap:wrap;gap:6px 16px;margin-bottom:1rem;}
+.leg-item{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--text-sub);}
+.leg-dot{width:10px;height:10px;border-radius:3px;flex-shrink:0;}
+
+/* SVG chart shared */
+.chart-wrap{overflow-x:auto;width:100%;}
+svg.chart{font-family:"Plus Jakarta Sans",-apple-system,sans-serif;overflow:visible;}
+
+/* ── Manual entry form ───────────────────────────────────────────────── */
+.manual-form{border:1px solid var(--border);border-radius:8px;padding:1rem 1.2rem;background:#fafaf9;margin-top:.5rem;}
+.manual-form h4{margin:0 0 .75rem;font-size:13.5px;font-weight:700;}
+.form-row{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin-bottom:.6rem;}
+.form-field{display:flex;flex-direction:column;gap:4px;min-width:140px;}
+.form-field label{font-size:11.5px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;}
+.form-field input,.form-field select{height:36px;border:1px solid var(--border);border-radius:7px;background:#fff;padding:0 10px;font-family:inherit;font-size:13px;outline:none;color:var(--text);transition:border-color .12s;}
+.form-field input:focus,.form-field select:focus{border-color:var(--accent);}
+.form-submit{height:36px;padding:0 16px;background:var(--accent);color:#fff;border:none;border-radius:7px;font-family:inherit;font-size:13px;font-weight:700;cursor:pointer;transition:background .12s;}
+.form-submit:hover{background:var(--accent-deep);}
+.form-msg{font-size:12px;color:var(--ok);margin-top:.4rem;}
+.form-msg.err{color:var(--danger);}
+</style>
+</head>
+<body>
+<header class="q-header">
+ <div class="q-strip">
+  <div class="q-brand">
+   <span class="q-brandname">Vivo</span>
+   <div>
+    <div class="q-brandtitle">Quality Dashboard</div>
+    <div class="q-brandsub">Production Quality Trackers</div>
+   </div>
+  </div>
+  <a href="/" class="q-back" aria-label="Back to Vivo BI" title="Back to Vivo BI">
+   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"></line><polyline points="12 19 5 12 12 5"></polyline></svg>
+  </a>
+ </div>
+ <div class="period-bar">
+  <span class="period-label">Period</span>
+  <div class="seg" id="period-seg">
+   <button class="seg-btn" data-p="daily" onclick="setPeriod('daily')">Daily</button>
+   <button class="seg-btn active" data-p="weekly" onclick="setPeriod('weekly')">Weekly</button>
+   <button class="seg-btn" data-p="monthly" onclick="setPeriod('monthly')">Monthly</button>
+  </div>
+  <span id="period-note" style="font-size:12px;color:var(--muted);margin-left:6px;"></span>
+ </div>
+</header>
+
+<div class="content">
+
+ <!-- ── 1. Repairs by Line ─────────────────────────────────────────────── -->
+ <section class="section-card" id="sec-repairs">
+  <div class="section-head">
+   <h2 class="section-title">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px;opacity:.7"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"></polyline><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"></path></svg>
+    Repairs per Sewing Line
+   </h2>
+   <span class="section-sub" id="repairs-src"></span>
+  </div>
+  <div id="repairs-legend" class="chart-legend"></div>
+  <div class="chart-wrap" id="repairs-chart-wrap">
+   <div class="loading-placeholder">Loading…</div>
+  </div>
+ </section>
+
+ <!-- ── 2. Overall Repairs ─────────────────────────────────────────────── -->
+ <section class="section-card" id="sec-overall">
+  <div class="section-head">
+   <h2 class="section-title">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px;opacity:.7"><line x1="18" y1="20" x2="18" y2="10"></line><line x1="12" y1="20" x2="12" y2="4"></line><line x1="6" y1="20" x2="6" y2="14"></line></svg>
+    Overall Repairs vs Production
+   </h2>
+   <span class="section-sub" id="overall-src"></span>
+  </div>
+  <div id="overall-legend" class="chart-legend"></div>
+  <div class="chart-wrap" id="overall-chart-wrap">
+   <div class="loading-placeholder">Loading…</div>
+  </div>
+ </section>
+
+ <!-- ── 3. Customer Complaints ─────────────────────────────────────────── -->
+ <section class="section-card" id="sec-complaints">
+  <div class="section-head">
+   <h2 class="section-title">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px;opacity:.7"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
+    Customer Complaint Types
+    <span style="font-size:12px;font-weight:500;color:var(--muted);margin-left:6px;">per week</span>
+   </h2>
+   <span class="section-sub" id="complaints-src"></span>
+  </div>
+  <div id="complaints-body">
+   <div class="loading-placeholder">Loading…</div>
+  </div>
+ </section>
+
+ <!-- ── 4. Washing ──────────────────────────────────────────────────────── -->
+ <section class="section-card" id="sec-washing">
+  <div class="section-head">
+   <h2 class="section-title">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:6px;opacity:.7"><path d="M12 22a7 7 0 0 0 7-7c0-2-1-3.9-3-5.5s-3.5-4-4-6.5c-.5 2.5-2 4.9-4 6.5C6 11.1 5 13 5 15a7 7 0 0 0 7 7z"></path></svg>
+    Washing Qty vs Actual Production
+    <span style="font-size:12px;font-weight:500;color:var(--muted);margin-left:6px;">per week</span>
+   </h2>
+   <span class="section-sub" id="washing-src"></span>
+  </div>
+  <div id="washing-body">
+   <div class="loading-placeholder">Loading…</div>
+  </div>
+ </section>
+
+</div><!-- /content -->
+
+<script>
+'use strict';
+
+/* ── Auth helpers ─────────────────────────────────────────────────────── */
+function vivoTok(){try{return localStorage.getItem('vivo_token');}catch(e){return null;}}
+function authHeaders(){const t=vivoTok();return t?{'Authorization':'Bearer '+t}:{};}
+async function apiFetch(path,opts={}){
+  const {headers:xh,...rest}=opts;
+  const r=await fetch(path,{credentials:'include',...rest,headers:{...authHeaders(),...(xh||{})}});
+  if(r.status===401||r.status===403) throw Object.assign(new Error('auth'),{status:r.status});
+  if(!r.ok) throw new Error('http '+r.status);
+  return r.json();
+}
+function errMsg(e){
+  return(e&&e.message==='auth')
+    ?'Your session has expired. <a href="/login">Sign in</a> and reopen this page.'
+    :'Could not load data — please try again.';
+}
+function esc(s){const d=document.createElement('div');d.textContent=String(s==null?'':s);return d.innerHTML;}
+
+/* ── Period state ─────────────────────────────────────────────────────── */
+let period='weekly';
+function setPeriod(p){
+  period=p;
+  document.querySelectorAll('#period-seg .seg-btn').forEach(b=>{
+    b.classList.toggle('active',b.dataset.p===p);
+  });
+  loadRepairs();
+  loadOverall();
+  // Complaints & Washing are always weekly — just update the note
+  document.getElementById('period-note').textContent=
+    (p!=='weekly')?'Complaints & Washing always shown weekly':'';
+}
+
+/* ── SVG grouped bar chart ────────────────────────────────────────────── */
+/*
+  data: [{label, groups:[{key,value,color}]}]
+  extraLine: [{label, value}] — drawn as a grey line (production)
+*/
+const PAD={top:14,right:24,bottom:60,left:52};
+const CHART_H=260;
+
+function buildGroupedBarSVG(data,seriesKeys,seriesColors,productionKey,opts={}){
+  if(!data||!data.length) return '<div class="no-data">No data for this period.</div>';
+
+  const W=Math.max(600,data.length*Math.max(80,seriesKeys.length*18+16));
+  const H=CHART_H;
+  const plotW=W-PAD.left-PAD.right;
+  const plotH=H-PAD.top-PAD.bottom;
+
+  // Compute max value
+  let maxVal=0;
+  data.forEach(d=>{
+    seriesKeys.forEach(k=>{if((d[k]||0)>maxVal)maxVal=d[k]||0;});
+    if(productionKey&&(d[productionKey]||0)>maxVal)maxVal=d[productionKey]||0;
+  });
+  if(!maxVal)maxVal=10;
+  const yScale=v=>plotH*(1-v/maxVal);
+
+  const n=data.length;
+  const groupW=plotW/n;
+  const barPad=4;
+  const innerW=groupW-barPad*2;
+  const barW=Math.max(4,innerW/seriesKeys.length-2);
+
+  let rects='';
+  let prodLine='';
+  let xLabels='';
+  let yTicks='';
+
+  // Y ticks
+  const ticks=5;
+  for(let i=0;i<=ticks;i++){
+    const v=maxVal*i/ticks;
+    const y=yScale(v);
+    yTicks+=`<line x1="0" x2="${plotW}" y1="${y}" y2="${y}" stroke="#e5e7eb" stroke-width="${i===0?1.5:.5}"/>`;
+    yTicks+=`<text x="-6" y="${y}" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#9ca3af">${fmtNum(v)}</text>`;
+  }
+
+  // Bars
+  data.forEach((d,gi)=>{
+    const gx=gi*groupW+barPad;
+    seriesKeys.forEach((k,si)=>{
+      const v=d[k]||0;
+      const bh=Math.max(0,plotH-yScale(v));
+      const bx=gx+si*(barW+2);
+      const by=plotH-bh;
+      rects+=`<rect x="${bx}" y="${by}" width="${barW}" height="${bh}" fill="${seriesColors[si]}" rx="2" opacity=".88">
+        <title>${esc(k)}: ${fmtNum(v)}</title></rect>`;
+    });
+    // X label
+    let lbl=String(d.period_label||d.week_start||'');
+    if(lbl.length>10)lbl=lbl.slice(5);// trim year for weekly/monthly
+    const lx=gi*groupW+groupW/2;
+    xLabels+=`<text x="${lx}" y="${plotH+16}" text-anchor="middle" font-size="10" fill="#6b7280">${esc(lbl)}</text>`;
+  });
+
+  // Production line
+  if(productionKey){
+    const pts=data.map((d,gi)=>{
+      const x=gi*groupW+groupW/2;
+      const y=yScale(d[productionKey]||0);
+      return `${x},${y}`;
+    }).join(' ');
+    prodLine=`<polyline points="${pts}" fill="none" stroke="var(--bar-prod)" stroke-width="2" stroke-dasharray="5,3"/>`;
+    data.forEach((d,gi)=>{
+      const x=gi*groupW+groupW/2;
+      const y=yScale(d[productionKey]||0);
+      prodLine+=`<circle cx="${x}" cy="${y}" r="3" fill="var(--bar-prod)"><title>Production: ${fmtNum(d[productionKey]||0)}</title></circle>`;
+    });
+  }
+
+  return `<svg class="chart" width="${W}" height="${H}" role="img" aria-label="Bar chart">
+    <g transform="translate(${PAD.left},${PAD.top})">
+      ${yTicks}
+      ${rects}
+      ${prodLine}
+      ${xLabels}
+    </g>
+  </svg>`;
+}
+
+function buildStackedBarSVG(data,seriesKeys,seriesColors){
+  if(!data||!data.length) return '<div class="no-data">No data available.</div>';
+
+  const W=Math.max(600,data.length*70);
+  const H=CHART_H;
+  const plotW=W-PAD.left-PAD.right;
+  const plotH=H-PAD.top-PAD.bottom;
+
+  let maxVal=0;
+  data.forEach(d=>{
+    const tot=seriesKeys.reduce((s,k)=>s+(d[k]||0),0);
+    if(tot>maxVal)maxVal=tot;
+  });
+  if(!maxVal)maxVal=10;
+  const yScale=v=>plotH*(1-v/maxVal);
+
+  const barW=Math.min(40,plotW/data.length-8);
+  let rects='',xLabels='',yTicks='';
+
+  const ticks=5;
+  for(let i=0;i<=ticks;i++){
+    const v=maxVal*i/ticks;
+    const y=yScale(v);
+    yTicks+=`<line x1="0" x2="${plotW}" y1="${y}" y2="${y}" stroke="#e5e7eb" stroke-width="${i===0?1.5:.5}"/>`;
+    yTicks+=`<text x="-6" y="${y}" text-anchor="end" dominant-baseline="middle" font-size="10" fill="#9ca3af">${fmtNum(v)}</text>`;
+  }
+
+  data.forEach((d,gi)=>{
+    const gx=gi*(plotW/data.length)+(plotW/data.length-barW)/2;
+    let yBase=plotH;
+    seriesKeys.forEach((k,si)=>{
+      const v=d[k]||0;
+      const bh=plotH-yScale(v);
+      yBase-=bh;
+      rects+=`<rect x="${gx}" y="${yBase}" width="${barW}" height="${bh}" fill="${seriesColors[si]}" rx="2" opacity=".88">
+        <title>${esc(k)}: ${fmtNum(v)}</title></rect>`;
+    });
+    let lbl=String(d.week_start||'');
+    if(lbl.length>10)lbl=lbl.slice(5);
+    const lx=gi*(plotW/data.length)+plotW/data.length/2;
+    xLabels+=`<text x="${lx}" y="${plotH+16}" text-anchor="middle" font-size="10" fill="#6b7280">${esc(lbl)}</text>`;
+  });
+
+  return `<svg class="chart" width="${W}" height="${H}" role="img" aria-label="Stacked bar chart">
+    <g transform="translate(${PAD.left},${PAD.top})">
+      ${yTicks}${rects}${xLabels}
+    </g>
+  </svg>`;
+}
+
+function fmtNum(v){
+  if(v==null||!isFinite(v))return '0';
+  if(v>=10000)return (v/1000).toFixed(1)+'k';
+  return Math.round(v).toLocaleString();
+}
+
+function buildLegend(entries){
+  return entries.map(e=>`<span class="leg-item"><span class="leg-dot" style="background:${esc(e.color)}"></span>${esc(e.label)}</span>`).join('');
+}
+
+/* ── 1. Repairs by Line ────────────────────────────────────────────────── */
+const LINE_COLORS={A:'var(--bar-a)',B:'var(--bar-b)',C:'var(--bar-c)',D:'var(--bar-d)',E:'var(--bar-e)'};
+const LINE_KEYS=['A','B','C','D','E'];
+
+async function loadRepairs(){
+  const wrap=document.getElementById('repairs-chart-wrap');
+  const leg=document.getElementById('repairs-legend');
+  const src=document.getElementById('repairs-src');
+  wrap.innerHTML='<div class="loading-placeholder">Loading…</div>';
+  try{
+    const d=await apiFetch('/api/quality/repairs?period='+period);
+    src.textContent=d.tab?('Sheet: '+d.tab):(d.source==='no_tab'?'No sheet tab found':'');
+    if(!d.has_data||!d.data||!d.data.length){
+      wrap.innerHTML='<div class="no-data">No repair data found for this period.</div>';
+      leg.innerHTML='';return;
+    }
+    // Collect which lines actually appear
+    const usedLines=new Set();
+    d.data.forEach(row=>Object.keys(row.lines||{}).forEach(l=>usedLines.add(l)));
+    const lines=LINE_KEYS.filter(l=>usedLines.has(l));
+    if(!lines.length){
+      d.data.forEach(row=>Object.keys(row.lines||{}).forEach(l=>lines.push(l)));
+    }
+    // Flatten for chart
+    const chartData=d.data.map(row=>({
+      period_label:row.period_label,
+      production:row.production,
+      ...Object.fromEntries(lines.map(l=>[l,row.lines[l]||0]))
+    }));
+    const colors=lines.map(l=>LINE_COLORS[l]||'#94a3b8');
+    leg.innerHTML=buildLegend([
+      ...lines.map((l,i)=>({label:'Line '+l,color:colors[i]})),
+      {label:'Production',color:'var(--bar-prod)'}
+    ]);
+    wrap.innerHTML=buildGroupedBarSVG(chartData,lines,colors,'production');
+  }catch(e){
+    wrap.innerHTML='<div class="error-banner">'+errMsg(e)+'</div>';
+    leg.innerHTML='';
+  }
+}
+
+/* ── 2. Overall Repairs ───────────────────────────────────────────────── */
+async function loadOverall(){
+  const wrap=document.getElementById('overall-chart-wrap');
+  const leg=document.getElementById('overall-legend');
+  const src=document.getElementById('overall-src');
+  wrap.innerHTML='<div class="loading-placeholder">Loading…</div>';
+  try{
+    const d=await apiFetch('/api/quality/overall-repairs?period='+period);
+    src.textContent=d.tab?('Sheet: '+d.tab):(d.source==='no_tab'?'No sheet tab found':'');
+    if(!d.has_data||!d.data||!d.data.length){
+      wrap.innerHTML='<div class="no-data">No overall repair data found.</div>';
+      leg.innerHTML='';return;
+    }
+    const chartData=d.data.map(row=>({
+      period_label:row.period_label,
+      Repairs:row.repairs,
+      production:row.production
+    }));
+    leg.innerHTML=buildLegend([
+      {label:'Repairs',color:'var(--bar-a)'},
+      {label:'Production',color:'var(--bar-prod)'},
+    ]);
+    wrap.innerHTML=buildGroupedBarSVG(chartData,['Repairs'],['var(--bar-a)'],'production');
+  }catch(e){
+    wrap.innerHTML='<div class="error-banner">'+errMsg(e)+'</div>';
+    leg.innerHTML='';
+  }
+}
+
+/* ── 3. Customer Complaints ───────────────────────────────────────────── */
+const COMPLAINT_PALETTE=[
+  '#EE5A0E','#1a5c38','#2563eb','#9333ea','#d97706',
+  '#be185d','#0891b2','#65a30d','#dc2626','#6366f1',
+];
+
+async function loadComplaints(){
+  const body=document.getElementById('complaints-body');
+  const src=document.getElementById('complaints-src');
+  body.innerHTML='<div class="loading-placeholder">Loading…</div>';
+  try{
+    const d=await apiFetch('/api/quality/complaints');
+    const isSheet=d.source==='sheet';
+    src.textContent=isSheet?'Source: Google Sheet':'Source: Manual entry';
+
+    let chartHtml='';
+    if(d.has_data&&d.data&&d.data.length){
+      // Collect all unique types
+      const typeSet=new Set();
+      d.data.forEach(w=>w.breakdown.forEach(b=>typeSet.add(b.type)));
+      const types=[...typeSet].sort();
+      const colorMap={};
+      types.forEach((t,i)=>colorMap[t]=COMPLAINT_PALETTE[i%COMPLAINT_PALETTE.length]);
+      const chartData=d.data.map(w=>{
+        const row={week_start:w.week_start};
+        types.forEach(t=>row[t]=0);
+        w.breakdown.forEach(b=>row[b.type]=(row[b.type]||0)+b.count);
+        return row;
+      });
+      const colors=types.map(t=>colorMap[t]);
+      const legend=buildLegend(types.map((t,i)=>({label:t,color:colors[i]})));
+      chartHtml=`<div class="chart-legend">${legend}</div><div class="chart-wrap">${buildStackedBarSVG(chartData,types,colors)}</div>`;
+    }else{
+      chartHtml='<div class="no-data">No complaint data found.</div>';
+    }
+
+    // Show the manual entry form whenever source is DB (sheet tabs take over from sheet side)
+    const formHtml=isSheet?'':renderComplaintsForm();
+    body.innerHTML=chartHtml+formHtml;
+  }catch(e){
+    body.innerHTML='<div class="error-banner">'+errMsg(e)+'</div>';
+  }
+}
+
+function renderComplaintsForm(){
+  return `
+    <div class="no-data" style="margin-bottom:.5rem;">No complaint sheet tab found — use the form below to log complaints manually.</div>
+    <div class="manual-form">
+      <h4>+ Log Customer Complaint</h4>
+      <div class="form-row">
+        <div class="form-field">
+          <label>Week Starting</label>
+          <input type="date" id="c-week" value="${mondayOfThisWeek()}">
+        </div>
+        <div class="form-field">
+          <label>Complaint Type</label>
+          <input type="text" id="c-type" placeholder="e.g. Stitching, Colour bleed">
+        </div>
+        <div class="form-field" style="min-width:80px;max-width:100px;">
+          <label>Count</label>
+          <input type="number" id="c-count" value="1" min="0">
+        </div>
+        <button class="form-submit" onclick="submitComplaint()">Save</button>
+      </div>
+      <div id="c-msg" class="form-msg" style="display:none;"></div>
+    </div>
+  `;
+}
+
+async function submitComplaint(){
+  const week=document.getElementById('c-week').value;
+  const type=(document.getElementById('c-type').value||'').trim();
+  const count=parseInt(document.getElementById('c-count').value,10);
+  const msg=document.getElementById('c-msg');
+  if(!week||!type||isNaN(count)||count<0){
+    msg.style.display='';msg.className='form-msg err';msg.textContent='Please fill in all fields.';return;
+  }
+  try{
+    msg.style.display='';msg.className='form-msg';msg.textContent='Saving…';
+    await apiFetch('/api/quality/complaints',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({week_start:week,complaint_type:type,count})
+    });
+    msg.className='form-msg';msg.textContent='Saved! Reloading…';
+    setTimeout(()=>loadComplaints(),800);
+  }catch(e){
+    msg.className='form-msg err';msg.textContent=errMsg(e);
+  }
+}
+
+/* ── 4. Washing ──────────────────────────────────────────────────────── */
+async function loadWashing(){
+  const body=document.getElementById('washing-body');
+  const src=document.getElementById('washing-src');
+  body.innerHTML='<div class="loading-placeholder">Loading…</div>';
+  try{
+    const d=await apiFetch('/api/quality/washing');
+    const isSheet=d.source==='sheet';
+    src.textContent=isSheet?'Source: Google Sheet':'Source: Manual entry';
+
+    let chartHtml='';
+    if(d.has_data&&d.data&&d.data.length){
+      const chartData=d.data.map(row=>({
+        week_start:row.week_start,
+        'Washing Qty':row.washing_qty,
+        production:row.production_qty
+      }));
+      const legend=buildLegend([
+        {label:'Washing Qty',color:'var(--bar-c)'},
+        {label:'Production',color:'var(--bar-prod)'},
+      ]);
+      chartHtml=`<div class="chart-legend">${legend}</div><div class="chart-wrap">${buildGroupedBarSVG(chartData,['Washing Qty'],['var(--bar-c)'],'production')}</div>`;
+    }else{
+      chartHtml='<div class="no-data">No washing data found.</div>';
+    }
+
+    // Show the manual entry form whenever source is DB
+    const formHtml=isSheet?'':renderWashingForm();
+    body.innerHTML=chartHtml+formHtml;
+  }catch(e){
+    body.innerHTML='<div class="error-banner">'+errMsg(e)+'</div>';
+  }
+}
+
+function renderWashingForm(){
+  return `
+    <div class="no-data" style="margin-bottom:.5rem;">No washing sheet tab found — use the form below to log washing data manually.</div>
+    <div class="manual-form">
+      <h4>+ Log Washing Data</h4>
+      <div class="form-row">
+        <div class="form-field">
+          <label>Week Starting</label>
+          <input type="date" id="w-week" value="${mondayOfThisWeek()}">
+        </div>
+        <div class="form-field">
+          <label>Washing Qty</label>
+          <input type="number" id="w-wqty" value="0" min="0" step="any">
+        </div>
+        <div class="form-field">
+          <label>Production Qty</label>
+          <input type="number" id="w-pqty" value="0" min="0" step="any">
+        </div>
+        <button class="form-submit" onclick="submitWashing()">Save</button>
+      </div>
+      <div id="w-msg" class="form-msg" style="display:none;"></div>
+    </div>
+  `;
+}
+
+async function submitWashing(){
+  const week=document.getElementById('w-week').value;
+  const wqty=parseFloat(document.getElementById('w-wqty').value);
+  const pqty=parseFloat(document.getElementById('w-pqty').value);
+  const msg=document.getElementById('w-msg');
+  if(!week||isNaN(wqty)||isNaN(pqty)){
+    msg.style.display='';msg.className='form-msg err';msg.textContent='Please fill in all fields.';return;
+  }
+  try{
+    msg.style.display='';msg.className='form-msg';msg.textContent='Saving…';
+    await apiFetch('/api/quality/washing',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({week_start:week,washing_qty:wqty,production_qty:pqty})
+    });
+    msg.className='form-msg';msg.textContent='Saved! Reloading…';
+    setTimeout(()=>loadWashing(),800);
+  }catch(e){
+    msg.className='form-msg err';msg.textContent=errMsg(e);
+  }
+}
+
+/* ── Utils ──────────────────────────────────────────────────────────── */
+function mondayOfThisWeek(){
+  const d=new Date();
+  const day=d.getDay();
+  const diff=d.getDate()-day+(day===0?-6:1);
+  const mon=new Date(d.setDate(diff));
+  return mon.toISOString().slice(0,10);
+}
+
+/* ── Init ───────────────────────────────────────────────────────────── */
+function init(){
+  loadRepairs();
+  loadOverall();
+  loadComplaints();
+  loadWashing();
+}
+init();
+</script>
+</body>
+</html>
