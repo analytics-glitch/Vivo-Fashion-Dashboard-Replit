@@ -12530,6 +12530,32 @@ def _ensure_costing_tables(conn):
             -- before DPS selection became required.
             ALTER TABLE fabric_costing_sheets
                 ADD COLUMN IF NOT EXISTS dps_ref TEXT;
+            -- Fabric-master product reference for auto fabric lines so saved
+            -- sheets can re-price at the fabric's CURRENT cost/metre on read.
+            ALTER TABLE fabric_costing_lines
+                ADD COLUMN IF NOT EXISTS component_id BIGINT;
+        """)
+        # One-time backfill: link existing auto fabric lines to their fabric
+        # product by matching the line label ("Main fabric (<name>)" from the
+        # suggester, or the bare fabric name from the typeahead) to the fabric
+        # master's name. Only unambiguous (single-product) matches are linked.
+        cur.execute(r"""
+            UPDATE fabric_costing_lines l
+            SET component_id = m.pid
+            FROM (
+                SELECT l2.id AS lid, MIN(p.id) AS pid
+                FROM fabric_costing_lines l2
+                JOIN raw_fabric_products p
+                  ON lower(trim(p.name)) = lower(trim(
+                       CASE WHEN l2.label ~* '^main fabric \(.*\)$'
+                            THEN substring(l2.label from '^[Mm]ain [Ff]abric \((.*)\)$')
+                            ELSE l2.label END))
+                WHERE l2.kind = 'fabric' AND l2.is_auto
+                  AND l2.component_id IS NULL
+                GROUP BY l2.id
+                HAVING COUNT(DISTINCT p.id) = 1
+            ) m
+            WHERE l.id = m.lid
         """)
     conn.commit()
     _COSTING_TABLES_READY = True
@@ -12927,7 +12953,16 @@ def _clean_costing_lines(lines):
             raise HTTPException(status_code=400, detail=f"Line {i+1}: qty/unit cost must be numbers")
         if qty < 0 or unit_cost < 0:
             raise HTTPException(status_code=400, detail=f"Line {i+1}: negative values not allowed")
+        comp = ln.get("component_id")
+        try:
+            comp = int(comp) if comp not in (None, "", 0) else None
+        except (TypeError, ValueError):
+            comp = None
+        # The fabric-product link only means anything on fabric lines.
+        if kind != "fabric":
+            comp = None
         out.append({
+            "component_id": comp,
             "kind": kind,
             "label": (str(ln.get("label") or "").strip())[:200],
             "qty": round(qty, 4),
@@ -12940,18 +12975,67 @@ def _clean_costing_lines(lines):
     return out
 
 
+# Suffix appended to a re-priced line's source note (and stripped again before
+# re-appending, so repeated read→save→read cycles never stack the note).
+_COSTING_REPRICE_NOTE_RE = re.compile(
+    r"\s*·\s*current cost/metre(?: \(was [\d,.\u2014-]+\))?\s*$")
+
+
+def _reprice_auto_fabric_lines(conn, lines):
+    """Re-price auto fabric lines at the fabric master's CURRENT cost/metre
+    (standard_price × kg_per_mtr_eff). Read-time only — never rewrites stored
+    rows. Manual lines, lines without a fabric link, and fabrics whose current
+    cost can't be derived keep their stored figures. When the current cost
+    differs from the saved one, the source note says so."""
+    ids = sorted({int(l["component_id"]) for l in lines
+                  if l.get("component_id") and l.get("is_auto")
+                  and l.get("kind") == "fabric"})
+    if not ids:
+        return lines
+    cur_cost = {}
+    for r in q(conn, """
+        SELECT id, ROUND((standard_price * kg_per_mtr_eff)::numeric, 2) AS cpm
+        FROM raw_fabric_products
+        WHERE id = ANY(%s) AND standard_price > 0 AND kg_per_mtr_eff > 0
+    """, [ids]):
+        cur_cost[r["id"]] = float(r["cpm"])
+    for l in lines:
+        if not (l.get("is_auto") and l.get("kind") == "fabric"
+                and l.get("component_id")):
+            continue
+        base_src = _COSTING_REPRICE_NOTE_RE.sub("", l.get("source") or "")
+        cpm = cur_cost.get(int(l["component_id"]))
+        if cpm is None or cpm <= 0:
+            # Fall back to the stored cost; just tidy any stale note.
+            if l.get("source"):
+                l["source"] = base_src or None
+            continue
+        old = l.get("unit_cost")
+        if old is not None and round(float(old), 2) != cpm:
+            l["repriced_from"] = round(float(old), 2)
+            note = f" · current cost/metre (was {round(float(old), 2):,.2f})"
+        else:
+            note = " · current cost/metre"
+        l["unit_cost"] = cpm
+        l["total"] = round(float(l.get("qty") or 0) * cpm, 2)
+        l["source"] = (base_src + note) if base_src else note.lstrip(" ·")
+    return lines
+
+
 def _sheet_payload(conn, sheet_id, with_history=True):
     sheets = q(conn, "SELECT * FROM fabric_costing_sheets WHERE id=%s", (sheet_id,))
     if not sheets:
         raise HTTPException(status_code=404, detail="Sheet not found")
     s = dict(sheets[0])
     lines = [dict(l) for l in q(conn, """
-        SELECT id, kind, label, qty, unit_cost, total, is_auto, source, position
+        SELECT id, kind, label, qty, unit_cost, total, is_auto, source,
+               position, component_id
         FROM fabric_costing_lines WHERE sheet_id=%s ORDER BY position, id
     """, (sheet_id,))]
     for l in lines:
         for k in ("qty", "unit_cost", "total"):
             l[k] = float(l[k]) if l[k] is not None else None
+    _reprice_auto_fabric_lines(conn, lines)
     total = round(sum(l["total"] or 0 for l in lines), 2)
     sp = float(s["selling_price"]) if s["selling_price"] is not None else None
     s["selling_price"] = sp
@@ -13010,10 +13094,20 @@ def costing_sheets_list():
         rows = q(conn, """
             SELECT s.id, s.style_name, s.style_number, s.selling_price,
                    s.dps_ref, s.updated_by_name, s.updated_at,
-                   COALESCE(SUM(l.total),0) AS total_cost,
+                   -- Auto fabric lines re-price at the fabric master's CURRENT
+                   -- cost/metre (same rule as _reprice_auto_fabric_lines) so
+                   -- the list totals agree with the sheet detail.
+                   COALESCE(SUM(
+                       CASE WHEN l.kind = 'fabric' AND l.is_auto
+                                 AND p.standard_price > 0
+                                 AND p.kg_per_mtr_eff > 0
+                            THEN ROUND(COALESCE(l.qty, 0)
+                                 * ROUND((p.standard_price * p.kg_per_mtr_eff)::numeric, 2), 2)
+                            ELSE l.total END), 0) AS total_cost,
                    COUNT(l.id) AS line_count
             FROM fabric_costing_sheets s
             LEFT JOIN fabric_costing_lines l ON l.sheet_id = s.id
+            LEFT JOIN raw_fabric_products p ON p.id = l.component_id
             GROUP BY s.id
             ORDER BY s.updated_at DESC
         """)
@@ -13260,10 +13354,12 @@ def costing_sheet_create(request: Request, body: dict = Body(...)):
             for ln in lines:
                 cur.execute("""
                     INSERT INTO fabric_costing_lines
-                        (sheet_id, kind, label, qty, unit_cost, total, is_auto, source, position)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        (sheet_id, kind, label, qty, unit_cost, total, is_auto,
+                         source, position, component_id)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 """, (sheet_id, ln["kind"], ln["label"], ln["qty"], ln["unit_cost"],
-                      ln["total"], ln["is_auto"], ln["source"], ln["position"]))
+                      ln["total"], ln["is_auto"], ln["source"], ln["position"],
+                      ln["component_id"]))
         _costing_history_write(conn, sheet_id, "created", uid, uname,
                                f"sheet created with {len(lines)} line(s)",
                                {"lines": lines, "selling_price": sp})
@@ -13308,10 +13404,12 @@ def costing_sheet_update(sheet_id: int, request: Request, body: dict = Body(...)
             for ln in lines:
                 cur.execute("""
                     INSERT INTO fabric_costing_lines
-                        (sheet_id, kind, label, qty, unit_cost, total, is_auto, source, position)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        (sheet_id, kind, label, qty, unit_cost, total, is_auto,
+                         source, position, component_id)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 """, (sheet_id, ln["kind"], ln["label"], ln["qty"], ln["unit_cost"],
-                      ln["total"], ln["is_auto"], ln["source"], ln["position"]))
+                      ln["total"], ln["is_auto"], ln["source"], ln["position"],
+                      ln["component_id"]))
         _costing_history_write(conn, sheet_id, "updated", uid, uname, summary,
                                {"lines": lines, "selling_price": sp})
         conn.commit()

@@ -8809,7 +8809,7 @@ function costBindEditor(){
     const i=+el.dataset.i,k=el.dataset.k,l=costEdit.lines[i];if(!l)return;
     l[k]=el.value;
     // Editing an auto-suggested value flips the line to MANUAL.
-    if(l.is_auto&&(k==='qty'||k==='unit_cost')){l.is_auto=false;l.source=null;costRenderLines();return;}
+    if(l.is_auto&&(k==='qty'||k==='unit_cost')){l.is_auto=false;l.source=null;l.component_id=null;costRenderLines();return;}
     if(k==='kind'){costRenderLines();return;}
     // Fabric/trim lines: the label doubles as a component typeahead scoped to
     // the sheet's DPS — picking one prefills Unit Cost (fabric: current
@@ -8852,16 +8852,19 @@ function costFabSearch(i,el){
       const rows=await apiFetch('/api/fabric/costing/fabrics?dps_ref='+encodeURIComponent(costEdit.dps_ref)+'&q='+encodeURIComponent(term));
       dd.innerHTML=(rows||[]).map(r=>{
         const cost=r.is_main_fabric?r.cost_per_metre:(r.unit_cost!=null?r.unit_cost:r.cost_per_metre);
-        return `<div class="resv-opt" data-costfab="${i}" data-fabname="${esc(r.name||r.sku||'')}" data-fabcpm="${cost==null?'':cost}" data-fabmain="${r.is_main_fabric?1:0}">`+
+        return `<div class="resv-opt" data-costfab="${i}" data-fabname="${esc(r.name||r.sku||'')}" data-fabcpm="${cost==null?'':cost}" data-fabmain="${r.is_main_fabric?1:0}" data-fabid="${r.id==null?'':Number(r.id)}">`+
         `<strong>${esc(r.name||r.sku||'')}</strong> <span class="muted" style="font-size:11px;">${r.is_main_fabric?'fabric':'accessory'}${cost!=null?' · '+fmtKES2(cost)+(r.is_main_fabric?'/m':'/unit'):' · no cost'}</span></div>`;}).join('')
         ||'<div class="resv-opt muted">No matching component on this DPS</div>';
       dd.style.display='';
     }catch(_){dd.style.display='none';}
   },250);
 }
-function costPickFabric(i,name,cpm,isMain){
+function costPickFabric(i,name,cpm,isMain,compId){
   if(!costEdit)return;const l=costEdit.lines[i];if(!l)return;
   l.label=name;
+  // Keep the fabric-product link so the saved sheet re-prices this line at
+  // the fabric's CURRENT cost/metre on every load (fabric lines only).
+  l.component_id=(isMain&&compId)?Number(compId):null;
   if(cpm!==''&&cpm!=null&&!isNaN(Number(cpm))){
     l.unit_cost=Number(cpm);l.is_auto=true;
     l.source=isMain?'Fabric master cost/metre (current)':'DPS/MO recorded cost';
@@ -8892,7 +8895,7 @@ async function costOpenSheet(id){
   try{
     const s=await apiFetch('/api/fabric/costing/sheets/'+encodeURIComponent(id));
     costEdit={id:s.id,style_name:s.style_name,style_number:s.style_number,dps_ref:s.dps_ref||null,
-      lines:(s.lines||[]).map(l=>({kind:l.kind,label:l.label,qty:l.qty,unit_cost:l.unit_cost,is_auto:!!l.is_auto,source:l.source})),
+      lines:(s.lines||[]).map(l=>({kind:l.kind,label:l.label,qty:l.qty,unit_cost:l.unit_cost,is_auto:!!l.is_auto,source:l.source,component_id:l.component_id||null})),
       sp_auto:!!s.selling_price_is_auto,history:s.history||[]};
     // Show which Done DPS the sheet's suggestions were built from (editable
     // again via re-suggest is out of scope for saved sheets; display only).
@@ -8940,7 +8943,7 @@ document.addEventListener('click',e=>{
   const box=document.getElementById('cost-style-list');
   if(box&&box.style.display!=='none'&&!e.target.closest('#cost-style-search')&&!e.target.closest('#cost-style-list'))box.style.display='none';
   const fopt=e.target.closest('.cost-fab-dd .resv-opt');
-  if(fopt&&fopt.dataset.costfab!=null&&fopt.dataset.fabname){costPickFabric(+fopt.dataset.costfab,fopt.dataset.fabname,fopt.dataset.fabcpm,fopt.dataset.fabmain==='1');return;}
+  if(fopt&&fopt.dataset.costfab!=null&&fopt.dataset.fabname){costPickFabric(+fopt.dataset.costfab,fopt.dataset.fabname,fopt.dataset.fabcpm,fopt.dataset.fabmain==='1',fopt.dataset.fabid);return;}
   if(!e.target.closest('.cost-fab-dd'))document.querySelectorAll('.cost-fab-dd').forEach(d=>{d.style.display='none';});
   const dopt=e.target.closest('#cost-dps-list .resv-opt');
   if(dopt&&dopt.dataset.costdps){costPickDps(dopt.dataset.costdps);return;}
@@ -8973,7 +8976,7 @@ async function costLoadSuggest(){
     const basis='DPS '+costEdit.dps_ref;
     const lines=[];
     if(s.metres_per_garment!=null&&s.fabric_cost_per_metre!=null){
-      lines.push({kind:'fabric',label:'Main fabric ('+(s.fabrics&&s.fabrics[0]?s.fabrics[0].name||'':'')+')',qty:s.metres_per_garment,unit_cost:s.fabric_cost_per_metre,is_auto:true,source:basis+' × '+((s.fabrics&&s.fabrics[0]&&s.fabrics[0].cost_source)||'fabric price')});
+      lines.push({kind:'fabric',label:'Main fabric ('+(s.fabrics&&s.fabrics[0]?s.fabrics[0].name||'':'')+')',qty:s.metres_per_garment,unit_cost:s.fabric_cost_per_metre,is_auto:true,component_id:(s.fabrics&&s.fabrics[0]&&s.fabrics[0].component_id)||null,source:basis+' × '+((s.fabrics&&s.fabrics[0]&&s.fabrics[0].cost_source)||'fabric price')});
     }else if(s.metres_per_garment!=null){
       lines.push({kind:'fabric',label:'Main fabric',qty:s.metres_per_garment,unit_cost:0,is_auto:true,source:'metres/garment from '+basis+' — enter cost/metre'});
     }
@@ -9054,7 +9057,7 @@ async function costSaveSheet(){
     dps_ref:costEdit.dps_ref||null,
     selling_price:spEl.value===''?null:Number(spEl.value),
     selling_price_is_auto:!!costEdit.sp_auto,
-    lines:costEdit.lines.map(l=>({kind:l.kind,label:l.label,qty:Number(l.qty)||0,unit_cost:Number(l.unit_cost)||0,is_auto:!!l.is_auto,source:l.source}))};
+    lines:costEdit.lines.map(l=>({kind:l.kind,label:l.label,qty:Number(l.qty)||0,unit_cost:Number(l.unit_cost)||0,is_auto:!!l.is_auto,source:l.source,component_id:l.component_id||null}))};
   const btn=document.getElementById('cost-save-btn');btn.disabled=true;btn.textContent='Saving…';
   try{
     const url=costEdit.id?'/api/fabric/costing/sheets/'+encodeURIComponent(costEdit.id):'/api/fabric/costing/sheets';
