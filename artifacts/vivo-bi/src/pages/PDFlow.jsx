@@ -285,13 +285,29 @@ const MoveDialog = ({ card, stages, onClose, onSaved }) => {
 
 // ── Style photo panel ─────────────────────────────────────────────────────────
 const StyleImage = ({ styleId, styleName }) => {
-  const [hasImage, setHasImage] = useState(null);
-  const [ts, setTs] = useState(() => Date.now());
+  const [blobUrl, setBlobUrl] = useState(null);   // null = loading, "" = no image
   const [uploading, setUploading] = useState(false);
   const [uploadErr, setUploadErr] = useState(null);
   const fileRef = useRef(null);
+  const prevBlobRef = useRef(null);
 
-  const imgSrc = `/api/pd/styles/${styleId}/image?_t=${ts}`;
+  // Fetch the image through the authenticated API client so the Bearer token is sent.
+  const fetchImage = useCallback(async () => {
+    try {
+      const res = await api.get(`/pd/styles/${styleId}/image`, { responseType: "blob" });
+      const url = URL.createObjectURL(res.data);
+      if (prevBlobRef.current) URL.revokeObjectURL(prevBlobRef.current);
+      prevBlobRef.current = url;
+      setBlobUrl(url);
+    } catch {
+      setBlobUrl("");   // 404 = no image yet
+    }
+  }, [styleId]);
+
+  useEffect(() => {
+    fetchImage();
+    return () => { if (prevBlobRef.current) URL.revokeObjectURL(prevBlobRef.current); };
+  }, [fetchImage]);
 
   const handleUpload = async (e) => {
     const file = e.target.files?.[0];
@@ -303,8 +319,7 @@ const StyleImage = ({ styleId, styleName }) => {
       await api.post(`/pd/styles/${styleId}/image`, fd, {
         headers: { "Content-Type": "multipart/form-data" },
       });
-      setHasImage(true);
-      setTs(Date.now());
+      await fetchImage();
     } catch (err) {
       setUploadErr(err?.response?.data?.detail || err.message || "Upload failed");
     } finally {
@@ -317,7 +332,8 @@ const StyleImage = ({ styleId, styleName }) => {
     if (!window.confirm("Remove this photo?")) return;
     try {
       await api.delete(`/pd/styles/${styleId}/image`);
-      setHasImage(false);
+      if (prevBlobRef.current) { URL.revokeObjectURL(prevBlobRef.current); prevBlobRef.current = null; }
+      setBlobUrl("");
     } catch (err) {
       setUploadErr(err?.response?.data?.detail || err.message);
     }
@@ -326,26 +342,22 @@ const StyleImage = ({ styleId, styleName }) => {
   return (
     <div className="mb-4" data-testid="pd-style-image">
       <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={handleUpload} />
-      {hasImage !== false ? (
-        <div className="relative rounded-lg overflow-hidden border border-line bg-slate-50 min-h-[60px]">
-          <img
-            src={imgSrc} alt={styleName}
-            className="w-full object-cover max-h-56"
-            onLoad={() => setHasImage(true)}
-            onError={() => setHasImage(false)}
-          />
-          {hasImage === true && (
-            <div className="absolute top-2 right-2 flex gap-1.5">
-              <button onClick={() => fileRef.current?.click()} disabled={uploading}
-                className="text-[10.5px] font-semibold bg-white/90 rounded-md px-2 py-0.5 shadow-sm hover:bg-white border border-line">
-                {uploading ? "Uploading…" : "Replace"}
-              </button>
-              <button onClick={handleRemove}
-                className="text-[10.5px] font-semibold bg-white/90 rounded-md px-2 py-0.5 shadow-sm hover:bg-white border border-line text-red-600">
-                Remove
-              </button>
-            </div>
-          )}
+      {blobUrl === null ? (
+        /* loading */
+        <div className="w-full rounded-lg border border-line bg-slate-50 h-20 animate-pulse" />
+      ) : blobUrl ? (
+        <div className="relative rounded-lg overflow-hidden border border-line bg-slate-50">
+          <img src={blobUrl} alt={styleName} className="w-full object-cover max-h-56" />
+          <div className="absolute top-2 right-2 flex gap-1.5">
+            <button onClick={() => fileRef.current?.click()} disabled={uploading}
+              className="text-[10.5px] font-semibold bg-white/90 rounded-md px-2 py-0.5 shadow-sm hover:bg-white border border-line">
+              {uploading ? "Uploading…" : "Replace"}
+            </button>
+            <button onClick={handleRemove}
+              className="text-[10.5px] font-semibold bg-white/90 rounded-md px-2 py-0.5 shadow-sm hover:bg-white border border-line text-red-600">
+              Remove
+            </button>
+          </div>
         </div>
       ) : (
         <button onClick={() => fileRef.current?.click()} disabled={uploading}
