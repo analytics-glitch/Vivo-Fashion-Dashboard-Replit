@@ -178,13 +178,20 @@ const SORNewStylesReport = () => {
     const totalSales  = filtered.reduce((s, r) => s + (r.sales_sel  || 0), 0);
     const totalUnits  = filtered.reduce((s, r) => s + (r.units_sel  || 0), 0);
     const totalSOH    = filtered.reduce((s, r) => s + (r.soh_total  || 0), 0);
+    const totalSOHWH  = filtered.reduce((s, r) => s + (r.soh_wh     || 0), 0);
+    const totalPipeline = filtered.reduce((s, r) => s + (r.soh_pipeline || 0), 0);
     const totalWeeklyBurn = filtered.reduce((s, r) => s + (r.weekly_avg || 0), 0);
     const aggregateWoc    = totalWeeklyBurn > 0 ? totalSOH / totalWeeklyBurn : null;
     // Weighted SOR: units / (units + stock) across all styles in window.
     const denom = filtered.reduce((s, r) => s + ((r.units_sel || 0) + (r.soh_total || 0)), 0);
     const wSor  = denom > 0 ? (totalUnits / denom) * 100 : 0;
     const slowBurners = filtered.filter((r) => (r.sor_6w ?? 0) < 25).length;
-    return { totalSales, totalUnits, totalSOH, wSor, aggregateWoc, slowBurners, n: filtered.length };
+    const pctInWH = totalSOH > 0 ? (totalSOHWH / totalSOH) * 100 : 0;
+    return {
+      totalSales, totalUnits, totalSOH, totalSOHWH, totalPipeline,
+      totalWeeklyBurn, aggregateWoc, wSor, slowBurners, pctInWH,
+      n: filtered.length,
+    };
   }, [filtered]);
 
   // ── Drill-down loaders (same pattern as SORReport) ───────────────────────
@@ -427,6 +434,50 @@ const SORNewStylesReport = () => {
                 initialSort={{ key: "units_sel", dir: "desc" }}
                 pageSize={50}
                 stickyFirstCol
+                footerRow={filtered.length > 0 ? [
+                  // style_name
+                  <td key="fn" className="p-2 font-bold text-[12px] text-foreground sticky left-0 bg-panel z-10 whitespace-nowrap">
+                    Total · {fmtNum(stats.n)} styles
+                  </td>,
+                  // style_number
+                  <td key="fsn" />,
+                  // units_sel
+                  <td key="fu" className="p-2 text-right num font-bold">{fmtNum(stats.totalUnits)}</td>,
+                  // sales_sel
+                  <td key="fs" className="p-2 text-right num font-bold">{fmtKES(stats.totalSales)}</td>,
+                  // weekly_avg
+                  <td key="fwa" className="p-2 text-right num font-bold">{stats.totalWeeklyBurn.toFixed(1)}</td>,
+                  // soh_total
+                  <td key="fsoh" className="p-2 text-right num font-bold">{fmtNum(Math.round(stats.totalSOH))}</td>,
+                  // soh_wh
+                  <td key="fwh" className="p-2 text-right num font-bold">{fmtNum(Math.round(stats.totalSOHWH))}</td>,
+                  // soh_pipeline
+                  <td key="fpipe" className="p-2 text-right num font-bold">{stats.totalPipeline ? fmtNum(Math.round(stats.totalPipeline)) : "—"}</td>,
+                  // woc
+                  <td key="fwoc" className="p-2 text-right num font-bold">
+                    {stats.aggregateWoc == null ? "—" : `${stats.aggregateWoc.toFixed(1)}w`}
+                  </td>,
+                  // pct_in_wh
+                  <td key="fpwh" className="p-2 text-right num font-bold">{stats.pctInWH.toFixed(1)}%</td>,
+                  // asp_6m — weighted avg (sales ÷ units)
+                  <td key="fasp" className="p-2 text-right num font-bold">
+                    {stats.totalUnits > 0 ? fmtKES(stats.totalSales / stats.totalUnits) : "—"}
+                  </td>,
+                  // original_price — no meaningful aggregate
+                  <td key="ffp" />,
+                  // sor_6w — weighted SOR
+                  <td key="fsor" className="p-2 text-right num font-bold">
+                    <SorPct v={stats.wSor} />
+                  </td>,
+                  // launch_date
+                  <td key="fld" />,
+                  // style_age_weeks
+                  <td key="fage" />,
+                  // category
+                  <td key="fcat" />,
+                  // subcategory
+                  <td key="fsub" />,
+                ] : null}
                 renderExpanded={(row) => (
                   <NSColorBreakdown
                     rows={colorCache[row.style_name]}
