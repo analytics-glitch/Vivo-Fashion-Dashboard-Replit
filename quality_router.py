@@ -39,7 +39,7 @@ log = logging.getLogger("quality_router")
 quality_router = APIRouter(tags=["quality"])
 
 # ── Sheet config ─────────────────────────────────────────────────────────────
-_DEFAULT_SHEET_ID = "1RhV27RJD7S4s5AChiggAMkxRHUocAOqkWzzUIqcF31U"
+_DEFAULT_SHEET_ID = "1SMQ8o1c4TY4t3A9ZuFj72c96gA58ca4OMtP4P8brskw"
 QUALITY_SHEET_ID = os.environ.get("QUALITY_SHEET_ID", "").strip() or _DEFAULT_SHEET_ID
 
 # ── DB tables (lazy creation) ─────────────────────────────────────────────────
