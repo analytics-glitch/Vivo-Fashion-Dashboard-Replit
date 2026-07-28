@@ -434,6 +434,7 @@ const SORNewStylesReport = () => {
                 initialSort={{ key: "units_sel", dir: "desc" }}
                 pageSize={50}
                 stickyFirstCol
+                resizable
                 footerRow={filtered.length > 0 ? [
                   // expand-chevron column (renderExpanded adds this as first col)
                   <td key="fchev" />,
