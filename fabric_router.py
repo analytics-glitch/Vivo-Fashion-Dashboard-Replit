@@ -13817,6 +13817,7 @@ def costing_sheet_unsign(sheet_id: int, step: int, request: Request):
     if step not in (1, 2, 3):
         raise HTTPException(status_code=400, detail="step must be 1, 2 or 3")
     uid, uname = _costing_user(request)
+    email = _costing_user_email(request)
     with _get_conn() as conn:
         _ensure_costing_tables(conn)
         sheets = q(conn, "SELECT style_name, color FROM fabric_costing_sheets "
@@ -13826,6 +13827,23 @@ def costing_sheet_unsign(sheet_id: int, step: int, request: Request):
         signoffs = _costing_signoff_rows(conn, sheet_id)
         if not signoffs[step - 1]["signed"]:
             raise HTTPException(status_code=400, detail="This step is not signed")
+        # Un-sign rights: only the ORIGINAL signer of this step, or someone
+        # authorized to sign this step, may remove its signature. Identity is
+        # compared by email (canonical — user_ids differ between local: and
+        # google: sign-ins), with a user_id fallback when the signer's email
+        # can't be resolved. Mirrors the per-step gate in the sign endpoint.
+        if email not in _COSTING_STEP_EMAILS[step]:
+            signer_uid = signoffs[step - 1].get("signed_by")
+            signer_email = _costing_signer_email(conn, signer_uid)
+            is_signer = ((signer_email == email) if signer_email
+                         else (signer_uid and signer_uid == uid))
+            if not is_signer:
+                raise HTTPException(
+                    status_code=403,
+                    detail=(f"You are not authorized to remove the "
+                            f"“{signoffs[step - 1]['title']}” signature — only "
+                            f"the person who signed it or "
+                            f"{_costing_signer_list(step)} may remove it"))
         was_approved = signoffs[2]["signed"]
         title = signoffs[step - 1]["title"]
         # The deleted signoff row ids make this un-sign event's dedupe key
