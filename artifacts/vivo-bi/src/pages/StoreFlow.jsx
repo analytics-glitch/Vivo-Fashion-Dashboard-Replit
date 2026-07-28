@@ -165,9 +165,13 @@ const StoreFlow = () => {
   const historyFrom = data?.transfer_history_from;
   const historyGap = historyFrom && dateFrom < historyFrom;
 
+  const EXCLUDED_LOCATIONS = new Set(["MarKT/Stock", "Retired Stock"]);
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    const base = q ? rows.filter((r) => (r.pos_location || "").toLowerCase().includes(q)) : rows;
+    const base = rows
+      .filter((r) => !EXCLUDED_LOCATIONS.has(r.pos_location))
+      .filter((r) => !q || (r.pos_location || "").toLowerCase().includes(q));
     return [...base].sort((a, b) => {
       let av, bv;
       if (sortKey === "pos_location") { av = a.pos_location || ""; bv = b.pos_location || ""; }
