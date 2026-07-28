@@ -10,3 +10,10 @@ description: Costing sheets on /fabric — email-allowlist gate, DPS labour cost
 - mo_fabric_consumption now also holds Accessories & Trims components (Odoo categ 19) flagged `is_main_fabric=FALSE`; EVERY fabric-only reader (metres/garment KPIs, category breakdowns, movements) must filter `AND c.is_main_fabric`. fabric_router lazily ensures the columns via `_ensure_mo_cons_cols()` in q().
 - New-sheet form has a style-scoped DPS # picker (GET /costing/dps lists Done DPS by dps_ref); `suggest?dps_ref=` scopes ALL suggestions (fabric metres, accessories, labour) to that one DPS (validated to belong to the style, else 404); blank = 365-day Done-DPS average. Chosen dps_ref persists on fabric_costing_sheets.dps_ref and shows read-only on reopen.
 - Accessory suggestion lines: kind='trim', qty/garment = Σconsumed ÷ Σproduced per component, unit cost = consumed-weighted avg unit_cost_mo, AUTO badge; capped at 25 components.
+
+## Costing sheets are SNAPSHOTS (explicit user decision, Jul 2026)
+Saved costing sheets capture fabric cost/metre at DPS/sheet creation time and must NEVER
+re-price on read as raw_fabric_products.standard_price drifts. An earlier read-time
+re-pricing behaviour was reversed on the boss's instruction. fabric_costing_lines.component_id
+(fabric-product link) is kept for *reporting* drift only — it must not feed pricing math.
+_strip_reprice_notes cleans the legacy "· current cost/metre" source notes.

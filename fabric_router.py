@@ -12975,50 +12975,24 @@ def _clean_costing_lines(lines):
     return out
 
 
-# Suffix appended to a re-priced line's source note (and stripped again before
-# re-appending, so repeated read→save→read cycles never stack the note).
+# Saved costing sheets are a SNAPSHOT: fabric lines keep the cost/metre
+# captured when the DPS was costed / the sheet was created — they must NOT
+# re-price as the fabric master's cost drifts (explicit product decision,
+# reversing an earlier read-time re-pricing behaviour). The component_id
+# fabric-product link is still stored so drift can be *reported* separately
+# without ever changing the saved figures. This regex strips the legacy
+# "· current cost/metre" note some sheets picked up while re-pricing was live.
 _COSTING_REPRICE_NOTE_RE = re.compile(
-    r"\s*·\s*current cost/metre(?: \(was [\d,.\u2014-]+\))?\s*$")
+    r"(?:\s*·\s*|^\s*)current cost/metre(?: \(was [\d,.\u2014-]+\))?\s*$")
 
 
-def _reprice_auto_fabric_lines(conn, lines):
-    """Re-price auto fabric lines at the fabric master's CURRENT cost/metre
-    (standard_price × kg_per_mtr_eff). Read-time only — never rewrites stored
-    rows. Manual lines, lines without a fabric link, and fabrics whose current
-    cost can't be derived keep their stored figures. When the current cost
-    differs from the saved one, the source note says so."""
-    ids = sorted({int(l["component_id"]) for l in lines
-                  if l.get("component_id") and l.get("is_auto")
-                  and l.get("kind") == "fabric"})
-    if not ids:
-        return lines
-    cur_cost = {}
-    for r in q(conn, """
-        SELECT id, ROUND((standard_price * kg_per_mtr_eff)::numeric, 2) AS cpm
-        FROM raw_fabric_products
-        WHERE id = ANY(%s) AND standard_price > 0 AND kg_per_mtr_eff > 0
-    """, [ids]):
-        cur_cost[r["id"]] = float(r["cpm"])
+def _strip_reprice_notes(lines):
+    """Remove the legacy read-time re-pricing note from line source text.
+    Stored costs are left exactly as saved."""
     for l in lines:
-        if not (l.get("is_auto") and l.get("kind") == "fabric"
-                and l.get("component_id")):
-            continue
-        base_src = _COSTING_REPRICE_NOTE_RE.sub("", l.get("source") or "")
-        cpm = cur_cost.get(int(l["component_id"]))
-        if cpm is None or cpm <= 0:
-            # Fall back to the stored cost; just tidy any stale note.
-            if l.get("source"):
-                l["source"] = base_src or None
-            continue
-        old = l.get("unit_cost")
-        if old is not None and round(float(old), 2) != cpm:
-            l["repriced_from"] = round(float(old), 2)
-            note = f" · current cost/metre (was {round(float(old), 2):,.2f})"
-        else:
-            note = " · current cost/metre"
-        l["unit_cost"] = cpm
-        l["total"] = round(float(l.get("qty") or 0) * cpm, 2)
-        l["source"] = (base_src + note) if base_src else note.lstrip(" ·")
+        src = l.get("source")
+        if src:
+            l["source"] = _COSTING_REPRICE_NOTE_RE.sub("", src) or None
     return lines
 
 
@@ -13035,7 +13009,7 @@ def _sheet_payload(conn, sheet_id, with_history=True):
     for l in lines:
         for k in ("qty", "unit_cost", "total"):
             l[k] = float(l[k]) if l[k] is not None else None
-    _reprice_auto_fabric_lines(conn, lines)
+    _strip_reprice_notes(lines)
     total = round(sum(l["total"] or 0 for l in lines), 2)
     sp = float(s["selling_price"]) if s["selling_price"] is not None else None
     s["selling_price"] = sp
@@ -13094,20 +13068,12 @@ def costing_sheets_list():
         rows = q(conn, """
             SELECT s.id, s.style_name, s.style_number, s.selling_price,
                    s.dps_ref, s.updated_by_name, s.updated_at,
-                   -- Auto fabric lines re-price at the fabric master's CURRENT
-                   -- cost/metre (same rule as _reprice_auto_fabric_lines) so
-                   -- the list totals agree with the sheet detail.
-                   COALESCE(SUM(
-                       CASE WHEN l.kind = 'fabric' AND l.is_auto
-                                 AND p.standard_price > 0
-                                 AND p.kg_per_mtr_eff > 0
-                            THEN ROUND(COALESCE(l.qty, 0)
-                                 * ROUND((p.standard_price * p.kg_per_mtr_eff)::numeric, 2), 2)
-                            ELSE l.total END), 0) AS total_cost,
+                   -- Stored line totals only: sheets are a snapshot of the
+                   -- cost at creation time and never re-price on read.
+                   COALESCE(SUM(l.total),0) AS total_cost,
                    COUNT(l.id) AS line_count
             FROM fabric_costing_sheets s
             LEFT JOIN fabric_costing_lines l ON l.sheet_id = s.id
-            LEFT JOIN raw_fabric_products p ON p.id = l.component_id
             GROUP BY s.id
             ORDER BY s.updated_at DESC
         """)

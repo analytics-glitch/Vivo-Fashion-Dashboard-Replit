@@ -8862,12 +8862,12 @@ function costFabSearch(i,el){
 function costPickFabric(i,name,cpm,isMain,compId){
   if(!costEdit)return;const l=costEdit.lines[i];if(!l)return;
   l.label=name;
-  // Keep the fabric-product link so the saved sheet re-prices this line at
-  // the fabric's CURRENT cost/metre on every load (fabric lines only).
+  // Keep the fabric-product link (reference only — saved sheets are a
+  // snapshot and never re-price; the link lets drift be reported later).
   l.component_id=(isMain&&compId)?Number(compId):null;
   if(cpm!==''&&cpm!=null&&!isNaN(Number(cpm))){
     l.unit_cost=Number(cpm);l.is_auto=true;
-    l.source=isMain?'Fabric master cost/metre (current)':'DPS/MO recorded cost';
+    l.source=isMain?'Fabric master cost/metre (at sheet creation)':'DPS/MO recorded cost';
   }else{
     l.is_auto=false;l.source='component has no cost on record — enter cost manually';
   }
