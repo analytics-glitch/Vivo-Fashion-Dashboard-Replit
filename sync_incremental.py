@@ -394,7 +394,7 @@ INVENTORY_SYNC_INTERVAL_SEC = int(os.environ.get("INVENTORY_SYNC_INTERVAL_SEC", 
 # ── Attendance Sync ───────────────────────────────────────────────────────────
 ATTENDANCE_API_URL = os.environ.get(
     "ATTENDANCE_API_URL",
-    "https://474df8515921d6d2-197-248-176-58.serveousercontent.com",
+    "https://0db75fc1b46ded8b-197-248-176-58.serveousercontent.com",
 )
 
 
@@ -1213,7 +1213,10 @@ def sync_odoo_customers_incremental(conn):
         missing_ids = [row[0] for row in cur.fetchall()]
 
     if missing_ids:
-        log.info("Odoo customer gap-fill: fetching %d missing partner IDs...", len(missing_ids))
+        log.info(
+            "Odoo customer gap-fill: fetching %d missing partner IDs...",
+            len(missing_ids),
+        )
         try:
             odoo_url = os.environ["ODOO_URL"]
             odoo_db = os.environ["ODOO_DB"]
@@ -1223,44 +1226,64 @@ def sync_odoo_customers_incremental(conn):
             uid = common.authenticate(odoo_db, odoo_user, odoo_password, {})
             models = xmlrpc.client.ServerProxy(f"{odoo_url}/xmlrpc/2/object")
             fields = [
-                "id", "name", "email", "phone", "mobile",
-                "street", "city", "state_id", "country_id",
-                "x_studio_shopify_user_id", "write_date",
+                "id",
+                "name",
+                "email",
+                "phone",
+                "mobile",
+                "street",
+                "city",
+                "state_id",
+                "country_id",
+                "x_studio_shopify_user_id",
+                "write_date",
             ]
             gap_rows = []
             for i in range(0, len(missing_ids), 200):
                 batch = missing_ids[i : i + 200]
                 records = models.execute_kw(
-                    odoo_db, uid, odoo_password,
-                    "res.partner", "read",
-                    [batch], {"fields": fields},
+                    odoo_db,
+                    uid,
+                    odoo_password,
+                    "res.partner",
+                    "read",
+                    [batch],
+                    {"fields": fields},
                 )
                 for r in records:
                     shopify_id = r.get("x_studio_shopify_user_id") or None
                     state_name = (
-                        r["state_id"][1] if isinstance(r.get("state_id"), list) else None
+                        r["state_id"][1]
+                        if isinstance(r.get("state_id"), list)
+                        else None
                     )
                     country_name = (
-                        r["country_id"][1] if isinstance(r.get("country_id"), list) else None
+                        r["country_id"][1]
+                        if isinstance(r.get("country_id"), list)
+                        else None
                     )
-                    gap_rows.append((
-                        r["id"],
-                        r.get("name"),
-                        r.get("email") or None,
-                        r.get("phone") or None,
-                        r.get("mobile") or None,
-                        r.get("street") or None,
-                        r.get("city") or None,
-                        state_name,
-                        country_name,
-                        int(shopify_id) if shopify_id else None,
-                        "vivofashiongroup",
-                        r.get("write_date"),
-                        now_utc,
-                    ))
+                    gap_rows.append(
+                        (
+                            r["id"],
+                            r.get("name"),
+                            r.get("email") or None,
+                            r.get("phone") or None,
+                            r.get("mobile") or None,
+                            r.get("street") or None,
+                            r.get("city") or None,
+                            state_name,
+                            country_name,
+                            int(shopify_id) if shopify_id else None,
+                            "vivofashiongroup",
+                            r.get("write_date"),
+                            now_utc,
+                        )
+                    )
             if gap_rows:
                 with conn.cursor() as cur:
-                    execute_values(cur, """
+                    execute_values(
+                        cur,
+                        """
                         INSERT INTO raw_odoo_customers (
                             id, name, email, phone, mobile,
                             street, city, state_name, country_name,
@@ -1275,9 +1298,14 @@ def sync_odoo_customers_incremental(conn):
                             shopify_user_id = EXCLUDED.shopify_user_id,
                             write_date     = EXCLUDED.write_date,
                             _synced_at     = EXCLUDED._synced_at
-                    """, gap_rows)
+                    """,
+                        gap_rows,
+                    )
                 conn.commit()
-                log.info("Odoo customer gap-fill: upserted %d rows into raw_odoo_customers", len(gap_rows))
+                log.info(
+                    "Odoo customer gap-fill: upserted %d rows into raw_odoo_customers",
+                    len(gap_rows),
+                )
         except Exception as e:
             log.error("Odoo customer gap-fill error: %s", e)
 
@@ -1296,21 +1324,30 @@ def sync_odoo_customers_incremental(conn):
 
     ac_rows = []
     new_ids = []
-    for (oid, name, email, phone, mobile, city, country) in recent:
+    for oid, name, email, phone, mobile, city, country in recent:
         name = (name or "").strip()
         parts = name.split(" ", 1)
         first = parts[0] if parts else ""
         last = parts[1] if len(parts) > 1 else ""
-        ac_rows.append((
-            str(oid), "vivofashiongroup", first, last,
-            email, phone or mobile,
-            city, country,
-            now_utc,
-        ))
+        ac_rows.append(
+            (
+                str(oid),
+                "vivofashiongroup",
+                first,
+                last,
+                email,
+                phone or mobile,
+                city,
+                country,
+                now_utc,
+            )
+        )
         new_ids.append(str(oid))
 
     with conn.cursor() as cur:
-        execute_values(cur, """
+        execute_values(
+            cur,
+            """
             INSERT INTO all_customers (
                 customer_id, store_id, first_name, last_name,
                 email, phone,
@@ -1325,10 +1362,13 @@ def sync_odoo_customers_incremental(conn):
                 city        = COALESCE(EXCLUDED.city, all_customers.city),
                 country     = COALESCE(EXCLUDED.country, all_customers.country),
                 last_synced = EXCLUDED.last_synced
-        """, ac_rows)
+        """,
+            ac_rows,
+        )
 
         # Backfill order stats from all_sales for these customer IDs
-        cur.execute("""
+        cur.execute(
+            """
             UPDATE all_customers c
             SET
                 total_orders       = sub.cnt,
@@ -1351,7 +1391,9 @@ def sync_odoo_customers_incremental(conn):
                 GROUP BY customer_id
             ) sub
             WHERE c.customer_id = sub.customer_id
-        """, (new_ids,))
+        """,
+            (new_ids,),
+        )
 
     conn.commit()
     log.info("Odoo customer sync: upserted %d rows into all_customers", len(ac_rows))
@@ -1360,18 +1402,32 @@ def sync_odoo_customers_incremental(conn):
 def sync_shopping_bags(cur, conn):
     """Sync shopping bag stock from Odoo into shopping_bags table."""
     import xmlrpc.client
-    ODOO_URL = os.environ["ODOO_URL"]; ODOO_DB = os.environ["ODOO_DB"]
-    ODOO_USER = os.environ["ODOO_USER"]; ODOO_PW = os.environ["ODOO_PASSWORD"]
+
+    ODOO_URL = os.environ["ODOO_URL"]
+    ODOO_DB = os.environ["ODOO_DB"]
+    ODOO_USER = os.environ["ODOO_USER"]
+    ODOO_PW = os.environ["ODOO_PASSWORD"]
     from psycopg2.extras import execute_values
+
     common = xmlrpc.client.ServerProxy(f"{ODOO_URL}/xmlrpc/2/common")
     uid = common.authenticate(ODOO_DB, ODOO_USER, ODOO_PW, {})
     models = xmlrpc.client.ServerProxy(f"{ODOO_URL}/xmlrpc/2/object")
 
-    quants = models.execute_kw(ODOO_DB, uid, ODOO_PW, "stock.quant", "search_read",
-        [[["product_id.name", "ilike", "shopping bag"],
-          ["location_id.usage", "=", "internal"],
-          ["quantity", ">", 0]]],
-        {"fields": ["product_id", "location_id", "quantity", "reserved_quantity"]})
+    quants = models.execute_kw(
+        ODOO_DB,
+        uid,
+        ODOO_PW,
+        "stock.quant",
+        "search_read",
+        [
+            [
+                ["product_id.name", "ilike", "shopping bag"],
+                ["location_id.usage", "=", "internal"],
+                ["quantity", ">", 0],
+            ]
+        ],
+        {"fields": ["product_id", "location_id", "quantity", "reserved_quantity"]},
+    )
 
     now = datetime.utcnow()
     rows = []
@@ -1382,24 +1438,48 @@ def sync_shopping_bags(cur, conn):
         loc_name = q["location_id"][1]
         loc_code = loc_name.split("/")[0]
         # Map location code to store name
-        store = LOCATION_COUNTRY_MAP.get(loc_code, (loc_name, ""))[0]                 if loc_code in LOCATION_COUNTRY_MAP else loc_name
+        store = (
+            LOCATION_COUNTRY_MAP.get(loc_code, (loc_name, ""))[0]
+            if loc_code in LOCATION_COUNTRY_MAP
+            else loc_name
+        )
         # Fix known unmapped codes
-        store = {"SARIT": "Vivo Sarit", "TMALL": "Vivo T- Mall",
-                 "HUB": "Vivo Hub", "ACHO": "Vivo Acacia"}.get(loc_code, store)
-        size = "S" if "S)" in pname else "M" if "M)" in pname else "L" if "L)" in pname else ""
+        store = {
+            "SARIT": "Vivo Sarit",
+            "TMALL": "Vivo T- Mall",
+            "HUB": "Vivo Hub",
+            "ACHO": "Vivo Acacia",
+        }.get(loc_code, store)
+        size = (
+            "S"
+            if "S)" in pname
+            else "M"
+            if "M)" in pname
+            else "L"
+            if "L)" in pname
+            else ""
+        )
         brand = "Safari" if "SAF" in sku else "Zoya" if "ZB" in sku else "Vivo"
-        qty = float(q["quantity"]); res = float(q["reserved_quantity"])
-        rows.append((sku, pname, size, brand, loc_code, store, qty, res, qty - res, now))
+        qty = float(q["quantity"])
+        res = float(q["reserved_quantity"])
+        rows.append(
+            (sku, pname, size, brand, loc_code, store, qty, res, qty - res, now)
+        )
 
     cur.execute("DELETE FROM shopping_bags")
     if rows:
-        execute_values(cur, """
+        execute_values(
+            cur,
+            """
             INSERT INTO shopping_bags (sku, product_name, size, brand, location_code,
                 pos_location_name, qty_on_hand, qty_reserved, qty_available, _synced_at)
-            VALUES %s""", rows)
+            VALUES %s""",
+            rows,
+        )
     conn.commit()
     log.info("✅ shopping_bags: %d rows synced", len(rows))
     return len(rows)
+
 
 def sync_footfall(cur, now):
     FOOTFALL_URL = "https://v9.footfallcam.com"
@@ -1608,7 +1688,8 @@ def _recv_backfill_missing_kpm_sync(conn):
             if not updated_sheet_ids:
                 conn.commit()
                 return
-            cur.execute("""
+            cur.execute(
+                """
                 UPDATE fabric_receiving_rolls r
                    SET qty_mtrs = ROUND(r.qty_kg / p.kg_per_mtr_eff, 2)
                   FROM fabric_receiving_sheets s
@@ -1618,13 +1699,17 @@ def _recv_backfill_missing_kpm_sync(conn):
                    AND r.deleted_at IS NULL
                    AND p.kg_per_mtr_eff IS NOT NULL
                    AND p.kg_per_mtr_eff > 0
-            """, (updated_sheet_ids,))
+            """,
+                (updated_sheet_ids,),
+            )
             updated_rolls = cur.rowcount
         conn.commit()
         log.info(
             "kpm backfill: patched %d sheet(s) and %d roll(s) "
             "with newly-available Width/GSM conversion",
-            len(updated_sheet_ids), updated_rolls)
+            len(updated_sheet_ids),
+            updated_rolls,
+        )
     except Exception as e:
         log.error("kpm backfill failed: %s", e)
         try:
@@ -1673,8 +1758,11 @@ def _recv_refresh_product_data_sync(conn):
             n = cur.rowcount
         conn.commit()
         if n:
-            log.info("product data sync: patched %d receiving sheet(s) "
-                     "with updated barcode/name from Odoo", n)
+            log.info(
+                "product data sync: patched %d receiving sheet(s) "
+                "with updated barcode/name from Odoo",
+                n,
+            )
     except Exception as e:
         log.error("recv_refresh_product_data_sync failed: %s", e)
         try:
@@ -1943,7 +2031,9 @@ def main():
             "SELECT 1 FROM app_config WHERE key='data_fix_shopzetu_customer_id_backfill_v1'"
         )
         if cur.fetchone() is None:
-            _cutoff = (datetime.now(timezone.utc).date() - timedelta(days=10)).isoformat()
+            _cutoff = (
+                datetime.now(timezone.utc).date() - timedelta(days=10)
+            ).isoformat()
             cur.execute(
                 "SELECT COUNT(*) FROM all_sales "
                 "WHERE store_id = 'shop-zetu' "
@@ -1956,18 +2046,26 @@ def main():
                 log.info(
                     "Shop Zetu customer_id backfill: %d historical rows missing — "
                     "re-extracting 2023-01-01 → %s",
-                    _missing, _cutoff,
+                    _missing,
+                    _cutoff,
                 )
                 run_subprocess_with_heartbeat(
-                    [_sys.executable,
-                     "/home/runner/workspace/extract_shopzetu_shopifyql.py",
-                     "--since", "2023-01-01",
-                     "--until", _cutoff],
+                    [
+                        _sys.executable,
+                        "/home/runner/workspace/extract_shopzetu_shopifyql.py",
+                        "--since",
+                        "2023-01-01",
+                        "--until",
+                        _cutoff,
+                    ],
                     status="shopzetu_customer_id_backfill",
                 )
                 log.info("Shop Zetu customer_id backfill complete")
             else:
-                log.info("Shop Zetu customer_id backfill: coverage OK (%d missing), skipping", _missing)
+                log.info(
+                    "Shop Zetu customer_id backfill: coverage OK (%d missing), skipping",
+                    _missing,
+                )
             cur.execute(
                 """
                 INSERT INTO app_config (key, value, updated_at)

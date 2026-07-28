@@ -1,27 +1,67 @@
-Style Name,Odoo Status,Odoo Tier
-B,Active,NOOS
-Test Vivo Product ,Active,NOOS
-Vivo Basic 3/4 Sleeve Double Layered Bodysuit,Active,NOOS
-Vivo Basic 3/4 Sleeved Double Layered Bodysuit,Active,NOOS
-Vivo Basic 3/4 Sleeved Double Layered Bodysuit in Jersey,Active,NOOS
-Vivo Basic Cap Sleeve Bodysuit,Active,NOOS
-Vivo Basic Cap Sleeve Bodysuit in Rayon,Active,NOOS
-Vivo Basic Cap Sleeve Bodysuit in Rayon- Red ,Active,NOOS
-Vivo Basic Imelda Cowl Sweater,Active,NOOS
-Vivo Basic Val Long Sleeve Top,Active,NOOS
-Vivo Chidii Maxi Kaftan,Active,NOOS
-Vivo Double Layered Capri Skirt in Jersey,Active,NOOS
-Vivo Everyday Cap Sleeve Top,Active,NOOS
-Vivo Everyday Cap Sleeve Top in Jersey,Active,NOOS
-Vivo Everyday Cap Sleeve Top in Jersey- Chocolate,Active,NOOS
-Vivo Everyday Cap Sleeve Top in Jersey-White,Active,NOOS
-Vivo Everyday Long Sleeve Top In Jersey,Active,NOOS
-Vivo Everyday Long Sleeve Top in Jersey,Active,NOOS
-Vivo Liora Kaftan Border Maxi Dress,Active,NOOS
-Vivo Liora Satin Drawstring Kimono Sleeve Top,Active,NOOS
-Vivo Loose Top,Active,NOOS
-Vivo Lulu Cotton Tent Mini Dress,Active,NOOS
-Vivo Seli Maxi Dress in Crepe,Active,NOOS
-Wandia Test,Active,NOOS
-Zoya Sleeveless Jackets & Coats,Active,NOOS
-test product,Active,NOOS
+Style Number,Style Name,Odoo Status,Odoo Tier
+V0919035,Vivo Basic 3/4 Sleeve Double Layered Bodycon Dress,Active,NOOS
+,Vivo Basic Bodycon Dress,Active,NOOS
+,Vivo Basic Bodycon Dress in Rayon,Active,NOOS
+V0422070,Vivo Basic Cap Sleeve Bodycon,Active,NOOS
+,Vivo Basic Cap Sleeve Bodycon in Rayon,Active,NOOS
+,Vivo Basic Cap Sleeve Knee Length Tent Dress,Active,NOOS
+V0121168,Vivo Basic Cap Sleeve Knee Length Tent Dress -Cobalt / Orange Capi Print,Active,NOOS
+,Vivo Basic Cap Sleeve Knee Length Tent Dress -Olive / Black Capi Print,Active,NOOS
+,Vivo Basic Cap Sleeve Knee Length Tent Dress -Tan/ Black Capi Print,Active,NOOS
+,Vivo Basic Cap Sleeve Top in Chiffon,Active,NOOS
+,Vivo Basic Cap Sleeved Bodysuit,Active,NOOS
+,Vivo Basic Cap Sleeved Bodysuit in Rayon,Active,NOOS
+,Vivo Basic Capri Leggings,Active,NOOS
+V1121090,Vivo Basic Capri Leggings in Rayon,Active,NOOS
+,Vivo Basic Double Layered Wrap Poncho,Active,NOOS
+V0523123,Vivo Basic Double Layered Wrap Poncho (Without Fringe),Active,NOOS
+V0121065,Vivo Basic Dua Jacket,Active,NOOS
+,Vivo Basic Dua Jacket in Ponte,Active,NOOS
+V1019069,Vivo Basic Escape A-Line Dress,Active,NOOS
+,Vivo Basic Escape A-Line Dress in Ponte,Active,NOOS
+V0719290,Vivo Basic Extra Long Lily Waterfall,Active,NOOS
+V0719290,Vivo Basic Extra Long Lily Waterfall in Jersey,Active,NOOS
+,Vivo Basic Kena Tent Knee Length Dress,Active,NOOS
+,Vivo Basic Kena Tent Knee Length Dress in Ponte,Active,NOOS
+V1119093,Vivo Basic Kena Tent Maxi Dress,Active,NOOS
+,Vivo Basic Leggings,Active,NOOS
+V0421160,Vivo Basic Leggings in Rayon,Active,NOOS
+V0220059,Vivo Basic Leisure Pants,Active,NOOS
+V0220059,Vivo Basic Leisure Pants in Ponte,Active,NOOS
+,Vivo Basic Long Sleeve Bodysuit (Seamless),Active,NOOS
+,Vivo Basic Panelled Leisure Pants,Active,NOOS
+V0819003,Vivo Basic Panelled Leisure Pants in Ponte,Active,NOOS
+V0819034,Vivo Basic Pencil Skirt,Active,NOOS
+V0819034,Vivo Basic Pencil Skirt in Ponte,Active,NOOS
+,Vivo Basic Sienna Waterfall,Active,NOOS
+,Vivo Basic Sienna Waterfall In Jersey,Active,NOOS
+V0819120,Vivo Basic Sienna Waterfall In Jersey- Black,Active,NOOS
+V0819120,Vivo Basic Sienna Waterfall in  Jersey,Active,NOOS
+V0819120,Vivo Basic Sienna Waterfall in Jersey,Active,NOOS
+,Vivo Basic Sleeveless Jersey Waterfall,Active,NOOS
+,Vivo Basic Straight Leg Pants,Active,NOOS
+V0122078,Vivo Basic Straight Leg Pants in Ponte,Active,NOOS
+V0724080,Vivo Basic Tank Top,Active,NOOS
+V0724080,Vivo Basic Tank Top In Jersey,Active,NOOS
+,Vivo Basic Tank Top Slip,Active,NOOS
+,Vivo Basic Tank Top in Jersey,Active,NOOS
+,Vivo Basic Val Cap Sleeve Top,Active,NOOS
+,Vivo Dua Wide Leg Pants,Active,NOOS
+,Vivo Dua Wide Leg Pants in Ponte,Active,NOOS
+V1120036,Vivo Everyday Cap Sleeve Top in Jersey,Active,NOOS
+V1120036,Vivo Everyday Cap Sleeve Top in Jersey- Chocolate,Active,NOOS
+V1120036,Vivo Everyday Cap Sleeve Top in Jersey-White,Active,NOOS
+V0723043,Vivo Everyday Long Sleeve Top In Jersey,Active,NOOS
+V0723043,Vivo Everyday Long Sleeve Top in Jersey,Active,NOOS
+,Vivo Everyday Short Waterfall,Active,NOOS
+,Vivo Everyday Short Waterfall in Jersey,Active,NOOS
+V1120122,Vivo Lindi High Low Dress,Active,NOOS
+,Vivo Lindi High Low Dress In Ponte,Active,NOOS
+,Vivo Upe Wide Leg Pants,Active,NOOS
+,Vivo Upe Wide Leg Pants in Ponte,Active,NOOS
+V0123114,Vivo Upe Wide Leg Pants in Ponte- Beige,Active,NOOS
+V0123114,Vivo Upe Wide Leg Pants in Ponte- Black,Active,NOOS
+V0123114,Vivo Upe Wide Leg Pants in Ponte- Dark Green,Active,NOOS
+,Vivo Waridi Pencil Skirt in Ponte,Active,NOOS
+Z0819062,Zoya Basic Full Length Leggings,Active,NOOS
+Z1019075,Zoya Basic Jersey Bandeau,Active,NOOS
