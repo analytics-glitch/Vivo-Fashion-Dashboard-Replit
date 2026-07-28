@@ -8768,9 +8768,12 @@ async function gateCreateProducts(){
 // lets /api/fabric/costing/access through (fails closed — the middleware in
 // api_pg.py is the real enforcement). All interpolated text goes through esc().
 let costLabourAvailable=false;
+// Per-step sign-off rights for the current user, from /api/fabric/costing/access.
+// UI gating only — the server enforces per-step rights + separation of duties.
+let costSignRights={steps:[],signers:{},userId:null};
 async function gateCosting(){
   let ok=false;
-  try{const a=await apiFetch('/api/fabric/costing/access');ok=!!(a&&a.allowed);costLabourAvailable=!!(a&&a.labour_data_available);}catch(e){ok=false;}
+  try{const a=await apiFetch('/api/fabric/costing/access');ok=!!(a&&a.allowed);costLabourAvailable=!!(a&&a.labour_data_available);costSignRights={steps:(a&&a.can_sign_steps)||[],signers:(a&&a.step_signers)||{},userId:(a&&a.user_id)||null};}catch(e){ok=false;}
   const tab=document.getElementById('nav-costing');
   if(ok){ if(tab)tab.style.display=''; }
   else{
@@ -9013,10 +9016,21 @@ function costRenderSignoffs(){
           `<div class="muted" style="font-size:11px;">Signed · ${esc(fmtNairobi(s.signed_at)||'')}</div>`+
           `<button class="btn" style="margin-top:7px;padding:2px 10px;font-size:12px;" onclick="costUnsign(${step})">${step===3?'Un-approve':'Remove signature'}</button></div>`;
       }
+      // Per-step rights + separation of duties (UI gating; server enforces):
+      // the button is disabled unless the current user is authorized for this
+      // step AND didn't sign the immediately preceding step themselves.
+      const signers=(costSignRights.signers[String(step)]||[]).map(e=>e.split('@')[0]+'@').join(', ');
+      const entitled=costSignRights.steps.includes(step);
+      const prevSelf=i>0&&so[i-1].signed&&costSignRights.userId&&so[i-1].signed_by===costSignRights.userId;
+      let block='';
+      if(!entitled)block=`disabled title="Only ${esc(signers)} can sign this step"`;
+      else if(prevSelf)block=`disabled title="Separation of duties — you signed “${esc(so[i-1].title)}”, so a different person must sign this step"`;
+      else if(!canSign(i))block='disabled title="Sign the earlier steps first"';
+      const hint=!entitled?`Signed by ${esc(signers)}`:(prevSelf?'Needs a different signer (you signed the previous step)':'Pending');
       return `<div style="border:1px dashed var(--border);border-radius:10px;padding:10px 12px;">`+
-        `<input id="cost-so-title-${step}" value="${esc(s.title)}" maxlength="100" title="Sign-off title (editable)" style="width:100%;height:30px;font-size:12px;margin-bottom:6px;">`+
-        `<div class="muted" style="font-size:11px;margin-bottom:7px;">Pending</div>`+
-        `<button class="btn btn-primary" style="padding:3px 12px;font-size:12px;" ${canSign(i)?'':'disabled title="Sign the earlier steps first"'} onclick="costSign(${step})">Sign${step===3?' & approve':''}</button></div>`;
+        `<input id="cost-so-title-${step}" value="${esc(s.title)}" maxlength="100" title="Sign-off title (editable)" style="width:100%;height:30px;font-size:12px;margin-bottom:6px;" ${entitled?'':'disabled'}>`+
+        `<div class="muted" style="font-size:11px;margin-bottom:7px;">${hint}</div>`+
+        `<button class="btn btn-primary" style="padding:3px 12px;font-size:12px;" ${block} onclick="costSign(${step})">Sign${step===3?' & approve':''}</button></div>`;
     }).join('')+'</div>';
 }
 function costApplyLock(){

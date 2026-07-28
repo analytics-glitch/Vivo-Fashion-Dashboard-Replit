@@ -1332,10 +1332,13 @@ async def clerk_auth_gate(request: Request, call_next):
             return JSONResponse({"detail": "Admin access required"}, status_code=403)
 
     # Product Costing (per-style cost sheets): STRICTLY email-allowlisted —
-    # every /api/fabric/costing path (read AND write) is limited to the three
-    # named emails in fabric_router._FABRIC_COSTING_EMAILS (single source of
-    # truth). The dashboard hides the tab for everyone else; this gate is the
-    # actual enforcement, so direct API calls are rejected too.
+    # every /api/fabric/costing path (read AND write) is limited to the
+    # combined per-step sign-off allowlist in
+    # fabric_router._FABRIC_COSTING_EMAILS (derived from _COSTING_STEP_EMAILS,
+    # the single source of truth). The dashboard hides the tab for everyone
+    # else; this gate is the actual enforcement, so direct API calls are
+    # rejected too. Per-STEP signing rights are enforced separately in the
+    # sign-off endpoint.
     if path.startswith("/api/fabric/costing"):
         from fabric_router import _fabric_costing_allowed
         if not _fabric_costing_allowed(user):

@@ -12559,11 +12559,28 @@ def pc_batch_detail(bid: int, request: Request):
 # enforced server-side for every /api/fabric/costing path in api_pg's auth
 # middleware via _fabric_costing_allowed below (the tab is also hidden in the
 # UI for everyone else, but the middleware is the enforcement).
-_FABRIC_COSTING_EMAILS = {
-    "bedan@vivofashiongroup.com",
-    "stephen@vivofashiongroup.com",
-    "kevinl@vivofashiongroup.com",
+# Per-step sign-off rights: each of the three sign-off steps has its OWN
+# email allowlist (server-enforced in the signoff endpoint). The combined
+# set below is the tab/API access gate used by api_pg's middleware — anyone
+# who can sign at least one step can open the Product Costing tab.
+_COSTING_STEP_EMAILS = {
+    1: {  # Prepared by
+        "bedan@vivofashiongroup.com",
+        "kevinl@vivofashiongroup.com",
+        "costing@vivofashiongroup.com",
+    },
+    2: {  # Checked by
+        "bedan@vivofashiongroup.com",
+        "stephen@vivofashiongroup.com",
+    },
+    3: {  # Approved by
+        "marynyambura@vivofashiongroup.com",
+        "rosebella@vivofashiongroup.com",
+        "wandia@vivofashiongroup.com",
+    },
 }
+
+_FABRIC_COSTING_EMAILS = frozenset().union(*_COSTING_STEP_EMAILS.values())
 
 
 def _fabric_costing_allowed(user):
@@ -12689,6 +12706,30 @@ def _costing_user(request):
     u = getattr(request.state, "user", None) or {}
     return (str(u.get("user_id") or u.get("id") or ""),
             u.get("name") or u.get("email") or "unknown")
+
+
+def _costing_user_email(request):
+    u = getattr(request.state, "user", None) or {}
+    return (u.get("email") or "").strip().lower()
+
+
+def _costing_signer_email(conn, uid):
+    """Resolve a stored signoff signed_by (a user_id) back to an email for the
+    separation-of-duties comparison. Emails are the canonical identity here
+    (user_ids can differ between local: and google: sign-ins for one person)."""
+    if not uid:
+        return None
+    try:
+        rows = q(conn, "SELECT lower(email) AS email FROM app_users "
+                       "WHERE user_id = %s", (uid,))
+        return (rows[0]["email"] or "").strip().lower() if rows else None
+    except Exception:
+        return None
+
+
+def _costing_signer_list(step):
+    """Human-readable 'who may sign this step' list for error messages/UI."""
+    return ", ".join(sorted(_COSTING_STEP_EMAILS[step]))
 
 
 def _notify_costing_users(conn, actor_uid, ntype, title, message, dedupe_prefix,
@@ -12977,7 +13018,21 @@ def costing_access(request: Request):
             lab = bool(r and r[0]["n"])
         except Exception:
             lab = False
-    return {"allowed": True, "labour_data_available": lab}
+    email = _costing_user_email(request)
+    uid, _ = _costing_user(request)
+    return {
+        "allowed": True,
+        "labour_data_available": lab,
+        # Per-step sign-off rights for THIS user plus the authorized-signer
+        # lists, so the UI can disable/hide sign buttons and explain who may
+        # sign each step. Server-side enforcement lives in the sign endpoint.
+        "user_id": uid,
+        "email": email,
+        "can_sign_steps": sorted(s for s, emails in _COSTING_STEP_EMAILS.items()
+                                 if email in emails),
+        "step_signers": {str(s): sorted(v)
+                         for s, v in _COSTING_STEP_EMAILS.items()},
+    }
 
 
 @fabric_router.get("/api/fabric/costing/styles")
@@ -13218,6 +13273,7 @@ def _costing_signoff_rows(conn, sheet_id):
             "step": step,
             "title": (r and (r["title"] or "").strip()) or _COSTING_SIGNOFF_DEFAULTS[step],
             "signed": bool(r),
+            "signed_by": r["signed_by"] if r else None,
             "signed_by_name": r["signed_by_name"] if r else None,
             "signed_at": (r["signed_at"].isoformat()
                           if r and r["signed_at"] else None),
@@ -13673,6 +13729,14 @@ def costing_sheet_sign(sheet_id: int, request: Request, body: dict = Body(...)):
     title = (str(body.get("title") or "").strip())[:100] \
         or _COSTING_SIGNOFF_DEFAULTS[step]
     uid, uname = _costing_user(request)
+    email = _costing_user_email(request)
+    # Per-step rights: only the emails authorized for THIS step may sign it.
+    if email not in _COSTING_STEP_EMAILS[step]:
+        raise HTTPException(
+            status_code=403,
+            detail=(f"You are not authorized to sign "
+                    f"“{_COSTING_SIGNOFF_DEFAULTS[step]}” — only "
+                    f"{_costing_signer_list(step)} may sign this step"))
     with _get_conn() as conn:
         _ensure_costing_tables(conn)
         sheets = q(conn, "SELECT style_name, color FROM fabric_costing_sheets "
@@ -13687,6 +13751,23 @@ def costing_sheet_sign(sheet_id: int, request: Request, body: dict = Body(...)):
                 raise HTTPException(
                     status_code=400,
                     detail=f"Sign the steps in order — “{prev['title']}” is still pending")
+        # Separation of duties: you cannot check a sheet you prepared, or
+        # approve a sheet you checked. Compared against the CURRENT signature
+        # of the immediately preceding step (an unsigned-then-resigned step is
+        # judged on whoever holds the signature now), by email — the canonical
+        # identity — with a user_id fallback when the email can't be resolved.
+        if step in (2, 3):
+            prev_row = signoffs[step - 2]
+            prev_uid = prev_row.get("signed_by")
+            prev_email = _costing_signer_email(conn, prev_uid)
+            same = (prev_email == email) if prev_email else (prev_uid and prev_uid == uid)
+            if same:
+                raise HTTPException(
+                    status_code=403,
+                    detail=(f"Separation of duties — you signed "
+                            f"“{prev_row['title']}” on this sheet, so a "
+                            f"different person must sign "
+                            f"“{_COSTING_SIGNOFF_DEFAULTS[step]}”"))
         with conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO fabric_costing_signoffs

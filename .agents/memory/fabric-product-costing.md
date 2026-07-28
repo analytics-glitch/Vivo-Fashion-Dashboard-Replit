@@ -2,7 +2,8 @@
 name: Fabric Product Costing tab
 description: Costing sheets on /fabric — email-allowlist gate, DPS labour cost source, MO→style matching rule
 ---
-- Access is a strict email allowlist `_FABRIC_COSTING_EMAILS` in fabric_router.py (admin role does NOT qualify); enforced in api_pg clerk_auth_gate middleware for all `/api/fabric/costing/*`; UI tab hiding is UX only and fails closed via GET /costing/access.
+- Access is a strict email allowlist `_FABRIC_COSTING_EMAILS` in fabric_router.py (admin role does NOT qualify), now DERIVED as the union of per-step sign-off sets `_COSTING_STEP_EMAILS` (1=prepare, 2=check, 3=approve); enforced in api_pg clerk_auth_gate middleware for all `/api/fabric/costing/*`; UI tab hiding is UX only and fails closed via GET /costing/access (which also returns can_sign_steps + step_signers for button gating).
+- Per-step sign rights + separation of duties are enforced in the signoff POST: signer's email must be in the step's set, and the signer of the immediately preceding step (resolved uid→email via app_users, uid fallback) cannot sign the next one (prepare→check, check→approve). 403 with a who-may-sign message. Unsign remains open to any tab user (unchanged semantics).
 - Labour/CMT cost lives on the Odoo DPS model `mrp.production.day` (`total_labour_cost`, `total_production_cost`, `cost_per_unit`), reached via `mrp.production.dps_id`; stored on mo_fabric_consumption (dps_cost_per_unit etc.). Labour per garment = produced-qty-weighted avg.
 - **MO→style matching:** never match mo_fabric_consumption.style_name to the product master (Odoo MO names embed fabric+colour); match `finished_sku = all_products_clean.sku` — 99.9% join when master intact.
 - One sheet per style (unique on lower(style_name)); POST returns 409; line totals recomputed server-side; edits append fabric_costing_history rows.
