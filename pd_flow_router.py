@@ -157,6 +157,103 @@ def ensure_pd_tables():
         except Exception as _e:
             log.warning("pd_styles seed failed (non-fatal): %s", _e)
 
+    # Excel import patch: apply stage/metadata/image updates from pd_excel_patch.json.
+    # Runs on every boot; idempotent — UPDATEs are safe to repeat.
+    # Images upserted so re-runs are cheap (same bytes, no change to served content).
+    _patch_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "pd_excel_patch.json")
+    if _os.path.exists(_patch_path):
+        try:
+            import base64 as _b64, io as _io
+            with open(_patch_path) as _pf:
+                _patch = _json.load(_pf)
+            _precs = _patch.get("records", [])
+            _ok = _skip = _ins = _img = 0
+            for _pr in _precs:
+                _snum = (_pr.get("style_number") or "").strip()
+                if not _snum:
+                    _skip += 1; continue
+                _stage   = _pr.get("current_stage")
+                _pstatus = _pr.get("status")
+                # Look up by style_number
+                _existing = _db("SELECT id, status FROM pd_styles WHERE style_number = %s", (_snum,))
+                if _existing:
+                    _sid  = _existing[0]["id"]
+                    _sets = []
+                    _pms  = []
+                    def _add(col, val):
+                        if val is not None:
+                            _sets.append(f"{col} = %s"); _pms.append(val)
+                    if _stage:
+                        _sets += ["current_stage = %s", "status = %s"]
+                        _pms  += [_stage, _pstatus]
+                        if _pstatus == "completed":
+                            _sets.append("completed_at = COALESCE(completed_at, now())")
+                    _add("brand",               _pr.get("brand"))
+                    _add("category",            _pr.get("category"))
+                    _add("sub_category",        _pr.get("sub_category"))
+                    _add("theme",               _pr.get("theme"))
+                    _add("fabric_type",         _pr.get("fabric_type"))
+                    _add("fabric_name",         _pr.get("fabric_name"))
+                    _add("sample_colour",       _pr.get("sample_colour"))
+                    _add("print_solid",         _pr.get("print_solid"))
+                    _add("pattern_maker",       _pr.get("pattern_maker"))
+                    _add("target_order_week",   _pr.get("target_order_week"))
+                    _add("adoption_date",       _pr.get("adoption_date"))
+                    _add("order_date",          _pr.get("order_date"))
+                    _add("sample_approval_date",_pr.get("sample_approval_date"))
+                    _add("lifecycle_type",      _pr.get("lifecycle_type"))
+                    if _sets:
+                        _pms.append(_sid)
+                        _db(f"UPDATE pd_styles SET {', '.join(_sets)} WHERE id = %s", tuple(_pms), fetch=False)
+                    _ok += 1
+                else:
+                    # Insert new style if stage is defined
+                    if not _stage: _skip += 1; continue
+                    _db("""
+                        INSERT INTO pd_styles (style_name, style_number, brand, category, sub_category,
+                            lifecycle_type, current_stage, status, created_by_email,
+                            fabric_type, fabric_name, sample_colour, print_solid, pattern_maker,
+                            target_order_week, adoption_date, order_date, sample_approval_date, theme,
+                            completed_at)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'system:excel-import',
+                                %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                                CASE WHEN %s='completed' THEN now() ELSE NULL END)
+                        ON CONFLICT DO NOTHING
+                    """, (_pr.get("style_name"), _snum, _pr.get("brand"), _pr.get("category"),
+                          _pr.get("sub_category"), _pr.get("lifecycle_type"), _stage, _pstatus,
+                          _pr.get("fabric_type"), _pr.get("fabric_name"), _pr.get("sample_colour"),
+                          _pr.get("print_solid"), _pr.get("pattern_maker"), _pr.get("target_order_week"),
+                          _pr.get("adoption_date"), _pr.get("order_date"), _pr.get("sample_approval_date"),
+                          _pr.get("theme"), _pstatus), fetch=False)
+                    _re2 = _db("SELECT id FROM pd_styles WHERE style_number = %s", (_snum,))
+                    _sid = _re2[0]["id"] if _re2 else None
+                    _ins += 1
+                # Image upsert
+                _enc = _pr.get("image_b64")
+                if _enc and _sid:
+                    try:
+                        from PIL import Image as _PilImg
+                        _raw = _b64.b64decode(_enc)
+                        _img_obj = _PilImg.open(_io.BytesIO(_raw)).convert("RGB")
+                        _img_obj.thumbnail((900, 900), _PilImg.LANCZOS)
+                        _buf = _io.BytesIO()
+                        _img_obj.save(_buf, format="JPEG", quality=82, optimize=True)
+                        _enc2 = _b64.b64encode(_buf.getvalue()).decode()
+                        _db("""
+                            INSERT INTO pd_style_images (style_id, image_data, content_type, uploaded_by, uploaded_at)
+                            VALUES (%s, %s, 'image/jpeg', 'system:excel-import', now())
+                            ON CONFLICT (style_id) DO UPDATE
+                              SET image_data=EXCLUDED.image_data, content_type='image/jpeg',
+                                  uploaded_by=EXCLUDED.uploaded_by, uploaded_at=now()
+                        """, (_sid, _enc2), fetch=False)
+                        _img += 1
+                    except Exception as _ie:
+                        log.warning("pd_patch image failed style_number=%s: %s", _snum, _ie)
+            log.info("pd_excel_patch applied: %d updated, %d inserted, %d images, %d skipped",
+                     _ok, _ins, _img, _skip)
+        except Exception as _pe:
+            log.warning("pd_excel_patch failed (non-fatal): %s", _pe)
+
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
