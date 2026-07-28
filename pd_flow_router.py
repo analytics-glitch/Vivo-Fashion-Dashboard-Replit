@@ -401,7 +401,7 @@ def register_pd_routes(app, api_pg_module):
         stages = _stages()
         sla_map = {s["stage_key"]: s["sla_days"] for s in stages}
         where = "TRUE" if include_completed else "status = 'active'"
-        rows = _db(f"SELECT * FROM pd_styles WHERE {where} ORDER BY stage_entered_at ASC") or []
+        rows = _db(f"SELECT * FROM pd_styles WHERE {where} ORDER BY current_stage, LOWER(style_name) ASC") or []
         cards = [_style_out(r, sla_map) for r in rows]
         return {"stages": stages, "cards": cards}
 
