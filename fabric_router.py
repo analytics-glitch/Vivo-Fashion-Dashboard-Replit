@@ -13573,7 +13573,7 @@ def costing_export_sheet_xlsx(sheet_id: int):
         ("Selling price (ex-VAT, KES)", s["selling_price_ex_vat"]),
         ("Retail price basis",
          "Auto (modal SKU price)" if s.get("selling_price_is_auto") else "Manual"),
-        ("Margin vs ex-VAT selling price (KES)", s["margin"]),
+        ("Margin (KES)", s["margin"]),
         ("Margin %", s["margin_pct"]),
         ("Notes", s.get("notes")),
         ("Last edited by", s.get("updated_by_name")),
@@ -14069,7 +14069,7 @@ def _costing_build_pdf(s):
          money(s.get("selling_price"))],
         ["Selling price (ex-VAT, retail ÷ 1.16)",
          money(s.get("selling_price_ex_vat"))],
-        ["Margin (vs ex-VAT selling price)", money(margin)],
+        ["Margin", money(margin)],
         ["Margin %", "—" if s.get("margin_pct") is None else f"{s['margin_pct']:.2f}%"],
     ]
     tt = Table(tot, colWidths=[None, 30*mm], hAlign="RIGHT")

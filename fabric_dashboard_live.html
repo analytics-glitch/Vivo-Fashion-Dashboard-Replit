@@ -8878,7 +8878,7 @@ function costRenderTotals(){
   const m=ex-total;
   mCell.textContent=fmtKES2(m);
   mCell.style.color=m<0?'var(--danger)':'var(--ok,#0a7d33)';
-  pCell.textContent=ex>0?(m/ex*100).toFixed(2)+'% of ex-VAT selling price':'';
+  pCell.textContent=ex>0?'Margin: '+(m/ex*100).toFixed(2)+'%':'';
 }
 function costBindEditor(){
   const body=document.getElementById('cost-lines-body');
