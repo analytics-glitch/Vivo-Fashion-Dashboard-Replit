@@ -435,38 +435,40 @@ const SORNewStylesReport = () => {
                 pageSize={50}
                 stickyFirstCol
                 footerRow={filtered.length > 0 ? [
-                  // style_name
-                  <td key="fn" className="p-2 font-bold text-[12px] text-foreground sticky left-0 bg-panel z-10 whitespace-nowrap">
+                  // expand-chevron column (renderExpanded adds this as first col)
+                  <td key="fchev" />,
+                  // style_name — sticky to match body stickyFirstCol
+                  <td key="fn" className="font-bold text-foreground sticky left-0 bg-panel z-10 whitespace-nowrap">
                     Total · {fmtNum(stats.n)} styles
                   </td>,
                   // style_number
                   <td key="fsn" />,
                   // units_sel
-                  <td key="fu" className="p-2 text-right num font-bold">{fmtNum(stats.totalUnits)}</td>,
+                  <td key="fu" className="text-right num font-bold">{fmtNum(stats.totalUnits)}</td>,
                   // sales_sel
-                  <td key="fs" className="p-2 text-right num font-bold">{fmtKES(stats.totalSales)}</td>,
+                  <td key="fs" className="text-right num font-bold">{fmtKES(stats.totalSales)}</td>,
                   // weekly_avg
-                  <td key="fwa" className="p-2 text-right num font-bold">{stats.totalWeeklyBurn.toFixed(1)}</td>,
+                  <td key="fwa" className="text-right num font-bold">{stats.totalWeeklyBurn.toFixed(1)}</td>,
                   // soh_total
-                  <td key="fsoh" className="p-2 text-right num font-bold">{fmtNum(Math.round(stats.totalSOH))}</td>,
+                  <td key="fsoh" className="text-right num font-bold">{fmtNum(Math.round(stats.totalSOH))}</td>,
                   // soh_wh
-                  <td key="fwh" className="p-2 text-right num font-bold">{fmtNum(Math.round(stats.totalSOHWH))}</td>,
+                  <td key="fwh" className="text-right num font-bold">{fmtNum(Math.round(stats.totalSOHWH))}</td>,
                   // soh_pipeline
-                  <td key="fpipe" className="p-2 text-right num font-bold">{stats.totalPipeline ? fmtNum(Math.round(stats.totalPipeline)) : "—"}</td>,
+                  <td key="fpipe" className="text-right num font-bold">{stats.totalPipeline ? fmtNum(Math.round(stats.totalPipeline)) : "—"}</td>,
                   // woc
-                  <td key="fwoc" className="p-2 text-right num font-bold">
+                  <td key="fwoc" className="text-right num font-bold">
                     {stats.aggregateWoc == null ? "—" : `${stats.aggregateWoc.toFixed(1)}w`}
                   </td>,
                   // pct_in_wh
-                  <td key="fpwh" className="p-2 text-right num font-bold">{stats.pctInWH.toFixed(1)}%</td>,
+                  <td key="fpwh" className="text-right num font-bold">{stats.pctInWH.toFixed(1)}%</td>,
                   // asp_6m — weighted avg (sales ÷ units)
-                  <td key="fasp" className="p-2 text-right num font-bold">
+                  <td key="fasp" className="text-right num font-bold">
                     {stats.totalUnits > 0 ? fmtKES(stats.totalSales / stats.totalUnits) : "—"}
                   </td>,
                   // original_price — no meaningful aggregate
                   <td key="ffp" />,
                   // sor_6w — weighted SOR
-                  <td key="fsor" className="p-2 text-right num font-bold">
+                  <td key="fsor" className="text-right num font-bold">
                     <SorPct v={stats.wSor} />
                   </td>,
                   // launch_date
