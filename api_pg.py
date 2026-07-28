@@ -33074,8 +33074,13 @@ def style_tracker_board():
     cur_key = (cur_y, cur_w)
 
     rows = _users_exec(
-        "SELECT * FROM style_tracker_styles WHERE NOT archived "
-        "ORDER BY completed, id", fetch=True) or []
+        "SELECT s.*, "
+        "  (SELECT mode() WITHIN GROUP (ORDER BY p.style_number) "
+        "   FROM all_products_clean p "
+        "   WHERE lower(p.style_name) = lower(s.style_name) "
+        "     AND p.style_number IS NOT NULL AND p.style_number <> '') AS style_number "
+        "FROM style_tracker_styles s WHERE NOT s.archived "
+        "ORDER BY s.completed, s.id", fetch=True) or []
 
     # Fetch notes for all non-archived styles in one query
     notes_raw = _users_exec("""
@@ -33601,8 +33606,13 @@ def style_tracker_archived():
     """Archived styles, newest first, with their week labels for display."""
     _ensure_style_tracker_tables()
     rows = _users_exec(
-        "SELECT * FROM style_tracker_styles WHERE archived "
-        "ORDER BY archived_at DESC NULLS LAST, id DESC LIMIT 1000",
+        "SELECT s.*, "
+        "  (SELECT mode() WITHIN GROUP (ORDER BY p.style_number) "
+        "   FROM all_products_clean p "
+        "   WHERE lower(p.style_name) = lower(s.style_name) "
+        "     AND p.style_number IS NOT NULL AND p.style_number <> '') AS style_number "
+        "FROM style_tracker_styles s WHERE s.archived "
+        "ORDER BY s.archived_at DESC NULLS LAST, s.id DESC LIMIT 1000",
         fetch=True) or []
     out = []
     for r in rows:

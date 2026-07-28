@@ -735,7 +735,7 @@ function NotesPanel({ style, onNoteAdded }) {
 }
 
 /** Fulfillment drill-down drawer (portal) */
-function FulfillmentDrawer({ styleId, styleName, onClose }) {
+function FulfillmentDrawer({ styleId, styleName, styleNumber, onClose }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState(null);
@@ -800,7 +800,12 @@ function FulfillmentDrawer({ styleId, styleName, onClose }) {
         <div className="flex items-center justify-between px-5 py-3.5 border-b border-line shrink-0">
           <div>
             <div className="font-bold text-[14px] text-[#0f3d24]">Fulfillment Drill-Down</div>
-            <div className="text-[12px] text-muted mt-0.5">{styleName}</div>
+            <div className="flex items-baseline gap-2 mt-0.5">
+              <span className="text-[12px] text-muted">{styleName}</span>
+              {styleNumber && (
+                <span className="text-[11px] font-mono font-semibold text-[#1a5c38] bg-[#1a5c38]/8 border border-[#1a5c38]/20 rounded px-1.5 py-0.5 leading-none">{styleNumber}</span>
+              )}
+            </div>
           </div>
           <button type="button" onClick={onClose} className="text-muted hover:text-danger p-1"><X size={18} /></button>
         </div>
@@ -976,14 +981,19 @@ function StyleCard({
       data-testid={`style-card-${style.id}`}
     >
       <div className="flex items-start justify-between gap-2">
-        <button
-          type="button"
-          onClick={() => onOpenFulfillment(style)}
-          className="font-semibold text-[12.5px] text-[#0f3d24] leading-snug text-left hover:underline underline-offset-2 min-w-0"
-          title="Click to view fulfillment drill-down"
-        >
-          {style.style_name}
-        </button>
+        <div className="min-w-0">
+          <button
+            type="button"
+            onClick={() => onOpenFulfillment(style)}
+            className="font-semibold text-[12.5px] text-[#0f3d24] leading-snug text-left hover:underline underline-offset-2"
+            title="Click to view fulfillment drill-down"
+          >
+            {style.style_name}
+          </button>
+          {style.style_number && (
+            <div className="text-[10px] font-mono font-semibold text-[#1a5c38] mt-0.5 leading-none">{style.style_number}</div>
+          )}
+        </div>
         <button
           type="button"
           onClick={handleComplete}
@@ -1459,6 +1469,7 @@ const StyleTracker = () => {
         <FulfillmentDrawer
           styleId={fulfillmentStyle.id}
           styleName={fulfillmentStyle.style_name}
+          styleNumber={fulfillmentStyle.style_number}
           onClose={() => setFulfillmentStyle(null)}
         />
       )}
@@ -1581,7 +1592,7 @@ const StyleTracker = () => {
                         onDragEnd={onCardDragEnd}
                         isPrivileged={isPrivileged}
                         onNoteAdded={handleNoteAdded}
-                        onOpenFulfillment={(style) => setFulfillmentStyle({ id: style.id, style_name: style.style_name })}
+                        onOpenFulfillment={(style) => setFulfillmentStyle({ id: style.id, style_name: style.style_name, style_number: style.style_number })}
                         onOptionsChange={() => loadBoard(true, true)}
                         weeks={board.weeks}
                       />
