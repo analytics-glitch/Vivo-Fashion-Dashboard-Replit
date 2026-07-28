@@ -12637,6 +12637,11 @@ def _ensure_costing_tables(conn):
             -- sheets can re-price at the fabric's CURRENT cost/metre on read.
             ALTER TABLE fabric_costing_lines
                 ADD COLUMN IF NOT EXISTS component_id BIGINT;
+            -- Colour the sheet's suggestions were scoped to (product-master
+            -- color_print of the finished SKUs). NULL = all colours (legacy
+            -- sheets and single-colour DPSes where no narrowing was needed).
+            ALTER TABLE fabric_costing_sheets
+                ADD COLUMN IF NOT EXISTS color TEXT;
         """)
         # One-time backfill: link existing auto fabric lines to their fabric
         # product by matching the line label ("Main fabric (<name>)" from the
@@ -12683,27 +12688,47 @@ def _style_selling_price(conn, style_name):
     return float(p) if p else None
 
 
-def _require_style_dps(conn, canon_style, dps_ref):
+def _require_style_dps(conn, canon_style, dps_ref, color=None):
     """The DPS must belong to this style (finished_sku match rule) — 404s
-    otherwise. Shared by the suggest endpoint and sheet create."""
-    chk = q(conn, """
+    otherwise. With a colour, the DPS must also have MOs whose finished SKU is
+    that colour of the style. Shared by the suggest endpoint and sheet create."""
+    scope_sql, scope_params, color = _costing_color_scope(canon_style, color)
+    chk = q(conn, f"""
         SELECT 1 FROM mo_fabric_consumption c
         WHERE c.dps_ref = %s
-          AND c.finished_sku IN (
-                SELECT sku FROM all_products_clean
-                WHERE lower(style_name) = lower(%s))
+          AND {scope_sql}
         LIMIT 1
-    """, [dps_ref, canon_style])
+    """, [dps_ref] + scope_params)
     if not chk:
         raise HTTPException(status_code=404,
-                            detail="No Done DPS with that reference for this style")
+                            detail=("No Done MOs in that colour on this DPS for the style"
+                                    if color else
+                                    "No Done DPS with that reference for this style"))
+
+
+def _costing_color_scope(style_name, color):
+    """SQL fragment + params restricting MO finished SKUs to the style — and,
+    when a colour is given, to that colour's SKUs only (product-master
+    color_print of the finished SKU). Shared by every suggestion reader so
+    fabrics, accessories, metres/garment, labour AND the typeahead all come
+    from the SAME colour-scoped MO set."""
+    color = (color or "").strip() or None
+    sql = """c.finished_sku IN (
+                SELECT sku FROM all_products_clean
+                WHERE lower(style_name) = lower(%s)"""
+    params = [style_name]
+    if color:
+        sql += "\n                  AND lower(coalesce(color_print,'')) = lower(%s)"
+        params.append(color)
+    sql += ")"
+    return sql, params, color
 
 
 _KG_UOMS = {"kg", "g"}
 _M_UOMS = {"m", "metre", "meter", "mtr", "metres", "meters", "metre(s)"}
 
 
-def _costing_style_facts(conn, style_name, dps_ref):
+def _costing_style_facts(conn, style_name, dps_ref, color=None):
     """Auto-suggestion facts for a style from ONE Done DPS's consumption:
     metres per garment, weighted labour cost per garment, the fabrics used AND
     the accessories/trims components consumed. Fabric cost/metre suggestions
@@ -12723,9 +12748,9 @@ def _costing_style_facts(conn, style_name, dps_ref):
                             detail="dps_ref is required — pick a DPS # for the style")
     scope_sql = "AND c.dps_ref = %s"
     scope_params = [dps_ref]
-    style_sql = """c.finished_sku IN (
-                SELECT sku FROM all_products_clean
-                WHERE lower(style_name) = lower(%s))"""
+    # Colour scope: when set, MOs are restricted to finished SKUs of that
+    # colour so a one-colour sheet never blends in sibling colours' components.
+    style_sql, style_params, color = _costing_color_scope(style_name, color)
     rows = q(conn, f"""
         SELECT c.odoo_mo_id, c.produced_qty, c.consumed_qty,
                lower(coalesce(c.uom,'')) AS uom,
@@ -12737,7 +12762,7 @@ def _costing_style_facts(conn, style_name, dps_ref):
         WHERE {style_sql}
           {scope_sql}
           AND c.is_main_fabric
-    """, [style_name] + scope_params)
+    """, style_params + scope_params)
 
     mos, fabrics = {}, {}
     for r in rows:
@@ -12864,7 +12889,7 @@ def _costing_style_facts(conn, style_name, dps_ref):
           AND NOT c.is_main_fabric
         GROUP BY c.component_id, c.fabric_sku, c.fabric_name, coalesce(c.uom,'')
         ORDER BY SUM(c.consumed_qty) DESC
-    """, [style_name] + scope_params)
+    """, style_params + scope_params)
     accessories = []
     for r in acc_rows[:25]:
         consumed = float(r["consumed"] or 0)
@@ -12886,6 +12911,7 @@ def _costing_style_facts(conn, style_name, dps_ref):
 
     return {
         "dps_ref": dps_ref,
+        "color": color,
         "accessories": accessories,
         "metres_per_garment": round(tot_m / tot_g, 2) if tot_g > 0 else None,
         "metres_mos": n_mos,
@@ -12938,6 +12964,8 @@ def costing_styles(q_: str = Query(default="", alias="q"),
 @fabric_router.get("/api/fabric/costing/fabrics")
 def costing_fabric_search(q_: str = Query(default="", alias="q"),
                           dps_ref: str = Query(default=None),
+                          style_name: str = Query(default=None),
+                          color: str = Query(default=None),
                           limit: int = Query(default=20)):
     """Component typeahead for costing lines — restricted to the components
     (main fabrics AND accessories/trims) actually consumed on the selected
@@ -12952,8 +12980,18 @@ def costing_fabric_search(q_: str = Query(default="", alias="q"),
         raise HTTPException(status_code=400,
                             detail="dps_ref is required — component search is scoped to the sheet's DPS")
     limit = max(1, min(int(limit or 20), 50))
+    # Optional colour scope (with the style): restrict to components consumed
+    # on the MOs whose finished SKU is that colour of the style, so the
+    # typeahead matches the colour-scoped suggestions exactly.
+    style = (style_name or "").strip() or None
+    col = (color or "").strip() or None
+    color_sql, color_params = "", []
+    if style and col:
+        scope_sql, scope_params, _ = _costing_color_scope(style, col)
+        color_sql = f"AND {scope_sql}"
+        color_params = scope_params
     with _get_conn() as conn:
-        rows = q(conn, """
+        rows = q(conn, f"""
             SELECT c.component_id AS id,
                    MAX(c.fabric_sku)  AS sku,
                    MAX(c.fabric_name) AS name,
@@ -12970,11 +13008,12 @@ def costing_fabric_search(q_: str = Query(default="", alias="q"),
             FROM mo_fabric_consumption c
             LEFT JOIN raw_fabric_products p ON p.id = c.component_id
             WHERE c.dps_ref = %s
+              {color_sql}
               AND (%s = '' OR c.fabric_name ILIKE %s OR c.fabric_sku ILIKE %s)
             GROUP BY c.component_id
             ORDER BY bool_or(c.is_main_fabric) DESC, MAX(c.fabric_name)
             LIMIT %s
-        """, [dps, term, f"%{term}%", f"%{term}%", limit])
+        """, [dps] + color_params + [term, f"%{term}%", f"%{term}%", limit])
     return [{"id": r["id"], "sku": r["sku"], "name": r["name"],
              "barcode": (r["barcode"] or "").strip() or None,
              "is_main_fabric": bool(r["is_main_fabric"]),
@@ -12997,18 +13036,27 @@ def costing_dps_list(style_name: str = Query(...)):
     with _get_conn() as conn:
         rows = q(conn, """
             WITH mo AS (
-                SELECT DISTINCT c.dps_ref, c.odoo_mo_id, c.produced_qty, c.done_date
+                SELECT DISTINCT c.dps_ref, c.odoo_mo_id, c.produced_qty,
+                       c.done_date, c.finished_sku
                 FROM mo_fabric_consumption c
                 WHERE c.finished_sku IN (
                         SELECT sku FROM all_products_clean
                         WHERE lower(style_name) = lower(%s))
                   AND c.dps_ref IS NOT NULL
             )
-            SELECT dps_ref, MAX(done_date) AS done_date,
-                   SUM(produced_qty) AS produced_qty,
-                   COUNT(*) AS mo_count
-            FROM mo GROUP BY dps_ref
-            ORDER BY MAX(done_date) DESC NULLS LAST, dps_ref DESC
+            SELECT mo.dps_ref, MAX(mo.done_date) AS done_date,
+                   SUM(mo.produced_qty) AS produced_qty,
+                   COUNT(*) AS mo_count,
+                   -- Distinct colours (product-master color_print of the
+                   -- finished SKUs) this DPS produced for the style — feeds
+                   -- the sheet creator's colour-scope picker.
+                   ARRAY_AGG(DISTINCT apc.color_print)
+                       FILTER (WHERE NULLIF(TRIM(apc.color_print), '') IS NOT NULL)
+                       AS colors
+            FROM mo
+            LEFT JOIN all_products_clean apc ON apc.sku = mo.finished_sku
+            GROUP BY mo.dps_ref
+            ORDER BY MAX(mo.done_date) DESC NULLS LAST, mo.dps_ref DESC
             LIMIT 100
         """, [canon])
     return {"style_name": canon, "dps": [{
@@ -13016,12 +13064,14 @@ def costing_dps_list(style_name: str = Query(...)):
         "done_date": r["done_date"].isoformat() if r["done_date"] else None,
         "produced_qty": round(float(r["produced_qty"] or 0)),
         "mo_count": r["mo_count"],
+        "colors": sorted(r["colors"] or []),
     } for r in rows]}
 
 
 @fabric_router.get("/api/fabric/costing/suggest")
 def costing_suggest(style_name: str = Query(...),
-                    dps_ref: str = Query(default=None)):
+                    dps_ref: str = Query(default=None),
+                    color: str = Query(default=None)):
     style_row = _match_style(style_name)
     if not style_row:
         raise HTTPException(status_code=404, detail="Unknown style")
@@ -13030,9 +13080,10 @@ def costing_suggest(style_name: str = Query(...),
     if not dps_ref:
         raise HTTPException(status_code=400,
                             detail="dps_ref is required — pick a DPS # for the style")
+    color = (color or "").strip() or None
     with _get_conn() as conn:
-        _require_style_dps(conn, canon, dps_ref)
-        facts = _costing_style_facts(conn, canon, dps_ref=dps_ref)
+        _require_style_dps(conn, canon, dps_ref, color=color)
+        facts = _costing_style_facts(conn, canon, dps_ref=dps_ref, color=color)
         sp = _style_selling_price(conn, canon)
     facts["style_name"] = canon
     facts["style_number"] = style_row.get("style_number")
@@ -13181,7 +13232,7 @@ def costing_sheets_list():
         _ensure_costing_tables(conn)
         rows = q(conn, """
             SELECT s.id, s.style_name, s.style_number, s.selling_price,
-                   s.dps_ref, s.updated_by_name, s.updated_at,
+                   s.dps_ref, s.color, s.updated_by_name, s.updated_at,
                    -- Stored line totals only: sheets are a snapshot of the
                    -- cost at creation time and never re-price on read.
                    COALESCE(SUM(l.total),0) AS total_cost,
@@ -13198,7 +13249,7 @@ def costing_sheets_list():
         out.append({
             "id": r["id"], "style_name": r["style_name"],
             "style_number": r["style_number"], "selling_price": sp,
-            "dps_ref": r["dps_ref"],
+            "dps_ref": r["dps_ref"], "color": r["color"],
             "total_cost": tc,
             "margin": round(sp - tc, 2) if sp is not None else None,
             "margin_pct": round((sp - tc) / sp * 100, 1) if sp else None,
@@ -13412,9 +13463,10 @@ def costing_sheet_create(request: Request, body: dict = Body(...)):
     if not dps_ref:
         raise HTTPException(status_code=400,
                             detail="Pick a DPS # for the style — costing sheets are built from one Done DPS")
+    color = (str(body.get("color") or "").strip())[:100] or None
     with _get_conn() as conn:
         _ensure_costing_tables(conn)
-        _require_style_dps(conn, canon, dps_ref)
+        _require_style_dps(conn, canon, dps_ref, color=color)
         dup = q(conn, "SELECT id FROM fabric_costing_sheets WHERE lower(style_name)=lower(%s)",
                 (canon,))
         if dup:
@@ -13424,12 +13476,13 @@ def costing_sheet_create(request: Request, body: dict = Body(...)):
             cur.execute("""
                 INSERT INTO fabric_costing_sheets
                     (style_name, style_number, selling_price, selling_price_is_auto,
-                     notes, dps_ref, created_by, created_by_name, updated_by, updated_by_name)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id
+                     notes, dps_ref, color, created_by, created_by_name,
+                     updated_by, updated_by_name)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id
             """, (canon, style_row.get("style_number"), sp,
                   bool(body.get("selling_price_is_auto")),
                   (str(body.get("notes") or "").strip())[:1000] or None,
-                  dps_ref,
+                  dps_ref, color,
                   uid, uname, uid, uname))
             sheet_id = cur.fetchone()[0]
             for ln in lines:
@@ -13474,12 +13527,13 @@ def costing_sheet_update(sheet_id: int, request: Request, body: dict = Body(...)
             cur.execute("""
                 UPDATE fabric_costing_sheets
                 SET selling_price=%s, selling_price_is_auto=%s, notes=%s,
-                    dps_ref=%s,
+                    dps_ref=%s, color=%s,
                     updated_by=%s, updated_by_name=%s, updated_at=now()
                 WHERE id=%s
             """, (sp, bool(body.get("selling_price_is_auto")),
                   (str(body.get("notes") or "").strip())[:1000] or None,
                   (str(body.get("dps_ref") or "").strip())[:100] or None,
+                  (str(body.get("color") or "").strip())[:100] or None,
                   uid, uname, sheet_id))
             cur.execute("DELETE FROM fabric_costing_lines WHERE sheet_id=%s", (sheet_id,))
             for ln in lines:

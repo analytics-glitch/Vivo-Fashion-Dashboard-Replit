@@ -1325,6 +1325,10 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
        <input id="cost-dps-search" placeholder="Pick a DPS # (required)" autocomplete="off" style="width:220px;" disabled oninput="costDpsInput()" onfocus="costDpsFocus()">
        <div id="cost-dps-list" class="resv-dropdown" style="display:none;"></div>
       </div>
+      <div id="cost-color-wrap" style="display:none;">
+       <label class="rsv-lbl">Colour scope</label>
+       <select id="cost-color-select" onchange="costColorChange()" style="width:180px;"></select>
+      </div>
      </div>
      <div id="cost-suggest-note" class="muted" style="font-size:12px;margin-bottom:8px;"></div>
      <div class="tbl-wrap">
@@ -8897,7 +8901,7 @@ function costFabSearch(i,el){
     const term=(el.value||'').trim();
     if(term.length<2){dd.style.display='none';return;}
     try{
-      const rows=await apiFetch('/api/fabric/costing/fabrics?dps_ref='+encodeURIComponent(costEdit.dps_ref)+'&q='+encodeURIComponent(term));
+      const rows=await apiFetch('/api/fabric/costing/fabrics?dps_ref='+encodeURIComponent(costEdit.dps_ref)+'&q='+encodeURIComponent(term)+(costEdit.color&&costEdit.style_name?'&style_name='+encodeURIComponent(costEdit.style_name)+'&color='+encodeURIComponent(costEdit.color):''));
       dd.innerHTML=(rows||[]).map(r=>{
         const cost=r.is_main_fabric?r.cost_per_metre:(r.unit_cost!=null?r.unit_cost:r.cost_per_metre);
         return `<div class="resv-opt" data-costfab="${i}" data-fabname="${esc(r.name||r.sku||'')}" data-fabcpm="${cost==null?'':cost}" data-fabmain="${r.is_main_fabric?1:0}" data-fabid="${r.id==null?'':Number(r.id)}" data-fabbarcode="${esc(r.barcode||'')}">`+
@@ -8924,7 +8928,7 @@ function costPickFabric(i,name,cpm,isMain,compId,barcode){
   costRenderLines();
 }
 function costNewSheet(){
-  costEdit={id:null,style_name:null,style_number:null,dps_ref:null,lines:[],sp_auto:true,history:[]};
+  costEdit={id:null,style_name:null,style_number:null,dps_ref:null,color:null,lines:[],sp_auto:true,history:[]};
   costDpsReset(true);
   document.getElementById('cost-editor-title').textContent='New costing sheet';
   document.getElementById('cost-style-search').value='';
@@ -8944,7 +8948,7 @@ function costCloseEditor(){costEdit=null;document.getElementById('cost-editor').
 async function costOpenSheet(id){
   try{
     const s=await apiFetch('/api/fabric/costing/sheets/'+encodeURIComponent(id));
-    costEdit={id:s.id,style_name:s.style_name,style_number:s.style_number,dps_ref:s.dps_ref||null,
+    costEdit={id:s.id,style_name:s.style_name,style_number:s.style_number,dps_ref:s.dps_ref||null,color:s.color||null,
       lines:(s.lines||[]).map(l=>({kind:l.kind,label:l.label,qty:l.qty,unit_cost:l.unit_cost,is_auto:!!l.is_auto,source:l.source,component_id:l.component_id||null,barcode:l.barcode||null})),
       sp_auto:!!s.selling_price_is_auto,history:s.history||[]};
     // Show which Done DPS the sheet's suggestions were built from (editable
@@ -8952,6 +8956,13 @@ async function costOpenSheet(id){
     const dpsEl=document.getElementById('cost-dps-search');
     if(dpsEl){dpsEl.value=s.dps_ref||'';dpsEl.disabled=true;dpsEl.placeholder=s.dps_ref?'':'No DPS recorded (older sheet)';}
     const dpsBox=document.getElementById('cost-dps-list');if(dpsBox)dpsBox.style.display='none';
+    // Show the colour scope the sheet's suggestions were built from (display
+    // only, like the DPS; NULL = all colours / legacy sheet).
+    costColorReset();costEdit.color=s.color||null;
+    if(s.color){
+      const w=document.getElementById('cost-color-wrap'),csel=document.getElementById('cost-color-select');
+      if(w&&csel){csel.innerHTML='<option selected>'+esc(s.color)+'</option>';csel.disabled=true;w.style.display='';}
+    }
     document.getElementById('cost-editor-title').textContent='Edit costing sheet — '+s.style_name;
     const st=document.getElementById('cost-style-search');st.value=s.style_name;st.disabled=true;
     document.getElementById('cost-style-number').value=s.style_number||'';
@@ -9018,12 +9029,12 @@ async function costLoadSuggest(){
   if(!costEdit.dps_ref){note.textContent='Pick a DPS # to load auto-suggestions.';return;}
   note.textContent='Loading auto-suggestions…';
   try{
-    const url='/api/fabric/costing/suggest?style_name='+encodeURIComponent(costEdit.style_name)+'&dps_ref='+encodeURIComponent(costEdit.dps_ref);
+    const url='/api/fabric/costing/suggest?style_name='+encodeURIComponent(costEdit.style_name)+'&dps_ref='+encodeURIComponent(costEdit.dps_ref)+(costEdit.color?'&color='+encodeURIComponent(costEdit.color):'');
     const s=await apiFetch(url);
     // Selling price (auto from the product master's modal SKU price).
     const spEl=document.getElementById('cost-selling-price');
     if(s.selling_price!=null){spEl.value=s.selling_price;costEdit.sp_auto=true;document.getElementById('cost-sp-badge').innerHTML=costBadge(true);}
-    const basis='DPS '+costEdit.dps_ref;
+    const basis='DPS '+costEdit.dps_ref+(costEdit.color?' · '+costEdit.color:'');
     const lines=[];
     if(s.metres_per_garment!=null&&s.fabric_cost_per_metre!=null){
       lines.push({kind:'fabric',label:'Main fabric ('+(s.fabrics&&s.fabrics[0]?s.fabrics[0].name||'':'')+')',qty:s.metres_per_garment,unit_cost:s.fabric_cost_per_metre,is_auto:true,component_id:(s.fabrics&&s.fabrics[0]&&s.fabrics[0].component_id)||null,barcode:(s.fabrics&&s.fabrics[0]&&s.fabrics[0].barcode)||null,source:basis+' × '+((s.fabrics&&s.fabrics[0]&&s.fabrics[0].cost_source)||'fabric price')});
@@ -9042,7 +9053,7 @@ async function costLoadSuggest(){
       lines.push({kind:'cmt',label:'CMT / labour (actual, Done DPS)',qty:1,unit_cost:s.labour_per_garment,is_auto:true,source:basis+' labour ÷ '+(s.labour_garments||0)+' garments'});
     }
     costEdit.lines=lines;
-    const bits=['Scoped to DPS '+costEdit.dps_ref];
+    const bits=['Scoped to DPS '+costEdit.dps_ref+(costEdit.color?' · '+costEdit.color+' MOs only':'')];
     bits.push(s.metres_per_garment!=null?('Metres/garment: '+s.metres_per_garment+' (from '+s.metres_mos+' MO(s) of this DPS)'):'No fabric consumption found on this DPS\u2019s MOs — enter fabric usage manually');
     bits.push(s.fabric_cost_per_metre!=null?('Fabric cost/metre: '+fmtKES2(s.fabric_cost_per_metre)):'No fabric price found — enter cost/metre manually');
     bits.push((s.accessories&&s.accessories.length)?('Accessories: '+s.accessories.length+' component(s) auto-added'):'No accessories/trims found on the Done-DPS MOs');
@@ -9055,11 +9066,43 @@ async function costLoadSuggest(){
 // ── DPS # picker (style-scoped typeahead over the style's Done DPS list) ──
 let costDpsCache=null; // {style, list:[...]} for the currently picked style
 function costDpsReset(disable){
-  if(costEdit)costEdit.dps_ref=null;
+  if(costEdit){costEdit.dps_ref=null;costEdit.color=null;}
   costDpsCache=null;
   const el=document.getElementById('cost-dps-search');
   if(el){el.value='';el.disabled=!!disable||!(costEdit&&costEdit.style_name);el.placeholder='Pick a DPS # (required)';}
   const box=document.getElementById('cost-dps-list');if(box)box.style.display='none';
+  costColorReset();
+}
+// ── Colour scope picker ──
+// Populated from the picked DPS's colours for the style (product-master
+// colours of the DPS's finished SKUs). Hidden for single-colour DPSes (the
+// scope is implied); on a multi-colour DPS the user can narrow suggestions to
+// one colour or keep "All colours" (the old blended behaviour).
+function costColorReset(){
+  if(costEdit)costEdit.color=null;
+  const w=document.getElementById('cost-color-wrap');if(w)w.style.display='none';
+  const sel=document.getElementById('cost-color-select');if(sel){sel.innerHTML='';sel.disabled=false;}
+}
+function costColorPopulate(colors,current){
+  const w=document.getElementById('cost-color-wrap'),sel=document.getElementById('cost-color-select');
+  if(!w||!sel)return;
+  colors=colors||[];
+  if(colors.length<=1){
+    // Single colour (or none recorded): no narrowing needed — scope stays the
+    // whole DPS, exactly the pre-colour-picker behaviour.
+    costEdit.color=null;w.style.display='none';sel.innerHTML='';return;
+  }
+  sel.innerHTML='<option value="">All colours ('+colors.length+')</option>'+
+    colors.map(c=>`<option value="${esc(c)}"${current&&c.toLowerCase()===current.toLowerCase()?' selected':''}>${esc(c)}</option>`).join('');
+  sel.disabled=false;
+  w.style.display='';
+  costEdit.color=current||null;
+}
+async function costColorChange(){
+  if(!costEdit)return;
+  const sel=document.getElementById('cost-color-select');
+  costEdit.color=(sel&&sel.value)||null;
+  await costLoadSuggest();
 }
 async function costDpsFetch(){
   if(!costEdit||!costEdit.style_name)return [];
@@ -9087,7 +9130,7 @@ function costDpsInput(){
   const inp=document.getElementById('cost-dps-search');
   // Clearing the box drops the DPS — a new one must be picked before
   // suggestions load or the sheet can be saved (DPS is mandatory).
-  if(costEdit&&costEdit.dps_ref&&(!inp||inp.value.trim()==='')){costEdit.dps_ref=null;document.getElementById('cost-suggest-note').textContent='Pick a DPS # to load auto-suggestions.';}
+  if(costEdit&&costEdit.dps_ref&&(!inp||inp.value.trim()==='')){costEdit.dps_ref=null;costColorReset();document.getElementById('cost-suggest-note').textContent='Pick a DPS # to load auto-suggestions.';}
   costDpsTimer=setTimeout(costDpsRender,200);
 }
 async function costPickDps(ref){
@@ -9095,6 +9138,13 @@ async function costPickDps(ref){
   costEdit.dps_ref=ref||null;
   const inp=document.getElementById('cost-dps-search');if(inp)inp.value=ref||'';
   const box=document.getElementById('cost-dps-list');if(box)box.style.display='none';
+  // Populate the colour-scope picker from the DPS's colours for the style
+  // (defaults to "All colours"; hidden when the DPS made only one colour).
+  costColorReset();
+  try{
+    const d=(await costDpsFetch()).find(x=>x.dps_ref===ref);
+    costColorPopulate((d&&d.colors)||[],null);
+  }catch(_){/* colour picker is best-effort — suggestions still load unscoped */}
   await costLoadSuggest();
 }
 async function costSaveSheet(){
@@ -9106,6 +9156,7 @@ async function costSaveSheet(){
   const spEl=document.getElementById('cost-selling-price');
   const payload={style_name:costEdit.style_name,
     dps_ref:costEdit.dps_ref||null,
+    color:costEdit.color||null,
     selling_price:spEl.value===''?null:Number(spEl.value),
     selling_price_is_auto:!!costEdit.sp_auto,
     lines:costEdit.lines.map(l=>({kind:l.kind,label:l.label,qty:Number(l.qty)||0,unit_cost:Number(l.unit_cost)||0,is_auto:!!l.is_auto,source:l.source,component_id:l.component_id||null}))};
