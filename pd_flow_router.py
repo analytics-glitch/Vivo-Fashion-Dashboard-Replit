@@ -1,10 +1,10 @@
 """
 Product Development Flow router — pre-production style tracker.
 
-A fixed 9-stage kanban (Adopted → Pattern → Sampling → Review → Pattern
-Transfer → CAD → Buying → Set Sample → Final Review) tracking each adopted
-style with per-stage assignees, an immutable movement/decision log, aging vs
-admin-editable SLA days, and analytics derived from the movement log.
+A fixed 9-stage kanban (Adopted → Pattern → Sampling → Sample Review → Pattern
+Transfer → CAD → Buying → Set Sample → Set Sample Final Review) tracking each
+adopted style with per-stage assignees, an immutable movement/decision log,
+aging vs admin-editable SLA days, and analytics derived from the movement log.
 
 Registered via register_pd_routes(app, api_pg_module) from api_pg.py.
 Gate: /api/pd/* requires product_development / production / leadership / smt /
@@ -35,12 +35,12 @@ _STAGES = [
     ("adopted",          "Adopted",          0, 3,  "Product Development", False),
     ("pattern",          "Pattern",          1, 5,  "Pattern Maker",       False),
     ("sampling",         "Sampling",         2, 5,  "Sample Maker",        False),
-    ("review",           "Review",           3, 2,  "Reviewer",            False),
-    ("pattern_transfer", "Pattern Transfer", 4, 3,  "Pattern Maker",       False),
-    ("cad",              "CAD",              5, 4,  "CAD Designer",        False),
-    ("buying",           "Buying",           6, 5,  "Buyer",               False),
-    ("set_sample",       "Set Sample",       7, 5,  "QA Team",             False),
-    ("final_review",     "Final Review",     8, 2,  "Approver",            True),
+    ("review",           "Sample Review",           3, 2,  "Reviewer",            False),
+    ("pattern_transfer", "Pattern Transfer",        4, 3,  "Pattern Maker",       False),
+    ("cad",              "CAD",                     5, 4,  "CAD Designer",        False),
+    ("buying",           "Buying",                  6, 5,  "Buyer",               False),
+    ("set_sample",       "Set Sample",              7, 5,  "QA Team",             False),
+    ("final_review",     "Set Sample Final Review", 8, 2,  "Approver",            True),
 ]
 _STAGE_ORDER = {k: i for k, (k2, _, i, *_r) in enumerate(_STAGES) for k in [k2]}
 _STAGE_KEYS = [s[0] for s in _STAGES]
@@ -125,6 +125,17 @@ def ensure_pd_tables():
             uploaded_by  TEXT,
             uploaded_at  TIMESTAMPTZ NOT NULL DEFAULT now()
         )""", fetch=False)
+    _db("""
+        CREATE TABLE IF NOT EXISTS pd_stage_notes (
+            id               BIGSERIAL PRIMARY KEY,
+            style_id         BIGINT NOT NULL REFERENCES pd_styles(id) ON DELETE CASCADE,
+            stage_key        TEXT   NOT NULL REFERENCES pd_stages(stage_key),
+            note             TEXT   NOT NULL,
+            created_by_email TEXT,
+            created_by_name  TEXT,
+            created_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+        )""", fetch=False)
+    _db("CREATE INDEX IF NOT EXISTS pd_stage_notes_style_idx ON pd_stage_notes (style_id, created_at DESC)", fetch=False)
 
     # One-time data seed: if pd_styles_seed.json is present, upsert any styles
     # that don't yet exist in this DB (ON CONFLICT DO NOTHING preserves prod data).
@@ -444,6 +455,45 @@ def register_pd_routes(app, api_pg_module):
         except Exception:
             pass
         return {"ok": True, "style": _style_out(st)}
+
+    @app.get("/api/pd/styles/{style_id}/notes")
+    def pd_style_notes_get(style_id: int):
+        _style(style_id)  # 404 guard
+        rows = _db("""
+            SELECT n.id, n.stage_key, s.stage_name, n.note,
+                   n.created_by_email, n.created_by_name, n.created_at
+            FROM pd_stage_notes n
+            JOIN pd_stages s ON s.stage_key = n.stage_key
+            WHERE n.style_id = %s
+            ORDER BY n.created_at DESC
+        """, (style_id,)) or []
+        return {"notes": [
+            {**r, "created_at": _iso(r["created_at"])} for r in rows
+        ]}
+
+    @app.post("/api/pd/styles/{style_id}/notes")
+    async def pd_style_notes_post(style_id: int, request: Request):
+        email, name, _role = _actor(request)
+        _style(style_id)  # 404 guard
+        body = await request.json()
+        stage_key = (body.get("stage_key") or "").strip()
+        note      = (body.get("note") or "").strip()
+        if not stage_key or stage_key not in _STAGE_KEYS:
+            raise HTTPException(status_code=400, detail="Valid stage_key is required")
+        if not note:
+            raise HTTPException(status_code=400, detail="Note text is required")
+        if len(note) > 4000:
+            raise HTTPException(status_code=400, detail="Note must be under 4000 characters")
+        row = _db("""
+            INSERT INTO pd_stage_notes (style_id, stage_key, note, created_by_email, created_by_name)
+            VALUES (%s, %s, %s, %s, %s) RETURNING id, created_at
+        """, (style_id, stage_key, note, email, name))
+        try:
+            A._log_activity(request, "POST", f"/api/pd/styles/{style_id}/notes",
+                            json.dumps({"action": "pd_style_note_add", "style_id": style_id, "stage_key": stage_key}))
+        except Exception:
+            pass
+        return {"ok": True, "id": row[0]["id"], "created_at": _iso(row[0]["created_at"])}
 
     @app.get("/api/pd/styles/{style_id}/image")
     def pd_style_image_get(style_id: int):

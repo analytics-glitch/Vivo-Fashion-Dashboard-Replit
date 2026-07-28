@@ -6,7 +6,7 @@ import { useAuth } from "@/lib/auth";
 import {
   Kanban, Plus, X, ArrowRight, ArrowUUpLeft, CheckCircle, XCircle,
   GearSix, DownloadSimple, ChartBar, ClockClockwise, ArrowsClockwise, Trash, Rows, PencilSimple, UploadSimple,
-  ChartPieSlice,
+  ChartPieSlice, PaperPlaneTilt, Note,
 } from "@phosphor-icons/react";
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid,
@@ -15,7 +15,7 @@ import {
 
 /**
  * Product Development Flow — pre-production style kanban.
- * 9 fixed stages (Adopted → … → Final Review); each card is ONE style.
+ * 9 fixed stages (Adopted → … → Set Sample Final Review); each card is ONE style.
  * Reads /api/pd/board, /api/pd/analytics, /api/pd/history; writes via
  * /api/pd/styles + /api/pd/styles/{id}/move. Aging colours come from the
  * server (`aging`: ok / warning / stuck vs per-stage SLA days, admin-editable).
@@ -373,6 +373,103 @@ const StyleImage = ({ styleId, styleName }) => {
   );
 };
 
+// ── Per-style stage notes ─────────────────────────────────────────────────────
+const StageNotes = ({ styleId, currentStage, stages }) => {
+  const [notes, setNotes]   = useState(null);
+  const [draft, setDraft]   = useState("");
+  const [saving, setSaving] = useState(false);
+  const [err, setErr]       = useState(null);
+
+  const stageNameMap = useMemo(
+    () => Object.fromEntries((stages || []).map((s) => [s.stage_key, s.stage_name])),
+    [stages],
+  );
+
+  const load = useCallback(() => {
+    api.get(`/pd/styles/${styleId}/notes`, { forceFresh: true })
+      .then((r) => setNotes(r.data.notes || []))
+      .catch(() => setNotes([]));
+  }, [styleId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const submit = async () => {
+    const text = draft.trim();
+    if (!text) return;
+    setSaving(true); setErr(null);
+    try {
+      await api.post(`/pd/styles/${styleId}/notes`, { stage_key: currentStage, note: text });
+      setDraft("");
+      load();
+    } catch (e) {
+      setErr(e?.response?.data?.detail || e.message || "Could not save note");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const stageName = stageNameMap[currentStage] || String(currentStage).replace(/_/g, " ");
+
+  return (
+    <div>
+      <SectionTitle
+        title="Stage notes"
+        subtitle="Notes tied to each stage — visible to the whole team"
+        icon={<Note size={14} />}
+      />
+
+      {/* compose area */}
+      <div className="mt-2 mb-3 rounded-lg border border-line bg-slate-50 p-3">
+        <div className="text-[10.5px] text-muted font-medium mb-1">
+          Adding note for: <span className="font-bold text-foreground">{stageName}</span>
+        </div>
+        <textarea
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) submit(); }}
+          placeholder={`Type a note for ${stageName}… (Ctrl+Enter to save)`}
+          rows={3}
+          className="w-full px-2.5 py-1.5 rounded-lg border border-border text-[12px] bg-white
+                     focus:outline-none focus:ring-1 focus:ring-brand resize-none"
+        />
+        {err && <p className="text-[11px] text-red-600 mt-0.5">{err}</p>}
+        <button
+          onClick={submit}
+          disabled={saving || !draft.trim()}
+          className="mt-1.5 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-brand text-white
+                     text-[12px] font-semibold hover:bg-brand-deep disabled:opacity-40 transition"
+        >
+          <PaperPlaneTilt size={13} />
+          {saving ? "Saving…" : "Add note"}
+        </button>
+      </div>
+
+      {/* notes list */}
+      {notes === null ? (
+        <Loading />
+      ) : notes.length === 0 ? (
+        <p className="text-[11.5px] text-muted italic">No notes yet — be the first to add one.</p>
+      ) : (
+        <div className="space-y-2">
+          {notes.map((n) => (
+            <div key={n.id} className="rounded-lg border border-line p-2.5 bg-white">
+              <div className="flex items-start justify-between gap-2 mb-1.5 flex-wrap">
+                <span className="text-[10.5px] font-bold text-brand bg-brand/10 px-1.5 py-0.5 rounded-full shrink-0">
+                  {stageNameMap[n.stage_key] || n.stage_key}
+                </span>
+                <span className="text-[10.5px] text-muted leading-tight text-right">
+                  {n.created_by_name || n.created_by_email || "Unknown"} · {fmtWhen(n.created_at)}
+                </span>
+              </div>
+              <p className="text-[12px] whitespace-pre-wrap leading-relaxed">{n.note}</p>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
 // ── Tiny form field helpers ───────────────────────────────────────────────────
 const FField = ({ label, name, value, onChange, type = "text", placeholder = "" }) => (
   <div className="flex flex-col gap-0.5">
@@ -386,7 +483,7 @@ const FField = ({ label, name, value, onChange, type = "text", placeholder = "" 
 );
 
 // ── Detail drawer with the stage timeline ────────────────────────────────────
-const DetailDrawer = ({ styleId, onClose, onMove, onRefreshBoard }) => {
+const DetailDrawer = ({ styleId, onClose, onMove, onRefreshBoard, allStages }) => {
   const [data, setData] = useState(null);
   const [err, setErr] = useState(null);
   const [editing, setEditing] = useState(false);
@@ -571,6 +668,15 @@ const DetailDrawer = ({ styleId, onClose, onMove, onRefreshBoard }) => {
                   )}
                 </div>
               ))}
+            </div>
+
+            {/* ── Stage notes ── */}
+            <div className="mt-5">
+              <StageNotes
+                styleId={st.id}
+                currentStage={st.current_stage}
+                stages={allStages || []}
+              />
             </div>
           </>
         )}
@@ -1318,7 +1424,7 @@ const PDFlow = () => {
           onClose={() => setMoving(null)} onSaved={() => { refresh(); setDetail(null); }} />
       )}
       {detail != null && (
-        <DetailDrawer styleId={detail} onClose={() => setDetail(null)}
+        <DetailDrawer styleId={detail} onClose={() => setDetail(null)} allStages={board.stages}
           onMove={(st) => { setMoving(st); }}
           onRefreshBoard={refresh} />
       )}
