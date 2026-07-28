@@ -1439,6 +1439,7 @@ const ReOrderTab = React.lazy(() => import("./ReOrder"));
 const StyleTrackerTab = React.lazy(() => import("./StyleTracker"));
 const GalleryTab = React.lazy(() => import("./Gallery"));
 const SORReportTab = React.lazy(() => import("@/components/SORReportExport"));
+const SORNewStylesTab = React.lazy(() => import("@/components/SORNewStylesReport"));
 const StockMovementTab = React.lazy(() => import("./StoreFlow"));
 const PDFlowTab = React.lazy(() => import("./PDFlow"));
 
@@ -1456,7 +1457,8 @@ const PA_TABS = [
   { id: "tracker", label: "Weekly Style Tracker", pageId: "style-tracker", el: StyleTrackerTab },
   { id: "pd-flow", label: "PD Flow", pageId: "pd-flow", el: PDFlowTab },
   { id: "catalog", label: "Catalog & SOR", pageId: "product-analysis", el: ProductsCatalog },
-  { id: "sor-report", label: "SOR Report", pageId: "exports", el: SORReportTab },
+  { id: "sor-report",      label: "SOR Report",      pageId: "exports", el: SORReportTab },
+  { id: "sor-new-styles",  label: "SOR New Styles",  pageId: "exports", el: SORNewStylesTab },
   { id: "allocations", label: "Allocations", pageId: "allocations", el: AllocationsTab },
   { id: "reorder", label: "Re-Order", pageId: "re-order", el: ReOrderTab },
   { id: "gallery", label: "Gallery", pageId: "gallery", el: GalleryTab },
