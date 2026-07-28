@@ -12691,6 +12691,30 @@ def _costing_user(request):
             u.get("name") or u.get("email") or "unknown")
 
 
+def _notify_costing_users(conn, actor_uid, ntype, title, message, dedupe_prefix,
+                          link="/fabric"):
+    """Bell-notify every OTHER allowlisted costing user (the actor already knows
+    what they just did). Recipients are resolved live from app_users by the
+    costing email allowlist, so an allowlisted user who has never signed in
+    simply gets skipped. Reuses the persisted user_notifications store via
+    _notify_user (idempotent per recipient through the UNIQUE dedupe_key —
+    dedupe_prefix must identify the EVENT, the recipient id is appended here).
+    Never raises — a notification hiccup must not fail the sign-off itself."""
+    try:
+        rows = q(conn, """
+            SELECT user_id FROM app_users
+            WHERE lower(email) = ANY(%s) AND status = 'active'
+        """, (sorted(_FABRIC_COSTING_EMAILS),))
+        for r in rows:
+            uid = r["user_id"]
+            if not uid or uid == actor_uid:
+                continue
+            _notify_user(conn, uid, ntype, title, message,
+                         f"{dedupe_prefix}:{uid}", link=link)
+    except Exception:
+        pass
+
+
 def _style_selling_price(conn, style_name):
     """Modal (most common) SKU price for the style from the product master —
     per the style-full-price rule (modal, never MAX). None when unknown."""
@@ -13651,7 +13675,9 @@ def costing_sheet_sign(sheet_id: int, request: Request, body: dict = Body(...)):
     uid, uname = _costing_user(request)
     with _get_conn() as conn:
         _ensure_costing_tables(conn)
-        if not q(conn, "SELECT 1 FROM fabric_costing_sheets WHERE id=%s", (sheet_id,)):
+        sheets = q(conn, "SELECT style_name, color FROM fabric_costing_sheets "
+                         "WHERE id=%s", (sheet_id,))
+        if not sheets:
             raise HTTPException(status_code=404, detail="Sheet not found")
         signoffs = _costing_signoff_rows(conn, sheet_id)
         if signoffs[step - 1]["signed"]:
@@ -13669,14 +13695,35 @@ def costing_sheet_sign(sheet_id: int, request: Request, body: dict = Body(...)):
                 ON CONFLICT (sheet_id, step) DO NOTHING
                 RETURNING id
             """, (sheet_id, step, title, uid, uname))
-            if cur.fetchone() is None:  # lost a concurrent-sign race
+            row = cur.fetchone()
+            if row is None:  # lost a concurrent-sign race
                 raise HTTPException(status_code=409,
                                     detail="This step is already signed")
+            signoff_id = row[0]
         summary = f"“{title}” signed (step {step} of 3)"
         if step == 3:
             summary += " — sheet approved and locked against edits"
         _costing_history_write(conn, sheet_id, "signed", uid, uname, summary,
                                {"step": step, "title": title})
+        # Bell-notify the other costing users: a signed step means the sheet
+        # now awaits the NEXT signature (or has just been approved). The
+        # signoff row id makes each sign event's dedupe key unique even if the
+        # same step is later un-signed and re-signed.
+        sheet_label = sheets[0]["style_name"] or f"sheet #{sheet_id}"
+        if sheets[0].get("color"):
+            sheet_label += f" ({sheets[0]['color']})"
+        if step == 3:
+            n_title = "Costing sheet approved"
+            n_msg = (f"{uname} signed “{title}” on the costing sheet for "
+                     f"{sheet_label} — the sheet is now approved and locked.")
+        else:
+            next_title = signoffs[step]["title"]
+            n_title = "Costing sheet awaits your signature"
+            n_msg = (f"{uname} signed “{title}” on the costing sheet for "
+                     f"{sheet_label} — it now awaits “{next_title}” "
+                     f"(step {step + 1} of 3).")
+        _notify_costing_users(conn, uid, "costing_signoff", n_title, n_msg,
+                              f"costing_sign:{sheet_id}:{step}:{signoff_id}")
         conn.commit()
         return _sheet_payload(conn, sheet_id)
 
@@ -13691,16 +13738,22 @@ def costing_sheet_unsign(sheet_id: int, step: int, request: Request):
     uid, uname = _costing_user(request)
     with _get_conn() as conn:
         _ensure_costing_tables(conn)
-        if not q(conn, "SELECT 1 FROM fabric_costing_sheets WHERE id=%s", (sheet_id,)):
+        sheets = q(conn, "SELECT style_name, color FROM fabric_costing_sheets "
+                         "WHERE id=%s", (sheet_id,))
+        if not sheets:
             raise HTTPException(status_code=404, detail="Sheet not found")
         signoffs = _costing_signoff_rows(conn, sheet_id)
         if not signoffs[step - 1]["signed"]:
             raise HTTPException(status_code=400, detail="This step is not signed")
         was_approved = signoffs[2]["signed"]
         title = signoffs[step - 1]["title"]
+        # The deleted signoff row ids make this un-sign event's dedupe key
+        # unique across repeated sign/unsign cycles of the same step.
         with conn.cursor() as cur:
             cur.execute("DELETE FROM fabric_costing_signoffs "
-                        "WHERE sheet_id=%s AND step >= %s", (sheet_id, step))
+                        "WHERE sheet_id=%s AND step >= %s RETURNING id",
+                        (sheet_id, step))
+            removed_ids = sorted(r[0] for r in cur.fetchall())
         summary = f"“{title}” signature removed (step {step})"
         if step < 3 and was_approved:
             summary += " together with the later step(s)"
@@ -13709,6 +13762,22 @@ def costing_sheet_unsign(sheet_id: int, step: int, request: Request):
         _costing_history_write(conn, sheet_id,
                                "unapproved" if was_approved else "unsigned",
                                uid, uname, summary, {"step": step})
+        # Bell-notify the other costing users of the reversal.
+        sheet_label = sheets[0]["style_name"] or f"sheet #{sheet_id}"
+        if sheets[0].get("color"):
+            sheet_label += f" ({sheets[0]['color']})"
+        if was_approved:
+            n_title = "Costing sheet un-approved"
+            n_msg = (f"{uname} removed the “{title}” signature (step {step}) on "
+                     f"the costing sheet for {sheet_label} — the sheet is "
+                     "un-approved and reopened for editing.")
+        else:
+            n_title = "Costing sheet signature removed"
+            n_msg = (f"{uname} removed the “{title}” signature (step {step}) on "
+                     f"the costing sheet for {sheet_label}.")
+        ids_key = "-".join(str(i) for i in removed_ids) or "none"
+        _notify_costing_users(conn, uid, "costing_signoff", n_title, n_msg,
+                              f"costing_unsign:{sheet_id}:{step}:{ids_key}")
         conn.commit()
         return _sheet_payload(conn, sheet_id)
 
