@@ -7613,6 +7613,96 @@ def inspection_approve(request: Request, body: dict = Body(...)):
         conn.commit()
     return {"ok": True, "ticket": _insp_ticket_row(t)}
 
+@fabric_router.post("/api/fabric/receiving/inspection/cuttable-width")
+def inspection_set_cuttable_width(request: Request, body: dict = Body(...)):
+    """Add or correct the CUTTABLE width (cm) on an EXISTING inspection
+    ticket, regardless of status. Rolls scored on a fallback width because no
+    cuttable width was entered stay flagged until this runs; saving here
+    re-resolves the score width (cuttable takes priority), recomputes
+    points_per_100 and the Pass/Reject grade in the same request — no
+    migration/sweep. Draft & Submitted tickets: any signed-in user (same as
+    creating the ticket); Approved tickets: QC supervisor / fabric admin only
+    (mirrors the approval permission). When the LATEST Submitted ticket's
+    grade changes, the roll's auto-set quality_status follows (audited)."""
+    ticket_id = body.get("ticket_id")
+    try:
+        ticket_id = int(ticket_id)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="ticket_id is required")
+    cut = _insp_num(body.get("cuttable_width_cm"), "cuttable width (cm)")
+    if cut is None or cut <= 0:
+        raise HTTPException(status_code=400,
+            detail="cuttable width (cm) must be greater than zero")
+    _uid, name = _fabric_actor(request)
+    with _get_conn() as conn:
+        _ensure_receiving_tables(conn)
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT * FROM fabric_inspection_tickets WHERE id=%s "
+                        "FOR UPDATE", (ticket_id,))
+            t = cur.fetchone()
+            if not t:
+                raise HTTPException(status_code=404, detail="ticket not found")
+            if t.get("approved_at") is not None and not _insp_can_approve(request):
+                raise HTTPException(status_code=403,
+                    detail="This ticket is supervisor-approved — only the QC "
+                           "supervisor or a fabric admin may change its "
+                           "cuttable width")
+            # Cuttable width always takes priority for the score width
+            # (same rule as _insp_enforce_source_width).
+            width_in = round(float(cut) / 2.54, 1)
+            yards = (float(t["yards_inspected"])
+                     if t.get("yards_inspected") is not None else None)
+            total_points = t.get("total_points")
+            pp100 = _insp_score(total_points, width_in, yards)
+            limit = (float(t["acceptable_limit"])
+                     if t.get("acceptable_limit") is not None else 40)
+            grade = None
+            if pp100 is not None:
+                grade = "Pass" if pp100 <= limit else "Reject"
+            old_grade = t.get("grade")
+            cur.execute("""
+                UPDATE fabric_inspection_tickets
+                SET cuttable_width_cm=%s, width_inches=%s,
+                    width_source='cuttable', points_per_100=%s, grade=%s,
+                    updated_at=now()
+                WHERE id=%s RETURNING *
+            """, (cut, width_in, pp100, grade, ticket_id))
+            t = cur.fetchone()
+            # Roll quality_status follows the auto-set flow ONLY when this is
+            # the roll's LATEST Submitted ticket and the grade actually
+            # computed (mirrors submit; manual overrides stay possible after).
+            roll_status = None
+            if t["status"] == "Submitted" and grade is not None:
+                cur.execute("""
+                    SELECT id FROM fabric_inspection_tickets
+                    WHERE sheet_id=%s AND roll_no=%s AND status='Submitted'
+                    ORDER BY version DESC, id DESC LIMIT 1
+                """, (t["sheet_id"], t["roll_no"]))
+                lat = cur.fetchone()
+                if lat and int(lat["id"]) == int(t["id"]):
+                    roll_status = "Pass" if grade == "Pass" else "Fail"
+                    cur.execute("""
+                        UPDATE fabric_receiving_rolls
+                        SET quality_status=%s, quality_updated_at=now(),
+                            quality_updated_by=%s
+                        WHERE sheet_id=%s AND roll_no=%s
+                          AND deleted_at IS NULL
+                    """, (roll_status, name, t["sheet_id"], t["roll_no"]))
+            _recv_audit(cur, t.get("po_id"), t["sheet_id"], None,
+                        "inspection_cuttable_updated",
+                        {"roll_no": t["roll_no"],
+                         "ticket_no": t.get("ticket_no"),
+                         "version": t.get("version"),
+                         "status": t.get("status"),
+                         "cuttable_width_cm": float(cut),
+                         "width_inches": width_in,
+                         "points_per_100": (float(pp100)
+                                            if pp100 is not None else None),
+                         "old_grade": old_grade, "grade": grade,
+                         "quality_status": roll_status}, name)
+        conn.commit()
+    return {"ok": True, "ticket": _insp_ticket_row(t)}
+
 def _recv_po_locked(conn, po_id):
     """A PO's rolls/quantities are LOCKED once it has at least one SUCCESSFUL
     Odoo upload. Failed attempts do not lock."""
@@ -9543,7 +9633,9 @@ def receiving_po_batch_detail(po_id: str = Query(default="")):
                        r.after_wash_width_cm, r.after_wash_length_cm,
                        t.grade as insp_grade, t.version as insp_version,
                        t.points_per_100 as insp_points,
-                       (t.approved_at IS NOT NULL) as insp_approved
+                       (t.approved_at IS NOT NULL) as insp_approved,
+                       COALESCE(lt.missing_cuttable, false)
+                           as insp_missing_cuttable
                 FROM fabric_receiving_rolls r
                 LEFT JOIN LATERAL (
                     SELECT grade, version, points_per_100, approved_at
@@ -9552,6 +9644,17 @@ def receiving_po_batch_detail(po_id: str = Query(default="")):
                       AND t.status = 'Submitted'
                     ORDER BY t.version DESC, t.id DESC LIMIT 1
                 ) t ON TRUE
+                LEFT JOIN LATERAL (
+                    -- Missing-cuttable flag: the roll's LATEST ticket (ANY
+                    -- status — Submitted/Approved included) scored on a
+                    -- fallback width because no cuttable width was entered.
+                    SELECT (lt0.cuttable_width_cm IS NULL
+                            OR lt0.cuttable_width_cm <= 0) as missing_cuttable
+                    FROM fabric_inspection_tickets lt0
+                    WHERE lt0.sheet_id = r.sheet_id
+                      AND lt0.roll_no = r.roll_no
+                    ORDER BY lt0.version DESC, lt0.id DESC LIMIT 1
+                ) lt ON TRUE
                 WHERE r.sheet_id = ANY(%s) AND r.deleted_at IS NULL
                 ORDER BY r.sheet_id, r.roll_no, r.id
             """, ([int(s["id"]) for s in sheets],))
@@ -9644,7 +9747,7 @@ def receiving_po_batch_detail(po_id: str = Query(default="")):
                                   "bleeding_test", "width_measured_m",
                                   "after_wash_width_cm", "after_wash_length_cm",
                                   "insp_grade", "insp_version", "insp_points",
-                                  "insp_approved")}
+                                  "insp_approved", "insp_missing_cuttable")}
         row["delta_kg"] = delta_kg_v
         row["delta_mtrs"] = delta_mtrs_v
         rolls_by_sheet.setdefault(r["sheet_id"], []).append(row)
