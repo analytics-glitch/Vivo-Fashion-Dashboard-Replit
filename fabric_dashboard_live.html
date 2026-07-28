@@ -8828,7 +8828,7 @@ function costRenderLines(){
     `<tr><td><select class="cost-cell" data-i="${i}" data-k="kind" style="width:110px;">`+
     Object.keys(COST_KINDS).map(k=>`<option value="${k}"${l.kind===k?' selected':''}>${esc(COST_KINDS[k])}</option>`).join('')+
     `</select></td>`+
-    `<td style="padding:2px;position:relative;"><input class="cost-cell" data-i="${i}" data-k="label" value="${esc(l.label||'')}" autocomplete="off" style="width:100%;padding:4px 6px;"${(l.kind==='fabric'||l.kind==='trim')&&costEdit.dps_ref?' placeholder="Type to search this DPS\u2019s components…"':''}>${(l.kind==='fabric'||l.kind==='trim')?`<div class="resv-dropdown cost-fab-dd" data-dd="${i}" style="display:none;left:2px;right:2px;width:auto;"></div>`:''}</td>`+
+    `<td style="padding:2px;position:relative;"><input class="cost-cell" data-i="${i}" data-k="label" value="${esc(l.label||'')}" autocomplete="off" style="width:100%;padding:4px 6px;"${(l.kind==='fabric'||l.kind==='trim')&&costEdit.dps_ref?' placeholder="Type to search this DPS\u2019s components…"':''}>${(l.kind==='fabric'||l.kind==='trim')&&l.barcode?`<div class="muted num" style="font-size:10.5px;padding:1px 6px 0;">Barcode ${esc(l.barcode)}</div>`:''}${(l.kind==='fabric'||l.kind==='trim')?`<div class="resv-dropdown cost-fab-dd" data-dd="${i}" style="display:none;left:2px;right:2px;width:auto;"></div>`:''}</td>`+
     `<td style="padding:2px;"><input class="cost-cell r" data-i="${i}" data-k="qty" type="number" min="0" step="any" value="${esc(l.qty==null?'':l.qty)}" style="width:100%;text-align:right;padding:4px 6px;"></td>`+
     `<td style="padding:2px;"><input class="cost-cell r" data-i="${i}" data-k="unit_cost" type="number" min="0" step="any" value="${esc(l.unit_cost==null?'':l.unit_cost)}" style="width:100%;text-align:right;padding:4px 6px;"></td>`+
     `<td class="r">${fmtKES2((Number(l.qty)||0)*(Number(l.unit_cost)||0))}</td>`+
@@ -8857,7 +8857,7 @@ function costBindEditor(){
     const i=+el.dataset.i,k=el.dataset.k,l=costEdit.lines[i];if(!l)return;
     l[k]=el.value;
     // Editing an auto-suggested value flips the line to MANUAL.
-    if(l.is_auto&&(k==='qty'||k==='unit_cost')){l.is_auto=false;l.source=null;l.component_id=null;costRenderLines();return;}
+    if(l.is_auto&&(k==='qty'||k==='unit_cost')){l.is_auto=false;l.source=null;l.component_id=null;l.barcode=null;costRenderLines();return;}
     if(k==='kind'){costRenderLines();return;}
     // Fabric/trim lines: the label doubles as a component typeahead scoped to
     // the sheet's DPS — picking one prefills Unit Cost (fabric: current
@@ -8900,19 +8900,21 @@ function costFabSearch(i,el){
       const rows=await apiFetch('/api/fabric/costing/fabrics?dps_ref='+encodeURIComponent(costEdit.dps_ref)+'&q='+encodeURIComponent(term));
       dd.innerHTML=(rows||[]).map(r=>{
         const cost=r.is_main_fabric?r.cost_per_metre:(r.unit_cost!=null?r.unit_cost:r.cost_per_metre);
-        return `<div class="resv-opt" data-costfab="${i}" data-fabname="${esc(r.name||r.sku||'')}" data-fabcpm="${cost==null?'':cost}" data-fabmain="${r.is_main_fabric?1:0}" data-fabid="${r.id==null?'':Number(r.id)}">`+
-        `<strong>${esc(r.name||r.sku||'')}</strong> <span class="muted" style="font-size:11px;">${r.is_main_fabric?'fabric':'accessory'}${cost!=null?' · '+fmtKES2(cost)+(r.is_main_fabric?'/m':'/unit'):' · no cost'}</span></div>`;}).join('')
+        return `<div class="resv-opt" data-costfab="${i}" data-fabname="${esc(r.name||r.sku||'')}" data-fabcpm="${cost==null?'':cost}" data-fabmain="${r.is_main_fabric?1:0}" data-fabid="${r.id==null?'':Number(r.id)}" data-fabbarcode="${esc(r.barcode||'')}">`+
+        `<strong>${esc(r.name||r.sku||'')}</strong> <span class="muted" style="font-size:11px;">${r.is_main_fabric?'fabric':'accessory'}${r.barcode?' · '+esc(r.barcode):''}${cost!=null?' · '+fmtKES2(cost)+(r.is_main_fabric?'/m':'/unit'):' · no cost'}</span></div>`;}).join('')
         ||'<div class="resv-opt muted">No matching component on this DPS</div>';
       dd.style.display='';
     }catch(_){dd.style.display='none';}
   },250);
 }
-function costPickFabric(i,name,cpm,isMain,compId){
+function costPickFabric(i,name,cpm,isMain,compId,barcode){
   if(!costEdit)return;const l=costEdit.lines[i];if(!l)return;
   l.label=name;
-  // Keep the fabric-product link (reference only — saved sheets are a
-  // snapshot and never re-price; the link lets drift be reported later).
-  l.component_id=(isMain&&compId)?Number(compId):null;
+  // Keep the component link (reference only — saved sheets are a snapshot
+  // and never re-price; the link resolves the barcode on load and lets
+  // drift be reported later). Fabric AND trim/accessory lines keep it.
+  l.component_id=compId?Number(compId):null;
+  l.barcode=(barcode||'').trim()||null;
   if(cpm!==''&&cpm!=null&&!isNaN(Number(cpm))){
     l.unit_cost=Number(cpm);l.is_auto=true;
     l.source=isMain?'Fabric master cost/metre (at sheet creation)':'DPS/MO recorded cost';
@@ -8943,7 +8945,7 @@ async function costOpenSheet(id){
   try{
     const s=await apiFetch('/api/fabric/costing/sheets/'+encodeURIComponent(id));
     costEdit={id:s.id,style_name:s.style_name,style_number:s.style_number,dps_ref:s.dps_ref||null,
-      lines:(s.lines||[]).map(l=>({kind:l.kind,label:l.label,qty:l.qty,unit_cost:l.unit_cost,is_auto:!!l.is_auto,source:l.source,component_id:l.component_id||null})),
+      lines:(s.lines||[]).map(l=>({kind:l.kind,label:l.label,qty:l.qty,unit_cost:l.unit_cost,is_auto:!!l.is_auto,source:l.source,component_id:l.component_id||null,barcode:l.barcode||null})),
       sp_auto:!!s.selling_price_is_auto,history:s.history||[]};
     // Show which Done DPS the sheet's suggestions were built from (editable
     // again via re-suggest is out of scope for saved sheets; display only).
@@ -8991,7 +8993,7 @@ document.addEventListener('click',e=>{
   const box=document.getElementById('cost-style-list');
   if(box&&box.style.display!=='none'&&!e.target.closest('#cost-style-search')&&!e.target.closest('#cost-style-list'))box.style.display='none';
   const fopt=e.target.closest('.cost-fab-dd .resv-opt');
-  if(fopt&&fopt.dataset.costfab!=null&&fopt.dataset.fabname){costPickFabric(+fopt.dataset.costfab,fopt.dataset.fabname,fopt.dataset.fabcpm,fopt.dataset.fabmain==='1',fopt.dataset.fabid);return;}
+  if(fopt&&fopt.dataset.costfab!=null&&fopt.dataset.fabname){costPickFabric(+fopt.dataset.costfab,fopt.dataset.fabname,fopt.dataset.fabcpm,fopt.dataset.fabmain==='1',fopt.dataset.fabid,fopt.dataset.fabbarcode);return;}
   if(!e.target.closest('.cost-fab-dd'))document.querySelectorAll('.cost-fab-dd').forEach(d=>{d.style.display='none';});
   const dopt=e.target.closest('#cost-dps-list .resv-opt');
   if(dopt&&dopt.dataset.costdps){costPickDps(dopt.dataset.costdps);return;}
@@ -9024,7 +9026,7 @@ async function costLoadSuggest(){
     const basis='DPS '+costEdit.dps_ref;
     const lines=[];
     if(s.metres_per_garment!=null&&s.fabric_cost_per_metre!=null){
-      lines.push({kind:'fabric',label:'Main fabric ('+(s.fabrics&&s.fabrics[0]?s.fabrics[0].name||'':'')+')',qty:s.metres_per_garment,unit_cost:s.fabric_cost_per_metre,is_auto:true,component_id:(s.fabrics&&s.fabrics[0]&&s.fabrics[0].component_id)||null,source:basis+' × '+((s.fabrics&&s.fabrics[0]&&s.fabrics[0].cost_source)||'fabric price')});
+      lines.push({kind:'fabric',label:'Main fabric ('+(s.fabrics&&s.fabrics[0]?s.fabrics[0].name||'':'')+')',qty:s.metres_per_garment,unit_cost:s.fabric_cost_per_metre,is_auto:true,component_id:(s.fabrics&&s.fabrics[0]&&s.fabrics[0].component_id)||null,barcode:(s.fabrics&&s.fabrics[0]&&s.fabrics[0].barcode)||null,source:basis+' × '+((s.fabrics&&s.fabrics[0]&&s.fabrics[0].cost_source)||'fabric price')});
     }else if(s.metres_per_garment!=null){
       lines.push({kind:'fabric',label:'Main fabric',qty:s.metres_per_garment,unit_cost:0,is_auto:true,source:'metres/garment from '+basis+' — enter cost/metre'});
     }
@@ -9033,6 +9035,7 @@ async function costLoadSuggest(){
     (s.accessories||[]).forEach(a=>{
       lines.push({kind:'trim',label:(a.name||a.sku||'Accessory')+(a.uom?' ('+a.uom+'/garment)':''),
         qty:a.qty_per_garment,unit_cost:a.unit_cost!=null?a.unit_cost:0,is_auto:true,
+        component_id:a.component_id||null,barcode:a.barcode||null,
         source:a.unit_cost!=null?(basis+' × '+(a.cost_source||'DPS/MO recorded cost')):('qty from '+basis+' — enter unit cost')});
     });
     if(s.labour_per_garment!=null){

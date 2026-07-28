@@ -12731,7 +12731,7 @@ def _costing_style_facts(conn, style_name, dps_ref):
                lower(coalesce(c.uom,'')) AS uom,
                c.component_id, c.fabric_sku, c.fabric_name,
                c.dps_cost_per_unit, c.unit_cost_mo,
-               p.kg_per_mtr_eff AS kpm, p.standard_price
+               p.kg_per_mtr_eff AS kpm, p.standard_price, p.barcode
         FROM mo_fabric_consumption c
         LEFT JOIN raw_fabric_products p ON p.id = c.component_id
         WHERE {style_sql}
@@ -12761,6 +12761,7 @@ def _costing_style_facts(conn, style_name, dps_ref):
         f = fabrics.setdefault(r["component_id"], {
             "component_id": r["component_id"], "sku": r["fabric_sku"],
             "name": r["fabric_name"], "metres": 0.0,
+            "barcode": (r["barcode"] or "").strip() or None,
             "kpm": float(kpm) if kpm else None,
             "standard_price": float(r["standard_price"]) if r["standard_price"] else None,
             "mo_cost_amt": 0.0, "mo_cost_qty": 0.0, "mo_cost_uom": None,
@@ -12849,6 +12850,7 @@ def _costing_style_facts(conn, style_name, dps_ref):
     acc_rows = q(conn, f"""
         SELECT c.component_id, c.fabric_sku AS sku, c.fabric_name AS name,
                coalesce(c.uom,'') AS uom,
+               MAX(p.barcode) AS barcode,
                SUM(c.consumed_qty) AS consumed,
                SUM(c.produced_qty) AS produced,
                SUM(c.unit_cost_mo * c.consumed_qty)
@@ -12856,6 +12858,7 @@ def _costing_style_facts(conn, style_name, dps_ref):
                SUM(c.consumed_qty)
                    FILTER (WHERE c.unit_cost_mo > 0 AND c.consumed_qty > 0) AS cost_qty
         FROM mo_fabric_consumption c
+        LEFT JOIN raw_fabric_products p ON p.id = c.component_id
         WHERE {style_sql}
           {scope_sql}
           AND NOT c.is_main_fabric
@@ -12874,6 +12877,7 @@ def _costing_style_facts(conn, style_name, dps_ref):
         accessories.append({
             "component_id": r["component_id"],
             "sku": r["sku"], "name": r["name"], "uom": r["uom"],
+            "barcode": (r["barcode"] or "").strip() or None,
             "qty_per_garment": round(consumed / produced, 4),
             "unit_cost": unit_cost,
             "cost_source": ("DPS/MO recorded cost" if unit_cost is not None
@@ -12953,6 +12957,7 @@ def costing_fabric_search(q_: str = Query(default="", alias="q"),
             SELECT c.component_id AS id,
                    MAX(c.fabric_sku)  AS sku,
                    MAX(c.fabric_name) AS name,
+                   MAX(p.barcode)     AS barcode,
                    bool_or(c.is_main_fabric) AS is_main_fabric,
                    ROUND(MAX(CASE WHEN p.kg_per_mtr_eff > 0 AND p.standard_price > 0
                              THEN p.standard_price * p.kg_per_mtr_eff
@@ -12971,6 +12976,7 @@ def costing_fabric_search(q_: str = Query(default="", alias="q"),
             LIMIT %s
         """, [dps, term, f"%{term}%", f"%{term}%", limit])
     return [{"id": r["id"], "sku": r["sku"], "name": r["name"],
+             "barcode": (r["barcode"] or "").strip() or None,
              "is_main_fabric": bool(r["is_main_fabric"]),
              "cost_per_metre": (float(r["cost_per_metre"])
                                 if r["cost_per_metre"] is not None else None),
@@ -13061,8 +13067,10 @@ def _clean_costing_lines(lines):
             comp = int(comp) if comp not in (None, "", 0) else None
         except (TypeError, ValueError):
             comp = None
-        # The fabric-product link only means anything on fabric lines.
-        if kind != "fabric":
+        # The component link only means anything on raw-material lines
+        # (fabric + trim/accessory) — it resolves the Odoo product's barcode
+        # on read. CMT/overhead lines never link to a product.
+        if kind not in ("fabric", "trim"):
             comp = None
         out.append({
             "component_id": comp,
@@ -13105,9 +13113,12 @@ def _sheet_payload(conn, sheet_id, with_history=True):
         raise HTTPException(status_code=404, detail="Sheet not found")
     s = dict(sheets[0])
     lines = [dict(l) for l in q(conn, """
-        SELECT id, kind, label, qty, unit_cost, total, is_auto, source,
-               position, component_id
-        FROM fabric_costing_lines WHERE sheet_id=%s ORDER BY position, id
+        SELECT l.id, l.kind, l.label, l.qty, l.unit_cost, l.total, l.is_auto,
+               l.source, l.position, l.component_id,
+               NULLIF(TRIM(p.barcode), '') AS barcode
+        FROM fabric_costing_lines l
+        LEFT JOIN raw_fabric_products p ON p.id = l.component_id
+        WHERE l.sheet_id=%s ORDER BY l.position, l.id
     """, (sheet_id,))]
     for l in lines:
         for k in ("qty", "unit_cost", "total"):
@@ -13342,7 +13353,7 @@ def costing_export_sheet_xlsx(sheet_id: int):
 
     # Cost-lines detail sheet — one row per line, Auto/Manual flag + source.
     ws2 = wb.create_sheet("Cost lines")
-    cols = ["#", "Kind", "Label", "Qty", "Unit cost (KES)",
+    cols = ["#", "Kind", "Label", "Barcode", "Qty", "Unit cost (KES)",
             "Line total (KES)", "Auto/Manual", "Source"]
     ws2.append(cols)
     for c in range(1, len(cols) + 1):
@@ -13354,6 +13365,7 @@ def costing_export_sheet_xlsx(sheet_id: int):
     for i, l in enumerate(s["lines"], 1):
         ws2.append([
             i, kind_lbl.get(l["kind"], l["kind"]), l["label"],
+            l.get("barcode"),
             l["qty"], l["unit_cost"], l["total"],
             "Auto" if l["is_auto"] else "Manual",
             l["source"],
@@ -13361,15 +13373,15 @@ def costing_export_sheet_xlsx(sheet_id: int):
     ws2.append([])
     tr = ws2.max_row + 1
     ws2.cell(row=tr, column=3, value="Total cost / garment").font = st["LBL"]
-    tc = ws2.cell(row=tr, column=6, value=s["total_cost"])
+    tc = ws2.cell(row=tr, column=7, value=s["total_cost"])
     tc.font = st["LBL"]
     tc.number_format = "#,##0.00"
-    for col, w in zip("ABCDEFGH", [5, 14, 40, 10, 16, 16, 13, 34]):
+    for col, w in zip("ABCDEFGHI", [5, 14, 40, 14, 10, 16, 16, 13, 34]):
         ws2.column_dimensions[col].width = w
-    for row in ws2.iter_rows(min_row=2, max_row=ws2.max_row, min_col=4, max_col=6):
+    for row in ws2.iter_rows(min_row=2, max_row=ws2.max_row, min_col=5, max_col=7):
         for cell in row:
             cell.alignment = st["R"]
-            if cell.value is not None and cell.column >= 5:
+            if cell.value is not None and cell.column >= 6:
                 cell.number_format = "#,##0.00"
 
     buf = io.BytesIO()
