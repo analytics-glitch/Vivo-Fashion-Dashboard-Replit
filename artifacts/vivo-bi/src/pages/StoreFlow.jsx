@@ -174,6 +174,7 @@ const StoreFlow = () => {
       else if (sortKey === "avg_4w")  { av = Math.round((a.units_4w || 0) / 4); bv = Math.round((b.units_4w || 0) / 4); }
       else if (sortKey === "prev_week_sold") { av = a.prev_week_sold || 0; bv = b.prev_week_sold || 0; }
       else if (sortKey === "units_transferred") { av = a.units_transferred || 0; bv = b.units_transferred || 0; }
+      else if (sortKey === "units_returned")   { av = a.units_returned || 0; bv = b.units_returned || 0; }
       else if (sortKey === "pacing_pct") {
         av = a.prev_week_sold > 0 ? a.units_transferred / a.prev_week_sold : -1;
         bv = b.prev_week_sold > 0 ? b.units_transferred / b.prev_week_sold : -1;
@@ -265,6 +266,7 @@ const StoreFlow = () => {
         "Sat": dt[6] || 0,
         "Sun": dt[7] || 0,
         "Total Transferred": r.units_transferred,
+        "Total Returned": r.units_returned || 0,
         "vs Prev Week %": pctVal != null ? pctVal / 100 : null,
         "Status": pctVal == null ? "—" : pctVal > 110 ? "Over" : pctVal < 90 ? "Under" : "On track",
         "Current Stock": r.current_stock,
@@ -343,6 +345,7 @@ const StoreFlow = () => {
       { Field: "Total Prev Week Sales", Value: filtered.reduce((a, r) => a + (r.prev_week_sold || 0), 0) },
       { Field: "Total Avg Weekly (4W)", Value: Math.round(filtered.reduce((a, r) => a + (r.units_4w || 0), 0) / 4) },
       { Field: "Total Transferred", Value: filtered.reduce((a, r) => a + r.units_transferred, 0) },
+      { Field: "Total Returned", Value: filtered.reduce((a, r) => a + (r.units_returned || 0), 0) },
       { Field: "Total Current Stock", Value: filtered.reduce((a, r) => a + r.current_stock, 0) },
       { Field: "WOC — Stores under target", Value: wocSummary.under },
       { Field: "WOC — Stores on target", Value: wocSummary.ok },
@@ -518,6 +521,11 @@ const StoreFlow = () => {
                         className="py-2 pr-3 text-right font-semibold">
                         Total Transferred
                       </SortTh>
+                      <SortTh sk="units_returned" cur={sortKey} dir={sortDir} onSort={handleSort}
+                        className="py-2 pr-3 text-right font-semibold whitespace-nowrap"
+                        title="Units returned from this store to the warehouse (WHREC) in the selected period">
+                        Total Returned
+                      </SortTh>
                       <SortTh sk="pacing_pct" cur={sortKey} dir={sortDir} onSort={handleSort}
                         className="py-2 pr-3 text-right whitespace-nowrap"
                         title="Total transferred vs previous week sales. On track = ±10%. Over = >10% above. Under = >10% below.">
@@ -544,6 +552,9 @@ const StoreFlow = () => {
                             </td>
                           ))}
                           <td className="py-1.5 pr-3 text-right tabular-nums font-medium">{fmtNum(r.units_transferred)}</td>
+                          <td className="py-1.5 pr-3 text-right tabular-nums font-medium text-rose-600">
+                            {r.units_returned ? fmtNum(r.units_returned) : "—"}
+                          </td>
                           <td className="py-1.5 pr-3 text-right">
                             <PacingBadge transferred={r.units_transferred} prevWeekSold={r.prev_week_sold} />
                           </td>
@@ -569,6 +580,9 @@ const StoreFlow = () => {
                       ))}
                       <td className="py-2 pr-3 text-right tabular-nums">
                         {fmtNum(filtered.reduce((a, r) => a + r.units_transferred, 0))}
+                      </td>
+                      <td className="py-2 pr-3 text-right tabular-nums text-rose-600">
+                        {fmtNum(filtered.reduce((a, r) => a + (r.units_returned || 0), 0)) || "—"}
                       </td>
                       <td className="py-2 pr-3 text-right">
                         <PacingBadge

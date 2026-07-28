@@ -11344,6 +11344,10 @@ def analytics_store_flow(
         GROUP BY s.pos_location_name
     """, date_to=date_to)
 
+    # Locations that appear in sales/transfers data but are not real retail stores
+    # (marketing stock, dead-stock holding) — suppress from this table.
+    _EXCLUDED_POS = "'MarKT/Stock','Retired Stock'"
+
     ctry_t = " AND t.to_country IN (" + csv_to_sql(country) + ")" if country else ""
     # Units Transferred = warehouse→store pickings dispatched in the period,
     # counted the moment they leave the warehouse (scheduled_date), regardless
@@ -11383,16 +11387,36 @@ def analytics_store_flow(
         r = by.setdefault(name, {
             "pos_location": name, "country": ctry or None,
             "units_sold": 0, "units_transferred": 0,
-            "units_incoming": 0, "current_stock": 0})
+            "units_incoming": 0, "units_returned": 0, "current_stock": 0})
         if ctry and not r["country"]:
             r["country"] = ctry
         return r
     for r in sales:
         _slot(r["pos_location"], r.get("country"))["units_sold"] = int(r["units_sold"] or 0)
+    # Units Returned = store→WHREC pickings completed in the period.
+    # For store_to_warehouse transfers, to_store_name holds the originating
+    # retail store (the one making the return); scheduled_date is the date used.
+    returns = run_query("""
+        SELECT t.to_store_name AS pos_location,
+               MAX(t.to_country) AS country,
+               COALESCE(SUM(t.qty_done) FILTER (
+                   WHERE t.scheduled_date::date
+                         BETWEEN '""" + date_from + """' AND '""" + date_to + """'
+                     AND t.state = 'done'), 0) AS units_returned
+        FROM stock_transfers t
+        WHERE t.transfer_type = 'store_to_warehouse'
+          AND t.to_store_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
+        """ + ctry_t + """
+        GROUP BY t.to_store_name
+    """, date_to=date_to)
+
     for r in transfers:
         s = _slot(r["pos_location"], r.get("country"))
         s["units_transferred"] = int(r["units_transferred"] or 0)
         s["units_incoming"] = int(r["units_incoming"] or 0)
+    for r in returns:
+        s = _slot(r["pos_location"], r.get("country"))
+        s["units_returned"] = int(r["units_returned"] or 0)
     for r in inventory:
         _slot(r["pos_location"], r.get("country"))["current_stock"] = int(r["current_stock"] or 0)
 
@@ -11471,11 +11495,17 @@ def analytics_store_flow(
         r["prev_week_sold"] = pw_map.get(name, 0)
         r["daily_transfers"] = daily_map.get(name, {})
 
-    rows = sorted(by.values(), key=lambda r: (-r["prev_week_sold"], -r["units_transferred"]))
+    # Suppress non-retail holding locations from the store-level table.
+    _EXCLUDED_SET = {"MarKT/Stock", "Retired Stock"}
+    rows = sorted(
+        (r for r in by.values() if r["pos_location"] not in _EXCLUDED_SET),
+        key=lambda r: (-r["prev_week_sold"], -r["units_transferred"])
+    )
     totals = {
         "units_sold": sum(r["units_sold"] for r in rows),
         "units_transferred": sum(r["units_transferred"] for r in rows),
         "units_incoming": sum(r["units_incoming"] for r in rows),
+        "units_returned": sum(r["units_returned"] for r in rows),
         "current_stock": sum(r["current_stock"] for r in rows),
         "prev_week_sold": sum(r["prev_week_sold"] for r in rows),
         "stores": len(rows),
