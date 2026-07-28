@@ -1295,16 +1295,18 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
      <div id="cost-list-err"></div>
      <div class="tbl-wrap">
       <table class="data">
-       <thead><tr><th>Style</th><th>Style #</th><th class="r">Total cost / garment</th><th class="r">Selling price</th><th class="r">Margin</th><th class="r">Margin %</th><th class="r">Lines</th><th>Last edited</th><th></th></tr></thead>
-       <tbody id="cost-list-body"><tr><td colspan="9" class="loading">Loading…</td></tr></tbody>
+       <thead><tr><th>Style</th><th>Style #</th><th class="r">Total cost / garment</th><th class="r">Selling price</th><th class="r">Margin</th><th class="r">Margin %</th><th class="r">Lines</th><th>Sign-off</th><th>Last edited</th><th></th></tr></thead>
+       <tbody id="cost-list-body"><tr><td colspan="10" class="loading">Loading…</td></tr></tbody>
       </table>
      </div>
     </div>
     <div class="card" id="cost-editor" style="display:none;">
      <div class="section-head"><h3 id="cost-editor-title">New costing sheet</h3>
-      <button class="btn" id="cost-export-btn" style="margin-left:auto;display:none;" onclick="costExportSheet()">Export sheet (.xlsx)</button>
+      <button class="btn" id="cost-pdf-btn" style="margin-left:auto;display:none;" onclick="costExportPdf()">Download PDF</button>
+      <button class="btn" id="cost-export-btn" style="display:none;" onclick="costExportSheet()">Export sheet (.xlsx)</button>
       <button class="btn" onclick="costCloseEditor()">Close</button>
      </div>
+     <div id="cost-lock-note"></div>
      <div id="cost-editor-err"></div>
      <div class="flex" style="flex-wrap:wrap;gap:12px;align-items:flex-end;margin-bottom:10px;">
       <div style="position:relative;">
@@ -1339,7 +1341,7 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
         <tr style="font-weight:700;"><td colspan="4" style="text-align:right;">Margin vs selling price</td><td class="r" id="cost-margin-cell">—</td><td colspan="2" id="cost-margin-pct-cell"></td></tr></tfoot>
       </table>
      </div>
-     <div class="flex" style="gap:8px;margin-top:10px;flex-wrap:wrap;">
+     <div class="flex" id="cost-line-btns" style="gap:8px;margin-top:10px;flex-wrap:wrap;">
       <button class="btn" onclick="costAddLine('trim')">+ Trim / accessory</button>
       <button class="btn" onclick="costAddLine('cmt')">+ CMT / labour</button>
       <button class="btn" onclick="costAddLine('overhead')">+ Overhead / other</button>
@@ -1347,6 +1349,7 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
       <span style="margin-left:auto;"></span>
       <button class="btn btn-primary" id="cost-save-btn" onclick="costSaveSheet()">Save sheet</button>
      </div>
+     <div id="cost-signoff" style="margin-top:14px;"></div>
      <div id="cost-history" style="margin-top:14px;"></div>
     </div>
    </section>
@@ -8788,17 +8791,19 @@ async function loadCosting(){
   try{
     const d=await apiFetch('/api/fabric/costing/sheets');
     costSheets=d.sheets||[];
-    if(!costSheets.length){body.innerHTML='<tr><td colspan="9" class="muted" style="padding:.8rem;">No costing sheets yet — click “New costing sheet” to build the first one.</td></tr>';return;}
+    if(!costSheets.length){body.innerHTML='<tr><td colspan="10" class="muted" style="padding:.8rem;">No costing sheets yet — click “New costing sheet” to build the first one.</td></tr>';return;}
     body.innerHTML=costSheets.map(s=>{
       const mCls=s.margin==null?'':(s.margin<0?' style="color:var(--danger);font-weight:700;"':' style="color:var(--ok,#0a7d33);font-weight:700;"');
       return `<tr><td>${esc(s.style_name)}</td><td>${esc(s.style_number||'—')}</td>`+
         `<td class="r">${fmtKES2(s.total_cost)}</td><td class="r">${fmtKES2(s.selling_price)}</td>`+
         `<td class="r"${mCls}>${fmtKES2(s.margin)}</td><td class="r"${mCls}>${s.margin_pct==null?'—':esc(s.margin_pct)+'%'}</td>`+
         `<td class="r">${esc(s.line_count)}</td>`+
+        `<td>${costStatusPill(s.signoff_status,s.signed_steps)}</td>`+
         `<td><span>${esc(s.updated_by_name||'—')}</span><br><span class="muted" style="font-size:11px;">${esc(fmtNairobi(s.updated_at)||'')}</span></td>`+
-        `<td><button class="btn" onclick="costOpenSheet(${Number(s.id)})">Edit</button></td></tr>`;
+        `<td style="white-space:nowrap;"><button class="btn" onclick="costOpenSheet(${Number(s.id)})">${s.signoff_status==='approved'?'View':'Edit'}</button> `+
+        `<button class="btn" title="Download the branded costing sheet PDF" onclick="costDownloadPdfById(${Number(s.id)},'${esc(s.style_name||'sheet')}')">PDF</button></td></tr>`;
     }).join('');
-  }catch(e){rowErr('cost-list-body',9,e);}
+  }catch(e){rowErr('cost-list-body',10,e);}
 }
 // Costing exports — credentialed blob fetch (same pattern as downloadMpgXlsx)
 // so auth is honoured and failures surface instead of a blank tab. The
@@ -8817,12 +8822,19 @@ async function costDownloadXlsx(url,fallbackName){
     a.download=(m&&m[1])||fallbackName;
     document.body.appendChild(a);a.click();a.remove();
     setTimeout(()=>URL.revokeObjectURL(a.href),1000);
-  }catch(e){alert('Could not generate the Excel export. Please try again.');}
+  }catch(e){alert('Could not generate the export. Please try again.');}
 }
 function costExportAll(){costDownloadXlsx('/api/fabric/costing/export.xlsx','costing-sheets-summary.xlsx');}
+function costDownloadPdfById(id,name){costDownloadXlsx('/api/fabric/costing/sheets/'+encodeURIComponent(id)+'/export.pdf','costing-'+(name||'sheet')+'.pdf');}
+function costExportPdf(){if(costEdit&&costEdit.id)costDownloadPdfById(costEdit.id,costEdit.style_name);}
 function costExportSheet(){
   if(!costEdit||!costEdit.id){alert('Save the sheet first, then export it.');return;}
   costDownloadXlsx('/api/fabric/costing/sheets/'+encodeURIComponent(costEdit.id)+'/export.xlsx','costing-sheet.xlsx');
+}
+function costStatusPill(status,steps){
+  if(status==='approved')return '<span class="pill pill-green" title="All sign-off steps complete — sheet locked against edits">Approved</span>';
+  if(status==='partial')return '<span class="pill pill-amber" title="Sign-off in progress">Signed '+esc(steps||0)+'/3</span>';
+  return '<span class="pill pill-neutral">Draft</span>';
 }
 function costBadge(auto){return auto?'<span style="background:var(--accent,#2563eb);color:#fff;border-radius:4px;font-size:10px;padding:1px 6px;">AUTO</span>':'<span style="background:var(--border,#999);color:#fff;border-radius:4px;font-size:10px;padding:1px 6px;">MANUAL</span>';}
 function costRenderLines(){
@@ -8928,7 +8940,7 @@ function costPickFabric(i,name,cpm,isMain,compId,barcode){
   costRenderLines();
 }
 function costNewSheet(){
-  costEdit={id:null,style_name:null,style_number:null,dps_ref:null,color:null,lines:[],sp_auto:true,history:[]};
+  costEdit={id:null,style_name:null,style_number:null,dps_ref:null,color:null,lines:[],sp_auto:true,history:[],signoffs:null,locked:false};
   costDpsReset(true);
   document.getElementById('cost-editor-title').textContent='New costing sheet';
   document.getElementById('cost-style-search').value='';
@@ -8939,9 +8951,11 @@ function costNewSheet(){
   document.getElementById('cost-suggest-note').textContent='Pick a style to load auto-suggestions (fabric cost, metres per garment, labour per garment).';
   document.getElementById('cost-editor-err').innerHTML='';
   document.getElementById('cost-history').innerHTML='';
+  document.getElementById('cost-signoff').innerHTML='';
   document.getElementById('cost-export-btn').style.display='none';
+  document.getElementById('cost-pdf-btn').style.display='none';
   document.getElementById('cost-editor').style.display='';
-  costRenderLines();costBindEditor();
+  costRenderLines();costBindEditor();costApplyLock();
   document.getElementById('cost-style-search').focus();
 }
 function costCloseEditor(){costEdit=null;document.getElementById('cost-editor').style.display='none';}
@@ -8950,7 +8964,7 @@ async function costOpenSheet(id){
     const s=await apiFetch('/api/fabric/costing/sheets/'+encodeURIComponent(id));
     costEdit={id:s.id,style_name:s.style_name,style_number:s.style_number,dps_ref:s.dps_ref||null,color:s.color||null,
       lines:(s.lines||[]).map(l=>({kind:l.kind,label:l.label,qty:l.qty,unit_cost:l.unit_cost,is_auto:!!l.is_auto,source:l.source,component_id:l.component_id||null,barcode:l.barcode||null})),
-      sp_auto:!!s.selling_price_is_auto,history:s.history||[]};
+      sp_auto:!!s.selling_price_is_auto,history:s.history||[],signoffs:s.signoffs||null,locked:!!s.locked};
     // Show which Done DPS the sheet's suggestions were built from (editable
     // again via re-suggest is out of scope for saved sheets; display only).
     const dpsEl=document.getElementById('cost-dps-search');
@@ -8970,12 +8984,75 @@ async function costOpenSheet(id){
     document.getElementById('cost-sp-badge').innerHTML=costBadge(costEdit.sp_auto);
     document.getElementById('cost-suggest-note').textContent='';
     document.getElementById('cost-editor-err').innerHTML='';
-    costRenderHistory();
+    costRenderHistory();costRenderSignoffs();
     document.getElementById('cost-export-btn').style.display='';
+    document.getElementById('cost-pdf-btn').style.display='';
     document.getElementById('cost-editor').style.display='';
-    costRenderLines();costBindEditor();
+    costRenderLines();costBindEditor();costApplyLock();
     document.getElementById('cost-editor').scrollIntoView({behavior:'smooth'});
   }catch(e){showErr('cost-list-err',e);}
+}
+// ── Sign-off panel (Prepared / Checked / Approved) ──
+// Three ordered digital sign-off blocks. Titles are editable at signing time;
+// signing the final step approves + locks the sheet (server-enforced — the UI
+// disabling below is UX only). Un-approving reopens it for editing.
+function costRenderSignoffs(){
+  const el=document.getElementById('cost-signoff');if(!el)return;
+  if(!costEdit||!costEdit.id||!costEdit.signoffs){el.innerHTML='';return;}
+  const so=costEdit.signoffs;
+  const canSign=i=>so.slice(0,i).every(x=>x.signed); // ordered signing
+  el.innerHTML='<div class="section-head"><h3 style="font-size:14px;">Sign-off</h3>'+
+    '<span class="muted">three ordered steps — signing the final step approves & locks the sheet</span></div>'+
+    '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;">'+
+    so.map((s,i)=>{
+      const step=s.step;
+      if(s.signed){
+        return `<div style="border:1px solid var(--border);border-radius:10px;padding:10px 12px;background:#f0fdf4;">`+
+          `<div class="muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.04em;">${esc(s.title)}</div>`+
+          `<div style="font-weight:700;margin:3px 0 1px;">${esc(s.signed_by_name||'—')}</div>`+
+          `<div class="muted" style="font-size:11px;">Signed · ${esc(fmtNairobi(s.signed_at)||'')}</div>`+
+          `<button class="btn" style="margin-top:7px;padding:2px 10px;font-size:12px;" onclick="costUnsign(${step})">${step===3?'Un-approve':'Remove signature'}</button></div>`;
+      }
+      return `<div style="border:1px dashed var(--border);border-radius:10px;padding:10px 12px;">`+
+        `<input id="cost-so-title-${step}" value="${esc(s.title)}" maxlength="100" title="Sign-off title (editable)" style="width:100%;height:30px;font-size:12px;margin-bottom:6px;">`+
+        `<div class="muted" style="font-size:11px;margin-bottom:7px;">Pending</div>`+
+        `<button class="btn btn-primary" style="padding:3px 12px;font-size:12px;" ${canSign(i)?'':'disabled title="Sign the earlier steps first"'} onclick="costSign(${step})">Sign${step===3?' & approve':''}</button></div>`;
+    }).join('')+'</div>';
+}
+function costApplyLock(){
+  const locked=!!(costEdit&&costEdit.locked);
+  document.querySelectorAll('#cost-lines-body input,#cost-lines-body select,#cost-lines-body button').forEach(el=>el.disabled=locked);
+  document.querySelectorAll('#cost-line-btns button').forEach(el=>{if(el.id!=='cost-save-btn')el.disabled=locked;});
+  const sv=document.getElementById('cost-save-btn');if(sv){sv.disabled=locked;sv.title=locked?'Approved sheets are locked — un-approve to edit':'';}
+  const sp=document.getElementById('cost-selling-price');if(sp)sp.disabled=locked;
+  const note=document.getElementById('cost-lock-note');
+  if(note)note.innerHTML=locked?'<div class="banner" style="background:#dcfce7;border:1px solid #86efac;">This sheet is <b>approved</b> and locked against edits. Un-approve it in the Sign-off panel below to make changes (all edits are change-logged).</div>':'';
+}
+// Apply a fresh sheet payload returned by sign/unsign to the open editor.
+function costApplySheet(s){
+  if(!costEdit||costEdit.id!==s.id)return;
+  costEdit.signoffs=s.signoffs||null;costEdit.locked=!!s.locked;costEdit.history=s.history||[];
+  costRenderSignoffs();costRenderHistory();costApplyLock();
+}
+async function costSign(step){
+  if(!costEdit||!costEdit.id)return;
+  const t=document.getElementById('cost-so-title-'+step);
+  const err=document.getElementById('cost-editor-err');if(err)err.innerHTML='';
+  try{
+    const r=await fetch('/api/fabric/costing/sheets/'+encodeURIComponent(costEdit.id)+'/signoff',{method:'POST',credentials:'include',headers:vivoAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify({step:step,title:t?t.value:null})});
+    if(!r.ok){let d={};try{d=await r.json();}catch(_){ }throw new Error(d.detail||('http '+r.status));}
+    costApplySheet(await r.json());loadCosting();
+  }catch(e){if(err)err.innerHTML='<div class="banner banner-err">Could not sign: '+esc(e.message)+'</div>';}
+}
+async function costUnsign(step){
+  if(!costEdit||!costEdit.id)return;
+  if(step===3&&!confirm('Un-approve this sheet? It reopens for editing and the change is logged.'))return;
+  const err=document.getElementById('cost-editor-err');if(err)err.innerHTML='';
+  try{
+    const r=await fetch('/api/fabric/costing/sheets/'+encodeURIComponent(costEdit.id)+'/signoff/'+step,{method:'DELETE',credentials:'include',headers:vivoAuthHeaders()});
+    if(!r.ok){let d={};try{d=await r.json();}catch(_){ }throw new Error(d.detail||('http '+r.status));}
+    costApplySheet(await r.json());loadCosting();
+  }catch(e){if(err)err.innerHTML='<div class="banner banner-err">Could not remove the signature: '+esc(e.message)+'</div>';}
 }
 function costRenderHistory(){
   const el=document.getElementById('cost-history');
@@ -9167,7 +9244,10 @@ async function costSaveSheet(){
     if(!r.ok){let d={};try{d=await r.json();}catch(_){ }throw new Error(d.detail||('http '+r.status));}
     const s=await r.json();
     costEdit.id=s.id;costEdit.history=s.history||[];
-    costRenderHistory();
+    costEdit.signoffs=s.signoffs||null;costEdit.locked=!!s.locked;
+    costRenderHistory();costRenderSignoffs();costApplyLock();
+    document.getElementById('cost-pdf-btn').style.display='';
+    document.getElementById('cost-export-btn').style.display='';
     err.innerHTML='<div class="banner" style="background:var(--ok-bg,#e8f7ee);">Saved.</div>';
     loadCosting();
   }catch(e){err.innerHTML='<div class="banner banner-err">Could not save: '+esc(e.message)+'</div>';}

@@ -17,3 +17,12 @@ re-price on read as raw_fabric_products.standard_price drifts. An earlier read-t
 re-pricing behaviour was reversed on the boss's instruction. fabric_costing_lines.component_id
 (fabric-product link) is kept for *reporting* drift only — it must not feed pricing math.
 _strip_reprice_notes cleans the legacy "· current cost/metre" source notes.
+
+## Sign-off & edit lock (Jul 2026)
+- 3 ORDERED sign-off steps per sheet in fabric_costing_signoffs (row exists ONLY when signed;
+  titles customizable at signing, defaults Prepared/Checked/Approved by). Step 3 signed =
+  approved = LOCKED: every sheet/line mutation endpoint must call _costing_reject_if_locked
+  (409) — new mutation endpoints must add this too. Un-signing step N cascades to later steps
+  and un-approving is history-logged; all sign actions write fabric_costing_history.
+- Per-sheet branded PDF: GET /costing/sheets/{id}/export.pdf builds from the SAME
+  _sheet_payload as the screen (reportlab A4, grouped by kind, sign-off blocks, history).
