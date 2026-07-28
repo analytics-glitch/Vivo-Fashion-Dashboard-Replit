@@ -102,6 +102,10 @@ export const KPICard = ({
   // No-op when omitted. Fires AT MOST once per mount (idempotent
   // via the inflight cache).
   prefetch = null,
+  // Optional footer line rendered between the delta badge and the
+  // action button — used for secondary metrics like ASP that belong
+  // below the comparison delta rather than above it.
+  footer = null,
 }) => {
   const navigate = useNavigate();
   const prefetchedRef = React.useRef(false);
@@ -211,6 +215,14 @@ export const KPICard = ({
               vs {prevValue}
             </span>
           )}
+        </div>
+      )}
+      {footer && (
+        <div
+          className={`mt-1.5 text-[11px] font-semibold ${accent ? "text-white/70" : "text-foreground/70"}`}
+          data-testid={testId ? `${testId}-footer` : undefined}
+        >
+          {footer}
         </div>
       )}
       {action && (

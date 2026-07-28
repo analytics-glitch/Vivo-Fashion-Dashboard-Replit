@@ -716,21 +716,27 @@ const Overview = () => {
   // measure, every row in exactly one bucket). null = still loading ("—").
   const ctSeg = useMemo(() => {
     const pick = (d, k) => (d == null ? null : Number(d[k] || 0));
+    const newSales       = pick(ctSpend, "new_sales");
+    const retSales       = pick(ctSpend, "returning_sales");
+    const walkInSales    = pick(ctSpend, "walk_in_sales");
+    const newCustomers   = pick(ctSpend, "new_customers");
+    const retCustomers   = pick(ctSpend, "returning_customers");
+    const walkInCustomers = pick(ctSpend, "walk_in_customers");
     return {
-      newSales:           pick(ctSpend, "new_sales"),
-      retSales:           pick(ctSpend, "returning_sales"),
-      walkInSales:        pick(ctSpend, "walk_in_sales"),
-      newSalesPrev:       pick(ctSpendPrev, "new_sales"),
-      retSalesPrev:       pick(ctSpendPrev, "returning_sales"),
-      walkInSalesPrev:    pick(ctSpendPrev, "walk_in_sales"),
-      newCustomers:       pick(ctSpend, "new_customers"),
-      retCustomers:       pick(ctSpend, "returning_customers"),
-      walkInCustomers:    pick(ctSpend, "walk_in_customers"),
-      totalCustomers:     pick(ctSpend, "total_customers"),
-      newCustomersPrev:   pick(ctSpendPrev, "new_customers"),
-      retCustomersPrev:   pick(ctSpendPrev, "returning_customers"),
+      newSales, retSales, walkInSales,
+      newSalesPrev:        pick(ctSpendPrev, "new_sales"),
+      retSalesPrev:        pick(ctSpendPrev, "returning_sales"),
+      walkInSalesPrev:     pick(ctSpendPrev, "walk_in_sales"),
+      newCustomers, retCustomers, walkInCustomers,
+      totalCustomers:      pick(ctSpend, "total_customers"),
+      newCustomersPrev:    pick(ctSpendPrev, "new_customers"),
+      retCustomersPrev:    pick(ctSpendPrev, "returning_customers"),
       walkInCustomersPrev: pick(ctSpendPrev, "walk_in_customers"),
-      totalCustomersPrev: pick(ctSpendPrev, "total_customers"),
+      totalCustomersPrev:  pick(ctSpendPrev, "total_customers"),
+      // Average spend per customer for each segment.
+      newAsp:    (newSales != null && newCustomers > 0) ? Math.round(newSales / newCustomers) : null,
+      retAsp:    (retSales != null && retCustomers > 0) ? Math.round(retSales / retCustomers) : null,
+      walkInAsp: (walkInSales != null && walkInCustomers > 0) ? Math.round(walkInSales / walkInCustomers) : null,
     };
   }, [ctSpend, ctSpendPrev]);
   // Share of Total Sales each bucket represents (they sum to 100%).
@@ -742,6 +748,17 @@ const Overview = () => {
     const newPct = (100 * newSales) / tot;
     const walkInPct = (100 * walkInSales) / tot;
     return { newPct, retPct: 100 - newPct - walkInPct, walkInPct };
+  }, [ctSeg]);
+  // Share of total customers each segment holds (shown in parens on headline).
+  const ctCustShare = useMemo(() => {
+    const { newCustomers, retCustomers, walkInCustomers, totalCustomers } = ctSeg;
+    if (totalCustomers == null || totalCustomers <= 0)
+      return { newPct: null, retPct: null, walkInPct: null };
+    return {
+      newPct:    (100 * (newCustomers    || 0)) / totalCustomers,
+      retPct:    (100 * (retCustomers    || 0)) / totalCustomers,
+      walkInPct: (100 * (walkInCustomers || 0)) / totalCustomers,
+    };
   }, [ctSeg]);
   // WS3 — on a single-day range the "last month/year" comparison base is
   // the SAME DAY shifted, not the whole month/year; label it honestly.
@@ -1475,42 +1492,57 @@ const Overview = () => {
               Revenue share + KES sit below as context. Delta tracks count vs prev period. */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <KPICard testId="kpi-new-customer-revenue" label="New Customers"
-              value={ctSeg.newCustomers == null ? "\u2014" : fmtNum(ctSeg.newCustomers)}
+              value={ctSeg.newCustomers == null ? "\u2014"
+                : ctCustShare.newPct != null
+                  ? `${fmtNum(ctSeg.newCustomers)} (${ctCustShare.newPct.toFixed(1)}%)`
+                  : fmtNum(ctSeg.newCustomers)}
               valueFull={ctSeg.newSales == null ? "\u2014" : fmtKESLong(ctSeg.newSales)}
-              sub={ctSeg.newSales == null ? "of Revenue"
-                : `${ctShare.newPct != null ? `${ctShare.newPct.toFixed(1)}% of Revenue · ` : ""}${kfmt(ctSeg.newSales)}`}
+              sub={ctSeg.newSales == null ? "of Revenue" : (
+                <>{kfmt(ctSeg.newSales)}{ctShare.newPct != null && <div>{ctShare.newPct.toFixed(1)}% of Revenue</div>}</>
+              )}
               icon={UserPlus}
-              formula="Customers making their first-ever purchase in this period. Count is the headline; % of Revenue and KES show their spend contribution."
+              formula="Customers making their first-ever purchase in this period. Count (% of all customers) is the headline; KES and % of Revenue show their spend contribution. ASP = average spend per new customer."
               delta={compareMode !== "none" && ctSeg.newCustomersPrev ? pctDelta(ctSeg.newCustomers, ctSeg.newCustomersPrev) : null}
               deltaLabel={compareLbl} deltaMuted={deltaMuted} deltaMutedNote={deltaMutedNote}
               prevValue={compareMode !== "none" && ctSeg.newCustomersPrev != null ? fmtNum(ctSeg.newCustomersPrev) : null}
               showDelta={compareMode !== "none"}
+              footer={ctSeg.newAsp != null ? `ASP KES ${fmtNum(ctSeg.newAsp)}` : null}
               action={{ label: "Customer Breakdown", to: "/customers" }}
               prefetch={pf("/customers")} />
             <KPICard testId="kpi-returning-customer-revenue" label="Returning Customers"
-              value={ctSeg.retCustomers == null ? "\u2014" : fmtNum(ctSeg.retCustomers)}
+              value={ctSeg.retCustomers == null ? "\u2014"
+                : ctCustShare.retPct != null
+                  ? `${fmtNum(ctSeg.retCustomers)} (${ctCustShare.retPct.toFixed(1)}%)`
+                  : fmtNum(ctSeg.retCustomers)}
               valueFull={ctSeg.retSales == null ? "\u2014" : fmtKESLong(ctSeg.retSales)}
-              sub={ctSeg.retSales == null ? "of Revenue"
-                : `${ctShare.retPct != null ? `${ctShare.retPct.toFixed(1)}% of Revenue · ` : ""}${kfmt(ctSeg.retSales)}`}
+              sub={ctSeg.retSales == null ? "of Revenue" : (
+                <>{kfmt(ctSeg.retSales)}{ctShare.retPct != null && <div>{ctShare.retPct.toFixed(1)}% of Revenue</div>}</>
+              )}
               icon={UsersThree}
-              formula="Repeat identified customers who have purchased before this period. Count is the headline; % of Revenue and KES show their spend contribution."
+              formula="Repeat identified customers who have purchased before this period. Count (% of all customers) is the headline; KES and % of Revenue show their spend contribution. ASP = average spend per returning customer."
               delta={compareMode !== "none" && ctSeg.retCustomersPrev ? pctDelta(ctSeg.retCustomers, ctSeg.retCustomersPrev) : null}
               deltaLabel={compareLbl} deltaMuted={deltaMuted} deltaMutedNote={deltaMutedNote}
               prevValue={compareMode !== "none" && ctSeg.retCustomersPrev != null ? fmtNum(ctSeg.retCustomersPrev) : null}
               showDelta={compareMode !== "none"}
+              footer={ctSeg.retAsp != null ? `ASP KES ${fmtNum(ctSeg.retAsp)}` : null}
               action={{ label: "Customer Breakdown", to: "/customers" }}
               prefetch={pf("/customers")} />
             <KPICard testId="kpi-walkin-revenue" label="Walk Ins"
-              value={ctSeg.walkInCustomers == null ? "\u2014" : fmtNum(ctSeg.walkInCustomers)}
+              value={ctSeg.walkInCustomers == null ? "\u2014"
+                : ctCustShare.walkInPct != null
+                  ? `${fmtNum(ctSeg.walkInCustomers)} (${ctCustShare.walkInPct.toFixed(1)}%)`
+                  : fmtNum(ctSeg.walkInCustomers)}
               valueFull={ctSeg.walkInSales == null ? "\u2014" : fmtKESLong(ctSeg.walkInSales)}
-              sub={ctSeg.walkInSales == null ? "of Revenue"
-                : `${ctShare.walkInPct != null ? `${ctShare.walkInPct.toFixed(1)}% of Revenue · ` : ""}${kfmt(ctSeg.walkInSales)}`}
+              sub={ctSeg.walkInSales == null ? "of Revenue" : (
+                <>{kfmt(ctSeg.walkInSales)}{ctShare.walkInPct != null && <div>{ctShare.walkInPct.toFixed(1)}% of Revenue</div>}</>
+              )}
               icon={PersonSimpleWalk}
-              formula="Anonymous / walk-in customers (no linked customer profile). Count is the headline; % of Revenue and KES show their spend contribution."
+              formula="Anonymous / walk-in customers (no linked customer profile). Count (% of all customers) is the headline; KES and % of Revenue show their spend contribution. ASP = average spend per walk-in."
               delta={compareMode !== "none" && ctSeg.walkInCustomersPrev ? pctDelta(ctSeg.walkInCustomers, ctSeg.walkInCustomersPrev) : null}
               deltaLabel={compareLbl} deltaMuted={deltaMuted} deltaMutedNote={deltaMutedNote}
               prevValue={compareMode !== "none" && ctSeg.walkInCustomersPrev != null ? fmtNum(ctSeg.walkInCustomersPrev) : null}
               showDelta={compareMode !== "none"}
+              footer={ctSeg.walkInAsp != null ? `ASP KES ${fmtNum(ctSeg.walkInAsp)}` : null}
               action={{ label: "Customer Breakdown", to: "/customers" }}
               prefetch={pf("/customers")} />
             <KPICard testId="kpi-total-customers" label="Total Customers"
