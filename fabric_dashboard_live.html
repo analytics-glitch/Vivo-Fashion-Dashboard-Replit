@@ -1295,8 +1295,8 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
      <div id="cost-list-err"></div>
      <div class="tbl-wrap">
       <table class="data">
-       <thead><tr><th>Style</th><th>Style #</th><th class="r">Total cost / garment</th><th class="r">Selling price</th><th class="r">Margin</th><th class="r">Margin %</th><th class="r">Lines</th><th>Sign-off</th><th>Last edited</th><th></th></tr></thead>
-       <tbody id="cost-list-body"><tr><td colspan="10" class="loading">Loading…</td></tr></tbody>
+       <thead><tr><th>Style</th><th>Style #</th><th class="r">Total cost / garment</th><th class="r">Retail price (VAT-incl)</th><th class="r">Selling price (ex-VAT)</th><th class="r">Margin</th><th class="r">Margin %</th><th class="r">Lines</th><th>Sign-off</th><th>Last edited</th><th></th></tr></thead>
+       <tbody id="cost-list-body"><tr><td colspan="11" class="loading">Loading…</td></tr></tbody>
       </table>
      </div>
     </div>
@@ -1319,8 +1319,9 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
        <input id="cost-style-number" disabled style="width:130px;background:var(--bg,#f5f5f5);">
       </div>
       <div>
-       <label class="rsv-lbl">Selling price (KES) <span id="cost-sp-badge"></span></label>
+       <label class="rsv-lbl">Retail price (VAT-incl, KES) <span id="cost-sp-badge"></span></label>
        <input id="cost-selling-price" type="number" min="0" step="any" style="width:140px;" oninput="costSpManual()">
+       <div id="cost-sp-exvat" class="muted num" style="font-size:11px;margin-top:2px;"></div>
       </div>
       <div style="position:relative;">
        <label class="rsv-lbl">DPS # (required)</label>
@@ -1338,7 +1339,8 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
        <thead><tr><th style="width:120px;">Type</th><th>Description</th><th class="r" style="width:110px;">Qty</th><th class="r" style="width:130px;">Unit cost (KES)</th><th class="r" style="width:120px;">Line total</th><th style="width:120px;">Source</th><th style="width:36px;"></th></tr></thead>
        <tbody id="cost-lines-body"></tbody>
        <tfoot><tr style="font-weight:700;"><td colspan="4" style="text-align:right;">Total cost per garment</td><td class="r" id="cost-total-cell">—</td><td colspan="2"></td></tr>
-        <tr style="font-weight:700;"><td colspan="4" style="text-align:right;">Margin vs selling price</td><td class="r" id="cost-margin-cell">—</td><td colspan="2" id="cost-margin-pct-cell"></td></tr></tfoot>
+        <tr><td colspan="4" style="text-align:right;">Selling price (ex-VAT, retail ÷ 1.16)</td><td class="r" id="cost-exvat-cell">—</td><td colspan="2"></td></tr>
+        <tr style="font-weight:700;"><td colspan="4" style="text-align:right;">Margin vs ex-VAT selling price</td><td class="r" id="cost-margin-cell">—</td><td colspan="2" id="cost-margin-pct-cell"></td></tr></tfoot>
       </table>
      </div>
      <div class="flex" id="cost-line-btns" style="gap:8px;margin-top:10px;flex-wrap:wrap;">
@@ -8794,11 +8796,11 @@ async function loadCosting(){
   try{
     const d=await apiFetch('/api/fabric/costing/sheets');
     costSheets=d.sheets||[];
-    if(!costSheets.length){body.innerHTML='<tr><td colspan="10" class="muted" style="padding:.8rem;">No costing sheets yet — click “New costing sheet” to build the first one.</td></tr>';return;}
+    if(!costSheets.length){body.innerHTML='<tr><td colspan="11" class="muted" style="padding:.8rem;">No costing sheets yet — click “New costing sheet” to build the first one.</td></tr>';return;}
     body.innerHTML=costSheets.map(s=>{
       const mCls=s.margin==null?'':(s.margin<0?' style="color:var(--danger);font-weight:700;"':' style="color:var(--ok,#0a7d33);font-weight:700;"');
       return `<tr><td>${esc(s.style_name)}</td><td>${esc(s.style_number||'—')}</td>`+
-        `<td class="r">${fmtKES2(s.total_cost)}</td><td class="r">${fmtKES2(s.selling_price)}</td>`+
+        `<td class="r">${fmtKES2(s.total_cost)}</td><td class="r">${fmtKES2(s.selling_price)}</td><td class="r">${fmtKES2(s.selling_price_ex_vat)}</td>`+
         `<td class="r"${mCls}>${fmtKES2(s.margin)}</td><td class="r"${mCls}>${s.margin_pct==null?'—':esc(s.margin_pct)+'%'}</td>`+
         `<td class="r">${esc(s.line_count)}</td>`+
         `<td>${costStatusPill(s.signoff_status,s.signed_steps)}</td>`+
@@ -8806,7 +8808,7 @@ async function loadCosting(){
         `<td style="white-space:nowrap;"><button class="btn" onclick="costOpenSheet(${Number(s.id)})">${s.signoff_status==='approved'?'View':'Edit'}</button> `+
         `<button class="btn" title="Download the branded costing sheet PDF" onclick="costDownloadPdfById(${Number(s.id)},'${esc(s.style_name||'sheet')}')">PDF</button></td></tr>`;
     }).join('');
-  }catch(e){rowErr('cost-list-body',10,e);}
+  }catch(e){rowErr('cost-list-body',11,e);}
 }
 // Costing exports — credentialed blob fetch (same pattern as downloadMpgXlsx)
 // so auth is honoured and failures surface instead of a blank tab. The
@@ -8856,17 +8858,27 @@ function costRenderLines(){
     ||'<tr><td colspan="7" class="muted" style="padding:.8rem;">No lines — add cost lines below.</td></tr>';
   costRenderTotals();
 }
+// Margin basis: the entered/stored price is the VAT-INCLUSIVE retail price;
+// margin is computed against the derived ex-VAT selling price (÷1.16, fixed
+// 16% Kenyan VAT) — matches the server (_costing_margin in fabric_router.py).
+const COST_VAT_DIVISOR=1.16;
+const costExVat=sp=>sp==null||isNaN(sp)?null:Math.round(sp/COST_VAT_DIVISOR*100)/100;
 function costRenderTotals(){
   const total=(costEdit?costEdit.lines:[]).reduce((s,l)=>s+(Number(l.qty)||0)*(Number(l.unit_cost)||0),0);
   const spEl=document.getElementById('cost-selling-price');
   const sp=spEl&&spEl.value!==''?Number(spEl.value):null;
   document.getElementById('cost-total-cell').textContent=fmtKES2(total);
+  const ex=costExVat(sp);
+  const exHint=document.getElementById('cost-sp-exvat');
+  if(exHint)exHint.textContent=ex==null?'':'Ex-VAT selling price: '+fmtKES2(ex);
+  const exCell=document.getElementById('cost-exvat-cell');
+  if(exCell)exCell.textContent=ex==null?'—':fmtKES2(ex);
   const mCell=document.getElementById('cost-margin-cell'),pCell=document.getElementById('cost-margin-pct-cell');
-  if(sp==null||isNaN(sp)){mCell.textContent='—';pCell.textContent='';return;}
-  const m=sp-total;
+  if(ex==null){mCell.textContent='—';pCell.textContent='';return;}
+  const m=ex-total;
   mCell.textContent=fmtKES2(m);
   mCell.style.color=m<0?'var(--danger)':'var(--ok,#0a7d33)';
-  pCell.textContent=sp>0?(m/sp*100).toFixed(1)+'% of selling price':'';
+  pCell.textContent=ex>0?(m/ex*100).toFixed(2)+'% of ex-VAT selling price':'';
 }
 function costBindEditor(){
   const body=document.getElementById('cost-lines-body');
@@ -9153,7 +9165,7 @@ async function costLoadSuggest(){
     bits.push(s.fabric_cost_per_metre!=null?('Fabric cost/metre: '+fmtKES2(s.fabric_cost_per_metre)):'No fabric price found — enter cost/metre manually');
     bits.push((s.accessories&&s.accessories.length)?('Accessories: '+s.accessories.length+' component(s) auto-added'):'No accessories/trims found on the Done-DPS MOs');
     bits.push(s.labour_per_garment!=null?('Labour/garment: '+fmtKES2(s.labour_per_garment)+' (Done DPS)'):(costLabourAvailable?'No DPS labour cost — enter CMT manually':'DPS labour data not synced yet — enter CMT manually'));
-    bits.push(s.selling_price!=null?('Selling price: '+fmtKES2(s.selling_price)+' (product master)'):'No selling price in the product master — enter manually');
+    bits.push(s.selling_price!=null?('Retail price: '+fmtKES2(s.selling_price)+' (product master, VAT-incl) · ex-VAT '+fmtKES2(costExVat(Number(s.selling_price)))):'No retail price in the product master — enter manually');
     note.textContent=bits.join(' · ');
     costRenderLines();
   }catch(e){note.textContent='Could not load suggestions — enter values manually.';costRenderLines();}

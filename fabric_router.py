@@ -12769,6 +12769,30 @@ def _style_selling_price(conn, style_name):
     return float(p) if p else None
 
 
+# Fixed 16% Kenyan VAT. Stored/entered selling_price is the VAT-INCLUSIVE
+# retail price (both auto modal-SKU pulls and manual entry); margin is ALWAYS
+# computed against the derived ex-VAT selling price (retail ÷ 1.16), never the
+# retail price itself. Derived at read time so existing (even signed-off)
+# sheets show the corrected margin without touching stored inputs.
+_COSTING_VAT_DIVISOR = 1.16
+
+
+def _costing_ex_vat(price):
+    """Ex-VAT selling price from the VAT-inclusive retail price; None-safe."""
+    return (round(float(price) / _COSTING_VAT_DIVISOR, 2)
+            if price is not None else None)
+
+
+def _costing_margin(retail_price, total_cost):
+    """(ex_vat_price, margin, margin_pct) vs the ex-VAT selling price."""
+    ex = _costing_ex_vat(retail_price)
+    if ex is None:
+        return None, None, None
+    margin = round(ex - total_cost, 2)
+    pct = round((ex - total_cost) / ex * 100, 2) if ex else None
+    return ex, margin, pct
+
+
 def _require_style_dps(conn, canon_style, dps_ref, color=None):
     """The DPS must belong to this style (finished_sku match rule) — 404s
     otherwise. With a colour, the DPS must also have MOs whose finished SKU is
@@ -13326,8 +13350,10 @@ def _sheet_payload(conn, sheet_id, with_history=True):
         s[k] = s[k].isoformat() if s.get(k) else None
     s["lines"] = lines
     s["total_cost"] = total
-    s["margin"] = round(sp - total, 2) if sp is not None else None
-    s["margin_pct"] = round((sp - total) / sp * 100, 1) if sp else None
+    sp_ex, margin, margin_pct = _costing_margin(sp, total)
+    s["selling_price_ex_vat"] = sp_ex
+    s["margin"] = margin
+    s["margin_pct"] = margin_pct
     signoffs = _costing_signoff_rows(conn, sheet_id)
     s["signoffs"] = signoffs
     s["signoff_status"] = _costing_signoff_status(signoffs)
@@ -13401,13 +13427,15 @@ def costing_sheets_list():
     for r in rows:
         sp = float(r["selling_price"]) if r["selling_price"] is not None else None
         tc = round(float(r["total_cost"] or 0), 2)
+        sp_ex, margin, margin_pct = _costing_margin(sp, tc)
         out.append({
             "id": r["id"], "style_name": r["style_name"],
             "style_number": r["style_number"], "selling_price": sp,
+            "selling_price_ex_vat": sp_ex,
             "dps_ref": r["dps_ref"], "color": r["color"],
             "total_cost": tc,
-            "margin": round(sp - tc, 2) if sp is not None else None,
-            "margin_pct": round((sp - tc) / sp * 100, 1) if sp else None,
+            "margin": margin,
+            "margin_pct": margin_pct,
             "line_count": r["line_count"],
             "signed_steps": int(r["n_signed"] or 0),
             "signoff_status": ("approved" if r["approved"]
@@ -13468,7 +13496,8 @@ def costing_export_all_xlsx():
     ws["A2"] = ("Generated " +
                 datetime.datetime.now(ZoneInfo("Africa/Nairobi"))
                 .strftime("%d %b %Y %H:%M") + " EAT · all amounts in KES")
-    cols = ["Style", "Style number", "Total cost / garment", "Selling price",
+    cols = ["Style", "Style number", "Total cost / garment",
+            "Retail price (VAT-incl)", "Selling price (ex-VAT)",
             "Margin", "Margin %", "Cost lines", "Last edited by", "Last edited at"]
     ws.append([])
     ws.append(cols)
@@ -13488,16 +13517,16 @@ def costing_export_all_xlsx():
                 pass
         ws.append([
             s["style_name"], s["style_number"],
-            s["total_cost"], s["selling_price"],
+            s["total_cost"], s["selling_price"], s["selling_price_ex_vat"],
             s["margin"], s["margin_pct"],
             s["line_count"], s["updated_by_name"], ua,
         ])
-    for col, w in zip("ABCDEFGHI", [34, 14, 20, 14, 12, 10, 10, 24, 20]):
+    for col, w in zip("ABCDEFGHIJ", [34, 14, 20, 18, 18, 12, 10, 10, 24, 20]):
         ws.column_dimensions[col].width = w
-    for row in ws.iter_rows(min_row=hdr_row + 1, min_col=3, max_col=7):
+    for row in ws.iter_rows(min_row=hdr_row + 1, min_col=3, max_col=8):
         for cell in row:
             cell.alignment = st["R"]
-            if cell.column <= 5 and cell.value is not None:
+            if cell.column <= 6 and cell.value is not None:
                 cell.number_format = "#,##0.00"
 
     buf = io.BytesIO()
@@ -13540,10 +13569,11 @@ def costing_export_sheet_xlsx(sheet_id: int):
         ("Style", s["style_name"]),
         ("Style number", s["style_number"]),
         ("Total cost / garment (KES)", s["total_cost"]),
-        ("Selling price (KES)", s["selling_price"]),
-        ("Selling price basis",
+        ("Retail price (VAT-incl, KES)", s["selling_price"]),
+        ("Selling price (ex-VAT, KES)", s["selling_price_ex_vat"]),
+        ("Retail price basis",
          "Auto (modal SKU price)" if s.get("selling_price_is_auto") else "Manual"),
-        ("Margin (KES)", s["margin"]),
+        ("Margin vs ex-VAT selling price (KES)", s["margin"]),
         ("Margin %", s["margin_pct"]),
         ("Notes", s.get("notes")),
         ("Last edited by", s.get("updated_by_name")),
@@ -13555,7 +13585,8 @@ def costing_export_sheet_xlsx(sheet_id: int):
     for i, (label, val) in enumerate(srows):
         ws.cell(row=r0 + i, column=1, value=label).font = st["LBL"]
         c = ws.cell(row=r0 + i, column=2, value=val)
-        if label.startswith(("Total cost", "Selling price (", "Margin (")):
+        if label.startswith(("Total cost", "Retail price (", "Selling price (",
+                             "Margin vs")):
             c.number_format = "#,##0.00"
     ws.column_dimensions["A"].width = 28
     ws.column_dimensions["B"].width = 44
@@ -13654,7 +13685,8 @@ def costing_sheet_create(request: Request, body: dict = Body(...)):
                       ln["component_id"]))
         _costing_history_write(conn, sheet_id, "created", uid, uname,
                                f"sheet created with {len(lines)} line(s)",
-                               {"lines": lines, "selling_price": sp})
+                               {"lines": lines, "selling_price": sp,
+                                "selling_price_ex_vat": _costing_ex_vat(sp)})
         conn.commit()
         return _sheet_payload(conn, sheet_id)
 
@@ -13706,7 +13738,8 @@ def costing_sheet_update(sheet_id: int, request: Request, body: dict = Body(...)
                       ln["total"], ln["is_auto"], ln["source"], ln["position"],
                       ln["component_id"]))
         _costing_history_write(conn, sheet_id, "updated", uid, uname, summary,
-                               {"lines": lines, "selling_price": sp})
+                               {"lines": lines, "selling_price": sp,
+                                "selling_price_ex_vat": _costing_ex_vat(sp)})
         conn.commit()
         return _sheet_payload(conn, sheet_id)
 
@@ -14030,19 +14063,22 @@ def _costing_build_pdf(s):
     margin = s.get("margin")
     tot = [
         ["Total cost per garment", money(s.get("total_cost"))],
-        ["Selling price" + (" (auto — modal SKU price)"
-                            if s.get("selling_price_is_auto") else " (manual)"),
+        ["Retail price (VAT-incl)" + (" (auto — modal SKU price)"
+                                      if s.get("selling_price_is_auto")
+                                      else " (manual)"),
          money(s.get("selling_price"))],
-        ["Margin", money(margin)],
-        ["Margin %", "—" if s.get("margin_pct") is None else f"{s['margin_pct']:.1f}%"],
+        ["Selling price (ex-VAT, retail ÷ 1.16)",
+         money(s.get("selling_price_ex_vat"))],
+        ["Margin (vs ex-VAT selling price)", money(margin)],
+        ["Margin %", "—" if s.get("margin_pct") is None else f"{s['margin_pct']:.2f}%"],
     ]
     tt = Table(tot, colWidths=[None, 30*mm], hAlign="RIGHT")
     tt.setStyle(TableStyle([
         ("FONTSIZE", (0, 0), (-1, -1), 9),
         ("ALIGN", (1, 0), (1, -1), "RIGHT"),
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTNAME", (0, 2), (-1, -1), "Helvetica-Bold"),
-        ("TEXTCOLOR", (0, 2), (-1, -1),
+        ("FONTNAME", (0, 3), (-1, -1), "Helvetica-Bold"),
+        ("TEXTCOLOR", (0, 3), (-1, -1),
          colors.HexColor("#DC2626") if (margin is not None and margin < 0)
          else colors.HexColor("#15803D")),
         ("LINEABOVE", (0, 0), (-1, 0), 0.7, INK),
