@@ -150,6 +150,22 @@ def run():
                     "scheduled_date", "date_done", "move_ids_without_package"]})
     log.info("Fetched %d pickings (in-flight + last %dd done)", len(pickings), RECENT_DONE_DAYS)
 
+    # 2b. Also fetch store→warehouse (returns to WHREC id=1356) from retail stores only
+    store_src_ids = list(store_dest_ids.keys())
+    domain_returns = [
+        ["location_dest_id", "=", 1356],  # WHREC/Stock
+        ["location_id", "in", store_src_ids],  # only from retail stores
+        "|",
+        ["state", "in", list(IN_FLIGHT_STATES)],
+        "&", ["state", "=", "done"], ["date_done", ">=", cutoff],
+    ]
+    pickings_returns = models.execute_kw(ODOO_DB, uid, ODOO_PW, "stock.picking", "search_read",
+        [domain_returns],
+        {"fields": ["id", "name", "state", "origin", "location_id", "location_dest_id",
+                    "scheduled_date", "date_done", "move_ids_without_package"]})
+    log.info("Fetched %d store→warehouse pickings", len(pickings_returns))
+    pickings = pickings + pickings_returns
+
     # 3. Resolve source location codes/usage in bulk
     src_ids = list({p["location_id"][0] for p in pickings if p.get("location_id")})
     src_info = {}  # loc_id -> (short_code, usage)
@@ -189,15 +205,22 @@ def run():
         pk = pk_by_id.get(pk_ref[0])
         if not pk: continue
         dst = pk.get("location_dest_id")
-        if not dst or dst[0] not in store_dest_ids: continue
-        code, store_name, country = store_dest_ids[dst[0]]
         src = pk.get("location_id")
         src_code, src_usage = src_info.get(src[0], (None, None)) if src else (None, None)
+        # Store→warehouse: source is the store, dest is WHREC
+        if dst and dst[0] == 1356 and src and src[0] in store_dest_ids:
+            code, store_name, country = store_dest_ids[src[0]]
+            transfer_type_override = "store_to_warehouse"
+        elif dst and dst[0] in store_dest_ids:
+            code, store_name, country = store_dest_ids[dst[0]]
+            transfer_type_override = None
+        else:
+            continue
         prod = m.get("product_id")
         sku, pname = prod_sku.get(prod[0], (None, None)) if prod else (None, None)
         rows.append((
             pk["id"], pk.get("name"), pk.get("state"),
-            _classify_source(src_code, src_usage),
+            transfer_type_override or _classify_source(src_code, src_usage),
             src_code, (src[1] if src else None),
             code, store_name, country,
             sku, pname,

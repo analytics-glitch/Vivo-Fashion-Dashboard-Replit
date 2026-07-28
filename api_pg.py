@@ -34906,6 +34906,46 @@ if build_dir.exists():
         return response
 
 
+@app.get("/api/transfers/store-returns")
+def transfers_store_returns(
+    store: str = Query(default=None),
+    state: str = Query(default=None),
+):
+    """Store→warehouse returns: pickings from retail stores back to WHREC."""
+    filters = ["transfer_type = 'store_to_warehouse'"]
+    if store:
+        filters.append(f"to_store_name = {repr(store)}")
+    if state:
+        filters.append(f"state = {repr(state)}")
+    where = " AND ".join(filters)
+    summary = _users_exec(f"""
+        SELECT
+            to_store_name AS store,
+            state,
+            COUNT(DISTINCT picking_id) AS pickings,
+            ROUND(SUM(qty_planned)) AS qty_planned,
+            ROUND(SUM(qty_done)) AS qty_done,
+            MIN(scheduled_date) AS earliest,
+            MAX(scheduled_date) AS latest,
+            MAX(date_done) AS last_done
+        FROM stock_transfers
+        WHERE {where}
+        GROUP BY to_store_name, state
+        ORDER BY to_store_name, state
+    """, fetch=True)
+    totals = _users_exec(f"""
+        SELECT
+            COUNT(DISTINCT picking_id) AS total_pickings,
+            ROUND(SUM(qty_planned)) AS total_qty_planned,
+            ROUND(SUM(qty_done)) AS total_qty_done
+        FROM stock_transfers
+        WHERE {where}
+    """, fetch=True)
+    return {
+        "summary": summary,
+        "totals": totals[0] if totals else {},
+    }
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
