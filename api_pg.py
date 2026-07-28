@@ -3396,7 +3396,8 @@ def _is_manually_retired(style_name):
     # Name kept for the many call sites; source is now the Odoo status field.
     return _norm_style(style_name) in _odoo_retired_styles()
 
-def _lifecycle_tier(style_name, brand, age_weeks, reorder_count, months_active_12):
+def _lifecycle_tier(style_name, brand, age_weeks, reorder_count, months_active_12,
+                    *, is_noos=False):
     """Unified, dashboard-wide style lifecycle tier — Product Analysis and Range
     Management share this ONE definition so their tiers always agree.
 
@@ -3404,20 +3405,19 @@ def _lifecycle_tier(style_name, brand, age_weeks, reorder_count, months_active_1
     Active [Tier 1..4] + Retired == the total style universe):
       Retired              — hard retirement ONLY: the Odoo product status field
                              marks the style Retired (see _odoo_retired_styles).
-      Tier 1 / NOOS        — ≥24 months old AND sold in ALL 12 of the trailing
-                             12 calendar months. Target: < 50 styles — the true
-                             never-out-of-stock core (strict: must have sold
-                             every single month for a full year).
+      Tier 1 / NOOS        — flagged as NOOS directly in Odoo
+                             (all_products_clean.is_noos = TRUE, synced from
+                             the noos_styles table). Strictly Odoo-sourced; no
+                             age / months-active rule applies.
       Tier 2 / Core        — reordered ≥4 times (a proven, established style).
       Tier 3 / Recent Performer — reordered ≥1 time (has at least one repeat
                              purchase order, gaining traction).
-      Tier 4 / New Styles  — everything else: < 4 months old and/or not yet
-                             reordered.
+      Tier 4 / New Styles  — everything else: not yet reordered.
     """
     if _is_manually_retired(style_name):
         return "Retired"
-    # Tier 1 — NOOS: must be ≥24 months old AND sold in ALL 12 trailing months
-    if (age_weeks or 0) >= 104 and (months_active_12 or 0) >= 12:
+    # Tier 1 — NOOS: strictly from Odoo flag (is_noos on all_products_clean)
+    if is_noos:
         return "Tier 1"
     # Tier 2 — Core: ≥4 reorder cycles — proven, established demand
     if (reorder_count or 0) >= 4:
@@ -8962,7 +8962,8 @@ def analytics_product_analysis(
         # style/colour with photos never shows a placeholder just because the
         # alphabetically-first SKU happens to lack one. Deterministic MIN(sku)
         # tiebreak keeps the choice stable.
-        " (array_agg(sku ORDER BY (im.norm_sku IS NOT NULL) DESC, sku ASC))[1] AS rep_sku"
+        " (array_agg(sku ORDER BY (im.norm_sku IS NOT NULL) DESC, sku ASC))[1] AS rep_sku,"
+        " BOOL_OR(is_noos) AS is_noos"
         + prod_disp +
         " FROM all_products_clean"
         " LEFT JOIN (SELECT DISTINCT norm_sku FROM ("
@@ -9003,7 +9004,8 @@ def analytics_product_analysis(
         " COALESCE(st.soh_current,0) AS soh_current, COALESCE(st.soh_warehouse,0) AS soh_warehouse,"
         " COALESCE(st.soh_pipeline,0) AS soh_pipeline,"
         " COALESCE(st.soh_stores,0) AS soh_stores," + pos_out + " sa.current_price,"
-        " COALESCE(nos.months_active_12,0) AS months_active_12"
+        " COALESCE(nos.months_active_12,0) AS months_active_12,"
+        " COALESCE(p.is_noos, FALSE) AS is_noos"
         + from_join + activity_where
     )
 
@@ -9076,8 +9078,10 @@ def analytics_product_analysis(
         if full_price and price_max and price_max > full_price * 3:
             price_max = full_price
         sor_6m = _sor(units_6m, stock)
+        is_noos = bool(r.get("is_noos"))
         life_cycle = _life_cycle(_lifecycle_tier(
-            r["style_name"], r["brand"], age_weeks, reorder_count, months_active_12))
+            r["style_name"], r["brand"], age_weeks, reorder_count, months_active_12,
+            is_noos=is_noos))
         rows.append({
             "style_name": r["style_name"],
             "sku": r["rep_sku"],
@@ -9144,7 +9148,7 @@ def analytics_product_analysis(
         if not g:
             g = {"units": 0, "gross_units_period": 0, "revenue": 0, "net_revenue": 0, "stock": 0, "units_vel": 0,
                  "units_life": 0, "units_6m": 0, "sales_life": 0, "months_active_12": 0,
-                 "age_weeks": None, "full_price": None, "last_sale": None,
+                 "age_weeks": None, "full_price": None, "last_sale": None, "is_noos": False,
                  "brand": row["brand"], "category": row["category"], "subcategory": row["subcategory"]}
             styles[k] = g
         g["units"] += row["units_sold"]
@@ -9156,8 +9160,9 @@ def analytics_product_analysis(
         g["units_life"] += row["units_life"] or 0
         g["units_6m"] += row["units_6m"] or 0
         g["sales_life"] += row["sales_life"] or 0
-        # months_active_12 is a style-level constant (same across dim rows).
+        # months_active_12 / is_noos are style-level constants (same across dim rows).
         g["months_active_12"] = max(g["months_active_12"], row.get("months_active_12") or 0)
+        g["is_noos"] = g["is_noos"] or bool(row.get("is_noos"))
         # age_weeks / full_price are style-level constants (same across dim rows);
         # last_sale we carry as the most-recent across dim rows. These feed the
         # style-grain lifecycle gate below.
@@ -9183,7 +9188,8 @@ def analytics_product_analysis(
     for k, g in styles.items():
         aw = g["age_weeks"]
         rc = int(aw // 12) if aw else 0
-        t = _lifecycle_tier(k, g["brand"], aw, rc, g.get("months_active_12", 0))
+        t = _lifecycle_tier(k, g["brand"], aw, rc, g.get("months_active_12", 0),
+                            is_noos=g.get("is_noos", False))
         if t != "Retired":
             ov = _RANGE_OVERRIDES.get(k)
             ov_tier = ov["tier"] if (ov and ov.get("tier") in
@@ -19618,7 +19624,8 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
                 mode() WITHIN GROUP (ORDER BY price) FILTER (WHERE price > 0) AS price,
                 MIN(substring(style_launch_date, 1, 10)) FILTER (
                     WHERE substring(style_launch_date, 1, 10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
-                ) AS launch_date
+                ) AS launch_date,
+                BOOL_OR(is_noos) AS is_noos
             FROM all_products_clean
             WHERE style_name IS NOT NULL AND style_name <> ''
             -- Exclude third-party brand at the SKU-ROW level (before GROUP BY),
@@ -19655,7 +19662,8 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
             sa.last_sale, sa.first_sale,
             COALESCE(st.soh_stores, 0) AS soh_stores, COALESCE(st.soh_warehouse, 0) AS soh_warehouse,
             COALESCE(st.soh_pipeline, 0) AS soh_pipeline,
-            COALESCE(nos.months_active_12, 0) AS months_active_12
+            COALESCE(nos.months_active_12, 0) AS months_active_12,
+            COALESCE(p.is_noos, FALSE) AS is_noos
         FROM prod p
         LEFT JOIN sales sa USING (style_name)
         LEFT JOIN stock st USING (style_name)
@@ -19672,7 +19680,7 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
                     "units_online", "units_stores",
                     "soh_stores", "soh_warehouse", "soh_pipeline",
                     "months_active_12"],
-        max_fields=["last_sale"],
+        max_fields=["last_sale", "is_noos"],
         min_fields=["first_sale", "launch_date"],
         keep_fields=["brand", "subcategory", "price"],
     )
@@ -19691,6 +19699,7 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
         soh_pipeline = int(r["soh_pipeline"] or 0)
         current_stock = soh_stores + soh_warehouse
         months_active_12 = int(r["months_active_12"] or 0)
+        is_noos = bool(r.get("is_noos"))
         last_sale = r["last_sale"]
         first_sale = r["first_sale"]
         launch = _parse_iso_date(r["launch_date"]) or first_sale
@@ -19736,7 +19745,8 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
         # it, an ADVISORY "flagged for retirement" overlay (_retirement_flag_reason)
         # marks still-trading styles that fail their SOP age-stage gate, with a reason.
         life_tier = _lifecycle_tier(
-            r["style_name"], r["brand"], age_weeks, reorder_count, months_active_12)
+            r["style_name"], r["brand"], age_weeks, reorder_count, months_active_12,
+            is_noos=is_noos)
         is_retired = (life_tier == "Retired")
 
         if is_retired:
