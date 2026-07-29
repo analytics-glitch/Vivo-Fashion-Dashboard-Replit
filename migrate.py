@@ -44,6 +44,14 @@ def main():
         checksum = hashlib.sha256(sql.encode()).hexdigest()[:16]
         log.info("Applying %s ...", fn)
         try:
+            # Cap lock-wait so a migration that needs AccessExclusiveLock on a
+            # table the running sync-loop holds never hangs the watchdog
+            # indefinitely (which would keep uvicorn from starting and cause
+            # the deployment health check to time out).  30 s is generous enough
+            # for any DDL on our tables but well under the 8-minute promote
+            # window, so a failed migration surfaces quickly and the watchdog
+            # can still boot the API.
+            cur.execute("SET LOCAL lock_timeout = '30s'")
             cur.execute(sql)
             cur.execute(
                 "INSERT INTO schema_migrations (version, filename, checksum) VALUES (%s,%s,%s)",
