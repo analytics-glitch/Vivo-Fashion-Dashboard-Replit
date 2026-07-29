@@ -19,6 +19,8 @@
   --chart-primary:#EE5A0E; --chart-primary-deep:#C2410C; --chart-secondary:#22332B; --chart-tertiary:#B8AFA3;
   /* KPI card design tokens — white cards, one ink hero, Vivo-orange accent */
   --kpi-surface:#ffffff; --kpi-border:#ECE6E1; --kpi-ink:#1A1A1A; --kpi-orange:#EE5A0E; --kpi-orange-deep:#C2410C;
+  /* Green KPI card variant tokens (Months-of-cover target card) */
+  --kpi-green-bg:#173404; --kpi-green-bar:#97C459; --kpi-green-text:#EAF3DE; --kpi-green-muted:#C0DD97; --kpi-value-danger:#F09595;
   /* Header (Fabric BI top zone) tokens — near-white paper bands, Vivo-orange accent, ink + warm-grey text.
      Brand rule: #F15A24 appears in exactly three places — the 3px top rule, the
      logo block and the active nav item (flat, no gradients/shadows). */
@@ -260,6 +262,20 @@ select:focus,input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(26
 .kpi.hero{background:var(--kpi-ink);border-color:var(--kpi-ink);color:#fff;position:relative;overflow:hidden;}
 .kpi.hero::after{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--kpi-orange);}
 .kpi.hero:hover{border-color:var(--kpi-ink);box-shadow:0 2px 8px rgba(26,26,26,.14);}
+/* Green variant — mirrors .kpi.hero (solid bg, single left accent bar, no border) */
+.kpi.green{background:var(--kpi-green-bg);border:none;border-radius:0;color:var(--kpi-green-text);position:relative;overflow:hidden;}
+.kpi.green::after{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--kpi-green-bar);}
+.kpi.green:hover{box-shadow:0 2px 8px rgba(23,52,4,.24);}
+.kpi.green .eyebrow{color:var(--kpi-green-text);}
+.kpi.green .eyebrow-qual{color:var(--kpi-green-muted);}
+.kpi.green .kpi-value{color:var(--kpi-green-text);}
+.kpi.green .kpi-value.danger{color:var(--kpi-value-danger);}
+.kpi.green .kpi-value.muted{color:var(--kpi-green-muted);}
+.kpi.green .kpi-value-unit{color:var(--kpi-green-muted);}
+.kpi.green .kpi-sub{color:var(--kpi-green-muted);}
+.kpi.green .kpi-range-hint{font-size:11px;font-weight:600;line-height:1.3;margin-top:2px;color:var(--kpi-value-danger);}
+.kpi.green .btn.ghost{background:transparent;border:1px solid var(--kpi-green-bar);color:var(--kpi-green-text);}
+.kpi.green .btn.ghost:hover{background:var(--kpi-green-bar);color:var(--kpi-green-bg);border-color:var(--kpi-green-bar);}
 .kpi .eyebrow{display:block;line-height:1.25;font-size:12px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);text-align:center;}
 .kpi .eyebrow-main{display:block;}
 .kpi .eyebrow-qual{display:block;min-height:1.25em;color:var(--kpi-orange);white-space:nowrap;}
@@ -1606,7 +1622,7 @@ const fx=t=>t?` data-fx="${esc(t)}"`:'';
 // button-less cards so footnote/button baselines stay aligned within a grid.
 function KpiCard(o){
   o=o||{};
-  const cls='kpi'+(o.hero?' hero':'');
+  const cls='kpi'+(o.hero?' hero':'')+(o.variant?(' '+o.variant):'');
   const cardAttrs=o.cardAttrs||'';
   const vcls='kpi-value'+(o.valueClass?(' '+o.valueClass):'');
   const vAttrs=o.valueAttrs||'';
@@ -1615,6 +1631,7 @@ function KpiCard(o){
   const unit=(o.unit&&!isEmpty)?`<span class="kpi-value-unit">${o.unit}</span>`:'';
   const prefix=(o.prefix&&!isEmpty)?`<span class="kpi-value-unit kpi-value-unit--prefix">${o.prefix}</span>`:'';
   const delta=`<div class="kpi-delta">${o.delta||''}</div>`;
+  const rangeHint=o.rangeHint?`<div class="kpi-range-hint">${o.rangeHint}</div>`:'';
   const footAttrs=o.footnoteAttrs||'';
   let foot;
   if(o.alert){
@@ -1634,7 +1651,7 @@ function KpiCard(o){
   return `<div class="${cls}"${cardAttrs}>`
     +eyebrow
     +`<p class="${vcls}"${vAttrs}>${prefix}<span class="kpi-value-number">${val}</span>${unit}</p>`
-    +delta+foot+action+`</div>`;
+    +rangeHint+delta+foot+action+`</div>`;
 }
 // Plain-language formulas / source notes, keyed for reuse across sub-pages.
 const FX={
@@ -4440,12 +4457,19 @@ function renderKpis(d,coverDelta){
     (()=>{
      // Headline value: number when computable, capped "12+" when overstocked
      // (stock but no recent use), "—" only when there is genuinely no data.
-     let cval,ccls='';
-     if(coverStatus==='overstocked'){cval='12+';}
-     else if(coverStatus==='ok'&&cover!=null){cval=coverFmt(cover);ccls=cover<1?'amber':'';}
-     else{cval='&mdash;';}
+     // Healthy target band for months of cover (green card): value colored green
+     // inside the band, light red (danger) outside it, with a small hint.
+     const MOC_TARGET_MIN=4, MOC_TARGET_MAX=6;
+     let cval,ccls='',chint='';
+     if(coverStatus==='overstocked'){cval='12+';ccls='danger';chint='Above target';}
+     else if(coverStatus==='ok'&&cover!=null&&!isNaN(Number(cover))){
+       cval=coverFmt(cover);
+       if(cover<MOC_TARGET_MIN){ccls='danger';chint='Below target';}
+       else if(cover>MOC_TARGET_MAX){ccls='danger';chint='Above target';}
+     }
+     else{cval='&mdash;';ccls='muted';}
      const dl=(cover!=null)?`<button class="btn ghost" onclick="downloadMonthsCoverXlsx()" title="Download the calculation audit trail (fabric stock, the 6-month net run-rate and the per-month consumption behind it) as an Excel workbook">&#11015; Download (Excel)</button>`:'';
-     return KpiCard({reserveAction:true,label:'Months of cover',qualifier:'Last 6 Months Consump.',value:cval,valueClass:ccls,valueAttrs:fx(FX.monthsCover),cardAttrs:` title="${coverTip}"`,footnote:coverNote,footnoteAttrs:' style="margin-top:0;"',action:dl});})(),
+     return KpiCard({variant:'green',reserveAction:true,label:'Months of cover',qualifier:'Last 6 Months Consump.',value:cval,valueClass:ccls,rangeHint:chint,valueAttrs:fx(FX.monthsCover),cardAttrs:` title="${coverTip}"`,footnote:coverNote,footnoteAttrs:' style="margin-top:0;"',action:dl});})(),
     (()=>{
      // Prev-month cover: stock ÷ the PREVIOUS full calendar month's net use — a
      // more reactive signal than the 6-month average. Sits next to it and degrades
