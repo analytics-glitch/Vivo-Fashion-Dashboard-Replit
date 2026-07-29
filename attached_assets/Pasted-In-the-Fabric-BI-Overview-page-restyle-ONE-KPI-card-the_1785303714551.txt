@@ -1,0 +1,46 @@
+In the Fabric BI Overview page, restyle ONE KPI card — the card titled
+"MONTHS OF COVER — LAST 6 MONTHS CONSUMP." (the 5.9 card). Do not change any
+other KPI card.
+
+VISUAL TREATMENT (solid green, mirroring the black "STOCK ON HAND" card):
+1. Card background: solid dark green #173404.
+2. Left accent bar: 4px solid #97C459, full card height. Because the accent is a
+   single-sided border, set border-radius: 0 on this card — same as how the
+   STOCK ON HAND card handles its orange bar. No outer border.
+3. Keep the EXACT same card width, height, padding, font sizes, font weights,
+   and internal layout as the other KPI cards. Only colors change, so the grid
+   stays aligned.
+4. Text colors:
+   - Label "MONTHS OF COVER" → #EAF3DE
+   - Sub-label "LAST 6 MONTHS CONSUMP." → #C0DD97
+5. "Download (Excel)" button inside this card: transparent background, 1px
+   #97C459 border, #EAF3DE text and icon. Hover state: #97C459 background with
+   #173404 text. Identical size, radius, and icon to the other download buttons.
+
+CONDITIONAL VALUE COLOR:
+6. The metric value (currently 5.9) must be colored by threshold:
+   - If value >= 4 AND value <= 6  → healthy → #EAF3DE
+   - If value < 4 OR value > 6     → out of range → #F09595
+   Use #F09595 (a light red) rather than a pure red — pure red on the dark green
+   background fails contrast and is hard to read.
+   Handle null/undefined/NaN gracefully: render an em dash in #C0DD97, never a
+   red NaN.
+7. Add a small text hint under the value when out of range, in the same color as
+   the value, 11px: "Below target" if < 4, "Above target" if > 6. Nothing shown
+   when in range.
+8. Put the thresholds in named constants (MOC_TARGET_MIN = 4, MOC_TARGET_MAX = 6)
+   at the top of the component, not inline in the JSX, so they are easy to tune.
+
+IMPLEMENTATION:
+9. Add all new colors as reusable theme tokens in the existing theme/CSS
+   variables file (e.g. --kpi-green-bg: #173404, --kpi-green-bar: #97C459,
+   --kpi-green-text: #EAF3DE, --kpi-green-muted: #C0DD97,
+   --kpi-value-danger: #F09595). Do not hardcode hex values inline.
+10. Drive the treatment through a variant prop on the existing KPI card
+    component (e.g. accent="green" | "dark" | "default") plus an optional
+    valueRange={{ min, max }} prop, rather than a one-off style override, so
+    other cards can reuse both behaviours later.
+11. If the app supports dark mode, verify the card and both value colors still
+    read correctly there.
+
+Show me the updated component file and the theme/CSS file.

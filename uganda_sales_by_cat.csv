@@ -1,0 +1,31 @@
+Category,Subcategory,Units Sold,Category Total Units,% of Category,Category % of Total,% of Total
+Dresses,Knee Length Dresses,2523,5331,47.3,36.8,17.4
+Dresses,Maxi Dresses,1954,5331,36.7,36.8,13.5
+Dresses,Midi & Capri Dresses,586,5331,11.0,36.8,4.0
+Dresses,Short & Mini Dresses,268,5331,5.0,36.8,1.9
+Tops,Loose Tops,1550,3845,40.3,26.5,10.7
+Tops,Fitted Tops,1415,3845,36.8,26.5,9.8
+Tops,T-shirts & Tank Tops,523,3845,13.6,26.5,3.6
+Tops,Bodysuits,193,3845,5.0,26.5,1.3
+Tops,Midriff & Crop Tops,157,3845,4.1,26.5,1.1
+Tops,Men's Tops,7,3845,0.2,26.5,0.0
+Bottoms,Full Length Pants,1824,2567,71.1,17.7,12.6
+Bottoms,Jumpsuits & Playsuits,392,2567,15.3,17.7,2.7
+Bottoms,Leggings,265,2567,10.3,17.7,1.8
+Bottoms,Shorts & Skorts,63,2567,2.5,17.7,0.4
+Bottoms,Culottes & Capri Pants,23,2567,0.9,17.7,0.2
+Outerwear,Waterfalls & Kimonos,1086,1913,56.8,13.2,7.5
+Outerwear,Sweaters & Ponchos,464,1913,24.3,13.2,3.2
+Outerwear,Jackets & Coats,331,1913,17.3,13.2,2.3
+Outerwear,Hoodies & Sweatshirts,32,1913,1.7,13.2,0.2
+Skirts,Knee Length Skirts,212,439,48.3,3.0,1.5
+Skirts,Maxi Skirts,158,439,36.0,3.0,1.1
+Skirts,Midi & Capri Skirts,55,439,12.5,3.0,0.4
+Skirts,Short & Mini Skirts,14,439,3.2,3.0,0.1
+Accessories,Scarves,150,274,54.7,1.9,1.0
+Accessories,Accessories,122,274,44.5,1.9,0.8
+Accessories,Belts,2,274,0.7,1.9,0.0
+Two-Piece Sets,Skirts & Top Set,55,113,48.7,0.8,0.4
+Two-Piece Sets,Pants & Waterfall Set,34,113,30.1,0.8,0.2
+Two-Piece Sets,Pants & Top Set,24,113,21.2,0.8,0.2
+Sale,Sample & Sale Items,1,1,100.0,0.0,0.0
