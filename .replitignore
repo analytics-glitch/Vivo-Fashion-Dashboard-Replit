@@ -3,3 +3,23 @@
 
 # No need to store the pnpm store twice.
 .local
+
+# Vite / build tool cache — grows continuously during dev, not needed at runtime.
+.cache
+
+# Legacy dashboard app that is no longer used in production.
+# Its node_modules alone are ~1.1 GiB.
+dashboard/node_modules
+
+# loyalty-app sub-projects — the production loyalty PWA lives in
+# artifacts/loyalty-pwa; these legacy backends are not served in production.
+loyalty-app/loyalty-app-backend/node_modules
+loyalty-app/the-loyalty-app/node_modules
+
+# Dev assets — screenshots, reference images, uploaded files used only during
+# development. Not needed at runtime.
+attached_assets
+
+# Python bytecode caches — regenerated automatically on first import.
+__pycache__
+**/__pycache__
