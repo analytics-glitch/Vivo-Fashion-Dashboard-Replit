@@ -1555,12 +1555,12 @@ const Overview = () => {
               sub={ctSeg.totalCustomers == null ? "New + Returning + Walk Ins"
                 : `${fmtNum(ctSeg.newCustomers || 0)} New · ${fmtNum(ctSeg.retCustomers || 0)} Returning · ${fmtNum(ctSeg.walkInCustomers || 0)} Walk Ins`}
               icon={UsersThree}
-              formula="Total unique customers in this period: New + Returning + Walk Ins. ABV = total revenue ÷ total customers across all segments."
+              formula="Total unique customers in this period: New + Returning + Walk Ins. ABV = Total Sales ÷ transactions (same as the ABV tile)."
               delta={compareMode !== "none" && ctSeg.totalCustomersPrev ? pctDelta(ctSeg.totalCustomers, ctSeg.totalCustomersPrev) : null}
               deltaLabel={compareLbl} deltaMuted={deltaMuted} deltaMutedNote={deltaMutedNote}
               prevValue={compareMode !== "none" && ctSeg.totalCustomersPrev != null ? fmtNum(ctSeg.totalCustomersPrev) : null}
               showDelta={compareMode !== "none"}
-              footer={ctSeg.totalAbv != null ? `ABV KES ${fmtNum(ctSeg.totalAbv)}` : null}
+              footer={kpis && kpis.total_orders ? `ABV KES ${fmtNum(Math.round(kpis.total_sales / kpis.total_orders))}` : null}
               action={{ label: "Customer Breakdown", to: "/customers" }}
               prefetch={pf("/customers")} />
           </div>
