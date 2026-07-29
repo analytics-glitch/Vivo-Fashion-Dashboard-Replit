@@ -722,21 +722,25 @@ const Overview = () => {
     const newCustomers   = pick(ctSpend, "new_customers");
     const retCustomers   = pick(ctSpend, "returning_customers");
     const walkInCustomers = pick(ctSpend, "walk_in_customers");
+    const totalCustomers  = pick(ctSpend, "total_customers");
     return {
       newSales, retSales, walkInSales,
       newSalesPrev:        pick(ctSpendPrev, "new_sales"),
       retSalesPrev:        pick(ctSpendPrev, "returning_sales"),
       walkInSalesPrev:     pick(ctSpendPrev, "walk_in_sales"),
       newCustomers, retCustomers, walkInCustomers,
-      totalCustomers:      pick(ctSpend, "total_customers"),
+      totalCustomers,
       newCustomersPrev:    pick(ctSpendPrev, "new_customers"),
       retCustomersPrev:    pick(ctSpendPrev, "returning_customers"),
       walkInCustomersPrev: pick(ctSpendPrev, "walk_in_customers"),
       totalCustomersPrev:  pick(ctSpendPrev, "total_customers"),
-      // Average spend per customer for each segment.
-      newAsp:    (newSales != null && newCustomers > 0) ? Math.round(newSales / newCustomers) : null,
-      retAsp:    (retSales != null && retCustomers > 0) ? Math.round(retSales / retCustomers) : null,
-      walkInAsp: (walkInSales != null && walkInCustomers > 0) ? Math.round(walkInSales / walkInCustomers) : null,
+      // Average Basket Value (ABV) per customer for each segment.
+      newAbv:    (newSales != null && newCustomers > 0) ? Math.round(newSales / newCustomers) : null,
+      retAbv:    (retSales != null && retCustomers > 0) ? Math.round(retSales / retCustomers) : null,
+      walkInAbv: (walkInSales != null && walkInCustomers > 0) ? Math.round(walkInSales / walkInCustomers) : null,
+      // Overall ABV across all segments: total revenue ÷ total customers.
+      totalAbv:  (newSales != null && retSales != null && walkInSales != null && totalCustomers > 0)
+        ? Math.round(((newSales || 0) + (retSales || 0) + (walkInSales || 0)) / totalCustomers) : null,
     };
   }, [ctSpend, ctSpendPrev]);
   // Share of Total Sales each bucket represents (they sum to 100%).
@@ -1501,12 +1505,12 @@ const Overview = () => {
                 <>{kfmt(ctSeg.newSales)}{ctShare.newPct != null && <div>{ctShare.newPct.toFixed(1)}% of Revenue</div>}</>
               )}
               icon={UserPlus}
-              formula="Customers making their first-ever purchase in this period. Count (% of all customers) is the headline; KES and % of Revenue show their spend contribution. ASP = average spend per new customer."
+              formula="Customers making their first-ever purchase in this period. Count (% of all customers) is the headline; KES and % of Revenue show their spend contribution. ABV = average basket value per new customer."
               delta={compareMode !== "none" && ctSeg.newCustomersPrev ? pctDelta(ctSeg.newCustomers, ctSeg.newCustomersPrev) : null}
               deltaLabel={compareLbl} deltaMuted={deltaMuted} deltaMutedNote={deltaMutedNote}
               prevValue={compareMode !== "none" && ctSeg.newCustomersPrev != null ? fmtNum(ctSeg.newCustomersPrev) : null}
               showDelta={compareMode !== "none"}
-              footer={ctSeg.newAsp != null ? `ASP KES ${fmtNum(ctSeg.newAsp)}` : null}
+              footer={ctSeg.newAbv != null ? `ABV KES ${fmtNum(ctSeg.newAbv)}` : null}
               action={{ label: "Customer Breakdown", to: "/customers" }}
               prefetch={pf("/customers")} />
             <KPICard testId="kpi-returning-customer-revenue" label="Returning Customers"
@@ -1519,12 +1523,12 @@ const Overview = () => {
                 <>{kfmt(ctSeg.retSales)}{ctShare.retPct != null && <div>{ctShare.retPct.toFixed(1)}% of Revenue</div>}</>
               )}
               icon={UsersThree}
-              formula="Repeat identified customers who have purchased before this period. Count (% of all customers) is the headline; KES and % of Revenue show their spend contribution. ASP = average spend per returning customer."
+              formula="Repeat identified customers who have purchased before this period. Count (% of all customers) is the headline; KES and % of Revenue show their spend contribution. ABV = average basket value per returning customer."
               delta={compareMode !== "none" && ctSeg.retCustomersPrev ? pctDelta(ctSeg.retCustomers, ctSeg.retCustomersPrev) : null}
               deltaLabel={compareLbl} deltaMuted={deltaMuted} deltaMutedNote={deltaMutedNote}
               prevValue={compareMode !== "none" && ctSeg.retCustomersPrev != null ? fmtNum(ctSeg.retCustomersPrev) : null}
               showDelta={compareMode !== "none"}
-              footer={ctSeg.retAsp != null ? `ASP KES ${fmtNum(ctSeg.retAsp)}` : null}
+              footer={ctSeg.retAbv != null ? `ABV KES ${fmtNum(ctSeg.retAbv)}` : null}
               action={{ label: "Customer Breakdown", to: "/customers" }}
               prefetch={pf("/customers")} />
             <KPICard testId="kpi-walkin-revenue" label="Walk Ins"
@@ -1537,12 +1541,12 @@ const Overview = () => {
                 <>{kfmt(ctSeg.walkInSales)}{ctShare.walkInPct != null && <div>{ctShare.walkInPct.toFixed(1)}% of Revenue</div>}</>
               )}
               icon={PersonSimpleWalk}
-              formula="Anonymous / walk-in customers (no linked customer profile). Count (% of all customers) is the headline; KES and % of Revenue show their spend contribution. ASP = average spend per walk-in."
+              formula="Anonymous / walk-in customers (no linked customer profile). Count (% of all customers) is the headline; KES and % of Revenue show their spend contribution. ABV = average basket value per walk-in."
               delta={compareMode !== "none" && ctSeg.walkInCustomersPrev ? pctDelta(ctSeg.walkInCustomers, ctSeg.walkInCustomersPrev) : null}
               deltaLabel={compareLbl} deltaMuted={deltaMuted} deltaMutedNote={deltaMutedNote}
               prevValue={compareMode !== "none" && ctSeg.walkInCustomersPrev != null ? fmtNum(ctSeg.walkInCustomersPrev) : null}
               showDelta={compareMode !== "none"}
-              footer={ctSeg.walkInAsp != null ? `ASP KES ${fmtNum(ctSeg.walkInAsp)}` : null}
+              footer={ctSeg.walkInAbv != null ? `ABV KES ${fmtNum(ctSeg.walkInAbv)}` : null}
               action={{ label: "Customer Breakdown", to: "/customers" }}
               prefetch={pf("/customers")} />
             <KPICard testId="kpi-total-customers" label="Total Customers"
@@ -1551,11 +1555,12 @@ const Overview = () => {
               sub={ctSeg.totalCustomers == null ? "New + Returning + Walk Ins"
                 : `${fmtNum(ctSeg.newCustomers || 0)} New · ${fmtNum(ctSeg.retCustomers || 0)} Returning · ${fmtNum(ctSeg.walkInCustomers || 0)} Walk Ins`}
               icon={UsersThree}
-              formula="Total unique customers in this period: New + Returning + Walk Ins."
+              formula="Total unique customers in this period: New + Returning + Walk Ins. ABV = total revenue ÷ total customers across all segments."
               delta={compareMode !== "none" && ctSeg.totalCustomersPrev ? pctDelta(ctSeg.totalCustomers, ctSeg.totalCustomersPrev) : null}
               deltaLabel={compareLbl} deltaMuted={deltaMuted} deltaMutedNote={deltaMutedNote}
               prevValue={compareMode !== "none" && ctSeg.totalCustomersPrev != null ? fmtNum(ctSeg.totalCustomersPrev) : null}
               showDelta={compareMode !== "none"}
+              footer={ctSeg.totalAbv != null ? `ABV KES ${fmtNum(ctSeg.totalAbv)}` : null}
               action={{ label: "Customer Breakdown", to: "/customers" }}
               prefetch={pf("/customers")} />
           </div>
