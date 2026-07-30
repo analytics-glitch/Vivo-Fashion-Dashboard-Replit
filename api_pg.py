@@ -9676,17 +9676,23 @@ def analytics_sts_by_category(
     # The Inventory page sends `locations` (plural); other callers send `channel`.
     # Accept both — `locations` wins when set.
     _chan = locations or channel
+    # The Inventory page lowercases country values before sending (e.g. 'uganda').
+    # all_sales.country stores title-cased values ('Uganda'), so normalise to
+    # title-case for the sales-side IN predicate.  For the stock side we use
+    # LOWER() on the column so both forms match regardless of caller.
+    _country_norm = (",".join(c.strip().title() for c in country.split(","))
+                    if country else None)
     # Inventory-page local filters (search / brand / subcategory pill) scope
     # BOTH the sales and stock sides so the table reflects only the matching
     # products, not category-wide totals.
     local_scope = _inv_local_scope_sql(search, brand, product_type, alias="p")
-    where = build_filters(date_from, date_to, country, _chan,
+    where = build_filters(date_from, date_to, _country_norm, _chan,
         extra="s.sale_kind IN ('sale','order') AND s.ordered_item_quantity > 0 AND p.category IS NOT NULL AND p.category <> ''") + local_scope
     # The filter-bar country / POS-location selection must scope the STOCK side
     # too, not just sales — otherwise the store-scoped Units Sold was matched
     # against catalog-wide Inventory and the category-total Inventory column
     # ignored the POS filter (mirrors the subcategory helper).
-    inv_country_filter = ("AND i.country IN (" + csv_to_sql(country) + ")") if country else ""
+    inv_country_filter = ("AND LOWER(i.country) IN (" + csv_to_sql(country.lower()) + ")") if country else ""
     inv_loc_filter = ("AND i.pos_location_name IN (" + csv_to_sql(_chan) + ")") if _chan else ""
     return run_query("""
         WITH sales AS (
