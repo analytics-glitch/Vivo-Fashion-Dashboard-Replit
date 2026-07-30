@@ -1461,8 +1461,8 @@ async def clerk_auth_gate(request: Request, call_next):
     if path.startswith("/api/chair") and user.get("role") not in ("admin", "leadership"):
         return JSONResponse({"detail": "The Chair access requires a leadership or admin role"}, status_code=403)
 
-    # L10 Meeting Tracker — leadership + admin surface.
-    if path.startswith("/api/l10") and user.get("role") not in ("admin", "leadership"):
+    # L10 Meeting Tracker — leadership, smt + admin surface.
+    if path.startswith("/api/l10") and user.get("role") not in ("admin", "leadership", "smt"):
         return JSONResponse({"detail": "L10 access requires a leadership or admin role"}, status_code=403)
 
     # Odoo Reconciliation Agent (/api/recon/*) is the same finance-grade surface
