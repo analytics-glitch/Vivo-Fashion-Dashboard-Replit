@@ -32827,7 +32827,16 @@ def _st_is_privileged(request):
 
 def _style_warehouse_pct(style_name, quantity):
     """Fraction (0–100) of the style's order qty in Warehouse Finished Goods.
-    Returns (pct_float, wh_units). Best-effort — returns (0.0, 0) on failure."""
+    Returns (pct_float, wh_units). Best-effort — returns (0.0, 0) on failure.
+
+    Matching is case-insensitive and tolerates suffix words that appear in the
+    tracker name but not in Odoo's style_name (e.g. tracker stores "Vivo Basic
+    Leisure Pants In Ponte" while Odoo has "Vivo Basic Leisure Pants").  The
+    query accepts a row when:
+      • exact case-insensitive match, OR
+      • the tracker name starts with the Odoo style_name (Odoo name is shorter), OR
+      • the Odoo style_name starts with the tracker name (tracker name is shorter).
+    """
     if not style_name or not quantity or int(quantity or 0) <= 0:
         return 0.0, 0
     try:
@@ -32835,8 +32844,11 @@ def _style_warehouse_pct(style_name, quantity):
             "SELECT COALESCE(SUM(GREATEST(i.available, 0)), 0)::int AS wh_units "
             "FROM all_inventory i "
             "JOIN all_products_clean p ON i.sku = p.sku "
-            "WHERE p.style_name = %s AND i.pos_location_name = 'Warehouse Finished Goods'",
-            (style_name,), fetch=True)
+            "WHERE (LOWER(p.style_name) = LOWER(%s) "
+            "       OR LOWER(%s) LIKE LOWER(p.style_name) || ' %%' "
+            "       OR LOWER(p.style_name) LIKE LOWER(%s) || ' %%') "
+            "  AND i.pos_location_name = 'Warehouse Finished Goods'",
+            (style_name, style_name, style_name), fetch=True)
         wh = int((rows or [{}])[0].get("wh_units") or 0)
         pct = min(wh / int(quantity) * 100, 100.0)
         return pct, wh
@@ -33295,15 +33307,9 @@ async def style_tracker_update(style_id: int, request: Request):
     # Auto-fill deliver_by when order_date changes and deliver_by not in body
     if "order_date" in fields and fields["order_date"] and "deliver_by" not in body:
         fields.setdefault("deliver_by", fields["order_date"] + timedelta(days=14))
-    # Warehouse gate: must have ≥90% of order qty transferred to warehouse.
-    # Replenishment and Re-Order types arrive from a supplier — they don't flow
-    # through internal production locations, so the Odoo inventory check would
-    # always return 0% even when the goods are physically in the warehouse.
-    # Skip the gate for those order types.
+    # Warehouse gate: must have ≥90% of order qty transferred to warehouse
     new_status = fields.get("status")
-    _non_production_types = {"Replenishment", "Re-Order"}
-    if (new_status == "Warehouse" and ex.get("status") != "Warehouse"
-            and ex.get("order_type") not in _non_production_types):
+    if new_status == "Warehouse" and ex.get("status") != "Warehouse":
         pct, wh_units = _style_warehouse_pct(ex["style_name"], ex["quantity"])
         if pct < 90.0:
             return JSONResponse({
