@@ -33295,9 +33295,15 @@ async def style_tracker_update(style_id: int, request: Request):
     # Auto-fill deliver_by when order_date changes and deliver_by not in body
     if "order_date" in fields and fields["order_date"] and "deliver_by" not in body:
         fields.setdefault("deliver_by", fields["order_date"] + timedelta(days=14))
-    # Warehouse gate: must have ≥90% of order qty transferred to warehouse
+    # Warehouse gate: must have ≥90% of order qty transferred to warehouse.
+    # Replenishment and Re-Order types arrive from a supplier — they don't flow
+    # through internal production locations, so the Odoo inventory check would
+    # always return 0% even when the goods are physically in the warehouse.
+    # Skip the gate for those order types.
     new_status = fields.get("status")
-    if new_status == "Warehouse" and ex.get("status") != "Warehouse":
+    _non_production_types = {"Replenishment", "Re-Order"}
+    if (new_status == "Warehouse" and ex.get("status") != "Warehouse"
+            and ex.get("order_type") not in _non_production_types):
         pct, wh_units = _style_warehouse_pct(ex["style_name"], ex["quantity"])
         if pct < 90.0:
             return JSONResponse({
