@@ -7994,7 +7994,8 @@ def analytics_sor_all_styles(
                 mode() WITHIN GROUP (ORDER BY style_number) AS style_number,
                 -- modal (most common) positive ticket price, robust to a
                 -- foreign-currency leak on a few country SKUs (see PA prod CTE)
-                mode() WITHIN GROUP (ORDER BY price::numeric) FILTER (WHERE price::numeric > 0) AS original_price
+                mode() WITHIN GROUP (ORDER BY price::numeric) FILTER (WHERE price::numeric > 0) AS original_price,
+                BOOL_OR(is_noos) AS is_noos
             FROM all_products_clean
             WHERE style_name IS NOT NULL AND style_name <> ''""" + brand_pf + """
             GROUP BY style_name
