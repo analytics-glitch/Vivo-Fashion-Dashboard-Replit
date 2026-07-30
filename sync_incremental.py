@@ -1643,13 +1643,10 @@ def categorise_products(cur):
         END
         WHERE category IS NULL OR TRIM(category) = ''
     """)
-    # Sync NOOS flag from noos_styles table
+    # Sync NOOS flag directly from Odoo tier field (single source of truth)
     cur.execute("""
-        UPDATE all_products_clean SET is_noos = FALSE WHERE is_noos = TRUE;
-        UPDATE all_products_clean p
-        SET is_noos = TRUE
-        FROM noos_styles n
-        WHERE p.product_name = n.product_name AND n.active = TRUE;
+        UPDATE all_products_clean
+        SET is_noos = (tier = 'NOOS');
     """)
     log.info("✅ Product categorisation done")
 
