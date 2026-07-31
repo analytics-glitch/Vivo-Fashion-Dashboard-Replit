@@ -11473,7 +11473,6 @@ def fabric_qc_report(date_from: str = Query(default=""),
     }
 
 
-
 # ── 4-Point QC Score Sheet ─────────────────────────────────────────────────
 # Self-contained, print-ready HTML page for a fabric receiving sheet.
 # Path /api/fabric/receiving/sheets/{sheet_id}/scoresheet avoids any clash
@@ -13913,6 +13912,131 @@ def costing_sheet_unsign(sheet_id: int, step: int, request: Request):
         conn.commit()
         return _sheet_payload(conn, sheet_id)
 
+def _costing_build_pdf_branded(s):
+    """Render the costing sheet PDF using the branded renderer in
+    artifacts/costing-pdf/costing.py.  Returns raw PDF bytes.
+    Raises RuntimeError if content overflows a single page (caller may fall back
+    to the inline multi-page renderer).
+    Raises ImportError/ModuleNotFoundError if reportlab is unavailable."""
+    import sys
+    import tempfile
+
+    if _COSTING_PDF_DIR not in sys.path:
+        sys.path.insert(0, _COSTING_PDF_DIR)
+    from costing import build_sheet  # from artifacts/costing-pdf/costing.py
+
+    kind_order = ["fabric", "trim", "cmt", "overhead"]
+    kind_labels = {
+        "fabric":   "Fabric",
+        "trim":     "Trims & accessories",
+        "cmt":      "CMT / Labour",
+        "overhead": "Overheads",
+    }
+
+    # Group lines by kind in canonical order
+    groups_dict: dict = {}
+    for kind in kind_order:
+        for l in s.get("lines") or []:
+            if l.get("kind") == kind:
+                lbl = kind_labels[kind]
+                if lbl not in groups_dict:
+                    groups_dict[lbl] = []
+                groups_dict[lbl].append({
+                    "desc":      l.get("label") or "—",
+                    "barcode":   l.get("barcode") or None,
+                    "qty":       float(l["qty"]) if l.get("qty") is not None else 1,
+                    "unit":      "unit",
+                    "unit_cost": float(l["unit_cost"]) if l.get("unit_cost") is not None else 0,
+                })
+    groups = [{"label": lbl, "lines": lines} for lbl, lines in groups_dict.items()]
+    if not groups:
+        groups = [{"label": "Cost lines", "lines": [
+            {"desc": "—", "barcode": None, "qty": 1, "unit": "unit", "unit_cost": 0}
+        ]}]
+
+    # Order qty — look up produced units from mo_fabric_consumption via dps_ref
+    order_qty = 0
+    dps_ref = (s.get("dps_ref") or "").strip()
+    if dps_ref:
+        try:
+            with _get_conn() as _conn:
+                _rows = q(_conn,
+                          "SELECT COALESCE(SUM(produced_qty),0) AS qty "
+                          "FROM mo_fabric_consumption WHERE dps_ref=%s",
+                          (dps_ref,))
+            if _rows and _rows[0]["qty"]:
+                order_qty = round(float(_rows[0]["qty"]))
+        except Exception:
+            pass
+
+    def _fmt_ts(ts):
+        """ISO timestamp → 'DD Mon YYYY, HH:MM EAT'"""
+        if not ts:
+            return None
+        try:
+            dt = datetime.datetime.fromisoformat(ts).astimezone(ZoneInfo("Africa/Nairobi"))
+            return dt.strftime("%d %b %Y, %H:%M EAT")
+        except Exception:
+            return str(ts)
+
+    # Signoffs: three blocks (role, name=None for unsigned, signed_at)
+    signoffs = []
+    for so in (s.get("signoffs") or []):
+        signoffs.append({
+            "role":      so.get("title") or "—",
+            "name":      so.get("signed_by_name") if so.get("signed") else None,
+            "signed_at": _fmt_ts(so.get("signed_at")) if so.get("signed") else None,
+        })
+
+    # Revisions from history — oldest first (history list is newest-first)
+    revisions = []
+    for h in reversed((s.get("history") or [])[:10]):
+        when    = _fmt_ts(h.get("changed_at")) or "—"
+        who     = h.get("changed_by_name") or "—"
+        action  = h.get("action") or ""
+        summary = (h.get("summary") or "").strip()
+        entry   = f"{when} — {who}"
+        if action:
+            entry += f" — {action}"
+        if summary:
+            entry += f": {summary}"
+        revisions.append(entry)
+    if not revisions and s.get("created_by_name"):
+        when = _fmt_ts(s.get("created_at")) or "—"
+        revisions.append(f"{when} — {s['created_by_name']} — sheet created")
+
+    gen = (datetime.datetime.now(ZoneInfo("Africa/Nairobi"))
+           .strftime("%d %b %Y, %H:%M EAT"))
+
+    data = {
+        "style_name":      s.get("style_name") or "—",
+        "style_no":        s.get("style_number") or "—",
+        "colour":          s.get("color") or "All colours",
+        "dps":             dps_ref or "—",
+        "order_qty":       order_qty,
+        "currency":        "KES",
+        "retail_incl_vat": float(s.get("selling_price") or 0),
+        "vat_rate":        0.16,
+        "groups":          groups,
+        "basis_note":      (s.get("notes") or "").strip(),
+        "signoffs":        signoffs,
+        "revisions":       revisions,
+        "generated_at":    gen,
+    }
+
+    import tempfile
+    fd, tmp_path = tempfile.mkstemp(suffix=".pdf", prefix="costing_branded_")
+    try:
+        os.close(fd)  # build_sheet opens the file itself; close the descriptor first
+        build_sheet(data, tmp_path)
+        with open(tmp_path, "rb") as fh:
+            return fh.read()
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
 
 # ── Costing sheet PDF export ────────────────────────────────────────────
 # Branded A4 costing sheet: Vivo header, style/colour/DPS identity, the full
@@ -14046,10 +14170,15 @@ def _costing_to_build_data(s):
 
 
 def _costing_build_pdf(s):
-    """Render the costing sheet PDF using the reference build_sheet renderer."""
+    """Render the costing sheet PDF using the reference build_sheet renderer.
+    Falls back to the inline multi-page renderer when build_sheet raises a
+    known non-fatal exception (layout overflow, accounting rounding edge case,
+    or missing dependency) so the export never returns HTTP 500 on valid sheets."""
     import os as _os
     import sys as _sys
     import tempfile
+    import logging as _log
+    _logger = _log.getLogger("fabric_router")
 
     _costing_dir = _os.path.join(
         _os.path.dirname(_os.path.abspath(__file__)),
@@ -14058,21 +14187,265 @@ def _costing_build_pdf(s):
     if _costing_dir not in _sys.path:
         _sys.path.insert(0, _costing_dir)
 
-    from costing import build_sheet  # noqa: PLC0415
+    try:
+        from costing import build_sheet  # noqa: PLC0415
+    except (ImportError, ModuleNotFoundError) as exc:
+        _logger.warning(
+            "Branded costing PDF renderer unavailable (%s); using inline renderer", exc)
+        return _costing_build_pdf_inline(s)
 
     build_data = _costing_to_build_data(s)
-    tmp_path = tempfile.mktemp(suffix=".pdf", prefix="costing_", dir="/tmp")
+    fd, tmp_path = tempfile.mkstemp(suffix=".pdf", prefix="costing_")
     try:
+        _os.close(fd)  # build_sheet opens the file itself
         build_sheet(build_data, tmp_path)
         with open(tmp_path, "rb") as fh:
             return fh.read()
+    except RuntimeError as exc:
+        # Layout overflow: too many lines for the branded single-page layout
+        _logger.warning(
+            "Branded costing PDF overflowed one page (%s); using inline renderer", exc)
+        return _costing_build_pdf_inline(s)
+    except ValueError as exc:
+        # Accounting identity rounding edge case in build_sheet()._derive()
+        _logger.warning(
+            "Branded costing PDF accounting check failed (%s); using inline renderer", exc)
+        return _costing_build_pdf_inline(s)
     finally:
         try:
             _os.unlink(tmp_path)
         except OSError:
             pass
 
+def _costing_build_pdf_inline(s):
+    import io
+    from xml.sax.saxutils import escape as xesc
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors
+    from reportlab.lib.units import mm
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.platypus import (SimpleDocTemplate, Table, TableStyle,
+                                    Paragraph, Spacer)
 
+    ORANGE = colors.HexColor("#F15A24")
+    INK = colors.HexColor("#1A1A1A")
+    MUTED = colors.HexColor("#6B6B6B")
+    LINE = colors.HexColor("#ECE6E1")
+    PAPER = colors.HexColor("#FAF8F4")
+
+    styles = getSampleStyleSheet()
+    p_title = ParagraphStyle("t", parent=styles["Heading1"], fontSize=16,
+                             textColor=INK, spaceAfter=0, leading=19)
+    p_sub = ParagraphStyle("s", parent=styles["Normal"], fontSize=8.5,
+                           textColor=MUTED, leading=11)
+    p_h = ParagraphStyle("h", parent=styles["Heading2"], fontSize=10.5,
+                         textColor=INK, spaceBefore=8, spaceAfter=3)
+    p_cell = ParagraphStyle("c", parent=styles["Normal"], fontSize=8.5, leading=10.5)
+    p_cellm = ParagraphStyle("cm", parent=p_cell, textColor=MUTED, fontSize=7.5)
+
+    def money(v):
+        return "—" if v is None else f"{float(v):,.2f}"
+
+    def eat(ts):
+        if not ts:
+            return "—"
+        try:
+            return (datetime.datetime.fromisoformat(ts)
+                    .astimezone(ZoneInfo("Africa/Nairobi"))
+                    .strftime("%d %b %Y %H:%M"))
+        except Exception:
+            return str(ts)
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=A4, leftMargin=16*mm, rightMargin=16*mm,
+        topMargin=14*mm, bottomMargin=14*mm,
+        title=f"Costing sheet — {s.get('style_name') or ''}")
+    story = []
+
+    # Branded header: flat orange "Vivo" block + title, hairline rule under.
+    gen = (datetime.datetime.now(ZoneInfo("Africa/Nairobi"))
+           .strftime("%d %b %Y %H:%M"))
+    brand = Table([[
+        Paragraph('<font color="white"><b>Vivo</b></font>',
+                  ParagraphStyle("b", fontSize=13, leading=16,
+                                 alignment=1, fontName="Helvetica-Bold")),
+        Paragraph(f"<b>Product Costing Sheet</b><br/>"
+                  f'<font size="8" color="#6B6B6B">Vivo Fashion Group · '
+                  f"Fabric BI · generated {gen} EAT · amounts in KES</font>",
+                  p_title),
+    ]], colWidths=[22*mm, None], rowHeights=[13*mm])
+    brand.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (0, 0), ORANGE),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (1, 0), (1, 0), 8),
+        ("LINEBELOW", (0, 0), (-1, -1), 2, ORANGE),
+    ]))
+    story += [brand, Spacer(1, 5*mm)]
+
+    # Sheet identity block.
+    ident = [
+        ["Style", s.get("style_name") or "—",
+         "Style number", s.get("style_number") or "—"],
+        ["Colour scope", s.get("color") or "All colours",
+         "Costed from DPS", s.get("dps_ref") or "—"],
+    ]
+    it = Table(ident, colWidths=[28*mm, None, 30*mm, 45*mm])
+    it.setStyle(TableStyle([
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("TEXTCOLOR", (0, 0), (0, -1), MUTED),
+        ("TEXTCOLOR", (2, 0), (2, -1), MUTED),
+        ("FONTNAME", (1, 0), (1, -1), "Helvetica-Bold"),
+        ("FONTNAME", (3, 0), (3, -1), "Helvetica-Bold"),
+        ("LINEBELOW", (0, 0), (-1, -2), 0.4, LINE),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    story += [it, Spacer(1, 3*mm)]
+
+    # Cost build-up grouped by kind, subtotal per group.
+    kind_lbl = {"fabric": "Fabric", "trim": "Trims & accessories",
+                "cmt": "CMT / Labour", "overhead": "Overheads"}
+    story.append(Paragraph("Cost build-up", p_h))
+    data = [["", "Description", "Qty", "Unit cost", "Line total"]]
+    spans = []
+    for kind in _COSTING_LINE_KINDS:
+        grp = [l for l in s["lines"] if l["kind"] == kind]
+        if not grp:
+            continue
+        hdr_i = len(data)
+        data.append([kind_lbl.get(kind, kind), "", "", "", ""])
+        spans.append(hdr_i)
+        for l in grp:
+            desc = xesc(l.get("label") or "—")
+            if l.get("barcode"):
+                desc += f' <font size="7" color="#6B6B6B">[{xesc(l["barcode"])}]</font>'
+            src = l.get("source")
+            para = Paragraph(desc, p_cell)
+            srcp = Paragraph(xesc(("Auto — " if l.get("is_auto") else "") + src)
+                             if src else ("Auto" if l.get("is_auto") else ""),
+                             p_cellm)
+            data.append(["", [para, srcp] if (src or l.get("is_auto")) else para,
+                         "—" if l.get("qty") is None else f"{l['qty']:g}",
+                         money(l.get("unit_cost")), money(l.get("total"))])
+        sub = round(sum(l.get("total") or 0 for l in grp), 2)
+        data.append(["", f"{kind_lbl.get(kind, kind)} subtotal", "", "", money(sub)])
+    t = Table(data, colWidths=[30*mm, None, 16*mm, 24*mm, 26*mm], repeatRows=1)
+    st = [
+        ("BACKGROUND", (0, 0), (-1, 0), INK),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+        ("ALIGN", (2, 0), (-1, -1), "RIGHT"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("GRID", (0, 0), (-1, -1), 0.4, LINE),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+    ]
+    for i in spans:
+        st += [("SPAN", (0, i), (-1, i)),
+               ("BACKGROUND", (0, i), (-1, i), PAPER),
+               ("FONTNAME", (0, i), (-1, i), "Helvetica-Bold"),
+               ("TEXTCOLOR", (0, i), (-1, i), ORANGE)]
+    for i, row in enumerate(data):
+        if isinstance(row[1], str) and row[1].endswith("subtotal"):
+            st += [("FONTNAME", (1, i), (-1, i), "Helvetica-Bold"),
+                   ("LINEABOVE", (0, i), (-1, i), 0.7, MUTED)]
+    t.setStyle(TableStyle(st))
+    story.append(t)
+
+    # Totals / selling price / margin.
+    margin = s.get("margin")
+    tot = [
+        ["Total cost per garment", money(s.get("total_cost"))],
+        ["Retail price (VAT-incl)" + (" (auto — modal SKU price)"
+                                      if s.get("selling_price_is_auto")
+                                      else " (manual)"),
+         money(s.get("selling_price"))],
+        ["Selling price (ex-VAT, retail ÷ 1.16)",
+         money(s.get("selling_price_ex_vat"))],
+        ["Margin", money(margin)],
+        ["Margin %", "—" if s.get("margin_pct") is None else f"{s['margin_pct']:.2f}%"],
+    ]
+    tt = Table(tot, colWidths=[None, 30*mm], hAlign="RIGHT")
+    tt.setStyle(TableStyle([
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("ALIGN", (1, 0), (1, -1), "RIGHT"),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTNAME", (0, 3), (-1, -1), "Helvetica-Bold"),
+        ("TEXTCOLOR", (0, 3), (-1, -1),
+         colors.HexColor("#DC2626") if (margin is not None and margin < 0)
+         else colors.HexColor("#15803D")),
+        ("LINEABOVE", (0, 0), (-1, 0), 0.7, INK),
+        ("TOPPADDING", (0, 0), (-1, -1), 2.5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
+    ]))
+    story += [Spacer(1, 2*mm), tt]
+
+    # Notes.
+    if s.get("notes"):
+        story += [Paragraph("Notes", p_h),
+                  Paragraph(xesc(s["notes"]).replace("\n", "<br/>"), p_cell)]
+
+    # Revision info: created/edited stamps + recent change history.
+    story.append(Paragraph("Revision info", p_h))
+    story.append(Paragraph(
+        f"Created by <b>{xesc(s.get('created_by_name') or '—')}</b> on "
+        f"{eat(s.get('created_at'))} EAT &nbsp;·&nbsp; last edited by "
+        f"<b>{xesc(s.get('updated_by_name') or '—')}</b> on "
+        f"{eat(s.get('updated_at'))} EAT", p_cell))
+    hist = (s.get("history") or [])[:8]
+    if hist:
+        hd = [["When (EAT)", "Who", "Action", "What changed"]]
+        for h in hist:
+            hd.append([eat(h.get("changed_at")), h.get("changed_by_name") or "—",
+                       h.get("action") or "", Paragraph(xesc(h.get("summary") or ""), p_cellm)])
+        ht = Table(hd, colWidths=[30*mm, 34*mm, 20*mm, None])
+        ht.setStyle(TableStyle([
+            ("FONTSIZE", (0, 0), (-1, -1), 7.5),
+            ("TEXTCOLOR", (0, 0), (-1, -1), MUTED),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("LINEBELOW", (0, 0), (-1, 0), 0.5, MUTED),
+            ("LINEBELOW", (0, 1), (-1, -1), 0.3, LINE),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("TOPPADDING", (0, 0), (-1, -1), 2),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+        ]))
+        story += [Spacer(1, 1.5*mm), ht]
+
+    # Three sign-off blocks — signed shows name + timestamp, unsigned = pending.
+    story.append(Paragraph("Sign-off", p_h))
+    cells = []
+    for so in s["signoffs"]:
+        if so["signed"]:
+            body = (f'<font size="8" color="#6B6B6B">{xesc(so["title"])}</font><br/>'
+                    f'<b>{xesc(so["signed_by_name"] or "—")}</b><br/>'
+                    f'<font size="7.5" color="#15803D">Signed · '
+                    f'{eat(so["signed_at"])} EAT</font>')
+        else:
+            body = (f'<font size="8" color="#6B6B6B">{xesc(so["title"])}</font><br/>'
+                    f'<font color="#9CA3AF">Pending</font><br/>'
+                    f'<font size="7.5" color="#9CA3AF">Not signed</font>')
+        cells.append(Paragraph(body, p_cell))
+    sot = Table([cells], colWidths=[None, None, None])
+    sot.setStyle(TableStyle([
+        ("BOX", (0, 0), (0, 0), 0.6, LINE), ("BOX", (1, 0), (1, 0), 0.6, LINE),
+        ("BOX", (2, 0), (2, 0), 0.6, LINE),
+        ("BACKGROUND", (0, 0), (-1, -1), PAPER),
+        ("TOPPADDING", (0, 0), (-1, -1), 7),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 9),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+    ]))
+    status_lbl = {"approved": "APPROVED", "partial": "PARTIALLY SIGNED",
+                  "draft": "DRAFT"}[s["signoff_status"]]
+    story += [Spacer(1, 1.5*mm), sot, Spacer(1, 2*mm),
+              Paragraph(f"Sheet status: <b>{status_lbl}</b>"
+                        + (" — locked against edits" if s["locked"] else ""),
+                        p_sub)]
+
+    doc.build(story)
+    return buf.getvalue()
 @fabric_router.get("/api/fabric/costing/sheets/{sheet_id}/export.pdf")
 def costing_export_sheet_pdf(sheet_id: int):
     with _get_conn() as conn:
