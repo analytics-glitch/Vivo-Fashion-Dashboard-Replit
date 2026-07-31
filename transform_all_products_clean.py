@@ -110,7 +110,12 @@ def extract_style_name(name):
 def extract_color_from_name(name):
     if not name:
         return None
-    name = re.sub(r' -([^ ])', r' - \1', name)
+    # Normalize hyphen separators to ' - ' regardless of surrounding spaces:
+    #   'Ponte- Black'  -> 'Ponte - Black'
+    #   'Ponte -Black'  -> 'Ponte - Black'
+    #   'Ponte-Black'   -> left alone (hyphen inside a word/color like Off-White)
+    name = re.sub(r'(?<=\S)\s*-\s+', ' - ', name)  # nospace/space before, space after
+    name = re.sub(r'\s+-\s*(?=\S)', ' - ', name)   # space before, nospace/space after
     if ' - ' in name:
         return name.split(' - ', 1)[1].strip()
     return None
