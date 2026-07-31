@@ -1562,6 +1562,8 @@ const TierDrillModal = ({ tier, rows, onClose }) => {
     const cols = [
       ["style_name", "Style"],
       ["style_number", "Style #"],
+      ["skus", "SKU"],
+      ["barcodes", "Barcode"],
       ["brand", "Brand"],
       ["subcategory", "Subcategory"],
       ["tier", "Tier"],
@@ -1646,6 +1648,22 @@ const TierDrillModal = ({ tier, rows, onClose }) => {
                 {
                   key: "style_number", label: "Style #", align: "left",
                   render: (r) => <span className="font-mono text-[10.5px] text-muted">{r.style_number || "—"}</span>,
+                },
+                {
+                  key: "skus", label: "SKU", align: "left",
+                  render: (r) => (
+                    <span className="font-mono text-[10px] text-muted block max-w-[160px] truncate" title={r.skus || ""}>
+                      {r.skus || "—"}
+                    </span>
+                  ),
+                },
+                {
+                  key: "barcodes", label: "Barcode", align: "left",
+                  render: (r) => (
+                    <span className="font-mono text-[10px] text-muted block max-w-[160px] truncate" title={r.barcodes || ""}>
+                      {r.barcodes || "—"}
+                    </span>
+                  ),
                 },
                 { key: "launch_date", label: "Launch", align: "left",
                   render: (r) => <span className="text-[11px]">{r.launch_date || "—"}</span> },

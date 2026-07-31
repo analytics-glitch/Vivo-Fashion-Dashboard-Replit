@@ -19632,7 +19632,12 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
                 MIN(substring(style_launch_date, 1, 10)) FILTER (
                     WHERE substring(style_launch_date, 1, 10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
                 ) AS launch_date,
-                BOOL_OR(is_noos) AS is_noos
+                BOOL_OR(is_noos) AS is_noos,
+                -- All variant SKUs and barcodes for this style, sorted for
+                -- stable output. Surfaced in the tier drill-down modal/CSV.
+                STRING_AGG(sku, ', ' ORDER BY sku) AS skus,
+                STRING_AGG(barcode, ', ' ORDER BY barcode)
+                    FILTER (WHERE barcode IS NOT NULL AND barcode <> '') AS barcodes
             FROM all_products_clean
             WHERE style_name IS NOT NULL AND style_name <> ''
             -- Exclude third-party brand at the SKU-ROW level (before GROUP BY),
@@ -19661,6 +19666,7 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
         ),
         """ + rm_nos_cte + """
         SELECT p.style_name, p.brand, p.subcategory, p.style_number, p.price, p.launch_date,
+            p.skus, p.barcodes,
             COALESCE(sa.units_life, 0) AS units_life, COALESCE(sa.sales_life, 0) AS sales_life,
             COALESCE(sa.units_6m, 0) AS units_6m, COALESCE(sa.sales_6m, 0) AS sales_6m,
             COALESCE(sa.units_30d, 0) AS units_30d,
@@ -19689,7 +19695,7 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
                     "months_active_12"],
         max_fields=["last_sale", "is_noos"],
         min_fields=["first_sale", "launch_date"],
-        keep_fields=["brand", "subcategory", "price"],
+        keep_fields=["brand", "subcategory", "price", "skus", "barcodes"],
     )
     today = date.today()
     active, retired, pipeline, candidates = [], [], [], []
@@ -19809,6 +19815,8 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
             "original_price": original_price,
             "avg_price_since_launch": avg_price,
             "full_price_pct": full_price_pct,
+            "skus": r.get("skus") or "",
+            "barcodes": r.get("barcodes") or "",
         }
 
         # --- Range tier classification (2026 Range Strategy / SOP): every style in
