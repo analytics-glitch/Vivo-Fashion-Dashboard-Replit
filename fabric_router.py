@@ -13653,6 +13653,17 @@ def costing_export_sheet_xlsx(sheet_id: int):
             "Auto" if l["is_auto"] else "Manual",
             l["source"],
         ])
+    # Embroidery row — appended after all cost lines when embroidery is enabled.
+    emb = s.get("embroidery_data") or {}
+    if emb.get("enabled"):
+        emb_i = len(s["lines"]) + 1
+        ws2.append([
+            emb_i, "Embroidery", "Embroidery",
+            None,
+            emb.get("run_count"), emb.get("cost_per_run"), emb.get("embroidery_total"),
+            "Manual",
+            "",
+        ])
     ws2.append([])
     tr = ws2.max_row + 1
     ws2.cell(row=tr, column=3, value="Total cost / garment").font = st["LBL"]
