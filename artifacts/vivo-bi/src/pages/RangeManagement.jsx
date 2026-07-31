@@ -1560,7 +1560,7 @@ const TierDrillModal = ({ tier, rows, onClose }) => {
   // share the tier breakdown via email/slack.
   const exportCsv = () => {
     const cols = [
-      ["style_name", "Style"],
+      ["style_name", "Product Name"],
       ["style_number", "Style #"],
       ["skus", "SKU"],
       ["barcodes", "Barcode"],
@@ -1637,9 +1637,9 @@ const TierDrillModal = ({ tier, rows, onClose }) => {
               initialSort={{ key: "sales_since_launch", dir: "desc" }}
               columns={[
                 {
-                  key: "style_name", label: "Style", align: "left",
+                  key: "style_name", label: "Product Name", align: "left",
                   render: (r) => (
-                    <div className="max-w-[260px]">
+                    <div className="max-w-[220px]">
                       <div className="font-medium truncate text-[11.5px]" title={r.style_name}>{r.style_name}</div>
                       <div className="text-muted text-[10px]">{r.brand} · {r.subcategory}</div>
                     </div>
