@@ -19622,17 +19622,17 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
         )"""
     raw = run_query("""
         WITH prod AS (
-            SELECT style_name,
-                MAX(brand) AS brand,
-                MAX(product_type) AS subcategory,
-                mode() WITHIN GROUP (ORDER BY style_number) AS style_number,
+            SELECT apc.style_name,
+                MAX(apc.brand) AS brand,
+                MAX(apc.product_type) AS subcategory,
+                mode() WITHIN GROUP (ORDER BY apc.style_number) AS style_number,
                 -- modal (most common) positive ticket price, robust to a
                 -- foreign-currency leak on a few country SKUs (see PA prod CTE)
-                mode() WITHIN GROUP (ORDER BY price) FILTER (WHERE price > 0) AS price,
-                MIN(substring(style_launch_date, 1, 10)) FILTER (
-                    WHERE substring(style_launch_date, 1, 10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+                mode() WITHIN GROUP (ORDER BY apc.price) FILTER (WHERE apc.price > 0) AS price,
+                MIN(substring(apc.style_launch_date, 1, 10)) FILTER (
+                    WHERE substring(apc.style_launch_date, 1, 10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
                 ) AS launch_date,
-                BOOL_OR(is_noos) AS is_noos,
+                BOOL_OR(apc.is_noos) AS is_noos,
                 -- Per-variant array so the tier drill-down modal can show one
                 -- row per SKU (sku+barcode+product_name matched correctly).
                 JSON_AGG(
@@ -19654,8 +19654,8 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
             -- string was "Third Party", so it diverged from Product Analysis on
             -- such styles (the xsurf_pa_vs_rm_total style-count mismatch). Both
             -- surfaces now define the identical inventory-holding style universe.
-              AND COALESCE(brand, '') NOT ILIKE '%third party%'
-            GROUP BY style_name
+              AND COALESCE(apc.brand, '') NOT ILIKE '%third party%'
+            GROUP BY apc.style_name
         ),
         """ + rm_sales_cte + """,
         stock AS (
