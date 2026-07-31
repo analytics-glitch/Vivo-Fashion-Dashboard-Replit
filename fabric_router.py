@@ -12567,6 +12567,8 @@ _COSTING_STEP_EMAILS = {
         "bedan@vivofashiongroup.com",
         "kevinl@vivofashiongroup.com",
         "costing@vivofashiongroup.com",
+        "admin@vivofashiongroup.com",
+        "analytics@vivofashiongroup.com",
     },
     2: {  # Checked by
         "bedan@vivofashiongroup.com",
