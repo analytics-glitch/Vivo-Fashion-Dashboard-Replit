@@ -19637,13 +19637,14 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
                 -- row per SKU (sku+barcode+product_name matched correctly).
                 JSON_AGG(
                     JSON_BUILD_OBJECT(
-                        'sku', sku,
-                        'barcode', COALESCE(barcode, ''),
-                        'product_name', COALESCE(product_name, '')
-                    ) ORDER BY sku
+                        'sku', apc.sku,
+                        'barcode', COALESCE(op.barcode, ''),
+                        'product_name', COALESCE(apc.product_name, '')
+                    ) ORDER BY apc.sku
                 ) AS sku_variants
-            FROM all_products_clean
-            WHERE style_name IS NOT NULL AND style_name <> ''
+            FROM all_products_clean apc
+            LEFT JOIN raw_odoo_products op ON op.default_code = apc.sku
+            WHERE apc.style_name IS NOT NULL AND apc.style_name <> ''
             -- Exclude third-party brand at the SKU-ROW level (before GROUP BY),
             -- exactly like /api/analytics/product-analysis's prod CTE. A style is
             -- third-party only if ALL its SKUs are third-party; a style with any
