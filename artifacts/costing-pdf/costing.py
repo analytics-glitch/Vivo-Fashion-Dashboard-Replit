@@ -802,10 +802,10 @@ def _section_notes(d: dict) -> list:
 
 def build_sheet(data: dict, out_path: str) -> str:
     """
-    Render a one-page A4 product costing sheet to *out_path*.
+    Render an A4 product costing sheet to *out_path* (multi-page when content
+    overflows — the branded footer is repeated on every page automatically).
     Returns out_path on success.
     Raises ValueError if derived values are inconsistent.
-    Raises RuntimeError if the content does not fit on a single page.
     """
     d    = _derive(data)
     logo = _get_logo()
@@ -837,12 +837,5 @@ def build_sheet(data: dict, out_path: str) -> str:
     )
     doc.addPageTemplates([template])
     doc.build(story)
-
-    # Assert exactly 1 page
-    if doc.page != 1:
-        raise RuntimeError(
-            f"Costing sheet rendered {doc.page} page(s); expected exactly 1. "
-            "Reduce line count or tighten spacing."
-        )
 
     return out_path
