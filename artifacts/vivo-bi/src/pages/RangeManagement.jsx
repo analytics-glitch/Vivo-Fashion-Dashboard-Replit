@@ -1549,42 +1549,46 @@ const RangeManagement = () => {
 };
 
 // Iter 91u — modal listing top-performing styles in the clicked tier.
-// Sorts by lifetime revenue descending; shows the 8 columns most
-// relevant to "how is this tier performing".
+// Each style is expanded to one row per SKU variant so every scannable
+// unit gets its own line. Style-level metrics (units, revenue, SOR, stock)
+// are repeated across all SKU rows for that style.
 const TierDrillModal = ({ tier, rows, onClose }) => {
-  const sorted = [...rows].sort(
+  // Sort styles by lifetime revenue desc, then expand to one row per SKU.
+  const stylesSorted = [...rows].sort(
     (a, b) => (b.sales_since_launch || 0) - (a.sales_since_launch || 0),
   );
-  // Iter 91v — CSV export of the drill rows (top→bottom by revenue).
-  // Saves the user from another export round-trip when they want to
-  // share the tier breakdown via email/slack.
+  const expanded = stylesSorted.flatMap((r) => {
+    const variants = Array.isArray(r.sku_variants) ? r.sku_variants : [];
+    if (!variants.length) {
+      return [{ ...r, _sku: "—", _barcode: "—", _product_name: r.style_name }];
+    }
+    return variants.map((v) => ({
+      ...r,
+      _sku: v.sku || "—",
+      _barcode: v.barcode || "—",
+      _product_name: v.product_name || r.style_name,
+    }));
+  });
+
   const exportCsv = () => {
-    const cols = [
-      ["style_name", "Product Name"],
-      ["style_number", "Style #"],
-      ["skus", "SKU"],
-      ["barcodes", "Barcode"],
-      ["brand", "Brand"],
-      ["subcategory", "Subcategory"],
-      ["tier", "Tier"],
-      ["launch_date", "Launch Date"],
-      ["style_age_weeks", "Age (weeks)"],
-      ["units_since_launch", "Units Since Launch"],
-      ["sales_since_launch", "Revenue Since Launch (KES)"],
-      ["original_price", "Full Price (Kenya)"],
-      ["avg_price_since_launch", "Avg Price (Kenya)"],
-      ["lifetime_sor_pct", "SOR Lifetime %"],
-      ["current_stock", "Current Stock"],
-      ["woc", "Weeks of Cover"],
-      ["last_sale_days", "Days Since Last Sale"],
-    ];
     const esc = (v) => {
       if (v == null) return "";
       const s = String(v);
       return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
     };
-    const header = cols.map((c) => c[1]).join(",");
-    const body = sorted.map((r) => cols.map((c) => esc(r[c[0]])).join(",")).join("\n");
+    const header = [
+      "Product Name","Style #","SKU","Barcode","Brand","Subcategory","Tier",
+      "Launch Date","Age (weeks)","Units Since Launch","Revenue Since Launch (KES)",
+      "Full Price (Kenya)","Avg Price (Kenya)","SOR Lifetime %",
+      "Current Stock","Weeks of Cover","Days Since Last Sale",
+    ].join(",");
+    const body = expanded.map((r) => [
+      r._product_name, r.style_number, r._sku, r._barcode,
+      r.brand, r.subcategory, r.tier, r.launch_date, r.style_age_weeks,
+      r.units_since_launch, r.sales_since_launch, r.original_price,
+      r.avg_price_since_launch, r.lifetime_sor_pct,
+      r.current_stock, r.woc, r.last_sale_days,
+    ].map(esc).join(",")).join("\n");
     const blob = new Blob([`\ufeff${header}\n${body}\n`], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -1605,8 +1609,10 @@ const TierDrillModal = ({ tier, rows, onClose }) => {
       >
         <div className="flex items-center justify-between px-5 py-3 border-b sticky top-0 bg-white">
           <div>
-            <h3 className="font-extrabold text-[15px]" data-testid="tier-drill-title">{tier} · {fmtNum(sorted.length)} styles</h3>
-            <p className="text-[11px] text-muted mt-0.5">Sorted by lifetime revenue. Click anywhere outside to close.</p>
+            <h3 className="font-extrabold text-[15px]" data-testid="tier-drill-title">
+              {tier} · {fmtNum(stylesSorted.length)} styles · {fmtNum(expanded.length)} SKUs
+            </h3>
+            <p className="text-[11px] text-muted mt-0.5">One row per SKU, sorted by style revenue. Click anywhere outside to close.</p>
           </div>
           <div className="flex items-center gap-2">
             <button
@@ -1628,19 +1634,19 @@ const TierDrillModal = ({ tier, rows, onClose }) => {
           </div>
         </div>
         <div className="p-3">
-          {sorted.length === 0 ? (
+          {expanded.length === 0 ? (
             <p className="text-center text-muted py-8 text-[12px]">No styles in this tier.</p>
           ) : (
             <SortableTable
               testId="tier-drill-table"
-              pageSize={50}
+              pageSize={100}
               initialSort={{ key: "sales_since_launch", dir: "desc" }}
               columns={[
                 {
-                  key: "style_name", label: "Product Name", align: "left",
+                  key: "_product_name", label: "Product Name", align: "left",
                   render: (r) => (
                     <div className="max-w-[220px]">
-                      <div className="font-medium truncate text-[11.5px]" title={r.style_name}>{r.style_name}</div>
+                      <div className="font-medium truncate text-[11.5px]" title={r._product_name}>{r._product_name}</div>
                       <div className="text-muted text-[10px]">{r.brand} · {r.subcategory}</div>
                     </div>
                   ),
@@ -1650,20 +1656,12 @@ const TierDrillModal = ({ tier, rows, onClose }) => {
                   render: (r) => <span className="font-mono text-[10.5px] text-muted">{r.style_number || "—"}</span>,
                 },
                 {
-                  key: "skus", label: "SKU", align: "left",
-                  render: (r) => (
-                    <span className="font-mono text-[10px] text-muted block max-w-[160px] truncate" title={r.skus || ""}>
-                      {r.skus || "—"}
-                    </span>
-                  ),
+                  key: "_sku", label: "SKU", align: "left",
+                  render: (r) => <span className="font-mono text-[10.5px]">{r._sku}</span>,
                 },
                 {
-                  key: "barcodes", label: "Barcode", align: "left",
-                  render: (r) => (
-                    <span className="font-mono text-[10px] text-muted block max-w-[160px] truncate" title={r.barcodes || ""}>
-                      {r.barcodes || "—"}
-                    </span>
-                  ),
+                  key: "_barcode", label: "Barcode", align: "left",
+                  render: (r) => <span className="font-mono text-[10.5px] text-muted">{r._barcode}</span>,
                 },
                 { key: "launch_date", label: "Launch", align: "left",
                   render: (r) => <span className="text-[11px]">{r.launch_date || "—"}</span> },
@@ -1675,9 +1673,6 @@ const TierDrillModal = ({ tier, rows, onClose }) => {
                   render: (r) => r.lifetime_sor_pct == null ? "—" : `${r.lifetime_sor_pct.toFixed(1)}%` },
                 { key: "current_stock", label: "Stock", numeric: true,
                   render: (r) => fmtNum(r.current_stock) },
-                // Iter 91q — channel-split columns also surface in the
-                // tier drill-down modal so leadership can act on
-                // sub-segments (e.g. retire heavy-warehouse styles).
                 { key: "soh_stores", label: "Stock Stores", numeric: true,
                   render: (r) => fmtNum(r.soh_stores) },
                 { key: "soh_warehouse", label: "Stock Warehouse", numeric: true,
@@ -1691,7 +1686,7 @@ const TierDrillModal = ({ tier, rows, onClose }) => {
                 { key: "last_sale_days", label: "Last Sale", numeric: true,
                   render: (r) => r.last_sale_days == null ? "—" : `${r.last_sale_days}d` },
               ]}
-              rows={sorted}
+              rows={expanded}
             />
           )}
         </div>
