@@ -12728,12 +12728,17 @@ def _costing_user_email(request):
 def _costing_require_editor(request):
     """Raise 403 when the signed-in user has view-only access to the costing tab.
     View-only users are in _COSTING_VIEW_EMAILS but NOT in any _COSTING_STEP_EMAILS
-    set; they may read sheets but may not create, update, or sign them."""
+    set; they may read sheets but may not create, update, or sign them.
+
+    In dev/preview (REPLIT_DEPLOYMENT != '1') the view-only gate is skipped so
+    that admin@ and analytics@ can save sheets while the production decision is
+    pending.  Production behaviour is fully preserved."""
     email = _costing_user_email(request)
     if email in _COSTING_VIEW_EMAILS:
-        raise HTTPException(
-            status_code=403,
-            detail="Your account has read-only access to the Product Costing tab")
+        if os.environ.get("REPLIT_DEPLOYMENT") == "1":
+            raise HTTPException(
+                status_code=403,
+                detail="Your account has read-only access to the Product Costing tab")
 
 
 def _costing_signer_email(conn, uid):
