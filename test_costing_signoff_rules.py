@@ -220,9 +220,10 @@ class TestAllowlistUnion(unittest.TestCase):
     def test_combined_allowlist_is_union_of_step_sets(self):
         self.assertEqual(
             fr._FABRIC_COSTING_EMAILS,
-            frozenset().union(*fr._COSTING_STEP_EMAILS.values()),
-            "_FABRIC_COSTING_EMAILS must be exactly the union of the "
-            "per-step sign-off sets")
+            frozenset().union(*fr._COSTING_STEP_EMAILS.values(),
+                              fr._COSTING_VIEW_EMAILS),
+            "_FABRIC_COSTING_EMAILS must be the union of the per-step "
+            "sign-off sets and the view-only set")
 
     def test_step_sets_cover_steps_1_2_3_and_are_nonempty(self):
         self.assertEqual(set(fr._COSTING_STEP_EMAILS), {1, 2, 3})

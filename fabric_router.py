@@ -12579,7 +12579,14 @@ _COSTING_STEP_EMAILS = {
     },
 }
 
-_FABRIC_COSTING_EMAILS = frozenset().union(*_COSTING_STEP_EMAILS.values())
+_COSTING_VIEW_EMAILS = frozenset({
+    "admin@vivofashiongroup.com",
+    "analytics@vivofashiongroup.com",
+})
+
+_FABRIC_COSTING_EMAILS = frozenset().union(
+    *_COSTING_STEP_EMAILS.values(), _COSTING_VIEW_EMAILS
+)
 
 
 def _fabric_costing_allowed(user):
@@ -12710,6 +12717,17 @@ def _costing_user(request):
 def _costing_user_email(request):
     u = getattr(request.state, "user", None) or {}
     return (u.get("email") or "").strip().lower()
+
+
+def _costing_require_editor(request):
+    """Raise 403 when the signed-in user has view-only access to the costing tab.
+    View-only users are in _COSTING_VIEW_EMAILS but NOT in any _COSTING_STEP_EMAILS
+    set; they may read sheets but may not create, update, or sign them."""
+    email = _costing_user_email(request)
+    if email in _COSTING_VIEW_EMAILS:
+        raise HTTPException(
+            status_code=403,
+            detail="Your account has read-only access to the Product Costing tab")
 
 
 def _costing_signer_email(conn, uid):
@@ -13633,6 +13651,7 @@ def costing_export_sheet_xlsx(sheet_id: int):
 
 @fabric_router.post("/api/fabric/costing/sheets")
 def costing_sheet_create(request: Request, body: dict = Body(...)):
+    _costing_require_editor(request)
     style_row = _match_style(body.get("style_name"))
     if not style_row:
         raise HTTPException(status_code=400,
@@ -13692,6 +13711,7 @@ def costing_sheet_create(request: Request, body: dict = Body(...)):
 
 @fabric_router.put("/api/fabric/costing/sheets/{sheet_id}")
 def costing_sheet_update(sheet_id: int, request: Request, body: dict = Body(...)):
+    _costing_require_editor(request)
     lines = _clean_costing_lines(body.get("lines"))
     sp = body.get("selling_price")
     try:
@@ -14173,7 +14193,20 @@ def _costing_build_pdf(s):
     """Render the costing sheet PDF using the reference build_sheet renderer.
     Falls back to the inline multi-page renderer when build_sheet raises a
     known non-fatal exception (layout overflow, accounting rounding edge case,
-    or missing dependency) so the export never returns HTTP 500 on valid sheets."""
+    or missing dependency) so the export never returns HTTP 500 on valid sheets.
+
+    Raises ValueError for sheets with a zero or missing selling price — the
+    accounting identity (cogs% + margin% = 100) cannot hold, and the inline
+    renderer would produce a corrupt sheet rather than a meaningful fallback."""
+    _sp = s.get("selling_price")
+    try:
+        _sp_f = float(_sp) if _sp is not None else None
+    except (TypeError, ValueError):
+        _sp_f = None
+    if _sp_f is None or _sp_f <= 0:
+        raise ValueError(
+            "selling_price must be > 0 — the accounting identity "
+            "(cogs% + margin% = 100) cannot hold for a zero or missing price")
     import os as _os
     import sys as _sys
     import tempfile
@@ -14437,11 +14470,14 @@ def _costing_build_pdf_inline(s):
         ("LEFTPADDING", (0, 0), (-1, -1), 8),
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
     ]))
+    _signoff_status = s.get("signoff_status") or _costing_signoff_status(
+        s.get("signoffs") or [{"signed": False}] * 3)
+    _locked = s.get("locked") if "locked" in s else (_signoff_status == "approved")
     status_lbl = {"approved": "APPROVED", "partial": "PARTIALLY SIGNED",
-                  "draft": "DRAFT"}[s["signoff_status"]]
+                  "draft": "DRAFT"}[_signoff_status]
     story += [Spacer(1, 1.5*mm), sot, Spacer(1, 2*mm),
               Paragraph(f"Sheet status: <b>{status_lbl}</b>"
-                        + (" — locked against edits" if s["locked"] else ""),
+                        + (" — locked against edits" if _locked else ""),
                         p_sub)]
 
     doc.build(story)
