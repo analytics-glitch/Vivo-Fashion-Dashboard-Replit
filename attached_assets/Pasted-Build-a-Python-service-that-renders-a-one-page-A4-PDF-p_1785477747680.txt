@@ -1,0 +1,234 @@
+Build a Python service that renders a one-page A4 PDF product costing sheet for Vivo Fashion Group. The layout is fully specified below — follow it exactly rather than improvising a design.
+
+## Stack
+
+- Python 3.11
+- `reportlab` for PDF generation (use the `platypus` flowable API, not raw canvas drawing, except where stated)
+- `Pillow` for logo measurement
+- `Flask` for a minimal web wrapper
+
+Two entry points:
+
+1. `costing.py` — exposes `build_sheet(data: dict, out_path: str) -> str`. Pure function, no I/O beyond writing the file.
+2. `app.py` — Flask app with `POST /render` accepting JSON matching the schema below and returning `application/pdf`, plus `GET /` serving a simple form that accepts pasted JSON and downloads the result.
+
+## Input schema
+
+```json
+{
+  "style_name": "Chela sleeveless waterfall in jersey",
+  "style_no": "V1025015",
+  "colour": "Dark Red",
+  "dps": "DPS00394",
+  "order_qty": 208,
+  "currency": "KES",
+  "retail_incl_vat": 3900.00,
+  "vat_rate": 0.16,
+  "groups": [
+    {
+      "label": "Fabric",
+      "lines": [
+        {"desc": "Main fabric — fashion knitted 1629, dark red",
+         "barcode": "302954", "qty": 1.43, "unit": "m", "unit_cost": 379.64}
+      ]
+    },
+    {
+      "label": "Trims and accessories",
+      "lines": [
+        {"desc": "Taffeta white ribbon / care label",
+         "barcode": "305149", "qty": 1, "unit": "pc", "unit_cost": 0.15}
+      ]
+    },
+    {
+      "label": "CMT / labour",
+      "lines": [
+        {"desc": "CMT labour — actual, from done DPS",
+         "barcode": null, "qty": 1, "unit": "gmt", "unit_cost": 444.92}
+      ]
+    }
+  ],
+  "basis_note": "Fabric valued at the current fabric-master cost per metre. Trims and accessories at the cost recorded on the DPS / MO. CMT is actual labour from the completed DPS divided by 208 garments, so it moves with order quantity. Retail is the modal SKU price.",
+  "signoffs": [
+    {"role": "Prepared by", "name": "Bedan Mwaura", "signed_at": "29 Jul 2026, 17:22 EAT"},
+    {"role": "Checked by", "name": null, "signed_at": null},
+    {"role": "Approved by", "name": null, "signed_at": null}
+  ],
+  "revisions": [
+    "28 Jul 2026, 17:15 — sheet created with 10 lines, Bedan Mwaura",
+    "29 Jul 2026, 17:22 — prepared-by signed, step 1 of 3, Bedan Mwaura"
+  ],
+  "generated_at": "30 Jul 2026, 15:25 EAT"
+}
+```
+
+Number of groups and lines is variable. Do not hard-code three groups.
+
+## Derived values — compute, never accept as input
+
+```
+line_total    = round(qty * unit_cost, 2)
+group_subtotal = sum(line_total)
+total_cost    = sum(group_subtotal)
+selling_exvat = retail_incl_vat / (1 + vat_rate)
+margin_value  = selling_exvat - total_cost
+margin_pc     = margin_value / selling_exvat * 100
+cogs_pc       = total_cost   / selling_exvat * 100
+```
+
+Assert `abs(cogs_pc + margin_pc - 100) < 0.01` and fail loudly if it doesn't hold.
+
+Status string is derived from `signoffs`: count entries with a non-null `name`. All signed → `"Fully signed"`; none → `"Unsigned"`; otherwise `"Partially signed"`, with a sub-line `"{n} of {total} approvals complete"`.
+
+## Page geometry
+
+- A4 portrait, 15 mm margins on all sides, bottom margin 15 mm + 6 pt for the footer
+- Content width `CW = A4_width - 2 * 15mm`
+- Everything must fit on **one page**. Add a build-time assertion that the rendered PDF has exactly 1 page and raise if not.
+
+## Palette
+
+These hex values are print-tested. Do not substitute "nicer" greys — anything lighter fails on an office laser printer and disappears on a photocopy.
+
+| Token | Hex | Use |
+|---|---|---|
+| `INK` | `#1A1A19` | body text, figures, totals |
+| `MUTED` | `#4E4D49` | labels, column headers, notes, footer |
+| `FAINT` | `#6B6A65` | reserved, currently unused |
+| `HAIR` | `#C4C3BC` | row separators, panel borders |
+| `RULE` | `#8B8A83` | section rules, header rule |
+| `PANEL` | `#EFEEE8` | neutral KPI tile fill |
+| `BLUE_D` | `#1F5FAA` | group labels, COGS accent, largest bar segment |
+| `BLUE_M` | `#6BA3DE` | middle bar segment |
+| `BLUE_L` | `#93BEE8` | smallest bar segment |
+| `BLUE_BG` | `#DCE9F7` | COGS tile fill |
+| `GREEN_TX` | `#3B6D11` | margin accent |
+| `GREEN_BG` | `#E0EDD4` | margin tile fill |
+| `LOGO_COLOR` | `#F15A24` | Vivo brand orange, text-fallback logo only |
+
+**Hard rule:** every colour applied to text must be defined once as a token and referenced. If you need a hex string inside reportlab inline markup (`<font color="...">`), generate it from the token with a helper:
+
+```python
+def hx(c):
+    return "#%02X%02X%02X" % (int(c.red*255), int(c.green*255), int(c.blue*255))
+```
+
+Never write a literal hex inside a markup string. This is not stylistic — literals silently drift out of sync when the palette changes, and the failure is invisible on screen and only shows up in print.
+
+## Typography
+
+Helvetica throughout (reportlab built-in — no font files needed).
+
+| Element | Size / leading | Colour | Weight |
+|---|---|---|---|
+| Document title | 16 / 19 | INK | regular |
+| Style name | 11 / 14 | INK | regular |
+| Identity strip | 8 / 11 | INK, labels MUTED | regular |
+| KPI label | 7 / 9.5 | MUTED or accent | regular |
+| KPI value | 14 / 16 | INK or accent | regular |
+| KPI note | 7 / 9.5 | MUTED or accent | regular |
+| Section label (caps) | 7.5 / 10 | MUTED | regular |
+| Table column header | 7.5 / 10 | MUTED | **bold** |
+| Group label (caps) | 7 / 10 | BLUE_D | **bold** |
+| Table body | 8 / 11 | INK | regular |
+| Unit suffix inside cell | 7 | MUTED | regular |
+| Subtotal row | 8 / 11 | INK | **bold** |
+| Total row | 9.5 / 13 | INK | **bold** |
+| Notes / revisions | 7 / 9.5 | MUTED | regular |
+| Footer | 7 | MUTED | regular |
+
+**No text anywhere below 7 pt.** Small type below that does not reproduce reliably on a copier.
+
+## Layout, top to bottom
+
+**1. Header.** Logo top-left. Right-aligned, bottom-aligned: status string in MUTED bold 8 pt, sub-line 7.5 pt MUTED. Then 6 pt gap, a 1.0 pt `RULE` horizontal rule across `CW`, then 8 pt gap.
+
+**2. Identity strip.** Left 42%: style name at 11 pt. Right 58%, right-aligned at 8 pt: `Style {no} · Colour {colour} · Costed from {dps} · Order qty {n} garments`, where the field labels are MUTED and the values INK. Then 9 pt gap.
+
+**3. KPI band.** Six equal tiles in one row, `CW/6` each, 7 pt horizontal padding, 8 pt vertical, separated by 2 pt white rules. Each tile: label, 3 pt gap, value, 1 pt gap, note.
+
+| # | Label | Value | Note | Fill | Text |
+|---|---|---|---|---|---|
+| 1 | Retail price | `{retail:,.0f}` | KES, VAT-incl | PANEL | default |
+| 2 | Selling price | `{selling:,.0f}` | KES, ex-VAT | PANEL | default |
+| 3 | Cost per garment | `{total:,.0f}` | KES, all-in | PANEL | default |
+| 4 | COGS | `{cogs:.1f}%` | of ex-VAT price | BLUE_BG | BLUE_D |
+| 5 | Margin | `{margin:,.0f}` | KES per garment | PANEL | default |
+| 6 | Margin | `{margin_pc:.1f}%` | of ex-VAT price | GREEN_BG | GREEN_TX |
+
+Every tile gets a 0.5 pt `HAIR` box border. The pale fills vanish on a photocopy; the borders are what preserve the grouping. Then 11 pt gap.
+
+**4. Cost composition.** Section label `WHERE THE COST SITS`. 6 pt gap. A single stacked horizontal bar, full `CW`, 9 pt tall, 1.5 pt corner radius, 2 pt gaps between segments. Segments are group subtotals sorted **descending by value**, coloured BLUE_D, BLUE_M, BLUE_L in that order. 7 pt gap. Below it, one legend row split into equal columns, each showing: a 6 pt colour swatch, the group name in INK 8 pt, the percentage in MUTED, and the subtotal right-aligned in INK bold. Then 12 pt gap.
+
+**5. Cost build-up table.** Five columns at `CW` fractions `[0.42, 0.13, 0.13, 0.16, 0.16]`.
+
+Headers: `Cost build-up`, `Barcode`, `Qty`, `Unit cost, KES`, `Line total, KES` — last three right-aligned. 0.6 pt `RULE` below the header row.
+
+For each group: a group label row in BLUE_D bold caps (8 pt above, 2 pt below), then one row per line, then a bold subtotal row `{label} subtotal` with a 0.6 pt `RULE` beneath.
+
+Line rows carry the unit inside the numeric cells rather than in a separate column:
+
+- Qty cell: `1.43` then a 7 pt MUTED ` m`
+- Unit cost cell: `379.64` then a 7 pt MUTED ` /m`
+- Line total: plain number, 2 dp
+
+Body rows get a 0.5 pt `HAIR` rule below. Row padding 3.2 pt top and bottom. Null barcode renders as an em dash.
+
+After the last subtotal: a `Total cost per garment` row at 9.5 pt bold with a 1.0 pt `RULE` under it, then four right-aligned pricing rows at 8 pt, 3 pt padding:
+
+| Label | Value | Style |
+|---|---|---|
+| Retail price, VAT-inclusive | 2 dp | MUTED regular |
+| Selling price, ex-VAT (retail ÷ 1.16) | 2 dp | MUTED regular |
+| Margin per garment | 2 dp | GREEN_TX bold |
+| Margin % | 2 dp + `%` | GREEN_TX bold |
+
+The divisor in that third label must be generated from `vat_rate`, not hard-coded. Then 12 pt gap.
+
+**6. Sign-off.** Three equal tiles, 10 pt padding, 2 pt white separators, 0.5 pt `HAIR` box each. Signed tiles get `GREEN_BG` fill with role, name and timestamp in `GREEN_TX`. Unsigned get `PANEL` fill, role and `Awaiting signature` in MUTED, and an em dash where the timestamp would be. Role 7.5 pt, name 8.5 pt bold, timestamp 7.5 pt. Then 10 pt gap.
+
+**7. Notes.** A 0.5 pt `HAIR` rule, 7 pt gap, then two columns at 56% / 44%: `BASIS OF COSTING` with the basis note, and `REVISION HISTORY` with the revision lines separated by `<br/>`. Both headers 7.5 pt MUTED bold, body 7 pt MUTED.
+
+**8. Footer** (drawn on canvas, not as a flowable). A 0.5 pt `HAIR` rule 4 pt above the bottom margin. Below it at 7 pt MUTED: left `Vivo Fashion Group · Fabric BI · generated {generated_at} · all amounts in {currency}`, right `{style_no} · {colour} · page {n}`.
+
+## Logo
+
+Place the asset at `assets/vivo-logo.png`. It is an orange rounded badge with the word "Vivo" reversed out in white.
+
+Two preprocessing steps, run once at startup if a `.processed` marker is absent:
+
+1. Crop to the bounding box of the orange pixels — the source may sit on a background that would otherwise print as a visible rectangle.
+2. Set alpha to 0 on any pixel where R > 235 and G > 230 and B > 220, so the rounded corners read as curves rather than square corners filled with background.
+
+Size the logo **proportionally to the type scale**, not with a fixed number:
+
+```python
+TITLE_PT      = 16.0    # document title size
+HELV_CAP      = 0.717   # Helvetica cap height as fraction of em
+LOGO_TO_TITLE = 0.62    # mark sits one typographic step below the title
+
+target_cap = TITLE_PT * HELV_CAP * LOGO_TO_TITLE
+# measure the white wordmark inside the artwork:
+#   cap_frac = (height of white-pixel bbox) / (image height)
+logo_height = target_cap / cap_frac
+logo_width  = logo_height * image_width / image_height
+```
+
+This makes the mark self-calibrate: swap in a plain transparent wordmark with no badge and it resizes correctly with no constant to retune. Draw with `preserveAspectRatio=True, anchor="sw", mask="auto"`.
+
+If the file is missing, fall back to the word `VIVO` in Helvetica-Bold, `LOGO_COLOR`, letterspaced at 0.15 em, sized so its cap height equals `target_cap`.
+
+## Acceptance checks
+
+Write these as tests that run on build:
+
+1. Output is exactly 1 page.
+2. `cogs_pc + margin_pc == 100` to two decimals.
+3. Sum of group subtotals equals the printed total.
+4. Every group subtotal equals the sum of its line totals.
+5. No `ParagraphStyle` in the file has `fontSize < 7`.
+6. No literal `#` hex string appears inside any f-string that builds markup — assert by regex over the source.
+7. Extracted text contains: the style number, every barcode, `Barcode`, `Unit cost, KES`, `COGS`, and the total.
+
+## What matters most
+
+This sheet is printed and circulated in hard copy for signature. Screen appearance is secondary. If you find yourself lightening a grey, shrinking type below 7 pt, or relying on a background tint alone to convey grouping, you are reintroducing bugs that were already found and fixed. Contrast and structure beat elegance here.
