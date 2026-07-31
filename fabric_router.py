@@ -12681,6 +12681,10 @@ def _ensure_costing_tables(conn):
                 signed_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
                 UNIQUE (sheet_id, step)
             );
+            -- Manually-entered embroidery cost (no Odoo source yet).
+            -- Stored as JSONB {enabled, cost_per_run, run_count}. NULL = not set.
+            ALTER TABLE fabric_costing_sheets
+                ADD COLUMN IF NOT EXISTS embroidery_data JSONB;
         """)
         # One-time backfill: link existing auto fabric lines to their fabric
         # product by matching the line label ("Main fabric (<name>)" from the
@@ -13360,7 +13364,22 @@ def _sheet_payload(conn, sheet_id, with_history=True):
         for k in ("qty", "unit_cost", "total"):
             l[k] = float(l[k]) if l[k] is not None else None
     _strip_reprice_notes(lines)
-    total = round(sum(l["total"] or 0 for l in lines), 2)
+    lines_total = round(sum(l["total"] or 0 for l in lines), 2)
+    # Embroidery cost — stored in embroidery_data JSONB; provide defaults when NULL.
+    raw_emb = s.get("embroidery_data") or {}
+    if not isinstance(raw_emb, dict):
+        raw_emb = {}
+    emb_enabled = bool(raw_emb.get("enabled", False))
+    emb_cpr = float(raw_emb.get("cost_per_run") or 0)
+    emb_rc = float(raw_emb.get("run_count") or 0)
+    emb_total = round(emb_cpr * emb_rc, 2) if emb_enabled else 0.0
+    s["embroidery_data"] = {
+        "enabled": emb_enabled,
+        "cost_per_run": emb_cpr,
+        "run_count": emb_rc,
+        "embroidery_total": emb_total,
+    }
+    total = round(lines_total + emb_total, 2)
     sp = float(s["selling_price"]) if s["selling_price"] is not None else None
     s["selling_price"] = sp
     for k in ("created_at", "updated_at"):
@@ -13424,9 +13443,10 @@ def costing_sheets_list():
         rows = q(conn, """
             SELECT s.id, s.style_name, s.style_number, s.selling_price,
                    s.dps_ref, s.color, s.updated_by_name, s.updated_at,
+                   s.embroidery_data,
                    -- Stored line totals only: sheets are a snapshot of the
                    -- cost at creation time and never re-price on read.
-                   COALESCE(SUM(l.total),0) AS total_cost,
+                   COALESCE(SUM(l.total),0) AS lines_total,
                    COUNT(l.id) AS line_count,
                    MAX(so.n_signed)  AS n_signed,
                    BOOL_OR(so.approved) AS approved
@@ -13443,7 +13463,13 @@ def costing_sheets_list():
     out = []
     for r in rows:
         sp = float(r["selling_price"]) if r["selling_price"] is not None else None
-        tc = round(float(r["total_cost"] or 0), 2)
+        tc = round(float(r["lines_total"] or 0), 2)
+        # Add embroidery cost when enabled — must match _sheet_payload logic.
+        raw_emb = r.get("embroidery_data") or {}
+        if isinstance(raw_emb, dict) and raw_emb.get("enabled"):
+            emb_cpr = float(raw_emb.get("cost_per_run") or 0)
+            emb_rc  = float(raw_emb.get("run_count") or 0)
+            tc = round(tc + emb_cpr * emb_rc, 2)
         sp_ex, margin, margin_pct = _costing_margin(sp, tc)
         out.append({
             "id": r["id"], "style_name": r["style_name"],
@@ -13649,6 +13675,27 @@ def costing_export_sheet_xlsx(sheet_id: int):
         headers={"Content-Disposition": 'attachment; filename="%s"' % fname})
 
 
+def _parse_embroidery_data(raw):
+    """Validate and normalise the embroidery_data field from a POST/PUT body.
+    Returns a JSON string ready to be stored in the JSONB column, or None when
+    embroidery is disabled/absent.  Raises HTTP 400 on bad input."""
+    if not raw or not isinstance(raw, dict):
+        return None
+    enabled = bool(raw.get("enabled", False))
+    try:
+        cpr = float(raw.get("cost_per_run") or 0)
+        rc  = float(raw.get("run_count") or 0)
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=400,
+            detail="embroidery_data: cost_per_run and run_count must be numbers")
+    if cpr < 0 or rc < 0:
+        raise HTTPException(
+            status_code=400,
+            detail="embroidery_data: cost_per_run and run_count must be non-negative")
+    return json.dumps({"enabled": enabled, "cost_per_run": cpr, "run_count": rc})
+
+
 @fabric_router.post("/api/fabric/costing/sheets")
 def costing_sheet_create(request: Request, body: dict = Body(...)):
     _costing_require_editor(request)
@@ -13671,6 +13718,7 @@ def costing_sheet_create(request: Request, body: dict = Body(...)):
         raise HTTPException(status_code=400,
                             detail="Pick a DPS # for the style — costing sheets are built from one Done DPS")
     color = (str(body.get("color") or "").strip())[:100] or None
+    emb_data_json = _parse_embroidery_data(body.get("embroidery_data"))
     with _get_conn() as conn:
         _ensure_costing_tables(conn)
         _require_style_dps(conn, canon, dps_ref, color=color)
@@ -13683,13 +13731,14 @@ def costing_sheet_create(request: Request, body: dict = Body(...)):
             cur.execute("""
                 INSERT INTO fabric_costing_sheets
                     (style_name, style_number, selling_price, selling_price_is_auto,
-                     notes, dps_ref, color, created_by, created_by_name,
+                     notes, dps_ref, color, embroidery_data,
+                     created_by, created_by_name,
                      updated_by, updated_by_name)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id
             """, (canon, style_row.get("style_number"), sp,
                   bool(body.get("selling_price_is_auto")),
                   (str(body.get("notes") or "").strip())[:1000] or None,
-                  dps_ref, color,
+                  dps_ref, color, emb_data_json,
                   uid, uname, uid, uname))
             sheet_id = cur.fetchone()[0]
             for ln in lines:
@@ -13721,6 +13770,7 @@ def costing_sheet_update(sheet_id: int, request: Request, body: dict = Body(...)
     if sp is not None and sp < 0:
         raise HTTPException(status_code=400, detail="selling_price must be ≥ 0")
     uid, uname = _costing_user(request)
+    emb_data_json = _parse_embroidery_data(body.get("embroidery_data"))
     with _get_conn() as conn:
         _ensure_costing_tables(conn)
         sheets = q(conn, "SELECT * FROM fabric_costing_sheets WHERE id=%s", (sheet_id,))
@@ -13738,13 +13788,14 @@ def costing_sheet_update(sheet_id: int, request: Request, body: dict = Body(...)
             cur.execute("""
                 UPDATE fabric_costing_sheets
                 SET selling_price=%s, selling_price_is_auto=%s, notes=%s,
-                    dps_ref=%s, color=%s,
+                    dps_ref=%s, color=%s, embroidery_data=%s,
                     updated_by=%s, updated_by_name=%s, updated_at=now()
                 WHERE id=%s
             """, (sp, bool(body.get("selling_price_is_auto")),
                   (str(body.get("notes") or "").strip())[:1000] or None,
                   (str(body.get("dps_ref") or "").strip())[:100] or None,
                   (str(body.get("color") or "").strip())[:100] or None,
+                  emb_data_json,
                   uid, uname, sheet_id))
             cur.execute("DELETE FROM fabric_costing_lines WHERE sheet_id=%s", (sheet_id,))
             for ln in lines:
@@ -14120,6 +14171,23 @@ def _costing_to_build_data(s):
                 "unit_cost": ln["unit_cost"] if ln.get("unit_cost") is not None else 0,
             })
         groups.append({"label": _group_labels[kind], "lines": out_lines})
+
+    # Embroidery cost — add as its own group when enabled so build_sheet's
+    # _derive() includes it in total_cost automatically.
+    raw_emb = s.get("embroidery_data") or {}
+    if isinstance(raw_emb, dict) and raw_emb.get("enabled"):
+        emb_cpr = float(raw_emb.get("cost_per_run") or 0)
+        emb_rc  = float(raw_emb.get("run_count") or 0)
+        groups.append({
+            "label": "Embroidery",
+            "lines": [{
+                "desc":      f"Embroidery ({emb_rc:g} runs \u00d7 KES {emb_cpr:,.2f}/1 000 stitches)",
+                "barcode":   None,
+                "qty":       emb_rc,
+                "unit":      "run",
+                "unit_cost": emb_cpr,
+            }],
+        })
 
     # Signoffs — format signed_at as EAT string for build_sheet
     def _fmt_eat(ts_iso):

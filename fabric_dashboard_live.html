@@ -1359,6 +1359,7 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
         <tr style="font-weight:700;"><td colspan="4" style="text-align:right;">Margin vs ex-VAT selling price</td><td class="r" id="cost-margin-cell">—</td><td colspan="2" id="cost-margin-pct-cell"></td></tr></tfoot>
       </table>
      </div>
+     <div id="cost-emb-section" style="margin-top:10px;"></div>
      <div class="flex" id="cost-line-btns" style="gap:8px;margin-top:10px;flex-wrap:wrap;">
       <button class="btn" onclick="costAddLine('trim')">+ Trim / accessory</button>
       <button class="btn" onclick="costAddLine('cmt')">+ CMT / labour</button>
@@ -8868,7 +8869,7 @@ function costStatusPill(status,steps){
 function costBadge(auto){return auto?'<span style="background:var(--accent,#2563eb);color:#fff;border-radius:4px;font-size:10px;padding:1px 6px;">AUTO</span>':'<span style="background:var(--border,#999);color:#fff;border-radius:4px;font-size:10px;padding:1px 6px;">MANUAL</span>';}
 function costRenderLines(){
   const body=document.getElementById('cost-lines-body');
-  if(!costEdit){body.innerHTML='';return;}
+  if(!costEdit){body.innerHTML='';costRenderEmbroidery();return;}
   body.innerHTML=costEdit.lines.map((l,i)=>
     `<tr><td><select class="cost-cell" data-i="${i}" data-k="kind" style="width:110px;">`+
     Object.keys(COST_KINDS).map(k=>`<option value="${k}"${l.kind===k?' selected':''}>${esc(COST_KINDS[k])}</option>`).join('')+
@@ -8880,6 +8881,57 @@ function costRenderLines(){
     `<td>${costBadge(!!l.is_auto)}${l.source?`<div class="muted" style="font-size:10px;">${esc(l.source)}</div>`:''}</td>`+
     `<td><button class="btn" style="padding:2px 8px;" title="Remove line" onclick="costDelLine(${i})">&times;</button></td></tr>`).join('')
     ||'<tr><td colspan="7" class="muted" style="padding:.8rem;">No lines — add cost lines below.</td></tr>';
+  costRenderEmbroidery();
+  costRenderTotals();
+}
+// ── Embroidery Cost section ──
+// Manually-entered embroidery cost (no Odoo source). Revealed by a checkbox.
+// The three sub-fields (Cost per Run, Run Count, Total) live in costEdit.embroidery_data
+// and are persisted to the DB as a JSONB column. The Total is read-only and
+// auto-calculated. The section is disabled for view-only users and locked sheets.
+function costRenderEmbroidery(){
+  const el=document.getElementById('cost-emb-section');if(!el)return;
+  if(!costEdit){el.innerHTML='';return;}
+  const emb=costEdit.embroidery_data||{enabled:false,cost_per_run:0,run_count:0};
+  const enabled=!!emb.enabled;
+  const cpr=emb.cost_per_run||0;
+  const rc=emb.run_count||0;
+  // Disable when sheet is locked OR user is view-only (no sign steps = view-only).
+  const dis=!!(costEdit.locked||(costSignRights&&!costSignRights.steps.length));
+  const disAttr=dis?'disabled':'';
+  el.innerHTML='<div style="border:1px solid var(--border);border-radius:10px;padding:10px 14px;background:var(--bg,#f9f6f3);">'+
+    `<label style="display:inline-flex;align-items:center;gap:8px;cursor:${dis?'default':'pointer'};font-weight:600;font-size:13px;">` +
+    `<input type="checkbox" id="cost-emb-enabled" ${enabled?'checked':''} ${disAttr} onchange="costEmbToggle()">` +
+    'Includes Embroidery</label>'+
+    `<div id="cost-emb-fields" style="display:${enabled?'flex':'none'};flex-wrap:wrap;gap:12px;align-items:flex-end;margin-top:10px;">` +
+    `<div><label class="rsv-lbl">Cost per Run (1 000 stitches)</label>`+
+    `<input type="number" id="cost-emb-cpr" min="0" step="any" value="${esc(String(cpr))}" style="width:160px;" ${disAttr} oninput="costEmbCalc()"></div>`+
+    `<div><label class="rsv-lbl">Run Count</label>`+
+    `<input type="number" id="cost-emb-rc" min="0" step="1" value="${esc(String(rc))}" style="width:120px;" ${disAttr} oninput="costEmbCalc()"></div>`+
+    `<div><label class="rsv-lbl">Total Embroidery Cost</label>`+
+    `<input type="text" id="cost-emb-total" readonly value="${esc(fmtKES2(cpr*rc))}" style="width:140px;background:var(--panel,#ffedd5);cursor:default;"></div>`+
+    '</div></div>';
+}
+function costEmbToggle(){
+  if(!costEdit)return;
+  const cb=document.getElementById('cost-emb-enabled');
+  if(!costEdit.embroidery_data)costEdit.embroidery_data={enabled:false,cost_per_run:0,run_count:0};
+  costEdit.embroidery_data.enabled=!!(cb&&cb.checked);
+  const fields=document.getElementById('cost-emb-fields');
+  if(fields)fields.style.display=costEdit.embroidery_data.enabled?'flex':'none';
+  costEmbCalc();
+}
+function costEmbCalc(){
+  if(!costEdit)return;
+  const cprEl=document.getElementById('cost-emb-cpr');
+  const rcEl=document.getElementById('cost-emb-rc');
+  const totEl=document.getElementById('cost-emb-total');
+  const cpr=Number((cprEl&&cprEl.value)||0)||0;
+  const rc=Number((rcEl&&rcEl.value)||0)||0;
+  if(!costEdit.embroidery_data)costEdit.embroidery_data={enabled:false,cost_per_run:0,run_count:0};
+  costEdit.embroidery_data.cost_per_run=cpr;
+  costEdit.embroidery_data.run_count=rc;
+  if(totEl)totEl.value=fmtKES2(cpr*rc);
   costRenderTotals();
 }
 // Margin basis: the entered/stored price is the VAT-INCLUSIVE retail price;
@@ -8888,7 +8940,11 @@ function costRenderLines(){
 const COST_VAT_DIVISOR=1.16;
 const costExVat=sp=>sp==null||isNaN(sp)?null:Math.round(sp/COST_VAT_DIVISOR*100)/100;
 function costRenderTotals(){
-  const total=(costEdit?costEdit.lines:[]).reduce((s,l)=>s+(Number(l.qty)||0)*(Number(l.unit_cost)||0),0);
+  const linesTotal=(costEdit?costEdit.lines:[]).reduce((s,l)=>s+(Number(l.qty)||0)*(Number(l.unit_cost)||0),0);
+  // Include embroidery total when enabled.
+  const emb=costEdit&&costEdit.embroidery_data;
+  const embTotal=(emb&&emb.enabled)?(Number(emb.cost_per_run||0)*Number(emb.run_count||0)):0;
+  const total=linesTotal+embTotal;
   const spEl=document.getElementById('cost-selling-price');
   const sp=spEl&&spEl.value!==''?Number(spEl.value):null;
   document.getElementById('cost-total-cell').textContent=fmtKES2(total);
@@ -8979,7 +9035,8 @@ function costPickFabric(i,name,cpm,isMain,compId,barcode){
   costRenderLines();
 }
 function costNewSheet(){
-  costEdit={id:null,style_name:null,style_number:null,dps_ref:null,color:null,lines:[],sp_auto:true,history:[],signoffs:null,locked:false};
+  costEdit={id:null,style_name:null,style_number:null,dps_ref:null,color:null,lines:[],sp_auto:true,history:[],signoffs:null,locked:false,
+    embroidery_data:{enabled:false,cost_per_run:0,run_count:0}};
   costDpsReset(true);
   document.getElementById('cost-editor-title').textContent='New costing sheet';
   document.getElementById('cost-style-search').value='';
@@ -9001,9 +9058,11 @@ function costCloseEditor(){costEdit=null;document.getElementById('cost-editor').
 async function costOpenSheet(id){
   try{
     const s=await apiFetch('/api/fabric/costing/sheets/'+encodeURIComponent(id));
+    const _sEmb=s.embroidery_data||{};
     costEdit={id:s.id,style_name:s.style_name,style_number:s.style_number,dps_ref:s.dps_ref||null,color:s.color||null,
       lines:(s.lines||[]).map(l=>({kind:l.kind,label:l.label,qty:l.qty,unit_cost:l.unit_cost,is_auto:!!l.is_auto,source:l.source,component_id:l.component_id||null,barcode:l.barcode||null})),
-      sp_auto:!!s.selling_price_is_auto,history:s.history||[],signoffs:s.signoffs||null,locked:!!s.locked};
+      sp_auto:!!s.selling_price_is_auto,history:s.history||[],signoffs:s.signoffs||null,locked:!!s.locked,
+      embroidery_data:{enabled:!!_sEmb.enabled,cost_per_run:Number(_sEmb.cost_per_run||0),run_count:Number(_sEmb.run_count||0)}};
     // Show which Done DPS the sheet's suggestions were built from (editable
     // again via re-suggest is out of scope for saved sheets; display only).
     const dpsEl=document.getElementById('cost-dps-search');
@@ -9081,6 +9140,8 @@ function costApplyLock(){
   const sp=document.getElementById('cost-selling-price');if(sp)sp.disabled=locked;
   const note=document.getElementById('cost-lock-note');
   if(note)note.innerHTML=locked?'<div class="banner" style="background:#dcfce7;border:1px solid #86efac;">This sheet is <b>approved</b> and locked against edits. Un-approve it in the Sign-off panel below to make changes (all edits are change-logged).</div>':'';
+  // Re-render embroidery section so its disabled state reflects the lock change.
+  costRenderEmbroidery();
 }
 // Apply a fresh sheet payload returned by sign/unsign to the open editor.
 function costApplySheet(s){
@@ -9285,11 +9346,21 @@ async function costSaveSheet(){
   if(!costEdit.id&&!costEdit.dps_ref){err.innerHTML='<div class="banner banner-err">Pick a DPS # for the style — new costing sheets are built from one Done DPS.</div>';return;}
   if(!costEdit.lines.length){err.innerHTML='<div class="banner banner-err">Add at least one cost line.</div>';return;}
   const spEl=document.getElementById('cost-selling-price');
+  // Sync embroidery inputs into costEdit.embroidery_data before building payload.
+  const cprEl=document.getElementById('cost-emb-cpr'),rcEl=document.getElementById('cost-emb-rc'),cbEl=document.getElementById('cost-emb-enabled');
+  if(cprEl&&rcEl&&cbEl){
+    if(!costEdit.embroidery_data)costEdit.embroidery_data={enabled:false,cost_per_run:0,run_count:0};
+    costEdit.embroidery_data.enabled=!!cbEl.checked;
+    costEdit.embroidery_data.cost_per_run=Number(cprEl.value)||0;
+    costEdit.embroidery_data.run_count=Number(rcEl.value)||0;
+  }
+  const emb=costEdit.embroidery_data||{enabled:false,cost_per_run:0,run_count:0};
   const payload={style_name:costEdit.style_name,
     dps_ref:costEdit.dps_ref||null,
     color:costEdit.color||null,
     selling_price:spEl.value===''?null:Number(spEl.value),
     selling_price_is_auto:!!costEdit.sp_auto,
+    embroidery_data:{enabled:!!emb.enabled,cost_per_run:Number(emb.cost_per_run||0),run_count:Number(emb.run_count||0)},
     lines:costEdit.lines.map(l=>({kind:l.kind,label:l.label,qty:Number(l.qty)||0,unit_cost:Number(l.unit_cost)||0,is_auto:!!l.is_auto,source:l.source,component_id:l.component_id||null}))};
   const btn=document.getElementById('cost-save-btn');btn.disabled=true;btn.textContent='Saving…';
   try{
