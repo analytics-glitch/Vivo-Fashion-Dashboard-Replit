@@ -4451,7 +4451,7 @@ function renderKpis(d,coverDelta){
     KpiCard({hero:true,reserveAction:true,label:'Stock on hand',value:fmt(stockQty),unit:unitLabel(),valueAttrs:fx(FX.stockOnHand),footnote:`<span${fx(FX.kpiSubStockValue)}>${fmtKES(d.fabric_stock_value)}</span> &middot; <span${fx(FX.kpiSubFabricCount)}>${fmt(d.fabric_products)} fabric SKUs in stock</span>`}),
     KpiCard({reserveAction:true,label:'Total fabric value',prefix:'KES',value:fmtKESval(totalVal),valueAttrs:fx(FX.totalFabricValue),footnote:valSub}),
     KpiCard(Object.assign({reserveAction:true,label:'Avg cost / metre',prefix:'KES',value:acpmNum(acpmS),unit:'/m',valueAttrs:fx(FX.avgCostMetreStock),cardAttrs:` title="${acpmTitle('Average cost per metre across fabric stock on hand (RMAT/Stock), per metre regardless of the kg/m unit toggle.',acpmSExc)}"`},acpmOpts('stock on hand &middot; RMAT/Stock',acpmSExc,'stock'))),
-    KpiCard(Object.assign({reserveAction:true,label:'Avg cost / metre',qualifier:'Purchases',prefix:'KES',value:acpmNum(acpmP),unit:'/m',valueAttrs:fx(FX.avgCostMetrePurchases),cardAttrs:` title="${acpmTitle('Average purchase cost per metre across all received POs, per metre regardless of the kg/m unit toggle.',acpmPExc)}"`},acpmOpts('received &middot; all POs',acpmPExc,'purchases'))),
+
     KpiCard({reserveAction:true,label:'Consumed today',value:fmt(UNIT==='kg'?d.consumption_today_kg:d.consumption_today_metres),unit:unitLabel(),valueAttrs:fx(FX.consumedToday),footnote:`${consumedTodaySub(d)}${consumptionSourcesLink('main')}`}),
     KpiCard({reserveAction:true,label:'Consumed 30d',value:fmt(UNIT==='kg'?d.consumption_30d_kg:d.consumption_30d_metres),unit:unitLabel(),valueAttrs:fx(FX.consumed30d),footnote:'net of returns'}),
     (()=>{
