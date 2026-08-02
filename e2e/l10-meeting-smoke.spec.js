@@ -123,17 +123,9 @@ test.describe("L10 Meeting — Fabric BI smoke", () => {
       await openFabric(page);
       const hasMeeting = await clickL10Tab(page);
 
-      if (!hasMeeting) {
-        // No meetings in this environment — "+ New Meeting" must be visible.
-        await expect(page.locator("#l10-new-btn")).toBeVisible();
-        // Nothing more to assert without a meeting; skip gracefully.
-        test.info().annotations.push({
-          type: "skip-reason",
-          description:
-            "No meetings in test DB — tab bar not rendered (acceptable)",
-        });
-        return;
-      }
+      // global-setup.js always seeds at least one meeting, so hasMeeting
+      // must be true.  Fail loudly if the seed didn't take.
+      expect(hasMeeting).toBe(true);
 
       // All eight tab buttons must exist and be visible.
       for (const tabId of L10_TAB_IDS) {
@@ -162,13 +154,9 @@ test.describe("L10 Meeting — Fabric BI smoke", () => {
       await openFabric(page);
       const hasMeeting = await clickL10Tab(page);
 
-      if (!hasMeeting) {
-        test.info().annotations.push({
-          type: "skip-reason",
-          description: "No meetings in test DB — skipping Conclude tab check",
-        });
-        return;
-      }
+      // global-setup.js always seeds at least one meeting, so hasMeeting
+      // must be true.  Fail loudly if the seed didn't take.
+      expect(hasMeeting).toBe(true);
 
       // Click the Conclude tab.
       await page.locator("#l10-t-conclude").click();
@@ -195,19 +183,13 @@ test.describe("L10 Meeting — Fabric BI smoke", () => {
         "Rate the meeting 1–10"
       );
 
-      // Sparkline: only rendered when ≥2 meetings have at least one rating.
-      const hasSparkline = await page.evaluate(
-        () => document.querySelector("#l10-content svg") !== null
+      // Sparkline: global-setup.js seeds 2 meetings each with a rating row,
+      // which meets the ≥2-rated-meetings threshold.  Assert it is always
+      // present so regressions in the sparkline path are caught immediately.
+      await expect(page.locator("#l10-content")).toContainText(
+        "Meeting Rating Trend"
       );
-
-      if (hasSparkline) {
-        // The sparkline card title and the SVG must both be in the DOM.
-        await expect(page.locator("#l10-content")).toContainText(
-          "Meeting Rating Trend"
-        );
-        await expect(page.locator("#l10-content svg")).toBeVisible();
-      }
-      // If !hasSparkline that is also valid (not enough history yet).
+      await expect(page.locator("#l10-content svg")).toBeVisible();
     }
   );
 
