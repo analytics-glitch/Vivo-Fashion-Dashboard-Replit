@@ -82,22 +82,32 @@ function getQuarterLabel(isoDate) {
 function scorecardTrafficLight(value, goal, direction) {
   if (value === null || value === undefined || value === "") return null;
   const v = parseFloat(value);
-  const g = parseFloat(goal);
-  if (isNaN(v) || isNaN(g) || g === 0) return null;
-  if (direction === "down") {
-    if (v <= g) return "green";
-    if (v <= g * 1.25) return "yellow";
-    return "red";
+  if (isNaN(v)) return null;
+  if (!goal && goal !== 0) return null;
+  const goalStr = String(goal).trim();
+  // Try operator prefix: >=, <=, >, <, =
+  const opMatch = goalStr.match(/^(>=|<=|>|<|=)\s*(-?\d+(\.\d+)?)$/);
+  if (opMatch) {
+    const op = opMatch[1];
+    const g = parseFloat(opMatch[2]);
+    if (isNaN(g)) return null;
+    let meets = false;
+    if (op === ">=") meets = v >= g;
+    else if (op === "<=") meets = v <= g;
+    else if (op === ">")  meets = v > g;
+    else if (op === "<")  meets = v < g;
+    else if (op === "=")  meets = v === g;
+    return meets ? "green" : "red";
   }
-  const pct = (v / g) * 100;
-  if (pct >= 100) return "green";
-  if (pct >= 80) return "yellow";
-  return "red";
+  // Plain numeric goal — fall back to goal_direction
+  const g = parseFloat(goalStr);
+  if (isNaN(g)) return null;
+  const meets = direction === "down" ? v <= g : v >= g;
+  return meets ? "green" : "red";
 }
 
 function trafficLightCls(tl, base = "") {
   if (tl === "green") return `${base} bg-emerald-100 text-emerald-800`;
-  if (tl === "yellow") return `${base} bg-amber-100 text-amber-800`;
   if (tl === "red") return `${base} bg-red-100 text-red-700`;
   return `${base} bg-muted/40 text-foreground`;
 }
@@ -440,9 +450,8 @@ const ScorecardTab = ({ meetingId, folderId = 1, onRedMetrics }) => {
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-4 text-xs text-muted-foreground">
-        <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded-sm bg-emerald-100 border border-emerald-300" /> ≥ 100% of target</span>
-        <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded-sm bg-amber-100 border border-amber-300" /> 80–99%</span>
-        <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded-sm bg-red-100 border border-red-300" /> &lt; 80% (auto-added to IDS)</span>
+        <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded-sm bg-emerald-100 border border-emerald-300" /> Meets goal</span>
+        <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded-sm bg-red-100 border border-red-300" /> Below goal (auto-added to IDS)</span>
       </div>
       <div className="rounded-xl border bg-card overflow-hidden">
         <div className="px-4 py-3 border-b bg-muted/20 flex items-center justify-between">
@@ -487,6 +496,8 @@ const ScorecardTab = ({ meetingId, folderId = 1, onRedMetrics }) => {
                           <ScorecardCell
                             value={cell.value}
                             trafficLight={tl}
+                            goal={metric.goal}
+                            goalDirection={metric.goal_direction}
                             onSave={(v) => saveValue(metric.id, v, metric.goal_direction, metric.goal)}
                           />
                         ) : (
@@ -512,7 +523,7 @@ const ScorecardTab = ({ meetingId, folderId = 1, onRedMetrics }) => {
   );
 };
 
-const ScorecardCell = ({ value, trafficLight, onSave }) => {
+const ScorecardCell = ({ value, trafficLight, goal, goalDirection, onSave }) => {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value || "");
   const inputRef = useRef(null);
@@ -520,6 +531,8 @@ const ScorecardCell = ({ value, trafficLight, onSave }) => {
   useEffect(() => { setDraft(value || ""); }, [value]);
   const commit = () => { setEditing(false); onSave(draft); };
   if (editing) {
+    const liveTl = scorecardTrafficLight(draft, goal, goalDirection);
+    const inputBg = liveTl === "green" ? "bg-emerald-100" : liveTl === "red" ? "bg-red-100" : "bg-white";
     return (
       <input
         ref={inputRef}
@@ -528,7 +541,7 @@ const ScorecardCell = ({ value, trafficLight, onSave }) => {
         onChange={(e) => setDraft(e.target.value)}
         onBlur={commit}
         onKeyDown={(e) => { if (e.key === "Enter") commit(); if (e.key === "Escape") setEditing(false); }}
-        className="w-16 border border-primary/40 rounded px-1 py-0.5 text-xs text-center bg-white outline-none"
+        className={`w-16 border border-primary/40 rounded px-1 py-0.5 text-xs text-center outline-none ${inputBg}`}
       />
     );
   }
@@ -990,16 +1003,7 @@ const IDSTab = ({ meetingId, members, folderId = 1, redMetrics = [] }) => {
     return next;
   });
 
-  const addRedKpiAsIssue = (kpi) => {
-    setRows((prev) => {
-      const issue = `[Scorecard red] ${kpi.measurable}${kpi.who ? ` (${kpi.who})` : ""} — actual: ${kpi.value}, goal: ${kpi.goal}`;
-      const alreadyAdded = prev.some((r) => r.issue === issue);
-      if (alreadyAdded) return prev;
-      const next = [...prev.filter((r) => r.issue !== ""), { issue, raised_by: "", status: "open" }];
-      save(next);
-      return next;
-    });
-  };
+
 
   if (loading) return <Loading label="Loading IDS…" />;
 
@@ -1012,39 +1016,7 @@ const IDSTab = ({ meetingId, members, folderId = 1, redMetrics = [] }) => {
 
   return (
     <div className="space-y-4">
-      {redMetrics.length > 0 && (
-        <div className="rounded-xl border border-red-200 bg-red-50 p-4">
-          <div className="flex items-center justify-between mb-2">
-            <h3 className="text-sm font-semibold text-red-800">
-              {redMetrics.length} Red KPI{redMetrics.length > 1 ? "s" : ""} from Scorecard
-            </h3>
-            <span className="text-xs text-red-600">Below 80% of target — add to issues list</span>
-          </div>
-          <div className="space-y-1.5">
-            {redMetrics.map((kpi) => {
-              const issue = `[Scorecard red] ${kpi.measurable}${kpi.who ? ` (${kpi.who})` : ""} — actual: ${kpi.value}, goal: ${kpi.goal}`;
-              const alreadyAdded = rows.some((r) => r.issue === issue);
-              return (
-                <div key={kpi.id} className="flex items-center gap-2">
-                  <span className="flex-1 text-sm text-red-900">
-                    <span className="font-medium">{kpi.measurable}</span>
-                    {kpi.who && <span className="text-xs text-red-700 ml-1">({kpi.who})</span>}
-                    <span className="text-xs text-red-600 ml-1.5">— actual: {kpi.value}, goal: {kpi.goal}</span>
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => addRedKpiAsIssue(kpi)}
-                    disabled={alreadyAdded}
-                    className="text-xs px-2.5 py-1 rounded-lg bg-red-700 text-white hover:opacity-90 disabled:opacity-50 whitespace-nowrap"
-                  >
-                    {alreadyAdded ? "Added" : "Add to Issues"}
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
+
       <div className="rounded-xl border bg-card overflow-hidden">
         <div className="px-4 py-3 border-b bg-muted/20 flex items-center justify-between">
           <h2 className="text-sm font-semibold">Issues List — Identify, Discuss, Solve</h2>
@@ -1064,38 +1036,53 @@ const IDSTab = ({ meetingId, members, folderId = 1, redMetrics = [] }) => {
               </tr>
             </thead>
             <tbody>
-              {rows.map((row, i) => (
-                <tr key={i} className="border-b last:border-0 hover:bg-muted/20">
-                  <td className="py-1.5 px-3 text-muted-foreground text-xs">{i + 1}</td>
-                  <td className="py-1.5 px-3">
-                    <InlineEdit value={row.issue} onSave={(v) => update(i, "issue", v)} placeholder="Describe the issue…" className="w-full" />
-                  </td>
-                  <td className="py-1.5 px-3">
-                    <select value={row.raised_by || ""} onChange={(e) => update(i, "raised_by", e.target.value)}
-                      className="border border-border rounded px-1.5 py-0.5 text-xs w-full bg-white">
-                      <option value="">Select…</option>
-                      {memberNames.map((n) => <option key={n} value={n}>{n}</option>)}
-                    </select>
-                  </td>
-                  <td className="py-1.5 px-3">
-                    <select value={row.status || "open"} onChange={(e) => update(i, "status", e.target.value)}
-                      className={`border rounded px-1.5 py-0.5 text-xs w-full bg-white ${
-                        row.status === "resolved" ? "border-emerald-300 text-emerald-700" :
-                        row.status === "discussed" ? "border-amber-300 text-amber-700" :
-                        "border-border"
-                      }`}>
-                      <option value="open">Open</option>
-                      <option value="discussed">Discussed</option>
-                      <option value="resolved">Resolved</option>
-                    </select>
-                  </td>
-                  <td className="py-1.5 px-3">
-                    <button type="button" onClick={() => removeRow(i)} className="text-muted-foreground hover:text-red-500">
-                      <Trash size={14} />
-                    </button>
-                  </td>
-                </tr>
-              ))}
+              {rows.map((row, i) => {
+                const isAuto = !!row.scorecard_metric_id;
+                return (
+                  <tr key={i} className="border-b last:border-0 hover:bg-muted/20">
+                    <td className="py-1.5 px-3 text-muted-foreground text-xs">{i + 1}</td>
+                    <td className="py-1.5 px-3">
+                      <div className="flex items-center gap-1.5">
+                        {isAuto && (
+                          <span className="inline-flex items-center gap-0.5 text-[10px] font-medium px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200 shrink-0 whitespace-nowrap">
+                            📊 Scorecard
+                          </span>
+                        )}
+                        {isAuto
+                          ? <span className="text-sm">{row.issue}</span>
+                          : <InlineEdit value={row.issue} onSave={(v) => update(i, "issue", v)} placeholder="Describe the issue…" className="w-full" />
+                        }
+                      </div>
+                    </td>
+                    <td className="py-1.5 px-3">
+                      <select value={row.raised_by || ""} onChange={(e) => update(i, "raised_by", e.target.value)}
+                        className="border border-border rounded px-1.5 py-0.5 text-xs w-full bg-white">
+                        <option value="">Select…</option>
+                        {memberNames.map((n) => <option key={n} value={n}>{n}</option>)}
+                      </select>
+                    </td>
+                    <td className="py-1.5 px-3">
+                      <select value={row.status || "open"} onChange={(e) => update(i, "status", e.target.value)}
+                        className={`border rounded px-1.5 py-0.5 text-xs w-full bg-white ${
+                          row.status === "resolved" ? "border-emerald-300 text-emerald-700" :
+                          row.status === "discussed" ? "border-amber-300 text-amber-700" :
+                          "border-border"
+                        }`}>
+                        <option value="open">Open</option>
+                        <option value="discussed">Discussed</option>
+                        <option value="resolved">Resolved</option>
+                      </select>
+                    </td>
+                    <td className="py-1.5 px-3">
+                      {!isAuto && (
+                        <button type="button" onClick={() => removeRow(i)} className="text-muted-foreground hover:text-red-500">
+                          <Trash size={14} />
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -1411,7 +1398,7 @@ const AdminTab = ({ members, onMembersChanged, settings, onSettingsChanged, fold
               className="border border-border rounded px-2 py-1 text-sm" />
             <input placeholder="Measurable *" value={newMetric.measurable} onChange={(e) => setNewMetric((p) => ({ ...p, measurable: e.target.value }))}
               className="border border-border rounded px-2 py-1 text-sm col-span-2 sm:col-span-1" />
-            <input placeholder="Goal" value={newMetric.goal} onChange={(e) => setNewMetric((p) => ({ ...p, goal: e.target.value }))}
+            <input placeholder=">2 or >=95 or <5 or =100" value={newMetric.goal} onChange={(e) => setNewMetric((p) => ({ ...p, goal: e.target.value }))}
               className="border border-border rounded px-2 py-1 text-sm" />
             <input placeholder="UOM" value={newMetric.uom} onChange={(e) => setNewMetric((p) => ({ ...p, uom: e.target.value }))}
               className="border border-border rounded px-2 py-1 text-sm" />

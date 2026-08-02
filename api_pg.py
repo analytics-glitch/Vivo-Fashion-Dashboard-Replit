@@ -34313,6 +34313,9 @@ def _ensure_l10_tables():
             updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
         )
         """,
+        # Dedup key for scorecard-auto-created IDS entries
+        "ALTER TABLE l10_ids_issues ADD COLUMN IF NOT EXISTS scorecard_metric_id INT REFERENCES l10_scorecard_metrics(id) ON DELETE CASCADE",
+        "CREATE UNIQUE INDEX IF NOT EXISTS l10_ids_auto_metric_uniq ON l10_ids_issues (meeting_id, scorecard_metric_id) WHERE scorecard_metric_id IS NOT NULL",
         # ── Conclude ──────────────────────────────────────────────────────────
         """
         CREATE TABLE IF NOT EXISTS l10_conclude (
@@ -34339,6 +34342,38 @@ def _ensure_l10_tables():
             _users_exec(stmt)
         except Exception as e:
             log.error("l10 DDL failed: %s — %s", stmt[:60], e)
+
+
+def _eval_scorecard_goal(value_str, goal_str, goal_direction):
+    """Return True (green/meets), False (red/misses), or None (skip) for value vs goal.
+    Parses operator prefixes (>=, <=, >, <, =) from goal_str; falls back to
+    goal_direction ('up'->>=, 'down'->=<) for plain numeric goals."""
+    if value_str is None or value_str == "":
+        return None
+    try:
+        v = float(value_str)
+    except (ValueError, TypeError):
+        return None
+    if not goal_str and goal_str != 0:
+        return None
+    goal = str(goal_str).strip()
+    for op in (">=", "<=", ">", "<", "="):
+        if goal.startswith(op):
+            g_str = goal[len(op):].strip()
+            try:
+                g = float(g_str)
+            except ValueError:
+                return None
+            if op == ">=": return v >= g
+            if op == "<=": return v <= g
+            if op == ">":  return v > g
+            if op == "<":  return v < g
+            if op == "=":  return v == g
+    try:
+        g = float(goal)
+    except ValueError:
+        return None
+    return v <= g if goal_direction == "down" else v >= g
 
 
 @_deferred_startup
@@ -34692,6 +34727,60 @@ async def l10_upsert_scorecard_values(meeting_id: int, request: Request):
             "ON CONFLICT (metric_id, meeting_id) DO UPDATE "
             "SET value=EXCLUDED.value, on_track=EXCLUDED.on_track, updated_at=now()",
             (metric_id, meeting_id, value, on_track))
+        # ── Auto-upsert / auto-remove IDS entry ───────────────────────────────
+        try:
+            metric_rows = _users_exec(
+                "SELECT measurable, who, goal, goal_direction FROM l10_scorecard_metrics WHERE id=%s",
+                (metric_id,), fetch=True)
+            if not metric_rows:
+                continue
+            m = metric_rows[0]
+            meets = _eval_scorecard_goal(value, m.get("goal"), m.get("goal_direction"))
+            if meets is None:
+                # Empty value — clean up any open auto-entry
+                _users_exec(
+                    "DELETE FROM l10_ids_issues "
+                    "WHERE meeting_id=%s AND scorecard_metric_id=%s AND status='open'",
+                    (meeting_id, metric_id))
+            elif meets:
+                # Green — remove any open auto-entry for this metric
+                _users_exec(
+                    "DELETE FROM l10_ids_issues "
+                    "WHERE meeting_id=%s AND scorecard_metric_id=%s AND status='open'",
+                    (meeting_id, metric_id))
+            else:
+                # Red — upsert an IDS entry; never overwrite a discussed/resolved one
+                goal_str = str(m.get("goal") or "")
+                issue_text = (
+                    f"{m.get('measurable') or 'KPI'} — actual: {value}, goal: {goal_str}"
+                )
+                raised_by = m.get("who") or ""
+                # Try to update an existing open auto-entry first
+                updated = _users_exec(
+                    "UPDATE l10_ids_issues SET issue=%s, raised_by=%s, updated_at=now() "
+                    "WHERE meeting_id=%s AND scorecard_metric_id=%s AND status='open' "
+                    "RETURNING id",
+                    (issue_text, raised_by, meeting_id, metric_id), fetch=True)
+                if not updated:
+                    # No open entry exists — insert only if no entry at all
+                    # (i.e. don't create a new one if a discussed/resolved entry exists)
+                    existing = _users_exec(
+                        "SELECT id FROM l10_ids_issues "
+                        "WHERE meeting_id=%s AND scorecard_metric_id=%s",
+                        (meeting_id, metric_id), fetch=True)
+                    if not existing:
+                        max_ord = _users_exec(
+                            "SELECT COALESCE(MAX(sort_order),0) AS m FROM l10_ids_issues "
+                            "WHERE meeting_id=%s",
+                            (meeting_id,), fetch=True)
+                        nxt = int((max_ord or [{"m": 0}])[0]["m"]) + 1
+                        _users_exec(
+                            "INSERT INTO l10_ids_issues "
+                            "(meeting_id, issue, raised_by, sort_order, status, scorecard_metric_id) "
+                            "VALUES (%s, %s, %s, %s, 'open', %s)",
+                            (meeting_id, issue_text, raised_by, nxt, metric_id))
+        except Exception as e:
+            log.warning("IDS auto-upsert failed for metric %s: %s", metric_id, e)
     return {"ok": True}
 
 
@@ -34901,7 +34990,7 @@ def l10_ids_history(request: Request, exclude_meeting_id: int = Query(None),
 def l10_get_ids(meeting_id: int, request: Request):
     _ensure_l10_tables()
     return _users_exec(
-        "SELECT id, issue, raised_by, sort_order, status "
+        "SELECT id, issue, raised_by, sort_order, status, scorecard_metric_id "
         "FROM l10_ids_issues WHERE meeting_id=%s ORDER BY sort_order, id",
         (meeting_id,), fetch=True) or []
 
@@ -34911,8 +35000,23 @@ async def l10_upsert_ids(meeting_id: int, request: Request):
     _ensure_l10_tables()
     body = await request.json()
     rows = body.get("rows", [])
-    _users_exec("DELETE FROM l10_ids_issues WHERE meeting_id=%s", (meeting_id,))
-    for i, row in enumerate(rows):
+    # Separate auto-scorecard rows (have scorecard_metric_id) from manual rows.
+    # Auto-rows are managed by the scorecard upsert; we only update their status here.
+    auto_rows = [r for r in rows if r.get("scorecard_metric_id")]
+    manual_rows = [r for r in rows if not r.get("scorecard_metric_id")]
+    # Update status on auto-rows (don't modify issue text or delete them)
+    for r in auto_rows:
+        row_id = r.get("id")
+        if row_id:
+            _users_exec(
+                "UPDATE l10_ids_issues SET status=%s, raised_by=%s, updated_at=now() "
+                "WHERE id=%s AND scorecard_metric_id IS NOT NULL",
+                (r.get("status") or "open", r.get("raised_by"), row_id))
+    # Delete and re-insert only the manual rows
+    _users_exec(
+        "DELETE FROM l10_ids_issues WHERE meeting_id=%s AND scorecard_metric_id IS NULL",
+        (meeting_id,))
+    for i, row in enumerate(manual_rows):
         issue = (row.get("issue") or "").strip()
         if not issue:
             continue
