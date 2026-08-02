@@ -34384,6 +34384,118 @@ def _init_l10_tables():
         log.error("L10 table init failed: %s", e)
 
 
+@_deferred_startup
+def _seed_supply_chain_l10():
+    """Seed canonical Supply Chain (folder_id=2) L10 config into a fresh DB.
+
+    Runs on every boot; skipped when folder_id=2 members already exist
+    (completeness guard).  All inserts use ON CONFLICT DO NOTHING so
+    re-runs are idempotent.  Meeting-linked FK columns (opened_meeting_id,
+    closed_meeting_id) are left NULL — they reference meeting records that
+    don't exist in prod yet.
+    """
+    _ensure_l10_tables()
+    try:
+        with _users_tx() as cur:
+            # Advisory lock prevents concurrent duplicate seeds
+            cur.execute(
+                "SELECT pg_try_advisory_xact_lock(hashtext('sc_l10_seed'))"
+            )
+            if not cur.fetchone()["pg_try_advisory_xact_lock"]:
+                log.warning("SC L10 seed: advisory lock not acquired, skipping")
+                return
+
+            # Completeness guard — skip if prod already has SC members
+            cur.execute(
+                "SELECT 1 FROM l10_members WHERE folder_id=2 LIMIT 1"
+            )
+            if cur.fetchone():
+                log.warning("SC L10 seed: folder_id=2 members already exist, skipping")
+                return
+
+            # ── Members ──────────────────────────────────────────────────────
+            members = [
+                (2, "Bedan",      1,  True),
+                (2, "Hagai",      2,  True),
+                (2, "Mwangi",     3,  False),
+                (2, "Wilson",     4,  False),
+                (2, "Kevin",      5,  False),
+                (2, "Fred",       6,  False),
+                (2, "Hellen",     7,  False),
+                (2, "Stephen M.", 8,  False),
+                (2, "Josphat",    9,  False),
+                (2, "Fredrick",   10, False),
+                (2, "Kevin",      11, True),
+                (2, "Fredrick",   12, True),
+                (2, "Hellen",     13, True),
+            ]
+            for row in members:
+                cur.execute(
+                    """
+                    INSERT INTO l10_members (folder_id, name, sort_order, active)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT DO NOTHING
+                    """,
+                    row,
+                )
+            n_members = len(members)
+
+            # ── Scorecard Metrics ─────────────────────────────────────────────
+            metrics = [
+                (2, "Bedan", "Basic Fabrics (NOOS) Monthly Cover", ">2", "Months", "up", 2, True),
+            ]
+            for row in metrics:
+                cur.execute(
+                    """
+                    INSERT INTO l10_scorecard_metrics
+                        (folder_id, who, measurable, goal, uom, goal_direction, sort_order, active)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT DO NOTHING
+                    """,
+                    row,
+                )
+            n_metrics = len(metrics)
+
+            # ── Rocks ─────────────────────────────────────────────────────────
+            rocks = [
+                (2,
+                 "Document all the departmental SOPs and have them reviewed and Signed Off by end of Q3",
+                 "Individual", "Bedan", True, False, None, None, "Q3 2026", 1, True),
+                (2,
+                 "Update Trims Attributes in Odoo and BI Page by end of Q3",
+                 "Individual", "Bedan", True, False, None, None, "Q3 2026", 2, True),
+                (2,
+                 "Map out the NOOS Fabrics in Odoo and Have them Tracked and Reports Created in the BI by end of Q3",
+                 "Individual", "Bedan", True, False, None, None, "Q3 2026", 3, True),
+                (2,
+                 "Automate product Costing in the BI by end of Q3",
+                 "Individual", "Bedan", True, False, None, None, "Q3 2026", 4, True),
+            ]
+            for row in rocks:
+                cur.execute(
+                    """
+                    INSERT INTO l10_rocks
+                        (folder_id, description, rock_type, owner, on_track, done,
+                         results, link, quarter_label, sort_order, active)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT DO NOTHING
+                    """,
+                    row,
+                )
+            n_rocks = len(rocks)
+
+            # ── To-Dos ────────────────────────────────────────────────────────
+            # No open to-dos in dev at seed time
+            n_todos = 0
+
+        log.warning(
+            "SC L10 seed applied: %d members, %d metrics, %d rocks, %d todos",
+            n_members, n_metrics, n_rocks, n_todos,
+        )
+    except Exception as e:
+        log.error("SC L10 seed failed: %s", e)
+
+
 def _l10_iso_week(d):
     iso = d.isocalendar()
     return f"{iso[0]}-W{iso[1]:02d}"
