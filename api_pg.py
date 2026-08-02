@@ -34435,8 +34435,11 @@ def _eval_scorecard_goal(value_str, goal_str, goal_direction):
     for op in (">=", "<=", ">", "<", "="):
         if goal.startswith(op):
             g_str = goal[len(op):].strip()
+            m = re.match(r'^(-?\d+(?:\.\d+)?)', g_str)
+            if not m:
+                return None
             try:
-                g = float(g_str)
+                g = float(m.group(1))
             except ValueError:
                 return None
             if op == ">=": return v >= g

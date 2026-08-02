@@ -86,7 +86,7 @@ function scorecardTrafficLight(value, goal, direction) {
   if (!goal && goal !== 0) return null;
   const goalStr = String(goal).trim();
   // Try range goal: min-max (hyphen, en-dash, em-dash, with optional spaces), e.g. "4-6", "4–6", "4 - 6"
-  const rangeMatch = goalStr.match(/^(-?\d+(?:\.\d+)?)\s*[-\u2013\u2014]\s*(-?\d+(?:\.\d+)?)$/);
+  const rangeMatch = goalStr.match(/^(-?\d+(?:\.\d+)?)\s*[-\u2013\u2014]\s*(-?\d+(?:\.\d+)?)(?=\s|$)/);
   if (rangeMatch) {
     const rMin = parseFloat(rangeMatch[1]);
     const rMax = parseFloat(rangeMatch[2]);
@@ -95,7 +95,7 @@ function scorecardTrafficLight(value, goal, direction) {
     }
   }
   // Try operator prefix: >=, <=, >, <, =
-  const opMatch = goalStr.match(/^(>=|<=|>|<|=)\s*(-?\d+(\.\d+)?)$/);
+  const opMatch = goalStr.match(/^(>=|<=|>|<|=)\s*(-?\d+(?:\.\d+)?)(?=\s|$)/);
   if (opMatch) {
     const op = opMatch[1];
     const g = parseFloat(opMatch[2]);
@@ -443,7 +443,7 @@ const ScorecardTab = ({ meetingId, folderId = 1, onRedMetrics }) => {
     let on_track = null;
     const numVal = parseFloat(value);
     // Range goal: min-max (hyphen, en-dash, em-dash, with optional spaces), e.g. "4-6"
-    const rangeMatchSave = goalStr ? String(goalStr).trim().match(/^(-?\d+(?:\.\d+)?)\s*[-\u2013\u2014]\s*(-?\d+(?:\.\d+)?)$/) : null;
+    const rangeMatchSave = goalStr ? String(goalStr).trim().match(/^(-?\d+(?:\.\d+)?)\s*[-\u2013\u2014]\s*(-?\d+(?:\.\d+)?)(?=\s|$)/) : null;
     if (rangeMatchSave && !isNaN(numVal)) {
       const rMin = parseFloat(rangeMatchSave[1]);
       const rMax = parseFloat(rangeMatchSave[2]);
@@ -451,9 +451,22 @@ const ScorecardTab = ({ meetingId, folderId = 1, onRedMetrics }) => {
         on_track = numVal >= rMin && numVal <= rMax;
       }
     } else {
-      const numGoal = parseFloat(goalStr);
-      if (!isNaN(numVal) && !isNaN(numGoal)) {
-        on_track = goalDirection === "up" ? numVal >= numGoal : numVal <= numGoal;
+      const opMatchSave = goalStr ? String(goalStr).trim().match(/^(>=|<=|>|<|=)\s*(-?\d+(?:\.\d+)?)(?=\s|$)/) : null;
+      if (opMatchSave && !isNaN(numVal)) {
+        const op = opMatchSave[1];
+        const g = parseFloat(opMatchSave[2]);
+        if (!isNaN(g)) {
+          if (op === ">=") on_track = numVal >= g;
+          else if (op === "<=") on_track = numVal <= g;
+          else if (op === ">")  on_track = numVal > g;
+          else if (op === "<")  on_track = numVal < g;
+          else if (op === "=")  on_track = numVal === g;
+        }
+      } else {
+        const numGoal = parseFloat(String(goalStr).trim());
+        if (!isNaN(numVal) && !isNaN(numGoal)) {
+          on_track = goalDirection === "up" ? numVal >= numGoal : numVal <= numGoal;
+        }
       }
     }
     api.put(`/l10/scorecard/${targetMeetingId}`, {
