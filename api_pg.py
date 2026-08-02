@@ -892,6 +892,11 @@ def _ensure_users_table():
     # admins on the Users page; surfaced via /auth/me so the BI frontend
     # can auto-apply the right channel filter when the user first logs in.
     _users_exec("ALTER TABLE app_users ADD COLUMN IF NOT EXISTS pos_location_name TEXT")
+    # Per-user extra page grants: a JSONB array of page ids granted on top of the
+    # user's role-level pages. Allows one-off access without changing the role.
+    _users_exec(
+        "ALTER TABLE app_users ADD COLUMN IF NOT EXISTS "
+        "extra_pages JSONB NOT NULL DEFAULT '[]'")
     # One-time seed: promote any existing hardcoded CRM_ADMIN_EMAILS entries into
     # the DB flag so the column immediately reflects the intended state.
     try:
@@ -989,7 +994,7 @@ def _derive_pos_from_email(email: str):
 
 def _resolve_app_user_db(sub, email, name, picture=None):
     rows = _users_exec(
-        "SELECT user_id, email, name, role, status, crm_admin, pos_location_name FROM app_users WHERE user_id=%s",
+        "SELECT user_id, email, name, role, status, crm_admin, pos_location_name, extra_pages FROM app_users WHERE user_id=%s",
         (sub,), fetch=True)
     if rows:
         rec = rows[0]
@@ -1012,7 +1017,7 @@ def _resolve_app_user_db(sub, email, name, picture=None):
     # account instead of creating a duplicate. (A blind insert would also violate
     # the email UNIQUE constraint and error, since ON CONFLICT only covers user_id.)
     erows = _users_exec(
-        "SELECT user_id, email, name, role, status, crm_admin, pos_location_name FROM app_users WHERE email=%s",
+        "SELECT user_id, email, name, role, status, crm_admin, pos_location_name, extra_pages FROM app_users WHERE email=%s",
         (email,), fetch=True) if email else None
     if erows:
         rec = erows[0]
@@ -1146,6 +1151,7 @@ def _user_dict(row):
         "email": row["email"], "name": row["name"],
         "role": row["role"], "status": row["status"],
         "active": row["status"] == "active", "picture": None,
+        "extra_pages": list(row["extra_pages"]) if row.get("extra_pages") else [],
     }
 
 
@@ -1159,7 +1165,7 @@ def _user_for_session(token):
         if cached and (now - cached[1]) < _SESSION_CACHE_TTL:
             return cached[0]
     rows = _users_exec(
-        "SELECT u.user_id, u.email, u.name, u.role, u.status "
+        "SELECT u.user_id, u.email, u.name, u.role, u.status, u.extra_pages "
         "FROM user_sessions s JOIN app_users u ON u.user_id = s.user_id "
         "WHERE s.session_token=%s AND s.expires_at > now()",
         (token,), fetch=True)
@@ -1475,12 +1481,16 @@ async def clerk_auth_gate(request: Request, call_next):
         _l10_email = (user.get("email") or "").lower()
         _l10_privileged = _l10_role in ("admin", "leadership", "smt")
         _l10_sc = _l10_email in _L10_SUPPLY_CHAIN_EMAILS
-        if not _l10_privileged and not _l10_sc:
+        # Per-user extra_pages grant: "l10" in extra_pages gives folder-2-scoped
+        # access (same as the hardcoded supply-chain email list) so individual
+        # users can be granted the Supply Chain L10 without a role change.
+        _l10_extra = "l10" in (user.get("extra_pages") or [])
+        if not _l10_privileged and not _l10_sc and not _l10_extra:
             return JSONResponse(
                 {"detail": "L10 access requires a leadership or admin role"},
                 status_code=403)
-        # Enforce folder 2 scope for Supply Chain users.
-        if _l10_sc and not _l10_privileged:
+        # Enforce folder 2 scope for Supply Chain users and extra_pages grants.
+        if (_l10_sc or _l10_extra) and not _l10_privileged:
             _sc_denied = JSONResponse(
                 {"detail": "Access restricted to Supply Chain folder"},
                 status_code=403)
@@ -1680,6 +1690,40 @@ def _seed_fabric_quality_supervisor():
                             "(was: %s)", current)
     except Exception as e:
         log.error("fabric_quality_supervisor seed failed: %s", e)
+
+
+@_deferred_startup
+def _seed_stephen_extra_pages():
+    # Idempotent: grant stephen@vivofashiongroup.com access to the l10 page via
+    # extra_pages without changing his role. Uses jsonb_array_elements_text to
+    # avoid overwriting any future extras that may already be in the column.
+    _target_email = "stephen@vivofashiongroup.com"
+    _grant_page = "l10"
+    try:
+        rows = _users_exec(
+            "SELECT user_id, extra_pages FROM app_users WHERE LOWER(email)=%s",
+            (_target_email,), fetch=True)
+        if not rows:
+            log.info("_seed_stephen_extra_pages: user %s not found yet; "
+                     "will apply on next boot after first sign-in.", _target_email)
+            return
+        row = rows[0]
+        existing = list(row.get("extra_pages") or [])
+        if _grant_page not in existing:
+            _users_exec(
+                "UPDATE app_users "
+                "SET extra_pages = extra_pages || %s::jsonb "
+                "WHERE LOWER(email) = %s "
+                "  AND NOT (extra_pages @> %s::jsonb)",
+                (f'["{_grant_page}"]', _target_email, f'["{_grant_page}"]'))
+            _invalidate_user_cache()
+            log.info("_seed_stephen_extra_pages: granted '%s' to %s",
+                     _grant_page, _target_email)
+        else:
+            log.info("_seed_stephen_extra_pages: '%s' already present for %s",
+                     _grant_page, _target_email)
+    except Exception as e:
+        log.error("_seed_stephen_extra_pages failed: %s", e)
 
 
 @_deferred_startup
@@ -3246,6 +3290,21 @@ def _effective_pages_for_role(role):
     if role in ov:
         return ov[role]
     return _default_pages_for_role(role)
+
+
+def _apply_extra_pages(u):
+    """Union a user's personal `extra_pages` grant into their `allowed_pages`.
+    Call this after `_effective_pages_for_role` has already set `allowed_pages`.
+    Mutates u in-place and returns it."""
+    extras = u.get("extra_pages") or []
+    if not extras:
+        return u
+    pages = list(u.get("allowed_pages") or [])
+    for p in extras:
+        if p and p not in pages:
+            pages.append(p)
+    u["allowed_pages"] = pages
+    return u
 
 
 def _apply_crm_admin_grants(u):
@@ -7223,6 +7282,7 @@ def auth_me(request: Request):
         u = dict(u)
         u["hidden_pages"] = _hidden_pages()
         u["allowed_pages"] = _effective_pages_for_role(u.get("role"))
+        _apply_extra_pages(u)
         _apply_crm_admin_grants(u)
         user_id = str(u.get("user_id") or "")
         if user_id:
@@ -7397,6 +7457,7 @@ def auth_me_status(request: Request):
     if u:
         u = dict(u)
         u["allowed_pages"] = _effective_pages_for_role(u.get("role"))
+        _apply_extra_pages(u)
         _apply_crm_admin_grants(u)
     return {"status": u.get("status", "active"), "role": u.get("role"), "user": u}
 
@@ -7412,7 +7473,7 @@ async def auth_login(request: Request):
     if not email or not password:
         return JSONResponse({"detail": "Email and password are required"}, status_code=400)
     rows = _users_exec(
-        "SELECT user_id, email, name, role, status, password_hash "
+        "SELECT user_id, email, name, role, status, password_hash, extra_pages "
         "FROM app_users WHERE email=%s", (email,), fetch=True)
     rec = rows[0] if rows else None
     if not rec or not _verify_password(password, rec.get("password_hash")):
@@ -7430,6 +7491,7 @@ async def auth_login(request: Request):
     user = _user_dict(rec)
     user["hidden_pages"] = _hidden_pages()
     user["allowed_pages"] = _effective_pages_for_role(user.get("role"))
+    _apply_extra_pages(user)
     _apply_crm_admin_grants(user)
     resp = JSONResponse({"token": token, "user": user})
     resp.set_cookie("session_token", token, **_login_cookie_kwargs())
