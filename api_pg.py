@@ -34738,7 +34738,7 @@ def _ensure_l10_folder_meetings(folder_id: int):
         (folder_id,), fetch=True) or []
     existing_labels = {r["week_label"] for r in existing}
     d = start_date
-    while d <= current_monday:
+    while d <= current_monday + timedelta(weeks=1):
         label = _l10_iso_week(d)
         if label not in existing_labels:
             _users_exec(
@@ -34813,6 +34813,7 @@ def l10_delete_folder(folder_id: int, request: Request):
 @app.get("/api/l10/meetings")
 def l10_list_meetings(request: Request, folder_id: int = Query(1)):
     _ensure_l10_tables()
+    _ensure_l10_folder_meetings(folder_id)
     rows = _users_exec(
         "SELECT id, week_label, meeting_date::text, start_time, created_at, folder_id "
         "FROM l10_meetings WHERE folder_id=%s ORDER BY meeting_date DESC",
