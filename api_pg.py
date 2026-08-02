@@ -34300,6 +34300,9 @@ def _ensure_l10_tables():
         )
         """,
         "ALTER TABLE l10_scorecard_metrics ADD COLUMN IF NOT EXISTS folder_id INT NOT NULL DEFAULT 1",
+        # Allow goal_direction to be NULL (Supply Chain rows store NULL to
+        # signal goal-text inference; folder_id=1 rows keep their 'up'/'down').
+        "ALTER TABLE l10_scorecard_metrics ALTER COLUMN goal_direction DROP NOT NULL",
         # ── Scorecard Values ──────────────────────────────────────────────────
         """
         CREATE TABLE IF NOT EXISTS l10_scorecard_values (
@@ -34453,6 +34456,9 @@ def _eval_scorecard_goal(value_str, goal_str, goal_direction):
         g = float(goal)
     except ValueError:
         return None
+    # When goal_direction is None (Supply Chain L10 rows with no direction
+    # stored), default to higher-is-better so NULL-direction metrics still
+    # colour correctly after the direction column is nulled out for folder_id=2.
     return v <= g if goal_direction == "down" else v >= g
 
 
@@ -34460,6 +34466,14 @@ def _eval_scorecard_goal(value_str, goal_str, goal_direction):
 def _init_l10_tables():
     try:
         _ensure_l10_tables()
+        # Idempotent migration: null out goal_direction for all Supply Chain
+        # (folder_id=2) rows so colour is inferred from goal text going forward.
+        # folder_id=1 rows are untouched.
+        with _users_tx() as cur:
+            cur.execute(
+                "UPDATE l10_scorecard_metrics SET goal_direction = NULL "
+                "WHERE folder_id = 2 AND goal_direction IS NOT NULL"
+            )
     except Exception as e:
         log.error("L10 table init failed: %s", e)
 
@@ -34990,12 +35004,15 @@ async def l10_add_scorecard_metric(request: Request):
         "SELECT COALESCE(MAX(sort_order),0) AS m FROM l10_scorecard_metrics WHERE folder_id=%s",
         (folder_id,), fetch=True)
     nxt = int((max_ord or [{"m": 0}])[0]["m"]) + 1
+    # Supply Chain folder (id=2) never stores a direction — colour is inferred
+    # from the goal text at render time.  Keep 'up' only for folder_id=1.
+    goal_direction = None if folder_id == 2 else (body.get("goal_direction") or "up")
     rows = _users_exec(
         "INSERT INTO l10_scorecard_metrics (folder_id, who, measurable, goal, uom, goal_direction, sort_order) "
         "VALUES (%s, %s, %s, %s, %s, %s, %s) "
         "RETURNING id, who, measurable, goal, uom, goal_direction, sort_order, active",
         (folder_id, body.get("who"), measurable, body.get("goal"),
-         body.get("uom"), body.get("goal_direction") or "up", nxt), fetch=True)
+         body.get("uom"), goal_direction, nxt), fetch=True)
     return rows[0] if rows else {}
 
 
