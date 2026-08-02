@@ -5231,7 +5231,6 @@ def _not_walkin_pseudo_sql(alias: str = "s") -> str:
             "WHERE customer_id IS NOT NULL AND " + _WALKIN_PSEUDO_COND + ")")
 
 
-
 @app.get("/api/customers")
 def get_customers(
     date_from: str = Query(default=str(date.today().replace(day=1))),
@@ -34501,6 +34500,40 @@ def _l10_iso_week(d):
     return f"{iso[0]}-W{iso[1]:02d}"
 
 
+# Per-folder earliest Monday to auto-seed.  Only folder 2 (Supply Chain) is
+# listed; folder 1 (SLT) keeps its manual "New Meeting" flow.
+_L10_FOLDER_START_DATES = {
+    2: date(2026, 7, 6),   # first Monday of the Supply Chain quarter
+}
+
+
+def _ensure_l10_folder_meetings(folder_id: int):
+    """Insert any Monday rows that are missing between a folder's configured
+    start date and the current ISO week.  Uses ON CONFLICT DO NOTHING so
+    concurrent requests are safe and existing rows are never touched."""
+    start_date = _L10_FOLDER_START_DATES.get(folder_id)
+    if not start_date:
+        return
+    today = date.today()
+    # Monday of the current ISO week (weekday() == 0 for Monday)
+    current_monday = today - timedelta(days=today.weekday())
+    if current_monday < start_date:
+        return
+    existing = _users_exec(
+        "SELECT week_label FROM l10_meetings WHERE folder_id=%s",
+        (folder_id,), fetch=True) or []
+    existing_labels = {r["week_label"] for r in existing}
+    d = start_date
+    while d <= current_monday:
+        label = _l10_iso_week(d)
+        if label not in existing_labels:
+            _users_exec(
+                "INSERT INTO l10_meetings (folder_id, week_label, meeting_date) "
+                "VALUES (%s, %s, %s) ON CONFLICT (folder_id, week_label) DO NOTHING",
+                (folder_id, label, d.isoformat()))
+        d += timedelta(weeks=1)
+
+
 # ── Folders ───────────────────────────────────────────────────────────────────
 
 @app.get("/api/l10/folders")
@@ -34794,6 +34827,8 @@ def l10_archive_scorecard_metric(metric_id: int, request: Request):
 def l10_get_scorecard(request: Request, meetings: int = Query(8),
                       folder_id: int = Query(1)):
     _ensure_l10_tables()
+    # Auto-seed any missing Mondays for folders that have a configured start date
+    _ensure_l10_folder_meetings(folder_id)
     mtgs = _users_exec(
         "SELECT id, week_label, meeting_date::text FROM l10_meetings "
         "WHERE folder_id=%s ORDER BY meeting_date DESC LIMIT %s",
@@ -35334,5 +35369,4 @@ def transfers_store_returns(
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
-
 

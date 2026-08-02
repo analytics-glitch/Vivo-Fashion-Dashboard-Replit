@@ -429,15 +429,15 @@ const ScorecardTab = ({ meetingId, folderId = 1, onRedMetrics }) => {
 
   useEffect(() => { reload(); }, [reload]);
 
-  const saveValue = (metricId, value, goalDirection, goalStr) => {
-    if (!meetingId) return;
+  const saveValue = (targetMeetingId, metricId, value, goalDirection, goalStr) => {
+    if (!targetMeetingId) return;
     let on_track = null;
     const numVal = parseFloat(value);
     const numGoal = parseFloat(goalStr);
     if (!isNaN(numVal) && !isNaN(numGoal)) {
       on_track = goalDirection === "up" ? numVal >= numGoal : numVal <= numGoal;
     }
-    api.put(`/l10/scorecard/${meetingId}`, {
+    api.put(`/l10/scorecard/${targetMeetingId}`, {
       values: [{ metric_id: metricId, value, on_track }]
     }).then(() => reload()).catch(() => {});
   };
@@ -446,6 +446,20 @@ const ScorecardTab = ({ meetingId, folderId = 1, onRedMetrics }) => {
   if (!data) return null;
 
   const { meetings, metrics } = data;
+
+  // Meetings where at least one metric value has been saved (non-null).
+  // Past weeks with zero saved values remain editable; once any value is
+  // saved the whole week flips to read-only (matching the current-week rule).
+  const savedMeetingIds = new Set(
+    meetings
+      .filter((m) =>
+        metrics.some((metric) => {
+          const v = metric.values?.[m.id];
+          return v && v.value !== null && v.value !== undefined && v.value !== "";
+        })
+      )
+      .map((m) => m.id)
+  );
 
   return (
     <div className="space-y-4">
@@ -456,7 +470,7 @@ const ScorecardTab = ({ meetingId, folderId = 1, onRedMetrics }) => {
       <div className="rounded-xl border bg-card overflow-hidden">
         <div className="px-4 py-3 border-b bg-muted/20 flex items-center justify-between">
           <h2 className="text-sm font-semibold">Weekly Scorecard</h2>
-          <span className="text-xs text-muted-foreground">Current week editable — prior weeks read-only</span>
+          <span className="text-xs text-muted-foreground">Current week and unsaved prior weeks editable — saved prior weeks read-only</span>
         </div>
         <div className="overflow-x-auto">
           <table className="text-sm min-w-full">
@@ -489,16 +503,18 @@ const ScorecardTab = ({ meetingId, folderId = 1, onRedMetrics }) => {
                   {meetings.map((m) => {
                     const cell = metric.values?.[m.id] || { value: null };
                     const isCurrent = m.id === meetingId;
+                    // Editable when: current week, OR past week with no saved values yet
+                    const isEditable = isCurrent || !savedMeetingIds.has(m.id);
                     const tl = scorecardTrafficLight(cell.value, metric.goal, metric.goal_direction);
                     return (
                       <td key={m.id} className={`py-1.5 px-2 text-center ${isCurrent ? "bg-emerald-50/20" : ""}`}>
-                        {isCurrent ? (
+                        {isEditable ? (
                           <ScorecardCell
                             value={cell.value}
                             trafficLight={tl}
                             goal={metric.goal}
                             goalDirection={metric.goal_direction}
-                            onSave={(v) => saveValue(metric.id, v, metric.goal_direction, metric.goal)}
+                            onSave={(v) => saveValue(m.id, metric.id, v, metric.goal_direction, metric.goal)}
                           />
                         ) : (
                           <span className={`rounded px-1.5 py-0.5 text-xs font-mono ${trafficLightCls(tl)}`}>
