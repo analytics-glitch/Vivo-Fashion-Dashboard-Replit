@@ -85,6 +85,15 @@ function scorecardTrafficLight(value, goal, direction) {
   if (isNaN(v)) return null;
   if (!goal && goal !== 0) return null;
   const goalStr = String(goal).trim();
+  // Try range goal: min-max (hyphen, en-dash, em-dash, with optional spaces), e.g. "4-6", "4–6", "4 - 6"
+  const rangeMatch = goalStr.match(/^(-?\d+(?:\.\d+)?)\s*[-\u2013\u2014]\s*(-?\d+(?:\.\d+)?)$/);
+  if (rangeMatch) {
+    const rMin = parseFloat(rangeMatch[1]);
+    const rMax = parseFloat(rangeMatch[2]);
+    if (!isNaN(rMin) && !isNaN(rMax)) {
+      return v >= rMin && v <= rMax ? "green" : "red";
+    }
+  }
   // Try operator prefix: >=, <=, >, <, =
   const opMatch = goalStr.match(/^(>=|<=|>|<|=)\s*(-?\d+(\.\d+)?)$/);
   if (opMatch) {
@@ -433,9 +442,19 @@ const ScorecardTab = ({ meetingId, folderId = 1, onRedMetrics }) => {
     if (!targetMeetingId) return;
     let on_track = null;
     const numVal = parseFloat(value);
-    const numGoal = parseFloat(goalStr);
-    if (!isNaN(numVal) && !isNaN(numGoal)) {
-      on_track = goalDirection === "up" ? numVal >= numGoal : numVal <= numGoal;
+    // Range goal: min-max (hyphen, en-dash, em-dash, with optional spaces), e.g. "4-6"
+    const rangeMatchSave = goalStr ? String(goalStr).trim().match(/^(-?\d+(?:\.\d+)?)\s*[-\u2013\u2014]\s*(-?\d+(?:\.\d+)?)$/) : null;
+    if (rangeMatchSave && !isNaN(numVal)) {
+      const rMin = parseFloat(rangeMatchSave[1]);
+      const rMax = parseFloat(rangeMatchSave[2]);
+      if (!isNaN(rMin) && !isNaN(rMax)) {
+        on_track = numVal >= rMin && numVal <= rMax;
+      }
+    } else {
+      const numGoal = parseFloat(goalStr);
+      if (!isNaN(numVal) && !isNaN(numGoal)) {
+        on_track = goalDirection === "up" ? numVal >= numGoal : numVal <= numGoal;
+      }
     }
     api.put(`/l10/scorecard/${targetMeetingId}`, {
       values: [{ metric_id: metricId, value, on_track }]
@@ -547,6 +566,7 @@ const ScorecardCell = ({ value, trafficLight, goal, goalDirection, onSave }) => 
   useEffect(() => { setDraft(value || ""); }, [value]);
   const commit = () => { setEditing(false); onSave(draft); };
   if (editing) {
+    // scorecardTrafficLight handles range goals (e.g. "4-6") so the live preview is correct too.
     const liveTl = scorecardTrafficLight(draft, goal, goalDirection);
     const inputBg = liveTl === "green" ? "bg-emerald-100" : liveTl === "red" ? "bg-red-100" : "bg-white";
     return (
