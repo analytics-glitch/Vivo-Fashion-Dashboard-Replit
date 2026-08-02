@@ -1462,8 +1462,90 @@ async def clerk_auth_gate(request: Request, call_next):
         return JSONResponse({"detail": "The Chair access requires a leadership or admin role"}, status_code=403)
 
     # L10 Meeting Tracker — leadership, smt + admin surface.
-    if path.startswith("/api/l10") and user.get("role") not in ("admin", "leadership", "smt"):
-        return JSONResponse({"detail": "L10 access requires a leadership or admin role"}, status_code=403)
+    # Three Supply Chain emails are also permitted but are STRICTLY SCOPED to
+    # folder 2 (Supply Chain). Privileged roles (admin/leadership/smt) keep full
+    # access to all folders.
+    _L10_SUPPLY_CHAIN_EMAILS = {
+        "bedan@vivofashiongroup.com",
+        "kevinl@vivofashiongroup.com",
+        "hagai@vivofashiongroup.com",
+    }
+    if path.startswith("/api/l10"):
+        _l10_role = user.get("role", "")
+        _l10_email = (user.get("email") or "").lower()
+        _l10_privileged = _l10_role in ("admin", "leadership", "smt")
+        _l10_sc = _l10_email in _L10_SUPPLY_CHAIN_EMAILS
+        if not _l10_privileged and not _l10_sc:
+            return JSONResponse(
+                {"detail": "L10 access requires a leadership or admin role"},
+                status_code=403)
+        # Enforce folder 2 scope for Supply Chain users.
+        if _l10_sc and not _l10_privileged:
+            _sc_denied = JSONResponse(
+                {"detail": "Access restricted to Supply Chain folder"},
+                status_code=403)
+            # Block folder management writes and settings writes.
+            if path.startswith("/api/l10/folders") and request.method != "GET":
+                return _sc_denied
+            if path == "/api/l10/settings" and request.method != "GET":
+                return _sc_denied
+            # Paths that need no folder_id check (folder list + global settings).
+            _SC_EXEMPT = {"/api/l10/folders", "/api/l10/settings"}
+            # Identify ID-based paths; each maps to the table that holds folder_id.
+            _sc_id_checks = [
+                (re.match(r'^/api/l10/(?:checkin|headlines|ids|conclude|scorecard)/(\d+)$', path),
+                 "l10_meetings"),
+                (re.match(r'^/api/l10/meetings/(\d+)$', path), "l10_meetings"),
+                (re.match(r'^/api/l10/members/(\d+)$', path), "l10_members"),
+                (re.match(r'^/api/l10/rocks/(\d+)$', path), "l10_rocks"),
+                (re.match(r'^/api/l10/todos/(\d+)$', path), "l10_todos"),
+                (re.match(r'^/api/l10/scorecard-metrics/(\d+)$', path),
+                 "l10_scorecard_metrics"),
+            ]
+            _sc_id_match = next(
+                ((m, t) for m, t in _sc_id_checks if m), None)
+            if _sc_id_match:
+                # ID-based path: verify the resource belongs to folder 2 via DB.
+                _sc_m, _sc_table = _sc_id_match
+                _sc_rid = int(_sc_m.group(1))
+                try:
+                    _sc_pool, _sc_conn = _acquire_conn()
+                    try:
+                        _sc_conn.autocommit = True
+                        _sc_cur = _sc_conn.cursor()
+                        _sc_cur.execute(
+                            f"SELECT folder_id FROM {_sc_table} WHERE id = %s",
+                            (_sc_rid,))
+                        _sc_row = _sc_cur.fetchone()
+                        _sc_cur.close()
+                    finally:
+                        _sc_pool.putconn(_sc_conn)
+                    if _sc_row is None or _sc_row[0] != 2:
+                        return _sc_denied
+                except Exception:
+                    return _sc_denied
+            elif path not in _SC_EXEMPT:
+                # Non-ID, non-exempt path: enforce folder_id=2 from query param
+                # (GET/HEAD) or JSON body (POST). PUT/DELETE without an ID in the
+                # path are unexpected and blocked as a safety measure.
+                if request.method in ("GET", "HEAD"):
+                    # Deny both absent and non-2 folder_id — the L10 UI always
+                    # sends folder_id explicitly, so absent means a raw API call
+                    # that would silently default to folder 1.
+                    if request.query_params.get("folder_id") != "2":
+                        return _sc_denied
+                elif request.method == "POST":
+                    # Read the request body (Starlette caches it so the endpoint
+                    # still receives it). Require folder_id == 2 in the JSON body.
+                    try:
+                        _sc_raw = await request.body()
+                        _sc_body = json.loads(_sc_raw) if _sc_raw else {}
+                        if str(_sc_body.get("folder_id", "")) != "2":
+                            return _sc_denied
+                    except Exception:
+                        return _sc_denied
+                else:
+                    return _sc_denied
 
     # Odoo Reconciliation Agent (/api/recon/*) is the same finance-grade surface
     # (approve/reject + staging write-back) — leadership + admin only.
@@ -34099,6 +34181,9 @@ def _ensure_l10_tables():
         # Seed the default SLT folder (id=1) if absent
         "INSERT INTO l10_folders (id, name, description, color) "
         "VALUES (1, 'SLT', 'Senior Leadership Team', '#1a5c38') ON CONFLICT (id) DO NOTHING",
+        # Seed the Supply Chain folder (id=2) if absent
+        "INSERT INTO l10_folders (id, name, description, color) "
+        "VALUES (2, 'Supply Chain', 'Supply Chain Department', '#0d7377') ON CONFLICT (id) DO NOTHING",
         # ── Meetings ──────────────────────────────────────────────────────────
         """
         CREATE TABLE IF NOT EXISTS l10_meetings (

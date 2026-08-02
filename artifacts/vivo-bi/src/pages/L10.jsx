@@ -1634,7 +1634,11 @@ const L10 = () => {
   const { user } = useAuth();
   const [tab, setTab] = useState("agenda");
   const [folders, setFolders] = useState([]);
-  const [folderId, setFolderId] = useState(1);
+  const [folderId, setFolderId] = useState(() => {
+    const param = new URLSearchParams(window.location.search).get('folder_id');
+    const parsed = param ? parseInt(param, 10) : NaN;
+    return (!isNaN(parsed) && parsed > 0) ? parsed : 1;
+  });
   const [meetings, setMeetings] = useState([]);
   const [meetingId, setMeetingId] = useState(null);
   const [members, setMembers] = useState([]);

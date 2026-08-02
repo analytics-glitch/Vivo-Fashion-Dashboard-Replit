@@ -572,6 +572,7 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
       <li><button type="button" class="nav-item" data-page="receiving"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"></polyline><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"></path></svg><span>Receiving</span></button></li>
       <li><button type="button" class="nav-item" data-page="createprod" style="display:none;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="16"></line><line x1="8" y1="12" x2="16" y2="12"></line></svg><span>Create Products</span></button></li>
       <li><button type="button" class="nav-item" data-page="costing" style="display:none;" id="nav-costing"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="1" x2="12" y2="23"></line><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path></svg><span>Product Costing</span></button></li>
+      <li><button type="button" class="nav-item" data-page="l10" id="nav-l10" style="display:none;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg><span>L10 Meeting</span></button></li>
      </ul>
     </li>
     <li class="nav-more-li" id="nav-more-li">
@@ -1371,6 +1372,11 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
      <div id="cost-signoff" style="margin-top:14px;"></div>
      <div id="cost-history" style="margin-top:14px;"></div>
     </div>
+   </section>
+
+   <!-- L10 MEETING (Supply Chain; iframe embeds main BI L10 with folder_id=2) -->
+   <section id="page-l10" style="display:none;">
+    <iframe id="l10-iframe" src="" frameborder="0" style="width:100%;height:calc(100vh - 130px);border:none;display:block;" title="L10 Meeting — Supply Chain"></iframe>
    </section>
 
   </div>
@@ -2354,8 +2360,8 @@ function qcExportDetail(){
 }
 
 // ── Navigation ──
-const LOADERS={buyingpd:loadBuyingPD,dashboard:loadFabricMixFirst,register:()=>loadRegister(0),deadstock:loadDeadStock,defects:loadFabricQC,dataquality:loadDataQuality,support:loadSupport,movement:initTrendBuilder,pos:loadPOsPage,suppliers:loadSuppliers,reservations:loadReservations,rolls:()=>loadRolls(0),receiving:loadReceivingBatches,createprod:loadCreateProducts,costing:loadCosting};
-const DESCS={buyingpd:'Buying & Product Development — garment fabric-efficiency KPIs from Done-DPS manufacturing orders',dashboard:'Stock Mix — each category\'s share of consumption vs share of available stock',overview:'Fabric stock, value and health across the warehouse',register:'',ageing:'Stock ageing analysis — coming soon',deadstock:'Fabric that has been sitting without movement',defects:'Roll-level quality results from the Receiving tab — pass rates, shrinkage, bleeding and width checks by supplier, fabric and month',dataquality:'Fabrics missing a kg-per-metre conversion — stock or usage that can only be shown in kg',support:'Lining, interfacing & support overrides — excluded from the main dashboard',movement:'Build your own KPI-over-time panels — fabric metrics in metres, page-local date range',pos:'Inbound purchase orders and delivery performance',suppliers:'Outstanding exposure by supplier',reservations:'Earmark fabric for a style, track how long it has been held, then mark it used',rolls:'Physical roll counts recorded by hand per fabric per location, shown next to the Odoo quantity',receiving:'Record the rolls of an arriving fabric delivery, then print the Fabric Receiving Information Sheet',createprod:'Bulk-create fabric products in Odoo — enter or upload rows, review the validation preview, then confirm. Duplicates are always skipped',costing:'Per-style cost sheets — fabric, trims, CMT/labour and overheads vs the current selling price, with auto-suggestions from fabric data and Done DPS'};
+const LOADERS={buyingpd:loadBuyingPD,dashboard:loadFabricMixFirst,register:()=>loadRegister(0),deadstock:loadDeadStock,defects:loadFabricQC,dataquality:loadDataQuality,support:loadSupport,movement:initTrendBuilder,pos:loadPOsPage,suppliers:loadSuppliers,reservations:loadReservations,rolls:()=>loadRolls(0),receiving:loadReceivingBatches,createprod:loadCreateProducts,costing:loadCosting,l10:loadL10Page};
+const DESCS={buyingpd:'Buying & Product Development — garment fabric-efficiency KPIs from Done-DPS manufacturing orders',dashboard:'Stock Mix — each category\'s share of consumption vs share of available stock',overview:'Fabric stock, value and health across the warehouse',register:'',ageing:'Stock ageing analysis — coming soon',deadstock:'Fabric that has been sitting without movement',defects:'Roll-level quality results from the Receiving tab — pass rates, shrinkage, bleeding and width checks by supplier, fabric and month',dataquality:'Fabrics missing a kg-per-metre conversion — stock or usage that can only be shown in kg',support:'Lining, interfacing & support overrides — excluded from the main dashboard',movement:'Build your own KPI-over-time panels — fabric metrics in metres, page-local date range',pos:'Inbound purchase orders and delivery performance',suppliers:'Outstanding exposure by supplier',reservations:'Earmark fabric for a style, track how long it has been held, then mark it used',rolls:'Physical roll counts recorded by hand per fabric per location, shown next to the Odoo quantity',receiving:'Record the rolls of an arriving fabric delivery, then print the Fabric Receiving Information Sheet',createprod:'Bulk-create fabric products in Odoo — enter or upload rows, review the validation preview, then confirm. Duplicates are always skipped',costing:'Per-style cost sheets — fabric, trims, CMT/labour and overheads vs the current selling price, with auto-suggestions from fabric data and Done DPS',l10:'Supply Chain L10 Meeting — weekly Level 10 meeting tracker for the Supply Chain team'};
 const loadedOnce={};
 
 // Bind ONLY real page tabs ([data-page]) — the "More ▾" trigger is also a
@@ -8812,6 +8818,34 @@ async function gateCosting(){
     delete LOADERS.costing;
   }
 }
+// ── Supply Chain L10 Meeting ────────────────────────────────────────────────
+// The nav tab is HIDDEN by default; gateL10Tab() reveals it only for the three
+// named Supply Chain emails and admins — fails closed (backend is the real gate).
+const _L10_SC_EMAILS=['bedan@vivofashiongroup.com','kevinl@vivofashiongroup.com','hagai@vivofashiongroup.com'];
+async function gateL10Tab(){
+  let allowed=false;
+  try{
+    const me=await apiFetch('/api/auth/me');
+    const email=((me&&me.email)||'').toLowerCase().trim();
+    const role=(me&&me.role)||'';
+    allowed=(role==='admin'||_L10_SC_EMAILS.includes(email));
+  }catch(e){allowed=false;}
+  const tab=document.getElementById('nav-l10');
+  if(allowed){if(tab)tab.style.display='';}
+  else{
+    if(tab)tab.style.display='none';
+    const sec=document.getElementById('page-l10');
+    if(sec)sec.style.display='none';
+    delete LOADERS.l10;
+  }
+}
+function loadL10Page(){
+  const iframe=document.getElementById('l10-iframe');
+  // Use getAttribute('src') — iframe.src is always resolved to an absolute URL
+  // by the browser even when the HTML attribute is empty, so !iframe.src is
+  // unreliable. getAttribute returns the literal attribute value ("" → falsy).
+  if(iframe&&!iframe.getAttribute('src')){iframe.src='/l10?folder_id=2';}
+}
 const COST_KINDS={fabric:'Fabric',trim:'Trim / accessory',cmt:'CMT / labour',overhead:'Overhead / other'};
 let costSheets=[],costEdit=null; // costEdit = {id|null, style_name, style_number, dps_ref|null, lines:[], sp_auto, history:[]}
 const fmtKES2=n=>n==null||isNaN(n)?'—':'KES '+Number(n).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
@@ -9388,6 +9422,8 @@ async function init(){
   gateCreateProducts();
   // Reveal Product Costing only for the allow-listed emails (non-blocking).
   gateCosting();
+  // Reveal L10 Meeting tab only for Supply Chain emails and admins (non-blocking).
+  gateL10Tab();
   // Column picker + close-on-outside-click
   buildColPicker();
   document.addEventListener('click',e=>{
