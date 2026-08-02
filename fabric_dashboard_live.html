@@ -493,6 +493,50 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
 .kpi.hero [data-fx]:hover,.card-accent [data-fx]:hover{text-decoration-color:#fff;}
 [data-fx] .pill,.pill[data-fx]{text-decoration:none;}
 #fx-tip{position:fixed;z-index:9999;display:none;pointer-events:none;max-width:320px;background:var(--accent-deep);color:#fff;font-size:12px;line-height:1.45;font-weight:500;padding:8px 11px;border-radius:9px;box-shadow:0 10px 30px rgba(16,40,24,.3);white-space:normal;}
+
+/* ── L10 Meeting — responsive layout ────────────────────────────────────
+   The L10 content is rendered in vanilla JS with inline styles, so we
+   override at the element-id / class level; !important is used only where
+   a structural inline style must be overridden.
+   Breakpoints mirror the Fabric BI shell (≤640px = phone/tablet). */
+
+/* Tab bar: always allow horizontal scroll so it never wraps to two rows.
+   On wide screens the content fits; on narrow screens the user swipes. */
+#l10-tabbar{overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:thin;scroll-snap-type:x proximity;}
+#l10-tabbar::-webkit-scrollbar{height:3px;}
+#l10-tabbar::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px;}
+.l10-tab-btn{scroll-snap-align:start;}
+
+@media(max-width:640px){
+  /* Tab bar: single non-wrapping scrolling row, tighter per-tab padding */
+  #l10-tabbar{flex-wrap:nowrap !important;gap:2px !important;}
+  .l10-tab-btn{padding:9px 10px 10px !important;font-size:12px !important;flex-shrink:0;}
+
+  /* Meeting shell header: stack title+info above the picker+button row */
+  .l10-shell-hdr{flex-direction:column !important;align-items:flex-start !important;gap:10px !important;}
+  .l10-shell-hdr-actions{width:100%;flex-wrap:wrap;}
+  /* Meeting selector stretches to fill available space next to the button */
+  #l10-mtg-pick{min-width:0 !important;flex:1 1 0 !important;}
+  #l10-new-btn{flex-shrink:0;}
+
+  /* Admin add-metric and add-rock grids: one column on mobile */
+  .l10-adm-metric-form,.l10-adm-rock-form{grid-template-columns:1fr !important;}
+  .l10-adm-metric-form input,.l10-adm-metric-form select,
+  .l10-adm-rock-form input,.l10-adm-rock-form select{width:100% !important;min-width:0 !important;box-sizing:border-box;}
+
+  /* Scorecard entry inputs: slightly narrower so more week-columns fit before scroll */
+  .l10-sc-inp{width:60px !important;}
+  /* Ratings number inputs */
+  .l10-rating-inp{width:50px !important;}
+
+  /* L10 root: pull the card edges to the viewport edge on phones */
+  #l10-root{margin:0 -0.4rem;}
+  #l10-root .card{border-radius:8px;}
+
+  /* Todo add-row: wrap inputs into a stacked column */
+  #l10-todo-add>div{flex-direction:column !important;align-items:stretch !important;}
+  #l10-todo-add input,#l10-todo-add select{width:100% !important;}
+}
 </style>
 </head>
 <body>
@@ -8927,19 +8971,19 @@ const L10={
     const mOptions=this.meetings.map(mt=>`<option value="${mt.id}"${mt.id===this.meetingId?' selected':''}>${esc(mt.week_label)} — ${this.fmtShortDate(mt.meeting_date)}</option>`).join('');
     r.innerHTML=`
 <div>
-  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px;justify-content:space-between;">
+  <div class="l10-shell-hdr" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px;justify-content:space-between;">
     <div>
       <div style="font-size:18px;font-weight:800;letter-spacing:-.01em;color:var(--fab-ink);">L10 Meeting — Supply Chain</div>
       ${mInfo}
     </div>
-    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+    <div class="l10-shell-hdr-actions" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
       ${this.meetings.length>0?`<select id="l10-mtg-pick" class="fab-select" style="min-width:200px;" onchange="L10.pickMeeting(+this.value)">${mOptions}</select>`:''}
       <button class="btn btn-primary" onclick="L10.createMeeting()" id="l10-new-btn" style="height:34px;padding:0 14px;font-size:13px;">+ New Meeting</button>
     </div>
   </div>
   ${this.meetingId?`
   <div style="display:flex;flex-wrap:wrap;gap:4px;border-bottom:1px solid var(--border);margin-bottom:16px;padding-bottom:0;" id="l10-tabbar">
-    ${this.TABS.map(t=>`<button type="button" onclick="L10.showTab('${t.id}')" id="l10-t-${t.id}"
+    ${this.TABS.map(t=>`<button type="button" class="l10-tab-btn" onclick="L10.showTab('${t.id}')" id="l10-t-${t.id}"
       style="display:inline-flex;align-items:center;gap:5px;padding:9px 12px 10px;font-size:13px;font-weight:600;border:none;border-bottom:2px solid transparent;background:none;cursor:pointer;white-space:nowrap;color:var(--muted);font-family:inherit;transition:color .12s;"
       >${esc(t.icon)} ${esc(t.label)}</button>`).join('')}
   </div>
@@ -9680,7 +9724,7 @@ ${sparkData.filter(d=>d.avg!=null).length>=2?`
 
 <div class="card" style="margin-bottom:1rem;">
   <div style="font-size:14px;font-weight:700;margin-bottom:4px;">Scorecard Metrics</div>
-  <div style="display:grid;grid-template-columns:1fr 1fr auto auto auto auto;gap:6px;padding:10px;border:1px dashed var(--border);border-radius:8px;margin-bottom:10px;align-items:end;">
+  <div class="l10-adm-metric-form" style="display:grid;grid-template-columns:1fr 1fr auto auto auto auto;gap:6px;padding:10px;border:1px dashed var(--border);border-radius:8px;margin-bottom:10px;align-items:end;">
     <input id="l10-adm-mwho" placeholder="Who" style="height:30px;padding:0 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:inherit;">
     <input id="l10-adm-mmeas" placeholder="Measurable *" style="height:30px;padding:0 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:inherit;">
     <input id="l10-adm-mgoal" placeholder="Goal" style="width:70px;height:30px;padding:0 6px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:inherit;">
@@ -9701,7 +9745,7 @@ ${sparkData.filter(d=>d.avg!=null).length>=2?`
 
 <div class="card" style="margin-bottom:1rem;">
   <div style="font-size:14px;font-weight:700;margin-bottom:4px;">Rocks</div>
-  <div style="display:grid;grid-template-columns:1fr auto auto auto;gap:6px;padding:10px;border:1px dashed var(--border);border-radius:8px;margin-bottom:10px;align-items:end;">
+  <div class="l10-adm-rock-form" style="display:grid;grid-template-columns:1fr auto auto auto;gap:6px;padding:10px;border:1px dashed var(--border);border-radius:8px;margin-bottom:10px;align-items:end;">
     <input id="l10-adm-rdesc" placeholder="Rock description *" style="height:30px;padding:0 8px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:inherit;">
     <select id="l10-adm-rtype" style="height:30px;padding:0 6px;border:1px solid var(--border);border-radius:6px;font-size:12px;font-family:inherit;">
       <option value="Company">Company Rock</option><option value="Individual">Individual Rock</option>
