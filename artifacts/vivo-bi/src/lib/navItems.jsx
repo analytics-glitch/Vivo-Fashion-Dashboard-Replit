@@ -150,6 +150,7 @@ export const PRIMARY_NAV = [
   { to: "/hr/", label: "HR & Attendance", icon: UsersThree, id: "hr", external: true, group: "Tools", desc: "Staff attendance, department performance and training (opens the HR dashboard)" },
   { to: "/sops", label: "SOPs", icon: BookOpen, id: "sops", group: "Tools", desc: "Standard Operating Procedures — browse and download department SOP documents" },
   { to: "/rota", label: "Staff Rota", icon: CalendarBlank, id: "rota", group: "Tools", desc: "Weekly staff scheduling — shift rota, leave management, coverage overview and hour reports" },
+  { to: "/l10", label: "L10 Meeting", icon: CalendarBlank, id: "l10", group: "Tools", desc: "EOS Level 10 weekly meeting tracker — agenda, scorecard, rocks, headlines, to-dos, IDS and conclude" },
   { to: "/data-quality", label: "Data Quality", icon: Warning, id: "data-quality", group: "Tools", desc: "Data completeness and quality checks" },
   { to: "/feedback", label: "Feedback", icon: ChatCircleDots, id: "feedback", group: "Tools", desc: "Send feedback to the BI team" },
 
