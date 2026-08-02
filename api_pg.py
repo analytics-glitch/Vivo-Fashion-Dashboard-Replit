@@ -34345,8 +34345,8 @@ def _ensure_l10_tables():
 
 def _eval_scorecard_goal(value_str, goal_str, goal_direction):
     """Return True (green/meets), False (red/misses), or None (skip) for value vs goal.
-    Parses operator prefixes (>=, <=, >, <, =) from goal_str; falls back to
-    goal_direction ('up'->>=, 'down'->=<) for plain numeric goals."""
+    Handles range goals ("X-Y" or "X-Y Suffix"), operator prefixes (>=, <=, >, <, =),
+    and plain numeric goals (falls back to goal_direction 'up'->>=, 'down'->=<)."""
     if value_str is None or value_str == "":
         return None
     try:
@@ -34356,6 +34356,20 @@ def _eval_scorecard_goal(value_str, goal_str, goal_direction):
     if not goal_str and goal_str != 0:
         return None
     goal = str(goal_str).strip()
+
+    # ── Range goal: "X-Y" or "X-Y Suffix" (e.g. "4-6 Months") ──────────────
+    # Must be checked before operator-prefix loop so "4-6" isn't mis-parsed.
+    import re as _re
+    _range_m = _re.match(r'^(-?\d+(?:\.\d+)?)-(-?\d+(?:\.\d+)?)(?:\s|$)', goal)
+    if _range_m:
+        try:
+            lo = float(_range_m.group(1))
+            hi = float(_range_m.group(2))
+            return lo <= v <= hi  # True=in-range (green), False=out-of-range (red)
+        except (ValueError, TypeError):
+            return None
+
+    # ── Operator-prefix goal: ">2", "<=5", etc. ──────────────────────────────
     for op in (">=", "<=", ">", "<", "="):
         if goal.startswith(op):
             g_str = goal[len(op):].strip()
@@ -34368,6 +34382,8 @@ def _eval_scorecard_goal(value_str, goal_str, goal_direction):
             if op == ">":  return v > g
             if op == "<":  return v < g
             if op == "=":  return v == g
+
+    # ── Plain numeric goal ────────────────────────────────────────────────────
     try:
         g = float(goal)
     except ValueError:
@@ -34493,6 +34509,125 @@ def _seed_supply_chain_l10():
         )
     except Exception as e:
         log.error("SC L10 seed failed: %s", e)
+
+
+@_deferred_startup
+def _seed_supply_chain_l10_v2():
+    """Seed the two additional SC L10 scorecard metrics and Wk28–Wk31 values.
+
+    Separate from _seed_supply_chain_l10 so it runs safely on prod where
+    members already exist (the original seed's member-existence guard would
+    skip everything).  Guard: skip if "Fabrics on Transit Monthly Cover"
+    already exists for folder_id=2.  All inserts use ON CONFLICT DO NOTHING.
+
+    Expected on_track per week (smoke-check, verified against _eval_scorecard_goal):
+      NOOS (goal >2):         3.6=T, 3.3=T, 3.0=T, 2.7=T
+      Overall Inv (goal 4-6): 5.7=T, 5.0=T, 6.9=F, 6.1=F  (>6 is out-of-range)
+      Transit (goal >1):      0.6=F, 0.6=F, 0.6=F, 0.6=F
+    """
+    _ensure_l10_tables()
+    # Ensure meeting rows for Wk28–Wk31 exist before inserting values
+    _ensure_l10_folder_meetings(2)
+    try:
+        with _users_tx() as cur:
+            # Advisory lock prevents concurrent duplicate seeds
+            cur.execute(
+                "SELECT pg_try_advisory_xact_lock(hashtext('sc_l10_seed_v2'))"
+            )
+            if not cur.fetchone()["pg_try_advisory_xact_lock"]:
+                log.warning("SC L10 v2 seed: advisory lock not acquired, skipping")
+                return
+
+            # Completeness guard — skip if Transit metric already exists
+            cur.execute(
+                "SELECT 1 FROM l10_scorecard_metrics "
+                "WHERE folder_id=2 AND measurable=%s LIMIT 1",
+                ("Fabrics on Transit Monthly Cover",),
+            )
+            if cur.fetchone():
+                log.warning("SC L10 v2 seed: Transit metric already exists, skipping")
+                return
+
+            # ── Insert the two new metrics ────────────────────────────────────
+            new_metrics = [
+                (2, "Bedan", "Overall Fabric Inventory Monthly Cover", "4-6",  "Months", "up", 3, True),
+                (2, "Bedan", "Fabrics on Transit Monthly Cover",       ">1",   "Months", "up", 4, True),
+            ]
+            for row in new_metrics:
+                cur.execute(
+                    """
+                    INSERT INTO l10_scorecard_metrics
+                        (folder_id, who, measurable, goal, uom, goal_direction, sort_order, active)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT DO NOTHING
+                    """,
+                    row,
+                )
+
+            # ── Look up metric_ids by measurable name ─────────────────────────
+            cur.execute(
+                "SELECT id, measurable FROM l10_scorecard_metrics WHERE folder_id=2",
+            )
+            metric_map = {r["measurable"]: r["id"] for r in cur.fetchall()}
+
+            # ── Look up meeting_ids by week_label ─────────────────────────────
+            cur.execute(
+                "SELECT id, week_label FROM l10_meetings WHERE folder_id=2",
+            )
+            meeting_map = {r["week_label"]: r["id"] for r in cur.fetchall()}
+
+            # ── Values to seed (week_label: {measurable: value_str}) ──────────
+            weeks_values = [
+                ("2026-W28", "Basic Fabrics (NOOS) Monthly Cover",         "3.6"),
+                ("2026-W28", "Overall Fabric Inventory Monthly Cover",      "5.7"),
+                ("2026-W28", "Fabrics on Transit Monthly Cover",            "0.6"),
+                ("2026-W29", "Basic Fabrics (NOOS) Monthly Cover",         "3.3"),
+                ("2026-W29", "Overall Fabric Inventory Monthly Cover",      "5.0"),
+                ("2026-W29", "Fabrics on Transit Monthly Cover",            "0.6"),
+                ("2026-W30", "Basic Fabrics (NOOS) Monthly Cover",         "3.0"),
+                ("2026-W30", "Overall Fabric Inventory Monthly Cover",      "6.9"),
+                ("2026-W30", "Fabrics on Transit Monthly Cover",            "0.6"),
+                ("2026-W31", "Basic Fabrics (NOOS) Monthly Cover",         "2.7"),
+                ("2026-W31", "Overall Fabric Inventory Monthly Cover",      "6.1"),
+                ("2026-W31", "Fabrics on Transit Monthly Cover",            "0.6"),
+            ]
+
+            n_values = 0
+            for week_label, measurable, value_str in weeks_values:
+                metric_id  = metric_map.get(measurable)
+                meeting_id = meeting_map.get(week_label)
+                if not metric_id or not meeting_id:
+                    log.warning(
+                        "SC L10 v2 seed: missing metric/meeting for %s / %s",
+                        measurable, week_label,
+                    )
+                    continue
+                # Look up the metric's goal + direction to compute on_track
+                cur.execute(
+                    "SELECT goal, goal_direction FROM l10_scorecard_metrics WHERE id=%s",
+                    (metric_id,),
+                )
+                m = cur.fetchone()
+                on_track = _eval_scorecard_goal(
+                    value_str, m["goal"] if m else None, m["goal_direction"] if m else "up"
+                )
+                cur.execute(
+                    """
+                    INSERT INTO l10_scorecard_values
+                        (metric_id, meeting_id, value, on_track)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (metric_id, meeting_id) DO NOTHING
+                    """,
+                    (metric_id, meeting_id, value_str, on_track),
+                )
+                n_values += 1
+
+        log.warning(
+            "SC L10 v2 seed applied: %d new metrics, %d values seeded",
+            len(new_metrics), n_values,
+        )
+    except Exception as e:
+        log.error("SC L10 v2 seed failed: %s", e)
 
 
 def _l10_iso_week(d):
