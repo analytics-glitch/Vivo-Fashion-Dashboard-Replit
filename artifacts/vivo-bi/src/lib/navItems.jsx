@@ -95,17 +95,17 @@ export const PRIMARY_NAV = [
   // Retail pages
   {
     to: "/retail", label: "Retail", icon: MapPin, id: "retail",
-    anyOfPageIds: ["locations", "warehouse-returns", "excess-inventory", "ibt"],
-    group: "Retail", desc: "Retail hub — Locations, Warehouse Returns, Excess Inventory and IBT tabs",
+    anyOfPageIds: ["locations", "store-profiling", "warehouse-returns", "excess-inventory", "ibt"],
+    group: "Retail", desc: "Retail hub — Locations, Store Pulse, Warehouse Returns, Excess Inventory and IBT tabs",
     subReports: [
       { pageId: "locations",         label: "Locations" },
+      { pageId: "store-profiling",   label: "Store Pulse" },
       { pageId: "warehouse-returns", label: "Warehouse Returns" },
       { pageId: "excess-inventory",  label: "Excess Inventory" },
       { pageId: "ibt",               label: "IBT" },
     ],
   },
   { to: "/footfall", label: "Footfall", icon: Footprints, id: "footfall", group: "Retail", desc: "Footfall, turn-in and conversion by store" },
-  { to: "/store-profiling", label: "Store Profile", icon: Gauge, id: "store-profiling", group: "Retail", desc: "Single-store deep-dive — 6-month KPI trend, category mix, and target vs performance" },
   {
     to: "/targets", label: "Targets", icon: Target, id: "targets",
     anyOfPageIds: ["targets", "quarter-scorecard"],

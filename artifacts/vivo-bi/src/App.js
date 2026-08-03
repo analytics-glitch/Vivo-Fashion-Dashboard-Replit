@@ -42,7 +42,6 @@ const L10 = React.lazy(() => import("@/pages/L10"));
 const Rota = React.lazy(() => import("@/pages/Rota"));
 const AskDashboard = React.lazy(() => import("@/pages/AskDashboard"));
 const GrowthModel  = React.lazy(() => import("@/pages/GrowthModel"));
-const StoreProfiling  = React.lazy(() => import("@/pages/StoreProfiling"));
 const RetailDesk      = React.lazy(() => import("@/pages/RetailDesk"));
 const ProductDesk      = React.lazy(() => import("@/pages/ProductDesk"));
 const WorkforceDesk    = React.lazy(() => import("@/pages/WorkforceDesk"));
@@ -184,7 +183,7 @@ function App() {
                 <Route path="/rota" element={<ProtectedShell pageId="rota"><Rota /></ProtectedShell>} />
                 <Route path="/ask" element={<ProtectedShell pageId="ask"><AskDashboard /></ProtectedShell>} />
                 <Route path="/growth" element={<ProtectedShell pageId="growth"><GrowthModel /></ProtectedShell>} />
-                <Route path="/store-profiling" element={<ProtectedShell pageId="store-profiling"><StoreProfiling /></ProtectedShell>} />
+                <Route path="/store-profiling" element={<Navigate to="/retail?tab=store-pulse" replace />} />
                 <Route path="/retail-desk" element={<ProtectedShell pageId="retail-desk"><RetailDesk /></ProtectedShell>} />
                 <Route path="/product-desk" element={<ProtectedShell pageId="product-desk"><ProductDesk /></ProtectedShell>} />
                 <Route path="/workforce-desk" element={<ProtectedShell pageId="workforce-desk"><WorkforceDesk /></ProtectedShell>} />
@@ -197,7 +196,7 @@ function App() {
                 <Route path="/gallery" element={<Navigate to="/product-analysis?tab=gallery" replace />} />
                 <Route path="/exec-summary" element={<ProtectedShell pageId="exec-summary"><ExecutiveSummary /></ProtectedShell>} />
                 <Route path="/overview" element={<ProtectedShell pageId="overview"><Overview /></ProtectedShell>} />
-                <Route path="/retail" element={<ProtectedShell anyOfPageIds={["locations", "warehouse-returns", "excess-inventory", "ibt", "rebalancing"]}><Retail /></ProtectedShell>} />
+                <Route path="/retail" element={<ProtectedShell anyOfPageIds={["locations", "store-profiling", "warehouse-returns", "excess-inventory", "ibt", "rebalancing"]}><Retail /></ProtectedShell>} />
                 <Route path="/locations" element={<Navigate to="/retail?tab=locations" replace />} />
                 {/* Legacy pages merged into tabs — keep old URLs working */}
                 <Route path="/products" element={<Navigate to="/product-analysis" replace />} />

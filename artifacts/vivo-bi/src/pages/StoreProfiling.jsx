@@ -762,6 +762,83 @@ function ActionPlan({ actions }) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
+// WEEKEND vs WEEKDAY — which metrics behave differently on weekends
+// ══════════════════════════════════════════════════════════════════════════════
+const WKND_META = [
+  { key: "revenue_day",  label: "Revenue / day",      f: "kes" },
+  { key: "txns_day",     label: "Transactions / day", f: "num" },
+  { key: "units_day",    label: "Items sold / day",   f: "num" },
+  { key: "footfall_day", label: "Footfall / day",     f: "num" },
+  { key: "conversion",   label: "Conversion",         f: "pct" },
+  { key: "abv",          label: "Basket value (ABV)", f: "kes" },
+  { key: "asp",          label: "Item price (ASP)",   f: "kes" },
+];
+const wkndFmt = (f, v) => v == null ? "—" : f === "kes" ? fmtKES(v) : f === "pct" ? `${v}%` : fmtNum(v);
+
+function WeekendProfile({ store }) {
+  const { data, isLoading } = useApi("store-profile/weekday-weekend", { store }, { enabled: !!store, staleTime: 10 * 60_000 });
+  if (isLoading) return <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, padding: 20 }}><Skeleton rows={4} /></div>;
+  if (!data) return null;
+  const { weekday, weekend, deltas_pct: d } = data;
+
+  // Rank metrics by how differently they behave on weekends
+  const ranked = WKND_META.filter(m => d?.[m.key] != null).sort((a, b) => Math.abs(d[b.key]) - Math.abs(d[a.key]));
+  const top = ranked[0];
+  const takeaway = top
+    ? (d[top.key] > 0
+        ? `Weekends run on ${top.label.toLowerCase()} — it's ${Math.abs(d[top.key]).toFixed(0)}% higher than a weekday. Protect it: staffing, stock and displays should peak Sat–Sun.`
+        : `${top.label} drops ${Math.abs(d[top.key]).toFixed(0)}% on weekends — that's the weekend leak to fix first.`)
+    : null;
+
+  const th = { padding: "10px 14px", color: "#6b7280", fontWeight: 700, fontSize: 12, borderBottom: "2px solid #e5e7eb", whiteSpace: "nowrap", background: "#f9fafb", textAlign: "right" };
+  return (
+    <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, overflow: "hidden", marginBottom: 16 }}>
+      <div style={{ padding: "12px 20px", borderBottom: "1px solid #f3f4f6", background: "#fafafa", fontSize: 12, color: "#6b7280" }}>
+        Average per day over the last 8 full weeks ({data.window?.from} → {data.window?.to}) · weekend = Sat & Sun
+      </div>
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
+          <thead>
+            <tr>
+              <th style={{ ...th, textAlign: "left", minWidth: 160 }}>Metric</th>
+              <th style={th}>Weekday avg</th>
+              <th style={{ ...th, background: "#eff6ff", color: C.blue.fg }}>Weekend avg</th>
+              <th style={th}>Weekend vs Weekday</th>
+            </tr>
+          </thead>
+          <tbody>
+            {ranked.map((m, i) => {
+              const dv = d[m.key];
+              const big = Math.abs(dv) >= 10;
+              return (
+                <tr key={m.key} style={{ borderBottom: "1px solid #f3f4f6", background: i % 2 ? "#fafafa" : "#fff" }}>
+                  <td style={{ padding: "11px 14px", fontWeight: 700, color: "#111827" }}>{m.label}</td>
+                  <td style={{ textAlign: "right", padding: "11px 14px", color: "#374151" }}>{wkndFmt(m.f, weekday?.[m.key])}</td>
+                  <td style={{ textAlign: "right", padding: "11px 14px", fontWeight: 800, color: C.blue.fg, background: "#f8faff" }}>{wkndFmt(m.f, weekend?.[m.key])}</td>
+                  <td style={{ textAlign: "right", padding: "11px 14px" }}>
+                    <span style={{ fontWeight: big ? 800 : 600, color: Math.abs(dv) < 3 ? "#6b7280" : dv > 0 ? C.good.fg : C.bad.fg }}>
+                      {dv > 0 ? "▲" : "▼"} {Math.abs(dv).toFixed(0)}%
+                    </span>
+                  </td>
+                </tr>
+              );
+            })}
+            {ranked.length === 0 && (
+              <tr><td colSpan={4} style={{ textAlign: "center", padding: 30, color: "#9ca3af" }}>Not enough recent data to compare</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+      {takeaway && (
+        <div style={{ padding: "12px 20px", borderTop: "1px solid #f3f4f6", background: "#f0f9ff", fontSize: 13, color: "#0c4a6e", fontWeight: 600 }}>
+          💡 {takeaway}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 // MAIN PAGE — the Store Profile
 // ══════════════════════════════════════════════════════════════════════════════
 export default function StoreProfiling() {
@@ -807,6 +884,7 @@ export default function StoreProfiling() {
             {locsLoading ? <div style={{ width: 260, height: 44, background: "#374151", borderRadius: 8 }} /> : (
               <select value={store || ""} onChange={e => setStore(e.target.value)}
                 style={{ border: "1px solid #4b5563", borderRadius: 8, padding: "9px 16px", fontSize: 20, fontWeight: 800, color: "#fff", minWidth: 280, background: "#1f2937", cursor: "pointer" }}>
+                <option value="All Stores">All Stores · Whole Business</option>
                 {stores.map(s => <option key={s.store} value={s.store}>{s.store}</option>)}
               </select>
             )}
@@ -872,6 +950,11 @@ export default function StoreProfiling() {
               <KpiTargetTable rpt={rpt} />
             </>
           )}
+
+          {/* 2b · Weekend vs Weekday */}
+          <SectionTitle icon="📅" title="Weekend vs Weekday"
+            subtitle="How the last 8 weeks split — which metrics behave differently on weekends, so you know what to keep doing (and what leaks)" />
+          <WeekendProfile store={store} />
 
           {/* 3 · Product Profile */}
           <SectionTitle icon="👗" title="Product Profile"
