@@ -4,7 +4,7 @@ Executive BI cockpit for Vivo Fashion Group — a multi-brand fashion retailer a
 
 ## Run & Operate
 
-- API server: `api_pg.py` (FastAPI) via the `artifacts/api-server` workflow — uvicorn on port 8080, served under `/api`. Required env: `DATABASE_URL`.
+- API server: `api_pg.py` (FastAPI) via the `artifacts/api-server` workflow — uvicorn on port 8080, served under `/api`. Required env: `DATABASE_URL` (Neon **pooler** URL, used by the connection pool and all normal query paths) + `DATABASE_URL_DIRECT` (Neon **direct / non-pooler** URL, used by advisory locks, VACUUM, and the watchdog — see below). **When rotating either secret, update both at the same time.** `/api/readyz` checks both independently and reports `db_direct: "down"` + a warning if the direct URL is reachable after rotation; a missing `DATABASE_URL_DIRECT` falls back to `DATABASE_URL` and is logged as a startup warning.
 - Frontend: `pnpm --filter @workspace/vivo-bi run dev` (previewPath `/`); typecheck with `pnpm --filter @workspace/vivo-bi run typecheck`.
 - Health probes (both public): `GET /api/healthz` = DB-free liveness (always 200 when up). `GET /api/readyz` = readiness (503 when DB unreachable) + sync heartbeat state (`ok`/`warning`/`critical`/`starting`); a stale heartbeat is reported but never flips the HTTP status. The watchdog probes readyz for observability only — restart decisions stay on liveness + heartbeat.
 - Boot resiliency: ALL DB-touching startup work in `api_pg.py` must go through the `@_deferred_startup` decorator (one ordered background thread) so the port binds immediately — never a synchronous startup event. See `.agents/memory/startup-hooks-port-bind.md`.

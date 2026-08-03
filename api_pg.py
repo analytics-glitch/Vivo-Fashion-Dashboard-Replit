@@ -283,6 +283,18 @@ def get_conn():
 # through PgBouncer's transaction-mode pooler).  Falls back to DATABASE_URL so
 # deployments without a Neon pooler continue to work unchanged.
 _DATABASE_URL_DIRECT = os.environ.get('DATABASE_URL_DIRECT') or os.environ['DATABASE_URL']
+_DATABASE_URL_DIRECT_IS_FALLBACK = not bool(os.environ.get('DATABASE_URL_DIRECT'))
+if _DATABASE_URL_DIRECT_IS_FALLBACK:
+    # Emit at startup so operators can see the fallback in logs when DATABASE_URL
+    # is rotated without also updating DATABASE_URL_DIRECT.  Advisory locks,
+    # VACUUM, and the watchdog all use the direct URL — a stale password there
+    # will break them even when the pooler continues to work.
+    logging.getLogger("api_pg").warning(
+        "DATABASE_URL_DIRECT is not set — falling back to DATABASE_URL for "
+        "direct connections (advisory locks, VACUUM, watchdog). "
+        "Set DATABASE_URL_DIRECT to a non-pooler Neon URL so the two "
+        "secrets can be rotated independently and both are verified by /api/readyz."
+    )
 
 
 def get_direct_conn():
@@ -4245,6 +4257,39 @@ def readyz():
         else:
             pool.putconn(conn)
 
+    # --- Check DATABASE_URL_DIRECT (non-pooler / watchdog / advisory-lock path) ---
+    # When DATABASE_URL_DIRECT is not set it falls back to DATABASE_URL; in that
+    # case we skip the redundant second check and report the fallback state instead.
+    # When it IS set (separate Neon direct URL) we open a short-lived connection to
+    # verify the password is still valid — a rotation that only updates one of the
+    # two secrets leaves the other silently broken until advisory locks or VACUUM fire.
+    direct_ok = None   # None = not checked (fallback mode)
+    direct_detail = None
+    if not _DATABASE_URL_DIRECT_IS_FALLBACK:
+        direct_conn = None
+        try:
+            direct_conn = psycopg2.connect(
+                _DATABASE_URL_DIRECT,
+                options='-c standard_conforming_strings=on',
+                connect_timeout=5,
+            )
+            direct_conn.autocommit = True
+            dc = direct_conn.cursor()
+            dc.execute("SELECT 1")
+            dc.fetchone()
+            dc.close()
+            direct_ok = True
+        except Exception as _de:
+            direct_ok = False
+            direct_detail = "direct_unreachable"
+            log.warning("readyz: DATABASE_URL_DIRECT check failed: %s", _de)
+        finally:
+            if direct_conn is not None:
+                try:
+                    direct_conn.close()
+                except Exception:
+                    pass
+
     if last_cycle is not None:
         lc = last_cycle if last_cycle.tzinfo else last_cycle.replace(tzinfo=timezone.utc)
         minutes = round((datetime.now(timezone.utc) - lc).total_seconds() / 60.0, 1)
@@ -4254,11 +4299,18 @@ def readyz():
 
     ready = db_ok  # DB reachability is the hard gate for promotion
     db_label = "ok" if db_ok else ("busy" if db_detail == "db_pool_exhausted" else "down")
+
+    if _DATABASE_URL_DIRECT_IS_FALLBACK:
+        direct_label = "fallback_to_pooler"
+    else:
+        direct_label = "ok" if direct_ok else "down"
+
     body = {
         "ready": ready,
         "checks": {
             "api": "ok",
             "db": db_label,
+            "db_direct": direct_label,
             "sync": {
                 "state": sync_state,
                 "minutes_since": minutes,
@@ -4270,6 +4322,10 @@ def readyz():
     }
     if not ready:
         body["detail"] = db_detail or "db_unreachable"
+    if direct_ok is False:
+        body.setdefault("warnings", []).append(
+            "DATABASE_URL_DIRECT unreachable — advisory locks and watchdog may fail"
+        )
     return JSONResponse(body, status_code=200 if ready else 503)
 
 
