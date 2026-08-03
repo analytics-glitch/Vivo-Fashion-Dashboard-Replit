@@ -105,6 +105,7 @@ export const PRIMARY_NAV = [
     ],
   },
   { to: "/footfall", label: "Footfall", icon: Footprints, id: "footfall", group: "Retail", desc: "Footfall, turn-in and conversion by store" },
+  { to: "/store-profiling", label: "Store Profiling", icon: Gauge, id: "store-profiling", group: "Retail", desc: "Per-store health scorecard — status verdict, composite score, KPIs vs prior period, target tracking and ranked pain-point diagnosis" },
   {
     to: "/targets", label: "Targets", icon: Target, id: "targets",
     anyOfPageIds: ["targets", "quarter-scorecard"],

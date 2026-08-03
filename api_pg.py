@@ -691,13 +691,13 @@ _VIEWER_PAGES = ["overview", "exec-summary", "locations", "footfall", "trend-ana
 # it lives in _LEADERSHIP_PAGES below (and therefore in ALL_PAGE_IDS, so admins
 # can also grant it to other groups via Group Access). The server-side
 # /api/finance gate independently restricts the API to leadership + admin.
-_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "quarter-scorecard", "product-analysis", "range-mgmt", "size-health", "inventory", "warehouse-returns", "excess-inventory", "rebalancing", "store-flow", "marketing", "social", "crm", "order-explorer", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "style-tracker", "pd-flow", "partner-brands", "finance", "margin", "l10", "rota", "growth", "retail-desk", "product-desk", "workforce-desk", "customer-desk", "marketing-desk", "supply-chain-desk", "production-desk", "the-chair", "quality"])
+_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "quarter-scorecard", "product-analysis", "range-mgmt", "size-health", "inventory", "warehouse-returns", "excess-inventory", "rebalancing", "store-flow", "marketing", "social", "crm", "order-explorer", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "style-tracker", "pd-flow", "partner-brands", "finance", "margin", "l10", "rota", "growth", "retail-desk", "product-desk", "workforce-desk", "customer-desk", "marketing-desk", "supply-chain-desk", "production-desk", "the-chair", "quality", "store-profiling"])
 
 DEFAULT_ROLE_PAGES = {
     "product_development": ["product-analysis", "range-mgmt", "catalogue", "gallery", "inventory", "size-health", "data-quality", "fabric", "exports", "production", "production-report", "style-tracker", "pd-flow", "partner-brands", "sops"],
-    "retail": ["store-flow", "overview", "exec-summary", "locations", "footfall", "trend-analysis", "customers", "product-analysis", "gallery", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "exports", "partner-brands", "sops", "ask"],
+    "retail": ["store-flow", "overview", "exec-summary", "locations", "footfall", "store-profiling", "trend-analysis", "customers", "product-analysis", "gallery", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "exports", "partner-brands", "sops", "ask"],
     "warehouse": ["store-flow", "inventory", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "re-order", "allocations", "data-quality", "exports", "sops"],
-    "store_manager": ["overview", "store-flow", "locations", "footfall", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "sops"],
+    "store_manager": ["overview", "store-flow", "locations", "footfall", "store-profiling", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "sops"],
     "leadership": _LEADERSHIP_PAGES,
     # SMT (Senior Management Team) — everything SLT (leadership) sees EXCEPT the
     # Finance Reports Suite. The /api/finance gate below also excludes "smt".
@@ -20200,6 +20200,461 @@ def analytics_store_overstock(country: str = Query(default=None), channel: str =
     for r in rows:
         r["velocity_method"] = "ewma_56d"
     return rows
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Store Performance Profiling
+# ─────────────────────────────────────────────────────────────────────────────
+@app.get("/api/analytics/store-profiling")
+def analytics_store_profiling(
+    country: str = Query(default=None),
+    period:  int = Query(default=28),
+):
+    """Per-store health scorecard: KPIs vs prior equal-length period, target
+    attainment, footfall/conversion, customer health, stock mix, a 0–100
+    composite health score, and ranked pain points + strengths.
+    Cached HEAVY_DASH_TTL (900 s), keyed on country + period."""
+    import calendar as _cal
+    import statistics as _stats
+    period = max(7, min(int(period), 365))
+    ck = f"store_profiling:{country or 'all'}:{period}"
+    _cv, _cf = cache_get_swr(ck)
+    if _cv is not None:
+        if not _cf:
+            swr_refresh(ck, lambda: analytics_store_profiling(country=country, period=period),
+                        label="store_profiling")
+        return _cv
+
+    today      = date.today()
+    cur_end    = today - timedelta(days=1)
+    cur_start  = cur_end - timedelta(days=period - 1)
+    pri_end    = cur_start - timedelta(days=1)
+    pri_start  = pri_end - timedelta(days=period - 1)
+    mstart     = today.replace(day=1)
+    days_in_mo = _cal.monthrange(today.year, today.month)[1]
+    days_done  = today.day
+
+    cs  = ("AND s.country = '" + _sql_str(country) + "'") if country else ""
+    ci  = ("AND i.country = '" + _sql_str(country) + "'") if country else ""
+    vat = "(CASE WHEN s.country IN ('Uganda','Rwanda') THEN 1.18 ELSE 1.16 END)"
+
+    # ── 1. Sales KPIs: current + prior + MTD in one table scan ───────────────
+    kpi_rows = run_query(f"""
+        SELECT s.pos_location_name AS store, MAX(s.country) AS country,
+          ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') AND s.sale_date::date BETWEEN '{cur_start}' AND '{cur_end}'
+                         THEN (s.total_sales_kes::numeric - COALESCE(s.discounts_kes,0)::numeric) / {vat}
+                         WHEN s.sale_kind = 'return' AND s.sale_date::date BETWEEN '{cur_start}' AND '{cur_end}'
+                         THEN -s.returns_kes::numeric / {vat} ELSE 0 END), 0) AS cur_net,
+          ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') AND s.sale_date::date BETWEEN '{pri_start}' AND '{pri_end}'
+                         THEN (s.total_sales_kes::numeric - COALESCE(s.discounts_kes,0)::numeric) / {vat}
+                         WHEN s.sale_kind = 'return' AND s.sale_date::date BETWEEN '{pri_start}' AND '{pri_end}'
+                         THEN -s.returns_kes::numeric / {vat} ELSE 0 END), 0) AS pri_net,
+          ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') AND s.sale_date::date BETWEEN '{mstart}' AND '{cur_end}'
+                         THEN (s.total_sales_kes::numeric - COALESCE(s.discounts_kes,0)::numeric) / {vat}
+                         WHEN s.sale_kind = 'return' AND s.sale_date::date BETWEEN '{mstart}' AND '{cur_end}'
+                         THEN -s.returns_kes::numeric / {vat} ELSE 0 END), 0) AS mtd_net,
+          COALESCE(SUM(s.ordered_item_quantity) FILTER (WHERE s.sale_date::date BETWEEN '{cur_start}' AND '{cur_end}' AND s.sale_kind IN ('sale','order')), 0) AS cur_units,
+          COALESCE(SUM(s.ordered_item_quantity) FILTER (WHERE s.sale_date::date BETWEEN '{pri_start}' AND '{pri_end}' AND s.sale_kind IN ('sale','order')), 0) AS pri_units,
+          COALESCE(COUNT(DISTINCT s.order_id) FILTER (WHERE s.sale_date::date BETWEEN '{cur_start}' AND '{cur_end}' AND s.sale_kind IN ('sale','order')), 0) AS cur_txns,
+          COALESCE(COUNT(DISTINCT s.order_id) FILTER (WHERE s.sale_date::date BETWEEN '{pri_start}' AND '{pri_end}' AND s.sale_kind IN ('sale','order')), 0) AS pri_txns,
+          COALESCE(SUM(COALESCE(s.discounts_kes::numeric,0)) FILTER (WHERE s.sale_date::date BETWEEN '{cur_start}' AND '{cur_end}' AND s.sale_kind IN ('sale','order')), 0) AS cur_disc,
+          COALESCE(SUM(COALESCE(s.gross_sales_kes::numeric,0)) FILTER (WHERE s.sale_date::date BETWEEN '{cur_start}' AND '{cur_end}' AND s.sale_kind IN ('sale','order')), 0) AS cur_gross,
+          COALESCE(SUM(COALESCE(s.returned_item_quantity,0)) FILTER (WHERE s.sale_date::date BETWEEN '{cur_start}' AND '{cur_end}' AND s.sale_kind IN ('sale','order')), 0) AS cur_ret_qty
+        FROM all_sales s
+        WHERE s.sale_date::date BETWEEN '{pri_start}' AND '{cur_end}'
+          AND s.pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})
+          AND s.pos_location_name NOT ILIKE '%online%'
+          AND s.sale_kind IN ('sale','order','return')
+          AND {BASE_FILTERS} {cs}
+        GROUP BY 1
+    """, ttl=HEAVY_DASH_TTL)
+
+    # ── 2. First sale date per store (maturity) ───────────────────────────────
+    first_rows = run_query(f"""
+        SELECT s.pos_location_name AS store, MIN(s.sale_date::date)::text AS first_sale
+        FROM all_sales s
+        WHERE s.sale_kind IN ('sale','order')
+          AND s.pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})
+          AND s.pos_location_name NOT ILIKE '%online%' {cs}
+        GROUP BY 1
+    """, ttl=3600)
+    first_map = {r["store"]: r["first_sale"] for r in (first_rows or [])}
+
+    # ── 3. Targets for current month ──────────────────────────────────────────
+    tgt_rows = run_query(
+        f"SELECT name, source, target_kes::numeric AS tgt FROM targets_monthly "
+        f"WHERE scope='store' AND month='{mstart}'"
+    )
+    tgt_map: dict = {}
+    for r in (tgt_rows or []):
+        nm, src, t = r["name"], r["source"], float(r["tgt"] or 0)
+        ex = tgt_map.get(nm)
+        if ex is None or (ex[1] != "manual" and src == "manual"):
+            tgt_map[nm] = (t, src)
+
+    # ── 4. Footfall: current + prior periods ──────────────────────────────────
+    ff_rows = run_query(f"""
+        WITH ff_base AS (
+          SELECT {ff_canon_sql()} AS loc, f.time::date AS d,
+                 SUM(f.a01_footfall_in) AS ff
+          FROM footfall f
+          WHERE f.time::date BETWEEN '{pri_start}' AND '{cur_end}'
+            AND {ff_store_master_predicate()}
+          GROUP BY 1, 2
+        ),
+        sd AS (
+          SELECT s.pos_location_name AS loc, s.sale_date::date AS d,
+                 COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END) AS orders
+          FROM all_sales s
+          WHERE s.sale_date::date BETWEEN '{pri_start}' AND '{cur_end}'
+            AND s.pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})
+            AND s.sale_kind IN ('sale','order','return') {cs}
+          GROUP BY 1, 2
+        ),
+        joined AS (
+          SELECT COALESCE(f.loc, s.loc) AS loc, COALESCE(f.d, s.d) AS d,
+                 COALESCE(f.ff, 0) AS ff, COALESCE(s.orders, 0) AS orders
+          FROM ff_base f FULL OUTER JOIN sd s ON f.loc = s.loc AND f.d = s.d
+          WHERE COALESCE(f.loc, s.loc) IN (SELECT DISTINCT loc FROM ff_base)
+        )
+        SELECT loc AS store,
+          COALESCE(SUM(ff)     FILTER (WHERE d BETWEEN '{cur_start}' AND '{cur_end}'), 0) AS cur_ff,
+          COALESCE(SUM(ff)     FILTER (WHERE d BETWEEN '{pri_start}' AND '{pri_end}'), 0) AS pri_ff,
+          COALESCE(SUM(orders) FILTER (WHERE d BETWEEN '{cur_start}' AND '{cur_end}'), 0) AS cur_orders,
+          COUNT(*) FILTER (WHERE d BETWEEN '{cur_start}' AND '{cur_end}' AND ff = 0 AND orders > 0) AS sensor_gaps
+        FROM joined GROUP BY 1
+    """, ttl=HEAVY_DASH_TTL)
+    _pdays = (cur_end - cur_start).days + 1
+    ff_map: dict = {}
+    for r in (ff_rows or []):
+        st  = r["store"]
+        cff = int(r.get("cur_ff") or 0)
+        pff = int(r.get("pri_ff") or 0)
+        cor = int(r.get("cur_orders") or 0)
+        gap = int(r.get("sensor_gaps") or 0)
+        fok = gap <= 0.25 * _pdays
+        cv  = round(cor * 100.0 / cff, 1) if (fok and cff > 0) else None
+        ff_map[st] = {
+            "current": cff, "prior": pff,
+            "change_pct": round((cff - pff) * 100.0 / pff, 1) if pff > 0 else None,
+            "conversion": cv, "ff_ok": fok,
+        }
+
+    # ── 5. Customer health ────────────────────────────────────────────────────
+    cust_rows = run_query(f"""
+        WITH {_unified_first_purchase_ctes()},
+        rc AS (
+          SELECT pos_location_name AS store, customer_id,
+                 COUNT(DISTINCT order_id) AS n_orders
+          FROM all_sales
+          WHERE sale_date::date BETWEEN '{cur_start}' AND '{cur_end}'
+            AND sale_kind IN ('sale','order')
+            AND customer_id IS NOT NULL AND customer_id NOT IN ('None','null','')
+            AND pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})
+          GROUP BY 1, 2
+        )
+        SELECT s.pos_location_name AS store,
+          COUNT(DISTINCT s.customer_id) AS total_cust,
+          COUNT(DISTINCT s.customer_id) FILTER (WHERE first_purchase.first_purchase_date::date BETWEEN '{cur_start}' AND '{cur_end}') AS new_cust,
+          COUNT(DISTINCT s.customer_id) FILTER (WHERE first_purchase.first_purchase_date::date < '{cur_start}') AS ret_cust,
+          COUNT(DISTINCT s.customer_id) FILTER (WHERE rc.n_orders > 1) AS repeat_cust
+        FROM all_sales s
+        LEFT JOIN first_purchase ON first_purchase.customer_id = s.customer_id
+        LEFT JOIN rc ON rc.store = s.pos_location_name AND rc.customer_id = s.customer_id
+        WHERE s.sale_date::date BETWEEN '{cur_start}' AND '{cur_end}'
+          AND s.sale_kind IN ('sale','order')
+          AND s.customer_id IS NOT NULL AND s.customer_id NOT IN ('None','null','')
+          AND s.pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})
+          AND s.pos_location_name NOT ILIKE '%online%'
+          AND {_not_walkin_pseudo_sql()} {cs}
+        GROUP BY 1
+    """, ttl=HEAVY_DASH_TTL)
+    cust_pri_rows = run_query(f"""
+        SELECT s.pos_location_name AS store, COUNT(DISTINCT s.customer_id) AS n
+        FROM all_sales s
+        WHERE s.sale_date::date BETWEEN '{pri_start}' AND '{pri_end}'
+          AND s.sale_kind IN ('sale','order')
+          AND s.customer_id IS NOT NULL AND s.customer_id NOT IN ('None','null','')
+          AND s.pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})
+          AND s.pos_location_name NOT ILIKE '%online%'
+          AND {_not_walkin_pseudo_sql()} {cs}
+        GROUP BY 1
+    """, ttl=HEAVY_DASH_TTL)
+    cust_pri = {r["store"]: int(r.get("n") or 0) for r in (cust_pri_rows or [])}
+    cust_map: dict = {}
+    for r in (cust_rows or []):
+        tot = int(r.get("total_cust") or 0)
+        rep = int(r.get("repeat_cust") or 0)
+        cust_map[r["store"]] = {
+            "new": int(r.get("new_cust") or 0),
+            "returning": int(r.get("ret_cust") or 0),
+            "total": tot,
+            "repeat_rate": round(rep * 100.0 / tot, 1) if tot else None,
+        }
+
+    # ── 6. Sell-through (current period + live SOH) ───────────────────────────
+    st_rows = run_query(f"""
+        WITH sold AS (
+          SELECT s.pos_location_name AS store, SUM(s.ordered_item_quantity) AS units
+          FROM all_sales s
+          WHERE s.sale_date::date BETWEEN '{cur_start}' AND '{cur_end}'
+            AND s.sale_kind IN ('sale','order')
+            AND s.pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})
+            AND s.pos_location_name NOT ILIKE '%online%' {cs}
+          GROUP BY 1
+        ),
+        inv AS (
+          SELECT i.pos_location_name AS store, SUM(i.available) AS soh
+          FROM all_inventory i
+          WHERE i.pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})
+            AND i.pos_location_name NOT ILIKE '%online%' {ci}
+          GROUP BY 1
+        )
+        SELECT COALESCE(s.store, i.store) AS store,
+          ROUND(COALESCE(s.units,0)*100.0 / NULLIF(COALESCE(s.units,0)+COALESCE(i.soh,0),0), 1) AS st_pct
+        FROM sold s FULL OUTER JOIN inv i ON s.store = i.store
+    """, ttl=HEAVY_DASH_TTL)
+    stm = {r["store"]: (float(r["st_pct"]) if r.get("st_pct") is not None else None)
+           for r in (st_rows or [])}
+
+    # ── 7. Stock mix (reuse range_mgmt_store_tier_mix) ────────────────────────
+    tier_data = range_mgmt_store_tier_mix(country=country or None)
+    _TL = {"Tier 1": "NOOS", "Tier 2": "Core", "Tier 3": "Recent Performer",
+           "Tier 4": "New Styles", "Retire": "Retired"}
+    raw_mix: dict = {}
+    for r in (tier_data.get("rows") or []):
+        s_nm = r.get("store") or ""
+        raw_mix.setdefault(s_nm, {})
+        raw_mix[s_nm][r.get("tier","")] = raw_mix[s_nm].get(r.get("tier",""), 0) + int(r.get("units") or 0)
+
+    def _mix(st_nm):
+        raw = raw_mix.get(st_nm, {})
+        tot = sum(raw.values()) or 1
+        out = {lbl: raw.get(tier, 0) for tier, lbl in _TL.items()}
+        nc  = raw.get("Tier 1", 0) + raw.get("Tier 2", 0)
+        dead = raw.get("Retire", 0)
+        tv  = sum(raw.values())
+        out["noos_pct"] = round(nc   * 100.0 / tot, 1) if tv else None
+        out["dead_pct"] = round(dead * 100.0 / tot, 1) if tv else None
+        return out
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+    def _pct(a, b):
+        a, b = float(a or 0), float(b or 0)
+        return round((a - b) * 100.0 / abs(b), 1) if b != 0 else None
+
+    def _pair(a, b):
+        return {"current": round(float(a or 0)), "prior": round(float(b or 0)), "change_pct": _pct(a, b)}
+
+    def _norm(v, lo, hi):
+        return max(0.0, min(100.0, (float(v) - lo) / (hi - lo) * 100.0)) if hi != lo else 50.0
+
+    # ── Per-store assembly + country pool ─────────────────────────────────────
+    ctry_pool: dict = {}
+    rows_out  = []
+
+    for r in (kpi_rows or []):
+        sn  = r["store"]
+        ctry = r.get("country") or "Kenya"
+        cn, pn = float(r.get("cur_net") or 0), float(r.get("pri_net") or 0)
+        mtd    = float(r.get("mtd_net") or 0)
+        cu, pu = float(r.get("cur_units") or 0), float(r.get("pri_units") or 0)
+        ct, pt = float(r.get("cur_txns") or 0), float(r.get("pri_txns") or 0)
+        cd, cg = float(r.get("cur_disc") or 0), float(r.get("cur_gross") or 0)
+        cr     = float(r.get("cur_ret_qty") or 0)
+
+        asp     = round(cn / cu, 0) if cu > 0 else None
+        pri_asp = round(pn / pu, 0) if pu > 0 else None
+        basket  = round(cn / ct, 0) if ct > 0 else None
+        pri_bsk = round(pn / pt, 0) if pt > 0 else None
+        upt     = round(cu / ct, 2) if ct > 0 else None
+        pri_upt = round(pu / pt, 2) if pt > 0 else None
+        disc_r  = round(cd * 100.0 / cg, 1) if cg > 0 else None
+        ret_r   = round(cr * 100.0 / cu, 1) if cu > 0 else None
+
+        tv = tgt_map.get(sn)
+        if tv:
+            daily  = tv[0] / days_in_mo
+            mtd_t  = round(daily * days_done)
+            proj   = round(mtd / days_done * days_in_mo) if days_done else 0
+            pct_t  = round(mtd * 100.0 / mtd_t, 1) if mtd_t > 0 else None
+            tblock = {"target_kes": round(tv[0]), "mtd_actual": round(mtd),
+                      "mtd_target": mtd_t, "pct_of_target": pct_t,
+                      "projected": proj, "variance": round(mtd - mtd_t)}
+        else:
+            tblock = {"target_kes": None, "mtd_actual": round(mtd),
+                      "mtd_target": None, "pct_of_target": None,
+                      "projected": None, "variance": None}
+
+        ff  = ff_map.get(sn, {})
+        cm  = cust_map.get(sn, {})
+        pri_cust = cust_pri.get(sn, 0)
+
+        fs = first_map.get(sn)
+        months_active = None
+        if fs:
+            try: months_active = max(1, (today - date.fromisoformat(fs)).days // 30)
+            except Exception: pass
+
+        p = ctry_pool.setdefault(ctry, {"conv": [], "disc": [], "basket": [], "asp": []})
+        if ff.get("conversion") is not None: p["conv"].append(ff["conversion"])
+        if disc_r is not None:               p["disc"].append(disc_r)
+        if basket is not None:               p["basket"].append(basket)
+        if asp is not None:                  p["asp"].append(asp)
+
+        rows_out.append({
+            "_sn": sn, "_ctry": ctry,
+            "_cn": cn, "_pn": pn, "_disc": disc_r, "_ret": ret_r,
+            "_basket": basket, "_ff": ff, "_tblock": tblock,
+            "_cm": cm, "_pri_cust": pri_cust, "_stp": stm.get(sn),
+            "store": sn, "country": ctry, "months_active": months_active,
+            "kpis": {
+                "revenue":      _pair(cn, pn),
+                "units":        _pair(cu, pu),
+                "transactions": _pair(ct, pt),
+                "asp":    {"current": asp,    "prior": pri_asp, "change_pct": _pct(asp, pri_asp)},
+                "basket": {"current": basket, "prior": pri_bsk, "change_pct": _pct(basket, pri_bsk)},
+                "upt":    {"current": upt,    "prior": pri_upt, "change_pct": _pct(upt, pri_upt)},
+                "discount_rate": {"current": disc_r},
+                "return_rate":   {"current": ret_r},
+                "distinct_customers": {"current": cm.get("total", 0), "prior": pri_cust,
+                                       "change_pct": _pct(cm.get("total", 0), pri_cust)},
+            },
+            "target":  tblock,
+            "footfall": {"current": ff.get("current", 0), "prior": ff.get("prior", 0),
+                         "change_pct": ff.get("change_pct"), "conversion": ff.get("conversion")},
+            "customers": {"new": cm.get("new", 0), "returning": cm.get("returning", 0),
+                          "total": cm.get("total", 0), "repeat_rate": cm.get("repeat_rate")},
+            "stock_mix":   _mix(sn),
+            "sell_through": stm.get(sn),
+        })
+
+    # ── Country medians ───────────────────────────────────────────────────────
+    def _med(lst):
+        return round(_stats.median(lst), 1) if lst else None
+
+    c_meds = {c: {"conversion": _med(p["conv"]), "discount_rate": _med(p["disc"]),
+                  "basket": _med(p["basket"]), "asp": _med(p["asp"])}
+              for c, p in ctry_pool.items()}
+    overall_med = {
+        "conversion":    _med([v for p in ctry_pool.values() for v in p["conv"]]),
+        "discount_rate": _med([v for p in ctry_pool.values() for v in p["disc"]]),
+        "basket":        _med([v for p in ctry_pool.values() for v in p["basket"]]),
+    }
+
+    # ── Score + pain points + strengths ───────────────────────────────────────
+    final = []
+    for s in rows_out:
+        ctry = s["_ctry"]
+        med  = c_meds.get(ctry, {})
+        mc, md, mb = med.get("conversion"), med.get("discount_rate"), med.get("basket")
+        tp        = s["_tblock"].get("pct_of_target")
+        conv      = s["_ff"].get("conversion")
+        st_p      = s["_stp"]
+        rr        = s["_cm"].get("repeat_rate")
+        noos      = s["stock_mix"].get("noos_pct")
+        dead      = s["stock_mix"].get("dead_pct")
+        rev_chg   = _pct(s["_cn"], s["_pn"]) or 0.0
+
+        t_sig  = _norm(tp, 0, 130)       if tp   is not None else 50.0
+        r_sig  = _norm(rev_chg, -50, 67)
+        c_sig  = (_norm(conv / mc, 0, 2.0) if conv is not None and mc and mc > 0 else 50.0)
+        s_sig  = _norm(st_p, 0, 30)      if st_p is not None else 50.0
+        rr_sig = _norm(rr, 0, 30)        if rr   is not None else 50.0
+        if noos is None and dead is None:
+            mix_sig = 50.0
+        else:
+            mix_sig = (_norm(noos or 0, 0, 30) + _norm(100 - (dead or 0), 70, 100)) / 2
+
+        score  = round(t_sig*0.30 + r_sig*0.20 + c_sig*0.15 + s_sig*0.15 + rr_sig*0.10 + mix_sig*0.10)
+        status = "Healthy" if score >= 70 else ("Watch" if score >= 50 else "At Risk")
+
+        pain, good = [], []
+
+        def _pp(sev, msg, val, bench=None):
+            pain.append({"severity": sev, "message": msg, "metric_value": val, "benchmark": bench})
+
+        if   rev_chg < -20: _pp("high",   f"Revenue down {abs(rev_chg):.0f}% vs last period",   round(s["_cn"]), round(s["_pn"]))
+        elif rev_chg < -10: _pp("medium", f"Revenue down {abs(rev_chg):.0f}% vs last period",   round(s["_cn"]), round(s["_pn"]))
+        elif rev_chg >= 15: good.append(f"Revenue up {rev_chg:.0f}% vs last period")
+
+        if tp is not None and s["_tblock"].get("target_kes"):
+            proj = s["_tblock"].get("projected") or 0
+            tgt  = s["_tblock"]["target_kes"]
+            ppp  = round(proj * 100.0 / tgt, 1) if tgt else None
+            if   tp < 80: _pp("high",   f"Tracking well below target — projected {ppp}% of month",  ppp, 100.0)
+            elif tp < 90: _pp("medium", f"Tracking below target — projected {ppp}% of month",       ppp, 100.0)
+            if   tp >= 100: good.append(f"Strong target attainment {tp:.0f}%")
+
+        if conv is not None and mc and mc > 0:
+            ratio = conv / mc
+            if   ratio < 0.6: _pp("high",   f"Low conversion: {conv}% vs country median {mc}%", conv, mc)
+            elif ratio < 0.8: _pp("medium", f"Below-median conversion: {conv}% vs median {mc}%", conv, mc)
+            elif ratio >= 1.2: good.append(f"Above-peer conversion: {conv}% vs median {mc}%")
+
+        ff_chg = s["_ff"].get("change_pct")
+        if ff_chg is not None and ff_chg < -10:
+            _pp("medium", f"Falling footfall: down {abs(ff_chg):.0f}%",
+                s["_ff"].get("current", 0), s["_ff"].get("prior", 0))
+
+        disc = s["_disc"]
+        if disc is not None and md is not None:
+            if   disc > md + 10: _pp("high",   f"High discounting: {disc:.1f}% of gross (median {md:.1f}%)", disc, md)
+            elif disc > md + 5:  _pp("medium", f"Above-median discounting: {disc:.1f}% of gross", disc, md)
+
+        ret = s["_ret"]
+        if ret is not None:
+            if   ret > 10: _pp("high",   f"High return rate: {ret:.1f}%", ret, 5.0)
+            elif ret > 5:  _pp("medium", f"Elevated return rate: {ret:.1f}%", ret, 5.0)
+
+        if noos is not None:
+            if   noos < 15: _pp("high",   f"Weak NOOS/Core coverage: only {noos:.0f}% of floor stock", noos, 20.0)
+            elif noos < 20: _pp("medium", f"Low NOOS/Core coverage: {noos:.0f}% of floor stock",       noos, 20.0)
+
+        if dead is not None:
+            if   dead > 25: _pp("high",   f"Dead/Retired stock heavy: {dead:.0f}% of floor", dead, 10.0)
+            elif dead > 15: _pp("medium", f"High Retired stock: {dead:.0f}% of floor",       dead, 10.0)
+
+        bask = s["_basket"]
+        if bask is not None and mb and mb > 0 and bask / mb < 0.75:
+            _pp("medium", f"Low basket size: KES {bask:,.0f} vs country avg KES {mb:,.0f}", bask, mb)
+
+        cc = _pct(s["_cm"].get("total", 0), s["_pri_cust"])
+        if cc is not None and cc < -10:
+            _pp("medium", f"Shrinking customer base: down {abs(cc):.0f}%",
+                s["_cm"].get("total", 0), s["_pri_cust"])
+
+        if rr is not None:
+            if   rr < 10:  _pp("high",   f"Very low repeat rate: {rr:.1f}%", rr, 25.0)
+            elif rr < 20:  _pp("medium", f"Low repeat rate: {rr:.1f}%",      rr, 25.0)
+            elif rr >= 30: good.append(f"Healthy repeat rate: {rr:.1f}%")
+
+        if st_p is not None and st_p >= 25:
+            good.append(f"Strong sell-through: {st_p:.1f}%")
+
+        _sev_ord = {"high": 0, "medium": 1, "low": 2}
+        pain.sort(key=lambda x: _sev_ord.get(x["severity"], 9))
+        if not pain:
+            pain = [{"severity": "none", "message": "No major issues — store performing well",
+                     "metric_value": None, "benchmark": None}]
+
+        out = {k: v for k, v in s.items() if not k.startswith("_")}
+        out["status"]      = status
+        out["score"]       = score
+        out["pain_points"] = pain
+        out["strengths"]   = good[:3]
+        final.append(out)
+
+    final.sort(key=lambda x: x["score"], reverse=True)
+    result = {
+        "period_days":     period,
+        "current_range":   [cur_start.isoformat(), cur_end.isoformat()],
+        "prior_range":     [pri_start.isoformat(), pri_end.isoformat()],
+        "country_medians": overall_med,
+        "stores":          final,
+    }
+    cache_set(ck, result, ttl=HEAVY_DASH_TTL)
+    return result
 
 
 @app.get("/api/analytics/declining-styles")

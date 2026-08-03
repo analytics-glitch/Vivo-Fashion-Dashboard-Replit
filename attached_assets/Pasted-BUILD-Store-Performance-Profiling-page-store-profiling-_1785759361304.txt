@@ -1,0 +1,84 @@
+BUILD: Store Performance Profiling page (/store-profiling)
+
+Goal: A page that profiles each retail store's performance vs. the last comparable period, gives an at-a-glance verdict (doing well / at risk / underperforming), and diagnoses the specific pain points hurting each store — across sales, targets, footfall/conversion, stock mix, sell-through, customer health, and range coverage.
+
+IMPORTANT — reuse existing infrastructure, do not rebuild:
+
+Read sales from all_sales (fields: pos_location_name, net_sales_kes, net_quantity, discounts_kes, gross_sales_kes, returned_item_quantity, customer_id, customer_type, sale_kind IN ('sale','order'), country, sale_date TEXT).
+Exclude warehouse + pipeline + online locations using the existing WAREHOUSE_LOCATIONS, PIPELINE_LOCATIONS, BASE_FILTERS constants and the _sql_str() helper — same pattern as analytics_store_potential (line ~26523).
+Targets: read from targets_monthly (scope='store', columns name, month, target_kes) — same as the monthly-targets endpoint.
+Stock mix by range tier: call the existing range_mgmt_store_tier_mix() function — do NOT re-derive tiers; it already uses the single-source _lifecycle_tier.
+Footfall: reuse /api/footfall logic (FootfallCam data) for traffic + conversion.
+Store revenue benchmarking + maturity: reuse the approach in analytics_store_potential.
+Sell-through by location: reuse /api/analytics/sell-through-by-location (line ~7979).
+Customer health per store: reuse /api/customers-by-location (line ~6397).
+
+NEW BACKEND ENDPOINT: GET /api/analytics/store-profiling?country=<optional>&period=<28|90>
+
+For each store, compute a scorecard comparing the current period vs the immediately preceding period of equal length (e.g. last 28 days vs the 28 days before that). Return per store:
+
+Identity: store, country, months_active (maturity from first sale date).
+Sales KPIs (current vs prior, with % change): net revenue (KES), units, transactions (distinct order/customer count), ASP (avg selling price = net_sales/units), avg basket (net_sales / distinct transactions), UPT (units per transaction), discount rate (discounts_kes / gross_sales_kes), return rate (returned_item_quantity / ordered units).
+Target performance: current-month target_kes, MTD actual, MTD-prorated target, % of target, projected month-end, variance.
+Footfall & conversion: footfall count (current vs prior), conversion rate (transactions / footfall), footfall trend %.
+Customer health: new vs returning split, repeat rate, distinct customers (current vs prior), % change.
+Stock mix: units by range tier (NOOS/Core/Recent/New/Retired) from range_mgmt_store_tier_mix; flag if NOOS coverage is low or Retired/dead stock is high. Include weeks-of-cover if available.
+Sell-through rate for the store (current period).
+
+VERDICT LOGIC (compute a status + score per store):
+
+Compute a 0–100 composite health score from weighted normalized signals: target attainment (30%), revenue trend vs prior (20%), conversion rate vs peer median (15%), sell-through (15%), customer repeat/retention (10%), stock-mix health — NOOS present & low dead stock (10%).
+Status buckets: Healthy (score ≥ 70), Watch (50–69), At Risk (< 50). Use existing dashboard color conventions (green/amber/red).
+Peer comparisons (conversion, ASP, basket) are computed within the same country (partition by country), like the tier logic does.
+
+PAIN POINTS (the key ask — diagnose WHAT is wrong): For each store, generate a ranked list of specific, human-readable pain points with the supporting number, only when a threshold is breached. Examples of rules to implement:
+
+"Revenue down X% vs last period" (if net revenue change < -10%)
+"Tracking below target — projected Y% of month" (if projected < 90%)
+"Low conversion: Z% vs country median W%" (footfall present but conversion below peer median)
+"Falling footfall: down X%" (footfall trend < -10%)
+"High discounting: X% of gross" (discount rate above country median + threshold)
+"High returns: X%" (return rate > threshold)
+"Weak NOOS coverage: only X% of stock is NOOS/Core" (core availability low)
+"Dead/Retired stock heavy: X% of floor" (retired+aged tier share high)
+"Low basket size: KES X vs country avg KES Y"
+"Shrinking customer base: distinct customers down X%"
+"Low repeat rate: X%"
+Each pain point = {severity: high|medium|low, message, metric_value, benchmark}. Sort by severity. If no pain points, return a "No major issues" positive note.
+
+Also return per store: 2–3 strengths (the inverse — what's going well: "Strong target attainment 112%", "Above-peer conversion", "Healthy repeat rate").
+
+Response shape:
+
+json
+{
+  "period_days": 28,
+  "current_range": ["2026-07-06","2026-08-03"],
+  "prior_range": ["2026-06-08","2026-07-05"],
+  "country_medians": { "conversion": .., "asp": .., "basket": .., "discount_rate": .. },
+  "stores": [
+    {
+      "store": "...", "country": "...", "months_active": ..,
+      "status": "Healthy|Watch|At Risk", "score": 0-100,
+      "kpis": { "revenue": {"current":..,"prior":..,"change_pct":..}, "units": {...}, "asp": {...}, "basket": {...}, "upt": {...}, "conversion": {...}, "discount_rate": {...}, "return_rate": {...}, "distinct_customers": {...} },
+      "target": { "target_kes":.., "mtd_actual":.., "pct_of_target":.., "projected":.., "variance":.. },
+      "footfall": { "current":.., "prior":.., "change_pct":.. },
+      "customers": { "new":.., "returning":.., "repeat_rate":.. },
+      "stock_mix": { "NOOS":.., "Core":.., "Recent Performer":.., "New Styles":.., "Retired":.., "noos_pct":.., "dead_pct":.. },
+      "sell_through": ..,
+      "pain_points": [ {"severity":"high","message":"...","metric_value":..,"benchmark":..} ],
+      "strengths": [ "..." ]
+    }
+  ]
+}
+
+Cache the response with @cached(ttl=HEAVY_DASH_TTL) (900s) keyed on country+period, same as other heavy endpoints. Follow the existing run_query() + f-string-with-_sql_str() pattern (parameterize country safely). Match the SOR/tier definitions already in the codebase — do NOT invent new ones.
+
+NEW FRONTEND PAGE: /store-profiling, added to the retail + store_manager + leadership nav groups (see NAV/role lists around line 697). Layout:
+
+Top: country filter + period toggle (28d / 90d). Summary strip: # Healthy / # Watch / # At Risk.
+Store cards / sortable table: one row per store showing status pill (green/amber/red), health score, revenue + %change (colored arrow), % of target, conversion, and a compact sparkline or the top pain point. Sortable by score, revenue, target%, etc. Filterable by status.
+Expand a store → detail panel: full KPI grid (current vs prior with % change arrows), target progress bar, footfall/conversion, customer health, stock-mix bar (tier breakdown), and the Pain Points list (red/amber chips with the supporting numbers) plus Strengths (green chips). Reuse existing card/table components and color tokens for visual consistency.
+Use the existing thumbnail/number-formatting helpers and KES formatting already used on the Locations page.
+
+Testing: verify the endpoint returns sensible current-vs-prior deltas for a few known stores (e.g. Vivo Sarit, Vivo Junction), that pain points fire only when thresholds breach, that country peer-medians compute within-country, and that excluded locations (warehouse/online/pipeline) never appear. Confirm the page renders for retail, store_manager, and leadership roles.
