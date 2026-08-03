@@ -1873,7 +1873,10 @@ def _start_cache_prewarmer():
     # FastAPI endpoint directly would otherwise pass Query(...) sentinel objects
     # as values.
     def _warm_loop():
-        time.sleep(90)  # let boot + first user traffic settle before warming
+        # No initial sleep — warm the cache immediately on startup so the first
+        # users after a deploy never pay the 10-20s cold-query cost. The loop
+        # then repeats every HEAVY_DASH_WARM_INTERVAL (600s) to keep entries
+        # fresh before the HEAVY_DASH_TTL (900s) lapses.
         while True:
             t0 = time.time()
             # Warm Postgres shared_buffers so cold-start queries hit RAM not disk.
