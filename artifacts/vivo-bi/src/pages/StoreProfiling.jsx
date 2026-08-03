@@ -557,8 +557,13 @@ function CategoryTargets({ store, rpt }) {
   return (
     <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, overflow: "hidden" }}>
       <div style={{ padding: "14px 20px", borderBottom: "1px solid #f3f4f6", background: "#fafafa", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
-        <div style={{ fontSize: 14, fontWeight: 700, color: "#374151" }}>
-          {selCat ? `${selCat} → sub-categories` : "All categories"} · August MTD vs full-month targets · mix shift vs 6-month norm
+        <div>
+          <div style={{ fontSize: 14, fontWeight: 700, color: "#374151" }}>
+            {selCat ? `${selCat} → sub-categories` : "All categories"} · how each one is tracking against its August share of the store target
+          </div>
+          <div style={{ fontSize: 12, color: "#9ca3af", marginTop: 2 }}>
+            Each row: how much is sold vs the month's goal, whether today's selling speed is enough, and if there's stock to get there.
+          </div>
         </div>
         {selCat && (
           <button onClick={() => setSelCat("")}
@@ -574,13 +579,11 @@ function CategoryTargets({ store, rpt }) {
             <thead>
               <tr>
                 <th style={{ ...th, textAlign: "left", minWidth: 170 }}>{selCat ? "Sub-Category" : "Category"}</th>
-                <th style={{ ...th, textAlign: "right", background: "#eff6ff", color: C.blue.fg }}>MTD Units</th>
-                <th style={{ ...th, textAlign: "right" }}>Pace</th>
-                <th style={{ ...th, textAlign: "right", background: "#fffbeb", color: C.amber.fg }}>Aug Target</th>
-                <th style={{ ...th, textAlign: "left", background: "#fff1f2", color: C.bad.fg, minWidth: 160 }}>⚡ What To Do</th>
-                <th style={{ ...th, textAlign: "right" }} title="Units currently in stock at this store, and how many days that lasts at the pace the target requires">Stock (Cover)</th>
-                <th style={{ ...th, textAlign: "right" }}>Mix vs Norm</th>
-                <th style={{ ...th, textAlign: "right" }}>ASP</th>
+                <th style={{ ...th, textAlign: "left", minWidth: 190 }} title="Units sold so far this month vs the full-month goal for this line">Month progress (units)</th>
+                <th style={{ ...th, textAlign: "left", minWidth: 210 }} title="Selling speed today vs the speed needed for the rest of the month to still hit the goal">Selling fast enough?</th>
+                <th style={{ ...th, textAlign: "right" }} title="Units in stock here now, and roughly how many days they last at the needed selling speed">Stock</th>
+                <th style={{ ...th, textAlign: "right" }} title="This line's share of the store's sales this month vs its usual share over the last 6 months">Share of sales</th>
+                <th style={{ ...th, textAlign: "right" }} title="Average selling price per unit this month">Avg price</th>
                 <th style={{ ...th, textAlign: "right" }}>Revenue MTD</th>
               </tr>
             </thead>
@@ -600,55 +603,65 @@ function CategoryTargets({ store, rpt }) {
                       {row.name}
                       {!selCat && row.hasSubs && <span style={{ fontSize: 10, color: "#6366f1", marginLeft: 7 }}>↵ drill</span>}
                     </td>
-                    <td style={{ textAlign: "right", padding: "12px 14px", background: "#f8faff" }}>
-                      <div style={{ fontWeight: 800, fontSize: 15, color: C.blue.fg }}>{fmtNum(row.units)}</div>
-                      {row.tgt != null && <div style={{ fontSize: 11, color: "#9ca3af" }}>{progPct}% of target</div>}
-                    </td>
-                    <td style={{ textAlign: "right", padding: "12px 14px", color: "#6b7280", fontSize: 13 }}>
-                      {row.dailyActual != null ? `${row.dailyActual}/day` : "—"}
-                    </td>
-                    <td style={{ textAlign: "right", padding: "12px 14px", background: "#fffef5" }}>
+                    {/* Month progress: sold X of Y with a bar */}
+                    <td style={{ padding: "12px 14px" }}>
                       {row.tgt != null ? (
                         <>
-                          <div style={{ fontWeight: 800, fontSize: 15, color: C.amber.fg }}>{fmtNum(row.tgt)}</div>
-                          <div style={{ fontSize: 11, color: "#b45309" }}>{Math.round(row.tgt / daysIn)}/day pace</div>
+                          <div style={{ fontSize: 13, marginBottom: 4 }}>
+                            <strong style={{ fontSize: 15, color: "#111827" }}>{fmtNum(row.units)}</strong>
+                            <span style={{ color: "#6b7280" }}> of {fmtNum(row.tgt)} sold</span>
+                            <span style={{ fontWeight: 700, color: progPct >= Math.round(daysDone / daysIn * 100) ? C.good.fg : C.amber.fg, marginLeft: 6 }}>{progPct}%</span>
+                          </div>
+                          <div style={{ position: "relative", height: 7, background: "#e5e7eb", borderRadius: 4, maxWidth: 170 }}>
+                            <div style={{ position: "absolute", inset: 0, width: `${Math.min(100, progPct)}%`, background: progPct >= Math.round(daysDone / daysIn * 100) ? C.good.fg : C.amber.fg, borderRadius: 4 }} />
+                            {/* marker: where progress SHOULD be by today */}
+                            <div style={{ position: "absolute", top: -2, bottom: -2, left: `${Math.round(daysDone / daysIn * 100)}%`, width: 2, background: "#6b7280" }}
+                                 title={`Should be at ~${Math.round(daysDone / daysIn * 100)}% by day ${daysDone}`} />
+                          </div>
+                          <div style={{ fontSize: 10, color: "#9ca3af", marginTop: 3 }}>│ = where it should be by today</div>
                         </>
-                      ) : <span style={{ color: "#9ca3af", fontSize: 12 }}>—</span>}
+                      ) : (
+                        <span style={{ fontSize: 13, color: "#6b7280" }}><strong style={{ color: "#111827" }}>{fmtNum(row.units)}</strong> sold · no target</span>
+                      )}
                     </td>
+                    {/* Selling fast enough? one verdict + the two speeds */}
                     <td style={{ padding: "12px 14px" }}>
-                      {row.dailyNeeded != null ? (
-                        <span style={{ fontWeight: 700, fontSize: 13, color: onTrack ? C.good.fg : C.bad.fg }}>
-                          {row.dailyNeeded}/day needed
-                          {row.dailyGap != null && (
-                            <span style={{ fontWeight: 400, display: "block", fontSize: 11, color: onTrack ? C.good.fg : C.bad.fg }}>
-                              {onTrack ? `✓ ${Math.abs(row.dailyGap).toFixed(1)}/day ahead` : `▲ +${row.dailyGap.toFixed(1)}/day more`}
-                            </span>
-                          )}
-                        </span>
-                      ) : row.rem === 0 ? <Pill c={C.good}>✓ Target hit</Pill> : <span style={{ color: "#9ca3af" }}>—</span>}
+                      {row.rem === 0 && row.tgt != null ? <Pill c={C.good}>✓ Target hit</Pill>
+                      : row.dailyNeeded != null && row.dailyActual != null ? (
+                        <>
+                          <Pill c={onTrack ? C.good : C.bad}>{onTrack ? "✓ On track" : "Behind"}</Pill>
+                          <div style={{ fontSize: 12, color: "#374151", marginTop: 4 }}>
+                            Selling <strong>{row.dailyActual}/day</strong> · needs <strong>{row.dailyNeeded}/day</strong>
+                            {!onTrack && <span style={{ color: C.bad.fg }}> → sell {row.dailyGap.toFixed(1)} more per day</span>}
+                          </div>
+                        </>
+                      ) : <span style={{ color: "#9ca3af" }}>—</span>}
                       {row.stockShort && (
-                        <div style={{ fontSize: 11, fontWeight: 700, color: C.amber.fg, marginTop: 2 }}>
-                          ⚠ only {fmtNum(row.soh)} in stock vs {fmtNum(row.rem)} to sell — needs replenishment
+                        <div style={{ fontSize: 11, fontWeight: 700, color: C.amber.fg, marginTop: 3 }}>
+                          ⚠ not enough stock to hit the goal — {fmtNum(row.soh)} left, {fmtNum(row.rem)} still to sell
                         </div>
                       )}
                     </td>
                     <td style={{ textAlign: "right", padding: "12px 14px", fontSize: 13 }}>
                       {row.soh != null ? (
                         <>
-                          <div style={{ fontWeight: 700, color: row.stockShort ? C.amber.fg : "#374151" }}>{fmtNum(row.soh)}</div>
+                          <div style={{ fontWeight: 700, color: row.stockShort ? C.amber.fg : "#374151" }}>{fmtNum(row.soh)} units</div>
                           {row.coverDays != null && (
                             <div style={{ fontSize: 10, color: row.coverDays < daysLeft ? C.amber.fg : "#9ca3af" }}>
-                              ~{row.coverDays}d cover
+                              lasts ~{row.coverDays} days{row.coverDays < daysLeft ? ` — runs out before month-end` : ""}
                             </div>
                           )}
                         </>
                       ) : "—"}
                     </td>
                     <td style={{ textAlign: "right", padding: "12px 14px", fontSize: 13 }}>
-                      {row.mixShift != null ? (
-                        <span style={{ fontWeight: 700, color: Math.abs(row.mixShift) < 1.5 ? "#6b7280" : row.mixShift > 0 ? C.good.fg : C.bad.fg }}>
-                          {row.mixShift > 0 ? "▲" : "▼"} {Math.abs(row.mixShift).toFixed(1)}pp
-                        </span>
+                      {row.mixShift != null && row.mtdPct != null ? (
+                        <>
+                          <div style={{ fontWeight: 700, color: "#374151" }}>{row.mtdPct.toFixed(0)}%</div>
+                          <div style={{ fontSize: 10, color: Math.abs(row.mixShift) < 1.5 ? "#9ca3af" : row.mixShift > 0 ? C.good.fg : C.bad.fg }}>
+                            usually {row.basePct.toFixed(0)}% {Math.abs(row.mixShift) < 1.5 ? "· steady" : row.mixShift > 0 ? "· gaining" : "· losing ground"}
+                          </div>
+                        </>
                       ) : "—"}
                     </td>
                     <td style={{ textAlign: "right", padding: "12px 14px", fontSize: 14, fontWeight: 600, color: "#374151" }}>
