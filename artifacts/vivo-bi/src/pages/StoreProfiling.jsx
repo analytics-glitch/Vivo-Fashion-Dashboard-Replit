@@ -335,7 +335,7 @@ const SORT_OPTS = [
 ];
 
 export default function StoreProfiling() {
-  const { filters } = useFilters();
+  const { countries } = useFilters();
   const [period, setPeriod]     = useState(28);
   const [data, setData]         = useState(null);
   const [loading, setLoading]   = useState(false);
@@ -344,7 +344,7 @@ export default function StoreProfiling() {
   const [sortBy, setSortBy]     = useState("score");
   const [filterStatus, setFilterStatus] = useState("all");
 
-  const country = (filters.countries || []).length === 1 ? filters.countries[0] : null;
+  const country = (countries || []).length === 1 ? countries[0] : null;
 
   useEffect(() => {
     setLoading(true);
