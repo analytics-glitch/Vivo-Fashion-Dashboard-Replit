@@ -20418,7 +20418,7 @@ def analytics_store_profiling(
            for r in (st_rows or [])}
 
     # ── 7. Stock mix (reuse range_mgmt_store_tier_mix) ────────────────────────
-    tier_data = range_mgmt_store_tier_mix(country=country or None)
+    tier_data = range_mgmt_store_tier_mix(country=country or None, channel=None)
     _TL = {"Tier 1": "NOOS", "Tier 2": "Core", "Tier 3": "Recent Performer",
            "Tier 4": "New Styles", "Retire": "Retired"}
     raw_mix: dict = {}
