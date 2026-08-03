@@ -1339,6 +1339,7 @@ const AdminTab = ({ members, onMembersChanged, settings, onSettingsChanged, fold
   const [newRock, setNewRock] = useState({ description: "", rock_type: "Company", owner: "", quarter_label: "" });
   const [editingMetricId, setEditingMetricId] = useState(null);
   const [editDraft, setEditDraft] = useState({});
+  const [metricSaveError, setMetricSaveError] = useState(null);
   const [startTime, setStartTime] = useState(settings?.default_start_time || "08:00");
 
   const reloadMetrics = useCallback(() => {
@@ -1488,34 +1489,38 @@ const AdminTab = ({ members, onMembersChanged, settings, onSettingsChanged, fold
                   return (
                     <div key={m.id} className="py-2 space-y-2">
                       <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
-                        <select value={editDraft.who} onChange={(e) => setEditDraft((p) => ({ ...p, who: e.target.value }))}
+                        <select value={editDraft.who} onChange={(e) => { setMetricSaveError(null); setEditDraft((p) => ({ ...p, who: e.target.value })); }}
                           className="border border-border rounded px-2 py-1 text-sm">
                           <option value="">Who…</option>
                           {whoOptions.map((n) => <option key={n} value={n}>{n}</option>)}
                         </select>
                         <input placeholder="Measurable *" value={editDraft.measurable}
-                          onChange={(e) => setEditDraft((p) => ({ ...p, measurable: e.target.value }))}
+                          onChange={(e) => { setMetricSaveError(null); setEditDraft((p) => ({ ...p, measurable: e.target.value })); }}
                           className="border border-border rounded px-2 py-1 text-sm col-span-2 sm:col-span-1" />
                         <input placeholder=">2 or >=95 or <5 or =100" value={editDraft.goal}
-                          onChange={(e) => setEditDraft((p) => ({ ...p, goal: e.target.value }))}
+                          onChange={(e) => { setMetricSaveError(null); setEditDraft((p) => ({ ...p, goal: e.target.value })); }}
                           className="border border-border rounded px-2 py-1 text-sm" />
                         <input placeholder="UOM" value={editDraft.uom}
-                          onChange={(e) => setEditDraft((p) => ({ ...p, uom: e.target.value }))}
+                          onChange={(e) => { setMetricSaveError(null); setEditDraft((p) => ({ ...p, uom: e.target.value })); }}
                           className="border border-border rounded px-2 py-1 text-sm" />
                         <select value={editDraft.goal_direction}
-                          onChange={(e) => setEditDraft((p) => ({ ...p, goal_direction: e.target.value }))}
+                          onChange={(e) => { setMetricSaveError(null); setEditDraft((p) => ({ ...p, goal_direction: e.target.value })); }}
                           className="border border-border rounded px-2 py-1 text-sm col-span-2 sm:col-span-1">
                           <option value="up">Higher is better</option>
                           <option value="down">Lower is better</option>
                         </select>
                       </div>
+                      {metricSaveError && (
+                        <p className="text-xs text-red-600">{metricSaveError}</p>
+                      )}
                       <div className="flex gap-2 justify-end">
-                        <button type="button" onClick={() => setEditingMetricId(null)}
+                        <button type="button" onClick={() => { setEditingMetricId(null); setMetricSaveError(null); }}
                           className="px-3 py-1 rounded-lg border border-border text-sm hover:bg-muted">Cancel</button>
                         <button type="button" onClick={() => {
+                          setMetricSaveError(null);
                           api.put(`/l10/scorecard-metrics/${m.id}`, editDraft)
                             .then(() => { reloadMetrics(); setEditingMetricId(null); })
-                            .catch(() => {});
+                            .catch(() => { setMetricSaveError("Save failed — try again"); });
                         }}
                           className="px-3 py-1 rounded-lg bg-primary text-primary-foreground text-sm hover:opacity-90">Save</button>
                       </div>
