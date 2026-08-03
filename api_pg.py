@@ -12009,6 +12009,63 @@ def analytics_store_flow(
     }
 
 
+@app.get("/api/analytics/store-flow/day-transfers")
+def analytics_store_flow_day_transfers(
+    date_from: str = Query(default=str(date.today().replace(day=1))),
+    date_to:   str = Query(default=str(date.today())),
+    dow:       int = Query(..., ge=1, le=7),
+    pos_location: str = Query(default=None),
+    country:   str = Query(default=None),
+):
+    """Drill-down for a daily transfer cell on the Store Flow page: the
+    warehouse→store transfer line items whose scheduled_date falls on the
+    given ISO weekday (1=Mon…7=Sun) within the selected range — the exact
+    same filter the daily_transfers aggregation uses, so the drill-down
+    total always matches the clicked cell.  pos_location omitted = all
+    filtered stores (the daily totals row)."""
+    try:
+        date.fromisoformat(date_from); date.fromisoformat(date_to)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date")
+    ctry_t = " AND t.to_country IN (" + csv_to_sql(country) + ")" if country else ""
+    loc_t = ""
+    if pos_location:
+        loc_t = " AND t.to_store_name = '" + pos_location.replace("'", "''") + "'"
+    rows = run_query("""
+        SELECT COALESCE(p.product_name, t.product_name) AS product_name,
+               p.barcode,
+               t.sku,
+               p.size,
+               p.category,
+               p.product_type AS sub_category,
+               t.to_store_name AS pos_location,
+               t.scheduled_date::date::text AS transfer_date,
+               SUM(CASE WHEN t.state = 'done' THEN t.qty_done ELSE t.qty_planned END)::int AS quantity
+        FROM stock_transfers t
+        LEFT JOIN LATERAL (
+            SELECT product_name, barcode, size, category, product_type
+            FROM all_products_clean
+            WHERE sku = t.sku
+            ORDER BY (active IS TRUE) DESC, barcode
+            LIMIT 1
+        ) p ON TRUE
+        WHERE t.scheduled_date::date
+              BETWEEN '""" + date_from + """' AND '""" + date_to + """'
+          AND EXTRACT(ISODOW FROM t.scheduled_date::date)::int = """ + str(int(dow)) + """
+          AND t.to_store_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
+          AND t.to_store_name NOT IN ('MarKT/Stock','Retired Stock')
+          AND """ + _WAREHOUSE_ORIGIN_FILTER + """
+        """ + ctry_t + loc_t + """
+        GROUP BY 1, 2, 3, 4, 5, 6, 7, 8
+        HAVING SUM(CASE WHEN t.state = 'done' THEN t.qty_done ELSE t.qty_planned END) > 0
+        ORDER BY 8, 7, 1
+    """, date_to=date_to)
+    return {
+        "items": rows,
+        "total_quantity": sum(int(r["quantity"] or 0) for r in rows),
+    }
+
+
 @app.get("/api/analytics/weeks-of-cover")
 def analytics_weeks_of_cover(
     date_from: str = Query(default=None),

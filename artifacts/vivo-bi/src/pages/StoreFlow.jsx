@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import * as XLSX from "xlsx";
 import { api, fmtNum } from "@/lib/api";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
-import { ArrowsClockwise, DownloadSimple, Storefront, Basket, Truck, Package, CalendarCheck } from "@phosphor-icons/react";
+import { ArrowsClockwise, DownloadSimple, Storefront, Basket, Truck, Package, CalendarCheck, X } from "@phosphor-icons/react";
 
 const COUNTRIES = ["", "Kenya", "Uganda", "Rwanda", "Online"];
 
@@ -71,17 +72,18 @@ function getThisWeekRange() {
 }
 
 /**
- * Transfer pacing: compare units_transferred to prev_week_sold ±10%.
- * Returns { status: "on_track"|"over"|"under"|"none", pct }
+ * Transfer pacing: compare NET transferred (transferred − returned) to
+ * prev_week_sold ±10%. Returns { status: "on_track"|"over"|"under"|"none", pct }
  */
-function transferPacing(transferred, prevWeekSold) {
+function transferPacing(netTransferred, prevWeekSold) {
   if (!prevWeekSold) return { status: "none", pct: null };
-  const pct = prevWeekSold > 0 ? (transferred / prevWeekSold) * 100 : null;
+  const pct = prevWeekSold > 0 ? (netTransferred / prevWeekSold) * 100 : null;
   if (pct === null) return { status: "none", pct: null };
-  if (transferred > prevWeekSold * 1.10) return { status: "over", pct };
-  if (transferred < prevWeekSold * 0.90) return { status: "under", pct };
+  if (netTransferred > prevWeekSold * 1.10) return { status: "over", pct };
+  if (netTransferred < prevWeekSold * 0.90) return { status: "under", pct };
   return { status: "on_track", pct };
 }
+const netXfr = (r) => (r.units_transferred || 0) - (r.units_returned || 0);
 
 function SortTh({ sk, cur, dir, onSort, className = "", title, children }) {
   const active = cur === sk;
@@ -110,8 +112,8 @@ function WocDelta({ delta }) {
   return <span className="text-[12px] text-slate-400">→ stable</span>;
 }
 
-function PacingBadge({ transferred, prevWeekSold }) {
-  const { status, pct } = transferPacing(transferred, prevWeekSold);
+function PacingBadge({ netTransferred, prevWeekSold }) {
+  const { status, pct } = transferPacing(netTransferred, prevWeekSold);
   if (status === "none") return <span className="text-slate-300">—</span>;
   const pctStr = pct != null ? `${pct.toFixed(0)}%` : "";
   if (status === "over")
@@ -180,9 +182,10 @@ const StoreFlow = () => {
       else if (sortKey === "units_transferred") { av = a.units_transferred || 0; bv = b.units_transferred || 0; }
       else if (sortKey === "units_returned")   { av = a.units_returned || 0; bv = b.units_returned || 0; }
       else if (sortKey === "pacing_pct") {
-        av = a.prev_week_sold > 0 ? a.units_transferred / a.prev_week_sold : -1;
-        bv = b.prev_week_sold > 0 ? b.units_transferred / b.prev_week_sold : -1;
+        av = a.prev_week_sold > 0 ? netXfr(a) / a.prev_week_sold : -1;
+        bv = b.prev_week_sold > 0 ? netXfr(b) / b.prev_week_sold : -1;
       }
+      else if (sortKey === "woc") { av = a.woc ?? -1; bv = b.woc ?? -1; }
       else if (sortKey === "current_stock") { av = a.current_stock || 0; bv = b.current_stock || 0; }
       else { av = 0; bv = 0; }
       if (typeof av === "string") return sortDir === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
@@ -256,7 +259,7 @@ const StoreFlow = () => {
   const _buildReportRows = () =>
     filtered.map((r) => {
       const dt = r.daily_transfers || {};
-      const pctVal = r.prev_week_sold > 0 ? +((r.units_transferred / r.prev_week_sold) * 100).toFixed(1) : null;
+      const pctVal = r.prev_week_sold > 0 ? +((netXfr(r) / r.prev_week_sold) * 100).toFixed(1) : null;
       return {
         "POS Location": r.pos_location,
         "WH Owner": whOwner(r.pos_location),
@@ -271,8 +274,10 @@ const StoreFlow = () => {
         "Sun": dt[7] || 0,
         "Total Transferred": r.units_transferred,
         "Total Returned": r.units_returned || 0,
-        "vs Prev Week %": pctVal != null ? pctVal / 100 : null,
+        "Net Transferred": netXfr(r),
+        "vs Prev Week % (net)": pctVal != null ? pctVal / 100 : null,
         "Status": pctVal == null ? "—" : pctVal > 110 ? "Over" : pctVal < 90 ? "Under" : "On track",
+        "WOC (weeks)": r.woc != null ? +r.woc.toFixed(1) : null,
         "Current Stock": r.current_stock,
       };
     });
@@ -325,7 +330,7 @@ const StoreFlow = () => {
     const ws = XLSX.utils.json_to_sheet(rows);
     // Format "vs Prev Week %" column as percentage
     const range = XLSX.utils.decode_range(ws["!ref"] || "A1");
-    const pctColIdx = Object.keys(rows[0]).indexOf("vs Prev Week %");
+    const pctColIdx = Object.keys(rows[0]).indexOf("vs Prev Week % (net)");
     for (let rowIdx = range.s.r + 1; rowIdx <= range.e.r; rowIdx++) {
       const cell = ws[XLSX.utils.encode_cell({ r: rowIdx, c: pctColIdx })];
       if (cell && cell.v != null) cell.z = "0.0%";
@@ -360,6 +365,60 @@ const StoreFlow = () => {
     XLSX.writeFile(wb, `store-flow-${dateFrom}-to-${dateTo}.xlsx`);
   };
 
+  // ── Daily transfer drill-down ──
+  const [drill, setDrill] = useState(null); // { dow, posLocation, cellQty }
+  const [drillData, setDrillData] = useState(null);
+  const [drillLoading, setDrillLoading] = useState(false);
+  const [drillError, setDrillError] = useState(null);
+
+  const openDrill = (dow, posLocation, cellQty) => {
+    setDrill({ dow, posLocation, cellQty });
+    setDrillData(null);
+    setDrillError(null);
+    setDrillLoading(true);
+    const params = { date_from: dateFrom, date_to: dateTo, dow };
+    if (posLocation) params.pos_location = posLocation;
+    if (country) params.country = country;
+    api
+      .get("/analytics/store-flow/day-transfers", { params, timeout: 120000 })
+      .then(({ data }) => setDrillData(data))
+      .catch((e) => setDrillError(e?.response?.data?.detail || e.message || "Failed to load transfer details"))
+      .finally(() => setDrillLoading(false));
+  };
+  const closeDrill = () => { setDrill(null); setDrillData(null); setDrillError(null); };
+
+  useEffect(() => {
+    if (!drill) return;
+    const onKey = (e) => { if (e.key === "Escape") closeDrill(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [drill]);
+
+  const exportDrillCsv = () => {
+    const items = drillData?.items || [];
+    if (!items.length) return;
+    const rows = items.map((it) => ({
+      "Product Name": it.product_name,
+      "Barcode": it.barcode,
+      "SKU": it.sku,
+      "Size": it.size,
+      "Category": it.category,
+      "Sub-category": it.sub_category,
+      "Store": it.pos_location,
+      "Date": it.transfer_date,
+      "Quantity": it.quantity,
+    }));
+    const header = Object.keys(rows[0]);
+    const esc = (v) => { const s = v == null ? "" : String(v); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
+    const lines = [header.join(","), ...rows.map((r) => header.map((h) => esc(r[h])).join(","))];
+    const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    const locSlug = drill?.posLocation ? drill.posLocation.replace(/[^a-z0-9]+/gi, "-").toLowerCase() : "all-stores";
+    a.href = url; a.download = `transfers-${locSlug}-${DOW_LABELS[(drill?.dow || 1) - 1]}-${dateFrom}-to-${dateTo}.csv`; a.click();
+    URL.revokeObjectURL(url);
+  };
+
   // Totals for the daily footer
   const dailyTotals = useMemo(() => {
     const t = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0 };
@@ -376,7 +435,7 @@ const StoreFlow = () => {
       <div className="flex flex-wrap items-end gap-3 justify-between">
         <SectionTitle
           title="Stock Movement"
-          subtitle="Per store: previous week sales vs daily transfers. Target: total transferred within ±10% of the previous week's sales."
+          subtitle="Per store: previous week sales vs daily transfers. Target: net transferred (transferred − returned) within ±10% of the previous week's sales. Click a daily number to see the products transferred."
         />
         <div className="flex items-center gap-2">
           <button
@@ -532,8 +591,13 @@ const StoreFlow = () => {
                       </SortTh>
                       <SortTh sk="pacing_pct" cur={sortKey} dir={sortDir} onSort={handleSort}
                         className="py-2 pr-3 text-right whitespace-nowrap"
-                        title="Total transferred vs previous week sales. On track = ±10%. Over = >10% above. Under = >10% below.">
+                        title="Net transferred (transferred − returned) vs previous week sales. On track = ±10%. Over = >10% above. Under = >10% below.">
                         vs Prev Week ⓘ
+                      </SortTh>
+                      <SortTh sk="woc" cur={sortKey} dir={sortDir} onSort={handleSort}
+                        className="py-2 pr-3 text-right whitespace-nowrap"
+                        title={`Weeks of cover: current stock ÷ 4-week weekly rate. Target ${WOC_TARGET}w ±1. Red <${WOC_LO}w, Green ${WOC_LO}–${WOC_HI}w, Amber >${WOC_HI}w.`}>
+                        WOC ⓘ
                       </SortTh>
                       <SortTh sk="current_stock" cur={sortKey} dir={sortDir} onSort={handleSort}
                         className="py-2 pr-3 text-right">
@@ -551,8 +615,19 @@ const StoreFlow = () => {
                           <td className="py-1.5 pr-3 text-right tabular-nums text-indigo-500">{r.units_4w ? fmtNum(Math.round(r.units_4w / 4)) : "—"}</td>
                           <td className="py-1.5 pr-3 text-right tabular-nums text-indigo-700 font-medium">{fmtNum(r.prev_week_sold)}</td>
                           {[1, 2, 3, 4, 5, 6, 7].map((dow) => (
-                            <td key={dow} className={"py-1.5 pr-2 text-right tabular-nums text-[12px] " + (dt[dow] ? "text-slate-700" : "text-slate-300")}>
-                              {dt[dow] ? fmtNum(dt[dow]) : "—"}
+                            <td key={dow} className="py-1.5 pr-2 text-right tabular-nums text-[12px]">
+                              {dt[dow] ? (
+                                <button
+                                  className="text-slate-700 underline decoration-dotted decoration-slate-300 underline-offset-2 hover:text-[#1a5c38] hover:decoration-[#1a5c38]"
+                                  title={`View products transferred to ${r.pos_location} on ${DOW_LABELS[dow - 1]}`}
+                                  onClick={() => openDrill(dow, r.pos_location, dt[dow])}
+                                  data-testid={`cell-daily-${r.pos_location}-${dow}`}
+                                >
+                                  {fmtNum(dt[dow])}
+                                </button>
+                              ) : (
+                                <span className="text-slate-300">—</span>
+                              )}
                             </td>
                           ))}
                           <td className="py-1.5 pr-3 text-right tabular-nums font-medium">{fmtNum(r.units_transferred)}</td>
@@ -560,7 +635,10 @@ const StoreFlow = () => {
                             {r.units_returned ? fmtNum(r.units_returned) : "—"}
                           </td>
                           <td className="py-1.5 pr-3 text-right">
-                            <PacingBadge transferred={r.units_transferred} prevWeekSold={r.prev_week_sold} />
+                            <PacingBadge netTransferred={netXfr(r)} prevWeekSold={r.prev_week_sold} />
+                          </td>
+                          <td className={"py-1.5 pr-3 text-right tabular-nums " + wocColor(r.woc)}>
+                            {r.woc == null ? "—" : r.woc.toLocaleString(undefined, { maximumFractionDigits: 1 })}
                           </td>
                           <td className="py-1.5 pr-3 text-right tabular-nums">{fmtNum(r.current_stock)}</td>
                         </tr>
@@ -578,8 +656,19 @@ const StoreFlow = () => {
                         {fmtNum(filtered.reduce((a, r) => a + (r.prev_week_sold || 0), 0))}
                       </td>
                       {[1, 2, 3, 4, 5, 6, 7].map((dow) => (
-                        <td key={dow} className={"py-2 pr-2 text-right tabular-nums text-[12px] " + (dailyTotals[dow] ? "text-slate-700" : "text-slate-300")}>
-                          {dailyTotals[dow] ? fmtNum(dailyTotals[dow]) : "—"}
+                        <td key={dow} className="py-2 pr-2 text-right tabular-nums text-[12px]">
+                          {dailyTotals[dow] ? (
+                            <button
+                              className="text-slate-700 underline decoration-dotted decoration-slate-300 underline-offset-2 hover:text-[#1a5c38] hover:decoration-[#1a5c38] font-semibold"
+                              title={`View all products transferred on ${DOW_LABELS[dow - 1]}`}
+                              onClick={() => openDrill(dow, null, dailyTotals[dow])}
+                              data-testid={`cell-daily-total-${dow}`}
+                            >
+                              {fmtNum(dailyTotals[dow])}
+                            </button>
+                          ) : (
+                            <span className="text-slate-300">—</span>
+                          )}
                         </td>
                       ))}
                       <td className="py-2 pr-3 text-right tabular-nums">
@@ -590,10 +679,11 @@ const StoreFlow = () => {
                       </td>
                       <td className="py-2 pr-3 text-right">
                         <PacingBadge
-                          transferred={filtered.reduce((a, r) => a + r.units_transferred, 0)}
+                          netTransferred={filtered.reduce((a, r) => a + netXfr(r), 0)}
                           prevWeekSold={filtered.reduce((a, r) => a + (r.prev_week_sold || 0), 0)}
                         />
                       </td>
+                      <td className="py-2 pr-3" />
                       <td className="py-2 pr-3 text-right tabular-nums">
                         {fmtNum(filtered.reduce((a, r) => a + r.current_stock, 0))}
                       </td>
@@ -739,6 +829,93 @@ const StoreFlow = () => {
             )}
           </div>
         </>
+      )}
+
+      {/* ── Daily transfer drill-down modal (portaled to body) ── */}
+      {drill && createPortal(
+        <div className="fixed inset-0 z-[1000] flex items-center justify-center p-4" data-testid="modal-day-transfers">
+          <div className="absolute inset-0 bg-slate-900/50" onClick={closeDrill} />
+          <div className="relative bg-white rounded-xl shadow-2xl w-full max-w-3xl max-h-[85vh] flex flex-col">
+            <div className="flex items-start justify-between gap-3 border-b border-slate-200 px-5 py-4">
+              <div>
+                <div className="text-base font-semibold text-slate-800">
+                  Transfers · {DOW_LABELS[drill.dow - 1]} · {drill.posLocation || "All stores"}
+                </div>
+                <div className="text-[12px] text-slate-500 mt-0.5">
+                  {DOW_LABELS[drill.dow - 1]}s within {dateFrom} → {dateTo}
+                  {drillData != null && <> · <span className="font-medium text-slate-700">{fmtNum(drillData.total_quantity || 0)} units</span></>}
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+                  onClick={exportDrillCsv}
+                  disabled={!drillData?.items?.length}
+                  data-testid="button-export-drill-csv"
+                >
+                  <DownloadSimple size={15} /> Export CSV
+                </button>
+                <button
+                  className="rounded-md p-1.5 text-slate-500 hover:bg-slate-100"
+                  onClick={closeDrill}
+                  data-testid="button-close-drill"
+                  aria-label="Close"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+            </div>
+            <div className="overflow-auto px-5 py-4">
+              {drillLoading ? (
+                <Loading label="Loading transfer details…" />
+              ) : drillError ? (
+                <ErrorBox message={drillError} />
+              ) : !drillData?.items?.length ? (
+                <Empty label="No transfer line items found for this day." />
+              ) : (
+                <table className="min-w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-xs uppercase tracking-wide text-slate-500 border-b border-slate-200">
+                      <th className="py-2 pr-3">Product Name</th>
+                      <th className="py-2 pr-3 whitespace-nowrap">Barcode</th>
+                      <th className="py-2 pr-3 whitespace-nowrap">SKU</th>
+                      <th className="py-2 pr-3">Size</th>
+                      <th className="py-2 pr-3">Category</th>
+                      <th className="py-2 pr-3">Sub-category</th>
+                      {!drill.posLocation && <th className="py-2 pr-3 whitespace-nowrap">Store</th>}
+                      <th className="py-2 pr-3 whitespace-nowrap">Date</th>
+                      <th className="py-2 pr-0 text-right">Qty</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {drillData.items.map((it, i) => (
+                      <tr key={i} className="border-b border-slate-100 hover:bg-slate-50">
+                        <td className="py-1.5 pr-3 text-slate-700">{it.product_name || "—"}</td>
+                        <td className="py-1.5 pr-3 text-slate-600 tabular-nums whitespace-nowrap">{it.barcode || "—"}</td>
+                        <td className="py-1.5 pr-3 text-slate-600 whitespace-nowrap">{it.sku || "—"}</td>
+                        <td className="py-1.5 pr-3 text-slate-600">{it.size || "—"}</td>
+                        <td className="py-1.5 pr-3 text-slate-600">{it.category || "—"}</td>
+                        <td className="py-1.5 pr-3 text-slate-600">{it.sub_category || "—"}</td>
+                        {!drill.posLocation && <td className="py-1.5 pr-3 text-slate-600 whitespace-nowrap">{it.pos_location}</td>}
+                        <td className="py-1.5 pr-3 text-slate-600 whitespace-nowrap">{it.transfer_date}</td>
+                        <td className="py-1.5 pr-0 text-right tabular-nums font-medium">{fmtNum(it.quantity)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr className="border-t border-slate-300 font-semibold text-slate-800">
+                      <td className="py-2 pr-3" colSpan={drill.posLocation ? 7 : 8}>Total</td>
+                      <td className="py-2 pr-0 text-right tabular-nums" data-testid="text-drill-total">
+                        {fmtNum(drillData.total_quantity || 0)}
+                      </td>
+                    </tr>
+                  </tfoot>
+                </table>
+              )}
+            </div>
+          </div>
+        </div>,
+        document.body
       )}
     </div>
   );
