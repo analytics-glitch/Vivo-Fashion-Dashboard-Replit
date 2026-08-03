@@ -36777,7 +36777,18 @@ def store_profile_kpi_trend(store: str = Query(...)):
     vat = "(CASE WHEN s.country IN ('Uganda','Rwanda') THEN 1.18 ELSE 1.16 END)"
 
     # ── Sales KPIs per month ──────────────────────────────────────────────────
+    # New/Returning must come from first-EVER purchase (canonical rollup), NOT
+    # stored customer_type: incremental Odoo sync writes 'registered' and rows
+    # only get reclassified to new/returning on full rebuilds, so recent months
+    # would always read 0% new.
+    _fp_cte_sp = (
+        "first_purchase AS (SELECT customer_id, first_purchase_date"
+        " FROM rollup_customer_first_purchase)"
+        if _rollup_fresh("customer_first_purchase")
+        else _unified_first_purchase_ctes()
+    )
     sales_rows = run_query(f"""
+        WITH {_fp_cte_sp}
         SELECT date_trunc('month', s.sale_date::date)::date AS month,
           SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) AS units,
           ROUND(SUM(
@@ -36791,14 +36802,23 @@ def store_profile_kpi_trend(store: str = Query(...)):
           ROUND(SUM(COALESCE(s.gross_sales_kes::numeric,0)) FILTER (WHERE s.sale_kind IN ('sale','order')), 0) AS gross_revenue,
           COUNT(DISTINCT s.order_id) FILTER (WHERE s.sale_kind IN ('sale','order')) AS transactions,
           COALESCE(SUM(COALESCE(s.returned_item_quantity,0)) FILTER (WHERE s.sale_kind IN ('sale','order')), 0) AS returned_qty,
-          COUNT(DISTINCT CASE WHEN LOWER(COALESCE(s.customer_type,'')) = 'new'
+          COUNT(DISTINCT CASE WHEN s.customer_id IS NOT NULL
+                               AND s.customer_id NOT IN ('None','null','')
+                               AND (fp.first_purchase_date IS NULL
+                                    OR date_trunc('month', fp.first_purchase_date)
+                                       = date_trunc('month', s.sale_date::date))
                               THEN s.customer_id END) AS new_customers,
-          COUNT(DISTINCT CASE WHEN LOWER(COALESCE(s.customer_type,'')) IN ('returning','registered')
+          COUNT(DISTINCT CASE WHEN s.customer_id IS NOT NULL
+                               AND s.customer_id NOT IN ('None','null','')
+                               AND fp.first_purchase_date IS NOT NULL
+                               AND date_trunc('month', fp.first_purchase_date)
+                                   < date_trunc('month', s.sale_date::date)
                               THEN s.customer_id END) AS returning_customers,
           COUNT(DISTINCT CASE WHEN s.customer_id IS NOT NULL
                                AND s.customer_id NOT IN ('None','null','')
                               THEN s.customer_id END) AS total_customers
         FROM all_sales s
+        LEFT JOIN first_purchase fp ON fp.customer_id = s.customer_id
         WHERE s.sale_date::date >= '{window_start}'
           AND s.sale_date::date <= '{window_end}'
           AND s.pos_location_name = '{store_s}'
@@ -37056,8 +37076,17 @@ def store_profile_targets(store: str = Query(...)):
     )
     tgt = float(tgt_rows[0]["tgt"]) if tgt_rows else None
 
-    # MTD actuals
+    # MTD actuals. New/Returning come from first-EVER purchase (canonical
+    # rollup) — stored customer_type reads 'registered' on current-month rows
+    # until a full rebuild, which would make new% always 0 MTD.
+    _fp_cte_sa = (
+        "first_purchase AS (SELECT customer_id, first_purchase_date"
+        " FROM rollup_customer_first_purchase)"
+        if _rollup_fresh("customer_first_purchase")
+        else _unified_first_purchase_ctes()
+    )
     kpi_rows = run_query(f"""
+        WITH {_fp_cte_sa}
         SELECT
           SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) AS units,
           ROUND(SUM(
@@ -37074,14 +37103,23 @@ def store_profile_targets(store: str = Query(...)):
                 FILTER (WHERE s.sale_kind IN ('sale','order')), 0) AS total_discounts,
           ROUND(SUM(COALESCE(s.gross_sales_kes::numeric,0))
                 FILTER (WHERE s.sale_kind IN ('sale','order')), 0) AS gross_revenue,
-          COUNT(DISTINCT CASE WHEN LOWER(COALESCE(s.customer_type,'')) = 'new'
+          COUNT(DISTINCT CASE WHEN s.customer_id IS NOT NULL
+                               AND s.customer_id NOT IN ('None','null','')
+                               AND (fp.first_purchase_date IS NULL
+                                    OR date_trunc('month', fp.first_purchase_date)
+                                       = date_trunc('month', s.sale_date::date))
                               THEN s.customer_id END) AS new_customers,
-          COUNT(DISTINCT CASE WHEN LOWER(COALESCE(s.customer_type,'')) IN ('returning','registered')
+          COUNT(DISTINCT CASE WHEN s.customer_id IS NOT NULL
+                               AND s.customer_id NOT IN ('None','null','')
+                               AND fp.first_purchase_date IS NOT NULL
+                               AND date_trunc('month', fp.first_purchase_date)
+                                   < date_trunc('month', s.sale_date::date)
                               THEN s.customer_id END) AS returning_customers,
           COUNT(DISTINCT CASE WHEN s.customer_id IS NOT NULL
                                AND s.customer_id NOT IN ('None','null','')
                               THEN s.customer_id END) AS total_customers
         FROM all_sales s
+        LEFT JOIN first_purchase fp ON fp.customer_id = s.customer_id
         WHERE s.sale_date::date >= '{mstart}'
           AND s.sale_date::date <= '{today}'
           AND s.pos_location_name = '{store_s}'
@@ -37224,7 +37262,16 @@ def store_profile_performance_report(store: str = Query(...)):
     target_revenue = float(tgt_rows[0]["tgt"]) if tgt_rows else None
 
     # ── Sales data: MTD + prior year same month + 6m trailing ─────────────────
+    # New/Returning from first-EVER purchase (canonical rollup), not stored
+    # customer_type (current-month rows read 'registered' until full rebuild).
+    _fp_cte_pr = (
+        "first_purchase AS (SELECT customer_id, first_purchase_date"
+        " FROM rollup_customer_first_purchase)"
+        if _rollup_fresh("customer_first_purchase")
+        else _unified_first_purchase_ctes()
+    )
     sales_rows = run_query(f"""
+        WITH {_fp_cte_pr}
         SELECT
             CASE
                 WHEN s.sale_date::date >= '{cur_mstart}' THEN 'mtd'
@@ -37248,15 +37295,23 @@ def store_profile_performance_report(store: str = Query(...)):
                   FILTER (WHERE s.sale_kind IN ('sale','order')), 0)               AS gross_revenue,
             COALESCE(SUM(COALESCE(s.returned_item_quantity,0))
                      FILTER (WHERE s.sale_kind IN ('sale','order')), 0)            AS returned_qty,
-            COUNT(DISTINCT CASE WHEN LOWER(COALESCE(s.customer_type,'')) = 'new'
+            COUNT(DISTINCT CASE WHEN s.customer_id IS NOT NULL
+                                 AND s.customer_id NOT IN ('None','null','')
+                                 AND (fp.first_purchase_date IS NULL
+                                      OR date_trunc('month', fp.first_purchase_date)
+                                         = date_trunc('month', s.sale_date::date))
                                 THEN s.customer_id END)                            AS new_customers,
-            COUNT(DISTINCT CASE WHEN LOWER(COALESCE(s.customer_type,'')) IN
-                                     ('returning','registered')
+            COUNT(DISTINCT CASE WHEN s.customer_id IS NOT NULL
+                                 AND s.customer_id NOT IN ('None','null','')
+                                 AND fp.first_purchase_date IS NOT NULL
+                                 AND date_trunc('month', fp.first_purchase_date)
+                                     < date_trunc('month', s.sale_date::date)
                                 THEN s.customer_id END)                            AS returning_customers,
             COUNT(DISTINCT CASE WHEN s.customer_id IS NOT NULL
                                  AND s.customer_id NOT IN ('None','null','')
                                 THEN s.customer_id END)                            AS total_customers
         FROM all_sales s
+        LEFT JOIN first_purchase fp ON fp.customer_id = s.customer_id
         WHERE (
               (s.sale_date::date >= '{cur_mstart}' AND s.sale_date::date <= '{today}')
            OR (s.sale_date::date >= '{py_mstart}'  AND s.sale_date::date <= '{py_mend}')
@@ -37647,6 +37702,101 @@ def store_profile_performance_report(store: str = Query(...)):
             "status":      _status(proj_att_status_val),
         })
 
+    # ── Priority drivers: rank levers by KES impact of closing each gap ───────
+    # Each lever = "what full-month revenue do we recover if this ONE metric
+    # returns to baseline, holding the others at their projected level".
+    # Overlap is intentional (ASP is a component of ABV etc.) — the ranking is
+    # about where attention pays most, and `linked` names the interlocks.
+    def _f(d, k):
+        v = d.get(k) if d else None
+        return float(v) if v is not None else None
+
+    p_ff, p_conv = _f(proj, "footfall"), _f(proj, "conversion")
+    p_abv, p_asp = _f(proj, "abv"), _f(proj, "asp")
+    p_txn, p_un  = _f(proj, "transactions"), _f(proj, "units")
+    p_disc, p_rr = _f(proj, "discount_rate"), _f(proj, "return_rate")
+    e_ff2, e_conv2 = _f(expected, "footfall"), _f(expected, "conversion")
+    e_abv2, e_asp2 = _f(expected, "abv"), _f(expected, "asp")
+    e_disc2, e_rr2 = _f(expected, "discount_rate"), _f(expected, "return_rate")
+
+    priority_drivers = []
+
+    def _driver(key, impact, gap_text, linked, lever, note):
+        priority_drivers.append({
+            "key": key, "label": KPI_LABELS.get(key, key),
+            "kes_impact": round(impact) if impact is not None else None,
+            "pct_of_gap": (round(impact * 100.0 / rev_gap, 0)
+                           if (impact is not None and rev_gap and rev_gap > 0) else None),
+            "gap_text": gap_text, "linked": linked, "lever": lever, "note": note,
+        })
+
+    # Explicit None checks (not truthy `or`): a projected 0.0 is a VALID value
+    # and must not silently fall back to baseline, or impacts get overstated.
+    abv_ref = p_abv if p_abv is not None else e_abv2
+    if p_conv is not None and e_conv2 and p_conv < e_conv2 and p_ff and abv_ref:
+        extra_txn = p_ff * (e_conv2 - p_conv) / 100.0
+        _driver("conversion", extra_txn * abv_ref,
+                f"{p_conv:.1f}% vs baseline {e_conv2:.1f}%",
+                ["footfall", "transactions", "abv"], "traffic→sales",
+                "Every extra 1pp converts existing footfall into transactions — the cheapest revenue since visitors are already in store.")
+    if p_ff is not None and e_ff2 and p_ff < e_ff2 and abv_ref:
+        conv_ref = p_conv if p_conv is not None else (e_conv2 or 0)
+        _driver("footfall", (e_ff2 - p_ff) * conv_ref / 100.0 * abv_ref,
+                f"{int(p_ff):,} vs baseline {int(e_ff2):,}",
+                ["conversion", "transactions"], "traffic",
+                "More visitors only pay off at current conversion — pair traffic drives with floor readiness.")
+    if p_abv is not None and e_abv2 and p_abv < e_abv2 and p_txn:
+        _driver("abv", (e_abv2 - p_abv) * p_txn,
+                f"KES {p_abv:,.0f} vs baseline KES {e_abv2:,.0f}",
+                ["asp", "transactions"], "basket",
+                "Basket = price (ASP) × items per basket. Lifting either lifts ABV without needing more visitors.")
+    if p_asp is not None and e_asp2 and p_asp < e_asp2 and p_un:
+        _driver("asp", (e_asp2 - p_asp) * p_un,
+                f"KES {p_asp:,.0f} vs baseline KES {e_asp2:,.0f}",
+                ["abv", "discount_rate"], "price/mix",
+                "ASP moves with discounting depth and category mix; it feeds directly into ABV.")
+    if p_disc is not None and e_disc2 is not None and p_disc > e_disc2 and p_disc < 100:
+        gross_proj = (proj.get("revenue") or 0) / (1 - p_disc / 100.0)
+        _driver("discount_rate", gross_proj * (p_disc - e_disc2) / 100.0,
+                f"{p_disc:.1f}% vs baseline {e_disc2:.1f}%",
+                ["asp", "abv"], "margin guardrail",
+                "Excess markdown suppresses ASP/ABV — recovered revenue here needs no extra volume.")
+    asp_ref = p_asp if p_asp is not None else e_asp2
+    if p_rr is not None and e_rr2 is not None and p_rr > e_rr2 and p_un and asp_ref:
+        _driver("return_rate", (p_rr - e_rr2) / 100.0 * p_un * asp_ref,
+                f"{p_rr:.1f}% vs baseline {e_rr2:.1f}%",
+                ["units", "revenue"], "quality guardrail",
+                "Every avoided return keeps already-earned revenue; check fit/quality on top-returned styles.")
+    p_new = _f(proj, "new_customer_pct")
+    e_new2 = _f(expected, "new_customer_pct")
+    if p_new is not None and e_new2 and p_new < e_new2 * 0.9:
+        _driver("new_customer_pct", None,
+                f"{p_new:.1f}% vs baseline {e_new2:.1f}%",
+                ["footfall", "customer_count"], "pipeline",
+                "New customers are next month's returning base — a weak share here shows up later as falling footfall.")
+
+    priority_drivers.sort(key=lambda d: (d["kes_impact"] is None, -(d["kes_impact"] or 0)))
+    for i, d in enumerate(priority_drivers):
+        d["rank"] = i + 1
+
+    # Causal interlink map for the frontend driver-chain visual
+    driver_links = [
+        {"from": "footfall",        "to": "transactions", "via": "conversion",
+         "note": "Transactions = Footfall × Conversion"},
+        {"from": "conversion",      "to": "transactions", "via": None,
+         "note": "Each +1pp conversion adds transactions from the same traffic"},
+        {"from": "asp",             "to": "abv",          "via": None,
+         "note": "ABV = ASP × items per basket"},
+        {"from": "discount_rate",   "to": "asp",          "via": None,
+         "note": "Deeper markdowns pull ASP down"},
+        {"from": "transactions",    "to": "revenue",      "via": "abv",
+         "note": "Revenue = Transactions × ABV"},
+        {"from": "return_rate",     "to": "revenue",      "via": None,
+         "note": "Returns subtract from net revenue"},
+        {"from": "new_customer_pct","to": "footfall",     "via": "returning_customer_pct",
+         "note": "Today's new customers become the returning traffic of coming months"},
+    ]
+
     out = {
         "store": store,
         "month": str(cur_mstart),
@@ -37673,6 +37823,8 @@ def store_profile_performance_report(store: str = Query(...)):
         "target_basis":    target_basis,
         "kpi_rows":      kpi_rows_out,
         "actions":       actions,
+        "priority_drivers": priority_drivers,
+        "driver_links":     driver_links,
     }
     cache_set(ck, out, ttl=600)
     return out

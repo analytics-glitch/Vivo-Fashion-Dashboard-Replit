@@ -122,6 +122,138 @@ function healthOf(projected, baseline, lowerBetter) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
+// 0 · PRIORITY FOCUS — impact-ranked levers + metric interlinks
+// ══════════════════════════════════════════════════════════════════════════════
+const LEVER_C = {
+  "traffic→sales":     C.blue,
+  "traffic":           C.blue,
+  "basket":            C.ok,
+  "price/mix":         C.ok,
+  "margin guardrail":  C.warn,
+  "quality guardrail": C.warn,
+  "pipeline":          C.muted,
+};
+
+function PriorityFocus({ rpt }) {
+  const drivers = rpt?.priority_drivers || [];
+  if (!drivers.length) {
+    return (
+      <div style={{ padding: "14px 18px", background: C.good.bg, border: `1px solid ${C.good.bdr}`, borderRadius: 10, fontSize: 14, color: C.good.fg }}>
+        ✅ No metric is projecting below its baseline — hold the current playbook and defend conversion & basket.
+      </div>
+    );
+  }
+  const maxImpact = Math.max(...drivers.map(d => d.kes_impact || 0), 1);
+  return (
+    <div style={{ display: "grid", gap: 10 }}>
+      {drivers.map(d => {
+        const lc = LEVER_C[d.lever] || C.muted;
+        const top = d.rank === 1;
+        return (
+          <div key={d.key} style={{ display: "flex", gap: 14, alignItems: "flex-start", background: "#fff", border: `1px solid ${top ? "#fca5a5" : "#e5e7eb"}`, borderLeft: `5px solid ${top ? C.bad.fg : lc.fg}`, borderRadius: 10, padding: "14px 16px" }}>
+            <div style={{ width: 34, height: 34, borderRadius: "50%", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 900, fontSize: 15, background: top ? C.bad.bg : "#f3f4f6", color: top ? C.bad.fg : "#374151", border: `1px solid ${top ? C.bad.bdr : "#e5e7eb"}` }}>{d.rank}</div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <span style={{ fontSize: 15, fontWeight: 800, color: "#111827" }}>{d.label}</span>
+                <Pill c={lc}>{d.lever}</Pill>
+                <span style={{ fontSize: 12.5, color: "#6b7280" }}>{d.gap_text}</span>
+              </div>
+              <div style={{ fontSize: 13, color: "#4b5563", marginTop: 4 }}>{d.note}</div>
+              {d.linked?.length > 0 && (
+                <div style={{ fontSize: 11.5, color: "#6b7280", marginTop: 6 }}>
+                  🔗 Moves with: {d.linked.map(k => KPI_META.find(m => m.key === k)?.label || k).join(" · ")}
+                </div>
+              )}
+            </div>
+            <div style={{ textAlign: "right", minWidth: 150, flexShrink: 0 }}>
+              {d.kes_impact != null ? (
+                <>
+                  <div style={{ fontSize: 17, fontWeight: 900, color: top ? C.bad.fg : "#111827" }}>+{fmtKES(d.kes_impact)}</div>
+                  <div style={{ fontSize: 11, color: "#6b7280" }}>if back to baseline{d.pct_of_gap != null ? ` · ~${d.pct_of_gap}% of gap` : ""}</div>
+                  <div style={{ marginTop: 6, width: 140, marginLeft: "auto" }}>
+                    <Bar value={d.kes_impact} max={maxImpact} color={top ? C.bad.fg : lc.fg} h={6} />
+                  </div>
+                </>
+              ) : (
+                <div style={{ fontSize: 12, color: "#6b7280", fontStyle: "italic" }}>Future-month impact</div>
+              )}
+            </div>
+          </div>
+        );
+      })}
+      <div style={{ fontSize: 11.5, color: "#9ca3af" }}>
+        Impact = extra full-month revenue if that one metric returns to baseline while the others stay at their projected level. Levers overlap (e.g. ASP feeds ABV) — treat the ranking as where attention pays most, not additive amounts.
+      </div>
+    </div>
+  );
+}
+
+// Driver interlink chain: how one metric leads to a change in the other
+function DriverChain({ rpt }) {
+  const statusByKey = useMemo(() => {
+    const m = {};
+    (rpt?.kpi_rows || []).forEach(r => { m[r.key] = r; });
+    return m;
+  }, [rpt]);
+  const projected = rpt?.projected_eom || {};
+  const expected  = rpt?.expected || {};
+
+  const Node = ({ k, label, sub }) => {
+    const meta = KPI_META.find(m => m.key === k);
+    const h = healthOf(projected?.[k], expected?.[k], meta?.lowerBetter);
+    const col = h?.c || C.muted;
+    return (
+      <div style={{ background: col.bg, border: `1.5px solid ${col.bdr}`, borderRadius: 10, padding: "10px 14px", textAlign: "center", minWidth: 108 }}>
+        <div style={{ fontSize: 12.5, fontWeight: 800, color: "#111827" }}>{label}</div>
+        <div style={{ fontSize: 14, fontWeight: 900, color: col.fg, marginTop: 2 }}>{fmt(meta?.f === "kes_c" ? "kes_c" : meta?.f, projected?.[k])}</div>
+        {sub && <div style={{ fontSize: 10, color: "#6b7280", marginTop: 2 }}>{sub}</div>}
+        {h && <div style={{ fontSize: 10, fontWeight: 700, color: col.fg, marginTop: 2 }}>{h.label}{h.delta != null ? ` ${h.delta > 0 ? "▲" : "▼"}${Math.abs(h.delta).toFixed(0)}%` : ""}</div>}
+      </div>
+    );
+  };
+  const Op = ({ children }) => (
+    <div style={{ fontSize: 16, fontWeight: 900, color: "#9ca3af", padding: "0 2px", alignSelf: "center" }}>{children}</div>
+  );
+
+  return (
+    <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, padding: "18px 20px" }}>
+      {/* Main revenue equation */}
+      <div style={{ display: "flex", gap: 8, alignItems: "stretch", flexWrap: "wrap", justifyContent: "center" }}>
+        <Node k="footfall" label="Footfall" sub="visitors in" />
+        <Op>×</Op>
+        <Node k="conversion" label="Conversion" sub="visitors → buyers" />
+        <Op>=</Op>
+        <Node k="transactions" label="Transactions" sub="baskets sold" />
+        <Op>×</Op>
+        <Node k="abv" label="ABV" sub="value per basket" />
+        <Op>=</Op>
+        <Node k="revenue" label="Revenue" sub="net, projected" />
+      </div>
+      {/* Feeder relationships */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 10, marginTop: 16 }}>
+        {[
+          { kids: [["asp", "ASP"]], arrow: "→ ABV", note: "ABV = ASP × items per basket. Higher price per item lifts every basket." },
+          { kids: [["discount_rate", "Discount Rate"]], arrow: "↓ ASP", note: "Deeper markdowns pull ASP (and so ABV) down — margin guardrail." },
+          { kids: [["return_rate", "Return Rate"]], arrow: "↓ Revenue", note: "Returns subtract straight from net revenue after the sale." },
+          { kids: [["new_customer_pct", "% New Cust."]], arrow: "→ future Footfall", note: "Today's new customers become the returning traffic of coming months." },
+        ].map(({ kids, arrow, note }, i) => (
+          <div key={i} style={{ display: "flex", gap: 10, alignItems: "center", background: "#f9fafb", border: "1px solid #e5e7eb", borderRadius: 10, padding: "10px 12px" }}>
+            {kids.map(([k, label]) => <Node key={k} k={k} label={label} />)}
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 12, fontWeight: 800, color: "#374151" }}>{arrow}</div>
+              <div style={{ fontSize: 11.5, color: "#6b7280", marginTop: 2 }}>{note}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+      <div style={{ fontSize: 11.5, color: "#9ca3af", marginTop: 12 }}>
+        Node colour = projected month vs baseline (green strong · teal steady · amber watch · red issue). Fixing an upstream metric (left) flows into every metric to its right.
+      </div>
+    </div>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 // 1 · STORE HEALTH CHECK — issue radar
 // ══════════════════════════════════════════════════════════════════════════════
 function HealthCheck({ rpt }) {
@@ -623,6 +755,18 @@ export default function StoreProfiling() {
 
           {/* 1 · Health Check — where the issues are */}
           {rpt && <HealthCheck rpt={rpt} />}
+
+          {/* 1b · Priority Focus — impact-ranked levers to hit target */}
+          {rpt && (
+            <>
+              <SectionTitle icon="🎯" title="Priority Focus"
+                subtitle="Ranked by revenue impact — fix the top item first, it recovers the most of the gap to target" />
+              <PriorityFocus rpt={rpt} />
+              <SectionTitle icon="🔗" title="How the Metrics Interlink"
+                subtitle="One metric leads to a change in the next — the revenue equation this store runs on" />
+              <DriverChain rpt={rpt} />
+            </>
+          )}
 
           {/* 2 · August Target Tracker */}
           {rpt && (

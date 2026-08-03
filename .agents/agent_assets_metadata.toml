@@ -97,3 +97,10 @@ uri = "file://.local/exports/customer-data-architecture.html"
 type = "unspecified"
 title = "Customer Data Architecture"
 description = "Full visual reference — where customer data lives, how it flows, and key constraints. Open in browser then Ctrl+P → Save as PDF."
+
+[[outputs]]
+id = "Ml1FoNDaOvuMl-gpROt69"
+uri = "file://attached_assets/replenishment_report_junction_sarit_2026-08-03.xlsx"
+type = "table"
+title = "Replenishment Report — Junction & Sarit, 3 Aug 2026"
+description = "Sales by SKU + SOH & recommended daily replenishment with reasons for non-recommended lines."
