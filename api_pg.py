@@ -826,9 +826,29 @@ def _admin_bootstrap_emails():
 
 
 def _users_exec(query, params=None, fetch=False):
-    """Run a parameterised write/read against the user store (never cached)."""
+    """Run a parameterised write/read against the user store (never cached).
+
+    Falls back to a direct (non-pooled) connection when the pool is exhausted.
+    This prevents deferred-startup DDL steps (CREATE TABLE IF NOT EXISTS, ALTER
+    TABLE ADD COLUMN IF NOT EXISTS) from failing with 503 during the cold-start
+    window when slow queries are holding all pool connections.  Direct fallback
+    connections are short-lived (autocommit DDL) so the extra connection is
+    closed immediately after use.
+    """
     pool = _get_pool()
-    conn = pool.getconn()
+    _direct_fallback = False
+    try:
+        conn = pool.getconn()
+    except _pg_pool.PoolError:
+        # Pool exhausted — open a direct connection for this one call.
+        # This is intentionally best-effort: if the DB itself is unreachable
+        # the exception propagates to the caller (same as normal pool failure).
+        conn = psycopg2.connect(
+            os.environ['DATABASE_URL'],
+            options='-c standard_conforming_strings=on')
+        _direct_fallback = True
+        log.debug("_users_exec: pool exhausted, using direct connection for: %s",
+                  query.split()[0])
     try:
         conn.autocommit = True
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -840,10 +860,19 @@ def _users_exec(query, params=None, fetch=False):
         rows = [dict(r) for r in cur.fetchall()] if fetch else None
         cur.close()
     except Exception:
-        pool.putconn(conn, close=True)
+        if _direct_fallback:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        else:
+            pool.putconn(conn, close=True)
         raise
     else:
-        pool.putconn(conn)
+        if _direct_fallback:
+            conn.close()
+        else:
+            pool.putconn(conn)
     return rows
 
 
@@ -2105,11 +2134,15 @@ def _cap_threadpool():
     # starvation on request bursts.  This fires inside each forked worker
     # process (FastAPI startup events run post-fork), so every worker is capped
     # independently.
+    cap = MAX_DB_CONNECTIONS + 2
+    log.info("Capping thread-pool workers to %d (MAX_DB_CONNECTIONS=%d, pid=%d)",
+             cap, MAX_DB_CONNECTIONS, os.getpid())
     try:
         import anyio
-        anyio.to_thread.current_default_thread_limiter().total_tokens = MAX_DB_CONNECTIONS + 2
-    except Exception:
-        pass
+        anyio.to_thread.current_default_thread_limiter().total_tokens = cap
+    except Exception as e:
+        log.warning("_cap_threadpool: anyio limiter not available (%s); "
+                    "thread-pool remains at default", e)
 
 
 @app.on_event("startup")
