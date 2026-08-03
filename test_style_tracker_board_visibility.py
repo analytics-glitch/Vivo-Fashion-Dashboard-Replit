@@ -279,5 +279,169 @@ class TestStyleTrackerBoardWeekVisibility(unittest.TestCase):
         self.assertEqual(w26["total_units"],     200)
 
 
+# ---------------------------------------------------------------------------
+# Fallback path — all_products_clean rebuild / TRUNCATE in progress
+# ---------------------------------------------------------------------------
+
+class _FakeUsersDBWithFallback:
+    """Fake ``_users_exec`` that raises when the style_number CTE query
+    references ``all_products_clean`` (simulating a TRUNCATE/rebuild in
+    progress), then succeeds for the plain fallback query and all subsequent
+    queries (notes, finishing options).
+    """
+
+    def __init__(self, styles_rows, notes_rows=None, finishing_rows=None):
+        self._styles = styles_rows
+        self._notes = notes_rows or []
+        self._finishing = finishing_rows or [
+            {"id": 1, "label": "Cutting",   "sort_order": 1},
+            {"id": 2, "label": "Sewing",    "sort_order": 2},
+            {"id": 3, "label": "Finishing", "sort_order": 3},
+            {"id": 4, "label": "Warehouse", "sort_order": 4},
+        ]
+
+    def exec(self, query, params=None, fetch=False):
+        q = query.strip().lower()
+        if "all_products_clean" in q:
+            # Simulate the table being momentarily unavailable (active TRUNCATE)
+            raise Exception('relation "all_products_clean" does not exist')
+        if (
+            "style_tracker_styles" in q
+            and "style_tracker_notes" not in q
+            and "style_tracker_finishing" not in q
+        ):
+            # Fallback query: returns rows WITHOUT a style_number key in the
+            # dict (the NULL::text cast would add it in a real DB but our fake
+            # returns the raw _style() dicts which lack that key — exactly the
+            # scenario _st_row_out.setdefault must handle).
+            return copy.deepcopy(self._styles)
+        if "style_tracker_notes" in q:
+            return copy.deepcopy(self._notes)
+        if "style_tracker_finishing_options" in q:
+            return copy.deepcopy(self._finishing)
+        return None
+
+
+def _run_board_fallback(today_date, styles_rows):
+    """Like ``_run_board`` but uses the fallback-triggering fake DB."""
+    db = _FakeUsersDBWithFallback(styles_rows)
+    with (
+        mock.patch.object(api_pg, "_users_exec", side_effect=db.exec),
+        mock.patch.object(api_pg, "_ensure_style_tracker_tables", return_value=None),
+        mock.patch.object(api_pg, "_st_today_eat", return_value=today_date),
+    ):
+        return api_pg.style_tracker_board()
+
+
+class TestStyleTrackerBoardFallback(unittest.TestCase):
+    """The board must stay up and return rows (style_number=None) when the
+    CTE that joins all_products_clean raises — e.g. while a rebuild TRUNCATE
+    is in progress — without surfacing a 500.
+    """
+
+    def setUp(self):
+        """Fix today to the same Monday used by the visibility test suite."""
+        self.today = date(2026, 7, 20)  # ISO week 29
+
+    # ------------------------------------------------------------------
+    # Core: board does not raise when all_products_clean is unavailable
+    # ------------------------------------------------------------------
+
+    def test_board_does_not_raise_when_cte_fails(self):
+        """style_tracker_board() must not propagate the exception raised by
+        the style_number CTE — the endpoint outer try/except re-raises, so
+        the real guard is the inner fallback block.  This test exercises that
+        block directly via _style_tracker_board_inner (via style_tracker_board)
+        and asserts no exception escapes to the caller.
+        """
+        styles = [_style(1, "Dress A", 2026, 29, completed=False)]
+        # If the fallback is broken this will propagate the fake exception.
+        board = _run_board_fallback(self.today, styles)
+        self.assertIn("weeks", board)
+
+    def test_fallback_returns_expected_row_count(self):
+        """All styles from the fallback query must appear in the board."""
+        styles = [
+            _style(1, "Dress A", 2026, 29, completed=False),
+            _style(2, "Top B",   2026, 30, completed=False),
+        ]
+        board = _run_board_fallback(self.today, styles)
+        all_styles = [s for w in board["weeks"] for s in w["styles"]]
+        self.assertEqual(len(all_styles), 2)
+
+    # ------------------------------------------------------------------
+    # style_number=None contract (required by _st_row_out.setdefault)
+    # ------------------------------------------------------------------
+
+    def test_fallback_rows_have_style_number_none(self):
+        """Rows returned via the fallback path must carry style_number=None,
+        not raise a KeyError inside _st_row_out.
+        """
+        styles = [_style(1, "Top A", 2026, 29, completed=False)]
+        board = _run_board_fallback(self.today, styles)
+        all_styles = [s for w in board["weeks"] for s in w["styles"]]
+        self.assertEqual(len(all_styles), 1)
+        self.assertIn("style_number", all_styles[0],
+                      "_st_row_out must inject style_number key")
+        self.assertIsNone(all_styles[0]["style_number"])
+
+    def test_fallback_rows_pass_through_st_row_out_without_key_error(self):
+        """_st_row_out must not raise KeyError for any field on fallback rows.
+
+        All mandatory keys (style_number, notes) must be present in every
+        output row regardless of whether they existed in the DB dict.
+        """
+        styles = [
+            _style(1, "Blouse X", 2026, 29, completed=False),
+            _style(2, "Skirt Y",  2026, 30, completed=True),
+        ]
+        board = _run_board_fallback(self.today, styles)
+        for week in board["weeks"]:
+            for s in week["styles"]:
+                self.assertIn("style_number", s,
+                              "style_number key must always be present")
+                self.assertIn("notes", s,
+                              "notes key must always be present")
+
+    # ------------------------------------------------------------------
+    # Board structure is intact after fallback
+    # ------------------------------------------------------------------
+
+    def test_fallback_preserves_overdue_week(self):
+        """Overdue logic must work correctly even when the fallback path is taken."""
+        styles = [
+            _style(1, "Old Style", 2026, 25, completed=False),  # overdue
+            _style(2, "Cur Style", 2026, 29, completed=False),  # current week
+        ]
+        board = _run_board_fallback(self.today, styles)
+        week_keys = {(w["iso_year"], w["iso_week"]) for w in board["weeks"]}
+        self.assertIn((2026, 25), week_keys, "Overdue week must appear after fallback")
+        self.assertIn((2026, 29), week_keys, "Current week must appear after fallback")
+        w25 = next(w for w in board["weeks"] if w["iso_week"] == 25 and w["iso_year"] == 2026)
+        self.assertTrue(w25["overdue"])
+        self.assertEqual(w25["count"], 1)
+
+    def test_fallback_current_week_always_present(self):
+        """Current week must still appear even with no styles (fallback path)."""
+        board = _run_board_fallback(self.today, [])
+        cur = next((w for w in board["weeks"] if w["is_current"]), None)
+        self.assertIsNotNone(cur, "Current week must be present even with no styles")
+
+    def test_fallback_completed_counts_correct(self):
+        """Completed counts must be accurate in fallback rows."""
+        styles = [
+            _style(1, "Done",   2026, 29, completed=True,  quantity=60),
+            _style(2, "Undone", 2026, 29, completed=False, quantity=40),
+        ]
+        board = _run_board_fallback(self.today, styles)
+        w29 = next(
+            w for w in board["weeks"]
+            if w["iso_year"] == 2026 and w["iso_week"] == 29
+        )
+        self.assertEqual(w29["completed_count"],  1)
+        self.assertEqual(w29["completed_units"], 60)
+        self.assertEqual(w29["total_units"],     100)
+
+
 if __name__ == "__main__":
     unittest.main()
