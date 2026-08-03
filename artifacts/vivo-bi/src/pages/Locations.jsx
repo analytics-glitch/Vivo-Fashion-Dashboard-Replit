@@ -445,6 +445,18 @@ const Locations = () => {
     };
   }, [rawKpisPrev]);
 
+  const [activeTab, setActiveTab] = useState("overview");
+
+  const TABS = [
+    { id: "overview",  label: "Store Overview" },
+    { id: "heatmap",   label: "Heatmap" },
+    { id: "stocksales",label: "Stock vs Sales" },
+    { id: "basket",    label: "Basket Value" },
+    { id: "footfall",  label: "Footfall" },
+    { id: "attention", label: "Attention" },
+    { id: "targets",   label: "Targets" },
+  ];
+
   const compareLbl = compareMode === "yesterday" ? "vs Yesterday" : compareMode === "last_month" ? "vs Last Month" : compareMode === "last_year" ? "vs Last Year" : null;
   const d = (cur, prev) => (cur != null && prev != null) ? pctDelta(cur, prev) : null;
 
@@ -669,13 +681,31 @@ const Locations = () => {
             />
           </div>
 
+          {/* Tab bar — one pill per report section, same style as the Sort-by row */}
+          <div className="card-white p-3 flex items-center gap-2 flex-wrap" data-testid="locations-tab-bar">
+            {TABS.map(({ id, label }) => (
+              <button
+                key={id}
+                data-testid={`loc-tab-${id}`}
+                className={`px-2.5 py-1 rounded-lg text-[12px] font-medium ${
+                  activeTab === id
+                    ? "bg-brand text-white"
+                    : "hover:bg-panel text-foreground/70"
+                }`}
+                onClick={() => setActiveTab(id)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
           {/* Sort + leaderboard + grid — store cards sit DIRECTLY below the
               main KPI cards (per request). The at-a-glance quadrant + heatmap
               visuals now follow the grid. Kept visible behind the deep-dive
               slide-over so users can jump between stores without losing
               context (the drill pattern the audit asked for). */}
           <>
-              <div className="card-white p-3 flex items-center gap-2 flex-wrap">
+              {activeTab === "overview" && <><div className="card-white p-3 flex items-center gap-2 flex-wrap">
                 <ArrowsDownUp size={14} className="text-muted ml-1" />
                 <span className="text-[12px] text-muted">Sort by:</span>
                 {[
@@ -895,42 +925,25 @@ const Locations = () => {
                   );
                 })}
               </div>
+            </>}
 
               {/* At-a-glance visual (graduated from the canvas): a per-store
                   heatmap. Placed below the store cards so the cards sit directly
                   under the main KPI cards. */}
-              <StoreHeatmap stores={storeViz} network={vizNetwork} />
+              {activeTab === "heatmap" && <StoreHeatmap stores={storeViz} network={vizNetwork} />}
 
-              {/* Stock-to-Sales · by Subcategory — moved from the bottom
-                  of the page (iter 88b) so location-focused users see the
-                  merchandise-mix imbalance immediately below the store
-                  cards. This card runs its OWN date filter (independent of
-                  the page-wide one at the top) and defaults to the last
-                  30 days. */}
-              <StockToSalesBySubcategory
-                testIdPrefix="locations-sts-subcat"
-                exportNameFlat="locations-stock-to-sales-by-subcategory.csv"
-                exportNameGrouped="locations-stock-to-sales-by-subcategory-grouped.csv"
-                useOwnDates
-                defaultLookbackDays={30}
-              />
+              {/* Stock-to-Sales · by Subcategory */}
+              {activeTab === "stocksales" && (
+                <StockToSalesBySubcategory
+                  testIdPrefix="locations-sts-subcat"
+                  exportNameFlat="locations-stock-to-sales-by-subcategory.csv"
+                  exportNameGrouped="locations-stock-to-sales-by-subcategory-grouped.csv"
+                  useOwnDates
+                  defaultLookbackDays={30}
+                />
+              )}
 
-              {/* Detailed per-store tables — demoted into a collapsible
-                  drill-down now that the quadrant + heatmap above give the
-                  at-a-glance read. Open it for exact figures, sorting, deltas
-                  and the basket / conversion decomposition drawers. */}
-              <details className="card-white group" data-testid="locations-tables-details">
-                <summary className="flex items-center justify-between gap-3 cursor-pointer select-none px-5 py-4 list-none">
-                  <span className="flex items-center gap-2.5">
-                    <CaretRight size={14} weight="bold" className="text-muted transition-transform group-open:rotate-90" />
-                    <span className="font-semibold text-[14px] text-[#0f3d24]">Full store breakdown (tables)</span>
-                    <span className="text-[12px] text-muted hidden sm:inline">Average basket value &amp; Footfall / conversion — exact figures and drill-downs</span>
-                  </span>
-                  <span className="text-[11px] font-medium text-muted shrink-0">Click to expand</span>
-                </summary>
-                <div className="px-5 pb-5 space-y-6">
-
-              {(() => {
+              {activeTab === "basket" && (() => {
                 const compare = compareMode !== "none";
                 const lmTag = compareMode === "yesterday" ? "Yd" : compareMode === "last_month" ? "LM" : "LY";
                 // Explicit comparison periods for the subtitle, e.g.
@@ -1143,7 +1156,7 @@ const Locations = () => {
                 );
               })()}
 
-              {(() => {
+              {activeTab === "footfall" && (() => {
                 const compare = compareMode !== "none";
                 const activeSort = ffSort.sort || { key: "spv", dir: "desc" };
                 const sortLabels = {
@@ -1354,26 +1367,19 @@ const Locations = () => {
                 );
               })()}
 
-                </div>
-              </details>
+              {activeTab === "attention" && (
+                <LocationsAttentionPanel
+                  rows={enrichedWithDq}
+                  avgSales={avg}
+                  totalSalesAll={totalSalesAll}
+                  returnStats={returnStats}
+                  compareMode={compareMode}
+                />
+              )}
 
-              {/* "Locations needing attention" — surfaces stores that look
-                  off on at least one of: sales drop, conversion drop,
-                  return-rate spike, or weak share + below-avg sales. */}
-              <LocationsAttentionPanel
-                rows={enrichedWithDq}
-                avgSales={avg}
-                totalSalesAll={totalSalesAll}
-                returnStats={returnStats}
-                compareMode={compareMode}
-              />
-
-              {/* Monthly Sales Target Tracker — duplicate of the
-                  Targets-page block so store managers and exec users
-                  can see daily progress without leaving the locations
-                  view. The tracker is self-fetching off /analytics/
-                  monthly-targets so the date range is the current month. */}
-              <MonthlyTargetsTracker month={`${new Date(dateTo).toISOString().slice(0, 7)}-01`} />
+              {activeTab === "targets" && (
+                <MonthlyTargetsTracker month={`${new Date(dateTo).toISOString().slice(0, 7)}-01`} />
+              )}
             </>
 
           {/* Store deep-dive slide-over — the audit's "single biggest missed
