@@ -241,13 +241,15 @@ _CACHE_LOCK = threading.Lock()
 import contextlib
 from psycopg2 import pool as _pg_pool
 
-# Cap concurrent DB connections. The dashboard fires bursts of ~20+ parallel
-# requests (KPI sparkline windows + compare + bootstrap), so a fresh
-# connect()/close() per query used to exhaust Postgres connections and spike
-# latency until the platform health probe killed the server. A bounded pool
-# reuses connections; request concurrency is capped below MAX_DB_CONNECTIONS at
-# startup so getconn() can never overflow the pool.
-MAX_DB_CONNECTIONS = 20
+# Cap concurrent DB connections per worker.  With multiple uvicorn workers the
+# pool is created PER process (fork), so total Neon connections =
+# API_WORKERS × MAX_DB_CONNECTIONS.  We derive the per-worker cap from a
+# total connection budget so the product never exceeds the Neon ceiling.
+# Defaults: 4 workers × 8 = 32 total connections (well below typical Neon
+# free-tier limit of 100; keeps slack for the sync loop + rollup subprocess).
+_TOTAL_DB_BUDGET = int(os.environ.get("TOTAL_DB_CONNECTIONS", "32"))
+_API_WORKERS_N   = int(os.environ.get("API_WORKERS", "4"))
+MAX_DB_CONNECTIONS = max(4, _TOTAL_DB_BUDGET // _API_WORKERS_N)  # e.g. 32//4 = 8
 
 _POOL = None
 _POOL_LOCK = threading.Lock()
@@ -2051,12 +2053,16 @@ def _ensure_fabric_structure_columns():
 
 @app.on_event("startup")
 def _cap_threadpool():
-    # Sync endpoints run in Starlette's thread pool (default 40). Each can hold a
-    # pooled DB connection, so keep concurrency strictly below MAX_DB_CONNECTIONS
-    # to guarantee getconn() never overflows the pool under request bursts.
+    # Sync endpoints run in Starlette's thread pool (default 40 threads). Each
+    # thread can hold a pooled DB connection, so cap the pool to match the DB
+    # pool size per worker.  +2 gives a small buffer for non-DB work (auth
+    # lookups, health checks) while still preventing thread/connection
+    # starvation on request bursts.  This fires inside each forked worker
+    # process (FastAPI startup events run post-fork), so every worker is capped
+    # independently.
     try:
         import anyio
-        anyio.to_thread.current_default_thread_limiter().total_tokens = MAX_DB_CONNECTIONS - 2
+        anyio.to_thread.current_default_thread_limiter().total_tokens = MAX_DB_CONNECTIONS + 2
     except Exception:
         pass
 
@@ -33654,14 +33660,23 @@ def style_tracker_board():
     cur_y, cur_w, _ = today.isocalendar()
     cur_key = (cur_y, cur_w)
 
-    rows = _users_exec(
-        "SELECT s.*, "
-        "  (SELECT mode() WITHIN GROUP (ORDER BY p.style_number) "
-        "   FROM all_products_clean p "
-        "   WHERE lower(p.style_name) = lower(s.style_name) "
-        "     AND p.style_number IS NOT NULL AND p.style_number <> '') AS style_number "
-        "FROM style_tracker_styles s WHERE NOT s.archived "
-        "ORDER BY s.completed, s.id", fetch=True) or []
+    # Use a single-pass CTE to look up style_number for all tracked styles at
+    # once (avoids one correlated subquery per row, which scaled O(n) with the
+    # number of active styles).
+    rows = _users_exec("""
+        WITH sn AS (
+            SELECT lower(p.style_name) AS sn_key,
+                   mode() WITHIN GROUP (ORDER BY p.style_number) AS style_number
+            FROM all_products_clean p
+            WHERE p.style_number IS NOT NULL AND p.style_number <> ''
+            GROUP BY 1
+        )
+        SELECT s.*, sn.style_number
+        FROM style_tracker_styles s
+        LEFT JOIN sn ON sn.sn_key = lower(s.style_name)
+        WHERE NOT s.archived
+        ORDER BY s.completed, s.id
+    """, fetch=True) or []
 
     # Fetch notes for all non-archived styles in one query
     notes_raw = _users_exec("""
