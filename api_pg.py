@@ -16033,15 +16033,17 @@ def analytics_monthly_targets(month: str = Query(default=None)):
             if month_wsum > 0:
                 dow_w = pat_net.get(st, {}).get(_pgdow(day), 0.0)
                 dt = round(sales_target * dow_w / month_wsum)
+                ratio = round(100.0 * dow_w / month_wsum, 1)
             else:
                 dt = round(daily_target_flat)
+                ratio = round(100.0 / days_in_month, 1)
             if not is_future:
                 mtd_target_sum += dt
             ksh_var = round(actual - dt)
             cum_var += ksh_var
             row = {
                 "date": str(day), "day_of_week": day.strftime("%a"),
-                "ratio": round(100.0 / days_in_month, 1),
+                "ratio": ratio,
                 "daily_target": dt,
                 "suggested_daily_target": None,
                 "suggested_daily_quantity": None,

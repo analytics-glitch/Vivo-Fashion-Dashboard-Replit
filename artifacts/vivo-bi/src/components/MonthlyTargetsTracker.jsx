@@ -20,7 +20,7 @@ function fmtSignedKES(v) {
 }
 
 function StoreCard({ store }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(true);
   const target = store.sales_target;
   const projected = store.projected_landing;
   const proj_pct = store.pct_of_target_projected;
