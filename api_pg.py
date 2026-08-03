@@ -37188,7 +37188,7 @@ def store_profile_category_mix(
 ):
     """Items sold % contribution and ASP, by category and sub-category."""
     store_s = _sql_str(store)
-    ck = f"store_profile:cat_mix:{store_s}:{month or 'all'}:{_sql_str(category or '')}"
+    ck = f"store_profile:cat_mix2:{store_s}:{month or 'all'}:{_sql_str(category or '')}"
     cv, cf = cache_get_swr(ck)
     if cv is not None:
         if not cf:
@@ -37248,6 +37248,28 @@ def store_profile_category_mix(
                  SUM(s.ordered_item_quantity) FILTER (WHERE s.sale_kind IN ('sale','order')) DESC NULLS LAST
     """, ttl=HEAVY_DASH_TTL)
 
+    # Current stock on hand at this store, by category/sub-category — so the
+    # UI can flag "X/day needed" targets the store physically can't fill.
+    soh_rows = run_query(f"""
+        SELECT
+          {cat_expr}      AS category,
+          p.product_type  AS subcategory,
+          SUM(i.available) AS soh
+        FROM all_inventory i
+        JOIN all_products_clean p ON i.sku = p.sku
+        WHERE i.pos_location_name = '{store_s}'
+          AND i.available > 0
+        GROUP BY 1, 2
+    """, ttl=HEAVY_DASH_TTL)
+    soh_sub = {}
+    soh_cat = {}
+    for r in (soh_rows or []):
+        c = r.get("category") or "Other"
+        sb = r.get("subcategory") or "Unknown"
+        v = int(r.get("soh") or 0)
+        soh_sub[(c, sb)] = v
+        soh_cat[c] = soh_cat.get(c, 0) + v
+
     from collections import defaultdict
     cat_totals    = defaultdict(lambda: {"units": 0, "revenue": 0})
     cat_subs_map  = defaultdict(list)
@@ -37277,6 +37299,7 @@ def store_profile_category_mix(
                 "revenue":     sr,
                 "asp":         round(sr / su, 0) if su > 0 else None,
                 "units_pct":   round(su * 100.0 / total_units, 1) if total_units > 0 else None,
+                "soh":         soh_sub.get((cat, s["subcategory"]), 0),
             })
         categories_out.append({
             "category":   cat,
@@ -37284,6 +37307,7 @@ def store_profile_category_mix(
             "revenue":    rev,
             "asp":        round(rev / u, 0) if u > 0 else None,
             "units_pct":  round(u * 100.0 / total_units, 1) if total_units > 0 else None,
+            "soh":        soh_cat.get(cat, 0),
             "subcategories": subs,
         })
 

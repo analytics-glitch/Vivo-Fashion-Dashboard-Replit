@@ -517,8 +517,14 @@ function CategoryTargets({ store, rpt }) {
       const basePct = baseDen && bc?.units ? bc.units / baseDen * 100 : null;
       const mtdPct  = mtdDen && row.units ? row.units / mtdDen * 100 : null;
       const mixShift = basePct != null && mtdPct != null ? mtdPct - basePct : null;
+      const soh = row.soh ?? null;
+      // Days of stock at the pace the target demands (fall back to actual pace)
+      const rate = (dn != null && dn > 0) ? dn : (da != null && da > 0 ? da : null);
+      const coverDays = soh != null && rate ? Math.round(soh / rate) : null;
+      const stockShort = soh != null && rem != null && rem > 0 && soh < rem;
       return {
         ...row, name, tgt, rem, dailyActual: da, dailyNeeded: dn,
+        soh, coverDays, stockShort,
         dailyGap: dn != null && da != null ? dn - da : null,
         basePct, mtdPct, mixShift,
         baseAsp: bc?.asp,
@@ -560,6 +566,7 @@ function CategoryTargets({ store, rpt }) {
                 <th style={{ ...th, textAlign: "right" }}>Pace</th>
                 <th style={{ ...th, textAlign: "right", background: "#fffbeb", color: C.amber.fg }}>Aug Target</th>
                 <th style={{ ...th, textAlign: "left", background: "#fff1f2", color: C.bad.fg, minWidth: 160 }}>⚡ What To Do</th>
+                <th style={{ ...th, textAlign: "right" }} title="Units currently in stock at this store, and how many days that lasts at the pace the target requires">Stock (Cover)</th>
                 <th style={{ ...th, textAlign: "right" }}>Mix vs Norm</th>
                 <th style={{ ...th, textAlign: "right" }}>ASP</th>
                 <th style={{ ...th, textAlign: "right" }}>Revenue MTD</th>
@@ -607,6 +614,23 @@ function CategoryTargets({ store, rpt }) {
                           )}
                         </span>
                       ) : row.rem === 0 ? <Pill c={C.good}>✓ Target hit</Pill> : <span style={{ color: "#9ca3af" }}>—</span>}
+                      {row.stockShort && (
+                        <div style={{ fontSize: 11, fontWeight: 700, color: C.amber.fg, marginTop: 2 }}>
+                          ⚠ only {fmtNum(row.soh)} in stock vs {fmtNum(row.rem)} to sell — needs replenishment
+                        </div>
+                      )}
+                    </td>
+                    <td style={{ textAlign: "right", padding: "12px 14px", fontSize: 13 }}>
+                      {row.soh != null ? (
+                        <>
+                          <div style={{ fontWeight: 700, color: row.stockShort ? C.amber.fg : "#374151" }}>{fmtNum(row.soh)}</div>
+                          {row.coverDays != null && (
+                            <div style={{ fontSize: 10, color: row.coverDays < daysLeft ? C.amber.fg : "#9ca3af" }}>
+                              ~{row.coverDays}d cover
+                            </div>
+                          )}
+                        </>
+                      ) : "—"}
                     </td>
                     <td style={{ textAlign: "right", padding: "12px 14px", fontSize: 13 }}>
                       {row.mixShift != null ? (
@@ -626,7 +650,7 @@ function CategoryTargets({ store, rpt }) {
                 );
               })}
               {rows.length === 0 && (
-                <tr><td colSpan={8} style={{ textAlign: "center", padding: 36, color: "#9ca3af" }}>No category data for August yet</td></tr>
+                <tr><td colSpan={9} style={{ textAlign: "center", padding: 36, color: "#9ca3af" }}>No category data for August yet</td></tr>
               )}
             </tbody>
           </table>
