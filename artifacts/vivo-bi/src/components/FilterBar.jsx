@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useFilters } from "@/lib/filters";
 import { api, datePresets, fmtDate } from "@/lib/api";
 import MultiSelect from "@/components/MultiSelect";
+import { CLUSTERS, clusterStores } from "@/lib/clusters";
 import {
   CalendarBlank,
   Globe,
@@ -597,18 +598,26 @@ const FilterBar = () => {
     for (const oc of ONLINE_CHANNELS) {
       if (!merged.some((l) => l.channel === oc.channel)) merged.push(oc);
     }
-    const filtered =
+    let filtered =
       f.countries.length === 0
         ? merged
         : merged.filter((l) => f.countries.includes(l.country));
+    if (f.clusters.length > 0) {
+      const pool = new Set(clusterStores(f.clusters));
+      filtered = filtered.filter((l) => pool.has(l.channel));
+    }
     return filtered.map((l) => ({
       value: l.channel,
       label: l.channel,
       group: l.country,
     }));
-  }, [locations, f.countries]);
+  }, [locations, f.countries, f.clusters]);
 
   const countryOptions = COUNTRIES.map((c) => ({ value: c, label: c }));
+  const clusterOptions = Object.entries(CLUSTERS).map(([id, c]) => ({
+    value: id,
+    label: c.leader ? `${c.label} — ${c.leader}` : c.label,
+  }));
 
   // Inner controls — used both inline (desktop) and inside the mobile sheet.
   // Order: All/Retail/Online segment → Date Range → Compare → Currency → Country/POS
@@ -629,6 +638,19 @@ const FilterBar = () => {
         }}
         placeholder="All countries"
         width={210}
+      />
+      <MultiSelect
+        testId="filter-clusters"
+        label="Cluster"
+        icon={Storefront}
+        options={clusterOptions}
+        value={f.clusters}
+        onChange={(v) => {
+          f.setClusters(v);
+          f.setChannels([]);
+        }}
+        placeholder="All clusters"
+        width={250}
       />
       {/* WS8 T809 — the All/Retail/Online segment and the POS picker are ONE
           merged control: the segment scopes the channel population, the
@@ -734,6 +756,21 @@ const FilterBar = () => {
             }}
             placeholder="All countries"
             width={210}
+          />
+        </div>
+        <div className="grid grid-cols-1 gap-2">
+          <MultiSelect
+            testId="filter-clusters"
+            label="Cluster"
+            icon={Storefront}
+            options={clusterOptions}
+            value={f.clusters}
+            onChange={(v) => {
+              f.setClusters(v);
+              f.setChannels([]);
+            }}
+            placeholder="All clusters"
+            width={250}
           />
         </div>
         <div className="flex items-center gap-2" data-testid="pos-filter-group-mobile">
