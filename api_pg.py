@@ -15994,7 +15994,7 @@ def analytics_monthly_targets(month: str = Query(default=None)):
             sales_target, tgt_source = round(target_map[st][0]), target_map[st][1]
         else:
             sales_target, tgt_source = round(py_map.get(st, 0) * growth), "derived"
-        daily_target = sales_target / days_in_month if days_in_month else 0
+        daily_target_flat = sales_target / days_in_month if days_in_month else 0
         ch_daily = dmap.get(st, {})
 
         # Month-to-date actuals.
@@ -16010,18 +16010,33 @@ def analytics_monthly_targets(month: str = Query(default=None)):
         a = asp_acc.get(st, [0.0, 0.0])
         store_asp = (a[0] / a[1]) if a[1] else (mtd_actual / mtd_units if mtd_units else 0)
 
-        # Future-day weights from the DOW net-sales pattern.
-        future_days = [date(mstart.year, mstart.month, dd) for dd in range(1, days_in_month + 1)
-                       if date(mstart.year, mstart.month, dd) > today]
+        # Full-month DOW weight denominator for daily_target allocation.
+        # Accounts for the actual DOW mix of the requested month (e.g. 5 Saturdays
+        # vs 4 of each other day) so the weighted targets sum to sales_target.
+        all_month_days = [date(mstart.year, mstart.month, dd) for dd in range(1, days_in_month + 1)]
+        month_wsum = sum(pat_net.get(st, {}).get(_pgdow(d), 0.0) for d in all_month_days)
+
+        # Future-day weights from the DOW net-sales pattern (for suggested need).
+        future_days = [d for d in all_month_days if d > today]
         wsum = sum(pat_net.get(st, {}).get(_pgdow(d), 0.0) for d in future_days)
 
-        days, cum_var = [], 0.0
+        days, cum_var, mtd_target_sum = [], 0.0, 0.0
         for dd in range(1, days_in_month + 1):
             day = date(mstart.year, mstart.month, dd)
             a = ch_daily.get(str(day))
             actual = a["net"] if a else 0.0
             is_future = day > today
-            dt = round(daily_target)
+            # DOW-weighted daily target: allocate the monthly budget proportionally
+            # to each day's historical trading weight for that store.  Falls back to
+            # a flat daily average when the store has no trailing pattern (new store,
+            # or no sales in the trailing 183-day window for any DOW in this month).
+            if month_wsum > 0:
+                dow_w = pat_net.get(st, {}).get(_pgdow(day), 0.0)
+                dt = round(sales_target * dow_w / month_wsum)
+            else:
+                dt = round(daily_target_flat)
+            if not is_future:
+                mtd_target_sum += dt
             ksh_var = round(actual - dt)
             cum_var += ksh_var
             row = {
@@ -16054,7 +16069,23 @@ def analytics_monthly_targets(month: str = Query(default=None)):
                 row["suggested_basket_size"] = round(sdt / opace) if opace > 0 else None
             days.append(row)
 
-        mtd_target = round(daily_target * days_complete)
+        # mtd_target is the sum of DOW-weighted daily targets for completed days.
+        mtd_target = round(mtd_target_sum)
+        # Integrity check: full-month sum of weighted daily targets should equal sales_target.
+        if sales_target and month_wsum > 0:
+            full_month_dt_sum = sum(
+                round(sales_target * pat_net.get(st, {}).get(_pgdow(d), 0.0) / month_wsum)
+                for d in all_month_days
+            )
+            _tol = max(days_in_month, round(sales_target * 0.001))  # ±1 KES/day or 0.1%
+            if abs(full_month_dt_sum - sales_target) > _tol:
+                import logging as _log
+                _log.getLogger(__name__).warning(
+                    "monthly-targets DOW rounding drift: store=%s month=%s "
+                    "sum=%s target=%s diff=%s",
+                    st, mstart, full_month_dt_sum, sales_target,
+                    full_month_dt_sum - sales_target,
+                )
         projected = round(mtd_actual / days_complete * days_in_month) if days_complete else 0
         stores.append({
             "channel": st, "sales_target": sales_target, "mtd_actual": round(mtd_actual),
