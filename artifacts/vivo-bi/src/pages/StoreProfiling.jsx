@@ -304,11 +304,30 @@ function SectionB({ store, trendData }) {
     return [{ value: "", label: "Last 6 months" }, ...trendData.months.map((m) => ({ value: m.month, label: m.label }))];
   }, [trendData]);
 
+  // Filtered display data
   const { data: mixData, isLoading, error } = useApi(
     "store-profile/category-mix",
     { store, ...(selMonth ? { month: selMonth } : {}), ...(selCategory ? { category: selCategory } : {}) },
     { enabled: !!store }
   );
+
+  // 6-month baseline — SWR deduplicates when selMonth="" so no extra request
+  const { data: baselineMix } = useApi(
+    "store-profile/category-mix",
+    { store },
+    { enabled: !!store }
+  );
+
+  // Performance report for derived targets (SWR deduplicates with SectionC)
+  const { data: rpt } = useApi(
+    "store-profile/performance-report",
+    { store },
+    { enabled: !!store, staleTime: 5 * 60_000 }
+  );
+
+  const targetUnitsTotal  = rpt?.derived_targets?.units;
+  const daysInMonth       = rpt?.days_in_month || 31;
+  const totalBaseline6m   = baselineMix?.total_units || 0;
 
   const categories = mixData?.categories || [];
 
@@ -322,27 +341,49 @@ function SectionB({ store, trendData }) {
   // Clear sub-cat when category changes
   useEffect(() => { setSelSubcat(""); }, [selCategory]);
 
-  // Rows to display
+  // Helper: compute August target units for a given baseline unit count
+  const toTargetUnits = (baselineUnits) => {
+    if (!targetUnitsTotal || !totalBaseline6m || !baselineUnits) return null;
+    return Math.round(targetUnitsTotal * (baselineUnits / totalBaseline6m));
+  };
+
+  // Rows to display — enriched with August target units
   const displayRows = useMemo(() => {
+    let rows;
     if (!selCategory) {
-      // Show all categories
-      return categories.map((c, ci) => ({
-        name: c.category, units: c.units, revenue: c.revenue,
-        asp: c.asp, units_pct: c.units_pct,
-        rev_pct: mixData ? Math.round(c.revenue * 1000 / Math.max(mixData.total_revenue, 1)) / 10 : null,
-        color: BAR_COLORS[ci % BAR_COLORS.length], isCategory: true,
-        subcategories: c.subcategories,
-      }));
+      rows = categories.map((c, ci) => {
+        const bc          = baselineMix?.categories?.find((x) => x.category === c.category);
+        const target_units = toTargetUnits(bc?.units);
+        return {
+          name: c.category, units: c.units, revenue: c.revenue,
+          asp: c.asp, units_pct: c.units_pct,
+          rev_pct: mixData ? Math.round(c.revenue * 1000 / Math.max(mixData.total_revenue, 1)) / 10 : null,
+          color: BAR_COLORS[ci % BAR_COLORS.length], isCategory: true,
+          subcategories: c.subcategories,
+          target_units,
+          target_per_day: target_units ? Math.round(target_units / daysInMonth) : null,
+        };
+      });
+    } else {
+      const cat = categories.find((c) => c.category === selCategory);
+      if (!cat) return [];
+      const bcCat = baselineMix?.categories?.find((x) => x.category === selCategory);
+      rows = cat.subcategories.map((s, si) => {
+        const bs          = bcCat?.subcategories?.find((x) => x.subcategory === s.subcategory);
+        const target_units = toTargetUnits(bs?.units);
+        return {
+          name: s.subcategory, units: s.units, revenue: s.revenue,
+          asp: s.asp, units_pct: s.units_pct,
+          rev_pct: mixData ? Math.round(s.revenue * 1000 / Math.max(mixData.total_revenue, 1)) / 10 : null,
+          color: BAR_COLORS[si % BAR_COLORS.length], isCategory: false,
+          target_units,
+          target_per_day: target_units ? Math.round(target_units / daysInMonth) : null,
+        };
+      });
     }
-    const cat = categories.find((c) => c.category === selCategory);
-    if (!cat) return [];
-    return cat.subcategories.map((s, si) => ({
-      name: s.subcategory, units: s.units, revenue: s.revenue,
-      asp: s.asp, units_pct: s.units_pct,
-      rev_pct: mixData ? Math.round(s.revenue * 1000 / Math.max(mixData.total_revenue, 1)) / 10 : null,
-      color: BAR_COLORS[si % BAR_COLORS.length], isCategory: false,
-    }));
-  }, [categories, selCategory, mixData]);
+    return rows;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [categories, selCategory, mixData, baselineMix, targetUnitsTotal, totalBaseline6m, daysInMonth]);
 
   // If a sub-category is selected, filter to just that row
   const filteredRows = selSubcat
@@ -400,71 +441,136 @@ function SectionB({ store, trendData }) {
 
       {!isLoading && !error && (
         <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
             <thead>
               <tr style={{ background: "#f9fafb" }}>
-                {[
-                  ["Category / Sub-Category", false],
-                  ["Units Sold", true],
-                  ["% of Units", false, 130],
-                  ["% of Revenue", false, 130],
-                  ["ASP", true],
-                  ["Revenue", true],
-                ].map(([h, right, minW]) => (
-                  <th key={h} style={{
-                    textAlign: right ? "right" : "left",
-                    padding: "7px 10px", color: "#6b7280", fontWeight: 600,
-                    borderBottom: "2px solid #e5e7eb", minWidth: minW,
-                  }}>{h}</th>
-                ))}
+                <th style={{ textAlign: "left", padding: "10px 14px", color: "#374151", fontWeight: 700, fontSize: 12, borderBottom: "2px solid #e5e7eb", minWidth: 200 }}>
+                  {selCategory ? `${selCategory} — Sub-Category` : "Category"}
+                </th>
+                <th style={{ textAlign: "right", padding: "10px 14px", color: "#374151", fontWeight: 700, fontSize: 12, borderBottom: "2px solid #e5e7eb", minWidth: 110 }}>
+                  Units Sold<br /><span style={{ fontWeight: 400, color: "#9ca3af", fontSize: 11 }}>{selMonth ? "this period" : "6-month total"}</span>
+                </th>
+                <th style={{ textAlign: "left", padding: "10px 14px", color: "#374151", fontWeight: 700, fontSize: 12, borderBottom: "2px solid #e5e7eb", minWidth: 140 }}>% of Units</th>
+                <th style={{ textAlign: "right", padding: "10px 14px", color: "#374151", fontWeight: 700, fontSize: 12, borderBottom: "2px solid #e5e7eb", minWidth: 100 }}>ASP</th>
+                <th style={{ textAlign: "right", padding: "10px 14px", color: "#374151", fontWeight: 700, fontSize: 12, borderBottom: "2px solid #e5e7eb", minWidth: 110 }}>Revenue</th>
+                <th style={{ textAlign: "left", padding: "10px 14px", borderBottom: "2px solid #e5e7eb", minWidth: 180, background: "#fffbeb" }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: "#92400e" }}>Aug Target Units</div>
+                  {targetUnitsTotal ? (
+                    <div style={{ fontSize: 11, color: "#b45309", fontWeight: 400 }}>
+                      Based on {totalBaseline6m ? fmtNum(totalBaseline6m) : "—"} total 6-month mix
+                    </div>
+                  ) : <div style={{ fontSize: 11, color: "#9ca3af" }}>No budget set</div>}
+                </th>
               </tr>
             </thead>
             <tbody>
-              {filteredRows.map((row, i) => (
+              {filteredRows.map((row) => (
                 <React.Fragment key={row.name}>
                   <tr
                     style={{
-                      borderBottom: "1px solid #f3f4f6",
+                      borderBottom: "1px solid #f0f0f0",
                       cursor: (!selCategory && row.isCategory) ? "pointer" : "default",
-                      background: selCategory === row.name ? "#f0f0ff" : "transparent",
+                      background: "transparent",
                     }}
                     onClick={() => !selCategory && row.isCategory && setSelCategory(row.name)}
-                    onMouseEnter={(e) => !selCategory && row.isCategory && (e.currentTarget.style.background = "#f9fafb")}
-                    onMouseLeave={(e) => !selCategory && row.isCategory && (e.currentTarget.style.background = "")}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = "#f9fafb")}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = "")}
                   >
-                    <td style={{ padding: "9px 10px", fontWeight: row.isCategory ? 700 : 500, color: "#111827" }}>
-                      <span style={{ display: "inline-block", width: 10, height: 10, borderRadius: 2,
-                                     background: row.color, marginRight: 7, verticalAlign: "middle" }} />
+                    {/* Name */}
+                    <td style={{ padding: "11px 14px", fontWeight: row.isCategory ? 700 : 500, color: "#111827", fontSize: 14 }}>
+                      <span style={{ display: "inline-block", width: 11, height: 11, borderRadius: 2,
+                                     background: row.color, marginRight: 8, verticalAlign: "middle", flexShrink: 0 }} />
                       {row.name}
                       {!selCategory && row.isCategory && (
-                        <span style={{ color: "#9ca3af", fontSize: 10, marginLeft: 6 }}>↵ drill down</span>
+                        <span style={{ color: "#9ca3af", fontSize: 11, marginLeft: 8 }}>↵ drill</span>
                       )}
                     </td>
-                    <td style={{ textAlign: "right", padding: "9px 10px" }}>{fmtNum(row.units)}</td>
-                    <td style={{ padding: "9px 10px" }}>
+                    {/* Units sold */}
+                    <td style={{ textAlign: "right", padding: "11px 14px", fontSize: 14, fontWeight: 600, color: "#111827" }}>
+                      {fmtNum(row.units)}
+                      <div style={{ fontSize: 11, color: "#9ca3af", fontWeight: 400 }}>{fmtPct(row.units_pct)} share</div>
+                    </td>
+                    {/* % of units bar */}
+                    <td style={{ padding: "11px 14px" }}>
                       <MiniBar pct={row.units_pct} color={row.color} max={selCategory ? 50 : 40} />
                     </td>
-                    <td style={{ padding: "9px 10px" }}>
-                      <MiniBar pct={row.rev_pct} color={row.color} max={selCategory ? 50 : 40} />
+                    {/* ASP */}
+                    <td style={{ textAlign: "right", padding: "11px 14px", fontSize: 14, fontWeight: 600, color: "#374151" }}>
+                      {fmtKES(row.asp)}
                     </td>
-                    <td style={{ textAlign: "right", padding: "9px 10px" }}>{fmtKES(row.asp)}</td>
-                    <td style={{ textAlign: "right", padding: "9px 10px" }}>{fmtKES(row.revenue)}</td>
+                    {/* Revenue */}
+                    <td style={{ textAlign: "right", padding: "11px 14px", fontSize: 14, color: "#374151" }}>
+                      {fmtKES(row.revenue)}
+                      <div style={{ fontSize: 11, color: "#9ca3af" }}>{fmtPct(row.rev_pct)} of total</div>
+                    </td>
+                    {/* Aug target units */}
+                    <td style={{ padding: "11px 14px", background: "#fffdf5", borderLeft: "2px solid #fde68a" }}>
+                      {row.target_units != null ? (
+                        <>
+                          <div style={{ fontWeight: 800, color: "#92400e", fontSize: 16 }}>{fmtNum(row.target_units)}</div>
+                          <div style={{ fontSize: 12, color: "#b45309", marginTop: 2 }}>
+                            {row.target_per_day} units/day needed
+                          </div>
+                          {row.units != null && (
+                            <div style={{
+                              fontSize: 11, marginTop: 3, fontWeight: 600,
+                              color: row.units >= row.target_units ? "#16a34a" : "#dc2626",
+                            }}>
+                              {row.units >= row.target_units
+                                ? `▲ ${fmtNum(row.units - row.target_units)} units above pace`
+                                : `▼ ${fmtNum(row.target_units - row.units)} units to hit target`}
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        <span style={{ color: "#9ca3af", fontSize: 13 }}>—</span>
+                      )}
+                    </td>
                   </tr>
                 </React.Fragment>
               ))}
               {filteredRows.length === 0 && (
-                <tr><td colSpan={6} style={{ textAlign: "center", padding: 20, color: "#9ca3af" }}>No data for this selection</td></tr>
+                <tr><td colSpan={6} style={{ textAlign: "center", padding: 24, color: "#9ca3af", fontSize: 13 }}>No data for this selection</td></tr>
               )}
             </tbody>
+            {/* Totals footer */}
+            {filteredRows.length > 1 && (
+              <tfoot>
+                <tr style={{ borderTop: "2px solid #e5e7eb", background: "#f9fafb" }}>
+                  <td style={{ padding: "10px 14px", fontWeight: 700, color: "#374151", fontSize: 13 }}>Total</td>
+                  <td style={{ textAlign: "right", padding: "10px 14px", fontWeight: 700, fontSize: 14 }}>
+                    {fmtNum(filteredRows.reduce((s, r) => s + (r.units || 0), 0))}
+                  </td>
+                  <td /><td />
+                  <td style={{ textAlign: "right", padding: "10px 14px", fontWeight: 700, fontSize: 14 }}>
+                    {fmtKES(filteredRows.reduce((s, r) => s + (r.revenue || 0), 0))}
+                  </td>
+                  <td style={{ padding: "10px 14px", background: "#fffdf5", borderLeft: "2px solid #fde68a" }}>
+                    {targetUnitsTotal && filteredRows.some(r => r.target_units != null) && (
+                      <div style={{ fontWeight: 800, color: "#92400e", fontSize: 15 }}>
+                        {fmtNum(filteredRows.reduce((s, r) => s + (r.target_units || 0), 0))}
+                        <div style={{ fontSize: 11, color: "#b45309", fontWeight: 400 }}>
+                          {Math.round(filteredRows.reduce((s, r) => s + (r.target_units || 0), 0) / daysInMonth)}/day needed
+                        </div>
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              </tfoot>
+            )}
           </table>
         </div>
       )}
 
       {/* Breadcrumb */}
       {selCategory && (
-        <div style={{ marginTop: 10, fontSize: 12, color: "#6b7280" }}>
+        <div style={{ marginTop: 12, fontSize: 13, color: "#6b7280" }}>
           All categories → <strong style={{ color: "#374151" }}>{selCategory}</strong>
           {selSubcat && <> → <strong style={{ color: "#374151" }}>{selSubcat}</strong></>}
+          <button onClick={() => { setSelCategory(""); setSelSubcat(""); }}
+            style={{ marginLeft: 12, background: "none", border: "none", cursor: "pointer", color: "#6366f1", fontSize: 12, fontWeight: 600 }}>
+            ↩ Back to all categories
+          </button>
         </div>
       )}
     </Card>
@@ -600,28 +706,31 @@ function SectionC({ store }) {
 
       {/* ── KPI comparison table ─────────────────────────────────────────────── */}
       <div style={{ overflowX: "auto", marginBottom: 24 }}>
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
           <thead>
-            <tr style={{ background: "#f9fafb" }}>
-              <th style={{ textAlign: "left", padding: "8px 10px", color: "#6b7280", fontWeight: 600, fontSize: 11, borderBottom: "2px solid #e5e7eb", minWidth: 160 }}>KPI</th>
-              <th style={{ textAlign: "right", padding: "8px 10px", color: "#6b7280", fontWeight: 600, fontSize: 11, borderBottom: "2px solid #e5e7eb", minWidth: 110 }}>Current MTD</th>
-              <th style={{ textAlign: "right", padding: "8px 10px", color: "#6b7280", fontWeight: 600, fontSize: 11, borderBottom: "2px solid #e5e7eb", minWidth: 110 }}>Projected EOM</th>
-              <th style={{ textAlign: "right", padding: "8px 10px", color: "#6b7280", fontWeight: 600, fontSize: 11, borderBottom: "2px solid #e5e7eb", minWidth: 120 }}>
-                {expected_source?.split(" ")[0] === "Aug" ? expected_source : "Baseline"}
+            <tr style={{ background: "#f8f9fa" }}>
+              <th style={{ textAlign: "left", padding: "12px 14px", color: "#374151", fontWeight: 700, fontSize: 12, borderBottom: "2px solid #d1d5db", minWidth: 180 }}>KPI</th>
+              <th style={{ textAlign: "right", padding: "12px 14px", color: "#374151", fontWeight: 700, fontSize: 12, borderBottom: "2px solid #d1d5db", minWidth: 130 }}>
+                MTD Actual<br /><span style={{ fontWeight: 400, color: "#9ca3af", fontSize: 11 }}>Day {days_done} · avg/day</span>
               </th>
-              <th style={{ textAlign: "left", padding: "8px 10px", borderBottom: "2px solid #e5e7eb", minWidth: 170, background: "#fffbeb" }}>
-                <div style={{ fontSize: 11, fontWeight: 700, color: "#92400e" }}>Required to Hit Target</div>
-                {target_revenue && (
-                  <div style={{ fontSize: 10, color: "#b45309", fontWeight: 400 }}>
+              <th style={{ textAlign: "right", padding: "12px 14px", color: "#374151", fontWeight: 700, fontSize: 12, borderBottom: "2px solid #d1d5db", minWidth: 120 }}>Projected EOM</th>
+              <th style={{ textAlign: "right", padding: "12px 14px", color: "#374151", fontWeight: 700, fontSize: 12, borderBottom: "2px solid #d1d5db", minWidth: 130 }}>
+                {expected_source?.split(" ")[0] === "Aug" ? expected_source : "6-Month Avg"}
+                <br /><span style={{ fontWeight: 400, color: "#9ca3af", fontSize: 11 }}>baseline</span>
+              </th>
+              <th style={{ textAlign: "left", padding: "12px 14px", borderBottom: "2px solid #d1d5db", minWidth: 200, background: "#fffbeb" }}>
+                <div style={{ fontSize: 13, fontWeight: 800, color: "#92400e" }}>Required to Hit Target</div>
+                {target_revenue ? (
+                  <div style={{ fontSize: 11, color: "#b45309", fontWeight: 400 }}>
                     KES {(target_revenue / 1e6).toFixed(1)}M budget · {days_in_month} days
                   </div>
-                )}
+                ) : <div style={{ fontSize: 11, color: "#9ca3af" }}>No budget set</div>}
               </th>
-              <th style={{ textAlign: "left", padding: "8px 10px", color: "#6b7280", fontWeight: 600, fontSize: 11, borderBottom: "2px solid #e5e7eb", minWidth: 140 }}>Proj vs Required</th>
+              <th style={{ textAlign: "left", padding: "12px 14px", color: "#374151", fontWeight: 700, fontSize: 12, borderBottom: "2px solid #d1d5db", minWidth: 150 }}>Proj vs Required</th>
             </tr>
           </thead>
           <tbody>
-            {C_KPI_KEYS.map(({ key, label, fmt, lowerBetter }) => {
+            {C_KPI_KEYS.map(({ key, label, fmt, lowerBetter }, rowIdx) => {
               const row    = kpi_rows.find((r) => r.key === key) || {};
               const m_val  = mtd?.[key];
               const p_val  = projected_eom?.[key];
@@ -632,63 +741,70 @@ function SectionC({ store }) {
               const status = row.status || statusFromPct(p_att, lowerBetter);
               const s      = STATUS[status] || STATUS.low;
 
-              // Volume KPIs get a /day breakdown
+              // Volume KPIs: show daily rates. ASP/ABV are averages — never show /day for them.
               const VOL_KEYS = new Set(["units","transactions","footfall","customer_count"]);
-              const perDay = (v) => v != null && VOL_KEYS.has(key)
-                ? <div style={{ fontSize: 10, color: "#9ca3af" }}>{fmtNum(Math.round(v / days_in_month))}/day</div>
+              const isVol = VOL_KEYS.has(key);
+
+              // MTD daily average = actual / days elapsed so far
+              const mtdAvg = isVol && m_val != null && days_done > 0
+                ? <div style={{ fontSize: 12, color: "#6b7280", marginTop: 2 }}>avg {fmtNum(Math.round(m_val / days_done))}/day</div>
+                : null;
+
+              // Required daily rate = full-month target / days in month
+              const tgtPerDay = isVol && t_val != null
+                ? <div style={{ fontSize: 12, color: "#b45309", marginTop: 2 }}>{fmtNum(Math.round(t_val / days_in_month))}/day needed</div>
                 : null;
 
               // vs expected delta on projected
               const vs_exp = (p_val != null && e_val != null && e_val > 0)
                 ? Math.round(p_val / e_val * 100) : null;
 
-              // Gap to required (projected vs required)
+              // Gap: projected vs required
               const gap_to_req = (p_val != null && t_val != null && t_val > 0 && !lowerBetter)
                 ? p_val - t_val : null;
 
+              const rowBg = rowIdx % 2 === 0 ? "#ffffff" : "#fafafa";
+
               return (
-                <tr key={key} style={{ borderBottom: "1px solid #f3f4f6" }}
-                    onMouseEnter={(e) => (e.currentTarget.style.background = "#f9fafb")}
-                    onMouseLeave={(e) => (e.currentTarget.style.background = "")}>
+                <tr key={key} style={{ borderBottom: "1px solid #e5e7eb", background: rowBg }}
+                    onMouseEnter={(e) => (e.currentTarget.style.background = "#f0f4ff")}
+                    onMouseLeave={(e) => (e.currentTarget.style.background = rowBg)}>
                   {/* KPI name */}
-                  <td style={{ padding: "9px 10px", fontWeight: 600, color: "#374151" }}>
+                  <td style={{ padding: "13px 14px", fontWeight: 700, color: "#111827", fontSize: 14 }}>
                     {label}
-                    {lowerBetter && <span style={{ fontSize: 10, color: "#9ca3af", marginLeft: 4 }}>↓ lower = better</span>}
+                    {lowerBetter && <div style={{ fontSize: 11, color: "#9ca3af", fontWeight: 400 }}>↓ lower is better</div>}
                   </td>
-                  {/* MTD actual */}
-                  <td style={{ textAlign: "right", padding: "9px 10px", color: "#374151" }}>
-                    {fmtAuto(fmt, m_val)}
-                    {perDay(m_val)}
+                  {/* MTD actual + daily avg */}
+                  <td style={{ textAlign: "right", padding: "13px 14px", color: "#111827" }}>
+                    <div style={{ fontSize: 16, fontWeight: 700 }}>{fmtAuto(fmt, m_val)}</div>
+                    {mtdAvg}
                   </td>
                   {/* Projected EOM */}
-                  <td style={{ textAlign: "right", padding: "9px 10px", fontWeight: 700, color: s.color }}>
-                    {fmtAuto(fmt, p_val)}
-                    {perDay(p_val)}
+                  <td style={{ textAlign: "right", padding: "13px 14px" }}>
+                    <div style={{ fontSize: 15, fontWeight: 700, color: s.color }}>{fmtAuto(fmt, p_val)}</div>
                     {vs_exp != null && Math.abs(vs_exp - 100) > 5 && (
-                      <div style={{ fontSize: 10, fontWeight: 400, color: vs_exp >= 95 ? "#16a34a" : "#dc2626" }}>
-                        {vs_exp >= 100 ? "▲" : "▼"}{Math.abs(vs_exp - 100)}% vs baseline
+                      <div style={{ fontSize: 11, fontWeight: 600, color: vs_exp >= 95 ? "#16a34a" : "#dc2626" }}>
+                        {vs_exp >= 100 ? "▲" : "▼"} {Math.abs(vs_exp - 100)}% vs baseline
                       </div>
                     )}
                   </td>
                   {/* Expected baseline */}
-                  <td style={{ textAlign: "right", padding: "9px 10px", color: "#6b7280" }}>
-                    {fmtAuto(fmt, e_val)}
-                    {perDay(e_val)}
+                  <td style={{ textAlign: "right", padding: "13px 14px", color: "#6b7280" }}>
+                    <div style={{ fontSize: 14 }}>{fmtAuto(fmt, e_val)}</div>
                   </td>
                   {/* Required to hit target */}
-                  <td style={{ padding: "9px 10px", background: "#fffdf5", borderLeft: "2px solid #fde68a" }}>
-                    <div style={{ fontWeight: 700, color: t_val != null ? "#92400e" : "#9ca3af", fontSize: 13 }}>
+                  <td style={{ padding: "13px 14px", background: "#fffdf5", borderLeft: "2px solid #fde68a" }}>
+                    <div style={{ fontWeight: 800, color: t_val != null ? "#92400e" : "#9ca3af", fontSize: 17 }}>
                       {fmtAuto(fmt, t_val)}
                     </div>
-                    {perDay(t_val)}
+                    {tgtPerDay}
                     {basis && (
-                      <div style={{ fontSize: 10, color: "#b45309", marginTop: 2, fontStyle: "italic" }}>
+                      <div style={{ fontSize: 11, color: "#b45309", marginTop: 3, fontStyle: "italic" }}>
                         {basis}
                       </div>
                     )}
-                    {/* Show gap between projected and required */}
                     {gap_to_req != null && t_val != null && (
-                      <div style={{ fontSize: 10, marginTop: 2, color: gap_to_req >= 0 ? "#16a34a" : "#dc2626", fontWeight: 600 }}>
+                      <div style={{ fontSize: 12, marginTop: 3, color: gap_to_req >= 0 ? "#16a34a" : "#dc2626", fontWeight: 700 }}>
                         {gap_to_req >= 0
                           ? `▲ +${fmtAuto(fmt, Math.abs(gap_to_req))} ahead`
                           : `▼ ${fmtAuto(fmt, Math.abs(gap_to_req))} short`}
@@ -696,7 +812,7 @@ function SectionC({ store }) {
                     )}
                   </td>
                   {/* Attainment bar */}
-                  <td style={{ padding: "9px 10px" }}>
+                  <td style={{ padding: "13px 14px" }}>
                     <AttainmentBar pct={p_att} lowerBetter={lowerBetter} />
                   </td>
                 </tr>
@@ -707,15 +823,15 @@ function SectionC({ store }) {
               { label: "WOC (Weeks of Cover)", val: woc != null ? `${woc}w` : null },
               { label: "MSI (Months of Stock)", val: msi != null ? `${msi}mo` : null },
             ].map(({ label, val }) => (
-              <tr key={label} style={{ borderBottom: "1px solid #f3f4f6", background: "#fafafa" }}>
-                <td style={{ padding: "8px 10px", fontWeight: 600, color: "#374151" }}>
+              <tr key={label} style={{ borderBottom: "1px solid #e5e7eb", background: "#fafafa" }}>
+                <td style={{ padding: "11px 14px", fontWeight: 700, color: "#374151", fontSize: 14 }}>
                   {label}
-                  <span style={{ fontSize: 10, color: "#9ca3af", marginLeft: 4 }}>current only</span>
+                  <span style={{ fontSize: 11, color: "#9ca3af", marginLeft: 6 }}>current only</span>
                 </td>
-                <td style={{ textAlign: "right", padding: "8px 10px", color: "#374151" }}>
+                <td style={{ textAlign: "right", padding: "11px 14px", fontSize: 15, fontWeight: 700, color: "#374151" }}>
                   {val || "—"}
                 </td>
-                {[1, 2, 3, 4].map((i) => <td key={i} style={{ textAlign: "right", padding: "8px 10px", color: "#9ca3af" }}>—</td>)}
+                {[1, 2, 3, 4].map((i) => <td key={i} style={{ textAlign: "right", padding: "11px 14px", color: "#9ca3af" }}>—</td>)}
               </tr>
             ))}
           </tbody>
