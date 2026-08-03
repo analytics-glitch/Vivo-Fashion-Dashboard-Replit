@@ -191,7 +191,7 @@ function Stat({ label, value, valueClass = "", valueColor }) {
   );
 }
 
-export default function MonthlyTargetsTracker({ month }) {
+export default function MonthlyTargetsTracker({ month, channels = [] }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -208,9 +208,23 @@ export default function MonthlyTargetsTracker({ month }) {
     return () => { cancelled = true; };
   }, [month]);
 
+  // Respect the top-bar POS filter (channel param carries pos_location_name
+  // values). "Online" in the filter matches any online-prefixed tracker row.
+  const stores = useMemo(() => {
+    const all = data?.stores || [];
+    if (!channels?.length) return all;
+    const sel = new Set(channels.map((c) => c.toLowerCase()));
+    const wantsOnline = [...sel].some((c) => c.startsWith("online"));
+    return all.filter((s) => {
+      const name = (s.channel || "").toLowerCase();
+      return sel.has(name) || (wantsOnline && name.startsWith("online"));
+    });
+  }, [data, JSON.stringify(channels)]);
+
   if (loading) return <div data-testid="monthly-targets-tracker"><Loading label="Loading monthly targets…" /></div>;
   if (error) return <div className="card-white p-4 text-rose-600 text-[12px]" data-testid="monthly-targets-tracker">{error}</div>;
   if (!data?.stores?.length) return <div className="card-white p-4 text-muted text-[12px]" data-testid="monthly-targets-tracker">No monthly targets configured for {month}.</div>;
+  if (!stores.length) return <div className="card-white p-4 text-muted text-[12px]" data-testid="monthly-targets-tracker">No monthly targets configured for the selected POS location(s).</div>;
 
   return (
     <div className="space-y-3" data-testid="monthly-targets-tracker">
@@ -220,7 +234,7 @@ export default function MonthlyTargetsTracker({ month }) {
         <span className="text-[10.5px] font-bold uppercase tracking-wide bg-[#fed7aa] text-[#7c2d12] px-1.5 py-0.5 rounded-full">{data.month}</span>
         <span className="text-[11px] text-muted">· daily budgets weighted by 6-month DOW sales pattern · click any store to expand</span>
       </div>
-      {data.stores.map((s) => (
+      {stores.map((s) => (
         <StoreCard key={s.channel} store={s} />
       ))}
     </div>

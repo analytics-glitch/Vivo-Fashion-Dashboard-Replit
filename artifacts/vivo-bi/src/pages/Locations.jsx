@@ -1378,7 +1378,7 @@ const Locations = () => {
               )}
 
               {activeTab === "targets" && (
-                <MonthlyTargetsTracker month={`${new Date(dateTo).toISOString().slice(0, 7)}-01`} />
+                <MonthlyTargetsTracker month={`${new Date(dateTo).toISOString().slice(0, 7)}-01`} channels={channels} />
               )}
             </>
 
