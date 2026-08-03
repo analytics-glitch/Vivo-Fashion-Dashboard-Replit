@@ -37655,6 +37655,8 @@ def store_profile_performance_report(store: str = Query(...)):
             "discount_rate": disc_r, "return_rate": ret_r,
             "new_customer_pct": new_pct, "returning_customer_pct": ret_pct,
             "customer_count": tot_c,
+            # absolute counts behind the % cards (UI shows "X of Y customers")
+            "new_customers": new_c, "returning_customers": ret_c,
         }
 
     mtd        = _extract("mtd", days_in_period=days_done)
@@ -38015,6 +38017,17 @@ def store_profile_performance_report(store: str = Query(...)):
                 f"{p_rr:.1f}% vs baseline {e_rr2:.1f}%",
                 ["units", "revenue"], "quality guardrail",
                 "Every avoided return keeps already-earned revenue; check fit/quality on top-returned styles.")
+    # Transactions lever — ONLY when neither footfall nor conversion could be
+    # computed (no sensor / baseline). Otherwise the txn gap is already
+    # explained by those two upstream levers and this would double-count.
+    _have_traffic_levers = any(d["key"] in ("footfall", "conversion") for d in priority_drivers)
+    p_txn2, e_txn2 = _f(proj, "transactions"), _f(expected, "transactions")
+    if (not _have_traffic_levers and p_txn2 is not None and e_txn2
+            and p_txn2 < e_txn2 and abv_ref):
+        _driver("transactions", (e_txn2 - p_txn2) * abv_ref,
+                f"{int(p_txn2):,} vs baseline {int(e_txn2):,}",
+                ["footfall", "conversion", "abv"], "traffic→sales",
+                "Fewer baskets than this store's norm — with no reliable footfall read, treat this as the traffic+conversion gap combined.")
     p_new = _f(proj, "new_customer_pct")
     e_new2 = _f(expected, "new_customer_pct")
     if p_new is not None and e_new2 and p_new < e_new2 * 0.9:
@@ -38022,6 +38035,13 @@ def store_profile_performance_report(store: str = Query(...)):
                 f"{p_new:.1f}% vs baseline {e_new2:.1f}%",
                 ["footfall", "customer_count"], "pipeline",
                 "New customers are next month's returning base — a weak share here shows up later as falling footfall.")
+    p_ret2 = _f(proj, "returning_customer_pct")
+    e_ret2 = _f(expected, "returning_customer_pct")
+    if p_ret2 is not None and e_ret2 and p_ret2 < e_ret2 * 0.9:
+        _driver("returning_customer_pct", None,
+                f"{p_ret2:.1f}% vs baseline {e_ret2:.1f}%",
+                ["customer_count", "footfall"], "pipeline",
+                "Known customers are coming back less often — check loyalty follow-ups and clienteling outreach; revenue impact lands over coming months, not this one.")
 
     priority_drivers.sort(key=lambda d: (d["kes_impact"] is None, -(d["kes_impact"] or 0)))
     for i, d in enumerate(priority_drivers):
@@ -38075,6 +38095,78 @@ def store_profile_performance_report(store: str = Query(...)):
         "driver_links":     driver_links,
     }
     cache_set(ck, out, ttl=600)
+    return out
+
+
+@app.get("/api/store-profile/ai-diagnosis")
+async def store_profile_ai_diagnosis(store: str = Query(...)):
+    """AI read of the Store Health Check: takes the same performance report the
+    page renders and asks the model to identify the REAL issues (root cause,
+    not just the biggest %), rank them, and say what to do. Cached 30 min.
+    Degrades gracefully (configured=false) when no ANTHROPIC_API_KEY."""
+    import asyncio as _aio
+    ck = f"store_profile:ai_diag:{_sql_str(store)}"
+    cached = cache_get(ck)
+    if cached is not None:
+        return cached
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        return {"configured": False, "issues": [], "summary": None}
+
+    # report build is heavy sync DB work — keep it off the event loop
+    rpt = await _aio.to_thread(store_profile_performance_report, store=store)
+
+    # Compact, model-friendly snapshot (no huge payloads)
+    snap = {
+        "store": rpt.get("store"),
+        "month": rpt.get("month_label"),
+        "days_done": rpt.get("days_done"),
+        "days_in_month": rpt.get("days_in_month"),
+        "target_revenue": rpt.get("target_revenue"),
+        "projected_revenue_attainment_pct": rpt.get("proj_revenue_attainment"),
+        "mtd": rpt.get("mtd"),
+        "projected_eom": rpt.get("projected_eom"),
+        "baseline_expected": rpt.get("expected"),
+        "baseline_source": rpt.get("expected_source"),
+        "priority_drivers": [
+            {k: d.get(k) for k in ("rank", "key", "kes_impact", "gap_text")}
+            for d in (rpt.get("priority_drivers") or [])],
+    }
+
+    def _ask():
+        import anthropic
+        client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+        msg = client.messages.create(
+            model="claude-haiku-4-5",
+            max_tokens=1200,
+            system=(
+                "You are a retail performance analyst for a fashion retailer in East Africa. "
+                "You get one store's month-to-date KPIs, full-month projections and historical "
+                "baselines. Identify the 2-4 REAL issues: distinguish root causes from symptoms "
+                "(e.g. footfall/conversion drive transactions drive revenue; ASP+items drive ABV; "
+                "a falling %returning is a future-months risk, not this month's revenue gap). "
+                "Only a few days into the month, small samples are noisy — say so when relevant. "
+                "Respond ONLY with JSON: {\"summary\": one-sentence overall read, \"issues\": "
+                "[{\"kpi\": key, \"severity\": \"high\"|\"medium\"|\"low\", \"why\": <=35 words root-cause "
+                "explanation, \"action\": <=25 words concrete next step}]} ordered most important first."),
+            messages=[{"role": "user", "content": json.dumps(snap, default=str)}],
+        )
+        txt = "".join(b.text for b in msg.content if getattr(b, "type", "") == "text").strip()
+        if txt.startswith("```"):
+            txt = txt.strip("`").lstrip("json").strip()
+        return json.loads(txt)
+
+    try:
+        parsed = await _aio.to_thread(_ask)
+        out = {"configured": True,
+               "summary": parsed.get("summary"),
+               "issues": parsed.get("issues") or []}
+    except Exception as e:
+        log.warning("store-profile ai-diagnosis failed: %s", e)
+        # short negative cache so a provider outage doesn't cause retry storms
+        err = {"configured": True, "error": "ai_unavailable", "issues": [], "summary": None}
+        cache_set(ck, err, ttl=180)
+        return err
+    cache_set(ck, out, ttl=1800)
     return out
 
 

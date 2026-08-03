@@ -66,6 +66,24 @@ export default function IBTBundleTable({
     [rows],
   );
 
+  // All visible lines for a From→To corridor → ONE Odoo draft. Uses the typed
+  // "Actual transferred" override when present (partial transfers), else the
+  // suggested qty.
+  const corridorLines = (b) =>
+    rows
+      .filter(({ b: rb }) => rb.from_store === b.from_store && rb.to_store === b.to_store)
+      .map(({ b: rb, s: rs }) => {
+        const a = actuals[`${rb.from_store}||${rb.to_store}||${rs.sku}`];
+        let qty;
+        if (a === undefined || a === "") qty = rs.suggested_qty || 0;
+        else {
+          const n = parseInt(a, 10);
+          qty = Number.isFinite(n) && n > 0 ? n : 0; // invalid/negative → excluded
+        }
+        return { sku: rs.sku, qty };
+      })
+      .filter((l) => l.qty > 0);
+
   const handleScanOut = (b, s) => {
     const rowKey = `${b.from_store}||${b.to_store}||${s.sku}`;
     const actual = actuals[rowKey];
@@ -269,14 +287,12 @@ export default function IBTBundleTable({
                         <span className="font-mono font-semibold text-[#1a5c38]">{draft.name}</span>
                         <button
                           type="button"
-                          disabled={!!draftingKey}
+                          disabled={!!draftingKey || corridorLines(b).length === 0}
                           onClick={() => {
-                            const lines = rows
-                              .filter(({ b: rb }) => rb.from_store === b.from_store && rb.to_store === b.to_store)
-                              .map(({ s: rs }) => ({ sku: rs.sku, qty: rs.suggested_qty || 0 }));
-                            onCreateDrafts?.({ from_store: b.from_store, to_store: b.to_store, lines });
+                            const lines = corridorLines(b);
+                            if (lines.length) onCreateDrafts?.({ from_store: b.from_store, to_store: b.to_store, lines });
                           }}
-                          title="Recreate the corridor's draft in Odoo with the current suggested quantities (the old draft is cancelled if still in draft)"
+                          title="Recreate this store-to-store draft in Odoo with the current quantities (Actual if typed, else Suggested). The old draft is cancelled if still in draft."
                           className="text-[10px] font-semibold px-1.5 py-0.5 rounded border border-border text-muted hover:text-brand hover:border-brand/40 disabled:opacity-50"
                           data-testid={`${testId}-redo-draft-${s.sku}`}
                         >
@@ -286,18 +302,20 @@ export default function IBTBundleTable({
                     ) : (
                       <button
                         type="button"
-                        disabled={!!draftingKey}
+                        disabled={!!draftingKey || corridorLines(b).length === 0}
                         onClick={() => {
-                          const lines = rows
-                            .filter(({ b: rb }) => rb.from_store === b.from_store && rb.to_store === b.to_store)
-                            .map(({ s: rs }) => ({ sku: rs.sku, qty: rs.suggested_qty || 0 }));
-                          onCreateDrafts?.({ from_store: b.from_store, to_store: b.to_store, lines });
+                          const lines = corridorLines(b);
+                          if (lines.length) onCreateDrafts?.({ from_store: b.from_store, to_store: b.to_store, lines });
                         }}
-                        title={`Create ONE draft internal transfer in Odoo covering every suggested line ${b.from_store} → ${b.to_store}`}
+                        title={corridorLines(b).length === 0
+                          ? "All quantities for this corridor are 0 — type a quantity to include in the draft"
+                          : `Creates ONE draft internal transfer in Odoo covering all ${b.from_store} → ${b.to_store} lines. Type a lower number in "Actual transferred" first to send fewer than suggested.`}
                         className="text-[11px] font-semibold px-2 py-1 rounded-md border border-brand/40 text-brand hover:bg-brand/5 disabled:opacity-50"
                         data-testid={`${testId}-create-draft-${s.sku}`}
                       >
-                        {draftingKey === `${b.from_store}||${b.to_store}` ? "Creating…" : "Create drafts"}
+                        {draftingKey === `${b.from_store}||${b.to_store}`
+                          ? "Creating…"
+                          : `Create 1 draft (${corridorLines(b).length} lines)`}
                       </button>
                     )}
                   </td>

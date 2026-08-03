@@ -99,7 +99,11 @@ const IBT = () => {
     try {
       const { data } = await api.post("/ibt/odoo-draft", { from_store, to_store, lines });
       setOdooDrafts((prev) => {
-        const next = { ...prev };
+        // Clear ALL old refs for this corridor first — a SKU zeroed out of the
+        // recreated draft must not keep showing the (now cancelled) old ref.
+        const next = {};
+        const prefix = `${from_store}||${to_store}||`;
+        Object.keys(prev).forEach((k) => { if (!k.startsWith(prefix)) next[k] = prev[k]; });
         lines.forEach(({ sku }) => {
           if (!(data.missing_skus || []).includes(sku)) {
             next[`${from_store}||${to_store}||${sku}`] = { id: data.picking_id, name: data.picking_name };

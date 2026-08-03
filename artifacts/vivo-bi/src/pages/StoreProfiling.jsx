@@ -188,6 +188,48 @@ function PriorityFocus({ rpt }) {
   );
 }
 
+// ── AI Diagnosis — model reads the health check and names the real issues ────
+const SEV_C = { high: C.bad, medium: C.warn, low: C.muted };
+function AiDiagnosis({ store }) {
+  const { data, isLoading, error } = useApi("store-profile/ai-diagnosis", { store }, { enabled: !!store, staleTime: 30 * 60_000 });
+  if (isLoading) {
+    return (
+      <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 10, padding: "14px 18px", fontSize: 13, color: "#6b7280", display: "flex", alignItems: "center", gap: 8 }}>
+        <span className="pulse" style={{ fontSize: 16 }}>🤖</span> AI is reading this store's health check…
+      </div>
+    );
+  }
+  if (error || !data || data.configured === false || data.error) return null;
+  const issues = data.issues || [];
+  if (!issues.length && !data.summary) return null;
+  return (
+    <div style={{ background: "#fff", border: "1px solid #c7d2fe", borderRadius: 12, padding: "16px 18px", marginTop: 12 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+        <span style={{ fontSize: 16 }}>🤖</span>
+        <span style={{ fontSize: 13.5, fontWeight: 800, color: "#3730a3" }}>AI Diagnosis</span>
+        <span style={{ fontSize: 11, color: "#9ca3af" }}>root-cause read of the numbers above</span>
+      </div>
+      {data.summary && <div style={{ fontSize: 13.5, color: "#374151", marginBottom: issues.length ? 10 : 0 }}>{data.summary}</div>}
+      <div style={{ display: "grid", gap: 8 }}>
+        {issues.map((it, i) => {
+          const c = SEV_C[it.severity] || C.muted;
+          const label = KPI_META.find(m => m.key === it.kpi)?.label || it.kpi;
+          return (
+            <div key={i} style={{ display: "flex", gap: 10, alignItems: "flex-start", background: c.bg, border: `1px solid ${c.bdr}`, borderRadius: 8, padding: "10px 12px" }}>
+              <Pill c={c}>{it.severity}</Pill>
+              <div style={{ minWidth: 0 }}>
+                <span style={{ fontSize: 13, fontWeight: 800, color: "#111827" }}>{label}</span>
+                <span style={{ fontSize: 13, color: "#4b5563" }}> — {it.why}</span>
+                {it.action && <div style={{ fontSize: 12.5, color: "#374151", marginTop: 3 }}><strong>Do:</strong> {it.action}</div>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // Driver interlink chain: how one metric leads to a change in the other
 function DriverChain({ rpt }) {
   const statusByKey = useMemo(() => {
@@ -289,7 +331,15 @@ function HealthCheck({ rpt }) {
                 <span style={{ fontSize: 12, fontWeight: 700, color: "#6b7280", textTransform: "uppercase", letterSpacing: "0.04em" }}>{t.label}</span>
                 {t.h && <Pill c={c}>{t.h.label}</Pill>}
               </div>
-              <div style={{ fontSize: 22, fontWeight: 800, color: "#111827" }}>{fmt(t.f, t.actual)}</div>
+              <div style={{ fontSize: 22, fontWeight: 800, color: "#111827" }}>
+                {fmt(t.f, t.actual)}
+                {t.key === "new_customer_pct" && mtd?.new_customers != null && (
+                  <span style={{ fontSize: 13, fontWeight: 700, color: "#6b7280", marginLeft: 6 }}>· {mtd.new_customers} of {mtd.customer_count}</span>
+                )}
+                {t.key === "returning_customer_pct" && mtd?.returning_customers != null && (
+                  <span style={{ fontSize: 13, fontWeight: 700, color: "#6b7280", marginLeft: 6 }}>· {mtd.returning_customers} of {mtd.customer_count}</span>
+                )}
+              </div>
               <div style={{ fontSize: 11, color: "#9ca3af" }}>MTD{t.note ? ` · ${t.note}` : ""}</div>
               {t.h && (
                 <div style={{ fontSize: 12, fontWeight: 700, marginTop: 6, color: c.fg }}>
@@ -762,6 +812,7 @@ export default function StoreProfiling() {
               <SectionTitle icon="🎯" title="Priority Focus"
                 subtitle="Ranked by revenue impact — fix the top item first, it recovers the most of the gap to target" />
               <PriorityFocus rpt={rpt} />
+              <AiDiagnosis store={store} />
               <SectionTitle icon="🔗" title="How the Metrics Interlink"
                 subtitle="One metric leads to a change in the next — the revenue equation this store runs on" />
               <DriverChain rpt={rpt} />
