@@ -20,6 +20,11 @@ Reconciliation map (all under identical filters):
 * ``/api/kpis``  ==  Σ ``/api/daily-trend`` rows           (date[, country])
 * ``/api/kpis``  ==  Σ ``/api/sales-summary`` rows         (date, country, channel)
 * ``/api/kpis``  ==  Σ ``/api/country-summary`` rows       (date only)
+* Store Profile "All Stores · Whole Business":
+  ``/api/store-profile/performance-report?store=All Stores`` MTD
+  revenue/transactions/units  ==  ``/api/kpis`` net_sales/total_orders/
+  total_units over the report's own MTD window (looser SP tolerance — the
+  report is SWR-cached while /kpis is fresh)
 * ``/api/inventory-summary``  ==  ``/api/analytics/inventory-summary`` and
   ``total_units``  ==  Σ ``by_location``  ==  Σ ``by_subcat`` (internal)
 * Product pages (style-count / breakdown totals that MUST tally):
@@ -156,13 +161,17 @@ def _filters(params: dict) -> dict:
     }
 
 
-def _cmp(scenario, metric, identity, check_code, a, b, money, period, params):
+def _cmp(scenario, metric, identity, check_code, a, b, money, period, params,
+         tol=None):
     """Return an exception dict when observed ``a`` disagrees with expected ``b``
     beyond tolerance, else None. Severity: RED for a material money gap or a large
     relative gap, else AMBER. Cross-surface breaks are never auto-fixable.
 
     ``params`` is the concrete filter dict applied to this comparison; it is
     persisted (structured) on the exception so an investigation is deterministic.
+    ``tol`` overrides the default relative tolerance (used by comparisons whose
+    two sides are cached on different refresh cycles, so a small live-data skew
+    is expected and not a break).
     """
     a = float(a or 0)
     b = float(b or 0)
@@ -170,7 +179,7 @@ def _cmp(scenario, metric, identity, check_code, a, b, money, period, params):
     denom = max(abs(a), abs(b))
     rel = gap / denom if denom else 0.0
     floor = config.CROSS_SURFACE_MONEY_FLOOR if money else config.CROSS_SURFACE_COUNT_FLOOR
-    if rel <= config.CROSS_SURFACE_TOL or gap <= floor:
+    if rel <= (tol if tol is not None else config.CROSS_SURFACE_TOL) or gap <= floor:
         return None
     money_gap = gap if money else 0.0
     severity = "red" if (money_gap >= config.MATERIALITY_KES
@@ -562,6 +571,63 @@ def _check_customers(session, period, out):
             out.append(exc)
 
 
+def _check_store_profile_all(session, period, out):
+    """Reconcile the Store Profile "All Stores · Whole Business" view against the
+    company headline KPIs (task: All-Stores must add up to the dashboard).
+
+    /store-profile/performance-report?store=All%20Stores computes MTD
+    revenue/transactions/units over ALL channels/stores (the ``_sp_all_stores``
+    sentinel drops the per-store predicate) under the same BASE_FILTERS as
+    /kpis, so for the SAME month-to-date window these are contractually equal:
+      - mtd.revenue      == kpis.net_sales      (both = (total − discounts −
+        returns) EX-VAT, the canonical Net Sales)
+      - mtd.transactions == kpis.total_orders   (distinct sale/order order_id)
+      - mtd.units        == kpis.total_units    (gross ordered quantity)
+
+    The KPI window is derived from the report's OWN ``month``/``days_done``
+    (not the validator's clock) so the two surfaces are compared over exactly
+    the days the report covered. The report is served from a 600s SWR cache
+    while /kpis is fresher, so intraday sales landing between the two reads is
+    expected skew, not a break — compared under the looser
+    ``CROSS_SURFACE_SP_TOL`` instead of the headline tolerance.
+    """
+    perf = _get(session, "/store-profile/performance-report",
+                {"store": "All Stores"},
+                timeout=config.CROSS_SURFACE_PRODUCT_TIMEOUT_SEC)
+    mtd = (perf or {}).get("mtd") or {}
+    month = (perf or {}).get("month")
+    days_done = int((perf or {}).get("days_done") or 0)
+    if not month or days_done <= 0:
+        raise _Skip("performance-report returned no month/days_done")
+    try:
+        mstart = date.fromisoformat(str(month))
+    except ValueError as e:
+        raise _Skip(f"performance-report bad month {month!r}: {e}")
+    params = {"date_from": str(mstart),
+              "date_to": str(mstart + timedelta(days=days_done - 1))}
+    kpis = _get(session, "/kpis", params)
+
+    checks = [
+        ("net_sales",
+         "store-profile[All Stores].mtd.revenue == kpis.net_sales",
+         "xsurf_sp_all_vs_kpis_revenue",
+         mtd.get("revenue"), kpis.get("net_sales"), True),
+        ("total_orders",
+         "store-profile[All Stores].mtd.transactions == kpis.total_orders",
+         "xsurf_sp_all_vs_kpis_transactions",
+         mtd.get("transactions"), kpis.get("total_orders"), False),
+        ("total_units",
+         "store-profile[All Stores].mtd.units == kpis.total_units",
+         "xsurf_sp_all_vs_kpis_units",
+         mtd.get("units"), kpis.get("total_units"), False),
+    ]
+    for metric, identity, code, a, b, money in checks:
+        exc = _cmp("store_profile_all", metric, identity, code, a, b, money,
+                   period, params, tol=config.CROSS_SURFACE_SP_TOL)
+        if exc:
+            out.append(exc)
+
+
 def _ago(period: date, win: int) -> str:
     return str(period - timedelta(days=max(1, win) - 1))
 
@@ -627,5 +693,12 @@ def run_checks(period: date):
         skips.append(f"customers: {s}")
     except Exception as e:  # noqa: BLE001
         skips.append(f"customers: {e}")
+
+    try:
+        _check_store_profile_all(session, period, exceptions)
+    except _Skip as s:
+        skips.append(f"store_profile_all: {s}")
+    except Exception as e:  # noqa: BLE001
+        skips.append(f"store_profile_all: {e}")
 
     return exceptions, ("; ".join(skips) if skips else None)

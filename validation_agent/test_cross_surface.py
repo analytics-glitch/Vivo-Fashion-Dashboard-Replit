@@ -490,5 +490,79 @@ class CustomerCheckTests(unittest.TestCase):
         self.assertTrue(any(e["check_code"] == "xsurf_cust_total_vs_details" for e in excs))
 
 
+class StoreProfileAllCheckTests(unittest.TestCase):
+    """``_check_store_profile_all`` — All-Stores Store Profile vs company /kpis.
+
+    The whole-business Store Profile MTD figures must add up to the company
+    dashboard headline for the report's own MTD window. ``_get`` is patched so
+    no API is needed; the /kpis window is asserted to derive from the report's
+    ``month``/``days_done``, not the validator's clock.
+    """
+
+    GREEN = {
+        "/store-profile/performance-report": {
+            "month": "2026-08-01", "days_done": 3,
+            "mtd": {"revenue": 12_345_678, "transactions": 4321, "units": 9876},
+        },
+        "/kpis": {"net_sales": 12_345_678, "total_orders": 4321,
+                  "total_units": 9876},
+    }
+
+    def _run(self, payloads, captured=None):
+        out = []
+
+        def fake_get(s, path, params, timeout=None):
+            if captured is not None:
+                captured[path] = dict(params or {})
+            return payloads[path]
+
+        with mock.patch.object(cross_surface, "_get", side_effect=fake_get):
+            cross_surface._check_store_profile_all(None, date(2026, 8, 3), out)
+        return out
+
+    def test_consistent_payloads_no_exceptions(self):
+        self.assertEqual(self._run(self.GREEN), [])
+
+    def test_kpis_window_derives_from_report_month_days_done(self):
+        captured = {}
+        self._run(self.GREEN, captured)
+        self.assertEqual(captured["/store-profile/performance-report"],
+                         {"store": "All Stores"})
+        self.assertEqual(captured["/kpis"],
+                         {"date_from": "2026-08-01", "date_to": "2026-08-03"})
+
+    def test_revenue_mismatch_fires(self):
+        bad = dict(self.GREEN)
+        bad["/kpis"] = {**self.GREEN["/kpis"], "net_sales": 13_000_000}
+        excs = self._run(bad)
+        codes = {e["check_code"] for e in excs}
+        self.assertIn("xsurf_sp_all_vs_kpis_revenue", codes)
+
+    def test_transactions_mismatch_fires(self):
+        bad = dict(self.GREEN)
+        bad["/kpis"] = {**self.GREEN["/kpis"], "total_orders": 5000}
+        codes = {e["check_code"] for e in self._run(bad)}
+        self.assertIn("xsurf_sp_all_vs_kpis_transactions", codes)
+
+    def test_units_mismatch_fires(self):
+        bad = dict(self.GREEN)
+        bad["/kpis"] = {**self.GREEN["/kpis"], "total_units": 11000}
+        codes = {e["check_code"] for e in self._run(bad)}
+        self.assertIn("xsurf_sp_all_vs_kpis_units", codes)
+
+    def test_sub_sp_tolerance_skew_ignored(self):
+        # Intraday cache skew below CROSS_SURFACE_SP_TOL must not fire.
+        bad = dict(self.GREEN)
+        skewed = round(12_345_678 * (1 + config.CROSS_SURFACE_SP_TOL * 0.5))
+        bad["/kpis"] = {**self.GREEN["/kpis"], "net_sales": skewed}
+        self.assertEqual(self._run(bad), [])
+
+    def test_missing_month_raises_skip(self):
+        bad = dict(self.GREEN)
+        bad["/store-profile/performance-report"] = {"mtd": {}}
+        with self.assertRaises(cross_surface._Skip):
+            self._run(bad)
+
+
 if __name__ == "__main__":
     unittest.main()

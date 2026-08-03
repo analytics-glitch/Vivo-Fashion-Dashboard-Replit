@@ -184,6 +184,10 @@ CROSS_SURFACE_COUNT_FLOOR = _i("VALIDATION_CROSS_SURFACE_COUNT_FLOOR", 4)
 # A count/unit mismatch this large (relative) is RED even with no KES at stake;
 # money mismatches are RED at/above MATERIALITY_KES (shared with governance).
 CROSS_SURFACE_RED_REL = _f("VALIDATION_CROSS_SURFACE_RED_REL", 0.01)  # 1%
+# Store-Profile "All Stores" vs /kpis: the performance-report is served from a
+# 600s SWR cache while /kpis is fresher, so intraday MTD sales landing between
+# the two reads is expected skew — compared under this looser tolerance.
+CROSS_SURFACE_SP_TOL = _f("VALIDATION_CROSS_SURFACE_SP_TOL", 0.01)    # 1%
 CROSS_SURFACE_TIMEOUT_SEC = _i("VALIDATION_CROSS_SURFACE_TIMEOUT", 30)
 # /analytics/product-analysis is a heavy full-catalog scan (server-side it is
 # cached ~10min, but a cold call can exceed the fast-endpoint timeout); give the
