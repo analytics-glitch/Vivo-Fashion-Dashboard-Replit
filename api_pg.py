@@ -29144,7 +29144,7 @@ def data_quality_cross_checks():
             "failures": sum(1 for r in out if r["status"] != "ok")}
 
 
-# =====================================================================
+# ---------------------------------------------------------------------
 # CRM / CEM / Loyalty platform (in-app, no external integrations)
 # ---------------------------------------------------------------------
 # A write-capable CRM layered on the live BI data. Customer 360 merges
@@ -29153,7 +29153,7 @@ def data_quality_cross_checks():
 # loyalty points and ticket messages. All money in KES. Social-channel
 # webhooks, the customer loyalty app, OTP, email engine and ML churn are
 # intentionally NOT built here (they need external accounts/approvals).
-# =====================================================================
+# ---------------------------------------------------------------------
 
 CRM_BRANDS = ("vivo", "sz")
 
@@ -37433,6 +37433,68 @@ def store_profile_weekday_weekend(store: str = Query(...)):
     weekday = _bucket(False, n_wkdy_days)
     weekend = _bucket(True,  n_wknd_days)
 
+    # ── Per-category breakdown: what actually sells on weekends vs weekdays ──
+    cat_when = "\n      ".join(
+        f"WHEN '{sub.replace(chr(39), chr(39)+chr(39))}' THEN '{cat.replace(chr(39), chr(39)+chr(39))}'"
+        for sub, cat in SUBCATEGORY_TO_CATEGORY.items()
+    )
+    cat_expr = f"CASE p.product_type\n      {cat_when}\n      ELSE 'Other' END"
+    cat_rows = run_query(f"""
+        SELECT
+          {cat_expr} AS category,
+          (EXTRACT(ISODOW FROM s.sale_date::date) >= 6) AS is_weekend,
+          SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) AS units,
+          ROUND(SUM(
+            CASE WHEN s.sale_kind IN ('sale','order')
+                 THEN (s.total_sales_kes::numeric - COALESCE(s.discounts_kes,0)::numeric) / {vat}
+                 WHEN s.sale_kind = 'return'
+                 THEN -s.returns_kes::numeric / {vat}
+                 ELSE 0 END
+          ), 0) AS net_revenue
+        FROM all_sales s
+        JOIN all_products_clean p ON s.variant_sku = p.sku
+        WHERE s.sale_date::date >= '{win_start}'
+          AND s.sale_date::date <= '{win_end}'
+          AND {sp_sales}
+          AND s.sale_kind IN ('sale','order','return')
+          AND {BASE_FILTERS}
+        GROUP BY 1, 2
+    """, ttl=HEAVY_DASH_TTL)
+
+    cat_map = {}
+    for r in (cat_rows or []):
+        c = r.get("category") or "Other"
+        b = cat_map.setdefault(c, {False: {"units": 0, "rev": 0}, True: {"units": 0, "rev": 0}})
+        k = bool(r["is_weekend"])
+        b[k]["units"] += int(r.get("units") or 0)
+        b[k]["rev"]   += int(r.get("net_revenue") or 0)
+
+    tot_wkdy_rev = sum(b[False]["rev"] for b in cat_map.values()) or 0
+    tot_wknd_rev = sum(b[True]["rev"]  for b in cat_map.values()) or 0
+    categories = []
+    for c, b in cat_map.items():
+        wkdy_day = b[False]["rev"] / n_wkdy_days
+        wknd_day = b[True]["rev"]  / n_wknd_days
+        # Skip categories too small to be actionable (< 1% of revenue on both sides)
+        if b[False]["rev"] < 0.01 * tot_wkdy_rev and b[True]["rev"] < 0.01 * tot_wknd_rev:
+            continue
+        wkdy_share = round(b[False]["rev"] * 100.0 / tot_wkdy_rev, 1) if tot_wkdy_rev > 0 else None
+        wknd_share = round(b[True]["rev"]  * 100.0 / tot_wknd_rev, 1) if tot_wknd_rev > 0 else None
+        delta = round((wknd_day - wkdy_day) * 100.0 / wkdy_day, 1) if wkdy_day > 0 else None
+        categories.append({
+            "category":          c,
+            "weekday_rev_day":   round(wkdy_day),
+            "weekend_rev_day":   round(wknd_day),
+            "weekday_units_day": round(b[False]["units"] / n_wkdy_days, 1),
+            "weekend_units_day": round(b[True]["units"]  / n_wknd_days, 1),
+            "weekday_share_pct": wkdy_share,
+            "weekend_share_pct": wknd_share,
+            "delta_pct":         delta,
+        })
+    # Rank by how differently the category behaves on weekends (biggest shifts first)
+    categories.sort(key=lambda x: -(abs(x["delta_pct"]) if x["delta_pct"] is not None else 0))
+    categories = categories[:8]
+
     # Per-metric weekend-vs-weekday delta %, so the UI can rank what changes.
     deltas = {}
     for k in ("revenue_day", "units_day", "txns_day", "asp", "abv", "footfall_day", "conversion"):
@@ -37445,6 +37507,7 @@ def store_profile_weekday_weekend(store: str = Query(...)):
         "weekday": weekday,
         "weekend": weekend,
         "deltas_pct": deltas,
+        "categories": categories,
     }
     cache_set(ck, out, ttl=HEAVY_DASH_TTL)
     return out

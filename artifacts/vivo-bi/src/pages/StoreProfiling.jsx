@@ -847,6 +847,77 @@ function WeekendProfile({ store }) {
           💡 {takeaway}
         </div>
       )}
+      <WeekendCategories cats={data.categories} />
+    </div>
+  );
+}
+
+// What sells on weekends — top categories by weekend-vs-weekday shift
+function WeekendCategories({ cats }) {
+  if (!cats || cats.length === 0) return null;
+  const overIdx  = cats.filter(c => (c.delta_pct ?? 0) > 0);
+  const underIdx = cats.filter(c => (c.delta_pct ?? 0) <= 0);
+  const th = { padding: "9px 14px", color: "#6b7280", fontWeight: 700, fontSize: 12, borderBottom: "2px solid #e5e7eb", whiteSpace: "nowrap", background: "#f9fafb", textAlign: "right" };
+  const top = overIdx[0];
+  return (
+    <div style={{ borderTop: "1px solid #e5e7eb" }}>
+      <div style={{ padding: "12px 20px 4px", fontSize: 14, fontWeight: 800, color: "#111827" }}>
+        What sells on weekends
+        <span style={{ marginLeft: 8, fontSize: 12, fontWeight: 600, color: "#6b7280" }}>
+          revenue per day, weekend vs weekday — biggest shifts first
+        </span>
+      </div>
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+          <thead>
+            <tr>
+              <th style={{ ...th, textAlign: "left", minWidth: 140 }}>Category</th>
+              <th style={th}>Weekday rev/day</th>
+              <th style={{ ...th, background: "#eff6ff", color: C.blue.fg }}>Weekend rev/day</th>
+              <th style={th}>Weekend units/day</th>
+              <th style={th}>Weekend share</th>
+              <th style={th}>Weekend vs Weekday</th>
+            </tr>
+          </thead>
+          <tbody>
+            {cats.map((c, i) => {
+              const dv = c.delta_pct;
+              const shareShift = (c.weekend_share_pct != null && c.weekday_share_pct != null)
+                ? Math.round((c.weekend_share_pct - c.weekday_share_pct) * 10) / 10 : null;
+              return (
+                <tr key={c.category} style={{ borderBottom: "1px solid #f3f4f6", background: i % 2 ? "#fafafa" : "#fff" }}>
+                  <td style={{ padding: "9px 14px", fontWeight: 700, color: "#111827" }}>{c.category}</td>
+                  <td style={{ textAlign: "right", padding: "9px 14px", color: "#374151" }}>{fmtKES(c.weekday_rev_day)}</td>
+                  <td style={{ textAlign: "right", padding: "9px 14px", fontWeight: 800, color: C.blue.fg, background: "#f8faff" }}>{fmtKES(c.weekend_rev_day)}</td>
+                  <td style={{ textAlign: "right", padding: "9px 14px", color: "#374151" }}>{fmtNum(c.weekend_units_day)}</td>
+                  <td style={{ textAlign: "right", padding: "9px 14px", color: "#374151" }}>
+                    {c.weekend_share_pct != null ? `${c.weekend_share_pct}%` : "—"}
+                    {shareShift != null && Math.abs(shareShift) >= 0.5 && (
+                      <span style={{ marginLeft: 6, fontSize: 11, fontWeight: 700, color: shareShift > 0 ? C.good.fg : C.bad.fg }}>
+                        ({shareShift > 0 ? "+" : ""}{shareShift}pt)
+                      </span>
+                    )}
+                  </td>
+                  <td style={{ textAlign: "right", padding: "9px 14px" }}>
+                    {dv == null ? <span style={{ color: "#9ca3af" }}>—</span> : (
+                      <span style={{ fontWeight: Math.abs(dv) >= 15 ? 800 : 600, color: Math.abs(dv) < 3 ? "#6b7280" : dv > 0 ? C.good.fg : C.bad.fg }}>
+                        {dv > 0 ? "▲" : "▼"} {Math.abs(dv).toFixed(0)}%
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      {(top || underIdx[0]) && (
+        <div style={{ padding: "10px 20px", borderTop: "1px solid #f3f4f6", background: "#f0f9ff", fontSize: 13, color: "#0c4a6e", fontWeight: 600 }}>
+          💡 {top
+            ? `${top.category} over-indexes most on weekends (+${Math.abs(top.delta_pct).toFixed(0)}% rev/day) — lead Sat–Sun displays and stock with it.`
+            : `No category over-indexes on weekends — ${underIdx[0].category} drops the most (${underIdx[0].delta_pct}%).`}
+        </div>
+      )}
     </div>
   );
 }
