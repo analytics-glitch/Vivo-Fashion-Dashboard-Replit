@@ -352,7 +352,7 @@ export default function StoreProfiling() {
     const params = new URLSearchParams({ period });
     if (country) params.set("country", country);
     api.get(`/analytics/store-profiling?${params}`)
-      .then((d) => { setData(d); setLoading(false); })
+      .then((d) => { setData(d.data); setLoading(false); })
       .catch((e) => { setError(e.message || "Failed to load"); setLoading(false); });
   }, [period, country]);
 
