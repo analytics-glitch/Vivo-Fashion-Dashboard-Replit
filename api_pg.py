@@ -35535,6 +35535,156 @@ async def l10_update_settings(request: Request):
         (json.dumps(settings),))
     return settings
 
+
+# ── L10 Export / Import (admin-only, gated by /api/admin path check) ─────────
+
+# FK-safe insert order: parents before children
+_L10_INSERT_ORDER = [
+    "l10_folders",
+    "l10_meetings",
+    "l10_members",
+    "l10_scorecard_metrics",
+    "l10_rocks",
+    "l10_todos",
+    "l10_checkin",
+    "l10_scorecard_values",
+    "l10_headlines",
+    "l10_ids_issues",
+    "l10_conclude",
+    "l10_ratings",
+]
+
+
+def _reset_l10_sequences(cur):
+    """Reset each l10_* serial PK sequence to MAX(id)+1 so future inserts
+    never collide with restored IDs."""
+    for tbl in _L10_INSERT_ORDER:
+        cur.execute(
+            "SELECT setval(pg_get_serial_sequence(%s, 'id'), "
+            "COALESCE((SELECT MAX(id) FROM " + tbl + "), 0) + 1, false)",
+            (tbl,),
+        )
+
+
+@app.get("/api/admin/l10/export")
+def l10_export():
+    """Export a full JSON snapshot of all l10_* tables in FK-safe order.
+
+    Returns::
+
+        {
+          "tables": {"l10_folders": [...], "l10_meetings": [...], ...},
+          "row_counts": {"l10_folders": N, ...},
+          "exported_at": "<ISO-8601>"
+        }
+
+    All timestamp/date columns are serialised as ISO-8601 strings.
+    Gated to admin role by the /api/admin path middleware.
+    """
+    from datetime import datetime
+    _ensure_l10_tables()
+
+    snapshot = {}
+    for tbl in _L10_INSERT_ORDER:
+        rows = _users_exec(f"SELECT * FROM {tbl} ORDER BY id", fetch=True)
+        cleaned = []
+        for row in rows:
+            r = {}
+            for k, v in row.items():
+                if hasattr(v, "isoformat"):
+                    r[k] = v.isoformat()
+                else:
+                    r[k] = v
+            cleaned.append(r)
+        snapshot[tbl] = cleaned
+
+    return {
+        "tables": snapshot,
+        "row_counts": {tbl: len(snapshot[tbl]) for tbl in _L10_INSERT_ORDER},
+        "exported_at": datetime.utcnow().isoformat() + "Z",
+    }
+
+
+@app.post("/api/admin/l10/import")
+async def l10_import(request: Request):
+    """Restore an L10 snapshot produced by GET /api/admin/l10/export.
+
+    Workflow:
+    1. Wipe existing rows for every folder_id present in the payload
+       (leaf → root, to respect FK constraints).
+    2. Insert all rows in FK order using original IDs (ON CONFLICT DO NOTHING
+       so the endpoint is idempotent / re-runnable).
+    3. Reset each table's serial sequence to MAX(id)+1 to prevent future
+       insert collisions.
+
+    Returns a row-count summary per table.
+    Gated to admin role by the /api/admin path middleware.
+    """
+    _ensure_l10_tables()
+    body = await request.json()
+    tables_data = body.get("tables", {})
+
+    folder_rows = tables_data.get("l10_folders", [])
+    folder_ids = [r["id"] for r in folder_rows if r.get("id") is not None]
+    if not folder_ids:
+        from fastapi.responses import JSONResponse as _JR
+        return _JR({"error": "No l10_folders rows in payload"}, status_code=400)
+
+    ids_sql = ", ".join(str(int(fid)) for fid in folder_ids)
+    mtg_sub = f"SELECT id FROM l10_meetings WHERE folder_id IN ({ids_sql})"
+
+    # Delete leaf → root so FK constraints are never violated
+    delete_stmts = [
+        f"DELETE FROM l10_ratings        WHERE meeting_id IN ({mtg_sub})",
+        f"DELETE FROM l10_conclude       WHERE meeting_id IN ({mtg_sub})",
+        f"DELETE FROM l10_ids_issues     WHERE meeting_id IN ({mtg_sub})",
+        f"DELETE FROM l10_headlines      WHERE meeting_id IN ({mtg_sub})",
+        f"DELETE FROM l10_scorecard_values WHERE meeting_id IN ({mtg_sub})",
+        f"DELETE FROM l10_checkin        WHERE meeting_id IN ({mtg_sub})",
+        f"DELETE FROM l10_todos          WHERE folder_id  IN ({ids_sql})",
+        f"DELETE FROM l10_rocks          WHERE folder_id  IN ({ids_sql})",
+        f"DELETE FROM l10_scorecard_metrics WHERE folder_id IN ({ids_sql})",
+        f"DELETE FROM l10_members        WHERE folder_id  IN ({ids_sql})",
+        f"DELETE FROM l10_meetings       WHERE folder_id  IN ({ids_sql})",
+        f"DELETE FROM l10_folders        WHERE id         IN ({ids_sql})",
+    ]
+
+    inserted = {}
+
+    with _users_tx() as cur:
+        for stmt in delete_stmts:
+            cur.execute(stmt)
+
+        for tbl in _L10_INSERT_ORDER:
+            rows = tables_data.get(tbl, [])
+            if not rows:
+                inserted[tbl] = 0
+                continue
+            cols = list(rows[0].keys())
+            col_list = ", ".join(cols)
+            placeholders = ", ".join(["%s"] * len(cols))
+            n = 0
+            for row in rows:
+                values = [row.get(c) for c in cols]
+                cur.execute(
+                    f"INSERT INTO {tbl} ({col_list}) VALUES ({placeholders}) "
+                    f"ON CONFLICT DO NOTHING",
+                    values,
+                )
+                n += cur.rowcount
+            inserted[tbl] = n
+
+    # Reset sequences after the bulk-insert transaction has committed
+    with _users_tx() as cur:
+        _reset_l10_sequences(cur)
+
+    return {
+        "imported": inserted,
+        "folder_ids": folder_ids,
+        "total_rows": sum(inserted.values()),
+    }
+
+
 # Serve React build as static files
 build_dir = pathlib.Path(__file__).parent / "dashboard" / "build"
 if build_dir.exists():
