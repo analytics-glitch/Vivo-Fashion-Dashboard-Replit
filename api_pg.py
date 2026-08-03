@@ -37088,22 +37088,76 @@ def store_profile_performance_report(store: str = Query(...)):
         else:
             proj[k] = None
 
-    # Derive non-revenue targets (scale expected ratios to revenue target)
-    RATE_KEYS = {"asp","abv","conversion","discount_rate","return_rate","new_customer_pct","returning_customer_pct"}
+    # ── Derived targets: what each KPI must be to hit the revenue budget ──────
+    # Volume KPIs — held assumption: rates (ASP/ABV/conversion) stay at baseline,
+    #               so volumes must scale to deliver the extra revenue.
+    # Rate KPIs   — held assumption: volumes stay at baseline, so the RATE must
+    #               lift to close the gap (shows the "pricing/efficiency" lever).
+    # Quality KPIs (discount/return/new%/returning%) — show the historical
+    #               benchmark as the guardrail target (lower-is-better already
+    #               flagged in the frontend).
+    RATE_KEYS = {"asp","abv","conversion","discount_rate","return_rate",
+                 "new_customer_pct","returning_customer_pct"}
     derived_targets: dict = {"revenue": target_revenue}
+    target_basis:    dict = {"revenue": "Budget"}      # human-readable assumption label
     if target_revenue and expected:
-        e_rev = float(expected.get("revenue") or 0)
-        rev_ratio = (target_revenue / e_rev) if e_rev > 0 else 1.0
-        for k in KPI_KEYS:
-            if k == "revenue":
-                continue
-            e_val = expected.get(k)
-            if e_val is None:
-                derived_targets[k] = None
-            elif k in RATE_KEYS:
-                derived_targets[k] = e_val           # rates don't scale with revenue
-            else:
-                derived_targets[k] = round(e_val * rev_ratio)
+        e_rev  = float(expected.get("revenue")       or 0)
+        e_units = float(expected.get("units")        or 0)
+        e_txns  = float(expected.get("transactions") or 0)
+        e_asp   = float(expected.get("asp")          or 0)
+        e_abv   = float(expected.get("abv")          or 0)
+        e_ff    = float(expected.get("footfall")     or 0)
+        e_conv  = float(expected.get("conversion")   or 0)
+        e_cust  = float(expected.get("customer_count") or 0)
+        e_new   = expected.get("new_customer_pct")
+        e_ret   = expected.get("returning_customer_pct")
+        e_disc  = expected.get("discount_rate")
+        e_ret_r = expected.get("return_rate")
+
+        # ── Volume KPIs (rates stay flat → volume must grow) ──────────────
+        # Units needed = target_revenue / baseline_ASP
+        needed_units = round(target_revenue / e_asp) if e_asp > 0 else None
+        # Transactions needed = target_revenue / baseline_ABV
+        needed_txns  = round(target_revenue / e_abv) if e_abv > 0 else None
+        # Footfall needed = needed_txns / baseline_conversion
+        needed_ff    = round(needed_txns / (e_conv / 100.0)) if (needed_txns and e_conv and e_conv > 0) else None
+        # Customer count scales with transactions
+        needed_cust  = round(needed_txns * (e_cust / e_txns)) if (needed_txns and e_txns > 0 and e_cust > 0) else None
+
+        # ── Rate KPIs (volumes stay flat → rate must lift) ────────────────
+        # ASP needed = target_revenue / baseline_units  (if you sell same volume, at what price?)
+        needed_asp   = round(target_revenue / e_units) if e_units > 0 else None
+        # ABV needed = target_revenue / baseline_transactions
+        needed_abv   = round(target_revenue / e_txns)  if e_txns  > 0 else None
+        # Conversion needed = needed_txns / baseline_footfall
+        needed_conv  = round(needed_txns * 100.0 / e_ff, 1) if (needed_txns and e_ff and e_ff > 0) else None
+
+        derived_targets.update({
+            "units":                  needed_units,
+            "transactions":           needed_txns,
+            "footfall":               needed_ff,
+            "customer_count":         needed_cust,
+            "asp":                    needed_asp,
+            "abv":                    needed_abv,
+            "conversion":             needed_conv,
+            "discount_rate":          e_disc,    # guardrail: stay at or below historical
+            "return_rate":            e_ret_r,   # guardrail: stay at or below historical
+            "new_customer_pct":       e_new,
+            "returning_customer_pct": e_ret,
+        })
+        target_basis.update({
+            "units":        f"At baseline ASP KES {e_asp:,.0f}" if e_asp else "",
+            "transactions": f"At baseline ABV KES {e_abv:,.0f}" if e_abv else "",
+            "footfall":     f"At baseline {e_conv:.1f}%% conversion" if e_conv else "",
+            "customer_count": f"Proportional to transactions",
+            "asp":          f"If units stay at {int(e_units):,}" if e_units else "",
+            "abv":          f"If transactions stay at {int(e_txns):,}" if e_txns else "",
+            "conversion":   f"To drive {needed_txns:,} txns from {int(e_ff):,} footfall" if (needed_txns and e_ff) else "",
+            "discount_rate":  "Historical benchmark (guardrail)",
+            "return_rate":    "Historical benchmark (guardrail)",
+            "new_customer_pct":       "Historical benchmark",
+            "returning_customer_pct": "Historical benchmark",
+        })
 
     # MTD prorated & headline attainment
     mtd_tgt_rev = round(target_revenue / days_in_m * days_done) if target_revenue else None
@@ -37302,6 +37356,7 @@ def store_profile_performance_report(store: str = Query(...)):
         "hist_avg":      hist_avg,
         "prior_year":    prior_year,
         "derived_targets": derived_targets,
+        "target_basis":    target_basis,
         "kpi_rows":      kpi_rows_out,
         "actions":       actions,
     }

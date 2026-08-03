@@ -531,8 +531,8 @@ function SectionC({ store }) {
 
   const { days_done, days_in_month, days_remaining, target_revenue, revenue_gap,
           required_daily_revenue, proj_revenue_attainment, mtd_revenue_attainment,
-          mtd, projected_eom, expected, derived_targets, expected_source,
-          actions = [], kpi_rows = [], woc, msi, soh } = rpt;
+          mtd, projected_eom, expected, derived_targets, target_basis = {},
+          expected_source, actions = [], kpi_rows = [], woc, msi, soh } = rpt;
 
   const rev_status = statusFromPct(proj_revenue_attainment);
 
@@ -603,65 +603,100 @@ function SectionC({ store }) {
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
           <thead>
             <tr style={{ background: "#f9fafb" }}>
-              {[
-                ["KPI", false, 160],
-                ["Current MTD", true, 110],
-                ["Projected EOM", true, 110],
-                [`Expected (${expected_source?.split(" ")[0] === "Aug" ? expected_source : "Baseline"})`, true, 120],
-                ["Budget Target", true, 120],
-                ["Proj vs Target", false, 140],
-              ].map(([h, right, minW]) => (
-                <th key={h} style={{
-                  textAlign: right ? "right" : "left",
-                  padding: "8px 10px", color: "#6b7280", fontWeight: 600, fontSize: 11,
-                  borderBottom: "2px solid #e5e7eb", minWidth: minW,
-                  whiteSpace: "nowrap",
-                }}>{h}</th>
-              ))}
+              <th style={{ textAlign: "left", padding: "8px 10px", color: "#6b7280", fontWeight: 600, fontSize: 11, borderBottom: "2px solid #e5e7eb", minWidth: 160 }}>KPI</th>
+              <th style={{ textAlign: "right", padding: "8px 10px", color: "#6b7280", fontWeight: 600, fontSize: 11, borderBottom: "2px solid #e5e7eb", minWidth: 110 }}>Current MTD</th>
+              <th style={{ textAlign: "right", padding: "8px 10px", color: "#6b7280", fontWeight: 600, fontSize: 11, borderBottom: "2px solid #e5e7eb", minWidth: 110 }}>Projected EOM</th>
+              <th style={{ textAlign: "right", padding: "8px 10px", color: "#6b7280", fontWeight: 600, fontSize: 11, borderBottom: "2px solid #e5e7eb", minWidth: 120 }}>
+                {expected_source?.split(" ")[0] === "Aug" ? expected_source : "Baseline"}
+              </th>
+              <th style={{ textAlign: "left", padding: "8px 10px", borderBottom: "2px solid #e5e7eb", minWidth: 170, background: "#fffbeb" }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: "#92400e" }}>Required to Hit Target</div>
+                {target_revenue && (
+                  <div style={{ fontSize: 10, color: "#b45309", fontWeight: 400 }}>
+                    KES {(target_revenue / 1e6).toFixed(1)}M budget · {days_in_month} days
+                  </div>
+                )}
+              </th>
+              <th style={{ textAlign: "left", padding: "8px 10px", color: "#6b7280", fontWeight: 600, fontSize: 11, borderBottom: "2px solid #e5e7eb", minWidth: 140 }}>Proj vs Required</th>
             </tr>
           </thead>
           <tbody>
             {C_KPI_KEYS.map(({ key, label, fmt, lowerBetter }) => {
-              const row = kpi_rows.find((r) => r.key === key) || {};
+              const row    = kpi_rows.find((r) => r.key === key) || {};
               const m_val  = mtd?.[key];
               const p_val  = projected_eom?.[key];
               const e_val  = expected?.[key];
               const t_val  = derived_targets?.[key];
+              const basis  = target_basis?.[key] || "";
               const p_att  = row.proj_attainment_pct;
               const status = row.status || statusFromPct(p_att, lowerBetter);
               const s      = STATUS[status] || STATUS.low;
 
-              // Highlight cells that are off vs expected
-              const vs_expected = (p_val != null && e_val != null && e_val > 0)
-                ? Math.round(p_val / e_val * 100)
+              // Volume KPIs get a /day breakdown
+              const VOL_KEYS = new Set(["units","transactions","footfall","customer_count"]);
+              const perDay = (v) => v != null && VOL_KEYS.has(key)
+                ? <div style={{ fontSize: 10, color: "#9ca3af" }}>{fmtNum(Math.round(v / days_in_month))}/day</div>
                 : null;
+
+              // vs expected delta on projected
+              const vs_exp = (p_val != null && e_val != null && e_val > 0)
+                ? Math.round(p_val / e_val * 100) : null;
+
+              // Gap to required (projected vs required)
+              const gap_to_req = (p_val != null && t_val != null && t_val > 0 && !lowerBetter)
+                ? p_val - t_val : null;
 
               return (
                 <tr key={key} style={{ borderBottom: "1px solid #f3f4f6" }}
                     onMouseEnter={(e) => (e.currentTarget.style.background = "#f9fafb")}
                     onMouseLeave={(e) => (e.currentTarget.style.background = "")}>
-                  <td style={{ padding: "8px 10px", fontWeight: 600, color: "#374151" }}>
+                  {/* KPI name */}
+                  <td style={{ padding: "9px 10px", fontWeight: 600, color: "#374151" }}>
                     {label}
                     {lowerBetter && <span style={{ fontSize: 10, color: "#9ca3af", marginLeft: 4 }}>↓ lower = better</span>}
                   </td>
-                  <td style={{ textAlign: "right", padding: "8px 10px", color: "#374151" }}>
+                  {/* MTD actual */}
+                  <td style={{ textAlign: "right", padding: "9px 10px", color: "#374151" }}>
                     {fmtAuto(fmt, m_val)}
+                    {perDay(m_val)}
                   </td>
-                  <td style={{ textAlign: "right", padding: "8px 10px", fontWeight: 700, color: s.color }}>
+                  {/* Projected EOM */}
+                  <td style={{ textAlign: "right", padding: "9px 10px", fontWeight: 700, color: s.color }}>
                     {fmtAuto(fmt, p_val)}
-                    {vs_expected != null && Math.abs(vs_expected - 100) > 5 && (
-                      <div style={{ fontSize: 10, fontWeight: 400, color: vs_expected >= 95 ? "#16a34a" : "#dc2626" }}>
-                        {vs_expected >= 100 ? "▲" : "▼"}{Math.abs(vs_expected - 100)}% vs exp.
+                    {perDay(p_val)}
+                    {vs_exp != null && Math.abs(vs_exp - 100) > 5 && (
+                      <div style={{ fontSize: 10, fontWeight: 400, color: vs_exp >= 95 ? "#16a34a" : "#dc2626" }}>
+                        {vs_exp >= 100 ? "▲" : "▼"}{Math.abs(vs_exp - 100)}% vs baseline
                       </div>
                     )}
                   </td>
-                  <td style={{ textAlign: "right", padding: "8px 10px", color: "#6b7280" }}>
+                  {/* Expected baseline */}
+                  <td style={{ textAlign: "right", padding: "9px 10px", color: "#6b7280" }}>
                     {fmtAuto(fmt, e_val)}
+                    {perDay(e_val)}
                   </td>
-                  <td style={{ textAlign: "right", padding: "8px 10px", color: "#374151" }}>
-                    {fmtAuto(fmt, t_val)}
+                  {/* Required to hit target */}
+                  <td style={{ padding: "9px 10px", background: "#fffdf5", borderLeft: "2px solid #fde68a" }}>
+                    <div style={{ fontWeight: 700, color: t_val != null ? "#92400e" : "#9ca3af", fontSize: 13 }}>
+                      {fmtAuto(fmt, t_val)}
+                    </div>
+                    {perDay(t_val)}
+                    {basis && (
+                      <div style={{ fontSize: 10, color: "#b45309", marginTop: 2, fontStyle: "italic" }}>
+                        {basis}
+                      </div>
+                    )}
+                    {/* Show gap between projected and required */}
+                    {gap_to_req != null && t_val != null && (
+                      <div style={{ fontSize: 10, marginTop: 2, color: gap_to_req >= 0 ? "#16a34a" : "#dc2626", fontWeight: 600 }}>
+                        {gap_to_req >= 0
+                          ? `▲ +${fmtAuto(fmt, Math.abs(gap_to_req))} ahead`
+                          : `▼ ${fmtAuto(fmt, Math.abs(gap_to_req))} short`}
+                      </div>
+                    )}
                   </td>
-                  <td style={{ padding: "8px 10px" }}>
+                  {/* Attainment bar */}
+                  <td style={{ padding: "9px 10px" }}>
                     <AttainmentBar pct={p_att} lowerBetter={lowerBetter} />
                   </td>
                 </tr>
