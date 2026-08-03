@@ -12102,31 +12102,29 @@ def _inv_local_scope_exists(search=None, brand=None, product_type=None, sku_expr
 # logistics overhead. Domestic moves are cheap; cross-border moves clear
 # customs/duty so they must consolidate a much larger bundle to be worthwhile.
 # These are knobs (spec §5 "minimum transfer"); Phase 2 makes them per-corridor.
-IBT_MIN_TRANSFER_DOMESTIC = 4
-IBT_MIN_TRANSFER_CROSS = 24
+IBT_MIN_TRANSFER_DOMESTIC = 0  # no minimum transfer size (simplified rules)
+IBT_MIN_TRANSFER_CROSS = 0     # cross-border removed; kept as 0 for callers
+IBT_MARKDOWN_MIN_ONHAND = 4    # markdown fork still needs meaningful stuck stock
 
 
 def _ibt_base_ctes(date_from, date_to, country, low, high, use_clustering=True):
     """Shared IBT candidate-qualification CTE chain (WITH ... scored).
 
-    Builds the donor/recipient qualification used by BOTH the legacy pair-level
-    SQL and the Phase-1 sku-grain edge SQL. Emits CTEs through `scored` (the set
-    of eligible (style, from_store, to_store) pairs that pass dead-stock,
-    per-size-pack donor/receiver unit thresholds (with a lower donor bar for
-    styles <= 21 days old — regular rules start at 22 days), cluster-adjacency,
-    demonstrated-demand and >=3-projected-SKU minimum-range guards). The canonical SOR formula is never used or changed
-    here — this only chooses WHICH pairs are eligible to move stock."""
+    SIMPLIFIED RULE SET (per business owner). An eligible
+    (style, from_store, to_store) move must satisfy ALL of:
+      1. Size-pack thresholds  — donor >= donor_min units; receiver <= recv_max.
+      2. Style age > 28 days   — styles launched within 28 days are excluded.
+      3. Same country          — no cross-border transfers.
+      4. Donor  = qualifying stock AND low/no recent sales at that store.
+      5. Receiver = at/below receiver threshold AND has sold the style.
+      6. Exclusions            — warehouse, Manual Order, Online.
+      7. No minimum bundle size.
+
+    `use_clustering` accepted for signature compatibility but ignored.
+    from_tier/to_tier emitted as constant 3 (cluster 'C') so downstream callers
+    keep working."""
     c_sales = ("AND s.country = '" + _sql_str(country) + "'") if country else ""
     c_inv = ("AND i.country = '" + _sql_str(country) + "'") if country else ""
-    if use_clustering:
-        avg_expr = "COALESCE(NULLIF(cs.avg_u, 0), st.avg_u)"
-        cs_join = ("LEFT JOIN cluster_stats cs ON cs.style = f.style "
-                   "AND cs.tier_n = t.tier_n AND cs.country = t.country")
-        adj_filter = "AND ABS(f.tier_n - t.tier_n) <= 1"
-    else:
-        avg_expr = "st.avg_u"
-        cs_join = ""
-        adj_filter = ""
     return f"""
     WITH sv AS (
       SELECT p.style_name AS style, s.pos_location_name AS store,
@@ -12140,6 +12138,7 @@ def _ibt_base_ctes(date_from, date_to, country, low, high, use_clustering=True):
         AND s.sale_kind IN ('sale','order')
         AND s.pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})
         AND s.pos_location_name NOT IN ('Manual Order','Online - vivo-uganda')
+        AND s.pos_location_name NOT ILIKE '%online%'
         AND COALESCE(p.style_name,'') <> '' {c_sales}
       GROUP BY 1, 2
     ),
@@ -12150,6 +12149,8 @@ def _ibt_base_ctes(date_from, date_to, country, low, high, use_clustering=True):
       FROM all_inventory i
       JOIN all_products_clean p ON p.sku = i.sku
       WHERE i.pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})
+        AND i.pos_location_name NOT IN ('Manual Order','Online - vivo-uganda')
+        AND i.pos_location_name NOT ILIKE '%online%'
         AND COALESCE(i.pos_location_name,'') <> ''
         AND COALESCE(p.style_name,'') <> '' {c_inv}
       GROUP BY 1, 2
@@ -12166,71 +12167,6 @@ def _ibt_base_ctes(date_from, date_to, country, low, high, use_clustering=True):
       SELECT style, AVG(units_sold) AS avg_u, MAX(asp) AS asp
       FROM combined GROUP BY style HAVING COUNT(*) >= 2 AND AVG(units_sold) > 0
     ),
-    store_rev AS (
-      SELECT s.pos_location_name AS store, s.country AS country,
-             SUM(s.net_sales_kes::numeric) AS rev90
-      FROM all_sales s
-      WHERE s.sale_kind IN ('sale','order')
-        AND s.sale_date >= (CURRENT_DATE - INTERVAL '90 days')::text
-        AND {BASE_FILTERS}
-        AND s.pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})
-        AND s.pos_location_name NOT ILIKE '%online%' {c_sales}
-      GROUP BY 1, 2
-    ),
-    -- Tier stores WITHIN their own country (PARTITION BY country). A store's
-    -- cluster (A/B/C) must reflect its rank in its OWN market, not a network-wide
-    -- revenue rank — otherwise the "All countries" view tiers, say, Kenya stores
-    -- against Uganda/Rwanda revenue and the tier-adjacency + cluster-average
-    -- thresholds suppress valid intra-country transfers that appear when the view
-    -- is scoped to one country. This partition is a NO-OP for any single-country
-    -- view (one partition), so it only makes "All countries" a proper superset.
-    store_tier AS (
-      SELECT store, country,
-             NTILE(3) OVER (PARTITION BY country ORDER BY rev90 DESC) AS tier_n
-      FROM store_rev
-    ),
-    cluster_stats AS (
-      SELECT c.style, c.country, COALESCE(t.tier_n, 3) AS tier_n,
-             AVG(c.units_sold) AS avg_u
-      FROM combined c
-      LEFT JOIN store_tier t ON t.store = c.store AND t.country = c.country
-      GROUP BY c.style, c.country, COALESCE(t.tier_n, 3)
-    ),
-    style_inv AS (
-      SELECT p.style_name AS style, SUM(i.available) AS avail
-      FROM all_inventory i
-      JOIN all_products_clean p ON p.sku = i.sku
-      WHERE i.pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})
-        AND COALESCE(p.style_name,'') <> '' {c_inv}
-      GROUP BY 1
-    ),
-    style_sales56 AS (
-      SELECT p.style_name AS style, SUM(s.net_quantity) AS u56
-      FROM all_sales s
-      JOIN all_products_clean p ON p.sku = s.variant_sku
-      WHERE s.sale_date >= (CURRENT_DATE - INTERVAL '56 days')::text
-        AND s.sale_kind IN ('sale','order')
-        AND s.pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})
-        AND COALESCE(p.style_name,'') <> '' {c_sales}
-      GROUP BY 1
-    ),
-    dead AS (
-      SELECT iv.style
-      FROM style_inv iv
-      LEFT JOIN style_sales56 sa ON sa.style = iv.style
-      WHERE (COALESCE(sa.u56, 0) = 0
-             OR (iv.avail::numeric * 8.0 / NULLIF(sa.u56, 0)) > 16.0)
-        AND (COALESCE(sa.u56, 0)::numeric
-             / NULLIF(COALESCE(sa.u56, 0) + iv.avail, 0) < 0.05
-             OR (COALESCE(sa.u56, 0) + iv.avail) = 0)
-    ),
-    -- Style age: regular IBT rules start once a style reaches 22 days of age.
-    -- Retail inventory carries no per-store received date, so the catalogue
-    -- launch date is the reliable proxy for how long the item has been in the
-    -- stores. Styles <= 21 days old use the LOWER "If New style" donor
-    -- threshold (they can still be redistributed when clearly overstocked).
-    -- A missing/unparseable launch date is treated as established (so the
-    -- guard never silently drops legitimate, established styles).
     style_age AS (
       SELECT style_name AS style,
              MIN(substring(style_launch_date,1,10)) FILTER (
@@ -12241,23 +12177,10 @@ def _ibt_base_ctes(date_from, date_to, country, low, high, use_clustering=True):
       GROUP BY 1
     ),
     too_new AS (
-      -- "New style" = launched within the last 21 days (regular IBT rules start
-      -- at 22 days of age). New styles are NOT excluded outright: they may still
-      -- DONATE under the lower per-size-pack "If New style" donor threshold.
       SELECT style FROM style_age
       WHERE launch IS NOT NULL
-        AND launch >= (CURRENT_DATE - INTERVAL '21 days')
+        AND launch >= (CURRENT_DATE - INTERVAL '28 days')
     ),
-    -- ── Size-pack thresholds (user rule table) ─────────────────────────────
-    -- Classify each style's size structure from its master SKU size labels and
-    -- pick the donor/receiver style-level unit thresholds accordingly:
-    --   pack                        receiver<=  donor>=  new-style donor>=
-    --   S,M,L,1X,2X (regular)            4         6            5
-    --   F / free size                    2         4            3
-    --   S/M,L/1X   (2 combined sizes)    1         3            2
-    --   XS/S,M/L,1X/2X (3+ combined)     2         4            3
-    -- Combined sizes embed a slash (e.g. "M/L", "1X/2X"); free size = single
-    -- size or an F/OS/Free-Size label. Unknown/missing → regular thresholds.
     style_pack AS (
       SELECT style_name AS style,
              COUNT(DISTINCT NULLIF(size,'')) AS n_sizes,
@@ -12268,8 +12191,6 @@ def _ibt_base_ctes(date_from, date_to, country, low, high, use_clustering=True):
       GROUP BY 1
     ),
     pack_rules AS (
-      -- Only an EXPLICIT free-size label maps to the free-size thresholds;
-      -- unknown/ambiguous size structures fall back to REGULAR thresholds.
       SELECT style,
         CASE WHEN freesize THEN 2
              WHEN combined AND n_sizes <= 2 THEN 1
@@ -12278,42 +12199,30 @@ def _ibt_base_ctes(date_from, date_to, country, low, high, use_clustering=True):
         CASE WHEN freesize THEN 4
              WHEN combined AND n_sizes <= 2 THEN 3
              WHEN combined THEN 4
-             ELSE 6 END AS donor_min,
-        CASE WHEN freesize THEN 3
-             WHEN combined AND n_sizes <= 2 THEN 2
-             WHEN combined THEN 3
-             ELSE 5 END AS new_donor_min
+             ELSE 6 END AS donor_min
       FROM style_pack
     ),
     froms AS (
       SELECT c.style, c.store, c.country, c.available, c.units_sold,
-             COALESCE(stt.tier_n, 3) AS tier_n
+             3 AS tier_n
       FROM combined c
       JOIN stats st ON st.style = c.style
-      LEFT JOIN store_tier stt ON stt.store = c.store AND stt.country = c.country
       LEFT JOIN pack_rules pk ON pk.style = c.style
-      WHERE c.available >= CASE
-              WHEN EXISTS (SELECT 1 FROM too_new tn WHERE tn.style = c.style)
-                THEN COALESCE(pk.new_donor_min, 5)
-              ELSE COALESCE(pk.donor_min, 6) END
-        AND NOT EXISTS (SELECT 1 FROM dead d WHERE d.style = c.style)
+      WHERE c.available >= COALESCE(pk.donor_min, 6)
+        AND c.units_sold <= {low} * st.avg_u
+        AND NOT EXISTS (SELECT 1 FROM too_new tn WHERE tn.style = c.style)
     ),
     tos AS (
       SELECT c.style, c.store, c.country, c.available, c.units_sold,
-             COALESCE(stt.tier_n, 3) AS tier_n
+             3 AS tier_n
       FROM combined c
       JOIN stats st ON st.style = c.style
-      LEFT JOIN store_tier stt ON stt.store = c.store AND stt.country = c.country
       LEFT JOIN pack_rules pk ON pk.style = c.style
       WHERE c.available <= COALESCE(pk.recv_max, 4)
-        -- New styles (<=21 days) may only DONATE — never receive.
+        AND c.units_sold >= GREATEST({high} * st.avg_u, 1)
         AND NOT EXISTS (SELECT 1 FROM too_new tn WHERE tn.style = c.style)
-        -- WS5: a receiver must be covered by the stock feed. Stores with ZERO
-        -- rows in all_inventory (UG/RW/Online) look like "available = 0" but
-        -- their true stock is unknown — never ship into a blind store.
         AND EXISTS (SELECT 1 FROM all_inventory sfl
                     WHERE sfl.pos_location_name = c.store)
-        AND NOT EXISTS (SELECT 1 FROM dead d WHERE d.style = c.style)
     ),
     pairs AS (
       SELECT f.style,
@@ -12321,21 +12230,14 @@ def _ibt_base_ctes(date_from, date_to, country, low, high, use_clustering=True):
              f.units_sold AS from_sold, f.tier_n AS from_tier,
              t.store AS to_store, t.available AS to_avail,
              t.units_sold AS to_sold, t.tier_n AS to_tier,
-             {avg_expr} AS avg_u, st.asp AS asp
+             st.avg_u AS avg_u, st.asp AS asp
       FROM froms f
       JOIN tos t ON t.style = f.style AND t.store <> f.store
+                AND t.country = f.country
       JOIN stats st ON st.style = f.style
-      {cs_join}
-      WHERE f.units_sold <= {low} * {avg_expr}
-        AND t.units_sold >= {high} * {avg_expr}
-        {adj_filter}
     ),
-    -- ── Minimum range guard (≥ 3 distinct SKUs at the receiver post-transfer) ──
-    -- A style is only allocated to a receiving store if, AFTER the transfer, that
-    -- store will hold at least 3 distinct SKUs of the style. Post-transfer SKUs =
-    -- SKUs the receiver already stocks (av >= 1) UNION SKUs the donor will send
-    -- (donor av >= 2 so it keeps ≥1, and receiver currently has <= 1) — the same
-    -- per-SKU rule the SKU-breakdown applies (suggested_qty > 0 ⇔ from>=2,to<=1).
+    -- Per-SKU availability per store (used by the edge/global-solve SQL to
+    -- explode a style-level pair into the specific SKUs the donor can ship).
     sku_av AS (
       SELECT p.style_name AS style, i.pos_location_name AS store, i.sku AS sku,
              SUM(i.available) AS av
@@ -12346,24 +12248,6 @@ def _ibt_base_ctes(date_from, date_to, country, low, high, use_clustering=True):
         AND COALESCE(p.style_name,'') <> '' {c_inv}
       GROUP BY 1, 2, 3
     ),
-    cand AS (SELECT DISTINCT style, from_store, to_store FROM pairs),
-    recv_have AS (
-      SELECT c.style, c.from_store, c.to_store, sa.sku
-      FROM cand c
-      JOIN sku_av sa ON sa.style = c.style AND sa.store = c.to_store AND sa.av >= 1
-    ),
-    recv_get AS (
-      SELECT c.style, c.from_store, c.to_store, df.sku
-      FROM cand c
-      JOIN sku_av df ON df.style = c.style AND df.store = c.from_store AND df.av >= 2
-      LEFT JOIN sku_av dt ON dt.style = c.style AND dt.store = c.to_store AND dt.sku = df.sku
-      WHERE COALESCE(dt.av, 0) <= 1
-    ),
-    recv_proj AS (
-      SELECT style, from_store, to_store, COUNT(DISTINCT sku) AS projected_skus
-      FROM (SELECT * FROM recv_have UNION SELECT * FROM recv_get) u
-      GROUP BY 1, 2, 3
-    ),
     scored AS (
       SELECT pr.*,
         ROUND(100 * (
@@ -12372,9 +12256,6 @@ def _ibt_base_ctes(date_from, date_to, country, low, high, use_clustering=True):
         + 0.2 * COALESCE(pr.to_sold::numeric / NULLIF(pr.to_sold + pr.to_avail, 0), 0)
         ))::int AS score
       FROM pairs pr
-      JOIN recv_proj rp
-        ON rp.style = pr.style AND rp.from_store = pr.from_store AND rp.to_store = pr.to_store
-      WHERE rp.projected_skus >= 3
     )
     """
 
@@ -13309,7 +13190,7 @@ def _ibt_global_solve(date_from, date_to, country, low, high,
     # Markdown fork: only surface a candidate once it carries meaningful stuck
     # stock (>= the domestic minimum), sorted by the most stock to clear.
     markdown_out = [m for m in markdown.values()
-                    if m["donor_onhand"] >= IBT_MIN_TRANSFER_DOMESTIC]
+                    if m["donor_onhand"] >= IBT_MARKDOWN_MIN_ONHAND]
     for m in markdown_out:
         m.pop("_skus", None)
     markdown_out.sort(key=lambda m: (-(m["donor_onhand"]), m.get("from_store") or "",
