@@ -34380,6 +34380,9 @@ def _ensure_l10_tables():
         # Dedup key for scorecard-auto-created IDS entries
         "ALTER TABLE l10_ids_issues ADD COLUMN IF NOT EXISTS scorecard_metric_id INT REFERENCES l10_scorecard_metrics(id) ON DELETE CASCADE",
         "CREATE UNIQUE INDEX IF NOT EXISTS l10_ids_auto_metric_uniq ON l10_ids_issues (meeting_id, scorecard_metric_id) WHERE scorecard_metric_id IS NOT NULL",
+        # Dedup key for rock-auto-created IDS entries
+        "ALTER TABLE l10_ids_issues ADD COLUMN IF NOT EXISTS rock_id INT REFERENCES l10_rocks(id) ON DELETE CASCADE",
+        "CREATE UNIQUE INDEX IF NOT EXISTS l10_ids_auto_rock_uniq ON l10_ids_issues (meeting_id, rock_id) WHERE rock_id IS NOT NULL",
         # ── Conclude ──────────────────────────────────────────────────────────
         """
         CREATE TABLE IF NOT EXISTS l10_conclude (
@@ -35206,9 +35209,57 @@ async def l10_update_rock(rock_id: int, request: Request):
                         (body[col], rock_id))
     rows = _users_exec(
         "SELECT id, description, rock_type, owner, on_track, done, results, link, "
-        "quarter_label, sort_order, active FROM l10_rocks WHERE id=%s",
+        "quarter_label, sort_order, active, folder_id FROM l10_rocks WHERE id=%s",
         (rock_id,), fetch=True)
-    return rows[0] if rows else {}
+    rock = rows[0] if rows else {}
+    # ── Auto-upsert / auto-remove IDS entry for off-track rocks ───────────────
+    try:
+        if rock and rock.get("rock_type") != "Company":
+            on_track = rock.get("on_track")
+            done = rock.get("done")
+            if on_track or done:
+                # Remove any open auto-rock IDS entry for this rock
+                _users_exec(
+                    "DELETE FROM l10_ids_issues WHERE rock_id=%s AND status='open'",
+                    (rock_id,))
+            elif on_track is False and not done:
+                # Off-track — upsert an IDS entry into the latest meeting for the folder
+                folder_id = rock.get("folder_id")
+                if folder_id:
+                    mtg_rows = _users_exec(
+                        "SELECT id FROM l10_meetings WHERE folder_id=%s ORDER BY meeting_date DESC LIMIT 1",
+                        (folder_id,), fetch=True)
+                    if mtg_rows:
+                        meeting_id = mtg_rows[0]["id"]
+                        issue_text = f"[Rock] {rock.get('description') or ''}"
+                        raised_by = rock.get("owner") or ""
+                        # Try to update an existing open auto-entry first
+                        updated = _users_exec(
+                            "UPDATE l10_ids_issues SET issue=%s, raised_by=%s, updated_at=now() "
+                            "WHERE meeting_id=%s AND rock_id=%s AND status='open' "
+                            "RETURNING id",
+                            (issue_text, raised_by, meeting_id, rock_id), fetch=True)
+                        if not updated:
+                            # No open entry — insert only if no entry at all
+                            existing = _users_exec(
+                                "SELECT id FROM l10_ids_issues WHERE meeting_id=%s AND rock_id=%s",
+                                (meeting_id, rock_id), fetch=True)
+                            if not existing:
+                                max_ord = _users_exec(
+                                    "SELECT COALESCE(MAX(sort_order),0) AS m FROM l10_ids_issues "
+                                    "WHERE meeting_id=%s",
+                                    (meeting_id,), fetch=True)
+                                nxt = int((max_ord or [{"m": 0}])[0]["m"]) + 1
+                                _users_exec(
+                                    "INSERT INTO l10_ids_issues "
+                                    "(meeting_id, issue, raised_by, sort_order, status, rock_id) "
+                                    "VALUES (%s, %s, %s, %s, 'open', %s)",
+                                    (meeting_id, issue_text, raised_by, nxt, rock_id))
+    except Exception as e:
+        log.warning("IDS auto-upsert for rock %s failed: %s", rock_id, e)
+    # Return rock without the folder_id field (not part of original contract)
+    rock.pop("folder_id", None)
+    return rock
 
 
 @app.delete("/api/l10/rocks/{rock_id}")
@@ -35355,7 +35406,7 @@ def l10_ids_history(request: Request, exclude_meeting_id: int = Query(None),
 def l10_get_ids(meeting_id: int, request: Request):
     _ensure_l10_tables()
     return _users_exec(
-        "SELECT id, issue, raised_by, sort_order, status, scorecard_metric_id "
+        "SELECT id, issue, raised_by, sort_order, status, scorecard_metric_id, rock_id "
         "FROM l10_ids_issues WHERE meeting_id=%s ORDER BY sort_order, id",
         (meeting_id,), fetch=True) or []
 
@@ -35365,21 +35416,21 @@ async def l10_upsert_ids(meeting_id: int, request: Request):
     _ensure_l10_tables()
     body = await request.json()
     rows = body.get("rows", [])
-    # Separate auto-scorecard rows (have scorecard_metric_id) from manual rows.
-    # Auto-rows are managed by the scorecard upsert; we only update their status here.
-    auto_rows = [r for r in rows if r.get("scorecard_metric_id")]
-    manual_rows = [r for r in rows if not r.get("scorecard_metric_id")]
+    # Separate auto rows (have scorecard_metric_id or rock_id) from manual rows.
+    # Auto-rows are managed by scorecard/rock upserts; we only update their status here.
+    auto_rows = [r for r in rows if r.get("scorecard_metric_id") or r.get("rock_id")]
+    manual_rows = [r for r in rows if not r.get("scorecard_metric_id") and not r.get("rock_id")]
     # Update status on auto-rows (don't modify issue text or delete them)
     for r in auto_rows:
         row_id = r.get("id")
         if row_id:
             _users_exec(
                 "UPDATE l10_ids_issues SET status=%s, raised_by=%s, updated_at=now() "
-                "WHERE id=%s AND scorecard_metric_id IS NOT NULL",
+                "WHERE id=%s AND (scorecard_metric_id IS NOT NULL OR rock_id IS NOT NULL)",
                 (r.get("status") or "open", r.get("raised_by"), row_id))
     # Delete and re-insert only the manual rows
     _users_exec(
-        "DELETE FROM l10_ids_issues WHERE meeting_id=%s AND scorecard_metric_id IS NULL",
+        "DELETE FROM l10_ids_issues WHERE meeting_id=%s AND scorecard_metric_id IS NULL AND rock_id IS NULL",
         (meeting_id,))
     for i, row in enumerate(manual_rows):
         issue = (row.get("issue") or "").strip()

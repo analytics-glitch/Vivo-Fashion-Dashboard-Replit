@@ -1086,15 +1086,21 @@ const IDSTab = ({ meetingId, members, folderId = 1, redMetrics = [] }) => {
             </thead>
             <tbody>
               {rows.map((row, i) => {
-                const isAuto = !!row.scorecard_metric_id;
+                const isAuto = !!(row.scorecard_metric_id || row.rock_id);
+                const isRock = !!(row.rock_id && !row.scorecard_metric_id);
                 return (
                   <tr key={i} className="border-b last:border-0 hover:bg-muted/20">
                     <td className="py-1.5 px-3 text-muted-foreground text-xs">{i + 1}</td>
                     <td className="py-1.5 px-3">
                       <div className="flex items-center gap-1.5">
-                        {isAuto && (
+                        {row.scorecard_metric_id && (
                           <span className="inline-flex items-center gap-0.5 text-[10px] font-medium px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200 shrink-0 whitespace-nowrap">
                             📊 Scorecard
+                          </span>
+                        )}
+                        {isRock && (
+                          <span className="inline-flex items-center gap-0.5 text-[10px] font-medium px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200 shrink-0 whitespace-nowrap">
+                            🪨 Rock
                           </span>
                         )}
                         {isAuto
