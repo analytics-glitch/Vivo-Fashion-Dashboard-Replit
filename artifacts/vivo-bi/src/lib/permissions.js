@@ -108,18 +108,21 @@ const ADMIN_ONLY_PAGES = new Set([]);
 
 export const canAccessPage = (user, pageId) => {
   if (!user) return false;
-  // Admin always sees every page — no per-page list to keep in sync (this is the
-  // single source of truth, so a new page can never be accidentally hidden from
-  // admins the way the explicit ADMIN list could drift).
   const role = (user.role || DEFAULT_ROLE).toLowerCase();
+  // Globally hidden pages (admin-controlled) apply to EVERYONE, admins
+  // included — checked BEFORE the admin bypass so a hidden page vanishes for
+  // all users. Admin management pages (admin-*) are exempt: the backend
+  // refuses to store them as hidden, and exempting them here guarantees an
+  // admin can always reach the Page Visibility screen to unhide pages.
+  const hidden = Array.isArray(user.hidden_pages) ? user.hidden_pages : [];
+  if (hidden.includes(pageId) && !String(pageId).startsWith("admin-")) return false;
+  // Admin sees every non-hidden page — no per-page list to keep in sync (this
+  // is the single source of truth, so a new page can never be accidentally
+  // hidden from admins the way the explicit ADMIN list could drift).
   if (role === "admin") return true;
   // Admin-only pages can never be reached by a non-admin, even via an
   // allowed_pages override (the backend mirror also refuses to grant them).
   if (ADMIN_ONLY_PAGES.has(pageId)) return false;
-  // Globally hidden pages (admin-controlled, applies to everyone). Admin
-  // management pages can never be hidden (enforced server-side too).
-  const hidden = Array.isArray(user.hidden_pages) ? user.hidden_pages : [];
-  if (hidden.includes(pageId)) return false;
   if (Array.isArray(user.allowed_pages)) return user.allowed_pages.includes(pageId);
   const pages = ROLE_PAGES[role] || ROLE_PAGES[DEFAULT_ROLE];
   return pages.includes(pageId);
