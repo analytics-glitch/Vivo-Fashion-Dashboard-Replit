@@ -35630,6 +35630,19 @@ async def l10_import(request: Request):
         from fastapi.responses import JSONResponse as _JR
         return _JR({"error": "No l10_folders rows in payload"}, status_code=400)
 
+    # Validate that every expected table key is explicitly present in the payload
+    # BEFORE executing any deletes.  A partial payload (e.g. produced by a
+    # truncated export or a missing key) would silently wipe existing rows for the
+    # affected folder_ids and then insert nothing – leaving the DB in an empty
+    # state. Rejecting the payload here is safe; no DB rows have been touched yet.
+    missing_tables = [t for t in _L10_INSERT_ORDER if t not in tables_data]
+    if missing_tables:
+        from fastapi.responses import JSONResponse as _JR
+        return _JR(
+            {"error": f"Payload missing required table keys: {missing_tables}"},
+            status_code=400,
+        )
+
     ids_sql = ", ".join(str(int(fid)) for fid in folder_ids)
     mtg_sub = f"SELECT id FROM l10_meetings WHERE folder_id IN ({ids_sql})"
 
