@@ -239,7 +239,7 @@ function SectionB({ store, trendData }) {
   }, [trendData]);
 
   const { data: mixData, isLoading, error } = useApi(
-    "/api/store-profile/category-mix",
+    "store-profile/category-mix",
     { store, ...(selMonth ? { month: selMonth } : {}), ...(selCategory ? { category: selCategory } : {}) },
     { enabled: !!store }
   );
@@ -391,7 +391,7 @@ function GapBar({ pct }) {
 
 function SectionC({ store }) {
   const { data: tgt, isLoading, error } = useApi(
-    "/api/store-profile/targets",
+    "store-profile/targets",
     { store },
     { enabled: !!store, staleTime: 5 * 60_000 }
   );
@@ -578,7 +578,7 @@ function SectionC({ store }) {
 export default function StoreProfiling() {
   const LS_KEY = "vivo_store_profile_last_store";
 
-  const { data: locsData, isLoading: locsLoading } = useApi("/api/store-profile/locations");
+  const { data: locsData, isLoading: locsLoading } = useApi("store-profile/locations");
   const stores = locsData?.stores || [];
 
   const [store, setStore] = useState(() => {
@@ -596,7 +596,7 @@ export default function StoreProfiling() {
   }, [store]);
 
   const { data: trendData, isLoading: trendLoading, error: trendError } = useApi(
-    "/api/store-profile/kpi-trend",
+    "store-profile/kpi-trend",
     { store },
     { enabled: !!store }
   );
