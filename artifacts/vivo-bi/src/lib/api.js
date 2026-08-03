@@ -295,6 +295,25 @@ export const clearApiCache = () => {
   if (ss) { try { ss.removeItem(SS_KEY); } catch { /* ignore */ } }
 };
 
+// ---------------------------------------------------------------------------
+// apiFetch — thin wrapper around api.get that auto-unwraps `.data`
+// ---------------------------------------------------------------------------
+// `api.get(url)` returns the full Axios response object `{ data, status,
+// headers, … }`. A common copy-paste mistake is writing
+//   `.then(d => setState(d))`        ← stores the wrapper object, NOT the payload
+// instead of
+//   `.then(r => setState(r.data))`   ← correct
+//
+// Use `apiFetch` for any new fetch that stores the result in state and you
+// won't need to remember the unwrap step:
+//
+//   apiFetch("/my-endpoint", { params })
+//     .then(data => setState(data))   ← `data` IS the payload here
+//     .catch(...)
+//
+// api.get remains available for callers that need status codes / headers.
+export const apiFetch = (url, config) => api.get(url, config).then((r) => r.data);
+
 // --- formatters ---
 // Currency formatter — prefixes every value with "KES " so the unit is
 // unambiguous on screen / in exports. Uses the compact 2-decimal form by
