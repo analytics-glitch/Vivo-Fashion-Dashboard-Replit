@@ -63,8 +63,8 @@ export const PRIMARY_NAV = [
   // "Operations & Production" group below.
   {
     to: "/product-analysis", label: "Product Development", icon: ChartBar, id: "product-analysis",
-    anyOfPageIds: ["product-analysis", "production", "range-mgmt", "allocations", "re-order", "style-tracker", "gallery", "exports", "store-flow", "pd-flow"],
-    group: "Products & Range", desc: "Product development hub — Style Cockpit, Range Management, Weekly Style Tracker, PD Flow, Catalog & SOR, SOR Report, Allocations, Re-Order, Gallery and Stock Movement tabs",
+    anyOfPageIds: ["product-analysis", "production", "range-mgmt", "allocations", "re-order", "style-tracker", "gallery", "exports", "pd-flow"],
+    group: "Products & Range", desc: "Product development hub — Style Cockpit, Range Management, Weekly Style Tracker, PD Flow, Catalog & SOR, SOR Report, Allocations, Re-Order and Gallery tabs",
     subReports: [
       { pageId: "product-analysis", label: "Style Cockpit & Catalog" },
       { pageId: "range-mgmt",       label: "Range Management" },
@@ -75,18 +75,16 @@ export const PRIMARY_NAV = [
       { pageId: "re-order",         label: "Re-Order" },
       { pageId: "gallery",          label: "Gallery" },
       { pageId: "exports",          label: "SOR Report" },
-      { pageId: "store-flow",       label: "Stock Movement" },
     ],
   },
   {
     to: "/inventory", label: "Inventory Management", icon: Package, id: "inventory",
-    anyOfPageIds: ["inventory", "replenishments", "replenish-by-item", "store-flow", "size-health"],
-    group: "Products & Range", desc: "Stock on hand, velocity & cover, stuck stock, replenishments, stock movement and size health",
+    anyOfPageIds: ["inventory", "replenishments", "replenish-by-item", "size-health"],
+    group: "Products & Range", desc: "Stock on hand, velocity & cover, stuck stock, replenishments and size health",
     subReports: [
       { pageId: "inventory",         label: "Stock, Velocity & Stuck Stock" },
       { pageId: "replenishments",    label: "Replenishments" },
       { pageId: "replenish-by-item", label: "Replenish by Style/SKU" },
-      { pageId: "store-flow",        label: "Stock Movement" },
       { pageId: "size-health",       label: "Size Health" },
     ],
   },
@@ -95,14 +93,15 @@ export const PRIMARY_NAV = [
   // Retail pages
   {
     to: "/retail", label: "Retail", icon: MapPin, id: "retail",
-    anyOfPageIds: ["locations", "store-profiling", "warehouse-returns", "excess-inventory", "ibt"],
-    group: "Retail", desc: "Retail hub — Locations, Store Scorecard, Warehouse Returns, Excess Inventory and IBT tabs",
+    anyOfPageIds: ["locations", "store-profiling", "warehouse-returns", "excess-inventory", "ibt", "store-flow"],
+    group: "Retail", desc: "Retail hub — Locations, Store Scorecard, Warehouse Returns, Excess Inventory, IBT and Stock Movement tabs",
     subReports: [
       { pageId: "locations",         label: "Locations" },
       { pageId: "store-profiling",   label: "Store Scorecard" },
       { pageId: "warehouse-returns", label: "Warehouse Returns" },
       { pageId: "excess-inventory",  label: "Excess Inventory" },
       { pageId: "ibt",               label: "IBT" },
+      { pageId: "store-flow",        label: "Stock Movement" },
     ],
   },
   { to: "/footfall", label: "Footfall", icon: Footprints, id: "footfall", group: "Retail", desc: "Footfall, turn-in and conversion by store" },

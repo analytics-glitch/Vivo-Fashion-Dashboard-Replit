@@ -196,11 +196,11 @@ function App() {
                 <Route path="/gallery" element={<Navigate to="/product-analysis?tab=gallery" replace />} />
                 <Route path="/exec-summary" element={<ProtectedShell pageId="exec-summary"><ExecutiveSummary /></ProtectedShell>} />
                 <Route path="/overview" element={<ProtectedShell pageId="overview"><Overview /></ProtectedShell>} />
-                <Route path="/retail" element={<ProtectedShell anyOfPageIds={["locations", "store-profiling", "warehouse-returns", "excess-inventory", "ibt", "rebalancing"]}><Retail /></ProtectedShell>} />
+                <Route path="/retail" element={<ProtectedShell anyOfPageIds={["locations", "store-profiling", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "store-flow"]}><Retail /></ProtectedShell>} />
                 <Route path="/locations" element={<Navigate to="/retail?tab=locations" replace />} />
                 {/* Legacy pages merged into tabs — keep old URLs working */}
                 <Route path="/products" element={<Navigate to="/product-analysis" replace />} />
-                <Route path="/inventory" element={<ProtectedShell anyOfPageIds={["inventory", "replenishments", "replenish-by-item", "store-flow", "size-health"]}><Inventory /></ProtectedShell>} />
+                <Route path="/inventory" element={<ProtectedShell anyOfPageIds={["inventory", "replenishments", "replenish-by-item", "size-health"]}><Inventory /></ProtectedShell>} />
                 <Route path="/velocity" element={<Navigate to="/inventory" replace />} />
                 <Route path="/size-health" element={<Navigate to="/inventory?tab=size-health" replace />} />
                 <Route path="/finance" element={<ProtectedShell pageId="finance"><Finance /></ProtectedShell>} />
@@ -216,13 +216,13 @@ function App() {
                 <Route path="/range-mgmt" element={<Navigate to="/product-analysis?tab=range" replace />} />
                 <Route path="/footfall" element={<ProtectedShell pageId="footfall"><Footfall /></ProtectedShell>} />
                 <Route path="/trend-analysis" element={<ProtectedShell pageId="trend-analysis"><TrendAnalysis /></ProtectedShell>} />
-                <Route path="/product-analysis" element={<ProtectedShell anyOfPageIds={["product-analysis", "production", "range-mgmt", "allocations", "re-order", "style-tracker", "gallery", "exports", "store-flow", "pd-flow"]}><ProductAnalysis /></ProtectedShell>} />
+                <Route path="/product-analysis" element={<ProtectedShell anyOfPageIds={["product-analysis", "production", "range-mgmt", "allocations", "re-order", "style-tracker", "gallery", "exports", "pd-flow"]}><ProductAnalysis /></ProtectedShell>} />
                 <Route path="/targets" element={<ProtectedShell anyOfPageIds={["targets", "quarter-scorecard"]}><TargetsHub /></ProtectedShell>} />
                 <Route path="/quarter-scorecard" element={<Navigate to="/targets?tab=quarter" replace />} />
                 <Route path="/re-order" element={<Navigate to="/product-analysis?tab=reorder" replace />} />
                 <Route path="/warehouse-returns" element={<Navigate to="/retail?tab=warehouse-returns" replace />} />
                 <Route path="/excess-inventory" element={<Navigate to="/retail?tab=excess-inventory" replace />} />
-                <Route path="/store-flow" element={<Navigate to="/inventory?tab=store-flow" replace />} />
+                <Route path="/store-flow" element={<Navigate to="/retail?tab=stock-movement" replace />} />
                 <Route path="/ibt" element={<Navigate to="/retail?tab=ibt" replace />} />
                 <Route path="/production" element={<ProtectedShell anyOfPageIds={["production", "production-report", "style-tracker"]}><Production /></ProtectedShell>} />
                 <Route path="/production-report" element={<Navigate to="/production?tab=report" replace />} />

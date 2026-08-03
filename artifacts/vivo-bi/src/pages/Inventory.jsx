@@ -2032,7 +2032,6 @@ const VelocityTab = React.lazy(() => import("./Velocity"));
 // the old URLs redirect here with ?tab=… (see App.js).
 const ReplenishmentsTab = React.lazy(() => import("./Replenishments"));
 const ReplenishByItemTab = React.lazy(() => import("./ReplenishByItem"));
-const StoreFlowTab = React.lazy(() => import("./StoreFlow"));
 const SizeHealthTab = React.lazy(() => import("./SizeHealth"));
 const ShoppingBagsTab = React.lazy(() => import("./ShoppingBags"));
 
@@ -2042,7 +2041,6 @@ const INV_TABS = [
   { id: "stuck", label: "Stuck & Declining", pageId: "inventory", el: null },
   { id: "replenishments", label: "Replenishments", pageId: "replenishments", el: ReplenishmentsTab },
   { id: "replenish-by-sku", label: "Replenish by Style/SKU", pageId: "replenish-by-item", el: ReplenishByItemTab },
-  { id: "store-flow", label: "Stock Movement", pageId: "store-flow", el: StoreFlowTab },
   { id: "size-health", label: "Size Health", pageId: "size-health", el: SizeHealthTab },
   { id: "shopping-bags", label: "Shopping Bags", pageId: "inventory", el: ShoppingBagsTab },
 ];

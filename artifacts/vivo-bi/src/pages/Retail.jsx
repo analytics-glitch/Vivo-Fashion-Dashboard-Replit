@@ -14,6 +14,7 @@ const WarehouseReturnsTab = React.lazy(() => import("./WarehouseReturns"));
 const ExcessInventoryTab = React.lazy(() => import("./ExcessInventory"));
 const IBTTab = React.lazy(() => import("./IBT"));
 const RebalancingTab = React.lazy(() => import("./Rebalancing"));
+const StockMovementTab = React.lazy(() => import("./StoreFlow"));
 
 const RETAIL_TABS = [
   { id: "locations", label: "Locations", pageId: "locations", el: LocationsTab },
@@ -22,6 +23,7 @@ const RETAIL_TABS = [
   { id: "excess-inventory", label: "Excess Inventory", pageId: "excess-inventory", el: ExcessInventoryTab },
   { id: "ibt", label: "IBT", pageId: "ibt", el: IBTTab },
   { id: "rebalancing", label: "Rebalancing", pageId: "rebalancing", el: RebalancingTab },
+  { id: "stock-movement", label: "Stock Movement", pageId: "store-flow", el: StockMovementTab },
 ];
 
 const RetailPage = () => {
