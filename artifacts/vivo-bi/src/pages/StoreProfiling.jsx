@@ -376,7 +376,7 @@ export default function StoreProfiling() {
 
   const periodLabel = (p) => p === 28 ? "28-day" : "90-day";
   const rangeLabel = () => {
-    if (!data) return "";
+    if (!data?.current_range) return "";
     const [cs, ce] = data.current_range;
     return `${new Date(cs + "T00:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short" })} – ${new Date(ce + "T00:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short" })}`;
   };
