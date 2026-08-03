@@ -12060,6 +12060,10 @@ def customers_walk_ins(
 #   excluded. Warehouse-to-store covers shop-floor gaps from warehouse stock.
 # ══════════════════════════════════════════════════════════════════════════════
 
+# Non-retail holding locations that must never appear as IBT donors or receivers.
+# Extends the WAREHOUSE_LOCATIONS exclusion applied everywhere in IBT CTEs.
+_IBT_STORE_EXCL = "'Retired Stock','ARANA/Stock','Manual Order','Online - vivo-uganda'"
+
 def _sql_str(s):
     return (s or "").replace("'", "''")
 
@@ -12138,7 +12142,7 @@ def _ibt_base_ctes(date_from, date_to, country, low, high, use_clustering=True):
       WHERE s.sale_date BETWEEN '{date_from}' AND '{date_to}'
         AND s.sale_kind IN ('sale','order')
         AND s.pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})
-        AND s.pos_location_name NOT IN ('Manual Order','Online - vivo-uganda')
+        AND s.pos_location_name NOT IN ({_IBT_STORE_EXCL})
         AND s.pos_location_name NOT ILIKE '%online%'
         AND COALESCE(p.style_name,'') <> '' {c_sales}
       GROUP BY 1, 2
@@ -12150,7 +12154,7 @@ def _ibt_base_ctes(date_from, date_to, country, low, high, use_clustering=True):
       FROM all_inventory i
       JOIN all_products_clean p ON p.sku = i.sku
       WHERE i.pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})
-        AND i.pos_location_name NOT IN ('Manual Order','Online - vivo-uganda')
+        AND i.pos_location_name NOT IN ({_IBT_STORE_EXCL})
         AND i.pos_location_name NOT ILIKE '%online%'
         AND COALESCE(i.pos_location_name,'') <> ''
         AND COALESCE(p.style_name,'') <> '' {c_inv}
@@ -12245,6 +12249,7 @@ def _ibt_base_ctes(date_from, date_to, country, low, high, use_clustering=True):
       FROM all_inventory i
       JOIN all_products_clean p ON p.sku = i.sku
       WHERE i.pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})
+        AND i.pos_location_name NOT IN ({_IBT_STORE_EXCL})
         AND COALESCE(i.pos_location_name,'') <> ''
         AND COALESCE(p.style_name,'') <> '' {c_inv}
       GROUP BY 1, 2, 3
@@ -12786,6 +12791,7 @@ def _ibt_store_sku_velocity(date_from, date_to, country):
       WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '56 days'
         AND s.sale_kind IN ('sale','order')
         AND s.pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})
+        AND s.pos_location_name NOT IN ({_IBT_STORE_EXCL})
         AND s.pos_location_name NOT ILIKE '%online%'
         AND COALESCE(s.variant_sku,'') <> '' {c_sales}
       GROUP BY 1, 2
@@ -12796,6 +12802,7 @@ def _ibt_store_sku_velocity(date_from, date_to, country):
       FROM all_inventory i
       JOIN all_products_clean p ON p.sku = i.sku
       WHERE i.pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})
+        AND i.pos_location_name NOT IN ({_IBT_STORE_EXCL})
         AND i.pos_location_name NOT ILIKE '%online%'
         AND COALESCE(i.sku,'') <> '' {c_inv}
       GROUP BY 1, 2
@@ -13352,7 +13359,8 @@ def ibt_warehouse_to_store(
       WHERE s.sale_date BETWEEN '{date_from}' AND '{date_to}'
         AND s.sale_kind IN ('sale','order')
         AND s.pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})
-        AND s.pos_location_name NOT IN ('Manual Order','Online - vivo-uganda')
+        AND s.pos_location_name NOT IN ({_IBT_STORE_EXCL})
+        AND s.pos_location_name NOT ILIKE '%online%'
         AND COALESCE(p.style_name,'') <> '' {c_sales}
       GROUP BY 1, 2 HAVING SUM(s.net_quantity) >= 3
     ),
@@ -13362,6 +13370,8 @@ def ibt_warehouse_to_store(
       FROM all_inventory i
       JOIN all_products_clean p ON p.sku = i.sku
       WHERE i.pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})
+        AND i.pos_location_name NOT IN ({_IBT_STORE_EXCL})
+        AND i.pos_location_name NOT ILIKE '%online%'
         AND COALESCE(i.pos_location_name,'') <> ''
         AND COALESCE(p.style_name,'') <> '' {c_inv}
       GROUP BY 1, 2
@@ -13393,6 +13403,7 @@ def ibt_warehouse_to_store(
       FROM all_inventory i
       JOIN all_products_clean p ON p.sku = i.sku
       WHERE i.pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})
+        AND i.pos_location_name NOT IN ({_IBT_STORE_EXCL})
         AND COALESCE(i.pos_location_name,'') <> ''
         AND COALESCE(p.style_name,'') <> '' {c_inv}
       GROUP BY 1, 2, 3
