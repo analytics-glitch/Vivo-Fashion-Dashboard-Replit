@@ -880,7 +880,7 @@ export default function StoreProfiling() {
       <div style={{ background: "linear-gradient(135deg, #111827 0%, #1f2937 100%)", borderRadius: 14, padding: "22px 26px", marginBottom: 20, color: "#fff" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 18, flexWrap: "wrap" }}>
           <div style={{ flex: 1, minWidth: 260 }}>
-            <div style={{ fontSize: 11, fontWeight: 700, color: "#9ca3af", letterSpacing: "0.1em", marginBottom: 6 }}>STORE PROFILE</div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "#9ca3af", letterSpacing: "0.1em", marginBottom: 6 }}>STORE SCORECARD</div>
             {locsLoading ? <div style={{ width: 260, height: 44, background: "#374151", borderRadius: 8 }} /> : (
               <select value={store || ""} onChange={e => setStore(e.target.value)}
                 style={{ border: "1px solid #4b5563", borderRadius: 8, padding: "9px 16px", fontSize: 20, fontWeight: 800, color: "#fff", minWidth: 280, background: "#1f2937", cursor: "pointer" }}>

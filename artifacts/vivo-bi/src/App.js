@@ -183,7 +183,7 @@ function App() {
                 <Route path="/rota" element={<ProtectedShell pageId="rota"><Rota /></ProtectedShell>} />
                 <Route path="/ask" element={<ProtectedShell pageId="ask"><AskDashboard /></ProtectedShell>} />
                 <Route path="/growth" element={<ProtectedShell pageId="growth"><GrowthModel /></ProtectedShell>} />
-                <Route path="/store-profiling" element={<Navigate to="/retail?tab=store-pulse" replace />} />
+                <Route path="/store-profiling" element={<Navigate to="/retail?tab=store-scorecard" replace />} />
                 <Route path="/retail-desk" element={<ProtectedShell pageId="retail-desk"><RetailDesk /></ProtectedShell>} />
                 <Route path="/product-desk" element={<ProtectedShell pageId="product-desk"><ProductDesk /></ProtectedShell>} />
                 <Route path="/workforce-desk" element={<ProtectedShell pageId="workforce-desk"><WorkforceDesk /></ProtectedShell>} />

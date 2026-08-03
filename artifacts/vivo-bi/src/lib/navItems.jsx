@@ -96,10 +96,10 @@ export const PRIMARY_NAV = [
   {
     to: "/retail", label: "Retail", icon: MapPin, id: "retail",
     anyOfPageIds: ["locations", "store-profiling", "warehouse-returns", "excess-inventory", "ibt"],
-    group: "Retail", desc: "Retail hub — Locations, Store Pulse, Warehouse Returns, Excess Inventory and IBT tabs",
+    group: "Retail", desc: "Retail hub — Locations, Store Scorecard, Warehouse Returns, Excess Inventory and IBT tabs",
     subReports: [
       { pageId: "locations",         label: "Locations" },
-      { pageId: "store-profiling",   label: "Store Pulse" },
+      { pageId: "store-profiling",   label: "Store Scorecard" },
       { pageId: "warehouse-returns", label: "Warehouse Returns" },
       { pageId: "excess-inventory",  label: "Excess Inventory" },
       { pageId: "ibt",               label: "IBT" },

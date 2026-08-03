@@ -9,7 +9,7 @@ import { Loading } from "@/components/common";
 // admits a user who can access ANY tab, and the old standalone routes
 // redirect here with ?tab=.
 const LocationsTab = React.lazy(() => import("./Locations"));
-const StorePulseTab = React.lazy(() => import("./StoreProfiling"));
+const StoreScorecardTab = React.lazy(() => import("./StoreProfiling"));
 const WarehouseReturnsTab = React.lazy(() => import("./WarehouseReturns"));
 const ExcessInventoryTab = React.lazy(() => import("./ExcessInventory"));
 const IBTTab = React.lazy(() => import("./IBT"));
@@ -17,7 +17,7 @@ const RebalancingTab = React.lazy(() => import("./Rebalancing"));
 
 const RETAIL_TABS = [
   { id: "locations", label: "Locations", pageId: "locations", el: LocationsTab },
-  { id: "store-pulse", label: "Store Pulse", pageId: "store-profiling", el: StorePulseTab },
+  { id: "store-scorecard", label: "Store Scorecard", pageId: "store-profiling", el: StoreScorecardTab },
   { id: "warehouse-returns", label: "Warehouse Returns", pageId: "warehouse-returns", el: WarehouseReturnsTab },
   { id: "excess-inventory", label: "Excess Inventory", pageId: "excess-inventory", el: ExcessInventoryTab },
   { id: "ibt", label: "IBT", pageId: "ibt", el: IBTTab },
