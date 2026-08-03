@@ -480,8 +480,8 @@ const IBT = () => {
 
           <div id="ibt-sec-store" className="card-white p-4 sm:p-5 scroll-mt-24" data-testid="ibt-table-card">
             <SectionTitle
-              title={`Transfer bundles · ${filteredBundles.length}${hasFilters ? ` of ${bundles.length}` : ""}`}
-              subtitle="Each row is one store → store transfer. Expand it to see the SKU pick list, type the units actually picked, then Scan out to dispatch it — the donor's live stock is re-validated at that moment (a sale wins) and the move enters the in-transit list below to be scanned in at the destination."
+              title={`Transfer suggestions · ${filteredBundles.length}${hasFilters ? ` of ${bundles.length}` : ""} bundles`}
+              subtitle="One row per SKU move (From → To). Type the units actually picked, then Scan out to dispatch — the donor's live stock is re-validated at that moment (a sale wins) and the move enters the in-transit list below to be scanned in at the destination."
             />
             <IBTBundleTable
               bundles={filteredBundles}
