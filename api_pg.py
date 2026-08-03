@@ -37685,6 +37685,123 @@ def store_profile_targets(store: str = Query(...)):
     return out
 
 
+# KPI labels shared by the performance-report rows and the priority-driver
+# builder (module-level so the pure driver builder below can be unit-tested).
+_SP_KPI_LABELS = {
+    "units": "Items Sold", "revenue": "Revenue (Net KES)",
+    "transactions": "Transactions", "asp": "ASP",
+    "abv": "ABV", "footfall": "Footfall",
+    "conversion": "Conversion Rate", "discount_rate": "Discount Rate",
+    "return_rate": "Return Rate", "new_customer_pct": "% New Customers",
+    "returning_customer_pct": "% Returning", "customer_count": "Customer Numbers",
+}
+
+
+def _build_priority_drivers(proj, expected, rev_gap):
+    """Pure builder for the Store Profile "Priority Focus" ranking.
+
+    Ranks levers by the KES impact of closing each gap between projected EOM
+    (`proj`) and the expected baseline (`expected`). Key invariants (unit
+    tested in test_store_profile_priority_drivers):
+      * the transactions lever is added ONLY when neither footfall nor
+        conversion levers could be computed (otherwise it double-counts the
+        traffic chain);
+      * returning_customer_pct appears as a pipeline driver when projected
+        drops below 90% of baseline.
+    Returns the sorted list with 1-based `rank` set.
+    """
+    def _f(d, k):
+        v = d.get(k) if d else None
+        return float(v) if v is not None else None
+
+    p_ff, p_conv = _f(proj, "footfall"), _f(proj, "conversion")
+    p_abv, p_asp = _f(proj, "abv"), _f(proj, "asp")
+    p_txn, p_un  = _f(proj, "transactions"), _f(proj, "units")
+    p_disc, p_rr = _f(proj, "discount_rate"), _f(proj, "return_rate")
+    e_ff2, e_conv2 = _f(expected, "footfall"), _f(expected, "conversion")
+    e_abv2, e_asp2 = _f(expected, "abv"), _f(expected, "asp")
+    e_disc2, e_rr2 = _f(expected, "discount_rate"), _f(expected, "return_rate")
+
+    priority_drivers = []
+
+    def _driver(key, impact, gap_text, linked, lever, note):
+        priority_drivers.append({
+            "key": key, "label": _SP_KPI_LABELS.get(key, key),
+            "kes_impact": round(impact) if impact is not None else None,
+            "pct_of_gap": (round(impact * 100.0 / rev_gap, 0)
+                           if (impact is not None and rev_gap and rev_gap > 0) else None),
+            "gap_text": gap_text, "linked": linked, "lever": lever, "note": note,
+        })
+
+    # Explicit None checks (not truthy `or`): a projected 0.0 is a VALID value
+    # and must not silently fall back to baseline, or impacts get overstated.
+    abv_ref = p_abv if p_abv is not None else e_abv2
+    if p_conv is not None and e_conv2 and p_conv < e_conv2 and p_ff and abv_ref:
+        extra_txn = p_ff * (e_conv2 - p_conv) / 100.0
+        _driver("conversion", extra_txn * abv_ref,
+                f"{p_conv:.1f}% vs baseline {e_conv2:.1f}%",
+                ["footfall", "transactions", "abv"], "traffic→sales",
+                "Every extra 1pp converts existing footfall into transactions — the cheapest revenue since visitors are already in store.")
+    if p_ff is not None and e_ff2 and p_ff < e_ff2 and abv_ref:
+        conv_ref = p_conv if p_conv is not None else (e_conv2 or 0)
+        _driver("footfall", (e_ff2 - p_ff) * conv_ref / 100.0 * abv_ref,
+                f"{int(p_ff):,} vs baseline {int(e_ff2):,}",
+                ["conversion", "transactions"], "traffic",
+                "More visitors only pay off at current conversion — pair traffic drives with floor readiness.")
+    if p_abv is not None and e_abv2 and p_abv < e_abv2 and p_txn:
+        _driver("abv", (e_abv2 - p_abv) * p_txn,
+                f"KES {p_abv:,.0f} vs baseline KES {e_abv2:,.0f}",
+                ["asp", "transactions"], "basket",
+                "Basket = price (ASP) × items per basket. Lifting either lifts ABV without needing more visitors.")
+    if p_asp is not None and e_asp2 and p_asp < e_asp2 and p_un:
+        _driver("asp", (e_asp2 - p_asp) * p_un,
+                f"KES {p_asp:,.0f} vs baseline KES {e_asp2:,.0f}",
+                ["abv", "discount_rate"], "price/mix",
+                "ASP moves with discounting depth and category mix; it feeds directly into ABV.")
+    if p_disc is not None and e_disc2 is not None and p_disc > e_disc2 and p_disc < 100:
+        gross_proj = (proj.get("revenue") or 0) / (1 - p_disc / 100.0)
+        _driver("discount_rate", gross_proj * (p_disc - e_disc2) / 100.0,
+                f"{p_disc:.1f}% vs baseline {e_disc2:.1f}%",
+                ["asp", "abv"], "margin guardrail",
+                "Excess markdown suppresses ASP/ABV — recovered revenue here needs no extra volume.")
+    asp_ref = p_asp if p_asp is not None else e_asp2
+    if p_rr is not None and e_rr2 is not None and p_rr > e_rr2 and p_un and asp_ref:
+        _driver("return_rate", (p_rr - e_rr2) / 100.0 * p_un * asp_ref,
+                f"{p_rr:.1f}% vs baseline {e_rr2:.1f}%",
+                ["units", "revenue"], "quality guardrail",
+                "Every avoided return keeps already-earned revenue; check fit/quality on top-returned styles.")
+    # Transactions lever — ONLY when neither footfall nor conversion could be
+    # computed (no sensor / baseline). Otherwise the txn gap is already
+    # explained by those two upstream levers and this would double-count.
+    _have_traffic_levers = any(d["key"] in ("footfall", "conversion") for d in priority_drivers)
+    p_txn2, e_txn2 = _f(proj, "transactions"), _f(expected, "transactions")
+    if (not _have_traffic_levers and p_txn2 is not None and e_txn2
+            and p_txn2 < e_txn2 and abv_ref):
+        _driver("transactions", (e_txn2 - p_txn2) * abv_ref,
+                f"{int(p_txn2):,} vs baseline {int(e_txn2):,}",
+                ["footfall", "conversion", "abv"], "traffic→sales",
+                "Fewer baskets than this store's norm — with no reliable footfall read, treat this as the traffic+conversion gap combined.")
+    p_new = _f(proj, "new_customer_pct")
+    e_new2 = _f(expected, "new_customer_pct")
+    if p_new is not None and e_new2 and p_new < e_new2 * 0.9:
+        _driver("new_customer_pct", None,
+                f"{p_new:.1f}% vs baseline {e_new2:.1f}%",
+                ["footfall", "customer_count"], "pipeline",
+                "New customers are next month's returning base — a weak share here shows up later as falling footfall.")
+    p_ret2 = _f(proj, "returning_customer_pct")
+    e_ret2 = _f(expected, "returning_customer_pct")
+    if p_ret2 is not None and e_ret2 and p_ret2 < e_ret2 * 0.9:
+        _driver("returning_customer_pct", None,
+                f"{p_ret2:.1f}% vs baseline {e_ret2:.1f}%",
+                ["customer_count", "footfall"], "pipeline",
+                "Known customers are coming back less often — check loyalty follow-ups and clienteling outreach; revenue impact lands over coming months, not this one.")
+
+    priority_drivers.sort(key=lambda d: (d["kes_impact"] is None, -(d["kes_impact"] or 0)))
+    for i, d in enumerate(priority_drivers):
+        d["rank"] = i + 1
+    return priority_drivers
+
+
 @app.get("/api/store-profile/performance-report")
 def store_profile_performance_report(store: str = Query(...)):
     """Comprehensive current-month performance report.
@@ -38134,14 +38251,7 @@ def store_profile_performance_report(store: str = Query(...)):
     actions.sort(key=lambda x: _prio_order.get(x["priority"], 5))
 
     # ── Build per-KPI analysis rows ────────────────────────────────────────────
-    KPI_LABELS = {
-        "units": "Items Sold", "revenue": "Revenue (Net KES)",
-        "transactions": "Transactions", "asp": "ASP",
-        "abv": "ABV", "footfall": "Footfall",
-        "conversion": "Conversion Rate", "discount_rate": "Discount Rate",
-        "return_rate": "Return Rate", "new_customer_pct": "% New Customers",
-        "returning_customer_pct": "% Returning", "customer_count": "Customer Numbers",
-    }
+    KPI_LABELS = _SP_KPI_LABELS
     KPI_FMT = {
         "units": "num", "revenue": "kes", "transactions": "num",
         "asp": "kes", "abv": "kes", "footfall": "num",
@@ -38190,95 +38300,9 @@ def store_profile_performance_report(store: str = Query(...)):
     # returns to baseline, holding the others at their projected level".
     # Overlap is intentional (ASP is a component of ABV etc.) — the ranking is
     # about where attention pays most, and `linked` names the interlocks.
-    def _f(d, k):
-        v = d.get(k) if d else None
-        return float(v) if v is not None else None
-
-    p_ff, p_conv = _f(proj, "footfall"), _f(proj, "conversion")
-    p_abv, p_asp = _f(proj, "abv"), _f(proj, "asp")
-    p_txn, p_un  = _f(proj, "transactions"), _f(proj, "units")
-    p_disc, p_rr = _f(proj, "discount_rate"), _f(proj, "return_rate")
-    e_ff2, e_conv2 = _f(expected, "footfall"), _f(expected, "conversion")
-    e_abv2, e_asp2 = _f(expected, "abv"), _f(expected, "asp")
-    e_disc2, e_rr2 = _f(expected, "discount_rate"), _f(expected, "return_rate")
-
-    priority_drivers = []
-
-    def _driver(key, impact, gap_text, linked, lever, note):
-        priority_drivers.append({
-            "key": key, "label": KPI_LABELS.get(key, key),
-            "kes_impact": round(impact) if impact is not None else None,
-            "pct_of_gap": (round(impact * 100.0 / rev_gap, 0)
-                           if (impact is not None and rev_gap and rev_gap > 0) else None),
-            "gap_text": gap_text, "linked": linked, "lever": lever, "note": note,
-        })
-
-    # Explicit None checks (not truthy `or`): a projected 0.0 is a VALID value
-    # and must not silently fall back to baseline, or impacts get overstated.
-    abv_ref = p_abv if p_abv is not None else e_abv2
-    if p_conv is not None and e_conv2 and p_conv < e_conv2 and p_ff and abv_ref:
-        extra_txn = p_ff * (e_conv2 - p_conv) / 100.0
-        _driver("conversion", extra_txn * abv_ref,
-                f"{p_conv:.1f}% vs baseline {e_conv2:.1f}%",
-                ["footfall", "transactions", "abv"], "traffic→sales",
-                "Every extra 1pp converts existing footfall into transactions — the cheapest revenue since visitors are already in store.")
-    if p_ff is not None and e_ff2 and p_ff < e_ff2 and abv_ref:
-        conv_ref = p_conv if p_conv is not None else (e_conv2 or 0)
-        _driver("footfall", (e_ff2 - p_ff) * conv_ref / 100.0 * abv_ref,
-                f"{int(p_ff):,} vs baseline {int(e_ff2):,}",
-                ["conversion", "transactions"], "traffic",
-                "More visitors only pay off at current conversion — pair traffic drives with floor readiness.")
-    if p_abv is not None and e_abv2 and p_abv < e_abv2 and p_txn:
-        _driver("abv", (e_abv2 - p_abv) * p_txn,
-                f"KES {p_abv:,.0f} vs baseline KES {e_abv2:,.0f}",
-                ["asp", "transactions"], "basket",
-                "Basket = price (ASP) × items per basket. Lifting either lifts ABV without needing more visitors.")
-    if p_asp is not None and e_asp2 and p_asp < e_asp2 and p_un:
-        _driver("asp", (e_asp2 - p_asp) * p_un,
-                f"KES {p_asp:,.0f} vs baseline KES {e_asp2:,.0f}",
-                ["abv", "discount_rate"], "price/mix",
-                "ASP moves with discounting depth and category mix; it feeds directly into ABV.")
-    if p_disc is not None and e_disc2 is not None and p_disc > e_disc2 and p_disc < 100:
-        gross_proj = (proj.get("revenue") or 0) / (1 - p_disc / 100.0)
-        _driver("discount_rate", gross_proj * (p_disc - e_disc2) / 100.0,
-                f"{p_disc:.1f}% vs baseline {e_disc2:.1f}%",
-                ["asp", "abv"], "margin guardrail",
-                "Excess markdown suppresses ASP/ABV — recovered revenue here needs no extra volume.")
-    asp_ref = p_asp if p_asp is not None else e_asp2
-    if p_rr is not None and e_rr2 is not None and p_rr > e_rr2 and p_un and asp_ref:
-        _driver("return_rate", (p_rr - e_rr2) / 100.0 * p_un * asp_ref,
-                f"{p_rr:.1f}% vs baseline {e_rr2:.1f}%",
-                ["units", "revenue"], "quality guardrail",
-                "Every avoided return keeps already-earned revenue; check fit/quality on top-returned styles.")
-    # Transactions lever — ONLY when neither footfall nor conversion could be
-    # computed (no sensor / baseline). Otherwise the txn gap is already
-    # explained by those two upstream levers and this would double-count.
-    _have_traffic_levers = any(d["key"] in ("footfall", "conversion") for d in priority_drivers)
-    p_txn2, e_txn2 = _f(proj, "transactions"), _f(expected, "transactions")
-    if (not _have_traffic_levers and p_txn2 is not None and e_txn2
-            and p_txn2 < e_txn2 and abv_ref):
-        _driver("transactions", (e_txn2 - p_txn2) * abv_ref,
-                f"{int(p_txn2):,} vs baseline {int(e_txn2):,}",
-                ["footfall", "conversion", "abv"], "traffic→sales",
-                "Fewer baskets than this store's norm — with no reliable footfall read, treat this as the traffic+conversion gap combined.")
-    p_new = _f(proj, "new_customer_pct")
-    e_new2 = _f(expected, "new_customer_pct")
-    if p_new is not None and e_new2 and p_new < e_new2 * 0.9:
-        _driver("new_customer_pct", None,
-                f"{p_new:.1f}% vs baseline {e_new2:.1f}%",
-                ["footfall", "customer_count"], "pipeline",
-                "New customers are next month's returning base — a weak share here shows up later as falling footfall.")
-    p_ret2 = _f(proj, "returning_customer_pct")
-    e_ret2 = _f(expected, "returning_customer_pct")
-    if p_ret2 is not None and e_ret2 and p_ret2 < e_ret2 * 0.9:
-        _driver("returning_customer_pct", None,
-                f"{p_ret2:.1f}% vs baseline {e_ret2:.1f}%",
-                ["customer_count", "footfall"], "pipeline",
-                "Known customers are coming back less often — check loyalty follow-ups and clienteling outreach; revenue impact lands over coming months, not this one.")
-
-    priority_drivers.sort(key=lambda d: (d["kes_impact"] is None, -(d["kes_impact"] or 0)))
-    for i, d in enumerate(priority_drivers):
-        d["rank"] = i + 1
+    # Logic lives in the module-level _build_priority_drivers so the ranking
+    # rules are unit-testable without a live DB.
+    priority_drivers = _build_priority_drivers(proj, expected, rev_gap)
 
     # Causal interlink map for the frontend driver-chain visual
     driver_links = [
