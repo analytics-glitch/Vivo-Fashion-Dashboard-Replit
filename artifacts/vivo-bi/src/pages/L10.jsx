@@ -94,18 +94,20 @@ function scorecardTrafficLight(value, goal, direction) {
       return v >= rMin && v <= rMax ? "green" : "red";
     }
   }
-  // Try operator prefix: >=, <=, >, <, =
-  const opMatch = goalStr.match(/^(>=|<=|>|<|=)\s*(-?\d+(?:\.\d+)?)(?=\s|$)/);
+  // Try operator prefix: >=, <=, >, <, =, and Unicode ≥ (U+2265) / ≤ (U+2264)
+  const opMatch = goalStr.match(/^(>=|<=|\u2265|\u2264|>|<|=)\s*(-?\d+(?:\.\d+)?)(?=\s|$)/);
   if (opMatch) {
     const op = opMatch[1];
     const g = parseFloat(opMatch[2]);
     if (isNaN(g)) return null;
+    // Normalise Unicode ≥/≤ to ASCII equivalents
+    const normOp = op === "\u2265" ? ">=" : op === "\u2264" ? "<=" : op;
     let meets = false;
-    if (op === ">=") meets = v >= g;
-    else if (op === "<=") meets = v <= g;
-    else if (op === ">")  meets = v > g;
-    else if (op === "<")  meets = v < g;
-    else if (op === "=")  meets = v === g;
+    if (normOp === ">=") meets = v >= g;
+    else if (normOp === "<=") meets = v <= g;
+    else if (normOp === ">")  meets = v > g;
+    else if (normOp === "<")  meets = v < g;
+    else if (normOp === "=")  meets = v === g;
     return meets ? "green" : "red";
   }
   // Plain numeric goal — fall back to goal_direction
@@ -451,16 +453,17 @@ const ScorecardTab = ({ meetingId, folderId = 1, onRedMetrics }) => {
         on_track = numVal >= rMin && numVal <= rMax;
       }
     } else {
-      const opMatchSave = goalStr ? String(goalStr).trim().match(/^(>=|<=|>|<|=)\s*(-?\d+(?:\.\d+)?)(?=\s|$)/) : null;
+      const opMatchSave = goalStr ? String(goalStr).trim().match(/^(>=|<=|\u2265|\u2264|>|<|=)\s*(-?\d+(?:\.\d+)?)(?=\s|$)/) : null;
       if (opMatchSave && !isNaN(numVal)) {
-        const op = opMatchSave[1];
+        const rawOp = opMatchSave[1];
+        const normOpSave = rawOp === "\u2265" ? ">=" : rawOp === "\u2264" ? "<=" : rawOp;
         const g = parseFloat(opMatchSave[2]);
         if (!isNaN(g)) {
-          if (op === ">=") on_track = numVal >= g;
-          else if (op === "<=") on_track = numVal <= g;
-          else if (op === ">")  on_track = numVal > g;
-          else if (op === "<")  on_track = numVal < g;
-          else if (op === "=")  on_track = numVal === g;
+          if (normOpSave === ">=") on_track = numVal >= g;
+          else if (normOpSave === "<=") on_track = numVal <= g;
+          else if (normOpSave === ">")  on_track = numVal > g;
+          else if (normOpSave === "<")  on_track = numVal < g;
+          else if (normOpSave === "=")  on_track = numVal === g;
         }
       } else {
         const numGoal = parseFloat(String(goalStr).trim());
@@ -549,9 +552,20 @@ const ScorecardTab = ({ meetingId, folderId = 1, onRedMetrics }) => {
                             onSave={(v) => saveValue(m.id, metric.id, v, metric.goal_direction, metric.goal)}
                           />
                         ) : (
-                          <span className={`rounded px-1.5 py-0.5 text-xs font-mono ${trafficLightCls(tl)}`}>
-                            {cell.value ?? "—"}
-                          </span>
+                          // No value entered → plain unstyled dash, no badge background
+                          (cell.value === null || cell.value === undefined || cell.value === "") ? (
+                            <span className="text-xs font-mono text-muted-foreground">—</span>
+                          ) : tl ? (
+                            // Value + resolvable goal → coloured badge
+                            <span className={`rounded px-1.5 py-0.5 text-xs font-mono ${trafficLightCls(tl)}`}>
+                              {cell.value}
+                            </span>
+                          ) : (
+                            // Value exists but no/unparsable goal → show value plain, no badge
+                            <span className="text-xs font-mono">
+                              {cell.value}
+                            </span>
+                          )
                         )}
                       </td>
                     );
@@ -594,16 +608,40 @@ const ScorecardCell = ({ value, trafficLight: _trafficLightProp, goal, goalDirec
       />
     );
   }
-  // Compute traffic-light colour directly from value+goal so blank cells (null/"")
-  // reliably fall through to the neutral bg-muted/40 baseline via trafficLightCls(null).
+  // Compute traffic-light colour directly from value+goal.
   const staticTl = scorecardTrafficLight(value, goal, goalDirection);
+  const isEmpty = value === null || value === undefined || value === "";
+  if (isEmpty) {
+    // No value entered → plain unstyled dash, no badge background
+    return (
+      <button
+        type="button"
+        onClick={() => setEditing(true)}
+        className="text-xs font-mono cursor-pointer hover:opacity-80 min-w-[48px] text-muted-foreground"
+      >
+        —
+      </button>
+    );
+  }
+  if (!staticTl) {
+    // Value exists but no/unparsable goal → show value plain, no badge
+    return (
+      <button
+        type="button"
+        onClick={() => setEditing(true)}
+        className="text-xs font-mono cursor-pointer hover:opacity-80 min-w-[48px]"
+      >
+        {value}
+      </button>
+    );
+  }
   return (
     <button
       type="button"
       onClick={() => setEditing(true)}
       className={`rounded px-2 py-0.5 text-xs font-mono cursor-pointer hover:opacity-80 min-w-[48px] ${trafficLightCls(staticTl)}`}
     >
-      {value ?? "—"}
+      {value}
     </button>
   );
 };
