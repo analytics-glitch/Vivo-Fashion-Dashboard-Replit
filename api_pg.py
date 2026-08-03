@@ -36881,6 +36881,434 @@ def store_profile_targets(store: str = Query(...)):
     return out
 
 
+@app.get("/api/store-profile/performance-report")
+def store_profile_performance_report(store: str = Query(...)):
+    """Comprehensive current-month performance report.
+    Returns MTD actuals, projected EOM, expected baseline (prior year Aug or 6m avg),
+    budget target, per-KPI analysis, and data-driven action plan.
+    """
+    store_s = _sql_str(store)
+    ck = f"store_profile:perf_report:{store_s}"
+    cv, cf = cache_get_swr(ck)
+    if cv is not None:
+        if not cf:
+            swr_refresh(ck, lambda: store_profile_performance_report(store=store), label="sp_perf_report")
+        return cv
+
+    today     = date.today()
+    cur_mstart = today.replace(day=1)
+    days_in_m = calendar.monthrange(today.year, today.month)[1]
+    days_done = today.day
+    days_rem  = days_in_m - days_done
+    vat       = "(CASE WHEN s.country IN ('Uganda','Rwanda') THEN 1.18 ELSE 1.16 END)"
+
+    # 6-month trailing window (previous 6 complete months)
+    six_end   = cur_mstart - timedelta(days=1)
+    six_start = cur_mstart
+    for _ in range(6):
+        six_start = (six_start - timedelta(days=1)).replace(day=1)
+
+    # Prior year same month
+    py_mstart = cur_mstart.replace(year=cur_mstart.year - 1)
+    py_mend   = py_mstart.replace(day=calendar.monthrange(py_mstart.year, py_mstart.month)[1])
+
+    # Revenue target
+    tgt_rows = run_query(
+        f"SELECT target_kes::numeric AS tgt FROM targets_monthly "
+        f"WHERE scope='store' AND name='{store_s}' AND month='{cur_mstart}' "
+        f"ORDER BY CASE WHEN source='manual' THEN 0 ELSE 1 END LIMIT 1"
+    )
+    target_revenue = float(tgt_rows[0]["tgt"]) if tgt_rows else None
+
+    # ── Sales data: MTD + prior year same month + 6m trailing ─────────────────
+    sales_rows = run_query(f"""
+        SELECT
+            CASE
+                WHEN s.sale_date::date >= '{cur_mstart}' THEN 'mtd'
+                WHEN s.sale_date::date >= '{py_mstart}'
+                 AND s.sale_date::date <= '{py_mend}' THEN 'py_aug'
+                ELSE 'hist_' || to_char(date_trunc('month', s.sale_date::date), 'YYYY-MM')
+            END AS period,
+            SUM(CASE WHEN s.sale_kind IN ('sale','order')
+                     THEN s.ordered_item_quantity ELSE 0 END)                      AS units,
+            ROUND(SUM(
+              CASE WHEN s.sale_kind IN ('sale','order')
+                   THEN (s.total_sales_kes::numeric - COALESCE(s.discounts_kes,0)::numeric) / {vat}
+                   WHEN s.sale_kind = 'return'
+                   THEN -s.returns_kes::numeric / {vat}
+                   ELSE 0 END
+            ), 0)                                                                   AS net_revenue,
+            COUNT(DISTINCT s.order_id) FILTER (WHERE s.sale_kind IN ('sale','order')) AS transactions,
+            ROUND(SUM(COALESCE(s.discounts_kes::numeric,0))
+                  FILTER (WHERE s.sale_kind IN ('sale','order')), 0)               AS total_discounts,
+            ROUND(SUM(COALESCE(s.gross_sales_kes::numeric,0))
+                  FILTER (WHERE s.sale_kind IN ('sale','order')), 0)               AS gross_revenue,
+            COALESCE(SUM(COALESCE(s.returned_item_quantity,0))
+                     FILTER (WHERE s.sale_kind IN ('sale','order')), 0)            AS returned_qty,
+            COUNT(DISTINCT CASE WHEN LOWER(COALESCE(s.customer_type,'')) = 'new'
+                                THEN s.customer_id END)                            AS new_customers,
+            COUNT(DISTINCT CASE WHEN LOWER(COALESCE(s.customer_type,'')) IN
+                                     ('returning','registered')
+                                THEN s.customer_id END)                            AS returning_customers,
+            COUNT(DISTINCT CASE WHEN s.customer_id IS NOT NULL
+                                 AND s.customer_id NOT IN ('None','null','')
+                                THEN s.customer_id END)                            AS total_customers
+        FROM all_sales s
+        WHERE (
+              (s.sale_date::date >= '{cur_mstart}' AND s.sale_date::date <= '{today}')
+           OR (s.sale_date::date >= '{py_mstart}'  AND s.sale_date::date <= '{py_mend}')
+           OR (s.sale_date::date >= '{six_start}'  AND s.sale_date::date <= '{six_end}')
+        )
+          AND s.pos_location_name = '{store_s}'
+          AND s.sale_kind IN ('sale','order','return')
+          AND {BASE_FILTERS}
+        GROUP BY 1
+    """, ttl=HEAVY_DASH_TTL)
+
+    # ── Footfall: same windows ─────────────────────────────────────────────────
+    ff_rows = run_query(f"""
+        SELECT
+            CASE
+                WHEN f.time::date >= '{cur_mstart}' THEN 'mtd'
+                WHEN f.time::date >= '{py_mstart}'
+                 AND f.time::date <= '{py_mend}' THEN 'py_aug'
+                ELSE 'hist_' || to_char(date_trunc('month', f.time::date), 'YYYY-MM')
+            END AS period,
+            SUM(f.a01_footfall_in)                         AS footfall,
+            COUNT(*) FILTER (WHERE f.a01_footfall_in = 0)  AS zero_days,
+            COUNT(*)                                         AS total_days
+        FROM footfall f
+        WHERE (
+              (f.time::date >= '{cur_mstart}' AND f.time::date <= '{today}')
+           OR (f.time::date >= '{py_mstart}'  AND f.time::date <= '{py_mend}')
+           OR (f.time::date >= '{six_start}'  AND f.time::date <= '{six_end}')
+        )
+          AND {ff_canon_sql()} = '{store_s}'
+          AND {ff_store_master_predicate()}
+        GROUP BY 1
+    """, ttl=HEAVY_DASH_TTL)
+
+    # ── Current WOC / MSI ──────────────────────────────────────────────────────
+    woc_row = (run_query(f"""
+        WITH velocity AS (
+          SELECT
+            SUM(s.ordered_item_quantity) FILTER (
+              WHERE s.sale_date::date >= CURRENT_DATE - 28) AS u28,
+            SUM(s.ordered_item_quantity) FILTER (
+              WHERE s.sale_date::date >= CURRENT_DATE - 56
+                AND s.sale_date::date <  CURRENT_DATE - 28) AS u_prior
+          FROM all_sales s
+          WHERE s.sale_kind IN ('sale','order')
+            AND s.pos_location_name = '{store_s}'
+            AND {BASE_FILTERS}
+        ),
+        soh AS (
+          SELECT COALESCE(SUM(i.available), 0) AS stock
+          FROM all_inventory i
+          WHERE i.pos_location_name = '{store_s}'
+            AND i.pos_location_name NOT IN ({PIPELINE_LOCATIONS})
+        )
+        SELECT soh.stock,
+          ROUND((COALESCE(v.u28,0)*2.0 + COALESCE(v.u_prior,0)) / 12.0, 2) AS weekly_vel,
+          ROUND(soh.stock / NULLIF((COALESCE(v.u28,0)*2.0 + COALESCE(v.u_prior,0)) / 12.0, 0), 1) AS woc
+        FROM velocity v, soh
+    """, ttl=3600) or [{}])[0]
+
+    # ── Helper: extract KPI dict from a period row ─────────────────────────────
+    sales_by_p = {r["period"]: r for r in (sales_rows or [])}
+    ff_by_p    = {r["period"]: r for r in (ff_rows    or [])}
+
+    def _extract(period_key, days_in_period=None):
+        s  = sales_by_p.get(period_key, {})
+        ff = ff_by_p.get(period_key, {})
+        units    = int(s.get("units")          or 0)
+        revenue  = int(s.get("net_revenue")    or 0)
+        txns     = int(s.get("transactions")   or 0)
+        ret_q    = int(s.get("returned_qty")   or 0)
+        gross    = float(s.get("gross_revenue")    or 0)
+        disc     = float(s.get("total_discounts")  or 0)
+        new_c    = int(s.get("new_customers")  or 0)
+        ret_c    = int(s.get("returning_customers") or 0)
+        tot_c    = int(s.get("total_customers") or 0)
+        ff_raw   = int(ff.get("footfall")  or 0)
+        zero_d   = int(ff.get("zero_days") or 0)
+        tot_d    = int(ff.get("total_days") or 0)
+        ref_days = days_in_period or max(tot_d, 1)
+        ff_ok    = tot_d > 0 and zero_d <= 0.25 * ref_days
+        footfall = ff_raw if ff_ok else None
+        asp      = round(revenue / units,    0) if units  > 0 else None
+        abv      = round(revenue / txns,     0) if txns   > 0 else None
+        conv     = round(txns * 100.0 / footfall, 1) if (footfall and footfall > 0) else None
+        disc_r   = round(disc  * 100.0 / gross,   1) if gross  > 0 else None
+        ret_r    = round(ret_q * 100.0 / units,   1) if units  > 0 else None
+        new_pct  = round(new_c * 100.0 / tot_c,   1) if tot_c  > 0 else None
+        ret_pct  = round(ret_c * 100.0 / tot_c,   1) if tot_c  > 0 else None
+        return {
+            "units": units, "revenue": revenue, "transactions": txns,
+            "asp": asp, "abv": abv, "footfall": footfall, "conversion": conv,
+            "discount_rate": disc_r, "return_rate": ret_r,
+            "new_customer_pct": new_pct, "returning_customer_pct": ret_pct,
+            "customer_count": tot_c,
+        }
+
+    mtd        = _extract("mtd", days_in_period=days_done)
+    py_days    = calendar.monthrange(py_mstart.year, py_mstart.month)[1]
+    prior_year = _extract("py_aug", days_in_period=py_days) if "py_aug" in sales_by_p else None
+
+    # 6-month averages
+    hist_months = []
+    m = cur_mstart
+    for _ in range(6):
+        m = (m - timedelta(days=1)).replace(day=1)
+        p_key  = "hist_" + m.strftime("%Y-%m")
+        days_m = calendar.monthrange(m.year, m.month)[1]
+        if p_key in sales_by_p:
+            hist_months.append(_extract(p_key, days_in_period=days_m))
+
+    KPI_KEYS = ["units","revenue","transactions","asp","abv","footfall","conversion",
+                "discount_rate","return_rate","new_customer_pct","returning_customer_pct","customer_count"]
+
+    def _avg(k):
+        vals = [h[k] for h in hist_months if h.get(k) is not None]
+        return round(sum(vals) / len(vals)) if vals else None
+
+    hist_avg = {k: _avg(k) for k in KPI_KEYS}
+
+    # Expected baseline: prior year if it has revenue data, else hist avg
+    py_has_data = prior_year and (prior_year.get("revenue") or 0) > 0
+    expected    = prior_year  if py_has_data else hist_avg
+    exp_source  = "Aug " + str(py_mstart.year) + " Actual" if py_has_data else "6-Month Average"
+
+    # Projected EOM (linear extrapolation)
+    proj = {}
+    for k in KPI_KEYS:
+        v = mtd.get(k)
+        if v is not None and days_done > 0:
+            proj[k] = round(v / days_done * days_in_m)
+        else:
+            proj[k] = None
+
+    # Derive non-revenue targets (scale expected ratios to revenue target)
+    RATE_KEYS = {"asp","abv","conversion","discount_rate","return_rate","new_customer_pct","returning_customer_pct"}
+    derived_targets: dict = {"revenue": target_revenue}
+    if target_revenue and expected:
+        e_rev = float(expected.get("revenue") or 0)
+        rev_ratio = (target_revenue / e_rev) if e_rev > 0 else 1.0
+        for k in KPI_KEYS:
+            if k == "revenue":
+                continue
+            e_val = expected.get(k)
+            if e_val is None:
+                derived_targets[k] = None
+            elif k in RATE_KEYS:
+                derived_targets[k] = e_val           # rates don't scale with revenue
+            else:
+                derived_targets[k] = round(e_val * rev_ratio)
+
+    # MTD prorated & headline attainment
+    mtd_tgt_rev = round(target_revenue / days_in_m * days_done) if target_revenue else None
+
+    def _pct(a, b):
+        if a is None or b is None or b == 0: return None
+        return round(a * 100.0 / b, 1)
+
+    mtd_pct  = _pct(mtd["revenue"],        mtd_tgt_rev)
+    proj_pct = _pct(proj.get("revenue"),   target_revenue)
+    rev_gap  = round(target_revenue - (proj.get("revenue") or 0)) if target_revenue else None
+    req_daily = round(rev_gap / days_rem)  if (rev_gap and rev_gap > 0 and days_rem > 0) else None
+
+    # ── Action plan ────────────────────────────────────────────────────────────
+    actions = []
+
+    # 1. Revenue headline
+    if target_revenue and proj.get("revenue") is not None:
+        hist_daily = round(hist_avg.get("revenue") / days_in_m) if hist_avg.get("revenue") else None
+        if proj_pct is not None and proj_pct < 95:
+            uplift_pct = round((req_daily / hist_daily - 1) * 100) if (req_daily and hist_daily and hist_daily > 0) else None
+            detail = (f"Projecting KES {(proj.get('revenue') or 0)/1e6:.1f}M vs target KES {target_revenue/1e6:.1f}M "
+                      f"({proj_pct:.0f}%%).")
+            if req_daily:
+                detail += f" Need KES {req_daily:,}/day for the remaining {days_rem} days"
+                if hist_daily:
+                    detail += f" (historical daily rate: KES {hist_daily:,}"
+                    if uplift_pct and uplift_pct > 0:
+                        detail += f" — {uplift_pct}%% uplift required"
+                    detail += ")."
+            sev = "critical" if (proj_pct or 0) < 75 else "high"
+            actions.append({"priority": sev, "kpi": "revenue",
+                            "title": f"Revenue gap — {100-(proj_pct or 0):.0f}%% below target pace",
+                            "detail": detail})
+        elif proj_pct is not None and proj_pct >= 95:
+            actions.append({"priority": "good", "kpi": "revenue",
+                            "title": f"Revenue on track — projecting {proj_pct:.0f}%% of target",
+                            "detail": f"KES {(proj.get('revenue') or 0)/1e6:.1f}M projected vs KES {target_revenue/1e6:.1f}M target. Maintain current pace."})
+
+    # 2. Transactions lever
+    hist_abv = hist_avg.get("abv")
+    if rev_gap and rev_gap > 0 and hist_abv and hist_abv > 0 and days_rem > 0:
+        extra_txns_day = max(1, round(req_daily / hist_abv)) if req_daily else None
+        curr_daily_txns = round(mtd["transactions"] / days_done) if days_done > 0 else 0
+        if extra_txns_day:
+            actions.append({"priority": "high", "kpi": "transactions",
+                            "title": f"Add {extra_txns_day} more transactions/day to close gap",
+                            "detail": (f"Currently averaging {curr_daily_txns} transactions/day. "
+                                       f"At historical ABV of KES {hist_abv:,}, adding {extra_txns_day} "
+                                       f"more/day over {days_rem} days recovers ~KES {extra_txns_day*hist_abv*days_rem:,}. "
+                                       f"Activate floor outreach, improve door-to-floor conversion, run targeted walk-in engagement.")})
+
+    # 3. ASP lever
+    hist_asp = hist_avg.get("asp")
+    curr_asp = mtd.get("asp")
+    if hist_asp and curr_asp and curr_asp < hist_asp * 0.95:
+        asp_gap = round(hist_asp - curr_asp)
+        actions.append({"priority": "high", "kpi": "asp",
+                        "title": f"ASP KES {curr_asp:,} is KES {asp_gap:,} below historical KES {hist_asp:,}",
+                        "detail": (f"Closing the ASP gap would add ~KES {round(asp_gap * mtd['units'] / max(days_done,1) * days_rem):,} "
+                                   f"over remaining days. Push full-price priority styles, reduce deep markdowns, "
+                                   f"upsell higher-category products (dresses, outerwear) over basics.")})
+
+    # 4. ABV lever
+    curr_abv = mtd.get("abv")
+    if curr_abv and hist_abv and curr_abv < hist_abv * 0.92:
+        gap_pct = round((hist_abv - curr_abv) / hist_abv * 100)
+        actions.append({"priority": "medium", "kpi": "abv",
+                        "title": f"Basket value KES {curr_abv:,} — {gap_pct}%% below historical norm",
+                        "detail": (f"Historical ABV: KES {hist_abv:,}. Drive outfit completion at the till — "
+                                   f"pair tops with bottoms, push accessories as add-ons. "
+                                   f"Train staff on 3-item minimum outfit presentation.")})
+
+    # 5. Conversion
+    hist_conv = hist_avg.get("conversion")
+    curr_conv = mtd.get("conversion")
+    curr_ff   = mtd.get("footfall")
+    if hist_conv and curr_conv and curr_conv < hist_conv * 0.90:
+        conv_gap = round(hist_conv - curr_conv, 1)
+        extra_per_day = round(curr_ff * conv_gap / 100 / days_done) if (curr_ff and days_done > 0) else None
+        sev = "high" if curr_conv < hist_conv * 0.80 else "medium"
+        detail = (f"Conversion at {curr_conv:.1f}%% vs historical {hist_conv:.1f}%%. "
+                  f"Each +1pp conversion = ~{round((curr_ff or 0)/max(days_done,1) * (hist_abv or 0)/100):,} KES/day extra. "
+                  f"Review staff floor placement, dressing room process, and hero-style visibility.")
+        if extra_per_day:
+            detail += f" Converting {extra_per_day} more visitors/day closes the gap."
+        actions.append({"priority": sev, "kpi": "conversion", "title": f"Conversion {curr_conv:.1f}%% — lift {conv_gap:.1f}pp to historical baseline", "detail": detail})
+
+    # 6. Returning customer share
+    hist_ret_pct = hist_avg.get("returning_customer_pct")
+    curr_ret_pct = mtd.get("returning_customer_pct")
+    if hist_ret_pct and curr_ret_pct and curr_ret_pct < hist_ret_pct * 0.90:
+        actions.append({"priority": "medium", "kpi": "returning",
+                        "title": f"Returning customer share {curr_ret_pct:.0f}%% below historical {hist_ret_pct:.0f}%%",
+                        "detail": (f"Returning customers spend ~{round((hist_abv or 0)*1.2):,} KES/visit on average. "
+                                   f"Activate loyalty re-engagement for customers last seen >21 days. "
+                                   f"Push SMS/WhatsApp for lapsed tier members.")})
+
+    # 7. Discount rate
+    curr_disc = mtd.get("discount_rate")
+    hist_disc = hist_avg.get("discount_rate")
+    if curr_disc and hist_disc and curr_disc > hist_disc * 1.15:
+        pp_above = round(curr_disc - hist_disc, 1)
+        sev = "high" if curr_disc > 25 else "medium"
+        actions.append({"priority": sev, "kpi": "discount",
+                        "title": f"Discount rate {curr_disc:.1f}%% — {pp_above}pp above historical {hist_disc:.1f}%%",
+                        "detail": (f"Excess discounting is compressing net revenue. "
+                                   f"Review authorisation thresholds and approval chain. "
+                                   f"Redirect promo energy to bundle deals (no markdown) rather than flat % off.")})
+
+    # 8. Return rate
+    curr_ret_r = mtd.get("return_rate")
+    if curr_ret_r and curr_ret_r > 8:
+        sev = "high" if curr_ret_r > 15 else "medium"
+        actions.append({"priority": sev, "kpi": "return_rate",
+                        "title": f"Return rate {curr_ret_r:.1f}%% is elevated",
+                        "detail": (f"Check top-returned styles for sizing or quality issues. "
+                                   f"Strengthen fit advisory at point of sale and review exchange-vs-refund policy.")})
+
+    # Sort: critical → high → medium → good → info
+    _prio_order = {"critical": 0, "high": 1, "medium": 2, "good": 3, "info": 4}
+    actions.sort(key=lambda x: _prio_order.get(x["priority"], 5))
+
+    # ── Build per-KPI analysis rows ────────────────────────────────────────────
+    KPI_LABELS = {
+        "units": "Items Sold", "revenue": "Revenue (Net KES)",
+        "transactions": "Transactions", "asp": "ASP",
+        "abv": "ABV", "footfall": "Footfall",
+        "conversion": "Conversion Rate", "discount_rate": "Discount Rate",
+        "return_rate": "Return Rate", "new_customer_pct": "% New Customers",
+        "returning_customer_pct": "% Returning", "customer_count": "Customer Numbers",
+    }
+    KPI_FMT = {
+        "units": "num", "revenue": "kes", "transactions": "num",
+        "asp": "kes", "abv": "kes", "footfall": "num",
+        "conversion": "pct", "discount_rate": "pct", "return_rate": "pct",
+        "new_customer_pct": "pct", "returning_customer_pct": "pct", "customer_count": "num",
+    }
+    # For rate KPIs: higher is not always better — flag direction
+    LOWER_BETTER = {"discount_rate", "return_rate"}
+
+    kpi_rows_out = []
+    for k in KPI_KEYS:
+        p_val  = proj.get(k)
+        t_val  = derived_targets.get(k)
+        e_val  = expected.get(k)
+        m_val  = mtd.get(k)
+        # prorated MTD target for attainment gauge
+        mt_prorated = round(t_val / days_in_m * days_done) if (t_val and k not in RATE_KEYS) else t_val
+        mtd_att = _pct(m_val, mt_prorated) if mt_prorated else None
+        proj_att = _pct(p_val, t_val)
+        # For lower-is-better KPIs invert the "good" signal
+        if k in LOWER_BETTER and proj_att is not None:
+            proj_att_status_val = 200 - proj_att   # e.g. 95 projected/target → status = 105 = good
+        else:
+            proj_att_status_val = proj_att
+        def _status(v):
+            if v is None: return "low"
+            if v >= 95: return "good"
+            if v >= 80: return "medium"
+            return "high"
+        kpi_rows_out.append({
+            "key":         k,
+            "label":       KPI_LABELS[k],
+            "fmt":         KPI_FMT[k],
+            "lower_better": k in LOWER_BETTER,
+            "mtd":         m_val,
+            "projected_eom": p_val,
+            "expected":    e_val,
+            "target":      t_val,
+            "mtd_attainment_pct":  mtd_att,
+            "proj_attainment_pct": proj_att,
+            "status":      _status(proj_att_status_val),
+        })
+
+    out = {
+        "store": store,
+        "month": str(cur_mstart),
+        "month_label": today.strftime("%B %Y"),
+        "days_done": days_done,
+        "days_in_month": days_in_m,
+        "days_remaining": days_rem,
+        "woc":  float(woc_row["woc"]) if woc_row.get("woc") is not None else None,
+        "msi":  round(float(woc_row["woc"]) / 4.0, 1) if woc_row.get("woc") is not None else None,
+        "soh":  int(woc_row.get("stock") or 0),
+        "target_revenue":          target_revenue,
+        "mtd_target_revenue":      mtd_tgt_rev,
+        "mtd_revenue_attainment":  mtd_pct,
+        "proj_revenue_attainment": proj_pct,
+        "revenue_gap":             rev_gap,
+        "required_daily_revenue":  req_daily,
+        "expected_source": exp_source,
+        "mtd":          mtd,
+        "projected_eom": proj,
+        "expected":      expected,
+        "hist_avg":      hist_avg,
+        "prior_year":    prior_year,
+        "derived_targets": derived_targets,
+        "kpi_rows":      kpi_rows_out,
+        "actions":       actions,
+    }
+    cache_set(ck, out, ttl=600)
+    return out
+
+
 # Serve React build as static files
 build_dir = pathlib.Path(__file__).parent / "dashboard" / "build"
 if build_dir.exists():
