@@ -79,7 +79,7 @@ class _FakeUsersDB:
 
     def exec(self, query, params=None, fetch=False):
         q = query.strip().lower()
-        if q.startswith("select * from style_tracker_styles"):
+        if "style_tracker_styles" in q and "style_tracker_notes" not in q and "style_tracker_finishing" not in q:
             return copy.deepcopy(self._styles)
         if "style_tracker_notes" in q:
             return copy.deepcopy(self._notes)

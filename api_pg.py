@@ -2073,6 +2073,17 @@ def _ensure_fabric_structure_columns():
         log.warning("fabric_structure column migration skipped: %s", e)
 
 
+@_deferred_startup
+def _ensure_style_number_column():
+    # style_number was added to all_products_clean after the initial schema;
+    # add it idempotently so existing prod DBs gain it on first deploy.
+    try:
+        _users_exec("ALTER TABLE all_products_clean "
+                    "ADD COLUMN IF NOT EXISTS style_number TEXT")
+    except Exception as e:
+        log.warning("style_number column migration skipped: %s", e)
+
+
 @app.on_event("startup")
 def _cap_threadpool():
     # Sync endpoints run in Starlette's thread pool (default 40 threads). Each
@@ -33673,6 +33684,8 @@ def _st_row_out(r):
             out[k] = out[k].isoformat()
     # Ensure notes key always present (populated by board endpoint, not DB fetch)
     out.setdefault("notes", [])
+    # Ensure style_number key always present (may be absent on DBs before migration)
+    out.setdefault("style_number", None)
     return out
 
 
@@ -33684,6 +33697,14 @@ def style_tracker_board():
     all completed/archived (or empty) are hidden. Also returns weeks BEYOND the
     window that already hold styles (a card dragged/created far ahead must
     never silently vanish from the board)."""
+    try:
+        return _style_tracker_board_inner()
+    except Exception as exc:
+        log.error("style_tracker_board failed: %s", exc, exc_info=True)
+        raise
+
+
+def _style_tracker_board_inner():
     _ensure_style_tracker_tables()
     today = _st_today_eat()
     cur_y, cur_w, _ = today.isocalendar()
@@ -33692,20 +33713,29 @@ def style_tracker_board():
     # Use a single-pass CTE to look up style_number for all tracked styles at
     # once (avoids one correlated subquery per row, which scaled O(n) with the
     # number of active styles).
-    rows = _users_exec("""
-        WITH sn AS (
-            SELECT lower(p.style_name) AS sn_key,
-                   mode() WITHIN GROUP (ORDER BY p.style_number) AS style_number
-            FROM all_products_clean p
-            WHERE p.style_number IS NOT NULL AND p.style_number <> ''
-            GROUP BY 1
-        )
-        SELECT s.*, sn.style_number
-        FROM style_tracker_styles s
-        LEFT JOIN sn ON sn.sn_key = lower(s.style_name)
-        WHERE NOT s.archived
-        ORDER BY s.completed, s.id
-    """, fetch=True) or []
+    try:
+        rows = _users_exec("""
+            WITH sn AS (
+                SELECT lower(p.style_name) AS sn_key,
+                       mode() WITHIN GROUP (ORDER BY p.style_number) AS style_number
+                FROM all_products_clean p
+                WHERE p.style_number IS NOT NULL AND p.style_number <> ''
+                GROUP BY 1
+            )
+            SELECT s.*, sn.style_number
+            FROM style_tracker_styles s
+            LEFT JOIN sn ON sn.sn_key = lower(s.style_name)
+            WHERE NOT s.archived
+            ORDER BY s.completed, s.id
+        """, fetch=True) or []
+    except Exception as exc:
+        log.warning("style_tracker_board: style_number join failed (%s), falling back", exc)
+        rows = _users_exec(
+            "SELECT s.*, NULL::text AS style_number "
+            "FROM style_tracker_styles s "
+            "WHERE NOT s.archived "
+            "ORDER BY s.completed, s.id",
+            fetch=True) or []
 
     # Fetch notes for all non-archived styles in one query
     notes_raw = _users_exec("""
@@ -36244,4 +36274,3 @@ def transfers_store_returns(
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
-
