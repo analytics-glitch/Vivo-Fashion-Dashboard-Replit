@@ -4055,7 +4055,8 @@ def _rollup_defs():
                COALESCE(SUM(s.net_quantity) FILTER (
                    WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '182 days'), 0)::int AS units_182d
         FROM all_sales s
-        WHERE s.sale_kind IN ('sale','order') AND """ + BASE_FILTERS + """
+        WHERE s.sale_kind IN ('sale','order') AND s.variant_sku IS NOT NULL
+          AND """ + BASE_FILTERS + """
         GROUP BY s.pos_location_name, s.variant_sku
     """
     style_velocity = """
@@ -4082,8 +4083,8 @@ def _rollup_defs():
         ("customer_first_purchase", "rollup_customer_first_purchase", cust_first_purchase),
         ("rm_style",                "rollup_rm_style",                rm_style),
         ("pa_style",                "rollup_pa_style",                pa_style),
-        ("sku_velocity",            "rollup_sku_velocity",            sku_velocity),
-        ("style_velocity",          "rollup_style_velocity",          style_velocity),
+        ("sku_velocity",            "rollup_sku_velocity2",            sku_velocity),
+        ("style_velocity",          "rollup_style_velocity2",          style_velocity),
     ]
 
 
@@ -4125,7 +4126,7 @@ def _ensure_rollup_tables(conn):
             current_price numeric, current_price_date date,
             PRIMARY KEY (style_name, country)
         );
-        CREATE TABLE IF NOT EXISTS rollup_sku_velocity (
+        CREATE TABLE IF NOT EXISTS rollup_sku_velocity2 (
             pos_location_name text,
             variant_sku       text,
             last_sale_date    date,
@@ -4134,7 +4135,7 @@ def _ensure_rollup_tables(conn):
             units_182d        int,
             PRIMARY KEY (pos_location_name, variant_sku)
         );
-        CREATE TABLE IF NOT EXISTS rollup_style_velocity (
+        CREATE TABLE IF NOT EXISTS rollup_style_velocity2 (
             style_name     text,
             country        text,
             units_28d      int,
@@ -11129,7 +11130,7 @@ def analytics_aged_stock(
     # window). For aged stock it is near-zero by definition, which is the point:
     # it quantifies how slowly each SKU is actually moving.
     # Rollup fast path (~<1 s) vs live all_sales scan (~30-50 s cold).
-    # rollup_sku_velocity is per (pos_location_name, variant_sku); aggregate by
+    # rollup_sku_velocity2 is per (pos_location_name, variant_sku); aggregate by
     # sku across all stores to match the original CTE which had no location filter.
     if _rollup_fresh("sku_velocity"):
         _last_sale_cte = """
@@ -11138,7 +11139,7 @@ def analytics_aged_stock(
                    SUM(units_182d) AS units_180,
                    SUM(units_28d)  AS u28,
                    SUM(units_56d)  AS u56
-            FROM rollup_sku_velocity
+            FROM rollup_sku_velocity2
             GROUP BY variant_sku
         ),"""
     else:
@@ -11247,11 +11248,11 @@ def analytics_warehouse_return_candidates(
             SELECT pos_location_name AS pos_location, variant_sku AS sku,
                    last_sale_date AS last_sold,
                    units_182d     AS units_180
-            FROM rollup_sku_velocity
+            FROM rollup_sku_velocity2
         ),
         style_sales AS (
             SELECT style_name, SUM(units_182d) AS units_182
-            FROM rollup_style_velocity
+            FROM rollup_style_velocity2
             GROUP BY style_name
         ),"""
     else:
@@ -11672,11 +11673,11 @@ def analytics_rebalancing():
         last_sale AS (
             SELECT pos_location_name AS store, variant_sku AS sku,
                    last_sale_date AS last_sold
-            FROM rollup_sku_velocity
+            FROM rollup_sku_velocity2
         ),
         style_sales_182 AS (
             SELECT style_name, SUM(units_182d) AS units_182
-            FROM rollup_style_velocity
+            FROM rollup_style_velocity2
             GROUP BY style_name
         ),"""
     else:
@@ -13230,7 +13231,7 @@ def _ibt_store_sku_velocity(date_from, date_to, country):
     The canonical SOR formula is not used or changed here."""
     c_inv = ("AND i.country = '" + _sql_str(country) + "'") if country else ""
     # Rollup fast path (~<1 s) vs live all_sales scan (~30-50 s cold).
-    # rollup_sku_velocity has no country column, so fall back when country is set.
+    # rollup_sku_velocity2 has no country column, so fall back when country is set.
     # The rollup covers the same trailing 28d/56d window that IBT defaults to.
     if not country and _rollup_fresh("sku_velocity"):
         vel_cte = f"""
@@ -13239,7 +13240,7 @@ def _ibt_store_sku_velocity(date_from, date_to, country):
              MAX(p.category) AS category,
              r.units_28d::numeric AS u28,
              r.units_56d::numeric AS u56
-      FROM rollup_sku_velocity r
+      FROM rollup_sku_velocity2 r
       JOIN all_products_clean p ON p.sku = r.variant_sku
       WHERE r.pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})
         AND r.pos_location_name NOT IN ({_IBT_STORE_EXCL})
