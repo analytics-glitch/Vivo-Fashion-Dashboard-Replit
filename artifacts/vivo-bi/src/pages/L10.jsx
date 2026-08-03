@@ -525,9 +525,9 @@ const ScorecardTab = ({ meetingId, folderId = 1, onRedMetrics }) => {
             </thead>
             <tbody>
               {metrics.map((metric) => (
-                <tr key={metric.id} className="border-b last:border-0 hover:bg-muted/20">
-                  <td className="py-2 px-3 sticky left-0 bg-white z-10 border-r text-muted-foreground text-xs">{metric.who || "—"}</td>
-                  <td className="py-2 px-3 sticky left-[80px] bg-white z-10 border-r font-medium">{metric.measurable}</td>
+                <tr key={metric.id} className="border-b last:border-0 bg-white hover:bg-muted/20">
+                  <td className="py-2 px-3 sticky left-0 bg-white hover:bg-inherit z-10 border-r text-muted-foreground text-xs">{metric.who || "—"}</td>
+                  <td className="py-2 px-3 sticky left-[80px] bg-white hover:bg-inherit z-10 border-r font-medium">{metric.measurable}</td>
                   <td className="py-2 px-3 text-xs">
                     <span className="flex items-center gap-0.5">
                       {metric.goal_direction === "up" ? <ArrowUp size={11} className="text-emerald-600" /> : <ArrowDown size={11} className="text-red-500" />}
