@@ -1,0 +1,62 @@
+# Replit Agent Prompt — Store Profile Page
+
+Build a new **"Store Profile"** page in the Vivo BI dashboard (React/craco frontend, FastAPI `api_pg.py` backend, PostgreSQL on Neon/helium). This page is for the **Head of Retail Performance** to review one store at a time in depth.
+
+## 1. Page-level filter
+
+- Single-select **Store (POS location)** filter at the top of the page. This filter drives every section below — the entire page always shows data for exactly one store at a time.
+- Default to the first store alphabetically, or the last store the user viewed if that pattern already exists elsewhere in the dashboard.
+- Reuse the existing store/location list and naming conventions already used elsewhere in the dashboard (the corrected FootfallCam site name mappings and `LOCATION_COUNTRY_MAP`) so store names match across pages.
+
+## 2. Section A — Monthly KPI trend (last 6 months)
+
+Show a table (and, where sensible, small trend sparklines/charts) with **one row per KPI** and **one column per month** for the trailing 6 full calendar months, for the selected store only:
+
+- Items Sold
+- Revenue
+- Contribution
+- MSI (Months of Supply Inventory / weeks-in-stock equivalent — use the existing dashboard definition)
+- Transactions
+- ABV (Average Basket Value)
+- ASP (Average Selling Price)
+- Footfall
+- Conversion Rate
+- % New Customer
+- % Returning Customer
+- Customer Numbers
+- WOC (Weeks of Cover)
+
+Use existing backend logic/endpoints for these KPIs wherever they already exist elsewhere in the dashboard (e.g. Exec Summary, Store performance views) rather than recalculating from scratch — reuse `get_kpis` and related query patterns, respecting the existing net-of-returns and `BASE_FILTERS` (online channel exclusion) conventions already used across the codebase.
+
+## 3. Section B — Items Sold & ASP by Category / Sub-Category
+
+For the selected store, over the same trailing 6-month window (with an option to select a single month):
+
+- Show **Items Sold % contribution** by Category, and by Sub-Category within a selected Category.
+- Show **ASP** by Category, and by Sub-Category within a selected Category.
+- **Category** and **Sub-Category** must be implemented as dropdown filters — selecting a Category should populate/filter the Sub-Category dropdown and refresh the chart/table below it, not force everything to render open in a flat list.
+- Pull Category/Sub-Category from `all_products_clean` joined to `all_sales`, consistent with the 5-level category/sub-category fallback join logic already fixed on the Production Board (exact style_number → style_name → regex-stripped style_number → fuzzy ILIKE both directions), so this page doesn't reintroduce "Unspecified" category rows.
+
+## 4. Section C — August 2026 Target vs Performance
+
+Add an **"August 2026 Targets"** input/reference table for this store (Items Sold, Revenue, Contribution, MSI, Transactions, ABV, ASP, Footfall, Conversion Rate, % New Customer, % Returning, Customer Numbers, WOC — same KPI list as Section A). Ask me for the actual target values/source table before wiring this — build the UI and calculation logic assuming targets are stored per-store per-KPI in a new table (e.g. `store_kpi_targets`) so they can be edited/updated later without a code change.
+
+For each KPI, build a three-row comparison:
+
+1. **Current Performance** — actual month-to-date (or latest completed month) performance for the KPI at this store.
+2. **Expected Performance** — a projection of where the store will land at month-end if it continues performing at the same trend/run-rate shown by the last 6 months of history (Section A). State the projection method simply (e.g. average daily run-rate × remaining days, or trailing 3-month average growth rate) so it's auditable, not a black box.
+3. **Suggested Action to Hit Target** — a plain-language, KPI-specific suggestion of what needs to change to close the gap between Expected and Target (e.g. "Conversion Rate is trending 2pts below target — focus on staffing at peak footfall hours" or "ASP is below target — review discounting on [top-selling sub-category]"). This can start as simple rule-based text generated from the gap size/direction per KPI; it does not need to be AI-generated in v1.
+
+Show Target, Current, Expected, and Gap-to-Target clearly (e.g. color-coded: green = on/above target, amber = close, red = at risk) for each KPI in one summary table, with the narrative suggestions listed below or alongside it.
+
+## 5. Build order (please follow this sequence)
+
+1. Store filter + Section A (6-month KPI trend table) first — this is the core.
+2. Section B (Category/Sub-Category dropdowns with Items Sold % and ASP).
+3. Section C (Targets table + Current/Expected/Suggested comparison) last, including the new `store_kpi_targets` table — check with me on the target values/import method before finalizing this part.
+
+## 6. General
+
+- Match the existing dashboard's visual style, filter component patterns, and loading/error states — don't introduce a new design system for this page.
+- Verify all new queries against both dev (helium) and production (Neon) once built.
+- Confirm the exact endpoint names/routes you plan to add before implementing, so they can be reviewed.
