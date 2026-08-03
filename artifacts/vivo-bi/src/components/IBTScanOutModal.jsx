@@ -21,7 +21,7 @@ export default function IBTScanOutModal({ row, onClose, onScannedOut }) {
   const [qty, setQty] = useState(
     row?.actual_units_moved != null ? Number(row.actual_units_moved) : Number(suggested) || 0,
   );
-  const [odooRef, setOdooRef] = useState("");
+  const [odooRef, setOdooRef] = useState(row?.odoo_transfer_id || "");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
   const [block, setBlock] = useState(null); // 409 donor_stock_unavailable detail
@@ -66,7 +66,15 @@ export default function IBTScanOutModal({ row, onClose, onScannedOut }) {
         value_kes: row.value_kes ?? null,
         curve_complete: !!row.curve_complete,
         odoo_transfer_id: odooRef.trim() || null,
+        // When a per-corridor draft exists, scan-out confirms it in Odoo
+        // (draft → ready) server-side.
+        odoo_picking_id: row.odoo_picking_id || null,
       });
+      if (data?.odoo_status && String(data.odoo_status).startsWith("error")) {
+        // Surface but don't block — the move is dispatched; the draft ref is
+        // on the ledger for manual follow-up in Odoo.
+        console.warn("Odoo draft confirmation:", data.odoo_status);
+      }
       setDone({ consignment_id: data?.consignment_id, status: data?.status || "in_transit" });
     } catch (err) {
       const status = err?.response?.status;

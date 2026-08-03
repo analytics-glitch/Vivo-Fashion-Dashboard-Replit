@@ -23978,6 +23978,243 @@ async def ibt_complete(request: Request):
     return {"ok": True}
 
 
+# ── IBT ⇄ Odoo internal-transfer drafts ──────────────────────────────────────
+# Per-corridor "Create drafts" action: one DRAFT stock.picking per From→To pair
+# (operation type = the DONOR store's "Internal Transfers", donor Stock →
+# receiver Stock, one stock.move per SKU). Scan-out then CONFIRMS the draft
+# (draft → waiting/assigned) — verified against this Odoo instance: every store
+# has its own internal picking type (e.g. 'Vivo Junction: Internal Transfers',
+# src JUNCT/Stock) and store→store IBTs are pickings donor Stock → receiver
+# Stock. Draft refs persist in ibt_odoo_drafts so they survive reloads.
+
+_IBT_ODOO_WH_ALIASES = {
+    # normalized pos_location_name -> normalized Odoo warehouse name where they
+    # differ beyond punctuation/spacing (verified against stock.picking.type).
+    "vivotrm": "vivothikaroadmall",
+    "onlineshopzetu": "shopzetuonline",
+}
+
+
+def _ibt_odoo_norm(name):
+    return "".join(ch for ch in (name or "").lower() if ch.isalnum())
+
+
+def _ibt_odoo_kw():
+    """Authenticated execute_kw closure against the Odoo XML-RPC API."""
+    from fastapi import HTTPException
+    import xmlrpc.client as _xc
+    url = os.environ.get("ODOO_URL"); db = os.environ.get("ODOO_DB")
+    user = os.environ.get("ODOO_USER"); pw = os.environ.get("ODOO_PASSWORD")
+    if not all([url, db, user, pw]):
+        raise HTTPException(status_code=503, detail="Odoo credentials are not configured")
+    common = _xc.ServerProxy(f"{url}/xmlrpc/2/common")
+    uid = common.authenticate(db, user, pw, {})
+    if not uid:
+        raise HTTPException(status_code=503, detail="Odoo authentication failed")
+    models = _xc.ServerProxy(f"{url}/xmlrpc/2/object")
+
+    def kw(model, method, args, **kws):
+        return models.execute_kw(db, uid, pw, model, method, args, kws)
+    return kw
+
+
+_ibt_odoo_map_cache = {"at": 0.0, "map": {}}
+
+
+def _ibt_odoo_store_map(kw):
+    """normalized warehouse name -> {pt: picking_type_id, loc: stock location id}.
+    Cached 1h — warehouses don't churn."""
+    now = time.time()
+    if _ibt_odoo_map_cache["map"] and now - _ibt_odoo_map_cache["at"] < 3600:
+        return _ibt_odoo_map_cache["map"]
+    pts = kw("stock.picking.type", "search_read", [[("code", "=", "internal")]],
+             fields=["id", "warehouse_id", "default_location_src_id"])
+    m = {}
+    for p in pts:
+        wh = p.get("warehouse_id") or [None, ""]
+        src = p.get("default_location_src_id") or [None, ""]
+        if wh[0] and src[0]:
+            m[_ibt_odoo_norm(wh[1])] = {"pt": p["id"], "loc": src[0]}
+    _ibt_odoo_map_cache.update(at=now, map=m)
+    return m
+
+
+def _ibt_odoo_resolve_store(kw, store):
+    from fastapi import HTTPException
+    n = _ibt_odoo_norm(store)
+    n = _IBT_ODOO_WH_ALIASES.get(n, n)
+    hit = _ibt_odoo_store_map(kw).get(n)
+    if not hit:
+        raise HTTPException(status_code=422,
+                            detail=f"No Odoo warehouse matches store '{store}' — "
+                                   "cannot create a draft transfer for it")
+    return hit
+
+
+def _ensure_ibt_odoo_drafts_table():
+    _users_exec("""
+        CREATE TABLE IF NOT EXISTS ibt_odoo_drafts (
+            from_store   TEXT NOT NULL,
+            to_store     TEXT NOT NULL,
+            sku          TEXT NOT NULL,
+            qty          INTEGER NOT NULL,
+            picking_id   INTEGER NOT NULL,
+            picking_name TEXT NOT NULL,
+            created_by   TEXT,
+            created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+            PRIMARY KEY (from_store, to_store, sku)
+        )""")
+
+
+@app.post("/api/ibt/odoo-draft")
+async def ibt_odoo_draft(request: Request):
+    """Create ONE draft internal transfer in Odoo for a From→To corridor
+    (all its suggested SKU lines). Returns the draft reference; lines whose
+    SKU has no Odoo product are reported back, never silently dropped."""
+    from fastapi import HTTPException
+    import asyncio as _aio
+    import xmlrpc.client as _xc
+    _ensure_ibt_odoo_drafts_table()
+    body = await request.json()
+    acting = getattr(request.state, "user", None) or {}
+    from_store = (body.get("from_store") or "").strip()
+    to_store = (body.get("to_store") or "").strip()
+    lines = body.get("lines") or []
+    clean = []
+    for ln in lines:
+        sku = (ln.get("sku") or "").strip()
+        try:
+            q = int(ln.get("qty") or 0)
+        except Exception:
+            q = 0
+        if sku and q > 0:
+            clean.append((sku, q))
+    if not from_store or not to_store or not clean:
+        raise HTTPException(status_code=400,
+                            detail="from_store, to_store and lines[{sku,qty}] are required")
+
+    def _do_create():
+        kw = _ibt_odoo_kw()
+        src = _ibt_odoo_resolve_store(kw, from_store)
+        dst = _ibt_odoo_resolve_store(kw, to_store)
+
+        # Recreate path: if this corridor already has a mapping whose picking is
+        # STILL a draft in Odoo, cancel+delete it first so we never leave an
+        # obsolete draft (with stale quantities) lying around in the ERP.
+        old = _users_exec(
+            "SELECT DISTINCT picking_id FROM ibt_odoo_drafts "
+            "WHERE from_store=%s AND to_store=%s", (from_store, to_store), fetch=True)
+        for r in (old or []):
+            try:
+                st = kw("stock.picking", "read", [[r["picking_id"]]], fields=["state"])
+                if st and st[0]["state"] == "draft":
+                    kw("stock.picking", "action_cancel", [[r["picking_id"]]])
+                    kw("stock.picking", "unlink", [[r["picking_id"]]])
+            except Exception:
+                pass  # already gone / confirmed — the new draft still supersedes it
+        _users_exec("DELETE FROM ibt_odoo_drafts WHERE from_store=%s AND to_store=%s",
+                    (from_store, to_store))
+
+        skus = [s for s, _ in clean]
+        prods = kw("product.product", "search_read", [[("default_code", "in", skus)]],
+                   fields=["id", "default_code", "uom_id"])
+        by_code = {p["default_code"]: p for p in prods}
+        missing = [s for s in skus if s not in by_code]
+        matched = [(s, q) for s, q in clean if s in by_code]
+        if not matched:
+            raise HTTPException(status_code=422, detail={
+                "error": "no_products_matched",
+                "message": "None of the SKUs exist as products in Odoo",
+                "missing_skus": missing})
+
+        moves = [(0, 0, {
+            "name": s,
+            "product_id": by_code[s]["id"],
+            "product_uom": by_code[s]["uom_id"][0],
+            "product_uom_qty": q,
+            "location_id": src["loc"],
+            "location_dest_id": dst["loc"],
+        }) for s, q in matched]
+        picking_id = kw("stock.picking", "create", [{
+            "picking_type_id": src["pt"],
+            "location_id": src["loc"],
+            "location_dest_id": dst["loc"],
+            "origin": f"VIVO-BI IBT {from_store} → {to_store}",
+            "move_ids_without_package": moves,
+        }])
+        name = kw("stock.picking", "read", [[picking_id]], fields=["name"])[0]["name"]
+        return picking_id, name, matched, missing
+
+    try:
+        picking_id, name, matched, missing = await _aio.to_thread(_do_create)
+    except HTTPException:
+        raise
+    except (_xc.Fault, _xc.ProtocolError, OSError) as e:
+        raise HTTPException(status_code=502, detail={
+            "error": "odoo_unreachable",
+            "message": f"Odoo rejected or did not answer the draft creation: {str(e)[:300]}"})
+
+    for s, q in matched:
+        _users_exec(
+            "INSERT INTO ibt_odoo_drafts (from_store, to_store, sku, qty, "
+            "picking_id, picking_name, created_by) VALUES (%s,%s,%s,%s,%s,%s,%s) "
+            "ON CONFLICT (from_store, to_store, sku) DO UPDATE SET "
+            "qty=EXCLUDED.qty, picking_id=EXCLUDED.picking_id, "
+            "picking_name=EXCLUDED.picking_name, created_by=EXCLUDED.created_by, "
+            "created_at=now()",
+            (from_store, to_store, s, q, picking_id, name,
+             acting.get("name") or acting.get("email")))
+    return {"ok": True, "picking_id": picking_id, "picking_name": name,
+            "lines_created": len(matched), "missing_skus": missing}
+
+
+@app.get("/api/ibt/odoo-drafts")
+def ibt_odoo_drafts_list():
+    """Open draft refs keyed for the transfer table (survives page reloads)."""
+    _ensure_ibt_odoo_drafts_table()
+    rows = _users_exec(
+        "SELECT from_store, to_store, sku, qty, picking_id, picking_name "
+        "FROM ibt_odoo_drafts WHERE created_at > now() - interval '30 days'",
+        fetch=True)
+    return {"rows": rows or []}
+
+
+def _ibt_odoo_confirm_picking(picking_id, sku=None, qty=None):
+    """Confirm a draft picking (draft → waiting/assigned) at scan-out. When the
+    scanned qty differs from the draft line (suggestions moved on), the matching
+    move's quantity is synced BEFORE confirming so Odoo never carries a stale
+    number. Returns a short status string; never raises — a scanned-out move
+    must not be lost because the ERP call hiccuped (the ref is on the ledger
+    for follow-up)."""
+    try:
+        kw = _ibt_odoo_kw()
+        st = kw("stock.picking", "read", [[int(picking_id)]], fields=["state"])
+        state = st[0]["state"] if st else None
+        if state == "draft":
+            if sku and qty:
+                try:
+                    mv = kw("stock.move", "search_read",
+                            [[("picking_id", "=", int(picking_id)),
+                              ("product_id.default_code", "=", sku)]],
+                            fields=["id", "product_uom_qty"], limit=1)
+                    if mv and int(mv[0]["product_uom_qty"]) != int(qty):
+                        kw("stock.move", "write", [[mv[0]["id"]],
+                                                   {"product_uom_qty": int(qty)}])
+                except Exception:
+                    pass  # qty sync is best-effort; confirm proceeds regardless
+            kw("stock.picking", "action_confirm", [[int(picking_id)]])
+            try:
+                kw("stock.picking", "action_assign", [[int(picking_id)]])
+            except Exception:
+                pass  # reservation can legitimately fail; picking stays confirmed
+            return "confirmed"
+        if state is None:
+            return "error: picking not found in Odoo"
+        return f"already_{state}"
+    except Exception as e:
+        return f"error: {str(e)[:200]}"
+
+
 # ── Phase 3 (Flow & Proof): two-sided scan lifecycle + reconciliation ─────────
 # Replaces the blind Mark-As-Done. A move is scanned OUT of the donor (re-validated
 # against live stock + reservations so a sale that took the unit blocks the move
@@ -24070,9 +24307,20 @@ async def ibt_scan_out(request: Request):
     except Exception:
         pass
 
+    # If this row was covered by a per-corridor Odoo draft, confirm it now
+    # ("initiate the transfer from draft"). Best-effort: the scan-out ledger
+    # write above already committed; a failed ERP call is surfaced, not fatal.
+    odoo_status = None
+    picking_id = body.get("odoo_picking_id")
+    if picking_id:
+        import asyncio as _aio
+        odoo_status = await _aio.to_thread(
+            _ibt_odoo_confirm_picking, picking_id, sku, qty)
+
     return {"ok": True, "consignment_id": cid, "status": "in_transit",
             "revalidated": revalidated,
-            "available": (avail if revalidated else None)}
+            "available": (avail if revalidated else None),
+            "odoo_status": odoo_status}
 
 
 @app.post("/api/ibt/scan-in")

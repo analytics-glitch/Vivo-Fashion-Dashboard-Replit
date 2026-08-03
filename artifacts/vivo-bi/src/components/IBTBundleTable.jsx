@@ -28,6 +28,8 @@ export default function IBTBundleTable({
   bundles = [],
   markdownCandidates = [],
   onScanOut,
+  onCreateDrafts,
+  draftingKey = null,
   runId,
   stale = false,
   odooDrafts = {},
@@ -261,8 +263,43 @@ export default function IBTBundleTable({
                       data-testid={`${testId}-actual-${s.sku}`}
                     />
                   </td>
-                  <td className="px-3 py-2.5 whitespace-nowrap font-mono text-[11px]" data-testid={`${testId}-draft-${s.sku}`}>
-                    {draft?.name || <span className="text-muted">—</span>}
+                  <td className="px-3 py-2.5 whitespace-nowrap text-[11px]" data-testid={`${testId}-draft-${s.sku}`}>
+                    {draft?.name ? (
+                      <span className="inline-flex items-center gap-1.5">
+                        <span className="font-mono font-semibold text-[#1a5c38]">{draft.name}</span>
+                        <button
+                          type="button"
+                          disabled={!!draftingKey}
+                          onClick={() => {
+                            const lines = rows
+                              .filter(({ b: rb }) => rb.from_store === b.from_store && rb.to_store === b.to_store)
+                              .map(({ s: rs }) => ({ sku: rs.sku, qty: rs.suggested_qty || 0 }));
+                            onCreateDrafts?.({ from_store: b.from_store, to_store: b.to_store, lines });
+                          }}
+                          title="Recreate the corridor's draft in Odoo with the current suggested quantities (the old draft is cancelled if still in draft)"
+                          className="text-[10px] font-semibold px-1.5 py-0.5 rounded border border-border text-muted hover:text-brand hover:border-brand/40 disabled:opacity-50"
+                          data-testid={`${testId}-redo-draft-${s.sku}`}
+                        >
+                          ↻
+                        </button>
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled={!!draftingKey}
+                        onClick={() => {
+                          const lines = rows
+                            .filter(({ b: rb }) => rb.from_store === b.from_store && rb.to_store === b.to_store)
+                            .map(({ s: rs }) => ({ sku: rs.sku, qty: rs.suggested_qty || 0 }));
+                          onCreateDrafts?.({ from_store: b.from_store, to_store: b.to_store, lines });
+                        }}
+                        title={`Create ONE draft internal transfer in Odoo covering every suggested line ${b.from_store} → ${b.to_store}`}
+                        className="text-[11px] font-semibold px-2 py-1 rounded-md border border-brand/40 text-brand hover:bg-brand/5 disabled:opacity-50"
+                        data-testid={`${testId}-create-draft-${s.sku}`}
+                      >
+                        {draftingKey === `${b.from_store}||${b.to_store}` ? "Creating…" : "Create drafts"}
+                      </button>
+                    )}
                   </td>
                   <td className="px-3 py-2.5 whitespace-nowrap">
                     <button

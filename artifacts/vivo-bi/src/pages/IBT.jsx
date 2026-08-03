@@ -71,6 +71,55 @@ const IBT = () => {
     if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
+  // Odoo draft refs keyed `${from}||${to}||${sku}` — persisted server-side so
+  // draft numbers survive page reloads.
+  const [odooDrafts, setOdooDrafts] = useState({});
+  const [draftingKey, setDraftingKey] = useState(null); // `${from}||${to}` in flight
+  useEffect(() => {
+    let cancelled = false;
+    api.get("/ibt/odoo-drafts")
+      .then((r) => {
+        if (cancelled) return;
+        const map = {};
+        (r.data?.rows || []).forEach((d) => {
+          map[`${d.from_store}||${d.to_store}||${d.sku}`] = { id: d.picking_id, name: d.picking_name };
+        });
+        setOdooDrafts(map);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
+  // Per-corridor draft creation: one Odoo draft picking covering every visible
+  // suggested line for the From→To pair.
+  const handleCreateDrafts = async ({ from_store, to_store, lines }) => {
+    const key = `${from_store}||${to_store}`;
+    if (draftingKey) return;
+    setDraftingKey(key);
+    try {
+      const { data } = await api.post("/ibt/odoo-draft", { from_store, to_store, lines });
+      setOdooDrafts((prev) => {
+        const next = { ...prev };
+        lines.forEach(({ sku }) => {
+          if (!(data.missing_skus || []).includes(sku)) {
+            next[`${from_store}||${to_store}||${sku}`] = { id: data.picking_id, name: data.picking_name };
+          }
+        });
+        return next;
+      });
+      const missing = (data.missing_skus || []).length;
+      toast.success(
+        `Odoo draft ${data.picking_name} created — ${data.lines_created} line(s)` +
+        (missing ? `; ${missing} SKU(s) not found in Odoo` : ""),
+      );
+    } catch (e) {
+      const d = e?.response?.data?.detail;
+      toast.error(typeof d === "string" ? d : d?.message || "Could not create the Odoo draft");
+    } finally {
+      setDraftingKey(null);
+    }
+  };
+
   // Load already-completed keys so actioned SKUs drop out of the live list.
   useEffect(() => {
     let cancelled = false;
@@ -487,6 +536,9 @@ const IBT = () => {
               bundles={filteredBundles}
               markdownCandidates={markdownCandidates}
               onScanOut={(payload) => setScanOutRow(payload)}
+              onCreateDrafts={handleCreateDrafts}
+              draftingKey={draftingKey}
+              odooDrafts={odooDrafts}
               runId={data?.run_id}
               stale={stale}
               completedSkuKeys={completedSkuKeys}
