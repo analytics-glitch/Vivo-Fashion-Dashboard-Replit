@@ -364,6 +364,11 @@ function RevenueBlock({ mtdRev, target, projected, daysDone, daysIn, daysLeft, r
   const sc = projPct != null ? scorePct(projPct) : C.muted;
   const gap = target && projected ? Math.max(0, target - projected) : null;
   const dailyAvg = mtdRev && daysDone > 0 ? Math.round(mtdRev / daysDone) : null;
+  // TOTAL sales needed per remaining day to land exactly on target (what the
+  // store must actually ring up each day — not the lift over current pace).
+  const totalDaily = target != null && mtdRev != null && daysLeft > 0
+    ? Math.max(0, Math.round((target - mtdRev) / daysLeft))
+    : null;
 
   return (
     <div style={{ background: "#fff", border: `2px solid ${sc.bdr}`, borderRadius: 14, padding: "22px 26px", marginBottom: 16 }}>
@@ -397,9 +402,16 @@ function RevenueBlock({ mtdRev, target, projected, daysDone, daysIn, daysLeft, r
         <div style={{ background: gap > 0 ? C.bad.bg : C.good.bg, border: `1px solid ${gap > 0 ? C.bad.bdr : C.good.bdr}`, borderRadius: 8, padding: "10px 14px" }}>
           <div style={{ fontSize: 10, fontWeight: 700, color: gap > 0 ? C.bad.fg : C.good.fg, textTransform: "uppercase" }}>⚡ What to do</div>
           <div style={{ fontSize: 18, fontWeight: 800, color: gap > 0 ? C.bad.fg : C.good.fg, marginTop: 2 }}>
-            {gap > 0 ? `${fmtKES(reqDaily, false)}/day` : "✓ On track"}
+            {gap > 0 ? `Sell ${fmtKES(totalDaily, false)}/day` : "✓ On track"}
           </div>
-          {gap > 0 && <div style={{ fontSize: 11, color: "#374151" }}>for {daysLeft} days · gap {fmtKES(gap)}</div>}
+          {gap > 0 && (
+            <div style={{ fontSize: 11, color: "#374151" }}>
+              total per day for the next {daysLeft} days
+              {dailyAvg != null && reqDaily != null && (
+                <> · currently {fmtKES(dailyAvg)}/day, so <strong>+{fmtKES(reqDaily)}/day more</strong></>
+              )}
+            </div>
+          )}
         </div>
       </div>
     </div>
