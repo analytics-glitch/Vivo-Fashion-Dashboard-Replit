@@ -547,7 +547,8 @@ _AUTH_PUBLIC_EXACT = {"/api", "/api/", "/api/healthz", "/api/readyz", "/api/sync
 # by the shared SESSION_SECRET via the X-Internal-Token header (validated in the
 # auth gate with a constant-time compare). Keep this set minimal.
 _AUTH_INTERNAL_TOKEN_PATHS = {"/api/analytics/replenishment-sor/snapshot",
-                              "/api/ibt/nightly-reconcile"}
+                              "/api/ibt/nightly-reconcile",
+                              "/api/admin/upsert-store-targets"}
 
 # Endpoints that accept EITHER a valid internal token (sync loop, no session) OR
 # a normal authenticated staff session (browser). Unlike the strict set above, a
@@ -14213,6 +14214,37 @@ async def admin_apply_q3_targets(request: Request):
             conn.close()
         except Exception:
             pass
+@app.post("/api/admin/upsert-store-targets")
+async def admin_upsert_store_targets(request: Request):
+    """Upsert store-level monthly targets.
+    Body: { "rows": [{ "name": str, "country": str, "month": "YYYY-MM-DD", "target_kes": int }] }
+    Accepts X-Internal-Token (SESSION_SECRET) or admin session. Idempotent."""
+    body = await request.json()
+    rows = body.get("rows", [])
+    if not rows:
+        return JSONResponse({"ok": False, "error": "no rows provided"}, status_code=400)
+    UPSERT = (
+        "INSERT INTO targets_monthly (scope, name, country, month, target_kes, source, updated_at) "
+        "VALUES ('store',%s,%s,%s,%s,'manual',NOW()) "
+        "ON CONFLICT (scope, name, month, source) DO UPDATE SET "
+        "target_kes=EXCLUDED.target_kes, country=EXCLUDED.country, updated_at=NOW()"
+    )
+    conn = get_conn()
+    try:
+        conn.autocommit = False
+        cur = conn.cursor()
+        for r in rows:
+            cur.execute(UPSERT, (r["name"], r["country"], r["month"], int(r["target_kes"])))
+        conn.commit()
+        return {"ok": True, "rows_upserted": len(rows)}
+    except Exception as e:
+        try: conn.rollback()
+        except Exception: pass
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=500)
+    finally:
+        try: conn.autocommit = True; conn.close()
+        except Exception: pass
+
 @app.get("/api/admin/replenishment-config")
 def admin_replenishment_config():
     return {"owners": _replen_owners()}
