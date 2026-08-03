@@ -37323,7 +37323,7 @@ def store_profile_performance_report(store: str = Query(...)):
     expected    = prior_year  if py_has_data else hist_avg
     exp_source  = "Aug " + str(py_mstart.year) + " Actual" if py_has_data else "6-Month Average"
 
-    # Projected EOM (linear extrapolation)
+    # Projected EOM (linear extrapolation for VOLUME KPIs only)
     proj = {}
     for k in KPI_KEYS:
         v = mtd.get(k)
@@ -37331,6 +37331,17 @@ def store_profile_performance_report(store: str = Query(...)):
             proj[k] = round(v / days_done * days_in_m)
         else:
             proj[k] = None
+    # Rate/percentage KPIs are averages — never day-prorated. Carry the MTD rate,
+    # then recompute ASP/ABV/conversion from projected components for coherence.
+    for k in ("asp", "abv", "conversion", "discount_rate", "return_rate",
+              "new_customer_pct", "returning_customer_pct"):
+        proj[k] = mtd.get(k)
+    if proj.get("revenue") and proj.get("units"):
+        proj["asp"] = round(proj["revenue"] / proj["units"])
+    if proj.get("revenue") and proj.get("transactions"):
+        proj["abv"] = round(proj["revenue"] / proj["transactions"])
+    if proj.get("transactions") and proj.get("footfall"):
+        proj["conversion"] = round(proj["transactions"] / proj["footfall"] * 100, 1)
 
     # ── Derived targets: what each KPI must be to hit the revenue budget ──────
     # Volume KPIs — held assumption: rates (ASP/ABV/conversion) stay at baseline,

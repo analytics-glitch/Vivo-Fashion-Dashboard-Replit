@@ -149,4 +149,5 @@
 - [Async LLM endpoint + BASE_FILTERS alias patterns](retail-desk-ai-analyst-bugs.md) — asyncio.to_thread for blocking LLM calls in async handlers; all_sales must be aliased s when using BASE_FILTERS; JSON schema field order = priority order; HAIKU = claude-haiku-4-5.
 - [Odoo product-create quirks](odoo-product-create-quirks.md) — no ir.model.fields read (use fields_get); x_vivo_attr_N options scoped to attribute_id=N; cost write blocked by auto-valuation (post-create best-effort).
 - [Fabric Product Costing tab](fabric-product-costing.md) — strict 3-email allowlist (NOT admin role) gated in middleware; DPS labour cost = mrp.production.day cost_per_unit; MO→style match on finished_sku=apc.sku only.
+- [Store Profile rate-KPI projection](store-profile-rate-kpi-projection.md) — never day-prorate rate KPIs (ASP/ABV/conversion/%); recompute from projected components; mix-shift denominators must be same-scope.
 - [Named cursor dies on commit](named-cursor-commit-invalidation.md) — conn.commit() mid-stream closes a psycopg2 named cursor (truncated all_products_clean to 1k rows); use withhold=True for batch-commit ETLs.
