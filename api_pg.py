@@ -20461,7 +20461,10 @@ def analytics_store_profiling(
           COALESCE(COUNT(DISTINCT s.order_id) FILTER (WHERE s.sale_date::date BETWEEN '{pri_start}' AND '{pri_end}' AND s.sale_kind IN ('sale','order')), 0) AS pri_txns,
           COALESCE(SUM(COALESCE(s.discounts_kes::numeric,0)) FILTER (WHERE s.sale_date::date BETWEEN '{cur_start}' AND '{cur_end}' AND s.sale_kind IN ('sale','order')), 0) AS cur_disc,
           COALESCE(SUM(COALESCE(s.gross_sales_kes::numeric,0)) FILTER (WHERE s.sale_date::date BETWEEN '{cur_start}' AND '{cur_end}' AND s.sale_kind IN ('sale','order')), 0) AS cur_gross,
-          COALESCE(SUM(COALESCE(s.returned_item_quantity,0)) FILTER (WHERE s.sale_date::date BETWEEN '{cur_start}' AND '{cur_end}' AND s.sale_kind IN ('sale','order')), 0) AS cur_ret_qty
+          COALESCE(SUM(COALESCE(s.returned_item_quantity,0)) FILTER (WHERE s.sale_date::date BETWEEN '{cur_start}' AND '{cur_end}' AND s.sale_kind IN ('sale','order')), 0) AS cur_ret_qty,
+          COALESCE(COUNT(DISTINCT s.order_id) FILTER (WHERE s.sale_date::date BETWEEN '{mstart}' AND '{cur_end}' AND s.sale_kind IN ('sale','order')), 0) AS mtd_txns,
+          COALESCE(SUM(COALESCE(s.discounts_kes::numeric,0)) FILTER (WHERE s.sale_date::date BETWEEN '{mstart}' AND '{cur_end}' AND s.sale_kind IN ('sale','order')), 0) AS mtd_disc,
+          COALESCE(SUM(COALESCE(s.gross_sales_kes::numeric,0)) FILTER (WHERE s.sale_date::date BETWEEN '{mstart}' AND '{cur_end}' AND s.sale_kind IN ('sale','order')), 0) AS mtd_gross
         FROM all_sales s
         WHERE s.sale_date::date BETWEEN '{pri_start}' AND '{cur_end}'
           AND s.pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})
@@ -20709,6 +20712,9 @@ def analytics_store_profiling(
             "_cn": cn, "_pn": pn, "_disc": disc_r, "_ret": ret_r,
             "_basket": basket, "_ff": ff, "_tblock": tblock,
             "_cm": cm, "_pri_cust": pri_cust, "_stp": stm.get(sn),
+            "_mtd_txns": int(r.get("mtd_txns") or 0),
+            "_mtd_disc": float(r.get("mtd_disc") or 0),
+            "_mtd_gross": float(r.get("mtd_gross") or 0),
             "store": sn, "country": ctry, "months_active": months_active,
             "kpis": {
                 "revenue":      _pair(cn, pn),
@@ -20840,11 +20846,83 @@ def analytics_store_profiling(
             pain = [{"severity": "none", "message": "No major issues — store performing well",
                      "metric_value": None, "benchmark": None}]
 
+        # ── August target achievement path ───────────────────────────────
+        mtd_v       = s["_tblock"]["mtd_actual"]
+        tgt_v       = s["_tblock"].get("target_kes")
+        mtd_txns_v  = s["_mtd_txns"]
+        mtd_disc_v  = s["_mtd_disc"]
+        mtd_gross_v = s["_mtd_gross"]
+        days_rem    = days_in_mo - days_done
+
+        aug_path = {
+            "gap": None,
+            "days_remaining": days_rem,
+            "required_daily_revenue": None,
+            "current_daily_revenue": round(float(mtd_v) / days_done) if days_done > 0 else 0,
+            "levers": {},
+        }
+        if tgt_v and days_done > 0:
+            aug_gap = max(0.0, float(tgt_v) - float(mtd_v))
+            aug_path["gap"] = round(aug_gap)
+            aug_path["current_daily_revenue"] = round(float(mtd_v) / days_done)
+            if days_rem > 0 and aug_gap > 0:
+                req_d_rev = aug_gap / days_rem
+                aug_path["required_daily_revenue"] = round(req_d_rev)
+                mtd_basket_v = round(float(mtd_v) / mtd_txns_v) if mtd_txns_v > 0 else None
+                curr_d_txns  = float(mtd_txns_v) / days_done
+                levers = {}
+                # Lever 1: more transactions at current basket
+                if mtd_basket_v and mtd_basket_v > 0:
+                    req_d_txns = req_d_rev / mtd_basket_v
+                    levers["transactions"] = {
+                        "extra_per_day":  round(req_d_txns - curr_d_txns, 1),
+                        "current_daily":  round(curr_d_txns, 1),
+                        "required_daily": round(req_d_txns, 1),
+                        "mtd_basket":     mtd_basket_v,
+                    }
+                # Lever 2: higher basket at current transaction pace
+                if curr_d_txns > 0:
+                    req_basket_v = req_d_rev / curr_d_txns
+                    levers["basket"] = {
+                        "current":    mtd_basket_v or 0,
+                        "required":   round(req_basket_v),
+                        "uplift":     round(req_basket_v - (mtd_basket_v or 0)),
+                        "daily_txns": round(curr_d_txns, 1),
+                    }
+                # Lever 3: conversion uplift (requires footfall sensor)
+                ff_d = s["_ff"]
+                if (ff_d.get("conversion") and ff_d.get("current", 0) > 0
+                        and mtd_basket_v and mtd_basket_v > 0):
+                    d_ff = ff_d["current"] / max(1, period)
+                    if d_ff > 0:
+                        req_d_txns2 = req_d_rev / mtd_basket_v
+                        req_conv    = round(req_d_txns2 * 100.0 / d_ff, 1)
+                        levers["conversion"] = {
+                            "current":        ff_d["conversion"],
+                            "required":       req_conv,
+                            "uplift":         round(req_conv - ff_d["conversion"], 1),
+                            "daily_footfall": round(d_ff),
+                        }
+                # Lever 4: discount recovery vs country median
+                curr_mo_dr = round(mtd_disc_v * 100.0 / mtd_gross_v, 1) if mtd_gross_v > 0 else None
+                if curr_mo_dr is not None and md is not None and curr_mo_dr > md:
+                    exc      = curr_mo_dr - md
+                    mo_gross = (mtd_gross_v / days_done) * days_in_mo
+                    levers["discounting"] = {
+                        "current_rate": curr_mo_dr,
+                        "median_rate":  round(md, 1),
+                        "recoverable":  round(mo_gross * exc / 100),
+                    }
+                aug_path["levers"] = levers
+            elif days_rem <= 0:
+                aug_path["required_daily_revenue"] = 0
+
         out = {k: v for k, v in s.items() if not k.startswith("_")}
-        out["status"]      = status
-        out["score"]       = score
-        out["pain_points"] = pain
-        out["strengths"]   = good[:3]
+        out["status"]             = status
+        out["score"]              = score
+        out["pain_points"]        = pain
+        out["strengths"]          = good[:3]
+        out["august_target_path"] = aug_path
         final.append(out)
 
     final.sort(key=lambda x: x["score"], reverse=True)
@@ -34379,13 +34457,40 @@ def style_tracker_fulfillment(style_id: int):
         total_row["fulfillment_pct"] = round(
             total_row["current_qty"] / total_row["cutting_qty"] * 100)
 
+    # ── Linked production orders (for the Move Units by SKU panel) ──────────
+    # Find production_orders whose style_name matches this style (case-insensitive)
+    # and return their per-stage SKU balances so the drawer can render move controls.
+    linked_orders = []
+    try:
+        prod_refs = _users_exec(
+            "SELECT order_ref, COALESCE(order_qty, 0) AS order_qty "
+            "FROM production_orders "
+            "WHERE lower(COALESCE(style_name, '')) = lower(%s) "
+            "ORDER BY order_ref LIMIT 5",
+            (style_name,), fetch=True) or []
+        for po in prod_refs:
+            detail = _production_order_detail(po["order_ref"])
+            if not detail:
+                continue
+            sku_balances = detail.get("sku_balances") or []
+            if not sku_balances:
+                continue
+            linked_orders.append({
+                "order_ref": po["order_ref"],
+                "order_qty": int(po["order_qty"] or 0),
+                "sku_balances": sku_balances,
+            })
+    except Exception:
+        pass  # Don't fail fulfillment if production linking errors
+
     return {
         "style_id": style_id,
         "style_name": style_name,
         "stages": stages,
         "matrix": matrix,
         "totals": total_row,
-        "has_data": bool(stages or matrix),
+        "has_data": bool(stages or matrix or linked_orders),
+        "linked_orders": linked_orders,
     }
 
 

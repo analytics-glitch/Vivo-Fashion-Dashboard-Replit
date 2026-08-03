@@ -5,6 +5,7 @@ import { useAuth } from "@/lib/auth";
 import { toast } from "sonner";
 import { SectionTitle, Loading, ErrorBox } from "@/components/common";
 import {
+  ArrowRight,
   ArrowsClockwise,
   Archive,
   ArrowCounterClockwise,
@@ -734,13 +735,180 @@ function NotesPanel({ style, onNoteAdded }) {
   );
 }
 
+// ── Style movement components (used inside FulfillmentDrawer) ────────────────
+
+function _stageAgeCls(d) {
+  const v = Number(d) || 0;
+  if (v > 7) return "bg-rose-50 text-rose-700 border-rose-200";
+  if (v >= 2) return "bg-amber-50 text-amber-700 border-amber-200";
+  return "bg-emerald-50 text-emerald-700 border-emerald-200";
+}
+function _fmtDays(d) {
+  const v = Number(d) || 0;
+  return v < 1 ? "<1d" : `${Math.round(v)}d`;
+}
+
+/** Per-SKU move row within a stage group. */
+function SkuMoveControl({ orderRef, row, allowed, onMoved }) {
+  const [toStage, setToStage] = useState(allowed[0] || "");
+  const [qty, setQty] = useState(String(row.qty_here));
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState(null);
+
+  const label = row.colour
+    ? `${row.colour}${row.size ? ` · ${row.size}` : ""}`
+    : row.sku || "Whole order";
+
+  const liveLocked = row.live && allowed.length === 0;
+  const clearOnly  = row.stage === "cutting";
+  const intoSewing = toStage === "sewing";
+  const autoLine   = row.stage === "repairs" ? row.last_sewing_line || null : null;
+
+  const move = async () => {
+    setError(null);
+    const q = Number(qty);
+    if (!toStage) { setError("Pick a destination."); return; }
+    if (!(q > 0))  { setError("Qty must be > 0."); return; }
+    const overMoveOk = row.stage === "buying_order" && toStage === "cutting";
+    if (!overMoveOk && q > Number(row.qty_here)) { setError(`Only ${row.qty_here} here.`); return; }
+    setSubmitting(true);
+    try {
+      await api.post("/production/move", {
+        order_ref: orderRef,
+        from_stage: row.stage,
+        to_stage: toStage,
+        qty: q,
+        sku: row.sku || undefined,
+        size: row.size || undefined,
+        sewing_line: (intoSewing && autoLine) ? autoLine : undefined,
+      });
+      onMoved?.();
+    } catch (e) {
+      setError(e?.response?.data?.detail || e.message || "Move failed");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="border-t border-line px-3 py-2">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+        <div className="min-w-0 flex-1">
+          <div className="text-[12px] font-semibold text-[#0f3d24] truncate">{label}</div>
+          {row.sku && row.colour && (
+            <div className="text-[10px] text-muted font-mono truncate">{row.sku}</div>
+          )}
+        </div>
+        <div className="text-right shrink-0 w-14">
+          <div className="text-[14px] font-bold text-brand leading-none">{Number(row.qty_here)}</div>
+          <div className="text-[9.5px] text-muted">here</div>
+        </div>
+        {liveLocked ? (
+          <span className="text-[10.5px] font-semibold text-sky-700 bg-sky-50 border border-sky-200 rounded px-1.5 py-1 shrink-0">
+            Live from Odoo{row.last_sewing_line ? ` · Line ${row.last_sewing_line}` : ""}
+          </span>
+        ) : (
+          <div className="flex items-center gap-1.5 shrink-0">
+            {!clearOnly && (
+              <select
+                value={toStage}
+                onChange={(e) => setToStage(e.target.value)}
+                className="input-pill text-[11.5px] py-1"
+              >
+                {allowed.map((s) => (
+                  <option key={s} value={s}>{String(s).replace(/_/g, " ")}</option>
+                ))}
+              </select>
+            )}
+            {intoSewing && autoLine && (
+              <span className="text-[10.5px] font-semibold text-[#0f3d24] bg-emerald-50 border border-emerald-200 rounded px-1.5 py-1 whitespace-nowrap">
+                Line {autoLine}
+              </span>
+            )}
+            <input
+              type="number"
+              min={1}
+              max={row.stage === "buying_order" && toStage === "cutting" ? undefined : Number(row.qty_here)}
+              value={qty}
+              onChange={(e) => setQty(e.target.value)}
+              className="input-pill text-[11.5px] py-1 w-16"
+            />
+            <button
+              type="button"
+              onClick={move}
+              disabled={submitting}
+              className="inline-flex items-center gap-1 text-[11.5px] font-semibold text-white bg-[#1a5c38] hover:bg-[#0f3d24] px-2.5 py-1.5 rounded-md disabled:opacity-50"
+              title={clearOnly ? "Clear to the sewing floor — tracked live from Odoo after this" : undefined}
+            >
+              {submitting ? "…" : clearOnly
+                ? <><span>Clear</span><ArrowRight size={12} weight="bold" /></>
+                : <ArrowRight size={12} weight="bold" />}
+            </button>
+          </div>
+        )}
+      </div>
+      {error && (
+        <div className="mt-1.5 text-[11px] text-rose-700 bg-rose-50 border border-rose-200 rounded px-2 py-1">{error}</div>
+      )}
+    </div>
+  );
+}
+
+/** Collapsible stage group with per-SKU move rows. */
+function StageMovementGroup({ orderRef, group, onMoved, scrollId }) {
+  const rows    = group.rows || [];
+  const total   = rows.reduce((s, r) => s + (Number(r.qty_here) || 0), 0);
+  const maxDays = rows.reduce((m, r) => Math.max(m, Number(r.days_in_stage) || 0), 0);
+  const allowed = group.allowed_next || [];
+  const live    = rows.some((r) => r.live);
+  const [open, setOpen] = useState(rows.length <= 10);
+
+  return (
+    <div id={scrollId} className="rounded-lg border border-line bg-white overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center justify-between gap-2 px-3 py-2 bg-panel/40 hover:bg-panel/60 text-left"
+      >
+        <div className="flex items-center gap-1.5 min-w-0">
+          {open ? <CaretDown size={13} /> : <CaretRight size={13} />}
+          <span className="font-semibold text-[13px] text-[#0f3d24] truncate">{group.stage_name}</span>
+          {live ? (
+            <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded border bg-sky-50 text-sky-700 border-sky-200" title="Derived live from Odoo stock locations.">
+              live
+            </span>
+          ) : (
+            <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded border ${_stageAgeCls(maxDays)}`}>
+              {_fmtDays(maxDays)} oldest
+            </span>
+          )}
+        </div>
+        <div className="text-right shrink-0">
+          <span className="text-[14px] font-extrabold text-brand">{total}</span>
+          <span className="text-[10.5px] text-muted"> u · {rows.length} sku{rows.length !== 1 ? "s" : ""}</span>
+        </div>
+      </button>
+      {open && rows.map((r) => (
+        <SkuMoveControl
+          key={`${r.sku || "whole"}|${r.size || ""}`}
+          orderRef={orderRef}
+          row={r}
+          allowed={allowed}
+          onMoved={onMoved}
+        />
+      ))}
+    </div>
+  );
+}
+
 /** Fulfillment drill-down drawer (portal) */
 function FulfillmentDrawer({ styleId, styleName, styleNumber, onClose }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState(null);
+  const scrollRef = useRef(null);
 
-  useEffect(() => {
+  const load = useCallback(() => {
     setLoading(true);
     setErr(null);
     api.get(`/style-tracker/styles/${styleId}/fulfillment`, { forceFresh: true })
@@ -748,6 +916,11 @@ function FulfillmentDrawer({ styleId, styleName, styleNumber, onClose }) {
       .catch((e) => setErr(e?.response?.data?.detail || e.message || "Failed to load fulfillment data"))
       .finally(() => setLoading(false));
   }, [styleId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  /** After a move, reload the panel so stage counts update. */
+  const handleMoved = useCallback(() => { load(); }, [load]);
 
   const STAGE_ORDER = ["cutting","waiting_sewing","sewing","finishing","warehouse"];
 
@@ -790,16 +963,45 @@ function FulfillmentDrawer({ styleId, styleName, styleNumber, onClose }) {
     return { colours, sizes, rows, totCounts, grandTotal };
   }, [data]);
 
+  /** Compute per-order stage groups from sku_balances (same shape as ProductionOrderModal). */
+  const linkedOrderGroups = useMemo(() => {
+    if (!data?.linked_orders?.length) return [];
+    return data.linked_orders.map((lo) => {
+      const m = new Map();
+      for (const r of lo.sku_balances || []) {
+        if (!m.has(r.stage)) {
+          m.set(r.stage, {
+            stage: r.stage,
+            stage_name: r.stage_name,
+            sort_order: r.sort_order ?? 0,
+            allowed_next: r.allowed_next || [],
+            rows: [],
+          });
+        }
+        m.get(r.stage).rows.push(r);
+      }
+      const groups = Array.from(m.values()).sort((a, b) => a.sort_order - b.sort_order);
+      return { order_ref: lo.order_ref, order_qty: lo.order_qty, groups };
+    });
+  }, [data]);
+
+  /** Scroll the drawer body to a stage group anchor. */
+  const scrollToStage = (stageKey) => {
+    if (!scrollRef.current) return;
+    const el = scrollRef.current.querySelector(`[id^="smg-${stageKey}-"]`);
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
   const content = (
     <div
       className="fixed inset-0 z-50 flex"
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
       <div className="flex-1 bg-black/30" onClick={onClose} />
-      <div className="w-full max-w-[700px] bg-white h-full shadow-2xl flex flex-col">
+      <div className="w-full max-w-[720px] bg-white h-full shadow-2xl flex flex-col">
         <div className="flex items-center justify-between px-5 py-3.5 border-b border-line shrink-0">
           <div>
-            <div className="font-bold text-[14px] text-[#0f3d24]">Fulfillment Drill-Down</div>
+            <div className="font-bold text-[14px] text-[#0f3d24]">Style Movement</div>
             <div className="flex items-baseline gap-2 mt-0.5">
               <span className="text-[12px] text-muted">{styleName}</span>
               {styleNumber && (
@@ -809,7 +1011,7 @@ function FulfillmentDrawer({ styleId, styleName, styleNumber, onClose }) {
           </div>
           <button type="button" onClick={onClose} className="text-muted hover:text-danger p-1"><X size={18} /></button>
         </div>
-        <div className="flex-1 overflow-y-auto p-5 space-y-6">
+        <div ref={scrollRef} className="flex-1 overflow-y-auto p-5 space-y-6">
           {loading ? (
             <Loading label="Loading fulfillment data…" />
           ) : err ? (
@@ -828,6 +1030,7 @@ function FulfillmentDrawer({ styleId, styleName, styleNumber, onClose }) {
                     const stage = data.stages.find((s) => s.stage === sk);
                     if (!stage) return null;
                     const isActive = sk === activeStage;
+                    const hasMove  = linkedOrderGroups.some((lo) => lo.groups.some((g) => g.stage === sk));
                     const prevStageExists = idx > 0 && STAGE_ORDER.slice(0, idx).some(
                       (prev) => data.stages.find((s) => s.stage === prev)
                     );
@@ -839,11 +1042,16 @@ function FulfillmentDrawer({ styleId, styleName, styleNumber, onClose }) {
                             <CaretRight size={12} className="text-[#1a5c38]/40 -ml-0.5" />
                           </div>
                         )}
-                        <div className={`rounded-lg border-2 px-3.5 py-2.5 min-w-[118px] text-center shrink-0 ${
-                          isActive
-                            ? "border-[#1a5c38] bg-[#1a5c38]/5"
-                            : "border-line bg-panel/40"
-                        }`}>
+                        <button
+                          type="button"
+                          onClick={() => hasMove && scrollToStage(sk)}
+                          title={hasMove ? `Click to jump to ${stage.stage_name} move section` : undefined}
+                          className={`rounded-lg border-2 px-3.5 py-2.5 min-w-[118px] text-center shrink-0 transition ${
+                            isActive
+                              ? "border-[#1a5c38] bg-[#1a5c38]/5"
+                              : "border-line bg-panel/40"
+                          } ${hasMove ? "hover:ring-2 hover:ring-[#1a5c38]/30 cursor-pointer" : "cursor-default"}`}
+                        >
                           <div className={`text-[9px] font-bold uppercase tracking-wide mb-1.5 ${isActive ? "text-[#1a5c38]" : "text-muted"}`}>
                             {stage.stage_name}
                           </div>
@@ -851,7 +1059,10 @@ function FulfillmentDrawer({ styleId, styleName, styleNumber, onClose }) {
                             {stage.units.toLocaleString()}
                           </div>
                           <div className="text-[9px] text-muted mt-1">u entered</div>
-                        </div>
+                          {hasMove && (
+                            <div className="text-[8.5px] text-[#1a5c38] mt-1 font-semibold opacity-70">↓ move</div>
+                          )}
+                        </button>
                       </div>
                     );
                   })}
@@ -901,6 +1112,38 @@ function FulfillmentDrawer({ styleId, styleName, styleNumber, onClose }) {
                       </tbody>
                     </table>
                   </div>
+                </div>
+              )}
+
+              {/* Move Units by SKU — one section per linked production order */}
+              {linkedOrderGroups.length > 0 && (
+                <div>
+                  <div className="text-[10.5px] font-bold text-[#0f3d24] uppercase tracking-widest mb-3">Move Units by SKU</div>
+                  {linkedOrderGroups.map((lo) => (
+                    <div key={lo.order_ref} className="mb-5">
+                      {linkedOrderGroups.length > 1 && (
+                        <div className="flex items-center gap-2 mb-2">
+                          <span className="text-[11px] font-mono font-semibold text-[#1a5c38] bg-[#1a5c38]/8 border border-[#1a5c38]/20 rounded px-1.5 py-0.5">
+                            {lo.order_ref}
+                          </span>
+                          {lo.order_qty > 0 && (
+                            <span className="text-[11px] text-muted">Order qty {lo.order_qty.toLocaleString()}</span>
+                          )}
+                        </div>
+                      )}
+                      <div className="space-y-2">
+                        {lo.groups.map((g) => (
+                          <StageMovementGroup
+                            key={g.stage}
+                            orderRef={lo.order_ref}
+                            group={g}
+                            onMoved={handleMoved}
+                            scrollId={`smg-${g.stage}-${lo.order_ref}`}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  ))}
                 </div>
               )}
             </>
