@@ -4897,9 +4897,26 @@ def get_kpis_customer_type_split(
     # This intentionally differs from /api/customer-type-spend (Customers
     # page), which reports gross order rows with a separate Walk-in bucket —
     # do NOT reuse that endpoint here, its total can't reconcile to /api/kpis.
+    _cts_ck = "cust_type_split:" + "|".join(str(x) for x in (date_from, date_to, country, channel))
+    _cts_cached, _cts_fresh = cache_get_swr(_cts_ck)
+    if _cts_cached is not None:
+        if not _cts_fresh:
+            swr_refresh(_cts_ck, lambda: get_kpis_customer_type_split(
+                date_from=date_from, date_to=date_to, country=country,
+                channel=channel), label="cust_type_split")
+        return _cts_cached
+    # Use pre-aggregated rollup when available to avoid a double-scan of
+    # all_sales (~1.5M rows). Falls back to the live _id_bridge CTE when
+    # the rollup is missing or stale (e.g. immediately after a deploy).
+    _fp_cte_cts = (
+        "first_purchase AS (SELECT customer_id, first_purchase_date"
+        " FROM rollup_customer_first_purchase)"
+        if _rollup_fresh("customer_first_purchase")
+        else _unified_first_purchase_ctes()
+    )
     where = build_filters(date_from, date_to, country, channel)
     rows = run_query("""
-        WITH """ + _unified_first_purchase_ctes() + """
+        WITH """ + _fp_cte_cts + """
         SELECT
             CASE
                 WHEN fp.first_purchase_date BETWEEN '""" + date_from + """'::date AND '""" + date_to + """'::date
@@ -4952,7 +4969,7 @@ def get_kpis_customer_type_split(
     walk_in_cust = orders["Walk-in"]
     new_cust = customers["New"]
     ret_cust = customers["Returning"]
-    return {
+    _cts_resp = {
         "new_sales": new,
         "returning_sales": total - new - walkin,
         "walk_in_sales": walkin,
@@ -4964,6 +4981,8 @@ def get_kpis_customer_type_split(
         "walk_in_customers": walk_in_cust,
         "total_customers": new_cust + ret_cust + walk_in_cust,
     }
+    cache_set(_cts_ck, _cts_resp, ttl=HEAVY_DASH_TTL)
+    return _cts_resp
 
 @app.get("/api/country-summary")
 def get_country_summary(
@@ -6516,12 +6535,26 @@ def get_customer_trend(
     date_to:   str = Query(default=str(date.today())),
     country:   str = Query(default=None),
 ):
+    _ct_ck = "cust_trend:" + "|".join(str(x) for x in (date_from, date_to, country))
+    _ct_cached, _ct_fresh = cache_get_swr(_ct_ck)
+    if _ct_cached is not None:
+        if not _ct_fresh:
+            swr_refresh(_ct_ck, lambda: get_customer_trend(
+                date_from=date_from, date_to=date_to, country=country),
+                label="cust_trend")
+        return _ct_cached
+    _fp_cte_ct = (
+        "all_time AS (SELECT customer_id, first_purchase_date AS first_purchase"
+        " FROM rollup_customer_first_purchase)"
+        if _rollup_fresh("customer_first_purchase")
+        else _unified_first_purchase_ctes("all_time", "first_purchase")
+    )
     where = build_filters(date_from, date_to, country,
         extra="s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL AND s.customer_id NOT IN ('None','null','')"
         " AND s.customer_id NOT IN (SELECT customer_id FROM all_customers WHERE customer_id IS NOT NULL"
         " AND " + _WALKIN_PSEUDO_COND + ")")
-    return run_query("""
-        WITH """ + _unified_first_purchase_ctes("all_time", "first_purchase") + """
+    _ct_resp = run_query("""
+        WITH """ + _fp_cte_ct + """
         SELECT s.sale_date AS day,
             COUNT(DISTINCT s.customer_id) AS total_customers,
             COUNT(DISTINCT CASE WHEN a.first_purchase = s.sale_date::date THEN s.customer_id END) AS new_customers,
@@ -6531,6 +6564,8 @@ def get_customer_trend(
         WHERE """ + where + """
         GROUP BY s.sale_date ORDER BY s.sale_date
     """, date_to=date_to)
+    cache_set(_ct_ck, _ct_resp, ttl=HEAVY_DASH_TTL)
+    return _ct_resp
 
 @app.get("/api/customers-by-location")
 def get_customers_by_location(
@@ -6538,12 +6573,26 @@ def get_customers_by_location(
     date_to:   str = Query(default=str(date.today())),
     country:   str = Query(default=None),
 ):
+    _cbl_ck = "cust_by_loc:" + "|".join(str(x) for x in (date_from, date_to, country))
+    _cbl_cached, _cbl_fresh = cache_get_swr(_cbl_ck)
+    if _cbl_cached is not None:
+        if not _cbl_fresh:
+            swr_refresh(_cbl_ck, lambda: get_customers_by_location(
+                date_from=date_from, date_to=date_to, country=country),
+                label="cust_by_loc")
+        return _cbl_cached
+    _fp_cte_cbl = (
+        "all_time AS (SELECT customer_id, first_purchase_date AS first_purchase"
+        " FROM rollup_customer_first_purchase)"
+        if _rollup_fresh("customer_first_purchase")
+        else _unified_first_purchase_ctes("all_time", "first_purchase")
+    )
     where = build_filters(date_from, date_to, country,
         extra="s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL AND s.customer_id NOT IN ('None','null','')"
         " AND s.customer_id NOT IN (SELECT customer_id FROM all_customers WHERE customer_id IS NOT NULL"
         " AND " + _WALKIN_PSEUDO_COND + ")")
-    return run_query("""
-        WITH """ + _unified_first_purchase_ctes("all_time", "first_purchase") + """
+    _cbl_resp = run_query("""
+        WITH """ + _fp_cte_cbl + """
         SELECT s.pos_location_name, s.country,
             COUNT(DISTINCT s.customer_id) AS total_customers,
             COUNT(DISTINCT CASE WHEN a.first_purchase BETWEEN '""" + date_from + """'::date AND '""" + date_to + """'::date THEN s.customer_id END) AS new_customers,
@@ -6555,6 +6604,8 @@ def get_customers_by_location(
         GROUP BY s.pos_location_name, s.country
         ORDER BY total_customers DESC
     """, date_to=date_to)
+    cache_set(_cbl_ck, _cbl_resp, ttl=HEAVY_DASH_TTL)
+    return _cbl_resp
 
 @app.get("/api/churned-customers")
 def get_churned_customers(
@@ -6647,16 +6698,27 @@ def get_new_customer_products(
     channel:   str = Query(default=None),
     limit:     int = Query(default=20),
 ):
+    _ncp_ck = "new_cust_prod:" + "|".join(str(x) for x in (date_from, date_to, country, channel, limit))
+    _ncp_cached, _ncp_fresh = cache_get_swr(_ncp_ck)
+    if _ncp_cached is not None:
+        if not _ncp_fresh:
+            swr_refresh(_ncp_ck, lambda: get_new_customer_products(
+                date_from=date_from, date_to=date_to, country=country,
+                channel=channel, limit=limit), label="new_cust_prod")
+        return _ncp_cached
+    # new_customers uses the first-purchase rollup (when fresh) or the
+    # _unified_first_purchase_ctes ID-bridge CTE as fallback. The rollup is a
+    # 173k-row PK read vs a double-scan of all_sales (~1.5M rows).
+    _fp_cte_ncp = (
+        "first_purchase AS (SELECT customer_id, first_purchase_date"
+        " FROM rollup_customer_first_purchase)"
+        if _rollup_fresh("customer_first_purchase")
+        else _unified_first_purchase_ctes()
+    )
     where = build_filters(date_from, date_to, country, channel,
         extra="s.sale_kind IN ('sale','order') AND s.ordered_item_quantity > 0 AND p.style_name IS NOT NULL")
-    # new_customers uses _unified_first_purchase_ctes (Kenya Odoo/Shopify ID
-    # bridge) so a post-cutover customer whose prior Shopify history exists is
-    # not mis-labelled "new". Raw MIN(sale_date) GROUP BY customer_id lacks the
-    # bridge and treated every Odoo-era ID as new regardless of history.
-    # Pseudo-accounts (walk-in placeholders) are also excluded so the product
-    # list isn't polluted by counter-account purchases.
-    return run_query("""
-        WITH """ + _unified_first_purchase_ctes() + """,
+    _ncp_resp = run_query("""
+        WITH """ + _fp_cte_ncp + """,
         new_customers AS (
             SELECT customer_id FROM first_purchase
             WHERE first_purchase_date BETWEEN '""" + date_from + """'::date AND '""" + date_to + """'::date
@@ -6676,6 +6738,8 @@ def get_new_customer_products(
         GROUP BY p.style_name, p.product_type, p.brand
         ORDER BY units_sold DESC
         LIMIT """ + str(limit), date_to=date_to)
+    cache_set(_ncp_ck, _ncp_resp, ttl=HEAVY_DASH_TTL)
+    return _ncp_resp
 
 @app.get("/api/sor")
 def get_sor(

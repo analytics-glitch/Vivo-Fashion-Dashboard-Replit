@@ -1,0 +1,18 @@
+BRIEF: Cache four uncached customer endpoints that run the expensive identity-bridge query
+
+Problem: Four endpoints call _unified_first_purchase_ctes() (the _id_bridge CTE) live on every request. That CTE double-scans all_sales (1.5M rows) and takes ~8.5s cold. Under concurrent load these stack up — we observed 6+ minute runtimes and 26 simultaneous active queries pinning CPU. Unlike /api/customers (line ~5445), these four have NO rollup gate and NO caching:
+
+/api/kpis/customer-type-split (line ~4880)
+/api/customer-trend (line ~6513)
+/api/customers-by-location (line ~6535)
+/api/new-customer-products (line ~6642)
+
+Task: Wrap each of these four endpoints' expensive query result in the existing stale-while-revalidate cache used elsewhere (cache_get_swr(key) / cache_set(key, resp, ttl=...) — see the pattern at lines ~6699 and ~16327-16418). Requirements:
+
+Build a cache key per endpoint that includes ALL of its query params (date_from, date_to, country, channel — whichever each uses) plus the inventory/data version if the endpoint already uses one, so different filter combos cache separately. Follow the exact keying pattern the SOR/excess endpoints use.
+Use ttl=HEAVY_DASH_TTL (900s) to match other heavy endpoints.
+Use the SWR pattern so a stale entry is served instantly while a single background refresh runs — do NOT let concurrent requests each trigger their own refresh (the existing cache_get_swr + _SWR_MAX_INFLIGHT machinery already bounds this; reuse it, don't reinvent).
+Do NOT change any SQL, business logic, or the query results themselves — only add a caching layer around the existing computation.
+Where an endpoint could instead read from rollup_customer_first_purchase (which already holds the bridged first-purchase date) behind a _rollup_fresh("customer_first_purchase") gate — exactly like /api/customers does at line ~5460 — prefer that as it's even faster than caching the live scan. Apply the rollup gate where the query shape allows it; fall back to caching the live query otherwise.
+
+Test: After changes, hit each endpoint twice — second call should return from cache in <100ms. Load the Customers and Locations pages with several concurrent requests and confirm no long-running _id_bridge queries pile up (SELECT count(*) FROM pg_stat_activity WHERE query ILIKE '%_id_bridge%' AND state='active' should stay near 0-1, not climb). Confirm results are identical to pre-change (spot-check counts). Do NOT touch worker/pool config or any other endpoint.
