@@ -183,6 +183,15 @@ def main():
 
     cur.execute("SELECT COUNT(*) FROM all_customers")
     log.info("✅ all_customers total: %d", cur.fetchone()[0])
+    try:
+        conn.commit()
+        conn.set_isolation_level(0)
+        vcur = conn.cursor()
+        vcur.execute("VACUUM ANALYZE all_customers")
+        vcur.close()
+        log.info("VACUUM ANALYZE all_customers complete")
+    except Exception as ve:
+        log.warning("VACUUM all_customers failed (non-fatal): %s", ve)
     conn.close()
 
 if __name__ == "__main__":

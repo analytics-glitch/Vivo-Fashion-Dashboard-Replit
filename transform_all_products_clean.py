@@ -687,6 +687,15 @@ def main():
     conflicts = cur.fetchone()[0]
     log.info("Style numbers with multiple subcats: %d", conflicts)
 
+    try:
+        conn.commit()
+        conn.set_isolation_level(0)
+        vcur = conn.cursor()
+        vcur.execute("VACUUM ANALYZE all_products_clean")
+        vcur.close()
+        log.info("VACUUM ANALYZE all_products_clean complete")
+    except Exception as ve:
+        log.warning("VACUUM all_products_clean failed (non-fatal): %s", ve)
     conn.close()
 
 

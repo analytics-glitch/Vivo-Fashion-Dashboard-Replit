@@ -4049,6 +4049,20 @@ def run_sales_rollup_refresh(only=None):
                     "row_count = EXCLUDED.row_count", (name, n))
                 conn.commit()
                 cur.close()
+                # VACUUM the freshly TRUNCATE+INSERTed table so its visibility map
+                # is rebuilt — otherwise index-only scans fall back to a heap fetch
+                # for EVERY row (Heap Fetches = row_count), making customer/PA/RM
+                # pages read ~25x slower until autovacuum eventually catches up.
+                # VACUUM cannot run inside a txn block, so use an autocommit cursor.
+                try:
+                    old_iso = conn.isolation_level
+                    conn.set_isolation_level(0)  # AUTOCOMMIT
+                    vcur = conn.cursor()
+                    vcur.execute("VACUUM ANALYZE " + table)
+                    vcur.close()
+                    conn.set_isolation_level(old_iso)
+                except Exception as ve:
+                    log.warning("VACUUM after rollup %s failed (non-fatal): %s", name, ve)
                 results[name] = n
             except Exception as e:
                 conn.rollback()

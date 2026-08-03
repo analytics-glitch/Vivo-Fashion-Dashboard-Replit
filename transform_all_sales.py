@@ -587,6 +587,17 @@ def main():
     for row in cur.fetchall():
         print(f"  {row[0]}: {row[1]} rows, {row[2]} to {row[3]}, {row[4]}M KES")
 
+    # VACUUM ANALYZE after the TRUNCATE+INSERT rebuild so index-only scans across
+    # the dashboard don't fall back to a heap fetch per row (stale visibility map).
+    try:
+        conn.commit()
+        conn.set_isolation_level(0)  # AUTOCOMMIT (VACUUM can't run in a txn)
+        vcur = conn.cursor()
+        vcur.execute("VACUUM ANALYZE all_sales")
+        vcur.close()
+        log.info("VACUUM ANALYZE all_sales complete")
+    except Exception as ve:
+        log.warning("VACUUM all_sales failed (non-fatal): %s", ve)
     conn.close()
 
 
