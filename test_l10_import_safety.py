@@ -509,5 +509,220 @@ class RoundTripTests(unittest.TestCase):
             )
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Test 4: concurrent imports are serialized — no interleaving, consistent state
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _make_users_tx_serializing(state, py_lock):
+    """Like _make_users_tx but the cursor acquires *py_lock* when it sees a
+    ``pg_advisory_xact_lock`` call, simulating Postgres advisory-lock
+    serialization.  The lock is released in the ``finally`` block so it is
+    freed on both commit and rollback."""
+
+    @contextlib.contextmanager
+    def _fake_tx(lock=False):
+        snapshot = copy.deepcopy(state)
+        lock_acquired = []
+
+        class _SerializingCursor(_FakeCursor):
+            def execute(self, query, params=None):
+                if "pg_advisory_xact_lock" in query:
+                    py_lock.acquire()
+                    lock_acquired.append(True)
+                    return
+                super().execute(query, params)
+
+        cursor = _SerializingCursor(state)
+        try:
+            yield cursor
+            # commit — state already mutated in-place by _SerializingCursor
+        except Exception:
+            state.clear()
+            state.update(snapshot)
+            raise
+        finally:
+            if lock_acquired:
+                py_lock.release()
+
+    return _fake_tx
+
+
+class ConcurrentImportTests(unittest.TestCase):
+    """Two simultaneous imports for the same folder must not corrupt each other.
+
+    The endpoint acquires ``pg_advisory_xact_lock(_L10_IMPORT_LOCK_KEY)`` as
+    the first statement inside its transaction so concurrent callers queue
+    behind the lock rather than interleave their delete→insert sequences.
+
+    The fake ``_users_tx`` provided here uses a real ``threading.Lock`` on the
+    ``pg_advisory_xact_lock`` call to reproduce the serialization in the
+    in-memory test environment.
+    """
+
+    def _complete_payload(self, extra_meetings=None):
+        """Return a complete valid payload for folder 42, optionally with
+        additional meeting rows beyond the base two."""
+        tables = {tbl: [] for tbl in api_pg._L10_INSERT_ORDER}
+        tables["l10_folders"] = [{"id": _FOLDER_ID, "name": "Leadership", "team_name": "L10"}]
+        tables["l10_meetings"] = [
+            {"id": 100, "folder_id": _FOLDER_ID, "week_label": "2026-W01",
+             "meeting_date": "2026-01-05", "start_time": None},
+            {"id": 101, "folder_id": _FOLDER_ID, "week_label": "2026-W02",
+             "meeting_date": "2026-01-12", "start_time": None},
+        ]
+        if extra_meetings:
+            tables["l10_meetings"].extend(extra_meetings)
+        tables["l10_members"] = [{"id": 200, "folder_id": _FOLDER_ID, "name": "Alice"}]
+        return {"tables": tables}
+
+    @staticmethod
+    def _run_in_thread(coro):
+        """Run an async coroutine in the calling thread using a fresh event loop.
+
+        ``asyncio.get_event_loop()`` raises RuntimeError in non-main threads on
+        Python ≥ 3.10; creating an explicit new loop avoids the failure."""
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+
+    def test_concurrent_imports_both_complete_without_error(self):
+        """Both concurrent imports must finish successfully (neither is rejected
+        and neither raises — they queue behind the advisory lock)."""
+        import threading
+
+        state = _initial_state()
+        py_lock = threading.Lock()
+
+        payload_a = self._complete_payload(extra_meetings=[
+            {"id": 102, "folder_id": _FOLDER_ID, "week_label": "2026-W03",
+             "meeting_date": "2026-01-19", "start_time": None},
+        ])
+        payload_b = self._complete_payload(extra_meetings=[
+            {"id": 103, "folder_id": _FOLDER_ID, "week_label": "2026-W04",
+             "meeting_date": "2026-01-26", "start_time": None},
+        ])
+
+        errors = []
+        results = []
+        barrier = threading.Barrier(2)
+
+        with mock.patch.object(api_pg, "_ensure_l10_tables", lambda: None), \
+             mock.patch.object(api_pg, "_users_tx",
+                               side_effect=_make_users_tx_serializing(state, py_lock)):
+
+            def run_import(payload):
+                try:
+                    barrier.wait()  # both threads enter the endpoint together
+                    r = self._run_in_thread(api_pg.l10_import(_FakeRequest(payload)))
+                    results.append(r)
+                except Exception as e:  # pragma: no cover
+                    errors.append(e)
+
+            t1 = threading.Thread(target=run_import, args=(payload_a,), daemon=True)
+            t2 = threading.Thread(target=run_import, args=(payload_b,), daemon=True)
+            t1.start()
+            t2.start()
+            t1.join(timeout=5)
+            t2.join(timeout=5)
+
+        self.assertEqual(errors, [], f"Unexpected errors from concurrent imports: {errors}")
+        self.assertEqual(len(results), 2, "Not all concurrent imports returned a result")
+
+    def test_concurrent_imports_leave_consistent_final_state(self):
+        """After two concurrent imports the DB state must exactly match one of
+        the two payloads — no rows from both, no empty tables."""
+        import threading
+
+        state = _initial_state()
+        py_lock = threading.Lock()
+
+        # Payload A: base meetings (100, 101) + meeting 102
+        payload_a = self._complete_payload(extra_meetings=[
+            {"id": 102, "folder_id": _FOLDER_ID, "week_label": "2026-W03",
+             "meeting_date": "2026-01-19", "start_time": None},
+        ])
+        # Payload B: base meetings (100, 101) + meeting 103
+        payload_b = self._complete_payload(extra_meetings=[
+            {"id": 103, "folder_id": _FOLDER_ID, "week_label": "2026-W04",
+             "meeting_date": "2026-01-26", "start_time": None},
+        ])
+
+        errors = []
+        barrier = threading.Barrier(2)
+
+        with mock.patch.object(api_pg, "_ensure_l10_tables", lambda: None), \
+             mock.patch.object(api_pg, "_users_tx",
+                               side_effect=_make_users_tx_serializing(state, py_lock)):
+
+            def run_import(payload):
+                barrier.wait()
+                try:
+                    self._run_in_thread(api_pg.l10_import(_FakeRequest(payload)))
+                except Exception as e:  # pragma: no cover
+                    errors.append(e)
+
+            t1 = threading.Thread(target=run_import, args=(payload_a,), daemon=True)
+            t2 = threading.Thread(target=run_import, args=(payload_b,), daemon=True)
+            t1.start()
+            t2.start()
+            t1.join(timeout=5)
+            t2.join(timeout=5)
+
+        self.assertEqual(errors, [], f"Errors during concurrent imports: {errors}")
+
+        meeting_ids = frozenset(r["id"] for r in state["l10_meetings"])
+
+        # Final state must exactly match one of the two payloads.
+        valid_a = frozenset({100, 101, 102})
+        valid_b = frozenset({100, 101, 103})
+        self.assertIn(
+            meeting_ids, (valid_a, valid_b),
+            f"Final meeting IDs {meeting_ids} are not consistent with either payload "
+            f"(expected {valid_a} or {valid_b}); concurrent writes interleaved.",
+        )
+
+    def test_advisory_lock_is_acquired_during_import(self):
+        """The import must call ``pg_advisory_xact_lock`` inside the transaction
+        so the serialization guarantee is actually in place."""
+        state = _initial_state()
+        lock_calls = []
+
+        class _SpyCursor(_FakeCursor):
+            def execute(self, query, params=None):
+                if "pg_advisory_xact_lock" in query:
+                    lock_calls.append(params)
+                    return
+                super().execute(query, params)
+
+        @contextlib.contextmanager
+        def _spy_tx(lock=False):
+            snapshot = copy.deepcopy(state)
+            cursor = _SpyCursor(state)
+            try:
+                yield cursor
+            except Exception:
+                state.clear()
+                state.update(snapshot)
+                raise
+
+        payload = self._complete_payload()
+        with mock.patch.object(api_pg, "_ensure_l10_tables", lambda: None), \
+             mock.patch.object(api_pg, "_users_tx", side_effect=_spy_tx):
+            _run(api_pg.l10_import(_FakeRequest(payload)))
+
+        self.assertGreater(
+            len(lock_calls), 0,
+            "pg_advisory_xact_lock was never called — advisory lock is missing",
+        )
+        # Verify it was called with _L10_IMPORT_LOCK_KEY, not some other key.
+        self.assertIn(
+            (api_pg._L10_IMPORT_LOCK_KEY,), lock_calls,
+            f"pg_advisory_xact_lock was not called with _L10_IMPORT_LOCK_KEY "
+            f"({api_pg._L10_IMPORT_LOCK_KEY:#x}); calls were {lock_calls}",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

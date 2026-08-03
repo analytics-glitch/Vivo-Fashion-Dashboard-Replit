@@ -815,6 +815,7 @@ def _users_exec(query, params=None, fetch=False):
 # turns check-then-write sequences into atomic operations so concurrent requests
 # can never both pass a last-admin guard (or both bootstrap a first admin).
 _ADMIN_LOCK_KEY = 0x5669766F  # "Vivo"
+_L10_IMPORT_LOCK_KEY = 0x4C313000  # "L10\0" — serialises concurrent L10 imports
 
 
 @contextlib.contextmanager
@@ -35679,6 +35680,11 @@ async def l10_import(request: Request):
     inserted = {}
 
     with _users_tx() as cur:
+        # Serialise concurrent imports for the same folder.  Two admin users
+        # firing the endpoint at the same time would otherwise interleave their
+        # delete → insert sequences and corrupt the data.  The advisory lock is
+        # transaction-scoped so it is released automatically on commit or rollback.
+        cur.execute("SELECT pg_advisory_xact_lock(%s)", (_L10_IMPORT_LOCK_KEY,))
         for stmt in delete_stmts:
             cur.execute(stmt)
 
