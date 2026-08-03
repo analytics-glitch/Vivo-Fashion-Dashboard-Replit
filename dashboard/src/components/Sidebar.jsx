@@ -24,6 +24,7 @@ import {
   Megaphone,
   List as MenuIcon,
   X as CloseIcon,
+  ArrowsLeftRight,
 } from "@phosphor-icons/react";
 import { useFilters } from "@/lib/filters";
 import { useAuth } from "@/lib/auth";
@@ -190,6 +191,13 @@ const UserMenu = () => {
                 data-testid="menu-store-clusters"
               >
                 <Stack size={13} /> Store Clusters
+              </button>
+              <button
+                className="w-full text-left px-3 py-2 text-[12.5px] hover:bg-panel flex items-center gap-2"
+                onClick={() => { setOpen(false); navigate("/admin/l10-migration"); }}
+                data-testid="menu-l10-migration"
+              >
+                <ArrowsLeftRight size={13} /> L10 Migration
               </button>
               <div className="h-px bg-border my-1" />
             </>

@@ -27,6 +27,7 @@ const Users = React.lazy(() => import("@/pages/Users"));
 const ActivityLogs = React.lazy(() => import("@/pages/ActivityLogs"));
 const Feedback = React.lazy(() => import("@/pages/Feedback"));
 const AdminFeedback = React.lazy(() => import("@/pages/AdminFeedback"));
+const AdminL10Migration = React.lazy(() => import("@/pages/AdminL10Migration"));
 const Allocations = React.lazy(() => import("@/pages/Allocations"));
 const Replenishments = React.lazy(() => import("@/pages/Replenishments"));
 const StoreClusters = React.lazy(() => import("@/pages/StoreClusters"));
@@ -122,6 +123,7 @@ function App() {
               <Route path="/admin/activity-logs" element={<ProtectedShell adminOnly pageId="admin-activity-logs"><ActivityLogs /></ProtectedShell>} />
               <Route path="/admin/feedback" element={<ProtectedShell adminOnly pageId="admin-feedback"><AdminFeedback /></ProtectedShell>} />
               <Route path="/admin/store-clusters" element={<ProtectedShell adminOnly pageId="admin-store-clusters"><StoreClusters /></ProtectedShell>} />
+              <Route path="/admin/l10-migration" element={<ProtectedShell adminOnly pageId="admin-l10-migration"><AdminL10Migration /></ProtectedShell>} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
           </FiltersProvider>

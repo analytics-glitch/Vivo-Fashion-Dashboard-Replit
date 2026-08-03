@@ -18,7 +18,7 @@ const STORE_MANAGER = ["locations", "ibt", "exports", "feedback", "replenishment
 const WAREHOUSE = ["inventory", "replenishments", "ibt", "re-order", "allocations", "exports", "feedback"];
 const ANALYST = [...VIEWER, "inventory", "re-order", "ibt", "products", "data-quality", "allocations", "replenishments", "marketing", "range-mgmt"];
 const EXEC = [...ANALYST, "ceo-report", "targets", "exports", "exec-summary"];
-const ADMIN = [...EXEC, "admin-users", "admin-activity-logs", "admin-feedback", "admin-store-clusters"];
+const ADMIN = [...EXEC, "admin-users", "admin-activity-logs", "admin-feedback", "admin-store-clusters", "admin-l10-migration"];
 
 export const ROLE_PAGES = {
   viewer: VIEWER,
@@ -77,6 +77,7 @@ export const homePageFor = (user) => {
     "admin-users": "/admin/users",
     "admin-activity-logs": "/admin/activity-logs",
     "admin-feedback": "/admin/feedback",
+    "admin-l10-migration": "/admin/l10-migration",
   };
   return routeMap[first] || "/";
 };
