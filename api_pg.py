@@ -276,6 +276,28 @@ def get_conn():
         os.environ['DATABASE_URL'],
         options='-c standard_conforming_strings=on')
 
+
+# Direct (non-pooler) connection URL for operations that require session-level
+# state: session advisory locks (pg_try_advisory_lock / pg_advisory_unlock) and
+# VACUUM (which needs autocommit at the session level and must not be routed
+# through PgBouncer's transaction-mode pooler).  Falls back to DATABASE_URL so
+# deployments without a Neon pooler continue to work unchanged.
+_DATABASE_URL_DIRECT = os.environ.get('DATABASE_URL_DIRECT') or os.environ['DATABASE_URL']
+
+
+def get_direct_conn():
+    """Open a direct (non-pooler) connection for session-level operations.
+
+    Use this instead of get_conn() / the pool whenever the operation requires
+    session-level state that PgBouncer transaction mode cannot preserve:
+      * pg_try_advisory_lock / pg_advisory_unlock (session-scoped locks)
+      * VACUUM / ANALYZE (must run outside a transaction block)
+    All other write paths (pg_advisory_xact_lock, normal DML) can use the pool.
+    """
+    return psycopg2.connect(
+        _DATABASE_URL_DIRECT,
+        options='-c standard_conforming_strings=on')
+
 def _acquire_conn(timeout=5.0):
     """Get a pooled connection, waiting up to ``timeout`` seconds if the pool is
     momentarily exhausted. ThreadedConnectionPool.getconn() raises immediately
@@ -4018,8 +4040,13 @@ def run_sales_rollup_refresh(only=None):
     """Rebuild the pre-aggregated rollup tables (build-then-swap per table). Safe
     to run repeatedly (idempotent full rebuild). Returns {name: row_count|error}.
     Used by the startup bootstrap and the incremental sync loop
-    (build_sales_rollups.py)."""
-    conn = get_conn()
+    (build_sales_rollups.py).
+
+    Uses a direct (non-pooler) connection: the refresh holds a SESSION-level
+    advisory lock (pg_try_advisory_lock / pg_advisory_unlock) across multiple
+    transactions, and runs VACUUM in autocommit mode — both require a stable
+    session that PgBouncer transaction-mode pooling cannot provide."""
+    conn = get_direct_conn()
     results = {}
     locked = False
     try:
@@ -4093,8 +4120,10 @@ def run_sales_rollup_refresh(only=None):
 def _init_rollup_tables():
     # Ensure the schema exists on boot (fresh prod DB gets empty tables; reads
     # fall back to live until the sync loop's first refresh populates them).
+    # Uses a direct connection consistent with run_sales_rollup_refresh so both
+    # paths always talk to the same backend session context.
     try:
-        conn = get_conn()
+        conn = get_direct_conn()
         try:
             _ensure_rollup_tables(conn)
         finally:

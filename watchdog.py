@@ -68,6 +68,12 @@ log = logging.getLogger("watchdog")
 
 ROOT = "/home/runner/workspace"
 DATABASE_URL = os.environ["DATABASE_URL"]
+# Watchdog is a long-running supervisor (not a request handler); it uses DDL,
+# session-level heartbeat writes, and advisory-lock-free transactions — none of
+# which need the pooler, and all of which are safer on a direct connection.
+# Falls back to DATABASE_URL so dev environments without a separate direct URL
+# continue to work unchanged.
+DATABASE_URL_DIRECT = os.environ.get("DATABASE_URL_DIRECT") or DATABASE_URL
 API_PORT = int(os.environ.get("PORT", "8080"))
 MANAGE_API = os.environ.get("WATCHDOG_MANAGE_API", "1") != "0"
 HEALTHZ_URL = f"http://localhost:{API_PORT}/api/healthz"
@@ -112,7 +118,7 @@ _escalation_level = 0         # 0 none, 1 sent 15m, 2 sent 30m
 
 
 def _db():
-    return psycopg2.connect(DATABASE_URL)
+    return psycopg2.connect(DATABASE_URL_DIRECT)
 
 
 def ensure_table():
