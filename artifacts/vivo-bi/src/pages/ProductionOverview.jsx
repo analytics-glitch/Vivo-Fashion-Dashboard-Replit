@@ -90,10 +90,16 @@ function ragOf(actual, greenMin, yellowMin) {
 
 // ─── Components ───────────────────────────────────────────────────────────────
 
-function TargetCard({ label, value, targetLabel, status, detail }) {
+function TargetCard({ label, value, targetLabel, status, detail, onClick }) {
   const c = RAG[status] || RAG.red;
   return (
-    <div className={`rounded-xl border ${c.border} ${c.bg} p-3 flex flex-col gap-1`}>
+    <div
+      role="button"
+      tabIndex={0}
+      className={`rounded-xl border ${c.border} ${c.bg} p-3 flex flex-col gap-1 ${onClick ? "cursor-pointer transition-shadow hover:shadow-md" : ""}`}
+      onClick={onClick}
+      onKeyDown={onClick ? (e) => { if (e.key === "Enter" || e.key === " ") onClick(); } : undefined}
+    >
       <div className="flex items-start justify-between gap-1">
         <span className="text-[12.5px] font-semibold text-[#0f3d24] leading-tight">{label}</span>
         <span className={`shrink-0 mt-0.5 w-2.5 h-2.5 rounded-full ${c.dot}`} title={c.label} />
@@ -654,12 +660,18 @@ export default function ProductionOverview({ onOpenReport }) {
       targetLabel: "2,400–3,200 · 30–40%",
       status: ragOf(rt.printUnits, 2400, 1920),
       detail: printPct >= 30 && printPct <= 40 ? "% in range" : `% ${printPct.toFixed(0)}% (target 30–40%)`,
+      drillFilter: (rows) => rows.filter((o) => o.print_plain
+        ? o.print_plain === "Print"
+        : /PR\d*$/i.test(o.style_number || "") || /\bprint\b/i.test(o.style_name || "")),
     },
     {
       label: "Knit Units",
       value: `${fmtQty(rt.knitUnits)}  (${knitPct.toFixed(0)}%)`,
       targetLabel: ">35% of total",
       status: ragOf(knitPct, 35, 28),
+      drillFilter: (rows) => rows.filter((o) => o.fabric_construction
+        ? o.fabric_construction === "Knit"
+        : /\b(jersey|ponte|rib\b|ribbed|sweater|knit|spandex|lycra|fleece)\b/i.test(o.style_name || "")),
     },
     {
       label: "Dress Units",
@@ -667,36 +679,42 @@ export default function ProductionOverview({ onOpenReport }) {
       targetLabel: "≥2,800 units · >35%",
       status: rt.dressUnits >= 2800 ? "green" : rt.dressUnits >= 2240 ? "yellow" : "red",
       detail: dressPct >= 35 ? "% on track" : `% ${dressPct.toFixed(0)}% (target >35%)`,
+      drillFilter: (rows) => rows.filter((o) => (o.category || "Unspecified") === "Dresses" || /dress/i.test(o.product_type || "")),
     },
     {
       label: "New Units %",
       value: `${fmtQty(lcNew.units)}  (${newUnitPct.toFixed(0)}%)`,
       targetLabel: ">35% of total",
       status: ragOf(newUnitPct, 35, 28),
+      drillFilter: (rows) => rows.filter((o) => o.lifecycle === "New"),
     },
     {
       label: "New Styles",
       value: fmtQty(rt.newStyles),
       targetLabel: ">6 styles",
       status: ragOf(rt.newStyles, 6, 5),
+      drillFilter: (rows) => rows.filter((o) => o.lifecycle === "New"),
     },
     {
       label: "Replenishment Units",
       value: fmtQty(lcRep.units),
       targetLabel: ">3,000 units",
       status: ragOf(lcRep.units, 3000, 2400),
+      drillFilter: (rows) => rows.filter((o) => o.lifecycle === "Replenishment"),
     },
     {
       label: "Re-order Units",
       value: fmtQty(lcReo.units),
       targetLabel: ">1,000 units",
       status: ragOf(lcReo.units, 1000, 800),
+      drillFilter: (rows) => rows.filter((o) => o.lifecycle === "Re-order"),
     },
     {
       label: "Total In-house Units",
       value: fmtQty(totalUnits),
       targetLabel: ">8,000 units",
       status: ragOf(totalUnits, 8000, 6400),
+      drillFilter: (rows) => rows,
     },
   ];
 
@@ -823,7 +841,7 @@ export default function ProductionOverview({ onOpenReport }) {
       {/* ── Styles KPI row ── */}
       <div>
         <div className="text-[12px] font-semibold text-muted uppercase tracking-wide mb-1.5 px-0.5">Styles</div>
-        <div className="grid gap-2 grid-cols-2 lg:grid-cols-4">
+        <div className="grid gap-2 grid-cols-1 lg:grid-cols-3">
           <MetricCard
             testId="prod-ov-kpi-styles-total"
             accent
@@ -831,14 +849,6 @@ export default function ProductionOverview({ onOpenReport }) {
             value={fmtQty(rt.styles)}
             sub={`${fmtQty(totalOrders)} buying orders`}
             onClick={() => openDrill("Buying Orders", rangeOrders, ORDER_COLS)}
-          />
-          <MetricCard
-            testId="prod-ov-kpi-styles-new"
-            label="New Styles"
-            value={fmtQty(lcNew.orders)}
-            pctText={pct(lcNew.orders, totalOrders)}
-            pctLabel="of orders"
-            onClick={() => openDrill("New Style Orders", rangeOrders.filter((o) => o.lifecycle === "New"), ORDER_COLS)}
           />
           <MetricCard
             testId="prod-ov-kpi-styles-replen"
@@ -862,37 +872,13 @@ export default function ProductionOverview({ onOpenReport }) {
       {/* ── Units KPI row ── */}
       <div>
         <div className="text-[12px] font-semibold text-muted uppercase tracking-wide mb-1.5 px-0.5">Units</div>
-        <div className="grid gap-2 grid-cols-2 lg:grid-cols-4">
+        <div className="grid gap-2 grid-cols-1">
           <MetricCard
             testId="prod-ov-kpi-units-total"
             accent
             label="Total Units"
             value={fmtQty(totalUnits)}
             onClick={() => openDrill("Units Ordered", [...rangeOrders].sort((a, b) => (Number(b.order_qty) || 0) - (Number(a.order_qty) || 0)), ORDER_COLS)}
-          />
-          <MetricCard
-            testId="prod-ov-kpi-units-new"
-            label="New Units"
-            value={fmtQty(lcNew.units)}
-            pctText={pct(lcNew.units, totalUnits)}
-            pctLabel="of units"
-            onClick={() => openDrill("New Style Units", rangeOrders.filter((o) => o.lifecycle === "New"), ORDER_COLS)}
-          />
-          <MetricCard
-            testId="prod-ov-kpi-units-replen"
-            label="Replenishment Units"
-            value={fmtQty(lcRep.units)}
-            pctText={pct(lcRep.units, totalUnits)}
-            pctLabel="of units"
-            onClick={() => openDrill("Replenishment Units", rangeOrders.filter((o) => o.lifecycle === "Replenishment"), ORDER_COLS)}
-          />
-          <MetricCard
-            testId="prod-ov-kpi-units-reorder"
-            label="Re-order Units"
-            value={fmtQty(lcReo.units)}
-            pctText={pct(lcReo.units, totalUnits)}
-            pctLabel="of units"
-            onClick={() => openDrill("Re-order Units", rangeOrders.filter((o) => o.lifecycle === "Re-order"), ORDER_COLS)}
           />
         </div>
       </div>
@@ -909,7 +895,13 @@ export default function ProductionOverview({ onOpenReport }) {
         </div>
         <div className="grid gap-2 grid-cols-2 lg:grid-cols-4">
           {targets.map((t) => (
-            <TargetCard key={t.label} {...t} />
+            <TargetCard
+              key={t.label}
+              {...t}
+              onClick={t.drillFilter
+                ? () => openDrill(t.label, t.drillFilter(rangeOrders), ORDER_COLS, windowLabel)
+                : undefined}
+            />
           ))}
         </div>
       </div>
