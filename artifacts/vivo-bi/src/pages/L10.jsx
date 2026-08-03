@@ -1337,6 +1337,8 @@ const AdminTab = ({ members, onMembersChanged, settings, onSettingsChanged, fold
   const [newMember, setNewMember] = useState("");
   const [newMetric, setNewMetric] = useState({ who: "", measurable: "", goal: "", uom: "", goal_direction: "up" });
   const [newRock, setNewRock] = useState({ description: "", rock_type: "Company", owner: "", quarter_label: "" });
+  const [editingMetricId, setEditingMetricId] = useState(null);
+  const [editDraft, setEditDraft] = useState({});
   const [startTime, setStartTime] = useState(settings?.default_start_time || "08:00");
 
   const reloadMetrics = useCallback(() => {
@@ -1449,8 +1451,11 @@ const AdminTab = ({ members, onMembersChanged, settings, onSettingsChanged, fold
         </div>
         <div className="p-4 space-y-3">
           <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 p-3 border border-dashed rounded-lg">
-            <input placeholder="Who" value={newMetric.who} onChange={(e) => setNewMetric((p) => ({ ...p, who: e.target.value }))}
-              className="border border-border rounded px-2 py-1 text-sm" />
+            <select value={newMetric.who} onChange={(e) => setNewMetric((p) => ({ ...p, who: e.target.value }))}
+              className="border border-border rounded px-2 py-1 text-sm">
+              <option value="">Who…</option>
+              {memberNames.map((n) => <option key={n} value={n}>{n}</option>)}
+            </select>
             <input placeholder="Measurable *" value={newMetric.measurable} onChange={(e) => setNewMetric((p) => ({ ...p, measurable: e.target.value }))}
               className="border border-border rounded px-2 py-1 text-sm col-span-2 sm:col-span-1" />
             <input placeholder=">2 or >=95 or <5 or =100" value={newMetric.goal} onChange={(e) => setNewMetric((p) => ({ ...p, goal: e.target.value }))}
@@ -1463,27 +1468,86 @@ const AdminTab = ({ members, onMembersChanged, settings, onSettingsChanged, fold
                 <option value="up">Higher is better</option>
                 <option value="down">Lower is better</option>
               </select>
-              <button type="button" onClick={addMetric}
-                className="px-3 py-1 rounded-lg bg-primary text-primary-foreground text-sm hover:opacity-90 whitespace-nowrap">
+              <button type="button" onClick={addMetric} disabled={!newMetric.who || !newMetric.measurable.trim()}
+                className="px-3 py-1 rounded-lg bg-primary text-primary-foreground text-sm hover:opacity-90 whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed">
                 Add
               </button>
             </div>
           </div>
           {loadingMetrics ? <Loading label="Loading metrics…" /> : (
             <div className="divide-y">
-              {metrics.map((m) => (
-                <div key={m.id} className={`flex items-center gap-2 py-1.5 ${!m.active ? "opacity-50" : ""}`}>
-                  <div className="flex-1 min-w-0">
-                    <span className="text-sm font-medium">{m.measurable}</span>
-                    {m.who && <span className="text-xs text-muted-foreground ml-2">({m.who})</span>}
-                    <span className="text-xs text-muted-foreground ml-2">Goal: {m.goal || "—"} {m.uom || ""} [{m.goal_direction === "up" ? "higher better" : "lower better"}]</span>
+              {metrics.map((m) => {
+                const whoStale = m.who && !memberNames.includes(m.who);
+                if (editingMetricId === m.id) {
+                  // Inline edit row
+                  const whoOptions = memberNames.includes(editDraft.who)
+                    ? memberNames
+                    : editDraft.who
+                    ? [editDraft.who, ...memberNames]
+                    : memberNames;
+                  return (
+                    <div key={m.id} className="py-2 space-y-2">
+                      <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                        <select value={editDraft.who} onChange={(e) => setEditDraft((p) => ({ ...p, who: e.target.value }))}
+                          className="border border-border rounded px-2 py-1 text-sm">
+                          <option value="">Who…</option>
+                          {whoOptions.map((n) => <option key={n} value={n}>{n}</option>)}
+                        </select>
+                        <input placeholder="Measurable *" value={editDraft.measurable}
+                          onChange={(e) => setEditDraft((p) => ({ ...p, measurable: e.target.value }))}
+                          className="border border-border rounded px-2 py-1 text-sm col-span-2 sm:col-span-1" />
+                        <input placeholder=">2 or >=95 or <5 or =100" value={editDraft.goal}
+                          onChange={(e) => setEditDraft((p) => ({ ...p, goal: e.target.value }))}
+                          className="border border-border rounded px-2 py-1 text-sm" />
+                        <input placeholder="UOM" value={editDraft.uom}
+                          onChange={(e) => setEditDraft((p) => ({ ...p, uom: e.target.value }))}
+                          className="border border-border rounded px-2 py-1 text-sm" />
+                        <select value={editDraft.goal_direction}
+                          onChange={(e) => setEditDraft((p) => ({ ...p, goal_direction: e.target.value }))}
+                          className="border border-border rounded px-2 py-1 text-sm col-span-2 sm:col-span-1">
+                          <option value="up">Higher is better</option>
+                          <option value="down">Lower is better</option>
+                        </select>
+                      </div>
+                      <div className="flex gap-2 justify-end">
+                        <button type="button" onClick={() => setEditingMetricId(null)}
+                          className="px-3 py-1 rounded-lg border border-border text-sm hover:bg-muted">Cancel</button>
+                        <button type="button" onClick={() => {
+                          api.put(`/l10/scorecard-metrics/${m.id}`, editDraft)
+                            .then(() => { reloadMetrics(); setEditingMetricId(null); })
+                            .catch(() => {});
+                        }}
+                          className="px-3 py-1 rounded-lg bg-primary text-primary-foreground text-sm hover:opacity-90">Save</button>
+                      </div>
+                    </div>
+                  );
+                }
+                return (
+                  <div key={m.id} className={`flex items-center gap-2 py-1.5 ${!m.active ? "opacity-50" : ""}`}>
+                    <div className="flex-1 min-w-0">
+                      <span className="text-sm font-medium">{m.measurable}</span>
+                      {m.who && (
+                        <span className="text-xs text-muted-foreground ml-2">
+                          ({m.who}
+                          {whoStale && (
+                            <span title="WHO not in current members list" className="ml-1 text-amber-500">⚠</span>
+                          )}
+                          )
+                        </span>
+                      )}
+                      <span className="text-xs text-muted-foreground ml-2">Goal: {m.goal || "—"} {m.uom || ""} [{m.goal_direction === "up" ? "higher better" : "lower better"}]</span>
+                    </div>
+                    {m.active && (
+                      <>
+                        <button type="button" onClick={() => { setEditingMetricId(m.id); setEditDraft({ who: m.who || "", measurable: m.measurable || "", goal: m.goal || "", uom: m.uom || "", goal_direction: m.goal_direction || "up" }); }}
+                          className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground"><PencilSimple size={13} /></button>
+                        <button type="button" onClick={() => archiveMetric(m.id)}
+                          className="p-1 rounded hover:bg-red-50 text-muted-foreground hover:text-red-500"><Trash size={13} /></button>
+                      </>
+                    )}
                   </div>
-                  {m.active && (
-                    <button type="button" onClick={() => archiveMetric(m.id)}
-                      className="p-1 rounded hover:bg-red-50 text-muted-foreground hover:text-red-500"><Trash size={13} /></button>
-                  )}
-                </div>
-              ))}
+                );
+              })}
               {metrics.length === 0 && <p className="py-3 text-sm text-muted-foreground text-center">No metrics yet.</p>}
             </div>
           )}
