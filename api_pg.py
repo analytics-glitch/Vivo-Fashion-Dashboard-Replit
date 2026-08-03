@@ -727,13 +727,13 @@ _VIEWER_PAGES = ["overview", "exec-summary", "locations", "footfall", "trend-ana
 # it lives in _LEADERSHIP_PAGES below (and therefore in ALL_PAGE_IDS, so admins
 # can also grant it to other groups via Group Access). The server-side
 # /api/finance gate independently restricts the API to leadership + admin.
-_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "quarter-scorecard", "product-analysis", "range-mgmt", "size-health", "inventory", "warehouse-returns", "excess-inventory", "rebalancing", "store-flow", "marketing", "social", "crm", "order-explorer", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "style-tracker", "pd-flow", "partner-brands", "finance", "margin", "l10", "rota", "growth", "retail-desk", "product-desk", "workforce-desk", "customer-desk", "marketing-desk", "supply-chain-desk", "production-desk", "the-chair", "quality"])
+_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "quarter-scorecard", "product-analysis", "range-mgmt", "size-health", "inventory", "warehouse-returns", "excess-inventory", "rebalancing", "store-flow", "marketing", "social", "crm", "order-explorer", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "style-tracker", "pd-flow", "partner-brands", "finance", "margin", "l10", "rota", "growth", "retail-desk", "product-desk", "workforce-desk", "customer-desk", "marketing-desk", "supply-chain-desk", "production-desk", "the-chair", "quality", "store-profiling"])
 
 DEFAULT_ROLE_PAGES = {
     "product_development": ["product-analysis", "range-mgmt", "catalogue", "gallery", "inventory", "size-health", "data-quality", "fabric", "exports", "production", "production-report", "style-tracker", "pd-flow", "partner-brands", "sops"],
-    "retail": ["store-flow", "overview", "exec-summary", "locations", "footfall", "trend-analysis", "customers", "product-analysis", "gallery", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "exports", "partner-brands", "sops", "ask"],
+    "retail": ["store-flow", "overview", "exec-summary", "locations", "footfall", "store-profiling", "trend-analysis", "customers", "product-analysis", "gallery", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "exports", "partner-brands", "sops", "ask"],
     "warehouse": ["store-flow", "inventory", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "re-order", "allocations", "data-quality", "exports", "sops"],
-    "store_manager": ["overview", "store-flow", "locations", "footfall", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "sops"],
+    "store_manager": ["overview", "store-flow", "locations", "footfall", "store-profiling", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "sops"],
     "leadership": _LEADERSHIP_PAGES,
     # SMT (Senior Management Team) — everything SLT (leadership) sees EXCEPT the
     # Finance Reports Suite. The /api/finance gate below also excludes "smt".
@@ -36409,6 +36409,465 @@ async def l10_import(request: Request):
         "folder_ids": folder_ids,
         "total_rows": sum(inserted.values()),
     }
+
+
+# ── Store Profile ─────────────────────────────────────────────────────────────
+# Single-store deep-dive: locations list, 6-month KPI trend, category mix,
+# and current-month targets vs actuals.
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/api/store-profile/locations")
+def store_profile_locations():
+    """Physical retail store names, deduplicated from all_sales."""
+    ck = "store_profile:locations"
+    cv, cf = cache_get_swr(ck)
+    if cv is not None:
+        if not cf:
+            swr_refresh(ck, store_profile_locations, label="sp_locations")
+        return cv
+    rows = run_query(
+        f"SELECT DISTINCT s.pos_location_name AS store, MAX(s.country) AS country "
+        f"FROM all_sales s "
+        f"WHERE s.pos_location_name NOT IN ({WAREHOUSE_LOCATIONS}) "
+        f"  AND s.pos_location_name NOT ILIKE '%%online%%' "
+        f"  AND s.sale_kind IN ('sale','order') "
+        f"  AND {BASE_FILTERS} "
+        f"GROUP BY 1 ORDER BY 1",
+        ttl=3600,
+    )
+    result = {"stores": [{"store": r["store"], "country": r["country"]} for r in (rows or [])]}
+    cache_set(ck, result, ttl=3600)
+    return result
+
+
+@app.get("/api/store-profile/kpi-trend")
+def store_profile_kpi_trend(store: str = Query(...)):
+    """6 trailing full calendar months of per-store KPIs."""
+    store_s = _sql_str(store)
+    ck = f"store_profile:kpi_trend:{store_s}"
+    cv, cf = cache_get_swr(ck)
+    if cv is not None:
+        if not cf:
+            swr_refresh(ck, lambda: store_profile_kpi_trend(store=store), label="sp_kpi_trend")
+        return cv
+
+    today     = date.today()
+    cur_month = today.replace(day=1)
+    months    = []
+    m         = cur_month
+    for _ in range(6):
+        m = (m - timedelta(days=1)).replace(day=1)
+        months.insert(0, m)
+    window_start = months[0]
+    window_end   = cur_month - timedelta(days=1)
+    vat = "(CASE WHEN s.country IN ('Uganda','Rwanda') THEN 1.18 ELSE 1.16 END)"
+
+    # ── Sales KPIs per month ──────────────────────────────────────────────────
+    sales_rows = run_query(f"""
+        SELECT date_trunc('month', s.sale_date::date)::date AS month,
+          SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) AS units,
+          ROUND(SUM(
+            CASE WHEN s.sale_kind IN ('sale','order')
+                 THEN (s.total_sales_kes::numeric - COALESCE(s.discounts_kes,0)::numeric) / {vat}
+                 WHEN s.sale_kind = 'return'
+                 THEN -s.returns_kes::numeric / {vat}
+                 ELSE 0 END
+          ), 0) AS net_revenue,
+          ROUND(SUM(COALESCE(s.discounts_kes::numeric,0)) FILTER (WHERE s.sale_kind IN ('sale','order')), 0) AS total_discounts,
+          ROUND(SUM(COALESCE(s.gross_sales_kes::numeric,0)) FILTER (WHERE s.sale_kind IN ('sale','order')), 0) AS gross_revenue,
+          COUNT(DISTINCT s.order_id) FILTER (WHERE s.sale_kind IN ('sale','order')) AS transactions,
+          COALESCE(SUM(COALESCE(s.returned_item_quantity,0)) FILTER (WHERE s.sale_kind IN ('sale','order')), 0) AS returned_qty,
+          COUNT(DISTINCT CASE WHEN LOWER(COALESCE(s.customer_type,'')) = 'new'
+                              THEN s.customer_id END) AS new_customers,
+          COUNT(DISTINCT CASE WHEN LOWER(COALESCE(s.customer_type,'')) IN ('returning','registered')
+                              THEN s.customer_id END) AS returning_customers,
+          COUNT(DISTINCT CASE WHEN s.customer_id IS NOT NULL
+                               AND s.customer_id NOT IN ('None','null','')
+                              THEN s.customer_id END) AS total_customers
+        FROM all_sales s
+        WHERE s.sale_date::date >= '{window_start}'
+          AND s.sale_date::date <= '{window_end}'
+          AND s.pos_location_name = '{store_s}'
+          AND s.sale_kind IN ('sale','order','return')
+          AND {BASE_FILTERS}
+        GROUP BY 1
+        ORDER BY 1
+    """, ttl=HEAVY_DASH_TTL)
+
+    # ── Footfall per month ────────────────────────────────────────────────────
+    ff_rows = run_query(f"""
+        SELECT date_trunc('month', f.time::date)::date AS month,
+               SUM(f.a01_footfall_in)                       AS footfall,
+               COUNT(*) FILTER (WHERE f.a01_footfall_in = 0) AS zero_days,
+               COUNT(*)                                       AS total_days
+        FROM footfall f
+        WHERE f.time::date >= '{window_start}'
+          AND f.time::date <= '{window_end}'
+          AND {ff_canon_sql()} = '{store_s}'
+          AND {ff_store_master_predicate()}
+        GROUP BY 1
+        ORDER BY 1
+    """, ttl=HEAVY_DASH_TTL)
+
+    # ── Current WOC / MSI (point-in-time; no historical inventory snapshots) ──
+    woc_row = (run_query(f"""
+        WITH velocity AS (
+          SELECT SUM(s.ordered_item_quantity) FILTER (
+                   WHERE s.sale_date::date >= CURRENT_DATE - 28) AS u28,
+                 SUM(s.ordered_item_quantity) FILTER (
+                   WHERE s.sale_date::date >= CURRENT_DATE - 56
+                     AND s.sale_date::date <  CURRENT_DATE - 28) AS u_prior
+          FROM all_sales s
+          WHERE s.sale_kind IN ('sale','order')
+            AND s.pos_location_name = '{store_s}'
+            AND {BASE_FILTERS}
+        ),
+        soh AS (
+          SELECT COALESCE(SUM(i.available), 0) AS stock
+          FROM all_inventory i
+          WHERE i.pos_location_name = '{store_s}'
+            AND i.pos_location_name NOT IN ({PIPELINE_LOCATIONS})
+        )
+        SELECT soh.stock,
+          ROUND((COALESCE(v.u28,0) * 2.0 + COALESCE(v.u_prior,0)) / 12.0, 2) AS weekly_vel,
+          ROUND(soh.stock /
+            NULLIF((COALESCE(v.u28,0) * 2.0 + COALESCE(v.u_prior,0)) / 12.0, 0), 1) AS woc
+        FROM velocity v, soh
+    """, ttl=3600) or [{}])[0]
+
+    # ── Assemble per-month rows ───────────────────────────────────────────────
+    sales_by_month = {str(r["month"]): r for r in (sales_rows or [])}
+    ff_by_month    = {str(r["month"]): r for r in (ff_rows    or [])}
+
+    result_months = []
+    for mo in months:
+        ms        = str(mo)
+        days_in_m = calendar.monthrange(mo.year, mo.month)[1]
+        s         = sales_by_month.get(ms, {})
+        ff        = ff_by_month.get(ms, {})
+
+        units   = int(s.get("units")         or 0)
+        revenue = int(s.get("net_revenue")   or 0)
+        txns    = int(s.get("transactions")  or 0)
+        ret_q   = int(s.get("returned_qty")  or 0)
+        gross   = float(s.get("gross_revenue") or 0)
+        disc    = float(s.get("total_discounts") or 0)
+        new_c   = int(s.get("new_customers") or 0)
+        ret_c   = int(s.get("returning_customers") or 0)
+        tot_c   = int(s.get("total_customers") or 0)
+        footfall = int(ff.get("footfall")    or 0)
+        zero_d   = int(ff.get("zero_days")   or 0)
+        tot_d    = int(ff.get("total_days")  or 0)
+        ff_ok    = tot_d > 0 and zero_d <= 0.25 * days_in_m
+
+        asp     = round(revenue / units, 0)   if units > 0 else None
+        abv     = round(revenue / txns,  0)   if txns  > 0 else None
+        conv    = round(txns * 100.0 / footfall, 1) if (ff_ok and footfall > 0) else None
+        disc_r  = round(disc  * 100.0 / gross,  1) if gross > 0 else None
+        ret_r   = round(ret_q * 100.0 / units,  1) if units > 0 else None
+        new_pct = round(new_c * 100.0 / tot_c,  1) if tot_c > 0 else None
+        ret_pct = round(ret_c * 100.0 / tot_c,  1) if tot_c > 0 else None
+
+        result_months.append({
+            "month":                  ms,
+            "label":                  mo.strftime("%b %Y"),
+            "units":                  units,
+            "revenue":                revenue,
+            "contribution":           revenue,   # net revenue (no per-store COGS)
+            "transactions":           txns,
+            "abv":                    abv,
+            "asp":                    asp,
+            "footfall":               footfall if ff_ok else None,
+            "conversion":             conv,
+            "new_customer_pct":       new_pct,
+            "returning_customer_pct": ret_pct,
+            "customer_count":         tot_c,
+            "discount_rate":          disc_r,
+            "return_rate":            ret_r,
+        })
+
+    current_woc = (float(woc_row["woc"]) if woc_row.get("woc") is not None else None)
+    out = {
+        "store":        store,
+        "months":       result_months,
+        "current_woc":  current_woc,
+        "current_msi":  round(current_woc / 4.0, 1) if current_woc is not None else None,
+        "current_soh":  int(woc_row.get("stock") or 0),
+    }
+    cache_set(ck, out, ttl=HEAVY_DASH_TTL)
+    return out
+
+
+@app.get("/api/store-profile/category-mix")
+def store_profile_category_mix(
+    store:    str = Query(...),
+    month:    str = Query(default=None),   # YYYY-MM or YYYY-MM-DD; None = trailing 6 months
+    category: str = Query(default=None),
+):
+    """Items sold % contribution and ASP, by category and sub-category."""
+    store_s = _sql_str(store)
+    ck = f"store_profile:cat_mix:{store_s}:{month or 'all'}:{_sql_str(category or '')}"
+    cv, cf = cache_get_swr(ck)
+    if cv is not None:
+        if not cf:
+            swr_refresh(ck,
+                        lambda: store_profile_category_mix(store=store, month=month, category=category),
+                        label="sp_cat_mix")
+        return cv
+
+    today = date.today()
+    if month:
+        try:
+            m_start = date.fromisoformat((month[:7]) + "-01")
+            m_end   = m_start.replace(day=calendar.monthrange(m_start.year, m_start.month)[1])
+        except Exception:
+            m_start = (today.replace(day=1) - timedelta(days=1)).replace(day=1)
+            m_end   = m_start.replace(day=calendar.monthrange(m_start.year, m_start.month)[1])
+        period_label = m_start.strftime("%B %Y")
+    else:
+        m_end    = today.replace(day=1) - timedelta(days=1)
+        m_start  = today.replace(day=1)
+        for _ in range(6):
+            m_start = (m_start - timedelta(days=1)).replace(day=1)
+        period_label = "Last 6 months"
+
+    # Build SQL CASE for category from SUBCATEGORY_TO_CATEGORY dict
+    when_clauses = "\n      ".join(
+        f"WHEN '{sub.replace(chr(39), chr(39)+chr(39))}' THEN '{cat.replace(chr(39), chr(39)+chr(39))}'"
+        for sub, cat in SUBCATEGORY_TO_CATEGORY.items()
+    )
+    cat_expr = f"CASE p.product_type\n      {when_clauses}\n      ELSE 'Other' END"
+
+    cat_filter = f"AND {cat_expr} = '{_sql_str(category)}'" if category else ""
+    vat        = "(CASE WHEN s.country IN ('Uganda','Rwanda') THEN 1.18 ELSE 1.16 END)"
+
+    rows = run_query(f"""
+        SELECT
+          {cat_expr}      AS category,
+          p.product_type  AS subcategory,
+          SUM(s.ordered_item_quantity) FILTER (WHERE s.sale_kind IN ('sale','order')) AS units,
+          ROUND(SUM(
+            CASE WHEN s.sale_kind IN ('sale','order')
+                 THEN (s.total_sales_kes::numeric - COALESCE(s.discounts_kes,0)::numeric) / {vat}
+                 WHEN s.sale_kind = 'return'
+                 THEN -s.returns_kes::numeric / {vat}
+                 ELSE 0 END
+          ), 0) AS revenue
+        FROM all_sales s
+        JOIN all_products_clean p ON s.variant_sku = p.sku
+        WHERE s.sale_date::date >= '{m_start}'
+          AND s.sale_date::date <= '{m_end}'
+          AND s.pos_location_name = '{store_s}'
+          AND s.sale_kind IN ('sale','order','return')
+          AND {BASE_FILTERS}
+          {cat_filter}
+        GROUP BY 1, 2
+        ORDER BY 1,
+                 SUM(s.ordered_item_quantity) FILTER (WHERE s.sale_kind IN ('sale','order')) DESC NULLS LAST
+    """, ttl=HEAVY_DASH_TTL)
+
+    from collections import defaultdict
+    cat_totals    = defaultdict(lambda: {"units": 0, "revenue": 0})
+    cat_subs_map  = defaultdict(list)
+    total_units   = 0
+    total_revenue = 0
+    for r in (rows or []):
+        cat  = r.get("category") or "Other"
+        sub  = r.get("subcategory") or "Unknown"
+        u    = int(r.get("units")   or 0)
+        rev  = int(r.get("revenue") or 0)
+        cat_totals[cat]["units"]   += u
+        cat_totals[cat]["revenue"] += rev
+        cat_subs_map[cat].append({"subcategory": sub, "units": u, "revenue": rev})
+        total_units   += u
+        total_revenue += rev
+
+    categories_out = []
+    for cat, t in sorted(cat_totals.items(), key=lambda x: -x[1]["units"]):
+        u   = t["units"]
+        rev = t["revenue"]
+        subs = []
+        for s in cat_subs_map[cat]:
+            su, sr = s["units"], s["revenue"]
+            subs.append({
+                "subcategory": s["subcategory"],
+                "units":       su,
+                "revenue":     sr,
+                "asp":         round(sr / su, 0) if su > 0 else None,
+                "units_pct":   round(su * 100.0 / total_units, 1) if total_units > 0 else None,
+            })
+        categories_out.append({
+            "category":   cat,
+            "units":      u,
+            "revenue":    rev,
+            "asp":        round(rev / u, 0) if u > 0 else None,
+            "units_pct":  round(u * 100.0 / total_units, 1) if total_units > 0 else None,
+            "subcategories": subs,
+        })
+
+    out = {
+        "store":         store,
+        "period":        {"from": str(m_start), "to": str(m_end), "label": period_label},
+        "total_units":   total_units,
+        "total_revenue": total_revenue,
+        "categories":    categories_out,
+    }
+    cache_set(ck, out, ttl=HEAVY_DASH_TTL)
+    return out
+
+
+@app.get("/api/store-profile/targets")
+def store_profile_targets(store: str = Query(...)):
+    """Current-month target vs MTD actuals + projection + rule-based suggestions."""
+    store_s = _sql_str(store)
+    ck = f"store_profile:targets:{store_s}"
+    cv, cf = cache_get_swr(ck)
+    if cv is not None:
+        if not cf:
+            swr_refresh(ck, lambda: store_profile_targets(store=store), label="sp_targets")
+        return cv
+
+    today     = date.today()
+    mstart    = today.replace(day=1)
+    days_in_m = calendar.monthrange(today.year, today.month)[1]
+    days_done = today.day
+    days_rem  = days_in_m - days_done
+    vat       = "(CASE WHEN s.country IN ('Uganda','Rwanda') THEN 1.18 ELSE 1.16 END)"
+
+    # Revenue target from targets_monthly (manual wins over budget)
+    tgt_rows = run_query(
+        f"SELECT target_kes::numeric AS tgt, source FROM targets_monthly "
+        f"WHERE scope='store' AND name='{store_s}' AND month='{mstart}' "
+        f"ORDER BY CASE WHEN source='manual' THEN 0 ELSE 1 END LIMIT 1"
+    )
+    tgt = float(tgt_rows[0]["tgt"]) if tgt_rows else None
+
+    # MTD actuals
+    kpi_rows = run_query(f"""
+        SELECT
+          SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) AS units,
+          ROUND(SUM(
+            CASE WHEN s.sale_kind IN ('sale','order')
+                 THEN (s.total_sales_kes::numeric - COALESCE(s.discounts_kes,0)::numeric) / {vat}
+                 WHEN s.sale_kind = 'return'
+                 THEN -s.returns_kes::numeric / {vat}
+                 ELSE 0 END
+          ), 0) AS net_revenue,
+          COUNT(DISTINCT s.order_id) FILTER (WHERE s.sale_kind IN ('sale','order')) AS transactions,
+          COALESCE(SUM(COALESCE(s.returned_item_quantity,0))
+                   FILTER (WHERE s.sale_kind IN ('sale','order')), 0) AS returned_qty,
+          ROUND(SUM(COALESCE(s.discounts_kes::numeric,0))
+                FILTER (WHERE s.sale_kind IN ('sale','order')), 0) AS total_discounts,
+          ROUND(SUM(COALESCE(s.gross_sales_kes::numeric,0))
+                FILTER (WHERE s.sale_kind IN ('sale','order')), 0) AS gross_revenue,
+          COUNT(DISTINCT CASE WHEN LOWER(COALESCE(s.customer_type,'')) = 'new'
+                              THEN s.customer_id END) AS new_customers,
+          COUNT(DISTINCT CASE WHEN LOWER(COALESCE(s.customer_type,'')) IN ('returning','registered')
+                              THEN s.customer_id END) AS returning_customers,
+          COUNT(DISTINCT CASE WHEN s.customer_id IS NOT NULL
+                               AND s.customer_id NOT IN ('None','null','')
+                              THEN s.customer_id END) AS total_customers
+        FROM all_sales s
+        WHERE s.sale_date::date >= '{mstart}'
+          AND s.sale_date::date <= '{today}'
+          AND s.pos_location_name = '{store_s}'
+          AND s.sale_kind IN ('sale','order','return')
+          AND {BASE_FILTERS}
+    """)
+    k      = (kpi_rows or [{}])[0]
+    units  = int(k.get("units")          or 0)
+    rev    = int(k.get("net_revenue")    or 0)
+    txns   = int(k.get("transactions")   or 0)
+    ret_q  = int(k.get("returned_qty")   or 0)
+    gross  = float(k.get("gross_revenue")    or 0)
+    disc   = float(k.get("total_discounts")  or 0)
+    new_c  = int(k.get("new_customers")  or 0)
+    ret_c  = int(k.get("returning_customers") or 0)
+    tot_c  = int(k.get("total_customers") or 0)
+
+    asp     = round(rev  / units, 0) if units > 0 else None
+    abv     = round(rev  / txns,  0) if txns  > 0 else None
+    disc_r  = round(disc  * 100.0 / gross, 1) if gross > 0 else None
+    ret_r   = round(ret_q * 100.0 / units, 1) if units > 0 else None
+    new_pct = round(new_c * 100.0 / tot_c, 1) if tot_c > 0 else None
+    ret_pct = round(ret_c * 100.0 / tot_c, 1) if tot_c > 0 else None
+
+    proj_rev  = round(rev   / days_done * days_in_m) if days_done > 0 else 0
+    proj_units = round(units / days_done * days_in_m) if days_done > 0 else 0
+    proj_txns = round(txns  / days_done * days_in_m) if days_done > 0 else 0
+
+    mtd_tgt    = round(tgt / days_in_m * days_done) if tgt else None
+    pct_of_tgt = round(rev * 100.0 / mtd_tgt, 1)   if mtd_tgt else None
+    gap        = round(tgt - proj_rev)               if tgt      else None
+    req_daily  = round(gap / days_rem)               if (gap and gap > 0 and days_rem > 0) else None
+
+    # Rule-based suggestions
+    suggestions = []
+    if pct_of_tgt is not None:
+        proj_pct = round(proj_rev * 100.0 / tgt, 1) if tgt else None
+        if pct_of_tgt < 80:
+            suggestions.append({"kpi": "revenue", "severity": "high",
+                "message": f"Revenue tracking well below target — on pace for {proj_pct}%% of monthly goal. "
+                            f"Requires KES {req_daily:,.0f}/day over the remaining {days_rem} days to close the gap.",
+                "current": rev, "target": tgt, "projected": proj_rev})
+        elif pct_of_tgt < 90:
+            suggestions.append({"kpi": "revenue", "severity": "medium",
+                "message": f"Slightly behind pace — projected {proj_pct}%% of monthly target. "
+                            f"Increase daily revenue by KES {req_daily:,.0f} across the remaining {days_rem} days.",
+                "current": rev, "target": tgt, "projected": proj_rev})
+        elif pct_of_tgt >= 100:
+            suggestions.append({"kpi": "revenue", "severity": "good",
+                "message": f"On track — {pct_of_tgt}%% of MTD target achieved.",
+                "current": rev, "target": tgt, "projected": proj_rev})
+
+    if asp is not None and asp < 2500:
+        suggestions.append({"kpi": "asp", "severity": "medium",
+            "message": f"ASP of KES {asp:,.0f} is low — review discounting depth and push higher-value styles into the top-selling sub-categories.",
+            "current": asp, "target": None, "projected": None})
+    if disc_r is not None and disc_r > 20:
+        sev = "high" if disc_r > 30 else "medium"
+        suggestions.append({"kpi": "discount_rate", "severity": sev,
+            "message": f"Discount rate {disc_r}%% — review markdown depth and promo authorisation to protect margin.",
+            "current": disc_r, "target": None, "projected": None})
+    if ret_r is not None and ret_r > 8:
+        sev = "high" if ret_r > 15 else "medium"
+        suggestions.append({"kpi": "return_rate", "severity": sev,
+            "message": f"Return rate {ret_r}%% is above normal — investigate top-returned styles for fit or quality issues.",
+            "current": ret_r, "target": None, "projected": None})
+    if ret_pct is not None and ret_pct < 25:
+        suggestions.append({"kpi": "returning_pct", "severity": "medium",
+            "message": f"Only {ret_pct}%% of customers are returning — prioritise loyalty enrolment and re-engagement communications.",
+            "current": ret_pct, "target": None, "projected": None})
+    if abv is not None and abv < 3000:
+        suggestions.append({"kpi": "abv", "severity": "low",
+            "message": f"Average basket KES {abv:,.0f} — encourage multi-category purchases through outfit bundling at point of sale.",
+            "current": abv, "target": None, "projected": None})
+
+    out = {
+        "store":                  store,
+        "month":                  str(mstart),
+        "month_label":            today.strftime("%B %Y"),
+        "days_done":              days_done,
+        "days_remaining":         days_rem,
+        "days_in_month":          days_in_m,
+        "target_revenue":         round(tgt)   if tgt    else None,
+        "mtd_target_revenue":     mtd_tgt,
+        "pct_of_mtd_target":      pct_of_tgt,
+        "revenue_gap":            gap,
+        "required_daily_revenue": req_daily,
+        "actuals": {
+            "revenue": rev, "units": units, "transactions": txns,
+            "asp": asp, "abv": abv, "discount_rate": disc_r,
+            "return_rate": ret_r, "new_customer_pct": new_pct,
+            "returning_customer_pct": ret_pct, "customer_count": tot_c,
+        },
+        "projected": {
+            "revenue": proj_rev, "units": proj_units, "transactions": proj_txns,
+        },
+        "suggestions": suggestions,
+    }
+    cache_set(ck, out, ttl=600)
+    return out
 
 
 # Serve React build as static files
