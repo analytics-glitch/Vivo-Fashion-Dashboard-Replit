@@ -571,7 +571,7 @@ const ScorecardTab = ({ meetingId, folderId = 1, onRedMetrics }) => {
   );
 };
 
-const ScorecardCell = ({ value, trafficLight, goal, goalDirection, onSave }) => {
+const ScorecardCell = ({ value, trafficLight: _trafficLightProp, goal, goalDirection, onSave }) => {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value || "");
   const inputRef = useRef(null);
@@ -594,11 +594,14 @@ const ScorecardCell = ({ value, trafficLight, goal, goalDirection, onSave }) => 
       />
     );
   }
+  // Compute traffic-light colour directly from value+goal so blank cells (null/"")
+  // reliably fall through to the neutral bg-muted/40 baseline via trafficLightCls(null).
+  const staticTl = scorecardTrafficLight(value, goal, goalDirection);
   return (
     <button
       type="button"
       onClick={() => setEditing(true)}
-      className={`rounded px-2 py-0.5 text-xs font-mono cursor-pointer hover:opacity-80 min-w-[48px] ${trafficLightCls(trafficLight)}`}
+      className={`rounded px-2 py-0.5 text-xs font-mono cursor-pointer hover:opacity-80 min-w-[48px] ${trafficLightCls(staticTl)}`}
     >
       {value ?? "—"}
     </button>
