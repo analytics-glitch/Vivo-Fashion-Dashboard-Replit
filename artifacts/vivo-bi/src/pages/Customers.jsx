@@ -181,6 +181,8 @@ const Customers = () => {
   const [unchurned, setUnchurned] = useState(null);
   const [unchurnedDays, setUnchurnedDays] = useState(90); // 30 / 60 / 90 / 180
   const [unchurnedLoading, setUnchurnedLoading] = useState(false);
+  const [churnEvents, setChurnEvents] = useState(null);
+  const [churnEventsLoading, setChurnEventsLoading] = useState(true);
 
   // Compute the previous-period range
   const prevRange = useMemo(() => {
@@ -373,6 +375,16 @@ const Customers = () => {
           return { ...prev, churn_source: "ready" };
         });
       });
+
+    // Churned / unchurned THIS PERIOD — period-scoped, depends on churnDays.
+    setChurnEventsLoading(true);
+    api.get("/customers/churn-events", {
+      params: { date_from: dateFrom, date_to: dateTo, country, channel, churn_days: churnDays },
+      timeout: 60000,
+    })
+      .then((r) => { if (!cancelled) setChurnEvents(r.data || null); })
+      .catch(() => { if (!cancelled) setChurnEvents({ churned_count: 0, unchurned_count: 0, churn_days: churnDays }); })
+      .finally(() => { if (!cancelled) setChurnEventsLoading(false); });
 
     // Walk-ins (anonymous transactions) — also slow on cold cache because
     // it fans /orders out per ≤30-day chunk. Fetch in parallel; tile shows
@@ -1052,6 +1064,45 @@ const Customers = () => {
                       />
                     );
                   })()}
+                  {/* ---- Churned This Period ---- */}
+                  <KPICard
+                    testId="kpi-churned-this-period"
+                    label="Churned This Period"
+                    sub={
+                      churnEventsLoading
+                        ? "computing…"
+                        : `No purchase in ${churnEvents?.churn_days ?? churnDays}+ days since`
+                    }
+                    formula={
+                      `Churned This Period = customers whose last-ever purchase falls inside the ` +
+                      `selected date window AND who have since been silent for at least ${churnDays} days ` +
+                      `(as of today). These are customers who made their final known purchase in the period ` +
+                      `and are now considered churned. Respects country, channel and churn-days filters.`
+                    }
+                    value={churnEventsLoading ? "…" : fmtNum(churnEvents?.churned_count ?? 0)}
+                    icon={UserMinus}
+                    higherIsBetter={false}
+                    showDelta={false}
+                  />
+                  {/* ---- Unchurned This Period ---- */}
+                  <KPICard
+                    testId="kpi-unchurned-this-period"
+                    label="Unchurned This Period"
+                    sub={
+                      churnEventsLoading
+                        ? "computing…"
+                        : `Returned after ${churnEvents?.churn_days ?? churnDays}+ day gap`
+                    }
+                    formula={
+                      `Unchurned This Period = customers who made a purchase inside the selected date ` +
+                      `window after a prior gap of at least ${churnDays} days — i.e. they were churned ` +
+                      `but reactivated in the period. Respects country, channel and churn-days filters.`
+                    }
+                    value={churnEventsLoading ? "…" : fmtNum(churnEvents?.unchurned_count ?? 0)}
+                    icon={UserPlus}
+                    higherIsBetter={true}
+                    showDelta={false}
+                  />
                 </>
               );
             })()}

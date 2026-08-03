@@ -12112,6 +12112,91 @@ def customers_churn_rate():
     r["churned_customers"] = r.get("churned_count")
     return r
 
+@app.get("/api/customers/churn-events")
+def customers_churn_events(
+    date_from:  str = Query(default=str(date.today().replace(day=1))),
+    date_to:    str = Query(default=str(date.today())),
+    country:    str = Query(default=None),
+    channel:    str = Query(default=None),
+    churn_days: int = Query(default=90),
+):
+    """Two-in-one: churned_in_period + unchurned_in_period counts.
+
+    churned_in_period  — customers whose MAX(sale_date) over ALL TIME falls in
+                         [date_from, date_to] AND who have since been silent for
+                         at least churn_days.  They made their final known
+                         purchase in the window and are now considered churned.
+
+    unchurned_in_period — customers with a purchase inside the window after a
+                          prior gap of >= churn_days.  They were churned but
+                          reactivated in the period.
+
+    Both CTEs apply _not_walkin_pseudo_sql + BASE_FILTERS (country/channel).
+    sale_date is TEXT — cast ::date before all date arithmetic.
+    """
+    cd = max(1, int(churn_days))
+    country_filter = ("AND s.country IN (" + csv_to_sql(country) + ")") if country else ""
+    channel_filter = ("AND s.pos_location_name IN (" + csv_to_sql(channel) + ")") if channel else ""
+    not_walkin = _not_walkin_pseudo_sql()
+
+    rows = run_query(f"""
+        WITH
+        -- All relevant sales: identified, non-walk-in, passing base filters.
+        base_sales AS (
+            SELECT s.customer_id, s.sale_date::date AS d
+            FROM all_sales s
+            WHERE s.sale_kind IN ('sale','order')
+              AND s.customer_id IS NOT NULL
+              AND s.customer_id NOT IN ('None','null','')
+              AND s.sale_date ~ '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}'
+              AND {not_walkin}
+              AND {BASE_FILTERS}
+              {country_filter}
+              {channel_filter}
+        ),
+        -- Each customer's last-ever purchase (over all time, all countries).
+        last_ever AS (
+            SELECT customer_id, MAX(d) AS last_d
+            FROM base_sales
+            GROUP BY customer_id
+        ),
+        -- Churned in period: last-ever purchase fell inside the window AND
+        -- (today - last_ever) >= churn_days, meaning they are now churned.
+        churned_in_period AS (
+            SELECT COUNT(DISTINCT customer_id) AS cnt
+            FROM last_ever
+            WHERE last_d BETWEEN '{date_from}'::date AND '{date_to}'::date
+              AND (CURRENT_DATE - last_d) >= {cd}
+        ),
+        -- Per-purchase LAG to detect reactivation gaps.
+        gaps AS (
+            SELECT customer_id, d,
+                LAG(d) OVER (PARTITION BY customer_id ORDER BY d) AS prev_d
+            FROM base_sales
+        ),
+        -- Unchurned in period: a purchase in-window preceded by a gap >=
+        -- churn_days (i.e. the customer was churned, then came back).
+        unchurned_in_period AS (
+            SELECT COUNT(DISTINCT customer_id) AS cnt
+            FROM gaps
+            WHERE d BETWEEN '{date_from}'::date AND '{date_to}'::date
+              AND prev_d IS NOT NULL
+              AND (d - prev_d) >= {cd}
+        )
+        SELECT
+            (SELECT cnt FROM churned_in_period)  AS churned_count,
+            (SELECT cnt FROM unchurned_in_period) AS unchurned_count
+    """)
+    if not rows:
+        return {"churned_count": 0, "unchurned_count": 0, "churn_days": cd}
+    r = rows[0]
+    return {
+        "churned_count":  int(r.get("churned_count") or 0),
+        "unchurned_count": int(r.get("unchurned_count") or 0),
+        "churn_days": cd,
+    }
+
+
 @app.get("/api/customers/walk-ins")
 def customers_walk_ins(
     date_from: str = Query(default=str(date.today().replace(day=1))),
