@@ -1384,7 +1384,14 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
        <input id="cost-selling-price" type="number" min="0" step="any" style="width:140px;" oninput="costSpManual()">
        <div id="cost-sp-exvat" class="muted num" style="font-size:11px;margin-top:2px;"></div>
       </div>
-      <div style="position:relative;">
+      <div>
+       <label class="rsv-lbl">Stage</label>
+       <select id="cost-stage" onchange="costApplyStage()" style="width:180px;">
+        <option value="main_production">Main Production</option>
+        <option value="pre_production">Pre-production</option>
+       </select>
+      </div>
+      <div id="cost-dps-wrap" style="position:relative;">
        <label class="rsv-lbl">DPS # (required)</label>
        <input id="cost-dps-search" placeholder="Pick a DPS # (required)" autocomplete="off" style="width:220px;" disabled oninput="costDpsInput()" onfocus="costDpsFocus()">
        <div id="cost-dps-list" class="resv-dropdown" style="display:none;"></div>
@@ -1394,14 +1401,41 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
        <select id="cost-color-select" onchange="costColorChange()" style="width:180px;"></select>
       </div>
      </div>
+     <div id="preproduction-fields" class="flex" style="display:none;flex-wrap:wrap;gap:12px;align-items:flex-end;margin-bottom:10px;padding:10px 12px;background:var(--panel,#f5f5f3);border-radius:8px;border:1px solid var(--border);">
+      <div>
+       <label class="rsv-lbl">Mtrs per Garment</label>
+       <input id="cost-pp-mpg" type="number" min="0" step="any" style="width:130px;" oninput="costPreProdCalc()">
+      </div>
+      <div>
+       <label class="rsv-lbl">Accessories % of fabric cost</label>
+       <input id="cost-pp-acc-pct" type="number" min="0" max="100" step="any" value="13" style="width:90px;" oninput="costPreProdCalc()">
+      </div>
+      <div>
+       <label class="rsv-lbl">Defect Allowance %</label>
+       <input id="cost-pp-def-pct" type="number" min="0" max="100" step="any" value="10" style="width:90px;" oninput="costPreProdCalc()">
+      </div>
+      <div>
+       <label class="rsv-lbl">CMT Start</label>
+       <input id="cost-pp-cmt-start" type="time" step="1" style="width:120px;" oninput="costPreProdCalc()">
+      </div>
+      <div>
+       <label class="rsv-lbl">CMT Stop</label>
+       <input id="cost-pp-cmt-stop" type="time" step="1" style="width:120px;" oninput="costPreProdCalc()">
+      </div>
+      <div>
+       <label class="rsv-lbl">Cost per Minute (KES)</label>
+       <input id="cost-pp-cpm" type="number" min="0" step="any" style="width:130px;" oninput="costPreProdCalc()">
+      </div>
+      <div id="cost-pp-cmt-info" class="muted" style="font-size:11px;align-self:flex-end;padding-bottom:5px;"></div>
+     </div>
      <div id="cost-suggest-note" class="muted" style="font-size:12px;margin-bottom:8px;"></div>
      <div class="tbl-wrap">
       <table class="data">
        <thead><tr><th style="width:120px;">Type</th><th>Description</th><th class="r" style="width:110px;">Qty</th><th class="r" style="width:130px;">Unit cost (KES)</th><th class="r" style="width:120px;">Line total</th><th style="width:120px;">Source</th><th style="width:36px;"></th></tr></thead>
        <tbody id="cost-lines-body"></tbody>
        <tfoot><tr style="font-weight:700;"><td colspan="4" style="text-align:right;">Total cost per garment</td><td class="r" id="cost-total-cell">—</td><td colspan="2"></td></tr>
-        <tr><td colspan="4" style="text-align:right;">Selling price (ex-VAT, retail ÷ 1.16)</td><td class="r" id="cost-exvat-cell">—</td><td colspan="2"></td></tr>
-        <tr style="font-weight:700;"><td colspan="4" style="text-align:right;">Margin vs ex-VAT selling price</td><td class="r" id="cost-margin-cell">—</td><td colspan="2" id="cost-margin-pct-cell"></td></tr></tfoot>
+        <tr><td colspan="4" style="text-align:right;" id="cost-exvat-label">Selling price (ex-VAT, retail ÷ 1.16)</td><td class="r" id="cost-exvat-cell">—</td><td colspan="2"></td></tr>
+        <tr style="font-weight:700;"><td colspan="4" style="text-align:right;" id="cost-margin-label">Margin vs ex-VAT selling price</td><td class="r" id="cost-margin-cell">—</td><td colspan="2" id="cost-margin-pct-cell"></td></tr></tfoot>
       </table>
      </div>
      <div id="cost-emb-section" style="margin-top:10px;"></div>
@@ -9862,7 +9896,8 @@ async function loadCosting(){
     if(!costSheets.length){body.innerHTML='<tr><td colspan="11" class="muted" style="padding:.8rem;">No costing sheets yet — click “New costing sheet” to build the first one.</td></tr>';return;}
     body.innerHTML=costSheets.map(s=>{
       const mCls=s.margin==null?'':(s.margin<0?' style="color:var(--danger);font-weight:700;"':' style="color:var(--ok,#0a7d33);font-weight:700;"');
-      return `<tr><td>${esc(s.style_name)}</td><td>${esc(s.style_number||'—')}</td>`+
+      const stageBadge=s.stage==='pre_production'?'&nbsp;<span class="pill pill-neutral" style="font-size:10px;padding:1px 5px;vertical-align:middle;">Pre-prod</span>':'';
+      return `<tr><td>${esc(s.style_name)}${stageBadge}</td><td>${esc(s.style_number||'—')}</td>`+
         `<td class="r">${fmtKES2(s.total_cost)}</td><td class="r">${fmtKES2(s.selling_price)}</td><td class="r">${fmtKES2(s.selling_price_ex_vat)}</td>`+
         `<td class="r"${mCls}>${fmtKES2(s.margin)}</td><td class="r"${mCls}>${s.margin_pct==null?'—':esc(s.margin_pct)+'%'}</td>`+
         `<td class="r">${esc(s.line_count)}</td>`+
@@ -9912,7 +9947,7 @@ function costRenderLines(){
     `<tr><td><select class="cost-cell" data-i="${i}" data-k="kind" style="width:110px;">`+
     Object.keys(COST_KINDS).map(k=>`<option value="${k}"${l.kind===k?' selected':''}>${esc(COST_KINDS[k])}</option>`).join('')+
     `</select></td>`+
-    `<td style="padding:2px;position:relative;"><input class="cost-cell" data-i="${i}" data-k="label" value="${esc(l.label||'')}" autocomplete="off" style="width:100%;padding:4px 6px;"${(l.kind==='fabric'||l.kind==='trim')&&costEdit.dps_ref?' placeholder="Type to search this DPS\u2019s components…"':''}>${(l.kind==='fabric'||l.kind==='trim')&&l.barcode?`<div class="muted num" style="font-size:10.5px;padding:1px 6px 0;">Barcode ${esc(l.barcode)}</div>`:''}${(l.kind==='fabric'||l.kind==='trim')?`<div class="resv-dropdown cost-fab-dd" data-dd="${i}" style="display:none;left:2px;right:2px;width:auto;"></div>`:''}</td>`+
+    `<td style="padding:2px;position:relative;"><input class="cost-cell" data-i="${i}" data-k="label" value="${esc(l.label||'')}" autocomplete="off" style="width:100%;padding:4px 6px;"${(l.kind==='fabric'||l.kind==='trim')?(costEdit.dps_ref?' placeholder="Type to search this DPS\u2019s components…"':' placeholder="Type to search fabric master…"'):''}>${(l.kind==='fabric'||l.kind==='trim')&&l.barcode?`<div class="muted num" style="font-size:10.5px;padding:1px 6px 0;">Barcode ${esc(l.barcode)}</div>`:''}${(l.kind==='fabric'||l.kind==='trim')?`<div class="resv-dropdown cost-fab-dd" data-dd="${i}" style="display:none;left:2px;right:2px;width:auto;"></div>`:''}</td>`+
     `<td style="padding:2px;"><input class="cost-cell r" data-i="${i}" data-k="qty" type="number" min="0" step="any" value="${esc(l.qty==null?'':l.qty)}" style="width:100%;text-align:right;padding:4px 6px;"></td>`+
     `<td style="padding:2px;"><input class="cost-cell r" data-i="${i}" data-k="unit_cost" type="number" min="0" step="any" value="${esc(l.unit_cost==null?'':l.unit_cost)}" style="width:100%;text-align:right;padding:4px 6px;"></td>`+
     `<td class="r">${fmtKES2((Number(l.qty)||0)*(Number(l.unit_cost)||0))}</td>`+
@@ -9983,9 +10018,26 @@ function costRenderTotals(){
   const emb=costEdit&&costEdit.embroidery_data;
   const embTotal=(emb&&emb.enabled)?(Number(emb.cost_per_run||0)*Number(emb.run_count||0)):0;
   const total=linesTotal+embTotal;
+  document.getElementById('cost-total-cell').textContent=fmtKES2(total);
+  const isPreprod=!!(costEdit&&costEdit.stage==='pre_production');
+  if(isPreprod){
+    // Back-calculate proposed prices to target 70% margin ex-VAT
+    const propEx=total>0?Math.round(total/0.30*100)/100:null;
+    const propRetail=propEx!=null?Math.round(propEx*COST_VAT_DIVISOR*100)/100:null;
+    const spEl=document.getElementById('cost-selling-price');
+    if(spEl&&propRetail!=null){spEl.value=propRetail;}
+    const exHint=document.getElementById('cost-sp-exvat');
+    if(exHint)exHint.textContent=propEx!=null?'Proposed ex-VAT (70% margin target): '+fmtKES2(propEx):'';
+    const exCell=document.getElementById('cost-exvat-cell');
+    if(exCell)exCell.textContent=propEx!=null?fmtKES2(propEx):'—';
+    const mCell=document.getElementById('cost-margin-cell'),pCell=document.getElementById('cost-margin-pct-cell');
+    if(propEx==null){if(mCell)mCell.textContent='—';if(pCell)pCell.textContent='';return;}
+    if(mCell){mCell.textContent=fmtKES2(propEx-total);mCell.style.color='var(--ok,#0a7d33)';}
+    if(pCell)pCell.textContent=propEx>0?'Margin: '+(((propEx-total)/propEx)*100).toFixed(2)+'%':'';
+    return;
+  }
   const spEl=document.getElementById('cost-selling-price');
   const sp=spEl&&spEl.value!==''?Number(spEl.value):null;
-  document.getElementById('cost-total-cell').textContent=fmtKES2(total);
   const ex=costExVat(sp);
   const exHint=document.getElementById('cost-sp-exvat');
   if(exHint)exHint.textContent=ex==null?'':'Ex-VAT selling price: '+fmtKES2(ex);
@@ -10042,11 +10094,13 @@ function costFabSearch(i,el){
   clearTimeout(costFabTimer);
   costFabTimer=setTimeout(async()=>{
     const dd=document.querySelector('.cost-fab-dd[data-dd="'+i+'"]');if(!dd)return;
-    if(!costEdit||!costEdit.dps_ref){dd.style.display='none';return;}
+    const isPreprodFab=costEdit&&costEdit.stage==='pre_production';
+    if(!costEdit||(!costEdit.dps_ref&&!isPreprodFab)){dd.style.display='none';return;}
     const term=(el.value||'').trim();
     if(term.length<2){dd.style.display='none';return;}
     try{
-      const rows=await apiFetch('/api/fabric/costing/fabrics?dps_ref='+encodeURIComponent(costEdit.dps_ref)+'&q='+encodeURIComponent(term)+(costEdit.color&&costEdit.style_name?'&style_name='+encodeURIComponent(costEdit.style_name)+'&color='+encodeURIComponent(costEdit.color):''));
+      const fabUrl='/api/fabric/costing/fabrics?q='+encodeURIComponent(term)+(costEdit.dps_ref?'&dps_ref='+encodeURIComponent(costEdit.dps_ref):'')+(costEdit.color&&costEdit.style_name&&costEdit.dps_ref?'&style_name='+encodeURIComponent(costEdit.style_name)+'&color='+encodeURIComponent(costEdit.color):'');
+      const rows=await apiFetch(fabUrl);
       dd.innerHTML=(rows||[]).map(r=>{
         const cost=r.is_main_fabric?r.cost_per_metre:(r.unit_cost!=null?r.unit_cost:r.cost_per_metre);
         return `<div class="resv-opt" data-costfab="${i}" data-fabname="${esc(r.name||r.sku||'')}" data-fabcpm="${cost==null?'':cost}" data-fabmain="${r.is_main_fabric?1:0}" data-fabid="${r.id==null?'':Number(r.id)}" data-fabbarcode="${esc(r.barcode||'')}">`+
@@ -10072,9 +10126,79 @@ function costPickFabric(i,name,cpm,isMain,compId,barcode){
   }
   costRenderLines();
 }
+function costApplyStage(restoreOnly){
+  if(!costEdit)return;
+  const stgEl=document.getElementById('cost-stage');
+  const stage=stgEl?stgEl.value:(costEdit.stage||'main_production');
+  costEdit.stage=stage;
+  const isPreprod=stage==='pre_production';
+  const dpsWrap=document.getElementById('cost-dps-wrap');if(dpsWrap)dpsWrap.style.display=isPreprod?'none':'';
+  const colorWrap=document.getElementById('cost-color-wrap');if(colorWrap&&isPreprod)colorWrap.style.display='none';
+  const ppFields=document.getElementById('preproduction-fields');if(ppFields)ppFields.style.display=isPreprod?'flex':'none';
+  const spEl=document.getElementById('cost-selling-price');
+  if(spEl){spEl.readOnly=isPreprod;spEl.style.background=isPreprod?'var(--panel,#f5f5f3)':'';spEl.style.cursor=isPreprod?'default':'';spEl.title=isPreprod?'Proposed retail price — auto-calculated to target 70% margin ex-VAT':'';}
+  const spBadge=document.getElementById('cost-sp-badge');if(spBadge)spBadge.innerHTML=isPreprod?'<span style="background:var(--accent,#2563eb);color:#fff;border-radius:4px;font-size:10px;padding:1px 6px;">PROPOSED</span>':'';
+  const exLbl=document.getElementById('cost-exvat-label');if(exLbl)exLbl.textContent=isPreprod?'Proposed selling price (ex-VAT, targeting 70% margin)':'Selling price (ex-VAT, retail ÷ 1.16)';
+  const mLbl=document.getElementById('cost-margin-label');if(mLbl)mLbl.textContent=isPreprod?'Proposed margin (targeting 70%)':'Margin vs ex-VAT selling price';
+  if(!restoreOnly){
+    const sNote=document.getElementById('cost-suggest-note');
+    if(sNote)sNote.textContent=isPreprod?'Pre-production: add a fabric line (+ Fabric), set Mtrs per Garment and CMT inputs — accessories, CMT cost, and defect allowance are auto-calculated.':'Pick a style to load auto-suggestions (fabric cost, metres per garment, labour per garment).';
+  }
+  costRenderTotals();
+}
+function costPreProdUpsert(kind,newLine){
+  const idx=costEdit.lines.findIndex(l=>l.kind===kind&&l.is_auto&&(l.source||'').startsWith('pre-production auto'));
+  if(idx>=0){costEdit.lines[idx]=newLine;}else{costEdit.lines.push(newLine);}
+}
+function costPreProdCalc(){
+  if(!costEdit||costEdit.stage!=='pre_production')return;
+  const mpg=Number((document.getElementById('cost-pp-mpg')||{}).value)||0;
+  const accPct=Number((document.getElementById('cost-pp-acc-pct')||{}).value)||0;
+  const defPct=Number((document.getElementById('cost-pp-def-pct')||{}).value)||0;
+  const cpmVal=Number((document.getElementById('cost-pp-cpm')||{}).value)||0;
+  const startStr=((document.getElementById('cost-pp-cmt-start')||{}).value||'').trim();
+  const stopStr=((document.getElementById('cost-pp-cmt-stop')||{}).value||'').trim();
+  costEdit.mtrs_per_garment=mpg||null;costEdit.accessories_pct=accPct;
+  costEdit.defect_allowance_pct=defPct;costEdit.cost_per_minute=cpmVal||null;
+  costEdit.cmt_start_time=startStr||null;costEdit.cmt_stop_time=stopStr||null;
+  // Update fabric line(s) qty to mpg
+  costEdit.lines.filter(l=>l.kind==='fabric').forEach(l=>{l.qty=mpg||0;});
+  // Fabric total for percentage-based lines
+  const fabUnitCost=costEdit.lines.filter(l=>l.kind==='fabric').reduce((s,l)=>s+(Number(l.unit_cost)||0),0);
+  const fabTotal=mpg*(costEdit.lines.filter(l=>l.kind==='fabric').length>0?Number(costEdit.lines.find(l=>l.kind==='fabric').unit_cost)||0:0);
+  // Accessories auto-line
+  const accTotal=Math.round(accPct/100*fabTotal*100)/100;
+  const accLabel='Accessories ('+accPct+'% of fabric cost)';
+  costPreProdUpsert('trim',{kind:'trim',label:accLabel,qty:1,unit_cost:accTotal,is_auto:true,source:'pre-production auto: '+accPct+'% of fabric cost',component_id:null,barcode:null});
+  // CMT auto-line from time inputs
+  let cpmTotal=0;
+  if(startStr&&stopStr){
+    const parseMins=s=>{const p=(s+':00').split(':').map(Number);return p[0]*60+p[1];};
+    let rawMins=parseMins(stopStr)-parseMins(startStr);
+    if(rawMins<0)rawMins+=24*60;
+    const adjMins=Math.round(rawMins*1.40*100)/100;
+    cpmTotal=Math.round(adjMins*cpmVal*100)/100;
+    const infoEl=document.getElementById('cost-pp-cmt-info');
+    if(infoEl)infoEl.textContent=rawMins+' min × 1.40 = '+adjMins+' adj min/gmt × KES '+cpmVal+'/min = KES '+cpmTotal;
+  }else{
+    const infoEl=document.getElementById('cost-pp-cmt-info');
+    if(infoEl)infoEl.textContent='Enter start and stop times to auto-calculate CMT cost.';
+  }
+  const cmtLabel='CMT ('+(startStr||'?')+'–'+(stopStr||'?')+', KES '+cpmVal+'/min ×1.40)';
+  costPreProdUpsert('cmt',{kind:'cmt',label:cmtLabel,qty:1,unit_cost:cpmTotal,is_auto:true,source:'pre-production auto: time-based CMT',component_id:null,barcode:null});
+  // Defect allowance auto-line
+  const defTotal=Math.round(defPct/100*fabTotal*100)/100;
+  const defLabel='Defect Allowance ('+defPct+'% of fabric cost)';
+  costPreProdUpsert('overhead',{kind:'overhead',label:defLabel,qty:1,unit_cost:defTotal,is_auto:true,source:'pre-production auto: '+defPct+'% of fabric cost',component_id:null,barcode:null});
+  costRenderLines();
+}
 function costNewSheet(){
   costEdit={id:null,style_name:null,style_number:null,dps_ref:null,color:null,lines:[],sp_auto:true,history:[],signoffs:null,locked:false,
-    embroidery_data:{enabled:false,cost_per_run:0,run_count:0}};
+    embroidery_data:{enabled:false,cost_per_run:0,run_count:0},
+    stage:'main_production',accessories_pct:13,defect_allowance_pct:10,
+    mtrs_per_garment:null,cost_per_minute:null,cmt_start_time:null,cmt_stop_time:null};
+  const stgEl=document.getElementById('cost-stage');if(stgEl)stgEl.value='main_production';
+  costApplyStage(false);
   costDpsReset(true);
   document.getElementById('cost-editor-title').textContent='New costing sheet';
   document.getElementById('cost-style-search').value='';
@@ -10082,7 +10206,6 @@ function costNewSheet(){
   document.getElementById('cost-style-number').value='';
   document.getElementById('cost-selling-price').value='';
   document.getElementById('cost-sp-badge').innerHTML='';
-  document.getElementById('cost-suggest-note').textContent='Pick a style to load auto-suggestions (fabric cost, metres per garment, labour per garment).';
   document.getElementById('cost-editor-err').innerHTML='';
   document.getElementById('cost-history').innerHTML='';
   document.getElementById('cost-signoff').innerHTML='';
@@ -10100,7 +10223,25 @@ async function costOpenSheet(id){
     costEdit={id:s.id,style_name:s.style_name,style_number:s.style_number,dps_ref:s.dps_ref||null,color:s.color||null,
       lines:(s.lines||[]).map(l=>({kind:l.kind,label:l.label,qty:l.qty,unit_cost:l.unit_cost,is_auto:!!l.is_auto,source:l.source,component_id:l.component_id||null,barcode:l.barcode||null})),
       sp_auto:!!s.selling_price_is_auto,history:s.history||[],signoffs:s.signoffs||null,locked:!!s.locked,
-      embroidery_data:{enabled:!!_sEmb.enabled,cost_per_run:Number(_sEmb.cost_per_run||0),run_count:Number(_sEmb.run_count||0)}};
+      embroidery_data:{enabled:!!_sEmb.enabled,cost_per_run:Number(_sEmb.cost_per_run||0),run_count:Number(_sEmb.run_count||0)},
+      stage:s.stage||'main_production',
+      accessories_pct:s.accessories_pct!=null?Number(s.accessories_pct):13,
+      defect_allowance_pct:s.defect_allowance_pct!=null?Number(s.defect_allowance_pct):10,
+      mtrs_per_garment:s.mtrs_per_garment!=null?Number(s.mtrs_per_garment):null,
+      cost_per_minute:s.cost_per_minute!=null?Number(s.cost_per_minute):null,
+      cmt_start_time:s.cmt_start_time||null,cmt_stop_time:s.cmt_stop_time||null};
+    // Apply stage UI (show/hide DPS/pre-prod fields) before populating DPS
+    const stgEl=document.getElementById('cost-stage');if(stgEl)stgEl.value=costEdit.stage||'main_production';
+    costApplyStage(true);
+    // Populate pre-production inputs if applicable
+    if(costEdit.stage==='pre_production'){
+      const mpgEl=document.getElementById('cost-pp-mpg');if(mpgEl)mpgEl.value=costEdit.mtrs_per_garment!=null?costEdit.mtrs_per_garment:'';
+      const accEl=document.getElementById('cost-pp-acc-pct');if(accEl)accEl.value=costEdit.accessories_pct!=null?costEdit.accessories_pct:13;
+      const defEl=document.getElementById('cost-pp-def-pct');if(defEl)defEl.value=costEdit.defect_allowance_pct!=null?costEdit.defect_allowance_pct:10;
+      const cpmEl=document.getElementById('cost-pp-cpm');if(cpmEl)cpmEl.value=costEdit.cost_per_minute!=null?costEdit.cost_per_minute:'';
+      const csEl=document.getElementById('cost-pp-cmt-start');if(csEl)csEl.value=costEdit.cmt_start_time||'';
+      const ceEl=document.getElementById('cost-pp-cmt-stop');if(ceEl)ceEl.value=costEdit.cmt_stop_time||'';
+    }
     // Show which Done DPS the sheet's suggestions were built from (editable
     // again via re-suggest is out of scope for saved sheets; display only).
     const dpsEl=document.getElementById('cost-dps-search');
@@ -10175,7 +10316,11 @@ function costApplyLock(){
   document.querySelectorAll('#cost-lines-body input,#cost-lines-body select,#cost-lines-body button').forEach(el=>el.disabled=locked);
   document.querySelectorAll('#cost-line-btns button').forEach(el=>{if(el.id!=='cost-save-btn')el.disabled=locked;});
   const sv=document.getElementById('cost-save-btn');if(sv){sv.disabled=locked;sv.title=locked?'Approved sheets are locked — un-approve to edit':'';}
-  const sp=document.getElementById('cost-selling-price');if(sp)sp.disabled=locked;
+  const sp=document.getElementById('cost-selling-price');
+  if(sp){
+    if(costEdit&&costEdit.stage==='pre_production'){sp.disabled=false;sp.readOnly=true;sp.style.background='var(--panel,#f5f5f3)';}
+    else{sp.disabled=locked;sp.readOnly=false;sp.style.background='';}
+  }
   const note=document.getElementById('cost-lock-note');
   if(note)note.innerHTML=locked?'<div class="banner" style="background:#dcfce7;border:1px solid #86efac;">This sheet is <b>approved</b> and locked against edits. Un-approve it in the Sign-off panel below to make changes (all edits are change-logged).</div>':'';
   // Re-render embroidery section so its disabled state reflects the lock change.
@@ -10247,9 +10392,14 @@ async function costPickStyle(style,num){
   document.getElementById('cost-style-search').value=style;
   document.getElementById('cost-style-number').value=num||'';
   document.getElementById('cost-style-list').style.display='none';
-  costDpsReset(false); // new style → clear any chosen DPS, enable the picker
-  document.getElementById('cost-suggest-note').textContent='Now pick the DPS # this sheet is costed from — suggestions are built strictly from that DPS\u2019s MOs.';
-  document.getElementById('cost-dps-search').focus();
+  if(costEdit.stage==='pre_production'){
+    costEdit.dps_ref=null;
+    document.getElementById('cost-suggest-note').textContent='Pre-production: add a fabric line (+ Fabric), set Mtrs per Garment and CMT inputs.';
+  } else {
+    costDpsReset(false); // new style → clear any chosen DPS, enable the picker
+    document.getElementById('cost-suggest-note').textContent='Now pick the DPS # this sheet is costed from — suggestions are built strictly from that DPS\u2019s MOs.';
+    document.getElementById('cost-dps-search').focus();
+  }
 }
 // Load auto-suggestions for the picked style, scoped strictly to
 // costEdit.dps_ref — DPS selection is mandatory (no trailing-window average).
@@ -10380,9 +10530,19 @@ async function costPickDps(ref){
 async function costSaveSheet(){
   if(!costEdit)return;
   const err=document.getElementById('cost-editor-err');err.innerHTML='';
+  const isPreprod=costEdit.stage==='pre_production';
   if(!costEdit.style_name){err.innerHTML='<div class="banner banner-err">Pick a style from the list first.</div>';return;}
-  if(!costEdit.id&&!costEdit.dps_ref){err.innerHTML='<div class="banner banner-err">Pick a DPS # for the style — new costing sheets are built from one Done DPS.</div>';return;}
+  if(!costEdit.id&&!costEdit.dps_ref&&!isPreprod){err.innerHTML='<div class="banner banner-err">Pick a DPS # for the style — new costing sheets are built from one Done DPS.</div>';return;}
   if(!costEdit.lines.length){err.innerHTML='<div class="banner banner-err">Add at least one cost line.</div>';return;}
+  // Sync pre-production inputs into costEdit before building payload
+  if(isPreprod){
+    costEdit.accessories_pct=Number((document.getElementById('cost-pp-acc-pct')||{}).value)||13;
+    costEdit.defect_allowance_pct=Number((document.getElementById('cost-pp-def-pct')||{}).value)||10;
+    costEdit.mtrs_per_garment=Number((document.getElementById('cost-pp-mpg')||{}).value)||null;
+    costEdit.cost_per_minute=Number((document.getElementById('cost-pp-cpm')||{}).value)||null;
+    costEdit.cmt_start_time=((document.getElementById('cost-pp-cmt-start')||{}).value||'').trim()||null;
+    costEdit.cmt_stop_time=((document.getElementById('cost-pp-cmt-stop')||{}).value||'').trim()||null;
+  }
   const spEl=document.getElementById('cost-selling-price');
   // Sync embroidery inputs into costEdit.embroidery_data before building payload.
   const cprEl=document.getElementById('cost-emb-cpr'),rcEl=document.getElementById('cost-emb-rc'),cbEl=document.getElementById('cost-emb-enabled');
@@ -10394,10 +10554,17 @@ async function costSaveSheet(){
   }
   const emb=costEdit.embroidery_data||{enabled:false,cost_per_run:0,run_count:0};
   const payload={style_name:costEdit.style_name,
+    stage:costEdit.stage||'main_production',
     dps_ref:costEdit.dps_ref||null,
     color:costEdit.color||null,
     selling_price:spEl.value===''?null:Number(spEl.value),
-    selling_price_is_auto:!!costEdit.sp_auto,
+    selling_price_is_auto:!!costEdit.sp_auto&&!isPreprod,
+    accessories_pct:costEdit.accessories_pct!=null?costEdit.accessories_pct:13,
+    defect_allowance_pct:costEdit.defect_allowance_pct!=null?costEdit.defect_allowance_pct:10,
+    mtrs_per_garment:costEdit.mtrs_per_garment||null,
+    cost_per_minute:costEdit.cost_per_minute||null,
+    cmt_start_time:costEdit.cmt_start_time||null,
+    cmt_stop_time:costEdit.cmt_stop_time||null,
     embroidery_data:{enabled:!!emb.enabled,cost_per_run:Number(emb.cost_per_run||0),run_count:Number(emb.run_count||0)},
     lines:costEdit.lines.map(l=>({kind:l.kind,label:l.label,qty:Number(l.qty)||0,unit_cost:Number(l.unit_cost)||0,is_auto:!!l.is_auto,source:l.source,component_id:l.component_id||null}))};
   const btn=document.getElementById('cost-save-btn');btn.disabled=true;btn.textContent='Saving…';

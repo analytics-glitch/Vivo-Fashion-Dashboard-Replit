@@ -371,21 +371,43 @@ def _section_header(d: dict, logo: dict) -> list:
 
 
 def _section_identity(d: dict) -> list:
-    left_para = Paragraph(
-        f'<font name="Helvetica" size="11" color="{hx(INK)}">{d["style_name"]}</font>',
-        _ps(11, 14, INK),
-    )
-    right_markup = (
-        f'<font color="{hx(MUTED)}">Style&nbsp;</font>'
-        f'<font color="{hx(INK)}">{d["style_no"]}</font>'
-        f'<font color="{hx(MUTED)}">&nbsp;\u00b7&nbsp;Colour&nbsp;</font>'
-        f'<font color="{hx(INK)}">{d["colour"]}</font>'
-        f'<font color="{hx(MUTED)}">&nbsp;\u00b7&nbsp;Costed from&nbsp;</font>'
-        f'<font color="{hx(INK)}">{d["dps"]}</font>'
-        f'<font color="{hx(MUTED)}">&nbsp;\u00b7&nbsp;Order qty&nbsp;</font>'
-        f'<font color="{hx(INK)}">{d["order_qty"]:,}</font>'
-        f'<font color="{hx(MUTED)}">&nbsp;garments</font>'
-    )
+    stage = d.get("stage", "main_production")
+    is_preprod = (stage == "pre_production")
+
+    if is_preprod:
+        left_markup = (
+            f'<font name="Helvetica" size="11" color="{hx(INK)}">{d["style_name"]}</font>'
+            f'&nbsp;&nbsp;<font name="Helvetica-Bold" size="7" color="#C05A00">'
+            f'PRE-PRODUCTION&nbsp;ESTIMATE</font>'
+        )
+        left_para = Paragraph(left_markup, _ps(11, 14, INK))
+    else:
+        left_para = Paragraph(
+            f'<font name="Helvetica" size="11" color="{hx(INK)}">{d["style_name"]}</font>',
+            _ps(11, 14, INK),
+        )
+
+    if is_preprod:
+        right_markup = (
+            f'<font color="{hx(MUTED)}">Style&nbsp;</font>'
+            f'<font color="{hx(INK)}">{d["style_no"]}</font>'
+            f'<font color="{hx(MUTED)}">&nbsp;\u00b7&nbsp;Colour&nbsp;</font>'
+            f'<font color="{hx(INK)}">{d["colour"]}</font>'
+            f'<font color="{hx(MUTED)}">&nbsp;\u00b7&nbsp;Stage&nbsp;</font>'
+            f'<font color="{hx(INK)}">Pre-production</font>'
+        )
+    else:
+        right_markup = (
+            f'<font color="{hx(MUTED)}">Style&nbsp;</font>'
+            f'<font color="{hx(INK)}">{d["style_no"]}</font>'
+            f'<font color="{hx(MUTED)}">&nbsp;\u00b7&nbsp;Colour&nbsp;</font>'
+            f'<font color="{hx(INK)}">{d["colour"]}</font>'
+            f'<font color="{hx(MUTED)}">&nbsp;\u00b7&nbsp;Costed from&nbsp;</font>'
+            f'<font color="{hx(INK)}">{d["dps"]}</font>'
+            f'<font color="{hx(MUTED)}">&nbsp;\u00b7&nbsp;Order qty&nbsp;</font>'
+            f'<font color="{hx(INK)}">{d["order_qty"]:,}</font>'
+            f'<font color="{hx(MUTED)}">&nbsp;garments</font>'
+        )
     right_para = Paragraph(right_markup, _ps(8, 11, INK, align=TA_RIGHT))
 
     tbl = Table(

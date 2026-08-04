@@ -12788,6 +12788,24 @@ def _ensure_costing_tables(conn):
             -- Stored as JSONB {enabled, cost_per_run, run_count}. NULL = not set.
             ALTER TABLE fabric_costing_sheets
                 ADD COLUMN IF NOT EXISTS embroidery_data JSONB;
+            -- Pre-production costing stage and per-sheet inputs.
+            -- stage: 'main_production' (default) or 'pre_production'.
+            -- Pre-production sheets have no Done DPS; fabric metres, accessory
+            -- percentage, defect allowance, and CMT time/rate are entered manually.
+            ALTER TABLE fabric_costing_sheets
+                ADD COLUMN IF NOT EXISTS stage TEXT DEFAULT 'main_production';
+            ALTER TABLE fabric_costing_sheets
+                ADD COLUMN IF NOT EXISTS accessories_pct NUMERIC DEFAULT 13;
+            ALTER TABLE fabric_costing_sheets
+                ADD COLUMN IF NOT EXISTS defect_allowance_pct NUMERIC DEFAULT 10;
+            ALTER TABLE fabric_costing_sheets
+                ADD COLUMN IF NOT EXISTS mtrs_per_garment NUMERIC;
+            ALTER TABLE fabric_costing_sheets
+                ADD COLUMN IF NOT EXISTS cost_per_minute NUMERIC;
+            ALTER TABLE fabric_costing_sheets
+                ADD COLUMN IF NOT EXISTS cmt_start_time TEXT;
+            ALTER TABLE fabric_costing_sheets
+                ADD COLUMN IF NOT EXISTS cmt_stop_time TEXT;
         """)
         # One-time backfill: link existing auto fabric lines to their fabric
         # product by matching the line label ("Main fabric (<name>)" from the
@@ -12920,6 +12938,17 @@ def _costing_margin(retail_price, total_cost):
     margin = round(ex - total_cost, 2)
     pct = round((ex - total_cost) / ex * 100, 2) if ex else None
     return ex, margin, pct
+
+
+def _preproduction_proposed_prices(total_cost):
+    """Back-calculate selling_price_ex_vat and retail_price_vat_incl to hit
+    exactly 70% margin ex-VAT.  Formula: selling_ex = total_cost / 0.30.
+    Returns (selling_ex_vat, retail_incl_vat) or (None, None) for zero cost."""
+    if total_cost is None or float(total_cost) <= 0:
+        return None, None
+    selling_ex = round(float(total_cost) / 0.30, 2)
+    retail = round(selling_ex * _COSTING_VAT_DIVISOR, 2)
+    return selling_ex, retail
 
 
 def _require_style_dps(conn, canon_style, dps_ref, color=None):
@@ -13225,8 +13254,30 @@ def costing_fabric_search(q_: str = Query(default="", alias="q"),
     term = (q_ or "").strip()
     dps = (dps_ref or "").strip()
     if not dps:
-        raise HTTPException(status_code=400,
-                            detail="dps_ref is required — component search is scoped to the sheet's DPS")
+        # Pre-production mode: search the whole fabric master without DPS scope.
+        # Returns fabrics only (no DPS-recorded accessory costs) with cost_per_metre
+        # from the fabric master so the unit_cost field can be pre-filled.
+        if not term or len(term) < 2:
+            return []
+        _limit = max(1, min(int(limit or 20), 50))
+        with _get_conn() as conn:
+            rows = q(conn, """
+                SELECT p.id, p.sku, p.name,
+                       NULLIF(TRIM(p.barcode), '') AS barcode,
+                       ROUND(CASE WHEN p.kg_per_mtr_eff > 0 AND p.standard_price > 0
+                                  THEN (p.standard_price * p.kg_per_mtr_eff)::numeric
+                                  ELSE NULL END, 2) AS cost_per_metre
+                FROM raw_fabric_products p
+                WHERE p.name ILIKE %s OR p.sku ILIKE %s
+                ORDER BY p.name
+                LIMIT %s
+            """, [f"%{term}%", f"%{term}%", _limit])
+        return [{"id": r["id"], "sku": r["sku"], "name": r["name"],
+                 "barcode": r["barcode"],
+                 "is_main_fabric": True,
+                 "cost_per_metre": float(r["cost_per_metre"]) if r["cost_per_metre"] is not None else None,
+                 "unit_cost": None}
+                for r in rows]
     limit = max(1, min(int(limit or 20), 50))
     # Optional colour scope (with the style): restrict to components consumed
     # on the MOs whose finished SKU is that colour of the style, so the
@@ -13498,6 +13549,17 @@ def _sheet_payload(conn, sheet_id, with_history=True):
     s["selling_price_ex_vat"] = sp_ex
     s["margin"] = margin
     s["margin_pct"] = margin_pct
+    stage = s.get("stage") or "main_production"
+    s["stage"] = stage
+    for _k in ("accessories_pct", "defect_allowance_pct", "mtrs_per_garment", "cost_per_minute"):
+        s[_k] = float(s[_k]) if s.get(_k) is not None else None
+    if stage == "pre_production":
+        prop_ex, prop_retail = _preproduction_proposed_prices(total)
+        s["proposed_selling_price"] = prop_ex
+        s["proposed_retail_price"] = prop_retail
+    else:
+        s["proposed_selling_price"] = None
+        s["proposed_retail_price"] = None
     signoffs = _costing_signoff_rows(conn, sheet_id)
     s["signoffs"] = signoffs
     s["signoff_status"] = _costing_signoff_status(signoffs)
@@ -13551,7 +13613,7 @@ def costing_sheets_list():
         rows = q(conn, """
             SELECT s.id, s.style_name, s.style_number, s.selling_price,
                    s.dps_ref, s.color, s.updated_by_name, s.updated_at,
-                   s.embroidery_data,
+                   s.embroidery_data, s.stage,
                    -- Stored line totals only: sheets are a snapshot of the
                    -- cost at creation time and never re-price on read.
                    COALESCE(SUM(l.total),0) AS lines_total,
@@ -13591,6 +13653,7 @@ def costing_sheets_list():
             "signed_steps": int(r["n_signed"] or 0),
             "signoff_status": ("approved" if r["approved"]
                                else "partial" if (r["n_signed"] or 0) else "draft"),
+            "stage": r.get("stage") or "main_production",
             "updated_by_name": r["updated_by_name"],
             "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
         })
@@ -13822,7 +13885,6 @@ def costing_sheet_create(request: Request, body: dict = Body(...)):
     if not style_row:
         raise HTTPException(status_code=400,
                             detail="Pick a style from the list — free-typed styles are not allowed")
-    lines = _clean_costing_lines(body.get("lines"))
     sp = body.get("selling_price")
     try:
         sp = float(sp) if sp not in (None, "") else None
@@ -13832,15 +13894,40 @@ def costing_sheet_create(request: Request, body: dict = Body(...)):
         raise HTTPException(status_code=400, detail="selling_price must be ≥ 0")
     uid, uname = _costing_user(request)
     canon = style_row.get("style_name")
+    stage = (str(body.get("stage") or "main_production").strip())[:50]
+    if stage not in ("main_production", "pre_production"):
+        stage = "main_production"
     dps_ref = (str(body.get("dps_ref") or "").strip())[:100] or None
-    if not dps_ref:
+    if stage == "main_production" and not dps_ref:
         raise HTTPException(status_code=400,
                             detail="Pick a DPS # for the style — costing sheets are built from one Done DPS")
     color = (str(body.get("color") or "").strip())[:100] or None
+    # Pre-production extra fields
+    try:
+        accessories_pct = float(body["accessories_pct"]) if body.get("accessories_pct") not in (None, "") else 13.0
+        defect_allowance_pct = float(body["defect_allowance_pct"]) if body.get("defect_allowance_pct") not in (None, "") else 10.0
+        mtrs_per_garment = float(body["mtrs_per_garment"]) if body.get("mtrs_per_garment") not in (None, "") else None
+        cost_per_minute = float(body["cost_per_minute"]) if body.get("cost_per_minute") not in (None, "") else None
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Pre-production numeric fields must be numbers")
+    cmt_start_time = (str(body.get("cmt_start_time") or "").strip())[:10] or None
+    cmt_stop_time  = (str(body.get("cmt_stop_time")  or "").strip())[:10] or None
     emb_data_json = _parse_embroidery_data(body.get("embroidery_data"))
+    lines = _clean_costing_lines(body.get("lines"))
+    # For pre-production, override selling_price with the 70%-margin proposed price
+    if stage == "pre_production":
+        _lines_total = sum(ln["total"] for ln in lines)
+        try:
+            _raw_emb = json.loads(emb_data_json) if emb_data_json else {}
+            if isinstance(_raw_emb, dict) and _raw_emb.get("enabled"):
+                _lines_total += float(_raw_emb.get("cost_per_run", 0)) * float(_raw_emb.get("run_count", 0))
+        except Exception:
+            pass
+        _, sp = _preproduction_proposed_prices(_lines_total)
     with _get_conn() as conn:
         _ensure_costing_tables(conn)
-        _require_style_dps(conn, canon, dps_ref, color=color)
+        if stage == "main_production" and dps_ref:
+            _require_style_dps(conn, canon, dps_ref, color=color)
         dup = q(conn, "SELECT id FROM fabric_costing_sheets WHERE lower(style_name)=lower(%s)",
                 (canon,))
         if dup:
@@ -13850,14 +13937,18 @@ def costing_sheet_create(request: Request, body: dict = Body(...)):
             cur.execute("""
                 INSERT INTO fabric_costing_sheets
                     (style_name, style_number, selling_price, selling_price_is_auto,
-                     notes, dps_ref, color, embroidery_data,
+                     notes, dps_ref, color, embroidery_data, stage,
+                     accessories_pct, defect_allowance_pct, mtrs_per_garment,
+                     cost_per_minute, cmt_start_time, cmt_stop_time,
                      created_by, created_by_name,
                      updated_by, updated_by_name)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id
             """, (canon, style_row.get("style_number"), sp,
-                  bool(body.get("selling_price_is_auto")),
+                  bool(body.get("selling_price_is_auto")) and stage == "main_production",
                   (str(body.get("notes") or "").strip())[:1000] or None,
-                  dps_ref, color, emb_data_json,
+                  dps_ref, color, emb_data_json, stage,
+                  accessories_pct, defect_allowance_pct, mtrs_per_garment,
+                  cost_per_minute, cmt_start_time, cmt_stop_time,
                   uid, uname, uid, uname))
             sheet_id = cur.fetchone()[0]
             for ln in lines:
@@ -13889,7 +13980,30 @@ def costing_sheet_update(sheet_id: int, request: Request, body: dict = Body(...)
     if sp is not None and sp < 0:
         raise HTTPException(status_code=400, detail="selling_price must be ≥ 0")
     uid, uname = _costing_user(request)
+    stage = (str(body.get("stage") or "main_production").strip())[:50]
+    if stage not in ("main_production", "pre_production"):
+        stage = "main_production"
+    # Pre-production extra fields
+    try:
+        accessories_pct = float(body["accessories_pct"]) if body.get("accessories_pct") not in (None, "") else 13.0
+        defect_allowance_pct = float(body["defect_allowance_pct"]) if body.get("defect_allowance_pct") not in (None, "") else 10.0
+        mtrs_per_garment = float(body["mtrs_per_garment"]) if body.get("mtrs_per_garment") not in (None, "") else None
+        cost_per_minute = float(body["cost_per_minute"]) if body.get("cost_per_minute") not in (None, "") else None
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Pre-production numeric fields must be numbers")
+    cmt_start_time = (str(body.get("cmt_start_time") or "").strip())[:10] or None
+    cmt_stop_time  = (str(body.get("cmt_stop_time")  or "").strip())[:10] or None
     emb_data_json = _parse_embroidery_data(body.get("embroidery_data"))
+    # For pre-production, override selling_price with the 70%-margin proposed price
+    if stage == "pre_production":
+        _lines_total = sum(ln["total"] for ln in lines)
+        try:
+            _raw_emb = json.loads(emb_data_json) if emb_data_json else {}
+            if isinstance(_raw_emb, dict) and _raw_emb.get("enabled"):
+                _lines_total += float(_raw_emb.get("cost_per_run", 0)) * float(_raw_emb.get("run_count", 0))
+        except Exception:
+            pass
+        _, sp = _preproduction_proposed_prices(_lines_total)
     with _get_conn() as conn:
         _ensure_costing_tables(conn)
         sheets = q(conn, "SELECT * FROM fabric_costing_sheets WHERE id=%s", (sheet_id,))
@@ -13907,14 +14021,18 @@ def costing_sheet_update(sheet_id: int, request: Request, body: dict = Body(...)
             cur.execute("""
                 UPDATE fabric_costing_sheets
                 SET selling_price=%s, selling_price_is_auto=%s, notes=%s,
-                    dps_ref=%s, color=%s, embroidery_data=%s,
+                    dps_ref=%s, color=%s, embroidery_data=%s, stage=%s,
+                    accessories_pct=%s, defect_allowance_pct=%s, mtrs_per_garment=%s,
+                    cost_per_minute=%s, cmt_start_time=%s, cmt_stop_time=%s,
                     updated_by=%s, updated_by_name=%s, updated_at=now()
                 WHERE id=%s
-            """, (sp, bool(body.get("selling_price_is_auto")),
+            """, (sp, bool(body.get("selling_price_is_auto")) and stage == "main_production",
                   (str(body.get("notes") or "").strip())[:1000] or None,
                   (str(body.get("dps_ref") or "").strip())[:100] or None,
                   (str(body.get("color") or "").strip())[:100] or None,
-                  emb_data_json,
+                  emb_data_json, stage,
+                  accessories_pct, defect_allowance_pct, mtrs_per_garment,
+                  cost_per_minute, cmt_start_time, cmt_stop_time,
                   uid, uname, sheet_id))
             cur.execute("DELETE FROM fabric_costing_lines WHERE sheet_id=%s", (sheet_id,))
             for ln in lines:
@@ -14346,24 +14464,36 @@ def _costing_to_build_data(s):
         revisions.append(f"{ts_str} — {summary}, {who}")
 
     # Basis note
+    stage = s.get("stage") or "main_production"
     basis_note = (s.get("notes") or "").strip()
     if not basis_note:
-        basis_note = (
-            f"Fabric valued at the current fabric-master cost per metre. "
-            f"Trims and accessories at the cost recorded on the DPS / MO. "
-            f"CMT is actual labour from the completed DPS divided by "
-            f"{order_qty} garments, so it moves with order quantity. "
-            f"Retail is the modal SKU price."
-        )
+        if stage == "pre_production":
+            basis_note = (
+                "Pre-production estimate. Fabric cost is metres per garment × master "
+                "cost/metre. Accessories are calculated as a percentage of fabric cost. "
+                "CMT is derived from start/stop time × cost-per-minute rate with a "
+                "×1.40 efficiency factor. Defect allowance is a percentage of fabric "
+                "cost. Retail price is a target to achieve 70% margin ex-VAT."
+            )
+        else:
+            basis_note = (
+                f"Fabric valued at the current fabric-master cost per metre. "
+                f"Trims and accessories at the cost recorded on the DPS / MO. "
+                f"CMT is actual labour from the completed DPS divided by "
+                f"{order_qty} garments, so it moves with order quantity. "
+                f"Retail is the modal SKU price."
+            )
 
     generated_at = (datetime.datetime.now(ZoneInfo("Africa/Nairobi"))
                     .strftime("%d %b %Y, %H:%M EAT"))
 
+    dps_label = (s.get("dps_ref") or
+                 ("Pre-production estimate" if stage == "pre_production" else "—"))
     return {
         "style_name":      s.get("style_name") or "—",
         "style_no":        s.get("style_number") or "—",
         "colour":          s.get("color") or "All colours",
-        "dps":             s.get("dps_ref") or "—",
+        "dps":             dps_label,
         "currency":        "KES",
         "vat_rate":        0.16,
         "retail_incl_vat": float(s.get("selling_price") or 0),
@@ -14372,6 +14502,7 @@ def _costing_to_build_data(s):
         "signoffs":        signoffs,
         "revisions":       revisions,
         "basis_note":      basis_note,
+        "stage":           stage,
         "generated_at":    generated_at,
     }
 
