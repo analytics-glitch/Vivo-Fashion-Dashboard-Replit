@@ -53,6 +53,7 @@ const TheChair         = React.lazy(() => import("@/pages/TheChair"));
 const PartnerBrandsReport = React.lazy(() => import("@/pages/PartnerBrandsReport"));
 const OrderExplorer = React.lazy(() => import("@/pages/OrderExplorer"));
 const Quality = React.lazy(() => import("@/pages/Quality"));
+const StoreFeedback = React.lazy(() => import("@/pages/StoreFeedback"));
 const Login = React.lazy(() => import("@/pages/Login"));
 const AuthCallback = React.lazy(() => import("@/pages/AuthCallback"));
 
@@ -181,6 +182,7 @@ function App() {
                 <Route path="/sops" element={<ProtectedShell pageId="sops"><SOPs /></ProtectedShell>} />
                 <Route path="/l10" element={<ProtectedShell pageId="l10"><L10 /></ProtectedShell>} />
                 <Route path="/rota" element={<ProtectedShell pageId="rota"><Rota /></ProtectedShell>} />
+                <Route path="/store-feedback" element={<ProtectedShell pageId="store-feedback"><StoreFeedback /></ProtectedShell>} />
                 <Route path="/ask" element={<ProtectedShell pageId="ask"><AskDashboard /></ProtectedShell>} />
                 <Route path="/growth" element={<ProtectedShell pageId="growth"><GrowthModel /></ProtectedShell>} />
                 <Route path="/store-profiling" element={<Navigate to="/retail?tab=store-scorecard" replace />} />

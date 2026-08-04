@@ -36,6 +36,7 @@ import {
   Storefront,
   Kanban,
   Medal,
+  ChatCenteredText,
 } from "@phosphor-icons/react";
 
 /**
@@ -153,6 +154,7 @@ export const PRIMARY_NAV = [
   { to: "/l10", label: "L10 Meeting", icon: CalendarBlank, id: "l10", group: "Tools", desc: "EOS Level 10 weekly meeting tracker — agenda, scorecard, rocks, headlines, to-dos, IDS and conclude" },
   { to: "/data-quality", label: "Data Quality", icon: Warning, id: "data-quality", group: "Tools", desc: "Data completeness and quality checks" },
   { to: "/feedback", label: "Feedback", icon: ChatCircleDots, id: "feedback", group: "Tools", desc: "Send feedback to the BI team" },
+  { to: "/store-feedback", label: "Store Feedback", icon: ChatCenteredText, id: "store-feedback", group: "Tools", desc: "Log what customers tell store teams — product requests, quality issues, sizing — and track HQ's response" },
 
   // Growth Model — leadership + admin (server-gated via /api/growth)
   { to: "/growth", label: "Growth Model", icon: RocketLaunch, id: "growth", group: "Performance", desc: "KES 5 Billion north-star trajectory — revenue bridge, compound growth path, store contribution splits and editable levers" },

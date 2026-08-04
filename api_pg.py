@@ -791,13 +791,13 @@ _VIEWER_PAGES = ["overview", "exec-summary", "locations", "footfall", "trend-ana
 # it lives in _LEADERSHIP_PAGES below (and therefore in ALL_PAGE_IDS, so admins
 # can also grant it to other groups via Group Access). The server-side
 # /api/finance gate independently restricts the API to leadership + admin.
-_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "quarter-scorecard", "product-analysis", "range-mgmt", "size-health", "inventory", "warehouse-returns", "excess-inventory", "rebalancing", "store-flow", "marketing", "social", "crm", "order-explorer", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "style-tracker", "pd-flow", "partner-brands", "finance", "margin", "l10", "rota", "growth", "retail-desk", "product-desk", "workforce-desk", "customer-desk", "marketing-desk", "supply-chain-desk", "production-desk", "the-chair", "quality", "store-profiling"])
+_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "quarter-scorecard", "product-analysis", "range-mgmt", "size-health", "inventory", "warehouse-returns", "excess-inventory", "rebalancing", "store-flow", "marketing", "social", "crm", "order-explorer", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "style-tracker", "pd-flow", "partner-brands", "finance", "margin", "l10", "rota", "growth", "retail-desk", "product-desk", "workforce-desk", "customer-desk", "marketing-desk", "supply-chain-desk", "production-desk", "the-chair", "quality", "store-profiling", "store-feedback"])
 
 DEFAULT_ROLE_PAGES = {
     "product_development": ["product-analysis", "range-mgmt", "catalogue", "gallery", "inventory", "size-health", "data-quality", "fabric", "exports", "production", "production-report", "style-tracker", "pd-flow", "partner-brands", "sops"],
-    "retail": ["store-flow", "overview", "exec-summary", "locations", "footfall", "store-profiling", "trend-analysis", "customers", "product-analysis", "gallery", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "exports", "partner-brands", "sops", "ask"],
+    "retail": ["store-flow", "overview", "exec-summary", "locations", "footfall", "store-profiling", "trend-analysis", "customers", "product-analysis", "gallery", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "exports", "partner-brands", "sops", "ask", "store-feedback"],
     "warehouse": ["store-flow", "inventory", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "re-order", "allocations", "data-quality", "exports", "sops"],
-    "store_manager": ["overview", "store-flow", "locations", "footfall", "store-profiling", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "sops"],
+    "store_manager": ["overview", "store-flow", "locations", "footfall", "store-profiling", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "sops", "store-feedback"],
     "leadership": _LEADERSHIP_PAGES,
     # SMT (Senior Management Team) — everything SLT (leadership) sees EXCEPT the
     # Finance Reports Suite. The /api/finance gate below also excludes "smt".
@@ -811,8 +811,8 @@ DEFAULT_ROLE_PAGES = {
     "fabric_quality_supervisor": ["fabric", "quality", "sops"],
     # Quality department — production quality trackers (repairs, complaints, washing).
     "quality": ["quality", "sops"],
-    "customer_service": ["customers", "customer-details", "crm", "order-explorer", "footfall", "sops"],
-    "marketing": ["marketing", "social", "crm", "order-explorer", "customers", "customer-details", "product-analysis", "footfall", "trend-analysis", "sops", "ask"],
+    "customer_service": ["customers", "customer-details", "crm", "order-explorer", "footfall", "sops", "store-feedback"],
+    "marketing": ["marketing", "social", "crm", "order-explorer", "customers", "customer-details", "product-analysis", "footfall", "trend-analysis", "sops", "ask", "store-feedback"],
     "hr": ["hr", "sops", "rota"],
     # Employee self-service (Google auto-approved sign-ups): NO BI pages at all.
     # Their only surface is the Salary Advance form inside the HR app
@@ -36175,6 +36175,13 @@ crm_clienteling.register_clienteling_routes(app)
 # Sources data from this project's live vivo_attendance Postgres table.
 import hr_attendance
 hr_attendance.register_hr_routes(app)
+
+# Store Feedback (Voice of Customer) endpoints (/api/store-feedback/*).
+# Submission is open to every authed BI user (employee fence still applies);
+# the review surface (list/status/notes/export) is role-gated inside the module
+# to admin + leadership + smt. Same placement rationale as the CRM module.
+import store_feedback
+store_feedback.register_store_feedback_routes(app)
 
 # Staff Rota endpoints (/api/rota/*). Same placement rationale as the HR module.
 # Gated in clerk_auth_gate to leadership + hr + admin.
