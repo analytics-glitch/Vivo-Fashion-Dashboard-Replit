@@ -22311,18 +22311,29 @@ def range_mgmt_weekly_sor(country: str = Query(default=None), channel: str = Que
 
 @app.get("/api/range-mgmt/marketing-candidates")
 def range_mgmt_marketing_candidates(country: str = Query(default=None), channel: str = Query(default=None)):
-    # Doc 03.8.1: a style is a marketing-push candidate if it is Tier 3/4 in the
-    # current Range Mgmt classification AND it re-activated recently — sold >= 1 unit
-    # in the last 14 days but was dormant for the 30 days before that. Reuses the
-    # classify pass (which carries units_14d / units_prior_30d per style).
+    # A style is a marketing-push candidate when it is UNDER-PERFORMING (user rule,
+    # Aug 2026, matching the page's stated criteria): at least MKT_AGE_MIN_WEEKS
+    # post-launch (launch = catalog style_launch_date, falling back to first sale)
+    # with lifetime sell-through still below MKT_SOR_MAX_PCT. Reuses the classify
+    # pass; its `rows` = ACTIVE styles only, so hard-retired (Odoo status) styles
+    # stay off this page. Styles with unknown age (no launch date AND never sold)
+    # can't establish the age gate and are excluded.
+    # (Previous rule — Tier 3/4 that re-activated after 30d dormancy — replaced.)
     # NOTE: action persistence was Mongo-backed (infrastructure not replicated), so
     # in_flight stays empty until an action store exists.
+    MKT_AGE_MIN_WEEKS = 4
+    MKT_SOR_MAX_PCT = 40.0
     cls = range_mgmt_classify(country, channel)
     cands = []
+    _today = date.today()
     for row in cls["rows"]:
-        if row["tier"] in ("Tier 3", "Tier 4") \
-                and (row.get("units_14d") or 0) >= 1 \
-                and (row.get("units_prior_30d") or 0) == 0:
+        # Exact-days age gate: classify's style_age_weeks is ROUNDED (26 days
+        # rounds up to 4w), so re-derive elapsed days from the row's launch_date
+        # (catalog launch, already falling back to first sale in classify).
+        launch = _parse_iso_date(row.get("launch_date"))
+        age_ok = launch is not None and (_today - launch).days >= MKT_AGE_MIN_WEEKS * 7
+        sor_life = row.get("sor_since_launch")
+        if age_ok and sor_life is not None and sor_life < MKT_SOR_MAX_PCT:
             cands.append({
                 "style_name": row["style_name"],
                 "style_number": row["style_number"],
@@ -22347,8 +22358,12 @@ def range_mgmt_marketing_candidates(country: str = Query(default=None), channel:
         "in_flight": [],
         "action_types": ["Discount", "Email Campaign", "Social Push",
                          "Window Display", "Bundle", "Influencer", "Other"],
-        "threshold_pct": 90,
-        "age_min_weeks": 13,
+        "sor_threshold_pct": MKT_SOR_MAX_PCT,
+        "age_min_weeks": MKT_AGE_MIN_WEEKS,
+        # Legacy alias: the pre-Aug-2026 dashboard/ CRA bundle interpolates
+        # `threshold_pct` into its header copy; keep it aliased so that stale
+        # build renders "SOR < 40%" rather than a blank.
+        "threshold_pct": MKT_SOR_MAX_PCT,
     }
 @app.get("/api/feedback")
 def stub_feedback_get(): return []

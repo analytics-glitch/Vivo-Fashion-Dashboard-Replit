@@ -58,7 +58,7 @@ export default function MarketingActionTracker({ countries = [], channels = [], 
   if (error) return <div className="card-white p-5 text-[12px] text-rose-700">Failed: {String(error)}</div>;
   if (!data) return null;
 
-  const { candidates = [], in_flight = [], action_types = [], threshold_pct, age_min_weeks } = data;
+  const { candidates = [], in_flight = [], action_types = [], sor_threshold_pct = 40, age_min_weeks = 4 } = data;
 
   return (
     <div className="space-y-4" data-testid="marketing-tracker">
@@ -66,7 +66,7 @@ export default function MarketingActionTracker({ countries = [], channels = [], 
       <div className="card-white p-5 border-l-4" style={{ borderLeftColor: "#f97316" }}>
         <h3 className="font-extrabold text-[15px]">Marketing Action Tracker</h3>
         <p className="text-[11.5px] text-muted mt-1">
-          Tier 3 / 4 styles that re-activated recently — sold in the last 14 days after 30+ days dormant. Log a marketing action to start tracking SOR progression.
+          Under-performing styles — at least {age_min_weeks} weeks post-launch with lifetime sell-through (SOR) still below {sor_threshold_pct}%. Log a marketing action to start tracking SOR progression.
         </p>
         <div className="mt-2 text-[11px] flex gap-4">
           <span className="px-2 py-0.5 rounded-full bg-rose-100 text-rose-800 font-bold">{candidates.length} need action</span>

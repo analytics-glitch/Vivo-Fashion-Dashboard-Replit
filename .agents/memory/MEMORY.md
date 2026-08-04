@@ -121,3 +121,4 @@
 - Store Profile: [All-Stores mode](store-profile-all-stores.md) sentinel + sp_* preds on every new query, footfall gate scales to row count; [rate KPIs](store-profile-rate-kpi-projection.md) never day-prorate rates — recompute from projected components, same-scope denominators.
 - [Named cursor dies on commit](named-cursor-commit-invalidation.md) — conn.commit() mid-stream closes a psycopg2 named cursor (truncated all_products_clean to 1k rows); use withhold=True for batch-commit ETLs.
 - [Sales fast-path worker](sales-fastpath-worker.md) — all_sales freshness = dedicated ~60s worker thread + _SALES_SYNC_LOCK; never re-couple sales pulls to the slow main cycle; lock-held subprocesses need timeouts.
+- [Two BI frontends](dual-frontend-dashboard-legacy.md) — artifacts/vivo-bi is the LIVE app (dev+prod); dashboard/ is a stale legacy CRA copy — UI work goes in vivo-bi, payload key renames need a legacy alias.
