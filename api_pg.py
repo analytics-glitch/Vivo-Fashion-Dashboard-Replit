@@ -12707,6 +12707,107 @@ def customers_churn_events(
     }
 
 
+@app.get("/api/customers/at-risk")
+def customers_at_risk(
+    request:    Request,
+    country:    str = Query(default=None),
+    channel:    str = Query(default=None),
+    churn_days: int = Query(default=90),
+    band_days:  int = Query(default=30),
+    limit:      int = Query(default=500),
+    reveal:     bool = Query(default=False),
+):
+    """At-risk customers: identified, non-pseudo customers whose LAST purchase
+    was between (churn_days - band_days) and (churn_days - 1) days ago — i.e.
+    still reachable before they cross the churn threshold. The band is defined
+    relative to the churn-days setting so the count reconciles with the
+    "Churned" logic: at churn_days=90 / band_days=30 it is 60–89 days of
+    silence. Snapshot as of TODAY (not the selected date window), matching the
+    /churned-customers list. Respects country/channel filters, BASE_FILTERS and
+    the pseudo-customer exclusions; phone/email masked unless reveal-authorized.
+    """
+    cd = max(2, int(churn_days))
+    band = min(max(1, int(band_days)), cd - 1)
+    lo = cd - band          # inclusive lower bound of days-since-last-purchase
+    hi = cd - 1             # inclusive upper bound (one day short of churn)
+    lim = min(max(1, int(limit)), 2000)
+    country_filter = ("AND s.country IN (" + csv_to_sql(country) + ")") if country else ""
+    channel_filter = ("AND s.pos_location_name IN (" + csv_to_sql(channel) + ")") if channel else ""
+    # Performance: a whole-table GROUP BY customer_id takes ~90 s cold. Instead,
+    # pre-filter candidates with two DATE-BOUNDED scans (sale_date is TEXT but
+    # ISO-formatted, so string comparison rides idx_all_sales_date): customers
+    # who bought inside the band window and NOT since. Lifetime stats are then
+    # computed only for that small candidate set via the (customer_id, ...)
+    # indexes. The final BETWEEN re-check keeps exactness regardless.
+    band_start   = (date.today() - timedelta(days=hi)).isoformat()
+    band_end_exc = (date.today() - timedelta(days=lo - 1)).isoformat()  # exclusive
+    rows = run_query(f"""
+        WITH band_buyers AS (
+            SELECT DISTINCT s.customer_id
+            FROM all_sales s
+            WHERE s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL
+              AND s.customer_id NOT IN ('None','null','')
+              AND s.sale_date >= '{band_start}' AND s.sale_date < '{band_end_exc}'
+              AND {BASE_FILTERS}
+              AND {_not_walkin_pseudo_sql()}
+              {country_filter}
+              {channel_filter}
+        ),
+        recent_buyers AS (
+            SELECT DISTINCT s.customer_id
+            FROM all_sales s
+            WHERE s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL
+              AND s.customer_id NOT IN ('None','null','')
+              AND s.sale_date >= '{band_end_exc}'
+              AND {BASE_FILTERS}
+              {country_filter}
+              {channel_filter}
+        ),
+        candidates AS (
+            SELECT b.customer_id FROM band_buyers b
+            LEFT JOIN recent_buyers r ON r.customer_id = b.customer_id
+            WHERE r.customer_id IS NULL
+        ),
+        last_purchase AS (
+            SELECT s.customer_id,
+                MAX(s.sale_date::date) AS last_purchase_date,
+                MIN(s.sale_date::date) AS first_purchase_date,
+                COUNT(DISTINCT s.order_id) AS total_orders,
+                ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)), 0) AS lifetime_spend
+            FROM all_sales s
+            JOIN candidates cd ON cd.customer_id = s.customer_id
+            WHERE s.sale_kind IN ('sale','order')
+              AND {BASE_FILTERS}
+              {country_filter}
+              {channel_filter}
+            GROUP BY s.customer_id
+        )
+        SELECT lp.customer_id,
+            NULLIF(TRIM(CONCAT(COALESCE(c.first_name,''), ' ', COALESCE(c.last_name,''))), '') AS customer_name,
+            COALESCE(c.phone,'') AS phone, c.email,
+            lp.last_purchase_date, lp.first_purchase_date,
+            lp.total_orders, lp.lifetime_spend,
+            CURRENT_DATE - lp.last_purchase_date AS days_since_last_purchase,
+            COUNT(*) OVER() AS at_risk_total
+        FROM last_purchase lp
+        LEFT JOIN all_customers c ON lp.customer_id = c.customer_id
+        WHERE CURRENT_DATE - lp.last_purchase_date BETWEEN {lo} AND {hi}
+        ORDER BY lp.lifetime_spend DESC
+        LIMIT {lim}
+    """, ttl=900)  # snapshot-of-today figure; long TTL rides out the page's query storm
+    total = int(rows[0]["at_risk_total"]) if rows else 0
+    for r in rows:
+        r.pop("at_risk_total", None)
+    return {
+        "at_risk_count": total,
+        "band_from_days": lo,
+        "band_to_days": hi,
+        "churn_days": cd,
+        "truncated": total > len(rows),
+        "customers": mask_pii_rows(rows, request),
+    }
+
+
 @app.get("/api/customers/walk-ins")
 def customers_walk_ins(
     date_from: str = Query(default=str(date.today().replace(day=1))),

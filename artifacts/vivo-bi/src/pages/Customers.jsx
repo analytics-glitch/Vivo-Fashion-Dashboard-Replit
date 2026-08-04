@@ -184,6 +184,14 @@ const Customers = () => {
   const [churnEvents, setChurnEvents] = useState(null);
   const [churnEventsLoading, setChurnEventsLoading] = useState(true);
 
+  // At-risk customers — last purchase (churnDays−30)…(churnDays−1) days ago,
+  // still reachable before they cross the churn threshold. Snapshot as of
+  // today; respects country/channel + pseudo exclusions (backend).
+  const [atRisk, setAtRisk] = useState(null);
+  const [atRiskLoading, setAtRiskLoading] = useState(true);
+  const [atRiskOpen, setAtRiskOpen] = useState(false);
+  const atRiskSectionRef = useRef(null);
+
   // Compute the previous-period range
   const prevRange = useMemo(() => {
     if (compareMode === "none") return null;
@@ -386,6 +394,36 @@ const Customers = () => {
       .catch(() => { if (!cancelled) setChurnEvents({ churned_count: 0, unchurned_count: 0, churn_days: churnDays }); })
       .finally(() => { if (!cancelled) setChurnEventsLoading(false); });
 
+    // At-risk customers — band derived from churnDays on the backend
+    // (churn_days − 30 … churn_days − 1 days of silence, as of today).
+    setAtRiskLoading(true);
+    // The Customers page fires a storm of heavy parallel queries on load, so
+    // the first at-risk call can hit a transient 503 (DB pool briefly
+    // saturated). Retry a couple of times with a short backoff before giving
+    // up — the backend caches the computed result for 15 min, so a retry
+    // after the storm subsides is cheap.
+    const fetchAtRisk = (attempt = 0) =>
+      api.get("/customers/at-risk", {
+        params: { country, channel, churn_days: churnDays, ...(revealToken ? { reveal: true } : {}) },
+        ...(revealToken ? { headers: { "X-PII-Reveal-Token": revealToken } } : {}),
+        timeout: 60000,
+      })
+        .then((r) => {
+          if (cancelled) return;
+          setAtRisk(r.data || null);
+          setAtRiskLoading(false);
+        })
+        .catch(() => {
+          if (cancelled) return;
+          if (attempt < 2) {
+            setTimeout(() => { if (!cancelled) fetchAtRisk(attempt + 1); }, 5000 * (attempt + 1));
+          } else {
+            setAtRisk({ _error: true, at_risk_count: 0, customers: [] });
+            setAtRiskLoading(false);
+          }
+        });
+    fetchAtRisk();
+
     // Walk-ins (anonymous transactions) — also slow on cold cache because
     // it fans /orders out per ≤30-day chunk. Fetch in parallel; tile shows
     // "computing…" until ready. Compare-period payload only fetched when
@@ -439,10 +477,20 @@ const Customers = () => {
         params: { ...dateP, limit: topN, reveal: true },
         headers,
       }).catch(() => ({ data: null })),
-    ]).then(([ch, tc]) => {
+      api.get("/customers/at-risk", {
+        params: {
+          country: countries.length === 1 ? countries[0] : undefined,
+          channel: channels.length ? channels.join(",") : undefined,
+          churn_days: churnDays, reveal: true,
+        },
+        headers,
+        timeout: 60000,
+      }).catch(() => ({ data: null })),
+    ]).then(([ch, tc, ar]) => {
       if (cancelled) return;
       if (ch?.data) setChurned(ch.data);
       if (tc?.data) setTop(tc.data);
+      if (ar?.data) setAtRisk(ar.data);
     });
     return () => { cancelled = true; };
     // eslint-disable-next-line
@@ -1102,6 +1150,39 @@ const Customers = () => {
                     icon={UserPlus}
                     higherIsBetter={true}
                     showDelta={false}
+                  />
+                  {/* ---- At-Risk Customers (win-back before they churn) ---- */}
+                  <KPICard
+                    testId="kpi-at-risk"
+                    label="At-Risk Customers"
+                    sub={
+                      atRiskLoading
+                        ? "computing…"
+                        : atRisk?._error
+                          ? "upstream unavailable"
+                          : `${atRisk?.band_from_days ?? Math.max(1, churnDays - 30)}–${atRisk?.band_to_days ?? churnDays - 1} days since last purchase`
+                    }
+                    formula={
+                      `At-Risk Customers = identified customers whose LAST purchase was between ` +
+                      `${atRisk?.band_from_days ?? Math.max(1, churnDays - 30)} and ${atRisk?.band_to_days ?? churnDays - 1} days ago (as of today) — ` +
+                      `inside the 30-day band just below the ${churnDays}-day churn threshold. ` +
+                      `They have NOT churned yet and are still reachable for a win-back offer. ` +
+                      `Respects country, channel and pseudo-customer exclusions; band moves with the churn-window setting.`
+                    }
+                    value={atRiskLoading ? "…" : fmtNum(atRisk?.at_risk_count ?? 0)}
+                    icon={Warning}
+                    higherIsBetter={false}
+                    showDelta={false}
+                    action={{
+                      label: "View list",
+                      testId: "kpi-at-risk-action",
+                      onClick: () => {
+                        setAtRiskOpen(true);
+                        setTimeout(() => {
+                          atRiskSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+                        }, 50);
+                      },
+                    }}
                   />
                 </>
               );
@@ -2355,6 +2436,91 @@ const Customers = () => {
               </div>
             );
           })()}
+
+          {/* ---- At-Risk Customers drill-down (opened from the KPI card) ---- */}
+          {atRiskOpen && (
+            <div ref={atRiskSectionRef} className="card-white p-5 border-l-4 border-amber-400" data-testid="at-risk-section">
+              <div className="flex items-start justify-between gap-3">
+                <SectionTitle
+                  title={`At-Risk Customers · ${fmtNum(atRisk?.at_risk_count ?? 0)}`}
+                  subtitle={`Last purchase ${atRisk?.band_from_days ?? Math.max(1, churnDays - 30)}–${atRisk?.band_to_days ?? churnDays - 1} days ago (as of today) — still short of the ${churnDays}-day churn threshold. Contact them now to win them back before they churn. Respects country/channel filters; the band moves with the churn-window setting above the Reactivation table.`}
+                />
+                <button
+                  type="button"
+                  onClick={() => setAtRiskOpen(false)}
+                  data-testid="at-risk-close"
+                  className="shrink-0 p-1.5 rounded-md hover:bg-panel text-muted"
+                  title="Close list"
+                >
+                  <X size={16} weight="bold" />
+                </button>
+              </div>
+              {atRiskLoading && <Loading label="scanning purchase history…" />}
+              {!atRiskLoading && atRisk?._error && (
+                <UpstreamNotReady label="At-risk list is temporarily unavailable — refresh in a moment." />
+              )}
+              {!atRiskLoading && !atRisk?._error && (atRisk?.customers?.length ?? 0) === 0 && (
+                <Empty label="No customers are currently in the at-risk band — nice." />
+              )}
+              {!atRiskLoading && !atRisk?._error && (atRisk?.customers?.length ?? 0) > 0 && (
+                <>
+                  {atRisk.truncated && (
+                    <div className="mb-2 text-[11px] text-amber-700">
+                      Showing the top {fmtNum(atRisk.customers.length)} by lifetime spend of {fmtNum(atRisk.at_risk_count)} at-risk customers.
+                    </div>
+                  )}
+                  <SortableTable
+                    testId="at-risk-table"
+                    exportName={`at-risk-customers_${atRisk?.band_from_days ?? ""}-${atRisk?.band_to_days ?? ""}d.csv`}
+                    pageSize={20}
+                    initialSort={{ key: "lifetime_spend", dir: "desc" }}
+                    columns={[
+                      { key: "customer_name", label: "Customer", align: "left",
+                        render: (r) => (
+                          <div>
+                            <div className="font-semibold">{r.customer_name || `Customer #${r.customer_id?.slice?.(-6) || "—"}`}</div>
+                            {r.email && <div className="text-[10.5px] text-muted">{r.email}</div>}
+                          </div>
+                        ),
+                        csv: (r) => r.customer_name || r.customer_id },
+                      { key: "phone", label: "Phone", align: "left",
+                        render: (r) => {
+                          const href = telHref(r.phone);
+                          const shown = maskPhone(r.phone);
+                          return href && !String(r.phone).includes("*")
+                            ? <a href={href} className="text-brand font-semibold hover:underline inline-flex items-center gap-1"><Phone size={12} /> {shown}</a>
+                            : <span>{shown}</span>;
+                        },
+                        csv: (r) => r.phone || "" },
+                      { key: "last_purchase_date", label: "Last Purchase", align: "left" },
+                      { key: "days_since_last_purchase", label: "Days Silent", numeric: true,
+                        render: (r) => (
+                          <span className={r.days_since_last_purchase >= churnDays - 10 ? "pill-red" : "pill-amber"}>
+                            {r.days_since_last_purchase}
+                          </span>
+                        ),
+                        csv: (r) => r.days_since_last_purchase },
+                      { key: "total_orders", label: "Lifetime Orders", numeric: true,
+                        render: (r) => fmtNum(r.total_orders) },
+                      { key: "lifetime_spend", label: "Lifetime Spend", numeric: true,
+                        render: (r) => <span className="font-bold">{fmtKES(r.lifetime_spend)}</span>,
+                        csv: (r) => r.lifetime_spend },
+                    ]}
+                    rows={atRisk.customers}
+                  />
+                  {!revealToken && (
+                    <div className="mt-2 text-[11px] text-muted">
+                      Phone numbers are masked.{" "}
+                      <button type="button" className="text-brand font-semibold hover:underline" onClick={() => setRevealModalOpen(true)}>
+                        Reveal contact details
+                      </button>{" "}
+                      to run a win-back campaign.
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          )}
 
           {/* ---- Recently Unchurned (customers returning after a long silence) ---- */}
           <div className="card-white p-5" data-testid="recently-unchurned-section">
