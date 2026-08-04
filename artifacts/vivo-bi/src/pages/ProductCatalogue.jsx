@@ -100,7 +100,7 @@ const Chip = ({ tone = "muted", children, testId }) => {
   };
   return (
     <span
-      className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10.5px] font-semibold ${tones[tone] || tones.muted}`}
+      className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-[12px] font-semibold ${tones[tone] || tones.muted}`}
       data-testid={testId}
     >
       {children}
@@ -195,14 +195,14 @@ const ProductDetailModal = ({ product, onClose }) => {
       onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
       data-testid="modal-product-detail"
     >
-      <div className="card-white w-full max-w-3xl mx-auto my-2 rounded-xl shadow-xl p-4 sm:p-5">
+      <div className="card-white w-full max-w-5xl mx-auto my-2 rounded-xl shadow-xl p-5 sm:p-7">
         {/* header */}
         <div className="flex items-start justify-between gap-3 mb-3">
           <div className="min-w-0">
-            <div className="font-bold text-[15px] leading-snug" data-testid="text-detail-style">
+            <div className="font-bold text-[20px] leading-snug" data-testid="text-detail-style">
               {card?.style_name || product.style_name}
             </div>
-            <div className="text-[12px] text-brand">
+            <div className="text-[14px] text-brand">
               {(card?.color || product.color) || ""}
             </div>
           </div>
@@ -213,11 +213,11 @@ const ProductDetailModal = ({ product, onClose }) => {
             title="Close"
             data-testid="button-close-detail"
           >
-            <X size={16} />
+            <X size={20} />
           </button>
         </div>
 
-        <div className="grid gap-5 md:grid-cols-[260px,1fr]">
+        <div className="grid gap-6 md:grid-cols-[340px,1fr]">
           {/* images */}
           <div className="space-y-2">
             <div className="w-full aspect-square overflow-hidden rounded-lg bg-panel grid place-items-center">
@@ -230,7 +230,7 @@ const ProductDetailModal = ({ product, onClose }) => {
                   data-testid="img-detail-main"
                 />
               ) : (
-                <Placeholder style={product.style_name} size={200} />
+                <Placeholder style={product.style_name} size={280} />
               )}
             </div>
             {images.length > 1 && (
@@ -241,7 +241,7 @@ const ProductDetailModal = ({ product, onClose }) => {
                     src={u}
                     alt=""
                     onClick={() => setImgIdx(i)}
-                    className={`h-12 w-12 rounded-md object-cover cursor-pointer border ${i === imgIdx ? "border-brand" : "border-border opacity-70 hover:opacity-100"}`}
+                    className={`h-14 w-14 rounded-md object-cover cursor-pointer border ${i === imgIdx ? "border-brand" : "border-border opacity-70 hover:opacity-100"}`}
                     data-testid={`img-detail-thumb-${i}`}
                   />
                 ))}
@@ -265,31 +265,31 @@ const ProductDetailModal = ({ product, onClose }) => {
                 </div>
 
                 <div className="flex items-baseline gap-3">
-                  <span className="text-[19px] font-bold" data-testid="text-detail-price">
+                  <span className="text-[24px] font-bold" data-testid="text-detail-price">
                     {fmtKES(card.price) || "No price"}
                   </span>
                   {card.launch_date ? (
-                    <span className="text-[12px] text-muted" data-testid="text-detail-launch">
+                    <span className="text-[13.5px] text-muted" data-testid="text-detail-launch">
                       Launched {fmtDate(card.launch_date)}
                       {card.launch_source === "first_sale" ? " (first sale)" : ""}
                     </span>
                   ) : (
-                    <span className="text-[12px] text-muted">Not launched yet — no sales recorded</span>
+                    <span className="text-[13.5px] text-muted">Not launched yet — no sales recorded</span>
                   )}
                 </div>
 
                 <dl className="grid grid-cols-2 gap-x-4 gap-y-1.5" data-testid="list-detail-attrs">
                   {attrs.map(([k, v]) => (
                     <div key={k} className="min-w-0">
-                      <dt className="text-[10.5px] uppercase tracking-wide text-muted/80">{k}</dt>
-                      <dd className="text-[12.5px] font-medium truncate" title={String(v)}>{v}</dd>
+                      <dt className="text-[12px] uppercase tracking-wide text-muted/80">{k}</dt>
+                      <dd className="text-[14.5px] font-medium truncate" title={String(v)}>{v}</dd>
                     </div>
                   ))}
                 </dl>
 
                 {fabricRows.length > 0 && (
                   <div className="rounded-lg border border-border bg-panel/50 p-3">
-                    <div className="text-[11px] font-semibold uppercase tracking-wide text-muted mb-1.5">Fabric</div>
+                    <div className="text-[12.5px] font-semibold uppercase tracking-wide text-muted mb-1.5">Fabric</div>
                     <dl className="grid grid-cols-2 gap-x-4 gap-y-1.5" data-testid="list-detail-fabric">
                       {fabricRows.map(([k, v]) => (
                         <div key={k} className="min-w-0">
@@ -309,9 +309,9 @@ const ProductDetailModal = ({ product, onClose }) => {
         {card && Array.isArray(card.sizes) && card.sizes.length > 0 && (
           <div className="mt-4">
             <div className="flex items-center justify-between mb-1.5">
-              <div className="text-[11px] font-semibold uppercase tracking-wide text-muted">Sizes &amp; stock</div>
+              <div className="text-[12.5px] font-semibold uppercase tracking-wide text-muted">Sizes &amp; stock</div>
               {totals && (
-                <div className="flex items-center gap-1.5 text-[11px] text-muted">
+                <div className="flex items-center gap-1.5 text-[12.5px] text-muted">
                   <span data-testid="text-detail-soh">
                     {totals.soh_total?.toLocaleString?.() ?? totals.soh_total} on hand
                   </span>
@@ -322,9 +322,9 @@ const ProductDetailModal = ({ product, onClose }) => {
               )}
             </div>
             <div className="overflow-x-auto rounded-lg border border-border">
-              <table className="w-full text-[12px]" data-testid="table-detail-sizes">
+              <table className="w-full text-[13.5px]" data-testid="table-detail-sizes">
                 <thead>
-                  <tr className="bg-panel/70 text-left [&>th]:p-2 [&>th]:font-semibold [&>th]:text-muted">
+                  <tr className="bg-panel/70 text-left [&>th]:p-2.5 [&>th]:font-semibold [&>th]:text-muted">
                     <th>Size</th>
                     <th>SKU</th>
                     <th>Barcode</th>
@@ -338,7 +338,7 @@ const ProductDetailModal = ({ product, onClose }) => {
                     <tr key={z.sku} className="border-t border-border" data-testid={`row-size-${z.sku}`}>
                       <td className="p-2 font-semibold">{z.size || "—"}</td>
                       <td className="p-2 text-muted">{z.sku}</td>
-                      <td className="p-2 font-mono text-[11px] text-muted">{z.barcode || "—"}</td>
+                      <td className="p-2 font-mono text-[12.5px] text-muted">{z.barcode || "—"}</td>
                       <td className="p-2 text-right">{fmtKES(z.price) || "—"}</td>
                       <td className="p-2 text-right tabular-nums">{z.soh_stores}</td>
                       <td className="p-2 text-right tabular-nums">{z.soh_warehouse}</td>
@@ -348,7 +348,7 @@ const ProductDetailModal = ({ product, onClose }) => {
               </table>
             </div>
             {(card.first_sale || card.last_sale) && (
-              <div className="mt-2 text-[11px] text-muted" data-testid="text-detail-sales-meta">
+              <div className="mt-2 text-[12.5px] text-muted" data-testid="text-detail-sales-meta">
                 {card.first_sale ? <>First sold {fmtDate(card.first_sale)}</> : null}
                 {card.first_sale && card.last_sale ? " · " : null}
                 {card.last_sale ? (

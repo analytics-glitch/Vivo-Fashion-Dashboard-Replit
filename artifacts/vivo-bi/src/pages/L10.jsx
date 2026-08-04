@@ -411,7 +411,7 @@ const CheckInTab = ({ meetingId, members, folderId = 1 }) => {
 };
 
 // ─── Scorecard Tab ───────────────────────────────────────────────────────────
-const ScorecardTab = ({ meetingId, folderId = 1, onRedMetrics }) => {
+const ScorecardTab = ({ meetingId, folderId = 1, onRedMetrics, isAdmin = false }) => {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -505,7 +505,7 @@ const ScorecardTab = ({ meetingId, folderId = 1, onRedMetrics }) => {
       <div className="rounded-xl border bg-card overflow-hidden">
         <div className="px-4 py-3 border-b bg-muted/20 flex items-center justify-between">
           <h2 className="text-sm font-semibold">Weekly Scorecard</h2>
-          <span className="text-xs text-muted-foreground">Current week and unsaved prior weeks editable — saved prior weeks read-only</span>
+          <span className="text-xs text-muted-foreground">{isAdmin ? "Admin — every week is editable" : "Current week and unsaved prior weeks editable — saved prior weeks read-only"}</span>
         </div>
         <div className="overflow-x-auto">
           <table className="text-sm min-w-full">
@@ -538,8 +538,9 @@ const ScorecardTab = ({ meetingId, folderId = 1, onRedMetrics }) => {
                   {meetings.map((m) => {
                     const cell = metric.values?.[m.id] || { value: null };
                     const isCurrent = m.id === meetingId;
-                    // Editable when: current week, OR past week with no saved values yet
-                    const isEditable = isCurrent || !savedMeetingIds.has(m.id);
+                    // Editable when: current week, past week with no saved values
+                    // yet, or the viewer is an admin (admins can correct any week)
+                    const isEditable = isAdmin || isCurrent || !savedMeetingIds.has(m.id);
                     const tl = scorecardTrafficLight(cell.value, metric.goal, metric.goal_direction);
                     return (
                       <td key={m.id} className={`py-1.5 px-2 text-center ${isCurrent ? "bg-emerald-50/20" : ""}`}>
@@ -647,7 +648,7 @@ const ScorecardCell = ({ value, trafficLight: _trafficLightProp, goal, goalDirec
 };
 
 // ─── Rocks Tab ───────────────────────────────────────────────────────────────
-const RocksTab = ({ members, folderId = 1 }) => {
+const RocksTab = ({ members, folderId = 1, isAdmin = false }) => {
   const [rocks, setRocks] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -657,7 +658,7 @@ const RocksTab = ({ members, folderId = 1 }) => {
       .then((r) => setRocks(r.data || []))
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, []);
+  }, [folderId]);
 
   useEffect(() => { reload(); }, [reload]);
 
@@ -675,6 +676,8 @@ const RocksTab = ({ members, folderId = 1 }) => {
   const doneCount = rocks.filter((r) => r.done).length;
   const pct = rocks.length ? Math.round((doneCount / rocks.length) * 100) : 0;
 
+  const memberNames = (members || []).filter((m) => m.active !== false).map((m) => m.name);
+
   const RockRow = ({ rock }) => (
     <div className="flex items-start gap-3 py-2.5 border-b last:border-0">
       <div className="flex-1 min-w-0">
@@ -682,12 +685,46 @@ const RocksTab = ({ members, folderId = 1 }) => {
           <span className={`text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded ${
             rock.rock_type === "Company" ? "bg-brand/10 text-brand" : "bg-violet-50 text-violet-700"
           }`}>{rock.rock_type}</span>
-          <span className="text-xs text-muted-foreground">{rock.owner || "—"}</span>
+          {isAdmin ? (
+            <select
+              value={rock.owner || ""}
+              onChange={(e) => update(rock.id, { owner: e.target.value || null })}
+              className="border border-border rounded px-1 py-0.5 text-xs bg-white text-muted-foreground"
+              data-testid={`select-rock-owner-${rock.id}`}
+            >
+              <option value="">Owner…</option>
+              {(rock.owner && !memberNames.includes(rock.owner) ? [rock.owner, ...memberNames] : memberNames).map((n) => (
+                <option key={n} value={n}>{n}</option>
+              ))}
+            </select>
+          ) : (
+            <span className="text-xs text-muted-foreground">{rock.owner || "—"}</span>
+          )}
         </div>
-        <div className="mt-0.5 font-medium text-sm">{rock.description}</div>
-        {rock.results && (
+        <div className="mt-0.5 font-medium text-sm">
+          {isAdmin ? (
+            <InlineEdit
+              value={rock.description}
+              onSave={(v) => { if (v && v.trim()) update(rock.id, { description: v.trim() }); }}
+              className="w-full"
+              multiline
+            />
+          ) : (
+            rock.description
+          )}
+        </div>
+        {isAdmin ? (
+          <div className="mt-0.5 text-xs text-muted-foreground">
+            <InlineEdit
+              value={rock.results || ""}
+              onSave={(v) => update(rock.id, { results: v })}
+              placeholder="Add results / notes…"
+              className="w-full"
+            />
+          </div>
+        ) : rock.results ? (
           <div className="mt-0.5 text-xs text-muted-foreground">{rock.results}</div>
-        )}
+        ) : null}
         {rock.link && (
           <a href={rock.link} target="_blank" rel="noopener noreferrer"
             className="mt-0.5 inline-flex items-center gap-1 text-xs text-primary hover:underline">
@@ -718,6 +755,17 @@ const RocksTab = ({ members, folderId = 1 }) => {
             }`}
           >
             {rock.on_track ? "On Track" : "Off Track"}
+          </button>
+        )}
+        {isAdmin && (
+          <button
+            type="button"
+            onClick={() => update(rock.id, { active: false })}
+            title="Archive rock"
+            className="p-1 rounded hover:bg-red-50 text-muted-foreground hover:text-red-500"
+            data-testid={`button-archive-rock-${rock.id}`}
+          >
+            <Trash size={13} />
           </button>
         )}
       </div>
@@ -920,7 +968,7 @@ const TodosTab = ({ meetingId, members, folderId = 1 }) => {
       .then((r) => setTodos(r.data || []))
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, []);
+  }, [folderId]);
 
   useEffect(() => { reload(); }, [reload]);
 
@@ -1242,7 +1290,7 @@ const ConcludeTab = ({ meetingId, members, folderId = 1 }) => {
       setRatings(curRatings);
       setRatingsData(h.data || { meetings: [], ratings_by_key: [] });
     }).catch(() => {}).finally(() => setLoading(false));
-  }, [meetingId]);
+  }, [meetingId, folderId]);
 
   useEffect(() => { reload(); }, [reload]);
 
@@ -1389,7 +1437,7 @@ const AdminTab = ({ members, onMembersChanged, settings, onSettingsChanged, fold
       .then((r) => setMetrics(r.data || []))
       .catch(() => {})
       .finally(() => setLoadingMetrics(false));
-  }, []);
+  }, [folderId]);
 
   const reloadRocks = useCallback(() => {
     setLoadingRocks(true);
@@ -1397,7 +1445,7 @@ const AdminTab = ({ members, onMembersChanged, settings, onSettingsChanged, fold
       .then((r) => setRocks(r.data || []))
       .catch(() => {})
       .finally(() => setLoadingRocks(false));
-  }, []);
+  }, [folderId]);
 
   useEffect(() => { reloadMetrics(); reloadRocks(); }, [reloadMetrics, reloadRocks]);
 
@@ -1784,6 +1832,7 @@ const MeetingHistoryTable = ({ meetings, meetingId, onSelect }) => {
 
 const L10 = () => {
   const { user } = useAuth();
+  const isAdmin = String(user?.role || "").toLowerCase() === "admin";
   const [tab, setTab] = useState("agenda");
   const [folders, setFolders] = useState([]);
   const [folderId, setFolderId] = useState(() => {
@@ -1799,6 +1848,10 @@ const L10 = () => {
   const [error, setError] = useState(null);
   const [creating, setCreating] = useState(false);
   const [redMetrics, setRedMetrics] = useState([]);
+  const [editingDate, setEditingDate] = useState(false);
+  const [dateDraft, setDateDraft] = useState("");
+  const [dateSaving, setDateSaving] = useState(false);
+  const [dateError, setDateError] = useState(null);
 
   const currentMeeting = meetings.find((m) => m.id === meetingId);
 
@@ -1876,6 +1929,23 @@ const L10 = () => {
       setError(e?.response?.data?.detail || e.message);
     } finally {
       setCreating(false);
+    }
+  };
+
+  const saveMeetingDate = async () => {
+    if (!meetingId || !dateDraft) return;
+    setDateSaving(true);
+    setDateError(null);
+    try {
+      await api.put(`/l10/meetings/${meetingId}`, { meeting_date: dateDraft });
+      // Refresh the meetings list but keep the same meeting selected
+      const r = await api.get("/l10/meetings", { params: { folder_id: folderId }, forceFresh: true });
+      setMeetings(r.data || []);
+      setEditingDate(false);
+    } catch (e) {
+      setDateError(e?.response?.data?.detail || e.message);
+    } finally {
+      setDateSaving(false);
     }
   };
 
@@ -1971,9 +2041,48 @@ const L10 = () => {
       {meetings.length > 0 && currentMeeting && (
         <>
           {/* Meeting info bar */}
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <div className="flex items-center gap-2 text-sm text-muted-foreground flex-wrap">
             <CalendarBlank size={14} />
-            <span>{fmtDate(currentMeeting.meeting_date)}</span>
+            {editingDate ? (
+              <span className="inline-flex items-center gap-1.5">
+                <input
+                  type="date"
+                  value={dateDraft}
+                  onChange={(e) => setDateDraft(e.target.value)}
+                  className="border border-border rounded px-1.5 py-0.5 text-xs bg-white"
+                  data-testid="input-meeting-date"
+                />
+                <button
+                  type="button"
+                  onClick={saveMeetingDate}
+                  disabled={dateSaving || !dateDraft}
+                  className="inline-flex items-center gap-1 rounded bg-primary text-primary-foreground text-xs px-2 py-1 hover:opacity-90 disabled:opacity-50"
+                  data-testid="button-save-meeting-date"
+                >
+                  <Check size={11} /> {dateSaving ? "Saving…" : "Save"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setEditingDate(false); setDateError(null); }}
+                  className="inline-flex items-center gap-1 rounded border border-border text-xs px-2 py-1 hover:bg-muted"
+                  data-testid="button-cancel-meeting-date"
+                >
+                  <X size={11} /> Cancel
+                </button>
+                {dateError && <span className="text-xs text-red-600" data-testid="text-meeting-date-error">{dateError}</span>}
+              </span>
+            ) : (
+              <button
+                type="button"
+                onClick={() => { setDateDraft((currentMeeting.meeting_date || "").slice(0, 10)); setEditingDate(true); setDateError(null); }}
+                className="inline-flex items-center gap-1 hover:text-foreground"
+                title="Edit meeting date"
+                data-testid="button-edit-meeting-date"
+              >
+                <span>{fmtDate(currentMeeting.meeting_date)}</span>
+                <PencilSimple size={12} />
+              </button>
+            )}
             <span>·</span>
             <span>Starts {fmtTime(currentMeeting.start_time)}</span>
             {folders.length > 0 && (
@@ -2012,8 +2121,8 @@ const L10 = () => {
           <div className="mt-0">
             {tab === "agenda" && <AgendaTab meeting={currentMeeting} settings={settings} />}
             {tab === "checkin" && <CheckInTab meetingId={meetingId} members={members} folderId={folderId} />}
-            {tab === "scorecard" && <ScorecardTab meetingId={meetingId} folderId={folderId} onRedMetrics={setRedMetrics} />}
-            {tab === "rocks" && <RocksTab members={members} folderId={folderId} />}
+            {tab === "scorecard" && <ScorecardTab meetingId={meetingId} folderId={folderId} onRedMetrics={setRedMetrics} isAdmin={isAdmin} />}
+            {tab === "rocks" && <RocksTab members={members} folderId={folderId} isAdmin={isAdmin} />}
             {tab === "headlines" && <HeadlinesTab meetingId={meetingId} members={members} folderId={folderId} />}
             {tab === "todos" && <TodosTab meetingId={meetingId} members={members} folderId={folderId} />}
             {tab === "ids" && <IDSTab meetingId={meetingId} members={members} folderId={folderId} redMetrics={redMetrics} />}

@@ -6218,6 +6218,9 @@ def _gallery_attach_launch_dates(items):
             "JOIN all_sales s ON s.variant_sku = p.sku "
             "               AND s.sale_kind IN ('sale','order') "
             "WHERE (LOWER(p.style_name), LOWER(COALESCE(p.color_print,''))) IN %s "
+            # Own-brand rows only — keeps launch dates in lockstep with the
+            # catalogue's brand filter should a mixed-brand style+colour appear.
+            "  AND COALESCE(p.brand,'') NOT ILIKE '%%third party%%' "
             "GROUP BY 1, 2",
             (tuple(pairs),),
         )
@@ -6262,7 +6265,12 @@ def get_gallery_search(
     # category values can legitimately contain apostrophes (e.g. Men's), so
     # those are ''-escaped instead of stripped.
     term = (q or "").strip().lower().replace("'", "")
-    where = "p.style_name IS NOT NULL AND p.style_name <> ''"
+    # Own brands only (Vivo / Zoya / Safari / Safari by Vivo): third-party
+    # products are excluded from the catalogue entirely. Same per-SKU-row
+    # predicate PA/RM use (applied before DISTINCT ON, so mixed-brand styles
+    # keep their own-brand rows).
+    where = ("p.style_name IS NOT NULL AND p.style_name <> ''"
+             " AND COALESCE(p.brand,'') NOT ILIKE '%third party%'")
     if term:
         like = "%" + term + "%"
         where += (" AND (LOWER(p.style_name) LIKE '" + like + "'"
@@ -6315,7 +6323,7 @@ def get_gallery_facets():
     master data groups under 'Uncategorised', the same bucket name the search
     endpoint's filters understand. Cached: master data only changes on the
     product sync cadence."""
-    ck = "gallery_facets_v1"
+    ck = "gallery_facets_v2"  # v2: own brands only (third-party excluded)
     hit = cache_get(ck)
     if hit is not None:
         return hit
@@ -6325,6 +6333,7 @@ def get_gallery_facets():
                COUNT(DISTINCT p.style_name) AS styles
         FROM all_products_clean p
         WHERE p.style_name IS NOT NULL AND p.style_name <> ''
+          AND COALESCE(p.brand,'') NOT ILIKE '%third party%'
         GROUP BY 1, 2
         ORDER BY 1, 2
     """)
@@ -6409,8 +6418,16 @@ def get_gallery_style_card(sku: str = Query(default="")):
         )
         cols = [c[0] for c in cur.description]
         prows = [dict(zip(cols, r)) for r in cur.fetchall()]
+        # Own brands only — mirror the grid/facets filter so a third-party
+        # product can't be opened via a direct SKU either. Per-SKU-row, so a
+        # mixed-brand style keeps its own-brand sizes.
+        prows = [p for p in prows if "third party" not in (p.get("brand") or "").lower()]
         if not prows:
             raise HTTPException(status_code=404, detail="product not found")
+        # Stock + sales metadata must use the FILTERED SKU set, or a mixed-brand
+        # style+colour would leak third-party sales history into launch/first/
+        # last-sale fields on an own-brand popup.
+        own_skus = [p["sku"] for p in prows]
         cur.execute(
             "SELECT sku, "
             "COALESCE(SUM(available) FILTER (WHERE pos_location_name NOT IN ("
@@ -6421,13 +6438,13 @@ def get_gallery_style_card(sku: str = Query(default="")):
             + WAREHOUSE_LOCATIONS + ") AND pos_location_name <> "
             + WH_DISPATCH_LOCATION + "),0) AS soh_pipeline "
             "FROM all_inventory WHERE sku = ANY(%s) GROUP BY sku",
-            (siblings,),
+            (own_skus,),
         )
         stock = {r[0]: (int(r[1] or 0), int(r[2] or 0), int(r[3] or 0)) for r in cur.fetchall()}
         cur.execute(
             "SELECT MIN(sale_date::date)::text, MAX(sale_date::date)::text "
             "FROM all_sales WHERE variant_sku = ANY(%s) AND sale_kind IN ('sale','order')",
-            (siblings,),
+            (own_skus,),
         )
         srow = cur.fetchone() or (None, None)
         first_sale, last_sale = srow[0], srow[1]
@@ -12445,6 +12462,91 @@ def inventory_freshness():
         if r.get("hours_since_update") is not None:
             r["hours_since_update"] = float(r["hours_since_update"])
     return rows
+
+@app.get("/api/analytics/finishing-to-warehouse")
+def analytics_finishing_to_warehouse(
+    date_from: str = Query(default=None),
+    date_to:   str = Query(default=None),
+    day:       str = Query(default=None),
+):
+    """Daily report of stock moved from Finished Goods Production (FGPRD/Stock)
+    into Warehouse Finished Goods (WHFIN/Stock), keyed on the transfer
+    completion date (date_done, shown as the EAT calendar day).
+
+    Without `day`: one row per day in [date_from, date_to] plus totals.
+    With `day`: per-style detail for that single day."""
+    try:
+        d_to = date.fromisoformat(date_to) if date_to else date.today()
+        d_from = date.fromisoformat(date_from) if date_from else (d_to - timedelta(days=29))
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date — use YYYY-MM-DD")
+    if day:
+        try:
+            d_day = date.fromisoformat(day)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid day — use YYYY-MM-DD")
+        rows = run_query("""
+            SELECT COALESCE(NULLIF(TRIM(p.style_name), ''), t.product_name, t.sku, 'Unknown') AS style_name,
+                   MAX(p.category) AS category,
+                   COUNT(DISTINCT t.sku) AS skus,
+                   SUM(t.qty_done) AS units
+            FROM stock_transfers t
+            LEFT JOIN LATERAL (
+                SELECT style_name, category
+                FROM all_products_clean
+                WHERE sku = t.sku
+                ORDER BY (active IS TRUE) DESC, barcode
+                LIMIT 1
+            ) p ON TRUE
+            WHERE t.transfer_type = 'finishing_to_warehouse'
+              AND t.state = 'done'
+              AND (t.date_done + interval '3 hours')::date = '""" + d_day.isoformat() + """'
+            GROUP BY 1
+            ORDER BY units DESC, style_name
+        """, date_to=str(d_to))
+        return {
+            "day": d_day.isoformat(),
+            "rows": [{"style_name": r["style_name"], "category": r.get("category"),
+                      "skus": int(r["skus"] or 0), "units": float(r["units"] or 0)}
+                     for r in rows],
+            "total_units": float(sum(float(r["units"] or 0) for r in rows)),
+        }
+    days = run_query("""
+        SELECT (t.date_done + interval '3 hours')::date::text AS day,
+               SUM(t.qty_done) AS units,
+               COUNT(DISTINCT t.sku) AS skus,
+               COUNT(DISTINCT COALESCE(NULLIF(TRIM(p.style_name), ''), t.product_name, t.sku)) AS styles,
+               COUNT(DISTINCT t.picking_id) AS transfers
+        FROM stock_transfers t
+        LEFT JOIN LATERAL (
+            SELECT style_name
+            FROM all_products_clean
+            WHERE sku = t.sku
+            ORDER BY (active IS TRUE) DESC, barcode
+            LIMIT 1
+        ) p ON TRUE
+        WHERE t.transfer_type = 'finishing_to_warehouse'
+          AND t.state = 'done'
+          AND (t.date_done + interval '3 hours')::date
+              BETWEEN '""" + d_from.isoformat() + """' AND '""" + d_to.isoformat() + """'
+        GROUP BY 1
+        ORDER BY 1 DESC
+    """, date_to=str(d_to))
+    hist = run_query("""
+        SELECT MIN((date_done + interval '3 hours')::date)::text AS first_day
+        FROM stock_transfers
+        WHERE transfer_type = 'finishing_to_warehouse' AND state = 'done'
+    """, date_to=str(d_to))
+    out_days = [{"day": r["day"], "units": float(r["units"] or 0),
+                 "skus": int(r["skus"] or 0), "styles": int(r["styles"] or 0),
+                 "transfers": int(r["transfers"] or 0)} for r in days]
+    return {
+        "from": d_from.isoformat(), "to": d_to.isoformat(),
+        "days": out_days,
+        "total_units": float(sum(d["units"] for d in out_days)),
+        "history_from": (hist[0]["first_day"] if hist else None),
+    }
+
 
 @app.get("/api/analytics/store-flow")
 def analytics_store_flow(
@@ -35168,7 +35270,7 @@ def _st_is_privileged(request):
 # TEMPORARILY DISABLED 2026-08-04 (user request): the ≥90% warehouse-transfer
 # gate is off so old styles that already shipped warehouse→stores can be moved
 # to Warehouse status during cleanup. RESTORE by setting this back to True.
-_ST_WAREHOUSE_GATE_ENABLED = False
+_ST_WAREHOUSE_GATE_ENABLED = True
 
 
 def _style_warehouse_pct(style_name, quantity):
@@ -37110,6 +37212,54 @@ def l10_get_meeting(meeting_id: int, request: Request):
     return mtg[0]
 
 
+@app.put("/api/l10/meetings/{meeting_id}")
+async def l10_update_meeting(meeting_id: int, request: Request):
+    """Edit a meeting's date (and optionally start time). The week label is
+    recomputed from the new date so the meeting keeps its ISO-week identity."""
+    _ensure_l10_tables()
+    body = await request.json()
+    rows = _users_exec(
+        "SELECT id, folder_id, week_label, meeting_date::text, start_time "
+        "FROM l10_meetings WHERE id=%s", (meeting_id,), fetch=True)
+    if not rows:
+        raise HTTPException(status_code=404, detail="Meeting not found")
+    mtg = rows[0]
+    new_date = None
+    if body.get("meeting_date"):
+        try:
+            new_date = date.fromisoformat(str(body["meeting_date"])[:10])
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid meeting_date — use YYYY-MM-DD")
+    new_start = (body.get("start_time") or "").strip() or None
+    if new_date is None and new_start is None:
+        return mtg
+    if new_date is not None:
+        # One meeting per ISO week per folder: reject if another meeting's date
+        # falls in the same Monday-to-Sunday window (labels alone can't be
+        # trusted — legacy rows carry date-style labels).
+        monday = new_date - timedelta(days=new_date.weekday())
+        dup = _users_exec(
+            "SELECT id, week_label FROM l10_meetings "
+            "WHERE folder_id=%s AND id != %s AND meeting_date >= %s AND meeting_date < %s",
+            (mtg["folder_id"], meeting_id, monday.isoformat(),
+             (monday + timedelta(days=7)).isoformat()), fetch=True)
+        if dup:
+            raise HTTPException(
+                status_code=409,
+                detail="Another meeting already exists in that week — pick a different week or edit that meeting instead")
+        new_label = _l10_iso_week(new_date)
+        _users_exec(
+            "UPDATE l10_meetings SET meeting_date=%s, week_label=%s WHERE id=%s",
+            (new_date.isoformat(), new_label, meeting_id))
+    if new_start is not None:
+        _users_exec("UPDATE l10_meetings SET start_time=%s WHERE id=%s",
+                    (new_start, meeting_id))
+    out = _users_exec(
+        "SELECT id, week_label, meeting_date::text, start_time, folder_id "
+        "FROM l10_meetings WHERE id=%s", (meeting_id,), fetch=True)
+    return out[0]
+
+
 # ── Members ───────────────────────────────────────────────────────────────────
 
 @app.get("/api/l10/members")
@@ -37318,6 +37468,70 @@ def l10_get_scorecard(request: Request, meetings: int = Query(8),
     return {"meetings": mtgs, "metrics": metrics}
 
 
+def _l10_sync_metric_ids_entry(meeting_id, metric_id, value, metric_row=None):
+    """Create/refresh/remove the auto IDS entry for one scorecard cell.
+    Red (misses goal) -> upsert an open entry; green or empty -> delete any
+    open auto entry. Never touches discussed/resolved entries."""
+    if metric_row is None:
+        rows = _users_exec(
+            "SELECT measurable, who, goal, goal_direction FROM l10_scorecard_metrics WHERE id=%s",
+            (metric_id,), fetch=True)
+        if not rows:
+            return
+        metric_row = rows[0]
+    meets = _eval_scorecard_goal(value, metric_row.get("goal"), metric_row.get("goal_direction"))
+    if meets is None or meets:
+        # Empty value or green — clean up any open auto-entry
+        _users_exec(
+            "DELETE FROM l10_ids_issues "
+            "WHERE meeting_id=%s AND scorecard_metric_id=%s AND status='open'",
+            (meeting_id, metric_id))
+        return
+    # Red — upsert an IDS entry; never overwrite a discussed/resolved one
+    goal_str = str(metric_row.get("goal") or "")
+    issue_text = f"{metric_row.get('measurable') or 'KPI'} — actual: {value}, goal: {goal_str}"
+    raised_by = metric_row.get("who") or ""
+    updated = _users_exec(
+        "UPDATE l10_ids_issues SET issue=%s, raised_by=%s, updated_at=now() "
+        "WHERE meeting_id=%s AND scorecard_metric_id=%s AND status='open' "
+        "RETURNING id",
+        (issue_text, raised_by, meeting_id, metric_id), fetch=True)
+    if updated:
+        return
+    existing = _users_exec(
+        "SELECT id FROM l10_ids_issues WHERE meeting_id=%s AND scorecard_metric_id=%s",
+        (meeting_id, metric_id), fetch=True)
+    if existing:
+        return
+    max_ord = _users_exec(
+        "SELECT COALESCE(MAX(sort_order),0) AS m FROM l10_ids_issues WHERE meeting_id=%s",
+        (meeting_id,), fetch=True)
+    nxt = int((max_ord or [{"m": 0}])[0]["m"]) + 1
+    _users_exec(
+        "INSERT INTO l10_ids_issues "
+        "(meeting_id, issue, raised_by, sort_order, status, scorecard_metric_id) "
+        "VALUES (%s, %s, %s, %s, 'open', %s)",
+        (meeting_id, issue_text, raised_by, nxt, metric_id))
+
+
+def _l10_reconcile_scorecard_ids(meeting_id):
+    """Ensure every scorecard metric that misses its goal for this meeting has
+    an IDS entry (and stale open auto-entries are cleaned up), regardless of
+    when the values were saved. Makes the IDS list self-healing for weeks whose
+    values were entered before auto-listing existed."""
+    try:
+        rows = _users_exec(
+            "SELECT v.metric_id, v.value, m.measurable, m.who, m.goal, m.goal_direction "
+            "FROM l10_scorecard_values v "
+            "JOIN l10_scorecard_metrics m ON m.id = v.metric_id AND m.active "
+            "WHERE v.meeting_id=%s",
+            (meeting_id,), fetch=True) or []
+        for r in rows:
+            _l10_sync_metric_ids_entry(meeting_id, r["metric_id"], r["value"], r)
+    except Exception as e:
+        log.warning("IDS reconcile failed for meeting %s: %s", meeting_id, e)
+
+
 @app.put("/api/l10/scorecard/{meeting_id}")
 async def l10_upsert_scorecard_values(meeting_id: int, request: Request):
     _ensure_l10_tables()
@@ -37337,56 +37551,7 @@ async def l10_upsert_scorecard_values(meeting_id: int, request: Request):
             (metric_id, meeting_id, value, on_track))
         # ── Auto-upsert / auto-remove IDS entry ───────────────────────────────
         try:
-            metric_rows = _users_exec(
-                "SELECT measurable, who, goal, goal_direction FROM l10_scorecard_metrics WHERE id=%s",
-                (metric_id,), fetch=True)
-            if not metric_rows:
-                continue
-            m = metric_rows[0]
-            meets = _eval_scorecard_goal(value, m.get("goal"), m.get("goal_direction"))
-            if meets is None:
-                # Empty value — clean up any open auto-entry
-                _users_exec(
-                    "DELETE FROM l10_ids_issues "
-                    "WHERE meeting_id=%s AND scorecard_metric_id=%s AND status='open'",
-                    (meeting_id, metric_id))
-            elif meets:
-                # Green — remove any open auto-entry for this metric
-                _users_exec(
-                    "DELETE FROM l10_ids_issues "
-                    "WHERE meeting_id=%s AND scorecard_metric_id=%s AND status='open'",
-                    (meeting_id, metric_id))
-            else:
-                # Red — upsert an IDS entry; never overwrite a discussed/resolved one
-                goal_str = str(m.get("goal") or "")
-                issue_text = (
-                    f"{m.get('measurable') or 'KPI'} — actual: {value}, goal: {goal_str}"
-                )
-                raised_by = m.get("who") or ""
-                # Try to update an existing open auto-entry first
-                updated = _users_exec(
-                    "UPDATE l10_ids_issues SET issue=%s, raised_by=%s, updated_at=now() "
-                    "WHERE meeting_id=%s AND scorecard_metric_id=%s AND status='open' "
-                    "RETURNING id",
-                    (issue_text, raised_by, meeting_id, metric_id), fetch=True)
-                if not updated:
-                    # No open entry exists — insert only if no entry at all
-                    # (i.e. don't create a new one if a discussed/resolved entry exists)
-                    existing = _users_exec(
-                        "SELECT id FROM l10_ids_issues "
-                        "WHERE meeting_id=%s AND scorecard_metric_id=%s",
-                        (meeting_id, metric_id), fetch=True)
-                    if not existing:
-                        max_ord = _users_exec(
-                            "SELECT COALESCE(MAX(sort_order),0) AS m FROM l10_ids_issues "
-                            "WHERE meeting_id=%s",
-                            (meeting_id,), fetch=True)
-                        nxt = int((max_ord or [{"m": 0}])[0]["m"]) + 1
-                        _users_exec(
-                            "INSERT INTO l10_ids_issues "
-                            "(meeting_id, issue, raised_by, sort_order, status, scorecard_metric_id) "
-                            "VALUES (%s, %s, %s, %s, 'open', %s)",
-                            (meeting_id, issue_text, raised_by, nxt, metric_id))
+            _l10_sync_metric_ids_entry(meeting_id, metric_id, value)
         except Exception as e:
             log.warning("IDS auto-upsert failed for metric %s: %s", metric_id, e)
     return {"ok": True}
@@ -37645,6 +37810,9 @@ def l10_ids_history(request: Request, exclude_meeting_id: int = Query(None),
 @app.get("/api/l10/ids/{meeting_id}")
 def l10_get_ids(meeting_id: int, request: Request):
     _ensure_l10_tables()
+    # Self-healing: make sure every off-track scorecard metric for this week
+    # has an IDS entry, even if values were saved before auto-listing existed.
+    _l10_reconcile_scorecard_ids(meeting_id)
     return _users_exec(
         "SELECT id, issue, raised_by, sort_order, status, scorecard_metric_id, rock_id "
         "FROM l10_ids_issues WHERE meeting_id=%s ORDER BY sort_order, id",

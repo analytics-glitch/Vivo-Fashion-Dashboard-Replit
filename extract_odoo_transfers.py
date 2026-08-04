@@ -39,6 +39,10 @@ RECENT_DONE_DAYS = 7
 IN_FLIGHT_STATES = ("draft", "confirmed", "assigned", "waiting")
 WAREHOUSE_CODES = {"WHFIN", "WHREC", "HWHFN"}  # warehouse-side codes
 
+# Finishing → Warehouse Finished Goods lane (IDs verified against Odoo 2026-08-04)
+FGPRD_STOCK_ID = 1757   # FGPRD/Stock — Finished Goods Production
+WHFIN_STOCK_ID = 8      # WHFIN/Stock — Warehouse Finished Goods
+
 
 def _classify_source(src_code, src_usage):
     """Given the source location's short code and usage, return transfer_type."""
@@ -166,6 +170,25 @@ def run():
     log.info("Fetched %d store→warehouse pickings", len(pickings_returns))
     pickings = pickings + pickings_returns
 
+    # 2c. Also fetch finishing→warehouse pickings (FGPRD/Stock → WHFIN/Stock) so
+    #     the daily "finishing → warehouse finished goods" report can be built.
+    #     FINISHING_DONE_DAYS env var allows a one-off deeper backfill run.
+    fin_days = int(os.environ.get("FINISHING_DONE_DAYS", RECENT_DONE_DAYS))
+    fin_cutoff = (datetime.now(timezone.utc) - timedelta(days=fin_days)).strftime("%Y-%m-%d %H:%M:%S")
+    domain_finishing = [
+        ["location_dest_id", "=", WHFIN_STOCK_ID],
+        ["location_id", "=", FGPRD_STOCK_ID],
+        "|",
+        ["state", "in", list(IN_FLIGHT_STATES)],
+        "&", ["state", "=", "done"], ["date_done", ">=", fin_cutoff],
+    ]
+    pickings_finishing = models.execute_kw(ODOO_DB, uid, ODOO_PW, "stock.picking", "search_read",
+        [domain_finishing],
+        {"fields": ["id", "name", "state", "origin", "location_id", "location_dest_id",
+                    "scheduled_date", "date_done", "move_ids_without_package"]})
+    log.info("Fetched %d finishing→warehouse pickings (last %dd done)", len(pickings_finishing), fin_days)
+    pickings = pickings + pickings_finishing
+
     # 3. Resolve source location codes/usage in bulk
     src_ids = list({p["location_id"][0] for p in pickings if p.get("location_id")})
     src_info = {}  # loc_id -> (short_code, usage)
@@ -178,7 +201,8 @@ def run():
             src_info[l["id"]] = (code, l.get("usage"))
 
     # 4. Explode picking -> move lines (products + quantities)
-    move_ids = [mid for p in pickings for mid in (p.get("move_ids_without_package") or [])]
+    move_ids = list(dict.fromkeys(
+        mid for p in pickings for mid in (p.get("move_ids_without_package") or [])))
     log.info("Reading %d move lines", len(move_ids))
     moves = []
     if move_ids:
@@ -207,8 +231,12 @@ def run():
         dst = pk.get("location_dest_id")
         src = pk.get("location_id")
         src_code, src_usage = src_info.get(src[0], (None, None)) if src else (None, None)
+        # Finishing→warehouse: FGPRD/Stock → WHFIN/Stock
+        if dst and dst[0] == WHFIN_STOCK_ID and src and src[0] == FGPRD_STOCK_ID:
+            code, store_name, country = ("WHFIN", "Warehouse Finished Goods", "Kenya")
+            transfer_type_override = "finishing_to_warehouse"
         # Store→warehouse: source is the store, dest is WHREC
-        if dst and dst[0] == 1356 and src and src[0] in store_dest_ids:
+        elif dst and dst[0] == 1356 and src and src[0] in store_dest_ids:
             code, store_name, country = store_dest_ids[src[0]]
             transfer_type_override = "store_to_warehouse"
         elif dst and dst[0] in store_dest_ids:

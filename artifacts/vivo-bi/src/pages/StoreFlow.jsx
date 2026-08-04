@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import * as XLSX from "xlsx";
 import { api, fmtNum } from "@/lib/api";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
+import FinishingToWarehouse from "@/components/FinishingToWarehouse";
 import { ArrowsClockwise, DownloadSimple, Storefront, Basket, Truck, Package, CalendarCheck, X } from "@phosphor-icons/react";
 
 const COUNTRIES = ["", "Kenya", "Uganda", "Rwanda", "Online"];
@@ -830,6 +831,9 @@ const StoreFlow = () => {
           </div>
         </>
       )}
+
+      {/* ── Finishing → Warehouse daily report ── */}
+      <FinishingToWarehouse />
 
       {/* ── Daily transfer drill-down modal (portaled to body) ── */}
       {drill && createPortal(
