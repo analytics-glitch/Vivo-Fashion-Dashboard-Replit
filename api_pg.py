@@ -1666,6 +1666,32 @@ def _launch_deferred_startup():
     # deployment logs get — keep them visible.
     def _runner():
         t0 = time.time()
+        # SINGLE-FLIGHT ACROSS WORKERS: with multiple uvicorn workers, every
+        # process fires this startup hook, so N workers would run the same
+        # idempotent DDL (ALTER TABLE / CREATE INDEX) concurrently — each taking
+        # locks that block every reader of all_products_clean etc. Gate the DDL
+        # behind a Postgres advisory lock so only the FIRST worker runs the
+        # steps; the rest skip (schema is already ensured by the winner).
+        _DEFERRED_STARTUP_LOCK_KEY = 0x5F0D_5741_2026  # arbitrary fixed key
+        _gate_conn = None
+        _got_gate = False
+        try:
+            _gate_conn = get_conn()
+            _gate_conn.autocommit = True
+            _gc = _gate_conn.cursor()
+            _gc.execute("SELECT pg_try_advisory_lock(%s)", (_DEFERRED_STARTUP_LOCK_KEY,))
+            _got_gate = bool(_gc.fetchone()[0])
+            _gc.close()
+        except Exception as _e:
+            log.warning("deferred startup gate check failed (%s) — running anyway", _e)
+            _got_gate = True  # fail open: better to run than to skip schema setup
+        if not _got_gate:
+            log.warning("Deferred startup: another worker holds the DDL lock — "
+                        "skipping migrations in this worker.")
+            if _gate_conn is not None:
+                try: _gate_conn.close()
+                except Exception: pass
+            return
         log.warning("Deferred startup: running %d steps in background…",
                     len(_DEFERRED_STARTUP))
         for fn in _DEFERRED_STARTUP:
@@ -1681,6 +1707,13 @@ def _launch_deferred_startup():
                             "lock contention)", name, step_dt)
         log.warning("Deferred startup complete (%d steps, %.1fs)",
                     len(_DEFERRED_STARTUP), time.time() - t0)
+        try:
+            _rc = _gate_conn.cursor()
+            _rc.execute("SELECT pg_advisory_unlock(%s)", (_DEFERRED_STARTUP_LOCK_KEY,))
+            _rc.close()
+            _gate_conn.close()
+        except Exception:
+            pass
     threading.Thread(target=_runner, name="deferred-startup",
                      daemon=True).start()
 
