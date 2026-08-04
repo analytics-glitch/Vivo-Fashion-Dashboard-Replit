@@ -1964,22 +1964,59 @@ def _start_cache_prewarmer():
         # users after a deploy never pay the 10-20s cold-query cost. The loop
         # then repeats every HEAVY_DASH_WARM_INTERVAL (600s) to keep entries
         # fresh before the HEAVY_DASH_TTL (900s) lapses.
+        cycle = 0
+        last_rollup_kick = 0.0
         while True:
             t0 = time.time()
-            # Warm Postgres shared_buffers so cold-start queries hit RAM not disk.
-            # all_sales is 962 MB; loading the recent 90-day slice (~150 MB) covers
-            # every default filter (7D/30D/90D) and keeps buffer-pool hit rate high.
+            cycle += 1
+            # Warm Postgres shared_buffers so cold-start queries hit RAM not disk
+            # — but only for the first few cycles after startup. Buffers are hot
+            # after that (the warm targets themselves keep touching the tables),
+            # and the 90-day all_sales scan showed up as a perpetual ~16s
+            # slow-query every 600s in sync_health_log for zero marginal benefit.
+            if cycle <= 3:
+                try:
+                    run_query(
+                        "SELECT COUNT(*), MAX(sale_date), "
+                        "ROUND(SUM(total_sales_kes::numeric)) AS rev "
+                        "FROM all_sales WHERE sale_date >= "
+                        "to_char(CURRENT_DATE - INTERVAL '90 days', 'YYYY-MM-DD')",
+                        ttl=60)
+                    run_query("SELECT COUNT(*) FROM all_inventory", ttl=60)
+                    run_query("SELECT COUNT(*) FROM all_products_clean", ttl=60)
+                except Exception as _warm_e:
+                    log.warning("PG buffer warmup failed (non-fatal): %s", _warm_e)
+            # Rollup staleness self-heal: the heavy endpoints now read the rollup
+            # tables and silently fall back to 8-30s live scans when the rollups
+            # go stale (>2h) — e.g. the sync loop is down, wedged, or this is a
+            # fresh production DB that has never built them. Kick a refresh
+            # subprocess (idempotent: it holds a single-flight claim and skips
+            # itself when the source watermark is unchanged) at >90 min age so
+            # the fallback window never actually opens. Throttled to one kick
+            # per 20 min so a long-running build is never stacked.
             try:
-                run_query(
-                    "SELECT COUNT(*), MAX(sale_date), "
-                    "ROUND(SUM(total_sales_kes::numeric)) AS rev "
-                    "FROM all_sales WHERE sale_date >= "
-                    "to_char(CURRENT_DATE - INTERVAL '90 days', 'YYYY-MM-DD')",
-                    ttl=60)
-                run_query("SELECT COUNT(*) FROM all_inventory", ttl=60)
-                run_query("SELECT COUNT(*) FROM all_products_clean", ttl=60)
-            except Exception as _warm_e:
-                log.warning("PG buffer warmup failed (non-fatal): %s", _warm_e)
+                _exp = len(_rollup_defs())
+                _meta = run_query(
+                    "SELECT COUNT(*) AS n, "
+                    "COALESCE(MAX(EXTRACT(EPOCH FROM (now() - refreshed_at))), 1e9) AS max_age "
+                    "FROM rollup_meta WHERE row_count > 0 AND schema_ver = "
+                    + str(int(_ROLLUP_SCHEMA_VER)), ttl=30)
+                _n = int(_meta[0]["n"]) if _meta else 0
+                _age = float(_meta[0]["max_age"]) if _meta else 1e9
+                if (_n < _exp or _age > 5400) and (t0 - last_rollup_kick) > 1200:
+                    last_rollup_kick = t0
+                    import subprocess as _sp
+                    import sys as _rk_sys
+                    _script = os.path.join(
+                        os.path.dirname(os.path.abspath(__file__)),
+                        "build_sales_rollups.py")
+                    _sp.Popen([_rk_sys.executable, _script],
+                              stdout=_sp.DEVNULL, stderr=_sp.DEVNULL)
+                    print("Prewarmer: rollups stale/missing (%d/%d fresh, max age %.0fs)"
+                          " — kicked refresh subprocess" % (_n, _exp, _age),
+                          flush=True)
+            except Exception as _rk_e:
+                log.warning("Rollup self-heal check failed (non-fatal): %s", _rk_e)
             targets = [
                 ("weeks-of-cover", lambda: analytics_weeks_of_cover(
                     date_from=None, date_to=None, country=None)),
@@ -4060,6 +4097,14 @@ ROLLUP_MAX_AGE_SEC = 2 * 3600    # rollups older than this → fall back to live
 # 2h matches the hourly refresh cadence with a 1-cycle grace margin. 25h was too
 # wide: a failed sync or a REBUILD_ON_BOOT with no immediate rollup refresh could
 # serve stale new/returning classifications all day before falling back to live.
+# Bump when a rollup gains columns that existing readers depend on: rows built
+# by OLD code are structurally fresh but the new columns are NULL/absent, so
+# readers that need them pass min_schema to _rollup_fresh and fall back to live
+# until the first refresh under the new code stamps the current version.
+# v2: rm_style +units_21d/units_42d; style_velocity +units_21d/units_30d/
+#     first_sale_date; sku_velocity +country; new store_style_sales/rm_months/
+#     rm_prod tables.
+_ROLLUP_SCHEMA_VER = 2
 
 # A row of all_sales contributes to PA-style sales the same CASE expression for
 # its signed KES value (sale/order add total_sales, returns subtract returns).
@@ -4096,7 +4141,12 @@ def _rollup_defs():
             SUM(s.net_quantity) FILTER (WHERE s.pos_location_name ILIKE '%online%') AS units_online,
             SUM(s.net_quantity) FILTER (WHERE s.pos_location_name NOT ILIKE '%online%') AS units_stores,
             MAX(s.sale_date::date) AS last_sale,
-            MIN(s.sale_date::date) AS first_sale
+            MIN(s.sale_date::date) AS first_sale,
+            -- v2 columns (appended LAST; the swap INSERTs positionally). NULL-
+            -- preserving like the other window sums so "no rows in window"
+            -- survives the per-country re-aggregation (IS NOT NULL contracts).
+            SUM(s.net_quantity) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '21 days') AS units_21d,
+            SUM(s.net_quantity) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '42 days') AS units_42d
         FROM all_products_clean p
         JOIN all_sales s ON s.variant_sku = p.sku
         WHERE p.style_name IS NOT NULL AND s.sale_kind IN ('sale','order')
@@ -4136,7 +4186,20 @@ def _rollup_defs():
                COALESCE(SUM(s.net_quantity) FILTER (
                    WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '56 days'), 0)::int AS units_56d,
                COALESCE(SUM(s.net_quantity) FILTER (
-                   WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '182 days'), 0)::int AS units_182d
+                   WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '182 days'), 0)::int AS units_182d,
+               -- v2 columns (appended LAST): the store's country, so IBT's per-sku
+               -- velocity can serve country-scoped requests from the rollup.
+               -- Stores are 1:1 with a country (verified: no store spans two
+               -- countries), so a per-cell attribute equals the row-level filter.
+               MAX(s.country) AS country,
+               -- rows_56d: 56d row-existence marker. The country-scoped velmap
+               -- reader must reproduce the LIVE 56d vel CTE exactly, whose cells
+               -- exist iff the (store,sku) had >=1 base sale row in 56d — a 0
+               -- unit SUM (returns netting out) still creates a live cell, so
+               -- units_56d=0 alone cannot distinguish existence.
+               COUNT(*) FILTER (
+                   WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '56 days'
+               )::int AS rows_56d
         FROM all_sales s
         WHERE s.sale_kind IN ('sale','order') AND s.variant_sku IS NOT NULL
           AND """ + BASE_FILTERS + """
@@ -4153,13 +4216,94 @@ def _rollup_defs():
                    WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '182 days'), 0)::int AS units_182d,
                COALESCE(SUM(s.net_sales_kes::numeric) FILTER (
                    WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '182 days'), 0) AS net_sales_182d,
-               MAX(s.sale_date::date) AS last_sale_date
+               MAX(s.sale_date::date) AS last_sale_date,
+               -- v2 columns (appended LAST) for the L-10 new-styles report.
+               COALESCE(SUM(s.net_quantity) FILTER (
+                   WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '21 days'), 0)::int AS units_21d,
+               COALESCE(SUM(s.net_quantity) FILTER (
+                   WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '30 days'), 0)::int AS units_30d,
+               MIN(s.sale_date::date) AS first_sale_date
         FROM all_sales s
         JOIN all_products_clean p ON s.variant_sku = p.sku
         WHERE s.sale_kind IN ('sale','order')
           AND p.style_name IS NOT NULL AND p.style_name <> ''
           AND """ + BASE_FILTERS + """
         GROUP BY p.style_name, COALESCE(s.country, '')
+    """
+    # Per-(style, store) trailing-56d sales cells. One table serves four heavy
+    # consumers (IBT solve sv, IBT warehouse-to-store sv, declining-styles,
+    # store-overstock vel) because the grain keys carry every predicate those
+    # queries apply: `base` = row passed BASE_FILTERS (IBT applies none, the
+    # analytics pair do), `has_style` + style_name = product-join membership,
+    # country/store = the filter-bar scopes. Aggregates are COALESCE'd to 0 —
+    # every consumer re-aggregates and either COALESCEs downstream or gates on
+    # rows_28d for existence, so NULL-ness does not need to survive here.
+    store_style_sales = """
+        SELECT COALESCE(p.style_name,'') AS style_name,
+            s.pos_location_name,
+            COALESCE(s.country,'') AS country,
+            (p.style_name IS NOT NULL) AS has_style,
+            (""" + BASE_FILTERS + """) AS base,
+            MAX(p.brand) AS brand,
+            MAX(p.product_type) AS product_type,
+            COUNT(*) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '28 days') AS rows_28d,
+            COALESCE(SUM(s.net_quantity) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '28 days'), 0) AS units_net_28d,
+            COALESCE(SUM(s.net_quantity) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '30 days'), 0) AS units_net_30d,
+            COALESCE(SUM(s.net_sales_kes) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '28 days'), 0) AS net_sales_28d,
+            COALESCE(SUM(s.ordered_item_quantity) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '28 days'), 0) AS units_gross_28d,
+            COALESCE(SUM(s.ordered_item_quantity) FILTER (WHERE s.sale_date::date <  CURRENT_DATE - INTERVAL '28 days'), 0) AS units_gross_2956d
+        FROM all_sales s
+        LEFT JOIN all_products_clean p ON p.sku = s.variant_sku
+        WHERE s.sale_kind IN ('sale','order')
+          AND s.sale_date::date >= CURRENT_DATE - INTERVAL '56 days'
+        GROUP BY 1, 2, 3, 4, 5
+    """
+    # Distinct active months (trailing 365d) per style — the NOOS gate's months
+    # metric in Range Mgmt classify (its 365d scan was the single slowest live
+    # CTE, ~11s warm). DISTINCT-month counts cannot be summed across countries,
+    # so GROUPING SETS materialises BOTH per-country rows and an '__ALL__' row;
+    # readers pick exactly one slice (multi-country csv falls back to live SQL).
+    rm_months = """
+        SELECT style_name,
+            CASE WHEN GROUPING(country) = 1 THEN '__ALL__' ELSE country END AS country,
+            COUNT(DISTINCT ym) AS months_active_12
+        FROM (
+            SELECT p.style_name, COALESCE(s.country,'') AS country,
+                   to_char(s.sale_date::date,'YYYY-MM') AS ym
+            FROM all_products_clean p
+            JOIN all_sales s ON s.variant_sku = p.sku
+            WHERE p.style_name IS NOT NULL AND s.sale_kind IN ('sale','order')
+              AND s.sale_date::date >= CURRENT_DATE - INTERVAL '365 days'
+              AND """ + BASE_FILTERS + """
+        ) t
+        GROUP BY GROUPING SETS ((style_name, country), (style_name))
+    """
+    # Range Mgmt classify's catalog prod CTE (per-SKU third-party exclusion +
+    # barcode join + JSON_AGG variants ~3s per cache-key variant). Product-only,
+    # no filter dependence, so a fresh rollup serves every country/channel scope.
+    # MUST stay verbatim-identical to the live prod CTE in range_mgmt_classify.
+    rm_prod = """
+        SELECT apc.style_name,
+            MAX(apc.brand) AS brand,
+            MAX(apc.product_type) AS subcategory,
+            mode() WITHIN GROUP (ORDER BY apc.style_number) AS style_number,
+            mode() WITHIN GROUP (ORDER BY apc.price) FILTER (WHERE apc.price > 0) AS price,
+            MIN(substring(apc.style_launch_date, 1, 10)) FILTER (
+                WHERE substring(apc.style_launch_date, 1, 10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+            ) AS launch_date,
+            BOOL_OR(apc.is_noos) AS is_noos,
+            JSON_AGG(
+                JSON_BUILD_OBJECT(
+                    'sku', apc.sku,
+                    'barcode', COALESCE(op.barcode, ''),
+                    'product_name', COALESCE(apc.product_name, '')
+                ) ORDER BY apc.sku
+            ) AS sku_variants
+        FROM all_products_clean apc
+        LEFT JOIN raw_odoo_products op ON op.default_code = apc.sku
+        WHERE apc.style_name IS NOT NULL AND apc.style_name <> ''
+          AND COALESCE(apc.brand, '') NOT ILIKE '%third party%'
+        GROUP BY apc.style_name
     """
     return [
         ("customer_lifetime",       "rollup_customer_lifetime",       cust_lifetime),
@@ -4168,6 +4312,9 @@ def _rollup_defs():
         ("pa_style",                "rollup_pa_style",                pa_style),
         ("sku_velocity",            "rollup_sku_velocity2",            sku_velocity),
         ("style_velocity",          "rollup_style_velocity2",          style_velocity),
+        ("store_style_sales",       "rollup_store_style_sales",       store_style_sales),
+        ("rm_months",               "rollup_rm_months",               rm_months),
+        ("rm_prod",                 "rollup_rm_prod",                 rm_prod),
     ]
 
 
@@ -4177,8 +4324,17 @@ def _ensure_rollup_tables(conn):
         CREATE TABLE IF NOT EXISTS rollup_meta (
             name text PRIMARY KEY,
             refreshed_at timestamptz,
-            row_count bigint
+            row_count bigint,
+            source_watermark timestamp,
+            source_products bigint,
+            built_on date,
+            schema_ver int
         );
+        -- Columns added after the first release (existing dev/prod tables).
+        ALTER TABLE rollup_meta ADD COLUMN IF NOT EXISTS source_watermark timestamp;
+        ALTER TABLE rollup_meta ADD COLUMN IF NOT EXISTS source_products bigint;
+        ALTER TABLE rollup_meta ADD COLUMN IF NOT EXISTS built_on date;
+        ALTER TABLE rollup_meta ADD COLUMN IF NOT EXISTS schema_ver int;
         CREATE TABLE IF NOT EXISTS rollup_customer_lifetime (
             customer_id text PRIMARY KEY,
             first_sale date,
@@ -4196,8 +4352,11 @@ def _ensure_rollup_tables(conn):
             units_30d numeric, units_14d numeric, units_prior_30d numeric,
             units_online numeric, units_stores numeric,
             last_sale date, first_sale date,
+            units_21d numeric, units_42d numeric,
             PRIMARY KEY (style_name, country)
         );
+        ALTER TABLE rollup_rm_style ADD COLUMN IF NOT EXISTS units_21d numeric;
+        ALTER TABLE rollup_rm_style ADD COLUMN IF NOT EXISTS units_42d numeric;
         CREATE TABLE IF NOT EXISTS rollup_pa_style (
             style_name text,
             country text,
@@ -4214,11 +4373,20 @@ def _ensure_rollup_tables(conn):
     cur.close()
 
 
-def run_sales_rollup_refresh(only=None):
+def run_sales_rollup_refresh(only=None, force=False):
     """Rebuild the pre-aggregated rollup tables (build-then-swap per table). Safe
     to run repeatedly (idempotent full rebuild). Returns {name: row_count|error}.
     Used by the startup bootstrap and the incremental sync loop
     (build_sales_rollups.py).
+
+    Watermark skip: every window column is CURRENT_DATE-relative and every
+    source row carries loaded_at, so a rebuild can only change anything when
+    (a) new all_sales rows landed, (b) the product catalog changed size, or
+    (c) the calendar date rolled over since the last build. When none of those
+    hold for every in-scope rollup, just bump refreshed_at (the data is
+    provably identical) — this turns the hourly full-history rebuild into a
+    no-op during quiet periods instead of ~10 heavy scans/day of DB churn.
+    `force=True` (CLI --force) bypasses the skip.
 
     Uses a direct (non-pooler) connection: the refresh holds a SESSION-level
     advisory lock (pg_try_advisory_lock / pg_advisory_unlock) across multiple
@@ -4238,6 +4406,38 @@ def run_sales_rollup_refresh(only=None):
         if not locked:
             log.info("Rollup refresh skipped — another refresh holds the lock")
             return {"skipped": "refresh already in progress"}
+        scope = [n for n, _, _ in _rollup_defs() if not only or n in only]
+        # Snapshot the source watermark BEFORE building: rows that land during
+        # the build make the stored watermark stale, so the next cycle rebuilds.
+        wm_cur = conn.cursor()
+        wm_cur.execute("SELECT MAX(loaded_at) FROM all_sales")
+        src_wm = wm_cur.fetchone()[0]
+        wm_cur.execute("SELECT COUNT(*) FROM all_products_clean")
+        src_products = wm_cur.fetchone()[0]
+        wm_cur.execute("SELECT CURRENT_DATE")
+        db_today = wm_cur.fetchone()[0]
+        wm_cur.execute(
+            "SELECT name, source_watermark, source_products, built_on, "
+            "row_count, schema_ver FROM rollup_meta WHERE name = ANY(%s)",
+            (scope,))
+        meta = {r[0]: r[1:] for r in wm_cur.fetchall()}
+        conn.commit()
+        if not force and src_wm is not None and scope and all(
+                meta.get(n)
+                and meta[n][3] and meta[n][3] > 0            # row_count
+                and meta[n][0] == src_wm                     # sales watermark
+                and meta[n][1] == src_products               # catalog size
+                and meta[n][2] == db_today                   # same build date
+                and meta[n][4] == _ROLLUP_SCHEMA_VER         # same reader schema
+                for n in scope):
+            wm_cur.execute(
+                "UPDATE rollup_meta SET refreshed_at = now() WHERE name = ANY(%s)",
+                (scope,))
+            conn.commit()
+            wm_cur.close()
+            log.info("Rollup refresh skipped — watermark unchanged (%s)", src_wm)
+            return {"skipped": "watermark unchanged (no new sales/products, same date)"}
+        wm_cur.close()
         for name, table, select_sql in _rollup_defs():
             if only and name not in only:
                 continue
@@ -4258,8 +4458,14 @@ def run_sales_rollup_refresh(only=None):
                             units_28d         int,
                             units_56d         int,
                             units_182d        int,
+                            country           text,
+                            rows_56d          int,
                             PRIMARY KEY (pos_location_name, variant_sku)
-                        )""",
+                        );
+                        ALTER TABLE rollup_sku_velocity2
+                            ADD COLUMN IF NOT EXISTS country text;
+                        ALTER TABLE rollup_sku_velocity2
+                            ADD COLUMN IF NOT EXISTS rows_56d int""",
                     "style_velocity": """
                         CREATE TABLE IF NOT EXISTS rollup_style_velocity2 (
                             style_name     text NOT NULL,
@@ -4269,7 +4475,52 @@ def run_sales_rollup_refresh(only=None):
                             units_182d     int,
                             net_sales_182d numeric,
                             last_sale_date date,
+                            units_21d      int,
+                            units_30d      int,
+                            first_sale_date date,
                             PRIMARY KEY (style_name, country)
+                        );
+                        ALTER TABLE rollup_style_velocity2
+                            ADD COLUMN IF NOT EXISTS units_21d int;
+                        ALTER TABLE rollup_style_velocity2
+                            ADD COLUMN IF NOT EXISTS units_30d int;
+                        ALTER TABLE rollup_style_velocity2
+                            ADD COLUMN IF NOT EXISTS first_sale_date date""",
+                    "store_style_sales": """
+                        CREATE TABLE IF NOT EXISTS rollup_store_style_sales (
+                            style_name        text NOT NULL,
+                            pos_location_name text,
+                            country           text NOT NULL,
+                            has_style         boolean NOT NULL,
+                            base              boolean NOT NULL,
+                            brand             text,
+                            product_type      text,
+                            rows_28d          int,
+                            units_net_28d     numeric,
+                            units_net_30d     numeric,
+                            net_sales_28d     numeric,
+                            units_gross_28d   numeric,
+                            units_gross_2956d numeric
+                        );
+                        CREATE INDEX IF NOT EXISTS idx_rss_style
+                            ON rollup_store_style_sales (style_name)""",
+                    "rm_months": """
+                        CREATE TABLE IF NOT EXISTS rollup_rm_months (
+                            style_name       text NOT NULL,
+                            country          text NOT NULL,
+                            months_active_12 int,
+                            PRIMARY KEY (style_name, country)
+                        )""",
+                    "rm_prod": """
+                        CREATE TABLE IF NOT EXISTS rollup_rm_prod (
+                            style_name   text PRIMARY KEY,
+                            brand        text,
+                            subcategory  text,
+                            style_number text,
+                            price        numeric,
+                            launch_date  text,
+                            is_noos      boolean,
+                            sku_variants json
                         )""",
                 }
                 if name in _lazy_rollup_ddl:
@@ -4284,10 +4535,16 @@ def run_sales_rollup_refresh(only=None):
                 cur.execute("SELECT COUNT(*) FROM " + table)
                 n = cur.fetchone()[0]
                 cur.execute(
-                    "INSERT INTO rollup_meta (name, refreshed_at, row_count) "
-                    "VALUES (%s, now(), %s) "
+                    "INSERT INTO rollup_meta (name, refreshed_at, row_count, "
+                    "source_watermark, source_products, built_on, schema_ver) "
+                    "VALUES (%s, now(), %s, %s, %s, %s, %s) "
                     "ON CONFLICT (name) DO UPDATE SET refreshed_at = now(), "
-                    "row_count = EXCLUDED.row_count", (name, n))
+                    "row_count = EXCLUDED.row_count, "
+                    "source_watermark = EXCLUDED.source_watermark, "
+                    "source_products = EXCLUDED.source_products, "
+                    "built_on = EXCLUDED.built_on, "
+                    "schema_ver = EXCLUDED.schema_ver",
+                    (name, n, src_wm, src_products, db_today, _ROLLUP_SCHEMA_VER))
                 conn.commit()
                 cur.close()
                 # VACUUM the freshly TRUNCATE+INSERTed table so its visibility map
@@ -4332,17 +4589,22 @@ def _init_rollup_tables():
         log.error("Rollup table init failed: %s", e)
 
 
-def _rollup_fresh(name):
+def _rollup_fresh(name, min_schema=None):
     """True iff the named rollup exists, is non-empty, and was refreshed within
     ROLLUP_MAX_AGE_SEC. Uncached (a tiny PK lookup) so a fresh refresh is adopted
-    immediately and a stale one is rejected without a cache lag."""
+    immediately and a stale one is rejected without a cache lag.
+
+    min_schema: readers that depend on columns added in a later schema version
+    pass the version that introduced them; rows last built by older code (NULL
+    or lower schema_ver) then report not-fresh so those readers fall back to
+    live SQL instead of reading NULL columns as zeros."""
     pool, conn = _acquire_conn()
     try:
         conn.autocommit = True
         cur = conn.cursor()
         cur.execute(
-            "SELECT row_count, EXTRACT(EPOCH FROM (now() - refreshed_at)) "
-            "FROM rollup_meta WHERE name = %s", (name,))
+            "SELECT row_count, EXTRACT(EPOCH FROM (now() - refreshed_at)), "
+            "schema_ver FROM rollup_meta WHERE name = %s", (name,))
         r = cur.fetchone()
         cur.close()
     except Exception:
@@ -4352,7 +4614,9 @@ def _rollup_fresh(name):
         pool.putconn(conn)
     if not r:
         return False
-    row_count, age = r
+    row_count, age, schema_ver = r
+    if min_schema is not None and (schema_ver is None or schema_ver < min_schema):
+        return False
     return bool(row_count and row_count > 0 and age is not None and age < ROLLUP_MAX_AGE_SEC)
 
 
@@ -8743,23 +9007,40 @@ def analytics_sor_all_styles(
     if brand:
         brand_pf = " AND LOWER(brand) = '" + brand.strip().lower().replace("'", "''") + "'"
     cf, chf = _style_filters(country, channel, "s")
-    raw = run_query(
-        """
-        WITH prod AS (
+    # Rollup fast path for the whole-history sales CTE: the default report
+    # (180d window, default selected period = same 180d, no channel filter) is
+    # exactly what rollup_rm_style pre-aggregates per (style, country). The
+    # window sums there are NULL-preserving (no COALESCE), so re-aggregating
+    # across country cells reproduces the live NULL-ness — including the
+    # `sa.units_6m IS NOT NULL` activity test below. ROUND after the SUM equals
+    # the live ROUND-of-full-sum. min_schema=2: needs the units_21d/units_42d
+    # columns; rows built by older code fall back to live SQL. brand_pf only
+    # touches the prod CTE, so it stays valid on this path.
+    _sor_today = date.today()
+    _use_rm_rollup = (
+        win == 180 and not channel
+        and sel_from == (_sor_today - timedelta(days=180)).isoformat()
+        and sel_to == _sor_today.isoformat()
+        and _rollup_fresh("rm_style", min_schema=2))
+    if _use_rm_rollup:
+        sales_cte = """
+        sales AS (
             SELECT style_name,
-                MAX(brand) AS brand,
-                MAX(category) AS category,
-                MAX(collection) AS collection,
-                MAX(product_type) AS subcategory,
-                mode() WITHIN GROUP (ORDER BY style_number) AS style_number,
-                -- modal (most common) positive ticket price, robust to a
-                -- foreign-currency leak on a few country SKUs (see PA prod CTE)
-                mode() WITHIN GROUP (ORDER BY price::numeric) FILTER (WHERE price::numeric > 0) AS original_price,
-                BOOL_OR(is_noos) AS is_noos
-            FROM all_products_clean
-            WHERE style_name IS NOT NULL AND style_name <> ''""" + brand_pf + """
+                SUM(units_6m) AS units_6m,
+                ROUND(SUM(sales_6m)) AS sales_6m,
+                SUM(units_21d) AS units_3w,
+                SUM(units_30d) AS units_30d,
+                SUM(units_42d) AS units_6w,
+                SUM(units_life) AS units_since_launch,
+                SUM(units_6m) AS units_sel,
+                ROUND(SUM(sales_6m)) AS sales_sel,
+                MAX(last_sale) AS last_sale,
+                MIN(first_sale) AS first_sale
+            FROM rollup_rm_style""" + _rollup_country_where(country) + """
             GROUP BY style_name
-        ),
+        ),"""
+    else:
+        sales_cte = """
         sales AS (
             SELECT p.style_name,
                 SUM(s.net_quantity) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '""" + str(win) + """ days') AS units_6m,
@@ -8782,7 +9063,24 @@ def analytics_sor_all_styles(
             WHERE p.style_name IS NOT NULL AND s.sale_kind IN ('sale','order')
               AND """ + BASE_FILTERS + cf + chf + """
             GROUP BY p.style_name
-        ),
+        ),"""
+    raw = run_query(
+        """
+        WITH prod AS (
+            SELECT style_name,
+                MAX(brand) AS brand,
+                MAX(category) AS category,
+                MAX(collection) AS collection,
+                MAX(product_type) AS subcategory,
+                mode() WITHIN GROUP (ORDER BY style_number) AS style_number,
+                -- modal (most common) positive ticket price, robust to a
+                -- foreign-currency leak on a few country SKUs (see PA prod CTE)
+                mode() WITHIN GROUP (ORDER BY price::numeric) FILTER (WHERE price::numeric > 0) AS original_price,
+                BOOL_OR(is_noos) AS is_noos
+            FROM all_products_clean
+            WHERE style_name IS NOT NULL AND style_name <> ''""" + brand_pf + """
+            GROUP BY style_name
+        ),""" + sales_cte + """
         stock AS (
             SELECT COALESCE(m.style_name, i.style_name) AS style_name,
                 COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)), 0) AS soh_stores,
@@ -13028,8 +13326,36 @@ def _ibt_base_ctes(date_from, date_to, country, low, high, use_clustering=True):
     keep working."""
     c_sales = ("AND s.country = '" + _sql_str(country) + "'") if country else ""
     c_inv = ("AND i.country = '" + _sql_str(country) + "'") if country else ""
-    return f"""
-    WITH sv AS (
+    # Rollup fast path for the sv CTE: the default IBT window (trailing 28d
+    # ending today) matches rollup_store_style_sales' 28d sums exactly. The
+    # rollup grain (style, store, country) carries every predicate applied
+    # here, and IBT applies NO BASE_FILTERS — so cells are summed across both
+    # base=true/false. HAVING SUM(rows_28d) > 0 preserves row EXISTENCE
+    # semantics (cells can exist from 29-56d rows only): sv presence feeds the
+    # FULL OUTER JOIN and the stats AVG/COUNT downstream. sale_date is TEXT but
+    # hygiene-checked (all values YYYY-MM-DD), so BETWEEN equals the ::date
+    # window the rollup uses.
+    _ibt_today = date.today()
+    if (str(date_from) == (_ibt_today - timedelta(days=28)).isoformat()
+            and str(date_to) == _ibt_today.isoformat()
+            and _rollup_fresh("store_style_sales")):
+        c_sales_r = ("AND r.country = '" + _sql_str(country) + "'") if country else ""
+        sv_cte = f"""sv AS (
+      SELECT r.style_name AS style, r.pos_location_name AS store,
+             MAX(NULLIF(r.country, '')) AS country,
+             SUM(r.units_net_28d) AS units_sold,
+             CASE WHEN SUM(r.units_net_28d) > 0
+                  THEN SUM(r.net_sales_28d) / SUM(r.units_net_28d) END AS asp
+      FROM rollup_store_style_sales r
+      WHERE r.pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})
+        AND r.pos_location_name NOT IN ({_IBT_STORE_EXCL})
+        AND r.pos_location_name NOT ILIKE '%online%'
+        AND r.style_name <> '' {c_sales_r}
+      GROUP BY 1, 2
+      HAVING SUM(r.rows_28d) > 0
+    )"""
+    else:
+        sv_cte = f"""sv AS (
       SELECT p.style_name AS style, s.pos_location_name AS store,
              MAX(s.country) AS country,
              SUM(s.net_quantity) AS units_sold,
@@ -13044,7 +13370,9 @@ def _ibt_base_ctes(date_from, date_to, country, low, high, use_clustering=True):
         AND s.pos_location_name NOT ILIKE '%online%'
         AND COALESCE(p.style_name,'') <> '' {c_sales}
       GROUP BY 1, 2
-    ),
+    )"""
+    return f"""
+    WITH {sv_cte},
     inv AS (
       SELECT p.style_name AS style, i.pos_location_name AS store,
              MAX(i.country) AS country,
@@ -13238,7 +13566,7 @@ def _ibt_edge_sql(date_from, date_to, country, low, high, use_clustering=True):
       AND sc.to_store NOT ILIKE '%online%'
       AND sc.from_store NOT ILIKE '%zetu%'
       AND sc.to_store NOT ILIKE '%zetu%'
-    ORDER BY sc.score DESC, sc.style, fav.sku
+    ORDER BY sc.score DESC, sc.style, fav.sku, sc.from_store, sc.to_store
     """
 
 
@@ -13676,10 +14004,26 @@ def _ibt_store_sku_velocity(date_from, date_to, country):
       - cell has NO stock and NO sales -> no signal -> category prior rate.
     The canonical SOR formula is not used or changed here."""
     c_inv = ("AND i.country = '" + _sql_str(country) + "'") if country else ""
-    # Rollup fast path (~<1 s) vs live all_sales scan (~30-50 s cold).
-    # rollup_sku_velocity2 has no country column, so fall back when country is set.
-    # The rollup covers the same trailing 28d/56d window that IBT defaults to.
-    if not country and _rollup_fresh("sku_velocity"):
+    # Rollup fast path (~<1 s) vs live all_sales scan (~30-50 s cold). The
+    # rollup covers the same trailing 28d/56d window that IBT defaults to.
+    # Country-scoped requests read the v2 `country` column (per-store attribute;
+    # stores never span two countries), so they need rows built by v2 code —
+    # min_schema=2 falls back to live until the first new-code refresh.
+    _svel_ok = (_rollup_fresh("sku_velocity", min_schema=2) if country
+                else _rollup_fresh("sku_velocity"))
+    if _svel_ok:
+        c_vel_r = ("AND r.country = '" + _sql_str(country) + "'") if country else ""
+        # Country-scoped reads must reproduce the LIVE 56d vel CTE exactly —
+        # that is what country-filtered IBT returned before this cutover: cells
+        # exist only when the (store,sku) had >=1 sale row inside the 56-day
+        # window. The rollup keeps every cell that EVER sold, so filter on the
+        # v2 rows_56d existence marker (a 0-unit SUM from netted returns still
+        # counts as an existing live cell, hence a row count, not units<>0).
+        # The DEFAULT (country=None) read intentionally keeps the historical
+        # all-cells rollup behaviour — that IS today's production output for
+        # the default IBT view (dead cells get the category prior downstream).
+        if country:
+            c_vel_r += " AND COALESCE(r.rows_56d, 0) > 0"
         vel_cte = f"""
     vel AS (
       SELECT r.pos_location_name AS store, r.variant_sku AS sku,
@@ -13691,7 +14035,7 @@ def _ibt_store_sku_velocity(date_from, date_to, country):
       WHERE r.pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})
         AND r.pos_location_name NOT IN ({_IBT_STORE_EXCL})
         AND r.pos_location_name NOT ILIKE '%online%'
-        AND COALESCE(r.variant_sku,'') <> ''
+        AND COALESCE(r.variant_sku,'') <> '' {c_vel_r}
       GROUP BY r.pos_location_name, r.variant_sku, r.units_28d, r.units_56d
     )"""
     else:
@@ -14269,8 +14613,27 @@ def ibt_warehouse_to_store(
     lim = max(1, min(int(limit), 1000))
     c_sales = ("AND s.country = '" + _sql_str(country) + "'") if country else ""
     c_inv = ("AND i.country = '" + _sql_str(country) + "'") if country else ""
-    q = f"""
-    WITH sv AS (
+    # Rollup fast path for the demand CTE: the default window (trailing 30d
+    # ending today) matches rollup_store_style_sales' units_net_30d exactly.
+    # HAVING >= 3 net units implies at least one raw row existed, so row
+    # existence (feeding cand/DISTINCT downstream) is preserved without a
+    # separate rows flag. IBT applies no BASE_FILTERS — sum all cells.
+    if (date_from == (today - timedelta(days=30)).isoformat()
+            and date_to == today.isoformat()
+            and _rollup_fresh("store_style_sales")):
+        c_sales_r = ("AND r.country = '" + _sql_str(country) + "'") if country else ""
+        sv_cte = f"""sv AS (
+      SELECT r.style_name AS style, r.pos_location_name AS store,
+             SUM(r.units_net_30d) AS units_sold
+      FROM rollup_store_style_sales r
+      WHERE r.pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})
+        AND r.pos_location_name NOT IN ({_IBT_STORE_EXCL})
+        AND r.pos_location_name NOT ILIKE '%online%'
+        AND r.style_name <> '' {c_sales_r}
+      GROUP BY 1, 2 HAVING SUM(r.units_net_30d) >= 3
+    )"""
+    else:
+        sv_cte = f"""sv AS (
       SELECT p.style_name AS style, s.pos_location_name AS store,
              SUM(s.net_quantity) AS units_sold
       FROM all_sales s
@@ -14282,7 +14645,9 @@ def ibt_warehouse_to_store(
         AND s.pos_location_name NOT ILIKE '%online%'
         AND COALESCE(p.style_name,'') <> '' {c_sales}
       GROUP BY 1, 2 HAVING SUM(s.net_quantity) >= 3
-    ),
+    )"""
+    q = f"""
+    WITH {sv_cte},
     si AS (
       SELECT p.style_name AS style, i.pos_location_name AS store,
              SUM(i.available) AS available
@@ -14368,7 +14733,7 @@ def ibt_warehouse_to_store(
     JOIN recv_proj rp ON rp.style = sv.style AND rp.store = sv.store
     WHERE COALESCE(si.available, 0) <= 2
       AND rp.projected_skus >= 3
-    ORDER BY suggested_qty DESC
+    ORDER BY suggested_qty DESC, style_name, to_store
     LIMIT {lim}
     """
     rows = run_query(q, date_to=date_to)
@@ -20644,7 +21009,24 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
     # months_active_12 = DISTINCT calendar months (trailing 365d) with a sale —
     # drives the unified Tier-1 ("NOOS") gate in _lifecycle_tier, shared with
     # Product Analysis. Respects the same country/channel sales scope (cf/chf).
-    rm_nos_cte = """nos AS (
+    # Rollup fast path: this 365d DISTINCT-month scan was the slowest live CTE
+    # here (~11 s warm). Distinct-month counts can't be summed across countries,
+    # so rollup_rm_months stores BOTH per-country slices and an '__ALL__' slice
+    # (GROUPING SETS); readers pick exactly one. Channel filters and
+    # multi-country csv scopes aren't derivable from the slices → live SQL.
+    _nos_multi_country = bool(country) and ("," in country)
+    if not channel and not _nos_multi_country and _rollup_fresh("rm_months"):
+        if country:
+            _nos_where = (" WHERE LOWER(country) = '"
+                          + country.strip().lower().replace("'", "''") + "'")
+        else:
+            _nos_where = " WHERE country = '__ALL__'"
+        rm_nos_cte = """nos AS (
+            SELECT style_name, months_active_12
+            FROM rollup_rm_months""" + _nos_where + """
+        )"""
+    else:
+        rm_nos_cte = """nos AS (
             SELECT p.style_name,
                 COUNT(DISTINCT to_char(s.sale_date::date,'YYYY-MM')) AS months_active_12
             FROM all_products_clean p
@@ -20654,8 +21036,18 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
               AND """ + BASE_FILTERS + cf + chf + """
             GROUP BY p.style_name
         )"""
-    raw = run_query("""
-        WITH prod AS (
+    # Catalog prod CTE: product-only (no country/channel dependence), so a fresh
+    # rollup_rm_prod — a verbatim materialisation of this exact SELECT — serves
+    # every scope. The barcode join + JSON_AGG cost ~3 s per cache-key variant
+    # live; the rollup read is a straight table scan of ~1 row per style.
+    if _rollup_fresh("rm_prod"):
+        rm_prod_cte = """prod AS (
+            SELECT style_name, brand, subcategory, style_number, price,
+                   launch_date, is_noos, sku_variants
+            FROM rollup_rm_prod
+        )"""
+    else:
+        rm_prod_cte = """prod AS (
             SELECT apc.style_name,
                 MAX(apc.brand) AS brand,
                 MAX(apc.product_type) AS subcategory,
@@ -20690,7 +21082,9 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
             -- surfaces now define the identical inventory-holding style universe.
               AND COALESCE(apc.brand, '') NOT ILIKE '%third party%'
             GROUP BY apc.style_name
-        ),
+        )"""
+    raw = run_query("""
+        WITH """ + rm_prod_cte + """,
         """ + rm_sales_cte + """,
         stock AS (
             SELECT COALESCE(m.style_name, i.style_name) AS style_name,
@@ -21118,6 +21512,34 @@ def analytics_store_overstock(country: str = Query(default=None), channel: str =
     first; stores with zero velocity sort to the top with cover = null."""
     icf, ichf = _style_filters(country, channel, "i")
     scf, schf = _style_filters(country, channel, "s")
+    # Rollup fast path for the 56d velocity CTE: rollup_store_style_sales'
+    # grain (store, country, base flag) carries every predicate this query
+    # applies — BASE_FILTERS becomes `r.base`, and BOTH the country and the
+    # channel (pos_location_name) filters are grain dimensions — so the rollup
+    # serves every filter combination, not just the default. The soh CTE stays
+    # live (all_inventory scan is ~50 ms).
+    if _rollup_fresh("store_style_sales"):
+        rcf, rchf = _style_filters(country, channel, "r")
+        vel_cte = """vel AS (
+            SELECT r.pos_location_name AS store,
+                SUM(r.units_gross_28d) AS u28,
+                SUM(r.units_gross_28d + r.units_gross_2956d) AS u56
+            FROM rollup_store_style_sales r
+            WHERE r.base""" + rcf + rchf + """
+            GROUP BY 1
+        )"""
+    else:
+        vel_cte = """vel AS (
+            SELECT s.pos_location_name AS store,
+                SUM(s.ordered_item_quantity) FILTER (
+                    WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '28 days') AS u28,
+                SUM(s.ordered_item_quantity) AS u56
+            FROM all_sales s
+            WHERE s.sale_kind IN ('sale','order')
+              AND s.sale_date::date >= CURRENT_DATE - INTERVAL '56 days'
+              AND """ + BASE_FILTERS + scf + schf + """
+            GROUP BY 1
+        )"""
     rows = run_query("""
         WITH soh AS (
             SELECT i.pos_location_name AS store, MAX(i.country) AS country,
@@ -21129,17 +21551,7 @@ def analytics_store_overstock(country: str = Query(default=None), channel: str =
               AND i.available > 0""" + icf + ichf + """
             GROUP BY 1
         ),
-        vel AS (
-            SELECT s.pos_location_name AS store,
-                SUM(s.ordered_item_quantity) FILTER (
-                    WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '28 days') AS u28,
-                SUM(s.ordered_item_quantity) AS u56
-            FROM all_sales s
-            WHERE s.sale_kind IN ('sale','order')
-              AND s.sale_date::date >= CURRENT_DATE - INTERVAL '56 days'
-              AND """ + BASE_FILTERS + scf + schf + """
-            GROUP BY 1
-        )
+        """ + vel_cte + """
         SELECT soh.store, soh.country, soh.units AS soh_units, soh.skus,
             ROUND(((COALESCE(v.u28,0) * 2)
                    + GREATEST(COALESCE(v.u56,0) - COALESCE(v.u28,0), 0)) / 12.0, 1) AS weekly_units,
@@ -21674,8 +22086,24 @@ def analytics_declining_styles(country: str = Query(default=None), channel: str 
     candidates link on to Markdown & Clearance for pricing action."""
     scf, schf = _style_filters(country, channel, "s")
     icf, _ = _style_filters(country, None, "i")
-    rows = run_query("""
-        WITH sales AS (
+    # Rollup fast path: rollup_store_style_sales' grain carries every predicate
+    # here — BASE_FILTERS is the `base` flag, the product join + IS NOT NULL is
+    # the `has_style` flag (NOTE: includes the '' style like live), and country/
+    # channel are grain dims — so ANY filter combination reads the rollup. All
+    # outer references COALESCE u28/u_prior, so cell-level 0-vs-NULL is
+    # invisible.
+    if _rollup_fresh("store_style_sales"):
+        rcf, rchf = _style_filters(country, channel, "r")
+        sales_cte = """sales AS (
+            SELECT r.style_name, MAX(r.brand) AS brand, MAX(r.product_type) AS product_type,
+                SUM(r.units_gross_28d) AS u28,
+                SUM(r.units_gross_2956d) AS u_prior
+            FROM rollup_store_style_sales r
+            WHERE r.base AND r.has_style""" + rcf + rchf + """
+            GROUP BY r.style_name
+        )"""
+    else:
+        sales_cte = """sales AS (
             SELECT p.style_name, MAX(p.brand) AS brand, MAX(p.product_type) AS product_type,
                 SUM(s.ordered_item_quantity) FILTER (
                     WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '28 days') AS u28,
@@ -21688,7 +22116,9 @@ def analytics_declining_styles(country: str = Query(default=None), channel: str 
               AND s.sale_date::date >= CURRENT_DATE - INTERVAL '56 days'
               AND """ + BASE_FILTERS + scf + schf + """
             GROUP BY p.style_name
-        ),
+        )"""
+    rows = run_query("""
+        WITH """ + sales_cte + """,
         stock AS (
             SELECT p.style_name, SUM(i.available) AS store_stock
             FROM all_inventory i
@@ -21785,19 +22215,27 @@ def analytics_sor_new_styles_l10(
     brand_pf = ""
     if brand:
         brand_pf = " AND LOWER(brand) = '" + brand.strip().lower().replace("'", "''") + "'"
-    raw = run_query(
-        """
-        WITH prod AS (
+    # Rollup fast path for the whole-history sales CTE (first_sale = first-EVER
+    # sale, so live SQL scans all of all_sales). rollup_style_velocity2 is the
+    # same aggregate per (style, country); this endpoint takes no country/
+    # channel params, so a fresh rollup always applies. The rollup build
+    # excludes the ''-style but the outer INNER JOIN with prod (style <> '')
+    # drops it anyway; all other 0-vs-NULL differences pass through the outer
+    # COALESCEs. min_schema=2: needs units_21d/units_30d/first_sale_date.
+    if _rollup_fresh("style_velocity", min_schema=2):
+        l10_sales_cte = """sales AS (
             SELECT style_name,
-                MAX(brand) AS brand,
-                MAX(collection) AS collection,
-                MAX(product_type) AS subcategory,
-                mode() WITHIN GROUP (ORDER BY style_number) AS style_number
-            FROM all_products_clean
-            WHERE style_name IS NOT NULL AND style_name <> ''""" + brand_pf + """
+                SUM(units_182d) AS units_6m,
+                ROUND(SUM(net_sales_182d)) AS sales_6m,
+                SUM(units_21d) AS units_3w,
+                SUM(units_30d) AS units_30d,
+                MAX(last_sale_date) AS last_sale,
+                MIN(first_sale_date) AS first_sale
+            FROM rollup_style_velocity2
             GROUP BY style_name
-        ),
-        sales AS (
+        )"""
+    else:
+        l10_sales_cte = """sales AS (
             SELECT p.style_name,
                 SUM(s.net_quantity) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '182 days') AS units_6m,
                 ROUND(SUM(s.net_sales_kes::numeric) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '182 days')) AS sales_6m,
@@ -21810,7 +22248,20 @@ def analytics_sor_new_styles_l10(
             WHERE p.style_name IS NOT NULL AND s.sale_kind IN ('sale','order')
               AND """ + BASE_FILTERS + """
             GROUP BY p.style_name
+        )"""
+    raw = run_query(
+        """
+        WITH prod AS (
+            SELECT style_name,
+                MAX(brand) AS brand,
+                MAX(collection) AS collection,
+                MAX(product_type) AS subcategory,
+                mode() WITHIN GROUP (ORDER BY style_number) AS style_number
+            FROM all_products_clean
+            WHERE style_name IS NOT NULL AND style_name <> ''""" + brand_pf + """
+            GROUP BY style_name
         ),
+        """ + l10_sales_cte + """,
         stock AS (
             SELECT COALESCE(m.style_name, i.style_name) AS style_name,
                 COALESCE(SUM(i.available) FILTER (WHERE i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)), 0) AS soh_stores,

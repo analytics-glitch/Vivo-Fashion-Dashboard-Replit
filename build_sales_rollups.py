@@ -17,6 +17,8 @@ into the incremental sync loop (sync_incremental.py).
 Usage:
     python3 build_sales_rollups.py            # refresh all rollups
     python3 build_sales_rollups.py rm_style   # refresh only the named rollup(s)
+    python3 build_sales_rollups.py --force    # rebuild even if the source
+                                              # watermark says nothing changed
 """
 import sys
 import logging
@@ -30,9 +32,14 @@ log = logging.getLogger("build_sales_rollups")
 
 def main():
     import api_pg
-    only = set(sys.argv[1:]) or None
-    log.info("Building sales rollups%s ...", (" (only=%s)" % ",".join(sorted(only))) if only else "")
-    results = api_pg.run_sales_rollup_refresh(only=only)
+    args = set(sys.argv[1:])
+    force = "--force" in args
+    args.discard("--force")
+    only = args or None
+    log.info("Building sales rollups%s%s ...",
+             (" (only=%s)" % ",".join(sorted(only))) if only else "",
+             " (force)" if force else "")
+    results = api_pg.run_sales_rollup_refresh(only=only, force=force)
     failed = False
     for name, outcome in results.items():
         if isinstance(outcome, str) and outcome.startswith("ERROR"):
