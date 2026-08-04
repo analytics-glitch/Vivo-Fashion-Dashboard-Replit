@@ -104,3 +104,10 @@ uri = "file://attached_assets/replenishment_report_junction_sarit_2026-08-03.xls
 type = "table"
 title = "Replenishment Report — Junction & Sarit, 3 Aug 2026"
 description = "Sales by SKU + SOH & recommended daily replenishment with reasons for non-recommended lines."
+
+[[outputs]]
+id = "TlqA52Pm8StUJn_Ef3KsR"
+uri = "file://docs/system-diagnosis-2026-08-04.md"
+type = "text"
+title = "System Diagnosis — 2026-08-04"
+description = "Full findings: production incident mechanism, architecture map, DB/table/query health, what's working, prioritized fixes."
