@@ -20,6 +20,7 @@ import hmac
 import base64
 import re
 import secrets
+import uuid
 import requests
 from urllib.parse import urlencode, quote
 
@@ -309,6 +310,66 @@ def get_direct_conn():
     return psycopg2.connect(
         _DATABASE_URL_DIRECT,
         options='-c standard_conforming_strings=on')
+
+# ── Pooler-safe single-flight claims ──────────────────────────────────────────
+# Session advisory locks (pg_try_advisory_lock) silently DO NOT WORK through a
+# transaction-mode pooler (PgBouncer / Neon pooled DATABASE_URL): every caller
+# "acquires" the lock because each statement runs on a fresh backend session.
+# In production DATABASE_URL_DIRECT is often unset, so even get_direct_conn()
+# goes through the pooler — which let ALL uvicorn workers run the heavy
+# deferred-startup + prewarm concurrently and saturate the DB (2026-08-04
+# incident). These claims use a plain table row with an expiry instead, which
+# is correct through any pooler.
+def _singleflight_claim(key, ttl_minutes=30):
+    """Try to claim `key`. Returns an owner token (truthy) for exactly one
+    concurrent caller, None for the losers. A stale claim (older than
+    ttl_minutes — e.g. a crashed winner) can be stolen. The token must be
+    passed to _singleflight_release so a late/expired ex-winner can never
+    delete a claim that was since stolen by another worker. Fail-open on DB
+    errors (better to run idempotent work twice than never)."""
+    owner = uuid.uuid4().hex
+    try:
+        conn = get_conn()
+        try:
+            conn.autocommit = True
+            cur = conn.cursor()
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS app_singleflight ("
+                " key text PRIMARY KEY, owner text NOT NULL,"
+                " claimed_at timestamptz NOT NULL)")
+            cur.execute(
+                "INSERT INTO app_singleflight (key, owner, claimed_at) "
+                "VALUES (%s, %s, now()) "
+                "ON CONFLICT (key) DO UPDATE SET owner = EXCLUDED.owner, "
+                "claimed_at = now() "
+                "WHERE app_singleflight.claimed_at < now() - (%s * interval '1 minute') "
+                "RETURNING key", (key, owner, ttl_minutes))
+            won = cur.fetchone() is not None
+            cur.close()
+            return owner if won else None
+        finally:
+            conn.close()
+    except Exception as e:
+        logging.getLogger("api_pg").warning(
+            "singleflight claim %s failed (%s) — failing open", key, e)
+        return owner
+
+
+def _singleflight_release(key, owner):
+    """Release `key` only if we still own it (owner token match)."""
+    try:
+        conn = get_conn()
+        try:
+            conn.autocommit = True
+            cur = conn.cursor()
+            cur.execute("DELETE FROM app_singleflight WHERE key = %s AND owner = %s",
+                        (key, owner))
+            cur.close()
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
 
 def _acquire_conn(timeout=5.0):
     """Get a pooled connection, waiting up to ``timeout`` seconds if the pool is
@@ -1672,48 +1733,34 @@ def _launch_deferred_startup():
         # locks that block every reader of all_products_clean etc. Gate the DDL
         # behind a Postgres advisory lock so only the FIRST worker runs the
         # steps; the rest skip (schema is already ensured by the winner).
-        _DEFERRED_STARTUP_LOCK_KEY = 0x5F0D_5741_2026  # arbitrary fixed key
-        _gate_conn = None
-        _got_gate = False
-        try:
-            _gate_conn = get_conn()
-            _gate_conn.autocommit = True
-            _gc = _gate_conn.cursor()
-            _gc.execute("SELECT pg_try_advisory_lock(%s)", (_DEFERRED_STARTUP_LOCK_KEY,))
-            _got_gate = bool(_gc.fetchone()[0])
-            _gc.close()
-        except Exception as _e:
-            log.warning("deferred startup gate check failed (%s) — running anyway", _e)
-            _got_gate = True  # fail open: better to run than to skip schema setup
-        if not _got_gate:
-            log.warning("Deferred startup: another worker holds the DDL lock — "
+        # Advisory locks are NOT pooler-safe (see _singleflight_claim): use the
+        # claim-row gate so exactly one worker/instance runs the steps even when
+        # DATABASE_URL routes through a transaction-mode pooler. TTL 30 min
+        # covers a crashed winner (steps normally finish well within that).
+        _GATE_KEY = "deferred_startup"
+        _gate_owner = _singleflight_claim(_GATE_KEY, ttl_minutes=30)
+        if not _gate_owner:
+            log.warning("Deferred startup: another worker holds the gate — "
                         "skipping migrations in this worker.")
-            if _gate_conn is not None:
-                try: _gate_conn.close()
-                except Exception: pass
             return
-        log.warning("Deferred startup: running %d steps in background…",
-                    len(_DEFERRED_STARTUP))
-        for fn in _DEFERRED_STARTUP:
-            name = getattr(fn, "__name__", str(fn))
-            step_t0 = time.time()
-            try:
-                fn()
-            except Exception as e:
-                log.error("deferred startup step %s failed: %s", name, e)
-            step_dt = time.time() - step_t0
-            if step_dt > 10:
-                log.warning("deferred startup step %s took %.1fs (possible "
-                            "lock contention)", name, step_dt)
-        log.warning("Deferred startup complete (%d steps, %.1fs)",
-                    len(_DEFERRED_STARTUP), time.time() - t0)
         try:
-            _rc = _gate_conn.cursor()
-            _rc.execute("SELECT pg_advisory_unlock(%s)", (_DEFERRED_STARTUP_LOCK_KEY,))
-            _rc.close()
-            _gate_conn.close()
-        except Exception:
-            pass
+            log.warning("Deferred startup: running %d steps in background…",
+                        len(_DEFERRED_STARTUP))
+            for fn in _DEFERRED_STARTUP:
+                name = getattr(fn, "__name__", str(fn))
+                step_t0 = time.time()
+                try:
+                    fn()
+                except Exception as e:
+                    log.error("deferred startup step %s failed: %s", name, e)
+                step_dt = time.time() - step_t0
+                if step_dt > 10:
+                    log.warning("deferred startup step %s took %.1fs (possible "
+                                "lock contention)", name, step_dt)
+            log.warning("Deferred startup complete (%d steps, %.1fs)",
+                        len(_DEFERRED_STARTUP), time.time() - t0)
+        finally:
+            _singleflight_release(_GATE_KEY, _gate_owner)
     threading.Thread(target=_runner, name="deferred-startup",
                      daemon=True).start()
 
@@ -4006,10 +4053,6 @@ ROLLUP_MAX_AGE_SEC = 2 * 3600    # rollups older than this → fall back to live
 # 2h matches the hourly refresh cadence with a 1-cycle grace margin. 25h was too
 # wide: a failed sync or a REBUILD_ON_BOOT with no immediate rollup refresh could
 # serve stale new/returning classifications all day before falling back to live.
-# Fixed key for the session advisory lock that serialises rollup refreshes (so a
-# manual run and the hourly sync subprocess never collide on the <table>_stage
-# tables). Arbitrary but stable; isolated from other advisory-lock keys.
-_ROLLUP_REFRESH_LOCK_KEY = 778201
 
 # A row of all_sales contributes to PA-style sales the same CASE expression for
 # its signed KES value (sale/order add total_sales, returns subtract returns).
@@ -4179,15 +4222,12 @@ def run_sales_rollup_refresh(only=None):
     locked = False
     try:
         _ensure_rollup_tables(conn)
-        # Serialise refreshes with a session advisory lock so a manual run and the
-        # hourly sync-loop subprocess can never overlap and collide on the shared
-        # <table>_stage tables (build-then-swap). try_lock so an overlapping caller
-        # skips cleanly instead of blocking.
-        lcur = conn.cursor()
-        lcur.execute("SELECT pg_try_advisory_lock(%s)", (_ROLLUP_REFRESH_LOCK_KEY,))
-        locked = bool(lcur.fetchone()[0])
-        lcur.close()
-        conn.commit()
+        # Serialise refreshes so a manual run and the hourly sync-loop subprocess
+        # never overlap and collide on the shared <table>_stage tables
+        # (build-then-swap). Uses the pooler-safe claim-row gate — session
+        # advisory locks silently no-op through a transaction-mode pooler
+        # (see _singleflight_claim). TTL 60 min > any refresh duration.
+        locked = _singleflight_claim("rollup_refresh", ttl_minutes=60)  # owner token or None
         if not locked:
             log.info("Rollup refresh skipped — another refresh holds the lock")
             return {"skipped": "refresh already in progress"}
@@ -4264,13 +4304,7 @@ def run_sales_rollup_refresh(only=None):
                 log.error("Rollup refresh failed for %s: %s", name, e)
     finally:
         if locked:
-            try:
-                ucur = conn.cursor()
-                ucur.execute("SELECT pg_advisory_unlock(%s)", (_ROLLUP_REFRESH_LOCK_KEY,))
-                ucur.close()
-                conn.commit()
-            except Exception:
-                pass
+            _singleflight_release("rollup_refresh", locked)
         conn.close()
     return results
 
