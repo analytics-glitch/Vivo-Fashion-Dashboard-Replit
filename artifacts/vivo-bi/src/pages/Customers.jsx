@@ -1071,13 +1071,13 @@ const Customers = () => {
                     sub={
                       churnEventsLoading
                         ? "computing…"
-                        : `No purchase in ${churnEvents?.churn_days ?? churnDays}+ days since`
+                        : `Hit ${churnEvents?.churn_days ?? churnDays} days since last purchase`
                     }
                     formula={
-                      `Churned This Period = customers whose last-ever purchase falls inside the ` +
-                      `selected date window AND who have since been silent for at least ${churnDays} days ` +
-                      `(as of today). These are customers who made their final known purchase in the period ` +
-                      `and are now considered churned. Respects country, channel and churn-days filters.`
+                      `Churned This Period = customers who crossed the ${churnDays}-day churn threshold ` +
+                      `during the selected date window — i.e. their ${churnDays}th day of silence since ` +
+                      `their last purchase falls inside the period, with no purchase made within that gap. ` +
+                      `They "entered" churn in this period. Respects country, channel and churn-days filters.`
                     }
                     value={churnEventsLoading ? "…" : fmtNum(churnEvents?.churned_count ?? 0)}
                     icon={UserMinus}

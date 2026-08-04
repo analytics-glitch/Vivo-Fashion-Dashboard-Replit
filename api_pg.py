@@ -12299,10 +12299,11 @@ def customers_churn_events(
 ):
     """Two-in-one: churned_in_period + unchurned_in_period counts.
 
-    churned_in_period  — customers whose MAX(sale_date) over ALL TIME falls in
-                         [date_from, date_to] AND who have since been silent for
-                         at least churn_days.  They made their final known
-                         purchase in the window and are now considered churned.
+    churned_in_period  — customers who CROSSED the churn threshold inside the
+                         window: their last purchase + churn_days lands in
+                         [date_from, date_to] and they made no purchase within
+                         that churn_days gap.  I.e. they "entered" churn during
+                         the period (works for recent windows too).
 
     unchurned_in_period — customers with a purchase inside the window after a
                           prior gap of >= churn_days.  They were churned but
@@ -12331,25 +12332,25 @@ def customers_churn_events(
               {country_filter}
               {channel_filter}
         ),
-        -- Each customer's last-ever purchase (over all time, all countries).
-        last_ever AS (
-            SELECT customer_id, MAX(d) AS last_d
-            FROM base_sales
-            GROUP BY customer_id
-        ),
-        -- Churned in period: last-ever purchase fell inside the window AND
-        -- (today - last_ever) >= churn_days, meaning they are now churned.
-        churned_in_period AS (
-            SELECT COUNT(DISTINCT customer_id) AS cnt
-            FROM last_ever
-            WHERE last_d BETWEEN '{date_from}'::date AND '{date_to}'::date
-              AND (CURRENT_DATE - last_d) >= {cd}
-        ),
-        -- Per-purchase LAG to detect reactivation gaps.
+        -- Per-purchase neighbours to detect churn-threshold crossings and
+        -- reactivation gaps.
         gaps AS (
             SELECT customer_id, d,
-                LAG(d) OVER (PARTITION BY customer_id ORDER BY d) AS prev_d
+                LAG(d)  OVER (PARTITION BY customer_id ORDER BY d) AS prev_d,
+                LEAD(d) OVER (PARTITION BY customer_id ORDER BY d) AS next_d
             FROM base_sales
+        ),
+        -- Churned in period: the customer hit churn_days of silence DURING the
+        -- window.  A purchase on day d starts a churn clock; the customer
+        -- "enters churn" on d + churn_days iff no purchase happened within
+        -- that gap.  Count customers whose churn-entry date falls in-window
+        -- (and that date is not in the future).
+        churned_in_period AS (
+            SELECT COUNT(DISTINCT customer_id) AS cnt
+            FROM gaps
+            WHERE (d + {cd}) BETWEEN '{date_from}'::date AND '{date_to}'::date
+              AND (d + {cd}) <= CURRENT_DATE
+              AND (next_d IS NULL OR (next_d - d) >= {cd})
         ),
         -- Unchurned in period: a purchase in-window preceded by a gap >=
         -- churn_days (i.e. the customer was churned, then came back).
