@@ -20,7 +20,7 @@ DATABASE_URL = os.environ["DATABASE_URL"]
 # would keep `sync_heartbeat` fresh even if the main cycle hangs, and the watchdog
 # would never recover a stalled Main-BI sync. So fabric gets its OWN separate
 # heartbeat table for /fabric observability. Both tables share the same shape.
-_HEARTBEAT_TABLES = ("sync_heartbeat", "fabric_heartbeat")
+_HEARTBEAT_TABLES = ("sync_heartbeat", "fabric_heartbeat", "sales_heartbeat")
 
 
 def ensure_heartbeat_table(conn, table="sync_heartbeat"):
@@ -305,6 +305,42 @@ FABRIC_HEAVY_TIMEOUT_SEC = int(os.environ.get("FABRIC_HEAVY_TIMEOUT_SEC", "900")
 # within ~1min (well under the 180s "running behind" banner threshold) instead of
 # refreshing only once per full sales/inventory cycle (10-15 min).
 FABRIC_WORKER_TICK_SEC = int(os.environ.get("FABRIC_WORKER_TICK_SEC", "20"))
+
+# ---------------------------------------------------------------------------
+# Dedicated sales fast-path worker (sales_worker_loop). Sales were only landing
+# in all_sales once per FULL main() cycle, and the cycle has grown from the
+# original ~1 min to 45-90 min (Shop Zetu inventory matching alone can run
+# ~20 min), so dashboard sales sat up to ~1.5h stale. Same cure as /fabric:
+# run the CHEAP sales pulls (Shopify stores + Odoo POS, ~5-30s total) on their
+# own ~60s daemon-thread timer with a short sliding watermark window, while the
+# main cycle keeps its wide multi-day self-healing anchors as the safety net.
+# _SALES_SYNC_LOCK serialises the worker and the main cycle so their
+# DELETE+INSERT passes over the same orders can never interleave (both paths
+# are idempotent, the lock just removes the race entirely). The worker writes
+# its OWN sales_heartbeat table — never sync_heartbeat — for the same reason
+# fabric does: an independent beat must not hide a stalled main cycle from the
+# watchdog.
+# ---------------------------------------------------------------------------
+import threading as _threading
+
+_SALES_SYNC_LOCK = _threading.Lock()
+SALES_WORKER_ENABLED = os.environ.get("SALES_WORKER_ENABLED", "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+)
+SALES_WORKER_TICK_SEC = int(os.environ.get("SALES_WORKER_TICK_SEC", "60"))
+# Sliding re-pull window per tick. New orders always carry a fresh
+# write_date/updated_at so 30 min is generous; anything older (rare late edits,
+# gap repairs) is covered by the main cycle's wide anchors each cycle.
+SALES_WORKER_WINDOW_MIN = int(os.environ.get("SALES_WORKER_WINDOW_MIN", "30"))
+# Shop Zetu rides ShopifyQL via a subprocess whose default window is ~4 days
+# (DELETE+INSERT per day) — heavier than the in-process pulls, so it runs on a
+# slower cadence inside the worker.
+SALES_WORKER_SZ_INTERVAL_SEC = int(os.environ.get("SALES_WORKER_SZ_INTERVAL_SEC", "300"))
+SALES_WORKER_SZ_TIMEOUT_SEC = int(os.environ.get("SALES_WORKER_SZ_TIMEOUT_SEC", "300"))
+_LAST_SALES_WORKER_SZ = None
+
 # Same once-per-minute guard for the fabric consumption/returns sheet override loader.
 _LAST_FABRIC_SHEET_EXTRACT = None
 _LAST_RECON_RUN = None  # date of the last nightly reconciliation run
@@ -641,9 +677,11 @@ def get_pos_location(store, order):
     return "vivowoman"
 
 
-def process_shopify_store(store, cur, now, rates):
+def process_shopify_store(store, cur, now, rates, since_override=None):
     store_id = store["store_id"]
-    since = get_last_sync(cur, store_id)
+    # since_override (sales_worker_loop fast path) = short sliding updated_at
+    # window; default (main cycle) = wide MAX(sale_date)-LOOKBACK_DAYS anchor.
+    since = since_override or get_last_sync(cur, store_id)
     log.info("Syncing %s since %s", store_id, since[:10])
 
     orders = fetch_orders(store["store_url"], store["token"], since)
@@ -830,7 +868,7 @@ def _dedup_all_sales_rows(rows):
     return out
 
 
-def sync_odoo(cur, now, rates):
+def sync_odoo(cur, now, rates, since_override=None):
     import xmlrpc.client
 
     ODOO_URL = os.environ["ODOO_URL"]
@@ -838,31 +876,39 @@ def sync_odoo(cur, now, rates):
     ODOO_USER = os.environ["ODOO_USER"]
     ODOO_PASS = os.environ["ODOO_PASSWORD"]
 
-    # Anchor `since` to the actual data coverage, NOT loaded_at alone: a full
-    # rebuild (transform_all_sales) resets every row's loaded_at to "today", which
-    # would push `since` ahead of the data we actually have (the raw Odoo source
-    # can lag a few days), permanently skipping orders in the gap. LEAST(loaded_at,
-    # sale_date) never runs ahead of real coverage, so the next sync self-heals.
-    cur.execute("""
-        SELECT LEAST(MAX(loaded_at::date), MAX(sale_date::date))
-        FROM all_sales WHERE store_id = 'vivofashiongroup'
-    """)
-    result = cur.fetchone()[0]
-    since = (
-        (result - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
-        if result
-        else "2026-03-19 00:00:00"
-    )
-
-    # One-off gap-repair overrides (e.g. backfilling a window the anchor has
-    # already run past). ODOO_SYNC_UNTIL bounds write_date so a repair run
-    # cannot collide with the live sync's recent window.
-    since = os.environ.get("ODOO_SYNC_SINCE", since)
-    until = os.environ.get("ODOO_SYNC_UNTIL")
-    if until and until <= since:
-        raise ValueError(
-            f"ODOO_SYNC_UNTIL ({until}) must be after the sync window start ({since})"
+    if since_override is not None:
+        # Fast-path caller (sales_worker_loop): short sliding write_date window.
+        # Skips the coverage-anchor query AND the ODOO_SYNC_SINCE/UNTIL repair
+        # overrides — those belong to the main cycle's wide self-healing pass,
+        # which still runs every cycle as the safety net.
+        since = since_override
+        until = None
+    else:
+        # Anchor `since` to the actual data coverage, NOT loaded_at alone: a full
+        # rebuild (transform_all_sales) resets every row's loaded_at to "today", which
+        # would push `since` ahead of the data we actually have (the raw Odoo source
+        # can lag a few days), permanently skipping orders in the gap. LEAST(loaded_at,
+        # sale_date) never runs ahead of real coverage, so the next sync self-heals.
+        cur.execute("""
+            SELECT LEAST(MAX(loaded_at::date), MAX(sale_date::date))
+            FROM all_sales WHERE store_id = 'vivofashiongroup'
+        """)
+        result = cur.fetchone()[0]
+        since = (
+            (result - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+            if result
+            else "2026-03-19 00:00:00"
         )
+
+        # One-off gap-repair overrides (e.g. backfilling a window the anchor has
+        # already run past). ODOO_SYNC_UNTIL bounds write_date so a repair run
+        # cannot collide with the live sync's recent window.
+        since = os.environ.get("ODOO_SYNC_SINCE", since)
+        until = os.environ.get("ODOO_SYNC_UNTIL")
+        if until and until <= since:
+            raise ValueError(
+                f"ODOO_SYNC_UNTIL ({until}) must be after the sync window start ({since})"
+            )
 
     log.info(
         "Odoo sync since %s%s", since[:10], f" until {until[:10]}" if until else ""
@@ -1956,6 +2002,129 @@ def fabric_worker_loop(stop_event=None):
             time.sleep(FABRIC_WORKER_TICK_SEC)
 
 
+def sales_worker_loop(stop_event=None):
+    """Dedicated ~60s sales fast-path, independent of the main cycle.
+
+    all_sales was only refreshed once per FULL main() cycle. The cycle was
+    designed around ~10-15 min but has grown to 45-90 min as heavy phases
+    accumulated (Shop Zetu inventory matching alone can run ~20 min), so
+    dashboard sales figures sat up to ~1.5 h behind the tills. The sales pulls
+    themselves are cheap (~5-30 s: Shopify country stores + Odoo POS), so —
+    exactly like fabric_worker_loop — they move onto their OWN ~60s timer, on
+    their OWN dedicated Postgres connection, in a daemon thread started once
+    alongside the sync loop.
+
+    Design points:
+    * Short sliding watermark per tick (SALES_WORKER_WINDOW_MIN, default 30
+      min): new orders always carry a fresh write_date/updated_at, so each tick
+      re-pulls only the recent edge (a handful of orders) instead of the main
+      cycle's multi-day anchors. Late edits and gap repairs remain the main
+      cycle's job — it still runs the wide self-healing pass every cycle.
+    * _SALES_SYNC_LOCK serialises worker ticks against the main cycle's sales
+      phase. Both paths are idempotent (DELETE by order_id + INSERT + intra-
+      batch dedup), the lock removes the interleaving race entirely. The
+      worker acquires non-blocking and SKIPS the tick if the cycle holds it.
+    * Shop Zetu runs via the ShopifyQL subprocess (default ~4-day window,
+      DELETE+INSERT per day) — heavier, so it fires every
+      SALES_WORKER_SZ_INTERVAL_SEC (default 5 min) instead of every tick.
+    * Heartbeat goes to the worker's OWN sales_heartbeat table, NEVER
+      sync_heartbeat — an independent beat must not hide a stalled main cycle
+      from the watchdog (same rule as fabric_heartbeat).
+    * Never dies: any error drops the (possibly broken) connection and the
+      next tick rebuilds it.
+    """
+    import sys as _sys
+    import subprocess as _subprocess
+
+    global _LAST_SALES_WORKER_SZ
+
+    log.info(
+        "Sales worker thread started (tick=%ss, window=%smin)",
+        SALES_WORKER_TICK_SEC,
+        SALES_WORKER_WINDOW_MIN,
+    )
+    conn = None
+    while stop_event is None or not stop_event.is_set():
+        acquired = False
+        try:
+            if conn is None or conn.closed:
+                conn = psycopg2.connect(DATABASE_URL)
+                ensure_heartbeat_table(conn, "sales_heartbeat")
+
+            acquired = _SALES_SYNC_LOCK.acquire(blocking=False)
+            if acquired:
+                now = datetime.now(timezone.utc)
+                window_start = now - timedelta(minutes=SALES_WORKER_WINDOW_MIN)
+                shopify_since = window_start.strftime("%Y-%m-%dT%H:%M:%SZ")
+                odoo_since = window_start.strftime("%Y-%m-%d %H:%M:%S")
+
+                with conn.cursor() as cur:
+                    rates = get_exchange_rates(cur)
+
+                    for store in STORES:
+                        try:
+                            process_shopify_store(
+                                store, cur, now, rates, since_override=shopify_since
+                            )
+                            conn.commit()
+                        except Exception as e:
+                            log.error(
+                                "Sales worker %s error: %s", store["store_id"], e
+                            )
+                            conn.rollback()
+
+                    try:
+                        sync_odoo(cur, now, rates, since_override=odoo_since)
+                        conn.commit()
+                    except Exception as e:
+                        log.error("Sales worker Odoo error: %s", e)
+                        conn.rollback()
+
+                    # Shop Zetu ShopifyQL — slower cadence (subprocess re-walks
+                    # a ~4-day window; ~10s normally, hard timeout so a hung
+                    # API walk can't wedge the worker).
+                    sz_due = (
+                        _LAST_SALES_WORKER_SZ is None
+                        or (now - _LAST_SALES_WORKER_SZ).total_seconds()
+                        >= SALES_WORKER_SZ_INTERVAL_SEC
+                    )
+                    if sz_due:
+                        _LAST_SALES_WORKER_SZ = now
+                        try:
+                            _subprocess.run(
+                                [
+                                    _sys.executable,
+                                    "/home/runner/workspace/extract_shopzetu_shopifyql.py",
+                                ],
+                                check=True,
+                                timeout=SALES_WORKER_SZ_TIMEOUT_SEC,
+                            )
+                            log.info("Sales worker: Shop Zetu ShopifyQL sync done")
+                        except Exception as e:
+                            log.error("Sales worker Shop Zetu error: %s", e)
+
+                write_heartbeat(conn, "sales", table="sales_heartbeat")
+        except Exception as e:
+            # Never let the sales worker die — drop the (possibly broken)
+            # connection and rebuild it on the next tick.
+            log.error("Sales worker loop error: %s", e)
+            try:
+                if conn is not None:
+                    conn.close()
+            except Exception:
+                pass
+            conn = None
+        finally:
+            if acquired:
+                _SALES_SYNC_LOCK.release()
+
+        if stop_event is not None:
+            if stop_event.wait(SALES_WORKER_TICK_SEC):
+                break
+        else:
+            time.sleep(SALES_WORKER_TICK_SEC)
+
+
 def main():
     conn = psycopg2.connect(DATABASE_URL)
     cur = conn.cursor()
@@ -2101,34 +2270,45 @@ def main():
     # the sync loop), independent of how long this cycle takes. It writes ONLY the
     # raw_fabric_* tables, so nothing here (Main BI) is affected.
 
-    for store in STORES:
+    # Sales pulls (Shopify stores / Shop Zetu / Odoo POS). The dedicated
+    # sales_worker_loop runs these same pulls every ~60s with a short sliding
+    # window for freshness; this in-cycle pass keeps the WIDE self-healing
+    # anchors (multi-day watermarks + ODOO_SYNC_SINCE/UNTIL repairs) as the
+    # safety net. _SALES_SYNC_LOCK serialises the two so a worker tick can
+    # never interleave with this pass's DELETE+INSERT on the same orders.
+    with _SALES_SYNC_LOCK:
+        for store in STORES:
+            try:
+                process_shopify_store(store, cur, now, rates)
+                conn.commit()
+                write_heartbeat(conn, f"store:{store['store_id']}")
+            except Exception as e:
+                log.error("Error syncing %s: %s", store["store_id"], e)
+                conn.rollback()
+
+        # Shop Zetu via ShopifyQL. Bounded: this runs while holding
+        # _SALES_SYNC_LOCK, so a hung API walk would otherwise stall the
+        # per-minute sales worker until someone notices. Normal run ~10-20s;
+        # 900s is generous headroom for slow days without risking a wedge.
         try:
-            process_shopify_store(store, cur, now, rates)
-            conn.commit()
-            write_heartbeat(conn, f"store:{store['store_id']}")
+            import subprocess, sys
+
+            subprocess.run(
+                [sys.executable, "/home/runner/workspace/extract_shopzetu_shopifyql.py"],
+                check=True,
+                timeout=900,
+            )
+            log.info("Shop Zetu ShopifyQL sync done")
         except Exception as e:
-            log.error("Error syncing %s: %s", store["store_id"], e)
+            log.error("Shop Zetu ShopifyQL sync error: %s", e)
+
+        try:
+            sync_odoo(cur, now, rates)
+            conn.commit()
+            write_heartbeat(conn, "odoo")
+        except Exception as e:
+            log.error("Odoo sync error: %s", e)
             conn.rollback()
-
-    # Shop Zetu via ShopifyQL
-    try:
-        import subprocess, sys
-
-        subprocess.run(
-            [sys.executable, "/home/runner/workspace/extract_shopzetu_shopifyql.py"],
-            check=True,
-        )
-        log.info("Shop Zetu ShopifyQL sync done")
-    except Exception as e:
-        log.error("Shop Zetu ShopifyQL sync error: %s", e)
-
-    try:
-        sync_odoo(cur, now, rates)
-        conn.commit()
-        write_heartbeat(conn, "odoo")
-    except Exception as e:
-        log.error("Odoo sync error: %s", e)
-        conn.rollback()
 
     # Categorise any new products
     try:
@@ -3326,6 +3506,18 @@ if __name__ == "__main__":
             target=fabric_worker_loop, name="fabric-worker", daemon=True
         )
         _fabric_thread.start()
+
+        # Dedicated ~60s sales fast-path (same rationale as the fabric worker):
+        # all_sales refreshes every minute regardless of how long the full
+        # sales/inventory cycle below takes. Continuous loop only — a --once
+        # recovery run must not spawn a competing worker.
+        if SALES_WORKER_ENABLED:
+            _sales_thread = threading.Thread(
+                target=sales_worker_loop, name="sales-worker", daemon=True
+            )
+            _sales_thread.start()
+        else:
+            log.info("Sales worker disabled (SALES_WORKER_ENABLED=0)")
 
         while True:
             try:
