@@ -163,6 +163,8 @@ The index set on `all_sales` matches how the app actually queries (SKU+date, sto
 
 ## 7. Prioritized action list
 
+**Status update (same day):** items 2–6 below are implemented and verified in dev (171-test suite green, architect review passed) — they ship with the next Republish.
+
 **Now (unblocks production):**
 1. **Republish.** Ships the single-flight startup fix, replaces stuck workers, boots at `API_WORKERS=1`. Publish diff is clean (only creates `app_singleflight`).
 

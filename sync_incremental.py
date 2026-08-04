@@ -1198,12 +1198,18 @@ def sync_odoo_customers_incremental(conn):
         "odoo_customer_extract",
     )
 
-    # Step 2 — gap-fill: Odoo partner IDs in all_sales not in raw_odoo_customers
+    # Step 2 — gap-fill: Odoo partner IDs in all_sales not in raw_odoo_customers.
+    # Windowed to the last 90 days: new customers only ever appear in RECENT
+    # sales, and older gaps were filled by previous runs — scanning the full
+    # multi-year all_sales (~1.3 GB) hourly was a guaranteed seq scan. On a
+    # fresh DB the incremental extract above re-fetches all partners anyway,
+    # so no historical gap can persist.
     with conn.cursor() as cur:
         cur.execute("""
             SELECT DISTINCT s.customer_id::bigint
             FROM all_sales s
             WHERE s.customer_id ~ '^[0-9]{1,8}$'
+              AND s.sale_date >= to_char(now() - interval '90 days', 'YYYY-MM-DD')
               AND NOT EXISTS (
                   SELECT 1 FROM raw_odoo_customers r
                   WHERE r.id = s.customer_id::bigint

@@ -246,11 +246,14 @@ from psycopg2 import pool as _pg_pool
 # pool is created PER process (fork), so total Neon connections =
 # API_WORKERS × MAX_DB_CONNECTIONS.  We derive the per-worker cap from a
 # total connection budget so the product never exceeds the Neon ceiling.
-# Defaults: 4 workers × 8 = 32 total connections (well below typical Neon
+# Defaults: 1 worker × 32 = 32 total connections (well below typical Neon
 # free-tier limit of 100; keeps slack for the sync loop + rollup subprocess).
+# The default matches watchdog.py's `_API_WORKERS` default; production pins
+# API_WORKERS=1 explicitly. Raising workers ALSO requires claim-gating the
+# cache prewarmer (each worker would otherwise warm the same caches N times).
 _TOTAL_DB_BUDGET = int(os.environ.get("TOTAL_DB_CONNECTIONS", "32"))
-_API_WORKERS_N   = int(os.environ.get("API_WORKERS", "4"))
-MAX_DB_CONNECTIONS = max(4, _TOTAL_DB_BUDGET // _API_WORKERS_N)  # e.g. 32//4 = 8
+_API_WORKERS_N   = int(os.environ.get("API_WORKERS", "1"))
+MAX_DB_CONNECTIONS = max(4, _TOTAL_DB_BUDGET // _API_WORKERS_N)  # e.g. 32//1 = 32
 
 _POOL = None
 _POOL_LOCK = threading.Lock()
@@ -1401,7 +1404,11 @@ async def clerk_auth_gate(request: Request, call_next):
     # refuse with a deterministic 503 rather than leaking a generic 500.
     token = _extract_session_token(request)
     try:
-        user = _user_for_session(token) if token else None
+        # Session resolution does blocking psycopg2 I/O. Run it in the worker
+        # threadpool so a busy/exhausted pool stalls THIS request instead of
+        # blocking the event loop (which would freeze every concurrent
+        # request on the worker, incl. health checks).
+        user = (await run_in_threadpool(_user_for_session, token)) if token else None
     except Exception:
         return JSONResponse(
             {"detail": "auth_store_unavailable"}, status_code=503)
@@ -22789,6 +22796,43 @@ def _require_admin(request: Request):
         raise HTTPException(status_code=403, detail="Administrator access required.")
 
 
+@app.get("/api/admin/slow-queries")
+def admin_slow_queries(request: Request):
+    """Admin diagnostics: the slowest queries on the database.
+
+    Combines two sources:
+    - ``pg_stat_statements`` top-20 by total time (the only per-query telemetry
+      available on the Neon pooler; degrades gracefully when unreachable).
+    - the in-process slow-query ring (every query ≥ SLOW_QUERY_WARN_SEC that
+      run_query recorded on THIS worker).
+    Added after the 2026-08-04 saturation incident, where the lack of per-query
+    visibility turned a slowdown diagnosis into guesswork.
+    """
+    _require_admin(request)
+    out = {"recent_in_process": list(_slow_queries)[:20]}
+    try:
+        # NB: run_query executes with no params — literal % must be doubled.
+        out["pg_stat_statements"] = run_query(
+            "SELECT left(regexp_replace(query, '\\s+', ' ', 'g'), 300) AS query,"
+            " calls,"
+            " round(total_exec_time::numeric, 1) AS total_ms,"
+            " round(mean_exec_time::numeric, 1) AS mean_ms,"
+            " round(max_exec_time::numeric, 1) AS max_ms,"
+            " round((100.0 * shared_blks_hit /"
+            "       nullif(shared_blks_hit + shared_blks_read, 0))::numeric, 1)"
+            "   AS cache_hit_pct"
+            " FROM pg_stat_statements"
+            " WHERE query NOT ILIKE '%%pg_stat_statements%%'"
+            " ORDER BY total_exec_time DESC LIMIT 20",
+            ttl=300)
+        out["pg_stat_statements_available"] = True
+    except Exception as e:
+        out["pg_stat_statements"] = []
+        out["pg_stat_statements_available"] = False
+        out["pg_stat_statements_error"] = str(e)[:300]
+    return out
+
+
 @app.get("/api/pool-status")
 def pool_status(request: Request):
     _require_admin(request)
@@ -26789,7 +26833,7 @@ async def projection_ai_post(request: Request):
 # Frontend-API calls through our own domain so Clerk works on .replit.app /
 # custom domains without CNAME DNS. Inactive in development (Clerk proxying
 # only works for production instances) and when no secret key is configured.
-import requests
+import httpx
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import Response as _StarletteResponse
 
@@ -26800,6 +26844,31 @@ _HOP_BY_HOP = {
     "te", "trailers", "transfer-encoding", "upgrade", "content-encoding",
     "content-length",
 }
+
+# Shared async client for the Clerk proxy. Fully async (no run_in_threadpool),
+# so Clerk traffic NEVER occupies the shared anyio worker-thread pool — that
+# coupling is what turned the 2026-08-04 DB saturation into a login outage
+# (stuck threads queued the sign-in check forever → blank dashboard).
+_CLERK_HTTP: "httpx.AsyncClient | None" = None
+
+
+def _clerk_http() -> httpx.AsyncClient:
+    global _CLERK_HTTP
+    if _CLERK_HTTP is None:
+        _CLERK_HTTP = httpx.AsyncClient(
+            timeout=httpx.Timeout(20.0, connect=10.0),
+            follow_redirects=False,
+            headers={"Accept-Encoding": "gzip, deflate"},
+        )
+    return _CLERK_HTTP
+
+
+@app.on_event("shutdown")
+async def _close_clerk_http():
+    global _CLERK_HTTP
+    if _CLERK_HTTP is not None:
+        await _CLERK_HTTP.aclose()
+        _CLERK_HTTP = None
 
 
 def _clerk_proxy_enabled() -> bool:
@@ -26831,17 +26900,15 @@ async def clerk_frontend_proxy(clerk_path: str, request: Request):
     }
     fwd_headers["Clerk-Proxy-Url"] = proxy_url
     fwd_headers["Clerk-Secret-Key"] = os.environ["CLERK_SECRET_KEY"]
-    # Restrict the upstream response to encodings the Python `requests`/urllib3
-    # stack transparently decodes. Browsers advertise `br`/`zstd`, which
-    # `requests` does NOT decompress — it would then hand us the raw compressed
-    # bytes, and since we strip the `Content-Encoding` response header below
-    # (it's hop-by-hop), the browser would receive compressed binary with no way
-    # to decode it and try to parse it as JS. That manifests as
-    # `Uncaught SyntaxError: Unexpected token '%' (at clerk.browser.js:1:2)` and
-    # `Clerk: Failed to load Clerk JS`, leaving the app stuck on the auth-loading
-    # screen in production (the proxy is dev-disabled, so dev never hits this).
-    # gzip/deflate/identity are all decoded by `requests` into the plain bytes we
-    # relay, so the browser always receives valid, uncompressed content.
+    # Restrict the upstream response to encodings httpx transparently decodes.
+    # Browsers advertise `br`/`zstd`; if we relayed those raw bytes while
+    # stripping the `Content-Encoding` response header below (it's hop-by-hop),
+    # the browser would receive compressed binary it can't decode and try to
+    # parse it as JS — `Uncaught SyntaxError: Unexpected token '%' (at
+    # clerk.browser.js:1:2)`, `Clerk: Failed to load Clerk JS`, app stuck on
+    # the auth-loading screen in production (the proxy is dev-disabled, so dev
+    # never hits this). gzip/deflate are decoded by httpx into the plain bytes
+    # we relay, so the browser always receives valid, uncompressed content.
     fwd_headers["Accept-Encoding"] = "gzip, deflate"
     xff = request.headers.get("x-forwarded-for")
     client_ip = (xff.split(",")[0].strip() if xff else None) or (
@@ -26852,17 +26919,18 @@ async def clerk_frontend_proxy(clerk_path: str, request: Request):
 
     body = await request.body()
 
-    def _do_request():
-        return requests.request(
+    # Fully async upstream call — no worker-thread pool involved (see
+    # _clerk_http above for why that matters).
+    try:
+        upstream = await _clerk_http().request(
             request.method,
             target,
             headers=fwd_headers,
-            data=body if body else None,
-            timeout=20,
-            allow_redirects=False,
+            content=body if body else None,
         )
-
-    upstream = await run_in_threadpool(_do_request)
+    except httpx.HTTPError:
+        return JSONResponse({"detail": "clerk_upstream_unavailable"},
+                            status_code=503)
     resp_headers = {
         k: v for k, v in upstream.headers.items()
         if k.lower() not in _HOP_BY_HOP
