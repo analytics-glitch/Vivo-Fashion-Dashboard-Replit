@@ -98,7 +98,7 @@ except ValueError:
     log.warning("Invalid REBUILD_TIMEOUT_SEC — falling back to 5400")
     REBUILD_TIMEOUT = 5400
 
-_API_WORKERS = os.environ.get("API_WORKERS", "4")
+_API_WORKERS = os.environ.get("API_WORKERS", "1")  # 1 = stable default; multi-worker needs shared cache + the startup advisory-lock guard (both now in place) before raising
 API_CMD = [
     sys.executable, "-m", "uvicorn", "api_pg:app",
     "--app-dir", ROOT, "--host", "0.0.0.0", "--port", str(API_PORT),
