@@ -11691,7 +11691,7 @@ def analytics_rebalancing():
             SELECT style_name, SUM(units_182d) AS units_182
             FROM rollup_style_velocity2
             GROUP BY style_name
-        ),"""
+        )"""
     else:
         _reb_last_sale_cte = """
         last_sale AS (
@@ -11709,7 +11709,7 @@ def analytics_rebalancing():
             JOIN all_products_clean p ON s.variant_sku = p.sku
             WHERE s.sale_kind IN ('sale','order')
             GROUP BY p.style_name
-        ),"""
+        )"""
     rows = run_query("""
         WITH store_inv AS (
             SELECT i.pos_location_name                                           AS store,
