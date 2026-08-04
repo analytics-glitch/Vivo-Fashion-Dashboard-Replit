@@ -34340,6 +34340,12 @@ def _st_is_privileged(request):
     }
 
 
+# TEMPORARILY DISABLED 2026-08-04 (user request): the ≥90% warehouse-transfer
+# gate is off so old styles that already shipped warehouse→stores can be moved
+# to Warehouse status during cleanup. RESTORE by setting this back to True.
+_ST_WAREHOUSE_GATE_ENABLED = False
+
+
 def _style_warehouse_pct(style_name, quantity):
     """Fraction (0–100) of the style's order qty in Warehouse Finished Goods.
     Returns (pct_float, wh_units). Best-effort — returns (0.0, 0) on failure.
@@ -34852,7 +34858,8 @@ async def style_tracker_update(style_id: int, request: Request):
         fields.setdefault("deliver_by", fields["order_date"] + timedelta(days=14))
     # Warehouse gate: must have ≥90% of order qty transferred to warehouse
     new_status = fields.get("status")
-    if new_status == "Warehouse" and ex.get("status") != "Warehouse":
+    if (_ST_WAREHOUSE_GATE_ENABLED
+            and new_status == "Warehouse" and ex.get("status") != "Warehouse"):
         pct, wh_units = _style_warehouse_pct(ex["style_name"], ex["quantity"])
         if pct < 90.0:
             return JSONResponse({
@@ -35021,7 +35028,7 @@ def style_tracker_warehouse_pct_endpoint(style_id: int):
         "pct": round(pct, 1),
         "wh_units": wh_units,
         "quantity": s["quantity"],
-        "meets_threshold": pct >= 90.0,
+        "meets_threshold": (pct >= 90.0) or (not _ST_WAREHOUSE_GATE_ENABLED),
     }
 
 
