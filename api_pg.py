@@ -4126,25 +4126,6 @@ def _ensure_rollup_tables(conn):
             current_price numeric, current_price_date date,
             PRIMARY KEY (style_name, country)
         );
-        CREATE TABLE IF NOT EXISTS rollup_sku_velocity2 (
-            pos_location_name text,
-            variant_sku       text,
-            last_sale_date    date,
-            units_28d         int,
-            units_56d         int,
-            units_182d        int,
-            PRIMARY KEY (pos_location_name, variant_sku)
-        );
-        CREATE TABLE IF NOT EXISTS rollup_style_velocity2 (
-            style_name     text,
-            country        text,
-            units_28d      int,
-            units_56d      int,
-            units_182d     int,
-            net_sales_182d numeric,
-            last_sale_date date,
-            PRIMARY KEY (style_name, country)
-        );
     """)
     conn.commit()
     cur.close()
@@ -4183,6 +4164,37 @@ def run_sales_rollup_refresh(only=None):
             stage = table + "_stage"
             try:
                 cur = conn.cursor()
+                # rollup_sku_velocity2 / rollup_style_velocity2 are intentionally
+                # excluded from _ensure_rollup_tables (which runs at startup) so
+                # Replit's publish migration never sees them as "missing from prod"
+                # and races the live app with a plain CREATE TABLE.  Create them
+                # lazily here on the first refresh instead.
+                _lazy_rollup_ddl = {
+                    "sku_velocity": """
+                        CREATE TABLE IF NOT EXISTS rollup_sku_velocity2 (
+                            pos_location_name text NOT NULL,
+                            variant_sku       text NOT NULL,
+                            last_sale_date    date,
+                            units_28d         int,
+                            units_56d         int,
+                            units_182d        int,
+                            PRIMARY KEY (pos_location_name, variant_sku)
+                        )""",
+                    "style_velocity": """
+                        CREATE TABLE IF NOT EXISTS rollup_style_velocity2 (
+                            style_name     text NOT NULL,
+                            country        text NOT NULL,
+                            units_28d      int,
+                            units_56d      int,
+                            units_182d     int,
+                            net_sales_182d numeric,
+                            last_sale_date date,
+                            PRIMARY KEY (style_name, country)
+                        )""",
+                }
+                if name in _lazy_rollup_ddl:
+                    cur.execute(_lazy_rollup_ddl[name])
+                    conn.commit()
                 cur.execute("DROP TABLE IF EXISTS " + stage)
                 cur.execute("CREATE TABLE " + stage + " (LIKE " + table + " INCLUDING DEFAULTS)")
                 cur.execute("INSERT INTO " + stage + " " + select_sql)
