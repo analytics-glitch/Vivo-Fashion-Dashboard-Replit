@@ -128,6 +128,29 @@ def _ensure_fabric_tables(conn):
                 updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
                 PRIMARY KEY (product_id, location_name)
             )""")
+        # Indexes on the core fabric read tables — wrapped in a DO/IF guard
+        # so they are safe to create even when the Odoo extract hasn't run
+        # yet (tables absent = guard fires, no error). IF NOT EXISTS makes
+        # every subsequent call a no-op once _FABRIC_TABLES_READY is set.
+        cur.execute("""
+            DO $$
+            BEGIN
+                IF to_regclass('public.raw_fabric_moves') IS NOT NULL THEN
+                    CREATE INDEX IF NOT EXISTS idx_rfm_product_id
+                        ON raw_fabric_moves(product_id);
+                    CREATE INDEX IF NOT EXISTS idx_rfm_date
+                        ON raw_fabric_moves(date);
+                    CREATE INDEX IF NOT EXISTS idx_rfm_move_types
+                        ON raw_fabric_moves(move_type, location_from, location_to);
+                END IF;
+                IF to_regclass('public.raw_fabric_inventory') IS NOT NULL THEN
+                    CREATE INDEX IF NOT EXISTS idx_rfi_product_id
+                        ON raw_fabric_inventory(product_id);
+                    CREATE INDEX IF NOT EXISTS idx_rfi_location_name
+                        ON raw_fabric_inventory(location_name);
+                END IF;
+            END $$;
+        """)
     conn.commit()
     _FABRIC_TABLES_READY = True
 
@@ -285,6 +308,12 @@ def _get_conn():
     import importlib
     api = importlib.import_module('api_pg')
     return api.get_conn()
+
+def _get_api():
+    """Lazy import of api_pg to access the shared SWR cache layer."""
+    import sys, importlib
+    sys.path.insert(0, '/home/runner/workspace')
+    return importlib.import_module('api_pg')
 
 _MO_CONS_COLS_READY = False
 
@@ -616,9 +645,10 @@ def _months_of_cover_prev_month(conn, fabric_stock_kg, scope="main", product_ids
         cover_status = "overstocked"
     else:
         cover_status = "no_data"
-    mon_label = q(conn, """
-        SELECT to_char(date_trunc('month', CURRENT_DATE) - INTERVAL '1 month', 'YYYY-MM') AS mon
-    """)[0]['mon']
+    # Derive the previous-month label in Python — no extra DB round-trip.
+    _today = datetime.date.today()
+    _prev = _today.replace(day=1) - datetime.timedelta(days=1)
+    mon_label = _prev.strftime('%Y-%m')
     return {
         "months_of_cover_prev_month": round(cover_now, 2) if cover_now is not None else None,
         "months_of_cover_prev_month_status": cover_status,
@@ -1126,6 +1156,11 @@ def cover_snapshot_lookup(date: str = Query(default=None)):
 @fabric_router.get("/api/fabric/summary")
 def summary(location: str = Query(default="RMAT/Stock"),
             scope: str = Query(default="main")):
+    _api = _get_api()
+    _ck = f"fabric:summary:{location}:{scope}"
+    _hit = _api.cache_get(_ck)
+    if _hit is not None:
+        return _hit
     with _get_conn() as conn:
         _ensure_fabric_sheet(conn)
         # Capture the requested support-scope BEFORE `scope` is reused below as the
@@ -1423,7 +1458,7 @@ def summary(location: str = Query(default="RMAT/Stock"),
             basic_cover_status = "no_match"
 
         # Headline KPIs reflect the selected scope; All = RMAT + Dead.
-        return {
+        _result = {
             "fabric_stock_kg": round(sum(r['qty_kg'] or 0 for r in scope), 1),
             "fabric_stock_metres": round(sum(r['qty_metres'] or 0 for r in scope)),
             "fabric_stock_value": round(sum(r['value_kes'] or 0 for r in scope)),
@@ -1470,6 +1505,8 @@ def summary(location: str = Query(default="RMAT/Stock"),
             **cover,
             **cover_prev,
         }
+        _api.cache_set(_ck, _result, ttl=90)
+        return _result
 
 # ── Fabrics excluded from the Avg cost/metre figure (missing Width/GSM) ──────
 # Companion download for the "N missing Width/GSM excluded" note on the Avg
@@ -3458,6 +3495,13 @@ def register(
     # Consumption window for the cover columns — same preset set as the Fabric mix
     # page (30/90/180/365), clamped identically so both pages reconcile.
     days = max(1, min(int(days or 90), 730))
+    _api = _get_api()
+    _ck = (f"fabric:register:{category}:{subcategory}:{plain_print}:{weight_range}:"
+           f"{fabric_color}:{supplier}:{structure}:{location}:{search}:"
+           f"{min_qty}:{sort}:{dir}:{days}:{limit}:{offset}:{scope}")
+    _hit = _api.cache_get(_ck)
+    if _hit is not None:
+        return _hit
     with _get_conn() as conn:
         # The register's `resv` CTE reads fabric_reservations; ensure it exists even
         # on a fresh DB where no reservation endpoint has been hit yet.
@@ -3526,6 +3570,11 @@ def register(
               FROM fabric_reservations
               WHERE status='active'
               GROUP BY product_id
+            ), last_move_cte AS (
+              SELECT lm.product_id, MAX(lm.date)::date AS last_move
+              FROM raw_fabric_moves lm
+              WHERE {_real_move_sql('lm')}
+              GROUP BY lm.product_id
             )
             SELECT 
               p.id, p.name, p.default_code, p.barcode,
@@ -3554,12 +3603,13 @@ def register(
                    ELSE NULL END as months_cover,
               ROUND(COALESCE(rv.reserved_kg,0)::numeric,2) as team_reserved_kg,
               ROUND(CASE WHEN p.kg_per_mtr_eff>0 THEN COALESCE(rv.reserved_kg,0)/p.kg_per_mtr_eff ELSE NULL END::numeric,1) as team_reserved_metres,
-              (SELECT MAX(date)::date FROM raw_fabric_moves m WHERE m.product_id=i.product_id AND {_real_move_sql('m')}) as last_move,
-              CURRENT_DATE - (SELECT MAX(date)::date FROM raw_fabric_moves m WHERE m.product_id=i.product_id AND {_real_move_sql('m')}) as days_since_move
+              lmc.last_move AS last_move,
+              CURRENT_DATE - lmc.last_move AS days_since_move
             FROM raw_fabric_inventory i
             JOIN raw_fabric_products p ON p.id = i.product_id
             LEFT JOIN cons_win c ON c.product_id = i.product_id
             LEFT JOIN resv rv ON rv.product_id = i.product_id
+            LEFT JOIN last_move_cte lmc ON lmc.product_id = i.product_id
             WHERE {' AND '.join(where)}
             {order_by}
             LIMIT %s OFFSET %s
@@ -3571,15 +3621,22 @@ def register(
             WHERE {' AND '.join(where)}
         """, params)[0]['n']
 
-        return {"total": total, "items": rows}
+        _result = {"total": total, "items": rows}
+        _api.cache_set(_ck, _result, ttl=60)
+        return _result
 
 # ── Ageing ──────────────────────────────────────────────────
 @fabric_router.get("/api/fabric/ageing")
 def ageing(location: str = Query(default="RMAT/Stock"),
            scope: str = Query(default="main")):
+    _api = _get_api()
+    _ck = f"fabric:ageing:{location}:{scope}"
+    _hit = _api.cache_get(_ck)
+    if _hit is not None:
+        return _hit
     with _get_conn() as conn:
         loc_sql, loc_params = _loc_filter(location)
-        return q(conn, f"""
+        _result = q(conn, f"""
             SELECT 
               CASE 
                 WHEN days_since <= 90  THEN '0-3 months'
@@ -3619,6 +3676,8 @@ def ageing(location: str = Query(default="RMAT/Stock"),
             GROUP BY age_band, sort_order
             ORDER BY sort_order
         """, loc_params)
+        _api.cache_set(_ck, _result, ttl=120)
+        return _result
 
 # ── Consumption over time ───────────────────────────────────
 @fabric_router.get("/api/fabric/consumption")
@@ -3628,6 +3687,11 @@ def consumption(
     group_by: str = Query(default="month"),
     scope: str = Query(default="main"),
 ):
+    _api = _get_api()
+    _ck = f"fabric:consumption:{since}:{until}:{group_by}:{scope}"
+    _hit = _api.cache_get(_ck)
+    if _hit is not None:
+        return _hit
     with _get_conn() as conn:
         _ensure_fabric_sheet(conn)
         kg_expr = _net_kg("m")  # net of returns: +OUT, −production returns
@@ -3646,21 +3710,25 @@ def consumption(
                    if group_by == "category"
                    else "COALESCE(NULLIF(m.product_name,''),'Unknown')")
             limit = "" if group_by == "category" else "LIMIT 50"
-            return q(conn, f"""
+            _result = q(conn, f"""
                 SELECT {dim} as period, {metrics}
                 FROM {EFFECTIVE_MOVES} m
                 LEFT JOIN raw_fabric_products p ON p.id = m.product_id
                 WHERE {base_where}
                 GROUP BY 1 ORDER BY qty_kg DESC NULLS LAST {limit}
             """, (since, until))
+            _api.cache_set(_ck, _result, ttl=120)
+            return _result
         trunc = {"day": "day", "week": "week"}.get(group_by, "month")
-        return q(conn, f"""
+        _result = q(conn, f"""
             SELECT DATE_TRUNC('{trunc}', m.date)::date as period, {metrics}
             FROM {EFFECTIVE_MOVES} m
             LEFT JOIN raw_fabric_products p ON p.id = m.product_id
             WHERE {base_where}
             GROUP BY 1 ORDER BY 1
         """, (since, until))
+        _api.cache_set(_ck, _result, ttl=120)
+        return _result
 
 # ── Consumption sources: today's move-level audit CSV ───────
 @fabric_router.get("/api/fabric/consumption-sources.csv")
@@ -3717,6 +3785,11 @@ def category_stock_consumption(
     (warehouse-wide, trailing N days). Derived %s / cover / SOR / variance / risk
     are computed client-side from these raw kg figures + the returned totals."""
     days = max(1, min(int(days or 30), 730))
+    _api = _get_api()
+    _ck = f"fabric:cat-stock:{location}:{days}:{scope}"
+    _hit = _api.cache_get(_ck)
+    if _hit is not None:
+        return _hit
     with _get_conn() as conn:
         _ensure_fabric_sheet(conn)
         loc_sql, loc_params = _loc_filter(location)
@@ -3770,12 +3843,14 @@ def category_stock_consumption(
             out.append(c)
         out.sort(key=lambda c: c["consumed_kg"], reverse=True)
 
-        return {
+        _result = {
             "days": days,
             "total_stock_kg": round(sum(c["stock_kg"] for c in out), 1),
             "total_consumed_kg": round(sum(c["consumed_kg"] for c in out), 1),
             "categories": out,
         }
+        _api.cache_set(_ck, _result, ttl=90)
+        return _result
 
 # ── Fabric mix (consumption share vs stock share) ───────────
 # A group is "idle" when it holds available stock but recorded ~zero net
@@ -3831,6 +3906,11 @@ def fabric_mix(
     else:
         days = max(1, min(int(days or 90), 730))
     months = days / DAYS_PER_MONTH
+    _api = _get_api()
+    _ck = f"fabric:mix:{group_by}:{days}:{location}:{date_from}:{date_to}:{scope}"
+    _hit = _api.cache_get(_ck)
+    if _hit is not None:
+        return _hit
     with _get_conn() as conn:
         _ensure_fabric_sheet(conn)
         # The per-product detail query (below) joins fabric_reservations, which is
@@ -4090,6 +4170,11 @@ def fabric_mix(
                   FROM raw_fabric_inventory i
                   WHERE i.product_id = ANY(%s) {loc_sql}
                   GROUP BY i.product_id
+                ), last_move_cte AS (
+                  SELECT lm.product_id, MAX(lm.date)::date AS last_move
+                  FROM raw_fabric_moves lm
+                  WHERE {_real_move_sql('lm')}
+                  GROUP BY lm.product_id
                 )
                 SELECT
                   p.id, p.name, p.default_code, p.barcode, p.fabric_category, p.fabric_subcategory,
@@ -4118,12 +4203,13 @@ def fabric_mix(
                        ELSE NULL END as months_cover,
                   ROUND(COALESCE(rv.reserved_kg,0)::numeric,2) as team_reserved_kg,
                   ROUND(CASE WHEN p.kg_per_mtr_eff>0 THEN COALESCE(rv.reserved_kg,0)/p.kg_per_mtr_eff ELSE NULL END::numeric,1) as team_reserved_metres,
-                  (SELECT MAX(date)::date FROM raw_fabric_moves mm WHERE mm.product_id=p.id AND {_real_move_sql('mm')}) as last_move,
-                  CURRENT_DATE - (SELECT MAX(date)::date FROM raw_fabric_moves mm WHERE mm.product_id=p.id AND {_real_move_sql('mm')}) as days_since_move
+                  lmc.last_move AS last_move,
+                  CURRENT_DATE - lmc.last_move AS days_since_move
                 FROM raw_fabric_products p
                 LEFT JOIN inv ON inv.product_id = p.id
                 LEFT JOIN cons_win c ON c.product_id = p.id
                 LEFT JOIN resv rv ON rv.product_id = p.id
+                LEFT JOIN last_move_cte lmc ON lmc.product_id = p.id
                 WHERE p.id = ANY(%s)
             """, [pids] + list(loc_params) + [pids])
             for dr in det_rows:
@@ -4209,7 +4295,7 @@ def fabric_mix(
                 row["subcategories"] = subs
                 out.append(row)
             out.sort(key=lambda r: r["consumption_metres"], reverse=True)
-        return {
+        _result = {
             "group_by": group_by,
             "days": days,
             "months": round(months, 2),
@@ -4226,6 +4312,8 @@ def fabric_mix(
             "total_tied_up_kes": round(tot_kes),
             "rows": out,
         }
+        _api.cache_set(_ck, _result, ttl=90)
+        return _result
 
 # ── Data quality: fabrics missing kg-per-metre ──────────────
 @fabric_router.get("/api/fabric/data-quality/missing-kg-per-metre")
@@ -4265,6 +4353,11 @@ def missing_kg_per_metre(scope: str = Query(default="main")):
               FROM raw_fabric_moves mm
               WHERE mm.location_to IN ({", ".join(["%s"] * len(_FABRIC_LOCATIONS))})
               ORDER BY mm.product_id, mm.date DESC NULLS LAST
+            ), last_move_cte AS (
+              SELECT lm.product_id, MAX(lm.date)::date AS last_move
+              FROM raw_fabric_moves lm
+              WHERE {_real_move_sql('lm')}
+              GROUP BY lm.product_id
             )
             SELECT
               p.id, p.default_code, p.name,
@@ -4275,11 +4368,12 @@ def missing_kg_per_metre(scope: str = Query(default="main")):
               ll.last_known_location AS last_known_location,
               ROUND(COALESCE(st.stock_kg,0)::numeric,1) AS stock_kg,
               ROUND(GREATEST(COALESCE(us.usage_kg,0),0)::numeric,1) AS usage_kg,
-              (SELECT MAX(date)::date FROM raw_fabric_moves mm WHERE mm.product_id=p.id AND {_real_move_sql('mm')}) AS last_move
+              lmc.last_move AS last_move
             FROM raw_fabric_products p
             LEFT JOIN stock st ON st.product_id = p.id
             LEFT JOIN usage us ON us.product_id = p.id
             LEFT JOIN last_loc ll ON ll.product_id = p.id
+            LEFT JOIN last_move_cte lmc ON lmc.product_id = p.id
             WHERE p.kg_per_mtr_eff IS NULL
               AND p.category = 'Fabric'
               AND {_scope_sql(scope)}
@@ -5194,6 +5288,11 @@ def where_used(component: str = Query(...)):
 # ── Purchase-order delivery performance ─────────────────────
 @fabric_router.get("/api/fabric/po-performance")
 def po_performance(scope: str = Query(default="main")):
+    _api = _get_api()
+    _ck = f"fabric:po-perf:{scope}"
+    _hit = _api.cache_get(_ck)
+    if _hit is not None:
+        return _hit
     with _get_conn() as conn:
         kpis = q(conn, f"""
             SELECT
@@ -5218,7 +5317,9 @@ def po_performance(scope: str = Query(default="main")):
             WHERE po.state != 'cancel' AND p.category = 'Fabric' AND {_scope_sql(scope)} AND po.order_date IS NOT NULL
             GROUP BY 1 ORDER BY 1
         """)
-        return {"kpis": kpis, "by_month": by_month}
+        _result = {"kpis": kpis, "by_month": by_month}
+        _api.cache_set(_ck, _result, ttl=120)
+        return _result
 
 # ── Supplier rollup (outstanding exposure) ──────────────────
 @fabric_router.get("/api/fabric/suppliers")
