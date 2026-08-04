@@ -5931,28 +5931,72 @@ def get_product_image(sku: str):
                     headers={"Cache-Control": "public, max-age=604800"})
 
 
+def _gallery_attach_launch_dates(items):
+    """Attach ``first_sale`` (ISO date string or None) to each catalogue card
+    dict — the launch-date fallback, since all_products_clean.style_launch_date
+    is unpopulated (0 of ~73k rows as of Aug 2026). "Launched" = first ever sale
+    of ANY size in the card's style+colour, the same fallback the analytics
+    endpoints use. One page-scoped grouped query (sales joined by SKU — the
+    catalog↔sales contract) keeps it a few ms per page."""
+    pairs = sorted({
+        ((r.get("style_name") or "").lower(), (r.get("color") or "").lower())
+        for r in items if r.get("style_name")
+    })
+    if not pairs:
+        return
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT LOWER(p.style_name), LOWER(COALESCE(p.color_print,'')), "
+            "       MIN(s.sale_date::date)::text "
+            "FROM all_products_clean p "
+            "JOIN all_sales s ON s.variant_sku = p.sku "
+            "               AND s.sale_kind IN ('sale','order') "
+            "WHERE (LOWER(p.style_name), LOWER(COALESCE(p.color_print,''))) IN %s "
+            "GROUP BY 1, 2",
+            (tuple(pairs),),
+        )
+        first = {(r[0], r[1]): r[2] for r in cur.fetchall()}
+    finally:
+        conn.close()
+    for r in items:
+        r["first_sale"] = first.get(
+            ((r.get("style_name") or "").lower(), (r.get("color") or "").lower())
+        )
+
+
 @app.get("/api/gallery/search")
 def get_gallery_search(
     request: Request,
-    q:       str = Query(default=""),
-    limit:   int = Query(default=48),
-    offset:  int = Query(default=0),
+    q:           str = Query(default=""),
+    category:    str = Query(default=""),
+    subcategory: str = Query(default=""),
+    limit:       int = Query(default=48),
+    offset:      int = Query(default=0),
 ):
-    """Searchable product photo gallery — one card per style + colour.
+    """Product Catalogue grid — one card per style + colour.
 
     Matches the (lower-cased) search term against style name / SKU / barcode
-    with a partial, case-insensitive LIKE. Returns one representative row per
-    (style, colour) (DISTINCT ON), preferring a SKU that actually has a stored image so
-    the card renders a photo where one exists; cards for styles with no image
-    fall back to the client-side coloured-initials placeholder.
+    with a partial, case-insensitive LIKE, and optionally narrows by category /
+    sub-category (exact display values as returned by /api/gallery/facets;
+    the 'Uncategorised' bucket selects products with blank master data).
+    Returns one representative row per (style, colour) (DISTINCT ON), preferring
+    a SKU that actually has a stored image so the card renders a photo where one
+    exists. Cards carry the catalogue fields the grid shows — price, category /
+    sub-category, Active/Retired status and launch date (catalogue date when
+    present, else first sale via _gallery_attach_launch_dates).
 
     Pagination is offset-based; we fetch one extra row to compute ``has_more``
     instead of paying for a COUNT(*) over the whole catalog. With no term it
     returns a sensible default page (styles-with-photos first, then alpha)."""
     limit = max(1, min(int(limit or 48), 96))
     offset = max(0, int(offset or 0))
-    # Same edge sanitisation as /api/customer-search: lower-case + strip single
-    # quotes so the concatenated LIKE literal can't break out of its '...'.
+    # run_query executes with NO bind parameters (it caches on the SQL text),
+    # so every dynamic value is embedded as a sanitised literal. The search
+    # term keeps the historical quote-STRIP (same as /api/customer-search);
+    # category values can legitimately contain apostrophes (e.g. Men's), so
+    # those are ''-escaped instead of stripped.
     term = (q or "").strip().lower().replace("'", "")
     where = "p.style_name IS NOT NULL AND p.style_name <> ''"
     if term:
@@ -5960,10 +6004,23 @@ def get_gallery_search(
         where += (" AND (LOWER(p.style_name) LIKE '" + like + "'"
                   " OR LOWER(p.sku) LIKE '" + like + "'"
                   " OR LOWER(COALESCE(p.barcode,'')) LIKE '" + like + "')")
+    cat = (category or "").strip()
+    if cat:
+        where += (" AND COALESCE(NULLIF(TRIM(p.category),''),'Uncategorised') = '"
+                  + cat.replace("'", "''") + "'")
+    sub = (subcategory or "").strip()
+    if sub:
+        where += (" AND COALESCE(NULLIF(TRIM(p.product_type),''),'Uncategorised') = '"
+                  + sub.replace("'", "''") + "'")
     rows = run_query("""
         SELECT * FROM (
             SELECT DISTINCT ON (p.style_name, COALESCE(p.color_print, ''))
                 p.style_name, COALESCE(p.color_print, '') AS color, p.sku, p.barcode,
+                COALESCE(NULLIF(TRIM(p.category),''),'')     AS category,
+                COALESCE(NULLIF(TRIM(p.product_type),''),'') AS subcategory,
+                NULLIF(TRIM(COALESCE(p.style_launch_date,'')),'') AS catalog_launch,
+                p.price::float AS price,
+                COALESCE(p.status,'') AS status,
                 (i.image_512 IS NOT NULL AND i.image_512 <> '') AS has_image
             FROM all_products_clean p
             LEFT JOIN product_image_map m ON m.sku = p.sku
@@ -5977,11 +6034,212 @@ def get_gallery_search(
         LIMIT """ + str(limit + 1) + " OFFSET " + str(offset))
     has_more = len(rows) > limit
     items = rows[:limit]
+    _gallery_attach_launch_dates(items)
     for r in items:
+        r["launch_date"] = r.pop("catalog_launch", None) or r.pop("first_sale", None)
         r["image_url"] = (
             "/api/product-image/" + quote(str(r["sku"]), safe="")
         ) if r.get("has_image") else None
     return {"items": items, "has_more": has_more, "limit": limit, "offset": offset}
+
+
+@app.get("/api/gallery/facets")
+def get_gallery_facets():
+    """Category → sub-category facet tree for the Product Catalogue filter
+    dropdowns, with DISTINCT-style counts (range width, not SKU count — matches
+    the one-card-per-style grid the user is looking at more honestly). Blank
+    master data groups under 'Uncategorised', the same bucket name the search
+    endpoint's filters understand. Cached: master data only changes on the
+    product sync cadence."""
+    ck = "gallery_facets_v1"
+    hit = cache_get(ck)
+    if hit is not None:
+        return hit
+    rows = run_query("""
+        SELECT COALESCE(NULLIF(TRIM(p.category),''),'Uncategorised')     AS category,
+               COALESCE(NULLIF(TRIM(p.product_type),''),'Uncategorised') AS subcategory,
+               COUNT(DISTINCT p.style_name) AS styles
+        FROM all_products_clean p
+        WHERE p.style_name IS NOT NULL AND p.style_name <> ''
+        GROUP BY 1, 2
+        ORDER BY 1, 2
+    """)
+    cats = {}
+    for r in rows:
+        c = cats.setdefault(r["category"], {"name": r["category"], "styles": 0, "subcategories": []})
+        c["styles"] += int(r["styles"] or 0)
+        c["subcategories"].append({"name": r["subcategory"], "styles": int(r["styles"] or 0)})
+    ordered = sorted(cats.values(), key=lambda c: (c["name"] == "Uncategorised", c["name"].lower()))
+    out = {"categories": ordered}
+    cache_set(ck, out, ttl=600)
+    return out
+
+
+# Garment size ladder for the catalogue popup's size table. Unknown sizes sort
+# after known ones (numeric sizes by value, then alphabetically).
+_SIZE_RANK = [
+    "xxs", "2xs", "xs", "xs/s", "s", "s/m", "m", "m/l", "l", "l/xl", "xl",
+    "xl/xxl", "1x", "xxl", "2xl", "1x/2x", "xxxl", "3xl", "2x/3x", "4xl",
+    "3x/4x", "5xl", "one size", "os", "free size",
+]
+
+
+def _size_sort_key(sz):
+    s = (sz or "").strip().lower()
+    if s in _SIZE_RANK:
+        return (0, float(_SIZE_RANK.index(s)), s)
+    try:
+        return (1, float(s.replace("uk", "").replace("eu", "").strip()), s)
+    except Exception:
+        return (2, 0.0, s)
+
+
+@app.get("/api/gallery/style-card")
+def get_gallery_style_card(sku: str = Query(default="")):
+    """Everything the Product Catalogue's product popup shows for one card:
+    the style+colour's full master-data attributes, modal (most common) full
+    price across its sizes — deliberately NOT MAX, which surfaces the known
+    foreign-currency price leak — launch date (catalogue date falling back to
+    first sale), first/last sale, a fabric block, and a per-size table (SKU,
+    barcode, price, live stock split stores / warehouse / pipeline, canonical
+    3-way split: warehouse = 'Finished Goods Production' dispatch stock ONLY,
+    Total = stores + warehouse, pipeline always excluded from the total).
+
+    Grain matches the card: the requested SKU expands to every size sharing
+    its style_name + colour (same expansion the image endpoints use).
+    Deliberately EXCLUDED: cost — costing stays behind its allowlisted page;
+    the catalogue is visible to viewer/retail roles."""
+    from fastapi import HTTPException
+    s = (sku or "").strip()
+    if not s:
+        raise HTTPException(status_code=400, detail="sku required")
+    conn = get_conn()
+    try:
+        siblings = _style_color_skus(conn, s)
+        if not siblings:
+            raise HTTPException(status_code=404, detail="product not found")
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT sku, COALESCE(size,'') AS size, COALESCE(barcode,'') AS barcode, price, "
+            "       COALESCE(style_name,'') AS style_name, COALESCE(style_number,'') AS style_number, "
+            "       COALESCE(NULLIF(product_name,''), style_name) AS product_name, "
+            "       COALESCE(color_print,'') AS color, COALESCE(print_plain,'') AS print_plain, "
+            "       COALESCE(brand,'') AS brand, COALESCE(vendor,'') AS vendor, "
+            "       COALESCE(NULLIF(TRIM(category),''),'') AS category, "
+            "       COALESCE(NULLIF(TRIM(product_type),''),'') AS subcategory, "
+            "       COALESCE(collection,'') AS collection, COALESCE(gender,'') AS gender, "
+            "       COALESCE(season,'') AS season, COALESCE(tier,'') AS tier, "
+            "       is_noos, COALESCE(status,'') AS status, "
+            "       NULLIF(TRIM(COALESCE(style_launch_date,'')),'') AS catalog_launch, "
+            "       COALESCE(fabric_structure,'') AS fabric_structure, "
+            "       COALESCE(fabric_category,'') AS fabric_category, "
+            "       COALESCE(fabric_subcategory,'') AS fabric_subcategory, "
+            "       COALESCE(fabric_width,'') AS fabric_width, "
+            "       COALESCE(gsm,'') AS gsm, COALESCE(fiber_content,'') AS fiber_content, "
+            "       COALESCE(source_country,'') AS source_country, "
+            "       COALESCE(source_city,'') AS source_city, "
+            "       COALESCE(supplier_fabric_code,'') AS supplier_fabric_code, "
+            "       COALESCE(noos_fabric,'') AS noos_fabric "
+            "FROM all_products_clean WHERE sku = ANY(%s) ORDER BY sku",
+            (siblings,),
+        )
+        cols = [c[0] for c in cur.description]
+        prows = [dict(zip(cols, r)) for r in cur.fetchall()]
+        if not prows:
+            raise HTTPException(status_code=404, detail="product not found")
+        cur.execute(
+            "SELECT sku, "
+            "COALESCE(SUM(available) FILTER (WHERE pos_location_name NOT IN ("
+            + WAREHOUSE_LOCATIONS + ")),0) AS soh_stores, "
+            "COALESCE(SUM(available) FILTER (WHERE pos_location_name = "
+            + WH_DISPATCH_LOCATION + "),0) AS soh_warehouse, "
+            "COALESCE(SUM(available) FILTER (WHERE pos_location_name IN ("
+            + WAREHOUSE_LOCATIONS + ") AND pos_location_name <> "
+            + WH_DISPATCH_LOCATION + "),0) AS soh_pipeline "
+            "FROM all_inventory WHERE sku = ANY(%s) GROUP BY sku",
+            (siblings,),
+        )
+        stock = {r[0]: (int(r[1] or 0), int(r[2] or 0), int(r[3] or 0)) for r in cur.fetchall()}
+        cur.execute(
+            "SELECT MIN(sale_date::date)::text, MAX(sale_date::date)::text "
+            "FROM all_sales WHERE variant_sku = ANY(%s) AND sale_kind IN ('sale','order')",
+            (siblings,),
+        )
+        srow = cur.fetchone() or (None, None)
+        first_sale, last_sale = srow[0], srow[1]
+    finally:
+        conn.close()
+
+    rep = next((p for p in prows if p["sku"] == s), prows[0])
+    prices = [float(p["price"]) for p in prows if p.get("price") is not None]
+    modal_price = None
+    if prices:
+        from collections import Counter
+        counts = Counter(prices)
+        # Most common price wins; ties break to the LOWER price (the known
+        # foreign-currency leak duplicates a KES price as UGX/RWF — huge).
+        modal_price = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
+    known_tiers = {"New", "Recent Performer", "Core Performer", "NOOS", "Retired"}
+    tier = next((p["tier"] for p in prows if (p["tier"] or "") in known_tiers), "")
+    status = "Active" if any(p["status"] == "Active" for p in prows) else (rep["status"] or "")
+    is_noos = any(bool(p.get("is_noos")) for p in prows)
+    catalog_launch = next((p["catalog_launch"] for p in prows if p.get("catalog_launch")), None)
+    launch_date = catalog_launch or first_sale
+    launch_source = "catalogue" if catalog_launch else ("first_sale" if first_sale else None)
+
+    sizes = []
+    for p in sorted(prows, key=lambda r: _size_sort_key(r["size"])):
+        st = stock.get(p["sku"], (0, 0, 0))
+        sizes.append({
+            "sku": p["sku"], "size": p["size"], "barcode": p["barcode"],
+            "price": float(p["price"]) if p.get("price") is not None else None,
+            "soh_stores": st[0], "soh_warehouse": st[1], "soh_pipeline": st[2],
+        })
+    soh_stores = sum(z["soh_stores"] for z in sizes)
+    soh_warehouse = sum(z["soh_warehouse"] for z in sizes)
+    soh_pipeline = sum(z["soh_pipeline"] for z in sizes)
+
+    fabric = {
+        k: rep[k] for k in (
+            "fabric_structure", "fabric_category", "fabric_subcategory",
+            "fabric_width", "gsm", "fiber_content", "source_country",
+            "source_city", "supplier_fabric_code", "noos_fabric",
+        ) if (rep.get(k) or "").strip()
+    }
+    today = date.today()
+    last_d = date.fromisoformat(last_sale) if last_sale else None
+    return {
+        "sku": rep["sku"],
+        "style_name": rep["style_name"],
+        "style_number": rep["style_number"],
+        "product_name": rep["product_name"],
+        "color": rep["color"],
+        "print_plain": rep["print_plain"],
+        "brand": rep["brand"],
+        "vendor": rep["vendor"],
+        "category": rep["category"],
+        "subcategory": rep["subcategory"],
+        "collection": rep["collection"],
+        "gender": rep["gender"],
+        "season": rep["season"],
+        "tier": tier,
+        "is_noos": is_noos,
+        "status": status,
+        "price": modal_price,
+        "launch_date": launch_date,
+        "launch_source": launch_source,
+        "first_sale": first_sale,
+        "last_sale": last_sale,
+        "days_since_last_sale": (today - last_d).days if last_d else None,
+        "fabric": fabric,
+        "sizes": sizes,
+        "totals": {
+            "soh_stores": soh_stores,
+            "soh_warehouse": soh_warehouse,
+            "soh_pipeline": soh_pipeline,
+            "soh_total": soh_stores + soh_warehouse,
+        },
+    }
 
 
 @app.get("/api/product-images/{sku:path}")

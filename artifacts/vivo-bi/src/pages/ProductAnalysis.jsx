@@ -1437,7 +1437,7 @@ const RangeManagementTab = React.lazy(() => import("./RangeManagement"));
 const AllocationsTab = React.lazy(() => import("./Allocations"));
 const ReOrderTab = React.lazy(() => import("./ReOrder"));
 const StyleTrackerTab = React.lazy(() => import("./StyleTracker"));
-const GalleryTab = React.lazy(() => import("./Gallery"));
+const CatalogueTab = React.lazy(() => import("./ProductCatalogue"));
 const SORReportTab = React.lazy(() => import("@/components/SORReportExport"));
 const SORNewStylesTab = React.lazy(() => import("@/components/SORNewStylesReport"));
 const PDFlowTab = React.lazy(() => import("./PDFlow"));
@@ -1460,7 +1460,7 @@ const PA_TABS = [
   { id: "sor-new-styles",  label: "SOR New Styles",  pageId: "exports", el: SORNewStylesTab },
   { id: "allocations", label: "Allocations", pageId: "allocations", el: AllocationsTab },
   { id: "reorder", label: "Re-Order", pageId: "re-order", el: ReOrderTab },
-  { id: "gallery", label: "Gallery", pageId: "gallery", el: GalleryTab },
+  { id: "gallery", label: "Product Catalogue", pageId: "gallery", el: CatalogueTab },
 ];
 
 const ProductAnalysisPage = () => {
