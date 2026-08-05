@@ -7,6 +7,7 @@ import { Loading, ErrorBox, SectionTitle } from "@/components/common";
 import IBTBundleTable from "@/components/IBTBundleTable";
 import IBTInTransit from "@/components/IBTInTransit";
 import IBTCompletedMoves from "@/components/IBTCompletedMoves";
+import IBTDoneReport from "@/components/IBTDoneReport";
 import IBTScanOutModal from "@/components/IBTScanOutModal";
 import IBTScanInModal from "@/components/IBTScanInModal";
 import IBTResolveStuckModal from "@/components/IBTResolveStuckModal";
@@ -443,7 +444,10 @@ const IBT = () => {
             {[
               { id: "ibt-sec-store", label: "Transfer bundles" },
               { id: "ibt-sec-in-transit", label: "In transit" },
-              ...(canSeeCompletedMoves ? [{ id: "ibt-sec-completed", label: "Received log" }] : []),
+              ...(canSeeCompletedMoves ? [
+                { id: "ibt-sec-completed", label: "Received log" },
+                { id: "ibt-sec-report",    label: "IBT Report" },
+              ] : []),
             ].map((s) => (
               <button
                 key={s.id}
@@ -628,9 +632,14 @@ const IBT = () => {
           />
 
           {canSeeCompletedMoves && (
-            <div id="ibt-sec-completed" className="scroll-mt-24">
-              <IBTCompletedMoves refreshKey={completedRefresh} />
-            </div>
+            <>
+              <div id="ibt-sec-completed" className="scroll-mt-24">
+                <IBTCompletedMoves refreshKey={completedRefresh} />
+              </div>
+              <div id="ibt-sec-report" className="scroll-mt-24">
+                <IBTDoneReport />
+              </div>
+            </>
           )}
 
           {scanOutRow && (

@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useCallback } from "react";
 import { useApi } from "@/lib/useApi";
+import { api } from "@/lib/api";
 
 // ── Formatters ───────────────────────────────────────────────────────────────
 const fmtKES = (v, compact = true) => {
@@ -34,6 +35,185 @@ function scorePct(pct, lowerBetter = false) {
   if (v >= 70)  return C.warn;
   if (v >= 45)  return C.bad;
   return C.crit;
+}
+
+// ── Network Bucket Summary ────────────────────────────────────────────────────
+const BUCKET_META = [
+  { key: "behind_pace",   label: "Behind Pace",    icon: "🔴", tone: { fg: "#dc2626", bg: "#fef2f2", bdr: "#fecaca" }, desc: "Revenue attainment >15% below day pace" },
+  { key: "on_pace",       label: "On Pace",         icon: "✅", tone: { fg: "#15803d", bg: "#f0fdf4", bdr: "#86efac" }, desc: "Tracking within 15% of day pace" },
+  { key: "ahead_of_pace", label: "Ahead of Pace",   icon: "🚀", tone: { fg: "#1d4ed8", bg: "#eff6ff", bdr: "#bfdbfe" }, desc: "Revenue attainment >15% above day pace" },
+  { key: "high_discount", label: "High Discount",   icon: "⚠️", tone: { fg: "#b45309", bg: "#fffbeb", bdr: "#fde68a" }, desc: "Discount rate >13% of gross revenue" },
+  { key: "high_returns",  label: "High Returns",    icon: "↩️", tone: { fg: "#7f1d1d", bg: "#fff1f2", bdr: "#fca5a5" }, desc: "Return rate >5% of units sold" },
+  { key: "low_stock",     label: "Low Stock Cover", icon: "📦", tone: { fg: "#78350f", bg: "#fff7ed", bdr: "#fed7aa" }, desc: "Weeks of cover < 6 — replenish risk" },
+  { key: "heavy_stock",   label: "Heavy Stock",     icon: "🏭", tone: { fg: "#374151", bg: "#f3f4f6", bdr: "#d1d5db" }, desc: "Weeks of cover > 20 — overstock risk" },
+  { key: "no_target",     label: "No Target Set",   icon: "❓", tone: { fg: "#6b7280", bg: "#f9fafb", bdr: "#e5e7eb" }, desc: "No monthly revenue target configured" },
+];
+
+const COUNTRY_BADGE = {
+  Kenya:  { bg: "#f0fdf4", fg: "#15803d" },
+  Uganda: { bg: "#fffbeb", fg: "#b45309" },
+  Rwanda: { bg: "#f0fdfa", fg: "#0f766e" },
+};
+
+function StoreBucketSummary({ onSelectStore }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState(null);
+  const [open, setOpen] = useState(true);
+  const [expanded, setExpanded] = useState(null); // key of expanded bucket card
+
+  useEffect(() => {
+    let dead = false;
+    setLoading(true);
+    api.get("/store-profile/network-summary", { timeout: 30000 })
+      .then((r) => { if (!dead) setData(r.data); })
+      .catch((e) => { if (!dead) setErr(e?.response?.data?.detail || e.message); })
+      .finally(() => { if (!dead) setLoading(false); });
+    return () => { dead = true; };
+  }, []);
+
+  const buckets = data?.buckets || {};
+  const storeMap = useMemo(() => {
+    const m = {};
+    (data?.stores || []).forEach((s) => { m[s.store] = s; });
+    return m;
+  }, [data]);
+
+  return (
+    <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 14, marginBottom: 18, overflow: "hidden" }}>
+      {/* Header row */}
+      <div
+        onClick={() => setOpen((v) => !v)}
+        style={{ display: "flex", alignItems: "center", gap: 10, padding: "13px 20px", cursor: "pointer", borderBottom: open ? "1px solid #f3f4f6" : "none", userSelect: "none" }}
+      >
+        <div style={{ flex: 1 }}>
+          <span style={{ fontSize: 13, fontWeight: 800, color: "#111827" }}>🗺 Network Overview</span>
+          <span style={{ marginLeft: 10, fontSize: 11, color: "#6b7280", fontWeight: 500 }}>
+            {data ? `${data.stores?.length || 0} stores · Day ${data.days_done} of ${data.days_in_month} · Day pace ${data.day_pace_pct}%` : ""}
+          </span>
+        </div>
+        <span style={{ fontSize: 12, color: "#9ca3af" }}>{open ? "▲ hide" : "▼ show"}</span>
+      </div>
+
+      {open && (
+        <div style={{ padding: "16px 20px" }}>
+          {loading && (
+            <div style={{ display: "flex", gap: 12 }}>
+              {[1,2,3,4].map((i) => (
+                <div key={i} style={{ flex: 1, height: 72, background: "#f3f4f6", borderRadius: 10, animation: "pulse 1.5s ease infinite" }} />
+              ))}
+            </div>
+          )}
+          {err && <div style={{ padding: "12px 16px", background: "#fef2f2", border: "1px solid #fca5a5", borderRadius: 8, color: "#dc2626", fontSize: 13 }}>⚠ {err}</div>}
+          {!loading && !err && data && (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(210px, 1fr))", gap: 10 }}>
+              {BUCKET_META.map((bm) => {
+                const stores = buckets[bm.key] || [];
+                const isOpen = expanded === bm.key;
+                return (
+                  <div
+                    key={bm.key}
+                    style={{ border: `1px solid ${bm.tone.bdr}`, borderRadius: 10, background: bm.tone.bg, cursor: stores.length ? "pointer" : "default", transition: "box-shadow 0.15s" }}
+                    onClick={() => stores.length && setExpanded(isOpen ? null : bm.key)}
+                  >
+                    <div style={{ padding: "11px 14px" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+                        <span style={{ fontSize: 14 }}>{bm.icon}</span>
+                        <span style={{ fontSize: 12, fontWeight: 800, color: bm.tone.fg }}>{bm.label}</span>
+                        <span style={{ marginLeft: "auto", fontSize: 20, fontWeight: 900, color: bm.tone.fg }}>{stores.length}</span>
+                      </div>
+                      <div style={{ fontSize: 10.5, color: bm.tone.fg, opacity: 0.75, marginBottom: stores.length ? 6 : 0 }}>{bm.desc}</div>
+                      {!isOpen && stores.length > 0 && (
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                          {stores.slice(0, 4).map((s) => (
+                            <button
+                              key={s}
+                              type="button"
+                              onClick={(e) => { e.stopPropagation(); onSelectStore(s); }}
+                              style={{ padding: "2px 8px", borderRadius: 5, fontSize: 10, fontWeight: 700, border: `1px solid ${bm.tone.bdr}`, background: "#fff", color: bm.tone.fg, cursor: "pointer" }}
+                            >
+                              {s}
+                            </button>
+                          ))}
+                          {stores.length > 4 && <span style={{ fontSize: 10, color: bm.tone.fg, padding: "2px 4px", fontWeight: 600 }}>+{stores.length - 4} more</span>}
+                        </div>
+                      )}
+                    </div>
+                    {/* Expanded detail */}
+                    {isOpen && stores.length > 0 && (
+                      <div style={{ borderTop: `1px solid ${bm.tone.bdr}`, padding: "10px 14px" }}>
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                          {stores.map((s) => {
+                            const sd = storeMap[s];
+                            const cc = COUNTRY_BADGE[sd?.country] || {};
+                            return (
+                              <button
+                                key={s}
+                                type="button"
+                                onClick={(e) => { e.stopPropagation(); onSelectStore(s); }}
+                                style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 10px", borderRadius: 7, border: `1px solid ${bm.tone.bdr}`, background: "#fff", cursor: "pointer", textAlign: "left" }}
+                              >
+                                <span style={{ fontSize: 11, fontWeight: 700, color: "#111827" }}>{s}</span>
+                                {sd?.country && (
+                                  <span style={{ fontSize: 9, fontWeight: 700, padding: "1px 5px", borderRadius: 3, background: cc.bg, color: cc.fg }}>{sd.country.slice(0, 3).toUpperCase()}</span>
+                                )}
+                                {sd?.attainment_pct != null && (
+                                  <span style={{ fontSize: 10, fontWeight: 700, color: bm.tone.fg }}>{sd.attainment_pct}%</span>
+                                )}
+                                {bm.key === "high_discount" && sd?.discount_rate != null && (
+                                  <span style={{ fontSize: 10, fontWeight: 700, color: bm.tone.fg }}>{sd.discount_rate}%</span>
+                                )}
+                                {bm.key === "high_returns" && sd?.return_rate != null && (
+                                  <span style={{ fontSize: 10, fontWeight: 700, color: bm.tone.fg }}>{sd.return_rate}%</span>
+                                )}
+                                {(bm.key === "low_stock" || bm.key === "heavy_stock") && sd?.woc != null && (
+                                  <span style={{ fontSize: 10, fontWeight: 700, color: bm.tone.fg }}>{sd.woc}w</span>
+                                )}
+                              </button>
+                            );
+                          })}
+                        </div>
+                        {/* Mini table for this bucket */}
+                        {(bm.key === "behind_pace" || bm.key === "ahead_of_pace" || bm.key === "on_pace") && (
+                          <table style={{ width: "100%", borderCollapse: "collapse", marginTop: 10, fontSize: 11 }}>
+                            <thead>
+                              <tr style={{ borderBottom: "1px solid #e5e7eb" }}>
+                                <th style={{ textAlign: "left", padding: "4px 8px", color: "#6b7280", fontWeight: 700 }}>Store</th>
+                                <th style={{ textAlign: "right", padding: "4px 8px", color: "#6b7280", fontWeight: 700 }}>Attainment</th>
+                                <th style={{ textAlign: "right", padding: "4px 8px", color: "#6b7280", fontWeight: 700 }}>Day pace</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {stores.map((s) => {
+                                const sd = storeMap[s];
+                                const gap = sd?.attainment_pct != null ? (sd.attainment_pct - sd.day_pace_pct).toFixed(1) : null;
+                                return (
+                                  <tr key={s} style={{ borderBottom: "1px solid #f3f4f6" }}>
+                                    <td style={{ padding: "5px 8px", fontWeight: 700, color: "#111827" }}>
+                                      <button type="button" onClick={() => onSelectStore(s)} style={{ background: "none", border: "none", cursor: "pointer", color: "#111827", fontWeight: 700, fontSize: 11 }}>{s}</button>
+                                    </td>
+                                    <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: 800, color: bm.tone.fg }}>{sd?.attainment_pct ?? "—"}%</td>
+                                    <td style={{ padding: "5px 8px", textAlign: "right", color: "#6b7280" }}>
+                                      {sd?.day_pace_pct ?? "—"}%
+                                      {gap != null && <span style={{ marginLeft: 4, fontSize: 10, fontWeight: 700, color: bm.tone.fg }}>({gap > 0 ? "+" : ""}{gap}pt)</span>}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ── Primitives ───────────────────────────────────────────────────────────────
@@ -958,8 +1138,13 @@ export default function StoreProfiling() {
     : woc > 30 ? { c: C.warn, label: "Heavy cover — overstock risk" }
     : { c: C.good, label: "Healthy cover" };
 
+  const handleSelectStore = useCallback((s) => setStore(s), []);
+
   return (
     <div style={{ maxWidth: 1340, margin: "0 auto", padding: "20px 16px" }}>
+      {/* ── Network bucket summary ── */}
+      <StoreBucketSummary onSelectStore={handleSelectStore} />
+
       {/* ── Store identity header ── */}
       <div style={{ background: "linear-gradient(135deg, #111827 0%, #1f2937 100%)", borderRadius: 14, padding: "22px 26px", marginBottom: 20, color: "#fff" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 18, flexWrap: "wrap" }}>

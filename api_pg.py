@@ -20809,6 +20809,73 @@ def ibt_completed():
             if r.get(k) is not None:
                 r[k] = r[k].isoformat()
     return rows
+
+@app.get("/api/ibt/done-report")
+def ibt_done_report(days: int = 90):
+    """Aggregate report of completed (received/discrepancy) IBT consignments."""
+    _ensure_ibt_lifecycle_tables()
+    days = max(7, min(int(days or 90), 365))
+    dt_filter = f"dispatch_ts >= now() - INTERVAL '{days} days'"
+    recv_filter = f"status IN ('received','discrepancy') AND {dt_filter}"
+
+    summary_row = (_users_exec(
+        "SELECT COUNT(DISTINCT consignment_id) AS consignments, "
+        "SUM(qty) AS dispatched, "
+        "SUM(COALESCE(received_qty,0)) AS received, "
+        "SUM(CASE WHEN status='discrepancy' THEN 1 ELSE 0 END) AS discrepancies, "
+        "ROUND(SUM(value_kes)::numeric, 0) AS value_kes, "
+        "ROUND(AVG(CASE WHEN received_ts IS NOT NULL "
+        "  THEN (received_ts::date - dispatch_ts::date) END), 1) AS avg_days_lapsed, "
+        "COUNT(DISTINCT from_store) AS donor_count, "
+        "COUNT(DISTINCT to_store) AS recipient_count "
+        f"FROM ibt_transfer WHERE {recv_filter}",
+        fetch=True) or [{}])[0]
+
+    by_corridor = _users_exec(
+        "SELECT from_store, to_store, "
+        "COUNT(DISTINCT consignment_id) AS consignments, "
+        "SUM(qty) AS dispatched, "
+        "SUM(COALESCE(received_qty,0)) AS received, "
+        "SUM(CASE WHEN status='discrepancy' THEN 1 ELSE 0 END) AS discrepancies, "
+        "ROUND(SUM(value_kes)::numeric, 0) AS value_kes, "
+        "ROUND(AVG(received_ts::date - dispatch_ts::date), 1) AS avg_days "
+        f"FROM ibt_transfer WHERE {recv_filter} "
+        "GROUP BY from_store, to_store ORDER BY SUM(qty) DESC LIMIT 100",
+        fetch=True) or []
+
+    by_week = _users_exec(
+        "SELECT date_trunc('week', received_ts)::date AS wk, "
+        "COUNT(DISTINCT consignment_id) AS consignments, "
+        "SUM(qty) AS dispatched, "
+        "SUM(COALESCE(received_qty,0)) AS received, "
+        "SUM(CASE WHEN status='discrepancy' THEN 1 ELSE 0 END) AS discrepancies "
+        f"FROM ibt_transfer WHERE {recv_filter} AND received_ts IS NOT NULL "
+        "GROUP BY 1 ORDER BY 1 DESC LIMIT 26",
+        fetch=True) or []
+
+    by_store = _users_exec(
+        "SELECT from_store AS store, 'donor' AS role, "
+        "COUNT(DISTINCT consignment_id) AS consignments, SUM(qty) AS units "
+        f"FROM ibt_transfer WHERE {recv_filter} GROUP BY from_store "
+        "UNION ALL "
+        "SELECT to_store, 'recipient', COUNT(DISTINCT consignment_id), "
+        "SUM(COALESCE(received_qty,qty)) "
+        f"FROM ibt_transfer WHERE {recv_filter} GROUP BY to_store "
+        "ORDER BY units DESC",
+        fetch=True) or []
+
+    for r in by_week:
+        if r.get("wk") is not None:
+            r["wk"] = str(r["wk"])
+
+    return {
+        "days": days,
+        "summary": summary_row,
+        "by_corridor": by_corridor,
+        "by_week": by_week,
+        "by_store": by_store,
+    }
+
 @app.get("/api/ibt/completed/keys")
 def ibt_completed_keys():
     sku_rows = _users_exec(
@@ -38161,6 +38228,133 @@ _SP_ALL_INV_PRED = (
     "AND i.pos_location_name NOT ILIKE '%%receiving%%'"
 )
 
+
+@app.get("/api/store-profile/network-summary")
+def store_profile_network_summary():
+    """Cross-store bucket summary — one SQL pass, classifies every store into issue buckets."""
+    today = date.today()
+    cur_mstart = today.replace(day=1)
+    days_done = today.day
+    days_in_m = calendar.monthrange(today.year, today.month)[1]
+    day_pace_pct = round(days_done / days_in_m * 100, 1)
+
+    vat = "(CASE WHEN s.country IN ('Uganda','Rwanda') THEN 1.18 ELSE 1.16 END)"
+
+    sales = run_query(f"""
+        SELECT
+            s.pos_location_name AS store,
+            MAX(s.country) AS country,
+            ROUND(SUM(
+                CASE WHEN s.sale_kind IN ('sale','order')
+                     THEN (s.total_sales_kes::numeric - COALESCE(s.discounts_kes,0)::numeric) / {vat}
+                     WHEN s.sale_kind = 'return' THEN -s.returns_kes::numeric / {vat}
+                     ELSE 0 END
+            ), 0) AS revenue,
+            SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) AS units,
+            ROUND(
+                SUM(COALESCE(s.discounts_kes::numeric,0)) FILTER (WHERE s.sale_kind IN ('sale','order'))
+                / NULLIF(SUM(s.total_sales_kes::numeric) FILTER (WHERE s.sale_kind IN ('sale','order')), 0) * 100
+            , 1) AS discount_rate,
+            ROUND(
+                SUM(COALESCE(s.returned_item_quantity,0)) FILTER (WHERE s.sale_kind IN ('sale','order')) * 100.0
+                / NULLIF(SUM(s.ordered_item_quantity) FILTER (WHERE s.sale_kind IN ('sale','order')), 0)
+            , 1) AS return_rate
+        FROM all_sales s
+        WHERE s.sale_date::date >= '{cur_mstart}' AND s.sale_date::date <= '{today}'
+          AND s.sale_kind IN ('sale','order','return')
+          AND {BASE_FILTERS}
+        GROUP BY s.pos_location_name
+        HAVING SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) > 0
+        ORDER BY revenue DESC
+    """, date_to=str(today)) or []
+
+    l4w_start = today - timedelta(days=28)
+    vel_rows = run_query(f"""
+        SELECT s.pos_location_name AS store,
+               SUM(s.ordered_item_quantity) / 4.0 AS weekly_units
+        FROM all_sales s
+        WHERE s.sale_date::date >= '{l4w_start}' AND s.sale_date::date <= '{today}'
+          AND s.sale_kind IN ('sale','order') AND {BASE_FILTERS}
+        GROUP BY s.pos_location_name
+    """, date_to=str(today)) or []
+    vel_map = {r["store"]: float(r.get("weekly_units") or 0) for r in vel_rows}
+
+    soh_rows = run_query(
+        "SELECT pos_location_name AS store, SUM(available_quantity) AS soh "
+        "FROM all_inventory "
+        "WHERE pos_location_name NOT ILIKE '%%warehouse%%' "
+        "  AND pos_location_name NOT ILIKE '%%wholesale%%' "
+        "  AND pos_location_name NOT ILIKE '%%holding%%' "
+        "  AND pos_location_name NOT ILIKE '%%production%%' "
+        "  AND pos_location_name NOT ILIKE '%%sew%%' "
+        "  AND pos_location_name NOT ILIKE '%%retired%%' "
+        "  AND pos_location_name NOT ILIKE '%%online%%' "
+        "GROUP BY pos_location_name"
+    ) or []
+    soh_map = {r["store"]: float(r.get("soh") or 0) for r in soh_rows}
+
+    tgt_rows = run_query(
+        f"SELECT name AS store, MIN(target_kes::numeric) AS tgt "
+        f"FROM targets_monthly WHERE scope='store' AND month='{cur_mstart}' "
+        f"GROUP BY name"
+    ) or []
+    tgt_map = {r["store"]: float(r.get("tgt") or 0) for r in tgt_rows}
+
+    buckets = {
+        "behind_pace": [], "on_pace": [], "ahead_of_pace": [], "no_target": [],
+        "high_discount": [], "high_returns": [], "low_stock": [], "heavy_stock": [],
+    }
+    stores_out = []
+
+    for r in sales:
+        st = r["store"]
+        revenue = float(r.get("revenue") or 0)
+        discount = float(r.get("discount_rate") or 0)
+        ret_rate = float(r.get("return_rate") or 0)
+        units = int(r.get("units") or 0)
+        country = r.get("country", "")
+        tgt_rev = tgt_map.get(st) or None
+        wkly = vel_map.get(st, 0)
+        s_soh = soh_map.get(st, 0)
+        woc = round(s_soh / wkly, 1) if wkly > 0 else None
+
+        attainment_pct = None
+        if tgt_rev and tgt_rev > 0:
+            attainment_pct = round(revenue / tgt_rev * 100, 1)
+            if attainment_pct < day_pace_pct * 0.85:
+                buckets["behind_pace"].append(st)
+            elif attainment_pct > day_pace_pct * 1.15:
+                buckets["ahead_of_pace"].append(st)
+            else:
+                buckets["on_pace"].append(st)
+        else:
+            buckets["no_target"].append(st)
+
+        if discount > 13:
+            buckets["high_discount"].append(st)
+        if ret_rate > 5:
+            buckets["high_returns"].append(st)
+        if woc is not None and woc < 6:
+            buckets["low_stock"].append(st)
+        if woc is not None and woc > 20:
+            buckets["heavy_stock"].append(st)
+
+        stores_out.append({
+            "store": st, "country": country,
+            "revenue": revenue, "units": units,
+            "target": tgt_rev, "attainment_pct": attainment_pct,
+            "day_pace_pct": day_pace_pct,
+            "discount_rate": discount, "return_rate": ret_rate,
+            "soh": s_soh, "woc": woc,
+        })
+
+    return {
+        "day_pace_pct": day_pace_pct,
+        "days_done": days_done,
+        "days_in_month": days_in_m,
+        "buckets": buckets,
+        "stores": stores_out,
+    }
 
 @app.get("/api/store-profile/locations")
 def store_profile_locations():
