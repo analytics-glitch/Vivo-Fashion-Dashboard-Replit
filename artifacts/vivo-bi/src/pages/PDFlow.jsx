@@ -67,7 +67,7 @@ const downloadCsv = (name, headers, rows) => {
 const BRANDS = ["Vivo", "Safari by Vivo", "Zoya"];
 const LIFECYCLE_TYPES = ["New", "Reorder", "Replenishment"];
 const PD_ASSIGNEES = [
-  "Abigail","Bella","Beryl","Chantal","Emily","Felista","Florence",
+  "Abigail","Bella","Beryl","CAD","Chantal","Emily","Felista","Florence",
   "Jewel","Marion","Mary","Maryann","Mercy","Natasha","Pech","Queen",
   "Re","Rose","Tony","Victoria","Wandia","Wanjohi","Yvonne",
 ];
