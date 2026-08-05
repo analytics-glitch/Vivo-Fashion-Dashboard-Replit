@@ -9943,6 +9943,12 @@ function costBadge(auto){return auto?'<span style="background:var(--accent,#2563
 function costRenderLines(){
   const body=document.getElementById('cost-lines-body');
   if(!costEdit){body.innerHTML='';costRenderEmbroidery();return;}
+  // Fabric rows always render FIRST (stable sort — relative order within
+  // fabric and non-fabric groups is preserved). Every mutation path funnels
+  // through this render, and the save payload follows costEdit.lines order,
+  // so saved positions + PDF/exports match the screen. Ordering only —
+  // amounts are never touched.
+  costEdit.lines.sort((a,b)=>(a.kind==='fabric'?0:1)-(b.kind==='fabric'?0:1));
   body.innerHTML=costEdit.lines.map((l,i)=>
     `<tr><td><select class="cost-cell" data-i="${i}" data-k="kind" style="width:110px;">`+
     Object.keys(COST_KINDS).map(k=>`<option value="${k}"${l.kind===k?' selected':''}>${esc(COST_KINDS[k])}</option>`).join('')+
@@ -10103,14 +10109,15 @@ function costFabSearch(i,el){
       const rows=await apiFetch(fabUrl);
       dd.innerHTML=(rows||[]).map(r=>{
         const cost=r.is_main_fabric?r.cost_per_metre:(r.unit_cost!=null?r.unit_cost:r.cost_per_metre);
-        return `<div class="resv-opt" data-costfab="${i}" data-fabname="${esc(r.name||r.sku||'')}" data-fabcpm="${cost==null?'':cost}" data-fabmain="${r.is_main_fabric?1:0}" data-fabid="${r.id==null?'':Number(r.id)}" data-fabbarcode="${esc(r.barcode||'')}">`+
-        `<strong>${esc(r.name||r.sku||'')}</strong> <span class="muted" style="font-size:11px;">${r.is_main_fabric?'fabric':'accessory'}${r.barcode?' · '+esc(r.barcode):''}${cost!=null?' · '+fmtKES2(cost)+(r.is_main_fabric?'/m':'/unit'):' · no cost'}</span></div>`;}).join('')
-        ||'<div class="resv-opt muted">No matching component on this DPS</div>';
+        const noCost=r.cost_missing_reason?('no cost — '+esc(r.cost_missing_reason.split(' — ')[0])):'no cost';
+        return `<div class="resv-opt" data-costfab="${i}" data-fabname="${esc(r.name||r.sku||'')}" data-fabcpm="${cost==null?'':cost}" data-fabmain="${r.is_main_fabric?1:0}" data-fabid="${r.id==null?'':Number(r.id)}" data-fabbarcode="${esc(r.barcode||'')}" data-fabreason="${esc(r.cost_missing_reason||'')}">`+
+        `<strong>${esc(r.name||r.sku||'')}</strong> <span class="muted" style="font-size:11px;">${r.is_main_fabric?'fabric':'accessory'}${r.barcode?' · '+esc(r.barcode):''}${cost!=null?' · '+fmtKES2(cost)+(r.is_main_fabric?'/m':'/unit'):' · '+noCost}</span></div>`;}).join('')
+        ||('<div class="resv-opt muted">'+(costEdit.dps_ref?'No matching component on this DPS':'No matching fabric in the master')+'</div>');
       dd.style.display='';
     }catch(_){dd.style.display='none';}
   },250);
 }
-function costPickFabric(i,name,cpm,isMain,compId,barcode){
+function costPickFabric(i,name,cpm,isMain,compId,barcode,reason){
   if(!costEdit)return;const l=costEdit.lines[i];if(!l)return;
   l.label=name;
   // Keep the component link (reference only — saved sheets are a snapshot
@@ -10120,9 +10127,14 @@ function costPickFabric(i,name,cpm,isMain,compId,barcode){
   l.barcode=(barcode||'').trim()||null;
   if(cpm!==''&&cpm!=null&&!isNaN(Number(cpm))){
     l.unit_cost=Number(cpm);l.is_auto=true;
-    l.source=isMain?'Fabric master cost/metre (at sheet creation)':'DPS/MO recorded cost';
+    l.source=isMain?'Fabric master cost/metre (at sheet creation)':(costEdit.dps_ref?'DPS/MO recorded cost':'Odoo standard cost');
   }else{
-    l.is_auto=false;l.source='component has no cost on record — enter cost manually';
+    // No derivable cost: leave the cost BLANK (never a silent 0) and surface
+    // the specific reason on the line. Manual entry stays MANUAL; a fabric
+    // line linked to a product auto-fills later (on reopen) once the missing
+    // Odoo data is fixed and synced.
+    l.unit_cost=null;l.is_auto=false;
+    l.source=reason||'component has no cost on record — enter cost manually';
   }
   costRenderLines();
 }
@@ -10132,6 +10144,19 @@ function costApplyStage(restoreOnly){
   const stage=stgEl?stgEl.value:(costEdit.stage||'main_production');
   costEdit.stage=stage;
   const isPreprod=stage==='pre_production';
+  // NEW Pre-production sheets seed ONE empty search-ready Fabric row as line 1
+  // (user decision — Main Production keeps DPS-based suggestions). Guarded so
+  // stage toggling never duplicates the seeded row; toggling back to Main
+  // Production removes it only while it is still pristine (no label, no
+  // component, no cost). Saved sheets are never touched here.
+  if(!costEdit.id){
+    if(isPreprod&&!costEdit.lines.some(l=>l.kind==='fabric')){
+      costEdit.lines.unshift({kind:'fabric',label:'',qty:Number(costEdit.mtrs_per_garment)||1,unit_cost:0,is_auto:false,source:null,component_id:null,barcode:null});
+    }else if(!isPreprod){
+      costEdit.lines=costEdit.lines.filter(l=>!(l.kind==='fabric'&&!(l.label||'').trim()&&!l.component_id&&!(Number(l.unit_cost)>0)&&!l.is_auto));
+    }
+    costRenderLines();
+  }
   const dpsWrap=document.getElementById('cost-dps-wrap');if(dpsWrap)dpsWrap.style.display=isPreprod?'none':'';
   const colorWrap=document.getElementById('cost-color-wrap');if(colorWrap&&isPreprod)colorWrap.style.display='none';
   const ppFields=document.getElementById('preproduction-fields');if(ppFields)ppFields.style.display=isPreprod?'flex':'none';
@@ -10142,7 +10167,7 @@ function costApplyStage(restoreOnly){
   const mLbl=document.getElementById('cost-margin-label');if(mLbl)mLbl.textContent=isPreprod?'Proposed margin (targeting 70%)':'Margin vs ex-VAT selling price';
   if(!restoreOnly){
     const sNote=document.getElementById('cost-suggest-note');
-    if(sNote)sNote.textContent=isPreprod?'Pre-production: add a fabric line (+ Fabric), set Mtrs per Garment and CMT inputs — accessories, CMT cost, and defect allowance are auto-calculated.':'Pick a style to load auto-suggestions (fabric cost, metres per garment, labour per garment).';
+    if(sNote)sNote.textContent=isPreprod?'Pre-production: the Fabric line is added for you — search it by name, code or barcode (Cost/Mtr auto-fills from the fabric master). Set Mtrs per Garment and CMT inputs — accessories, CMT cost, and defect allowance are auto-calculated.':'Pick a style to load auto-suggestions (fabric cost, metres per garment, labour per garment).';
   }
   costRenderTotals();
 }
@@ -10221,7 +10246,7 @@ async function costOpenSheet(id){
     const s=await apiFetch('/api/fabric/costing/sheets/'+encodeURIComponent(id));
     const _sEmb=s.embroidery_data||{};
     costEdit={id:s.id,style_name:s.style_name,style_number:s.style_number,dps_ref:s.dps_ref||null,color:s.color||null,
-      lines:(s.lines||[]).map(l=>({kind:l.kind,label:l.label,qty:l.qty,unit_cost:l.unit_cost,is_auto:!!l.is_auto,source:l.source,component_id:l.component_id||null,barcode:l.barcode||null})),
+      lines:(s.lines||[]).map(l=>({kind:l.kind,label:l.label,qty:l.qty,unit_cost:l.unit_cost,is_auto:!!l.is_auto,source:l.source,component_id:l.component_id||null,barcode:l.barcode||null,current_cost_per_metre:l.current_cost_per_metre!=null?l.current_cost_per_metre:null,cost_missing_reason:l.cost_missing_reason||null})),
       sp_auto:!!s.selling_price_is_auto,history:s.history||[],signoffs:s.signoffs||null,locked:!!s.locked,
       embroidery_data:{enabled:!!_sEmb.enabled,cost_per_run:Number(_sEmb.cost_per_run||0),run_count:Number(_sEmb.run_count||0)},
       stage:s.stage||'main_production',
@@ -10230,6 +10255,22 @@ async function costOpenSheet(id){
       mtrs_per_garment:s.mtrs_per_garment!=null?Number(s.mtrs_per_garment):null,
       cost_per_minute:s.cost_per_minute!=null?Number(s.cost_per_minute):null,
       cmt_start_time:s.cmt_start_time||null,cmt_stop_time:s.cmt_stop_time||null};
+    // Blank-cost self-heal (editor only, UNLOCKED sheets only): a fabric line
+    // linked to a master product whose Cost/Mtr was never captured (saved
+    // blank/0 because Width/GSM or cost was missing in Odoo at the time)
+    // auto-fills from the CURRENT master conversion once it is derivable.
+    // Lines that already carry a cost are NEVER re-priced — saved sheets stay
+    // a snapshot. Persists only when the user saves the sheet.
+    let costHealed=0;
+    if(!costEdit.locked){
+      costEdit.lines.forEach(l=>{
+        if(l.kind==='fabric'&&l.component_id&&!(Number(l.unit_cost)>0)&&l.current_cost_per_metre!=null){
+          l.unit_cost=l.current_cost_per_metre;l.is_auto=true;
+          l.source='Fabric master cost/metre — auto-filled when the Odoo data became available';
+          costHealed++;
+        }
+      });
+    }
     // Apply stage UI (show/hide DPS/pre-prod fields) before populating DPS
     const stgEl=document.getElementById('cost-stage');if(stgEl)stgEl.value=costEdit.stage||'main_production';
     costApplyStage(true);
@@ -10260,7 +10301,7 @@ async function costOpenSheet(id){
     document.getElementById('cost-selling-price').value=s.selling_price==null?'':s.selling_price;
     document.getElementById('cost-sp-badge').innerHTML=costBadge(costEdit.sp_auto);
     document.getElementById('cost-suggest-note').textContent='';
-    document.getElementById('cost-editor-err').innerHTML='';
+    document.getElementById('cost-editor-err').innerHTML=costHealed?('<div class="banner">Cost/Mtr auto-filled on '+costHealed+' fabric line'+(costHealed>1?'s':'')+' from the fabric master — it was blank when the sheet was last saved and the Odoo data is now available. Save the sheet to keep it.</div>'):'';
     costRenderHistory();costRenderSignoffs();
     document.getElementById('cost-export-btn').style.display='';
     document.getElementById('cost-pdf-btn').style.display='';
@@ -10379,7 +10420,7 @@ document.addEventListener('click',e=>{
   const box=document.getElementById('cost-style-list');
   if(box&&box.style.display!=='none'&&!e.target.closest('#cost-style-search')&&!e.target.closest('#cost-style-list'))box.style.display='none';
   const fopt=e.target.closest('.cost-fab-dd .resv-opt');
-  if(fopt&&fopt.dataset.costfab!=null&&fopt.dataset.fabname){costPickFabric(+fopt.dataset.costfab,fopt.dataset.fabname,fopt.dataset.fabcpm,fopt.dataset.fabmain==='1',fopt.dataset.fabid,fopt.dataset.fabbarcode);return;}
+  if(fopt&&fopt.dataset.costfab!=null&&fopt.dataset.fabname){costPickFabric(+fopt.dataset.costfab,fopt.dataset.fabname,fopt.dataset.fabcpm,fopt.dataset.fabmain==='1',fopt.dataset.fabid,fopt.dataset.fabbarcode,fopt.dataset.fabreason||'');return;}
   if(!e.target.closest('.cost-fab-dd'))document.querySelectorAll('.cost-fab-dd').forEach(d=>{d.style.display='none';});
   const dopt=e.target.closest('#cost-dps-list .resv-opt');
   if(dopt&&dopt.dataset.costdps){costPickDps(dopt.dataset.costdps);return;}
@@ -10394,7 +10435,7 @@ async function costPickStyle(style,num){
   document.getElementById('cost-style-list').style.display='none';
   if(costEdit.stage==='pre_production'){
     costEdit.dps_ref=null;
-    document.getElementById('cost-suggest-note').textContent='Pre-production: add a fabric line (+ Fabric), set Mtrs per Garment and CMT inputs.';
+    document.getElementById('cost-suggest-note').textContent='Pre-production: search the Fabric line below by name, code or barcode — Cost/Mtr auto-fills from the fabric master. Then set Mtrs per Garment and CMT inputs.';
   } else {
     costDpsReset(false); // new style → clear any chosen DPS, enable the picker
     document.getElementById('cost-suggest-note').textContent='Now pick the DPS # this sheet is costed from — suggestions are built strictly from that DPS\u2019s MOs.';

@@ -19,6 +19,13 @@ re-pricing behaviour was reversed on the boss's instruction. fabric_costing_line
 (fabric-product link) is kept for *reporting* drift only — it must not feed pricing math.
 _strip_reprice_notes cleans the legacy "· current cost/metre" source notes.
 
+## Fabric-first lines + auto Cost/Mtr (Aug 2026)
+- raw_fabric_products has NO `sku` column — the internal code is `default_code`. (A `p.sku` select 500'd the pre-production costing search for weeks; the UI catch hid it — verify search endpoints with curl, not just "dropdown appears".)
+- Pre-prod (no dps_ref) search covers the whole raw-material master by name/default_code/barcode: Fabric-category rows carry cost_per_metre = standard_price × kg_per_mtr_eff; Trim rows carry standard_price as unit_cost. BOTH branches return `cost_missing_reason` (shared `_fabric_cost_missing_reason`) so a blank cost is explained, never a silent 0.
+- Fabric lines order FIRST on every surface: `_sheet_payload` ORDER BY `(kind <> 'fabric'), position` + client stable sort that also feeds save positions and the PDF/xlsx. Ordering only — amounts untouched. The PUT change-summary's old-lines query must use the SAME order or legacy sheets log spurious "edited" history.
+- New Pre-production sheets seed one empty fabric row client-side (unsaved sheets only; pristine row pruned when toggled back to Main Production, so no duplicates).
+- SNAPSHOT carve-out (user-approved): the ONLY auto re-price is the editor-side self-heal — unlocked sheet + fabric line with component_id + cost never captured (≤0) + advisory `current_cost_per_metre` now derivable → fill AUTO ("auto-filled when the Odoo data became available"), persisted on next save. Lines already carrying a cost and locked sheets are NEVER touched; read endpoints stay pure (advisory fields only).
+
 ## Sign-off & edit lock (Jul 2026)
 - 3 ORDERED sign-off steps per sheet in fabric_costing_signoffs (row exists ONLY when signed;
   titles customizable at signing, defaults Prepared/Checked/Approved by). Step 3 signed =

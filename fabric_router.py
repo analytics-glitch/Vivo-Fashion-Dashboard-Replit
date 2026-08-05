@@ -13238,46 +13238,90 @@ def costing_styles(q_: str = Query(default="", alias="q"),
     return out
 
 
+def _fabric_cost_missing_reason(in_master, kg_eff, std_price):
+    """Why the standard cost/metre conversion (standard_price × kg_per_mtr_eff,
+    i.e. cost/kg × Width(m) × GSM ÷ 1000) can't be derived for a fabric.
+    Returns None when it IS derivable. The UI shows this instead of a silent 0."""
+    if not in_master:
+        return "Not linked to an Odoo fabric product — enter cost manually"
+    no_conv = kg_eff is None or float(kg_eff) <= 0
+    no_cost = std_price is None or float(std_price) <= 0
+    if no_conv and no_cost:
+        return ("No Width/GSM and no cost in Odoo — "
+                "enter cost manually or fix the product")
+    if no_conv:
+        return "No Width/GSM in Odoo — enter cost manually or fix the product"
+    if no_cost:
+        return "No cost in Odoo — enter cost manually or fix the product"
+    return None
+
+
 @fabric_router.get("/api/fabric/costing/fabrics")
 def costing_fabric_search(q_: str = Query(default="", alias="q"),
                           dps_ref: str = Query(default=None),
                           style_name: str = Query(default=None),
                           color: str = Query(default=None),
                           limit: int = Query(default=20)):
-    """Component typeahead for costing lines — restricted to the components
-    (main fabrics AND accessories/trims) actually consumed on the selected
-    DPS's Done MOs; the whole-fabric-master search is gone. `dps_ref` is
-    required. Fabrics return the master's CURRENT cost/metre (standard_price ×
-    kg_per_mtr_eff, the popup modal's Cost/Metre figure); accessories return
-    the DPS/MO recorded unit cost (consumed-qty-weighted, never latest-PO).
-    cost_per_metre / unit_cost are NULL when unknown."""
+    """Component typeahead for costing lines. With `dps_ref` it is restricted
+    to the components (main fabrics AND accessories/trims) actually consumed
+    on the selected DPS's Done MOs; without one (Pre-production sheets) it
+    searches the whole raw-material master. Both modes match name, internal
+    code AND barcode. Fabrics return the master's CURRENT cost/metre
+    (standard_price × kg_per_mtr_eff, the popup modal's Cost/Metre figure);
+    accessories return the DPS/MO recorded unit cost (consumed-qty-weighted,
+    never latest-PO). cost_per_metre / unit_cost are NULL when unknown, with
+    cost_missing_reason saying why so the UI can explain the blank."""
     term = (q_ or "").strip()
     dps = (dps_ref or "").strip()
     if not dps:
-        # Pre-production mode: search the whole fabric master without DPS scope.
-        # Returns fabrics only (no DPS-recorded accessory costs) with cost_per_metre
-        # from the fabric master so the unit_cost field can be pre-filled.
+        # Pre-production mode: search the whole raw-material master without
+        # DPS scope, by name, internal code (default_code) or barcode.
+        # Fabric-category rows carry the master conversion cost/metre;
+        # Trim-category rows carry their Odoo standard cost per unit.
         if not term or len(term) < 2:
             return []
         _limit = max(1, min(int(limit or 20), 50))
         with _get_conn() as conn:
             rows = q(conn, """
-                SELECT p.id, p.sku, p.name,
+                SELECT p.id, p.default_code AS sku, p.name,
                        NULLIF(TRIM(p.barcode), '') AS barcode,
-                       ROUND(CASE WHEN p.kg_per_mtr_eff > 0 AND p.standard_price > 0
+                       p.category, p.kg_per_mtr_eff, p.standard_price,
+                       ROUND(CASE WHEN p.category = 'Fabric'
+                                   AND p.kg_per_mtr_eff > 0
+                                   AND p.standard_price > 0
                                   THEN (p.standard_price * p.kg_per_mtr_eff)::numeric
                                   ELSE NULL END, 2) AS cost_per_metre
                 FROM raw_fabric_products p
-                WHERE p.name ILIKE %s OR p.sku ILIKE %s
-                ORDER BY p.name
+                WHERE p.name ILIKE %s OR p.default_code ILIKE %s
+                   OR p.barcode ILIKE %s
+                ORDER BY (p.category <> 'Fabric'), p.name
                 LIMIT %s
-            """, [f"%{term}%", f"%{term}%", _limit])
-        return [{"id": r["id"], "sku": r["sku"], "name": r["name"],
-                 "barcode": r["barcode"],
-                 "is_main_fabric": True,
-                 "cost_per_metre": float(r["cost_per_metre"]) if r["cost_per_metre"] is not None else None,
-                 "unit_cost": None}
-                for r in rows]
+            """, [f"%{term}%", f"%{term}%", f"%{term}%", _limit])
+        out = []
+        for r in rows:
+            is_fab = (r["category"] or "").strip().lower() == "fabric"
+            cpm = (float(r["cost_per_metre"])
+                   if r["cost_per_metre"] is not None else None)
+            unit_cost, reason = None, None
+            if is_fab:
+                if cpm is None:
+                    reason = _fabric_cost_missing_reason(
+                        True, r["kg_per_mtr_eff"], r["standard_price"])
+            else:
+                # Accessory/trim: no metre conversion — its Odoo standard
+                # cost is the per-unit cost (same basis the MO extract records).
+                std = float(r["standard_price"] or 0)
+                unit_cost = round(std, 2) if std > 0 else None
+                if unit_cost is None:
+                    reason = ("No cost in Odoo — enter cost manually "
+                              "or fix the product")
+            out.append({"id": r["id"], "sku": r["sku"], "name": r["name"],
+                        "barcode": r["barcode"],
+                        "is_main_fabric": is_fab,
+                        "cost_per_metre": cpm,
+                        "unit_cost": unit_cost,
+                        "cost_missing_reason": reason})
+        return out
     limit = max(1, min(int(limit or 20), 50))
     # Optional colour scope (with the style): restrict to components consumed
     # on the MOs whose finished SKU is that colour of the style, so the
@@ -13296,6 +13340,9 @@ def costing_fabric_search(q_: str = Query(default="", alias="q"),
                    MAX(c.fabric_name) AS name,
                    MAX(p.barcode)     AS barcode,
                    bool_or(c.is_main_fabric) AS is_main_fabric,
+                   MAX(p.id)             AS master_id,
+                   MAX(p.kg_per_mtr_eff) AS kg_per_mtr_eff,
+                   MAX(p.standard_price) AS standard_price,
                    ROUND(MAX(CASE WHEN p.kg_per_mtr_eff > 0 AND p.standard_price > 0
                              THEN p.standard_price * p.kg_per_mtr_eff
                              ELSE NULL END)::numeric, 2) AS cost_per_metre,
@@ -13308,19 +13355,33 @@ def costing_fabric_search(q_: str = Query(default="", alias="q"),
             LEFT JOIN raw_fabric_products p ON p.id = c.component_id
             WHERE c.dps_ref = %s
               {color_sql}
-              AND (%s = '' OR c.fabric_name ILIKE %s OR c.fabric_sku ILIKE %s)
+              AND (%s = '' OR c.fabric_name ILIKE %s OR c.fabric_sku ILIKE %s
+                   OR p.barcode ILIKE %s)
             GROUP BY c.component_id
             ORDER BY bool_or(c.is_main_fabric) DESC, MAX(c.fabric_name)
             LIMIT %s
-        """, [dps] + color_params + [term, f"%{term}%", f"%{term}%", limit])
-    return [{"id": r["id"], "sku": r["sku"], "name": r["name"],
-             "barcode": (r["barcode"] or "").strip() or None,
-             "is_main_fabric": bool(r["is_main_fabric"]),
-             "cost_per_metre": (float(r["cost_per_metre"])
-                                if r["cost_per_metre"] is not None else None),
-             "unit_cost": (float(r["unit_cost"])
-                           if r["unit_cost"] is not None else None)}
-            for r in rows]
+        """, [dps] + color_params + [term, f"%{term}%", f"%{term}%",
+                                     f"%{term}%", limit])
+    out = []
+    for r in rows:
+        is_main = bool(r["is_main_fabric"])
+        cpm = (float(r["cost_per_metre"])
+               if r["cost_per_metre"] is not None else None)
+        uc = float(r["unit_cost"]) if r["unit_cost"] is not None else None
+        reason = None
+        if is_main and cpm is None:
+            reason = _fabric_cost_missing_reason(
+                r["master_id"] is not None,
+                r["kg_per_mtr_eff"], r["standard_price"])
+        elif not is_main and uc is None:
+            reason = "No recorded cost on this DPS's MOs — enter cost manually"
+        out.append({"id": r["id"], "sku": r["sku"], "name": r["name"],
+                    "barcode": (r["barcode"] or "").strip() or None,
+                    "is_main_fabric": is_main,
+                    "cost_per_metre": cpm,
+                    "unit_cost": uc,
+                    "cost_missing_reason": reason})
+    return out
 
 
 @fabric_router.get("/api/fabric/costing/dps")
@@ -13511,17 +13572,39 @@ def _sheet_payload(conn, sheet_id, with_history=True):
     if not sheets:
         raise HTTPException(status_code=404, detail="Sheet not found")
     s = dict(sheets[0])
+    # Fabric rows always list FIRST (stable within each group) — the editor,
+    # the per-sheet XLSX and the PDF all read this payload, so every surface
+    # shows the same fabric-first order, including sheets saved before the
+    # rule existed. Ordering only — stored amounts are untouched.
     lines = [dict(l) for l in q(conn, """
         SELECT l.id, l.kind, l.label, l.qty, l.unit_cost, l.total, l.is_auto,
                l.source, l.position, l.component_id,
-               NULLIF(TRIM(p.barcode), '') AS barcode
+               NULLIF(TRIM(p.barcode), '') AS barcode,
+               (p.id IS NOT NULL)  AS _in_master,
+               p.kg_per_mtr_eff    AS _kg_eff,
+               p.standard_price    AS _std_price,
+               ROUND(CASE WHEN p.kg_per_mtr_eff > 0 AND p.standard_price > 0
+                          THEN (p.standard_price * p.kg_per_mtr_eff)::numeric
+                          ELSE NULL END, 2) AS _current_cpm
         FROM fabric_costing_lines l
         LEFT JOIN raw_fabric_products p ON p.id = l.component_id
-        WHERE l.sheet_id=%s ORDER BY l.position, l.id
+        WHERE l.sheet_id=%s ORDER BY (l.kind <> 'fabric'), l.position, l.id
     """, (sheet_id,))]
     for l in lines:
         for k in ("qty", "unit_cost", "total"):
             l[k] = float(l[k]) if l[k] is not None else None
+        # Advisory CURRENT master conversion for fabric lines linked to a
+        # product — editor-only information (blank-cost self-heal + reason).
+        # Saved sheets are a SNAPSHOT: this read never modifies stored costs.
+        in_master = bool(l.pop("_in_master"))
+        kg_eff, std_price = l.pop("_kg_eff"), l.pop("_std_price")
+        cur_cpm = l.pop("_current_cpm")
+        if l["kind"] == "fabric" and l["component_id"] is not None:
+            l["current_cost_per_metre"] = (float(cur_cpm)
+                                           if cur_cpm is not None else None)
+            l["cost_missing_reason"] = (
+                None if cur_cpm is not None
+                else _fabric_cost_missing_reason(in_master, kg_eff, std_price))
     _strip_reprice_notes(lines)
     lines_total = round(sum(l["total"] or 0 for l in lines), 2)
     # Embroidery cost — stored in embroidery_data JSONB; provide defaults when NULL.
@@ -14014,7 +14097,8 @@ def costing_sheet_update(sheet_id: int, request: Request, body: dict = Body(...)
         old_sp = float(sheets[0]["selling_price"]) if sheets[0]["selling_price"] is not None else None
         old_lines = q(conn, """
             SELECT kind, label, qty, unit_cost, total, is_auto, source
-            FROM fabric_costing_lines WHERE sheet_id=%s ORDER BY position, id
+            FROM fabric_costing_lines WHERE sheet_id=%s
+            ORDER BY (kind <> 'fabric'), position, id
         """, (sheet_id,))
         summary = _costing_change_summary(old_lines, lines, old_sp, sp)
         with conn.cursor() as cur:
