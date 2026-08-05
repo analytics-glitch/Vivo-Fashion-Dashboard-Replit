@@ -5457,28 +5457,71 @@ def product_search(q_: str = Query(default="", alias="q"), limit: int = Query(de
 # INCLUDED. Served from api_pg.run_query with a short TTL so it stays live but
 # cheap; search filtering happens in-process over the ~3.5k cached rows.
 _STYLE_UNIVERSE_SQL = """
-    SELECT style_name,
-           mode() WITHIN GROUP (ORDER BY style_number) AS style_number,
-           ARRAY_AGG(DISTINCT style_number)
-               FILTER (WHERE style_number IS NOT NULL AND style_number <> '')
-               AS style_numbers,
-           MAX(brand) AS brand
-    FROM all_products_clean
-    WHERE style_name IS NOT NULL AND style_name <> ''
-    GROUP BY style_name
-    HAVING COALESCE(MAX(brand), '') NOT ILIKE '%third party%'
+    WITH apc AS (
+        SELECT style_name,
+               mode() WITHIN GROUP (ORDER BY style_number) AS style_number,
+               ARRAY_AGG(DISTINCT style_number)
+                   FILTER (WHERE style_number IS NOT NULL AND style_number <> '')
+                   AS style_numbers,
+               MAX(brand) AS brand,
+               'apc' AS source
+        FROM all_products_clean
+        WHERE style_name IS NOT NULL AND style_name <> ''
+        GROUP BY style_name
+        HAVING COALESCE(MAX(brand), '') NOT ILIKE '%third party%'
+    ),
+    rop AS (
+        SELECT
+            COALESCE(NULLIF(TRIM(style_name), ''),
+                     NULLIF(SPLIT_PART(name, ' - ', 1), '')) AS style_name,
+            mode() WITHIN GROUP (ORDER BY style_number) AS style_number,
+            ARRAY_AGG(DISTINCT style_number)
+                FILTER (WHERE style_number IS NOT NULL AND style_number <> '')
+                AS style_numbers,
+            MAX(brand) AS brand,
+            'rop' AS source
+        FROM raw_odoo_products
+        WHERE COALESCE(NULLIF(TRIM(style_name), ''),
+                       NULLIF(SPLIT_PART(name, ' - ', 1), '')) IS NOT NULL
+          AND (
+              COALESCE(brand, '') NOT ILIKE '%third party%'
+              AND (
+                  brand IS NOT NULL
+                  OR name ILIKE 'Vivo%'
+                  OR name ILIKE 'Safari%'
+                  OR name ILIKE 'Zoya%'
+              )
+          )
+        GROUP BY 1
+    ),
+    combined AS (
+        SELECT * FROM apc
+        UNION ALL
+        SELECT * FROM rop
+    ),
+    deduped AS (
+        SELECT DISTINCT ON (lower(style_name))
+               style_name, style_number, style_numbers, brand, source
+        FROM combined
+        ORDER BY lower(style_name), CASE source WHEN 'apc' THEN 0 ELSE 1 END
+    )
+    SELECT style_name, style_number, style_numbers, brand
+    FROM deduped
     ORDER BY style_name
 """
 
 
 def _own_styles():
-    """Deduplicated own-style list (live, 300s-cached via api_pg.run_query).
+    """Deduplicated own-style list (live, 60s-cached via api_pg.run_query).
+    Merges all_products_clean (apc) and raw_odoo_products (rop) so styles
+    that exist in Odoo but have not yet flowed through a full rebuild are
+    still findable.  apc rows win when both sources carry the same style.
     Each row carries style_numbers = ALL distinct numbers on the style's SKUs
     (230 styles have several, e.g. SAF10BT/SAF10GR/SAF10WH) for matching;
     style_number stays the single modal one that is displayed and stored."""
     import importlib
     api = importlib.import_module('api_pg')
-    return api.run_query(_STYLE_UNIVERSE_SQL, ttl=300)
+    return api.run_query(_STYLE_UNIVERSE_SQL, ttl=60)
 
 
 def _style_norm(s):
@@ -13297,6 +13340,111 @@ def costing_styles(q_: str = Query(default="", alias="q"),
     return [{"style_name": s.get("style_name"),
              "style_number": s.get("style_number")}
             for s in _style_search_rows(q_, limit)]
+
+
+@fabric_router.get("/api/fabric/costing/style-debug")
+def costing_style_debug(name: str = Query(default=""),
+                        request: Request = None):
+    """Diagnostic endpoint (costing-role only).
+    For a given style name, reports whether it is found in each data layer
+    so the team can self-diagnose 'No matching style' mismatches without
+    asking engineering."""
+    # Middleware already gates /api/fabric/costing/* by _fabric_costing_allowed,
+    # but guard explicitly so the endpoint is self-documenting.
+    u = getattr(request.state, "user", None) if request else None
+    if not _fabric_costing_allowed(u or {}):
+        raise HTTPException(status_code=403, detail="Costing access required")
+    if not (name or "").strip():
+        raise HTTPException(status_code=400, detail="name query param is required")
+
+    import importlib
+    api = importlib.import_module('api_pg')
+
+    name_q = f"%{name.strip()}%"
+
+    # --- all_products_clean layer ---
+    apc_rows = api.run_query(
+        """
+        SELECT style_name, brand
+        FROM all_products_clean
+        WHERE style_name ILIKE %(n)s
+          AND style_name IS NOT NULL AND style_name <> ''
+        ORDER BY style_name
+        LIMIT 5
+        """,
+        params={"n": name_q},
+        ttl=0,
+    )
+    apc_found = len(apc_rows) > 0
+    apc_sample = apc_rows[0].get("style_name") if apc_found else None
+
+    # --- raw_odoo_products layer ---
+    rop_rows = api.run_query(
+        """
+        SELECT COALESCE(NULLIF(TRIM(style_name), ''),
+                        NULLIF(SPLIT_PART(name, ' - ', 1), '')) AS style_name,
+               brand
+        FROM raw_odoo_products
+        WHERE (style_name ILIKE %(n)s
+               OR (NULLIF(TRIM(style_name), '') IS NULL
+                   AND SPLIT_PART(name, ' - ', 1) ILIKE %(n)s))
+        ORDER BY 1
+        LIMIT 5
+        """,
+        params={"n": name_q},
+        ttl=0,
+    )
+    rop_found = len(rop_rows) > 0
+    rop_sample = rop_rows[0] if rop_found else None
+
+    # --- picker search layer ---
+    picker_hits = _style_search_rows(name, 5)
+    matched_by_search = any(
+        name.strip().lower() in (h.get("style_name") or "").lower()
+        for h in picker_hits
+    )
+
+    # --- human-readable suggestion ---
+    if matched_by_search:
+        suggestion = "Style is visible in the picker right now."
+    elif rop_found and not apc_found:
+        suggestion = (
+            "Style is in raw_odoo_products (last nightly extract) but has not "
+            "yet been through a full rebuild — it should appear in the picker "
+            "within 60 s of the next nightly extract completing."
+        )
+    elif not rop_found and not apc_found:
+        suggestion = (
+            "Style not found in either layer. Check that the product exists in "
+            "Odoo with a style name (x_vivo_attr_16) set and that the nightly "
+            "extract has run since it was created."
+        )
+    elif apc_found and not matched_by_search:
+        suggestion = (
+            "Style is in all_products_clean but the picker did not match the "
+            "search term — try a shorter or differently-spaced substring."
+        )
+    else:
+        suggestion = (
+            "Style appears in all_products_clean but not in the picker results "
+            "for this search term — try a shorter substring."
+        )
+
+    return {
+        "query": name,
+        "all_products_clean": {
+            "found": apc_found,
+            "style_name": apc_sample,
+        },
+        "raw_odoo_products": {
+            "found": rop_found,
+            "style_name": rop_sample.get("style_name") if rop_sample else None,
+            "brand": rop_sample.get("brand") if rop_sample else None,
+        },
+        "matched_by_search": matched_by_search,
+        "picker_hits": [h.get("style_name") for h in picker_hits],
+        "suggestion": suggestion,
+    }
 
 
 def _fabric_cost_missing_reason(in_master, kg_eff, std_price):
