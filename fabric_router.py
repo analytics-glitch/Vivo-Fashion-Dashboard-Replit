@@ -5459,6 +5459,9 @@ def product_search(q_: str = Query(default="", alias="q"), limit: int = Query(de
 _STYLE_UNIVERSE_SQL = """
     SELECT style_name,
            mode() WITHIN GROUP (ORDER BY style_number) AS style_number,
+           ARRAY_AGG(DISTINCT style_number)
+               FILTER (WHERE style_number IS NOT NULL AND style_number <> '')
+               AS style_numbers,
            MAX(brand) AS brand
     FROM all_products_clean
     WHERE style_name IS NOT NULL AND style_name <> ''
@@ -5469,20 +5472,97 @@ _STYLE_UNIVERSE_SQL = """
 
 
 def _own_styles():
-    """Deduplicated own-style list (live, 300s-cached via api_pg.run_query)."""
+    """Deduplicated own-style list (live, 300s-cached via api_pg.run_query).
+    Each row carries style_numbers = ALL distinct numbers on the style's SKUs
+    (230 styles have several, e.g. SAF10BT/SAF10GR/SAF10WH) for matching;
+    style_number stays the single modal one that is displayed and stored."""
     import importlib
     api = importlib.import_module('api_pg')
     return api.run_query(_STYLE_UNIVERSE_SQL, ttl=300)
 
 
+def _style_norm(s):
+    """Lowercase + collapse every whitespace run (incl. non-breaking spaces —
+    14 own styles carry double/NBSP spaces) to a single space, trimmed."""
+    return re.sub(r"\s+", " ", (s or "")).strip().lower()
+
+
+# Normalized companion of the cached universe, memoized per cache generation
+# (run_query hands back the same list object for the TTL; rows are shared with
+# other callers so we must never mutate them — build a parallel index instead).
+_style_index_memo = (None, None)
+
+
+def _style_index():
+    """[(row, norm_name, [norm_numbers…])] for the current cached universe."""
+    global _style_index_memo
+    rows = _own_styles()
+    memo_rows, memo_idx = _style_index_memo
+    if memo_rows is rows and memo_idx is not None:
+        return memo_idx
+    idx = []
+    for s in rows:
+        nums = s.get("style_numbers") or []
+        if not isinstance(nums, (list, tuple)):
+            nums = [nums]
+        modal = s.get("style_number")
+        if modal and modal not in nums:
+            nums = list(nums) + [modal]
+        idx.append((s, _style_norm(s.get("style_name")),
+                    [_style_norm(n) for n in nums if n]))
+    _style_index_memo = (rows, idx)
+    return idx
+
+
+def _style_search_rows(term, limit):
+    """Shared tolerant matcher for the reservation + costing style pickers.
+
+    Case-insensitive and whitespace-normalized; EVERY typed token must appear
+    (as a substring) in the style name or any of the style's numbers, so
+    out-of-order words ("arusha kaftan"), single-spaced quirk names and
+    non-modal style numbers all hit. Rank: exact name/number match, then
+    prefix, then contiguous substring, then looser token matches —
+    alphabetical within each band — so the result cap never buries the target.
+    """
+    term_n = _style_norm(term)
+    tokens = term_n.split(" ") if term_n else []
+    scored = []
+    for s, name_n, nums_n in _style_index():
+        if tokens:
+            hay = name_n + " " + " ".join(nums_n) if nums_n else name_n
+            if not all(t in hay for t in tokens):
+                continue
+            if term_n == name_n or term_n in nums_n:
+                rank = 0
+            elif name_n.startswith(term_n) or any(n.startswith(term_n) for n in nums_n):
+                rank = 1
+            elif term_n in name_n:
+                rank = 2
+            else:
+                rank = 3
+        else:
+            rank = 0
+        scored.append((rank, name_n, s))
+    scored.sort(key=lambda r: (r[0], r[1]))
+    return [s for _, _, s in scored[:limit]]
+
+
 def _match_style(style_name):
-    """Exact (case-insensitive, trimmed) match of a posted style against the
-    allowed universe. Returns the canonical row or None."""
+    """Strict membership check of a posted style against the allowed universe.
+    Tolerant of case + whitespace quirks ONLY (runs of spaces / non-breaking
+    spaces compare as one space) so picked suggestions never bounce; an exact
+    trimmed match is preferred when both variants exist as distinct rows.
+    Returns the UNTOUCHED canonical row — what gets stored (and used for
+    DPS/MO lookups) stays byte-identical to all_products_clean — or None."""
     want = (style_name or "").strip().lower()
     if not want:
         return None
     for s in _own_styles():
         if (s.get("style_name") or "").strip().lower() == want:
+            return s
+    want_n = _style_norm(style_name)
+    for s, name_n, _nums in _style_index():
+        if name_n == want_n:
             return s
     return None
 
@@ -5490,23 +5570,14 @@ def _match_style(style_name):
 @fabric_router.get("/api/fabric/style-search")
 def style_search(q_: str = Query(default="", alias="q"),
                  limit: int = Query(default=20)):
-    """Strict style picker for the reservation form: matches on style name OR
-    style number, returns name + number + brand."""
-    term = (q_ or "").strip().lower()
+    """Strict style picker for the reservation form: tolerant token match on
+    style name OR any of the style's numbers (see _style_search_rows), returns
+    name + modal number + brand."""
     limit = max(1, min(int(limit or 20), 50))
-    out = []
-    for s in _own_styles():
-        if term:
-            name = (s.get("style_name") or "").lower()
-            num = (s.get("style_number") or "").lower()
-            if term not in name and term not in num:
-                continue
-        out.append({"style_name": s.get("style_name"),
-                    "style_number": s.get("style_number"),
-                    "brand": s.get("brand")})
-        if len(out) >= limit:
-            break
-    return out
+    return [{"style_name": s.get("style_name"),
+             "style_number": s.get("style_number"),
+             "brand": s.get("brand")}
+            for s in _style_search_rows(q_, limit)]
 
 
 # ── Reservation aging + expiry thresholds (the ONE place to tune them) ──
@@ -13221,21 +13292,11 @@ def costing_access(request: Request):
 def costing_styles(q_: str = Query(default="", alias="q"),
                    limit: int = Query(default=20)):
     """Searchable style list for the sheet creator — same strict own-style
-    universe as the reservation picker, plus the modal selling price."""
-    term = (q_ or "").strip().lower()
+    universe and tolerant matcher as the reservation picker."""
     limit = max(1, min(int(limit or 20), 50))
-    out = []
-    for s in _own_styles():
-        if term:
-            name = (s.get("style_name") or "").lower()
-            num = (s.get("style_number") or "").lower()
-            if term not in name and term not in num:
-                continue
-        out.append({"style_name": s.get("style_name"),
-                    "style_number": s.get("style_number")})
-        if len(out) >= limit:
-            break
-    return out
+    return [{"style_name": s.get("style_name"),
+             "style_number": s.get("style_number")}
+            for s in _style_search_rows(q_, limit)]
 
 
 def _fabric_cost_missing_reason(in_master, kg_eff, std_price):
