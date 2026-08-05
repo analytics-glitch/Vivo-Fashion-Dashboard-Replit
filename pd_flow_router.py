@@ -115,6 +115,7 @@ def ensure_pd_tables():
     _db("ALTER TABLE pd_styles ADD COLUMN IF NOT EXISTS theme           TEXT", fetch=False)
     _db("ALTER TABLE pd_styles ADD COLUMN IF NOT EXISTS print_solid     TEXT", fetch=False)
     _db("ALTER TABLE pd_styles ADD COLUMN IF NOT EXISTS pattern_maker   TEXT", fetch=False)
+    _db("ALTER TABLE pd_styles ADD COLUMN IF NOT EXISTS cad             TEXT", fetch=False)
     _db("ALTER TABLE pd_styles ADD COLUMN IF NOT EXISTS order_date      DATE", fetch=False)
     _db("ALTER TABLE pd_styles ADD COLUMN IF NOT EXISTS sample_approval_date DATE", fetch=False)
     _db("""
@@ -331,6 +332,7 @@ def _style_out(r, sla_map=None):
         "assignee_user_id": r.get("assignee_user_id"),
         "assignee_name": r.get("assignee_name"),
         "pattern_maker": r.get("pattern_maker"),
+        "cad": r.get("cad"),
         "created_by_name": r.get("created_by_name"),
         "created_at": _iso(r.get("created_at")),
         "completed_at": _iso(r.get("completed_at")),
@@ -566,7 +568,7 @@ def register_pd_routes(app, api_pg_module):
         _style(style_id)  # 404 if not found
         _EDITABLE = {
             "style_name", "style_number", "brand", "category", "sub_category",
-            "lifecycle_type", "pattern_maker", "target_order_week",
+            "lifecycle_type", "pattern_maker", "cad", "target_order_week",
             "fabric_type", "fabric_name", "sample_colour", "theme", "print_solid",
             "adoption_date", "order_date", "sample_approval_date",
             "assignee_name", "assignee_user_id",

@@ -31087,6 +31087,16 @@ def crm_customers(request: Request):
     except Exception:
         offset = 0
 
+    # SWR cache: the customer list aggregates all_customers live on every call
+    # (no per-customer rollup exists yet). Cache keyed on every filter/pagination
+    # param so distinct views cache separately; the common unfiltered first page
+    # then serves instantly. TTL 300s with stale-while-revalidate.
+    _crm_ck = ("crm_customers:v1:" + "|".join([
+        q, brand, segment, str(tag_id), str(limit), str(offset)]))
+    _crm_cached, _crm_fresh = cache_get_swr(_crm_ck)
+    if _crm_cached is not None and _crm_fresh:
+        return _crm_cached
+
     like = f"%{q.lower()}%"
     phone_digits = re.sub(r"[^0-9]", "", q)
     phone_like = f"%{phone_digits}%" if phone_digits else None
@@ -31176,7 +31186,9 @@ def crm_customers(request: Request):
         r["tags"] = tags_by_cust.get(r["customer_id"], [])
         if r.get("total_spend_kes") is not None:
             r["total_spend_kes"] = float(r["total_spend_kes"])
-    return {"customers": rows, "count": len(rows), "limit": limit, "offset": offset}
+    _crm_result = {"customers": rows, "count": len(rows), "limit": limit, "offset": offset}
+    cache_set(_crm_ck, _crm_result, ttl=300)
+    return _crm_result
 
 
 @app.get("/api/crm/customers/{customer_id}")

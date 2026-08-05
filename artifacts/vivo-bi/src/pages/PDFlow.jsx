@@ -508,6 +508,7 @@ const DetailDrawer = ({ styleId, onClose, onMove, onRefreshBoard, allStages }) =
       sub_category: st.sub_category || "",
       lifecycle_type: st.lifecycle_type || "",
       pattern_maker: st.pattern_maker || "",
+      cad: st.cad || "",
       target_order_week: st.target_order_week || "",
       fabric_type: st.fabric_type || "",
       fabric_name: st.fabric_name || "",
@@ -587,6 +588,7 @@ const DetailDrawer = ({ styleId, onClose, onMove, onRefreshBoard, allStages }) =
                   <FField label="Sub-category" name="sub_category" value={form.sub_category} onChange={setField} />
                   <FField label="Lifecycle Type" name="lifecycle_type" value={form.lifecycle_type} onChange={setField} placeholder="e.g. core, new" />
                   <FField label="Pattern Maker" name="pattern_maker" value={form.pattern_maker} onChange={setField} />
+                  <FField label="CAD" name="cad" value={form.cad} onChange={setField} />
                   <FField label="Target Order Wk" name="target_order_week" value={form.target_order_week} onChange={setField} placeholder="e.g. WK 30" />
                   <FField label="Fabric Type" name="fabric_type" value={form.fabric_type} onChange={setField} />
                   <FField label="Fabric Name" name="fabric_name" value={form.fabric_name} onChange={setField} />
@@ -616,6 +618,7 @@ const DetailDrawer = ({ styleId, onClose, onMove, onRefreshBoard, allStages }) =
                 <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-[11.5px]">
                   {[
                     ["Pattern Maker", st.pattern_maker || st.assignee_name],
+                    ["CAD", st.cad],
                     ["Target Order Wk", st.target_order_week],
                     ["Sub-category", st.sub_category],
                     ["Theme", st.theme],
@@ -1389,7 +1392,10 @@ const PDFlow = () => {
                           {[c.brand, c.category].filter(Boolean).join(" · ") || "—"}
                         </div>
                         <div className="flex items-center justify-between mt-1.5">
-                          <span className="text-[10.5px] text-muted truncate max-w-[120px]">{c.assignee_name || c.pattern_maker || "Unassigned"}</span>
+                          <div className="flex flex-col min-w-0">
+                            <span className="text-[10.5px] text-muted truncate max-w-[120px]">{c.assignee_name || c.pattern_maker || "Unassigned"}</span>
+                            {c.cad && <span className="text-[9.5px] text-muted/70 truncate max-w-[120px]">CAD: {c.cad}</span>}
+                          </div>
                           <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${agingBadge(c.aging)}`}>
                             {fmtDays(c.days_in_stage)}d
                           </span>
