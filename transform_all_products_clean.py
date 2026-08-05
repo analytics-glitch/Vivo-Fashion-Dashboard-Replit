@@ -161,6 +161,10 @@ _INSERT_SQL = """
     ) VALUES %s
     ON CONFLICT (sku) DO UPDATE SET
         product_name    = EXCLUDED.product_name,
+        -- Colour follows the authoritative product name, so refresh it whenever
+        -- the row is re-upserted (renamed colourways must heal). Guard: an empty
+        -- new derivation never blanks a colour we already have.
+        color_print     = COALESCE(NULLIF(TRIM(EXCLUDED.color_print), ''), all_products_clean.color_print),
         price           = EXCLUDED.price,
         cost            = EXCLUDED.cost,
         is_noos = EXCLUDED.is_noos,
@@ -305,7 +309,13 @@ def main():
             # is authoritative, so always derive style_name from it rather than trusting
             # the source. (Post-processing then canonicalises one name per style_number.)
             sname = extract_style_name(name)
-            clr   = color or extract_color_from_name(name)
+            # Colour: the product NAME is authoritative (same rule as style_name).
+            # Odoo's colour *attribute* goes stale when a product is duplicated/
+            # renamed to a new colourway (e.g. DPS00414's Mulberry/Olive kept the
+            # donor's "WHITE / BROWN IKA PRINT" attribute), so prefer the colour
+            # parsed from the name and use the attribute only as a fallback when
+            # the name has no parsable colour suffix.
+            clr   = extract_color_from_name(name) or color
             if clr:
                 clr = clr.title()
 

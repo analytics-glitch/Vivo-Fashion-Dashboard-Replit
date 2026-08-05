@@ -127,3 +127,4 @@
 - [Two BI frontends](dual-frontend-dashboard-legacy.md) — artifacts/vivo-bi is the LIVE app (dev+prod); dashboard/ is a stale legacy CRA copy — UI work goes in vivo-bi, payload key renames need a legacy alias.
 - [Product Catalogue page](product-catalogue-page.md) — page id stays "gallery"; launch = catalogue col (empty) → first-sale fallback; cost NEVER in popup (viewer-visible); 'Uncategorised' bucket expression must match on facet+filter sides.
 - [Store Feedback tool](store-feedback-tool.md) — submit open to ALL BI roles, review gate (admin/leadership/smt) in handlers; BYTEA attachments owner-or-reviewer; distinct from legacy "feedback" page id.
+- [Product colour name-authoritative](product-color-name-authoritative.md) — color_print derives from the product NAME (Odoo attr = stale-on-rename fallback); nightly transform self-heals dev+prod; beware "Off - Shoulder" wrong-split wart.

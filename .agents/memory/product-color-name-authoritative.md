@@ -1,0 +1,8 @@
+---
+name: Product colour = name-derived (attribute fallback)
+description: Why all_products_clean.color_print must follow the product name, not Odoo's colour attribute
+---
+- **Rule:** in the products transform, `color_print` is parsed from the product NAME first; Odoo's colour *attribute* is only a defensive fallback when the name has no ` - ` colour suffix. The upsert's conflict-update also refreshes colour with a blank-guard (`COALESCE(NULLIF(TRIM(EXCLUDED...),''), existing)`) so re-upserted rows heal and never blank.
+- **Why:** duplicating/renaming an Odoo product to a new colourway keeps the donor's colour attribute (a DPS's Mulberry/Olive SKUs stayed stamped "WHITE / BROWN IKA PRINT"), which fed a bogus colour into the costing Colour Scope picker and 258 SKUs' colours contradicted their own names. Measured: zero rows have an attribute colour without a name colour, so name-first loses nothing.
+- **How to apply:** treat product_name as the authority for colour exactly like style_name; never hand-patch colours — the nightly product-master sync (watchdog → sync loop → extract_odoo_products + transform_all_products_clean subprocesses, 24h/stale-gated) full-rebuilds and self-heals dev AND prod on each cycle after publish.
+- **Known wart (pre-existing, do not "fix" by re-preferring the attribute):** names with spaced-hyphen tokens inside the style part ("Off - Shoulder", "T- Shirt", "Hi - Low") split at the wrong ` - `, so BOTH style_name and colour mangle (colour like "Shoulder Top - Lime"). Proper fix is compound-token normalisation before splitting, applied to style and colour together.
