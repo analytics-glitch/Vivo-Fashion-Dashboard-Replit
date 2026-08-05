@@ -447,17 +447,9 @@ export default function ProductionOverview({ onOpenReport }) {
   const [refreshing, setRefreshing] = useState(false);
   const [drill, setDrill] = useState(null);
 
-  // Date filter — default to Last Week (Mon-Sun)
-  const [dateFrom, setDateFrom] = useState(() => {
-    const ws = weekStartOf(new Date());
-    const start = new Date(ws); start.setDate(ws.getDate() - 7);
-    return toISO(start);
-  });
-  const [dateTo, setDateTo] = useState(() => {
-    const ws = weekStartOf(new Date());
-    const end = new Date(ws); end.setDate(ws.getDate() - 1);
-    return toISO(end);
-  });
+  // Date filter — default to This Week (Mon–today), matching the activePreset below.
+  const [dateFrom, setDateFrom] = useState(() => toISO(weekStartOf(new Date())));
+  const [dateTo, setDateTo] = useState(() => toISO(new Date()));
   const [activePreset, setActivePreset] = useState("thisWeek");
 
   const applyPreset = useCallback((preset) => {
