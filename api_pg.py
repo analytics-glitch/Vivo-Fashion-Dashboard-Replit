@@ -6239,6 +6239,7 @@ def get_gallery_search(
     q:           str = Query(default=""),
     category:    str = Query(default=""),
     subcategory: str = Query(default=""),
+    brand:       str = Query(default=""),
     limit:       int = Query(default=48),
     offset:      int = Query(default=0),
 ):
@@ -6284,6 +6285,10 @@ def get_gallery_search(
     if sub:
         where += (" AND COALESCE(NULLIF(TRIM(p.product_type),''),'Uncategorised') = '"
                   + sub.replace("'", "''") + "'")
+    br = (brand or "").strip()
+    if br:
+        where += (" AND COALESCE(NULLIF(TRIM(p.brand),''),'(Unknown)') = '"
+                  + br.replace("'", "''") + "'")
     rows = run_query("""
         SELECT * FROM (
             SELECT DISTINCT ON (p.style_name, COALESCE(p.color_print, ''))
@@ -6323,7 +6328,7 @@ def get_gallery_facets():
     master data groups under 'Uncategorised', the same bucket name the search
     endpoint's filters understand. Cached: master data only changes on the
     product sync cadence."""
-    ck = "gallery_facets_v2"  # v2: own brands only (third-party excluded)
+    ck = "gallery_facets_v3"  # v3: + brands list
     hit = cache_get(ck)
     if hit is not None:
         return hit
@@ -6337,13 +6342,23 @@ def get_gallery_facets():
         GROUP BY 1, 2
         ORDER BY 1, 2
     """)
+    brand_rows = run_query("""
+        SELECT COALESCE(NULLIF(TRIM(p.brand),''),'(Unknown)') AS brand,
+               COUNT(DISTINCT p.style_name) AS styles
+        FROM all_products_clean p
+        WHERE p.style_name IS NOT NULL AND p.style_name <> ''
+          AND COALESCE(p.brand,'') NOT ILIKE '%third party%'
+        GROUP BY 1
+        ORDER BY 2 DESC, 1
+    """)
     cats = {}
     for r in rows:
         c = cats.setdefault(r["category"], {"name": r["category"], "styles": 0, "subcategories": []})
         c["styles"] += int(r["styles"] or 0)
         c["subcategories"].append({"name": r["subcategory"], "styles": int(r["styles"] or 0)})
     ordered = sorted(cats.values(), key=lambda c: (c["name"] == "Uncategorised", c["name"].lower()))
-    out = {"categories": ordered}
+    brands = [{"name": r["brand"], "styles": int(r["styles"] or 0)} for r in brand_rows]
+    out = {"categories": ordered, "brands": brands}
     cache_set(ck, out, ttl=600)
     return out
 

@@ -395,6 +395,7 @@ const ProductCatalogue = () => {
   const [query, setQuery] = useState("");
   const [cat, setCat] = useState("");
   const [subcat, setSubcat] = useState("");
+  const [brand, setBrand] = useState("");
   const [facets, setFacets] = useState(null);      // {categories:[{name,styles,subcategories:[…]}]}
   const [facetsErr, setFacetsErr] = useState(false);
   const [items, setItems] = useState([]);
@@ -420,13 +421,13 @@ const ProductCatalogue = () => {
     return () => { dead = true; };
   }, []);
 
-  const fetchPage = useCallback(async (q, c, sc, off, append) => {
+  const fetchPage = useCallback(async (q, c, sc, br, off, append) => {
     const myReq = ++reqId.current;
     if (append) setLoadingMore(true);
     else { setLoading(true); setError(null); }
     try {
       const { data } = await api.get("/gallery/search", {
-        params: { q, category: c, subcategory: sc, limit: PAGE_SIZE, offset: off },
+        params: { q, category: c, subcategory: sc, brand: br, limit: PAGE_SIZE, offset: off },
       });
       if (myReq !== reqId.current) return;
       const next = Array.isArray(data?.items) ? data.items : [];
@@ -447,16 +448,16 @@ const ProductCatalogue = () => {
 
   useEffect(() => {
     setOffset(0);
-    fetchPage(query, cat, subcat, 0, false);
-  }, [query, cat, subcat, fetchPage]);
+    fetchPage(query, cat, subcat, brand, 0, false);
+  }, [query, cat, subcat, brand, fetchPage]);
 
   const loadMore = () => {
     if (loadingMore || !hasMore) return;
-    fetchPage(query, cat, subcat, offset, true);
+    fetchPage(query, cat, subcat, brand, offset, true);
   };
 
   const activeCat = facets?.categories?.find((c) => c.name === cat) || null;
-  const anyFilter = Boolean(query || cat || subcat);
+  const anyFilter = Boolean(query || cat || subcat || brand);
 
   return (
     <div className="space-y-4" data-testid="catalogue-page">
@@ -494,9 +495,24 @@ const ProductCatalogue = () => {
         }
       />
 
-      {/* category / sub-category filters */}
+      {/* brand / category / sub-category filters */}
       <div className="flex flex-wrap items-center gap-2" data-testid="catalogue-filters">
         <FunnelSimple size={15} className="text-muted" />
+        {(facets?.brands || []).length > 1 && (
+          <select
+            value={brand}
+            onChange={(e) => setBrand(e.target.value)}
+            className="border border-border rounded-md px-2.5 py-1.5 text-[12.5px] bg-card outline-none focus:border-brand max-w-[180px]"
+            data-testid="select-brand"
+          >
+            <option value="">All brands</option>
+            {(facets.brands).map((b) => (
+              <option key={b.name} value={b.name}>
+                {b.name} ({b.styles})
+              </option>
+            ))}
+          </select>
+        )}
         <select
           value={cat}
           onChange={(e) => { setCat(e.target.value); setSubcat(""); }}
@@ -527,7 +543,7 @@ const ProductCatalogue = () => {
         {anyFilter && (
           <button
             type="button"
-            onClick={() => { setTerm(""); setCat(""); setSubcat(""); }}
+            onClick={() => { setTerm(""); setCat(""); setSubcat(""); setBrand(""); }}
             className="text-[12px] text-brand hover:underline"
             data-testid="button-clear-filters"
           >
