@@ -5465,8 +5465,8 @@ _STYLE_UNIVERSE_SQL = """
            MAX(brand) AS brand
     FROM all_products_clean
     WHERE style_name IS NOT NULL AND style_name <> ''
-      AND COALESCE(brand, '') NOT ILIKE '%third party%'
     GROUP BY style_name
+    HAVING COALESCE(MAX(brand), '') NOT ILIKE '%third party%'
     ORDER BY style_name
 """
 
@@ -13475,11 +13475,13 @@ def costing_dps_list(style_name: str = Query(...)):
                        FILTER (WHERE NULLIF(TRIM(apc.color_print), '') IS NOT NULL)
                        AS colors
             FROM mo
-            LEFT JOIN all_products_clean apc ON apc.sku = mo.finished_sku
+            LEFT JOIN all_products_clean apc
+                   ON apc.sku = mo.finished_sku
+                  AND lower(apc.style_name) = lower(%s)
             GROUP BY mo.dps_ref
             ORDER BY MAX(mo.done_date) DESC NULLS LAST, mo.dps_ref DESC
             LIMIT 100
-        """, [canon])
+        """, [canon, canon])
     return {"style_name": canon, "dps": [{
         "dps_ref": r["dps_ref"],
         "done_date": r["done_date"].isoformat() if r["done_date"] else None,
