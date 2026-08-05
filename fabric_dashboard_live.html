@@ -10114,7 +10114,12 @@ function costFabSearch(i,el){
         `<strong>${esc(r.name||r.sku||'')}</strong> <span class="muted" style="font-size:11px;">${r.is_main_fabric?'fabric':'accessory'}${r.barcode?' · '+esc(r.barcode):''}${cost!=null?' · '+fmtKES2(cost)+(r.is_main_fabric?'/m':'/unit'):' · '+noCost}</span></div>`;}).join('')
         ||('<div class="resv-opt muted">'+(costEdit.dps_ref?'No matching component on this DPS':'No matching fabric in the master')+'</div>');
       dd.style.display='';
-    }catch(_){dd.style.display='none';}
+    }catch(_){
+      // Surface failures instead of silently hiding the dropdown — a broken
+      // endpoint must not look identical to "no results".
+      dd.innerHTML='<div class="resv-opt muted">Search failed — try again</div>';
+      dd.style.display='';
+    }
   },250);
 }
 function costPickFabric(i,name,cpm,isMain,compId,barcode,reason){
