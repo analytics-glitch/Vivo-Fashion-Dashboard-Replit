@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('attendance_ingest_api.py'\\).read\\(\\)\\); ast.parse\\(open\\('push_to_replit.py'\\).read\\(\\)\\); ast.parse\\(open\\('api_pg.py'\\).read\\(\\)\\); print\\('OK'\\)\")"
+    ]
+  }
+}

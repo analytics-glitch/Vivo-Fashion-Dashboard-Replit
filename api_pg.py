@@ -613,6 +613,9 @@ def _cache_stats_payload():
 
 
 app = FastAPI(title="Vivo Fashion Group BI API")
+from attendance_ingest_api import app as attendance_app
+app.mount("/api/attendance", attendance_app)
+
 
 # Fabric BI routes
 from fabric_router import fabric_router
@@ -1392,7 +1395,7 @@ async def clerk_auth_gate(request: Request, call_next):
     # Internal sync jobs (no staff session) write a small set of snapshot
     # endpoints, authenticated by the shared SESSION_SECRET via X-Internal-Token
     # with a constant-time compare. Fails closed when the secret is unset/wrong.
-    if path in _AUTH_INTERNAL_TOKEN_PATHS:
+    if path in _AUTH_INTERNAL_TOKEN_PATHS or path.startswith("/api/attendance"):
         _sec = os.environ.get("SESSION_SECRET") or ""
         _tok = request.headers.get("x-internal-token") or ""
         if _sec and hmac.compare_digest(_tok, _sec):
@@ -1581,6 +1584,10 @@ async def clerk_auth_gate(request: Request, call_next):
     # Growth Model (/api/growth/*) is a leadership + admin surface.
     if path.startswith("/api/growth") and user.get("role") not in ("admin", "leadership"):
         return JSONResponse({"detail": "Growth Model access requires a leadership or admin role"}, status_code=403)
+
+    # IBT Done Report mirrors the completed-moves UI gate (admin + leadership).
+    if path.startswith("/api/ibt/done-report") and user.get("role") not in ("admin", "leadership"):
+        return JSONResponse({"detail": "IBT Done Report access requires a leadership or admin role"}, status_code=403)
 
     # Retail Desk (/api/retail-desk/*) is a leadership + admin surface.
     if path.startswith("/api/retail-desk") and user.get("role") not in ("admin", "leadership"):
@@ -24507,6 +24514,277 @@ def get_trend_series(
     return out
 
 
+# ── Size Demand Report (Inventory hub) ─────────────────────────────────────────
+# "When a new style lands in a store, which sizes sell fastest — and does the
+# store's stock mix match its demand mix?"  A style counts as NEW to a store
+# when its first-ever sale at that store falls inside the lookback window (no
+# historical inventory snapshots exist, so the first sale is the launch
+# anchor; styles with stock but zero sales ever can't be anchored and are out
+# of scope). Demand is measured over the first `window` days after launch; the
+# stock mix is the store's CURRENT on-hand for those same styles.
+
+_SDR_SIZE_ORDER = {s: i for i, s in enumerate([
+    "XXXS", "XXS", "XS", "XS/S", "S", "S/M", "M", "M/L", "L", "L/XL", "L/1X",
+    "XL", "XL/1X", "1X", "1X/2X", "2X", "2X/3X", "3X", "3X/4X", "4X", "4X/5X",
+    "5X", "XXL", "2XL", "3XL", "4XL", "5XL", "F"])}
+
+
+def _sdr_size_key(sz):
+    u = (sz or "").strip().upper()
+    if u in _SDR_SIZE_ORDER:
+        return (0, _SDR_SIZE_ORDER[u], "")
+    return _size_sort_key(u)
+
+
+def _sdr_median(xs):
+    xs = sorted(x for x in xs if x is not None)
+    n = len(xs)
+    if not n:
+        return None
+    mid = n // 2
+    return xs[mid] if n % 2 else round((xs[mid - 1] + xs[mid]) / 2, 1)
+
+
+# Physical retail stores only (mirrors /api/store-profile/locations exclusions).
+_PHYSICAL_STORE_PRED = (
+    "s.pos_location_name NOT ILIKE '%%online%%' "
+    "AND s.pos_location_name NOT ILIKE '%%warehouse%%' "
+    "AND s.pos_location_name NOT ILIKE '%%holding%%' "
+    "AND s.pos_location_name NOT ILIKE '%%location%%' "
+    "AND s.pos_location_name NOT ILIKE '%%manual%%' "
+    "AND s.pos_location_name NOT ILIKE '%%mockup%%' "
+    "AND s.pos_location_name NOT ILIKE '%%purchase%%' "
+    "AND s.pos_location_name NOT ILIKE '%%bags%%' "
+    "AND s.pos_location_name NOT ILIKE '%%third%%' "
+    "AND s.pos_location_name NOT ILIKE '%%popup%%' "
+    "AND s.pos_location_name NOT ILIKE '%%defect%%' "
+    "AND s.pos_location_name NOT IN ('Buying and Merchandise')"
+)
+
+
+def _sdr_first_sale_cte(store_pred, days):
+    # Shared CTE: first-ever sale date of each style under `store_pred`, then
+    # keep only styles whose first sale falls inside the lookback window.
+    return f"""
+        first_sale AS (
+            SELECT {'s.pos_location_name AS store,' if 'ILIKE' in store_pred else ''} p.style_name,
+                   MIN(s.sale_date::date) AS launch_date
+            FROM all_sales s
+            JOIN all_products_clean p ON p.sku = s.variant_sku
+            WHERE s.sale_kind = 'order'
+              AND {store_pred}
+              AND COALESCE(p.style_name, '') != ''
+              AND {BASE_FILTERS}
+            GROUP BY {'1, 2' if 'ILIKE' in store_pred else '1'}
+        ),
+        launches AS (
+            SELECT * FROM first_sale
+            WHERE launch_date >= CURRENT_DATE - {days}
+        )"""
+
+
+@app.get("/api/analytics/size-demand-report")
+def size_demand_report(
+    store: str = Query(...),
+    days: int = Query(default=90),
+    window: int = Query(default=30),
+):
+    days = max(30, min(365, int(days)))
+    window = max(7, min(90, int(window)))
+    if store == "__ALL__":
+        return _sdr_compare(days, window)
+
+    st = store.replace("'", "''")
+    store_pred = f"s.pos_location_name = '{st}'"
+
+    # Per-(style, size) units in the first `window` days after launch, plus how
+    # many days after launch each size took to record its first sale.
+    sales_rows = run_query(f"""
+        WITH {_sdr_first_sale_cte(store_pred, days)}
+        SELECT l.style_name, l.launch_date,
+               UPPER(TRIM(p.size)) AS size,
+               SUM(s.ordered_item_quantity)::int AS units,
+               MIN(s.sale_date::date - l.launch_date)::int AS first_sale_days
+        FROM all_sales s
+        JOIN all_products_clean p ON p.sku = s.variant_sku
+        JOIN launches l ON l.style_name = p.style_name
+        WHERE s.sale_kind = 'order'
+          AND {store_pred}
+          AND COALESCE(p.size, '') != ''
+          AND s.sale_date::date >= l.launch_date
+          AND s.sale_date::date < l.launch_date + {window}
+          AND {BASE_FILTERS}
+        GROUP BY 1, 2, 3
+    """)
+
+    # Current on-hand for the launched styles at this store, per (style, size).
+    # Inventory is pre-aggregated by SKU in its own CTE (fan-out guard).
+    stock_rows = run_query(f"""
+        WITH {_sdr_first_sale_cte(store_pred, days)},
+        inv AS (
+            SELECT i.sku, SUM(i.available)::numeric AS soh
+            FROM all_inventory i
+            WHERE i.pos_location_name = '{st}'
+            GROUP BY 1
+            HAVING SUM(i.available) > 0
+        )
+        SELECT l.style_name, l.launch_date,
+               UPPER(TRIM(p.size)) AS size,
+               SUM(inv.soh)::int AS soh
+        FROM inv
+        JOIN all_products_clean p ON p.sku = inv.sku
+        JOIN launches l ON l.style_name = p.style_name
+        WHERE COALESCE(p.size, '') != ''
+        GROUP BY 1, 2, 3
+    """)
+
+    per = {}           # (style, size) -> {units, first_days, soh}
+    launch_by_style = {}
+    for r in sales_rows:
+        launch_by_style[r["style_name"]] = r["launch_date"]
+        per[(r["style_name"], r["size"])] = {
+            "units": int(r["units"] or 0),
+            "first_days": r["first_sale_days"], "soh": 0}
+    for r in stock_rows:
+        launch_by_style.setdefault(r["style_name"], r["launch_date"])
+        e = per.setdefault((r["style_name"], r["size"]),
+                           {"units": 0, "first_days": None, "soh": 0})
+        e["soh"] = int(r["soh"] or 0)
+
+    # ── size curve ──
+    sizes = {}
+    for (style, size), e in per.items():
+        d = sizes.setdefault(size, {
+            "size": size, "units": 0, "soh": 0,
+            "styles_selling": 0, "styles_stocked": 0, "_first_days": []})
+        d["units"] += e["units"]
+        d["soh"] += e["soh"]
+        if e["units"] > 0:
+            d["styles_selling"] += 1
+        if e["soh"] > 0:
+            d["styles_stocked"] += 1
+        if e["first_days"] is not None:
+            d["_first_days"].append(e["first_days"])
+    tot_units = sum(d["units"] for d in sizes.values())
+    tot_soh = sum(d["soh"] for d in sizes.values())
+    curve = []
+    for d in sorted(sizes.values(), key=lambda x: _sdr_size_key(x["size"])):
+        sold_share = round(100.0 * d["units"] / tot_units, 1) if tot_units else 0.0
+        stock_share = round(100.0 * d["soh"] / tot_soh, 1) if tot_soh else 0.0
+        denom = d["units"] + d["soh"]
+        curve.append({
+            "size": d["size"], "units": d["units"], "soh": d["soh"],
+            "sold_share": sold_share, "stock_share": stock_share,
+            "gap": round(sold_share - stock_share, 1),
+            "styles_selling": d["styles_selling"],
+            "styles_stocked": d["styles_stocked"],
+            "median_days_to_first_sale": _sdr_median(d["_first_days"]),
+            "sell_through_pct": round(100.0 * d["units"] / denom, 1) if denom else None,
+            "stockout": d["units"] > 0 and d["soh"] == 0,
+        })
+
+    # ── style detail ──
+    today = date.today()
+    by_style = {}
+    for (style, size), e in per.items():
+        s_ = by_style.setdefault(style, {
+            "style_name": style, "units": 0, "soh": 0, "sizes": []})
+        s_["units"] += e["units"]
+        s_["soh"] += e["soh"]
+        s_["sizes"].append({"size": size, "units": e["units"], "soh": e["soh"],
+                            "first_sale_days": e["first_days"]})
+    styles = []
+    for style, s_ in by_style.items():
+        ld = launch_by_style.get(style)
+        s_["launch_date"] = str(ld) if ld else None
+        s_["days_measured"] = (min(window, (today - ld).days + 1) if ld else None)
+        s_["sizes"].sort(key=lambda x: _sdr_size_key(x["size"]))
+        sold = [x for x in s_["sizes"] if x["units"] > 0]
+        s_["top_size"] = max(sold, key=lambda x: x["units"])["size"] if sold else None
+        s_["stockout_sizes"] = [x["size"] for x in s_["sizes"]
+                                if x["units"] > 0 and x["soh"] == 0]
+        styles.append(s_)
+    styles.sort(key=lambda x: -x["units"])
+    truncated = len(styles) > 1000
+    styles = styles[:1000]
+
+    top = max(curve, key=lambda d: d["units"], default=None)
+    summary = {
+        "new_styles": len(by_style),
+        "full_window_styles": sum(1 for s_ in by_style.values()
+                                  if (s_.get("days_measured") or 0) >= window),
+        "units_window": tot_units,
+        "soh_now": tot_soh,
+        "top_size": top["size"] if top and top["units"] > 0 else None,
+        "stockout_sizes": [d["size"] for d in curve if d["stockout"]],
+        "under_allocated": sorted(
+            [{"size": d["size"], "gap": d["gap"]} for d in curve if d["gap"] >= 3],
+            key=lambda x: -x["gap"])[:4],
+        "over_allocated": sorted(
+            [{"size": d["size"], "gap": d["gap"]} for d in curve if d["gap"] <= -3],
+            key=lambda x: x["gap"])[:4],
+    }
+    return {"store": store, "days": days, "window": window,
+            "summary": summary, "size_curve": curve,
+            "styles": styles, "styles_truncated": truncated}
+
+
+def _sdr_compare(days, window):
+    # All physical stores side by side: what share of first-`window`-day units
+    # does each size take, per store? (Sold shares only — allocation gaps are a
+    # single-store view.)
+    rows = run_query(f"""
+        WITH {_sdr_first_sale_cte(_PHYSICAL_STORE_PRED, days)}
+        SELECT s.pos_location_name AS store,
+               MAX(s.country) AS country,
+               UPPER(TRIM(p.size)) AS size,
+               SUM(s.ordered_item_quantity)::int AS units,
+               COUNT(DISTINCT p.style_name)::int AS styles
+        FROM all_sales s
+        JOIN all_products_clean p ON p.sku = s.variant_sku
+        JOIN launches l ON l.style_name = p.style_name
+                        AND l.store = s.pos_location_name
+        WHERE s.sale_kind = 'order'
+          AND {_PHYSICAL_STORE_PRED}
+          AND COALESCE(p.size, '') != ''
+          AND s.sale_date::date >= l.launch_date
+          AND s.sale_date::date < l.launch_date + {window}
+          AND {BASE_FILTERS}
+        GROUP BY 1, 3
+    """)
+    # Launched-style counts per store, straight from the launches CTE (a MAX
+    # over per-size distinct counts would undercount).
+    style_rows = run_query(f"""
+        WITH {_sdr_first_sale_cte(_PHYSICAL_STORE_PRED, days)}
+        SELECT l.store, COUNT(*)::int AS new_styles
+        FROM launches l
+        GROUP BY 1
+    """)
+    styles_per_store = {r["store"]: int(r["new_styles"] or 0) for r in style_rows}
+    stores = {}
+    all_sizes = set()
+    for r in rows:
+        st = stores.setdefault(r["store"], {
+            "store": r["store"], "country": r["country"],
+            "units": 0, "new_styles": 0, "shares": {}, "_units_by_size": {}})
+        u = int(r["units"] or 0)
+        st["units"] += u
+        st["_units_by_size"][r["size"]] = u
+        all_sizes.add(r["size"])
+    out_stores = []
+    for st in stores.values():
+        tot = st["units"] or 0
+        st["new_styles"] = styles_per_store.get(st["store"], 0)
+        st["shares"] = {sz: round(100.0 * u / tot, 1)
+                        for sz, u in st["_units_by_size"].items()} if tot else {}
+        del st["_units_by_size"]
+        out_stores.append(st)
+    out_stores.sort(key=lambda x: -x["units"])
+    size_list = sorted(all_sizes, key=_sdr_size_key)
+    return {"mode": "compare", "days": days, "window": window,
+            "sizes": size_list, "stores": out_stores}
+
+
 # ── Partner Brands Report ──────────────────────────────────────────────────────
 # Dedicated sales drill-down for three external partner brands identified by
 # product_title patterns:
@@ -38263,6 +38541,7 @@ def store_profile_network_summary():
         WHERE s.sale_date::date >= '{cur_mstart}' AND s.sale_date::date <= '{today}'
           AND s.sale_kind IN ('sale','order','return')
           AND {BASE_FILTERS}
+          AND {_PHYSICAL_STORE_PRED}
         GROUP BY s.pos_location_name
         HAVING SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) > 0
         ORDER BY revenue DESC
@@ -38275,12 +38554,13 @@ def store_profile_network_summary():
         FROM all_sales s
         WHERE s.sale_date::date >= '{l4w_start}' AND s.sale_date::date <= '{today}'
           AND s.sale_kind IN ('sale','order') AND {BASE_FILTERS}
+          AND {_PHYSICAL_STORE_PRED}
         GROUP BY s.pos_location_name
     """, date_to=str(today)) or []
     vel_map = {r["store"]: float(r.get("weekly_units") or 0) for r in vel_rows}
 
     soh_rows = run_query(
-        "SELECT pos_location_name AS store, SUM(available_quantity) AS soh "
+        "SELECT pos_location_name AS store, SUM(available) AS soh "
         "FROM all_inventory "
         "WHERE pos_location_name NOT ILIKE '%%warehouse%%' "
         "  AND pos_location_name NOT ILIKE '%%wholesale%%' "
@@ -39812,7 +40092,7 @@ if build_dir.exists():
     async def serve_react(full_path: str):
         from fastapi.responses import HTMLResponse, JSONResponse
         # Never serve the SPA for API routes
-        if full_path.startswith("api/"):
+        if full_path.startswith("api/") or full_path.startswith("attendance/") or full_path == "attendance":
             return JSONResponse({"detail": "Not found"}, status_code=404)
         # Standalone Fabric BI dashboard — a self-contained static HTML page served
         # full-page (outside the React SPA) at /fabric. Auth is the general /api gate
