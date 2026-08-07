@@ -11,3 +11,5 @@ description: Why to diff against the merge base before markTaskComplete — unco
 - If stray changes are found and they are NOT part of the task: restore tracked files from the merge base (`git checkout <base> -- <files>`), delete stray new files, then re-apply your own edits to any mixed files.
 - Leave `attached_assets/` uploads alone — they are user-provided and inert; deleting user assets is the riskier direction.
 - After the revert, re-run compile + restart the affected workflow and re-verify your own feature before completing again.
+- If the sweep already happened (completion committed it and review rejected): do NOT rewrite history (gitsafe backup refs exist) — restore unrelated tracked files from the base, `git rm` stray new files, and commit the revert on top; the swept-in work stays recoverable through the rejected commit. Confirm `git diff <base>..HEAD --stat` is task-only before re-completing.
+- Expect sibling task branches seeded from the same snapshot to carry the same contamination + revert pair; their rebases conflict wherever the stray code lived — resolve those regions to main's version (contamination out, merged work intact).
