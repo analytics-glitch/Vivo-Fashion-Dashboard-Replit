@@ -5366,7 +5366,11 @@ async function loadReceivingSupplierSummary(){
       const mtrs=r.total_mtrs!=null?fmt1(r.total_mtrs)+' m':'<span class="muted">—</span>';
       const ssPriceTds=window._fabricPricingAdmin?(()=>{
         const vKES=r.value_kes!=null?fmtKES(r.value_kes):'<span class="muted">—</span>';
-        const vYuan=r.value_yuan!=null?(fmt2(r.value_yuan)+' ¥'):'<span class="muted" title="Yuan pricing not entered for this supplier\'s POs">—</span>';
+        const vYuan=r.value_yuan!=null
+          ?(fmt2(r.value_yuan)+' ¥'+(r.yuan_local?' <span class="muted" style="font-size:11px;" title="Also includes local direct-KES PO(s) — their value appears in the KES column only">+ Local</span>':''))
+          :(r.yuan_local
+            ?'<span class="muted" style="font-size:11px;" title="Local purchase — priced directly in KES (no Yuan value)">Local (KES)</span>'
+            :'<span class="muted" title="Yuan pricing not entered for this supplier\'s POs">—</span>');
         return `<td class="r">${vKES}</td><td class="r">${vYuan}</td>`;
       })():'<td style="display:none;"></td><td style="display:none;"></td>';
       return `<tr><td>${esc(r.supplier||'—')}</td><td>${esc(r.supplier_code||'—')}</td><td class="r">${fmt(r.rolls)}</td><td class="r">${fmt2(r.total_kg)}</td><td class="r">${mtrs}</td>${ssPriceTds}</tr>`;
@@ -5943,7 +5947,7 @@ async function loadRecvPoBatches(){
       }
       const action=isNoPo?'':`<button class="btn" data-po-print="${esc(key)}" title="Print the full PO receiving sheet (all fabrics &amp; rolls)" style="padding:4px 10px;font-size:12px;">Print</button> <button class="btn" data-po-dl="${Number(r.po_id)}" data-dl-fmt="pdf" title="Download this PO's full receiving sheet as a PDF" style="padding:4px 10px;font-size:12px;">PDF</button> <button class="btn" data-po-dl="${Number(r.po_id)}" data-dl-fmt="xlsx" title="Download this PO's full receiving sheet as an Excel workbook" style="padding:4px 10px;font-size:12px;">Excel</button>${(recvQualityOnly||!window._fabricPricingAdmin)?'':` <button class="btn btn-primary" data-po-open="${Number(r.po_id)}" style="padding:4px 10px;font-size:12px;">Review &amp; upload</button> <button class="btn" data-po-lc="${Number(r.po_id)}" title="Attach clearing, duty &amp; freight charges to this PO's receipt as a draft landed cost in Odoo" style="padding:4px 10px;font-size:12px;">Landed cost</button>`} ${approveBtn}`;
       const vKES=window._fabricPricingAdmin?(r.value_kes!=null?fmtKES(r.value_kes):'<span class="muted">—</span>'):'';
-      const vYuan=window._fabricPricingAdmin?(r.value_yuan!=null?(fmt2(r.value_yuan)+' ¥'):'<span class="muted" title="Yuan pricing not yet entered for this PO">—</span>'):'';
+      const vYuan=window._fabricPricingAdmin?(r.value_yuan!=null?(fmt2(r.value_yuan)+' ¥'):(r.yuan_local?'<span class="muted" style="font-size:11px;" title="Local purchase — priced directly in KES (no Yuan value)">Local (KES)</span>':'<span class="muted" title="Yuan pricing not yet entered for this PO">—</span>')):'';
       const priceCells=window._fabricPricingAdmin?`<td class="r">${vKES}</td><td class="r">${vYuan}</td>`:'<td style="display:none;"></td><td style="display:none;"></td>';
       const main=`<tr>
         <td><button class="btn" data-po-toggle="${esc(key)}" title="${open?'Collapse':'Expand'}" style="padding:2px 9px;font-size:13px;font-weight:700;">${open?'−':'+'}</button></td>
@@ -6206,7 +6210,7 @@ function renderRecvPoDetail(box,det,poKey){
         ${(canEditRolls&&window._fabricPricingAdmin)?`<button class="btn" data-fab-del="${Number(s0.id)}" data-fab-name="${esc(g.fabric_name||'')}" data-fab-rolls="${Number(g.rolls_count||0)}" style="padding:3px 8px;font-size:12px;">Delete</button>`:''}
       </span>`:'';
     const pricingSpan=window._fabricPricingAdmin
-      ?` · ${g.value_kes!=null?fmtKES(g.value_kes):'<span class="muted" title="KES value unavailable">KES —</span>'} · ${g.value_yuan!=null?fmt2(g.value_yuan)+' ¥':'<span class="muted" title="Yuan pricing not entered for this PO">— ¥</span>'}`
+      ?` · ${g.value_kes!=null?fmtKES(g.value_kes):'<span class="muted" title="KES value unavailable">KES —</span>'} · ${(det&&det.direct_kes)?'<span class="muted" style="font-size:11px;" title="Local purchase — priced directly in KES (no Yuan value)">Local (KES)</span>':(g.value_yuan!=null?fmt2(g.value_yuan)+' ¥':'<span class="muted" title="Yuan pricing not entered for this PO">— ¥</span>')}`
       :'';
     const head=`<div data-fab-toggle="${esc(fk)}" style="display:flex;gap:.9rem;align-items:center;cursor:pointer;padding:.45rem .55rem;border:1px solid var(--border,#d7d7de);border-radius:8px;background:#fff;${open?'border-bottom-left-radius:0;border-bottom-right-radius:0;':''}">
       <span style="font-weight:700;width:14px;text-align:center;">${open?'−':'+'}</span>
@@ -7290,9 +7294,10 @@ function renderRecvPoBatch(){
     ? 'Last upload: <b>'+esc(last.status||'')+'</b>'+(last.uploaded_at?(' · '+esc(last.uploaded_at)):'')+(last.uploaded_by_name?(' · '+esc(last.uploaded_by_name)):'')
     : 'Never uploaded to Odoo yet.';
   const pr=recvPoBatch.data.pricing||{};
+  const isDirect=!!pr.direct_kes;
   const _y2u=pr.yuan_to_usd!=null?parseFloat(pr.yuan_to_usd):null;
   const _u2k=pr.usd_to_kes!=null?parseFloat(pr.usd_to_kes):null;
-  const fxOk=_y2u!=null&&_y2u>0&&_u2k!=null&&_u2k>0;
+  const fxOk=!isDirect&&_y2u!=null&&_y2u>0&&_u2k!=null&&_u2k>0;
   let totalKes=0,totalYuan=0,hasKes=false,hasYuan=false;
   const rows=plan.length?plan.map(e=>{
     const mtrs=e.total_mtrs!=null?fmt1(e.total_mtrs):'<span style="color:var(--danger);" title="No usable kg→metre conversion">Missing Width/GSM</span>';
@@ -7300,8 +7305,9 @@ function renderRecvPoBatch(){
     const push=e.push_qty!=null?('<b>'+fmt2(e.push_qty)+'</b> '+esc(e.push_uom||'')):'<span class="muted">—</span>';
     const price=e.push_price!=null
       ?('<b>'+fmt2(e.push_price)+'</b>'+(e.line_uom?('<span class="muted" style="font-size:11px;"> /'+esc(e.line_uom)+'</span>'):''))
-      :(e.price_missing?'<span style="color:#b8860b;font-weight:700;" title="Enter the Yuan price + FX rates below">needs pricing</span>':'<span class="muted">—</span>');
+      :(e.price_missing?'<span style="color:#b8860b;font-weight:700;" title="'+(isDirect?'Enter the KES price below':'Enter the Yuan price + FX rates below')+'">needs pricing</span>':'<span class="muted">—</span>');
     let kesCell='<span class="muted">—</span>',yuanCell='<span class="muted">—</span>';
+    if(isDirect)yuanCell='<span class="muted" style="font-size:11px;" title="Local purchase — priced directly in KES (no Yuan value)">Local (KES)</span>';
     if(e.push_price!=null&&e.push_qty!=null){
       const kv=e.push_price*e.push_qty;
       totalKes+=kv;hasKes=true;
@@ -7326,6 +7332,7 @@ function renderRecvPoBatch(){
   const sumParts=[];
   if(hasKes)sumParts.push('<b>'+fmt2(totalKes)+'</b> KES');
   if(hasYuan)sumParts.push('<b>'+fmt2(totalYuan)+'</b> ¥');
+  if(isDirect&&hasKes)sumParts.push('<span class="muted" title="Local purchase — priced directly in KES (no Yuan value)">Local (KES)</span>');
   document.getElementById('recv-po-value-summary').innerHTML=sumParts.length
     ?'<div class="muted" style="font-size:13px;text-align:right;padding-right:4px;">PO total: '+sumParts.join(' · ')+'</div>'
     :'';
@@ -7342,15 +7349,18 @@ function renderRecvPoBatch(){
     : 'PO state: <b style="color:var(--danger);">'+esc(po.state||'unknown')+'</b> — quantities can only be uploaded onto a <b>draft</b> PO.';
   document.getElementById('recv-po-upload-btn').disabled=!(isDraft&&pushable);
 }
-// ── Per-PO Yuan → KES pricing form ──
+// ── Per-PO pricing form (Yuan → KES, or Direct KES for local purchases) ──
 // The form state lives in recvPoBatch.pricingForm and is rebuilt from the
 // server payload on every renderRecvPoBatch (open / after save / after
 // upload). Typing only updates the state + the live KES previews; Save
 // pricing persists it and refetches the batch so the plan table shows the
-// server-computed prices (client math mirrors the server exactly).
+// server-computed prices (client math mirrors the server exactly). The
+// Direct KES checkbox re-renders from the CURRENT state (typed values —
+// including hidden FX rates — survive the toggle until the next refetch).
 function recvPoNum(v){const f=parseFloat(v);return (isFinite(f)&&f>0)?f:null;}
 function recvPoKesPreview(g,p){
   const f=recvPoBatch&&recvPoBatch.pricingForm;if(!f)return'—';
+  const direct=!!f.direct_kes;
   const it=f.items[g.price_key]||{};
   const yp=recvPoNum(it.yuan_price),qu=it.quote_unit==='m'?'m':'kg';
   const y2u=recvPoNum(f.yuan_to_usd),u2k=recvPoNum(f.usd_to_kes);
@@ -7358,11 +7368,11 @@ function recvPoKesPreview(g,p){
   const kind=p.line_kind,kpm=recvPoNum(p.kg_per_mtr);
   if(!kind)return'<span class="muted">—</span>';
   if(qu!==kind&&!kpm)return'<span style="color:var(--danger);font-weight:700;" title="Cross-unit price needs a kg→metre conversion — fix Width/GSM in Odoo">needs kg/m</span>';
-  if(yp==null||y2u==null||u2k==null)return'<span class="muted">—</span>';
+  if(yp==null||(!direct&&(y2u==null||u2k==null)))return'<span class="muted">—</span>';
   let u=yp;
   if(qu==='kg'&&kind==='m')u=yp*kpm;
   else if(qu==='m'&&kind==='kg')u=yp/kpm;
-  return'<b>'+fmt2(u/y2u*u2k)+'</b> KES / '+esc(p.line_uom||kind);
+  return'<b>'+fmt2(direct?u:u/y2u*u2k)+'</b> KES / '+esc(p.line_uom||kind);
 }
 function recvPoRefreshPreviews(){
   if(!recvPoBatch)return;
@@ -7381,20 +7391,28 @@ function recvPoPricingInput(field,value,key){
   else f[field]=value;
   recvPoRefreshPreviews();
 }
-function renderRecvPoPricing(){
+function renderRecvPoPricing(preserveForm){
   const box=document.getElementById('recv-po-pricing');
   if(!recvPoBatch){box.innerHTML='';return;}
   const pr=recvPoBatch.data.pricing||{},groups=pr.groups||[];
   if(!groups.length){box.innerHTML='';return;}
-  // Rebuild the editable state from the server payload.
-  recvPoBatch.pricingForm={
-    yuan_to_usd:pr.yuan_to_usd!=null?String(pr.yuan_to_usd):'',
-    usd_to_kes:pr.usd_to_kes!=null?String(pr.usd_to_kes):'',
-    items:{}
-  };
-  groups.forEach(g=>{recvPoBatch.pricingForm.items[g.price_key]={
-    yuan_price:g.yuan_price!=null?String(g.yuan_price):'',
-    quote_unit:g.quote_unit==='m'?'m':'kg'};});
+  if(!preserveForm||!recvPoBatch.pricingForm){
+    // Rebuild the editable state from the server payload.
+    recvPoBatch.pricingForm={
+      yuan_to_usd:pr.yuan_to_usd!=null?String(pr.yuan_to_usd):'',
+      usd_to_kes:pr.usd_to_kes!=null?String(pr.usd_to_kes):'',
+      direct_kes:!!pr.direct_kes,
+      items:{}
+    };
+    groups.forEach(g=>{recvPoBatch.pricingForm.items[g.price_key]={
+      yuan_price:g.yuan_price!=null?String(g.yuan_price):'',
+      quote_unit:g.quote_unit==='m'?'m':'kg'};});
+  }else{
+    // Toggle re-render: keep whatever is typed; only backfill missing keys.
+    groups.forEach(g=>{if(!recvPoBatch.pricingForm.items[g.price_key])
+      recvPoBatch.pricingForm.items[g.price_key]={yuan_price:'',quote_unit:'kg'};});
+  }
+  const direct=!!recvPoBatch.pricingForm.direct_kes;
   const stamp=pr.updated_at?('Saved '+pr.updated_at+(pr.updated_by_name?(' by '+pr.updated_by_name):'')):'Not saved yet';
   const numStyle='width:110px;padding:.3rem .45rem;border:1px solid var(--border,#d7d7de);border-radius:6px;font-size:13px;';
   const rows=groups.map((g,gi)=>{
@@ -7411,7 +7429,7 @@ function renderRecvPoPricing(){
     return `<tr>
       <td style="vertical-align:top;">${label}</td>
       <td style="vertical-align:top;white-space:nowrap;">
-        <input type="number" min="0" step="any" inputmode="decimal" style="${numStyle}" placeholder="¥ price"
+        <input type="number" min="0" step="any" inputmode="decimal" style="${numStyle}" placeholder="${direct?'KES price':'¥ price'}"
           value="${esc(it.yuan_price)}" oninput="recvPoPricingInput('yuan_price',this.value,'${esc(g.price_key)}')">
         <select style="padding:.3rem .35rem;border:1px solid var(--border,#d7d7de);border-radius:6px;font-size:13px;"
           onchange="recvPoPricingInput('quote_unit',this.value,'${esc(g.price_key)}')">
@@ -7422,23 +7440,30 @@ function renderRecvPoPricing(){
       <td style="vertical-align:top;">${prods}</td>
     </tr>`;
   }).join('');
-  box.innerHTML=`
-   <div style="border:1px solid var(--border,#d7d7de);border-radius:10px;padding:.8rem .9rem;background:rgba(0,0,0,.015);">
-    <div class="flex" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem;">
-     <div><b>Pricing (Yuan → KES)</b><div class="muted" style="font-size:11px;">Upload is blocked until both FX rates and every Yuan price are entered. Prices are written to the PO lines in KES, taxes cleared, analytic 100% HQ.</div></div>
-     <span class="muted" id="recv-po-pricing-stamp" style="font-size:11px;">${esc(stamp)}</span>
-    </div>
-    <div class="flex" style="gap:1rem;margin-top:.6rem;flex-wrap:wrap;align-items:center;">
+  const helper=direct
+    ?'Local purchase — prices are entered directly in KES, no FX rates needed. Upload is blocked until every KES price is entered. Prices are written to the PO lines in KES, taxes cleared, analytic 100% HQ.'
+    :'Upload is blocked until both FX rates and every Yuan price are entered. Prices are written to the PO lines in KES, taxes cleared, analytic 100% HQ.';
+  const fxInputs=direct?'':`
      <label style="font-size:12px;">Yuan per USD&nbsp;
       <input type="number" min="0" step="any" inputmode="decimal" style="${numStyle}" placeholder="e.g. 7.99" title="How many Yuan buy 1 USD (Yuan price is divided by this)"
         value="${esc(recvPoBatch.pricingForm.yuan_to_usd)}" oninput="recvPoPricingInput('yuan_to_usd',this.value)"></label>
      <label style="font-size:12px;">USD → KES&nbsp;
       <input type="number" min="0" step="any" inputmode="decimal" style="${numStyle}" placeholder="e.g. 129.5"
-        value="${esc(recvPoBatch.pricingForm.usd_to_kes)}" oninput="recvPoPricingInput('usd_to_kes',this.value)"></label>
+        value="${esc(recvPoBatch.pricingForm.usd_to_kes)}" oninput="recvPoPricingInput('usd_to_kes',this.value)"></label>`;
+  box.innerHTML=`
+   <div style="border:1px solid var(--border,#d7d7de);border-radius:10px;padding:.8rem .9rem;background:rgba(0,0,0,.015);">
+    <div class="flex" style="justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.5rem;">
+     <div><b>${direct?'Pricing (Direct KES)':'Pricing (Yuan → KES)'}</b><div class="muted" style="font-size:11px;">${helper}</div></div>
+     <span class="muted" id="recv-po-pricing-stamp" style="font-size:11px;">${esc(stamp)}</span>
+    </div>
+    <div class="flex" style="gap:1rem;margin-top:.6rem;flex-wrap:wrap;align-items:center;">
+     <label style="font-size:12px;white-space:nowrap;cursor:pointer;" title="Tick for fabric bought locally in Kenya Shillings — enter KES prices directly, no FX rates required">
+      <input type="checkbox" ${direct?'checked':''} onchange="recvPoDirectToggle(this.checked)" style="vertical-align:-2px;"> <b>Direct KES purchase</b> <span class="muted">(local — no FX)</span></label>
+     ${fxInputs}
     </div>
     <div class="tbl-wrap" style="margin-top:.6rem;">
      <table class="data">
-      <thead><tr><th style="width:220px;">Supplier fabric code</th><th style="width:230px;">Yuan price</th><th>Fabrics · live KES preview (in each PO line's unit)</th></tr></thead>
+      <thead><tr><th style="width:220px;">Supplier fabric code</th><th style="width:230px;">${direct?'KES price':'Yuan price'}</th><th>Fabrics · live KES preview (in each PO line's unit)</th></tr></thead>
       <tbody>${rows}</tbody>
      </table>
     </div>
@@ -7447,12 +7472,20 @@ function renderRecvPoPricing(){
     </div>
    </div>`;
 }
+function recvPoDirectToggle(on){
+  if(!recvPoBatch||!recvPoBatch.pricingForm)return;
+  recvPoBatch.pricingForm.direct_kes=!!on;
+  // Re-render from the CURRENT form state so typed prices and the (now
+  // hidden) FX rates survive the toggle; previews recompute in the new mode.
+  renderRecvPoPricing(true);
+}
 async function saveRecvPoPricing(refresh){
   if(!recvPoBatch||!recvPoBatch.pricingForm)return false;
   const f=recvPoBatch.pricingForm;
   const body={
     yuan_to_usd:f.yuan_to_usd===''?null:f.yuan_to_usd,
     usd_to_kes:f.usd_to_kes===''?null:f.usd_to_kes,
+    direct_kes:!!f.direct_kes,
     items:Object.keys(f.items).map(k=>({price_key:k,
       yuan_price:f.items[k].yuan_price===''?null:f.items[k].yuan_price,
       quote_unit:f.items[k].quote_unit==='m'?'m':'kg'}))

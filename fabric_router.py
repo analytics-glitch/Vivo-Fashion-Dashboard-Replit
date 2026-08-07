@@ -6362,6 +6362,9 @@ def _ensure_receiving_tables(conn):
         # price_key is 'code:<supplier fabric code>' or 'product:<odoo id>'.
         # quote_unit is the unit the Yuan price was quoted in ('kg' | 'm');
         # the upload converts to the PO line's own unit via kg_per_mtr_eff.
+        # direct_kes (whole-PO): a local Kenya purchase priced directly in
+        # KES — yuan_price then HOLDS the KES price and the two FX rates are
+        # ignored/not required (no conversion anywhere).
         cur.execute("""
             CREATE TABLE IF NOT EXISTS fabric_po_pricing (
                 po_id           BIGINT PRIMARY KEY,
@@ -6370,6 +6373,9 @@ def _ensure_receiving_tables(conn):
                 updated_by_name TEXT,
                 updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
             )""")
+        cur.execute("ALTER TABLE fabric_po_pricing "
+                    "ADD COLUMN IF NOT EXISTS direct_kes BOOLEAN "
+                    "NOT NULL DEFAULT FALSE")
         cur.execute("""
             CREATE TABLE IF NOT EXISTS fabric_po_pricing_items (
                 po_id      BIGINT NOT NULL,
@@ -8906,14 +8912,18 @@ def _recv_dl_shrink_cells(r):
         return ("", "")
     return (w or "", l or "")
 
-def _recv_roll_value(r, item, yuan_to_usd, usd_to_kes):
+def _recv_roll_value(r, item, yuan_to_usd, usd_to_kes, direct_kes=False):
     """Return (value_yuan, value_kes) rounded to 2 dp, or (None, None) when any
-    required pricing field is absent.  yuan_to_usd is Yuan-per-USD (e.g. 7.9998)."""
+    required pricing field is absent.  yuan_to_usd is Yuan-per-USD (e.g. 7.9998).
+    direct_kes (local purchase): the entered price IS KES — value_kes comes
+    straight from price × qty, value_yuan is always None (no FX involved)."""
     if not item:
         return None, None
     yp = item.get("yuan_price")
     qu = item.get("quote_unit") or "kg"
-    if yp is None or yuan_to_usd is None or usd_to_kes is None:
+    if yp is None:
+        return None, None
+    if not direct_kes and (yuan_to_usd is None or usd_to_kes is None):
         return None, None
     raw_qty = r.get("qty_kg") if qu == "kg" else r.get("qty_mtrs")
     if raw_qty is None:
@@ -8922,6 +8932,8 @@ def _recv_roll_value(r, item, yuan_to_usd, usd_to_kes):
         qty = float(raw_qty)
     except (TypeError, ValueError):
         return None, None
+    if direct_kes:
+        return None, round(yp * qty, 2)
     value_yuan = round(yp * qty, 2)
     value_kes = round(value_yuan / yuan_to_usd * usd_to_kes, 2)
     return value_yuan, value_kes
@@ -8963,6 +8975,7 @@ def _recv_build_xlsx(sheets, by_sheet, pricing):
     ws.append([])
     y2u = pricing.get("yuan_to_usd")
     u2k = pricing.get("usd_to_kes")
+    direct = bool(pricing.get("direct_kes"))
     for s in sheets:
         ws.append([f"{s.get('fabric_name') or ''}"
                    + (f"  [{s.get('barcode')}]" if s.get("barcode") else "")])
@@ -8980,20 +8993,24 @@ def _recv_build_xlsx(sheets, by_sheet, pricing):
         total_kg = 0.0
         total_yuan = 0.0
         total_kes = 0.0
-        has_value = False
+        has_yuan = False
+        has_kes = False
         for r in by_sheet.get(s["id"], []):
-            vy, vk = _recv_roll_value(r, item, y2u, u2k)
+            vy, vk = _recv_roll_value(r, item, y2u, u2k, direct)
             ws.append(_recv_dl_row(r, vy, vk))
             total_kg += float(r["qty_kg"] or 0)
             if vy is not None:
                 total_yuan += vy
+                has_yuan = True
+            if vk is not None:
                 total_kes += vk
-                has_value = True
+                has_kes = True
         tm = s.get("total_mtrs")
         ws.append(["Total", round(total_kg, 3),
                    float(tm) if tm not in (None, "") else None,
-                   round(total_yuan, 2) if has_value else None,
-                   round(total_kes, 2) if has_value else None])
+                   ("Local (KES)" if direct
+                    else (round(total_yuan, 2) if has_yuan else None)),
+                   round(total_kes, 2) if has_kes else None])
         ws.cell(row=ws.max_row, column=1).font = bold
         ws.cell(row=ws.max_row, column=2).font = bold
         ws.append([])
@@ -9030,6 +9047,7 @@ def _recv_build_pdf(sheets, by_sheet, pricing):
              Spacer(1, 4*mm)]
     y2u = pricing.get("yuan_to_usd")
     u2k = pricing.get("usd_to_kes")
+    direct = bool(pricing.get("direct_kes"))
     for s in sheets:
         title = (s.get("fabric_name") or "") + \
                 (f"  [{s.get('barcode')}]" if s.get("barcode") else "")
@@ -9046,22 +9064,26 @@ def _recv_build_pdf(sheets, by_sheet, pricing):
         total_kg = 0.0
         total_yuan = 0.0
         total_kes = 0.0
-        has_value = False
+        has_yuan = False
+        has_kes = False
         for r in by_sheet.get(s["id"], []):
-            vy, vk = _recv_roll_value(r, item, y2u, u2k)
+            vy, vk = _recv_roll_value(r, item, y2u, u2k, direct)
             row = _recv_dl_row(r, vy, vk)
             row[-1] = Paragraph(str(row[-1]), cell)
             data.append(["" if v is None else v for v in row])
             total_kg += float(r["qty_kg"] or 0)
             if vy is not None:
                 total_yuan += vy
+                has_yuan = True
+            if vk is not None:
                 total_kes += vk
-                has_value = True
+                has_kes = True
         tm = s.get("total_mtrs")
         data.append(["Total", round(total_kg, 3),
                      "" if tm in (None, "") else float(tm),
-                     round(total_yuan, 2) if has_value else "",
-                     round(total_kes, 2) if has_value else "",
+                     ("Local (KES)" if direct
+                      else (round(total_yuan, 2) if has_yuan else "")),
+                     round(total_kes, 2) if has_kes else "",
                      "", "", "", "", "", "", ""])
         t = Table(data, repeatRows=1,
                   colWidths=[12*mm, 15*mm, 15*mm, 22*mm, 22*mm,
@@ -9245,10 +9267,12 @@ def _recv_po_num(v):
     return f if f > 0 else None
 
 def _recv_po_pricing(conn, po_id):
-    """The saved Yuan pricing for one PO: the two FX rates + the per-price-key
-    Yuan prices/quote units, normalized (only positive numbers count as set)."""
+    """The saved pricing for one PO: the two FX rates + the per-price-key
+    prices/quote units, normalized (only positive numbers count as set).
+    direct_kes marks a whole-PO local purchase: yuan_price then holds the
+    KES price and the FX rates are ignored."""
     head_rows = q(conn, """
-        SELECT yuan_to_usd, usd_to_kes, updated_by_name,
+        SELECT yuan_to_usd, usd_to_kes, direct_kes, updated_by_name,
                to_char(updated_at AT TIME ZONE 'Africa/Nairobi',
                        'DD Mon YYYY, HH24:MI') as updated_at
         FROM fabric_po_pricing WHERE po_id=%s
@@ -9261,6 +9285,7 @@ def _recv_po_pricing(conn, po_id):
     return {
         "yuan_to_usd": _recv_po_num(head.get("yuan_to_usd")),
         "usd_to_kes": _recv_po_num(head.get("usd_to_kes")),
+        "direct_kes": bool(head.get("direct_kes")),
         "updated_by_name": head.get("updated_by_name"),
         "updated_at": head.get("updated_at"),
         "items": {r["price_key"]: {
@@ -9329,7 +9354,8 @@ def _recv_po_plan(conn, odoo, po_id):
     """Build the per-product upload plan for a PO batch: summed sheet totals
     (kg always; metres via the LIVE kg_per_mtr_eff), the matching PO line,
     exactly what would be pushed in the line's own unit AND the KES unit price
-    computed from the saved per-PO Yuan pricing. Returns (plan, po_lines,
+    computed from the saved per-PO pricing (Yuan via the two FX rates, or the
+    entered price as-is on a direct-KES local PO). Returns (plan, po_lines,
     pricing) where po_lines is the PO's current lines for display."""
     db, uid, pwd, models = odoo
     line_rows = _odoo_kw(models, db, uid, pwd, "purchase.order.line",
@@ -9462,13 +9488,16 @@ def _recv_po_plan(conn, odoo, po_id):
             e["flags"].append(
                 f"unsupported unit '{e['line_uom'] or '?'}' — only kg / "
                 "metre lines can be uploaded")
-        # Price: Yuan quote → the PO line's OWN unit → KES via the two rates.
+        # Price: quote → the PO line's OWN unit → KES. Yuan mode converts
+        # via the two FX rates; direct-KES mode (local purchase) uses the
+        # entered price as-is — no FX at all.
         # A cross-unit quote (per-kg on a metre line or per-metre on a kg
         # line) needs the fabric's live kg/m factor; without one the product
         # is BLOCKED (same pattern as the quantity block) — never guessed.
-        # Missing rates / missing Yuan price do not block per-product; they
+        # Missing rates / missing price do not block per-product; they
         # block the WHOLE upload (the pricing form must be completed first).
         if e["action"] in ("update", "create"):
+            direct = pricing["direct_kes"]
             y2u, u2k = pricing["yuan_to_usd"], pricing["usd_to_kes"]
             yp, qu = e["yuan_price"], e["quote_unit"]
             if qu != kind and not kpm:
@@ -9479,20 +9508,27 @@ def _recv_po_plan(conn, odoo, po_id):
                     f"{'metres' if kind == 'm' else 'kg'} and this fabric "
                     "has no usable kg→metre conversion — fix Width/GSM "
                     "(or a stored kg/m) in Odoo first")
-            elif yp is None or y2u is None or u2k is None:
+            elif yp is None or (not direct
+                                and (y2u is None or u2k is None)):
                 e["price_missing"] = True
                 e["flags"].append(
+                    "KES price not entered yet — complete the pricing form "
+                    "before uploading" if direct else
                     "Yuan price / FX rates not entered yet — complete the "
                     "pricing form before uploading")
             else:
-                unit_yuan = yp
+                unit_price = yp
                 if qu == "kg" and kind == "m":
-                    unit_yuan = yp * kpm
+                    unit_price = yp * kpm
                 elif qu == "m" and kind == "kg":
-                    unit_yuan = yp / kpm
-                # yuan_to_usd is quoted as Yuan PER USD (e.g. 7.9998), so
-                # Yuan → USD is a DIVISION; USD → KES is a multiplication.
-                e["push_price"] = round(unit_yuan / y2u * u2k, 4)
+                    unit_price = yp / kpm
+                if direct:
+                    # Local purchase: the entered price IS the KES price.
+                    e["push_price"] = round(unit_price, 4)
+                else:
+                    # yuan_to_usd is quoted as Yuan PER USD (e.g. 7.9998), so
+                    # Yuan → USD is a DIVISION; USD → KES is a multiplication.
+                    e["push_price"] = round(unit_price / y2u * u2k, 4)
         plan.append(e)
     return plan, po_lines, pricing
 
@@ -9630,6 +9666,7 @@ def receiving_po_batches():
         # Compute value_kes and value_yuan for each PO in one pass.
         all_po_ids = [int(r["po_id"]) for r in rows if r.get("po_id") is not None]
         kes_data, yuan_data = {}, {}
+        direct_pos: set = set()
         if all_po_ids:
             # Per-(po_id, product_id) kg totals, kg_per_mtr and supplier_fabric_code.
             prod_totals = q(conn, """
@@ -9657,6 +9694,11 @@ def receiving_po_batches():
                 " FROM fabric_po_pricing_items WHERE po_id = ANY(%s)",
                 (all_po_ids,)):
                 pitems.setdefault(r["po_id"], {})[r["price_key"]] = r
+            # Direct-KES POs (local purchases): no Yuan value exists at all —
+            # the table shows a "Local (KES)" label instead.
+            direct_pos = {int(r["po_id"]) for r in q(conn,
+                "SELECT po_id FROM fabric_po_pricing"
+                " WHERE direct_kes AND po_id = ANY(%s)", (all_po_ids,))}
             prod_by_po: dict = {}
             for pt in prod_totals:
                 prod_by_po.setdefault(pt["po_id"], []).append(pt)
@@ -9710,11 +9752,13 @@ def receiving_po_batches():
                         else:
                             total_yuan += yp * (kg / kpm)
                 kes_data[po_id] = total_kes if kes_ok else None
-                yuan_data[po_id] = total_yuan if yuan_ok else None
+                yuan_data[po_id] = (None if po_id in direct_pos
+                                    else (total_yuan if yuan_ok else None))
     for r in rows:
         po_id = r.get("po_id")
         r["value_kes"] = kes_data.get(po_id) if po_id is not None else None
         r["value_yuan"] = yuan_data.get(po_id) if po_id is not None else None
+        r["yuan_local"] = po_id is not None and int(po_id) in direct_pos
     no_po_group = None
     if nopo and int(nopo[0].get("sheets") or 0) > 0:
         no_po_group = {"po_id": None, "po_name": None, "po_date": None,
@@ -9786,6 +9830,13 @@ def receiving_supplier_summary(
             (all_po_ids,)):
             pitems.setdefault(r["po_id"], {})[r["price_key"]] = r
 
+        # Direct-KES POs (local purchases): their entered prices are KES, so
+        # they contribute NO Yuan value — the group gets a "Local (KES)"
+        # indicator instead.
+        ss_direct_pos = {int(r["po_id"]) for r in q(conn,
+            "SELECT po_id FROM fabric_po_pricing"
+            " WHERE direct_kes AND po_id = ANY(%s)", (all_po_ids,))}
+
     groups: dict = {}
     for pt in prod_rows:
         po_id = int(pt["po_id"])
@@ -9815,6 +9866,7 @@ def receiving_supplier_summary(
                  "rolls": 0, "total_kg": 0.0, "total_mtrs": 0.0,
                  "_mtrs_ok": True, "_kes_ok": True,
                  "_has_yuan": False,   # True once at least one entry has pricing
+                 "_has_local": False,  # True once a direct-KES PO contributes
                  "value_kes": 0.0, "value_yuan": 0.0}
             groups[group_key] = g
 
@@ -9845,7 +9897,11 @@ def receiving_supplier_summary(
         qu = it.get("quote_unit") if it.get("quote_unit") in _PO_QUOTE_UNITS else "kg"
         # Partial coverage is fine for Yuan: accumulate only priced entries;
         # return None only when NO entry for this (supplier, code) has any pricing.
-        if yp is not None:
+        # Direct-KES POs never contribute Yuan (their prices ARE KES) — they
+        # flag the group as containing local purchases instead.
+        if po_id in ss_direct_pos:
+            g["_has_local"] = True
+        elif yp is not None:
             if qu == "kg":
                 g["_has_yuan"] = True
                 g["value_yuan"] += yp * kg
@@ -9864,6 +9920,7 @@ def receiving_supplier_summary(
             "total_mtrs":    round(g["total_mtrs"], 1) if g["_mtrs_ok"] else None,
             "value_kes":     round(g["value_kes"], 2)  if g["_kes_ok"]  else None,
             "value_yuan":    round(g["value_yuan"], 2) if g["_has_yuan"] else None,
+            "yuan_local":    g["_has_local"],
         })
 
     rows_out.sort(key=lambda r: (r["value_kes"] is None, -(r["value_kes"] or 0)))
@@ -9961,6 +10018,7 @@ def receiving_po_batch_detail(po_id: str = Query(default="")):
         detail_pricing: dict = {}       # price_key → {yuan_price, quote_unit}
         detail_kpm: dict = {}           # product_id → kg_per_mtr_eff
         detail_sfc: dict = {}           # product_id → supplier_fabric_code
+        detail_direct = False           # whole-PO direct-KES (local) purchase
         if params:  # a real PO id (not the legacy "No PO" group)
             ps = q(conn, """
                 SELECT id, po_name,
@@ -10006,6 +10064,10 @@ def receiving_po_batch_detail(po_id: str = Query(default="")):
                 "SELECT price_key, yuan_price, quote_unit"
                 " FROM fabric_po_pricing_items WHERE po_id=%s", (params[0],))
             detail_pricing = {r["price_key"]: r for r in yi_rows}
+            ph_rows = q(conn,
+                "SELECT direct_kes FROM fabric_po_pricing WHERE po_id=%s",
+                (params[0],))
+            detail_direct = bool(ph_rows and ph_rows[0].get("direct_kes"))
             # kg_per_mtr and supplier_fabric_code per product.
             kpm_rows = q(conn, """
                 SELECT p.id as product_id,
@@ -10109,7 +10171,9 @@ def receiving_po_batch_detail(po_id: str = Query(default="")):
             it = {}
         yp = _recv_po_num(it.get("yuan_price"))
         qu = it.get("quote_unit") if it.get("quote_unit") in _PO_QUOTE_UNITS else "kg"
-        if yp is None:
+        # Direct-KES PO (local purchase): the entered prices are KES, so no
+        # Yuan value exists — the UI shows a "Local (KES)" label instead.
+        if detail_direct or yp is None:
             g["value_yuan"] = None
         elif qu == "kg":
             g["value_yuan"] = yp * kg
@@ -10123,7 +10187,7 @@ def receiving_po_batch_detail(po_id: str = Query(default="")):
         out.append(g)
     out.sort(key=lambda g: (g.get("fabric_name") or "").lower())
     return {"fabrics": out, "locked": locked, "audit": audit,
-            "po_sheet": po_sheet}
+            "po_sheet": po_sheet, "direct_kes": detail_direct}
 
 @fabric_router.get("/api/fabric/receiving/po-batch/{po_id}")
 def receiving_po_batch(po_id: int):
@@ -10167,11 +10231,15 @@ def receiving_po_batch(po_id: int):
 @fabric_router.post("/api/fabric/receiving/po-batch/{po_id}/pricing")
 def receiving_po_pricing_save(po_id: int, request: Request,
                               body: dict = Body(...)):
-    """Save the per-PO Yuan pricing form: the two FX rates (Yuan→USD and
-    USD→KES) plus one Yuan price + quote unit per price key. Values persist
-    per PO (survive reload, reused on re-upload) and stay editable until the
-    upload. Empty/zero inputs are stored as NULL ('not set yet')."""
+    """Save the per-PO pricing form: the two FX rates (Yuan→USD and
+    USD→KES) plus one price + quote unit per price key, and the whole-PO
+    direct_kes flag (local purchase priced directly in KES — FX rates not
+    required, the entered prices ARE KES). Values persist per PO (survive
+    reload, reused on re-upload) and stay editable until the upload.
+    Empty/zero inputs are stored as NULL ('not set yet')."""
     _recv_block_quality_only(request)
+    direct_kes = bool(body.get("direct_kes"))
+    price_word = "KES price" if direct_kes else "Yuan price"
     def _rate(name):
         v = body.get(name)
         if v in (None, ""):
@@ -10212,10 +10280,10 @@ def receiving_po_pricing_save(po_id: int, request: Request,
                 yp = float(yp)
             except (TypeError, ValueError):
                 raise HTTPException(status_code=400,
-                    detail=f"pricing row {i}: Yuan price must be a number")
+                    detail=f"pricing row {i}: {price_word} must be a number")
             if not (yp > 0):
                 raise HTTPException(status_code=400,
-                    detail=f"pricing row {i}: Yuan price must be greater "
+                    detail=f"pricing row {i}: {price_word} must be greater "
                            "than zero")
         items.append((key, yp, qu))
     _uid, name = _fabric_actor(request)
@@ -10224,14 +10292,16 @@ def receiving_po_pricing_save(po_id: int, request: Request,
         with conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO fabric_po_pricing
-                  (po_id, yuan_to_usd, usd_to_kes, updated_by_name, updated_at)
-                VALUES (%s,%s,%s,%s,now())
+                  (po_id, yuan_to_usd, usd_to_kes, direct_kes,
+                   updated_by_name, updated_at)
+                VALUES (%s,%s,%s,%s,%s,now())
                 ON CONFLICT (po_id) DO UPDATE SET
                   yuan_to_usd=EXCLUDED.yuan_to_usd,
                   usd_to_kes=EXCLUDED.usd_to_kes,
+                  direct_kes=EXCLUDED.direct_kes,
                   updated_by_name=EXCLUDED.updated_by_name,
                   updated_at=now()
-            """, (po_id, y2u, u2k, name))
+            """, (po_id, y2u, u2k, direct_kes, name))
             # The form always posts the FULL set of rows for this PO, so a
             # delete + reinsert keeps the stored keys in lockstep with the
             # products actually on the batch (no stale leftovers).
@@ -10280,12 +10350,15 @@ def receiving_po_upload(po_id: int, request: Request):
         if not plan:
             raise HTTPException(status_code=400,
                 detail="No receiving sheets are linked to this PO yet")
-        # Pricing gate: BOTH FX rates and a Yuan price for every product that
-        # would actually be pushed must be in place before anything is
-        # written. Blocked products (quantity or conversion blocks) are
-        # excluded — they never reach Odoo anyway.
+        # Pricing gate: a price for every product that would actually be
+        # pushed — plus BOTH FX rates in Yuan mode (direct-KES POs need no
+        # FX) — must be in place before anything is written. Blocked
+        # products (quantity or conversion blocks) are excluded — they
+        # never reach Odoo anyway.
+        direct = pricing["direct_kes"]
         missing_bits = []
-        if pricing["yuan_to_usd"] is None or pricing["usd_to_kes"] is None:
+        if not direct and (pricing["yuan_to_usd"] is None
+                           or pricing["usd_to_kes"] is None):
             missing_bits.append("both FX rates (Yuan→USD and USD→KES)")
         unpriced = sorted({(e.get("fabric_name") or e.get("barcode")
                             or f"product {e['product_id']}")
@@ -10293,7 +10366,9 @@ def receiving_po_upload(po_id: int, request: Request):
                            if e["action"] in ("update", "create")
                            and e.get("push_price") is None})
         if unpriced:
-            missing_bits.append("a Yuan price for: " + ", ".join(unpriced))
+            missing_bits.append(("a KES price for: " if direct
+                                 else "a Yuan price for: ")
+                                + ", ".join(unpriced))
         if missing_bits:
             raise HTTPException(status_code=400,
                 detail="Pricing is incomplete — enter "
@@ -10365,7 +10440,8 @@ def receiving_po_upload(po_id: int, request: Request):
             """, (po_id, po.get("name"), status,
                   psycopg2.extras.Json({
                       "results": results, "error": error,
-                      "pricing": {"yuan_to_usd": pricing["yuan_to_usd"],
+                      "pricing": {"direct_kes": direct,
+                                  "yuan_to_usd": pricing["yuan_to_usd"],
                                   "usd_to_kes": pricing["usd_to_kes"],
                                   "hq_analytic_id": hq_id}}),
                   actor_id, actor_name))
