@@ -350,6 +350,11 @@ _LAST_FABRIC_CAT_TRACKER = None
 # Guards the production tracker (Odoo DPS buying & manufacturing orders) sync to
 # once per 30 minutes even though main() runs every 60s.
 _LAST_PRODUCTION_SYNC = None
+# Hourly output board fed from the team's Google Sheet (separate from the
+# Odoo DPS production_orders tracker above). Short interval so the dashboard
+# reflects the sheet within a few minutes of each hourly update.
+_LAST_PRODUCTION_HOURLY_SYNC = None
+PRODUCTION_HOURLY_INTERVAL_SEC = int(os.environ.get("PRODUCTION_HOURLY_INTERVAL_SEC", "300"))
 # Guards the MO fabric-consumption extract (extract_mo_fabric_consumption.py —
 # Done DPS manufacturing-order fabric usage feeding the "Avg metres per garment"
 # KPI) to once per 30 minutes even though main() runs every 60s. None on boot so
@@ -2679,6 +2684,26 @@ def main():
             log.info("✅ Production tracker sync complete")
         except Exception as e:
             log.error("Production tracker sync error: %s", e)
+    # Production HOURLY output board (Google Sheet -> production_hourly).
+    # Fed by extract_production_tracker.py; refreshes every 5 min so the live
+    # actual-vs-target + projected-landing dashboard tracks the team's hourly
+    # sheet updates. Full refresh (TRUNCATE+reload), safe to re-run.
+    global _LAST_PRODUCTION_HOURLY_SYNC
+    prod_hourly_due = (
+        _LAST_PRODUCTION_HOURLY_SYNC is None
+        or (now_utc - _LAST_PRODUCTION_HOURLY_SYNC).total_seconds() >= PRODUCTION_HOURLY_INTERVAL_SEC
+    )
+    if prod_hourly_due:
+        _LAST_PRODUCTION_HOURLY_SYNC = now_utc
+        try:
+            log.info("Running production hourly-sheet sync...")
+            run_subprocess_with_heartbeat(
+                [sys.executable, "/home/runner/workspace/extract_production_tracker.py"],
+                check=True,
+            )
+            log.info("\u2705 Production hourly-sheet sync complete")
+        except Exception as e:
+            log.error("Production hourly-sheet sync error: %s", e)
 
     # MO fabric-consumption extract — feeds the "Avg metres per garment" KPI on the
     # Fabric Overview (mo_fabric_consumption table). It reads Done DPS manufacturing

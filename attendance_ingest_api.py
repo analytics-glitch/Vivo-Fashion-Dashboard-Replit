@@ -53,7 +53,7 @@ def health():
 
 
 @app.post("/ingest")
-async def ingest_attendance(request: Request):
+async def ingest_attendance(request: Request, t: str = ""):
     data = await request.json()
     rows = data.get("rows", [])
     if not rows:
