@@ -1,79 +1,77 @@
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
 
-// Factory-floor wallboard: large, glanceable, auto-refreshing. Shows each
-// sewing line's hourly output vs target and the projected end-of-day landing.
+// Factory-floor wallboard: as big and glanceable as possible. One board per
+// sewing line — hourly Target vs Achieved cells, pace, and the projected
+// end-of-day landing. Data: the hourly-updated Production Tracker sheet,
+// re-polled every 30s so an edit lands on screen within ~1 minute.
 
-const REFRESH_MS = 60000; // pull fresh every 60s
+const REFRESH_MS = 30000;
 
-function statusColor(status) {
-  switch (status) {
-    case "On track":       return { bg: "#0f7a3d", fg: "#ffffff", label: "ON TRACK" };
-    case "Slightly behind":return { bg: "#c98a00", fg: "#ffffff", label: "SLIGHTLY BEHIND" };
-    case "Behind":         return { bg: "#c0392b", fg: "#ffffff", label: "BEHIND" };
-    case "Not started":    return { bg: "#555555", fg: "#ffffff", label: "NOT STARTED" };
-    default:               return { bg: "#555555", fg: "#ffffff", label: String(status || "—") };
-  }
+const STATUS = {
+  "On track": { bg: "#0f7a3d", label: "ON TRACK" },
+  "Slightly behind": { bg: "#c98a00", label: "SLIGHTLY BEHIND" },
+  Behind: { bg: "#c0392b", label: "BEHIND" },
+  "Not started": { bg: "#4a5568", label: "NOT STARTED" },
+};
+
+const fmt = (n) => (n == null ? "—" : Number(n).toLocaleString());
+
+function slotShort(s) {
+  const a = s.start_hour > 12 ? s.start_hour - 12 : s.start_hour;
+  const b = s.end_hour > 12 ? s.end_hour - 12 : s.end_hour;
+  return `${a}–${b}`;
 }
 
-function LineBoard({ data }) {
-  const sc = statusColor(data.status);
-  const pct = data.pct_achieved ?? 0;
-  const projPct = data.projected_pct ?? 0;
+function Metric({ label, value, sub, bg }) {
   return (
-    <div style={{
-      background: "#12261c", borderRadius: 18, padding: "26px 30px",
-      color: "#eafaf1", boxShadow: "0 4px 24px rgba(0,0,0,.35)",
-      display: "flex", flexDirection: "column", gap: 18, minWidth: 0,
-    }}>
-      {/* Header row */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 16 }}>
-        <div style={{ display: "flex", alignItems: "baseline", gap: 16 }}>
-          <span style={{ fontSize: 46, fontWeight: 800, letterSpacing: 1 }}>LINE {data.sewing_line}</span>
-          <span style={{ fontSize: 20, opacity: .8, fontWeight: 500 }}>{data.style || ""}</span>
-        </div>
-        <span style={{
-          background: sc.bg, color: sc.fg, fontWeight: 800, fontSize: 24,
-          padding: "8px 22px", borderRadius: 999, whiteSpace: "nowrap",
-        }}>{sc.label}</span>
+    <div style={{ background: bg || "#0a1a12", borderRadius: 14, padding: "12px 10px", textAlign: "center", minWidth: 0 }}>
+      <div style={{ fontSize: "clamp(12px, 1.1vw, 18px)", opacity: 0.8, fontWeight: 700, letterSpacing: 1.5 }}>{label}</div>
+      <div style={{ fontSize: "clamp(34px, 3.4vw, 62px)", fontWeight: 800, lineHeight: 1.02 }}>{value}</div>
+      <div style={{ fontSize: "clamp(12px, 1vw, 17px)", opacity: 0.75 }}>{sub}</div>
+    </div>
+  );
+}
+
+function LineBoard({ d }) {
+  const sc = STATUS[d.status] || STATUS["Not started"];
+  const pct = d.pct_achieved ?? 0;
+  const marker = d.daily_target > 0 ? Math.min(100, (100 * d.expected_by_now) / d.daily_target) : 0;
+  return (
+    <div style={{ background: "#12261c", borderRadius: 18, padding: "18px 20px", color: "#eafaf1", boxShadow: "0 4px 24px rgba(0,0,0,.35)", display: "flex", flexDirection: "column", gap: 12, minWidth: 0 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+        <span style={{ fontSize: "clamp(34px, 3vw, 56px)", fontWeight: 800, letterSpacing: 1 }}>
+          LINE {d.sewing_line}
+        </span>
+        <span style={{ background: sc.bg, fontWeight: 800, fontSize: "clamp(16px, 1.5vw, 26px)", padding: "6px 20px", borderRadius: 999, whiteSpace: "nowrap" }}>
+          {d.targets_set ? sc.label : "TARGETS NOT SET"}
+        </span>
       </div>
 
-      {/* Big numbers */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 18 }}>
-        <Metric label="MADE SO FAR" value={data.made_so_far} sub={`of ${data.daily_target}`} />
-        <Metric label="% OF TARGET" value={`${pct}%`} sub={`should be ${data.expected_by_now}`} />
-        <Metric label="PACE / HOUR" value={data.pace_per_hour} sub={`${data.hours_completed}/${data.productive_hours} hrs`} />
-        <Metric label="PROJECTED" value={data.projected_landing} sub={`${projPct}% of target`}
-                highlight={sc.bg} />
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10 }}>
+        <Metric label="MADE" value={fmt(d.made_so_far)} sub={`of ${fmt(d.daily_target)}`} />
+        <Metric label="% OF TARGET" value={`${pct}%`} sub={`should be ${fmt(d.expected_by_now)}`} />
+        <Metric label="PACE / HR" value={d.pace_per_hour == null ? "—" : fmt(Math.round(d.pace_per_hour))} sub={`${d.hours_completed}/${d.productive_hours} hrs done`} />
+        <Metric label="PROJECTED" value={fmt(d.projected_landing)} sub={`${d.projected_pct}% of target`} bg={sc.bg} />
       </div>
 
-      {/* Progress bar: actual vs target, with an "expected by now" marker */}
-      <div style={{ position: "relative", height: 34, background: "#0a1a12", borderRadius: 8, overflow: "hidden" }}>
-        <div style={{
-          width: `${Math.min(100, pct)}%`, height: "100%",
-          background: sc.bg, transition: "width .6s ease",
-        }} />
-        {data.daily_target > 0 && (
-          <div title="Where you should be now" style={{
-            position: "absolute", top: 0, bottom: 0,
-            left: `${Math.min(100, 100 * (data.expected_by_now / data.daily_target))}%`,
-            width: 3, background: "#ffffff", opacity: .85,
-          }} />
+      <div style={{ position: "relative", height: 26, background: "#0a1a12", borderRadius: 8, overflow: "hidden" }}>
+        <div style={{ width: `${Math.min(100, pct)}%`, height: "100%", background: sc.bg, transition: "width .6s ease" }} />
+        {d.daily_target > 0 && (
+          <div title="Where you should be now" style={{ position: "absolute", top: 0, bottom: 0, left: `${marker}%`, width: 3, background: "#fff", opacity: 0.9 }} />
         )}
       </div>
 
-      {/* Hourly cells */}
-      <div style={{ display: "grid", gridTemplateColumns: `repeat(${data.slots.length || 8}, 1fr)`, gap: 8 }}>
-        {data.slots.map((s) => {
-          const a = s.actual;
-          const t = s.target || 0;
-          const hit = a != null && t > 0 && a >= t;
-          const bg = a == null ? "#0a1a12" : hit ? "#0f7a3d" : "#7a2018";
+      <div style={{ display: "grid", gridTemplateColumns: `repeat(${d.slots.length || 8}, 1fr)`, gap: 6 }}>
+        {d.slots.map((s) => {
+          const active = s.elapsed_fraction > 0 && s.elapsed_fraction < 1;
+          const bg = s.actual == null ? "#0a1a12" : s.hit ? "#0f7a3d" : "#7a2018";
+          const notCounted = s.actual != null && s.counted === false;
           return (
-            <div key={s.slot} style={{ background: bg, borderRadius: 8, padding: "10px 6px", textAlign: "center" }}>
-              <div style={{ fontSize: 13, opacity: .75 }}>{s.slot}</div>
-              <div style={{ fontSize: 30, fontWeight: 800, lineHeight: 1.1 }}>{a == null ? "—" : a}</div>
-              <div style={{ fontSize: 12, opacity: .7 }}>/{t}</div>
+            <div key={s.start_hour} title={notCounted ? "Entered ahead of time — not counted yet" : undefined} style={{ background: bg, borderRadius: 8, padding: "8px 2px", textAlign: "center", border: active ? "2px solid #ffd75e" : "2px solid transparent", opacity: notCounted ? 0.45 : 1 }}>
+              <div style={{ fontSize: "clamp(11px, 0.95vw, 16px)", opacity: 0.8, fontWeight: 600 }}>{slotShort(s)}</div>
+              <div style={{ fontSize: "clamp(22px, 2.1vw, 40px)", fontWeight: 800, lineHeight: 1.05 }}>{s.actual == null ? "—" : fmt(s.actual)}</div>
+              <div style={{ fontSize: "clamp(11px, 0.9vw, 15px)", opacity: 0.7 }}>/{fmt(s.target ?? 0)}</div>
             </div>
           );
         })}
@@ -82,82 +80,107 @@ function LineBoard({ data }) {
   );
 }
 
-function Metric({ label, value, sub, highlight }) {
-  return (
-    <div style={{
-      background: highlight ? highlight : "#0a1a12",
-      borderRadius: 12, padding: "14px 16px", textAlign: "center",
-    }}>
-      <div style={{ fontSize: 14, opacity: .8, fontWeight: 600, letterSpacing: 1 }}>{label}</div>
-      <div style={{ fontSize: 44, fontWeight: 800, lineHeight: 1.05 }}>{value}</div>
-      <div style={{ fontSize: 14, opacity: .75 }}>{sub}</div>
-    </div>
-  );
-}
-
 export default function ProductionWallboard() {
-  const [lines, setLines] = useState([]);   // one payload per sewing line
-  const [updated, setUpdated] = useState(null);
+  const [payload, setPayload] = useState(null);
   const [err, setErr] = useState(null);
+  const [updated, setUpdated] = useState(null);
+  const [clock, setClock] = useState(new Date());
+  const boardRef = useRef(null);
 
   const load = useCallback(async () => {
     try {
-      // First call: default day + first line, also returns available_lines.
-      const { data: first } = await api.get("/production/hourly-tracker", { forceFresh: true });
-      const day = first.work_date;
-      const avail = first.available_lines && first.available_lines.length ? first.available_lines : [first.sewing_line];
-      // Fetch each line for that day.
-      const results = await Promise.all(
-        avail.map((ln) =>
-          api.get(`/production/hourly-tracker`, { params: { work_date: day, sewing_line: ln }, forceFresh: true })
-             .then((r) => r.data)
-        )
-      );
-      setLines(results);
+      // Optional ?date=YYYY-MM-DD lets supervisors review a past day's board.
+      const dateParam = new URLSearchParams(window.location.search).get("date");
+      const { data } = await api.get("/production/hourly-tracker", {
+        forceFresh: true,
+        params: dateParam ? { work_date: dateParam } : undefined,
+      });
+      setPayload(data);
       setUpdated(new Date());
       setErr(null);
     } catch (e) {
-      setErr(e?.message || "Failed to load");
+      setErr(e?.response?.data?.detail || e?.message || "Failed to load");
     }
   }, []);
 
   useEffect(() => {
     load();
     const id = setInterval(load, REFRESH_MS);
-    return () => clearInterval(id);
+    const ck = setInterval(() => setClock(new Date()), 1000);
+    return () => { clearInterval(id); clearInterval(ck); };
   }, [load]);
 
-  const day = lines[0]?.work_date;
+  const goFullscreen = () => {
+    const el = boardRef.current;
+    if (!el) return;
+    if (document.fullscreenElement) document.exitFullscreen();
+    else el.requestFullscreen?.();
+  };
+
+  const t = payload?.totals;
+  const dateLabel = payload
+    ? new Date(payload.work_date + "T00:00:00").toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "short" })
+    : "";
+  const agoSec = updated ? Math.max(0, Math.round((clock - updated) / 1000)) : null;
 
   return (
-    <div style={{ minHeight: "100vh", background: "#0a140e", padding: "28px 34px" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 22 }}>
-        <div style={{ color: "#eafaf1", fontSize: 40, fontWeight: 800, letterSpacing: 1 }}>
-          PRODUCTION — HOURLY OUTPUT
+    <div ref={boardRef} style={{ minHeight: "100vh", background: "#0a140e", padding: "18px 22px", overflow: "auto" }}>
+      {/* Header */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 14, marginBottom: 12, color: "#eafaf1", flexWrap: "wrap" }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 16, flexWrap: "wrap" }}>
+          <span style={{ fontSize: "clamp(26px, 2.6vw, 46px)", fontWeight: 800, letterSpacing: 1.5 }}>PRODUCTION TRACKER</span>
+          <span style={{ fontSize: "clamp(16px, 1.5vw, 26px)", opacity: 0.85 }}>{dateLabel}</span>
+          {payload && !payload.is_today && (
+            <span style={{ background: payload.is_future ? "#4a5568" : "#c98a00", color: "#fff", fontWeight: 800, borderRadius: 999, padding: "4px 16px", fontSize: "clamp(13px, 1.2vw, 20px)" }}>
+              {payload.is_future ? "SCHEDULED DAY — not started yet" : "LAST RECORDED DAY — waiting for today's first entry"}
+            </span>
+          )}
         </div>
-        <div style={{ color: "#9fd8b8", fontSize: 18, textAlign: "right" }}>
-          <div style={{ fontSize: 26, fontWeight: 700 }}>{day || "—"}</div>
-          <div>{updated ? `Updated ${updated.toLocaleTimeString()}` : "Loading…"}</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+          <span style={{ fontSize: "clamp(13px, 1vw, 17px)", opacity: 0.7 }}>
+            {agoSec == null ? "" : agoSec < 5 ? "updated just now" : `updated ${agoSec}s ago`}
+          </span>
+          <span style={{ fontSize: "clamp(26px, 2.4vw, 44px)", fontWeight: 800, fontVariantNumeric: "tabular-nums" }}>
+            {clock.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: "Africa/Nairobi" })}
+          </span>
+          <button onClick={goFullscreen} style={{ background: "#1d3a2a", color: "#eafaf1", border: "1px solid #2e5941", borderRadius: 10, padding: "8px 16px", fontSize: 15, fontWeight: 700, cursor: "pointer" }}>
+            ⛶ Fullscreen
+          </button>
         </div>
       </div>
 
       {err && (
-        <div style={{ color: "#ffb4a8", fontSize: 20, padding: 20 }}>
-          {err}
+        <div style={{ background: "#7a2018", color: "#fff", borderRadius: 10, padding: "10px 16px", fontWeight: 700, marginBottom: 12, fontSize: "clamp(14px, 1.2vw, 20px)" }}>
+          Connection problem — showing last loaded data. ({String(err)})
         </div>
       )}
 
-      <div style={{
-        display: "grid",
-        gridTemplateColumns: lines.length > 1 ? "repeat(auto-fit, minmax(560px, 1fr))" : "1fr",
-        gap: 22,
-      }}>
-        {lines.map((d) => <LineBoard key={d.sewing_line} data={d} />)}
-      </div>
-
-      {!err && lines.length === 0 && (
-        <div style={{ color: "#9fd8b8", fontSize: 22, padding: 30 }}>No production data yet for today.</div>
+      {payload?.warnings && (payload.warnings.duplicate_rows > 0 || payload.warnings.skipped_rows > 0 || payload.warnings.future_actuals > 0) && (
+        <div style={{ background: "#3d3212", color: "#ffd75e", borderRadius: 10, padding: "8px 16px", fontWeight: 700, marginBottom: 12, fontSize: "clamp(13px, 1vw, 17px)" }}>
+          Sheet check:
+          {payload.warnings.duplicate_rows > 0 && ` ${payload.warnings.duplicate_rows} duplicate row(s) — latest kept.`}
+          {payload.warnings.skipped_rows > 0 && ` ${payload.warnings.skipped_rows} unreadable row(s) skipped.`}
+          {payload.warnings.future_actuals > 0 && ` ${payload.warnings.future_actuals} entry(ies) in future hours — not counted yet.`}
+        </div>
       )}
+
+      {/* Factory totals */}
+      {t && (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 14, color: "#eafaf1" }}>
+          <Metric label="FACTORY MADE" value={fmt(t.made_so_far)} sub={`of ${fmt(t.daily_target)} target`} />
+          <Metric label="% OF TARGET" value={`${t.pct_achieved}%`} sub={`should be ${fmt(t.expected_by_now)} by now`} />
+          <Metric label="PROJECTED LANDING" value={fmt(t.projected_landing)} sub={`${t.projected_pct}% of target`} bg={t.projected_pct >= 97 ? "#0f7a3d" : t.projected_pct >= 85 ? "#c98a00" : "#7a2018"} />
+          <Metric label="SEWING LINES" value={payload.lines.length} sub="reporting today" />
+        </div>
+      )}
+
+      {/* Line boards */}
+      {!payload && !err && (
+        <div style={{ color: "#eafaf1", fontSize: 28, opacity: 0.7, padding: 40 }}>Loading tracker…</div>
+      )}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(620px, 1fr))", gap: 14 }}>
+        {(payload?.lines || []).map((l) => <LineBoard key={l.sewing_line} d={l} />)}
+      </div>
     </div>
   );
 }

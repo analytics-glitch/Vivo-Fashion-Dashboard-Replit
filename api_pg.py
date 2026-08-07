@@ -622,6 +622,8 @@ from fabric_router import fabric_router
 app.include_router(fabric_router)
 from quality_router import quality_router
 app.include_router(quality_router)
+from production_wallboard import production_wallboard_router
+app.include_router(production_wallboard_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
