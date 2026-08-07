@@ -9998,21 +9998,46 @@ function costRenderLines(){
   const body=document.getElementById('cost-lines-body');
   if(!costEdit){body.innerHTML='';costRenderEmbroidery();return;}
   // Fabric rows always render FIRST (stable sort — relative order within
-  // fabric and non-fabric groups is preserved). Every mutation path funnels
-  // through this render, and the save payload follows costEdit.lines order,
-  // so saved positions + PDF/exports match the screen. Ordering only —
-  // amounts are never touched.
-  costEdit.lines.sort((a,b)=>(a.kind==='fabric'?0:1)-(b.kind==='fabric'?0:1));
-  body.innerHTML=costEdit.lines.map((l,i)=>
-    `<tr><td><select class="cost-cell" data-i="${i}" data-k="kind" style="width:110px;">`+
+  // fabric and non-fabric groups is preserved). On Pre-production sheets the
+  // three derived default rows follow the fabric block in fixed order
+  // (Accessories → CMT → Defect Allowance) with user-added extras after.
+  // Every mutation path funnels through this render, and the save payload
+  // follows costEdit.lines order, so saved positions + PDF/exports match the
+  // screen. Ordering only — amounts are never touched.
+  const isPP=costEdit.stage==='pre_production';
+  const ppSortKey=l=>{
+    if(l.kind==='fabric')return 0;
+    if(isPP){
+      const dk=costPPDerivedKind(l);
+      if(dk==='trim')return 1;
+      if(dk==='cmt')return 2;
+      if(dk==='overhead')return 3;
+    }
+    return 4;
+  };
+  costEdit.lines.sort((a,b)=>ppSortKey(a)-ppSortKey(b));
+  const mainFabIdx=isPP?costMainFabricIdx():-1;
+  const roStyle='background:var(--panel,#f5f5f3);cursor:default;';
+  body.innerHTML=costEdit.lines.map((l,i)=>{
+    // Pre-production fixtures: the MAIN fabric row's qty is read-only (it
+    // mirrors the Mtrs per Garment header field) and the row is not
+    // deletable; the three derived rows are fully machine-managed — only the
+    // header inputs move them. Additional fabric rows stay hand-editable.
+    const isMainFab=isPP&&i===mainFabIdx;
+    const isDerived=isPP&&!!costPPDerivedKind(l);
+    const kindLock=(isMainFab||isDerived)?' disabled data-ppfix="1" title="Fixed line type on Pre-production default rows"':'';
+    const labelRO=isDerived?' readonly title="Auto-managed — use the header inputs above"':'';
+    const qtyRO=isMainFab?' readonly title="Mirrors the Mtrs per Garment field above"':(isDerived?' readonly title="Fixed at 1 — auto-calculated line"':'');
+    const costRO=isDerived?' readonly title="Auto-calculated from the header inputs above"':'';
+    return `<tr><td><select class="cost-cell" data-i="${i}" data-k="kind" style="width:110px;"${kindLock}>`+
     Object.keys(COST_KINDS).map(k=>`<option value="${k}"${l.kind===k?' selected':''}>${esc(COST_KINDS[k])}</option>`).join('')+
     `</select></td>`+
-    `<td style="padding:2px;position:relative;"><input class="cost-cell" data-i="${i}" data-k="label" value="${esc(l.label||'')}" autocomplete="off" style="width:100%;padding:4px 6px;"${(l.kind==='fabric'||l.kind==='trim')?(costEdit.dps_ref?' placeholder="Type to search this DPS\u2019s components…"':' placeholder="Type to search fabric master…"'):''}>${(l.kind==='fabric'||l.kind==='trim')&&l.barcode?`<div class="muted num" style="font-size:10.5px;padding:1px 6px 0;">Barcode ${esc(l.barcode)}</div>`:''}${(l.kind==='fabric'||l.kind==='trim')?`<div class="resv-dropdown cost-fab-dd" data-dd="${i}" style="display:none;left:2px;right:2px;width:auto;"></div>`:''}</td>`+
-    `<td style="padding:2px;"><input class="cost-cell r" data-i="${i}" data-k="qty" type="number" min="0" step="any" value="${esc(l.qty==null?'':l.qty)}" style="width:100%;text-align:right;padding:4px 6px;"></td>`+
-    `<td style="padding:2px;"><input class="cost-cell r" data-i="${i}" data-k="unit_cost" type="number" min="0" step="any" value="${esc(l.unit_cost==null?'':l.unit_cost)}" style="width:100%;text-align:right;padding:4px 6px;"></td>`+
+    `<td style="padding:2px;position:relative;"><input class="cost-cell" data-i="${i}" data-k="label" value="${esc(l.label||'')}" autocomplete="off" style="width:100%;padding:4px 6px;${labelRO?roStyle:''}"${labelRO}${(l.kind==='fabric'||l.kind==='trim')&&!labelRO?(costEdit.dps_ref?' placeholder="Type to search this DPS\u2019s components…"':' placeholder="Type to search fabric master…"'):''}>${(l.kind==='fabric'||l.kind==='trim')&&l.barcode?`<div class="muted num" style="font-size:10.5px;padding:1px 6px 0;">Barcode ${esc(l.barcode)}</div>`:''}${(l.kind==='fabric'||l.kind==='trim')?`<div class="resv-dropdown cost-fab-dd" data-dd="${i}" style="display:none;left:2px;right:2px;width:auto;"></div>`:''}</td>`+
+    `<td style="padding:2px;"><input class="cost-cell r" data-i="${i}" data-k="qty" type="number" min="0" step="any" value="${esc(l.qty==null?'':l.qty)}" style="width:100%;text-align:right;padding:4px 6px;${qtyRO?roStyle:''}"${qtyRO}></td>`+
+    `<td style="padding:2px;"><input class="cost-cell r" data-i="${i}" data-k="unit_cost" type="number" min="0" step="any" value="${esc(l.unit_cost==null?'':l.unit_cost)}" style="width:100%;text-align:right;padding:4px 6px;${costRO?roStyle:''}"${costRO}></td>`+
     `<td class="r">${fmtKES2((Number(l.qty)||0)*(Number(l.unit_cost)||0))}</td>`+
     `<td>${costBadge(!!l.is_auto)}${l.source?`<div class="muted" style="font-size:10px;">${esc(l.source)}</div>`:''}</td>`+
-    `<td><button class="btn" style="padding:2px 8px;" title="Remove line" onclick="costDelLine(${i})">&times;</button></td></tr>`).join('')
+    `<td>${(isMainFab||isDerived)?'':`<button class="btn" style="padding:2px 8px;" title="Remove line" onclick="costDelLine(${i})">&times;</button>`}</td></tr>`;}).join('')
     ||'<tr><td colspan="7" class="muted" style="padding:.8rem;">No lines — add cost lines below.</td></tr>';
   costRenderEmbroidery();
   costRenderTotals();
@@ -10117,9 +10142,22 @@ function costBindEditor(){
     const el=e.target.closest('.cost-cell');if(!el||!costEdit)return;
     const i=+el.dataset.i,k=el.dataset.k,l=costEdit.lines[i];if(!l)return;
     l[k]=el.value;
-    // Editing an auto-suggested value flips the line to MANUAL.
-    if(l.is_auto&&(k==='qty'||k==='unit_cost')){l.is_auto=false;l.source=null;l.component_id=null;l.barcode=null;costRenderLines();return;}
-    if(k==='kind'){costRenderLines();return;}
+    const ppFab=costEdit.stage==='pre_production'&&l.kind==='fabric';
+    // Editing an auto-suggested value flips the line to MANUAL — EXCEPT the
+    // qty on Pre-production fabric rows: additional fabric rows (lining etc.)
+    // take a hand-typed qty while their auto-filled cost provenance stands
+    // (the main fabric row's qty is read-only and never fires here).
+    if(l.is_auto&&(k==='qty'||k==='unit_cost')&&!(ppFab&&k==='qty')){
+      l.is_auto=false;l.source=null;l.component_id=null;l.barcode=null;
+      costRenderLines();
+      if(ppFab)costPreProdCalc(); // a hand-typed fabric cost still moves the 13%/10% basis
+      return;
+    }
+    if(k==='kind'){
+      costRenderLines();
+      if(costEdit.stage==='pre_production')costPreProdCalc(); // fabric↔other flips change the basis
+      return;
+    }
     // Fabric/trim lines: the label doubles as a component typeahead scoped to
     // the sheet's DPS — picking one prefills Unit Cost (fabric: current
     // cost/metre; accessory: DPS/MO recorded cost).
@@ -10127,6 +10165,9 @@ function costBindEditor(){
     if(k==='qty'||k==='unit_cost'){
       // Update the line-total cell in place without a full re-render (keeps focus).
       const row=el.closest('tr');if(row)row.cells[4].textContent=fmtKES2((Number(l.qty)||0)*(Number(l.unit_cost)||0));
+      // Pre-production: any fabric-row edit re-derives the three auto lines
+      // immediately; the in-place patch keeps the focused cell alive.
+      if(ppFab){costPreProdCalc({inPlace:true});return;}
       costRenderTotals();
     }
   });
@@ -10138,10 +10179,31 @@ function costSpManual(){
 }
 function costAddLine(kind){
   if(!costEdit)return;
-  costEdit.lines.push({kind:kind||'trim',label:'',qty:1,unit_cost:0,is_auto:false,source:null});
+  const k=kind||'trim';
+  const ppFab=costEdit.stage==='pre_production'&&k==='fabric';
+  // Pre-production additional fabric rows (lining etc.) start with a BLANK
+  // qty — it is typed manually, and the row's total rolls into the 13%/10%
+  // basis as soon as qty × cost is set.
+  costEdit.lines.push({kind:k,label:'',qty:ppFab?null:1,unit_cost:0,is_auto:false,source:null});
   costRenderLines();
+  if(ppFab)costPreProdCalc();
 }
-function costDelLine(i){if(!costEdit)return;costEdit.lines.splice(i,1);costRenderLines();}
+function costDelLine(i){
+  if(!costEdit)return;
+  const l=costEdit.lines[i];if(!l)return;
+  if(costEdit.stage==='pre_production'){
+    // Fixtures are not deletable in Pre-production: the three derived rows
+    // and the MAIN fabric row (their delete buttons are hidden — this also
+    // guards the inline handler against stale indexes).
+    if(costPPDerivedKind(l))return;
+    if(l.kind==='fabric'&&costMainFabricIdx()===i)return;
+  }
+  const wasFabric=l.kind==='fabric';
+  costEdit.lines.splice(i,1);
+  costRenderLines();
+  // Deleting a fabric row shrinks the percentage basis — re-derive.
+  if(costEdit.stage==='pre_production'&&wasFabric)costPreProdCalc();
+}
 // ── Component typeahead on fabric/trim cost lines ──
 // Searches ONLY the components consumed on the sheet's selected DPS's MOs
 // (/api/fabric/costing/fabrics?dps_ref=…) — the whole-fabric-master search is
@@ -10196,6 +10258,10 @@ function costPickFabric(i,name,cpm,isMain,compId,barcode,reason){
     l.source=reason||'component has no cost on record — enter cost manually';
   }
   costRenderLines();
+  // Pre-production: a fabric pick (cost auto-fill) changes the percentage
+  // basis immediately — the 13%/10% lines must follow without waiting for a
+  // header field to be typed into.
+  if(costEdit.stage==='pre_production'&&l.kind==='fabric')costPreProdCalc();
 }
 function costApplyStage(restoreOnly){
   if(!costEdit)return;
@@ -10203,18 +10269,31 @@ function costApplyStage(restoreOnly){
   const stage=stgEl?stgEl.value:(costEdit.stage||'main_production');
   costEdit.stage=stage;
   const isPreprod=stage==='pre_production';
-  // NEW Pre-production sheets seed ONE empty search-ready Fabric row as line 1
-  // (user decision — Main Production keeps DPS-based suggestions). Guarded so
-  // stage toggling never duplicates the seeded row; toggling back to Main
-  // Production removes it only while it is still pristine (no label, no
-  // component, no cost). Saved sheets are never touched here.
-  if(!costEdit.id){
-    if(isPreprod&&!costEdit.lines.some(l=>l.kind==='fabric')){
-      costEdit.lines.unshift({kind:'fabric',label:'',qty:Number(costEdit.mtrs_per_garment)||1,unit_cost:0,is_auto:false,source:null,component_id:null,barcode:null});
-    }else if(!isPreprod){
-      costEdit.lines=costEdit.lines.filter(l=>!(l.kind==='fabric'&&!(l.label||'').trim()&&!l.component_id&&!(Number(l.unit_cost)>0)&&!l.is_auto));
+  // Pre-production ALWAYS presents the four default rows — main Fabric first,
+  // then the derived Accessories / CMT / Defect Allowance lines — on ANY
+  // unlocked sheet (new, saved or legacy). Seeding is idempotent: existing
+  // default rows (including adoptable legacy ones) are kept, never
+  // duplicated. Toggling back to Main Production prunes the derived rows
+  // (pure derivations of the header inputs — recreated identically on toggle
+  // back) plus a still-pristine seeded Fabric row; the prune fires only on a
+  // USER stage change (!restoreOnly), never on plain open. Locked sheets are
+  // never touched.
+  if(!costEdit.locked){
+    if(isPreprod){
+      if(!restoreOnly)costPreProdFillInputs();
+      costPreProdSeedLines();
+      costRenderLines();
+      if(!restoreOnly)costPreProdCalc();
+    }else if(!restoreOnly){
+      // Stage already flipped to main here — match the derived rows directly
+      // (stage-independent), not via the preprod-gated costPPDerivedKind.
+      costEdit.lines=costEdit.lines.filter(l=>{
+        if(costPreProdMatchDefault(l,'trim')||costPreProdMatchDefault(l,'cmt')||costPreProdMatchDefault(l,'overhead'))return false;
+        if(l.kind==='fabric'&&!(l.label||'').trim()&&!l.component_id&&!(Number(l.unit_cost)>0))return false;
+        return true;
+      });
+      costRenderLines();
     }
-    costRenderLines();
   }
   const dpsWrap=document.getElementById('cost-dps-wrap');if(dpsWrap)dpsWrap.style.display=isPreprod?'none':'';
   const colorWrap=document.getElementById('cost-color-wrap');if(colorWrap&&isPreprod)colorWrap.style.display='none';
@@ -10226,16 +10305,102 @@ function costApplyStage(restoreOnly){
   const mLbl=document.getElementById('cost-margin-label');if(mLbl)mLbl.textContent=isPreprod?'Proposed margin (targeting 70%)':'Margin vs ex-VAT selling price';
   if(!restoreOnly){
     const sNote=document.getElementById('cost-suggest-note');
-    if(sNote)sNote.textContent=isPreprod?'Pre-production: the Fabric line is added for you — search it by name, code or barcode (Cost/Mtr auto-fills from the fabric master). Set Mtrs per Garment and CMT inputs — accessories, CMT cost, and defect allowance are auto-calculated.':'Pick a style to load auto-suggestions (fabric cost, metres per garment, labour per garment).';
+    if(sNote)sNote.textContent=isPreprod?'Pre-production: the four default lines are added for you. Search the Fabric line by name, code or barcode (Cost/Mtr auto-fills from the fabric master); its Qty mirrors Mtrs per Garment. Accessories, CMT and Defect Allowance recalculate from the header inputs and all fabric line totals. Add extra fabric (e.g. lining) with + Fabric — it feeds the percentages too.':'Pick a style to load auto-suggestions (fabric cost, metres per garment, labour per garment).';
   }
   costRenderTotals();
 }
-function costPreProdUpsert(kind,newLine){
-  const idx=costEdit.lines.findIndex(l=>l.kind===kind&&l.is_auto&&(l.source||'').startsWith('pre-production auto'));
-  if(idx>=0){costEdit.lines[idx]=newLine;}else{costEdit.lines.push(newLine);}
+// ── Pre-production default lines ──
+// The four default rows (main Fabric + derived Accessories / CMT / Defect
+// Allowance) are seeded on stage entry; the three derived rows are then
+// re-computed by costPreProdCalc from the header inputs. Derived rows are
+// recognised by the source tag below — plus, for sheets saved while the old
+// qty-edit rule stripped the tag (flipped them to MANUAL), by their
+// machine-generated labels — so recalc ADOPTS them instead of duplicating.
+// User-added extra trim/overhead lines never match and are left alone.
+const COST_PP_AUTO_PREFIX='pre-production auto';
+const COST_PP_LEGACY_LABELS={
+  trim:/^Accessories \([\d.]+% of fabric cost\)$/,
+  cmt:/^CMT \([^)]*×1\.40\)$/,
+  overhead:/^Defect Allowance \([\d.]+% of fabric cost\)$/
+};
+function costIsPPAuto(l){return !!(l&&l.is_auto&&(l.source||'').indexOf(COST_PP_AUTO_PREFIX)===0);}
+function costPreProdMatchDefault(l,kind){
+  if(!l||l.kind!==kind||!COST_PP_LEGACY_LABELS[kind])return false;
+  return costIsPPAuto(l)||COST_PP_LEGACY_LABELS[kind].test((l.label||'').trim());
 }
-function costPreProdCalc(){
-  if(!costEdit||costEdit.stage!=='pre_production')return;
+function costPPDerivedKind(l){
+  if(costEdit&&costEdit.stage!=='pre_production')return null;
+  return costPreProdMatchDefault(l,'trim')?'trim':(costPreProdMatchDefault(l,'cmt')?'cmt':(costPreProdMatchDefault(l,'overhead')?'overhead':null));
+}
+// Index of the MAIN fabric row — fabric rows sort first, so this is the row
+// the Mtrs-per-Garment header mirrors into (and the one not deletable).
+function costMainFabricIdx(){return costEdit?costEdit.lines.findIndex(l=>l.kind==='fabric'):-1;}
+function costPreProdFillInputs(){
+  // Push the sheet's stored Pre-production header inputs into the DOM fields
+  // (on open AND stage toggle) so calc always reads THIS sheet's values —
+  // never leftovers from a previously viewed sheet.
+  if(!costEdit)return;
+  const set=(id,v)=>{const el=document.getElementById(id);if(el)el.value=v;};
+  set('cost-pp-mpg',costEdit.mtrs_per_garment!=null?costEdit.mtrs_per_garment:'');
+  set('cost-pp-acc-pct',costEdit.accessories_pct!=null?costEdit.accessories_pct:13);
+  set('cost-pp-def-pct',costEdit.defect_allowance_pct!=null?costEdit.defect_allowance_pct:10);
+  set('cost-pp-cpm',costEdit.cost_per_minute!=null?costEdit.cost_per_minute:'');
+  set('cost-pp-cmt-start',costEdit.cmt_start_time||'');
+  set('cost-pp-cmt-stop',costEdit.cmt_stop_time||'');
+}
+function costPreProdSeedLines(){
+  // Add whichever of the four default Pre-production rows are missing, in
+  // order (idempotent — existing rows, incl. adoptable legacy ones, stay).
+  if(!costEdit||costEdit.locked)return;
+  if(!costEdit.lines.some(l=>l.kind==='fabric')){
+    costEdit.lines.unshift({kind:'fabric',label:'',qty:Number(costEdit.mtrs_per_garment)||null,unit_cost:null,is_auto:true,
+      source:COST_PP_AUTO_PREFIX+': qty mirrors Mtrs per Garment — search the fabric master to fill cost',component_id:null,barcode:null});
+  }
+  const acc=costEdit.accessories_pct!=null?costEdit.accessories_pct:13;
+  const def=costEdit.defect_allowance_pct!=null?costEdit.defect_allowance_pct:10;
+  if(!costEdit.lines.some(l=>costPreProdMatchDefault(l,'trim')))
+    costEdit.lines.push({kind:'trim',label:'Accessories ('+acc+'% of fabric cost)',qty:1,unit_cost:0,is_auto:true,source:COST_PP_AUTO_PREFIX+': '+acc+'% of fabric cost',component_id:null,barcode:null});
+  if(!costEdit.lines.some(l=>costPreProdMatchDefault(l,'cmt')))
+    costEdit.lines.push({kind:'cmt',label:'CMT (?–?, KES 0/min ×1.40)',qty:1,unit_cost:0,is_auto:true,source:COST_PP_AUTO_PREFIX+': time-based CMT',component_id:null,barcode:null});
+  if(!costEdit.lines.some(l=>costPreProdMatchDefault(l,'overhead')))
+    costEdit.lines.push({kind:'overhead',label:'Defect Allowance ('+def+'% of fabric cost)',qty:1,unit_cost:0,is_auto:true,source:COST_PP_AUTO_PREFIX+': '+def+'% of fabric cost',component_id:null,barcode:null});
+}
+function costPreProdUpsert(kind,newLine){
+  // Adopt the sheet's existing default line for this kind (source-tagged, or
+  // legacy machine-labelled) — never duplicate it. Machine-labelled
+  // duplicates left behind by the old flip bug are folded into the first.
+  // Returns true when the lines ARRAY changed shape (append/fold), telling
+  // the caller an in-place DOM patch is not enough.
+  const idxs=[];
+  costEdit.lines.forEach((l,i)=>{if(costPreProdMatchDefault(l,kind))idxs.push(i);});
+  if(!idxs.length){costEdit.lines.push(newLine);return true;}
+  costEdit.lines[idxs[0]]=newLine;
+  for(let j=idxs.length-1;j>0;j--)costEdit.lines.splice(idxs[j],1);
+  return idxs.length>1;
+}
+function costPreProdPatchDerivedRows(){
+  // Update the three derived rows' cells in place (label, unit cost, line
+  // total, badge/source). Returns false when the DOM is out of step with
+  // costEdit.lines — caller then falls back to a full re-render.
+  const body=document.getElementById('cost-lines-body');if(!body||!costEdit)return false;
+  const trs=body.children;
+  if(trs.length!==costEdit.lines.length)return false;
+  let ok=true;
+  ['trim','cmt','overhead'].forEach(kind=>{
+    const i=costEdit.lines.findIndex(l=>costPreProdMatchDefault(l,kind));
+    const l=i>=0?costEdit.lines[i]:null,row=i>=0?trs[i]:null;
+    if(!l||!row||row.cells.length<6){ok=false;return;}
+    const lab=row.querySelector('input[data-k="label"]');if(lab)lab.value=l.label||'';
+    const qc=row.querySelector('input[data-k="qty"]');if(qc)qc.value=l.qty==null?'':l.qty;
+    const uc=row.querySelector('input[data-k="unit_cost"]');if(uc)uc.value=l.unit_cost==null?'':l.unit_cost;
+    row.cells[4].textContent=fmtKES2((Number(l.qty)||0)*(Number(l.unit_cost)||0));
+    row.cells[5].innerHTML=costBadge(true)+(l.source?'<div class="muted" style="font-size:10px;">'+esc(l.source)+'</div>':'');
+  });
+  return ok;
+}
+function costPreProdCalc(opts){
+  if(!costEdit||costEdit.stage!=='pre_production'||costEdit.locked)return;
+  opts=opts||{};
   const mpg=Number((document.getElementById('cost-pp-mpg')||{}).value)||0;
   const accPct=Number((document.getElementById('cost-pp-acc-pct')||{}).value)||0;
   const defPct=Number((document.getElementById('cost-pp-def-pct')||{}).value)||0;
@@ -10245,15 +10410,17 @@ function costPreProdCalc(){
   costEdit.mtrs_per_garment=mpg||null;costEdit.accessories_pct=accPct;
   costEdit.defect_allowance_pct=defPct;costEdit.cost_per_minute=cpmVal||null;
   costEdit.cmt_start_time=startStr||null;costEdit.cmt_stop_time=stopStr||null;
-  // Update fabric line(s) qty to mpg
-  costEdit.lines.filter(l=>l.kind==='fabric').forEach(l=>{l.qty=mpg||0;});
-  // Fabric total for percentage-based lines
-  const fabUnitCost=costEdit.lines.filter(l=>l.kind==='fabric').reduce((s,l)=>s+(Number(l.unit_cost)||0),0);
-  const fabTotal=mpg*(costEdit.lines.filter(l=>l.kind==='fabric').length>0?Number(costEdit.lines.find(l=>l.kind==='fabric').unit_cost)||0:0);
+  // Only the MAIN fabric row mirrors Mtrs per Garment — additional fabric
+  // rows (lining etc.) keep their hand-typed qty.
+  const fi=costMainFabricIdx();
+  if(fi>=0)costEdit.lines[fi].qty=mpg||null;
+  // Percentage basis = combined LINE TOTALS of ALL fabric rows
+  // (e.g. 2.5 mtrs × 363.24 = 908.10 → 13% = 118.05, 10% = 90.81).
+  const fabTotal=costEdit.lines.reduce((s,l)=>s+(l.kind==='fabric'?(Number(l.qty)||0)*(Number(l.unit_cost)||0):0),0);
   // Accessories auto-line
   const accTotal=Math.round(accPct/100*fabTotal*100)/100;
   const accLabel='Accessories ('+accPct+'% of fabric cost)';
-  costPreProdUpsert('trim',{kind:'trim',label:accLabel,qty:1,unit_cost:accTotal,is_auto:true,source:'pre-production auto: '+accPct+'% of fabric cost',component_id:null,barcode:null});
+  let structural=costPreProdUpsert('trim',{kind:'trim',label:accLabel,qty:1,unit_cost:accTotal,is_auto:true,source:COST_PP_AUTO_PREFIX+': '+accPct+'% of fabric cost',component_id:null,barcode:null});
   // CMT auto-line from time inputs
   let cpmTotal=0;
   if(startStr&&stopStr){
@@ -10269,11 +10436,15 @@ function costPreProdCalc(){
     if(infoEl)infoEl.textContent='Enter start and stop times to auto-calculate CMT cost.';
   }
   const cmtLabel='CMT ('+(startStr||'?')+'–'+(stopStr||'?')+', KES '+cpmVal+'/min ×1.40)';
-  costPreProdUpsert('cmt',{kind:'cmt',label:cmtLabel,qty:1,unit_cost:cpmTotal,is_auto:true,source:'pre-production auto: time-based CMT',component_id:null,barcode:null});
+  structural=costPreProdUpsert('cmt',{kind:'cmt',label:cmtLabel,qty:1,unit_cost:cpmTotal,is_auto:true,source:COST_PP_AUTO_PREFIX+': time-based CMT',component_id:null,barcode:null})||structural;
   // Defect allowance auto-line
   const defTotal=Math.round(defPct/100*fabTotal*100)/100;
   const defLabel='Defect Allowance ('+defPct+'% of fabric cost)';
-  costPreProdUpsert('overhead',{kind:'overhead',label:defLabel,qty:1,unit_cost:defTotal,is_auto:true,source:'pre-production auto: '+defPct+'% of fabric cost',component_id:null,barcode:null});
+  structural=costPreProdUpsert('overhead',{kind:'overhead',label:defLabel,qty:1,unit_cost:defTotal,is_auto:true,source:COST_PP_AUTO_PREFIX+': '+defPct+'% of fabric cost',component_id:null,barcode:null})||structural;
+  // In-place mode (typing in a fabric row's Qty/Cost cell): patch the derived
+  // rows' DOM cells without a full re-render so the focused input survives
+  // keystrokes. Any structural change (adopt-fold/append) forces a re-render.
+  if(opts.inPlace&&!structural&&costPreProdPatchDerivedRows()){costRenderTotals();return;}
   costRenderLines();
 }
 function costNewSheet(){
@@ -10334,13 +10505,20 @@ async function costOpenSheet(id){
     const stgEl=document.getElementById('cost-stage');if(stgEl)stgEl.value=costEdit.stage||'main_production';
     costApplyStage(true);
     // Populate pre-production inputs if applicable
+    let costResynced=false;
     if(costEdit.stage==='pre_production'){
-      const mpgEl=document.getElementById('cost-pp-mpg');if(mpgEl)mpgEl.value=costEdit.mtrs_per_garment!=null?costEdit.mtrs_per_garment:'';
-      const accEl=document.getElementById('cost-pp-acc-pct');if(accEl)accEl.value=costEdit.accessories_pct!=null?costEdit.accessories_pct:13;
-      const defEl=document.getElementById('cost-pp-def-pct');if(defEl)defEl.value=costEdit.defect_allowance_pct!=null?costEdit.defect_allowance_pct:10;
-      const cpmEl=document.getElementById('cost-pp-cpm');if(cpmEl)cpmEl.value=costEdit.cost_per_minute!=null?costEdit.cost_per_minute:'';
-      const csEl=document.getElementById('cost-pp-cmt-start');if(csEl)csEl.value=costEdit.cmt_start_time||'';
-      const ceEl=document.getElementById('cost-pp-cmt-stop');if(ceEl)ceEl.value=costEdit.cmt_stop_time||'';
+      costPreProdFillInputs();
+      // Reopen re-sync (UNLOCKED sheets only, editor-side like the blank-cost
+      // self-heal above): re-derive the main fabric Qty and the three auto
+      // lines from THIS sheet's saved header inputs. Runs after the self-heal
+      // so healed costs feed the percentage basis. The saved sheet itself is
+      // untouched until the user saves; locked sheets render exactly as saved.
+      if(!costEdit.locked){
+        const fp=l=>l.kind+'|'+(l.label||'')+'|'+(l.qty==null?'':l.qty)+'|'+(l.unit_cost==null?'':l.unit_cost)+'|'+(l.is_auto?1:0);
+        const before=costEdit.lines.map(fp).join(';');
+        costPreProdCalc();
+        costResynced=before!==costEdit.lines.map(fp).join(';');
+      }
     }
     // Show which Done DPS the sheet's suggestions were built from (editable
     // again via re-suggest is out of scope for saved sheets; display only).
@@ -10360,7 +10538,10 @@ async function costOpenSheet(id){
     document.getElementById('cost-selling-price').value=s.selling_price==null?'':s.selling_price;
     document.getElementById('cost-sp-badge').innerHTML=costBadge(costEdit.sp_auto);
     document.getElementById('cost-suggest-note').textContent='';
-    document.getElementById('cost-editor-err').innerHTML=costHealed?('<div class="banner">Cost/Mtr auto-filled on '+costHealed+' fabric line'+(costHealed>1?'s':'')+' from the fabric master — it was blank when the sheet was last saved and the Odoo data is now available. Save the sheet to keep it.</div>'):'';
+    const costBanners=[];
+    if(costHealed)costBanners.push('<div class="banner">Cost/Mtr auto-filled on '+costHealed+' fabric line'+(costHealed>1?'s':'')+' from the fabric master — it was blank when the sheet was last saved and the Odoo data is now available. Save the sheet to keep it.</div>');
+    if(costResynced)costBanners.push('<div class="banner">Pre-production auto lines re-synced from this sheet\u2019s saved inputs (Mtrs per Garment, percentages, CMT times). Save the sheet to keep the updated figures.</div>');
+    document.getElementById('cost-editor-err').innerHTML=costBanners.join('');
     costRenderHistory();costRenderSignoffs();
     document.getElementById('cost-export-btn').style.display='';
     document.getElementById('cost-pdf-btn').style.display='';
@@ -10413,9 +10594,16 @@ function costRenderSignoffs(){
 }
 function costApplyLock(){
   const locked=!!(costEdit&&costEdit.locked);
-  document.querySelectorAll('#cost-lines-body input,#cost-lines-body select,#cost-lines-body button').forEach(el=>el.disabled=locked);
+  // data-ppfix cells (Pre-production fixture kind-selects) stay disabled even
+  // while the sheet itself is unlocked — unlocking must not re-enable them.
+  document.querySelectorAll('#cost-lines-body input,#cost-lines-body select,#cost-lines-body button').forEach(el=>el.disabled=locked||el.dataset.ppfix==='1');
   document.querySelectorAll('#cost-line-btns button').forEach(el=>{if(el.id!=='cost-save-btn')el.disabled=locked;});
   const sv=document.getElementById('cost-save-btn');if(sv){sv.disabled=locked;sv.title=locked?'Approved sheets are locked — un-approve to edit':'';}
+  // Approved sheets also freeze the stage select + Pre-production header
+  // inputs (they drive the auto lines); costPreProdCalc and costApplyStage
+  // refuse to touch locked sheets as well — this is UX, the server enforces.
+  const stg=document.getElementById('cost-stage');if(stg)stg.disabled=locked;
+  document.querySelectorAll('#preproduction-fields input').forEach(el=>el.disabled=locked);
   const sp=document.getElementById('cost-selling-price');
   if(sp){
     if(costEdit&&costEdit.stage==='pre_production'){sp.disabled=false;sp.readOnly=true;sp.style.background='var(--panel,#f5f5f3)';}
