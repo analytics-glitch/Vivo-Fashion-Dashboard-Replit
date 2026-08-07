@@ -13686,29 +13686,60 @@ def customers_churn_events(
 
     Both CTEs apply _not_walkin_pseudo_sql + BASE_FILTERS (country/channel).
     sale_date is TEXT — cast ::date before all date arithmetic.
+
+    PERFORMANCE (2026-08): the scan is DATE-BOUNDED to [date_from − churn_days,
+    date_to] instead of full history — a window-function pass over all of
+    all_sales took 30–120s+ and, with no cold-miss single-flight, page-load +
+    auto-refresh storms piled up copies until the pool choked ("computing…" for
+    an hour). Boundedness is exact, not approximate:
+      · churned:  candidate purchases d satisfy d + cd ∈ [from, to] ⇒
+        d ≥ from − cd, and any disqualifying next purchase lies in (d, d+cd) ⊆
+        the scan range; a next purchase after date_to is > d + cd anyway.
+      · unchurned: for d ∈ [from, to], if the previous in-scope purchase is
+        inside the scan range LAG sees it exactly; if LAG is NULL the true
+        previous purchase (if any) is < from − cd ≤ d − cd, so the gap is
+        automatically ≥ cd — reduced to an EXISTS history probe (index seek)
+        under the SAME filters, so scoped views stay consistent.
+    Parity-verified against the full-history query on 5 window/cd/country/
+    channel combos (identical counts; ~4s vs ~36s cold, uncontended).
     """
-    cd = max(1, int(churn_days))
+    # Clamp: guards date overflow in both SQL (d + cd) and Python timedelta —
+    # churn_days is an unbounded query int; the UI maxes out at 365.
+    cd = max(1, min(int(churn_days), 3650))
     country_filter = ("AND s.country IN (" + csv_to_sql(country) + ")") if country else ""
     channel_filter = ("AND s.pos_location_name IN (" + csv_to_sql(channel) + ")") if channel else ""
     not_walkin = _not_walkin_pseudo_sql()
+    try:
+        scan_from = (date.fromisoformat(str(date_from)[:10])
+                     - timedelta(days=cd)).isoformat()
+        # Half-open end bound: sale_date is TEXT, so a hypothetical
+        # 'YYYY-MM-DDT..' suffix on date_to would sort AFTER the bare date and
+        # slip past an inclusive BETWEEN; < next-day is suffix-proof and stays
+        # index-friendly. (All current rows are bare dates.)
+        scan_end = (date.fromisoformat(str(date_to)[:10])
+                    + timedelta(days=1)).isoformat()
+    except (ValueError, OverflowError):
+        scan_from, scan_end = "1900-01-01", "9999-12-31"  # safe full scan
 
     rows = run_query(f"""
         WITH
-        -- All relevant sales: identified, non-walk-in, passing base filters.
+        -- Relevant sales, DATE-BOUNDED (see endpoint docstring): identified,
+        -- non-walk-in, passing base filters.
         base_sales AS (
             SELECT s.customer_id, s.sale_date::date AS d
             FROM all_sales s
             WHERE s.sale_kind IN ('sale','order')
               AND s.customer_id IS NOT NULL
               AND s.customer_id NOT IN ('None','null','')
+              AND s.sale_date >= '{scan_from}' AND s.sale_date < '{scan_end}'
               AND s.sale_date ~ '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}'
               AND {not_walkin}
               AND {BASE_FILTERS}
               {country_filter}
               {channel_filter}
         ),
-        -- Per-purchase neighbours to detect churn-threshold crossings and
-        -- reactivation gaps.
+        -- Per-purchase neighbours (within the bounded scan) to detect
+        -- churn-threshold crossings and reactivation gaps.
         gaps AS (
             SELECT customer_id, d,
                 LAG(d)  OVER (PARTITION BY customer_id ORDER BY d) AS prev_d,
@@ -13727,19 +13758,45 @@ def customers_churn_events(
               AND (d + {cd}) <= CURRENT_DATE
               AND (next_d IS NULL OR (next_d - d) >= {cd})
         ),
+        -- In-window purchases with no earlier purchase inside the scan range:
+        -- their true previous purchase (if any) predates scan_from, making the
+        -- gap ≥ churn_days by construction — only EXISTENCE of history needs
+        -- checking, via an index probe under the same scope filters.
+        prevnull AS (
+            SELECT DISTINCT customer_id
+            FROM gaps
+            WHERE d BETWEEN '{date_from}'::date AND '{date_to}'::date
+              AND prev_d IS NULL
+        ),
+        hist AS (
+            SELECT p.customer_id
+            FROM prevnull p
+            WHERE EXISTS (
+                SELECT 1 FROM all_sales s
+                WHERE s.customer_id = p.customer_id
+                  AND s.sale_kind IN ('sale','order')
+                  AND s.sale_date < '{scan_from}'
+                  AND s.sale_date ~ '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}'
+                  AND {BASE_FILTERS}
+                  {country_filter}
+                  {channel_filter}
+            )
+        ),
         -- Unchurned in period: a purchase in-window preceded by a gap >=
         -- churn_days (i.e. the customer was churned, then came back).
         unchurned_in_period AS (
-            SELECT COUNT(DISTINCT customer_id) AS cnt
-            FROM gaps
-            WHERE d BETWEEN '{date_from}'::date AND '{date_to}'::date
-              AND prev_d IS NOT NULL
-              AND (d - prev_d) >= {cd}
+            SELECT COUNT(DISTINCT g.customer_id) AS cnt
+            FROM gaps g
+            WHERE g.d BETWEEN '{date_from}'::date AND '{date_to}'::date
+              AND (
+                    (g.prev_d IS NOT NULL AND (g.d - g.prev_d) >= {cd})
+                 OR (g.prev_d IS NULL AND g.customer_id IN (SELECT customer_id FROM hist))
+              )
         )
         SELECT
             (SELECT cnt FROM churned_in_period)  AS churned_count,
             (SELECT cnt FROM unchurned_in_period) AS unchurned_count
-    """)
+    """, ttl=900)  # storm shield: page-load + auto-refresh ticks reuse one compute
     if not rows:
         return {"churned_count": 0, "unchurned_count": 0, "churn_days": cd}
     r = rows[0]
@@ -13877,9 +13934,20 @@ def customers_walk_ins(
         "OR s.customer_type ILIKE 'walk-in' "
         "OR ps.customer_id IS NOT NULL)"
     )
+    # Pseudo/placeholder detection is a ~3s regex scan over ~500k all_customers
+    # rows; scoped to customers actually seen in the period it is milliseconds.
+    # Only period-filtered sales rows ever consult the pseudo set (LEFT JOIN on
+    # s.customer_id), so the scoping is semantics-neutral.
+    period_ids_cte = (
+        "period_ids AS (SELECT DISTINCT s.customer_id FROM all_sales s WHERE "
+        + where + " AND s.customer_id IS NOT NULL "
+        "AND s.customer_id NOT IN ('None','null','')), "
+    )
     pseudo_cte = (
-        "pseudo AS (SELECT DISTINCT customer_id FROM all_customers "
-        "WHERE customer_id IS NOT NULL AND " + _WALKIN_PSEUDO_COND + ")"
+        period_ids_cte +
+        "pseudo AS (SELECT DISTINCT c.customer_id FROM all_customers c "
+        "JOIN period_ids pi ON pi.customer_id = c.customer_id "
+        "WHERE " + _WALKIN_PSEUDO_COND + ")"
     )
 
     def _shares(r):
@@ -13901,7 +13969,7 @@ def customers_walk_ins(
         FROM all_sales s
         LEFT JOIN pseudo ps ON ps.customer_id = s.customer_id
         WHERE """ + where
-    top = run_query(agg_sql, date_to=date_to)
+    top = run_query(agg_sql, date_to=date_to, ttl=900)
     summary = _shares(top[0]) if top else {
         "total_orders": 0, "walk_in_orders": 0, "total_sales": 0, "walk_in_sales": 0,
         "walk_in_customers": 0, "walk_in_share_orders_pct": 0,
@@ -13920,7 +13988,7 @@ def customers_walk_ins(
             WHERE """ + where + """ AND COALESCE(s.country,'') <> ''
             GROUP BY s.country
             HAVING COUNT(DISTINCT s.order_id) FILTER (WHERE """ + anon_expr + """) > 0
-            ORDER BY walk_in_orders DESC""", date_to=date_to)
+            ORDER BY walk_in_orders DESC""", date_to=date_to, ttl=900)
     ]
 
     by_location = [
@@ -13935,7 +14003,7 @@ def customers_walk_ins(
             WHERE """ + where + """ AND COALESCE(s.pos_location_name,'') <> ''
             GROUP BY s.pos_location_name
             HAVING COUNT(DISTINCT s.order_id) FILTER (WHERE """ + anon_expr + """) > 0
-            ORDER BY walk_in_orders DESC""", date_to=date_to)
+            ORDER BY walk_in_orders DESC""", date_to=date_to, ttl=900)
     ]
 
     # ── Incomplete profile (identified customers missing name/phone/email) ──────
@@ -13944,27 +14012,35 @@ def customers_walk_ins(
     # "of N identified" denominator matches the Total Identified Customers tile.
     country_filter = ("AND s.country IN (" + csv_to_sql(country) + ")") if country else ""
     channel_filter = ("AND s.pos_location_name IN (" + csv_to_sql(channel) + ")") if channel else ""
+    # Same period-scoping trick as the walk-in queries above: the pseudo regex
+    # and the profile GROUP BY only matter for customers active in the period,
+    # so restrict both to that set instead of scanning ~500k profile rows.
     ip_rows = run_query("""
-        WITH excluded AS (
-            SELECT DISTINCT customer_id FROM all_customers
-            WHERE customer_id IS NOT NULL
-              AND """ + _WALKIN_PSEUDO_COND + """
-        ),
-        cust_profile AS (
-            SELECT customer_id,
-                MAX(NULLIF(TRIM(COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')), '')) AS prof_name,
-                MAX(NULLIF(TRIM(COALESCE(phone,'')), '')) AS prof_phone,
-                MAX(NULLIF(TRIM(COALESCE(email,'')), '')) AS prof_email
-            FROM all_customers WHERE customer_id IS NOT NULL GROUP BY customer_id
-        ),
-        period_customers AS (
+        WITH period_ids AS (
             SELECT DISTINCT s.customer_id
             FROM all_sales s
             WHERE s.sale_date BETWEEN '""" + date_from + """' AND '""" + date_to + """'
               AND s.sale_kind IN ('sale','order')
               AND s.customer_id IS NOT NULL AND s.customer_id NOT IN ('None','null','')
-              AND s.customer_id NOT IN (SELECT customer_id FROM excluded)
               AND """ + BASE_FILTERS + " " + country_filter + " " + channel_filter + """
+        ),
+        excluded AS (
+            SELECT DISTINCT c.customer_id FROM all_customers c
+            JOIN period_ids pi ON pi.customer_id = c.customer_id
+            WHERE """ + _WALKIN_PSEUDO_COND + """
+        ),
+        period_customers AS (
+            SELECT p.customer_id FROM period_ids p
+            WHERE p.customer_id NOT IN (SELECT customer_id FROM excluded)
+        ),
+        cust_profile AS (
+            SELECT c.customer_id,
+                MAX(NULLIF(TRIM(COALESCE(c.first_name,'') || ' ' || COALESCE(c.last_name,'')), '')) AS prof_name,
+                MAX(NULLIF(TRIM(COALESCE(c.phone,'')), '')) AS prof_phone,
+                MAX(NULLIF(TRIM(COALESCE(c.email,'')), '')) AS prof_email
+            FROM all_customers c
+            JOIN period_customers pc ON pc.customer_id = c.customer_id
+            GROUP BY c.customer_id
         )
         SELECT
             COUNT(*) AS identified_total,
@@ -13975,7 +14051,7 @@ def customers_walk_ins(
             COUNT(*) FILTER (WHERE cp.customer_id IS NULL OR cp.prof_email IS NULL) AS no_email
         FROM period_customers p
         LEFT JOIN cust_profile cp ON cp.customer_id = p.customer_id
-    """, date_to=date_to)
+    """, date_to=date_to, ttl=900)
     ip = ip_rows[0] if ip_rows else {"identified_total": 0, "customers": 0, "no_name": 0, "no_phone": 0, "no_email": 0}
     ip_total = ip.get("identified_total") or 0
     ip["share_pct"] = round((ip.get("customers") or 0) * 100.0 / ip_total, 1) if ip_total else 0

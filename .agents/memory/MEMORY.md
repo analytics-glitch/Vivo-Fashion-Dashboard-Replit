@@ -140,3 +140,4 @@
 - [Prod Overview style cards](production-overview-style-cards.md) — partition styles one-bucket-per-style (New›Repl›Re-order) on style_number identity so cards always sum to Total; style_name is often blank.
 - [NOOS tracker](noos-tracker.md) — is_noos universe always fully listed; cover in lockstep with weeks-of-cover EWMA; country views grey out "not ranged" instead of false "out" alarms.
 - [vivo-bi TopNav mobile pills](vivo-bi-topnav-mobile-pills.md) — every top-bar pill must self-hide below lg (or hidden md:contents wrap) or phones scroll sideways; mobile overflow → check TopNav first.
+- [Churn/gap window bounding](churn-window-bounding.md) — bound LAG/LEAD gap queries to [from−gap, to] + EXISTS history probe (exact, 10×); period-scope pseudo-regex/profile scans; slow query × no cold single-flight = hour-long "computing…".
