@@ -8556,19 +8556,13 @@ async function deleteReservation(id){
 // the number only — no variance, no roll→kg conversion, no flagging. Editing is
 // admin-only: the Save controls only render for admins, and the write is ALSO
 // gated server-side, so hiding them is not the enforcement point.
-let rollsOffset=0, rollsTotal=0, lastRollItems=[], rollsIsAdmin=false, rollsBound=false, _mePromise=null;
+let rollsOffset=0, rollsTotal=0, lastRollItems=[], rollsCanEdit=false, rollsBound=false, _mePromise=null;
 function getMe(){ if(!_mePromise) _mePromise=apiFetch('/api/auth/me').catch(()=>null); return _mePromise; }
 let rollsTimer;
 function debouncedRolls(){clearTimeout(rollsTimer);rollsTimer=setTimeout(()=>loadRolls(0),300);}
 function rollsPage(dir){const o=rollsOffset+dir*PAGE_SIZE;if(o<0||o>=rollsTotal)return;loadRolls(o);}
 async function loadRolls(offset){
   rollsOffset=offset??rollsOffset;
-  const me=await getMe();
-  rollsIsAdmin=!!(me&&me.role==='admin');
-  const noteEl=document.getElementById('rolls-note');
-  if(noteEl)noteEl.textContent=rollsIsAdmin
-    ?'Enter the physical roll count per location and press Save. This is a manual figure — it is not converted to kg or compared against Odoo.'
-    :'Physical roll counts are view-only. Ask an admin to update them.';
   const params=new URLSearchParams({limit:PAGE_SIZE,offset:rollsOffset,sort:'value_kes',dir:'desc'});
   const s=document.getElementById('rolls-search').value;if(s)params.set('search',s);
   const c=document.getElementById('rolls-category').value;if(c)params.set('category',c);
@@ -8578,6 +8572,13 @@ async function loadRolls(offset){
   try{
     const d=await apiFetch('/api/fabric/rolls?'+params);
     rollsTotal=d.total;lastRollItems=d.items||[];
+    // Edit rights come from the server (admin role or the named rolls-edit
+    // allowlist) so the page never duplicates the email list client-side.
+    rollsCanEdit=!!d.can_edit;
+    const noteEl=document.getElementById('rolls-note');
+    if(noteEl)noteEl.textContent=rollsCanEdit
+      ?'Enter the physical roll count per location and press Save. This is a manual figure — it is not converted to kg or compared against Odoo.'
+      :'Physical roll counts are view-only. Ask an admin or a fabric-team roll editor to update them.';
     renderRollsTable();
     document.getElementById('rolls-info').textContent=rollsTotal?`${rollsOffset+1}–${Math.min(rollsOffset+PAGE_SIZE,rollsTotal)} of ${fmt(rollsTotal)}`:'0 results';
   }catch(e){rowErr('rolls-body',9,e);}
@@ -8588,7 +8589,7 @@ function rollLocCell(r,lk){
   const loc=lk==='rmat'?'RMAT/Stock':'Dead/Stock Fabric';
   const kg=r[lk+'_kg'], m=r[lk+'_metres'], rolls=r[lk+'_rolls'], by=r[lk+'_updated_by'], at=r[lk+'_updated_at'];
   const qtyTxt=kg!=null?(fmt1(kg)+' kg'+(m!=null?' · '+fmt1(m)+' m':'')):'—';
-  const rollsInner=rollsIsAdmin
+  const rollsInner=rollsCanEdit
     ? `<input type="number" min="0" step="1" class="roll-input" data-pid="${esc(r.id)}" data-lk="${lk}" data-loc="${esc(loc)}" value="${rolls!=null?esc(rolls):''}" placeholder="—" style="width:62px;height:30px;text-align:right;"> <button class="btn roll-save" data-pid="${esc(r.id)}" data-lk="${lk}" data-loc="${esc(loc)}" style="padding:3px 9px;font-size:12px;">Save</button>`
     : (rolls!=null?`<span class="pill pill-neutral">${esc(rolls)}</span>`:'<span class="muted">—</span>');
   const updInner=at?`${esc(by||'—')}<br><span class="muted" style="font-size:11px;">${esc(at)}</span>`:'<span class="muted">—</span>';

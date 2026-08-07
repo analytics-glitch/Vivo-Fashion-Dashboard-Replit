@@ -6001,13 +6001,33 @@ def support_overrides_delete(rule_id: int, request: Request):
 # Odoo only tracks fabric quantity by weight (kg) / length (m), never the number
 # of physical rolls. The Rolls tab lets the fabric team hand-maintain a roll
 # count per fabric product per stock location, shown alongside the Odoo quantity
-# purely for eyeballing physical stock. Editing is admin-only (enforced in the
-# api_pg auth gate on the POST method); the GET is broadly viewable like the rest
-# of Fabric BI.
+# purely for eyeballing physical stock. Editing is limited to the admin ROLE plus
+# the named fabric-team emails below (enforced in the api_pg auth gate on the
+# POST method); the GET is broadly viewable like the rest of Fabric BI.
 _ROLL_TZ = "Africa/Nairobi"
+
+# Users allowed to EDIT roll counts: the admin role plus an explicit per-email
+# allowance for the fabric team (mirrors the _FABRIC_ADMIN_EMAILS pattern used
+# for receiving-sheet editing). Everyone else keeps view-only access.
+_ROLLS_EDIT_EMAILS = {
+    "bedan@vivofashiongroup.com",
+    "hagai@vivofashiongroup.com",
+    "kevinl@vivofashiongroup.com",
+    "admin@vivofashiongroup.com",
+    "analytics@vivofashiongroup.com",
+}
+
+def _rolls_can_edit(user):
+    """True when this user dict may edit manual roll counts (admin role or an
+    explicitly allowlisted email, matched case-insensitively/trimmed)."""
+    u = user or {}
+    if u.get("role") == "admin":
+        return True
+    return (u.get("email") or "").strip().lower() in _ROLLS_EDIT_EMAILS
 
 @fabric_router.get("/api/fabric/rolls")
 def rolls_list(
+    request: Request,
     category: str = Query(default=None),
     subcategory: str = Query(default=None),
     plain_print: str = Query(default=None),
@@ -6099,13 +6119,17 @@ def rolls_list(
             ) sub
         """, params)[0]['n']
 
-        return {"total": total, "items": rows}
+        # The page learns its edit rights from the server (admin role or the
+        # rolls-edit email allowlist) instead of duplicating the list client-side.
+        return {"total": total, "items": rows,
+                "can_edit": _rolls_can_edit(getattr(request.state, "user", None))}
 
 @fabric_router.post("/api/fabric/rolls")
 def set_roll_count(request: Request, body: dict = Body(...)):
-    """Upsert a manual roll count for a (product, location). Admin-only — the
-    write is gated server-side in the api_pg auth gate; client hiding of the edit
-    controls is not the enforcement point."""
+    """Upsert a manual roll count for a (product, location). Limited to the
+    admin role or the rolls-edit email allowlist — the write is gated
+    server-side in the api_pg auth gate; client hiding of the edit controls is
+    not the enforcement point."""
     product_id = body.get("product_id")
     location = (body.get("location") or "").strip()
     if not product_id:

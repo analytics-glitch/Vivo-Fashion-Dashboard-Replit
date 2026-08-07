@@ -1457,12 +1457,16 @@ async def clerk_auth_gate(request: Request, call_next):
         return JSONResponse({"detail": "Admin access required"}, status_code=403)
 
     # Fabric Rolls tracking: viewing the manual roll counts is broadly accessible
-    # (like the rest of Fabric BI), but WRITING a roll count is admin-only. Gate
-    # the write method server-side so hiding the edit controls in the dashboard
-    # cannot be bypassed via a direct API call.
-    if path == "/api/fabric/rolls" and request.method not in ("GET", "HEAD", "OPTIONS") \
-            and user.get("role") != "admin":
-        return JSONResponse({"detail": "Admin access required"}, status_code=403)
+    # (like the rest of Fabric BI), but WRITING a roll count is limited to the
+    # admin role plus the named fabric-team emails in fabric_router's rolls-edit
+    # allowlist. Gate the write method server-side so hiding the edit controls
+    # in the dashboard cannot be bypassed via a direct API call.
+    if path == "/api/fabric/rolls" and request.method not in ("GET", "HEAD", "OPTIONS"):
+        from fabric_router import _rolls_can_edit
+        if not _rolls_can_edit(user):
+            return JSONResponse(
+                {"detail": "Roll-count editing is limited to the fabric team"},
+                status_code=403)
 
     # Fabric Receiving sheets: recording per-roll QUALITY results
     # (POST .../receiving/{id}/quality) is broadly accessible, but EDITING the
