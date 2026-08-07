@@ -10493,6 +10493,56 @@ def _lc_record_url(lc_id):
         return None
     return f"{base}/web#id={int(lc_id)}&model=stock.landed.cost&view_type=form"
 
+# The five standard Odoo split methods — the fallback when the live
+# fields_get call is blocked for the API user (labels match stock's own).
+_LC_SPLIT_METHODS_FALLBACK = [
+    ("equal", "Equal"),
+    ("by_quantity", "By Quantity"),
+    ("by_current_cost_price", "By Current Cost"),
+    ("by_weight", "By Weight"),
+    ("by_volume", "By Volume"),
+]
+_LC_SPLIT_DEFAULT = "by_current_cost_price"   # today's historical behaviour
+
+def _lc_split_methods(odoo):
+    """Split-method choices for landed-cost lines, read live from Odoo so
+    values/labels match the instance (incl. any customised selection);
+    falls back to the standard five when the call is blocked or malformed."""
+    try:
+        fg = _lc_kw(odoo, "stock.landed.cost.lines", "fields_get",
+                    [["split_method"]], {"attributes": ["selection"]})
+        sel = ((fg or {}).get("split_method") or {}).get("selection") or []
+        out = [{"value": str(s[0]), "label": str(s[1])} for s in sel
+               if isinstance(s, (list, tuple)) and len(s) == 2 and s[0]]
+        if out:
+            return out
+    except Exception:
+        pass
+    return [{"value": v, "label": l} for v, l in _LC_SPLIT_METHODS_FALLBACK]
+
+def _lc_cost_type_split_field(odoo):
+    """Name of the product field holding a cost type's default split method
+    (varies across Odoo versions), or None when the instance has neither."""
+    try:
+        fg = _lc_kw(odoo, "product.product", "fields_get",
+                    [["split_method_landed_cost", "split_method"]],
+                    {"attributes": ["type"]})
+        for cand in ("split_method_landed_cost", "split_method"):
+            if cand in (fg or {}):
+                return cand
+    except Exception:
+        pass
+    return None
+
+def _lc_default_split(split_methods):
+    """The default split method for new lines and for requests that don't
+    send one (older/cached forms) — GUARANTEED to be one of the given
+    choices: the historical By Current Cost when the instance offers it
+    (always true on the standard-five fallback), else the instance's first
+    choice. `split_methods` is never empty (see _lc_split_methods)."""
+    vals = [s["value"] for s in split_methods]
+    return _LC_SPLIT_DEFAULT if _LC_SPLIT_DEFAULT in vals else vals[0]
+
 def _lc_po_and_pickings(odoo, po_id):
     """The PO header (any state) + its incoming (receipt) pickings. 404 when
     the PO does not exist; the caller decides what 'usable' means."""
@@ -10529,12 +10579,19 @@ def _lc_po_and_pickings(odoo, po_id):
 @fabric_router.get("/api/fabric/receiving/landed-cost/options")
 def landed_cost_options():
     """Form options: the landed-cost 'cost type' products (live from Odoo,
-    landed_cost_ok=True) and the general journals with a suggested default
-    (Miscellaneous Operations, Odoo's usual landed-cost journal)."""
+    landed_cost_ok=True, each with its own default split method when the
+    instance has that product field), the split-method choices for cost
+    lines, and the general journals with a suggested default (Miscellaneous
+    Operations, Odoo's usual landed-cost journal)."""
     odoo = _odoo_connect()
+    split_methods = _lc_split_methods(odoo)
+    split_values = {s["value"] for s in split_methods}
+    split_field = _lc_cost_type_split_field(odoo)
     prods = _lc_kw(odoo, "product.product", "search_read",
                    [[["landed_cost_ok", "=", True]]],
-                   {"fields": ["display_name"], "order": "name",
+                   {"fields": ["display_name"]
+                              + ([split_field] if split_field else []),
+                    "order": "name",
                     "context": {"active_test": True}})
     journals = _lc_kw(odoo, "account.journal", "search_read",
                       [[["type", "=", "general"]]],
@@ -10546,11 +10603,18 @@ def landed_cost_options():
             break
     if default_id is None and journals:
         default_id = journals[0]["id"]
-    return {"cost_types": [{"id": p["id"], "name": p["display_name"]}
-                           for p in prods],
+    cost_types = []
+    for p in prods:
+        d = (p.get(split_field) or None) if split_field else None
+        cost_types.append({"id": p["id"], "name": p["display_name"],
+                           "default_split_method":
+                               d if d in split_values else None})
+    return {"cost_types": cost_types,
             "journals": [{"id": j["id"], "name": j["name"], "code": j["code"]}
                          for j in journals],
-            "default_journal_id": default_id}
+            "default_journal_id": default_id,
+            "split_methods": split_methods,
+            "default_split_method": _lc_default_split(split_methods)}
 
 @fabric_router.get("/api/fabric/receiving/landed-cost/pos")
 def landed_cost_pos(q_: str = Query(default="", alias="q"),
@@ -10686,10 +10750,15 @@ def landed_cost_create(request: Request, body: dict = Body(...)):
         if not (kes > 0):
             raise HTTPException(status_code=400,
                 detail=f"Line {i}: the KES amount must be greater than zero")
+        # Optional per-line split method — absent/blank (older or cached
+        # forms) keeps today's default; values are checked against Odoo's
+        # own selection later, once connected.
+        sm = ln.get("split_method")
+        split_method = (str(sm).strip() or None) if sm is not None else None
         lines.append({"product_id": pid,
                       "name": str(ln.get("name") or "").strip() or None,
                       "mode": mode, "amount": amount, "fx_rate": rate,
-                      "kes": kes})
+                      "kes": kes, "split_method": split_method})
     # ── 2. Live re-verification in Odoo (still nothing written) ──
     actor_id, actor_name = _fabric_actor(request)
     odoo = _odoo_connect()
@@ -10708,6 +10777,22 @@ def landed_cost_create(request: Request, body: dict = Body(...)):
         raise HTTPException(status_code=400,
             detail=f"These receipts cannot take a landed cost (cancelled, "
                    f"draft or not on this PO): {names}")
+    # Split methods must be ones Odoo's landed-cost lines accept. Absent →
+    # the default (so requests from an older/cached form keep working);
+    # the default is by construction one of the allowed values, and every
+    # resulting value — defaulted or explicit — is validated against the
+    # live set, no exceptions.
+    split_methods = _lc_split_methods(odoo)
+    allowed_sm = {s["value"] for s in split_methods}
+    default_sm = _lc_default_split(split_methods)
+    for i, l in enumerate(lines, start=1):
+        if l["split_method"] is None:
+            l["split_method"] = default_sm
+        if l["split_method"] not in allowed_sm:
+            raise HTTPException(status_code=400,
+                detail=f"Line {i}: '{l['split_method']}' is not a valid "
+                       "split method — allowed: "
+                       + ", ".join(sorted(allowed_sm)))
     # Cost-type products must still be landed-cost products in Odoo.
     prod_ids = sorted({l["product_id"] for l in lines})
     prods = _lc_kw(odoo, "product.product", "search_read",
@@ -10754,7 +10839,7 @@ def landed_cost_create(request: Request, body: dict = Body(...)):
             "product_id": l["product_id"],
             "name": l["name"],
             "price_unit": l["kes"],
-            "split_method": "by_current_cost_price",
+            "split_method": l["split_method"],
         }] for l in lines],
     }
     if description:
@@ -10780,7 +10865,8 @@ def landed_cost_create(request: Request, body: dict = Body(...)):
                 "total_kes": total_kes,
                 "lines": [{"product_id": l["product_id"], "name": l["name"],
                            "mode": l["mode"], "amount": l["amount"],
-                           "fx_rate": l["fx_rate"], "kes": l["kes"]}
+                           "fx_rate": l["fx_rate"], "kes": l["kes"],
+                           "split_method": l["split_method"]}
                           for l in lines],
             }, actor_name)
         conn.commit()

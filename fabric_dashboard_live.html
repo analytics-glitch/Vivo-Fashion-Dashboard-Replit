@@ -1533,7 +1533,7 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
   </div>
 
   <div id="lc-overlay" class="modal-overlay" style="display:none;" onclick="closeLandedCost()">
-   <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="lc-title" style="max-width:900px;" onclick="event.stopPropagation()">
+   <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="lc-title" style="max-width:980px;" onclick="event.stopPropagation()">
     <div class="modal-head">
      <div><h3 id="lc-title" style="margin:0;">Landed Cost Upload</h3><div class="muted" id="lc-sub" style="font-size:12px;margin-top:2px;">Attach clearing, duty &amp; freight charges to a PO&rsquo;s receipt — saved in Odoo as a <b>draft</b> for accounting to review and validate</div></div>
      <button class="modal-close" onclick="closeLandedCost()" aria-label="Close">&times;</button>
@@ -1568,9 +1568,9 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
       <div class="card" style="padding:0;">
        <div class="tbl-wrap">
         <table class="data">
-         <thead><tr><th style="min-width:210px;">Cost type</th><th>Description</th><th style="width:1%;">Currency</th><th class="r" style="width:120px;">Amount</th><th class="r" style="width:110px;">Rate → KES</th><th class="r" style="width:130px;">KES amount</th><th style="width:36px;"></th></tr></thead>
+         <thead><tr><th style="min-width:210px;">Cost type</th><th style="min-width:140px;">Split method</th><th>Description</th><th style="width:1%;">Currency</th><th class="r" style="width:120px;">Amount</th><th class="r" style="width:110px;">Rate → KES</th><th class="r" style="width:130px;">KES amount</th><th style="width:36px;"></th></tr></thead>
          <tbody id="lc-lines-body"></tbody>
-         <tfoot><tr style="font-weight:700;"><td colspan="5" class="r">Total (KES)</td><td class="r" id="lc-total">—</td><td></td></tr></tfoot>
+         <tfoot><tr style="font-weight:700;"><td colspan="6" class="r">Total (KES)</td><td class="r" id="lc-total">—</td><td></td></tr></tfoot>
         </table>
        </div>
       </div>
@@ -7181,7 +7181,23 @@ function renderLcPo(){
   document.getElementById('lc-form').style.display='block';
   document.getElementById('lc-save-btn').disabled=!anyUsable||lcSaved;
 }
-function lcAddLine(){lcLines.push({product_id:'',name:'',mode:'kes',amount:'',fx_rate:''});renderLcLines();}
+// Split-method choices: server list (live from Odoo) with a static fallback
+// so the dropdown still works if the options call failed.
+const LC_SPLIT_FALLBACK=[{value:'equal',label:'Equal'},{value:'by_quantity',label:'By Quantity'},{value:'by_current_cost_price',label:'By Current Cost'},{value:'by_weight',label:'By Weight'},{value:'by_volume',label:'By Volume'}];
+function lcSplitMethods(){return (lcOptions&&Array.isArray(lcOptions.split_methods)&&lcOptions.split_methods.length)?lcOptions.split_methods:LC_SPLIT_FALLBACK;}
+function lcDefaultSplit(){
+  const ms=lcSplitMethods();
+  const d=lcOptions&&lcOptions.default_split_method;
+  if(d&&ms.some(s=>s.value===d))return d;
+  return ms.some(s=>s.value==='by_current_cost_price')?'by_current_cost_price':ms[0].value;
+}
+function lcTypeDefaultSplit(pid){
+  const c=((lcOptions&&lcOptions.cost_types)||[]).find(x=>String(x.id)===String(pid));
+  const d=c&&c.default_split_method;
+  return (d&&lcSplitMethods().some(s=>s.value===d))?d:lcDefaultSplit();
+}
+function lcNewLine(){return {product_id:'',name:'',mode:'kes',amount:'',fx_rate:'',split_method:lcDefaultSplit(),split_touched:false};}
+function lcAddLine(){lcLines.push(lcNewLine());renderLcLines();}
 function lcLineKes(l){
   const a=parseFloat(l.amount);
   if(isNaN(a)||a<=0)return null;
@@ -7193,8 +7209,10 @@ function renderLcLines(){
   const o=lcOptions||{cost_types:[]};
   body.innerHTML=lcLines.map((l,i)=>{
     const kes=lcLineKes(l);
+    const sm=l.split_method||lcDefaultSplit();
     return `<tr>
       <td><select class="lc-in" data-li="${i}" data-k="product_id"><option value="">— pick cost type —</option>${(o.cost_types||[]).map(c=>`<option value="${Number(c.id)}" ${String(c.id)===String(l.product_id)?'selected':''}>${esc(c.name)}</option>`).join('')}</select></td>
+      <td><select class="lc-in" data-li="${i}" data-k="split_method" title="How this charge is distributed across the received products">${lcSplitMethods().map(s=>`<option value="${esc(s.value)}" ${s.value===sm?'selected':''}>${esc(s.label)}</option>`).join('')}</select></td>
       <td><input class="lc-in" data-li="${i}" data-k="name" value="${esc(l.name||'')}" placeholder="defaults to the cost type" style="width:100%;min-width:140px;"></td>
       <td><select class="lc-in" data-li="${i}" data-k="mode"><option value="kes" ${l.mode==='kes'?'selected':''}>KES</option><option value="fx" ${l.mode==='fx'?'selected':''}>FX</option></select></td>
       <td class="r"><input class="lc-in r" data-li="${i}" data-k="amount" type="number" min="0" step="any" value="${esc(String(l.amount??''))}" style="width:110px;text-align:right;"></td>
@@ -7212,7 +7230,7 @@ function renderLcLines(){
     body.addEventListener('click',e=>{
       const b=e.target.closest('[data-lc-del]');if(!b)return;
       lcLines.splice(Number(b.dataset.lcDel),1);
-      if(!lcLines.length)lcLines.push({product_id:'',name:'',mode:'kes',amount:'',fx_rate:''});
+      if(!lcLines.length)lcLines.push(lcNewLine());
       renderLcLines();
     });
   }
@@ -7221,10 +7239,12 @@ function lcLineInput(e){
   const el=e.target.closest('.lc-in');if(!el)return;
   const l=lcLines[Number(el.dataset.li)];if(!l)return;
   l[el.dataset.k]=el.value;
+  if(el.dataset.k==='split_method')l.split_touched=true; // explicit choice — never clobbered
+  else if(el.dataset.k==='product_id'&&!l.split_touched)l.split_method=lcTypeDefaultSplit(el.value);
   if(el.dataset.k==='mode'||el.tagName==='SELECT'){renderLcLines();return;}
   // live-update just the KES cell + total without a full re-render (keeps focus)
   const tr=el.closest('tr');
-  if(tr){const kes=lcLineKes(l);tr.children[5].innerHTML=kes!=null?fmt2(kes):'<span class="muted">—</span>';}
+  if(tr){const kes=lcLineKes(l);tr.children[6].innerHTML=kes!=null?fmt2(kes):'<span class="muted">—</span>';}
   const total=lcLines.reduce((s,x)=>{const k=lcLineKes(x);return s+(k||0);},0);
   document.getElementById('lc-total').textContent=total>0?fmt2(total):'—';
 }
@@ -7245,7 +7265,7 @@ async function saveLandedCost(){
       const r=parseFloat(l.fx_rate);
       if(isNaN(r)||r<=0){lcShowErr('Line '+(i+1)+': enter the exchange rate to KES.');return;}
     }
-    lines.push({product_id:Number(l.product_id),name:(l.name||'').trim(),mode:l.mode,amount:a,fx_rate:l.mode==='fx'?parseFloat(l.fx_rate):null});
+    lines.push({product_id:Number(l.product_id),name:(l.name||'').trim(),mode:l.mode,amount:a,fx_rate:l.mode==='fx'?parseFloat(l.fx_rate):null,split_method:l.split_method||lcDefaultSplit()});
   }
   if(!lines.length){lcShowErr('Add at least one cost line.');return;}
   const btn=document.getElementById('lc-save-btn');
