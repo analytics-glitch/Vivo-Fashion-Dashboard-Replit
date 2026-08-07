@@ -310,7 +310,7 @@ const TopNav = () => {
     >
       {/* Row 1: brand · utility pills (full width) */}
       <div className="flex items-center justify-between gap-3">
-      <div className="flex items-center gap-2 sm:gap-3 shrink-0 min-w-0">
+      <div className="flex items-center gap-2 sm:gap-3 min-w-0">
         <button
           type="button"
           className="lg:hidden p-1.5 -ml-1 rounded-lg hover:bg-panel"
@@ -342,7 +342,7 @@ const TopNav = () => {
         </Link>
       </div>
 
-      <div className="flex items-center gap-1.5 sm:gap-2 text-[11.5px] text-muted">
+      <div className="flex items-center gap-1.5 sm:gap-2 text-[11.5px] text-muted shrink-0">
         <span className="hidden xl:inline" data-testid="last-updated">
           Updated {relativeTime(lastUpdated)}
         </span>
@@ -369,14 +369,14 @@ const TopNav = () => {
         >
           <ArrowClockwise size={15} weight="bold" />
         </button>
-        <LiveViewers />
+        <span className="hidden md:contents"><LiveViewers /></span>
         <NotificationBell />
         <BackendUrlWarningPill />
         <UpstreamHealthPill />
         <SyncStatusPill />
         <ReconciliationStatusPill />
         <DataQualityStatusPill />
-        <CacheStatsPill />
+        <span className="hidden md:contents"><CacheStatsPill /></span>
         <UserMenu />
       </div>
       </div>

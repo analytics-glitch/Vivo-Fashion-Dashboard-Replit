@@ -23,6 +23,18 @@ function titleize(s) {
   if (!s) return "—";
   return String(s).replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
+// Canonical style identity for counting: style_number first (stable across
+// renames, present even when style_name is blank), then name, then product,
+// then the order ref itself so no order is ever invisible in style counts.
+function styleKeyOf(o) {
+  const num = String(o.style_number || "").trim();
+  if (num) return num;
+  const nm = String(o.style_name || "").trim();
+  if (nm) return nm;
+  const pn = String(o.product_name || "").trim();
+  if (pn) return pn;
+  return `order:${o.order_ref}`;
+}
 const toISO = (d) =>
   `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 const isoDaysAgo = (n) => {
@@ -111,7 +123,7 @@ function TargetCard({ label, value, targetLabel, status, detail, onClick }) {
   );
 }
 
-function MetricCard({ label, value, pctText, pctLabel, accent, onClick, testId }) {
+function MetricCard({ label, value, pctText, pctLabel, sub, accent, onClick, testId }) {
   return (
     <div
       role="button" tabIndex={0}
@@ -128,6 +140,7 @@ function MetricCard({ label, value, pctText, pctLabel, accent, onClick, testId }
         )}
       </div>
       {pctLabel && <div className={`text-[11px] mt-1 ${accent ? "text-emerald-300" : "text-muted"}`}>{pctLabel}</div>}
+      {sub && <div className={`text-[11px] mt-1 ${accent ? "text-emerald-300" : "text-muted"}`}>{sub}</div>}
     </div>
   );
 }
@@ -250,7 +263,7 @@ function PieMix({ title, rows, colorFor, metric = "units", testId }) {
       {total === 0 ? (
         <div className="text-[13px] text-muted italic">No data for this period.</div>
       ) : (
-        <div className="flex items-center gap-4">
+        <div className="flex flex-col sm:flex-row items-center gap-4">
           <div style={{ flexShrink: 0 }}>
             <PieChart width={200} height={200}>
               <Pie
@@ -271,7 +284,7 @@ function PieMix({ title, rows, colorFor, metric = "units", testId }) {
               <Tooltip content={<CustomTooltip />} />
             </PieChart>
           </div>
-          <div className="flex-1 min-w-0">
+          <div className="w-full sm:w-auto sm:flex-1 min-w-0">
             {renderLegend()}
           </div>
         </div>
@@ -387,7 +400,7 @@ function DrillModal({ title, subtitle, rows, columns, onClose }) {
     <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4" data-testid="drill-modal">
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
       <div className="relative bg-white rounded-xl shadow-2xl w-full max-w-5xl max-h-[85vh] flex flex-col">
-        <div className="flex items-start justify-between gap-4 px-6 py-4 border-b border-slate-200">
+        <div className="flex items-start justify-between gap-4 px-4 sm:px-6 py-4 border-b border-slate-200">
           <div>
             <div className="text-[15px] font-bold text-[#0f3d24]">{title}</div>
             {subtitle && <div className="text-[12.5px] text-muted mt-0.5">{subtitle}</div>}
@@ -403,7 +416,7 @@ function DrillModal({ title, subtitle, rows, columns, onClose }) {
             </button>
           </div>
         </div>
-        <div className="overflow-auto flex-1 px-6 py-3">
+        <div className="overflow-auto flex-1 px-4 sm:px-6 py-3">
           {rows.length === 0 ? (
             <div className="py-8 text-center text-[13px] text-muted italic">No orders in this selection.</div>
           ) : (
@@ -544,7 +557,7 @@ export default function ProductionOverview({ onOpenReport }) {
   // Full aggregation over rangeOrders — powers ALL visuals
   const rt = useMemo(() => {
     const byLc = {}, byCat = {}, bySub = {}, byState = {};
-    const styleSet = new Set(), newStyleSet = new Set();
+    const styleLc = new Map(); // style key -> Set of named lifecycles seen
     let units = 0, printUnits = 0, knitUnits = 0, dressUnits = 0;
 
     for (const o of rangeOrders) {
@@ -552,10 +565,9 @@ export default function ProductionOverview({ onOpenReport }) {
       units += qty;
 
       const lc = o.lifecycle || "Unspecified";
-      if (!byLc[lc]) byLc[lc] = { orders: 0, units: 0, label: lc, styleSet: new Set() };
+      if (!byLc[lc]) byLc[lc] = { orders: 0, units: 0, label: lc };
       byLc[lc].orders++;
       byLc[lc].units += qty;
-      if (o.style_name) byLc[lc].styleSet.add(o.style_name);
 
       const cat = o.category || "Unspecified";
       if (!byCat[cat]) byCat[cat] = { label: cat, orders: 0, units: 0 };
@@ -569,8 +581,9 @@ export default function ProductionOverview({ onOpenReport }) {
       if (!byState[state]) byState[state] = { label: state, orders: 0, units: 0 };
       byState[state].orders++; byState[state].units += qty;
 
-      if (o.style_name) styleSet.add(o.style_name);
-      if (lc === "New" && o.style_name) newStyleSet.add(o.style_name);
+      const sk = styleKeyOf(o);
+      if (!styleLc.has(sk)) styleLc.set(sk, new Set());
+      if (lc === "New" || lc === "Replenishment" || lc === "Re-order") styleLc.get(sk).add(lc);
 
       // Print: use backend print_plain field when available; fall back to
       // style_number / style_name keyword heuristics for orders not yet in
@@ -592,6 +605,18 @@ export default function ProductionOverview({ onOpenReport }) {
       if (isDress) dressUnits += qty;
     }
 
+    // Partition every style into exactly ONE bucket so the style cards always
+    // add up to Total Styles. A style whose window orders span several types
+    // counts once, by precedence New › Replenishment › Re-order; styles whose
+    // orders carry no type at all land in Unclassified.
+    const styleBuckets = { New: new Set(), Replenishment: new Set(), "Re-order": new Set(), Unclassified: new Set() };
+    for (const [sk, lcs] of styleLc) {
+      if (lcs.has("New")) styleBuckets.New.add(sk);
+      else if (lcs.has("Replenishment")) styleBuckets.Replenishment.add(sk);
+      else if (lcs.has("Re-order")) styleBuckets["Re-order"].add(sk);
+      else styleBuckets.Unclassified.add(sk);
+    }
+
     // Build sub-cat → color map: shade = function of rank within category
     const catSubs = {};
     for (const [sub, d] of Object.entries(bySub)) {
@@ -611,11 +636,12 @@ export default function ProductionOverview({ onOpenReport }) {
     return {
       orders: rangeOrders.length,
       units,
-      styles: styleSet.size,
+      styles: styleLc.size,
+      styleBuckets,
       printUnits,
       knitUnits,
       dressUnits,
-      newStyles: newStyleSet.size,
+      newStyles: styleBuckets.New.size,
       byLc,
       byCat: Object.values(byCat).sort((a, b) => b.units - a.units),
       bySub: Object.values(bySub).sort((a, b) => b.units - a.units),
@@ -638,6 +664,10 @@ export default function ProductionOverview({ onOpenReport }) {
   const totalOrders = rt.orders;
   const totalUnits  = rt.units;
   const pct = (n, d) => d > 0 ? `${((n / d) * 100).toFixed(0)}%` : "—";
+  // Style cards read the one-bucket-per-style partition (see rt.styleBuckets)
+  // so New + Replenishment + Re-order (+ unclassified) always equals Total.
+  const bucketCount = (k) => rt.styleBuckets[k]?.size || 0;
+  const bucketOrders = (k) => rangeOrders.filter((o) => rt.styleBuckets[k]?.has(styleKeyOf(o)));
 
   // ─── Targets (per-week) ───────────────────────────────────────────────────
   const printPct   = totalUnits > 0 ? (rt.printUnits / totalUnits) * 100 : 0;
@@ -685,7 +715,7 @@ export default function ProductionOverview({ onOpenReport }) {
       value: fmtQty(rt.newStyles),
       targetLabel: ">6 styles",
       status: ragOf(rt.newStyles, 6, 5),
-      drillFilter: (rows) => rows.filter((o) => o.lifecycle === "New"),
+      drillFilter: (rows) => rows.filter((o) => rt.styleBuckets.New?.has(styleKeyOf(o))),
     },
     {
       label: "Replenishment Units",
@@ -833,46 +863,50 @@ export default function ProductionOverview({ onOpenReport }) {
       {/* ── Styles KPI row ── */}
       <div>
         <div className="text-[12px] font-semibold text-muted uppercase tracking-wide mb-1.5 px-0.5">Styles</div>
-        <div className="grid gap-2 grid-cols-1 lg:grid-cols-3">
+        <div className="grid gap-2 grid-cols-2 lg:grid-cols-4">
           <MetricCard
             testId="prod-ov-kpi-styles-total"
             accent
             label="Total Styles"
             value={fmtQty(rt.styles)}
-            sub={`${fmtQty(totalOrders)} buying orders`}
+            sub={`across ${fmtQty(totalOrders)} buying orders · ${fmtQty(totalUnits)} units`}
             onClick={() => openDrill("Buying Orders", rangeOrders, ORDER_COLS)}
+          />
+          <MetricCard
+            testId="prod-ov-kpi-styles-new"
+            label="New Styles"
+            value={fmtQty(bucketCount("New"))}
+            pctText={pct(bucketCount("New"), rt.styles)}
+            pctLabel="of styles"
+            onClick={() => openDrill("New Style Orders", bucketOrders("New"), ORDER_COLS)}
           />
           <MetricCard
             testId="prod-ov-kpi-styles-replen"
             label="Replenishment Styles"
-            value={fmtQty(lcRep.orders)}
-            pctText={pct(lcRep.orders, totalOrders)}
-            pctLabel="of orders"
-            onClick={() => openDrill("Replenishment Orders", rangeOrders.filter((o) => o.lifecycle === "Replenishment"), ORDER_COLS)}
+            value={fmtQty(bucketCount("Replenishment"))}
+            pctText={pct(bucketCount("Replenishment"), rt.styles)}
+            pctLabel="of styles"
+            onClick={() => openDrill("Replenishment Orders", bucketOrders("Replenishment"), ORDER_COLS)}
           />
           <MetricCard
             testId="prod-ov-kpi-styles-reorder"
             label="Re-order Styles"
-            value={fmtQty(lcReo.orders)}
-            pctText={pct(lcReo.orders, totalOrders)}
-            pctLabel="of orders"
-            onClick={() => openDrill("Re-order Orders", rangeOrders.filter((o) => o.lifecycle === "Re-order"), ORDER_COLS)}
+            value={fmtQty(bucketCount("Re-order"))}
+            pctText={pct(bucketCount("Re-order"), rt.styles)}
+            pctLabel="of styles"
+            onClick={() => openDrill("Re-order Orders", bucketOrders("Re-order"), ORDER_COLS)}
           />
         </div>
-      </div>
-
-      {/* ── Units KPI row ── */}
-      <div>
-        <div className="text-[12px] font-semibold text-muted uppercase tracking-wide mb-1.5 px-0.5">Units</div>
-        <div className="grid gap-2 grid-cols-1">
-          <MetricCard
-            testId="prod-ov-kpi-units-total"
-            accent
-            label="Total Units"
-            value={fmtQty(totalUnits)}
-            onClick={() => openDrill("Units Ordered", [...rangeOrders].sort((a, b) => (Number(b.order_qty) || 0) - (Number(a.order_qty) || 0)), ORDER_COLS)}
-          />
-        </div>
+        {bucketCount("Unclassified") > 0 && (
+          <button
+            type="button"
+            onClick={() => openDrill("Styles with no order type", bucketOrders("Unclassified"), ORDER_COLS)}
+            className="mt-1 px-0.5 text-[11px] text-muted hover:text-brand hover:underline text-left"
+            data-testid="prod-ov-styles-unclassified"
+          >
+            +{fmtQty(bucketCount("Unclassified"))} style{bucketCount("Unclassified") === 1 ? "" : "s"} with no order type set — click to view
+          </button>
+        )}
       </div>
 
       {/* ── Weekly target tracker ── */}

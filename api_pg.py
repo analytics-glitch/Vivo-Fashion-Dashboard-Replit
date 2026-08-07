@@ -9264,6 +9264,371 @@ def analytics_sor_all_styles(
     return out
 
 
+# ── Retired Stock Performance report ─────────────────────────────────────────
+# "How is the retired range performing, and where?" — sales + remaining stock
+# for Odoo-Retired styles (shared _ODOO_RETIRED_STYLES_SQL predicate; third
+# party brands excluded per-SKU-row, same as Range Mgmt / PA universes),
+# broken down by style AND by store over a caller-chosen date window.
+# Units basis = net_quantity (the SOR/sell-through lens, matching
+# /sor-all-styles); money = NET_SALES_CANON (ex-VAT, returns netted).
+_RETIRED_WH_LOC_SET = set(re.findall(r"'([^']+)'", WAREHOUSE_LOCATIONS))
+# "Retired Stock" is a Kenya holding location where retired goods are parked
+# (IBT + replenishment already exclude it from store lists). It is NOT in
+# WAREHOUSE_LOCATIONS, so platform-wide (Range Mgmt included) its units count
+# as store stock — we keep that so totals reconcile across surfaces, but flag
+# it is_holding so the UI never presents it as a selling store with an SOR%.
+_RETIRED_HOLDING_LOCS = frozenset({"Retired Stock"})
+
+
+def _retired_soh_bucket(loc):
+    """Classify one inventory location into the 3-bucket SOH convention:
+    'stores' / 'wh' (sellable Warehouse FG) / 'pipeline', or None for
+    'Finished Goods Production' (excluded from every bucket, mirroring
+    /sor-all-styles). Total SOH = stores + wh; pipeline never counts."""
+    if loc not in _RETIRED_WH_LOC_SET:
+        return "stores"
+    if loc == "Warehouse Finished Goods":
+        return "wh"
+    if loc == "Finished Goods Production":
+        return None
+    return "pipeline"
+
+
+def _retired_report_window(date_from, date_to):
+    """Validated sales window for the retired-stock report; defaults to the
+    trailing 90 days when the caller sends no dates."""
+    today = date.today()
+    df = _pa_safe_date(date_from, str(today - timedelta(days=90)))
+    dt = _pa_safe_date(date_to, str(today))
+    if df > dt:
+        df, dt = dt, df
+    return df, dt
+
+
+@app.get("/api/analytics/retired-report")
+def analytics_retired_report(
+    country: str = Query(default=None),
+    channel: str = Query(default=None),
+    date_from: str = Query(default=None),
+    date_to: str = Query(default=None),
+):
+    """Retired-stock performance report: one payload with summary KPIs,
+    per-style rows and per-store rows for Odoo-Retired styles.
+
+    Universe = retired styles with current stock OR sales activity in the
+    window — a style that sold out still shows (that's the success story).
+    `summary.styles_retired_catalog` counts ALL retired styles for context.
+    Renamed twins sharing a style_number are folded into one row, same as
+    the SOR report.
+    """
+    df, dt = _retired_report_window(date_from, date_to)
+    cf, chf = _style_filters(country, channel, "s")
+    icf, ichf = _style_filters(country, channel, "i")
+    retired_in = "(" + _ODOO_RETIRED_STYLES_SQL + ")"
+
+    rows = run_query(
+        """
+        WITH sales_range AS (
+            SELECT m.style_name, s.pos_location_name AS store,
+                MAX(s.country) AS country,
+                COALESCE(SUM(s.net_quantity) FILTER (WHERE s.sale_kind IN ('sale','order')), 0) AS units,
+                ROUND(""" + NET_SALES_CANON + """, 0) AS net_sales,
+                MAX(s.sale_date::date) FILTER (WHERE s.sale_kind IN ('sale','order')) AS last_sale_range
+            FROM all_sales s
+            JOIN """ + SKU_STYLE_MAP + """ m ON m.sku = s.variant_sku
+            WHERE m.style_name IN """ + retired_in + """
+              AND s.sale_date::date BETWEEN '""" + df + """' AND '""" + dt + """'
+              AND """ + BASE_FILTERS + cf + chf + """
+            GROUP BY 1, 2
+        ),
+        stock AS (
+            SELECT COALESCE(m.style_name, i.style_name) AS style_name,
+                i.pos_location_name AS store,
+                MAX(i.country) AS country,
+                COALESCE(SUM(i.available), 0) AS soh
+            FROM all_inventory i
+            LEFT JOIN """ + SKU_STYLE_MAP + """ m ON m.sku = i.sku
+            WHERE COALESCE(m.style_name, i.style_name) IN """ + retired_in + icf + ichf + """
+            GROUP BY 1, 2
+        ),
+        combined AS (
+            SELECT style_name, store,
+                COALESCE(sr.country, st.country) AS country,
+                COALESCE(sr.units, 0) AS units,
+                COALESCE(sr.net_sales, 0) AS net_sales,
+                COALESCE(st.soh, 0) AS soh,
+                sr.last_sale_range
+            FROM sales_range sr
+            FULL OUTER JOIN stock st USING (style_name, store)
+        )
+        SELECT c.*, p.brand, p.category, p.subcategory, p.style_number, p.original_price
+        FROM combined c
+        JOIN (
+            -- third-party exclusion is per-SKU-row BEFORE the GROUP BY so a
+            -- mixed-brand style keeps its house rows (universe grain rule)
+            SELECT style_name, MAX(brand) AS brand, MAX(category) AS category,
+                MAX(product_type) AS subcategory,
+                mode() WITHIN GROUP (ORDER BY style_number) AS style_number,
+                mode() WITHIN GROUP (ORDER BY price::numeric) FILTER (WHERE price::numeric > 0) AS original_price
+            FROM all_products_clean
+            WHERE COALESCE(style_name, '') <> ''
+              AND COALESCE(brand, '') NOT ILIKE '%third party%'
+            GROUP BY style_name
+        ) p USING (style_name)
+        """
+    ) or []
+
+    life = run_query(
+        """
+        SELECT m.style_name,
+            COALESCE(SUM(s.net_quantity), 0) AS units_life,
+            MIN(s.sale_date::date) AS first_sale,
+            MAX(s.sale_date::date) AS last_sale
+        FROM all_sales s
+        JOIN """ + SKU_STYLE_MAP + """ m ON m.sku = s.variant_sku
+        WHERE m.style_name IN """ + retired_in + """
+          AND s.sale_kind IN ('sale','order')
+          AND """ + BASE_FILTERS + cf + chf + """
+        GROUP BY 1
+        """
+    ) or []
+    life_by = {r["style_name"]: r for r in life}
+
+    cat = run_query(
+        "SELECT COUNT(*) AS n FROM ("
+        "SELECT style_name FROM all_products_clean "
+        "WHERE style_name IN " + retired_in +
+        " AND COALESCE(brand,'') NOT ILIKE '%third party%' "
+        "GROUP BY style_name) q"
+    )
+    styles_retired_catalog = int(cat[0]["n"]) if cat else 0
+
+    range_days = (date.fromisoformat(dt) - date.fromisoformat(df)).days + 1
+    styles = {}
+    stores = {}
+    for r in rows:
+        name = r["style_name"]
+        loc = r["store"] or "(unknown)"
+        bucket = _retired_soh_bucket(loc)
+        units = int(r["units"] or 0)
+        net = float(r["net_sales"] or 0)
+        soh = int(r["soh"] or 0)
+
+        sy = styles.get(name)
+        if sy is None:
+            sy = styles[name] = {
+                "style_name": name,
+                "style_number": r["style_number"],
+                "brand": r["brand"], "category": r["category"],
+                "subcategory": r["subcategory"],
+                "original_price": float(r["original_price"]) if r["original_price"] is not None else None,
+                "units_sold": 0, "net_sales": 0.0,
+                "last_sale_range": None,
+                "_stores": {},
+            }
+        sy["units_sold"] += units
+        sy["net_sales"] += net
+        lsr = r["last_sale_range"]
+        if lsr and (sy["last_sale_range"] is None or lsr > sy["last_sale_range"]):
+            sy["last_sale_range"] = lsr
+        # Per-store cell — the row-expand breakdown ships in this payload so
+        # the UI never re-queries all_sales per click (two full scans each).
+        cell = sy["_stores"].get(loc)
+        if cell is None:
+            cell = sy["_stores"][loc] = {
+                "units": 0, "net": 0.0, "soh": 0,
+                "last_sale": None, "bucket": bucket,
+            }
+        cell["units"] += units
+        cell["net"] += net
+        if bucket is not None:
+            cell["soh"] += soh
+        if lsr and (cell["last_sale"] is None or lsr > cell["last_sale"]):
+            cell["last_sale"] = lsr
+
+        stv = stores.get(loc)
+        if stv is None:
+            stv = stores[loc] = {
+                "store": loc, "country": r["country"],
+                "is_warehouse": loc in _RETIRED_WH_LOC_SET,
+                "is_holding": (loc in _RETIRED_WH_LOC_SET
+                               or loc in _RETIRED_HOLDING_LOCS),
+                "units_sold": 0, "net_sales": 0.0, "soh": 0,
+                "styles_sold": 0, "styles_with_stock": 0,
+            }
+        stv["units_sold"] += units
+        stv["net_sales"] += net
+        if bucket is not None:
+            stv["soh"] += soh
+            if soh > 0:
+                stv["styles_with_stock"] += 1
+        if units > 0:
+            stv["styles_sold"] += 1
+
+    def _twin_key(row):
+        snum = (row.get("style_number") or "").strip()
+        return ("sn", snum) if snum else ("nm", row.get("style_name", ""))
+
+    # Pre-merge the per-store maps by the same twin key the dedup helper
+    # groups on, since the helper only merges scalar fields.
+    raw_styles = []
+    bd_by_key = {}
+    for name, sy in styles.items():
+        lf = life_by.get(name)
+        sy["units_life"] = int(lf["units_life"]) if lf else 0
+        sy["first_sale"] = lf["first_sale"] if lf else None
+        sy["last_sale"] = lf["last_sale"] if lf else None
+        bd = bd_by_key.setdefault(_twin_key(sy), {})
+        for loc, cell in sy.pop("_stores").items():
+            tgt = bd.get(loc)
+            if tgt is None:
+                bd[loc] = dict(cell)
+            else:
+                tgt["units"] += cell["units"]
+                tgt["net"] += cell["net"]
+                tgt["soh"] += cell["soh"]
+                if cell["last_sale"] and (tgt["last_sale"] is None or cell["last_sale"] > tgt["last_sale"]):
+                    tgt["last_sale"] = cell["last_sale"]
+        raw_styles.append(sy)
+
+    # One Style Number → One Style Name (mid-season Odoo renames)
+    raw_styles = _dedup_raw_by_style_number(
+        raw_styles,
+        sum_fields=["units_sold", "net_sales", "units_life"],
+        max_fields=["last_sale", "last_sale_range"],
+        min_fields=["first_sale"],
+        keep_fields=["brand", "category", "subcategory", "original_price"],
+    )
+
+    today = date.today()
+    out_styles = []
+    for sy in raw_styles:
+        bd = bd_by_key.get(_twin_key(sy), {})
+        soh_stores = int(sum(c["soh"] for c in bd.values() if c["bucket"] == "stores"))
+        soh_wh = int(sum(c["soh"] for c in bd.values() if c["bucket"] == "wh"))
+        soh_pipeline = int(sum(c["soh"] for c in bd.values() if c["bucket"] == "pipeline"))
+        stores_with_stock = sum(
+            1 for loc, c in bd.items()
+            if c["bucket"] == "stores" and c["soh"] > 0 and loc not in _RETIRED_HOLDING_LOCS)
+        stores_sold = sum(1 for c in bd.values() if c["units"] > 0)
+        top_store, top_units = None, 0
+        for loc, c in bd.items():
+            if loc in _RETIRED_HOLDING_LOCS:
+                continue
+            if c["units"] > top_units:
+                top_units, top_store = c["units"], loc
+        breakdown = []
+        for loc, c in sorted(bd.items(), key=lambda kv: (-kv[1]["units"], -kv[1]["soh"])):
+            if c["units"] == 0 and c["soh"] == 0 and abs(c["net"]) < 0.5:
+                continue
+            is_wh = loc in _RETIRED_WH_LOC_SET
+            is_holding = is_wh or loc in _RETIRED_HOLDING_LOCS
+            bdenom = c["units"] + c["soh"]
+            breakdown.append({
+                "store": loc,
+                "units_sold": int(c["units"]),
+                "net_sales": round(float(c["net"])),
+                "soh": int(c["soh"]),
+                "last_sale": str(c["last_sale"]) if c["last_sale"] else None,
+                "is_warehouse": is_wh,
+                "is_holding": is_holding,
+                "sor_period": (round(100.0 * c["units"] / bdenom, 1)
+                               if bdenom > 0 and c["units"] >= 0 and not is_holding else None),
+            })
+
+        units = int(sy["units_sold"])
+        net = float(sy["net_sales"])
+        soh_total = soh_stores + soh_wh
+        denom = units + soh_total
+        units_life = int(sy["units_life"])
+        life_denom = units_life + soh_total
+        weekly = (units / (range_days / 7.0)) if range_days > 0 and units > 0 else 0.0
+        op = sy.get("original_price")
+        last_sale = sy.get("last_sale")
+        first_sale = sy.get("first_sale")
+        out_styles.append({
+            "style_name": sy["style_name"],
+            "style_number": sy.get("style_number"),
+            "brand": sy.get("brand"), "category": sy.get("category"),
+            "subcategory": sy.get("subcategory"),
+            "units_sold": units,
+            "net_sales": round(net),
+            "asp": round(net / units) if units > 0 else None,
+            "soh_stores": soh_stores,
+            "soh_wh": soh_wh,
+            "soh_pipeline": soh_pipeline,
+            "soh_total": soh_total,
+            "soh_value_full_price": round(soh_total * op) if op else None,
+            "original_price": round(op) if op else None,
+            "sor_period": round(100.0 * units / denom, 1) if denom > 0 and units >= 0 else None,
+            "units_life": units_life,
+            "sor_life": round(100.0 * units_life / life_denom, 1) if life_denom > 0 and units_life >= 0 else None,
+            "weekly_rate": round(weekly, 1),
+            "woc": round(soh_total / weekly, 1) if weekly > 0 else None,
+            "stores_with_stock": stores_with_stock,
+            "stores_sold": stores_sold,
+            "top_store": top_store,
+            "launch_date": str(first_sale) if first_sale else None,
+            "last_sale": str(last_sale) if last_sale else None,
+            "days_since_last_sale": (today - last_sale).days if last_sale else None,
+            "store_breakdown": breakdown,
+        })
+    out_styles.sort(key=lambda x: (-(x["net_sales"] or 0), -(x["soh_total"] or 0)))
+
+    out_stores = []
+    for stv in stores.values():
+        units = int(stv["units_sold"])
+        soh = int(stv["soh"])
+        if units == 0 and soh == 0 and abs(stv["net_sales"]) < 0.5:
+            continue
+        denom = units + soh
+        out_stores.append({
+            "store": stv["store"], "country": stv["country"],
+            "is_warehouse": bool(stv["is_warehouse"]),
+            "is_holding": bool(stv["is_holding"]),
+            "units_sold": units,
+            "net_sales": round(float(stv["net_sales"])),
+            "soh": soh,
+            "styles_sold": int(stv["styles_sold"]),
+            "styles_with_stock": int(stv["styles_with_stock"]),
+            "sor_period": (round(100.0 * units / denom, 1)
+                           if denom > 0 and units >= 0 and not stv["is_holding"] else None),
+        })
+    out_stores.sort(key=lambda x: (-x["units_sold"], -x["soh"]))
+
+    t_units = sum(s["units_sold"] for s in out_styles)
+    t_net = sum(s["net_sales"] for s in out_styles)
+    t_soh_stores = sum(s["soh_stores"] for s in out_styles)
+    t_soh_wh = sum(s["soh_wh"] for s in out_styles)
+    t_soh_pipe = sum(s["soh_pipeline"] for s in out_styles)
+    t_soh = t_soh_stores + t_soh_wh
+    t_life = sum(s["units_life"] for s in out_styles)
+    denom = t_units + t_soh
+    life_denom = t_life + t_soh
+    soh_value = sum((s["soh_value_full_price"] or 0) for s in out_styles)
+    soh_holding = sum(int(stv["soh"]) for stv in stores.values()
+                      if stv["store"] in _RETIRED_HOLDING_LOCS)
+    summary = {
+        "styles_retired_catalog": styles_retired_catalog,
+        "styles_in_report": len(out_styles),
+        "styles_with_stock": sum(1 for s in out_styles if s["soh_stores"] > 0 or s["soh_wh"] > 0),
+        "styles_sold": sum(1 for s in out_styles if s["units_sold"] > 0),
+        "styles_sold_out": sum(1 for s in out_styles if s["units_sold"] > 0 and s["soh_total"] == 0),
+        "units_sold": t_units,
+        "net_sales": round(t_net),
+        "soh_stores": t_soh_stores, "soh_wh": t_soh_wh,
+        "soh_pipeline": t_soh_pipe, "soh_total": t_soh,
+        # Units parked in the "Retired Stock" holding location — included in
+        # soh_stores (platform convention) but not a selling store.
+        "soh_holding": soh_holding,
+        "soh_value_full_price": round(soh_value),
+        "sor_period": round(100.0 * t_units / denom, 1) if denom > 0 and t_units >= 0 else None,
+        "sor_life": round(100.0 * t_life / life_denom, 1) if life_denom > 0 else None,
+    }
+    return {"window": {"date_from": df, "date_to": dt, "days": range_days},
+            "summary": summary, "styles": out_styles, "stores": out_stores}
+
+
 @app.get("/api/analytics/sor-style-colors")
 def analytics_sor_style_colors(
     style_name: str = Query(...),
@@ -12925,6 +13290,241 @@ def analytics_weeks_of_cover(
         ORDER BY available DESC
         LIMIT 2000
     """, ttl=HEAVY_DASH_TTL)
+
+# ── NOOS tracker ────────────────────────────────────────────────────────────
+# "Never Out Of Stock" report for the Odoo-flagged NOOS styles (Tier 1 in the
+# shared lifecycle-tier model: all_products_clean.is_noos, synced from Odoo's
+# noos_styles list). Purpose: catch a NOOS style BEFORE it stocks out — weeks
+# of cover split warehouse vs stores, plus per-store presence so merchandisers
+# can see exactly which stores lack each style.
+#
+# Conventions (must stay in lockstep with the rest of the app):
+#   • Velocity = the standardized recency-weighted weekly rate used by
+#     /analytics/weeks-of-cover: gross ordered_item_quantity over a trailing
+#     56-day window, last 28 days double-weighted, /12.0 (velocity canon).
+#   • SOH buckets = pipeline-soh canon: stores = NOT IN WAREHOUSE_LOCATIONS,
+#     warehouse = 'Warehouse Finished Goods' only, pipeline = the rest
+#     (informational — NEVER part of total cover).
+#   • Store gap matrix uses PHYSICAL selling stores only (same name-pattern
+#     excludes as /store-profile/locations); the stores SOH bucket itself
+#     stays canonical (it can include e.g. online levels), so bucket totals
+#     reconcile with every other SOH surface.
+#   • Thresholds: critical = REORDER_COVER_WEEKS (same bar as the Velocity
+#     tab's at_risk/reorder_point), low = 2× that.
+_NOOS_STORE_NAME_EXCLUDES = (
+    "  AND {col} NOT ILIKE '%%online%%' "
+    "  AND {col} NOT ILIKE '%%location%%' "
+    "  AND {col} NOT ILIKE '%%holding%%' "
+    "  AND {col} NOT ILIKE '%%warehouse%%' "
+    "  AND {col} NOT ILIKE '%%manual%%' "
+    "  AND {col} NOT ILIKE '%%mockup%%' "
+    "  AND {col} NOT ILIKE '%%purchase%%' "
+    "  AND {col} NOT ILIKE '%%bags%%' "
+    "  AND {col} NOT ILIKE '%%third%%' "
+    "  AND {col} NOT ILIKE '%%popup%%' "
+    "  AND {col} NOT ILIKE '%%defect%%' "
+    "  AND {col} NOT ILIKE '%%retired%%' "
+    "  AND {col} NOT IN ('Buying and Merchandise') "
+)
+
+@app.get("/api/analytics/noos-report")
+def analytics_noos_report(country: str = Query(default=None)):
+    # NOTE: no channel param on purpose — this is a store-presence report; a
+    # pos_location channel filter would contradict the gap matrix.
+    def _ctry_in(col):
+        vals = [v.strip() for v in str(country or "").split(",") if v.strip()]
+        if not vals:
+            return ""
+        # Case-insensitive on both sides (house contract — the UI may send
+        # either title- or lower-case country values).
+        return ("AND LOWER(" + col + ") IN ("
+                + ",".join("'" + _sql_str(v.lower()) + "'" for v in vals) + ") ")
+    ctry_inv = _ctry_in("i.country")
+    ctry_sales = _ctry_in("s.country")
+
+    # All Odoo-flagged NOOS styles — even ones with zero stock AND zero sales
+    # must appear (that's the loudest possible alarm for this report).
+    catalog = run_query("""
+        SELECT p.style_name,
+               MAX(NULLIF(p.style_number, '')) AS style_number,
+               MAX(p.brand) AS brand,
+               MAX(p.product_type) AS product_type
+        FROM all_products_clean p
+        WHERE p.is_noos IS TRUE AND p.style_name IS NOT NULL
+        GROUP BY p.style_name
+    """, ttl=HEAVY_DASH_TTL)
+
+    # Stock per style × location (pre-aggregated on its own — never join raw
+    # inventory to sales; bucket split happens in Python below).
+    inv_rows = run_query("""
+        SELECT p.style_name, i.pos_location_name AS loc, SUM(i.available) AS units
+        FROM all_inventory i
+        JOIN all_products_clean p ON i.sku = p.sku
+        WHERE p.is_noos IS TRUE AND p.style_name IS NOT NULL
+          AND i.available <> 0 """ + ctry_inv + """
+        GROUP BY p.style_name, i.pos_location_name
+    """, ttl=HEAVY_DASH_TTL)
+
+    # Velocity per style × location — weeks-of-cover canon (56d gross EWMA).
+    vel_rows = run_query("""
+        SELECT p.style_name, s.pos_location_name AS loc,
+               SUM(s.ordered_item_quantity) FILTER (
+                   WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '28 days') AS u28,
+               SUM(s.ordered_item_quantity) AS u56
+        FROM all_sales s
+        JOIN all_products_clean p ON s.variant_sku = p.sku
+        WHERE s.sale_kind IN ('sale','order')
+          AND p.is_noos IS TRUE AND p.style_name IS NOT NULL
+          AND s.sale_date::date >= CURRENT_DATE - INTERVAL '56 days'
+          AND """ + BASE_FILTERS + " " + ctry_sales + """
+        GROUP BY p.style_name, s.pos_location_name
+    """, ttl=HEAVY_DASH_TTL)
+
+    # Active physical selling stores (the gap-matrix universe): any store
+    # currently holding ANY stock, minus warehouse/holding/online-style names.
+    store_rows = run_query("""
+        SELECT i.pos_location_name AS store, MAX(i.country) AS country
+        FROM all_inventory i
+        WHERE i.available > 0
+          AND i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
+        """ + _NOOS_STORE_NAME_EXCLUDES.format(col="i.pos_location_name") + ctry_inv + """
+        GROUP BY i.pos_location_name ORDER BY i.pos_location_name
+    """, ttl=HEAVY_DASH_TTL)
+    matrix_stores = [r["store"] for r in (store_rows or [])]
+    matrix_set = set(matrix_stores)
+
+    # Parse the SQL-string constant into a Python set once per call (tiny).
+    wh_locs = frozenset(re.findall(r"'([^']*)'", WAREHOUSE_LOCATIONS))
+    def _bucket(loc):
+        if loc == "Warehouse Finished Goods":
+            return "warehouse"
+        return "pipeline" if loc in wh_locs else "stores"
+
+    crit_weeks = float(REORDER_COVER_WEEKS)
+    low_weeks = crit_weeks * 2.0
+    def _rate(u28, u56):
+        return ((u28 or 0) * 2 + max((u56 or 0) - (u28 or 0), 0)) / 12.0
+    def _cover(units, rate):
+        if rate and rate > 0:
+            return round(units / rate, 1)
+        return None
+    def _status(units, cover, rate):
+        if (units or 0) <= 0:
+            return "out"
+        if rate is None or rate <= 0:
+            return "no_sales"
+        if cover is not None and cover < crit_weeks:
+            return "critical"
+        if cover is not None and cover < low_weeks:
+            return "low"
+        return "healthy"
+
+    styles = {}
+    for c in (catalog or []):
+        styles[c["style_name"]] = {
+            "style_name": c["style_name"],
+            "style_number": c.get("style_number"),
+            "brand": c.get("brand"),
+            "product_type": c.get("product_type"),
+            "soh_stores": 0, "soh_warehouse": 0, "soh_pipeline": 0,
+            "_locs": {},  # store-bucket loc -> {units, u28, u56}
+        }
+    for r in (inv_rows or []):
+        st = styles.get(r["style_name"])
+        if st is None:
+            continue
+        units = int(r.get("units") or 0)
+        b = _bucket(r["loc"])
+        if b == "warehouse":
+            st["soh_warehouse"] += units
+        elif b == "pipeline":
+            st["soh_pipeline"] += units
+        else:
+            st["soh_stores"] += units
+            st["_locs"].setdefault(r["loc"], {"units": 0, "u28": 0, "u56": 0})
+            st["_locs"][r["loc"]]["units"] += units
+    total_rate_in = {}
+    for r in (vel_rows or []):
+        st = styles.get(r["style_name"])
+        if st is None:
+            continue
+        u28, u56 = int(r.get("u28") or 0), int(r.get("u56") or 0)
+        agg = total_rate_in.setdefault(r["style_name"], [0, 0])
+        agg[0] += u28
+        agg[1] += u56
+        if _bucket(r["loc"]) == "stores":
+            st["_locs"].setdefault(r["loc"], {"units": 0, "u28": 0, "u56": 0})
+            st["_locs"][r["loc"]]["u28"] += u28
+            st["_locs"][r["loc"]]["u56"] += u56
+
+    out = []
+    summary = {"styles": len(styles), "out": 0, "critical": 0, "low": 0,
+               "healthy": 0, "no_sales": 0, "not_ranged": 0, "store_gaps": 0}
+    for name, st in styles.items():
+        u28, u56 = total_rate_in.get(name, [0, 0])
+        rate = _rate(u28, u56)
+        soh_total = st["soh_stores"] + st["soh_warehouse"]  # pipeline excluded (canon)
+        woc_total = _cover(soh_total, rate)
+        row = {
+            "style_name": name,
+            "style_number": st["style_number"],
+            "brand": st["brand"],
+            "product_type": st["product_type"],
+            "weekly_rate": round(rate, 2),
+            "units_28d": u28,
+            "soh_stores": st["soh_stores"],
+            "soh_warehouse": st["soh_warehouse"],
+            "soh_pipeline": st["soh_pipeline"],
+            "soh_total": soh_total,
+            "woc_total": woc_total,
+            "woc_stores": _cover(st["soh_stores"], rate),
+            "woc_warehouse": _cover(st["soh_warehouse"], rate),
+            "status": _status(soh_total, woc_total, rate),
+        }
+        # Country-scoped views: a style with ZERO stock (all buckets) and ZERO
+        # 56d sales in the selected country isn't "out of stock" there — it
+        # simply isn't ranged in that market. Grey it out instead of raising a
+        # false alarm, and don't count its store gaps. The all-countries view
+        # keeps the true global "out" alarm.
+        if country and soh_total == 0 and st["soh_pipeline"] == 0 and (u56 or 0) == 0:
+            row["status"] = "not_ranged"
+        detail = []
+        for loc, d in st["_locs"].items():
+            srate = _rate(d["u28"], d["u56"])
+            scover = _cover(d["units"], srate)
+            detail.append({
+                "store": loc,
+                "units": d["units"],
+                "weekly_rate": round(srate, 2),
+                "woc": scover,
+                "status": _status(d["units"], scover, srate),
+                "in_matrix": loc in matrix_set,
+            })
+        # Stores that lack the style = matrix stores with no units on hand.
+        stocked = {d["store"] for d in detail if d["units"] > 0 and d["in_matrix"]}
+        missing = [] if row["status"] == "not_ranged" else \
+            [s for s in matrix_stores if s not in stocked]
+        detail.sort(key=lambda d: (d["units"] > 0, d["woc"] if d["woc"] is not None else 1e9))
+        row["store_detail"] = detail
+        row["stores_stocked"] = len(stocked)
+        row["stores_missing"] = missing
+        summary[row["status"]] += 1
+        summary["store_gaps"] += len(missing)
+        out.append(row)
+
+    sev = {"out": 0, "critical": 1, "low": 2, "no_sales": 3, "healthy": 4,
+           "not_ranged": 5}
+    out.sort(key=lambda r: (sev.get(r["status"], 9),
+                            r["woc_total"] if r["woc_total"] is not None else 1e9,
+                            r["style_name"]))
+    summary["stores_tracked"] = len(matrix_stores)
+    return {
+        "summary": summary,
+        "thresholds": {"critical_weeks": crit_weeks, "low_weeks": low_weeks},
+        "stores": matrix_stores,
+        "styles": out,
+        "velocity_method": "ewma_56d_gross",
+    }
 
 @app.get("/api/analytics/repeat-customers")
 def analytics_repeat_customers(

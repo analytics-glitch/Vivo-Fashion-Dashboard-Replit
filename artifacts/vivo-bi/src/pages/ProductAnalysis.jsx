@@ -1440,6 +1440,7 @@ const StyleTrackerTab = React.lazy(() => import("./StyleTracker"));
 const CatalogueTab = React.lazy(() => import("./ProductCatalogue"));
 const SORReportTab = React.lazy(() => import("@/components/SORReportExport"));
 const SORNewStylesTab = React.lazy(() => import("@/components/SORNewStylesReport"));
+const RetiredStockTab = React.lazy(() => import("@/components/RetiredStockReport"));
 const PDFlowTab = React.lazy(() => import("./PDFlow"));
 
 export const PA_TAB_PAGE_IDS = [
@@ -1458,6 +1459,9 @@ const PA_TABS = [
   { id: "catalog", label: "Catalog & SOR", pageId: "product-analysis", el: ProductsCatalog },
   { id: "sor-report",      label: "SOR Report",      pageId: "exports", el: SORReportTab },
   { id: "sor-new-styles",  label: "SOR New Styles",  pageId: "exports", el: SORNewStylesTab },
+  // Retired Stock rides the range-mgmt page id — retirement is a Range
+  // Management concern, so whoever can see Range Mgmt sees this report.
+  { id: "retired-stock",   label: "Retired Stock",   pageId: "range-mgmt", el: RetiredStockTab },
   { id: "allocations", label: "Allocations", pageId: "allocations", el: AllocationsTab },
   { id: "reorder", label: "Re-Order", pageId: "re-order", el: ReOrderTab },
   { id: "gallery", label: "Product Catalogue", pageId: "gallery", el: CatalogueTab },
