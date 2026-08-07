@@ -27638,7 +27638,7 @@ fabric for a specific style, then later marks it used:
   r.used_at::date - r.reserved_at::date. Compare reserved kg to that fabric's stock
   on hand = SUM(i.quantity) over its inventory rows.
 
-fabric_roll_counts rc  — MANUAL physical roll counts (the Rolls tab). Odoo only
+fabric_roll_counts rc  — MANUAL physical roll counts (the Rolls Tracker tab). Odoo only
 tracks fabric by weight/length, never physical rolls, so the fabric team
 hand-maintains a roll count per product per stock location:
   rc.product_id -> p.id, rc.location_name ('RMAT/Stock' or 'Dead/Stock Fabric'),
@@ -27855,7 +27855,7 @@ def _fabric_chat_system_prompt(ctx):
         "available stock); the attribute explorer (plain/print, weight, structure, "
         "fibre); and data quality (fabrics missing a kg-per-metre conversion, MOs "
         "missing a conversion). You also cover manual physical ROLL counts (the "
-        "Rolls tab), canonical colour breakdowns, and data freshness (when the "
+        "Rolls Tracker tab), canonical colour breakdowns, and data freshness (when the "
         "fabric feed last updated). All money is Kenyan Shillings (KES).\n\n"
         "OUT OF SCOPE — PRODUCTION TRACKER: the Production Tracker board (buying "
         "orders, production stages / stage movements, order progress) is a "
