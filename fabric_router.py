@@ -5504,10 +5504,36 @@ _STYLE_UNIVERSE_SQL = """
                style_name, style_number, style_numbers, brand, source
         FROM combined
         ORDER BY lower(style_name), CASE source WHEN 'apc' THEN 0 ELSE 1 END
+    ),
+    -- A rop-sourced name that shares a style_number with an apc entry is the
+    -- SAME physical style wearing its pre-canonicalization name (apc unifies
+    -- every SKU of a style_number to the dominant name, e.g. "… Maxi Dress",
+    -- while raw Odoo still carries "… Maxi Dress in Crepe"). Fold it into the
+    -- apc row as a searchable alias so the picker shows ONE entry whose
+    -- displayed/stored name stays byte-identical to all_products_clean.
+    -- Rop-only styles (no apc twin sharing a number) keep their own row.
+    alias_map AS (
+        SELECT DISTINCT ON (lower(r.style_name))
+               lower(a.style_name) AS apc_key,
+               r.style_name       AS alias_name
+        FROM deduped r
+        JOIN deduped a
+          ON a.source = 'apc'
+         AND a.style_numbers && r.style_numbers
+        WHERE r.source = 'rop'
+        ORDER BY lower(r.style_name), lower(a.style_name)
     )
-    SELECT style_name, style_number, style_numbers, brand
-    FROM deduped
-    ORDER BY style_name
+    SELECT d.style_name, d.style_number, d.style_numbers, d.brand,
+           al.aliases
+    FROM deduped d
+    LEFT JOIN (SELECT apc_key,
+                      ARRAY_AGG(alias_name ORDER BY alias_name) AS aliases
+               FROM alias_map GROUP BY apc_key) al
+           ON al.apc_key = lower(d.style_name)
+    WHERE d.source = 'apc'
+       OR NOT EXISTS (SELECT 1 FROM alias_map m
+                      WHERE lower(m.alias_name) = lower(d.style_name))
+    ORDER BY d.style_name
 """
 
 
@@ -5515,7 +5541,10 @@ def _own_styles():
     """Deduplicated own-style list (live, 60s-cached via api_pg.run_query).
     Merges all_products_clean (apc) and raw_odoo_products (rop) so styles
     that exist in Odoo but have not yet flowed through a full rebuild are
-    still findable.  apc rows win when both sources carry the same style.
+    still findable.  apc rows win when both sources carry the same style; a
+    rop name that shares a style_number with an apc row (the style was
+    renamed by apc's dominant-name canonicalization) is folded into that apc
+    row as a searchable alias (aliases column) instead of a duplicate entry.
     Each row carries style_numbers = ALL distinct numbers on the style's SKUs
     (230 styles have several, e.g. SAF10BT/SAF10GR/SAF10WH) for matching;
     style_number stays the single modal one that is displayed and stored."""
@@ -5537,7 +5566,8 @@ _style_index_memo = (None, None)
 
 
 def _style_index():
-    """[(row, norm_name, [norm_numbers…])] for the current cached universe."""
+    """[(row, norm_name, [norm_numbers…], [norm_aliases…])] for the current
+    cached universe. Aliases are the folded pre-canonicalization rop names."""
     global _style_index_memo
     rows = _own_styles()
     memo_rows, memo_idx = _style_index_memo
@@ -5551,8 +5581,12 @@ def _style_index():
         modal = s.get("style_number")
         if modal and modal not in nums:
             nums = list(nums) + [modal]
+        aliases = s.get("aliases") or []
+        if not isinstance(aliases, (list, tuple)):
+            aliases = [aliases]
         idx.append((s, _style_norm(s.get("style_name")),
-                    [_style_norm(n) for n in nums if n]))
+                    [_style_norm(n) for n in nums if n],
+                    [_style_norm(a) for a in aliases if a]))
     _style_index_memo = (rows, idx)
     return idx
 
@@ -5561,28 +5595,43 @@ def _style_search_rows(term, limit):
     """Shared tolerant matcher for the reservation + costing style pickers.
 
     Case-insensitive and whitespace-normalized; EVERY typed token must appear
-    (as a substring) in the style name or any of the style's numbers, so
-    out-of-order words ("arusha kaftan"), single-spaced quirk names and
-    non-modal style numbers all hit. Rank: exact name/number match, then
-    prefix, then contiguous substring, then looser token matches —
+    (as a substring) in the style name, any of the style's numbers or any of
+    its alias names (folded pre-canonicalization rop names — typing "in
+    crepe" finds the canonical entry), so out-of-order words ("arusha
+    kaftan"), single-spaced quirk names and non-modal style numbers all hit.
+    Rank: exact name/number match, then prefix, then contiguous substring,
+    then looser token matches; hits that needed an alias always rank BELOW
+    every primary-name hit, in the same exact/prefix/substring/token order —
     alphabetical within each band — so the result cap never buries the target.
     """
     term_n = _style_norm(term)
     tokens = term_n.split(" ") if term_n else []
     scored = []
-    for s, name_n, nums_n in _style_index():
+    for s, name_n, nums_n, aliases_n in _style_index():
         if tokens:
             hay = name_n + " " + " ".join(nums_n) if nums_n else name_n
-            if not all(t in hay for t in tokens):
-                continue
-            if term_n == name_n or term_n in nums_n:
-                rank = 0
-            elif name_n.startswith(term_n) or any(n.startswith(term_n) for n in nums_n):
-                rank = 1
-            elif term_n in name_n:
-                rank = 2
+            if all(t in hay for t in tokens):
+                if term_n == name_n or term_n in nums_n:
+                    rank = 0
+                elif name_n.startswith(term_n) or any(n.startswith(term_n) for n in nums_n):
+                    rank = 1
+                elif term_n in name_n:
+                    rank = 2
+                else:
+                    rank = 3
+            elif aliases_n and all(
+                    t in hay + " " + " ".join(aliases_n) for t in tokens):
+                # Alias band: matched only thanks to a folded former name.
+                if term_n in aliases_n:
+                    rank = 4
+                elif any(a.startswith(term_n) for a in aliases_n):
+                    rank = 5
+                elif any(term_n in a for a in aliases_n):
+                    rank = 6
+                else:
+                    rank = 7
             else:
-                rank = 3
+                continue
         else:
             rank = 0
         scored.append((rank, name_n, s))
@@ -5594,9 +5643,13 @@ def _match_style(style_name):
     """Strict membership check of a posted style against the allowed universe.
     Tolerant of case + whitespace quirks ONLY (runs of spaces / non-breaking
     spaces compare as one space) so picked suggestions never bounce; an exact
-    trimmed match is preferred when both variants exist as distinct rows.
-    Returns the UNTOUCHED canonical row — what gets stored (and used for
-    DPS/MO lookups) stays byte-identical to all_products_clean — or None."""
+    trimmed match is preferred when both variants exist as distinct rows. A
+    folded alias name (the style's pre-canonicalization rop name) also
+    matches — LAST, so it can never shadow a real entry — and resolves to
+    the canonical row, so a sheet posted with the old name stores the
+    canonical one. Returns the UNTOUCHED canonical row — what gets stored
+    (and used for DPS/MO lookups) stays byte-identical to
+    all_products_clean — or None."""
     want = (style_name or "").strip().lower()
     if not want:
         return None
@@ -5604,8 +5657,11 @@ def _match_style(style_name):
         if (s.get("style_name") or "").strip().lower() == want:
             return s
     want_n = _style_norm(style_name)
-    for s, name_n, _nums in _style_index():
+    for s, name_n, _nums, _aliases in _style_index():
         if name_n == want_n:
+            return s
+    for s, _name_n, _nums, aliases_n in _style_index():
+        if want_n in aliases_n:
             return s
     return None
 
@@ -13107,21 +13163,58 @@ def _require_style_dps(conn, canon_style, dps_ref, color=None):
                                     "No Done DPS with that reference for this style"))
 
 
+# One row per finished SKU of a style — (sku, color) — resolved from BOTH
+# product layers so renamed and brand-new styles find their DPSes:
+#   • all_products_clean by (canonical) style name — colour = color_print;
+#   • UNION raw_odoo_products by the SAME derived-style rule the picker
+#     universe uses (style_name attr, else the name up to the first " - "),
+#     covering styles/SKUs that have not flowed through a rebuild yet.
+#     Colour falls back to the raw name's LAST " - " segment (last, so
+#     "Off - Shoulder …" names never split into a bogus colour).
+# DISTINCT ON keeps ONE colour per SKU, preferring the product master's
+# color_print over the raw-name fallback. Takes the style name TWICE as
+# params; %% escapes survive the psycopg2 param interpolation every consumer
+# performs.
+_STYLE_SKU_COLORS_SQL = """
+    SELECT DISTINCT ON (u.sku) u.sku, u.color
+    FROM (
+        SELECT apc.sku, NULLIF(TRIM(apc.color_print), '') AS color, 0 AS pref
+        FROM all_products_clean apc
+        WHERE lower(apc.style_name) = lower(%s)
+        UNION ALL
+        SELECT NULLIF(TRIM(r.default_code), ''),
+               CASE WHEN r.name LIKE '%% - %%'
+                    THEN NULLIF(TRIM(regexp_replace(r.name, '.* - ', '')), '')
+               END,
+               1
+        FROM raw_odoo_products r
+        WHERE lower(COALESCE(NULLIF(TRIM(r.style_name), ''),
+                             NULLIF(SPLIT_PART(r.name, ' - ', 1), '')))
+              = lower(%s)
+    ) u
+    WHERE u.sku IS NOT NULL
+    ORDER BY u.sku, (u.color IS NULL), u.pref
+"""
+
+
 def _costing_color_scope(style_name, color):
     """SQL fragment + params restricting MO finished SKUs to the style — and,
-    when a colour is given, to that colour's SKUs only (product-master
-    color_print of the finished SKU). Shared by every suggestion reader so
-    fabrics, accessories, metres/garment, labour AND the typeahead all come
-    from the SAME colour-scoped MO set."""
+    when a colour is given, to that colour's SKUs only. The style's SKU set
+    is the UNION of all_products_clean (by name) and raw_odoo_products (by
+    the picker universe's derived-name rule), with colour per SKU falling
+    back from the master's color_print to the raw name's colour segment
+    (see _STYLE_SKU_COLORS_SQL) — so styles not yet in the product master
+    still resolve. Shared by every suggestion reader so fabrics,
+    accessories, metres/garment, labour AND the typeahead all come from the
+    SAME colour-scoped MO set."""
     color = (color or "").strip() or None
-    sql = """c.finished_sku IN (
-                SELECT sku FROM all_products_clean
-                WHERE lower(style_name) = lower(%s)"""
-    params = [style_name]
+    sql = f"""c.finished_sku IN (
+                SELECT sc.sku FROM ({_STYLE_SKU_COLORS_SQL}) sc"""
+    params = [style_name, style_name]
     if color:
-        sql += "\n                  AND lower(coalesce(color_print,'')) = lower(%s)"
+        sql += "\n                WHERE lower(coalesce(sc.color,'')) = lower(%s)"
         params.append(color)
-    sql += ")"
+    sql += "\n              )"
     return sql, params, color
 
 
@@ -13381,56 +13474,80 @@ def costing_style_debug(name: str = Query(default=""),
     if not (name or "").strip():
         raise HTTPException(status_code=400, detail="name query param is required")
 
-    import importlib
-    api = importlib.import_module('api_pg')
-
     name_q = f"%{name.strip()}%"
 
-    # --- all_products_clean layer ---
-    apc_rows = api.run_query(
-        """
-        SELECT style_name, brand
-        FROM all_products_clean
-        WHERE style_name ILIKE %(n)s
-          AND style_name IS NOT NULL AND style_name <> ''
-        ORDER BY style_name
-        LIMIT 5
-        """,
-        params={"n": name_q},
-        ttl=0,
-    )
+    with _get_conn() as conn:
+        # --- all_products_clean layer ---
+        apc_rows = q(conn, """
+            SELECT style_name, brand
+            FROM all_products_clean
+            WHERE style_name ILIKE %(n)s
+              AND style_name IS NOT NULL AND style_name <> ''
+            ORDER BY style_name
+            LIMIT 5
+        """, {"n": name_q})
+
+        # --- raw_odoo_products layer ---
+        rop_rows = q(conn, """
+            SELECT COALESCE(NULLIF(TRIM(style_name), ''),
+                            NULLIF(SPLIT_PART(name, ' - ', 1), '')) AS style_name,
+                   brand
+            FROM raw_odoo_products
+            WHERE (style_name ILIKE %(n)s
+                   OR (NULLIF(TRIM(style_name), '') IS NULL
+                       AND SPLIT_PART(name, ' - ', 1) ILIKE %(n)s))
+            ORDER BY 1
+            LIMIT 5
+        """, {"n": name_q})
+
     apc_found = len(apc_rows) > 0
     apc_sample = apc_rows[0].get("style_name") if apc_found else None
-
-    # --- raw_odoo_products layer ---
-    rop_rows = api.run_query(
-        """
-        SELECT COALESCE(NULLIF(TRIM(style_name), ''),
-                        NULLIF(SPLIT_PART(name, ' - ', 1), '')) AS style_name,
-               brand
-        FROM raw_odoo_products
-        WHERE (style_name ILIKE %(n)s
-               OR (NULLIF(TRIM(style_name), '') IS NULL
-                   AND SPLIT_PART(name, ' - ', 1) ILIKE %(n)s))
-        ORDER BY 1
-        LIMIT 5
-        """,
-        params={"n": name_q},
-        ttl=0,
-    )
     rop_found = len(rop_rows) > 0
     rop_sample = rop_rows[0] if rop_found else None
 
     # --- picker search layer ---
     picker_hits = _style_search_rows(name, 5)
+    q_low = name.strip().lower()
     matched_by_search = any(
-        name.strip().lower() in (h.get("style_name") or "").lower()
+        q_low in n.lower()
         for h in picker_hits
+        for n in [h.get("style_name") or ""] + list(h.get("aliases") or [])
     )
+
+    # --- Done-DPS visibility layer ---
+    # Probes the exact union scope the DPS # picker uses (all_products_clean
+    # ∪ raw_odoo_products, see _STYLE_SKU_COLORS_SQL) so "style resolves but
+    # the DPS # picker is empty" cases are self-diagnosable. Probes the
+    # exactly-matched style, falling back to the top picker hit for
+    # substring queries.
+    probe_row = _match_style(name) or (picker_hits[0] if picker_hits else None)
+    dps_probe = {"style_name": None, "done_dps_count": 0,
+                 "latest_done_date": None, "visible": False}
+    if probe_row:
+        scope_sql, scope_params, _ = _costing_color_scope(
+            probe_row.get("style_name"), None)
+        with _get_conn() as conn:
+            r = q(conn, f"""
+                SELECT COUNT(DISTINCT c.dps_ref) AS n,
+                       MAX(c.done_date) AS latest
+                FROM mo_fabric_consumption c
+                WHERE {scope_sql}
+                  AND c.dps_ref IS NOT NULL
+            """, scope_params)
+        n_dps = int(r[0]["n"] or 0)
+        latest = r[0]["latest"]
+        dps_probe = {"style_name": probe_row.get("style_name"),
+                     "done_dps_count": n_dps,
+                     "latest_done_date": latest.isoformat() if latest else None,
+                     "visible": n_dps > 0}
 
     # --- human-readable suggestion ---
     if matched_by_search:
         suggestion = "Style is visible in the picker right now."
+        if not dps_probe["visible"]:
+            suggestion += (" No Done DPS is visible for it yet — the DPS # "
+                           "picker stays empty until a DPS for this style "
+                           "is Done and its MOs have synced.")
     elif rop_found and not apc_found:
         suggestion = (
             "Style is in raw_odoo_products (last nightly extract) but has not "
@@ -13467,6 +13584,7 @@ def costing_style_debug(name: str = Query(default=""),
         },
         "matched_by_search": matched_by_search,
         "picker_hits": [h.get("style_name") for h in picker_hits],
+        "done_dps": dps_probe,
         "suggestion": suggestion,
     }
 
@@ -13621,35 +13739,35 @@ def costing_fabric_search(q_: str = Query(default="", alias="q"),
 def costing_dps_list(style_name: str = Query(...)):
     """Done DPS list for a style (DPS ref, latest done date, produced garments,
     MO count) — feeds the DPS # picker on the new-sheet form. Produced qty is
-    summed over the DPS's MOs at the MO grain (component rows would repeat it)."""
+    summed over the DPS's MOs at the MO grain (component rows would repeat it).
+    The style's finished-SKU set unions all_products_clean with
+    raw_odoo_products (_STYLE_SKU_COLORS_SQL) so brand-new styles that only
+    exist in the raw extract list their DPSes too."""
     style_row = _match_style(style_name)
     if not style_row:
         raise HTTPException(status_code=404, detail="Unknown style")
     canon = style_row.get("style_name")
     with _get_conn() as conn:
-        rows = q(conn, """
-            WITH mo AS (
+        rows = q(conn, f"""
+            WITH sku_colors AS ({_STYLE_SKU_COLORS_SQL}),
+            mo AS (
                 SELECT DISTINCT c.dps_ref, c.odoo_mo_id, c.produced_qty,
                        c.done_date, c.finished_sku
                 FROM mo_fabric_consumption c
-                WHERE c.finished_sku IN (
-                        SELECT sku FROM all_products_clean
-                        WHERE lower(style_name) = lower(%s))
+                WHERE c.finished_sku IN (SELECT sku FROM sku_colors)
                   AND c.dps_ref IS NOT NULL
             )
             SELECT mo.dps_ref, MAX(mo.done_date) AS done_date,
                    SUM(mo.produced_qty) AS produced_qty,
                    COUNT(*) AS mo_count,
-                   -- Distinct colours (product-master color_print of the
-                   -- finished SKUs) this DPS produced for the style — feeds
-                   -- the sheet creator's colour-scope picker.
-                   ARRAY_AGG(DISTINCT apc.color_print)
-                       FILTER (WHERE NULLIF(TRIM(apc.color_print), '') IS NOT NULL)
-                       AS colors
+                   -- Distinct colours of the finished SKUs this DPS produced
+                   -- for the style (master color_print, falling back to the
+                   -- raw product name's colour segment for SKUs not in the
+                   -- master yet) — feeds the sheet creator's colour picker.
+                   ARRAY_AGG(DISTINCT sc.color)
+                       FILTER (WHERE sc.color IS NOT NULL) AS colors
             FROM mo
-            LEFT JOIN all_products_clean apc
-                   ON apc.sku = mo.finished_sku
-                  AND lower(apc.style_name) = lower(%s)
+            LEFT JOIN sku_colors sc ON sc.sku = mo.finished_sku
             GROUP BY mo.dps_ref
             ORDER BY MAX(mo.done_date) DESC NULLS LAST, mo.dps_ref DESC
             LIMIT 100

@@ -1,10 +1,11 @@
 """
 attendance_ingest_api.py
 FastAPI sub-app for receiving attendance data pushed from Laptop 1.
-Mounted at /api/attendance inside api_pg.py — the outer Clerk auth gate
-already requires X-Internal-Token == SESSION_SECRET for this whole prefix
-(see _AUTH_INTERNAL_TOKEN_PATHS / path.startswith("/api/attendance") in
-api_pg.py), so no separate token check happens in here.
+Mounted at /api/public/attendance inside api_pg.py — the outer auth gate
+requires X-Internal-Token == SESSION_SECRET (or ?t=<secret>, the pusher's
+client contract) for this whole prefix, checked BEFORE the generic
+/api/public/ bypass (see clerk_auth_gate in api_pg.py), so no separate
+token check happens in here.
 """
 
 import os

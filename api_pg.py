@@ -1371,6 +1371,20 @@ async def clerk_auth_gate(request: Request, call_next):
     if path.startswith("/api/loyalty"):
         return await call_next(request)
 
+    # Attendance ingest (Laptop-1 headless pusher). It lives under /api/public/
+    # for client-routing reasons but is NOT anonymous: it must present the
+    # shared SESSION_SECRET. This check MUST run before the generic
+    # /api/public/ bypass below, or that bypass would expose an
+    # unauthenticated attendance write path. The pusher may send the token as
+    # X-Internal-Token or ?t= (its client contract); constant-time compare,
+    # fails closed when the secret is unset or the token missing/wrong.
+    if path.startswith("/api/public/attendance"):
+        _sec = os.environ.get("SESSION_SECRET") or ""
+        _tok = request.headers.get("x-internal-token") or request.query_params.get("t", "")
+        if _sec and _tok and hmac.compare_digest(_tok, _sec):
+            return await call_next(request)
+        return JSONResponse({"detail": "Not authenticated"}, status_code=401)
+
     # Customer-facing public lookbook share links (no login): a stylist sends a
     # shopper a tokenised lookbook URL; viewing it and registering interest must
     # work without any staff or member session. The handlers validate the
@@ -1394,10 +1408,11 @@ async def clerk_auth_gate(request: Request, call_next):
 
     # Internal sync jobs (no staff session) write a small set of snapshot
     # endpoints, authenticated by the shared SESSION_SECRET via X-Internal-Token
-    # with a constant-time compare. Fails closed when the secret is unset/wrong.
-    if path in _AUTH_INTERNAL_TOKEN_PATHS or path.startswith("/api/public/attendance"):
+    # (header only — no query-token option here) with a constant-time compare.
+    # Fails closed when the secret is unset/wrong.
+    if path in _AUTH_INTERNAL_TOKEN_PATHS:
         _sec = os.environ.get("SESSION_SECRET") or ""
-        _tok = request.headers.get("x-internal-token") or request.query_params.get("t", "")
+        _tok = request.headers.get("x-internal-token") or ""
         if _sec and _tok and hmac.compare_digest(_tok, _sec):
             return await call_next(request)
         return JSONResponse({"detail": "Not authenticated"}, status_code=401)
@@ -40088,56 +40103,11 @@ async def store_profile_ai_diagnosis(store: str = Query(...)):
 
 
 
-@app.post("/api/public/attendance/ingest")
-async def public_attendance_ingest(request: Request):
-    import psycopg2
-    from psycopg2.extras import execute_values as _ev
-    data = await request.json()
-    rows = data.get("rows", [])
-    if not rows:
-        return {"status": "ok", "inserted": 0}
-    conn = psycopg2.connect(os.environ["DATABASE_URL"])
-    cur = conn.cursor()
-    try:
-        _ev(cur, """
-            INSERT INTO vivo_attendance (
-                user_id, employee_name, privilege_level, branch_name, branch_country, location,
-                device_type, device_ip, device_port, device_status, device_fail_count, device_last_seen,
-                attendance_date, check_in_time, check_out_time, hours_worked, is_complete, punch_count,
-                attendance_status, synced_at, pushed_at
-            ) VALUES %s
-            ON CONFLICT (user_id, branch_name, attendance_date) DO UPDATE SET
-                check_in_time=EXCLUDED.check_in_time, check_out_time=EXCLUDED.check_out_time,
-                hours_worked=EXCLUDED.hours_worked, is_complete=EXCLUDED.is_complete,
-                punch_count=EXCLUDED.punch_count, attendance_status=EXCLUDED.attendance_status,
-                pushed_at=EXCLUDED.pushed_at
-        """, [(
-            r["user_id"], r["employee_name"], r["privilege_level"],
-            r["branch_name"], r["branch_country"], r["location"],
-            r["device_type"], r["device_ip"], r["device_port"],
-            r["device_status"], r["device_fail_count"], r["device_last_seen"],
-            r["attendance_date"], r["check_in_time"], r["check_out_time"],
-            r["hours_worked"], r["is_complete"], r["punch_count"],
-            r["attendance_status"], r["synced_at"], r["pushed_at"]
-        ) for r in rows], page_size=500)
-        conn.commit()
-        return {"status": "ok", "inserted": len(rows)}
-    except Exception as e:
-        conn.rollback()
-        return {"error": str(e)}
-    finally:
-        cur.close()
-        conn.close()
-
-@app.get("/api/public/attendance/health")
-async def public_attendance_health():
-    import psycopg2
-    conn = psycopg2.connect(os.environ["DATABASE_URL"])
-    cur = conn.cursor()
-    cur.execute("SELECT MAX(attendance_date), COUNT(*) FROM vivo_attendance")
-    result = cur.fetchone()
-    conn.close()
-    return {"status": "ok", "latest_date": str(result[0]), "total": result[1]}
+# Attendance ingest/health live ONLY in the mounted attendance_ingest_api
+# sub-app (mounted at /api/public/attendance near the top of this file, which
+# owns the whole prefix). The auth gate enforces the internal token for that
+# prefix BEFORE the generic /api/public/ bypass. Do not add duplicate
+# /api/public/attendance/* handlers here — the earlier mount shadows them.
 
 # Serve React build as static files
 build_dir = pathlib.Path(__file__).parent / "dashboard" / "build"
