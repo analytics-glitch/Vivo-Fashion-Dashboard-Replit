@@ -132,3 +132,5 @@
 - [Product colour name-authoritative](product-color-name-authoritative.md) — color_print derives from the product NAME (Odoo attr = stale-on-rename fallback); nightly transform self-heals dev+prod; beware "Off - Shoulder" wrong-split wart.
 - [all_inventory quantity canon](inventory-quantity-column-canon.md) — stock qty column is `available`; on_hand is not the canon and available_quantity does NOT exist (latent 500 raw SQL misses).
 - [Task commits sweep stray worktree changes](task-commit-sweeps-worktree.md) — completion commits include ANY uncommitted env leftovers; diff vs merge base before markTaskComplete or review rejects on unrelated code.
+- [Deploy image 8 GiB limit](deploy-image-size-limit.md) — publish "image size over limit" = workspace bloat; prune .vscode-server/pnpm store/legacy node_modules (safe list inside); builds need BASE_PATH env when run by hand.
+- [Port-cleanup kill hazards](port-cleanup-kill-hazards.md) — never kill a PID off lsof alone (low-PID "node" = platform infra; killing it downs ALL workflows); inspect ps args first, restart everything after.
