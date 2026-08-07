@@ -51,7 +51,7 @@ function LineBoard({ d }) {
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10 }}>
         <Metric label="MADE" value={fmt(d.made_so_far)} sub={`of ${fmt(d.daily_target)}`} />
         <Metric label="% OF TARGET" value={`${pct}%`} sub={`should be ${fmt(d.expected_by_now)}`} />
-        <Metric label="PACE / HR" value={d.pace_per_hour == null ? "—" : fmt(Math.round(d.pace_per_hour))} sub={`${d.hours_completed}/${d.productive_hours} hrs done`} />
+        <Metric label="PACE / HR" value={d.pace_per_hour == null ? "—" : fmt(Math.round(d.pace_per_hour))} sub={`${d.hours_filled ?? 0}/${d.productive_hours} hrs filled`} />
         <Metric label="PROJECTED" value={fmt(d.projected_landing)} sub={`${d.projected_pct}% of target`} bg={sc.bg} />
       </div>
 

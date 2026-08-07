@@ -12,11 +12,19 @@ in practice that is one sheet read per ~30s), so an edit shows on the screen
 within ~1 minute.
 
 Day modes
-- live   (requested/default date == today EAT): pro-rata elapsed math; actuals
-  typed into NOT-YET-STARTED slots are shown but EXCLUDED from made/pace/
-  projection (counted=False) so a stray future entry can't inflate the board.
+- live   (requested/default date == today EAT): "should be" / status use
+  pro-rata clock math; actuals typed into NOT-YET-STARTED slots are shown but
+  EXCLUDED from made/pace/projection (counted=False) so a stray future entry
+  can't inflate the board.
 - past   (date < today): everything elapsed; projection == actual total.
 - future (date > today): nothing elapsed; status "Not started".
+
+Pace & projection are FILLED-HOURS based (per user spec): pace = made ÷ hours
+with an Actual entered (counted only); projection = made + pace × hours
+without a counted entry (future-typed values are forecast as if blank — they
+must not move the projection either way). The clock only drives
+expected_by_now/status — so a line isn't punished for a sheet update that
+lags the wall clock.
 
 Data quality: duplicate (date, line, slot) rows keep the LAST row (treated as
 a correction) and are reported in payload.warnings; unparseable rows are
@@ -222,17 +230,23 @@ def _line_payload(line_name, slots_by_hour, now_eat, day_mode):
             done_slots += 1
 
     productive_hours = len(slots)
-    remaining_hours = max(0.0, productive_hours - elapsed_hours)
 
-    if elapsed_hours >= 0.5 and made > 0:
-        pace = made / elapsed_hours
-        projected = made + pace * remaining_hours
-    elif elapsed_hours >= 0.5:
-        pace = 0.0
-        projected = 0.0
+    # Pace is data-driven, not clock-driven: made ÷ hours actually FILLED IN
+    # (counted slots with an Actual). With 2 hours filled, pace = made/2 until
+    # a third hour is entered — a late sheet update can't drag the pace down.
+    # Projection extends that pace over every slot without a COUNTED entry; a
+    # value typed into a not-yet-started slot is forecast at pace as if blank,
+    # so a stray future entry can neither raise nor lower the projection. A
+    # finished (past) day simply lands on its actual total.
+    hours_filled = sum(1 for s in slots if s["actual"] is not None and s["counted"])
+    unfilled_hours = productive_hours - hours_filled
+
+    if hours_filled > 0:
+        pace = made / hours_filled
+        projected = float(made) if day_mode == "past" else made + pace * unfilled_hours
     else:
-        pace = None  # too early to project from run-rate
-        projected = daily_target
+        pace = None  # no hours filled in yet — no run-rate to project from
+        projected = float(made) if day_mode == "past" else float(daily_target)
 
     expected_i = int(round(expected))
     if day_mode == "future" or elapsed_hours < 0.25 or (expected_i <= 0 and made <= 0):
@@ -255,6 +269,7 @@ def _line_payload(line_name, slots_by_hour, now_eat, day_mode):
         "expected_by_now": expected_i,
         "pct_achieved": int(round(100 * made / daily_target)) if daily_target else 0,
         "pace_per_hour": round(pace, 1) if pace is not None else None,
+        "hours_filled": hours_filled,
         "hours_completed": done_slots,
         "productive_hours": productive_hours,
         "projected_landing": int(round(projected)),

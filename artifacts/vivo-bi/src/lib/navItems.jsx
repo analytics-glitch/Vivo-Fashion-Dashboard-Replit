@@ -142,7 +142,6 @@ export const PRIMARY_NAV = [
     ],
   },
   { to: "/quality", label: "Quality", icon: Medal, id: "quality", group: "Operations & Production", desc: "Production quality dashboard — repairs, defect rates, complaints and washing trackers" },
-  { to: "/production-wallboard", label: "Production Wallboard", icon: Factory, id: "production-wallboard", anyOfPageIds: ["production"], group: "Operations & Production", desc: "Live factory-floor wallboard — hourly output vs target and projected end-of-day landing per sewing line" },
 
   // Catalogues & others
   { to: "/ask", label: "Ask the Dashboard", icon: Sparkle, id: "ask", group: "Tools", desc: "Ask questions about today's sales, footfall, and performance — answered from live business data by AI" },
