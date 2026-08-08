@@ -1416,15 +1416,19 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
       </div>
       <div>
        <label class="rsv-lbl">CMT Start</label>
-       <input id="cost-pp-cmt-start" type="time" step="1" style="width:120px;" oninput="costPreProdCalc()">
+       <input id="cost-pp-cmt-start" type="time" style="width:120px;" oninput="costPreProdCalc()">
       </div>
       <div>
        <label class="rsv-lbl">CMT Stop</label>
-       <input id="cost-pp-cmt-stop" type="time" step="1" style="width:120px;" oninput="costPreProdCalc()">
+       <input id="cost-pp-cmt-stop" type="time" style="width:120px;" oninput="costPreProdCalc()">
       </div>
       <div>
        <label class="rsv-lbl">Cost per Minute (KES)</label>
        <input id="cost-pp-cpm" type="number" min="0" step="any" style="width:130px;" oninput="costPreProdCalc()">
+      </div>
+      <div>
+       <label class="rsv-lbl" title="CMT efficiency factor — raw minutes × this multiplier = adjusted minutes per garment. Blank falls back to 1.40.">Production Multiplier</label>
+       <input id="cost-pp-mult" type="number" min="0" step="any" placeholder="1.40" style="width:130px;" oninput="costPPMultInput(this)">
       </div>
       <div id="cost-pp-cmt-info" class="muted" style="font-size:11px;align-self:flex-end;padding-bottom:5px;"></div>
      </div>
@@ -10320,9 +10324,22 @@ function costApplyStage(restoreOnly){
 const COST_PP_AUTO_PREFIX='pre-production auto';
 const COST_PP_LEGACY_LABELS={
   trim:/^Accessories \([\d.]+% of fabric cost\)$/,
-  cmt:/^CMT \([^)]*×1\.40\)$/,
+  cmt:/^CMT \([^)]*×[\d.]+\)$/,
   overhead:/^Defect Allowance \([\d.]+% of fabric cost\)$/
 };
+// Production Multiplier (CMT efficiency factor) — per SHEET, default 1.40.
+// Blank / invalid / non-positive input falls back to 1.40; the last value the
+// user TYPED is remembered in this browser to prefill NEW sheets only.
+const COST_PP_MULT_DEFAULT=1.40;
+const COST_PP_MULT_KEY='fab_cost_pp_mult_last';
+function costPPMultNorm(v){const n=Number(v);return isFinite(n)&&n>0?n:COST_PP_MULT_DEFAULT;}
+function costPPMultFmt(m){const n=Number(m),s=String(n);return /^\d+(\.\d)?$/.test(s)?n.toFixed(2):s;}
+function costPPMultLast(){try{return costPPMultNorm(localStorage.getItem(COST_PP_MULT_KEY));}catch(e){return COST_PP_MULT_DEFAULT;}}
+function costPPMultInput(el){
+  const n=Number(el&&el.value);
+  if(isFinite(n)&&n>0){try{localStorage.setItem(COST_PP_MULT_KEY,String(n));}catch(e){}}
+  costPreProdCalc();
+}
 function costIsPPAuto(l){return !!(l&&l.is_auto&&(l.source||'').indexOf(COST_PP_AUTO_PREFIX)===0);}
 function costPreProdMatchDefault(l,kind){
   if(!l||l.kind!==kind||!COST_PP_LEGACY_LABELS[kind])return false;
@@ -10345,8 +10362,12 @@ function costPreProdFillInputs(){
   set('cost-pp-acc-pct',costEdit.accessories_pct!=null?costEdit.accessories_pct:13);
   set('cost-pp-def-pct',costEdit.defect_allowance_pct!=null?costEdit.defect_allowance_pct:10);
   set('cost-pp-cpm',costEdit.cost_per_minute!=null?costEdit.cost_per_minute:'');
-  set('cost-pp-cmt-start',costEdit.cmt_start_time||'');
-  set('cost-pp-cmt-stop',costEdit.cmt_stop_time||'');
+  set('cost-pp-mult',costEdit.production_multiplier!=null?costEdit.production_multiplier:COST_PP_MULT_DEFAULT);
+  // Sheets saved while the pickers had a seconds spinner stored HH:MM:SS —
+  // normalize to HH:MM so the pickers stay seconds-free (minutes maths is
+  // unchanged: the calc always ignored seconds).
+  set('cost-pp-cmt-start',(costEdit.cmt_start_time||'').slice(0,5));
+  set('cost-pp-cmt-stop',(costEdit.cmt_stop_time||'').slice(0,5));
 }
 function costPreProdSeedLines(){
   // Add whichever of the four default Pre-production rows are missing, in
@@ -10361,7 +10382,7 @@ function costPreProdSeedLines(){
   if(!costEdit.lines.some(l=>costPreProdMatchDefault(l,'trim')))
     costEdit.lines.push({kind:'trim',label:'Accessories ('+acc+'% of fabric cost)',qty:1,unit_cost:0,is_auto:true,source:COST_PP_AUTO_PREFIX+': '+acc+'% of fabric cost',component_id:null,barcode:null});
   if(!costEdit.lines.some(l=>costPreProdMatchDefault(l,'cmt')))
-    costEdit.lines.push({kind:'cmt',label:'CMT (?–?, KES 0/min ×1.40)',qty:1,unit_cost:0,is_auto:true,source:COST_PP_AUTO_PREFIX+': time-based CMT',component_id:null,barcode:null});
+    costEdit.lines.push({kind:'cmt',label:'CMT (?–?, KES 0/min ×'+costPPMultFmt(costPPMultNorm(costEdit.production_multiplier))+')',qty:1,unit_cost:0,is_auto:true,source:COST_PP_AUTO_PREFIX+': time-based CMT',component_id:null,barcode:null});
   if(!costEdit.lines.some(l=>costPreProdMatchDefault(l,'overhead')))
     costEdit.lines.push({kind:'overhead',label:'Defect Allowance ('+def+'% of fabric cost)',qty:1,unit_cost:0,is_auto:true,source:COST_PP_AUTO_PREFIX+': '+def+'% of fabric cost',component_id:null,barcode:null});
 }
@@ -10405,10 +10426,14 @@ function costPreProdCalc(opts){
   const accPct=Number((document.getElementById('cost-pp-acc-pct')||{}).value)||0;
   const defPct=Number((document.getElementById('cost-pp-def-pct')||{}).value)||0;
   const cpmVal=Number((document.getElementById('cost-pp-cpm')||{}).value)||0;
+  // Blank / invalid / non-positive multiplier → 1.40 until a new figure is typed.
+  const mult=costPPMultNorm((document.getElementById('cost-pp-mult')||{}).value);
+  const multTxt=costPPMultFmt(mult);
   const startStr=((document.getElementById('cost-pp-cmt-start')||{}).value||'').trim();
   const stopStr=((document.getElementById('cost-pp-cmt-stop')||{}).value||'').trim();
   costEdit.mtrs_per_garment=mpg||null;costEdit.accessories_pct=accPct;
   costEdit.defect_allowance_pct=defPct;costEdit.cost_per_minute=cpmVal||null;
+  costEdit.production_multiplier=mult;
   costEdit.cmt_start_time=startStr||null;costEdit.cmt_stop_time=stopStr||null;
   // Only the MAIN fabric row mirrors Mtrs per Garment — additional fabric
   // rows (lining etc.) keep their hand-typed qty.
@@ -10427,15 +10452,15 @@ function costPreProdCalc(opts){
     const parseMins=s=>{const p=(s+':00').split(':').map(Number);return p[0]*60+p[1];};
     let rawMins=parseMins(stopStr)-parseMins(startStr);
     if(rawMins<0)rawMins+=24*60;
-    const adjMins=Math.round(rawMins*1.40*100)/100;
+    const adjMins=Math.round(rawMins*mult*100)/100;
     cpmTotal=Math.round(adjMins*cpmVal*100)/100;
     const infoEl=document.getElementById('cost-pp-cmt-info');
-    if(infoEl)infoEl.textContent=rawMins+' min × 1.40 = '+adjMins+' adj min/gmt × KES '+cpmVal+'/min = KES '+cpmTotal;
+    if(infoEl)infoEl.textContent=rawMins+' min × '+multTxt+' = '+adjMins+' adj min/gmt × KES '+cpmVal+'/min = KES '+cpmTotal;
   }else{
     const infoEl=document.getElementById('cost-pp-cmt-info');
     if(infoEl)infoEl.textContent='Enter start and stop times to auto-calculate CMT cost.';
   }
-  const cmtLabel='CMT ('+(startStr||'?')+'–'+(stopStr||'?')+', KES '+cpmVal+'/min ×1.40)';
+  const cmtLabel='CMT ('+(startStr||'?')+'–'+(stopStr||'?')+', KES '+cpmVal+'/min ×'+multTxt+')';
   structural=costPreProdUpsert('cmt',{kind:'cmt',label:cmtLabel,qty:1,unit_cost:cpmTotal,is_auto:true,source:COST_PP_AUTO_PREFIX+': time-based CMT',component_id:null,barcode:null})||structural;
   // Defect allowance auto-line
   const defTotal=Math.round(defPct/100*fabTotal*100)/100;
@@ -10451,7 +10476,8 @@ function costNewSheet(){
   costEdit={id:null,style_name:null,style_number:null,dps_ref:null,color:null,lines:[],sp_auto:true,history:[],signoffs:null,locked:false,
     embroidery_data:{enabled:false,cost_per_run:0,run_count:0},
     stage:'main_production',accessories_pct:13,defect_allowance_pct:10,
-    mtrs_per_garment:null,cost_per_minute:null,cmt_start_time:null,cmt_stop_time:null};
+    mtrs_per_garment:null,cost_per_minute:null,cmt_start_time:null,cmt_stop_time:null,
+    production_multiplier:costPPMultLast()};
   const stgEl=document.getElementById('cost-stage');if(stgEl)stgEl.value='main_production';
   costApplyStage(false);
   costDpsReset(true);
@@ -10484,6 +10510,9 @@ async function costOpenSheet(id){
       defect_allowance_pct:s.defect_allowance_pct!=null?Number(s.defect_allowance_pct):10,
       mtrs_per_garment:s.mtrs_per_garment!=null?Number(s.mtrs_per_garment):null,
       cost_per_minute:s.cost_per_minute!=null?Number(s.cost_per_minute):null,
+      // Sheets saved before the field existed (NULL) used the hardcoded 1.40 —
+      // reopen at 1.40 so their totals stay identical.
+      production_multiplier:costPPMultNorm(s.production_multiplier),
       cmt_start_time:s.cmt_start_time||null,cmt_stop_time:s.cmt_stop_time||null};
     // Blank-cost self-heal (editor only, UNLOCKED sheets only): a fabric line
     // linked to a master product whose Cost/Mtr was never captured (saved
@@ -10828,6 +10857,7 @@ async function costSaveSheet(){
     costEdit.defect_allowance_pct=Number((document.getElementById('cost-pp-def-pct')||{}).value)||10;
     costEdit.mtrs_per_garment=Number((document.getElementById('cost-pp-mpg')||{}).value)||null;
     costEdit.cost_per_minute=Number((document.getElementById('cost-pp-cpm')||{}).value)||null;
+    costEdit.production_multiplier=costPPMultNorm((document.getElementById('cost-pp-mult')||{}).value);
     costEdit.cmt_start_time=((document.getElementById('cost-pp-cmt-start')||{}).value||'').trim()||null;
     costEdit.cmt_stop_time=((document.getElementById('cost-pp-cmt-stop')||{}).value||'').trim()||null;
   }
@@ -10851,6 +10881,7 @@ async function costSaveSheet(){
     defect_allowance_pct:costEdit.defect_allowance_pct!=null?costEdit.defect_allowance_pct:10,
     mtrs_per_garment:costEdit.mtrs_per_garment||null,
     cost_per_minute:costEdit.cost_per_minute||null,
+    production_multiplier:costEdit.production_multiplier!=null?costEdit.production_multiplier:null,
     cmt_start_time:costEdit.cmt_start_time||null,
     cmt_stop_time:costEdit.cmt_stop_time||null,
     embroidery_data:{enabled:!!emb.enabled,cost_per_run:Number(emb.cost_per_run||0),run_count:Number(emb.run_count||0)},

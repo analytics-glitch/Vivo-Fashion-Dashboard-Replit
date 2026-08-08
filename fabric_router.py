@@ -13162,6 +13162,11 @@ def _ensure_costing_tables(conn):
                 ADD COLUMN IF NOT EXISTS cmt_start_time TEXT;
             ALTER TABLE fabric_costing_sheets
                 ADD COLUMN IF NOT EXISTS cmt_stop_time TEXT;
+            -- CMT efficiency factor ("Production Multiplier") the sheet used.
+            -- NULL = saved before the field existed → read as the legacy 1.40
+            -- so old sheets' totals stay identical.
+            ALTER TABLE fabric_costing_sheets
+                ADD COLUMN IF NOT EXISTS production_multiplier NUMERIC;
         """)
         # One-time backfill: link existing auto fabric lines to their fabric
         # product by matching the line label ("Main fabric (<name>)" from the
@@ -14149,7 +14154,8 @@ def _sheet_payload(conn, sheet_id, with_history=True):
     s["margin_pct"] = margin_pct
     stage = s.get("stage") or "main_production"
     s["stage"] = stage
-    for _k in ("accessories_pct", "defect_allowance_pct", "mtrs_per_garment", "cost_per_minute"):
+    for _k in ("accessories_pct", "defect_allowance_pct", "mtrs_per_garment",
+               "cost_per_minute", "production_multiplier"):
         s[_k] = float(s[_k]) if s.get(_k) is not None else None
     if stage == "pre_production":
         prop_ex, prop_retail = _preproduction_proposed_prices(total)
@@ -14506,8 +14512,12 @@ def costing_sheet_create(request: Request, body: dict = Body(...)):
         defect_allowance_pct = float(body["defect_allowance_pct"]) if body.get("defect_allowance_pct") not in (None, "") else 10.0
         mtrs_per_garment = float(body["mtrs_per_garment"]) if body.get("mtrs_per_garment") not in (None, "") else None
         cost_per_minute = float(body["cost_per_minute"]) if body.get("cost_per_minute") not in (None, "") else None
+        production_multiplier = float(body["production_multiplier"]) if body.get("production_multiplier") not in (None, "") else None
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail="Pre-production numeric fields must be numbers")
+    # Non-positive multiplier is meaningless — store NULL so reads fall back to 1.40.
+    if production_multiplier is not None and production_multiplier <= 0:
+        production_multiplier = None
     cmt_start_time = (str(body.get("cmt_start_time") or "").strip())[:10] or None
     cmt_stop_time  = (str(body.get("cmt_stop_time")  or "").strip())[:10] or None
     emb_data_json = _parse_embroidery_data(body.get("embroidery_data"))
@@ -14538,15 +14548,17 @@ def costing_sheet_create(request: Request, body: dict = Body(...)):
                      notes, dps_ref, color, embroidery_data, stage,
                      accessories_pct, defect_allowance_pct, mtrs_per_garment,
                      cost_per_minute, cmt_start_time, cmt_stop_time,
+                     production_multiplier,
                      created_by, created_by_name,
                      updated_by, updated_by_name)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id
             """, (canon, style_row.get("style_number"), sp,
                   bool(body.get("selling_price_is_auto")) and stage == "main_production",
                   (str(body.get("notes") or "").strip())[:1000] or None,
                   dps_ref, color, emb_data_json, stage,
                   accessories_pct, defect_allowance_pct, mtrs_per_garment,
                   cost_per_minute, cmt_start_time, cmt_stop_time,
+                  production_multiplier,
                   uid, uname, uid, uname))
             sheet_id = cur.fetchone()[0]
             for ln in lines:
@@ -14587,8 +14599,12 @@ def costing_sheet_update(sheet_id: int, request: Request, body: dict = Body(...)
         defect_allowance_pct = float(body["defect_allowance_pct"]) if body.get("defect_allowance_pct") not in (None, "") else 10.0
         mtrs_per_garment = float(body["mtrs_per_garment"]) if body.get("mtrs_per_garment") not in (None, "") else None
         cost_per_minute = float(body["cost_per_minute"]) if body.get("cost_per_minute") not in (None, "") else None
+        production_multiplier = float(body["production_multiplier"]) if body.get("production_multiplier") not in (None, "") else None
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail="Pre-production numeric fields must be numbers")
+    # Non-positive multiplier is meaningless — store NULL so reads fall back to 1.40.
+    if production_multiplier is not None and production_multiplier <= 0:
+        production_multiplier = None
     cmt_start_time = (str(body.get("cmt_start_time") or "").strip())[:10] or None
     cmt_stop_time  = (str(body.get("cmt_stop_time")  or "").strip())[:10] or None
     emb_data_json = _parse_embroidery_data(body.get("embroidery_data"))
@@ -14623,6 +14639,7 @@ def costing_sheet_update(sheet_id: int, request: Request, body: dict = Body(...)
                     dps_ref=%s, color=%s, embroidery_data=%s, stage=%s,
                     accessories_pct=%s, defect_allowance_pct=%s, mtrs_per_garment=%s,
                     cost_per_minute=%s, cmt_start_time=%s, cmt_stop_time=%s,
+                    production_multiplier=%s,
                     updated_by=%s, updated_by_name=%s, updated_at=now()
                 WHERE id=%s
             """, (sp, bool(body.get("selling_price_is_auto")) and stage == "main_production",
@@ -14632,6 +14649,7 @@ def costing_sheet_update(sheet_id: int, request: Request, body: dict = Body(...)
                   emb_data_json, stage,
                   accessories_pct, defect_allowance_pct, mtrs_per_garment,
                   cost_per_minute, cmt_start_time, cmt_stop_time,
+                  production_multiplier,
                   uid, uname, sheet_id))
             cur.execute("DELETE FROM fabric_costing_lines WHERE sheet_id=%s", (sheet_id,))
             for ln in lines:
@@ -14953,6 +14971,21 @@ def _costing_build_pdf_branded(s):
 # so figures always match. Lives under /api/fabric/costing/ so the email
 # allowlist middleware gate covers it like every other costing path.
 
+def _costing_mult_fmt(pm):
+    """Format a sheet's Production Multiplier for display text.
+
+    NULL/invalid/non-positive → the legacy hardcoded 1.40. Two decimals
+    minimum ("1.40", "1.55", "0.90"); extra precision kept as typed
+    ("1.375") — mirrors costPPMultFmt in the editor JS."""
+    try:
+        pm = float(pm) if pm is not None else 1.40
+    except (TypeError, ValueError):
+        pm = 1.40
+    if pm <= 0:
+        pm = 1.40
+    return f"{pm:.2f}" if round(pm, 2) == pm else f"{pm:g}"
+
+
 def _costing_to_build_data(s):
     """Convert a _sheet_payload dict into the build_sheet input format."""
     import re
@@ -15067,11 +15100,14 @@ def _costing_to_build_data(s):
     basis_note = (s.get("notes") or "").strip()
     if not basis_note:
         if stage == "pre_production":
+            # Quote the sheet's OWN Production Multiplier; sheets saved before
+            # the field existed (NULL) used the then-hardcoded 1.40.
+            _pm_txt = _costing_mult_fmt(s.get("production_multiplier"))
             basis_note = (
                 "Pre-production estimate. Fabric cost is metres per garment × master "
                 "cost/metre. Accessories are calculated as a percentage of fabric cost. "
                 "CMT is derived from start/stop time × cost-per-minute rate with a "
-                "×1.40 efficiency factor. Defect allowance is a percentage of fabric "
+                f"×{_pm_txt} efficiency factor. Defect allowance is a percentage of fabric "
                 "cost. Retail price is a target to achieve 70% margin ex-VAT."
             )
         else:

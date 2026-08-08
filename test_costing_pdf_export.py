@@ -271,6 +271,23 @@ class CostingPdfEdgeCases(unittest.TestCase):
         d = fr._costing_to_build_data(s)
         self.assertEqual(d["basis_note"], custom_note)
 
+    def test_preprod_basis_note_quotes_sheet_multiplier(self):
+        """The pre-production fallback basis note must quote the sheet's OWN
+        Production Multiplier, not a fixed ×1.40."""
+        s = _base_sheet(notes="", stage="pre_production",
+                        production_multiplier=1.55)
+        d = fr._costing_to_build_data(s)
+        self.assertIn("\u00d71.55 efficiency factor", d["basis_note"])
+        self.assertNotIn("1.40", d["basis_note"])
+
+    def test_preprod_basis_note_falls_back_to_140_for_legacy_sheets(self):
+        """Sheets saved before the field existed (NULL multiplier) used the
+        then-hardcoded 1.40 — the note must say so."""
+        s = _base_sheet(notes="", stage="pre_production",
+                        production_multiplier=None)
+        d = fr._costing_to_build_data(s)
+        self.assertIn("\u00d71.40 efficiency factor", d["basis_note"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -13,12 +13,22 @@ Covers, per scenario:
   seed_new        — seeding order/labels/AUTO state + idempotency
   worked_example  — 2.5 mtrs x 363.24 = 908.10 -> Trim 118.05, Defect 90.81,
                     CMT (08:00-08:30, KES 5/min x1.40) = 210.00; main fabric
-                    qty mirrors Mtrs per Garment
+                    qty mirrors Mtrs per Garment (no multiplier field in the
+                    DOM -> default 1.40 keeps legacy figures)
   second_fabric   — an additional fabric row keeps its own qty, rolls into
                     the 13%/10% basis, and removal restores the base figures
   adopt_legacy    — reopen re-sync path: manual-flipped machine-labelled rows
                     are ADOPTED in place (duplicates folded, never appended),
                     user-added extra lines untouched
+  custom_mult     — Production Multiplier 1.55 drives the adjusted minutes,
+                    CMT line label (x1.55) and helper text
+  mult_fallback   — blank / non-positive multiplier input falls back to 1.40
+  adopt_custom    — saved sheet with multiplier 1.55 + HH:MM:SS times: fill
+                    normalizes pickers to HH:MM, x1.55 label is adopted (not
+                    duplicated) and re-synced figures use the sheet's value
+  mult_helpers    — costPPMultNorm/costPPMultFmt edge cases; the generalized
+                    CMT label matcher takes x1.40 AND xN.NN labels
+  mult_last       — last-used multiplier remembered only on valid typed input
   locked          — seed + calc are no-ops on a locked sheet
   main_prod_guard — calc no-ops outside pre_production; derived-kind
                     detection is stage-gated
@@ -47,6 +57,12 @@ const esc = (s) => s;
 let renderCalls = 0, totalsCalls = 0;
 function costRenderLines(){ renderCalls++; }
 function costRenderTotals(){ totalsCalls++; }
+const _lsStore = {};                  // browser localStorage stand-in
+const localStorage = {
+  getItem: (k) => (k in _lsStore ? _lsStore[k] : null),
+  setItem: (k, v) => { _lsStore[k] = String(v); },
+  removeItem: (k) => { delete _lsStore[k]; },
+};
 function setDom(vals){ for (const k of Object.keys(dom)) delete dom[k];
   for (const [k, v] of Object.entries(vals)) dom[k] = { value: v }; }
 function snap(){ return JSON.parse(JSON.stringify(costEdit.lines)); }
@@ -166,6 +182,126 @@ results.adopt_legacy = {
   special: adopted.find(l => l.label === 'Special buttons'),
 };
 
+// ── custom_mult (Production Multiplier drives calc, label + helper text) ───
+costEdit = { stage: 'pre_production', locked: false,
+  mtrs_per_garment: null, accessories_pct: 13, defect_allowance_pct: 10,
+  cost_per_minute: null, cmt_start_time: null, cmt_stop_time: null,
+  production_multiplier: null,
+  lines: [{ kind: 'fabric', label: 'Test Fabric', qty: null,
+            unit_cost: 363.24, is_auto: false, source: null,
+            component_id: null, barcode: null }] };
+setDom({ 'cost-pp-mpg': '2.5', 'cost-pp-acc-pct': '13',
+         'cost-pp-def-pct': '10', 'cost-pp-cpm': '5',
+         'cost-pp-cmt-start': '08:00', 'cost-pp-cmt-stop': '08:30',
+         'cost-pp-mult': '1.55', 'cost-pp-cmt-info': '' });
+costPreProdSeedLines();
+costPreProdCalc();
+const cmRows = snap();
+const cmCmt = cmRows.find(l => costPreProdMatchDefault(l, 'cmt'));
+results.custom_mult = {
+  cmt_cost: cmCmt.unit_cost, cmt_label: cmCmt.label,
+  cmt_auto: costIsPPAuto(cmCmt),
+  info: dom['cost-pp-cmt-info'].textContent,
+  synced: costEdit.production_multiplier,
+  trim_cost: cmRows.find(l => costPreProdMatchDefault(l, 'trim')).unit_cost,
+  def_cost: cmRows.find(l => costPreProdMatchDefault(l, 'overhead')).unit_cost,
+  count: cmRows.length,
+};
+
+// ── mult_fallback (blank / non-positive input -> 1.40) ─────────────────────
+costEdit = { stage: 'pre_production', locked: false,
+  mtrs_per_garment: null, accessories_pct: 13, defect_allowance_pct: 10,
+  cost_per_minute: null, cmt_start_time: null, cmt_stop_time: null,
+  lines: [{ kind: 'fabric', label: 'Test Fabric', qty: null,
+            unit_cost: 363.24, is_auto: false, source: null,
+            component_id: null, barcode: null }] };
+setDom({ 'cost-pp-mpg': '2.5', 'cost-pp-acc-pct': '13',
+         'cost-pp-def-pct': '10', 'cost-pp-cpm': '5',
+         'cost-pp-cmt-start': '08:00', 'cost-pp-cmt-stop': '08:30',
+         'cost-pp-mult': '', 'cost-pp-cmt-info': '' });
+costPreProdSeedLines();
+costPreProdCalc();
+const fbCmt = costEdit.lines.find(l => costPreProdMatchDefault(l, 'cmt'));
+const fbBlank = { cmt: fbCmt.unit_cost, label: fbCmt.label,
+  info: dom['cost-pp-cmt-info'].textContent,
+  synced: costEdit.production_multiplier };
+dom['cost-pp-mult'].value = '0';
+costPreProdCalc();
+const fbZero = {
+  cmt: costEdit.lines.find(l => costPreProdMatchDefault(l, 'cmt')).unit_cost,
+  synced: costEdit.production_multiplier };
+results.mult_fallback = { blank: fbBlank, zero: fbZero };
+
+// ── adopt_custom (saved sheet: multiplier 1.55 + HH:MM:SS times) ───────────
+costEdit = { stage: 'pre_production', locked: false,
+  mtrs_per_garment: 2.5, accessories_pct: 13, defect_allowance_pct: 10,
+  cost_per_minute: 5, cmt_start_time: '08:00:00', cmt_stop_time: '08:30:00',
+  production_multiplier: 1.55,
+  lines: [
+    { kind: 'fabric', label: 'Test Fabric', qty: 1, unit_cost: 363.24,
+      is_auto: false, source: null, component_id: null },
+    { kind: 'trim', label: 'Accessories (13% of fabric cost)', qty: 1,
+      unit_cost: 0, is_auto: false, source: null, component_id: null },
+    { kind: 'cmt', label: 'CMT (08:00:00\u201308:30:00, KES 5/min \u00d71.55)',
+      qty: 1, unit_cost: 0, is_auto: false, source: null, component_id: null },
+    { kind: 'overhead', label: 'Defect Allowance (10% of fabric cost)',
+      qty: 1, unit_cost: 0, is_auto: false, source: null, component_id: null },
+  ] };
+setDom({ 'cost-pp-mpg': '', 'cost-pp-acc-pct': '', 'cost-pp-def-pct': '',
+         'cost-pp-cpm': '', 'cost-pp-cmt-start': '', 'cost-pp-cmt-stop': '',
+         'cost-pp-mult': '', 'cost-pp-cmt-info': '' });
+costPreProdFillInputs();              // costOpenSheet's re-sync path
+const acFilled = { start: dom['cost-pp-cmt-start'].value,
+                   stop: dom['cost-pp-cmt-stop'].value,
+                   mult: dom['cost-pp-mult'].value };
+const acLenBefore = costEdit.lines.length;
+costPreProdSeedLines();
+const acSeedAddedNothing = costEdit.lines.length === acLenBefore;
+costPreProdCalc();
+const acRows = snap();
+const acCmt = acRows.find(l => costPreProdMatchDefault(l, 'cmt'));
+results.adopt_custom = {
+  filled: acFilled, seed_added_nothing: acSeedAddedNothing,
+  count: acRows.length,
+  cmt_cost: acCmt.unit_cost, cmt_label: acCmt.label,
+  cmt_auto: costIsPPAuto(acCmt),
+  cmt_default_count: acRows.filter(l => costPreProdMatchDefault(l, 'cmt')).length,
+  synced_mult: costEdit.production_multiplier,
+  trim_cost: acRows.find(l => costPreProdMatchDefault(l, 'trim')).unit_cost,
+};
+
+// ── mult_helpers (norm/fmt edges + generalized CMT label matcher) ──────────
+results.mult_helpers = {
+  norm_blank: costPPMultNorm(''), norm_zero: costPPMultNorm('0'),
+  norm_neg: costPPMultNorm('-2'), norm_txt: costPPMultNorm('abc'),
+  norm_missing: costPPMultNorm(undefined),
+  norm_low: costPPMultNorm('0.9'), norm_ok: costPPMultNorm('1.55'),
+  fmt_140: costPPMultFmt(1.4), fmt_155: costPPMultFmt(1.55),
+  fmt_090: costPPMultFmt(0.9), fmt_1375: costPPMultFmt(1.375),
+  fmt_2: costPPMultFmt(2),
+  matcher_legacy: costPreProdMatchDefault(
+    { kind: 'cmt', label: 'CMT (08:00\u201308:30, KES 5/min \u00d71.40)',
+      is_auto: false }, 'cmt'),
+  matcher_new: costPreProdMatchDefault(
+    { kind: 'cmt', label: 'CMT (08:00\u201308:30, KES 5/min \u00d71.55)',
+      is_auto: false }, 'cmt'),
+  matcher_seed: costPreProdMatchDefault(
+    { kind: 'cmt', label: 'CMT (?\u2013?, KES 0/min \u00d70.90)',
+      is_auto: false }, 'cmt'),
+  matcher_not_cmt: costPreProdMatchDefault(
+    { kind: 'cmt', label: 'Special CMT work', is_auto: false }, 'cmt'),
+};
+
+// ── mult_last (remember last TYPED value; blank/invalid never overwrite) ───
+costEdit = { stage: 'main_production', locked: false, lines: [] };  // calc no-ops
+const mlDefault = costPPMultLast();
+costPPMultInput({ value: '1.62' });
+const mlAfter = costPPMultLast();
+costPPMultInput({ value: '' });       // blank must NOT overwrite
+costPPMultInput({ value: '-3' });     // invalid must NOT overwrite
+results.mult_last = { default_val: mlDefault, after: mlAfter,
+                      after_bad: costPPMultLast() };
+
 // ── locked (seed + calc must both be no-ops) ───────────────────────────────
 costEdit = { stage: 'pre_production', locked: true,
   mtrs_per_garment: 2.5, accessories_pct: 13, defect_allowance_pct: 10,
@@ -221,7 +357,9 @@ class PreProdCostingLinesTest(unittest.TestCase):
         block = _extract_block()
         for fn in ("costPreProdSeedLines", "costPreProdUpsert",
                    "costPreProdCalc", "costPreProdFillInputs",
-                   "costPreProdMatchDefault", "costPPDerivedKind"):
+                   "costPreProdMatchDefault", "costPPDerivedKind",
+                   "costPPMultNorm", "costPPMultFmt", "costPPMultLast",
+                   "costPPMultInput"):
             if ("function %s(" % fn) not in block:
                 raise AssertionError("expected %s in extracted block" % fn)
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False,
@@ -320,6 +458,89 @@ class PreProdCostingLinesTest(unittest.TestCase):
         sp = self.results["adopt_legacy"]["special"]
         self.assertEqual((sp["qty"], sp["unit_cost"], sp["is_auto"]),
                          (2, 10, False))
+
+    # ── Production Multiplier ──────────────────────────────────────────────
+    def test_custom_multiplier_drives_calc_label_and_info(self):
+        cm = self.results["custom_mult"]
+        self.assertEqual(cm["cmt_cost"], 232.5,
+                         "30 min x 1.55 = 46.5 adj min x KES 5/min")
+        self.assertIn("\u00d71.55", cm["cmt_label"])
+        self.assertNotIn("1.40", cm["cmt_label"],
+                         "label must quote the sheet's actual multiplier")
+        self.assertEqual(cm["info"],
+                         "30 min \u00d7 1.55 = 46.5 adj min/gmt \u00d7 "
+                         "KES 5/min = KES 232.5")
+        self.assertEqual(cm["synced"], 1.55,
+                         "calc must sync the multiplier onto the sheet")
+        self.assertTrue(cm["cmt_auto"])
+        self.assertEqual(cm["count"], 4)
+        self.assertEqual(cm["trim_cost"], 118.05,
+                         "multiplier must not touch the percentage lines")
+        self.assertEqual(cm["def_cost"], 90.81)
+
+    def test_blank_or_nonpositive_multiplier_falls_back_to_140(self):
+        fb = self.results["mult_fallback"]
+        self.assertEqual(fb["blank"]["cmt"], 210.00)
+        self.assertIn("\u00d71.40", fb["blank"]["label"])
+        self.assertEqual(fb["blank"]["synced"], 1.40)
+        self.assertEqual(fb["blank"]["info"],
+                         "30 min \u00d7 1.40 = 42 adj min/gmt \u00d7 "
+                         "KES 5/min = KES 210")
+        self.assertEqual(fb["zero"]["cmt"], 210.00)
+        self.assertEqual(fb["zero"]["synced"], 1.40)
+
+    def test_saved_multiplier_reopen_resync(self):
+        ac = self.results["adopt_custom"]
+        self.assertEqual(ac["filled"]["start"], "08:00",
+                         "HH:MM:SS start time must fill the picker as HH:MM")
+        self.assertEqual(ac["filled"]["stop"], "08:30")
+        self.assertEqual(ac["filled"]["mult"], 1.55,
+                         "stored multiplier must prefill the field")
+        self.assertTrue(ac["seed_added_nothing"],
+                        "the x1.55-labelled row satisfies seeding")
+        self.assertEqual(ac["count"], 4)
+        self.assertEqual(ac["cmt_default_count"], 1,
+                         "custom-multiplier label adopted, never duplicated")
+        self.assertEqual(ac["cmt_cost"], 232.5,
+                         "same 30 minutes as before: figures unchanged")
+        self.assertIn("08:00\u201308:30", ac["cmt_label"],
+                      "re-synced label drops the legacy seconds")
+        self.assertIn("\u00d71.55", ac["cmt_label"])
+        self.assertTrue(ac["cmt_auto"],
+                        "manual-flipped custom-label row re-adopted AUTO")
+        self.assertEqual(ac["synced_mult"], 1.55)
+        self.assertEqual(ac["trim_cost"], 118.05)
+
+    def test_multiplier_norm_and_fmt_helpers(self):
+        h = self.results["mult_helpers"]
+        for k in ("norm_blank", "norm_zero", "norm_neg", "norm_txt",
+                  "norm_missing"):
+            self.assertEqual(h[k], 1.40, k + " must fall back to 1.40")
+        self.assertEqual(h["norm_low"], 0.9,
+                         "positive values below 1 are allowed")
+        self.assertEqual(h["norm_ok"], 1.55)
+        self.assertEqual(h["fmt_140"], "1.40")
+        self.assertEqual(h["fmt_155"], "1.55")
+        self.assertEqual(h["fmt_090"], "0.90")
+        self.assertEqual(h["fmt_1375"], "1.375",
+                         "extra precision is kept as typed")
+        self.assertEqual(h["fmt_2"], "2.00")
+
+    def test_cmt_matcher_adopts_legacy_and_custom_labels(self):
+        h = self.results["mult_helpers"]
+        self.assertTrue(h["matcher_legacy"], "x1.40 legacy label must match")
+        self.assertTrue(h["matcher_new"], "xN.NN labels must match")
+        self.assertTrue(h["matcher_seed"], "seed placeholder label must match")
+        self.assertFalse(h["matcher_not_cmt"],
+                         "user-added CMT lines must never be adopted")
+
+    def test_last_used_multiplier_remembered_only_on_valid_input(self):
+        ml = self.results["mult_last"]
+        self.assertEqual(ml["default_val"], 1.40,
+                         "no remembered value -> 1.40")
+        self.assertEqual(ml["after"], 1.62)
+        self.assertEqual(ml["after_bad"], 1.62,
+                         "blank/invalid input must not overwrite last-used")
 
     # ── locked / stage guards ──────────────────────────────────────────────
     def test_locked_sheet_is_never_mutated(self):
