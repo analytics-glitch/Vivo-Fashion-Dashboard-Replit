@@ -13152,6 +13152,14 @@ def _ensure_costing_tables(conn):
                 ADD COLUMN IF NOT EXISTS stage TEXT DEFAULT 'main_production';
             ALTER TABLE fabric_costing_sheets
                 ADD COLUMN IF NOT EXISTS accessories_pct NUMERIC DEFAULT 13;
+            -- Provenance of the AUTO-PICKED Accessories % (pre-production
+            -- sheets created since the previous-month Done-DPS auto-pick):
+            -- {pct, source_month, month_label, dps_count, fallback,
+            --  is_default, requested_month, requested_month_label, picked_at}.
+            -- NULL = legacy sheet created before the auto-pick existed — its
+            -- hand-typed accessories_pct is preserved and never re-picked.
+            ALTER TABLE fabric_costing_sheets
+                ADD COLUMN IF NOT EXISTS accessories_pct_meta JSONB;
             ALTER TABLE fabric_costing_sheets
                 ADD COLUMN IF NOT EXISTS defect_allowance_pct NUMERIC DEFAULT 10;
             ALTER TABLE fabric_costing_sheets
@@ -13971,6 +13979,212 @@ def costing_suggest(style_name: str = Query(...),
     return facts
 
 
+# ── Pre-production Accessories % — previous-month Done-DPS average ──────
+# The Pre-production "Accessories % of fabric cost" is no longer hand-typed:
+# it is picked ONCE at sheet creation from the previous CALENDAR month's
+# Done-DPS actuals and persisted with full provenance (source month, DPS
+# count, fallback flag). Pooled ratio on the same MO-valued basis as the
+# costing consumption analysis: Σ(consumed_qty × unit_cost_mo) of trims rows
+# ÷ the same sum of fabric rows. A DPS qualifies when it has ≥1 fabric
+# component (is_main_fabric) AND ≥1 trims component and its fabric value is
+# > 0; each DPS is attributed to the month of its LATEST done_date. No
+# qualifying DPS in the previous month → walk back to the most recent
+# earlier month that has them (flagged as fallback); no month at all → the
+# legacy 13% default, labelled as such.
+
+_PP_ACC_DEFAULT_PCT = 13.0
+_PP_MONTH_ABBR = ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+
+def _preprod_month_label(ym):
+    """'2026-07' → 'Jul 2026' (locale-independent)."""
+    try:
+        y, m = str(ym).split("-")[:2]
+        return f"{_PP_MONTH_ABBR[int(m) - 1]} {int(y)}"
+    except Exception:
+        return str(ym)
+
+
+def _preprod_acc_pct_fmt(pct):
+    """Display form of the % — rounded HALF-UP to 2 dp with trailing zeros
+    dropped ('8.98', '13'). Mirrors costAccPctFmt in the editor JS
+    (Math.round semantics) so server-stamped and editor-recalculated labels
+    stay byte-identical."""
+    try:
+        return f"{math.floor(float(pct) * 100 + 0.5) / 100.0:g}"
+    except (TypeError, ValueError):
+        return str(pct)
+
+
+def _preprod_acc_provenance_suffix(meta):
+    """Canonical ' — <Mon YYYY> Done-DPS avg, N DPS' provenance suffix used
+    in the auto Accessories line label AND source. Empty for legacy sheets
+    (meta None) so their labels stay exactly as saved. Must match
+    costAccProvSuffix in the editor JS character-for-character."""
+    if not isinstance(meta, dict):
+        return ""
+    if meta.get("is_default"):
+        return " — default (no Done-DPS history)"
+    lbl = meta.get("month_label") or _preprod_month_label(meta.get("source_month"))
+    suffix = f" — {lbl} Done-DPS avg, {int(meta.get('dps_count') or 0)} DPS"
+    if meta.get("fallback"):
+        suffix += " (fallback)"
+    return suffix
+
+
+def _preprod_acc_month_rows(conn):
+    """Per-month pooled trims/fabric MO value over QUALIFYING Done DPS,
+    newest month first. Same valuation filters as the MO-valued accessory
+    basis used for main-production suggestions (unit_cost_mo > 0 AND
+    consumed_qty > 0 rows only)."""
+    return q(conn, """
+        WITH dps AS (
+            SELECT dps_ref,
+                   to_char(date_trunc('month', MAX(done_date)), 'YYYY-MM') AS month,
+                   SUM(consumed_qty * unit_cost_mo)
+                       FILTER (WHERE is_main_fabric
+                               AND unit_cost_mo > 0 AND consumed_qty > 0) AS fabric_val,
+                   SUM(consumed_qty * unit_cost_mo)
+                       FILTER (WHERE NOT is_main_fabric
+                               AND unit_cost_mo > 0 AND consumed_qty > 0) AS trims_val,
+                   COUNT(*) FILTER (WHERE is_main_fabric)     AS fabric_rows,
+                   COUNT(*) FILTER (WHERE NOT is_main_fabric) AS trims_rows
+            FROM mo_fabric_consumption
+            WHERE dps_ref IS NOT NULL AND done_date IS NOT NULL
+            GROUP BY dps_ref
+        )
+        SELECT month,
+               COUNT(*)                    AS dps_count,
+               SUM(COALESCE(trims_val, 0)) AS trims_total,
+               SUM(fabric_val)             AS fabric_total
+        FROM dps
+        WHERE fabric_rows > 0 AND trims_rows > 0 AND COALESCE(fabric_val, 0) > 0
+        GROUP BY month
+        ORDER BY month DESC
+    """)
+
+
+def _preprod_acc_pick_from_months(month_rows, today):
+    """Pure picker: previous calendar month relative to `today`, walking back
+    to the most recent earlier month with qualifying DPS (fallback=True), or
+    the 13% default when no month qualifies. Months at/after the current one
+    are never considered. Returns {"pct": float, "meta": dict} — pct is the
+    PRECISE value (the maths uses it); display rounds to 2 dp."""
+    first_this = today.replace(day=1)
+    prev = first_this - datetime.timedelta(days=1)
+    want = f"{prev.year:04d}-{prev.month:02d}"
+    picked_at = datetime.datetime.now(ZoneInfo("Africa/Nairobi")).isoformat()
+    usable = []
+    for r in month_rows or []:
+        m = str(r.get("month") or "")
+        fab = float(r.get("fabric_total") or 0)
+        n = int(r.get("dps_count") or 0)
+        if not m or m > want or fab <= 0 or n <= 0:
+            continue
+        usable.append((m, n, float(r.get("trims_total") or 0), fab))
+    usable.sort(key=lambda t: t[0], reverse=True)
+    if usable:
+        m, n, trims, fab = usable[0]
+        pct = trims / fab * 100.0
+        meta = {
+            "pct": pct,
+            "source_month": m,
+            "month_label": _preprod_month_label(m),
+            "dps_count": n,
+            "fallback": m != want,
+            "is_default": False,
+            "requested_month": want,
+            "requested_month_label": _preprod_month_label(want),
+            "picked_at": picked_at,
+        }
+        return {"pct": pct, "meta": meta}
+    meta = {
+        "pct": _PP_ACC_DEFAULT_PCT,
+        "source_month": None,
+        "month_label": None,
+        "dps_count": 0,
+        "fallback": False,
+        "is_default": True,
+        "requested_month": want,
+        "requested_month_label": _preprod_month_label(want),
+        "picked_at": picked_at,
+    }
+    return {"pct": _PP_ACC_DEFAULT_PCT, "meta": meta}
+
+
+def _preprod_accessories_pick(conn, today=None):
+    """The % a pre-production sheet created `today` (EAT) uses. A missing
+    mo_fabric_consumption table (brand-new DB, extract never ran) is
+    genuinely 'no data' → the labelled 13% default; any other DB error
+    surfaces."""
+    if today is None:
+        today = datetime.datetime.now(ZoneInfo("Africa/Nairobi")).date()
+    try:
+        rows = _preprod_acc_month_rows(conn)
+    except Exception as e:
+        if getattr(e, "pgcode", None) == "42P01":  # undefined_table
+            conn.rollback()
+            rows = []
+        else:
+            raise
+    return _preprod_acc_pick_from_months(rows, today)
+
+
+_PP_AUTO_SOURCE_PREFIX = "pre-production auto"
+# Machine-generated Accessories line label: the legacy form and the
+# provenance-suffixed form ("… — Jul 2026 Done-DPS avg, 75 DPS"). Kept in
+# lockstep with COST_PP_LEGACY_LABELS.trim in the editor JS.
+_PP_ACC_LINE_LABEL_RE = re.compile(
+    r"^Accessories \([\d.]+% of fabric cost( — .*)?\)$")
+
+
+def _preprod_apply_accessories(lines, pct, meta):
+    """Server-authoritative Accessories auto line for pre-production sheets.
+
+    The % is read-only (picked at creation / stored on the sheet), so the
+    derived line's amount, label and source are re-stamped here from the
+    SHEET's % — the client's figures for this one derived line are never
+    trusted, or a stale/tampered editor could bake a different % into the
+    saved maths. Line identity matches the editor's derived-row contract:
+    the 'pre-production auto' source tag, or the machine-generated label for
+    legacy rows; duplicate machine-labelled leftovers are folded into the
+    first. Sheets with no matching row are left alone — the server never
+    injects lines."""
+    idxs = []
+    for i, ln in enumerate(lines):
+        if ln.get("kind") != "trim":
+            continue
+        src = ln.get("source") or ""
+        label = (ln.get("label") or "").strip()
+        if ((ln.get("is_auto") and src.startswith(_PP_AUTO_SOURCE_PREFIX))
+                or _PP_ACC_LINE_LABEL_RE.match(label)):
+            idxs.append(i)
+    if not idxs:
+        return lines
+    fab_total = sum(float(ln.get("qty") or 0) * float(ln.get("unit_cost") or 0)
+                    for ln in lines if ln.get("kind") == "fabric")
+    # Same rounding as the editor (Math.round half-up) on the PRECISE %.
+    amount = math.floor(float(pct) / 100.0 * fab_total * 100 + 0.5) / 100.0
+    txt = (f"{_preprod_acc_pct_fmt(pct)}% of fabric cost"
+           f"{_preprod_acc_provenance_suffix(meta)}")
+    keep = lines[idxs[0]]
+    keep.update({
+        "label": f"Accessories ({txt})",
+        "qty": 1.0,
+        "unit_cost": round(amount, 4),
+        "total": round(amount, 2),
+        "is_auto": True,
+        "source": f"{_PP_AUTO_SOURCE_PREFIX}: {txt}",
+        "component_id": None,
+    })
+    for j in reversed(idxs[1:]):
+        lines.pop(j)
+    for p, ln in enumerate(lines):
+        ln["position"] = p
+    return lines
+
+
 def _clean_costing_lines(lines):
     """Validate + normalise posted cost lines; totals are recomputed
     server-side (never trusted from the client)."""
@@ -14157,6 +14371,15 @@ def _sheet_payload(conn, sheet_id, with_history=True):
     for _k in ("accessories_pct", "defect_allowance_pct", "mtrs_per_garment",
                "cost_per_minute", "production_multiplier"):
         s[_k] = float(s[_k]) if s.get(_k) is not None else None
+    # Accessories % provenance (auto-picked at creation for pre-production
+    # sheets). None = legacy sheet — its saved % is shown as-is.
+    _acc_meta = s.get("accessories_pct_meta")
+    if isinstance(_acc_meta, str):
+        try:
+            _acc_meta = json.loads(_acc_meta)
+        except Exception:
+            _acc_meta = None
+    s["accessories_pct_meta"] = _acc_meta if isinstance(_acc_meta, dict) else None
     if stage == "pre_production":
         prop_ex, prop_retail = _preproduction_proposed_prices(total)
         s["proposed_selling_price"] = prop_ex
@@ -14482,6 +14705,23 @@ def _parse_embroidery_data(raw):
     return json.dumps({"enabled": enabled, "cost_per_run": cpr, "run_count": rc})
 
 
+@fabric_router.get("/api/fabric/costing/preprod-accessories-pct")
+def costing_preprod_accessories_pct():
+    """Preview of the Accessories % a NEW pre-production sheet would be
+    created with right now: the previous calendar month's pooled Done-DPS
+    trims:fabric average (walk-back fallback / labelled 13% default when
+    there is no qualifying history). The create endpoint re-computes and
+    PERSISTS this itself — the preview only lets the editor show the value
+    before saving."""
+    with _get_conn() as conn:
+        pick = _preprod_accessories_pick(conn)
+    return {
+        "accessories_pct": pick["pct"],
+        "accessories_pct_display": math.floor(pick["pct"] * 100 + 0.5) / 100.0,
+        "meta": pick["meta"],
+    }
+
+
 @fabric_router.post("/api/fabric/costing/sheets")
 def costing_sheet_create(request: Request, body: dict = Body(...)):
     _costing_require_editor(request)
@@ -14506,9 +14746,12 @@ def costing_sheet_create(request: Request, body: dict = Body(...)):
         raise HTTPException(status_code=400,
                             detail="Pick a DPS # for the style — costing sheets are built from one Done DPS")
     color = (str(body.get("color") or "").strip())[:100] or None
-    # Pre-production extra fields
+    # Pre-production extra fields. accessories_pct is NOT read from the
+    # client: pre-production sheets get the server-picked previous-month
+    # Done-DPS average below (read-only by design), and main-production
+    # sheets don't use it (stored at the legacy 13 default).
+    accessories_pct = _PP_ACC_DEFAULT_PCT
     try:
-        accessories_pct = float(body["accessories_pct"]) if body.get("accessories_pct") not in (None, "") else 13.0
         defect_allowance_pct = float(body["defect_allowance_pct"]) if body.get("defect_allowance_pct") not in (None, "") else 10.0
         mtrs_per_garment = float(body["mtrs_per_garment"]) if body.get("mtrs_per_garment") not in (None, "") else None
         cost_per_minute = float(body["cost_per_minute"]) if body.get("cost_per_minute") not in (None, "") else None
@@ -14522,16 +14765,6 @@ def costing_sheet_create(request: Request, body: dict = Body(...)):
     cmt_stop_time  = (str(body.get("cmt_stop_time")  or "").strip())[:10] or None
     emb_data_json = _parse_embroidery_data(body.get("embroidery_data"))
     lines = _clean_costing_lines(body.get("lines"))
-    # For pre-production, override selling_price with the 70%-margin proposed price
-    if stage == "pre_production":
-        _lines_total = sum(ln["total"] for ln in lines)
-        try:
-            _raw_emb = json.loads(emb_data_json) if emb_data_json else {}
-            if isinstance(_raw_emb, dict) and _raw_emb.get("enabled"):
-                _lines_total += float(_raw_emb.get("cost_per_run", 0)) * float(_raw_emb.get("run_count", 0))
-        except Exception:
-            pass
-        _, sp = _preproduction_proposed_prices(_lines_total)
     with _get_conn() as conn:
         _ensure_costing_tables(conn)
         if stage == "main_production" and dps_ref:
@@ -14541,22 +14774,43 @@ def costing_sheet_create(request: Request, body: dict = Body(...)):
         if dup:
             raise HTTPException(status_code=409,
                                 detail=f"A costing sheet for this style already exists (#{dup[0]['id']}) — edit it instead")
+        acc_meta_json = None
+        if stage == "pre_production":
+            # Accessories % — picked ONCE here, from the previous calendar
+            # month's Done-DPS average, and persisted with provenance.
+            # Client-supplied percentages are never accepted; the derived
+            # Accessories line is re-stamped from the picked % too.
+            _acc_pick = _preprod_accessories_pick(conn)
+            accessories_pct = _acc_pick["pct"]
+            acc_meta_json = json.dumps(_acc_pick["meta"])
+            _preprod_apply_accessories(lines, accessories_pct, _acc_pick["meta"])
+            # Selling price: 70%-margin proposal from the (re-stamped) lines.
+            _lines_total = sum(ln["total"] for ln in lines)
+            try:
+                _raw_emb = json.loads(emb_data_json) if emb_data_json else {}
+                if isinstance(_raw_emb, dict) and _raw_emb.get("enabled"):
+                    _lines_total += float(_raw_emb.get("cost_per_run", 0)) * float(_raw_emb.get("run_count", 0))
+            except Exception:
+                pass
+            _, sp = _preproduction_proposed_prices(_lines_total)
         with conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO fabric_costing_sheets
                     (style_name, style_number, selling_price, selling_price_is_auto,
                      notes, dps_ref, color, embroidery_data, stage,
-                     accessories_pct, defect_allowance_pct, mtrs_per_garment,
+                     accessories_pct, accessories_pct_meta,
+                     defect_allowance_pct, mtrs_per_garment,
                      cost_per_minute, cmt_start_time, cmt_stop_time,
                      production_multiplier,
                      created_by, created_by_name,
                      updated_by, updated_by_name)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id
             """, (canon, style_row.get("style_number"), sp,
                   bool(body.get("selling_price_is_auto")) and stage == "main_production",
                   (str(body.get("notes") or "").strip())[:1000] or None,
                   dps_ref, color, emb_data_json, stage,
-                  accessories_pct, defect_allowance_pct, mtrs_per_garment,
+                  accessories_pct, acc_meta_json,
+                  defect_allowance_pct, mtrs_per_garment,
                   cost_per_minute, cmt_start_time, cmt_stop_time,
                   production_multiplier,
                   uid, uname, uid, uname))
@@ -14593,9 +14847,10 @@ def costing_sheet_update(sheet_id: int, request: Request, body: dict = Body(...)
     stage = (str(body.get("stage") or "main_production").strip())[:50]
     if stage not in ("main_production", "pre_production"):
         stage = "main_production"
-    # Pre-production extra fields
+    # Pre-production extra fields. accessories_pct is NOT read from the
+    # client — it is read-only: the value picked at sheet creation (or the
+    # hand-typed value saved on legacy sheets) always wins, below.
     try:
-        accessories_pct = float(body["accessories_pct"]) if body.get("accessories_pct") not in (None, "") else 13.0
         defect_allowance_pct = float(body["defect_allowance_pct"]) if body.get("defect_allowance_pct") not in (None, "") else 10.0
         mtrs_per_garment = float(body["mtrs_per_garment"]) if body.get("mtrs_per_garment") not in (None, "") else None
         cost_per_minute = float(body["cost_per_minute"]) if body.get("cost_per_minute") not in (None, "") else None
@@ -14608,16 +14863,6 @@ def costing_sheet_update(sheet_id: int, request: Request, body: dict = Body(...)
     cmt_start_time = (str(body.get("cmt_start_time") or "").strip())[:10] or None
     cmt_stop_time  = (str(body.get("cmt_stop_time")  or "").strip())[:10] or None
     emb_data_json = _parse_embroidery_data(body.get("embroidery_data"))
-    # For pre-production, override selling_price with the 70%-margin proposed price
-    if stage == "pre_production":
-        _lines_total = sum(ln["total"] for ln in lines)
-        try:
-            _raw_emb = json.loads(emb_data_json) if emb_data_json else {}
-            if isinstance(_raw_emb, dict) and _raw_emb.get("enabled"):
-                _lines_total += float(_raw_emb.get("cost_per_run", 0)) * float(_raw_emb.get("run_count", 0))
-        except Exception:
-            pass
-        _, sp = _preproduction_proposed_prices(_lines_total)
     with _get_conn() as conn:
         _ensure_costing_tables(conn)
         sheets = q(conn, "SELECT * FROM fabric_costing_sheets WHERE id=%s", (sheet_id,))
@@ -14625,6 +14870,32 @@ def costing_sheet_update(sheet_id: int, request: Request, body: dict = Body(...)
             raise HTTPException(status_code=404, detail="Sheet not found")
         # Approved sheets are read-only — the server, not the UI, enforces it.
         _costing_reject_if_locked(conn, sheet_id)
+        if stage == "pre_production":
+            # Accessories % is READ-ONLY: keep the sheet's stored value
+            # (picked at creation, or hand-typed on legacy sheets — never
+            # re-picked) and re-stamp the derived Accessories line from it,
+            # so a stale or tampered editor can't bake a different % into
+            # the saved maths. Then the 70%-margin proposed selling price.
+            _acc_pct = (float(sheets[0]["accessories_pct"])
+                        if sheets[0].get("accessories_pct") is not None
+                        else _PP_ACC_DEFAULT_PCT)
+            _acc_meta = sheets[0].get("accessories_pct_meta")
+            if isinstance(_acc_meta, str):
+                try:
+                    _acc_meta = json.loads(_acc_meta)
+                except Exception:
+                    _acc_meta = None
+            if not isinstance(_acc_meta, dict):
+                _acc_meta = None
+            _preprod_apply_accessories(lines, _acc_pct, _acc_meta)
+            _lines_total = sum(ln["total"] for ln in lines)
+            try:
+                _raw_emb = json.loads(emb_data_json) if emb_data_json else {}
+                if isinstance(_raw_emb, dict) and _raw_emb.get("enabled"):
+                    _lines_total += float(_raw_emb.get("cost_per_run", 0)) * float(_raw_emb.get("run_count", 0))
+            except Exception:
+                pass
+            _, sp = _preproduction_proposed_prices(_lines_total)
         old_sp = float(sheets[0]["selling_price"]) if sheets[0]["selling_price"] is not None else None
         old_lines = q(conn, """
             SELECT kind, label, qty, unit_cost, total, is_auto, source
@@ -14637,7 +14908,7 @@ def costing_sheet_update(sheet_id: int, request: Request, body: dict = Body(...)
                 UPDATE fabric_costing_sheets
                 SET selling_price=%s, selling_price_is_auto=%s, notes=%s,
                     dps_ref=%s, color=%s, embroidery_data=%s, stage=%s,
-                    accessories_pct=%s, defect_allowance_pct=%s, mtrs_per_garment=%s,
+                    defect_allowance_pct=%s, mtrs_per_garment=%s,
                     cost_per_minute=%s, cmt_start_time=%s, cmt_stop_time=%s,
                     production_multiplier=%s,
                     updated_by=%s, updated_by_name=%s, updated_at=now()
@@ -14647,7 +14918,7 @@ def costing_sheet_update(sheet_id: int, request: Request, body: dict = Body(...)
                   (str(body.get("dps_ref") or "").strip())[:100] or None,
                   (str(body.get("color") or "").strip())[:100] or None,
                   emb_data_json, stage,
-                  accessories_pct, defect_allowance_pct, mtrs_per_garment,
+                  defect_allowance_pct, mtrs_per_garment,
                   cost_per_minute, cmt_start_time, cmt_stop_time,
                   production_multiplier,
                   uid, uname, sheet_id))
@@ -15098,14 +15369,41 @@ def _costing_to_build_data(s):
     # Basis note
     stage = s.get("stage") or "main_production"
     basis_note = (s.get("notes") or "").strip()
+    # Accessories % provenance (pre-production sheets created since the
+    # auto-pick): the % and its source month must reach the PDF wherever the
+    # accessories basis is described — including an explicit note when a
+    # walk-back fallback month supplied the value. Legacy sheets (no meta)
+    # keep the exact wording they always had.
+    acc_prov = None
+    if stage == "pre_production":
+        _m = s.get("accessories_pct_meta")
+        if isinstance(_m, dict):
+            _pct_txt = _preprod_acc_pct_fmt(
+                s.get("accessories_pct") if s.get("accessories_pct") is not None
+                else _m.get("pct"))
+            if _m.get("is_default"):
+                acc_prov = (f"Accessories are {_pct_txt}% of fabric cost — the "
+                            "standard default (no month with qualifying "
+                            "Done-DPS data), picked at sheet creation.")
+            else:
+                acc_prov = (f"Accessories are {_pct_txt}% of fabric cost — the "
+                            f"{_m.get('month_label') or _m.get('source_month')} "
+                            f"Done-DPS average ({int(_m.get('dps_count') or 0)} "
+                            "DPS), picked at sheet creation.")
+                if _m.get("fallback"):
+                    _req = _m.get("requested_month_label") or "the previous month"
+                    acc_prov += (f" Fallback month: {_req} had no qualifying "
+                                 "Done DPS.")
     if not basis_note:
         if stage == "pre_production":
             # Quote the sheet's OWN Production Multiplier; sheets saved before
             # the field existed (NULL) used the then-hardcoded 1.40.
             _pm_txt = _costing_mult_fmt(s.get("production_multiplier"))
+            _acc_sentence = acc_prov or ("Accessories are calculated as a "
+                                         "percentage of fabric cost.")
             basis_note = (
                 "Pre-production estimate. Fabric cost is metres per garment × master "
-                "cost/metre. Accessories are calculated as a percentage of fabric cost. "
+                f"cost/metre. {_acc_sentence} "
                 "CMT is derived from start/stop time × cost-per-minute rate with a "
                 f"×{_pm_txt} efficiency factor. Defect allowance is a percentage of fabric "
                 "cost. Retail price is a target to achieve 70% margin ex-VAT."
@@ -15118,6 +15416,10 @@ def _costing_to_build_data(s):
                 f"{order_qty} garments, so it moves with order quantity. "
                 f"Retail is the modal SKU price."
             )
+    elif acc_prov:
+        # Sheets with hand-written notes must still surface the auto-picked
+        # Accessories % provenance on the PDF.
+        basis_note = f"{basis_note} {acc_prov}"
 
     generated_at = (datetime.datetime.now(ZoneInfo("Africa/Nairobi"))
                     .strftime("%d %b %Y, %H:%M EAT"))

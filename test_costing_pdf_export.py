@@ -60,6 +60,19 @@ def _make_history(n: int = 2) -> list:
     ]
 
 
+def _acc_meta(**over) -> dict:
+    """Accessories % provenance meta as persisted at sheet creation."""
+    meta = {
+        "pct": 8.981039134139472, "source_month": "2026-07",
+        "month_label": "Jul 2026", "dps_count": 75,
+        "fallback": False, "is_default": False,
+        "requested_month": "2026-07", "requested_month_label": "Jul 2026",
+        "picked_at": "2026-08-08T10:00:00+03:00",
+    }
+    meta.update(over)
+    return meta
+
+
 def _base_sheet(**overrides) -> dict:
     """Minimal ``_sheet_payload``-shaped dict that produces a renderable PDF."""
     sheet = {
@@ -287,6 +300,87 @@ class CostingPdfEdgeCases(unittest.TestCase):
                         production_multiplier=None)
         d = fr._costing_to_build_data(s)
         self.assertIn("\u00d71.40 efficiency factor", d["basis_note"])
+
+
+class CostingPdfAccessoriesProvenance(unittest.TestCase):
+    """The auto-picked Accessories % must reach the PDF with full provenance
+    (source month, DPS count, fallback note) — while legacy sheets' wording
+    stays byte-identical to what they always exported."""
+
+    def test_generated_note_carries_month_and_dps_count(self):
+        s = _base_sheet(notes="", stage="pre_production",
+                        production_multiplier=1.55,
+                        accessories_pct=8.981039134139472,
+                        accessories_pct_meta=_acc_meta())
+        d = fr._costing_to_build_data(s)
+        self.assertIn(
+            "Accessories are 8.98% of fabric cost — the Jul 2026 "
+            "Done-DPS average (75 DPS), picked at sheet creation.",
+            d["basis_note"])
+        self.assertNotIn("Fallback month", d["basis_note"])
+
+    def test_generated_note_fallback_month(self):
+        s = _base_sheet(notes="", stage="pre_production",
+                        accessories_pct=11.52,
+                        accessories_pct_meta=_acc_meta(
+                            pct=11.52, source_month="2026-06",
+                            month_label="Jun 2026", dps_count=45,
+                            fallback=True))
+        d = fr._costing_to_build_data(s)
+        self.assertIn("the Jun 2026 Done-DPS average (45 DPS)",
+                      d["basis_note"])
+        self.assertIn("Fallback month: Jul 2026 had no qualifying Done DPS.",
+                      d["basis_note"])
+
+    def test_generated_note_labelled_default(self):
+        s = _base_sheet(notes="", stage="pre_production",
+                        accessories_pct=13,
+                        accessories_pct_meta=_acc_meta(
+                            pct=13.0, source_month=None, month_label=None,
+                            dps_count=0, is_default=True))
+        d = fr._costing_to_build_data(s)
+        self.assertIn(
+            "Accessories are 13% of fabric cost — the standard default "
+            "(no month with qualifying Done-DPS data), picked at sheet "
+            "creation.", d["basis_note"])
+
+    def test_legacy_generated_note_byte_identical(self):
+        """Pre-auto-pick sheets (no meta) must export the exact wording they
+        always had — approved/locked PDFs cannot change."""
+        s = _base_sheet(notes="", stage="pre_production",
+                        production_multiplier=None)
+        d = fr._costing_to_build_data(s)
+        self.assertEqual(
+            d["basis_note"],
+            "Pre-production estimate. Fabric cost is metres per garment × "
+            "master cost/metre. Accessories are calculated as a percentage "
+            "of fabric cost. CMT is derived from start/stop time × "
+            "cost-per-minute rate with a ×1.40 efficiency factor. Defect "
+            "allowance is a percentage of fabric cost. Retail price is a "
+            "target to achieve 70% margin ex-VAT.")
+
+    def test_custom_notes_get_provenance_appended(self):
+        s = _base_sheet(notes="Hand-written basis note.",
+                        stage="pre_production",
+                        accessories_pct=8.981039134139472,
+                        accessories_pct_meta=_acc_meta())
+        d = fr._costing_to_build_data(s)
+        self.assertTrue(d["basis_note"].startswith("Hand-written basis note."))
+        self.assertIn("Jul 2026 Done-DPS average (75 DPS)", d["basis_note"])
+
+    def test_custom_notes_without_meta_untouched(self):
+        s = _base_sheet(notes="Hand-written basis note.",
+                        stage="pre_production")
+        d = fr._costing_to_build_data(s)
+        self.assertEqual(d["basis_note"], "Hand-written basis note.")
+
+    def test_pdf_renders_with_provenance_meta(self):
+        s = _base_sheet(notes="", stage="pre_production",
+                        selling_price=3900.0,
+                        accessories_pct=8.981039134139472,
+                        accessories_pct_meta=_acc_meta())
+        pdf = fr._costing_build_pdf(s)
+        self.assertTrue(pdf.startswith(b"%PDF"))
 
 
 if __name__ == "__main__":

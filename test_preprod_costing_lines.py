@@ -32,6 +32,11 @@ Covers, per scenario:
   locked          — seed + calc are no-ops on a locked sheet
   main_prod_guard — calc no-ops outside pre_production; derived-kind
                     detection is stage-gated
+  acc_meta        — server-picked Accessories % (precise value on costEdit,
+                    2 dp read-only display + note, provenance-suffixed label
+                    adopted, calc never overwrites the precise %)
+  acc_prov        — provenance suffix/note strings for fallback, default,
+                    legacy-saved and loading states
 """
 import json
 import os
@@ -320,6 +325,63 @@ costPreProdCalc();
 results.locked = { unchanged: JSON.stringify(costEdit.lines) === lockedBefore,
                    count: costEdit.lines.length };
 
+// ── acc_meta (server-picked % + provenance; read-only display; adoption) ──
+costEdit = { stage: 'pre_production', locked: false, id: 42,
+  mtrs_per_garment: 2.5,
+  accessories_pct: 8.981039134139472,
+  accessories_meta: { pct: 8.981039134139472, source_month: '2026-07',
+    month_label: 'Jul 2026', dps_count: 75, fallback: false,
+    is_default: false, requested_month: '2026-07',
+    requested_month_label: 'Jul 2026' },
+  defect_allowance_pct: 10, cost_per_minute: 5,
+  cmt_start_time: '08:00', cmt_stop_time: '08:30',
+  lines: [
+    { kind: 'fabric', label: 'Test Fabric', qty: 1, unit_cost: 363.24,
+      is_auto: false, source: null, component_id: null },
+    // saved provenance-labelled trim row (manual-flipped) → must be ADOPTED
+    { kind: 'trim',
+      label: 'Accessories (8.98% of fabric cost \u2014 Jul 2026 Done-DPS avg, 75 DPS)',
+      qty: 1, unit_cost: 0, is_auto: false, source: null, component_id: null },
+  ] };
+setDom({ 'cost-pp-mpg': '', 'cost-pp-acc-pct': '', 'cost-pp-def-pct': '',
+         'cost-pp-cpm': '', 'cost-pp-cmt-start': '', 'cost-pp-cmt-stop': '',
+         'cost-pp-acc-note': '', 'cost-pp-cmt-info': '' });
+costPreProdFillInputs();
+const accFilled = { display: dom['cost-pp-acc-pct'].value,
+                    note: dom['cost-pp-acc-note'].textContent };
+const accLenBefore = costEdit.lines.length;
+costPreProdSeedLines();
+costPreProdCalc();
+const accRows = snap();
+const accTrim = accRows.find(l => costPreProdMatchDefault(l, 'trim'));
+results.acc_meta = {
+  display: accFilled.display, note: accFilled.note,
+  seeded_extra: costEdit.lines.length - accLenBefore,
+  trim_default_count: accRows.filter(l => costPreProdMatchDefault(l, 'trim')).length,
+  trim_label: accTrim.label, trim_source: accTrim.source,
+  trim_cost: accTrim.unit_cost, trim_auto: costIsPPAuto(accTrim),
+  precise_kept: costEdit.accessories_pct,
+  fmt_13: costAccPctFmt(13), fmt_precise: costAccPctFmt(8.981039134139472),
+  fmt_123: costAccPctFmt(12.3),
+};
+
+// ── acc_prov (fallback / default / legacy / loading provenance strings) ───
+costEdit = { stage: 'pre_production', locked: false, id: 7,
+  accessories_pct: 11.52,
+  accessories_meta: { month_label: 'Jun 2026', dps_count: 45, fallback: true,
+    is_default: false, requested_month_label: 'Jul 2026' } };
+const provFallback = { suffix: costAccProvSuffix(), note: costAccPctNote() };
+costEdit.accessories_meta = { is_default: true, fallback: false, dps_count: 0 };
+costEdit.accessories_pct = 13;
+const provDefault = { suffix: costAccProvSuffix(), note: costAccPctNote() };
+costEdit.accessories_meta = null;
+const provLegacy = { suffix: costAccProvSuffix(), note: costAccPctNote() };
+costEdit = { stage: 'pre_production', locked: false, id: null,
+  accessories_pct: 13, accessories_meta: null, _accLoading: true };
+const provLoading = { note: costAccPctNote() };
+results.acc_prov = { fallback: provFallback, dflt: provDefault,
+                     legacy: provLegacy, loading: provLoading };
+
 // ── main_prod_guard ────────────────────────────────────────────────────────
 costEdit = { stage: 'main_production', locked: false,
   lines: [{ kind: 'trim', label: 'Accessories (13% of fabric cost)', qty: 1,
@@ -359,7 +421,8 @@ class PreProdCostingLinesTest(unittest.TestCase):
                    "costPreProdCalc", "costPreProdFillInputs",
                    "costPreProdMatchDefault", "costPPDerivedKind",
                    "costPPMultNorm", "costPPMultFmt", "costPPMultLast",
-                   "costPPMultInput"):
+                   "costPPMultInput", "costAccPctFmt", "costAccProvSuffix",
+                   "costAccPctNote", "costAccPctRender"):
             if ("function %s(" % fn) not in block:
                 raise AssertionError("expected %s in extracted block" % fn)
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False,
@@ -555,6 +618,60 @@ class PreProdCostingLinesTest(unittest.TestCase):
                         "derived-kind detection is stage-gated")
         self.assertTrue(mp["matches_stage_independent"],
                         "matcher itself stays stage-independent for pruning")
+
+    # ── server-picked Accessories % (read-only display + provenance) ──────
+    def test_acc_readonly_display_and_note(self):
+        am = self.results["acc_meta"]
+        self.assertEqual(am["display"], "8.98",
+                         "display shows the % rounded half-up to 2 dp")
+        self.assertEqual(am["note"],
+                         "Jul 2026 Done-DPS average (75 DPS). "
+                         "Read-only — picked at sheet creation.")
+
+    def test_acc_provenance_label_adopted_not_duplicated(self):
+        am = self.results["acc_meta"]
+        self.assertEqual(am["seeded_extra"], 2,
+                         "provenance-labelled trim satisfies seeding "
+                         "(only cmt+overhead added)")
+        self.assertEqual(am["trim_default_count"], 1)
+        self.assertEqual(am["trim_label"],
+                         "Accessories (8.98% of fabric cost — "
+                         "Jul 2026 Done-DPS avg, 75 DPS)")
+        self.assertEqual(am["trim_source"],
+                         "pre-production auto: 8.98% of fabric cost — "
+                         "Jul 2026 Done-DPS avg, 75 DPS")
+        self.assertTrue(am["trim_auto"],
+                        "manual-flipped provenance row re-adopted AUTO")
+
+    def test_acc_amount_uses_precise_pct(self):
+        am = self.results["acc_meta"]
+        # 8.981039134139472% of 908.10 = 81.5568… → 81.56 (half-up, 2 dp)
+        self.assertEqual(am["trim_cost"], 81.56)
+        self.assertEqual(am["precise_kept"], 8.981039134139472,
+                         "calc must NEVER overwrite the precise stored %")
+
+    def test_acc_fmt_matches_server_formatter(self):
+        am = self.results["acc_meta"]
+        self.assertEqual(am["fmt_13"], "13",
+                         "legacy 13 keeps its bare wording")
+        self.assertEqual(am["fmt_precise"], "8.98")
+        self.assertEqual(am["fmt_123"], "12.3",
+                         "trailing zeros dropped like the server :g format")
+
+    def test_acc_provenance_strings(self):
+        ap = self.results["acc_prov"]
+        self.assertEqual(ap["fallback"]["suffix"],
+                         " — Jun 2026 Done-DPS avg, 45 DPS (fallback)")
+        self.assertIn("fallback month: Jul 2026 had no qualifying DPS",
+                      ap["fallback"]["note"])
+        self.assertEqual(ap["dflt"]["suffix"],
+                         " — default (no Done-DPS history)")
+        self.assertIn("Default 13%", ap["dflt"]["note"])
+        self.assertEqual(ap["legacy"]["suffix"], "",
+                         "legacy sheets keep their exact saved labels")
+        self.assertEqual(ap["legacy"]["note"],
+                         "Saved on this sheet (created before the auto-pick).")
+        self.assertIn("Loading", ap["loading"]["note"])
 
 
 if __name__ == "__main__":

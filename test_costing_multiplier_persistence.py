@@ -31,11 +31,21 @@ Covers:
   (``_costing_mult_fmt``, ``_costing_to_build_data`` basis note) read 1.40;
 * schema guard: ``_ensure_costing_tables`` still declares the column.
 
+Also covers the server-picked Accessories % (previous-calendar-month Done-DPS
+average): the pure month picker (previous-month pick, walk-back fallback,
+no-data 13% default, current month never used), read-only enforcement on
+create/update (client percentages ignored, derived line re-stamped with
+provenance, meta persisted as JSONB and normalised by ``_sheet_payload``),
+legacy sheets keeping their saved % with bare labels, and the preview
+endpoint shape.
+
 Run with the stdlib test path (no pytest in this env)::
 
     python -m unittest test_costing_multiplier_persistence
 """
+import datetime
 import inspect
+import json
 import re
 import unittest
 from types import SimpleNamespace
@@ -66,7 +76,7 @@ _SHEET_ROW_DEFAULTS = {
     "stage": "main_production", "accessories_pct": None,
     "defect_allowance_pct": None, "mtrs_per_garment": None,
     "cost_per_minute": None, "cmt_start_time": None, "cmt_stop_time": None,
-    "production_multiplier": None,
+    "production_multiplier": None, "accessories_pct_meta": None,
     "created_by": None, "created_by_name": None, "created_at": None,
     "updated_by": None, "updated_by_name": None, "updated_at": None,
     "style_name": None, "style_number": None,
@@ -228,11 +238,49 @@ def _preprod_body(**over):
     return body
 
 
+# ── Accessories % fixtures ───────────────────────────────────────────────────
+# The real picker, captured BEFORE the harness patches it with a pinned
+# "today" (tests must not drift when the wall-clock month changes).
+_REAL_ACC_PICK = fr._preprod_accessories_pick
+_ACC_TODAY = datetime.date(2026, 8, 8)          # sheets "created" in Aug 2026
+_ACC_PRECISE = 898.1039134139472 / 10000.0 * 100.0   # Jul 2026 pooled ratio
+_ACC_MONTH_ROWS = [
+    # current month — must NEVER be picked for an Aug-created sheet
+    {"month": "2026-08", "dps_count": 19, "trims_total": 1233.0,
+     "fabric_total": 10000.0},
+    {"month": "2026-07", "dps_count": 75, "trims_total": 898.1039134139472,
+     "fabric_total": 10000.0},
+    {"month": "2026-06", "dps_count": 45, "trims_total": 1152.0,
+     "fabric_total": 10000.0},
+]
+
+
+def _acc_body(**over):
+    """Pre-production body with a machine Accessories line and a client-sent
+    % that the server must IGNORE."""
+    body = _preprod_body(
+        accessories_pct=50,
+        lines=[
+            {"kind": "fabric", "label": "Test Fabric", "qty": 2.5,
+             "unit_cost": 363.24, "is_auto": True, "source": None},
+            {"kind": "trim", "label": "Accessories (13% of fabric cost)",
+             "qty": 1, "unit_cost": 118.05, "is_auto": True,
+             "source": "pre-production auto: 13% of fabric cost"},
+            {"kind": "cmt", "label": "CMT (08:00–08:30, KES 5/min ×1.55)",
+             "qty": 1, "unit_cost": 232.5, "is_auto": True, "source": None},
+        ])
+    body.update(over)
+    return body
+
+
 class _Harness(unittest.TestCase):
     """Patches fabric_router's DB plumbing onto the in-memory fake."""
 
     def setUp(self):
         self.store = FakeStore()
+        # Canned Done-DPS month history for the Accessories % pick; tests
+        # reassign self.month_rows to exercise fallback / no-data paths.
+        self.month_rows = [dict(r) for r in _ACC_MONTH_ROWS]
         patches = [
             mock.patch.object(fr, "q", _fake_q(self.store)),
             mock.patch.object(fr, "_get_conn",
@@ -244,6 +292,12 @@ class _Harness(unittest.TestCase):
                                             "style_number": "V999001"}),
             mock.patch.object(fr, "_require_style_dps",
                               lambda *a, **k: None),
+            mock.patch.object(fr, "_preprod_acc_month_rows",
+                              lambda conn: [dict(r) for r in self.month_rows]),
+            # Pin "today" so the previous-month pick is deterministic.
+            mock.patch.object(fr, "_preprod_accessories_pick",
+                              lambda conn, today=None: _REAL_ACC_PICK(
+                                  conn, today=_ACC_TODAY)),
         ]
         for p in patches:
             p.start()
@@ -375,6 +429,251 @@ class SchemaGuard(unittest.TestCase):
             src = inspect.getsource(fn)
             self.assertIn("production_multiplier", src,
                           f"{fn.__name__} must persist production_multiplier")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Accessories % — previous-month Done-DPS average (picked once, read-only)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class AccessoriesPickPure(unittest.TestCase):
+    """The pure month picker: previous calendar month, walk-back fallback,
+    labelled 13% default, current month never considered."""
+
+    TODAY = datetime.date(2026, 8, 8)
+
+    def test_previous_month_pick(self):
+        out = fr._preprod_acc_pick_from_months(
+            [dict(r) for r in _ACC_MONTH_ROWS], self.TODAY)
+        self.assertAlmostEqual(out["pct"], _ACC_PRECISE, places=9)
+        m = out["meta"]
+        self.assertEqual(m["source_month"], "2026-07")
+        self.assertEqual(m["month_label"], "Jul 2026")
+        self.assertEqual(m["dps_count"], 75)
+        self.assertFalse(m["fallback"])
+        self.assertFalse(m["is_default"])
+        self.assertEqual(m["requested_month"], "2026-07")
+        self.assertAlmostEqual(m["pct"], out["pct"])
+
+    def test_current_month_never_picked(self):
+        rows = [r for r in _ACC_MONTH_ROWS if r["month"] == "2026-08"]
+        out = fr._preprod_acc_pick_from_months(rows, self.TODAY)
+        self.assertTrue(out["meta"]["is_default"],
+                        "the in-progress month must never supply the %")
+        self.assertEqual(out["pct"], 13.0)
+
+    def test_walk_back_sets_fallback_flag(self):
+        rows = [r for r in _ACC_MONTH_ROWS if r["month"] != "2026-07"]
+        out = fr._preprod_acc_pick_from_months(rows, self.TODAY)
+        self.assertAlmostEqual(out["pct"], 11.52, places=9)
+        m = out["meta"]
+        self.assertTrue(m["fallback"])
+        self.assertFalse(m["is_default"])
+        self.assertEqual(m["source_month"], "2026-06")
+        self.assertEqual(m["requested_month_label"], "Jul 2026")
+
+    def test_zero_fabric_month_skipped(self):
+        rows = [dict(r) for r in _ACC_MONTH_ROWS]
+        for r in rows:
+            if r["month"] == "2026-07":
+                r["fabric_total"] = 0
+        out = fr._preprod_acc_pick_from_months(rows, self.TODAY)
+        self.assertEqual(out["meta"]["source_month"], "2026-06")
+        self.assertTrue(out["meta"]["fallback"])
+
+    def test_no_data_default(self):
+        out = fr._preprod_acc_pick_from_months([], self.TODAY)
+        self.assertEqual(out["pct"], 13.0)
+        m = out["meta"]
+        self.assertTrue(m["is_default"])
+        self.assertFalse(m["fallback"])
+        self.assertEqual(m["dps_count"], 0)
+        self.assertEqual(m["requested_month"], "2026-07")
+
+    def test_display_helpers(self):
+        self.assertEqual(fr._preprod_month_label("2026-07"), "Jul 2026")
+        self.assertEqual(fr._preprod_month_label("2026-01"), "Jan 2026")
+        self.assertEqual(fr._preprod_acc_pct_fmt(8.981039134139472), "8.98")
+        self.assertEqual(fr._preprod_acc_pct_fmt(13), "13")
+        self.assertEqual(fr._preprod_acc_pct_fmt(12.3), "12.3")
+
+    def test_provenance_suffix(self):
+        self.assertEqual(fr._preprod_acc_provenance_suffix(None), "",
+                         "legacy sheets keep their exact saved labels")
+        self.assertEqual(
+            fr._preprod_acc_provenance_suffix(
+                {"month_label": "Jul 2026", "dps_count": 75}),
+            " — Jul 2026 Done-DPS avg, 75 DPS")
+        self.assertEqual(
+            fr._preprod_acc_provenance_suffix(
+                {"month_label": "Jun 2026", "dps_count": 45,
+                 "fallback": True}),
+            " — Jun 2026 Done-DPS avg, 45 DPS (fallback)")
+        self.assertEqual(
+            fr._preprod_acc_provenance_suffix({"is_default": True}),
+            " — default (no Done-DPS history)")
+
+
+class AccessoriesCreateReadOnly(_Harness):
+    """Create endpoint: client % ignored, precise pick persisted with meta,
+    derived line re-stamped with provenance."""
+
+    def test_client_pct_ignored_and_precise_pick_persisted(self):
+        payload = fr.costing_sheet_create(_request(), _acc_body())
+        self.assertAlmostEqual(payload["accessories_pct"], _ACC_PRECISE,
+                               places=9)
+        self.assertNotEqual(payload["accessories_pct"], 50,
+                            "client-sent % must never be accepted")
+        row = self.store.sheets[payload["id"]]
+        self.assertAlmostEqual(float(row["accessories_pct"]), _ACC_PRECISE,
+                               places=9)
+        meta_raw = row["accessories_pct_meta"]
+        self.assertIsInstance(meta_raw, str,
+                              "meta is persisted as a JSON string")
+        meta = json.loads(meta_raw)
+        self.assertEqual(meta["source_month"], "2026-07")
+        self.assertEqual(meta["dps_count"], 75)
+        self.assertFalse(meta["fallback"])
+        # _sheet_payload must hand the editor a parsed dict.
+        self.assertIsInstance(payload["accessories_pct_meta"], dict)
+        self.assertEqual(payload["accessories_pct_meta"]["month_label"],
+                         "Jul 2026")
+
+    def test_derived_line_restamped_with_provenance(self):
+        fr.costing_sheet_create(_request(), _acc_body())
+        trims = [l for l in self.store.lines if l["kind"] == "trim"]
+        self.assertEqual(len(trims), 1)
+        self.assertEqual(trims[0]["label"],
+                         "Accessories (8.98% of fabric cost — "
+                         "Jul 2026 Done-DPS avg, 75 DPS)")
+        self.assertEqual(trims[0]["source"],
+                         "pre-production auto: 8.98% of fabric cost — "
+                         "Jul 2026 Done-DPS avg, 75 DPS")
+        # 8.981039…% of 908.10 = 81.5568… → 81.56 (half-up, 2 dp)
+        self.assertEqual(float(trims[0]["unit_cost"]), 81.56)
+
+    def test_duplicate_machine_lines_folded(self):
+        body = _acc_body()
+        body["lines"] = body["lines"] + [
+            {"kind": "trim", "label": "Accessories (13% of fabric cost)",
+             "qty": 1, "unit_cost": 99, "is_auto": False, "source": None}]
+        fr.costing_sheet_create(_request(), body)
+        trims = [l for l in self.store.lines if l["kind"] == "trim"]
+        self.assertEqual(len(trims), 1,
+                         "duplicate machine-labelled rows must be folded")
+
+    def test_walk_back_fallback_month_labelled(self):
+        self.month_rows = [r for r in self.month_rows
+                           if r["month"] != "2026-07"]
+        payload = fr.costing_sheet_create(_request(), _acc_body())
+        self.assertAlmostEqual(payload["accessories_pct"], 11.52, places=9)
+        meta = payload["accessories_pct_meta"]
+        self.assertTrue(meta["fallback"])
+        self.assertEqual(meta["source_month"], "2026-06")
+        self.assertEqual(meta["requested_month_label"], "Jul 2026")
+        trims = [l for l in self.store.lines if l["kind"] == "trim"]
+        self.assertEqual(trims[0]["label"],
+                         "Accessories (11.52% of fabric cost — "
+                         "Jun 2026 Done-DPS avg, 45 DPS (fallback))")
+
+    def test_no_history_labelled_default(self):
+        self.month_rows = []
+        payload = fr.costing_sheet_create(_request(), _acc_body())
+        self.assertEqual(payload["accessories_pct"], 13.0)
+        self.assertTrue(payload["accessories_pct_meta"]["is_default"])
+        trims = [l for l in self.store.lines if l["kind"] == "trim"]
+        self.assertEqual(trims[0]["label"],
+                         "Accessories (13% of fabric cost — "
+                         "default (no Done-DPS history))")
+
+    def test_server_never_injects_a_line(self):
+        body = _acc_body()
+        body["lines"] = [l for l in body["lines"] if l["kind"] != "trim"]
+        fr.costing_sheet_create(_request(), body)
+        self.assertEqual(
+            [l for l in self.store.lines if l["kind"] == "trim"], [],
+            "sheets without a machine Accessories row are left alone")
+
+    def test_main_production_stays_at_legacy_default(self):
+        body = _acc_body(stage="main_production", dps_ref="DPS00001",
+                         accessories_pct=50)
+        body["lines"] = [l for l in body["lines"] if l["kind"] != "trim"]
+        payload = fr.costing_sheet_create(_request(), body)
+        self.assertEqual(payload["accessories_pct"], 13.0)
+        self.assertIsNone(payload["accessories_pct_meta"])
+        self.assertIsNone(
+            self.store.sheets[payload["id"]]["accessories_pct_meta"])
+
+    def test_preview_endpoint_shape(self):
+        out = fr.costing_preprod_accessories_pct()
+        self.assertAlmostEqual(out["accessories_pct"], _ACC_PRECISE, places=9)
+        self.assertEqual(out["accessories_pct_display"], 8.98)
+        self.assertEqual(out["meta"]["month_label"], "Jul 2026")
+        self.assertEqual(out["meta"]["dps_count"], 75)
+
+
+class AccessoriesUpdateReadOnly(_Harness):
+    """Update endpoint: stored % + meta always win; never re-picked; legacy
+    sheets keep their saved % with the bare label."""
+
+    def test_update_ignores_client_pct_and_keeps_meta(self):
+        sid = fr.costing_sheet_create(_request(), _acc_body())["id"]
+        body = _acc_body(accessories_pct=99)
+        body["lines"][1].update(  # stale editor rewrote the label
+            label="Accessories (99% of fabric cost)", source=None,
+            is_auto=False)
+        p = fr.costing_sheet_update(sid, _request(), body)
+        self.assertAlmostEqual(p["accessories_pct"], _ACC_PRECISE, places=9)
+        self.assertEqual(p["accessories_pct_meta"]["source_month"], "2026-07")
+        trims = [l for l in self.store.lines if l["kind"] == "trim"]
+        self.assertEqual(len(trims), 1)
+        self.assertEqual(trims[0]["label"],
+                         "Accessories (8.98% of fabric cost — "
+                         "Jul 2026 Done-DPS avg, 75 DPS)")
+        self.assertEqual(float(trims[0]["unit_cost"]), 81.56)
+
+    def test_update_never_repicks_even_when_history_changes(self):
+        sid = fr.costing_sheet_create(_request(), _acc_body())["id"]
+        self.month_rows = []          # history vanishes — stored % must win
+        p = fr.costing_sheet_update(sid, _request(), _acc_body())
+        self.assertAlmostEqual(p["accessories_pct"], _ACC_PRECISE, places=9)
+        self.assertFalse(p["accessories_pct_meta"]["is_default"])
+
+    def test_legacy_sheet_keeps_saved_pct_and_bare_label(self):
+        sid = self.store.seed_sheet(
+            style_name="Legacy Acc Style", style_number="V777001",
+            stage="pre_production", selling_price=3900.0,
+            accessories_pct=15, defect_allowance_pct=10,
+            mtrs_per_garment=2.5, cost_per_minute=5,
+            cmt_start_time="08:00", cmt_stop_time="08:30")
+        p = fr.costing_sheet_update(
+            sid, _request(),
+            _acc_body(style_name="Legacy Acc Style", accessories_pct=50))
+        self.assertEqual(float(p["accessories_pct"]), 15.0)
+        self.assertIsNone(p["accessories_pct_meta"])
+        trims = [l for l in self.store.lines if l["kind"] == "trim"]
+        self.assertEqual(trims[0]["label"],
+                         "Accessories (15% of fabric cost)",
+                         "no provenance suffix on legacy sheets")
+        self.assertEqual(trims[0]["source"],
+                         "pre-production auto: 15% of fabric cost")
+        # 15% of 908.10 = 136.215 → 136.22 (half-up)
+        self.assertEqual(float(trims[0]["unit_cost"]), 136.22)
+
+    def test_update_sql_never_writes_the_pct_or_meta(self):
+        src = inspect.getsource(fr.costing_sheet_update)
+        self.assertNotRegex(src, r"accessories_pct\s*=\s*%s")
+        self.assertNotRegex(src, r"accessories_pct_meta\s*=\s*%s")
+
+
+class AccessoriesSchemaGuard(unittest.TestCase):
+    def test_ddl_declares_meta_column(self):
+        src = inspect.getsource(fr._ensure_costing_tables)
+        self.assertRegex(
+            src, r"ADD COLUMN IF NOT EXISTS accessories_pct_meta JSONB")
+
+    def test_create_insert_carries_meta_column(self):
+        self.assertIn("accessories_pct_meta",
+                      inspect.getsource(fr.costing_sheet_create))
 
 
 if __name__ == "__main__":

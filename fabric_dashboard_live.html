@@ -1407,8 +1407,9 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
        <input id="cost-pp-mpg" type="number" min="0" step="any" style="width:130px;" oninput="costPreProdCalc()">
       </div>
       <div>
-       <label class="rsv-lbl">Accessories % of fabric cost</label>
-       <input id="cost-pp-acc-pct" type="number" min="0" max="100" step="any" value="13" style="width:90px;" oninput="costPreProdCalc()">
+       <label class="rsv-lbl" title="Auto-picked from the previous calendar month's Done-DPS actuals when the sheet is created — read-only">Accessories % of fabric cost</label>
+       <input id="cost-pp-acc-pct" readonly tabindex="-1" style="width:90px;background:var(--panel,#f5f5f3);cursor:default;" title="Read-only — picked from Done-DPS actuals at sheet creation">
+       <div id="cost-pp-acc-note" class="muted" style="font-size:10px;max-width:240px;margin-top:2px;"></div>
       </div>
       <div>
        <label class="rsv-lbl">Defect Allowance %</label>
@@ -10288,6 +10289,9 @@ function costApplyStage(restoreOnly){
       costPreProdSeedLines();
       costRenderLines();
       if(!restoreOnly)costPreProdCalc();
+      // NEW (unsaved) sheets: fetch the server-picked Accessories % preview
+      // (async — re-renders + recalcs when it lands). Saved sheets no-op.
+      costAccPctFetch();
     }else if(!restoreOnly){
       // Stage already flipped to main here — match the derived rows directly
       // (stage-independent), not via the preprod-gated costPPDerivedKind.
@@ -10323,7 +10327,7 @@ function costApplyStage(restoreOnly){
 // User-added extra trim/overhead lines never match and are left alone.
 const COST_PP_AUTO_PREFIX='pre-production auto';
 const COST_PP_LEGACY_LABELS={
-  trim:/^Accessories \([\d.]+% of fabric cost\)$/,
+  trim:/^Accessories \([\d.]+% of fabric cost( — .*)?\)$/,
   cmt:/^CMT \([^)]*×[\d.]+\)$/,
   overhead:/^Defect Allowance \([\d.]+% of fabric cost\)$/
 };
@@ -10339,6 +10343,61 @@ function costPPMultInput(el){
   const n=Number(el&&el.value);
   if(isFinite(n)&&n>0){try{localStorage.setItem(COST_PP_MULT_KEY,String(n));}catch(e){}}
   costPreProdCalc();
+}
+// ── Accessories % — server-picked previous-month Done-DPS average ──
+// costEdit.accessories_pct carries the PRECISE stored value (the maths uses
+// it); display and labels round half-up to 2 dp with trailing zeros dropped
+// so legacy sheets keep their exact "13%" wording. costEdit.accessories_meta
+// is the provenance persisted with the sheet ({month_label, dps_count,
+// fallback, is_default, requested_month_label, …}); null = legacy sheet
+// (its saved hand-typed % is shown as-is and never re-picked). The % is
+// READ-ONLY — the server enforces it on create/update; this UI never sends
+// an editable value.
+function costAccPctFmt(p){return String(Math.round((Number(p)||0)*100)/100);}
+function costAccProvSuffix(){
+  // Canonical label/source suffix — must match the server's
+  // _preprod_acc_provenance_suffix character-for-character.
+  const m=costEdit&&costEdit.accessories_meta;
+  if(!m)return '';
+  if(m.is_default)return ' — default (no Done-DPS history)';
+  let t=' — '+(m.month_label||m.source_month||'?')+' Done-DPS avg, '+(Number(m.dps_count)||0)+' DPS';
+  if(m.fallback)t+=' (fallback)';
+  return t;
+}
+function costAccPctNote(){
+  // Human sentence under the read-only % field (sheet-header provenance).
+  if(!costEdit)return '';
+  const m=costEdit.accessories_meta;
+  if(!m)return costEdit.id?'Saved on this sheet (created before the auto-pick).':(costEdit._accLoading?'Loading previous-month Done-DPS average…':'');
+  if(m.is_default)return 'Default '+costAccPctFmt(costEdit.accessories_pct)+'% — no month with qualifying Done-DPS data.';
+  let t=(m.month_label||m.source_month)+' Done-DPS average ('+(Number(m.dps_count)||0)+' DPS)';
+  if(m.fallback)t+=' — fallback month: '+(m.requested_month_label||'the previous month')+' had no qualifying DPS';
+  return t+'. Read-only — picked at sheet creation.';
+}
+function costAccPctRender(){
+  const el=document.getElementById('cost-pp-acc-pct');
+  if(el)el.value=costEdit&&costEdit.accessories_pct!=null?costAccPctFmt(costEdit.accessories_pct):'';
+  const note=document.getElementById('cost-pp-acc-note');
+  if(note)note.textContent=costAccPctNote();
+}
+async function costAccPctFetch(){
+  // NEW (unsaved) sheets only: preview the % the create endpoint will pick —
+  // the server re-computes and PERSISTS it authoritatively on save. Saved
+  // sheets keep their stored %, never re-picked on reopen.
+  if(!costEdit||costEdit.id||costEdit.accessories_meta||costEdit._accLoading)return;
+  costEdit._accLoading=true;costAccPctRender();
+  try{
+    const r=await apiFetch('/api/fabric/costing/preprod-accessories-pct');
+    if(!costEdit||costEdit.id)return;
+    costEdit._accLoading=false;
+    costEdit.accessories_pct=Number(r.accessories_pct);
+    costEdit.accessories_meta=r.meta||null;
+    costAccPctRender();
+    if(costEdit.stage==='pre_production'&&!costEdit.locked)costPreProdCalc();
+  }catch(e){
+    const note=document.getElementById('cost-pp-acc-note');
+    if(note)note.textContent='Could not load the Done-DPS average preview — the sheet will still be created with the server-computed %.';
+  }finally{if(costEdit)costEdit._accLoading=false;}
 }
 function costIsPPAuto(l){return !!(l&&l.is_auto&&(l.source||'').indexOf(COST_PP_AUTO_PREFIX)===0);}
 function costPreProdMatchDefault(l,kind){
@@ -10359,7 +10418,7 @@ function costPreProdFillInputs(){
   if(!costEdit)return;
   const set=(id,v)=>{const el=document.getElementById(id);if(el)el.value=v;};
   set('cost-pp-mpg',costEdit.mtrs_per_garment!=null?costEdit.mtrs_per_garment:'');
-  set('cost-pp-acc-pct',costEdit.accessories_pct!=null?costEdit.accessories_pct:13);
+  costAccPctRender();
   set('cost-pp-def-pct',costEdit.defect_allowance_pct!=null?costEdit.defect_allowance_pct:10);
   set('cost-pp-cpm',costEdit.cost_per_minute!=null?costEdit.cost_per_minute:'');
   set('cost-pp-mult',costEdit.production_multiplier!=null?costEdit.production_multiplier:COST_PP_MULT_DEFAULT);
@@ -10378,9 +10437,10 @@ function costPreProdSeedLines(){
       source:COST_PP_AUTO_PREFIX+': qty mirrors Mtrs per Garment — search the fabric master to fill cost',component_id:null,barcode:null});
   }
   const acc=costEdit.accessories_pct!=null?costEdit.accessories_pct:13;
+  const accTxt=costAccPctFmt(acc)+'% of fabric cost'+costAccProvSuffix();
   const def=costEdit.defect_allowance_pct!=null?costEdit.defect_allowance_pct:10;
   if(!costEdit.lines.some(l=>costPreProdMatchDefault(l,'trim')))
-    costEdit.lines.push({kind:'trim',label:'Accessories ('+acc+'% of fabric cost)',qty:1,unit_cost:0,is_auto:true,source:COST_PP_AUTO_PREFIX+': '+acc+'% of fabric cost',component_id:null,barcode:null});
+    costEdit.lines.push({kind:'trim',label:'Accessories ('+accTxt+')',qty:1,unit_cost:0,is_auto:true,source:COST_PP_AUTO_PREFIX+': '+accTxt,component_id:null,barcode:null});
   if(!costEdit.lines.some(l=>costPreProdMatchDefault(l,'cmt')))
     costEdit.lines.push({kind:'cmt',label:'CMT (?–?, KES 0/min ×'+costPPMultFmt(costPPMultNorm(costEdit.production_multiplier))+')',qty:1,unit_cost:0,is_auto:true,source:COST_PP_AUTO_PREFIX+': time-based CMT',component_id:null,barcode:null});
   if(!costEdit.lines.some(l=>costPreProdMatchDefault(l,'overhead')))
@@ -10423,7 +10483,9 @@ function costPreProdCalc(opts){
   if(!costEdit||costEdit.stage!=='pre_production'||costEdit.locked)return;
   opts=opts||{};
   const mpg=Number((document.getElementById('cost-pp-mpg')||{}).value)||0;
-  const accPct=Number((document.getElementById('cost-pp-acc-pct')||{}).value)||0;
+  // Accessories % is server-picked and read-only — the sheet's stored PRECISE
+  // value drives the maths; the DOM field is display-only (2 dp).
+  const accPct=Number(costEdit.accessories_pct)||0;
   const defPct=Number((document.getElementById('cost-pp-def-pct')||{}).value)||0;
   const cpmVal=Number((document.getElementById('cost-pp-cpm')||{}).value)||0;
   // Blank / invalid / non-positive multiplier → 1.40 until a new figure is typed.
@@ -10431,7 +10493,7 @@ function costPreProdCalc(opts){
   const multTxt=costPPMultFmt(mult);
   const startStr=((document.getElementById('cost-pp-cmt-start')||{}).value||'').trim();
   const stopStr=((document.getElementById('cost-pp-cmt-stop')||{}).value||'').trim();
-  costEdit.mtrs_per_garment=mpg||null;costEdit.accessories_pct=accPct;
+  costEdit.mtrs_per_garment=mpg||null;
   costEdit.defect_allowance_pct=defPct;costEdit.cost_per_minute=cpmVal||null;
   costEdit.production_multiplier=mult;
   costEdit.cmt_start_time=startStr||null;costEdit.cmt_stop_time=stopStr||null;
@@ -10442,10 +10504,13 @@ function costPreProdCalc(opts){
   // Percentage basis = combined LINE TOTALS of ALL fabric rows
   // (e.g. 2.5 mtrs × 363.24 = 908.10 → 13% = 118.05, 10% = 90.81).
   const fabTotal=costEdit.lines.reduce((s,l)=>s+(l.kind==='fabric'?(Number(l.qty)||0)*(Number(l.unit_cost)||0):0),0);
-  // Accessories auto-line
+  // Accessories auto-line — amount recalculates as % × Σ fabric line totals
+  // exactly as always; label + source carry the provenance suffix when the
+  // sheet has auto-pick meta (legacy sheets keep the bare wording).
   const accTotal=Math.round(accPct/100*fabTotal*100)/100;
-  const accLabel='Accessories ('+accPct+'% of fabric cost)';
-  let structural=costPreProdUpsert('trim',{kind:'trim',label:accLabel,qty:1,unit_cost:accTotal,is_auto:true,source:COST_PP_AUTO_PREFIX+': '+accPct+'% of fabric cost',component_id:null,barcode:null});
+  const accTxt=costAccPctFmt(accPct)+'% of fabric cost'+costAccProvSuffix();
+  const accLabel='Accessories ('+accTxt+')';
+  let structural=costPreProdUpsert('trim',{kind:'trim',label:accLabel,qty:1,unit_cost:accTotal,is_auto:true,source:COST_PP_AUTO_PREFIX+': '+accTxt,component_id:null,barcode:null});
   // CMT auto-line from time inputs
   let cpmTotal=0;
   if(startStr&&stopStr){
@@ -10475,7 +10540,7 @@ function costPreProdCalc(opts){
 function costNewSheet(){
   costEdit={id:null,style_name:null,style_number:null,dps_ref:null,color:null,lines:[],sp_auto:true,history:[],signoffs:null,locked:false,
     embroidery_data:{enabled:false,cost_per_run:0,run_count:0},
-    stage:'main_production',accessories_pct:13,defect_allowance_pct:10,
+    stage:'main_production',accessories_pct:13,accessories_meta:null,defect_allowance_pct:10,
     mtrs_per_garment:null,cost_per_minute:null,cmt_start_time:null,cmt_stop_time:null,
     production_multiplier:costPPMultLast()};
   const stgEl=document.getElementById('cost-stage');if(stgEl)stgEl.value='main_production';
@@ -10507,6 +10572,7 @@ async function costOpenSheet(id){
       embroidery_data:{enabled:!!_sEmb.enabled,cost_per_run:Number(_sEmb.cost_per_run||0),run_count:Number(_sEmb.run_count||0)},
       stage:s.stage||'main_production',
       accessories_pct:s.accessories_pct!=null?Number(s.accessories_pct):13,
+      accessories_meta:s.accessories_pct_meta||null,
       defect_allowance_pct:s.defect_allowance_pct!=null?Number(s.defect_allowance_pct):10,
       mtrs_per_garment:s.mtrs_per_garment!=null?Number(s.mtrs_per_garment):null,
       cost_per_minute:s.cost_per_minute!=null?Number(s.cost_per_minute):null,
@@ -10851,9 +10917,11 @@ async function costSaveSheet(){
   if(!costEdit.style_name){err.innerHTML='<div class="banner banner-err">Pick a style from the list first.</div>';return;}
   if(!costEdit.id&&!costEdit.dps_ref&&!isPreprod){err.innerHTML='<div class="banner banner-err">Pick a DPS # for the style — new costing sheets are built from one Done DPS.</div>';return;}
   if(!costEdit.lines.length){err.innerHTML='<div class="banner banner-err">Add at least one cost line.</div>';return;}
-  // Sync pre-production inputs into costEdit before building payload
+  // Sync pre-production inputs into costEdit before building payload.
+  // accessories_pct is NOT read from the DOM: the field is a read-only
+  // 2 dp display — costEdit keeps the precise server-picked (or legacy
+  // saved) value, and the server enforces it regardless of the payload.
   if(isPreprod){
-    costEdit.accessories_pct=Number((document.getElementById('cost-pp-acc-pct')||{}).value)||13;
     costEdit.defect_allowance_pct=Number((document.getElementById('cost-pp-def-pct')||{}).value)||10;
     costEdit.mtrs_per_garment=Number((document.getElementById('cost-pp-mpg')||{}).value)||null;
     costEdit.cost_per_minute=Number((document.getElementById('cost-pp-cpm')||{}).value)||null;
@@ -10894,6 +10962,13 @@ async function costSaveSheet(){
     const s=await r.json();
     costEdit.id=s.id;costEdit.history=s.history||[];
     costEdit.signoffs=s.signoffs||null;costEdit.locked=!!s.locked;
+    // Accessories % is authoritative from the SERVER (picked at creation,
+    // persisted with provenance): sync it back so a failed preview fetch
+    // can't leave the editor showing a different % than the sheet was
+    // actually saved with — then re-derive the auto line to match.
+    if(s.accessories_pct!=null)costEdit.accessories_pct=Number(s.accessories_pct);
+    if(s.accessories_pct_meta)costEdit.accessories_meta=s.accessories_pct_meta;
+    if(costEdit.stage==='pre_production'){costAccPctRender();if(!costEdit.locked)costPreProdCalc();}
     costRenderHistory();costRenderSignoffs();costApplyLock();
     document.getElementById('cost-pdf-btn').style.display='';
     document.getElementById('cost-export-btn').style.display='';
