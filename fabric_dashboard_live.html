@@ -1381,7 +1381,7 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
       </div>
       <div style="position:relative;">
        <label class="rsv-lbl">Retail price (VAT-incl, KES) <span id="cost-sp-badge"></span></label>
-       <input id="cost-selling-price" type="number" min="0" step="any" style="width:140px;" oninput="costSpManual()">
+       <input id="cost-selling-price" type="text" inputmode="numeric" style="width:140px;" oninput="costSpManual()" onfocus="costSpStripFmt(this)" onblur="costSpApplyFmt(this)">
        <div id="cost-sp-exvat" class="muted num" style="font-size:11px;position:absolute;top:100%;left:0;white-space:nowrap;"></div>
       </div>
       <div>
@@ -9944,6 +9944,10 @@ function loadL10Page(){
 const COST_KINDS={fabric:'Fabric',trim:'Trim / accessory',cmt:'CMT / labour',overhead:'Overhead / other'};
 let costSheets=[],costEdit=null; // costEdit = {id|null, style_name, style_number, dps_ref|null, lines:[], sp_auto, history:[]}
 const fmtKES2=n=>n==null||isNaN(n)?'—':'KES '+Number(n).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+const costFmtSP=v=>v==null||v===''||isNaN(Number(v))?'':Math.round(Number(v)).toLocaleString('en-US');
+const costParseSP=el=>el.value===''?null:Number(String(el.value).replace(/,/g,''));
+function costSpStripFmt(el){const n=costParseSP(el);el.value=n==null?'':n;}
+function costSpApplyFmt(el){const n=costParseSP(el);el.value=costFmtSP(n);}
 async function loadCosting(){
   const body=document.getElementById('cost-list-body');
   const note=document.getElementById('cost-labour-note');
@@ -10115,7 +10119,7 @@ function costRenderTotals(){
     const propEx=total>0?Math.round(total/0.30*100)/100:null;
     const propRetail=propEx!=null?Math.round(propEx*COST_VAT_DIVISOR*100)/100:null;
     const spEl=document.getElementById('cost-selling-price');
-    if(spEl&&propRetail!=null){spEl.value=propRetail;}
+    if(spEl&&propRetail!=null){spEl.value=costFmtSP(propRetail);}
     const exHint=document.getElementById('cost-sp-exvat');
     if(exHint)exHint.textContent=propEx!=null?'Proposed ex-VAT (70% margin target): '+fmtKES2(propEx):'';
     const exCell=document.getElementById('cost-exvat-cell');
@@ -10127,7 +10131,7 @@ function costRenderTotals(){
     return;
   }
   const spEl=document.getElementById('cost-selling-price');
-  const sp=spEl&&spEl.value!==''?Number(spEl.value):null;
+  const sp=spEl?costParseSP(spEl):null;
   const ex=costExVat(sp);
   const exHint=document.getElementById('cost-sp-exvat');
   if(exHint)exHint.textContent=ex==null?'':'Ex-VAT selling price: '+fmtKES2(ex);
@@ -10630,7 +10634,7 @@ async function costOpenSheet(id){
     document.getElementById('cost-editor-title').textContent='Edit costing sheet — '+s.style_name;
     const st=document.getElementById('cost-style-search');st.value=s.style_name;st.disabled=true;
     document.getElementById('cost-style-number').value=s.style_number||'';
-    document.getElementById('cost-selling-price').value=s.selling_price==null?'':s.selling_price;
+    document.getElementById('cost-selling-price').value=costFmtSP(s.selling_price);
     document.getElementById('cost-sp-badge').innerHTML=costBadge(costEdit.sp_auto);
     document.getElementById('cost-suggest-note').textContent='';
     const costBanners=[];
@@ -10796,7 +10800,7 @@ async function costLoadSuggest(){
     const s=await apiFetch(url);
     // Selling price (auto from the product master's modal SKU price).
     const spEl=document.getElementById('cost-selling-price');
-    if(s.selling_price!=null){spEl.value=s.selling_price;costEdit.sp_auto=true;document.getElementById('cost-sp-badge').innerHTML=costBadge(true);}
+    if(s.selling_price!=null){spEl.value=costFmtSP(s.selling_price);costEdit.sp_auto=true;document.getElementById('cost-sp-badge').innerHTML=costBadge(true);}
     const basis='DPS '+costEdit.dps_ref+(costEdit.color?' · '+costEdit.color:'');
     const lines=[];
     if(s.metres_per_garment!=null&&s.fabric_cost_per_metre!=null){
@@ -10943,7 +10947,7 @@ async function costSaveSheet(){
     stage:costEdit.stage||'main_production',
     dps_ref:costEdit.dps_ref||null,
     color:costEdit.color||null,
-    selling_price:spEl.value===''?null:Number(spEl.value),
+    selling_price:costParseSP(spEl),
     selling_price_is_auto:!!costEdit.sp_auto&&!isPreprod,
     accessories_pct:costEdit.accessories_pct!=null?costEdit.accessories_pct:13,
     defect_allowance_pct:costEdit.defect_allowance_pct!=null?costEdit.defect_allowance_pct:10,
