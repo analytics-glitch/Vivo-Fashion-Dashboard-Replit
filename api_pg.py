@@ -35484,6 +35484,26 @@ def production_board():
     return {"cards": rows}
 
 
+@app.post("/api/admin/run-production-tracker-sync")
+async def admin_run_production_tracker_sync(request: Request):
+    """Admin-only: fire sync_production_tracker.py as a background subprocess.
+    Returns immediately; poll /api/production/sync-status to see when it completes."""
+    user = getattr(request.state, "user", {})
+    if user.get("role") not in ("admin",):
+        return JSONResponse(status_code=403, content={"error": "admin only"})
+    import subprocess, sys, os as _os
+    try:
+        subprocess.Popen(
+            [sys.executable, _os.path.join("/home/runner/workspace", "sync_production_tracker.py")],
+            cwd="/home/runner/workspace",
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return {"ok": True, "message": "sync_production_tracker.py started in background"}
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"error": str(exc)})
+
+
 @app.get("/api/production/sync-status")
 def production_sync_status():
     """When the production tracker last synced from Odoo.
