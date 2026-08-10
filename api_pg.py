@@ -39057,6 +39057,220 @@ async def l10_update_settings(request: Request):
     return settings
 
 
+# ── L10 Excel Export (l10 page permission) ───────────────────────────────────
+
+@app.get("/api/l10/export/excel")
+def l10_export_excel(request: Request, folder_id: int = Query(1),
+                     meetings: int = Query(8)):
+    """Download a multi-sheet .xlsx with data from all L10 tabs.
+
+    Gated to the `l10` page permission (same as the other L10 routes).
+    Sheets: Scorecard, Check-In, Rocks, Headlines, To-Dos, IDS, Conclude.
+    """
+    import io
+    try:
+        import openpyxl
+    except ImportError:
+        raise HTTPException(status_code=500,
+                            detail="openpyxl is not installed on this server")
+    from fastapi.responses import Response as FastResponse
+
+    _ensure_l10_tables()
+
+    # ── Meetings window ───────────────────────────────────────────────────────
+    mtgs = _users_exec(
+        "SELECT id, week_label, meeting_date::text FROM l10_meetings "
+        "WHERE folder_id=%s ORDER BY meeting_date DESC LIMIT %s",
+        (folder_id, meetings), fetch=True) or []
+    mtgs = list(reversed(mtgs))            # oldest → newest (left → right)
+    mtg_ids = [m["id"] for m in mtgs]
+    mtg_by_id = {m["id"]: m for m in mtgs}
+
+    # ── Folder name (used in the filename) ───────────────────────────────────
+    folder_rows = _users_exec(
+        "SELECT name FROM l10_folders WHERE id=%s", (folder_id,), fetch=True)
+    folder_name = (folder_rows[0]["name"] if folder_rows else "L10").replace(" ", "-")
+
+    # ── Filename: L10-<FolderName>-<YYYY-Www> of the most recent meeting ─────
+    if mtgs:
+        last_date = mtgs[-1].get("meeting_date", "")[:10]
+        try:
+            from datetime import date as _date
+            d = _date.fromisoformat(last_date)
+            iso_week = d.isocalendar()
+            week_tag = f"{iso_week[0]}-W{iso_week[1]:02d}"
+        except Exception:
+            week_tag = last_date
+    else:
+        from datetime import date as _date
+        d = _date.today()
+        iso_week = d.isocalendar()
+        week_tag = f"{iso_week[0]}-W{iso_week[1]:02d}"
+    filename = f"L10-{folder_name}-{week_tag}.xlsx"
+
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)   # remove the default empty sheet
+
+    # ── Helper: write a simple table to a new sheet ───────────────────────────
+    def _add_sheet(name, headers, rows_data):
+        ws = wb.create_sheet(title=name)
+        ws.append(headers)
+        for row in rows_data:
+            ws.append(row)
+        return ws
+
+    # ══ 1. SCORECARD ══════════════════════════════════════════════════════════
+    metrics = _users_exec(
+        "SELECT id, who, measurable, goal, uom, goal_direction "
+        "FROM l10_scorecard_metrics WHERE folder_id=%s AND active ORDER BY sort_order, id",
+        (folder_id,), fetch=True) or []
+    values = {}
+    if mtg_ids:
+        placeholders = ",".join(["%s"] * len(mtg_ids))
+        vals = _users_exec(
+            f"SELECT metric_id, meeting_id, value FROM l10_scorecard_values "
+            f"WHERE meeting_id IN ({placeholders})",
+            tuple(mtg_ids), fetch=True) or []
+        for v in vals:
+            values[(v["metric_id"], v["meeting_id"])] = v["value"]
+    sc_headers = ["WHO", "MEASURABLE", "GOAL", "UOM"] + [
+        f"{m['week_label']} · {m['meeting_date']}" for m in mtgs]
+    sc_rows = []
+    for metric in metrics:
+        row = [metric.get("who") or "", metric.get("measurable") or "",
+               metric.get("goal") or "", metric.get("uom") or ""]
+        for m in mtgs:
+            row.append(values.get((metric["id"], m["id"])))
+        sc_rows.append(row)
+    _add_sheet("Scorecard", sc_headers, sc_rows)
+
+    # ══ 2. CHECK-IN ═══════════════════════════════════════════════════════════
+    ci_headers = ["MEETING DATE", "WEEK", "MEMBER", "PERSONAL NEWS", "PROFESSIONAL NEWS"]
+    ci_rows = []
+    if mtg_ids:
+        placeholders = ",".join(["%s"] * len(mtg_ids))
+        ci_data = _users_exec(
+            f"SELECT c.meeting_id, c.member_name, c.personal_news, c.professional_news "
+            f"FROM l10_checkin c WHERE c.meeting_id IN ({placeholders}) "
+            f"ORDER BY c.meeting_id, c.member_name",
+            tuple(mtg_ids), fetch=True) or []
+        for c in ci_data:
+            m = mtg_by_id.get(c["meeting_id"], {})
+            ci_rows.append([m.get("meeting_date", ""), m.get("week_label", ""),
+                            c["member_name"], c.get("personal_news") or "",
+                            c.get("professional_news") or ""])
+    _add_sheet("Check-In", ci_headers, ci_rows)
+
+    # ══ 3. ROCKS ══════════════════════════════════════════════════════════════
+    rocks = _users_exec(
+        "SELECT owner, description, rock_type, quarter_label, on_track, done, results "
+        "FROM l10_rocks WHERE folder_id=%s AND active ORDER BY sort_order, id",
+        (folder_id,), fetch=True) or []
+    rock_rows = []
+    for r in rocks:
+        status = "Done" if r.get("done") else ("On Track" if r.get("on_track") else "Off Track")
+        rock_rows.append([r.get("owner") or "", r.get("description") or "",
+                          r.get("rock_type") or "", r.get("quarter_label") or "",
+                          status, r.get("results") or ""])
+    _add_sheet("Rocks", ["OWNER", "DESCRIPTION", "TYPE", "QUARTER", "STATUS", "RESULTS"], rock_rows)
+
+    # ══ 4. HEADLINES ══════════════════════════════════════════════════════════
+    hl_headers = ["MEETING DATE", "WEEK", "ADDED BY", "HEADLINE"]
+    hl_rows = []
+    if mtg_ids:
+        placeholders = ",".join(["%s"] * len(mtg_ids))
+        hl_data = _users_exec(
+            f"SELECT h.meeting_id, h.headline, h.added_by "
+            f"FROM l10_headlines h WHERE h.meeting_id IN ({placeholders}) "
+            f"ORDER BY h.meeting_id, h.sort_order, h.id",
+            tuple(mtg_ids), fetch=True) or []
+        for h in hl_data:
+            m = mtg_by_id.get(h["meeting_id"], {})
+            hl_rows.append([m.get("meeting_date", ""), m.get("week_label", ""),
+                            h.get("added_by") or "", h.get("headline") or ""])
+    _add_sheet("Headlines", hl_headers, hl_rows)
+
+    # ══ 5. TO-DOS ════════════════════════════════════════════════════════════
+    td_data = _users_exec(
+        "SELECT t.owner, t.description, t.open_date, t.status, "
+        "om.week_label AS opened_week, om.meeting_date::text AS opened_date, "
+        "cm.week_label AS closed_week "
+        "FROM l10_todos t "
+        "LEFT JOIN l10_meetings om ON om.id=t.opened_meeting_id "
+        "LEFT JOIN l10_meetings cm ON cm.id=t.closed_meeting_id "
+        "WHERE t.folder_id=%s ORDER BY t.status, t.created_at DESC",
+        (folder_id,), fetch=True) or []
+    td_rows = [[r.get("owner") or "", r.get("description") or "",
+                r.get("open_date") or "", r.get("status") or "",
+                r.get("opened_date") or "", r.get("opened_week") or "",
+                r.get("closed_week") or ""]
+               for r in td_data]
+    _add_sheet("To-Dos",
+               ["OWNER", "TASK", "OPEN DATE", "STATUS",
+                "OPENED MEETING DATE", "OPENED WEEK", "CLOSED WEEK"],
+               td_rows)
+
+    # ══ 6. IDS ════════════════════════════════════════════════════════════════
+    ids_headers = ["MEETING DATE", "WEEK", "RAISED BY", "ISSUE", "STATUS"]
+    ids_rows = []
+    if mtg_ids:
+        placeholders = ",".join(["%s"] * len(mtg_ids))
+        ids_data = _users_exec(
+            f"SELECT i.meeting_id, i.issue, i.raised_by, i.status "
+            f"FROM l10_ids_issues i WHERE i.meeting_id IN ({placeholders}) "
+            f"ORDER BY i.meeting_id, i.sort_order, i.id",
+            tuple(mtg_ids), fetch=True) or []
+        for i in ids_data:
+            m = mtg_by_id.get(i["meeting_id"], {})
+            ids_rows.append([m.get("meeting_date", ""), m.get("week_label", ""),
+                             i.get("raised_by") or "", i.get("issue") or "",
+                             i.get("status") or ""])
+    _add_sheet("IDS", ids_headers, ids_rows)
+
+    # ══ 7. CONCLUDE ══════════════════════════════════════════════════════════
+    conc_headers = ["MEETING DATE", "WEEK", "MEMBER", "RATING", "CASCADING MESSAGES"]
+    conc_rows = []
+    if mtg_ids:
+        placeholders = ",".join(["%s"] * len(mtg_ids))
+        rat_data = _users_exec(
+            f"SELECT r.meeting_id, r.member_name, r.rating "
+            f"FROM l10_ratings r WHERE r.meeting_id IN ({placeholders}) "
+            f"ORDER BY r.meeting_id, r.member_name",
+            tuple(mtg_ids), fetch=True) or []
+        conc_data = _users_exec(
+            f"SELECT meeting_id, cascading_messages FROM l10_conclude "
+            f"WHERE meeting_id IN ({placeholders})",
+            tuple(mtg_ids), fetch=True) or []
+        cascading_by_mtg = {c["meeting_id"]: c.get("cascading_messages") or ""
+                            for c in conc_data}
+        for r in rat_data:
+            m = mtg_by_id.get(r["meeting_id"], {})
+            conc_rows.append([m.get("meeting_date", ""), m.get("week_label", ""),
+                              r.get("member_name") or "", r.get("rating"),
+                              cascading_by_mtg.get(r["meeting_id"], "")])
+        # Meetings with cascading messages but no ratings
+        rated_mtgs = {r["meeting_id"] for r in rat_data}
+        for mtg_id, msg in cascading_by_mtg.items():
+            if mtg_id not in rated_mtgs and msg:
+                m = mtg_by_id.get(mtg_id, {})
+                conc_rows.append([m.get("meeting_date", ""), m.get("week_label", ""),
+                                  "", None, msg])
+    _add_sheet("Conclude", conc_headers, conc_rows)
+
+    # ── Serialise and return ──────────────────────────────────────────────────
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    return FastResponse(
+        content=buf.read(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+        },
+    )
+
+
 # ── L10 Export / Import (admin-only, gated by /api/admin path check) ─────────
 
 # FK-safe insert order: parents before children

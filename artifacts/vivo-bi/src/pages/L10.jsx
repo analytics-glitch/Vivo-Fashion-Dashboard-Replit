@@ -22,6 +22,7 @@ import {
   ArrowUp,
   ArrowDown,
   Link as LinkIcon,
+  DownloadSimple,
 } from "@phosphor-icons/react";
 
 const TABS = [
@@ -1835,6 +1836,8 @@ const L10 = () => {
   const isAdmin = String(user?.role || "").toLowerCase() === "admin";
   const [tab, setTab] = useState("agenda");
   const [folders, setFolders] = useState([]);
+  const [excelLoading, setExcelLoading] = useState(false);
+  const [excelError, setExcelError] = useState(null);
   const [folderId, setFolderId] = useState(() => {
     const param = new URLSearchParams(window.location.search).get('folder_id');
     const parsed = param ? parseInt(param, 10) : NaN;
@@ -1916,6 +1919,35 @@ const L10 = () => {
     setMembers([]);
   };
 
+  const downloadExcel = async () => {
+    setExcelLoading(true);
+    setExcelError(null);
+    try {
+      const resp = await api.get("/l10/export/excel", {
+        params: { folder_id: folderId, meetings: 8 },
+        responseType: "blob",
+      });
+      const blob = new Blob([resp.data], {
+        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      // Try to get the filename from Content-Disposition header
+      const cd = resp.headers?.["content-disposition"] || "";
+      const match = cd.match(/filename="?([^"]+)"?/);
+      a.download = match ? match[1] : `L10-export.xlsx`;
+      a.href = url;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setExcelError("Export failed — please try again.");
+    } finally {
+      setExcelLoading(false);
+    }
+  };
+
   const createMeeting = async () => {
     setCreating(true);
     try {
@@ -1964,7 +1996,7 @@ const L10 = () => {
             EOS Level 10 weekly meeting — same time, same place, same agenda.
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           {meetings.length > 0 && (
             <select
               value={meetingId || ""}
@@ -1990,6 +2022,19 @@ const L10 = () => {
                 ));
               })()}
             </select>
+          )}
+          <button
+            type="button"
+            onClick={downloadExcel}
+            disabled={excelLoading}
+            title="Download all tabs as Excel"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-white text-sm px-3 py-1.5 hover:bg-muted disabled:opacity-50"
+          >
+            <DownloadSimple size={14} />
+            {excelLoading ? "Exporting…" : "Excel"}
+          </button>
+          {excelError && (
+            <span className="text-xs text-red-600">{excelError}</span>
           )}
           <button
             type="button"
