@@ -13826,8 +13826,14 @@ def customers_at_risk(
     /churned-customers list. Respects country/channel filters, BASE_FILTERS and
     the pseudo-customer exclusions; phone/email masked unless reveal-authorized.
     """
-    cd = max(2, int(churn_days))
-    band = min(max(1, int(band_days)), cd - 1)
+    try:
+        cd = max(2, min(int(churn_days), 3650))
+    except (ValueError, OverflowError):
+        cd = 90
+    try:
+        band = min(max(1, int(band_days)), cd - 1)
+    except (ValueError, OverflowError):
+        band = 30
     lo = cd - band          # inclusive lower bound of days-since-last-purchase
     hi = cd - 1             # inclusive upper bound (one day short of churn)
     lim = min(max(1, int(limit)), 2000)
@@ -13839,9 +13845,13 @@ def customers_at_risk(
     # who bought inside the band window and NOT since. Lifetime stats are then
     # computed only for that small candidate set via the (customer_id, ...)
     # indexes. The final BETWEEN re-check keeps exactness regardless.
-    band_start   = (date.today() - timedelta(days=hi)).isoformat()
-    band_end_exc = (date.today() - timedelta(days=lo - 1)).isoformat()  # exclusive
-    rows = run_query(f"""
+    try:
+        band_start   = (date.today() - timedelta(days=hi)).isoformat()
+        band_end_exc = (date.today() - timedelta(days=lo - 1)).isoformat()  # exclusive
+    except OverflowError:
+        band_start, band_end_exc = "1900-01-01", str(date.today())
+    try:
+        rows = run_query(f"""
         WITH band_buyers AS (
             SELECT DISTINCT s.customer_id
             FROM all_sales s
@@ -13895,17 +13905,23 @@ def customers_at_risk(
         ORDER BY lp.lifetime_spend DESC
         LIMIT {lim}
     """, ttl=900)  # snapshot-of-today figure; long TTL rides out the page's query storm
-    total = int(rows[0]["at_risk_total"]) if rows else 0
-    for r in rows:
-        r.pop("at_risk_total", None)
-    return {
-        "at_risk_count": total,
-        "band_from_days": lo,
-        "band_to_days": hi,
-        "churn_days": cd,
-        "truncated": total > len(rows),
-        "customers": mask_pii_rows(rows, request),
-    }
+        total = int(rows[0]["at_risk_total"]) if rows else 0
+        for r in rows:
+            r.pop("at_risk_total", None)
+        return {
+            "at_risk_count": total,
+            "band_from_days": lo,
+            "band_to_days": hi,
+            "churn_days": cd,
+            "truncated": total > len(rows),
+            "customers": mask_pii_rows(rows, request),
+        }
+    except Exception as exc:
+        logger.error("customers_at_risk error: %s", exc, exc_info=True)
+        return JSONResponse(
+            status_code=503,
+            content={"error": "at-risk query failed", "detail": str(exc)},
+        )
 
 
 @app.get("/api/customers/walk-ins")
