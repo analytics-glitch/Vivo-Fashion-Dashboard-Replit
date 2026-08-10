@@ -5516,7 +5516,7 @@ def get_daily_trend(
         LEFT JOIN order_cnt o
             ON o.day = d.day AND o.country IS NOT DISTINCT FROM d.country
         ORDER BY d.day, d.country
-    """, date_to=date_to)
+    """, ttl=HEAVY_DASH_TTL, date_to=date_to)
 
 @app.get("/api/subcategory-sales")
 def get_subcategory_sales(
@@ -5543,7 +5543,7 @@ def get_subcategory_sales(
         WHERE """ + where + """
         GROUP BY p.product_type
         ORDER BY total_sales DESC
-    """, date_to=date_to)
+    """, ttl=HEAVY_DASH_TTL, date_to=date_to)
 
 @app.get("/api/top-skus")
 def get_top_skus(
@@ -5628,7 +5628,7 @@ def get_inventory_summary(country: str = Query(default=None), locations: str = Q
         WHERE """ + where + """
         GROUP BY i.pos_location_name, i.country
         ORDER BY units DESC
-    """)
+    """, ttl=900)
     by_subcat = run_query("""
         SELECT p.product_type, ROUND(SUM(i.available)::numeric, 2) AS units
         FROM all_inventory i
@@ -5636,14 +5636,14 @@ def get_inventory_summary(country: str = Query(default=None), locations: str = Q
         WHERE """ + where + """
         GROUP BY p.product_type
         ORDER BY units DESC
-    """)
+    """, ttl=900)
     totals = run_query("""
         SELECT ROUND(COALESCE(SUM(i.available), 0)::numeric, 2) AS total_units,
             COUNT(DISTINCT i.sku) AS sku_count,
             COUNT(DISTINCT i.pos_location_name) AS location_count
         FROM all_inventory i
         JOIN all_products_clean p ON i.sku = p.sku
-        WHERE """ + where)
+        WHERE """ + where, ttl=900)
     t = totals[0] if totals else {}
     return {
         "total_units": float(t.get("total_units") or 0),
@@ -5722,7 +5722,7 @@ def get_footfall(
         FROM joined""" + loc_filter + """
         GROUP BY loc
         ORDER BY total_footfall DESC
-    """, date_to=date_to)
+    """, ttl=HEAVY_DASH_TTL, date_to=date_to)
 
     # WS5/T503 — ONE broken-counter rule, applied server-side so Footfall and
     # Locations render identically:
@@ -5807,7 +5807,7 @@ def get_footfall_weekday(
         FROM joined
         GROUP BY location, wd
         ORDER BY location, wd
-    """, date_to=date_to)
+    """, ttl=HEAVY_DASH_TTL, date_to=date_to)
 
     # Assemble into per-location rows, each with a dense 7-entry by_weekday list
     # (missing weekdays filled with days=0 so the frontend renders a dashed cell).
@@ -5933,6 +5933,7 @@ def get_customers(
                 FROM all_sales
                 WHERE sale_kind IN ('sale','order') AND customer_id IS NOT NULL
                   AND customer_id NOT IN ('None','null','')
+                  AND sale_date >= (CURRENT_DATE - INTERVAL '5 years')::text
                 GROUP BY customer_id
                 HAVING MIN(sale_date::date) < CURRENT_DATE - INTERVAL '90 days'
             ) t
@@ -6061,7 +6062,7 @@ def get_customers(
         CROSS JOIN churned c
         CROSS JOIN first_time_reg ftr
         CROSS JOIN pc_agg pa
-    """, date_to=date_to)
+    """, ttl=HEAVY_DASH_TTL, date_to=date_to)
     return rows[0] if rows else {}
 
 def _top_customers_data(date_from: str, date_to: str, country=None, channel=None, limit: int = 20):
@@ -6086,7 +6087,7 @@ def _top_customers_data(date_from: str, date_to: str, country=None, channel=None
         WHERE """ + where + """
         GROUP BY s.customer_id, c.first_name, c.last_name, c.phone, c.email, c.city, c.country
         ORDER BY total_sales DESC
-        LIMIT """ + str(limit), date_to=date_to)
+        LIMIT """ + str(limit), ttl=HEAVY_DASH_TTL, date_to=date_to)
 
 
 @app.get("/api/top-customers")
@@ -7250,7 +7251,7 @@ def get_customer_frequency(
         FROM order_counts
         GROUP BY frequency_bucket
         ORDER BY MIN(order_count)
-    """, date_to=date_to)
+    """, ttl=HEAVY_DASH_TTL, date_to=date_to)
 
 @app.get("/api/customer-trend")
 def get_customer_trend(
@@ -7361,7 +7362,7 @@ def get_churned_customers(
         LEFT JOIN all_customers c ON lp.customer_id = c.customer_id
         WHERE CURRENT_DATE - lp.last_purchase_date > """ + str(days) + """
         ORDER BY lp.lifetime_spend DESC
-        LIMIT """ + str(limit))
+        LIMIT """ + str(limit), ttl=HEAVY_DASH_TTL)
     return mask_pii_rows(rows, request)
 
 @app.get("/api/analytics/customer-details")
@@ -7410,7 +7411,7 @@ def analytics_customer_details(
         WHERE """ + where + """
         GROUP BY s.customer_id, c.first_name, c.last_name, c.email, c.phone, c.city, c.country
         ORDER BY total_sales DESC
-        LIMIT """ + str(limit), date_to=date_to)
+        LIMIT """ + str(limit), ttl=HEAVY_DASH_TTL, date_to=date_to)
     return mask_pii_rows(rows, request, phone_keys=("mobile",), email_keys=("email",))
 
 @app.get("/api/new-customer-products")
@@ -7855,7 +7856,7 @@ def get_order_detail_v2(order_id: str, request: Request):
         ) agg ON TRUE
         WHERE rso.id = '{oid}'
         LIMIT 1
-    """)
+    """, ttl=300)
     if not hrows:
         # Fall back: build header from all_sales + all_customers (Kenya/Odoo orders)
         hrows = run_query(f"""
@@ -7886,7 +7887,7 @@ def get_order_detail_v2(order_id: str, request: Request):
               AND s.sale_kind IN ('sale','order')
             GROUP BY s.order_id
             LIMIT 1
-        """)
+        """, ttl=300)
     if not hrows:
         raise HTTPException(status_code=404, detail="Order not found")
     header = hrows[0]
@@ -7944,7 +7945,7 @@ def get_order_detail_v2(order_id: str, request: Request):
                  THEN 1 ELSE 0 END,
             s.sale_kind,
             s.variant_sku
-    """)
+    """, ttl=300)
     # ── customer profile ────────────────────────────────────────────────────
     cid = (header.get("customer_id") or "").replace("'", "").strip()
     customer = {}
@@ -7965,7 +7966,7 @@ def get_order_detail_v2(order_id: str, request: Request):
             LEFT JOIN crm_loyalty_member lm ON lm.customer_id = c.customer_id
             WHERE c.customer_id = '{cid}'
             LIMIT 1
-        """)
+        """, ttl=300)
         if crows:
             customer = crows[0]
     # ── pricing summary from all_sales ──────────────────────────────────────
@@ -7977,7 +7978,7 @@ def get_order_detail_v2(order_id: str, request: Request):
             COALESCE(SUM(ordered_item_quantity) FILTER (WHERE sale_kind IN ('sale','order')),0) AS total_qty
         FROM all_sales
         WHERE order_id = '{oid}'
-    """)
+    """, ttl=300)
     pricing = prows[0] if prows else {}
     return {"header": header, "lines": lines, "customer": customer, "pricing": pricing}
 
@@ -8008,7 +8009,7 @@ def get_order_product_detail(sku: str, request: Request):
         ) inv ON TRUE
         WHERE p.sku = '{sku}'
         LIMIT 1
-    """)
+    """, ttl=3600)
     if not prod_rows:
         raise HTTPException(status_code=404, detail="Product not found")
     product = prod_rows[0]
@@ -8022,7 +8023,7 @@ def get_order_product_detail(sku: str, request: Request):
         JOIN product_images i ON i.tmpl_id = m.tmpl_id
         WHERE m.sku = '{sku}' AND i.image_512 IS NOT NULL AND i.image_512 <> ''
         LIMIT 1
-    """)
+    """, ttl=3600)
     image_url = img_rows[0]["image_url"] if img_rows else ""
 
     # ── stock by location (all with any available) ───────────────────────────
@@ -8035,7 +8036,7 @@ def get_order_product_detail(sku: str, request: Request):
         WHERE sku = '{sku}'
         GROUP BY pos_location_name, country
         ORDER BY SUM(available) DESC, pos_location_name
-    """)
+    """, ttl=900)
 
     # ── SOH summary: stores vs warehouse ─────────────────────────────────────
     soh_rows = run_query(f"""
@@ -8046,7 +8047,7 @@ def get_order_product_detail(sku: str, request: Request):
                               THEN available ELSE 0 END), 0)::int AS soh_stores
         FROM all_inventory
         WHERE sku = '{sku}'
-    """)
+    """, ttl=900)
     soh = soh_rows[0] if soh_rows else {"soh_warehouse": 0, "soh_stores": 0}
 
     # ── 30-day velocity (BASE_FILTERS uses s. alias) ──────────────────────────
@@ -8061,7 +8062,7 @@ def get_order_product_detail(sku: str, request: Request):
           AND s.sale_kind IN ('sale', 'order')
           AND s.sale_date::date >= CURRENT_DATE - INTERVAL '30 days'
           AND {BASE_FILTERS}
-    """)
+    """, ttl=900)
     velocity = vel_rows[0] if vel_rows else {"units_30d": 0, "revenue_30d": 0}
 
     return {
@@ -11971,7 +11972,7 @@ def analytics_buy_candidates(
         LEFT JOIN wip   w  USING (style_name)
         LEFT JOIN aged  ag USING (style_name)
         WHERE COALESCE(sa.u56, 0) > 0
-    """) or []
+    """, ttl=HEAVY_DASH_TTL) or []
 
     # Censoring signal (approx): styles recently flagged at-risk (low weeks-of-
     # cover) in the weekly stockout snapshot. No daily SOH history exists, so this
@@ -13559,7 +13560,7 @@ def analytics_repeat_customers(
         LEFT JOIN all_customers cu ON c.customer_id = cu.customer_id
         ORDER BY c.total_spend_kes DESC
         LIMIT 500
-    """, date_to=date_to)
+    """, ttl=HEAVY_DASH_TTL, date_to=date_to)
 
 @app.get("/api/analytics/customer-retention")
 def analytics_customer_retention(
@@ -13629,35 +13630,53 @@ def analytics_customer_crosswalk(
         GROUP BY a.pos_location_name, b.pos_location_name, ta.n, tb.n
         ORDER BY shared_customers DESC
         LIMIT 100
-    """, date_to=date_to)
+    """, ttl=HEAVY_DASH_TTL, date_to=date_to)
 
 @app.get("/api/customers/churn-rate")
 def customers_churn_rate():
-    rows = run_query("""
-        -- Churn (doc 03.6.2): churned = no transaction in the last 90 days.
-        -- Rate = churned / eligible base (customers whose first purchase was
-        -- before the 90-day cutoff, i.e. old enough to be assessed).
-        WITH per_customer AS (
-            SELECT customer_id,
-                MAX(sale_date::date) AS last_sale,
-                MIN(sale_date::date) AS first_sale
-            FROM all_sales
-            WHERE sale_kind IN ('sale','order') AND customer_id IS NOT NULL
-              AND customer_id NOT IN ('None','null','')
-              AND """ + _not_walkin_pseudo_sql(alias="all_sales") + """
-            GROUP BY customer_id
-        ),
-        agg AS (
-            SELECT
-                COUNT(*) FILTER (WHERE last_sale < CURRENT_DATE - INTERVAL '90 days') AS churned_count,
-                COUNT(*) AS eligible_base
-            FROM per_customer
-            WHERE first_sale < CURRENT_DATE - INTERVAL '90 days'
-        )
-        SELECT churned_count, eligible_base AS base,
-            ROUND(churned_count * 100.0 / NULLIF(eligible_base, 0), 2) AS churn_rate
-        FROM agg
-    """)
+    # Fast path: rollup_customer_lifetime has pre-aggregated last_sale/first_sale
+    # per customer; a COUNT over ~170k rollup rows is <1s vs 15-20s scanning 1.5M
+    # all_sales rows. Pseudo-account exclusion is omitted (they're absent from the
+    # rollup and are a negligible fraction), so the result may differ by < 0.1%.
+    if _rollup_fresh("customer_lifetime"):
+        rows = run_query("""
+            WITH agg AS (
+                SELECT
+                    COUNT(*) FILTER (WHERE last_sale < CURRENT_DATE - INTERVAL '90 days') AS churned_count,
+                    COUNT(*) AS eligible_base
+                FROM rollup_customer_lifetime
+                WHERE first_sale < CURRENT_DATE - INTERVAL '90 days'
+            )
+            SELECT churned_count, eligible_base AS base,
+                ROUND(churned_count * 100.0 / NULLIF(eligible_base, 0), 2) AS churn_rate
+            FROM agg
+        """, ttl=HEAVY_DASH_TTL)
+    else:
+        # Fallback: live scan when rollup is stale (first boot / just after deploy).
+        # Bounded to 5 years so it doesn't need to touch decade-old rows.
+        rows = run_query("""
+            WITH per_customer AS (
+                SELECT customer_id,
+                    MAX(sale_date::date) AS last_sale,
+                    MIN(sale_date::date) AS first_sale
+                FROM all_sales
+                WHERE sale_kind IN ('sale','order') AND customer_id IS NOT NULL
+                  AND customer_id NOT IN ('None','null','')
+                  AND sale_date >= (CURRENT_DATE - INTERVAL '5 years')::text
+                  AND """ + _not_walkin_pseudo_sql(alias="all_sales") + """
+                GROUP BY customer_id
+            ),
+            agg AS (
+                SELECT
+                    COUNT(*) FILTER (WHERE last_sale < CURRENT_DATE - INTERVAL '90 days') AS churned_count,
+                    COUNT(*) AS eligible_base
+                FROM per_customer
+                WHERE first_sale < CURRENT_DATE - INTERVAL '90 days'
+            )
+            SELECT churned_count, eligible_base AS base,
+                ROUND(churned_count * 100.0 / NULLIF(eligible_base, 0), 2) AS churn_rate
+            FROM agg
+        """, ttl=HEAVY_DASH_TTL)
     if not rows:
         return {"churn_rate": 0, "churned_count": 0, "churned_customers": 0, "base": 0}
     r = rows[0]
@@ -13887,6 +13906,7 @@ def customers_at_risk(
             FROM all_sales s
             JOIN candidates cd ON cd.customer_id = s.customer_id
             WHERE s.sale_kind IN ('sale','order')
+              AND s.sale_date >= (CURRENT_DATE - INTERVAL '5 years')::text
               AND {BASE_FILTERS}
               {country_filter}
               {channel_filter}
@@ -13905,19 +13925,21 @@ def customers_at_risk(
         ORDER BY lp.lifetime_spend DESC
         LIMIT {lim}
     """, ttl=900)  # snapshot-of-today figure; long TTL rides out the page's query storm
-        total = int(rows[0]["at_risk_total"]) if rows else 0
-        for r in rows:
-            r.pop("at_risk_total", None)
+        total = int(rows[0].get("at_risk_total", 0)) if rows else 0
+        # Copy rows before popping so we don't mutate the cached dicts —
+        # the run_query cache holds references to the same dict objects,
+        # and in-place pop() would make at_risk_total vanish on the next hit.
+        clean = [{k: v for k, v in r.items() if k != "at_risk_total"} for r in rows]
         return {
             "at_risk_count": total,
             "band_from_days": lo,
             "band_to_days": hi,
             "churn_days": cd,
-            "truncated": total > len(rows),
-            "customers": mask_pii_rows(rows, request),
+            "truncated": total > len(clean),
+            "customers": mask_pii_rows(clean, request),
         }
     except Exception as exc:
-        logger.error("customers_at_risk error: %s", exc, exc_info=True)
+        log.error("customers_at_risk error: %s", exc, exc_info=True)
         return JSONResponse(
             status_code=503,
             content={"error": "at-risk query failed", "detail": str(exc)},
