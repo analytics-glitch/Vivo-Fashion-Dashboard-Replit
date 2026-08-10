@@ -554,9 +554,9 @@ class PreProdCostingLinesTest(unittest.TestCase):
 
     def test_saved_multiplier_reopen_resync(self):
         ac = self.results["adopt_custom"]
-        self.assertEqual(ac["filled"]["start"], "08:00",
-                         "HH:MM:SS start time must fill the picker as HH:MM")
-        self.assertEqual(ac["filled"]["stop"], "08:30")
+        self.assertEqual(ac["filled"]["start"], "08:00:00",
+                         "HH:MM:SS start time must preserve seconds in the picker")
+        self.assertEqual(ac["filled"]["stop"], "08:30:00")
         self.assertEqual(ac["filled"]["mult"], 1.55,
                          "stored multiplier must prefill the field")
         self.assertTrue(ac["seed_added_nothing"],
@@ -566,8 +566,8 @@ class PreProdCostingLinesTest(unittest.TestCase):
                          "custom-multiplier label adopted, never duplicated")
         self.assertEqual(ac["cmt_cost"], 232.5,
                          "same 30 minutes as before: figures unchanged")
-        self.assertIn("08:00\u201308:30", ac["cmt_label"],
-                      "re-synced label drops the legacy seconds")
+        self.assertIn("08:00:00\u201308:30:00", ac["cmt_label"],
+                      "re-synced label includes seconds")
         self.assertIn("\u00d71.55", ac["cmt_label"])
         self.assertTrue(ac["cmt_auto"],
                         "manual-flipped custom-label row re-adopted AUTO")

@@ -1417,11 +1417,11 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
       </div>
       <div>
        <label class="rsv-lbl">CMT Start</label>
-       <input id="cost-pp-cmt-start" type="time" style="width:120px;" oninput="costPreProdCalc()">
+       <input id="cost-pp-cmt-start" type="time" step="1" style="width:155px;" oninput="costPreProdCalc()">
       </div>
       <div>
        <label class="rsv-lbl">CMT Stop</label>
-       <input id="cost-pp-cmt-stop" type="time" style="width:120px;" oninput="costPreProdCalc()">
+       <input id="cost-pp-cmt-stop" type="time" step="1" style="width:155px;" oninput="costPreProdCalc()">
       </div>
       <div>
        <label class="rsv-lbl">Cost per Minute (KES)</label>
@@ -10426,11 +10426,8 @@ function costPreProdFillInputs(){
   set('cost-pp-def-pct',costEdit.defect_allowance_pct!=null?costEdit.defect_allowance_pct:10);
   set('cost-pp-cpm',costEdit.cost_per_minute!=null?costEdit.cost_per_minute:'');
   set('cost-pp-mult',costEdit.production_multiplier!=null?costEdit.production_multiplier:COST_PP_MULT_DEFAULT);
-  // Sheets saved while the pickers had a seconds spinner stored HH:MM:SS —
-  // normalize to HH:MM so the pickers stay seconds-free (minutes maths is
-  // unchanged: the calc always ignored seconds).
-  set('cost-pp-cmt-start',(costEdit.cmt_start_time||'').slice(0,5));
-  set('cost-pp-cmt-stop',(costEdit.cmt_stop_time||'').slice(0,5));
+  set('cost-pp-cmt-start',(costEdit.cmt_start_time||'').slice(0,8));
+  set('cost-pp-cmt-stop',(costEdit.cmt_stop_time||'').slice(0,8));
 }
 function costPreProdSeedLines(){
   // Add whichever of the four default Pre-production rows are missing, in
@@ -10518,7 +10515,7 @@ function costPreProdCalc(opts){
   // CMT auto-line from time inputs
   let cpmTotal=0;
   if(startStr&&stopStr){
-    const parseMins=s=>{const p=(s+':00').split(':').map(Number);return p[0]*60+p[1];};
+    const parseMins=s=>{const p=(s+':00:00').split(':').map(Number);return p[0]*60+p[1]+(p[2]||0)/60;};
     let rawMins=parseMins(stopStr)-parseMins(startStr);
     if(rawMins<0)rawMins+=24*60;
     const adjMins=Math.round(rawMins*mult*100)/100;
