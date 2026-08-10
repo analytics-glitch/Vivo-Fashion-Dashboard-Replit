@@ -23,6 +23,12 @@ import {
   ArrowDown,
   Link as LinkIcon,
   DownloadSimple,
+  ArrowSquareOut,
+  UploadSimple,
+  CheckCircle,
+  Warning,
+  Database,
+  CircleNotch,
 } from "@phosphor-icons/react";
 
 const TABS = [
@@ -1417,8 +1423,263 @@ const ConcludeTab = ({ meetingId, members, folderId = 1 }) => {
   );
 };
 
+// ─── L10 Data Migration Panel ─────────────────────────────────────────────────
+const L10MigrationPanel = () => {
+  // ── Export ──────────────────────────────────────────────────────────────────
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState(null);
+
+  const handleExport = async () => {
+    setExporting(true);
+    setExportError(null);
+    try {
+      const { data } = await api.get("/admin/l10/export");
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+      a.download = `l10-snapshot-${ts}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setExportError(e?.response?.data?.detail || e.message || "Export failed");
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  // ── Import ──────────────────────────────────────────────────────────────────
+  const fileRef = useRef(null);
+  const [parsed, setParsed] = useState(null);
+  const [parseError, setParseError] = useState(null);
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState(null);
+  const [importError, setImportError] = useState(null);
+
+  const handleFileChange = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setParsed(null);
+    setParseError(null);
+    setImportResult(null);
+    setImportError(null);
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const data = JSON.parse(ev.target.result);
+        if (!data?.tables || !data?.row_counts) {
+          throw new Error("File does not look like an L10 snapshot (missing tables or row_counts).");
+        }
+        setParsed(data);
+      } catch (err) {
+        setParseError(err.message);
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  const handleImport = async () => {
+    if (!parsed) return;
+    setImporting(true);
+    setImportError(null);
+    setImportResult(null);
+    try {
+      const { data } = await api.post("/admin/l10/import", parsed);
+      setImportResult(data);
+      setParsed(null);
+      if (fileRef.current) fileRef.current.value = "";
+    } catch (e) {
+      setImportError(e?.response?.data?.detail || e.message || "Import failed");
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const handleCancel = () => {
+    setParsed(null);
+    setParseError(null);
+    setImportResult(null);
+    setImportError(null);
+    if (fileRef.current) fileRef.current.value = "";
+  };
+
+  return (
+    <div className="rounded-xl border bg-card">
+      <div className="px-4 py-3 border-b bg-muted/20 flex items-center gap-2">
+        <Database size={14} className="text-muted-foreground" />
+        <h2 className="text-sm font-semibold">Data Migration</h2>
+        <span className="text-xs text-muted-foreground">— export or import a full L10 snapshot</span>
+      </div>
+      <div className="p-4 space-y-5">
+
+        {/* Export */}
+        <div className="space-y-2">
+          <div>
+            <p className="text-sm font-medium">Export &amp; Download</p>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Downloads a JSON file containing all L10 folders, meetings, members, rocks, scorecard metrics, and history.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={handleExport}
+            disabled={exporting}
+            className="inline-flex items-center gap-2 text-sm font-semibold bg-primary text-primary-foreground px-4 py-1.5 rounded-lg hover:opacity-90 disabled:opacity-50 transition-opacity"
+          >
+            {exporting
+              ? <><CircleNotch size={13} className="animate-spin" /> Exporting…</>
+              : <><ArrowSquareOut size={13} /> Export &amp; Download</>}
+          </button>
+          {exportError && (
+            <div className="flex items-start gap-2 text-xs text-red-700 bg-red-50 border border-red-200 rounded-md px-3 py-2">
+              <Warning size={13} weight="fill" className="mt-0.5 shrink-0" />
+              {exportError}
+            </div>
+          )}
+        </div>
+
+        <div className="border-t" />
+
+        {/* Import */}
+        <div className="space-y-3">
+          <div>
+            <p className="text-sm font-medium">Import Snapshot</p>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Select a JSON file exported from another environment. Folders present in the file are replaced; others are left untouched.
+            </p>
+          </div>
+
+          {/* File picker */}
+          {!parsed && !importResult && (
+            <label className="flex items-center gap-3 cursor-pointer border-2 border-dashed border-border rounded-lg px-4 py-4 hover:border-primary/40 transition-colors">
+              <UploadSimple size={20} className="text-muted-foreground shrink-0" />
+              <div>
+                <span className="text-sm font-medium">Choose a snapshot file</span>
+                <span className="text-xs text-muted-foreground ml-2">(.json)</span>
+              </div>
+              <input
+                ref={fileRef}
+                type="file"
+                accept=".json,application/json"
+                className="sr-only"
+                onChange={handleFileChange}
+              />
+            </label>
+          )}
+
+          {/* Parse error */}
+          {parseError && (
+            <div className="flex items-start gap-2 text-xs text-red-700 bg-red-50 border border-red-200 rounded-md px-3 py-2">
+              <Warning size={13} weight="fill" className="mt-0.5 shrink-0" />
+              <span className="flex-1">{parseError}</span>
+              <button type="button" onClick={handleCancel} className="underline text-red-600 hover:text-red-800">Clear</button>
+            </div>
+          )}
+
+          {/* Row-count preview */}
+          {parsed && !importResult && (
+            <div className="space-y-3">
+              <p className="text-xs font-semibold">
+                Snapshot preview
+                <span className="ml-2 font-normal text-muted-foreground">
+                  exported {parsed.exported_at ? new Date(parsed.exported_at).toLocaleString() : "unknown"}
+                </span>
+              </p>
+              <div className="overflow-x-auto rounded-md border border-border">
+                <table className="w-full text-xs">
+                  <thead className="bg-muted/20">
+                    <tr>
+                      <th className="text-left px-3 py-2 font-semibold text-muted-foreground">Table</th>
+                      <th className="text-right px-3 py-2 font-semibold text-muted-foreground">Rows</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {Object.entries(parsed.row_counts).map(([tbl, n]) => (
+                      <tr key={tbl} className="border-t border-border">
+                        <td className="px-3 py-1.5 font-mono">{tbl}</td>
+                        <td className="px-3 py-1.5 text-right tabular-nums">{n.toLocaleString()}</td>
+                      </tr>
+                    ))}
+                    <tr className="border-t-2 border-border bg-muted/20">
+                      <td className="px-3 py-1.5 font-semibold">Total</td>
+                      <td className="px-3 py-1.5 text-right font-semibold tabular-nums">
+                        {Object.values(parsed.row_counts).reduce((s, n) => s + n, 0).toLocaleString()}
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              {importError && (
+                <div className="flex items-start gap-2 text-xs text-red-700 bg-red-50 border border-red-200 rounded-md px-3 py-2">
+                  <Warning size={13} weight="fill" className="mt-0.5 shrink-0" />
+                  {importError}
+                </div>
+              )}
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleImport}
+                  disabled={importing}
+                  className="inline-flex items-center gap-2 text-sm font-semibold bg-primary text-primary-foreground px-4 py-1.5 rounded-lg hover:opacity-90 disabled:opacity-50 transition-opacity"
+                >
+                  {importing ? <><CircleNotch size={13} className="animate-spin" /> Importing…</> : <>Confirm Import</>}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleCancel}
+                  disabled={importing}
+                  className="text-sm font-semibold text-muted-foreground border border-border px-4 py-1.5 rounded-lg hover:bg-muted disabled:opacity-50 transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Success result */}
+          {importResult && (
+            <div className="space-y-3">
+              <div className="flex items-center gap-2 text-sm font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-md px-4 py-3">
+                <CheckCircle size={15} weight="fill" className="shrink-0" />
+                Import complete — {Object.values(importResult.imported || {}).reduce((s, n) => s + n, 0).toLocaleString()} rows written
+                {importResult.folder_ids?.length > 0 && (
+                  <span className="ml-2 text-xs font-normal text-emerald-600">
+                    (folder{importResult.folder_ids.length !== 1 ? "s" : ""} {importResult.folder_ids.join(", ")})
+                  </span>
+                )}
+              </div>
+              <div className="overflow-x-auto rounded-md border border-border">
+                <table className="w-full text-xs">
+                  <thead className="bg-muted/20">
+                    <tr>
+                      <th className="text-left px-3 py-2 font-semibold text-muted-foreground">Table</th>
+                      <th className="text-right px-3 py-2 font-semibold text-muted-foreground">Rows inserted</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {Object.entries(importResult.imported || {}).map(([tbl, n]) => (
+                      <tr key={tbl} className="border-t border-border">
+                        <td className="px-3 py-1.5 font-mono">{tbl}</td>
+                        <td className="px-3 py-1.5 text-right tabular-nums">{n.toLocaleString()}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <button type="button" onClick={handleCancel} className="text-xs text-muted-foreground underline hover:text-foreground">
+                Import another file
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // ─── Admin Tab ────────────────────────────────────────────────────────────────
-const AdminTab = ({ members, onMembersChanged, settings, onSettingsChanged, folderId = 1 }) => {
+const AdminTab = ({ members, onMembersChanged, settings, onSettingsChanged, folderId = 1, isAdmin = false }) => {
   const [metrics, setMetrics] = useState([]);
   const [rocks, setRocks] = useState([]);
   const [loadingMetrics, setLoadingMetrics] = useState(true);
@@ -1718,6 +1979,9 @@ const AdminTab = ({ members, onMembersChanged, settings, onSettingsChanged, fold
           </button>
         </div>
       </div>
+
+      {/* Data Migration — admin only */}
+      {isAdmin && <L10MigrationPanel />}
     </div>
   );
 };
@@ -2179,6 +2443,7 @@ const L10 = () => {
                 settings={settings}
                 onSettingsChanged={reloadSettings}
                 folderId={folderId}
+                isAdmin={isAdmin}
               />
             )}
           </div>
