@@ -27,10 +27,12 @@ import {
   Briefcase,
   Megaphone,
   Star,
+  ArrowCounterClockwise,
   List as MenuIcon,
   X as CloseIcon,
 } from "@phosphor-icons/react";
 import { usePinnedPages } from "@/lib/pinnedPages";
+import { useTabOrder } from "@/lib/tabOrder";
 import { useFilters } from "@/lib/filters";
 import { useAuth } from "@/lib/auth";
 import { api } from "@/lib/api";
@@ -106,7 +108,7 @@ const prefetchForRoute = (routeId, filters) => {
   } catch { /* prefetch is best-effort */ }
 };
 
-const UserMenu = () => {
+const UserMenu = ({ onResetTabOrder, hasCustomTabOrder }) => {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const [open, setOpen] = React.useState(false);
@@ -209,6 +211,18 @@ const UserMenu = () => {
               <div className="h-px bg-border my-1" />
             </>
           )}
+          {hasCustomTabOrder && (
+            <>
+              <button
+                className="w-full text-left px-3 py-2 text-[12.5px] hover:bg-panel flex items-center gap-2 text-muted"
+                onClick={() => { setOpen(false); onResetTabOrder(); }}
+                data-testid="menu-reset-tab-order"
+              >
+                <ArrowCounterClockwise size={13} /> Reset tab order
+              </button>
+              <div className="h-px bg-border my-1" />
+            </>
+          )}
           <button
             className="w-full text-left px-3 py-2 text-[12.5px] hover:bg-panel flex items-center gap-2 text-danger"
             onClick={async () => { setOpen(false); await logout(); navigate("/login", { replace: true }); }}
@@ -252,6 +266,43 @@ const TopNav = () => {
     // longer access without mutating their saved pins).
     return pinned.map((id) => byId.get(id)).filter(Boolean);
   }, [pinned, visibleTabs]);
+
+  // Per-user drag-reorder of top nav tabs.
+  const [orderedVisible, setTabOrder, resetTabOrder, hasCustomTabOrder] = useTabOrder(user, visibleTabs);
+
+  // Drag-and-drop state — track which tab id is being dragged.
+  const dragSrcRef = React.useRef(null);
+
+  const handleDragStart = React.useCallback((e, id) => {
+    dragSrcRef.current = id;
+    e.dataTransfer.effectAllowed = "move";
+    // Minimal ghost — use the element itself (browser default).
+  }, []);
+
+  const handleDragOver = React.useCallback((e) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+  }, []);
+
+  const handleDrop = React.useCallback((e, targetId) => {
+    e.preventDefault();
+    const srcId = dragSrcRef.current;
+    if (!srcId || srcId === targetId) return;
+    const ids = orderedVisible.map((t) => t.id);
+    const srcIdx = ids.indexOf(srcId);
+    const tgtIdx = ids.indexOf(targetId);
+    if (srcIdx === -1 || tgtIdx === -1) return;
+    const next = [...ids];
+    next.splice(srcIdx, 1);
+    next.splice(tgtIdx, 0, srcId);
+    setTabOrder(next);
+    dragSrcRef.current = null;
+  }, [orderedVisible, setTabOrder]);
+
+  const handleDragEnd = React.useCallback(() => {
+    dragSrcRef.current = null;
+  }, []);
+
   const [mobileOpen, setMobileOpen] = React.useState(false);
   // Force the relative-time label to re-render every 30s.
   const [, setTick] = React.useState(0);
@@ -377,7 +428,7 @@ const TopNav = () => {
         <ReconciliationStatusPill />
         <DataQualityStatusPill />
         <span className="hidden md:contents"><CacheStatsPill /></span>
-        <UserMenu />
+        <UserMenu onResetTabOrder={resetTabOrder} hasCustomTabOrder={hasCustomTabOrder} />
       </div>
       </div>
 
@@ -437,17 +488,22 @@ const TopNav = () => {
         className="hidden lg:flex items-center gap-x-1 gap-y-1 justify-start flex-wrap mt-2 -mx-1 px-1"
         data-testid="top-nav-tabs"
       >
-        {visibleTabs.map((t) => (
+        {orderedVisible.map((t) => (
           <NavLink
             key={t.id}
             to={t.to}
             end={t.to === "/"}
             reloadDocument={t.external}
             data-testid={`nav-${t.id}`}
+            draggable
+            onDragStart={(e) => handleDragStart(e, t.id)}
+            onDragOver={handleDragOver}
+            onDrop={(e) => handleDrop(e, t.id)}
+            onDragEnd={handleDragEnd}
             onMouseEnter={() => prefetchForRoute(t.id, prefetchFilters)}
             onFocus={() => prefetchForRoute(t.id, prefetchFilters)}
             className={({ isActive }) =>
-              `group flex items-center gap-1 px-1.5 xl:px-2 py-1 rounded-md text-[11px] xl:text-[12px] font-medium transition-colors whitespace-nowrap ${
+              `group flex items-center gap-1 px-1.5 xl:px-2 py-1 rounded-md text-[11px] xl:text-[12px] font-medium transition-colors whitespace-nowrap cursor-grab active:cursor-grabbing ${
                 isActive
                   ? "bg-brand text-white shadow-sm"
                   : "text-foreground/70 hover:bg-panel hover:text-foreground"
@@ -550,7 +606,7 @@ const TopNav = () => {
               <div className="h-px bg-border my-1 mx-3" />
             </>
           )}
-          {visibleTabs.map((t) => (
+          {orderedVisible.map((t) => (
             <NavLink
               key={t.id}
               to={t.to}
