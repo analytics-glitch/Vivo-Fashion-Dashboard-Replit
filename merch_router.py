@@ -231,11 +231,17 @@ def _fetch_styles(brand=None, subcategory=None, tier=None, status=None,
 
     # Country filter for sales CTEs
     country_clause = ""
+    # Inventory country filter — mirrors api_pg's icf = _style_filters(country, None, "i")
+    # so that soh_stores/soh_warehouse in the stock CTE are scoped to the same
+    # countries as the sales CTEs, making active_styles_count reconcile with PA.
+    country_inv_where = ""
     if country:
         cl = [c.strip() for c in country.split(",") if c.strip()]
         if cl:
             params["countries"] = cl
             country_clause = " AND s.country = ANY(%(countries)s)"
+            inv_cs = ", ".join(f"'{c.lower().replace(chr(39), chr(39)*2)}'" for c in cl)
+            country_inv_where = f" WHERE LOWER(i.country) IN ({inv_cs})"
 
     # POS location filter — narrows store stock and sales to specific locations
     pos_store_clause = ""  # applied to the stock CTE's soh_stores FILTER
@@ -327,7 +333,7 @@ stock AS (
         FROM all_products_clean
         WHERE style_name IS NOT NULL
         GROUP BY sku
-    ) m ON m.sku = i.sku
+    ) m ON m.sku = i.sku{country_inv_where}
     GROUP BY COALESCE(m.style_name, i.style_name)
 ),
 sales_6m AS (
