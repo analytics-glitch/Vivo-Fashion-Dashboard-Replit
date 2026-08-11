@@ -307,8 +307,8 @@ const MerchStoreDetail = () => {
       {/* KPI rows — always shown once data is ready */}
       {!storeListLoading && displayKPIs && (
         <>
-          {/* Row 1 — Inventory */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {/* KPI grid — 3 per row */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
             <KPICard label="Actual Stock" value={fmtNum(displayKPIs.total_stock)}
               sub={
                 <span>
@@ -330,17 +330,14 @@ const MerchStoreDetail = () => {
               }
               icon={Package} showDelta={false} testId="sd-actual-stock" />
 
-            <KPICard label="Rev / Sq Ft (6m)"
+            <KPICard label="Gross Rev / Sq Ft (6m)"
               value={revPerSqft != null ? fmtKES(revPerSqft) : "—"}
-              sub="6m net revenue per sq ft"
+              sub="6m gross revenue per sq ft"
               icon={CurrencyCircleDollar} showDelta={false} testId="sd-rev-sqft" />
-          </div>
 
-          {/* Row 2 — Performance */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-            <KPICard label="Revenue (6m)"
+            <KPICard label="Gross Revenue (6m)"
               value={totalRevenue != null ? fmtKES(totalRevenue) : "—"}
-              sub="6-month net revenue"
+              sub="6-month gross revenue (incl. VAT)"
               icon={TrendUp} showDelta={false} testId="sd-revenue" />
 
             <KPICard label="Units Sold (6m)"

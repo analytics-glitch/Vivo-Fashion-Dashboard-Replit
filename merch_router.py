@@ -1232,7 +1232,9 @@ store_sales AS (
         COALESCE(SUM(s.ordered_item_quantity) FILTER (
             WHERE s.sale_kind IN ('sale','order')
         ), 0)                                            AS units_6m,
-        COALESCE(SUM({_NET_SALES_EXPR}), 0.0)           AS revenue_6m
+        COALESCE(SUM(CASE WHEN s.sale_kind IN ('sale','order')
+                         THEN s.total_sales_kes::numeric ELSE 0 END), 0.0)
+                                                         AS revenue_6m
     FROM all_sales s
     LEFT JOIN all_products_clean p ON p.sku = s.variant_sku
     WHERE s.sale_date BETWEEN %(period_from)s AND %(period_to)s
