@@ -90,8 +90,12 @@ def extract_size(sku):
 def extract_style_number(sku, name=''):
     if not sku:
         return None
-    if re.match(r'^[A-Za-z]\d{7}', sku):
-        return sku[:8]
+    # Capture the full style number: 1 letter + 7 or 8 digits (8–9 chars total).
+    # The old sku[:8] slice truncated 9-char style numbers like S01260010MUSS
+    # to S0126001 (dropping the last digit).  Using a greedy group fixes this.
+    m = re.match(r'^([A-Za-z]\d{7,8})', sku)
+    if m:
+        return m.group(1)
     if re.match(r'^\d{7}', sku):
         n = (name or '').upper()
         if n.startswith('SAFARI'):

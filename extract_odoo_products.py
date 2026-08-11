@@ -1,4 +1,5 @@
 import os
+import json
 import xmlrpc.client
 import psycopg2
 from psycopg2.extras import execute_values
@@ -13,6 +14,27 @@ ODOO_URL      = os.environ['ODOO_URL']
 ODOO_DB       = os.environ['ODOO_DB']
 ODOO_USER     = os.environ['ODOO_USER']
 ODOO_PASSWORD = os.environ['ODOO_PASSWORD']
+
+# ── Tier 4 allowlist ─────────────────────────────────────────────────────────
+# Odoo sets x_vivo_attr_99 = "New" (opt 60012) on every new product template by
+# default and never clears it unless write_tiers_to_odoo.py is run.  Only styles
+# that are deliberately in tier_map.json as Tier 4 (opt == 60012) should carry
+# tier = 'New' in the DB; everything else gets NULL so the computed lifecycle
+# model (_compute_tier) can classify them on actual reorder count instead.
+_TIER_MAP_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tier_map.json")
+try:
+    with open(_TIER_MAP_PATH, encoding="utf-8") as _f:
+        _tier_map_rows = json.load(_f)
+    TIER4_STYLE_NUMBERS: set = {
+        str(r["sn"]).strip()
+        for r in _tier_map_rows
+        if r.get("opt") == 60012
+    }
+    log.info("Tier 4 allowlist loaded: %d style numbers from tier_map.json", len(TIER4_STYLE_NUMBERS))
+except Exception as _e:
+    log.warning("Could not load tier_map.json (%s) — defaulting to empty Tier 4 allowlist", _e)
+    TIER4_STYLE_NUMBERS = set()
+# ─────────────────────────────────────────────────────────────────────────────
 
 def get_m2o_name(v):
     """Extract name from many2one field [id, name] or return None."""
@@ -121,6 +143,17 @@ def main():
             pp_status = get_m2o_name(r.get("x_vivo_attr_97"))
             tier   = pp_tier   or (tmpl_tier_map.get(tmpl_id)   if tmpl_id else None)
             status = pp_status or (tmpl_status_map.get(tmpl_id) if tmpl_id else None)
+
+            # Strip Odoo's creation-time default "New" (opt 60012) from styles
+            # that were never deliberately tiered.  Every new product template
+            # gets x_vivo_attr_99 = "New" automatically; write_tiers_to_odoo.py
+            # only overwrites a subset.  Only keep tier='New' when the style
+            # number explicitly appears in tier_map.json as Tier 4 (opt 60012).
+            if tier == "New":
+                raw_sn = get_m2o_name(r.get("x_vivo_attr_18"))
+                sn_key = str(raw_sn).strip() if raw_sn else None
+                if not sn_key or sn_key not in TIER4_STYLE_NUMBERS:
+                    tier = None
 
             rows.append((
                 r["id"],
