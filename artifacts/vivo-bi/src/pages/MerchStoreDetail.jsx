@@ -77,12 +77,10 @@ const StorePicker = ({ stores, value, onChange }) => (
     value={value}
     onChange={e => onChange(e.target.value)}
   >
-    <option value="">— Select a store —</option>
+    <option value="">All Stores</option>
     {stores.map(s => (
       <option key={s.store} value={s.store}>
-        {s.store}
-        {s.store_tier && s.store_tier !== "—" ? `  [Tier ${s.store_tier}]` : ""}
-        {s.revenue_6m ? `  · ${fmtKES(s.revenue_6m)} 6m rev` : ""}
+        {s.store}{s.store_tier && s.store_tier !== "—" ? `  [Tier ${s.store_tier}]` : ""}
       </option>
     ))}
   </select>
