@@ -113,6 +113,8 @@ export const useMerchData = (endpoints = []) => {
   if (filters.to_date)      params.to_date      = filters.to_date;
   if (filters.country)      params.country      = filters.country;
   if (filters.pos_location) params.pos_location = filters.pos_location;
+  if (filters.brand)        params.brand        = filters.brand;
+  if (filters.subcategory)  params.subcategory  = filters.subcategory;
 
   // Stable serialisation for the dep array
   const paramsKey = JSON.stringify(params) + filters.dataVersion;

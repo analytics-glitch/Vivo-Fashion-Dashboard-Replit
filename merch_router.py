@@ -1318,6 +1318,27 @@ def register_merch_routes(app, api_pg_module):
 
     _TTL = 600  # seconds
 
+    @app.get("/api/merch/filter-options")
+    async def merch_filter_options(request: Request):
+        """Distinct brands and categories for the hub-level filter dropdowns.
+        Long TTL (1 hour) — product catalogue changes slowly."""
+        def _fetch():
+            brands = [r["brand"] for r in _db_exec("""
+                SELECT DISTINCT brand
+                FROM all_products_clean
+                WHERE brand IS NOT NULL AND brand != ''
+                  AND COALESCE(brand,'') NOT ILIKE '%%third party%%'
+                ORDER BY brand
+            """)]
+            categories = [r["product_type"] for r in _db_exec("""
+                SELECT DISTINCT product_type
+                FROM all_products_clean
+                WHERE product_type IS NOT NULL AND product_type != ''
+                ORDER BY product_type
+            """)]
+            return {"brands": brands, "categories": categories}
+        return JSONResponse(_cached("merch_filter_options", 3600, _fetch))
+
     @app.get("/api/merch/styles")
     async def merch_styles(
         request:      Request,

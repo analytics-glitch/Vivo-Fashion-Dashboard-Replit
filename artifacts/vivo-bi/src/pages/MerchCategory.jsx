@@ -62,7 +62,8 @@ const MerchCategory = () => {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    const params = { country: filters.country, from_date: filters.from_date, to_date: filters.to_date };
+    const params = { country: filters.country, from_date: filters.from_date, to_date: filters.to_date,
+      brand: filters.brand, subcategory: filters.subcategory };
     Promise.all([
       apiFetch("/merch/by-subcategory", { params }),
       apiFetch("/merch/summary", { params }),
@@ -75,7 +76,7 @@ const MerchCategory = () => {
       .catch((e) => { if (!cancelled) setError(e?.response?.data?.detail || e.message); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [filters.country, filters.from_date, filters.to_date, filters.dataVersion]);
+  }, [filters.country, filters.from_date, filters.to_date, filters.brand, filters.subcategory, filters.dataVersion]);
 
   // ── KPI derivations ──────────────────────────────────────────────────────
   const kpis = useMemo(() => {

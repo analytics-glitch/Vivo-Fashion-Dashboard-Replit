@@ -4,6 +4,7 @@ import { useAuth } from "@/lib/auth";
 import { canAccessPage } from "@/lib/permissions";
 import { useFilters } from "@/lib/filters";
 import { Loading } from "@/components/common";
+import { apiFetch } from "@/lib/api";
 
 /**
  * Merchandising Hub — tabbed container for all 12 merchandising sub-pages.
@@ -120,14 +121,30 @@ const MerchandisingHub = () => {
   const { applied } = useFilters();
   const { dateFrom, dateTo, countries, channels, dataVersion } = applied;
 
+  // ── Hub-level scope filters (Brand + Category) ───────────────────────────
+  // These sit in a secondary strip below the tab bar, persist across tab
+  // switches, and narrow the data scope for all tabs that accept them.
+  const [hubBrand, setHubBrand]           = useState("");
+  const [hubSubcategory, setHubSubcategory] = useState("");
+  const [filterOptions, setFilterOptions]   = useState({ brands: [], categories: [] });
+
+  // Fetch distinct brands + categories once on mount (1h server TTL)
+  useEffect(() => {
+    apiFetch("/merch/filter-options")
+      .then((d) => setFilterOptions(d || { brands: [], categories: [] }))
+      .catch(() => {});
+  }, []);
+
   // Normalise filter values into the shapes /api/merch/* expects
   const merchFilters = useMemo(() => ({
     from_date:    dateFrom || undefined,
     to_date:      dateTo   || undefined,
     country:      countries && countries.length ? countries.join(",") : undefined,
     pos_location: channels && channels.length  ? channels.join(",")  : undefined,
+    brand:        hubBrand       || undefined,
+    subcategory:  hubSubcategory || undefined,
     dataVersion,   // bump triggers re-fetch in tab components
-  }), [dateFrom, dateTo, countries, channels, dataVersion]);
+  }), [dateFrom, dateTo, countries, channels, hubBrand, hubSubcategory, dataVersion]);
 
   // ── Tab selection ─────────────────────────────────────────────────────────
   const visibleTabs = MERCH_TABS.filter((t) => canAccessPage(user, t.pageId));
@@ -161,14 +178,17 @@ const MerchandisingHub = () => {
   const active   = visibleTabs.find((t) => t.id === activeId) || visibleTabs[0];
   const ActiveEl = active?.el;
 
+  const anyHubFilter = hubBrand || hubSubcategory;
+
   return (
     <MerchFiltersContext.Provider value={merchFilters}>
       <div className="space-y-4">
-        {/* ── Sticky tab bar ── */}
+        {/* ── Sticky tab bar + hub-scope filter strip ── */}
         <div
           className="sticky z-30 bg-background/95 backdrop-blur-sm"
           style={{ top: "var(--app-navbar-h, 0px)" }}
         >
+          {/* Tab row */}
           <div
             className="flex items-center gap-0.5 border-b border-border overflow-x-auto"
             data-testid="merch-tabs"
@@ -189,6 +209,70 @@ const MerchandisingHub = () => {
                 {t.label}
               </button>
             ))}
+          </div>
+
+          {/* Hub-scope filter strip — Brand + Category */}
+          <div className="flex items-center gap-2 px-1 py-2 border-b border-border/50 bg-slate-50/60">
+            <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400 select-none pr-1">
+              Scope
+            </span>
+
+            {/* Brand */}
+            <div className="relative">
+              <select
+                value={hubBrand}
+                onChange={(e) => setHubBrand(e.target.value)}
+                className={
+                  "appearance-none text-[12px] pl-2.5 pr-6 py-1 rounded-full border transition-colors cursor-pointer " +
+                  "bg-white focus:outline-none focus:ring-1 focus:ring-[#1a5c38]/40 " +
+                  (hubBrand
+                    ? "border-[#1a5c38] text-[#1a5c38] font-semibold"
+                    : "border-border text-slate-500")
+                }
+              >
+                <option value="">All Brands</option>
+                {filterOptions.brands.map((b) => (
+                  <option key={b} value={b}>{b}</option>
+                ))}
+              </select>
+              <svg className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-400" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M4 6l4 4 4-4" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round"/>
+              </svg>
+            </div>
+
+            {/* Category */}
+            <div className="relative">
+              <select
+                value={hubSubcategory}
+                onChange={(e) => setHubSubcategory(e.target.value)}
+                className={
+                  "appearance-none text-[12px] pl-2.5 pr-6 py-1 rounded-full border transition-colors cursor-pointer " +
+                  "bg-white focus:outline-none focus:ring-1 focus:ring-[#1a5c38]/40 " +
+                  (hubSubcategory
+                    ? "border-[#1a5c38] text-[#1a5c38] font-semibold"
+                    : "border-border text-slate-500")
+                }
+              >
+                <option value="">All Categories</option>
+                {filterOptions.categories.map((c) => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+              </select>
+              <svg className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-400" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M4 6l4 4 4-4" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round"/>
+              </svg>
+            </div>
+
+            {/* Clear button — only shown when a filter is active */}
+            {anyHubFilter && (
+              <button
+                type="button"
+                onClick={() => { setHubBrand(""); setHubSubcategory(""); }}
+                className="text-[11px] text-slate-400 hover:text-slate-700 px-1.5 py-0.5 rounded transition-colors"
+              >
+                Clear
+              </button>
+            )}
           </div>
         </div>
 
