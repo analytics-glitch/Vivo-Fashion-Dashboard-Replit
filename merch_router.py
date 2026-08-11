@@ -1161,16 +1161,15 @@ def _fetch_by_store(brand=None, subcategory=None, tier=None, status=None,
     warehouse/internal locations.  Store tier (A/B/C) computed from trailing-90d
     net revenue via NTILE(3), consistent with style-stores and api_pg.
     """
-    today      = date.today()
-    six_mo_ago = str(today - timedelta(days=_SIX_MONTHS_DAYS))
-    today_str  = str(today)
-    period_from = from_date or six_mo_ago
-    period_to   = to_date   or today_str
+    today        = date.today()
+    three_mo_ago = str(today - timedelta(days=91))
+    today_str    = str(today)
+    period_from  = from_date or three_mo_ago
+    period_to    = to_date   or today_str
 
     params = {
         "period_from": period_from,
         "period_to":   period_to,
-        "six_mo_ago":  six_mo_ago,
         "today":       today_str,
     }
 
@@ -1231,10 +1230,10 @@ store_sales AS (
                                                          AS colour_style_count,
         COALESCE(SUM(s.ordered_item_quantity) FILTER (
             WHERE s.sale_kind IN ('sale','order')
-        ), 0)                                            AS units_6m,
+        ), 0)                                            AS units_3m,
         COALESCE(SUM(CASE WHEN s.sale_kind IN ('sale','order')
                          THEN s.total_sales_kes::numeric ELSE 0 END), 0.0)
-                                                         AS revenue_6m
+                                                         AS revenue_3m
     FROM all_sales s
     LEFT JOIN all_products_clean p ON p.sku = s.variant_sku
     WHERE s.sale_date BETWEEN %(period_from)s AND %(period_to)s
@@ -1263,8 +1262,8 @@ SELECT
     COALESCE(t.store_tier, '—')             AS store_tier,
     COALESCE(ss.style_count, 0)             AS style_count,
     COALESCE(ss.colour_style_count, 0)     AS colour_style_count,
-    COALESCE(ss.units_6m, 0)               AS units_6m,
-    COALESCE(ss.revenue_6m, 0.0)           AS revenue_6m,
+    COALESCE(ss.units_3m, 0)               AS units_3m,
+    COALESCE(ss.revenue_3m, 0.0)           AS revenue_3m,
     COALESCE(sk.total_stock, 0)            AS total_stock,
     sm.optimal_stock,
     sm.sqft
@@ -1272,7 +1271,7 @@ FROM store_sales ss
 FULL OUTER JOIN store_stock sk ON sk.store = ss.store
 LEFT  JOIN store_tiers     t  ON t.store  = COALESCE(ss.store, sk.store)
 LEFT  JOIN store_meta      sm ON sm.store = COALESCE(ss.store, sk.store)
-ORDER BY revenue_6m DESC NULLS LAST
+ORDER BY revenue_3m DESC NULLS LAST
 """
     rows = _db_exec(sql, params, fetch=True)
 
@@ -1352,8 +1351,8 @@ GROUP BY COALESCE(sk.store, sa.store)
             "store_tier":          r.get("store_tier") or "—",
             "style_count":         int(r.get("style_count") or 0),
             "colour_style_count":  int(r.get("colour_style_count") or 0),
-            "units_6m":            int(r.get("units_6m") or 0),
-            "revenue_6m":     round(float(r.get("revenue_6m") or 0), 0),
+            "units_3m":            int(r.get("units_3m") or 0),
+            "revenue_3m":     round(float(r.get("revenue_3m") or 0), 0),
             "total_stock":    total_stock,
             "optimal_stock":  optimal_stock,
             "stock_variance": stock_variance,

@@ -103,8 +103,8 @@ const MerchStoreDetail = () => {
   useEffect(() => {
     let cancelled = false;
     setStoreListLoading(true);
-    // Revenue (6m) must always be the trailing 180-day window — do NOT pass
-    // from_date/to_date here so the backend uses its own six_mo_ago default.
+    // Revenue/units always use the trailing 3-month window — do NOT pass
+    // from_date/to_date here so the backend uses its own three_mo_ago default.
     // Country, brand and subcategory still narrow the scope correctly.
     apiFetch("/merch/by-store", {
       params: {
@@ -159,8 +159,8 @@ const MerchStoreDetail = () => {
   // Aggregated KPIs across all stores (shown when no store is selected)
   const allStoresKPIs = useMemo(() => {
     if (!allStores.length) return null;
-    const revenue       = allStores.reduce((s, r) => s + (r.revenue_6m          || 0), 0);
-    const units         = allStores.reduce((s, r) => s + (r.units_6m            || 0), 0);
+    const revenue       = allStores.reduce((s, r) => s + (r.revenue_3m          || 0), 0);
+    const units         = allStores.reduce((s, r) => s + (r.units_3m            || 0), 0);
     const stock         = allStores.reduce((s, r) => s + (r.total_stock         || 0), 0);
     const sqftSum       = allStores.reduce((s, r) => s + (r.sqft                || 0), 0);
     const styleSum      = allStores.reduce((s, r) => s + (r.style_count         || 0), 0);
@@ -168,11 +168,11 @@ const MerchStoreDetail = () => {
     const withOpt       = allStores.filter(r => r.optimal_stock != null);
     const optimal       = withOpt.reduce((s, r) => s + r.optimal_stock, 0);
     const avgSOR        = revenue > 0
-      ? allStores.reduce((s, r) => s + (r.avg_sor || 0) * (r.revenue_6m || 0), 0) / revenue
+      ? allStores.reduce((s, r) => s + (r.avg_sor || 0) * (r.revenue_3m || 0), 0) / revenue
       : null;
     return {
-      revenue_6m:          revenue,
-      units_6m:            units,
+      revenue_3m:          revenue,
+      units_3m:            units,
       total_stock:         stock,
       optimal_stock:       withOpt.length ? optimal : null,
       stock_variance:      withOpt.length ? stock - optimal : null,
@@ -189,8 +189,8 @@ const MerchStoreDetail = () => {
 
   // Derived: revenue per sq ft
   const revPerSqft = useMemo(() => {
-    if (!displayKPIs?.revenue_6m || !displayKPIs?.sqft) return null;
-    return Math.round(displayKPIs.revenue_6m / displayKPIs.sqft);
+    if (!displayKPIs?.revenue_3m || !displayKPIs?.sqft) return null;
+    return Math.round((displayKPIs.revenue_3m / 3) / displayKPIs.sqft);
   }, [displayKPIs]);
 
   // Derived: at-risk style count (only meaningful for a specific store)
@@ -205,15 +205,15 @@ const MerchStoreDetail = () => {
   // Derived: units from styles list (specific store) or aggregate
   const totalUnits = selectedStore
     ? styles.reduce((sum, s) => sum + (s.units_6m || 0), 0)
-    : (allStoresKPIs?.units_6m ?? 0);
+    : (allStoresKPIs?.units_3m ?? 0);
 
-  const totalRevenue = displayKPIs?.revenue_6m ?? null;
+  const totalRevenue = displayKPIs?.revenue_3m ?? null;
 
   // All-stores actual vs optimal chart data (only stores with optimal set)
   const allStoresOptChart = useMemo(() =>
     allStores
       .filter(s => s.optimal_stock != null)
-      .sort((a, b) => b.revenue_6m - a.revenue_6m)
+      .sort((a, b) => b.revenue_3m - a.revenue_3m)
       .map(s => ({
         name:     s.store,
         actual:   s.total_stock,
@@ -226,10 +226,10 @@ const MerchStoreDetail = () => {
   // All-stores rev/sqft chart data
   const revSqftChart = useMemo(() =>
     allStores
-      .filter(s => s.sqft && s.sqft > 0 && s.revenue_6m > 0)
+      .filter(s => s.sqft && s.sqft > 0 && s.revenue_3m > 0)
       .map(s => ({
         name:      s.store,
-        revSqft:   Math.round(s.revenue_6m / s.sqft),
+        revSqft:   Math.round((s.revenue_3m / 3) / s.sqft),
         tier:      s.store_tier,
       }))
       .sort((a, b) => b.revSqft - a.revSqft),
@@ -330,19 +330,37 @@ const MerchStoreDetail = () => {
               }
               icon={Package} showDelta={false} testId="sd-actual-stock" />
 
-            <KPICard label="Gross Rev / Sq Ft (6m)"
+            <KPICard label="Gross Rev / Sq Ft (mo avg)"
               value={revPerSqft != null ? fmtKES(revPerSqft) : "—"}
-              sub="6m gross revenue per sq ft"
+              sub="Monthly avg gross revenue per sq ft"
               icon={CurrencyCircleDollar} showDelta={false} testId="sd-rev-sqft" />
 
-            <KPICard label="Gross Revenue (6m)"
+            <KPICard label="Gross Revenue (3m)"
               value={totalRevenue != null ? fmtKES(totalRevenue) : "—"}
-              sub="6-month gross revenue (incl. VAT)"
+              sub={
+                <span>
+                  <span>3-month gross revenue (incl. VAT)</span>
+                  {totalRevenue != null && (
+                    <span className="block mt-1 text-[14px] font-semibold">
+                      Avg {fmtKES(Math.round(totalRevenue / 3))} / month
+                    </span>
+                  )}
+                </span>
+              }
               icon={TrendUp} showDelta={false} testId="sd-revenue" />
 
-            <KPICard label="Units Sold (6m)"
+            <KPICard label="Units Sold (3m)"
               value={totalUnits > 0 ? fmtNum(totalUnits) : "—"}
-              sub="Total units sold in period"
+              sub={
+                <span>
+                  <span>3-month gross units sold</span>
+                  {totalUnits > 0 && (
+                    <span className="block mt-1 text-[14px] font-semibold">
+                      Avg {fmtNum(Math.round(totalUnits / 3))} units / month
+                    </span>
+                  )}
+                </span>
+              }
               icon={CubeFocus} showDelta={false} testId="sd-units" />
 
             <KPICard label="No. of Styles"
