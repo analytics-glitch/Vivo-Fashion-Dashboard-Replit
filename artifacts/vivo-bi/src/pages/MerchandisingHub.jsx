@@ -57,10 +57,10 @@ const PlaceholderTab = ({ name }) => (
 // Each entry: { id, label, pageId, el }
 // All start as PlaceholderTab; swap in real implementations as tasks land.
 
-const MerchandisingOverview    = React.lazy(() => Promise.resolve({ default: () => <PlaceholderTab name="Executive Overview" /> }));
-const MerchandisingSales       = React.lazy(() => Promise.resolve({ default: () => <PlaceholderTab name="Sales Performance" /> }));
-const MerchandisingInventory   = React.lazy(() => Promise.resolve({ default: () => <PlaceholderTab name="Inventory & Stock Health" /> }));
-const MerchandisingSellThrough = React.lazy(() => Promise.resolve({ default: () => <PlaceholderTab name="Sell-Through & Markdown" /> }));
+const MerchandisingOverview    = React.lazy(() => import("./merch/MerchOverview"));
+const MerchandisingSales       = React.lazy(() => import("./merch/MerchSales"));
+const MerchandisingInventory   = React.lazy(() => import("./merch/MerchInventory"));
+const MerchandisingSellThrough = React.lazy(() => import("./merch/MerchSellThrough"));
 const MerchandisingCategory    = React.lazy(() => import("./MerchCategory"));
 const MerchandisingLifecycle   = React.lazy(() => import("./MerchLifecycle"));
 const MerchandisingAtRisk      = React.lazy(() => import("./MerchAtRisk"));
