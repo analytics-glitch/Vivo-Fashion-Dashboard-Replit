@@ -4,7 +4,7 @@ import { useAuth } from "@/lib/auth";
 import { canAccessPage } from "@/lib/permissions";
 import { useFilters } from "@/lib/filters";
 import { Loading } from "@/components/common";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, comparePeriod } from "@/lib/api";
 
 /**
  * Merchandising Hub — tabbed container for all 12 merchandising sub-pages.
@@ -119,7 +119,8 @@ const MerchandisingHub = () => {
 
   // ── Global filter bar — published down to tab components ─────────────────
   const { applied } = useFilters();
-  const { dateFrom, dateTo, countries, channels, dataVersion } = applied;
+  const { dateFrom, dateTo, countries, channels, dataVersion,
+          compareMode, compareDateFrom, compareDateTo } = applied;
 
   // ── Hub-level scope filters (Brand + Category) ───────────────────────────
   // These sit in a secondary strip below the tab bar, persist across tab
@@ -128,58 +129,15 @@ const MerchandisingHub = () => {
   const [hubSubcategory, setHubSubcategory] = useState("");
   const [filterOptions, setFilterOptions]   = useState({ brands: [], categories: [] });
 
-  // Hub-level date range for the Store Detail tab (default: trailing 90 days)
-  const todayStr = useMemo(() => new Date().toISOString().slice(0, 10), []);
-  const HUB_PRESETS = [
-    { key: "last_30d",  label: "Last 30 days",   days: 30  },
-    { key: "last_90d",  label: "Last 90 days",   days: 90  },
-    { key: "last_6m",   label: "Last 6 months",  days: 182 },
-    { key: "last_12m",  label: "Last 12 months", days: 365 },
-  ];
-  const [hubPresetKey, setHubPresetKey] = useState("last_90d");
-  const [hubFrom, setHubFrom] = useState(() => {
-    const d = new Date(); d.setDate(d.getDate() - 90); return d.toISOString().slice(0, 10);
-  });
-  const [hubTo, setHubTo] = useState(() => new Date().toISOString().slice(0, 10));
-  const applyHubPreset = (key, days) => {
-    const d = new Date();
-    setHubTo(d.toISOString().slice(0, 10));
-    d.setDate(d.getDate() - days);
-    setHubFrom(d.toISOString().slice(0, 10));
-    setHubPresetKey(key);
-  };
-  const handlePeriodSelect = (key) => {
-    if (key === "custom") { setHubPresetKey("custom"); return; }
-    const preset = HUB_PRESETS.find(p => p.key === key);
-    if (preset) applyHubPreset(preset.key, preset.days);
-  };
-
-  // Compare-to-period state
-  const [hubCompareMode,       setHubCompareMode]       = useState("none");
-  const [hubCompareCustomFrom, setHubCompareCustomFrom] = useState("");
-  const [hubCompareCustomTo,   setHubCompareCustomTo]   = useState("");
-
-  // Derive the actual comparison date range from mode + primary range
+  // Derive the comparison date range from the GLOBAL filter bar's compare
+  // settings (same source as useKpis / Overview) so Store Detail numbers
+  // always agree with the Overview headline.
   const storeCompare = useMemo(() => {
-    if (hubCompareMode === "none" || !hubFrom || !hubTo) return { from: null, to: null };
-    const fromD = new Date(hubFrom + "T00:00:00");
-    const toD   = new Date(hubTo   + "T00:00:00");
-    const days  = Math.round((toD - fromD) / 86400000) + 1;
-    if (hubCompareMode === "prior_period") {
-      const cTo   = new Date(fromD); cTo.setDate(cTo.getDate() - 1);
-      const cFrom = new Date(cTo);   cFrom.setDate(cFrom.getDate() - days + 1);
-      return { from: cFrom.toISOString().slice(0, 10), to: cTo.toISOString().slice(0, 10) };
-    }
-    if (hubCompareMode === "prior_year") {
-      const cFrom = new Date(fromD); cFrom.setFullYear(cFrom.getFullYear() - 1);
-      const cTo   = new Date(toD);   cTo.setFullYear(cTo.getFullYear() - 1);
-      return { from: cFrom.toISOString().slice(0, 10), to: cTo.toISOString().slice(0, 10) };
-    }
-    if (hubCompareMode === "custom") {
-      return { from: hubCompareCustomFrom || null, to: hubCompareCustomTo || null };
-    }
-    return { from: null, to: null };
-  }, [hubCompareMode, hubFrom, hubTo, hubCompareCustomFrom, hubCompareCustomTo]);
+    if (!dateFrom || !dateTo) return { from: null, to: null };
+    const prev = comparePeriod(dateFrom, dateTo, compareMode,
+                               { date_from: compareDateFrom, date_to: compareDateTo });
+    return prev ? { from: prev.date_from, to: prev.date_to } : { from: null, to: null };
+  }, [dateFrom, dateTo, compareMode, compareDateFrom, compareDateTo]);
 
   // Fetch distinct brands + categories once on mount (1h server TTL)
   useEffect(() => {
@@ -196,16 +154,18 @@ const MerchandisingHub = () => {
     pos_location: channels && channels.length  ? channels.join(",")  : undefined,
     brand:        hubBrand       || undefined,
     subcategory:  hubSubcategory || undefined,
-    storeFrom:        hubFrom,              // page-level date range — Store Detail tab
-    storeTo:          hubTo,
-    storeCompareFrom: storeCompare.from,   // comparison period dates
+    // Store Detail uses the SAME date range as the global filter so that
+    // the headline Total Sales always matches the Overview page exactly.
+    storeFrom:        dateFrom || undefined,
+    storeTo:          dateTo   || undefined,
+    storeCompareFrom: storeCompare.from,
     storeCompareTo:   storeCompare.to,
-    storeCompareMode: hubCompareMode,
+    storeCompareMode: compareMode || "none",
     dataVersion,   // bump triggers re-fetch in tab components
     filterOptions, // expose to tab pages so they can build local subcategory selectors
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [dateFrom, dateTo, countries, channels, hubBrand, hubSubcategory, hubFrom, hubTo,
-       storeCompare.from, storeCompare.to, hubCompareMode, dataVersion, filterOptions]);
+  }), [dateFrom, dateTo, countries, channels, hubBrand, hubSubcategory,
+       storeCompare.from, storeCompare.to, compareMode, dataVersion, filterOptions]);
 
   // ── Tab selection ─────────────────────────────────────────────────────────
   const visibleTabs = MERCH_TABS.filter((t) => canAccessPage(user, t.pageId));
@@ -337,74 +297,6 @@ const MerchandisingHub = () => {
                 <path d="M4 6l4 4 4-4" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round"/>
               </svg>
             </div>
-
-            {/* Period dropdown */}
-            <span className="h-4 w-px bg-border/60 mx-0.5 self-center" />
-            <div className="relative flex items-center">
-              <select
-                value={hubPresetKey}
-                onChange={e => handlePeriodSelect(e.target.value)}
-                className={
-                  "appearance-none text-[12px] pl-2.5 pr-6 py-1 rounded-full border transition-colors cursor-pointer " +
-                  "bg-white focus:outline-none focus:ring-1 focus:ring-[#1a5c38]/40 " +
-                  "border-[#1a5c38] text-[#1a5c38] font-semibold"
-                }
-              >
-                {HUB_PRESETS.map(p => (
-                  <option key={p.key} value={p.key}>{p.label}</option>
-                ))}
-                <option value="custom">Custom…</option>
-              </select>
-              <svg className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-400" viewBox="0 0 16 16" fill="currentColor">
-                <path d="M4 6l4 4 4-4" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round"/>
-              </svg>
-            </div>
-            {hubPresetKey === "custom" && (
-              <>
-                <input type="date" value={hubFrom} max={hubTo}
-                  onChange={e => setHubFrom(e.target.value)}
-                  className="text-[11px] border border-border rounded px-1.5 py-0.5 bg-white text-slate-600" />
-                <span className="text-[10px] text-slate-400 select-none">–</span>
-                <input type="date" value={hubTo} min={hubFrom} max={todayStr}
-                  onChange={e => setHubTo(e.target.value)}
-                  className="text-[11px] border border-border rounded px-1.5 py-0.5 bg-white text-slate-600" />
-              </>
-            )}
-
-            {/* Compare period — same row */}
-            <span className="h-4 w-px bg-border/60 mx-0.5 self-center" />
-            <div className="relative flex items-center">
-              <select
-                value={hubCompareMode}
-                onChange={e => setHubCompareMode(e.target.value)}
-                className={
-                  "appearance-none text-[12px] pl-2.5 pr-6 py-1 rounded-full border transition-colors cursor-pointer " +
-                  "bg-white focus:outline-none focus:ring-1 focus:ring-[#1a5c38]/40 " +
-                  (hubCompareMode !== "none"
-                    ? "border-[#1a5c38] text-[#1a5c38] font-semibold"
-                    : "border-border text-slate-500")
-                }
-              >
-                <option value="none">No comparison</option>
-                <option value="prior_period">Prior period</option>
-                <option value="prior_year">Prior year</option>
-                <option value="custom">Custom…</option>
-              </select>
-              <svg className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-400" viewBox="0 0 16 16" fill="currentColor">
-                <path d="M4 6l4 4 4-4" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round"/>
-              </svg>
-            </div>
-            {hubCompareMode === "custom" && (
-              <>
-                <input type="date" value={hubCompareCustomFrom}
-                  onChange={e => setHubCompareCustomFrom(e.target.value)}
-                  className="text-[11px] border border-border rounded px-1.5 py-0.5 bg-white text-slate-600" />
-                <span className="text-[10px] text-slate-400 select-none">–</span>
-                <input type="date" value={hubCompareCustomTo}
-                  onChange={e => setHubCompareCustomTo(e.target.value)}
-                  className="text-[11px] border border-border rounded px-1.5 py-0.5 bg-white text-slate-600" />
-              </>
-            )}
 
             {/* Clear button — only shown when a brand/category filter is active */}
             {anyHubFilter && (

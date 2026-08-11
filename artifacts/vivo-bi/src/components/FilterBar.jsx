@@ -278,6 +278,7 @@ const isoOf = (d) => {
 // ---------- Comparison Period Button ----------
 const COMPARE_OPTIONS = [
   ["none", "No comparison"],
+  ["prior_period", "Previous period"],
   ["yesterday", "Yesterday"],
   ["last_month", "Previous month"],
   ["last_year", "Previous year"],

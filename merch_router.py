@@ -108,8 +108,8 @@ _WAREHOUSE_LOCATIONS = (
 # Internal holding/transfer locations that must never appear as sellable stores.
 # Exact-case version kept for display; LOWER version used in SQL so a casing
 # mismatch in all_inventory / all_sales can never let them slip through.
-_HOLDING_STORES = "'MarKT/Stock','Retired Stock','ARANA/Stock'"
-_HOLDING_STORES_LOWER = "'markt/stock','retired stock','arana/stock'"
+_HOLDING_STORES = "'MarKT/Stock','Retired Stock','ARENA/Stock'"
+_HOLDING_STORES_LOWER = "'markt/stock','retired stock','arena/stock'"
 
 _VAT_DIV = "(CASE WHEN s.country IN ('Uganda','Rwanda') THEN 1.18 ELSE 1.16 END)"
 

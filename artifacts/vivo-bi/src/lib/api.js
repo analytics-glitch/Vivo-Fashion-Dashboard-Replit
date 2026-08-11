@@ -512,6 +512,21 @@ export const comparePeriod = (from, to, mode, custom) => {
     dt.setDate(dt.getDate() + days);
     return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
   };
+  if (mode === "prior_period") {
+    // Shift back by the exact length of the current period so the windows
+    // are equal-length and contiguous (prior period ends the day before "from").
+    const [fy, fm, fd] = from.split("-").map((x) => parseInt(x, 10));
+    const [ty, tm, td] = to.split("-").map((x) => parseInt(x, 10));
+    const days =
+      Math.round(
+        (new Date(ty, tm - 1, td) - new Date(fy, fm - 1, fd)) / 86400000
+      ) + 1;
+    return {
+      date_from: shiftDays(from, -days),
+      date_to:   shiftDays(from, -1),
+      label:     "vs Previous Period",
+    };
+  }
   if (mode === "yesterday") {
     return {
       date_from: shiftDays(from, -1),

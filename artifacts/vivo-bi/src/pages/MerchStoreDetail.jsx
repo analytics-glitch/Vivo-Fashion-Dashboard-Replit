@@ -9,6 +9,7 @@
 import React, { useEffect, useState, useMemo } from "react";
 import { useSearchParams } from "react-router-dom";
 import { apiFetch, fmtKES, fmtKESLong, fmtNum, fmtPct, fmtDelta } from "@/lib/api";
+import { useKpis } from "@/lib/useKpis";
 import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import { SortableTable } from "@/components/SortableTable";
@@ -119,32 +120,10 @@ const MerchStoreDetail = () => {
     return `${fmt(pageFrom)} – ${fmt(pageTo)}`;
   }, [pageFrom, pageTo]);
 
-  // True all-stores totals: pull from /api/kpis (same query as the Overview hub)
-  // so the headline revenue matches exactly — per-store summing misses returns
-  // that flow through warehouse locations (attributed to non-store pos_location_name).
-  const [kpiTotals, setKpiTotals] = useState(null);
-  const [kpiCmpTotals, setKpiCmpTotals] = useState(null);
-  useEffect(() => {
-    if (!pageFrom || !pageTo) return;
-    let cancelled = false;
-    const kpiParams = {
-      date_from: pageFrom,
-      date_to:   pageTo,
-      country:   filters.country     || undefined,
-      channel:   filters.pos_location || undefined,  // mirrors global filter bar channel scope
-    };
-    apiFetch("/kpis", { params: kpiParams })
-      .then(d => { if (!cancelled) setKpiTotals(d); })
-      .catch(() => {});
-    if (compareFrom && compareTo) {
-      apiFetch("/kpis", { params: { ...kpiParams, date_from: compareFrom, date_to: compareTo } })
-        .then(d => { if (!cancelled) setKpiCmpTotals(d); })
-        .catch(() => {});
-    } else {
-      setKpiCmpTotals(null);
-    }
-    return () => { cancelled = true; };
-  }, [pageFrom, pageTo, compareFrom, compareTo, filters.country, filters.dataVersion]);
+  // True all-stores totals: use the EXACT same hook as Overview so that
+  // date range, country, channel, and caching are byte-for-byte identical.
+  // useKpis reads applied directly from useFilters() — no manual params needed.
+  const { kpis: kpiTotals, prevKpis: kpiCmpTotals } = useKpis({ compare: true });
 
   // Load store list
   useEffect(() => {
