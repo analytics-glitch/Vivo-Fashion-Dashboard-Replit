@@ -95,7 +95,7 @@ const MerchandisingReplen      = React.lazy(() => import("./MerchReplen"));
 const MerchandisingFinancial   = React.lazy(() => import("./MerchFinancial"));
 const MerchandisingArrivals    = React.lazy(() => import("./MerchArrivals"));
 const MerchandisingDeepDive    = React.lazy(() => import("./MerchDeepDive"));
-const MerchandisingStore       = React.lazy(() => import("./MerchStoreDetail"));
+const MerchandisingStore       = React.lazy(() => import("./MerchStoreCockpit"));
 
 const MERCH_TABS = [
   { id: "merch-overview",    label: "Executive Overview",       pageId: "merch-overview",    el: MerchandisingOverview },
