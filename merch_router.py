@@ -1222,6 +1222,13 @@ store_sales AS (
                     AND COALESCE(p.brand,'') NOT ILIKE '%%third party%%'
                     {extra_prod_where.replace("p.", "p.", 1)})
                                                          AS style_count,
+        COUNT(DISTINCT (p.style_name || '||' || COALESCE(p.color_print,'')))
+            FILTER (WHERE p.style_name IS NOT NULL
+                    AND p.style_name <> ''
+                    AND COALESCE(p.color_print,'') <> ''
+                    AND COALESCE(p.brand,'') NOT ILIKE '%%third party%%'
+                    {extra_prod_where.replace("p.", "p.", 1)})
+                                                         AS colour_style_count,
         COALESCE(SUM(s.ordered_item_quantity) FILTER (
             WHERE s.sale_kind IN ('sale','order')
         ), 0)                                            AS units_6m,
@@ -1253,6 +1260,7 @@ SELECT
     COALESCE(ss.store, sk.store)            AS store,
     COALESCE(t.store_tier, '—')             AS store_tier,
     COALESCE(ss.style_count, 0)             AS style_count,
+    COALESCE(ss.colour_style_count, 0)     AS colour_style_count,
     COALESCE(ss.units_6m, 0)               AS units_6m,
     COALESCE(ss.revenue_6m, 0.0)           AS revenue_6m,
     COALESCE(sk.total_stock, 0)            AS total_stock,
@@ -1338,10 +1346,11 @@ GROUP BY COALESCE(sk.store, sa.store)
         optimal_stock = int(r["optimal_stock"]) if r.get("optimal_stock") is not None else None
         stock_variance = (total_stock - optimal_stock) if optimal_stock is not None else None
         result.append({
-            "store":          store,
-            "store_tier":     r.get("store_tier") or "—",
-            "style_count":    int(r.get("style_count") or 0),
-            "units_6m":       int(r.get("units_6m") or 0),
+            "store":               store,
+            "store_tier":          r.get("store_tier") or "—",
+            "style_count":         int(r.get("style_count") or 0),
+            "colour_style_count":  int(r.get("colour_style_count") or 0),
+            "units_6m":            int(r.get("units_6m") or 0),
             "revenue_6m":     round(float(r.get("revenue_6m") or 0), 0),
             "total_stock":    total_stock,
             "optimal_stock":  optimal_stock,

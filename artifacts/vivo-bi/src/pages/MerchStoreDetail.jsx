@@ -159,25 +159,28 @@ const MerchStoreDetail = () => {
   // Aggregated KPIs across all stores (shown when no store is selected)
   const allStoresKPIs = useMemo(() => {
     if (!allStores.length) return null;
-    const revenue  = allStores.reduce((s, r) => s + (r.revenue_6m  || 0), 0);
-    const units    = allStores.reduce((s, r) => s + (r.units_6m    || 0), 0);
-    const stock    = allStores.reduce((s, r) => s + (r.total_stock  || 0), 0);
-    const sqftSum  = allStores.reduce((s, r) => s + (r.sqft         || 0), 0);
-    const withOpt  = allStores.filter(r => r.optimal_stock != null);
-    const optimal  = withOpt.reduce((s, r) => s + r.optimal_stock, 0);
-    const avgSOR   = revenue > 0
+    const revenue       = allStores.reduce((s, r) => s + (r.revenue_6m          || 0), 0);
+    const units         = allStores.reduce((s, r) => s + (r.units_6m            || 0), 0);
+    const stock         = allStores.reduce((s, r) => s + (r.total_stock         || 0), 0);
+    const sqftSum       = allStores.reduce((s, r) => s + (r.sqft                || 0), 0);
+    const styleSum      = allStores.reduce((s, r) => s + (r.style_count         || 0), 0);
+    const colourSum     = allStores.reduce((s, r) => s + (r.colour_style_count  || 0), 0);
+    const withOpt       = allStores.filter(r => r.optimal_stock != null);
+    const optimal       = withOpt.reduce((s, r) => s + r.optimal_stock, 0);
+    const avgSOR        = revenue > 0
       ? allStores.reduce((s, r) => s + (r.avg_sor || 0) * (r.revenue_6m || 0), 0) / revenue
       : null;
     return {
-      revenue_6m:    revenue,
-      units_6m:      units,
-      total_stock:   stock,
-      optimal_stock: withOpt.length ? optimal : null,
-      stock_variance: withOpt.length ? stock - optimal : null,
-      sqft:          sqftSum || null,
-      avg_sor:       avgSOR,
-      store_tier:    null,
-      style_count:   null, // can't dedupe across stores without extra fetch
+      revenue_6m:          revenue,
+      units_6m:            units,
+      total_stock:         stock,
+      optimal_stock:       withOpt.length ? optimal : null,
+      stock_variance:      withOpt.length ? stock - optimal : null,
+      sqft:                sqftSum || null,
+      avg_sor:             avgSOR,
+      store_tier:          null,
+      style_count:         styleSum,
+      colour_style_count:  colourSum,
     };
   }, [allStores]);
 
@@ -338,7 +341,7 @@ const MerchStoreDetail = () => {
           </div>
 
           {/* Row 2 — Performance */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
             <KPICard label="Revenue (6m)"
               value={totalRevenue != null ? fmtKES(totalRevenue) : "—"}
               sub="6-month net revenue"
@@ -349,10 +352,25 @@ const MerchStoreDetail = () => {
               sub="Total units sold in period"
               icon={CubeFocus} showDelta={false} testId="sd-units" />
 
-            <KPICard label="Active Styles"
+            <KPICard label="No. of Styles"
               value={displayKPIs.style_count != null ? fmtNum(displayKPIs.style_count) : "—"}
-              sub="Styles with sales in period"
+              sub={(() => {
+                const sc = displayKPIs.style_count;
+                const st = displayKPIs.total_stock;
+                if (sc && st) return `Avg ${fmtNum(Math.round(st / sc))} units/style`;
+                return "No. of styles with sales";
+              })()}
               icon={ChartBar} showDelta={false} testId="sd-style-count" />
+
+            <KPICard label="No. of Colour Styles"
+              value={displayKPIs.colour_style_count != null ? fmtNum(displayKPIs.colour_style_count) : "—"}
+              sub={(() => {
+                const cc = displayKPIs.colour_style_count;
+                const st = displayKPIs.total_stock;
+                if (cc && st) return `Avg ${fmtNum(Math.round(st / cc))} units/colour`;
+                return "No. of colour-style combos";
+              })()}
+              icon={ChartBar} showDelta={false} testId="sd-colour-count" />
 
             <KPICard label="At-Risk Styles"
               value={!selectedStore
