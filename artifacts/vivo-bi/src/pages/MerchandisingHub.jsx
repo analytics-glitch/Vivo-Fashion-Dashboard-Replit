@@ -130,15 +130,28 @@ const MerchandisingHub = () => {
 
   // Hub-level date range for the Store Detail tab (default: trailing 90 days)
   const todayStr = useMemo(() => new Date().toISOString().slice(0, 10), []);
+  const HUB_PRESETS = [
+    { key: "last_30d",  label: "Last 30 days",   days: 30  },
+    { key: "last_90d",  label: "Last 90 days",   days: 90  },
+    { key: "last_6m",   label: "Last 6 months",  days: 182 },
+    { key: "last_12m",  label: "Last 12 months", days: 365 },
+  ];
+  const [hubPresetKey, setHubPresetKey] = useState("last_90d");
   const [hubFrom, setHubFrom] = useState(() => {
     const d = new Date(); d.setDate(d.getDate() - 90); return d.toISOString().slice(0, 10);
   });
   const [hubTo, setHubTo] = useState(() => new Date().toISOString().slice(0, 10));
-  const applyHubPreset = (days) => {
+  const applyHubPreset = (key, days) => {
     const d = new Date();
     setHubTo(d.toISOString().slice(0, 10));
     d.setDate(d.getDate() - days);
     setHubFrom(d.toISOString().slice(0, 10));
+    setHubPresetKey(key);
+  };
+  const handlePeriodSelect = (key) => {
+    if (key === "custom") { setHubPresetKey("custom"); return; }
+    const preset = HUB_PRESETS.find(p => p.key === key);
+    if (preset) applyHubPreset(preset.key, preset.days);
   };
 
   // Compare-to-period state
@@ -325,23 +338,40 @@ const MerchandisingHub = () => {
               </svg>
             </div>
 
-            {/* Date range */}
+            {/* Period dropdown */}
             <span className="h-4 w-px bg-border/60 mx-0.5 self-center" />
-            {[[30,"30d"],[90,"90d"],[182,"6m"],[365,"12m"]].map(([days, label]) => (
-              <button key={label} type="button" onClick={() => applyHubPreset(days)}
-                className="text-[11px] px-1.5 py-0.5 rounded-full border border-border bg-white text-slate-500 hover:bg-slate-50 transition-colors">
-                {label}
-              </button>
-            ))}
-            <input type="date" value={hubFrom} max={hubTo}
-              onChange={e => setHubFrom(e.target.value)}
-              className="text-[11px] border border-border rounded px-1.5 py-0.5 bg-white text-slate-600" />
-            <span className="text-[10px] text-slate-400 select-none">–</span>
-            <input type="date" value={hubTo} min={hubFrom} max={todayStr}
-              onChange={e => setHubTo(e.target.value)}
-              className="text-[11px] border border-border rounded px-1.5 py-0.5 bg-white text-slate-600" />
+            <div className="relative flex items-center">
+              <select
+                value={hubPresetKey}
+                onChange={e => handlePeriodSelect(e.target.value)}
+                className={
+                  "appearance-none text-[12px] pl-2.5 pr-6 py-1 rounded-full border transition-colors cursor-pointer " +
+                  "bg-white focus:outline-none focus:ring-1 focus:ring-[#1a5c38]/40 " +
+                  "border-[#1a5c38] text-[#1a5c38] font-semibold"
+                }
+              >
+                {HUB_PRESETS.map(p => (
+                  <option key={p.key} value={p.key}>{p.label}</option>
+                ))}
+                <option value="custom">Custom…</option>
+              </select>
+              <svg className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-400" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M4 6l4 4 4-4" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round"/>
+              </svg>
+            </div>
+            {hubPresetKey === "custom" && (
+              <>
+                <input type="date" value={hubFrom} max={hubTo}
+                  onChange={e => setHubFrom(e.target.value)}
+                  className="text-[11px] border border-border rounded px-1.5 py-0.5 bg-white text-slate-600" />
+                <span className="text-[10px] text-slate-400 select-none">–</span>
+                <input type="date" value={hubTo} min={hubFrom} max={todayStr}
+                  onChange={e => setHubTo(e.target.value)}
+                  className="text-[11px] border border-border rounded px-1.5 py-0.5 bg-white text-slate-600" />
+              </>
+            )}
 
-            {/* Compare period */}
+            {/* Compare period — same row */}
             <span className="h-4 w-px bg-border/60 mx-0.5 self-center" />
             <div className="relative flex items-center">
               <select
