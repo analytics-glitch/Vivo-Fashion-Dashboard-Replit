@@ -192,7 +192,7 @@ const MerchandisingHub = () => {
         >
           {/* Tab row */}
           <div
-            className="flex items-center gap-0.5 border-b border-border overflow-x-auto"
+            className="flex items-center gap-0.5 border-b border-border overflow-x-auto lg:flex-wrap lg:overflow-x-visible"
             data-testid="merch-tabs"
           >
             {visibleTabs.map((t) => (
@@ -202,7 +202,7 @@ const MerchandisingHub = () => {
                 onClick={() => handleTabClick(t.id)}
                 data-testid={`merch-tab-${t.id}`}
                 className={
-                  "px-3.5 py-2 text-[13px] font-medium border-b-2 -mb-px transition-colors whitespace-nowrap " +
+                  "px-3.5 py-2 lg:px-3 text-[13px] font-medium border-b-2 -mb-px transition-colors whitespace-nowrap lg:whitespace-normal " +
                   (t.id === active?.id
                     ? "border-[#1a5c38] text-[#1a5c38]"
                     : "border-transparent text-muted hover:text-foreground")
