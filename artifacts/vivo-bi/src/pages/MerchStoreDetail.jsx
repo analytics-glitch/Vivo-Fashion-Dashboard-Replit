@@ -99,6 +99,22 @@ const MerchStoreDetail = () => {
   const [stylesLoading, setStylesLoading] = useState(false);
   const [stylesError, setStylesError]     = useState(null);
 
+  // Date range — driven by the hub scope filter strip
+  const pageFrom = filters.storeFrom || "";
+  const pageTo   = filters.storeTo   || "";
+
+  const numDays = useMemo(() => {
+    if (!pageFrom || !pageTo) return 90;
+    return Math.max(1, Math.round((new Date(pageTo) - new Date(pageFrom)) / 86400000) + 1);
+  }, [pageFrom, pageTo]);
+  const numMonths = Math.max(1, numDays / 30.44);
+
+  const displayRange = useMemo(() => {
+    if (!pageFrom || !pageTo) return "";
+    const fmt = (s) => new Date(s + "T00:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+    return `${fmt(pageFrom)} – ${fmt(pageTo)}`;
+  }, [pageFrom, pageTo]);
+
   // Load store list
   useEffect(() => {
     let cancelled = false;
@@ -111,13 +127,15 @@ const MerchStoreDetail = () => {
         country:     filters.country,
         brand:       filters.brand,
         subcategory: filters.subcategory,
+        from_date:   pageFrom,
+        to_date:     pageTo,
       },
     })
       .then(d => { if (!cancelled) setAllStores(d.rows || []); })
       .catch(() => { if (!cancelled) setAllStores([]); })
       .finally(() => { if (!cancelled) setStoreListLoading(false); });
     return () => { cancelled = true; };
-  }, [filters.country, filters.brand, filters.subcategory, filters.dataVersion]);
+  }, [filters.country, filters.brand, filters.subcategory, filters.dataVersion, pageFrom, pageTo]);
 
   // Load styles for the selected store
   useEffect(() => {
@@ -128,8 +146,8 @@ const MerchStoreDetail = () => {
     apiFetch("/merch/styles", {
       params: {
         pos_location: selectedStore,
-        from_date:    filters.from_date,
-        to_date:      filters.to_date,
+        from_date:    pageFrom,
+        to_date:      pageTo,
         country:      filters.country,
         brand:        filters.brand,
         subcategory:  filters.subcategory,
@@ -139,7 +157,7 @@ const MerchStoreDetail = () => {
       .catch(e => { if (!cancelled) setStylesError(e?.response?.data?.detail || e.message); })
       .finally(() => { if (!cancelled) setStylesLoading(false); });
     return () => { cancelled = true; };
-  }, [selectedStore, filters.from_date, filters.to_date, filters.country, filters.brand, filters.subcategory, filters.dataVersion]);
+  }, [selectedStore, pageFrom, pageTo, filters.country, filters.brand, filters.subcategory, filters.dataVersion]);
 
   const handleStoreChange = (storeName) => {
     setSearchParams(prev => {
@@ -187,11 +205,12 @@ const MerchStoreDetail = () => {
   // Active KPIs: specific store or all-stores aggregate
   const displayKPIs = selectedStore ? storeKPIs : allStoresKPIs;
 
-  // Derived: revenue per sq ft
+  // Derived: revenue per sq ft (monthly average over selected range)
   const revPerSqft = useMemo(() => {
     if (!displayKPIs?.revenue_3m || !displayKPIs?.sqft) return null;
-    return Math.round((displayKPIs.revenue_3m / 3) / displayKPIs.sqft);
-  }, [displayKPIs]);
+    const months = Math.max(1, numDays / 30.44);
+    return Math.round((displayKPIs.revenue_3m / months) / displayKPIs.sqft);
+  }, [displayKPIs, numDays]);
 
   // Derived: at-risk style count (only meaningful for a specific store)
   const atRiskCount = useMemo(() =>
@@ -223,18 +242,18 @@ const MerchStoreDetail = () => {
     [allStores],
   );
 
-  // All-stores rev/sqft chart data
-  const revSqftChart = useMemo(() =>
-    allStores
+  // All-stores rev/sqft chart data (monthly average over selected range)
+  const revSqftChart = useMemo(() => {
+    const months = Math.max(1, numDays / 30.44);
+    return allStores
       .filter(s => s.sqft && s.sqft > 0 && s.revenue_3m > 0)
       .map(s => ({
-        name:      s.store,
-        revSqft:   Math.round((s.revenue_3m / 3) / s.sqft),
-        tier:      s.store_tier,
+        name:    s.store,
+        revSqft: Math.round((s.revenue_3m / months) / s.sqft),
+        tier:    s.store_tier,
       }))
-      .sort((a, b) => b.revSqft - a.revSqft),
-    [allStores],
-  );
+      .sort((a, b) => b.revSqft - a.revSqft);
+  }, [allStores, numDays]);
 
   // Revenue by category chart (selected store)
   const subcatChart = useMemo(() => {
@@ -257,9 +276,9 @@ const MerchStoreDetail = () => {
     { key: "subcategory",  label: "Category",     sortable: true },
     { key: "tier",         label: "Tier",          sortable: true,
       render: r => <span className="text-[11px]">{r.tier || "—"}</span> },
-    { key: "revenue_6m",   label: "Revenue 6m",   sortable: true, numeric: true,
+    { key: "revenue_6m",   label: "Revenue",      sortable: true, numeric: true,
       render: r => fmtKES(r.revenue_6m) },
-    { key: "units_6m",     label: "Units 6m",     sortable: true, numeric: true,
+    { key: "units_6m",     label: "Units Sold",   sortable: true, numeric: true,
       render: r => fmtNum(r.units_6m) },
     { key: "soh_current",  label: "Stock",        sortable: true, numeric: true,
       render: r => r.soh_current != null ? fmtNum(r.soh_current) : "—" },
@@ -307,8 +326,8 @@ const MerchStoreDetail = () => {
       {/* KPI rows — always shown once data is ready */}
       {!storeListLoading && displayKPIs && (
         <>
-          {/* KPI grid — 3 per row */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+          {/* KPI grid — 4 per row */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <KPICard label="Actual Stock" value={fmtNum(displayKPIs.total_stock)}
               sub={
                 <span>
@@ -332,31 +351,31 @@ const MerchStoreDetail = () => {
 
             <KPICard label="Gross Rev / Sq Ft (mo avg)"
               value={revPerSqft != null ? fmtKES(revPerSqft) : "—"}
-              sub="Monthly average based on past 90 days Gross Revenue"
+              sub={`Monthly avg gross revenue per sq ft · ${displayRange}`}
               icon={CurrencyCircleDollar} showDelta={false} testId="sd-rev-sqft" />
 
-            <KPICard label="Gross Revenue (3m)"
+            <KPICard label="Gross Revenue"
               value={totalRevenue != null ? fmtKES(totalRevenue) : "—"}
               sub={
                 <span>
-                  <span>3-month gross revenue (incl. VAT)</span>
+                  <span>Gross revenue incl. VAT · {displayRange}</span>
                   {totalRevenue != null && (
                     <span className="block mt-1 text-[14px] font-semibold">
-                      Avg {fmtKES(Math.round(totalRevenue / 3))} / month
+                      Avg {fmtKES(Math.round(totalRevenue / numMonths))} / month
                     </span>
                   )}
                 </span>
               }
               icon={TrendUp} showDelta={false} testId="sd-revenue" />
 
-            <KPICard label="Units Sold (3m)"
+            <KPICard label="Units Sold"
               value={totalUnits > 0 ? fmtNum(totalUnits) : "—"}
               sub={
                 <span>
-                  <span>3-month gross units sold</span>
+                  <span>Gross units sold · {displayRange}</span>
                   {totalUnits > 0 && (
                     <span className="block mt-1 text-[14px] font-semibold">
-                      Avg {fmtNum(Math.round(totalUnits / 3))} units / month
+                      Avg {fmtNum(Math.round(totalUnits / numMonths))} units / month
                     </span>
                   )}
                 </span>

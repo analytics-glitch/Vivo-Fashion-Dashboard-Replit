@@ -128,6 +128,19 @@ const MerchandisingHub = () => {
   const [hubSubcategory, setHubSubcategory] = useState("");
   const [filterOptions, setFilterOptions]   = useState({ brands: [], categories: [] });
 
+  // Hub-level date range for the Store Detail tab (default: trailing 90 days)
+  const todayStr = useMemo(() => new Date().toISOString().slice(0, 10), []);
+  const [hubFrom, setHubFrom] = useState(() => {
+    const d = new Date(); d.setDate(d.getDate() - 90); return d.toISOString().slice(0, 10);
+  });
+  const [hubTo, setHubTo] = useState(() => new Date().toISOString().slice(0, 10));
+  const applyHubPreset = (days) => {
+    const d = new Date();
+    setHubTo(d.toISOString().slice(0, 10));
+    d.setDate(d.getDate() - days);
+    setHubFrom(d.toISOString().slice(0, 10));
+  };
+
   // Fetch distinct brands + categories once on mount (1h server TTL)
   useEffect(() => {
     apiFetch("/merch/filter-options")
@@ -143,10 +156,12 @@ const MerchandisingHub = () => {
     pos_location: channels && channels.length  ? channels.join(",")  : undefined,
     brand:        hubBrand       || undefined,
     subcategory:  hubSubcategory || undefined,
+    storeFrom:    hubFrom,   // page-level date range consumed by Store Detail tab
+    storeTo:      hubTo,
     dataVersion,   // bump triggers re-fetch in tab components
     filterOptions, // expose to tab pages so they can build local subcategory selectors
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [dateFrom, dateTo, countries, channels, hubBrand, hubSubcategory, dataVersion, filterOptions]);
+  }), [dateFrom, dateTo, countries, channels, hubBrand, hubSubcategory, hubFrom, hubTo, dataVersion, filterOptions]);
 
   // ── Tab selection ─────────────────────────────────────────────────────────
   const visibleTabs = MERCH_TABS.filter((t) => canAccessPage(user, t.pageId));
@@ -227,8 +242,8 @@ const MerchandisingHub = () => {
             ))}
           </div>
 
-          {/* Hub-scope filter strip — Brand + Category */}
-          <div className="flex items-center gap-2 px-1 py-2 border-b border-border/50 bg-slate-50/60">
+          {/* Hub-scope filter strip — Brand + Category + Date Range */}
+          <div className="flex flex-wrap items-center gap-2 px-1 py-2 border-b border-border/50 bg-slate-50/60">
             <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400 select-none pr-1">
               Scope
             </span>
@@ -279,7 +294,23 @@ const MerchandisingHub = () => {
               </svg>
             </div>
 
-            {/* Clear button — only shown when a filter is active */}
+            {/* Date range */}
+            <span className="h-4 w-px bg-border/60 mx-0.5 self-center" />
+            {[[30,"30d"],[90,"90d"],[182,"6m"],[365,"12m"]].map(([days, label]) => (
+              <button key={label} type="button" onClick={() => applyHubPreset(days)}
+                className="text-[11px] px-1.5 py-0.5 rounded-full border border-border bg-white text-slate-500 hover:bg-slate-50 transition-colors">
+                {label}
+              </button>
+            ))}
+            <input type="date" value={hubFrom} max={hubTo}
+              onChange={e => setHubFrom(e.target.value)}
+              className="text-[11px] border border-border rounded px-1.5 py-0.5 bg-white text-slate-600" />
+            <span className="text-[10px] text-slate-400 select-none">–</span>
+            <input type="date" value={hubTo} min={hubFrom} max={todayStr}
+              onChange={e => setHubTo(e.target.value)}
+              className="text-[11px] border border-border rounded px-1.5 py-0.5 bg-white text-slate-600" />
+
+            {/* Clear button — only shown when a brand/category filter is active */}
             {anyHubFilter && (
               <button
                 type="button"
