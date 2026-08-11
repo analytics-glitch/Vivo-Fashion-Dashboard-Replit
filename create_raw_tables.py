@@ -26,8 +26,13 @@ tables = [
         list_price NUMERIC, standard_price NUMERIC, categ_name TEXT,
         sub_category TEXT, style_name TEXT, style_number TEXT,
         collection TEXT, color TEXT, brand TEXT, vendor TEXT,
-        category TEXT, gender TEXT, season TEXT, active BOOLEAN,
-        fabric_structure TEXT,
+        category TEXT, gender TEXT, season TEXT,
+        status TEXT, tier TEXT,
+        active BOOLEAN, fabric_structure TEXT,
+        plain_print TEXT, source_country TEXT, source_city TEXT,
+        fabric_category TEXT, fabric_subcategory TEXT,
+        fabric_width TEXT, gsm TEXT,
+        supplier_fabric_code TEXT, noos_fabric TEXT, fiber_content TEXT,
         write_date TEXT, _synced_at TIMESTAMP
     )""",
     """CREATE TABLE IF NOT EXISTS raw_odoo_customers (

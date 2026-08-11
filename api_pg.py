@@ -2273,6 +2273,21 @@ def _ensure_ibt_lifecycle_startup():
 
 
 @_deferred_startup
+def _ensure_raw_odoo_products_tier_status_columns():
+    # status (x_vivo_attr_97) and tier (x_vivo_attr_99) were added to the
+    # extract after the original create_raw_tables.py bootstrap.  Add them
+    # idempotently so existing prod DBs gain them on first deploy and fresh
+    # bootstraps via create_raw_tables.py also pick them up via this guard.
+    try:
+        _users_exec("ALTER TABLE raw_odoo_products "
+                    "ADD COLUMN IF NOT EXISTS status TEXT")
+        _users_exec("ALTER TABLE raw_odoo_products "
+                    "ADD COLUMN IF NOT EXISTS tier TEXT")
+    except Exception as e:
+        log.warning("raw_odoo_products status/tier column migration skipped: %s", e)
+
+
+@_deferred_startup
 def _ensure_fabric_structure_columns():
     # Fabric Structure (x_vivo_attr_101) is now extracted from garment products
     # and stored on both raw_odoo_products and all_products_clean.  Add the

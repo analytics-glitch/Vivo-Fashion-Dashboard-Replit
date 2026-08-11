@@ -52,7 +52,8 @@ def main():
         "x_vivo_collection",
         "x_vivo_color",
         "x_vivo_categories",
-        "active", "write_date"
+        "active", "write_date",
+        "product_tmpl_id",  # needed for template-level tier/status fallback
     ]
 
     # Keyset pagination on the immutable id (NOT offset over a write_date sort):
@@ -80,8 +81,47 @@ def main():
         if not records:
             break
 
+        # ── Template-level tier/status fallback ──────────────────────────────
+        # x_vivo_attr_97 (status) and x_vivo_attr_99 (tier) may be defined as
+        # related fields on product.template that are not stored on
+        # product.product, causing search_read to return False for those
+        # variants even when the template has the correct value.  Read the
+        # template values for the whole batch and use them as a fallback when
+        # the variant-level read returns nothing.
+        tmpl_ids = list({
+            r["product_tmpl_id"][0]
+            for r in records
+            if isinstance(r.get("product_tmpl_id"), list)
+        })
+        tmpl_tier_map = {}   # tmpl_id -> tier name
+        tmpl_status_map = {} # tmpl_id -> status name
+        if tmpl_ids:
+            tmpl_records = models.execute_kw(
+                ODOO_DB, uid, ODOO_PASSWORD,
+                "product.template", "read",
+                [tmpl_ids],
+                {"fields": ["id", "x_vivo_attr_99", "x_vivo_attr_97"]}
+            )
+            for tr in tmpl_records:
+                tmpl_tier_map[tr["id"]]   = get_m2o_name(tr.get("x_vivo_attr_99"))
+                tmpl_status_map[tr["id"]] = get_m2o_name(tr.get("x_vivo_attr_97"))
+        # ─────────────────────────────────────────────────────────────────────
+
         rows = []
         for r in records:
+            tmpl_id = (
+                r["product_tmpl_id"][0]
+                if isinstance(r.get("product_tmpl_id"), list)
+                else r.get("product_tmpl_id")
+            )
+            # Variant value wins; fall back to template value when variant
+            # returns None (covers the non-stored related case and any future
+            # field-storage changes in Odoo).
+            pp_tier   = get_m2o_name(r.get("x_vivo_attr_99"))
+            pp_status = get_m2o_name(r.get("x_vivo_attr_97"))
+            tier   = pp_tier   or (tmpl_tier_map.get(tmpl_id)   if tmpl_id else None)
+            status = pp_status or (tmpl_status_map.get(tmpl_id) if tmpl_id else None)
+
             rows.append((
                 r["id"],
                 r.get("name"),
@@ -100,8 +140,8 @@ def main():
                 get_m2o_name(r.get("x_vivo_categories")),# category
                 get_m2o_name(r.get("x_vivo_attr_83")),  # gender
                 get_m2o_name(r.get("x_vivo_attr_92")),  # season
-                get_m2o_name(r.get("x_vivo_attr_97")),  # status
-                get_m2o_name(r.get("x_vivo_attr_99")),  # tier
+                status,                                  # status (variant ∪ template)
+                tier,                                    # tier   (variant ∪ template)
                 get_m2o_name(r.get("x_vivo_attr_101")), # fabric_structure
                 get_m2o_name(r.get("x_vivo_attr_100")), # plain_print
                 get_m2o_name(r.get("x_vivo_attr_125")), # source_country
@@ -134,6 +174,8 @@ def main():
                 name = EXCLUDED.name,
                 list_price = EXCLUDED.list_price,
                 standard_price = EXCLUDED.standard_price,
+                status = EXCLUDED.status,
+                tier = EXCLUDED.tier,
                 fabric_structure = EXCLUDED.fabric_structure,
                 plain_print = EXCLUDED.plain_print,
                 source_country = EXCLUDED.source_country,
