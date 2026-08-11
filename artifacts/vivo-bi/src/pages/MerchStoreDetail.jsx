@@ -479,23 +479,21 @@ const MerchStoreDetail = () => {
             )}
 
             {/* ── Operational cards ─────────────────────────────────────── */}
-            <KPICard label="Actual Stock" value={fmtNum(displayKPIs.total_stock)}
-              sub={
-                <span>
-                  <span>{selectedStore ? "Units on hand right now" : "Total units across all stores"}</span>
-                  <span className="flex flex-wrap gap-x-3 mt-1 text-[14px] font-semibold">
-                    {displayKPIs.optimal_stock != null && (
-                      <span>Optimal: {fmtNum(displayKPIs.optimal_stock)}</span>
-                    )}
-                    {displayKPIs.stock_variance != null && (
-                      <span style={{ color: varianceColor(displayKPIs.stock_variance) }}>
-                        Variance: {displayKPIs.stock_variance >= 0 ? "+" : ""}{fmtNum(displayKPIs.stock_variance)}
-                      </span>
-                    )}
-                    {displayKPIs.sqft != null && (
-                      <span>{fmtNum(displayKPIs.sqft)} sq ft</span>
-                    )}
-                  </span>
+            <KPICard label="Stock on Hand" value={fmtNum(displayKPIs.total_stock)}
+              sub={selectedStore ? "Units on hand right now" : "Total units across all stores"}
+              footer={
+                <span className="flex flex-wrap gap-x-3 text-[13px] font-semibold">
+                  {displayKPIs.optimal_stock != null && (
+                    <span>Optimal: {fmtNum(displayKPIs.optimal_stock)}</span>
+                  )}
+                  {displayKPIs.stock_variance != null && (
+                    <span style={{ color: varianceColor(displayKPIs.stock_variance) }}>
+                      Variance: {displayKPIs.stock_variance >= 0 ? "+" : ""}{fmtNum(displayKPIs.stock_variance)}
+                    </span>
+                  )}
+                  {displayKPIs.sqft != null && (
+                    <span className="font-normal text-muted">{fmtNum(displayKPIs.sqft)} sq ft</span>
+                  )}
                 </span>
               }
               icon={Package} showDelta={false} testId="sd-actual-stock" />
