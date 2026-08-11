@@ -332,7 +332,7 @@ const MerchStoreDetail = () => {
 
             <KPICard label="Gross Rev / Sq Ft (mo avg)"
               value={revPerSqft != null ? fmtKES(revPerSqft) : "—"}
-              sub="Monthly avg gross revenue per sq ft"
+              sub="Monthly average based on past 90 days Gross Revenue"
               icon={CurrencyCircleDollar} showDelta={false} testId="sd-rev-sqft" />
 
             <KPICard label="Gross Revenue (3m)"
