@@ -221,10 +221,8 @@ const MerchStoreDetail = () => {
     [styles],
   );
 
-  // Derived: units from styles list (specific store) or aggregate
-  const totalUnits = selectedStore
-    ? styles.reduce((sum, s) => sum + (s.units_6m || 0), 0)
-    : (allStoresKPIs?.units_3m ?? 0);
+  // Derived: units from the by-store KPI aggregate (same source as revenue)
+  const totalUnits = displayKPIs?.units_3m ?? 0;
 
   const totalRevenue = displayKPIs?.revenue_3m ?? null;
 
