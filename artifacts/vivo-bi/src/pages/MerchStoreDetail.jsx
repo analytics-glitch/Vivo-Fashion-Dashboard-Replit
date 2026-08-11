@@ -19,7 +19,7 @@ import {
 } from "recharts";
 import {
   Storefront, Package, ChartBar, Percent, ArrowsLeftRight,
-  CurrencyCircleDollar, Ruler,
+  CurrencyCircleDollar, Ruler, TrendUp, CubeFocus, Warning,
 } from "@phosphor-icons/react";
 
 // ── WOC colour coding ─────────────────────────────────────────────────────────
@@ -160,6 +160,24 @@ const MerchStoreDetail = () => {
     if (!storeKPIs?.revenue_6m || !storeKPIs?.sqft) return null;
     return Math.round(storeKPIs.revenue_6m / storeKPIs.sqft);
   }, [storeKPIs]);
+
+  // Derived: at-risk style count (any action except "On Track")
+  const atRiskCount = useMemo(() =>
+    styles.filter(s => {
+      const rec = (s.recommendation || "").toLowerCase();
+      return rec && rec !== "on track";
+    }).length,
+    [styles],
+  );
+
+  // Derived: total units from styles list
+  const totalUnits = useMemo(() =>
+    styles.reduce((sum, s) => sum + (s.units_6m || 0), 0),
+    [styles],
+  );
+
+  // Derived: total revenue from styles list (fallback to storeKPIs)
+  const totalRevenue = storeKPIs?.revenue_6m ?? null;
 
   // All-stores actual vs optimal chart data (only stores with optimal set)
   const allStoresOptChart = useMemo(() =>
@@ -337,14 +355,6 @@ const MerchStoreDetail = () => {
             )}
           </div>
         </div>
-        {storeKPIs && (
-          <div className="flex flex-col items-end gap-1 shrink-0">
-            <div className="text-[11px] text-muted">6m Revenue</div>
-            <div className="text-[18px] font-bold text-brand">{fmtKES(storeKPIs.revenue_6m)}</div>
-            <div className="text-[11px] text-muted">6m Units</div>
-            <div className="text-[14px] font-bold tabular-nums">{fmtNum(storeKPIs.units_6m)}</div>
-          </div>
-        )}
       </div>
 
       {/* KPI Row 1 — Inventory */}
@@ -383,29 +393,35 @@ const MerchStoreDetail = () => {
           </div>
 
           {/* KPI Row 2 — Performance */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <KPICard label="Active Styles" value={fmtNum(storeKPIs.style_count)}
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+            <KPICard label="Revenue (6m)"
+              value={totalRevenue != null ? fmtKES(totalRevenue) : "—"}
+              sub="6-month net revenue"
+              icon={TrendUp} showDelta={false} testId="sd-revenue" />
+
+            <KPICard label="Units Sold (6m)"
+              value={totalUnits > 0 ? fmtNum(totalUnits) : "—"}
+              sub="Total units sold in period"
+              icon={CubeFocus} showDelta={false} testId="sd-units" />
+
+            <KPICard label="Active Styles"
+              value={fmtNum(storeKPIs.style_count)}
               sub="Styles with sales in period"
               icon={ChartBar} showDelta={false} testId="sd-style-count" />
 
-            <KPICard label="Avg WOC"
-              value={storeKPIs.avg_woc != null
-                ? <span style={{ color: wocColor(storeKPIs.avg_woc) }}>{storeKPIs.avg_woc.toFixed(1)} wks</span>
-                : "—"}
-              sub="Weeks of cover (portfolio avg)"
-              showDelta={false} testId="sd-avg-woc" />
+            <KPICard label="At-Risk Styles"
+              value={stylesLoading
+                ? "…"
+                : <span style={{ color: atRiskCount > 0 ? "#d97706" : "#1a5c38" }}>
+                    {fmtNum(atRiskCount)}
+                  </span>}
+              sub={atRiskCount === 1 ? "1 style needs action" : `${atRiskCount} styles need action`}
+              icon={Warning} showDelta={false} testId="sd-at-risk" />
 
             <KPICard label="Avg Sell-Through"
               value={storeKPIs.avg_sor != null ? fmtPct(storeKPIs.avg_sor) : "—"}
-              sub="Avg SOR across styles"
+              sub="Avg SOR % across styles"
               icon={Percent} showDelta={false} testId="sd-avg-sor" />
-
-            <KPICard label="Store Tier"
-              value={storeKPIs.store_tier && storeKPIs.store_tier !== "—"
-                ? <TierBadge tier={storeKPIs.store_tier} />
-                : "—"}
-              sub="A=Flagship · B=Standard · C=Regional"
-              icon={Storefront} showDelta={false} testId="sd-tier" />
           </div>
         </>
       )}
