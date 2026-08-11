@@ -269,7 +269,8 @@ style_nums AS (
 reorder_counts AS (
     SELECT
         sn.style_name,
-        COUNT(DISTINCT po.order_ref) AS reorder_count
+        COUNT(DISTINCT po.order_ref) AS reorder_count,
+        MAX(po.date_ordered)         AS last_order_date
     FROM style_nums sn
     LEFT JOIN production_orders po
            ON po.style_number = sn.style_number
@@ -296,7 +297,7 @@ prod AS (
             FILTER (WHERE substring(p.style_launch_date,1,10)
                     ~ '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}$')  AS launch_date,
         MAX(p.cost)                                        AS standard_cost_kes,
-        NULL::date                                         AS last_order_date,
+        rc.last_order_date,
         mode() WITHIN GROUP (ORDER BY p.price)
             FILTER (WHERE p.price > 0)                    AS full_price,
         BOOL_OR(COALESCE(p.is_noos, FALSE))               AS is_noos,
@@ -307,7 +308,7 @@ prod AS (
     JOIN style_nums sn     ON sn.style_name = p.style_name
     JOIN reorder_counts rc ON rc.style_name = p.style_name
     WHERE {_PROD_BASE}{extra_prod_where}
-    GROUP BY p.style_name, sn.style_number, rc.reorder_count
+    GROUP BY p.style_name, sn.style_number, rc.reorder_count, rc.last_order_date
 ),
 stock AS (
     SELECT
