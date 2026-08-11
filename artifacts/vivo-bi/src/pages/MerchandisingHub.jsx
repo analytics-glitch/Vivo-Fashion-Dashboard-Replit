@@ -61,10 +61,10 @@ const MerchandisingOverview    = React.lazy(() => Promise.resolve({ default: () 
 const MerchandisingSales       = React.lazy(() => Promise.resolve({ default: () => <PlaceholderTab name="Sales Performance" /> }));
 const MerchandisingInventory   = React.lazy(() => Promise.resolve({ default: () => <PlaceholderTab name="Inventory & Stock Health" /> }));
 const MerchandisingSellThrough = React.lazy(() => Promise.resolve({ default: () => <PlaceholderTab name="Sell-Through & Markdown" /> }));
-const MerchandisingCategory    = React.lazy(() => Promise.resolve({ default: () => <PlaceholderTab name="Category Performance" /> }));
-const MerchandisingLifecycle   = React.lazy(() => Promise.resolve({ default: () => <PlaceholderTab name="Style Lifecycle & Age" /> }));
-const MerchandisingAtRisk      = React.lazy(() => Promise.resolve({ default: () => <PlaceholderTab name="At-Risk & Actions" /> }));
-const MerchandisingReplen      = React.lazy(() => Promise.resolve({ default: () => <PlaceholderTab name="Replenishment Planning" /> }));
+const MerchandisingCategory    = React.lazy(() => import("./MerchCategory"));
+const MerchandisingLifecycle   = React.lazy(() => import("./MerchLifecycle"));
+const MerchandisingAtRisk      = React.lazy(() => import("./MerchAtRisk"));
+const MerchandisingReplen      = React.lazy(() => import("./MerchReplen"));
 const MerchandisingFinancial   = React.lazy(() => Promise.resolve({ default: () => <PlaceholderTab name="Financial Performance" /> }));
 const MerchandisingArrivals    = React.lazy(() => Promise.resolve({ default: () => <PlaceholderTab name="New Arrivals & Pipeline" /> }));
 const MerchandisingDeepDive    = React.lazy(() => Promise.resolve({ default: () => <PlaceholderTab name="Style Deep Dive" /> }));
