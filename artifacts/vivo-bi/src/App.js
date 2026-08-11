@@ -62,6 +62,7 @@ const OrderExplorer = React.lazy(() => import("@/pages/OrderExplorer"));
 const Quality = React.lazy(() => import("@/pages/Quality"));
 const StoreFeedback = React.lazy(() => import("@/pages/StoreFeedback"));
 const MerchandisingHub = React.lazy(() => import("@/pages/MerchandisingHub"));
+const CentralTracker = React.lazy(() => import("@/pages/CentralTracker"));
 const Login = React.lazy(() => import("@/pages/Login"));
 const AuthCallback = React.lazy(() => import("@/pages/AuthCallback"));
 
@@ -239,6 +240,7 @@ function App() {
                 <Route path="/production-wallboard" element={<WallboardRedirect />} />
                 <Route path="/production-report" element={<Navigate to="/production?tab=report" replace />} />
                 <Route path="/quality" element={<ProtectedShell pageId="quality"><Quality /></ProtectedShell>} />
+                <Route path="/central-tracker" element={<ProtectedShell pageId="central-tracker"><CentralTracker /></ProtectedShell>} />
                 <Route path="/pd-flow" element={<Navigate to="/product-analysis?tab=pd-flow" replace />} />
                 <Route path="/style-tracker" element={<Navigate to="/product-analysis?tab=tracker" replace />} />
                 <Route path="/data-quality" element={<ProtectedShell pageId="data-quality"><DataQuality /></ProtectedShell>} />

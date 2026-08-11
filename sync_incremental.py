@@ -355,6 +355,12 @@ _LAST_PRODUCTION_SYNC = None
 # KPI) to once per 30 minutes even though main() runs every 60s. None on boot so
 # a fresh prod DB bootstraps on the first cycle.
 _LAST_MO_FABRIC_CONSUMPTION = None
+# Guards the Central Tracker Google Sheet extract (extract_central_tracker.py —
+# Style No, Style Name, Order Qty, Order Date from the 4 year-tabs of the
+# Central Tracker sheet → central_tracker_orders table) to once per 30 minutes
+# even though main() runs every 60s. None on boot so a fresh prod DB bootstraps
+# on the first cycle (or an empty table is filled immediately on restart).
+_LAST_CENTRAL_TRACKER = None
 # Module-level guard so attendance syncs at most once per hour even though main()
 # runs every 60s. None on boot so the first cycle after a (re)start refreshes
 # immediately. Persists for the lifetime of the process.
@@ -2728,6 +2734,47 @@ def main():
             log.info("✅ MO fabric-consumption extract complete")
         except Exception as e:
             log.error("MO fabric-consumption extract error: %s", e)
+
+    # Central Tracker Google Sheet extract — mirrors Style No / Style Name /
+    # Order Qty / Order Date from the 4 year-tabs of the Central Tracker sheet
+    # into the central_tracker_orders Postgres table. Rate-limited to once per
+    # 30 minutes; bootstraps immediately when the table is empty or missing so
+    # a fresh prod DB is populated on the first cycle. The extractor itself
+    # creates the table (CREATE TABLE IF NOT EXISTS), so we always attempt the
+    # run when missing (treat as empty).
+    global _LAST_CENTRAL_TRACKER
+    central_tracker_empty = False
+    try:
+        cur.execute("SELECT to_regclass('public.central_tracker_orders')")
+        if cur.fetchone()[0] is None:
+            central_tracker_empty = True
+        else:
+            cur.execute("SELECT COUNT(*) FROM central_tracker_orders")
+            central_tracker_empty = cur.fetchone()[0] == 0
+        conn.commit()
+    except Exception as e:
+        log.error("Central tracker presence check error: %s", e)
+        conn.rollback()
+    central_tracker_due = (
+        _LAST_CENTRAL_TRACKER is None
+        or (now_utc - _LAST_CENTRAL_TRACKER).total_seconds() >= 1800
+    )
+    if central_tracker_empty or central_tracker_due:
+        _LAST_CENTRAL_TRACKER = now_utc
+        try:
+            import subprocess, sys
+
+            log.info(
+                "Running Central Tracker sheet extract (bootstrap=%s)...",
+                central_tracker_empty,
+            )
+            subprocess.run(
+                [sys.executable, "/home/runner/workspace/extract_central_tracker.py"],
+                check=True,
+            )
+            log.info("✅ Central Tracker sheet extract complete")
+        except Exception as e:
+            log.error("Central Tracker sheet extract error: %s", e)
 
     # Fabric Months-of-Cover daily snapshot — logs the EXACT inputs behind the
     # Fabric "Months of Cover" KPI (RMAT/Stock kg + the 6-completed-month average

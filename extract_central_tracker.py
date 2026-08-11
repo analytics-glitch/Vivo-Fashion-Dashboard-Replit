@@ -15,7 +15,8 @@ Table: central_tracker_orders
   source_year   text        (which tab the row came from)
   _loaded_at    timestamptz
 """
-import os, sys, requests, datetime as dt
+import io, os, sys, requests, datetime as dt
+import openpyxl
 import psycopg2, psycopg2.extras
 
 SHEET_ID = os.environ.get("CENTRAL_TRACKER_SHEET_ID", "1GlH4njBb3IfRtw1ojrbA4TLxqH1zfWVg")
@@ -32,67 +33,152 @@ TABS = {
 def _norm(h): return str(h).strip().lower()
 STYLE_NO_HEADERS   = {"style number"}
 STYLE_NAME_HEADERS = {"product name", "product names"}
-ORDER_DATE_HEADERS = {"order creation date"}
+ORDER_DATE_HEADERS = {"order creation date", "order date"}
 ORDER_QTY_HEADERS  = {"order qty"}
 
 
-def _connector_access_token():
-    conn = psycopg2.connect(os.environ["DATABASE_URL"]); conn.autocommit = True
-    cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-    def q(sql, args=None):
-        cur.execute(sql, args or ()); return cur.fetchall()
-    rows = q("""SELECT settings->>'access_token' AS tok
-                FROM connection WHERE connector_names && ARRAY['google-sheet']
-                ORDER BY updated_at DESC LIMIT 1""")
-    if not rows:  # HR-version fallback: unfiltered
-        rows = q("""SELECT settings->>'access_token' AS tok
-                    FROM connection WHERE settings ? 'access_token'
-                    ORDER BY updated_at DESC LIMIT 1""")
-    conn.close()
-    if not rows or not rows[0]["tok"]:
-        raise RuntimeError("No google-sheet connector access token found")
-    return rows[0]["tok"]
+def _connector_access_token(connector="google-sheet"):
+    """Fetch a live OAuth access token via the Replit connectors proxy.
 
+    Mirrors extract_fabric_sheet.py / hr_attendance.py. Falls back to the
+    unfiltered connection list when the connector_names filter returns [] (a
+    known proxy quirk documented in .agents/memory/connectors-proxy-name-filter.md).
+    """
+    hostname = os.environ.get("REPLIT_CONNECTORS_HOSTNAME", "")
+    if not hostname:
+        raise RuntimeError("REPLIT_CONNECTORS_HOSTNAME is not set")
+    repl_identity = os.environ.get("REPL_IDENTITY")
+    web_renewal   = os.environ.get("WEB_REPL_RENEWAL")
+    if repl_identity:
+        xtok = "repl " + repl_identity
+    elif web_renewal:
+        xtok = "depl " + web_renewal
+    else:
+        raise RuntimeError("No REPL_IDENTITY / WEB_REPL_RENEWAL for connector auth")
 
-def _read_tab(tab, token):
-    """Return list of (style_number, style_name, order_date_raw, order_qty_raw) from one tab."""
-    H = {"Authorization": f"Bearer {token}"}
-    # pull a generous range; header on row 1
-    url = f"https://sheets.googleapis.com/v4/spreadsheets/{SHEET_ID}/values/{requests.utils.quote(tab)}!A1:AF20000"
-    r = requests.get(url, headers=H, timeout=120)
+    headers = {"Accept": "application/json", "X_REPLIT_TOKEN": xtok}
+
+    def _tok_from_items(items):
+        for item in items:
+            s = item.get("settings") or {}
+            tok = s.get("access_token") or (
+                ((s.get("oauth") or {}).get("credentials") or {}).get("access_token"))
+            if tok:
+                return tok
+        return None
+
+    # Primary: filtered request
+    r = requests.get(
+        f"https://{hostname}/api/v2/connection",
+        params={"include_secrets": "true", "connector_names": connector},
+        headers=headers, timeout=20,
+    )
     r.raise_for_status()
-    vals = r.json().get("values", [])
-    if not vals:
+    items = (r.json() or {}).get("items") or []
+    tok = _tok_from_items(items)
+    if tok:
+        return tok
+
+    # Fallback: unfiltered list + client-side match
+    r2 = requests.get(
+        f"https://{hostname}/api/v2/connection",
+        params={"include_secrets": "true"},
+        headers=headers, timeout=20,
+    )
+    r2.raise_for_status()
+    all_items = (r2.json() or {}).get("items") or []
+    matching = [i for i in all_items
+                if (i.get("connector_name") or i.get("connectorName")) == connector]
+    tok = _tok_from_items(matching or all_items)  # last-resort: any token
+    if tok:
+        return tok
+    raise RuntimeError(f"No '{connector}' connection / access_token found")
+
+
+def _download_workbook(token):
+    """Download the Central Tracker xlsx via the Google Docs export URL and
+    return an openpyxl workbook. The Sheets API rejects xlsx (Office) files
+    with FAILED_PRECONDITION; the export URL works with the same OAuth token."""
+    r = requests.get(
+        f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export",
+        params={"format": "xlsx"},
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=120, allow_redirects=True,
+    )
+    r.raise_for_status()
+    return openpyxl.load_workbook(io.BytesIO(r.content), read_only=True, data_only=True)
+
+
+def _read_tab(ws):
+    """Return list of (style_number, style_name, order_date_raw, order_qty_raw)
+    from one openpyxl worksheet."""
+    rows_iter = ws.iter_rows(values_only=True)
+    try:
+        header_raw = next(rows_iter)
+    except StopIteration:
         return []
-    header = [ _norm(h) for h in vals[0] ]
+    header = [_norm(h) for h in header_raw]
+
     def col_idx(candidates):
         for i, h in enumerate(header):
             if h in candidates:
                 return i
         return None
+
     i_no   = col_idx(STYLE_NO_HEADERS)
     i_name = col_idx(STYLE_NAME_HEADERS)
     i_date = col_idx(ORDER_DATE_HEADERS)
     i_qty  = col_idx(ORDER_QTY_HEADERS)
     if i_no is None:
-        print(f"  WARN '{tab}': no Style number column found; skipping", file=sys.stderr)
+        print(f"  WARN sheet '{ws.title}': no Style number column; skipping", file=sys.stderr)
         return []
+
+    def cell(row, i):
+        if i is None or i >= len(row):
+            return None
+        return row[i]
+
     out = []
-    for row in vals[1:]:
-        def cell(i):
-            return (row[i].strip() if i is not None and i < len(row) and row[i] is not None else "")
-        sn = cell(i_no); nm = cell(i_name); od = cell(i_date); oq = cell(i_qty)
-        if not sn and not nm and not od and not oq:
-            continue  # fully blank line
+    for row in rows_iter:
+        sn = cell(row, i_no)
+        nm = cell(row, i_name)
+        od = cell(row, i_date)
+        oq = cell(row, i_qty)
+        # skip fully blank lines
+        if not any([sn, nm, od, oq]):
+            continue
         out.append((sn, nm, od, oq))
     return out
 
 
-def _parse_date(s):
+def _parse_date(v):
+    """Coerce an openpyxl cell value to a Python date (or None).
+
+    openpyxl returns:
+      • datetime.datetime / datetime.date objects for formatted date cells
+      • float (Excel serial) for some date cells without explicit format
+      • str for text-formatted cells
+      • None for blank cells
+    """
+    if v is None:
+        return None
+    if isinstance(v, dt.datetime):
+        return v.date()
+    if isinstance(v, dt.date):
+        return v
+    # Excel serial number (days since 1899-12-30)
+    if isinstance(v, (int, float)):
+        try:
+            n = float(v)
+            if 1 < n < 100000:
+                return dt.date(1899, 12, 30) + dt.timedelta(days=int(n))
+        except (ValueError, OverflowError):
+            pass
+        return None
+    # String fallback
+    s = str(v).strip()
     if not s:
         return None
-    s = s.strip()
-    # Google Sheets values API returns display strings; try common formats + serials
     fmts = ["%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%d-%b-%Y", "%d-%b-%y",
             "%Y/%m/%d", "%d %B %Y", "%d %b %Y"]
     for f in fmts:
@@ -100,20 +186,21 @@ def _parse_date(s):
             return dt.datetime.strptime(s, f).date()
         except ValueError:
             pass
-    # serial number (days since 1899-12-30, the Sheets/Excel epoch)
-    try:
-        n = float(s)
-        if 1 < n < 100000:
-            return (dt.date(1899, 12, 30) + dt.timedelta(days=int(n)))
-    except ValueError:
-        pass
     return None
 
 
-def _parse_qty(s):
+def _parse_qty(v):
+    """Coerce an openpyxl cell value to an integer quantity (or None)."""
+    if v is None:
+        return None
+    if isinstance(v, (int, float)):
+        try:
+            return int(round(float(v)))
+        except (ValueError, OverflowError):
+            return None
+    s = str(v).strip().replace(",", "")
     if not s:
         return None
-    s = str(s).strip().replace(",", "")
     try:
         return int(round(float(s)))
     except (ValueError, TypeError):
@@ -122,12 +209,24 @@ def _parse_qty(s):
 
 def main():
     token = _connector_access_token()
+    # Download the xlsx once (the Sheets API rejects xlsx/Office files).
+    wb = _download_workbook(token)
     all_rows = []
     for tab, year in TABS.items():
-        rows = _read_tab(tab, token)
+        if tab not in wb.sheetnames:
+            print(f"  WARN tab '{tab}' not found in workbook; skipping", file=sys.stderr)
+            continue
+        ws = wb[tab]
+        rows = _read_tab(ws)
         print(f"  '{tab}': {len(rows)} rows")
         for sn, nm, od, oq in rows:
-            all_rows.append((sn, nm, _parse_date(od), _parse_qty(oq), year))
+            all_rows.append((
+                str(sn).strip() if sn is not None else None,
+                str(nm).strip() if nm is not None else None,
+                _parse_date(od),
+                _parse_qty(oq),
+                year,
+            ))
     print(f"TOTAL rows: {len(all_rows)}")
 
     conn = psycopg2.connect(os.environ["DATABASE_URL"]); conn.autocommit = False

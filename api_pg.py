@@ -797,10 +797,10 @@ _VIEWER_PAGES = ["overview", "exec-summary", "locations", "footfall", "trend-ana
 # can also grant it to other groups via Group Access). The server-side
 # /api/finance gate independently restricts the API to leadership + admin.
 _MERCH_PAGES = ["merchandising", "merch-overview", "merch-sales", "merch-inventory", "merch-sellthrough", "merch-category", "merch-lifecycle", "merch-atrisk", "merch-replen", "merch-financial", "merch-arrivals", "merch-deepdive", "merch-store"]
-_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "quarter-scorecard", "product-analysis", "range-mgmt", "size-health", "inventory", "warehouse-returns", "excess-inventory", "rebalancing", "store-flow", "marketing", "social", "crm", "order-explorer", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "style-tracker", "pd-flow", "partner-brands", "finance", "margin", "l10", "rota", "growth", "retail-desk", "product-desk", "workforce-desk", "customer-desk", "marketing-desk", "supply-chain-desk", "production-desk", "the-chair", "quality", "store-profiling", "store-feedback"] + _MERCH_PAGES)
+_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "quarter-scorecard", "product-analysis", "range-mgmt", "size-health", "inventory", "warehouse-returns", "excess-inventory", "rebalancing", "store-flow", "marketing", "social", "crm", "order-explorer", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "style-tracker", "pd-flow", "partner-brands", "finance", "margin", "l10", "rota", "growth", "retail-desk", "product-desk", "workforce-desk", "customer-desk", "marketing-desk", "supply-chain-desk", "production-desk", "the-chair", "quality", "store-profiling", "store-feedback", "central-tracker"] + _MERCH_PAGES)
 
 DEFAULT_ROLE_PAGES = {
-    "product_development": ["product-analysis", "range-mgmt", "catalogue", "gallery", "inventory", "size-health", "data-quality", "fabric", "exports", "production", "production-report", "style-tracker", "pd-flow", "partner-brands", "sops"] + _MERCH_PAGES,
+    "product_development": ["product-analysis", "range-mgmt", "catalogue", "gallery", "inventory", "size-health", "data-quality", "fabric", "exports", "production", "production-report", "style-tracker", "pd-flow", "partner-brands", "sops", "central-tracker"] + _MERCH_PAGES,
     "retail": ["store-flow", "overview", "exec-summary", "locations", "footfall", "store-profiling", "trend-analysis", "customers", "product-analysis", "gallery", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "exports", "partner-brands", "sops", "ask", "store-feedback"],
     "warehouse": ["store-flow", "inventory", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "re-order", "allocations", "data-quality", "exports", "sops"],
     "store_manager": ["overview", "store-flow", "locations", "footfall", "store-profiling", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "sops", "store-feedback"],
@@ -1610,6 +1610,18 @@ async def clerk_auth_gate(request: Request, call_next):
     # Merchandising Hub (/api/merch/*) — product_development, leadership, smt, admin.
     if path.startswith("/api/merch") and user.get("role") not in ("admin", "leadership", "smt", "product_development"):
         return JSONResponse({"detail": "Merchandising access requires a product development, leadership, SMT or admin role"}, status_code=403)
+
+    # Central Tracker (/api/central-tracker) — commercial buying-order data from
+    # the Central Tracker sheet. Restricted to product_development, leadership,
+    # smt and admin; enforced server-side so direct API calls cannot bypass the
+    # client-side page-permission gate.
+    if path.startswith("/api/central-tracker") and user.get("role") not in (
+        "product_development", "leadership", "smt", "admin"
+    ):
+        return JSONResponse(
+            {"detail": "Order Tracker access requires a product development, leadership, SMT or admin role"},
+            status_code=403,
+        )
 
     # IBT Done Report mirrors the completed-moves UI gate (admin + leadership).
     if path.startswith("/api/ibt/done-report") and user.get("role") not in ("admin", "leadership"):
@@ -41174,6 +41186,97 @@ async def store_profile_ai_diagnosis(store: str = Query(...)):
 # owns the whole prefix). The auth gate enforces the internal token for that
 # prefix BEFORE the generic /api/public/ bypass. Do not add duplicate
 # /api/public/attendance/* handlers here — the earlier mount shadows them.
+
+# ── Central Tracker ───────────────────────────────────────────────────────────
+# Mirrors Style No / Style Name / Order Qty / Order Date from the 4 year-tabs
+# of the Central Tracker Google Sheet into the central_tracker_orders table
+# (populated every 30 min by the sync loop via extract_central_tracker.py).
+# The startup DDL (_ensure_central_tracker_table) ensures the endpoint never
+# 500s on a cold DB. MUST be registered BEFORE the serve_react catch-all below.
+
+@_deferred_startup
+def _ensure_central_tracker_table():
+    """Idempotent DDL for central_tracker_orders. Called from deferred_startup
+    so the table exists before the first API request, even before the sync loop
+    has had a chance to run extract_central_tracker.py."""
+    _users_exec("""
+        CREATE TABLE IF NOT EXISTS central_tracker_orders (
+            style_number text,
+            style_name   text,
+            order_date   date,
+            order_qty    integer,
+            source_year  text,
+            _loaded_at   timestamptz DEFAULT now()
+        )""")
+    _users_exec("CREATE INDEX IF NOT EXISTS idx_cto_style ON central_tracker_orders(style_number)")
+    _users_exec("CREATE INDEX IF NOT EXISTS idx_cto_date  ON central_tracker_orders(order_date)")
+
+
+@app.get("/api/central-tracker")
+def get_central_tracker(request: Request, year: str = Query(None)):
+    """Return all central tracker orders (optionally filtered to a single year tab).
+
+    Response: { rows: [...], total: N, loaded_at: "ISO-timestamp or null" }
+    Cache: 1800 s (matches the 30-minute sync cadence).
+    Auth: product_development, leadership, smt, admin (enforced in clerk_auth_gate).
+    """
+    cache_key = f"central_tracker:{year or 'all'}"
+    cached = cache_get(cache_key)
+    if cached is not None:
+        return cached
+
+    where = ""
+    params: list = []
+    if year and year != "All":
+        where = "WHERE source_year = %s"
+        params.append(year)
+
+    sql = f"""
+        SELECT style_number, style_name, order_qty,
+               order_date::text AS order_date, source_year
+        FROM central_tracker_orders
+        {where}
+        ORDER BY order_date DESC NULLS LAST, style_number
+    """
+    sql_meta = """
+        SELECT COUNT(*) AS total,
+               MAX(_loaded_at)::text AS loaded_at
+        FROM central_tracker_orders
+    """
+
+    pool, conn = _acquire_conn()
+    try:
+        conn.autocommit = True
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        # Ensure the table exists on a cold DB (deferred startup may not have
+        # run yet if the API is hit very early).
+        try:
+            cur.execute("SELECT to_regclass('public.central_tracker_orders')")
+            if cur.fetchone()["to_regclass"] is None:
+                result = {"rows": [], "total": 0, "loaded_at": None}
+                cache_set(cache_key, result, ttl=60)
+                return result
+        except Exception:
+            pass
+        cur.execute(sql, params or None)
+        rows = [dict(r) for r in cur.fetchall()]
+        cur.execute(sql_meta)
+        meta = cur.fetchone() or {}
+        cur.close()
+    except Exception:
+        pool.putconn(conn, close=True)
+        raise
+    else:
+        pool.putconn(conn)
+
+    result = {
+        "rows": rows,
+        "total": int(meta.get("total") or 0),
+        "loaded_at": meta.get("loaded_at"),
+    }
+    cache_set(cache_key, result, ttl=1800)
+    return result
+
 
 # Serve React build as static files
 build_dir = pathlib.Path(__file__).parent / "dashboard" / "build"
