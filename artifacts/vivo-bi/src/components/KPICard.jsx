@@ -193,7 +193,7 @@ export const KPICard = ({
       )}
       {sub && (
         <div
-          className={`mt-1 text-[11px] ${accent ? "text-white/60" : "text-muted"}`}
+          className={`mt-1 text-[11px] min-h-[2.8em] ${accent ? "text-white/60" : "text-muted"}`}
         >
           {sub}
         </div>
