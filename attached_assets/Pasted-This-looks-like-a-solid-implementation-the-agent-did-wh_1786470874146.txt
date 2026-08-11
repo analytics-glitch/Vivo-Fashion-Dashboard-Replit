@@ -1,0 +1,21 @@
+This looks like a solid implementation — the agent did what was asked and the structure is right. Let me give you a review, because a few things in that summary warrant a second look before you trust it end-to-end.
+
+What's clearly good:
+
+Reorder-count branches gone from _lifecycle_tier, replaced by an Odoo lookup with a 5-min cache — exactly the pattern.
+The age_weeks // 12 proxy removed from all three call sites, now using real central_tracker_orders counts. Good that the agent found all three — that's the kind of spot an agent can miss.
+Handling both typo variants ("Core Perfomer"/"Recent Perfomer") — smart, that's the corrupted-data issue I flagged earlier, now absorbed rather than dropped.
+Status/Retired left flowing through the existing _odoo_retired_styles. Correct — don't touch what works.
+
+But three things don't add up, and I'd verify before moving on:
+
+1. The tier counts dropped sharply from what the dashboard showed. Your earlier screenshot (active styles) had Tier 2 = 245, Tier 3 = 143, Tier 4 = 76. Now it's Tier 2 = 38, Tier 3 = 24, Tier 4 = 63. That's a massive reduction — Tier 2 fell from 245 to 38. Two possible explanations:
+
+Expected: the old rule-based counts were inflated by the age proxy (lots of styles auto-graduated to Core), and the real Odoo/reorder picture is genuinely smaller. Plausible.
+A bug: the Odoo tier lookup is only matching a fraction of styles, so most are silently falling to "Untiered" or being excluded. If all_products_clean.tier is only populated for some styles, you'd see exactly this shrinkage.
+
+The tell: only 4 "Untiered" in the summary — but if the counts really dropped that much, where did the other ~200 Tier 2 styles go? Are they now Retired? Untiered? Filtered out? This needs explaining. This is the thing I'd nail down first.
+
+2. all_products_clean.tier — is it actually populated and fresh? The agent reads tier from all_products_clean.tier, which means the Odoo x_vivo_attr_99 value has to be synced into that table. We wrote tiers to Odoo, but does the product sync pull x_vivo_attr_99 → all_products_clean.tier? If that sync doesn't run (or doesn't include the tier column), the dashboard reads stale/empty tiers. Worth confirming the sync populates it and when it last ran.
+
+3. "Retired = 1,008" but your sheet had 623 Retired. Where do the extra ~385 come from? Possibly styles retired in Odoo but not in your sheet (legitimately). But it's a gap worth understanding, since Retired-first classification means those 385 override any tier.
