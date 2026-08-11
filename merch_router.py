@@ -547,6 +547,11 @@ def _compute_summary(styles):
     woc_vals = []; fp_vals = []; sor_vals = []; gm_pct_vals = []
     total_cogs = 0.0; total_gm = 0.0
     active_styles = 0; active_colour_styles = 0; warehouse_stock = 0
+    # Dedup active-style counts by style_number — mirrors Range Management's
+    # _dedup_raw_by_style_number() so renamed styles (same style_number, different
+    # style_name) count as one line. Falls back to style_name when style_number
+    # is blank (brand-new styles not yet in a buying order).
+    _seen_active_keys: set = set()
 
     for s in styles:
         st = s["action_status"]
@@ -559,15 +564,18 @@ def _compute_summary(styles):
         units_6m     += s["units_6m"] or 0
         warehouse_stock += s.get("soh_warehouse") or 0
 
-        # Mirror the PA Style Cockpit's activity_where:
-        # only count a style as "active" when it has stock in stores OR warehouse
-        # (soh_stores > 0 OR soh_warehouse > 0) — pipeline-only / zero-stock
-        # styles are excluded so the number matches the PA Style Cockpit.
+        # Mirror Range Management classify's universe:
+        # • only styles with stock in stores OR warehouse (not pipeline-only / zero)
+        # • dedup by style_number so renamed styles count as one product line
         has_stock = (s.get("soh_stores") or 0) > 0 or (s.get("soh_warehouse") or 0) > 0
         is_active = (s.get("odoo_status") or "active").lower() != "retired"
         if is_active and has_stock:
-            active_styles += 1
-            active_colour_styles += s.get("colour_count") or 0
+            snum = (s.get("style_number") or "").strip()
+            dedup_key = snum if snum else s.get("style_name", "")
+            if dedup_key not in _seen_active_keys:
+                _seen_active_keys.add(dedup_key)
+                active_styles += 1
+                active_colour_styles += s.get("colour_count") or 0
 
         if (s["current_stock"] or 0) == 0:   zero_stock  += 1
         if s["last_sale_days"] is not None and s["last_sale_days"] >= 30: no_sale_30d += 1
