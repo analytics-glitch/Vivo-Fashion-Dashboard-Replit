@@ -12,6 +12,7 @@ import {
   ReferenceLine, PieChart, Pie, Cell, ScatterChart, Scatter, ZAxis, Legend,
   LabelList,
 } from "recharts";
+import { DownloadSimple } from "@phosphor-icons/react";
 import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle } from "@/components/common";
 import { apiFetch, fmtKES, fmtNum, fmtDec } from "@/lib/api";
@@ -147,13 +148,40 @@ const MerchCategory = () => {
   if (error)   return <ErrorBox message={error} />;
 
   const today = new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+  const dateSlug = new Date().toISOString().slice(0, 10);
+
+  const handleDownload = () => {
+    const headers = ["Subcategory", "Revenue 6m (KES)", "Avg SOR 6m (%)", "Weekly Velocity (units/wk)", "Avg Full Price (%)", "Style Count"];
+    const rows = [...subRows].sort((a, b) => (b.revenue_6m || 0) - (a.revenue_6m || 0)).map(r => [
+      `"${(r.subcategory || "").replace(/"/g, '""')}"`,
+      Math.round(r.revenue_6m || 0),
+      r.avg_sor_6m !== null && r.avg_sor_6m !== undefined ? Number(r.avg_sor_6m).toFixed(1) : "",
+      Math.round((r.units_6m || 0) / 26),
+      r.avg_full_price_pct !== null && r.avg_full_price_pct !== undefined ? Number(r.avg_full_price_pct).toFixed(1) : "",
+      r.style_count || 0,
+    ]);
+    const csv = [headers.join(","), ...rows.map(r => r.join(","))].join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `category-performance-${dateSlug}.csv`;
+    a.click();
+  };
 
   return (
     <div className="space-y-6 pb-10">
       {/* Header */}
-      <div>
-        <h2 className="text-[22px] font-bold text-foreground">Category Performance</h2>
-        <p className="text-[13px] text-muted mt-0.5">Subcategory Revenue, Velocity & Sell-Through · As at {today}</p>
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <h2 className="text-[22px] font-bold text-foreground">Category Performance</h2>
+          <p className="text-[13px] text-muted mt-0.5">Subcategory Revenue, Velocity & Sell-Through · As at {today}</p>
+        </div>
+        <button
+          onClick={handleDownload}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-border text-[12px] text-muted hover:text-foreground hover:border-foreground transition-colors bg-white"
+        >
+          <DownloadSimple size={13} /> Download CSV
+        </button>
       </div>
 
       {/* KPI Cards */}

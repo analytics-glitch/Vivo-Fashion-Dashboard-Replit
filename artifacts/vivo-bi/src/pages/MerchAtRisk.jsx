@@ -12,6 +12,7 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend, LabelList,
 } from "recharts";
+import { DownloadSimple } from "@phosphor-icons/react";
 import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle } from "@/components/common";
 import { apiFetch, fmtNum } from "@/lib/api";
@@ -158,12 +159,42 @@ const MerchAtRisk = () => {
   if (error)   return <ErrorBox message={error} />;
 
   const today = new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+  const dateSlug = new Date().toISOString().slice(0, 10);
+
+  const handleDownload = () => {
+    const atRiskStyles = styles.filter(s => s.action_status === "at_risk" || s.action_status === "overdue");
+    const headers = ["Style Name", "Subcategory", "Tier", "Current Stock", "WOC (weeks)", "Last Sale (days)", "Action Status", "Recommended Action"];
+    const rows = atRiskStyles.map(s => [
+      `"${(s.style_name || "").replace(/"/g, '""')}"`,
+      `"${(s.subcategory || "").replace(/"/g, '""')}"`,
+      s.tier || "",
+      s.current_stock ?? "",
+      s.woc !== null && s.woc !== undefined ? s.woc : "",
+      s.last_sale_days !== null && s.last_sale_days !== undefined ? s.last_sale_days : "",
+      s.action_status || "",
+      `"${(s.recommended_action || "").replace(/"/g, '""')}"`,
+    ]);
+    const csv = [headers.join(","), ...rows.map(r => r.join(","))].join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `at-risk-styles-${dateSlug}.csv`;
+    a.click();
+  };
 
   return (
     <div className="space-y-6 pb-10">
-      <div>
-        <h2 className="text-[22px] font-bold text-foreground">At-Risk Styles &amp; Action Required</h2>
-        <p className="text-[13px] text-muted mt-0.5">Underperformers, Slow Movers &amp; Recommended Actions · As at {today}</p>
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <h2 className="text-[22px] font-bold text-foreground">At-Risk Styles &amp; Action Required</h2>
+          <p className="text-[13px] text-muted mt-0.5">Underperformers, Slow Movers &amp; Recommended Actions · As at {today}</p>
+        </div>
+        <button
+          onClick={handleDownload}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-border text-[12px] text-muted hover:text-foreground hover:border-foreground transition-colors bg-white"
+        >
+          <DownloadSimple size={13} /> Download CSV
+        </button>
       </div>
 
       {/* KPI row */}
