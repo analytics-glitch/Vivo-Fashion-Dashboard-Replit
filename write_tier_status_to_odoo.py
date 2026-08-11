@@ -16,7 +16,7 @@ TEST_ONLY   -> if non-empty set of style numbers, only those are processed.
 import xmlrpc.client, os, json, re, sys
 
 DRY = False
-TEST_ONLY = {"V0822077","V0725043","V0126025"}
+TEST_ONLY = set()
 
 url=os.environ["ODOO_URL"]; db=os.environ["ODOO_DB"]
 user=os.environ["ODOO_USER"]; pw=os.environ["ODOO_PASSWORD"]
