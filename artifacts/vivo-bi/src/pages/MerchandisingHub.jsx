@@ -20,6 +20,32 @@ import { Loading } from "@/components/common";
  * until the feature task for that page ships.
  */
 
+// ── Deep-dive navigation helper ───────────────────────────────────────────────
+/**
+ * navigateToDeepDive — shared helper that all tab components can import.
+ * Navigates to ?tab=merch-deepdive&style=<styleNumber> so clicking any style
+ * name anywhere in the hub lands on the Style Deep Dive page for that style.
+ *
+ * Usage (in a tab component):
+ *   import { navigateToDeepDive } from "./MerchandisingHub";
+ *   ...
+ *   <button onClick={() => navigateToDeepDive(row.style_number, setSearchParams)}>
+ *     {row.style_name}
+ *   </button>
+ *
+ * @param {string}   styleNumber  — style_number to navigate to
+ * @param {Function} setSearchParams — from useSearchParams()
+ */
+export const navigateToDeepDive = (styleNumber, setSearchParams) => {
+  if (!styleNumber || !setSearchParams) return;
+  setSearchParams(prev => {
+    const next = new URLSearchParams(prev);
+    next.set("tab", "merch-deepdive");
+    next.set("style", String(styleNumber));
+    return next;
+  });
+};
+
 // ── Filter context — published by the hub, consumed by tabs ──────────────────
 /**
  * Shape: { brand, subcategory, countries, dateFrom, dateTo, dataVersion }
@@ -65,10 +91,10 @@ const MerchandisingCategory    = React.lazy(() => import("./MerchCategory"));
 const MerchandisingLifecycle   = React.lazy(() => import("./MerchLifecycle"));
 const MerchandisingAtRisk      = React.lazy(() => import("./MerchAtRisk"));
 const MerchandisingReplen      = React.lazy(() => import("./MerchReplen"));
-const MerchandisingFinancial   = React.lazy(() => Promise.resolve({ default: () => <PlaceholderTab name="Financial Performance" /> }));
-const MerchandisingArrivals    = React.lazy(() => Promise.resolve({ default: () => <PlaceholderTab name="New Arrivals & Pipeline" /> }));
-const MerchandisingDeepDive    = React.lazy(() => Promise.resolve({ default: () => <PlaceholderTab name="Style Deep Dive" /> }));
-const MerchandisingStore       = React.lazy(() => Promise.resolve({ default: () => <PlaceholderTab name="Store Detail" /> }));
+const MerchandisingFinancial   = React.lazy(() => import("./MerchFinancial"));
+const MerchandisingArrivals    = React.lazy(() => import("./MerchArrivals"));
+const MerchandisingDeepDive    = React.lazy(() => import("./MerchDeepDive"));
+const MerchandisingStore       = React.lazy(() => import("./MerchStoreDetail"));
 
 const MERCH_TABS = [
   { id: "merch-overview",    label: "Executive Overview",       pageId: "merch-overview",    el: MerchandisingOverview },
