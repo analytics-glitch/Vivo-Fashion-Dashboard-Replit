@@ -6,7 +6,7 @@ import RebuildSnapshotsButton from "@/components/RebuildSnapshotsButton";
 import { api, fmtKES, fmtNum, fmtPct, fmtDate } from "@/lib/api";
 import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
-import SortableTable from "@/components/SortableTable";
+import SortableTable, { exportCSV } from "@/components/SortableTable";
 import CountryDot from "@/components/CountryDot";
 import {
   Users, UserPlus, ArrowsCounterClockwise, UserMinus, Coins,
@@ -31,6 +31,14 @@ const maskPhone = (p) => {
   const digits = s.replace(/\D/g, "");
   if (digits.length < 7) return s;
   return `${digits.slice(0, 4)}***${digits.slice(-3)}`;
+};
+
+// Mask email to "j***@example.com" style — mirrors Python mask_email on the backend.
+const mask_email_js = (e) => {
+  if (!e) return "—";
+  const s = String(e);
+  const at = s.indexOf("@");
+  return at < 1 ? s : s[0] + "***" + s.slice(at);
 };
 
 // Raw digits for tel: link. Returns null if unusable.
@@ -2886,6 +2894,94 @@ const Customers = () => {
             const csvDate = new Date().toISOString().slice(0, 10);
             const csvFilename = `reactivation-list_${csvCountry}_${churnDays}d-churn${csvChipLabel}_${csvDate}.csv`;
 
+            // Column definitions shared between the table and the header Download CSV button.
+            const churnedColumns = [
+              {
+                key: "priority", label: "Priority Tier", align: "left",
+                sortValue: (r) => r.priority.rank,
+                render: (r) => <span className={r.priority.cls} title={r.priority.tip}>{r.priority.label}</span>,
+                csv: (r) => r.priority.label.replace(/[^\w\s]/g, "").trim(),
+              },
+              {
+                key: "customer_name", label: "Name", align: "left",
+                render: (r) => {
+                  if (!r.customer_name) return <span className="pill-amber" title="Anonymous / walk-in sale">Walk-in / Unregistered</span>;
+                  return (
+                    <button
+                      type="button"
+                      onClick={() => openCustomer(r)}
+                      title="Open full customer profile"
+                      className="font-medium text-brand-deep hover:text-brand hover:underline underline-offset-2 break-words max-w-[220px] inline-block text-left"
+                    >
+                      {r.customer_name}
+                      {!r.hasContact && <span title="Missing contact — cannot run automated outreach" className="ml-1">⚠️</span>}
+                    </button>
+                  );
+                },
+                csv: (r) => r.customer_name || "Walk-in",
+              },
+              {
+                key: "phone", label: "Phone", align: "left",
+                render: (r) => {
+                  if (!r.phone) return <span className="text-muted" title="No contact on file">— ⚠️</span>;
+                  const href = telHref(r.phone);
+                  const display = revealToken ? r.phone : maskPhone(r.phone);
+                  return href
+                    ? <a href={href} className="text-brand-deep hover:text-brand inline-flex items-center gap-1" title="Click to dial"><Phone size={11} weight="bold" />{display}</a>
+                    : <span className="text-muted">{display}</span>;
+                },
+                csv: (r) => revealToken ? (r.phone || "") : maskPhone(r.phone),
+              },
+              {
+                key: "email", label: "Email", align: "left",
+                render: (r) => {
+                  if (!r.email) return <span className="text-muted">—</span>;
+                  const display = revealToken ? r.email : mask_email_js(r.email);
+                  return <span className="text-[12px] text-foreground/70">{display}</span>;
+                },
+                csv: (r) => r.email || "",
+              },
+              { key: "last_purchase_date", label: "Last Purchase Date", render: (r) => fmtDate(r.last_purchase_date) || "—",
+                csv: (r) => r.last_purchase_date || "" },
+              {
+                key: "days_since_last_purchase", label: "Days Churned", numeric: true,
+                render: (r) => <span className={(r.days_since_last_purchase || 0) > 180 ? "pill-red" : "pill-amber"}>{fmtNum(r.days_since_last_purchase)}d</span>,
+                csv: (r) => r.days_since_last_purchase,
+              },
+              { key: "total_orders", label: "Total Orders", numeric: true,
+                render: (r) => fmtNum(r.total_orders),
+                csv: (r) => r.total_orders },
+              {
+                key: "lifetime_spend", label: "Lifetime Spend (KES)", numeric: true,
+                render: (r) => <span className="text-brand font-bold">{fmtKES(r.lifetime_spend)}</span>,
+                csv: (r) => r.lifetime_spend,
+              },
+              {
+                key: "actions", label: "", align: "left", sortable: false,
+                render: (r) => {
+                  const href = telHref(r.phone);
+                  return (
+                    <div className="inline-flex items-center gap-1.5">
+                      {href ? (
+                        <a href={href} className="p-1 rounded hover:bg-panel" title="Call for win-back"><Phone size={13} /></a>
+                      ) : (
+                        <span className="p-1 text-muted/40" title="No phone"><Phone size={13} /></span>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => openCustomer(r)}
+                        title="View profile"
+                        className="p-1 rounded hover:bg-panel"
+                      >
+                        <Eye size={13} />
+                      </button>
+                    </div>
+                  );
+                },
+                csv: () => "",
+              },
+            ];
+
             return (
               <div className="card-white p-5 border-l-4 border-danger" data-testid="churned-customers-section">
                 <div className="flex items-start justify-between gap-3 flex-wrap">
@@ -2928,24 +3024,37 @@ const Customers = () => {
                   </div>
                 )}
 
-                {/* ---- Filter chips ---- */}
-                <div className="flex flex-wrap items-center gap-1.5 mb-1.5">
-                  {CHIPS.map(([k, label, def]) => (
+                {/* ---- Filter chips + Download CSV ---- */}
+                <div className="flex flex-wrap items-center justify-between gap-2 mb-1.5">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {CHIPS.map(([k, label, def]) => (
+                      <button
+                        key={k}
+                        type="button"
+                        onClick={() => setReactivationChip(k)}
+                        data-testid={`reactivation-chip-${k}`}
+                        title={def}
+                        className={`px-2.5 py-1 rounded-lg text-[11.5px] font-medium border transition-colors ${
+                          reactivationChip === k
+                            ? "bg-brand-deep text-white border-brand-deep"
+                            : "bg-white text-foreground/70 border-border hover:border-brand/40"
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                  {filtered.length > 0 && (
                     <button
-                      key={k}
                       type="button"
-                      onClick={() => setReactivationChip(k)}
-                      data-testid={`reactivation-chip-${k}`}
-                      title={def}
-                      className={`px-2.5 py-1 rounded-lg text-[11.5px] font-medium border transition-colors ${
-                        reactivationChip === k
-                          ? "bg-brand-deep text-white border-brand-deep"
-                          : "bg-white text-foreground/70 border-border hover:border-brand/40"
-                      }`}
+                      data-testid="download-churned-csv"
+                      onClick={() => exportCSV(filtered, churnedColumns, csvFilename)}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-brand text-brand text-[11.5px] font-semibold hover:bg-brand hover:text-white transition-colors shrink-0"
+                      title={`Download ${filtered.length.toLocaleString()} rows as CSV${revealToken ? " (with full contacts)" : " (contacts masked — reveal first for full PII)"}`}
                     >
-                      {label}
+                      ⬇ Download CSV ({filtered.length.toLocaleString()} rows)
                     </button>
-                  ))}
+                  )}
                 </div>
                 {/* Definition for the active chip */}
                 {(() => {
@@ -3002,92 +3111,12 @@ const Customers = () => {
                     exportName={csvFilename}
                     initialSort={{ key: "priority", dir: "desc" }}
                     pageSize={25}
-                    columns={[
-                      {
-                        key: "priority", label: "Priority", align: "left",
-                        sortValue: (r) => r.priority.rank,
-                        render: (r) => <span className={r.priority.cls} title={r.priority.tip}>{r.priority.label}</span>,
-                        csv: (r) => r.priority.label.replace(/[^\w\s]/g, "").trim(),
-                      },
-                      {
-                        key: "customer_name", label: "Name", align: "left",
-                        render: (r) => {
-                          if (!r.customer_name) return <span className="pill-amber" title="Anonymous / walk-in sale">Walk-in / Unregistered</span>;
-                          return (
-                            <button
-                              type="button"
-                              onClick={() => openCustomer(r)}
-                              title="Open full customer profile"
-                              className="font-medium text-brand-deep hover:text-brand hover:underline underline-offset-2 break-words max-w-[220px] inline-block text-left"
-                            >
-                              {r.customer_name}
-                              {!r.hasContact && <span title="Missing contact — cannot run automated outreach" className="ml-1">⚠️</span>}
-                            </button>
-                          );
-                        },
-                        csv: (r) => r.customer_name || "Walk-in",
-                      },
-                      {
-                        key: "phone", label: "Contact", align: "left",
-                        render: (r) => {
-                          if (!r.phone) return <span className="text-muted" title="No contact on file">— ⚠️</span>;
-                          const href = telHref(r.phone);
-                          // Show raw phone only when the user has unlocked PII;
-                          // otherwise apply the standard 4-3 mask.
-                          const display = revealToken ? r.phone : maskPhone(r.phone);
-                          return href
-                            ? <a href={href} className="text-brand-deep hover:text-brand inline-flex items-center gap-1" title="Click to dial"><Phone size={11} weight="bold" />{display}</a>
-                            : <span className="text-muted">{display}</span>;
-                        },
-                        csv: (r) => revealToken ? r.phone : maskPhone(r.phone),
-                      },
-                      { key: "last_purchase_date", label: "Last Purchase", render: (r) => fmtDate(r.last_purchase_date) || "—" },
-                      {
-                        key: "days_since_last_purchase", label: "Days Since", numeric: true,
-                        render: (r) => <span className={(r.days_since_last_purchase || 0) > 180 ? "pill-red" : "pill-amber"}>{fmtNum(r.days_since_last_purchase)}d</span>,
-                        csv: (r) => r.days_since_last_purchase,
-                      },
-                      { key: "total_orders", label: "Orders", numeric: true, render: (r) => fmtNum(r.total_orders) },
-                      {
-                        key: "lifetime_spend", label: "LTV", numeric: true,
-                        render: (r) => <span className="text-brand font-bold">{fmtKES(r.lifetime_spend)}</span>,
-                        csv: (r) => r.lifetime_spend,
-                      },
-                      {
-                        key: "aov", label: "Avg Order Value", numeric: true,
-                        render: (r) => fmtKES(r.aov),
-                        csv: (r) => r.aov?.toFixed(0),
-                      },
-                      {
-                        key: "actions", label: "", align: "left", sortable: false,
-                        render: (r) => {
-                          const href = telHref(r.phone);
-                          return (
-                            <div className="inline-flex items-center gap-1.5">
-                              {href ? (
-                                <a href={href} className="p-1 rounded hover:bg-panel" title="Call for win-back"><Phone size={13} /></a>
-                              ) : (
-                                <span className="p-1 text-muted/40" title="No phone"><Phone size={13} /></span>
-                              )}
-                              <button
-                                type="button"
-                                onClick={() => openCustomer(r)}
-                                title="View profile"
-                                className="p-1 rounded hover:bg-panel"
-                              >
-                                <Eye size={13} />
-                              </button>
-                            </div>
-                          );
-                        },
-                        csv: () => "",
-                      },
-                    ]}
+                    columns={churnedColumns}
                     rows={filtered}
                   />
                 )}
                 <p className="text-[11px] text-muted italic mt-2">
-                  Email, favourite category/location per customer, bulk-campaign assignment and outreach tracking deferred — upstream Vivo BI API does not currently expose these. Use Export CSV to push this list into your CRM workflow.
+                  CSV includes: name, phone, email, last purchase date, days churned, lifetime spend, orders, and priority tier. Contacts are masked until you reveal them above. Favourite category/location, bulk-campaign assignment and outreach tracking deferred — upstream API does not currently expose these.
                 </p>
               </div>
             );
