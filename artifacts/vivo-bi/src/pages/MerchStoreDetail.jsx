@@ -8,7 +8,7 @@
  */
 import React, { useEffect, useState, useMemo } from "react";
 import { useSearchParams } from "react-router-dom";
-import { apiFetch, fmtKES, fmtNum, fmtPct } from "@/lib/api";
+import { apiFetch, fmtKES, fmtKESLong, fmtNum, fmtPct } from "@/lib/api";
 import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import { SortableTable } from "@/components/SortableTable";
@@ -205,12 +205,11 @@ const MerchStoreDetail = () => {
   // Active KPIs: specific store or all-stores aggregate
   const displayKPIs = selectedStore ? storeKPIs : allStoresKPIs;
 
-  // Derived: revenue per sq ft (monthly average over selected range)
+  // Derived: total period gross revenue per sq ft
   const revPerSqft = useMemo(() => {
     if (!displayKPIs?.revenue_3m || !displayKPIs?.sqft) return null;
-    const months = Math.max(1, numDays / 30.44);
-    return Math.round((displayKPIs.revenue_3m / months) / displayKPIs.sqft);
-  }, [displayKPIs, numDays]);
+    return Math.round(displayKPIs.revenue_3m / displayKPIs.sqft);
+  }, [displayKPIs]);
 
   // Derived: at-risk style count (only meaningful for a specific store)
   const atRiskCount = useMemo(() =>
@@ -347,9 +346,9 @@ const MerchStoreDetail = () => {
               }
               icon={Package} showDelta={false} testId="sd-actual-stock" />
 
-            <KPICard label="Gross Rev / Sq Ft (mo avg)"
-              value={revPerSqft != null ? fmtKES(revPerSqft) : "—"}
-              sub={`Monthly avg gross revenue per sq ft · ${displayRange}`}
+            <KPICard label="Gross Revenue / Sq Ft"
+              value={revPerSqft != null ? fmtKESLong(revPerSqft) : "—"}
+              sub={`Total gross revenue per sq ft · ${displayRange}`}
               icon={CurrencyCircleDollar} showDelta={false} testId="sd-rev-sqft" />
 
             <KPICard label="Gross Revenue"
@@ -374,6 +373,11 @@ const MerchStoreDetail = () => {
                   {totalUnits > 0 && (
                     <span className="block mt-1 text-[14px] font-semibold">
                       Avg {fmtNum(Math.round(totalUnits / numMonths))} units / month
+                    </span>
+                  )}
+                  {totalUnits > 0 && totalRevenue != null && totalRevenue > 0 && (
+                    <span className="block mt-0.5 text-[14px] font-semibold">
+                      ASP {fmtKESLong(Math.round(totalRevenue / totalUnits))}
                     </span>
                   )}
                 </span>
