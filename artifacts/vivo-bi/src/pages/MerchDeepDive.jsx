@@ -20,7 +20,7 @@ import {
 } from "recharts";
 import {
   CurrencyCircleDollar, Package, Percent, ArrowsLeftRight,
-  Clock, ArrowCounterClockwise, Warning, CheckCircle, XCircle,
+  Clock, ArrowCounterClockwise, Warning, CheckCircle, XCircle, CalendarBlank,
 } from "@phosphor-icons/react";
 
 // ── Tier colours ─────────────────────────────────────────────────────────────
@@ -462,6 +462,16 @@ const MerchDeepDive = () => {
           showDelta={false}
           testId="dd-reorder"
         />
+        {style.last_order_date && (
+          <KPICard
+            label="Last Ordered"
+            value={fmtDate(style.last_order_date)}
+            sub=""
+            icon={CalendarBlank}
+            showDelta={false}
+            testId="dd-last-order"
+          />
+        )}
       </div>
 
       {/* ── Row 1: Weekly trend + Subcategory percentile + Gross Margin waterfall ── */}
