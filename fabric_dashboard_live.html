@@ -315,7 +315,7 @@ select:focus,input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(26
 .bar-track{flex:1;height:18px;background:#fff4e6;border:1px solid var(--border);border-radius:6px;overflow:hidden;}
 .bar-fill{height:100%;background:var(--accent);border-radius:5px 0 0 5px;transition:width .5s ease;}
 .bar-qty{width:90px;text-align:right;font-size:12.5px;font-weight:700;flex-shrink:0;font-variant-numeric:tabular-nums;}
-.bar-sub{width:80px;text-align:right;font-size:11px;color:var(--muted);flex-shrink:0;font-variant-numeric:tabular-nums;}
+.bar-sub{width:80px;text-align:right;font-size:11px;color:var(--muted);flex-shrink:0;font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .struct-row{display:flex;align-items:center;gap:11px;margin-bottom:11px;}
 .struct-row .bar-label{width:90px;}
 .dot{width:9px;height:9px;border-radius:50%;display:inline-block;margin-right:7px;flex-shrink:0;}
@@ -411,7 +411,7 @@ tr.sub-row td{background:var(--bg);font-size:12.5px;}
   .bar-label{width:96px;font-size:11.5px;}
   .struct-row .bar-label{width:72px;}
   .bar-qty{width:68px;font-size:11.5px;}
-  .bar-sub{width:52px;font-size:10px;}
+  .bar-sub{width:52px;font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
   .chart-key{gap:6px 12px;padding:8px 10px;}
   .donut-wrap{gap:12px;justify-content:center;}
   .donut-legend{min-width:0;flex-basis:100%;}
@@ -927,11 +927,11 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
     <div class="card" style="margin-bottom:1.1rem;">
      <p class="muted" style="margin:0;" id="qc-rule-note">Loading…</p>
     </div>
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:1.1rem;margin-bottom:1.1rem;">
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(420px,100%),1fr));gap:1.1rem;margin-bottom:1.1rem;">
      <div class="card"><h3 style="margin:0 0 .6rem;">Fails by supplier</h3><div id="qc-sup-bars"><p class="muted">Loading…</p></div></div>
      <div class="card"><h3 style="margin:0 0 .6rem;">Fails by fabric</h3><div id="qc-fab-bars"><p class="muted">Loading…</p></div></div>
      <div class="card"><h3 style="margin:0 0 .6rem;">Monthly pass rate</h3><div id="qc-month-bars"><p class="muted">Loading…</p></div></div>
-     <div class="card"><h3 style="margin:0 0 .6rem;">Shrinkage distribution <span class="muted" id="qc-shrink-sub" style="font-weight:400;font-size:11px;"></span></h3><div id="qc-shrink-bars"><p class="muted">Loading…</p></div></div>
+     <div class="card"><h3 style="margin:0 0 .6rem;display:flex;align-items:baseline;gap:4px;min-width:0;flex-wrap:wrap;">Shrinkage distribution <span class="muted" id="qc-shrink-sub" style="font-weight:400;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;"></span></h3><div id="qc-shrink-bars"><p class="muted">Loading…</p></div></div>
      <div class="card"><h3 style="margin:0 0 .6rem;">Bleeding test outcomes</h3><div id="qc-bleed-bars"><p class="muted">Loading…</p></div></div>
     </div>
     <h3 style="margin:1.6rem 0 .5rem;">Supplier scorecard</h3>
@@ -2064,7 +2064,7 @@ function bars(id,rows,labelKey,valKey,subFmt,colored,fxText){
     const dot=colored?`<span class="dot" style="background:${c}"></span>`:'';
     return `<div class="bar-row"><span class="bar-label" title="${esc(r[labelKey])}">${dot}${esc(r[labelKey])}</span>
      <div class="bar-track"><div class="bar-fill" style="width:${(Math.abs(r[valKey]||0)/max*100).toFixed(1)}%;background:${c}"></div></div>
-     <span class="bar-qty"${fa}>${r._qty}</span><span class="bar-sub">${subFmt?subFmt(r):''}</span></div>`;
+     <span class="bar-qty"${fa}>${r._qty}</span><span class="bar-sub" title="${subFmt?esc(subFmt(r)):''}">${subFmt?subFmt(r):''}</span></div>`;
   }).join(''):'<p class="muted">No data.</p>';
 }
 
