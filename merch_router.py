@@ -1243,17 +1243,25 @@ store_stock AS (
     WHERE i.pos_location_name NOT IN ({_WAREHOUSE_LOCATIONS})
       AND i.pos_location_name NOT ILIKE '%%online%%'
     GROUP BY i.pos_location_name
+),
+store_meta AS (
+    SELECT location_name AS store, optimal_stock, sqft
+    FROM pos_locations
+    WHERE optimal_stock IS NOT NULL
 )
 SELECT
-    COALESCE(ss.store, sk.store)   AS store,
-    COALESCE(t.store_tier, '—')    AS store_tier,
-    COALESCE(ss.style_count, 0)    AS style_count,
-    COALESCE(ss.units_6m, 0)       AS units_6m,
-    COALESCE(ss.revenue_6m, 0.0)   AS revenue_6m,
-    COALESCE(sk.total_stock, 0)    AS total_stock
+    COALESCE(ss.store, sk.store)            AS store,
+    COALESCE(t.store_tier, '—')             AS store_tier,
+    COALESCE(ss.style_count, 0)             AS style_count,
+    COALESCE(ss.units_6m, 0)               AS units_6m,
+    COALESCE(ss.revenue_6m, 0.0)           AS revenue_6m,
+    COALESCE(sk.total_stock, 0)            AS total_stock,
+    sm.optimal_stock,
+    sm.sqft
 FROM store_sales ss
 FULL OUTER JOIN store_stock sk ON sk.store = ss.store
 LEFT  JOIN store_tiers     t  ON t.store  = COALESCE(ss.store, sk.store)
+LEFT  JOIN store_meta      sm ON sm.store = COALESCE(ss.store, sk.store)
 ORDER BY revenue_6m DESC NULLS LAST
 """
     rows = _db_exec(sql, params, fetch=True)
@@ -1326,15 +1334,21 @@ GROUP BY COALESCE(sk.store, sa.store)
     for r in rows:
         store = r.get("store") or "Unknown"
         ws = woc_sor_map.get(store, {})
+        total_stock   = int(r.get("total_stock") or 0)
+        optimal_stock = int(r["optimal_stock"]) if r.get("optimal_stock") is not None else None
+        stock_variance = (total_stock - optimal_stock) if optimal_stock is not None else None
         result.append({
-            "store":       store,
-            "store_tier":  r.get("store_tier") or "—",
-            "style_count": int(r.get("style_count") or 0),
-            "units_6m":    int(r.get("units_6m") or 0),
-            "revenue_6m":  round(float(r.get("revenue_6m") or 0), 0),
-            "total_stock": int(r.get("total_stock") or 0),
-            "avg_woc":     ws.get("avg_woc"),
-            "avg_sor":     ws.get("avg_sor"),
+            "store":          store,
+            "store_tier":     r.get("store_tier") or "—",
+            "style_count":    int(r.get("style_count") or 0),
+            "units_6m":       int(r.get("units_6m") or 0),
+            "revenue_6m":     round(float(r.get("revenue_6m") or 0), 0),
+            "total_stock":    total_stock,
+            "optimal_stock":  optimal_stock,
+            "stock_variance": stock_variance,
+            "sqft":           int(r["sqft"]) if r.get("sqft") is not None else None,
+            "avg_woc":        ws.get("avg_woc"),
+            "avg_sor":        ws.get("avg_sor"),
         })
 
     # Apply tier filter in Python (mirrors _fetch_styles approach)
