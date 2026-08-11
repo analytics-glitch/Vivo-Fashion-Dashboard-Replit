@@ -308,31 +308,27 @@ const MerchStoreDetail = () => {
       {!storeListLoading && displayKPIs && (
         <>
           {/* Row 1 — Inventory */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <KPICard label="Actual Stock" value={fmtNum(displayKPIs.total_stock)}
-              sub={selectedStore ? "Units on hand right now" : "Total units across all stores"}
-              icon={Package} showDelta={false} testId="sd-actual-stock" />
-
-            <KPICard label="Optimal Stock"
-              value={displayKPIs.optimal_stock != null ? fmtNum(displayKPIs.optimal_stock) : "—"}
-              sub={selectedStore ? "Target unit capacity" : "Combined target capacity"}
-              icon={ArrowsLeftRight} showDelta={false} testId="sd-optimal-stock" />
-
-            <KPICard label="Stock Variance"
-              value={displayKPIs.stock_variance != null
-                ? <span style={{ color: varianceColor(displayKPIs.stock_variance) }}>
-                    {displayKPIs.stock_variance >= 0 ? "+" : ""}{fmtNum(displayKPIs.stock_variance)}
+              sub={
+                <span>
+                  <span>{selectedStore ? "Units on hand right now" : "Total units across all stores"}</span>
+                  <span className="flex flex-wrap gap-x-3 mt-1 text-[10px] opacity-70">
+                    {displayKPIs.optimal_stock != null && (
+                      <span>Optimal: {fmtNum(displayKPIs.optimal_stock)}</span>
+                    )}
+                    {displayKPIs.stock_variance != null && (
+                      <span style={{ color: varianceColor(displayKPIs.stock_variance) }}>
+                        Variance: {displayKPIs.stock_variance >= 0 ? "+" : ""}{fmtNum(displayKPIs.stock_variance)}
+                      </span>
+                    )}
+                    {displayKPIs.sqft != null && (
+                      <span>{fmtNum(displayKPIs.sqft)} sq ft</span>
+                    )}
                   </span>
-                : "—"}
-              sub={displayKPIs.stock_variance != null
-                ? displayKPIs.stock_variance >= 0 ? "Over capacity" : "Under capacity"
-                : "Actual vs optimal"}
-              showDelta={false} testId="sd-variance" />
-
-            <KPICard label="Square Footage"
-              value={displayKPIs.sqft != null ? fmtNum(displayKPIs.sqft) + " sq ft" : "—"}
-              sub={selectedStore ? "Retail selling area" : "Total retail area"}
-              icon={Ruler} showDelta={false} testId="sd-sqft" />
+                </span>
+              }
+              icon={Package} showDelta={false} testId="sd-actual-stock" />
 
             <KPICard label="Rev / Sq Ft (6m)"
               value={revPerSqft != null ? fmtKES(revPerSqft) : "—"}
