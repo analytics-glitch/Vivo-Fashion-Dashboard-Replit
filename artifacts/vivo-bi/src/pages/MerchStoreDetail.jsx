@@ -205,11 +205,17 @@ const MerchStoreDetail = () => {
   // Active KPIs: specific store or all-stores aggregate
   const displayKPIs = selectedStore ? storeKPIs : allStoresKPIs;
 
-  // Derived: total period gross revenue per sq ft
+  // Derived: total period gross revenue per sq ft (selected store or all-stores)
   const revPerSqft = useMemo(() => {
     if (!displayKPIs?.revenue_3m || !displayKPIs?.sqft) return null;
     return Math.round(displayKPIs.revenue_3m / displayKPIs.sqft);
   }, [displayKPIs]);
+
+  // All-stores average rev/sqft — used as a benchmark when a store is selected
+  const avgRevPerSqftAllStores = useMemo(() => {
+    if (!allStoresKPIs?.revenue_3m || !allStoresKPIs?.sqft) return null;
+    return Math.round(allStoresKPIs.revenue_3m / allStoresKPIs.sqft);
+  }, [allStoresKPIs]);
 
   // Derived: at-risk style count (only meaningful for a specific store)
   const atRiskCount = useMemo(() =>
@@ -348,7 +354,16 @@ const MerchStoreDetail = () => {
 
             <KPICard label="Gross Revenue / Sq Ft"
               value={revPerSqft != null ? fmtKESLong(revPerSqft) : "—"}
-              sub={`Total gross revenue per sq ft · ${displayRange}`}
+              sub={
+                <span>
+                  <span>Total gross revenue per sq ft · {displayRange}</span>
+                  {selectedStore && avgRevPerSqftAllStores != null && (
+                    <span className="block mt-1 text-[14px] font-semibold">
+                      All-store avg {fmtKESLong(avgRevPerSqftAllStores)}
+                    </span>
+                  )}
+                </span>
+              }
               icon={CurrencyCircleDollar} showDelta={false} testId="sd-rev-sqft" />
 
             <KPICard label="Gross Revenue"
