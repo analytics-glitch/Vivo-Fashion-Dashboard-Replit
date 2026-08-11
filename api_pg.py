@@ -2377,6 +2377,7 @@ FOOTFALL_LOCATION_ALIASES = {
     "VFGSIGNATURE": "Vivo Signature Mall",
     "KILELESHWA": "Vivo Kileleshwa",
     "VFG T-MALL": "Vivo T- Mall",
+    "VIVO Westside": "Vivo Nakuru",
     " Oasis mall": "The Oasis Mall",
 }
 
