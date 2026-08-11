@@ -10913,6 +10913,46 @@ def analytics_product_analysis(
         by_brand.append(bb)
     by_brand.sort(key=lambda x: -x["revenue"])
 
+    # ── Other brands footnote ────────────────────────────────────────────────
+    # Compute a lightweight summary for third-party consignment styles so the
+    # Style Cockpit can display them as a read-only informational row without
+    # including them in any Vivo metric (SOR, WOC, optimal stock, tier, etc.).
+    _other_brands_summary = None
+    try:
+        _ob_sql = (
+            "SELECT"
+            " COUNT(DISTINCT p.style_name) AS styles,"
+            " COALESCE(SUM(CASE WHEN s.sale_kind IN ('sale','order')"
+            "   THEN s.ordered_item_quantity ELSE 0 END), 0) AS units,"
+            " COALESCE(ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order')"
+            "   THEN (s.total_sales_kes::numeric - COALESCE(s.discounts_kes,0)::numeric)"
+            "   WHEN s.sale_kind = 'return' THEN -COALESCE(s.returns_kes,0)::numeric"
+            "   ELSE 0 END)), 0) AS revenue,"
+        )
+        _ob_sql += " COALESCE(SUM(i.available) FILTER (WHERE " + current_loc_clause + "), 0) AS stock"
+        _ob_sql += (
+            " FROM all_products_clean p"
+            " LEFT JOIN all_sales s ON s.variant_sku = p.sku"
+            "   AND s.sale_kind IN ('sale','order')"
+            "   AND s.sale_date BETWEEN '" + df + "' AND '" + dt + "'"
+        )
+        _ob_sql += "   AND " + BASE_FILTERS + cf + chf
+        _ob_sql += (
+            " LEFT JOIN all_inventory i ON i.sku = p.sku"
+            " WHERE COALESCE(p.brand,'') ILIKE '%third party%'"
+            " AND p.style_name IS NOT NULL AND p.style_name <> ''"
+        )
+        _ob = (run_query(_ob_sql) or [{}])[0]
+        if int(_ob.get("styles") or 0) > 0:
+            _other_brands_summary = {
+                "styles":  int(_ob.get("styles")  or 0),
+                "units":   int(_ob.get("units")   or 0),
+                "revenue": int(_ob.get("revenue") or 0),
+                "stock":   int(_ob.get("stock")   or 0),
+            }
+    except Exception as _ob_err:
+        log.warning("other_brands_summary query failed: %s", _ob_err)
+
     total_styles = len(kept) or 1
     sub_map = {}
     for g in kept.values():
@@ -10959,6 +10999,7 @@ def analytics_product_analysis(
         "rows": rows,
         "summary": summary,
         "by_brand": by_brand,
+        "other_brands_summary": _other_brands_summary,
         "by_subcategory": by_subcategory,
         "scope": {
             "store": store or None, "country": country or None,

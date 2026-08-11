@@ -1222,11 +1222,13 @@ store_sales_cmp AS (
           - SUM(CASE WHEN s.sale_kind = 'return'          THEN COALESCE(s.returns_kes,0)::numeric   ELSE 0 END)
         , 0.0)                                           AS revenue_cmp
     FROM all_sales s
+    LEFT JOIN all_products_clean p ON p.sku = s.variant_sku
     WHERE s.sale_date BETWEEN %(compare_from)s AND %(compare_to)s
         AND {_BASE_FILTERS}
         AND s.pos_location_name NOT IN ({_WAREHOUSE_LOCATIONS})
         AND LOWER(s.pos_location_name) NOT IN ({_HOLDING_STORES_LOWER})
         AND s.pos_location_name NOT ILIKE '%%online%%'
+        AND COALESCE(p.brand,'') NOT ILIKE '%%third party%%'
         {country_clause}
     GROUP BY s.pos_location_name
 )"""
@@ -1282,6 +1284,7 @@ store_sales AS (
         AND s.pos_location_name NOT IN ({_WAREHOUSE_LOCATIONS})
         AND LOWER(s.pos_location_name) NOT IN ({_HOLDING_STORES_LOWER})
         AND s.pos_location_name NOT ILIKE '%%online%%'
+        AND COALESCE(p.brand,'') NOT ILIKE '%%third party%%'
         {country_clause}
     GROUP BY s.pos_location_name
 ),
@@ -1290,9 +1293,11 @@ store_stock AS (
         i.pos_location_name                 AS store,
         COALESCE(SUM(i.available), 0)       AS total_stock
     FROM all_inventory i
+    LEFT JOIN all_products_clean p ON p.sku = i.sku
     WHERE i.pos_location_name NOT IN ({_WAREHOUSE_LOCATIONS})
       AND LOWER(i.pos_location_name) NOT IN ({_HOLDING_STORES_LOWER})
       AND i.pos_location_name NOT ILIKE '%%online%%'
+      AND COALESCE(p.brand,'') NOT ILIKE '%%third party%%'
     GROUP BY i.pos_location_name
 ),
 store_meta AS (

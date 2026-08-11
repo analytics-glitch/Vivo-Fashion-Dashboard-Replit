@@ -1146,6 +1146,20 @@ const ProductAnalysis = () => {
                   ]}
                 />
               ) : <Empty />}
+              {data.other_brands_summary && (
+                <div className="mt-3 rounded border border-border/60 bg-muted/30 px-3 py-2 text-[11.5px] text-muted">
+                  <span className="font-semibold text-foreground/70">Other brands (consignment)</span>
+                  <span className="mx-1.5 text-border">·</span>
+                  {fmtNum(data.other_brands_summary.styles)} styles
+                  <span className="mx-1.5 text-border">·</span>
+                  {fmtNum(data.other_brands_summary.units)} units sold
+                  <span className="mx-1.5 text-border">·</span>
+                  {fmtKES(data.other_brands_summary.revenue)} revenue
+                  <span className="mx-1.5 text-border">·</span>
+                  {fmtNum(data.other_brands_summary.stock)} on floor
+                  <span className="ml-2 italic opacity-70">— not included in metrics above</span>
+                </div>
+              )}
             </div>
             <div className="card-white p-4">
               <div className="eyebrow mb-2">By sub-category</div>
