@@ -141,6 +141,33 @@ const MerchandisingHub = () => {
     setHubFrom(d.toISOString().slice(0, 10));
   };
 
+  // Compare-to-period state
+  const [hubCompareMode,       setHubCompareMode]       = useState("none");
+  const [hubCompareCustomFrom, setHubCompareCustomFrom] = useState("");
+  const [hubCompareCustomTo,   setHubCompareCustomTo]   = useState("");
+
+  // Derive the actual comparison date range from mode + primary range
+  const storeCompare = useMemo(() => {
+    if (hubCompareMode === "none" || !hubFrom || !hubTo) return { from: null, to: null };
+    const fromD = new Date(hubFrom + "T00:00:00");
+    const toD   = new Date(hubTo   + "T00:00:00");
+    const days  = Math.round((toD - fromD) / 86400000) + 1;
+    if (hubCompareMode === "prior_period") {
+      const cTo   = new Date(fromD); cTo.setDate(cTo.getDate() - 1);
+      const cFrom = new Date(cTo);   cFrom.setDate(cFrom.getDate() - days + 1);
+      return { from: cFrom.toISOString().slice(0, 10), to: cTo.toISOString().slice(0, 10) };
+    }
+    if (hubCompareMode === "prior_year") {
+      const cFrom = new Date(fromD); cFrom.setFullYear(cFrom.getFullYear() - 1);
+      const cTo   = new Date(toD);   cTo.setFullYear(cTo.getFullYear() - 1);
+      return { from: cFrom.toISOString().slice(0, 10), to: cTo.toISOString().slice(0, 10) };
+    }
+    if (hubCompareMode === "custom") {
+      return { from: hubCompareCustomFrom || null, to: hubCompareCustomTo || null };
+    }
+    return { from: null, to: null };
+  }, [hubCompareMode, hubFrom, hubTo, hubCompareCustomFrom, hubCompareCustomTo]);
+
   // Fetch distinct brands + categories once on mount (1h server TTL)
   useEffect(() => {
     apiFetch("/merch/filter-options")
@@ -156,12 +183,16 @@ const MerchandisingHub = () => {
     pos_location: channels && channels.length  ? channels.join(",")  : undefined,
     brand:        hubBrand       || undefined,
     subcategory:  hubSubcategory || undefined,
-    storeFrom:    hubFrom,   // page-level date range consumed by Store Detail tab
-    storeTo:      hubTo,
+    storeFrom:        hubFrom,              // page-level date range — Store Detail tab
+    storeTo:          hubTo,
+    storeCompareFrom: storeCompare.from,   // comparison period dates
+    storeCompareTo:   storeCompare.to,
+    storeCompareMode: hubCompareMode,
     dataVersion,   // bump triggers re-fetch in tab components
     filterOptions, // expose to tab pages so they can build local subcategory selectors
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [dateFrom, dateTo, countries, channels, hubBrand, hubSubcategory, hubFrom, hubTo, dataVersion, filterOptions]);
+  }), [dateFrom, dateTo, countries, channels, hubBrand, hubSubcategory, hubFrom, hubTo,
+       storeCompare.from, storeCompare.to, hubCompareMode, dataVersion, filterOptions]);
 
   // ── Tab selection ─────────────────────────────────────────────────────────
   const visibleTabs = MERCH_TABS.filter((t) => canAccessPage(user, t.pageId));
@@ -309,6 +340,41 @@ const MerchandisingHub = () => {
             <input type="date" value={hubTo} min={hubFrom} max={todayStr}
               onChange={e => setHubTo(e.target.value)}
               className="text-[11px] border border-border rounded px-1.5 py-0.5 bg-white text-slate-600" />
+
+            {/* Compare period */}
+            <span className="h-4 w-px bg-border/60 mx-0.5 self-center" />
+            <div className="relative flex items-center">
+              <select
+                value={hubCompareMode}
+                onChange={e => setHubCompareMode(e.target.value)}
+                className={
+                  "appearance-none text-[12px] pl-2.5 pr-6 py-1 rounded-full border transition-colors cursor-pointer " +
+                  "bg-white focus:outline-none focus:ring-1 focus:ring-[#1a5c38]/40 " +
+                  (hubCompareMode !== "none"
+                    ? "border-[#1a5c38] text-[#1a5c38] font-semibold"
+                    : "border-border text-slate-500")
+                }
+              >
+                <option value="none">No comparison</option>
+                <option value="prior_period">Prior period</option>
+                <option value="prior_year">Prior year</option>
+                <option value="custom">Custom…</option>
+              </select>
+              <svg className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-400" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M4 6l4 4 4-4" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round"/>
+              </svg>
+            </div>
+            {hubCompareMode === "custom" && (
+              <>
+                <input type="date" value={hubCompareCustomFrom}
+                  onChange={e => setHubCompareCustomFrom(e.target.value)}
+                  className="text-[11px] border border-border rounded px-1.5 py-0.5 bg-white text-slate-600" />
+                <span className="text-[10px] text-slate-400 select-none">–</span>
+                <input type="date" value={hubCompareCustomTo}
+                  onChange={e => setHubCompareCustomTo(e.target.value)}
+                  className="text-[11px] border border-border rounded px-1.5 py-0.5 bg-white text-slate-600" />
+              </>
+            )}
 
             {/* Clear button — only shown when a brand/category filter is active */}
             {anyHubFilter && (

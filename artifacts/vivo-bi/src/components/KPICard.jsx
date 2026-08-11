@@ -1,12 +1,12 @@
 import React from "react";
-import { Info, ArrowRight } from "@phosphor-icons/react";
+import { Info, ArrowRight, ArrowUp, ArrowDown } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import { fmtDelta, api } from "@/lib/api";
 
 const DeltaBadge = ({ delta, higherIsBetter = true, label, accent = false, muted = false, mutedNote = null }) => {
   if (delta === null || delta === undefined) {
     return (
-      <span className="text-[11.5px] delta-flat" data-testid="delta-na">
+      <span className="inline-flex items-center gap-0.5 text-[11.5px] delta-flat" data-testid="delta-na">
         {label && <span className="text-muted mr-1">{label}</span>}— n/a
       </span>
     );
@@ -20,7 +20,7 @@ const DeltaBadge = ({ delta, higherIsBetter = true, label, accent = false, muted
   // misleading. Render grey with an explanatory note instead of hiding the
   // number entirely (users still want the raw gap).
   const cls = muted ? "delta-flat" : good ? "delta-up" : bad ? "delta-down" : "delta-flat";
-  const arrow = pos ? "▲" : neg ? "▼" : "◆";
+  const ArrowIcon = pos ? ArrowUp : neg ? ArrowDown : ArrowRight;
   const onAccent = accent
     ? muted
       ? "text-white/60"
@@ -32,16 +32,17 @@ const DeltaBadge = ({ delta, higherIsBetter = true, label, accent = false, muted
     : "";
   return (
     <span
-      className={`text-[11.5px] font-semibold ${accent ? onAccent : cls}`}
+      className={`inline-flex items-center gap-0.5 text-[11.5px] font-semibold ${accent ? onAccent : cls}`}
       data-testid={muted ? "delta-muted" : undefined}
       title={muted && mutedNote ? mutedNote : undefined}
     >
       {label && (
-        <span className={`${accent ? "text-white/60" : "text-muted"} mr-1 font-normal`}>
+        <span className={`${accent ? "text-white/60" : "text-muted"} mr-0.5 font-normal`}>
           {label}
         </span>
       )}
-      {arrow} {fmtDelta(Math.abs(delta) * (delta < 0 ? -1 : 1))}
+      <ArrowIcon size={13} weight="bold" />
+      <span>{fmtDelta(Math.abs(delta))}</span>
       {muted && (
         <span className={`ml-1 font-normal ${accent ? "text-white/50" : "text-muted/80"}`}>
           (partial day)

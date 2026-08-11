@@ -8,7 +8,7 @@
  */
 import React, { useEffect, useState, useMemo } from "react";
 import { useSearchParams } from "react-router-dom";
-import { apiFetch, fmtKES, fmtKESLong, fmtNum, fmtPct } from "@/lib/api";
+import { apiFetch, fmtKES, fmtKESLong, fmtNum, fmtPct, fmtDelta } from "@/lib/api";
 import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import { SortableTable } from "@/components/SortableTable";
@@ -20,6 +20,7 @@ import {
 import {
   Storefront, Package, ChartBar, Percent, ArrowsLeftRight,
   CurrencyCircleDollar, Ruler, TrendUp, CubeFocus, Warning,
+  ArrowUp, ArrowDown,
 } from "@phosphor-icons/react";
 
 // ── WOC colour coding ─────────────────────────────────────────────────────────
@@ -99,9 +100,12 @@ const MerchStoreDetail = () => {
   const [stylesLoading, setStylesLoading] = useState(false);
   const [stylesError, setStylesError]     = useState(null);
 
-  // Date range — driven by the hub scope filter strip
-  const pageFrom = filters.storeFrom || "";
-  const pageTo   = filters.storeTo   || "";
+  // Date range + comparison — driven by the hub scope filter strip
+  const pageFrom    = filters.storeFrom        || "";
+  const pageTo      = filters.storeTo          || "";
+  const compareFrom = filters.storeCompareFrom || null;
+  const compareTo   = filters.storeCompareTo   || null;
+  const compareMode = filters.storeCompareMode || "none";
 
   const numDays = useMemo(() => {
     if (!pageFrom || !pageTo) return 90;
@@ -124,18 +128,20 @@ const MerchStoreDetail = () => {
     // Country, brand and subcategory still narrow the scope correctly.
     apiFetch("/merch/by-store", {
       params: {
-        country:     filters.country,
-        brand:       filters.brand,
-        subcategory: filters.subcategory,
-        from_date:   pageFrom,
-        to_date:     pageTo,
+        country:      filters.country,
+        brand:        filters.brand,
+        subcategory:  filters.subcategory,
+        from_date:    pageFrom,
+        to_date:      pageTo,
+        compare_from: compareFrom || undefined,
+        compare_to:   compareTo   || undefined,
       },
     })
       .then(d => { if (!cancelled) setAllStores(d.rows || []); })
       .catch(() => { if (!cancelled) setAllStores([]); })
       .finally(() => { if (!cancelled) setStoreListLoading(false); });
     return () => { cancelled = true; };
-  }, [filters.country, filters.brand, filters.subcategory, filters.dataVersion, pageFrom, pageTo]);
+  }, [filters.country, filters.brand, filters.subcategory, filters.dataVersion, pageFrom, pageTo, compareFrom, compareTo]);
 
   // Load styles for the selected store
   useEffect(() => {
@@ -188,6 +194,8 @@ const MerchStoreDetail = () => {
     const avgSOR        = revenue > 0
       ? allStores.reduce((s, r) => s + (r.avg_sor || 0) * (r.revenue_3m || 0), 0) / revenue
       : null;
+    const compareRev   = allStores.reduce((s, r) => s + (r.compare_revenue_3m ?? 0), 0);
+    const compareUnits = allStores.reduce((s, r) => s + (r.compare_units_3m   ?? 0), 0);
     return {
       revenue_3m:          revenue,
       units_3m:            units,
@@ -199,6 +207,8 @@ const MerchStoreDetail = () => {
       store_tier:          null,
       style_count:         styleSum,
       colour_style_count:  colourSum,
+      compare_revenue_3m:  allStores.some(r => r.compare_revenue_3m != null) ? compareRev  : null,
+      compare_units_3m:    allStores.some(r => r.compare_units_3m   != null) ? compareUnits : null,
     };
   }, [allStores]);
 
@@ -230,6 +240,42 @@ const MerchStoreDetail = () => {
   const totalUnits = displayKPIs?.units_3m ?? 0;
 
   const totalRevenue = displayKPIs?.revenue_3m ?? null;
+
+  // Comparison-period label + deltas (shown on Revenue and Units cards)
+  const compareLabel = useMemo(() => {
+    if (compareMode === "none") return null;
+    if (compareMode === "prior_period") return "vs prior period";
+    if (compareMode === "prior_year")   return "vs prior year";
+    if (compareMode === "custom" && compareFrom && compareTo) {
+      const fmt = s => new Date(s + "T00:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+      return `vs ${fmt(compareFrom)} – ${fmt(compareTo)}`;
+    }
+    return null;
+  }, [compareMode, compareFrom, compareTo]);
+
+  const revDelta = useMemo(() => {
+    const prev = displayKPIs?.compare_revenue_3m;
+    if (!compareLabel || prev == null || prev === 0) return null;
+    return Math.round(((( totalRevenue ?? 0) - prev) / prev) * 100);
+  }, [compareLabel, totalRevenue, displayKPIs]);
+
+  const unitsDelta = useMemo(() => {
+    const prev = displayKPIs?.compare_units_3m;
+    if (!compareLabel || prev == null || prev === 0) return null;
+    return Math.round(((totalUnits - prev) / prev) * 100);
+  }, [compareLabel, totalUnits, displayKPIs]);
+
+  const revAbsDelta = useMemo(() => {
+    const prev = displayKPIs?.compare_revenue_3m;
+    if (prev == null || totalRevenue == null) return null;
+    return Math.round(totalRevenue - prev);
+  }, [totalRevenue, displayKPIs]);
+
+  const unitsAbsDelta = useMemo(() => {
+    const prev = displayKPIs?.compare_units_3m;
+    if (prev == null) return null;
+    return totalUnits - prev;
+  }, [totalUnits, displayKPIs]);
 
   // All-stores actual vs optimal chart data (only stores with optimal set)
   const allStoresOptChart = useMemo(() =>
@@ -331,6 +377,108 @@ const MerchStoreDetail = () => {
         <>
           {/* KPI grid — 4 per row */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+
+            {/* ── Revenue & Units ── always first ───────────────────────── */}
+            <KPICard label="Gross Revenue"
+              value={totalRevenue != null ? fmtKES(totalRevenue) : "—"}
+              valueFull={totalRevenue != null ? fmtKESLong(totalRevenue) : undefined}
+              showDelta={false}
+              sub={
+                <span>
+                  <span>Gross revenue incl. VAT · {displayRange}</span>
+                  {totalRevenue != null && (
+                    <span className="block mt-1 text-[14px] font-semibold">
+                      Avg {fmtKES(Math.round(totalRevenue / numMonths))} / month
+                    </span>
+                  )}
+                  {compareLabel && displayKPIs?.compare_revenue_3m != null && (
+                    <span className="block mt-0.5 text-[13px] text-muted">
+                      Prior: {fmtKES(displayKPIs.compare_revenue_3m)}
+                    </span>
+                  )}
+                </span>
+              }
+              icon={TrendUp} testId="sd-revenue" />
+
+            <KPICard label="Units Sold"
+              value={totalUnits > 0 ? fmtNum(totalUnits) : "—"}
+              showDelta={false}
+              sub={
+                <span>
+                  <span>Gross units sold · {displayRange}</span>
+                  {totalUnits > 0 && (
+                    <span className="block mt-1 text-[14px] font-semibold">
+                      Avg {fmtNum(Math.round(totalUnits / numMonths))} units / month
+                    </span>
+                  )}
+                  {totalUnits > 0 && totalRevenue != null && totalRevenue > 0 && (
+                    <span className="block mt-0.5 text-[14px] font-semibold">
+                      ASP {fmtKESLong(Math.round(totalRevenue / totalUnits))}
+                    </span>
+                  )}
+                  {compareLabel && displayKPIs?.compare_units_3m != null && (
+                    <span className="block mt-0.5 text-[13px] text-muted">
+                      Prior: {fmtNum(displayKPIs.compare_units_3m)} units
+                    </span>
+                  )}
+                </span>
+              }
+              icon={CubeFocus} testId="sd-units" />
+
+            {/* ── Change cards — only rendered when a compare period is set ── */}
+            {compareLabel != null && (
+              <KPICard label="Revenue Change"
+                value={
+                  revDelta != null ? (
+                    <span className={`inline-flex items-center gap-1.5 ${revDelta >= 0 ? "text-emerald-600" : "text-red-500"}`}>
+                      {revDelta >= 0
+                        ? <ArrowUp size={20} weight="bold" />
+                        : <ArrowDown size={20} weight="bold" />}
+                      {fmtDelta(Math.abs(revDelta))}
+                    </span>
+                  ) : "—"
+                }
+                showDelta={false}
+                sub={
+                  <span>
+                    <span className="text-muted">{compareLabel}</span>
+                    {revAbsDelta != null && (
+                      <span className={`block mt-1 text-[14px] font-semibold ${revAbsDelta >= 0 ? "text-emerald-600" : "text-red-500"}`}>
+                        {revAbsDelta >= 0 ? "+" : "−"}{fmtKES(Math.abs(revAbsDelta))}
+                      </span>
+                    )}
+                  </span>
+                }
+                icon={TrendUp} testId="sd-revenue-change" />
+            )}
+
+            {compareLabel != null && (
+              <KPICard label="Units Change"
+                value={
+                  unitsDelta != null ? (
+                    <span className={`inline-flex items-center gap-1.5 ${unitsDelta >= 0 ? "text-emerald-600" : "text-red-500"}`}>
+                      {unitsDelta >= 0
+                        ? <ArrowUp size={20} weight="bold" />
+                        : <ArrowDown size={20} weight="bold" />}
+                      {fmtDelta(Math.abs(unitsDelta))}
+                    </span>
+                  ) : "—"
+                }
+                showDelta={false}
+                sub={
+                  <span>
+                    <span className="text-muted">{compareLabel}</span>
+                    {unitsAbsDelta != null && (
+                      <span className={`block mt-1 text-[14px] font-semibold ${unitsAbsDelta >= 0 ? "text-emerald-600" : "text-red-500"}`}>
+                        {unitsAbsDelta >= 0 ? "+" : "−"}{fmtNum(Math.abs(unitsAbsDelta))} units
+                      </span>
+                    )}
+                  </span>
+                }
+                icon={CubeFocus} testId="sd-units-change" />
+            )}
+
+            {/* ── Operational cards ─────────────────────────────────────── */}
             <KPICard label="Actual Stock" value={fmtNum(displayKPIs.total_stock)}
               sub={
                 <span>
@@ -365,39 +513,6 @@ const MerchStoreDetail = () => {
                 </span>
               }
               icon={CurrencyCircleDollar} showDelta={false} testId="sd-rev-sqft" />
-
-            <KPICard label="Gross Revenue"
-              value={totalRevenue != null ? fmtKES(totalRevenue) : "—"}
-              sub={
-                <span>
-                  <span>Gross revenue incl. VAT · {displayRange}</span>
-                  {totalRevenue != null && (
-                    <span className="block mt-1 text-[14px] font-semibold">
-                      Avg {fmtKES(Math.round(totalRevenue / numMonths))} / month
-                    </span>
-                  )}
-                </span>
-              }
-              icon={TrendUp} showDelta={false} testId="sd-revenue" />
-
-            <KPICard label="Units Sold"
-              value={totalUnits > 0 ? fmtNum(totalUnits) : "—"}
-              sub={
-                <span>
-                  <span>Gross units sold · {displayRange}</span>
-                  {totalUnits > 0 && (
-                    <span className="block mt-1 text-[14px] font-semibold">
-                      Avg {fmtNum(Math.round(totalUnits / numMonths))} units / month
-                    </span>
-                  )}
-                  {totalUnits > 0 && totalRevenue != null && totalRevenue > 0 && (
-                    <span className="block mt-0.5 text-[14px] font-semibold">
-                      ASP {fmtKESLong(Math.round(totalRevenue / totalUnits))}
-                    </span>
-                  )}
-                </span>
-              }
-              icon={CubeFocus} showDelta={false} testId="sd-units" />
 
             <KPICard label="No. of Styles"
               value={displayKPIs.style_count != null ? fmtNum(displayKPIs.style_count) : "—"}

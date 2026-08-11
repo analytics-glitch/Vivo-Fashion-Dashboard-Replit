@@ -105,6 +105,9 @@ _WAREHOUSE_LOCATIONS = (
     "'Sew/Stock/A','Sew/Stock/B','Sew/Stock/C','Sew/Stock/D','Sew/Stock/E'"
 )
 
+# Internal holding/transfer locations that must never appear as sellable stores
+_HOLDING_STORES = "'MarKT/Stock','Retired Stock','ARANA/Stock'"
+
 _VAT_DIV = "(CASE WHEN s.country IN ('Uganda','Rwanda') THEN 1.18 ELSE 1.16 END)"
 
 _NET_SALES_EXPR = (
@@ -1154,7 +1157,8 @@ ORDER BY 4
 # ── By-store aggregation ───────────────────────────────────────────────────────
 
 def _fetch_by_store(brand=None, subcategory=None, tier=None, status=None,
-                    from_date=None, to_date=None, country=None):
+                    from_date=None, to_date=None, country=None,
+                    compare_from=None, compare_to=None):
     """Per-store aggregated KPIs for the Store Detail tab.
 
     Aggregates all_sales + all_inventory by pos_location_name, excluding
@@ -1195,6 +1199,35 @@ def _fetch_by_store(brand=None, subcategory=None, tier=None, status=None,
             params["countries"] = cl
             country_clause = " AND s.country = ANY(%(countries)s)"
 
+    # Optional comparison-period CTE (injected into the main SQL when dates supplied)
+    cmp_cte  = ""
+    cmp_join = ""
+    cmp_cols = "NULL::numeric AS compare_revenue_3m, NULL::bigint AS compare_units_3m"
+    if compare_from and compare_to:
+        params["compare_from"] = compare_from
+        params["compare_to"]   = compare_to
+        cmp_cte = f""",
+store_sales_cmp AS (
+    SELECT
+        s.pos_location_name AS store,
+        COALESCE(SUM(s.ordered_item_quantity) FILTER (
+            WHERE s.sale_kind IN ('sale','order')
+        ), 0)                                            AS units_cmp,
+        COALESCE(SUM(CASE WHEN s.sale_kind IN ('sale','order')
+                         THEN s.total_sales_kes::numeric ELSE 0 END
+        ), 0.0)                                          AS revenue_cmp
+    FROM all_sales s
+    WHERE s.sale_date BETWEEN %(compare_from)s AND %(compare_to)s
+        AND {_BASE_FILTERS}
+        AND s.pos_location_name NOT IN ({_WAREHOUSE_LOCATIONS})
+        AND s.pos_location_name NOT IN ({_HOLDING_STORES})
+        AND s.pos_location_name NOT ILIKE '%%online%%'
+        {country_clause}
+    GROUP BY s.pos_location_name
+)"""
+        cmp_join = "LEFT  JOIN store_sales_cmp sc ON sc.store = COALESCE(ss.store, sk.store)"
+        cmp_cols = "COALESCE(sc.revenue_cmp, 0.0) AS compare_revenue_3m, COALESCE(sc.units_cmp, 0) AS compare_units_3m"
+
     sql = f"""
 WITH
 store_tiers AS (
@@ -1208,6 +1241,7 @@ store_tiers AS (
         AND s.sale_date >= (CURRENT_DATE - INTERVAL '90 days')::text
         AND {_BASE_FILTERS}
         AND s.pos_location_name NOT IN ({_WAREHOUSE_LOCATIONS})
+        AND s.pos_location_name NOT IN ({_HOLDING_STORES})
         AND s.pos_location_name NOT ILIKE '%%online%%'
     GROUP BY s.pos_location_name
     HAVING SUM(s.net_sales_kes::numeric) > 0
@@ -1239,6 +1273,7 @@ store_sales AS (
     WHERE s.sale_date BETWEEN %(period_from)s AND %(period_to)s
         AND {_BASE_FILTERS}
         AND s.pos_location_name NOT IN ({_WAREHOUSE_LOCATIONS})
+        AND s.pos_location_name NOT IN ({_HOLDING_STORES})
         AND s.pos_location_name NOT ILIKE '%%online%%'
         {country_clause}
     GROUP BY s.pos_location_name
@@ -1249,6 +1284,7 @@ store_stock AS (
         COALESCE(SUM(i.available), 0)       AS total_stock
     FROM all_inventory i
     WHERE i.pos_location_name NOT IN ({_WAREHOUSE_LOCATIONS})
+      AND i.pos_location_name NOT IN ({_HOLDING_STORES})
       AND i.pos_location_name NOT ILIKE '%%online%%'
     GROUP BY i.pos_location_name
 ),
@@ -1257,6 +1293,7 @@ store_meta AS (
     FROM pos_locations
     WHERE optimal_stock IS NOT NULL
 )
+{cmp_cte}
 SELECT
     COALESCE(ss.store, sk.store)            AS store,
     COALESCE(t.store_tier, '—')             AS store_tier,
@@ -1266,11 +1303,13 @@ SELECT
     COALESCE(ss.revenue_3m, 0.0)           AS revenue_3m,
     COALESCE(sk.total_stock, 0)            AS total_stock,
     sm.optimal_stock,
-    sm.sqft
+    sm.sqft,
+    {cmp_cols}
 FROM store_sales ss
 FULL OUTER JOIN store_stock sk ON sk.store = ss.store
 LEFT  JOIN store_tiers     t  ON t.store  = COALESCE(ss.store, sk.store)
 LEFT  JOIN store_meta      sm ON sm.store = COALESCE(ss.store, sk.store)
+{cmp_join}
 ORDER BY revenue_3m DESC NULLS LAST
 """
     rows = _db_exec(sql, params, fetch=True)
@@ -1352,7 +1391,9 @@ GROUP BY COALESCE(sk.store, sa.store)
             "style_count":         int(r.get("style_count") or 0),
             "colour_style_count":  int(r.get("colour_style_count") or 0),
             "units_3m":            int(r.get("units_3m") or 0),
-            "revenue_3m":     round(float(r.get("revenue_3m") or 0), 0),
+            "revenue_3m":          round(float(r.get("revenue_3m") or 0), 0),
+            "compare_revenue_3m":  round(float(r["compare_revenue_3m"]), 0) if r.get("compare_revenue_3m") is not None else None,
+            "compare_units_3m":    int(r["compare_units_3m"]) if r.get("compare_units_3m") is not None else None,
             "total_stock":    total_stock,
             "optimal_stock":  optimal_stock,
             "stock_variance": stock_variance,
@@ -1613,20 +1654,23 @@ def register_merch_routes(app, api_pg_module):
 
     @app.get("/api/merch/by-store")
     async def merch_by_store(
-        request:     Request,
-        brand:       Optional[str] = Query(None),
-        subcategory: Optional[str] = Query(None),
-        tier:        Optional[str] = Query(None),
-        status:      Optional[str] = Query(None),
-        from_date:   Optional[str] = Query(None),
-        to_date:     Optional[str] = Query(None),
-        country:     Optional[str] = Query(None),
+        request:      Request,
+        brand:        Optional[str] = Query(None),
+        subcategory:  Optional[str] = Query(None),
+        tier:         Optional[str] = Query(None),
+        status:       Optional[str] = Query(None),
+        from_date:    Optional[str] = Query(None),
+        to_date:      Optional[str] = Query(None),
+        country:      Optional[str] = Query(None),
+        compare_from: Optional[str] = Query(None),
+        compare_to:   Optional[str] = Query(None),
     ):
         """Per-store aggregated merchandising KPIs (stock, units, revenue, avg WOC, avg SOR)."""
-        key = f"merch_by_store|{brand}|{subcategory}|{tier}|{status}|{from_date}|{to_date}|{country}"
+        key = f"merch_by_store|{brand}|{subcategory}|{tier}|{status}|{from_date}|{to_date}|{country}|{compare_from}|{compare_to}"
         result = _cached(key, _TTL, lambda: _fetch_by_store(
             brand=brand, subcategory=subcategory, tier=tier, status=status,
             from_date=from_date, to_date=to_date, country=country,
+            compare_from=compare_from, compare_to=compare_to,
         ))
         return JSONResponse({"rows": result})
 
