@@ -156,8 +156,8 @@ export const KPICard = ({
       onMouseEnter={handleHover}
       onFocus={handleHover}
     >
-      <div className="flex items-start justify-between gap-3">
-        <div className="eyebrow flex items-center gap-1">
+      <div className="flex items-start justify-between gap-3 min-h-[2.25rem]">
+        <div className="eyebrow flex items-center gap-1 flex-wrap">
           <span>{label}</span>
           {formula && (
             <Info
