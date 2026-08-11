@@ -553,8 +553,13 @@ def _compute_summary(styles):
         units_6m     += s["units_6m"] or 0
         warehouse_stock += s.get("soh_warehouse") or 0
 
+        # Mirror the PA Style Cockpit's activity_where:
+        # only count a style as "active" when it has stock in stores OR warehouse
+        # (soh_stores > 0 OR soh_warehouse > 0) — pipeline-only / zero-stock
+        # styles are excluded so the number matches the PA Style Cockpit.
+        has_stock = (s.get("soh_stores") or 0) > 0 or (s.get("soh_warehouse") or 0) > 0
         is_active = (s.get("odoo_status") or "active").lower() != "retired"
-        if is_active:
+        if is_active and has_stock:
             active_styles += 1
             active_colour_styles += s.get("colour_count") or 0
 
