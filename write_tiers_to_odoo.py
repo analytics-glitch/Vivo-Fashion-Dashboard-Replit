@@ -42,14 +42,14 @@ def tmpl_ids_for(sn, nm):
     ids = ex("product.template","search",[["x_style_number_text","=",sn]])
     if ids: return set(ids), "style_text"
     # 3. variant default_code LIKE sn%
-    v = ex("product.product","search_read",[[["default_code","=like",sn+"%"]]],
+    v = ex("product.product","search_read",[["default_code","=like",sn+"%"]],
            fields=["product_tmpl_id"])
     if v:
         return set(x["product_tmpl_id"][0] for x in v), "default_code"
     # 4. numeric part (drop leading letter) default_code
     m = re.match(r"^[A-Za-z](\d.*)$", sn)
     if m:
-        v = ex("product.product","search_read",[[["default_code","=like",m.group(1)+"%"]]],
+        v = ex("product.product","search_read",[["default_code","=like",m.group(1)+"%"]],
                fields=["product_tmpl_id"])
         if v:
             return set(x["product_tmpl_id"][0] for x in v), "default_code_noletter"
