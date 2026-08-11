@@ -246,11 +246,11 @@ WITH
  */
 style_nums AS (
     SELECT
-        style_name,
-        mode() WITHIN GROUP (ORDER BY style_number) AS style_number
-    FROM all_products_clean
+        p.style_name,
+        mode() WITHIN GROUP (ORDER BY p.style_number) AS style_number
+    FROM all_products_clean p
     WHERE {_PROD_BASE}
-    GROUP BY style_name
+    GROUP BY p.style_name
 ),
 /*
  * Step 2 — count distinct buying orders per style using the pre-computed
@@ -285,8 +285,8 @@ prod AS (
         MIN(substring(p.style_launch_date,1,10))
             FILTER (WHERE substring(p.style_launch_date,1,10)
                     ~ '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}$')  AS launch_date,
-        MAX(p.standard_cost_kes)                          AS standard_cost_kes,
-        MAX(p.last_order_date)                            AS last_order_date,
+        MAX(p.cost)                                        AS standard_cost_kes,
+        NULL::date                                         AS last_order_date,
         mode() WITHIN GROUP (ORDER BY p.price)
             FILTER (WHERE p.price > 0)                    AS full_price,
         BOOL_OR(COALESCE(p.is_noos, FALSE))               AS is_noos,
@@ -680,8 +680,8 @@ store_tiers AS (
 ),
 style_meta AS (
     SELECT
-        mode() WITHIN GROUP (ORDER BY standard_cost_kes)
-            FILTER (WHERE standard_cost_kes IS NOT NULL) AS cost_kes
+        mode() WITHIN GROUP (ORDER BY cost)
+            FILTER (WHERE cost IS NOT NULL) AS cost_kes
     FROM all_products_clean
     WHERE style_number = %(style_number)s
 ),
@@ -927,11 +927,11 @@ WITH
  */
 style_nums AS (
     SELECT
-        style_name,
-        mode() WITHIN GROUP (ORDER BY style_number) AS style_number
-    FROM all_products_clean
+        p.style_name,
+        mode() WITHIN GROUP (ORDER BY p.style_number) AS style_number
+    FROM all_products_clean p
     WHERE {_PROD_BASE}
-    GROUP BY style_name
+    GROUP BY p.style_name
 ),
 /*
  * Step 2 — reorder counts using the pre-computed style_number.
