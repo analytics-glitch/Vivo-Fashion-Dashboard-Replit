@@ -102,7 +102,10 @@ const MerchandisingStore       = React.lazy(() => import("./MerchStoreCockpit"))
 const PdStyleCockpit    = React.lazy(() => import("./ProductAnalysis"));
 const PdRangeMgmt       = React.lazy(() => import("./RangeManagement"));
 const PdStyleTracker    = React.lazy(() => import("./StyleTracker"));
+const PdCatalogSOR      = React.lazy(() => import("./Products"));
 const PdSORReport       = React.lazy(() => import("./Exports"));
+const PdSORNewStyles    = React.lazy(() => import("@/components/SORNewStylesReport"));
+const PdRetiredStock    = React.lazy(() => import("@/components/RetiredStockReport"));
 const PdAllocations     = React.lazy(() => import("./Allocations"));
 const PdReOrder         = React.lazy(() => import("./ReOrder"));
 const PdProductCat      = React.lazy(() => import("./ProductCatalogue"));
@@ -116,10 +119,10 @@ const MERCH_TABS = [
   { id: "pd-style-cockpit",    label: "Style Cockpit",          pageId: "product-analysis",  el: PdStyleCockpit },
   { id: "pd-range-mgmt",       label: "Range Management",       pageId: "range-mgmt",        el: PdRangeMgmt },
   { id: "pd-style-tracker",    label: "Weekly Style Tracker",   pageId: "style-tracker",     el: PdStyleTracker },
-  { id: "pd-catalog-sor",      label: "Catalog & SOR",          pageId: "product-analysis",  el: () => <PlaceholderTab name="Catalog & SOR" /> },
+  { id: "pd-catalog-sor",      label: "Catalog & SOR",          pageId: "product-analysis",  el: PdCatalogSOR },
   { id: "pd-sor-report",       label: "SOR Report",             pageId: "exports",           el: PdSORReport },
-  { id: "pd-sor-new",          label: "SOR New Styles",         pageId: "product-analysis",  el: () => <PlaceholderTab name="SOR New Styles" /> },
-  { id: "pd-retired-stock",    label: "Retired Stock",          pageId: "product-analysis",  el: () => <PlaceholderTab name="Retired Stock" /> },
+  { id: "pd-sor-new",          label: "SOR New Styles",         pageId: "exports",           el: PdSORNewStyles },
+  { id: "pd-retired-stock",    label: "Retired Stock",          pageId: "range-mgmt",        el: PdRetiredStock },
   { id: "pd-allocations",      label: "Allocations",            pageId: "allocations",       el: PdAllocations },
   { id: "pd-reorder",          label: "Re-Order",               pageId: "re-order",          el: PdReOrder },
   { id: "pd-product-cat",      label: "Product Catalogue",      pageId: "gallery",           el: PdProductCat },
