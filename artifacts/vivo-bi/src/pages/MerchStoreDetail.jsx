@@ -155,13 +155,41 @@ const MerchStoreDetail = () => {
     [allStores, selectedStore],
   );
 
+  // Aggregated KPIs across all stores (shown when no store is selected)
+  const allStoresKPIs = useMemo(() => {
+    if (!allStores.length) return null;
+    const revenue  = allStores.reduce((s, r) => s + (r.revenue_6m  || 0), 0);
+    const units    = allStores.reduce((s, r) => s + (r.units_6m    || 0), 0);
+    const stock    = allStores.reduce((s, r) => s + (r.total_stock  || 0), 0);
+    const sqftSum  = allStores.reduce((s, r) => s + (r.sqft         || 0), 0);
+    const withOpt  = allStores.filter(r => r.optimal_stock != null);
+    const optimal  = withOpt.reduce((s, r) => s + r.optimal_stock, 0);
+    const avgSOR   = revenue > 0
+      ? allStores.reduce((s, r) => s + (r.avg_sor || 0) * (r.revenue_6m || 0), 0) / revenue
+      : null;
+    return {
+      revenue_6m:    revenue,
+      units_6m:      units,
+      total_stock:   stock,
+      optimal_stock: withOpt.length ? optimal : null,
+      stock_variance: withOpt.length ? stock - optimal : null,
+      sqft:          sqftSum || null,
+      avg_sor:       avgSOR,
+      store_tier:    null,
+      style_count:   null, // can't dedupe across stores without extra fetch
+    };
+  }, [allStores]);
+
+  // Active KPIs: specific store or all-stores aggregate
+  const displayKPIs = selectedStore ? storeKPIs : allStoresKPIs;
+
   // Derived: revenue per sq ft
   const revPerSqft = useMemo(() => {
-    if (!storeKPIs?.revenue_6m || !storeKPIs?.sqft) return null;
-    return Math.round(storeKPIs.revenue_6m / storeKPIs.sqft);
-  }, [storeKPIs]);
+    if (!displayKPIs?.revenue_6m || !displayKPIs?.sqft) return null;
+    return Math.round(displayKPIs.revenue_6m / displayKPIs.sqft);
+  }, [displayKPIs]);
 
-  // Derived: at-risk style count (any action except "On Track")
+  // Derived: at-risk style count (only meaningful for a specific store)
   const atRiskCount = useMemo(() =>
     styles.filter(s => {
       const rec = (s.recommendation || "").toLowerCase();
@@ -170,14 +198,12 @@ const MerchStoreDetail = () => {
     [styles],
   );
 
-  // Derived: total units from styles list
-  const totalUnits = useMemo(() =>
-    styles.reduce((sum, s) => sum + (s.units_6m || 0), 0),
-    [styles],
-  );
+  // Derived: units from styles list (specific store) or aggregate
+  const totalUnits = selectedStore
+    ? styles.reduce((sum, s) => sum + (s.units_6m || 0), 0)
+    : (allStoresKPIs?.units_6m ?? 0);
 
-  // Derived: total revenue from styles list (fallback to storeKPIs)
-  const totalRevenue = storeKPIs?.revenue_6m ?? null;
+  const totalRevenue = displayKPIs?.revenue_6m ?? null;
 
   // All-stores actual vs optimal chart data (only stores with optimal set)
   const allStoresOptChart = useMemo(() =>
@@ -241,149 +267,67 @@ const MerchStoreDetail = () => {
       render: r => <ActionPill action={r.recommendation} /> },
   ];
 
-  // ── Empty state (no store selected) ──────────────────────────────────────
-  if (!selectedStore) {
-    return (
-      <div className="space-y-5 pb-8">
-        <div>
-          <h2 className="text-[22px] font-bold text-foreground">Store Performance Detail</h2>
-          <p className="text-[12px] text-muted mt-0.5">Select a store to view its merchandising performance</p>
-        </div>
-
-        <div className="card-white p-6 flex flex-col gap-3 items-start max-w-lg">
-          <p className="text-[13px] font-medium">Choose a store:</p>
-          {storeListLoading
-            ? <p className="text-[12px] text-muted">Loading stores…</p>
-            : <StorePicker stores={allStores} value={selectedStore} onChange={handleStoreChange} />
-          }
-          {allStores.length > 0 && (
-            <p className="text-[11px] text-muted">{allStores.length} stores available</p>
-          )}
-        </div>
-
-        {/* All-stores overview charts */}
-        {!storeListLoading && (
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-
-            {/* Actual vs Optimal stock chart */}
-            {allStoresOptChart.length > 0 && (
-              <div className="card-white p-5">
-                <SectionTitle
-                  title="Actual vs Optimal Stock — All Stores"
-                  subtitle="Stores with configured optimal stock level only"
-                />
-                <ResponsiveContainer width="100%" height={Math.max(240, allStoresOptChart.length * 28)}>
-                  <BarChart
-                    data={allStoresOptChart}
-                    layout="vertical"
-                    margin={{ top: 4, right: 32, left: 4, bottom: 4 }}
-                  >
-                    <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" horizontal={false} />
-                    <XAxis type="number" tick={{ fontSize: 9 }} />
-                    <YAxis type="category" dataKey="name" tick={{ fontSize: 9 }} width={110} />
-                    <Tooltip
-                      formatter={(v, name) => [fmtNum(v), name === "actual" ? "Actual Stock" : "Optimal Stock"]}
-                    />
-                    <Legend wrapperStyle={{ fontSize: 10 }} />
-                    <Bar dataKey="actual"  name="Actual"  fill="#1a5c38" radius={[0, 3, 3, 0]} barSize={8} />
-                    <Bar dataKey="optimal" name="Optimal" fill="#d1fae5" stroke="#1a5c38" strokeWidth={1} radius={[0, 3, 3, 0]} barSize={8} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            )}
-
-            {/* Revenue per sq ft chart */}
-            {revSqftChart.length > 0 && (
-              <div className="card-white p-5">
-                <SectionTitle
-                  title="Revenue per Sq Ft — All Stores (6m)"
-                  subtitle="Stores with sq footage configured"
-                />
-                <ResponsiveContainer width="100%" height={Math.max(240, revSqftChart.length * 28)}>
-                  <BarChart
-                    data={revSqftChart}
-                    layout="vertical"
-                    margin={{ top: 4, right: 32, left: 4, bottom: 4 }}
-                  >
-                    <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" horizontal={false} />
-                    <XAxis type="number" tick={{ fontSize: 9 }} tickFormatter={v => "K" + Math.round(v / 1000)} />
-                    <YAxis type="category" dataKey="name" tick={{ fontSize: 9 }} width={110} />
-                    <Tooltip formatter={v => [fmtKES(v) + "/sq ft", "Rev/Sq Ft"]} />
-                    <Bar dataKey="revSqft" name="Rev/Sq Ft" radius={[0, 3, 3, 0]} fill="#4b7bec">
-                      <LabelList
-                        dataKey="revSqft"
-                        position="right"
-                        style={{ fontSize: 8, fill: "#4b7bec" }}
-                        formatter={v => fmtKES(v)}
-                      />
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-    );
-  }
-
-  // ── Selected store view ───────────────────────────────────────────────────
+  // ── Unified render ────────────────────────────────────────────────────────
   return (
     <div className="space-y-5 pb-8">
+
       {/* Header */}
-      <div className="flex items-start justify-between gap-4 flex-wrap">
-        <div className="flex-1 min-w-0">
-          <div className="flex items-baseline gap-3 flex-wrap">
-            <h2 className="text-[22px] font-bold text-foreground leading-tight">
-              {selectedStore}
-            </h2>
-            {storeKPIs?.store_tier && storeKPIs.store_tier !== "—" && (
-              <TierBadge tier={storeKPIs.store_tier} />
-            )}
-            <span className="text-[14px] text-muted font-medium shrink-0">
-              — Store Performance Detail
-            </span>
-          </div>
-          <p className="text-[12px] text-muted mt-0.5">
-            {storeKPIs
-              ? `${storeKPIs.style_count} styles active · ${fmtNum(storeKPIs.total_stock)} units in stock`
-              : "Loading store KPIs…"}
-          </p>
-          <div className="mt-2 max-w-xs">
-            {!storeListLoading && (
-              <StorePicker stores={allStores} value={selectedStore} onChange={handleStoreChange} />
-            )}
-          </div>
+      <div>
+        <div className="flex items-baseline gap-3 flex-wrap">
+          <h2 className="text-[22px] font-bold text-foreground leading-tight">
+            {selectedStore || "All Stores"}
+          </h2>
+          {storeKPIs?.store_tier && storeKPIs.store_tier !== "—" && (
+            <TierBadge tier={storeKPIs.store_tier} />
+          )}
+          <span className="text-[14px] text-muted font-medium shrink-0">
+            — Store Performance Detail
+          </span>
+        </div>
+        <p className="text-[12px] text-muted mt-0.5">
+          {storeListLoading
+            ? "Loading stores…"
+            : selectedStore
+              ? storeKPIs
+                ? `${storeKPIs.style_count} styles active · ${fmtNum(storeKPIs.total_stock)} units in stock`
+                : "Loading…"
+              : `${allStores.length} stores · ${fmtNum(allStoresKPIs?.total_stock ?? 0)} total units in stock`}
+        </p>
+        <div className="mt-2 max-w-xs">
+          {!storeListLoading && (
+            <StorePicker stores={allStores} value={selectedStore} onChange={handleStoreChange} />
+          )}
         </div>
       </div>
 
-      {/* KPI Row 1 — Inventory */}
-      {storeKPIs && (
+      {/* KPI rows — always shown once data is ready */}
+      {!storeListLoading && displayKPIs && (
         <>
+          {/* Row 1 — Inventory */}
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-            <KPICard label="Actual Stock" value={fmtNum(storeKPIs.total_stock)}
-              sub="Units on hand right now"
+            <KPICard label="Actual Stock" value={fmtNum(displayKPIs.total_stock)}
+              sub={selectedStore ? "Units on hand right now" : "Total units across all stores"}
               icon={Package} showDelta={false} testId="sd-actual-stock" />
 
             <KPICard label="Optimal Stock"
-              value={storeKPIs.optimal_stock != null ? fmtNum(storeKPIs.optimal_stock) : "—"}
-              sub="Target unit capacity"
+              value={displayKPIs.optimal_stock != null ? fmtNum(displayKPIs.optimal_stock) : "—"}
+              sub={selectedStore ? "Target unit capacity" : "Combined target capacity"}
               icon={ArrowsLeftRight} showDelta={false} testId="sd-optimal-stock" />
 
             <KPICard label="Stock Variance"
-              value={storeKPIs.stock_variance != null
-                ? <span style={{ color: varianceColor(storeKPIs.stock_variance) }}>
-                    {storeKPIs.stock_variance >= 0 ? "+" : ""}{fmtNum(storeKPIs.stock_variance)}
+              value={displayKPIs.stock_variance != null
+                ? <span style={{ color: varianceColor(displayKPIs.stock_variance) }}>
+                    {displayKPIs.stock_variance >= 0 ? "+" : ""}{fmtNum(displayKPIs.stock_variance)}
                   </span>
                 : "—"}
-              sub={storeKPIs.stock_variance != null
-                ? storeKPIs.stock_variance >= 0 ? "Over capacity" : "Under capacity"
+              sub={displayKPIs.stock_variance != null
+                ? displayKPIs.stock_variance >= 0 ? "Over capacity" : "Under capacity"
                 : "Actual vs optimal"}
               showDelta={false} testId="sd-variance" />
 
             <KPICard label="Square Footage"
-              value={storeKPIs.sqft != null ? fmtNum(storeKPIs.sqft) + " sq ft" : "—"}
-              sub="Retail selling area"
+              value={displayKPIs.sqft != null ? fmtNum(displayKPIs.sqft) + " sq ft" : "—"}
+              sub={selectedStore ? "Retail selling area" : "Total retail area"}
               icon={Ruler} showDelta={false} testId="sd-sqft" />
 
             <KPICard label="Rev / Sq Ft (6m)"
@@ -392,7 +336,7 @@ const MerchStoreDetail = () => {
               icon={CurrencyCircleDollar} showDelta={false} testId="sd-rev-sqft" />
           </div>
 
-          {/* KPI Row 2 — Performance */}
+          {/* Row 2 — Performance */}
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
             <KPICard label="Revenue (6m)"
               value={totalRevenue != null ? fmtKES(totalRevenue) : "—"}
@@ -405,50 +349,90 @@ const MerchStoreDetail = () => {
               icon={CubeFocus} showDelta={false} testId="sd-units" />
 
             <KPICard label="Active Styles"
-              value={fmtNum(storeKPIs.style_count)}
+              value={displayKPIs.style_count != null ? fmtNum(displayKPIs.style_count) : "—"}
               sub="Styles with sales in period"
               icon={ChartBar} showDelta={false} testId="sd-style-count" />
 
             <KPICard label="At-Risk Styles"
-              value={stylesLoading
-                ? "…"
-                : <span style={{ color: atRiskCount > 0 ? "#d97706" : "#1a5c38" }}>
-                    {fmtNum(atRiskCount)}
-                  </span>}
-              sub={atRiskCount === 1 ? "1 style needs action" : `${atRiskCount} styles need action`}
+              value={!selectedStore
+                ? "—"
+                : stylesLoading
+                  ? "…"
+                  : <span style={{ color: atRiskCount > 0 ? "#d97706" : "#1a5c38" }}>
+                      {fmtNum(atRiskCount)}
+                    </span>}
+              sub={!selectedStore
+                ? "Select a store to see"
+                : atRiskCount === 1 ? "1 style needs action" : `${atRiskCount} styles need action`}
               icon={Warning} showDelta={false} testId="sd-at-risk" />
 
             <KPICard label="Avg Sell-Through"
-              value={storeKPIs.avg_sor != null ? fmtPct(storeKPIs.avg_sor) : "—"}
+              value={displayKPIs.avg_sor != null ? fmtPct(displayKPIs.avg_sor) : "—"}
               sub="Avg SOR % across styles"
               icon={Percent} showDelta={false} testId="sd-avg-sor" />
           </div>
         </>
       )}
 
-      {/* Styles content */}
-      {stylesLoading
-        ? <Loading label={`Loading styles for ${selectedStore}…`} />
-        : stylesError
-        ? <ErrorBox message={stylesError} />
-        : (
-          <div className="space-y-5">
+      {/* All-stores charts (shown when no specific store is selected) */}
+      {!selectedStore && !storeListLoading && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {allStoresOptChart.length > 0 && (
+            <div className="card-white p-5">
+              <SectionTitle
+                title="Actual vs Optimal Stock — All Stores"
+                subtitle="Stores with configured optimal stock level only"
+              />
+              <ResponsiveContainer width="100%" height={Math.max(240, allStoresOptChart.length * 28)}>
+                <BarChart data={allStoresOptChart} layout="vertical" margin={{ top: 4, right: 32, left: 4, bottom: 4 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" horizontal={false} />
+                  <XAxis type="number" tick={{ fontSize: 9 }} />
+                  <YAxis type="category" dataKey="name" tick={{ fontSize: 9 }} width={110} />
+                  <Tooltip formatter={(v, name) => [fmtNum(v), name === "actual" ? "Actual Stock" : "Optimal Stock"]} />
+                  <Legend wrapperStyle={{ fontSize: 10 }} />
+                  <Bar dataKey="actual"  name="Actual"  fill="#1a5c38" radius={[0, 3, 3, 0]} barSize={8} />
+                  <Bar dataKey="optimal" name="Optimal" fill="#d1fae5" stroke="#1a5c38" strokeWidth={1} radius={[0, 3, 3, 0]} barSize={8} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+          {revSqftChart.length > 0 && (
+            <div className="card-white p-5">
+              <SectionTitle
+                title="Revenue per Sq Ft — All Stores (6m)"
+                subtitle="Stores with sq footage configured"
+              />
+              <ResponsiveContainer width="100%" height={Math.max(240, revSqftChart.length * 28)}>
+                <BarChart data={revSqftChart} layout="vertical" margin={{ top: 4, right: 32, left: 4, bottom: 4 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" horizontal={false} />
+                  <XAxis type="number" tick={{ fontSize: 9 }} tickFormatter={v => "K" + Math.round(v / 1000)} />
+                  <YAxis type="category" dataKey="name" tick={{ fontSize: 9 }} width={110} />
+                  <Tooltip formatter={v => [fmtKES(v) + "/sq ft", "Rev/Sq Ft"]} />
+                  <Bar dataKey="revSqft" name="Rev/Sq Ft" radius={[0, 3, 3, 0]} fill="#4b7bec">
+                    <LabelList dataKey="revSqft" position="right" style={{ fontSize: 8, fill: "#4b7bec" }} formatter={v => fmtKES(v)} />
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Store-specific: subcategory chart + styles table */}
+      {selectedStore && (
+        stylesLoading
+          ? <Loading label={`Loading styles for ${selectedStore}…`} />
+          : stylesError
+          ? <ErrorBox message={stylesError} />
+          : (
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-              {/* Revenue by subcategory */}
               <div className="lg:col-span-4 card-white p-5">
-                <SectionTitle
-                  title="Revenue by Category"
-                  subtitle="6-month net revenue · top 10 categories"
-                />
+                <SectionTitle title="Revenue by Category" subtitle="6-month net revenue · top 10 categories" />
                 {subcatChart.length === 0
                   ? <Empty />
                   : (
                     <ResponsiveContainer width="100%" height={280}>
-                      <BarChart
-                        data={subcatChart}
-                        layout="vertical"
-                        margin={{ top: 4, right: 24, left: 4, bottom: 4 }}
-                      >
+                      <BarChart data={subcatChart} layout="vertical" margin={{ top: 4, right: 24, left: 4, bottom: 4 }}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" horizontal={false} />
                         <XAxis type="number" tick={{ fontSize: 9 }} tickFormatter={v => "K" + v} />
                         <YAxis type="category" dataKey="name" tick={{ fontSize: 9 }} width={90} />
@@ -458,8 +442,6 @@ const MerchStoreDetail = () => {
                     </ResponsiveContainer>
                   )}
               </div>
-
-              {/* Style table */}
               <div className="lg:col-span-8 card-white p-5">
                 <SectionTitle
                   title={`All Active Styles — ${selectedStore}`}
@@ -481,8 +463,8 @@ const MerchStoreDetail = () => {
                   )}
               </div>
             </div>
-          </div>
-        )}
+          )
+      )}
     </div>
   );
 };
