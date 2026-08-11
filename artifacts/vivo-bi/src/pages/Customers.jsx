@@ -291,7 +291,7 @@ const Customers = () => {
       ["freq", api.get("/customer-frequency", { params: { date_from: dateFrom, date_to: dateTo, country, channel } }).catch(() => ({ data: [] }))],
       ["byLoc", api.get("/customers-by-location", { params: { date_from: dateFrom, date_to: dateTo, channel } }).catch(() => ({ data: [] }))],
       ["churned", api.get("/churned-customers", {
-        params: { days: churnDays, limit: 500, ...(revealToken ? { reveal: true } : {}) },
+        params: { days: churnDays, limit: 5000, ...(revealToken ? { reveal: true } : {}) },
         ...(revealToken ? { headers: { "X-PII-Reveal-Token": revealToken } } : {}),
       }).catch(() => ({ data: [] }))],
       ["np", api.get("/new-customer-products", { params: { date_from: dateFrom, date_to: dateTo, limit: 20 } }).catch(() => ({ data: [] }))],
@@ -470,7 +470,7 @@ const Customers = () => {
       channel: channels.length ? channels.join(",") : undefined };
     Promise.all([
       api.get("/churned-customers", {
-        params: { days: churnDays, limit: 500, reveal: true },
+        params: { days: churnDays, limit: 5000, reveal: true },
         headers,
       }).catch(() => ({ data: null })),
       api.get("/top-customers", {
@@ -1004,6 +1004,20 @@ const Customers = () => {
                 const el = document.querySelector('[data-testid="top-customers-section"]');
                 if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
               }}}
+            />
+            <KPICard
+              testId="kpi-active-customers"
+              label="Active Customers"
+              sub={cust.churn_source === "computing" ? "computing…" : "purchased in last 90 days · as of today"}
+              formula={
+                "Customers with at least one purchase in the last 90 days (rolling window from today).\n\n" +
+                "This is a global snapshot — independent of the selected date filter.\n\n" +
+                "Includes new and returning customers who are actively buying. " +
+                "The complement of Churned Customers: Active + Churned ≈ all customers ever seen."
+              }
+              value={cust.churn_source === "computing" ? "…" : fmtNum(cust.active_customers_90d || 0)}
+              icon={Users}
+              showDelta={false}
             />
             {(() => {
               // Churn is a GLOBAL, lifetime retention metric computed from full
@@ -2850,13 +2864,20 @@ const Customers = () => {
             const recentChurn = decorated.filter((r) => (r.days_since_last_purchase || 0) <= 30).length;
 
             const CHIPS = [
-              ["all", `All (${decorated.length})`],
-              ["hot", `🔥 Hot (${decorated.filter((r) => r.priority.key === "hot").length})`],
-              ["ex_vip", `Ex-VIP (${decorated.filter((r) => (r.total_orders || 0) >= 5).length})`],
-              ["high_spender", `High spenders (${decorated.filter((r) => (r.lifetime_spend || 0) >= 100000).length})`],
-              ["recent", `Recent 30–60d (${decorated.filter((r) => (r.days_since_last_purchase || 0) <= 60).length})`],
-              ["long", `Long >180d (${decorated.filter((r) => (r.days_since_last_purchase || 0) > 180).length})`],
-              ["contactable", `Contactable (${decorated.filter((r) => r.hasContact).length})`],
+              ["all", `All (${decorated.length})`,
+                "Every churned customer — no purchase in the selected churn window. Use this view for bulk export or campaign planning."],
+              ["hot", `🔥 Hot (${decorated.filter((r) => r.priority.key === "hot").length})`,
+                "Lifetime spend ≥ KES 50k + ≥5 orders + churned ≤60 days ago + has phone. Highest win-back ROI — prioritise for personal outreach by a team member."],
+              ["ex_vip", `Ex-VIP (${decorated.filter((r) => (r.total_orders || 0) >= 5).length})`,
+                "≥5 lifetime orders — were frequent, loyal buyers. Even without recent churn, they know the brand well and respond well to targeted reactivation offers."],
+              ["high_spender", `High Spenders (${decorated.filter((r) => (r.lifetime_spend || 0) >= 100000).length})`,
+                "Lifetime spend ≥ KES 100k. High-value customers worth significant win-back investment — a personalised offer or VIP invite can justify the cost."],
+              ["recent", `Recent 30–60d (${decorated.filter((r) => (r.days_since_last_purchase || 0) <= 60).length})`,
+                "Churned within the last 30–60 days. Still top-of-mind — statistically the highest probability of reactivation with a timely, relevant offer."],
+              ["long", `Long >180d (${decorated.filter((r) => (r.days_since_last_purchase || 0) > 180).length})`,
+                "No purchase in over 180 days. Hardest to reactivate — consider a strong incentive (deep discount, exclusive product) or reclassify as dormant."],
+              ["contactable", `Contactable (${decorated.filter((r) => r.hasContact).length})`,
+                "Has a phone number on file — can be reached by personal call or automated SMS campaign. Customers without contact info can only be reached if they return to a store."],
             ];
 
             const slug = (s) => (s || "all").replace(/[^\w]+/g, "-").toLowerCase();
@@ -2869,7 +2890,7 @@ const Customers = () => {
               <div className="card-white p-5 border-l-4 border-danger" data-testid="churned-customers-section">
                 <div className="flex items-start justify-between gap-3 flex-wrap">
                   <SectionTitle
-                    title={`Reactivation Opportunity · ${fmtNum(decorated.length)}${decorated.length >= 500 ? "+" : ""} Churned Customers`}
+                    title={`Reactivation Opportunity · ${fmtNum(decorated.length)} Churned Customers`}
                     subtitle={`Customers with no purchase in the last ${churnDays} days. Prioritized by reactivation value — target high-LTV / high-frequency / recent-churn segments first for win-back campaigns.`}
                     action={
                       <div className="inline-flex items-center gap-1.5 text-[11.5px] flex-wrap" data-testid="churn-days-filter">
@@ -2896,7 +2917,7 @@ const Customers = () => {
                 {decorated.length > 0 && (
                   <div className="rounded-xl bg-red-50 border border-red-200 text-red-900 p-3.5 text-[12.5px] my-3" data-testid="revenue-at-risk">
                     <div className="flex items-start gap-2 flex-wrap">
-                      <span>📉 <strong>Revenue at Risk:</strong> <span className="num font-bold">{fmtKES(revAtRisk)}</span> in historical LTV from {fmtNum(decorated.length)}{decorated.length >= 500 ? "+" : ""} churned customers.</span>
+                      <span>📉 <strong>Revenue at Risk:</strong> <span className="num font-bold">{fmtKES(revAtRisk)}</span> in historical LTV from {fmtNum(decorated.length)} churned customers.</span>
                     </div>
                     <div className="flex items-start gap-2 mt-1">
                       <span>🎯 <strong>Top 50:</strong> {fmtKES(top50Rev)} ({top50Pct.toFixed(0)}% of churn LTV) — prioritize for personal outreach.</span>
@@ -2908,13 +2929,14 @@ const Customers = () => {
                 )}
 
                 {/* ---- Filter chips ---- */}
-                <div className="flex flex-wrap items-center gap-1.5 mb-3">
-                  {CHIPS.map(([k, label]) => (
+                <div className="flex flex-wrap items-center gap-1.5 mb-1.5">
+                  {CHIPS.map(([k, label, def]) => (
                     <button
                       key={k}
                       type="button"
                       onClick={() => setReactivationChip(k)}
                       data-testid={`reactivation-chip-${k}`}
+                      title={def}
                       className={`px-2.5 py-1 rounded-lg text-[11.5px] font-medium border transition-colors ${
                         reactivationChip === k
                           ? "bg-brand-deep text-white border-brand-deep"
@@ -2925,6 +2947,17 @@ const Customers = () => {
                     </button>
                   ))}
                 </div>
+                {/* Definition for the active chip */}
+                {(() => {
+                  const chip = CHIPS.find(([k]) => k === reactivationChip);
+                  if (!chip || !chip[2]) return null;
+                  return (
+                    <div className="flex items-start gap-1.5 text-[11.5px] text-muted/80 mb-3 px-0.5">
+                      <span className="mt-px shrink-0">ℹ️</span>
+                      <span>{chip[2]}</span>
+                    </div>
+                  );
+                })()}
 
                 {/* Show contacts (password-gated PII reveal) ------------- */}
                 <div className="flex items-center gap-2 mb-3 flex-wrap" data-testid="reveal-contacts-strip">

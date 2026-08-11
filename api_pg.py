@@ -13642,12 +13642,12 @@ def customers_churn_rate():
         rows = run_query("""
             WITH agg AS (
                 SELECT
-                    COUNT(*) FILTER (WHERE last_sale < CURRENT_DATE - INTERVAL '90 days') AS churned_count,
-                    COUNT(*) AS eligible_base
+                    COUNT(*) FILTER (WHERE last_sale <  CURRENT_DATE - INTERVAL '90 days') AS churned_count,
+                    COUNT(*) FILTER (WHERE last_sale >= CURRENT_DATE - INTERVAL '90 days') AS active_count,
+                    COUNT(*) FILTER (WHERE first_sale < CURRENT_DATE - INTERVAL '90 days') AS eligible_base
                 FROM rollup_customer_lifetime
-                WHERE first_sale < CURRENT_DATE - INTERVAL '90 days'
             )
-            SELECT churned_count, eligible_base AS base,
+            SELECT churned_count, active_count, eligible_base AS base,
                 ROUND(churned_count * 100.0 / NULLIF(eligible_base, 0), 2) AS churn_rate
             FROM agg
         """, ttl=HEAVY_DASH_TTL)
@@ -13668,19 +13668,21 @@ def customers_churn_rate():
             ),
             agg AS (
                 SELECT
-                    COUNT(*) FILTER (WHERE last_sale < CURRENT_DATE - INTERVAL '90 days') AS churned_count,
-                    COUNT(*) AS eligible_base
+                    COUNT(*) FILTER (WHERE last_sale <  CURRENT_DATE - INTERVAL '90 days') AS churned_count,
+                    COUNT(*) FILTER (WHERE last_sale >= CURRENT_DATE - INTERVAL '90 days') AS active_count,
+                    COUNT(*) FILTER (WHERE first_sale < CURRENT_DATE - INTERVAL '90 days') AS eligible_base
                 FROM per_customer
-                WHERE first_sale < CURRENT_DATE - INTERVAL '90 days'
             )
-            SELECT churned_count, eligible_base AS base,
+            SELECT churned_count, active_count, eligible_base AS base,
                 ROUND(churned_count * 100.0 / NULLIF(eligible_base, 0), 2) AS churn_rate
             FROM agg
         """, ttl=HEAVY_DASH_TTL)
     if not rows:
-        return {"churn_rate": 0, "churned_count": 0, "churned_customers": 0, "base": 0}
+        return {"churn_rate": 0, "churned_count": 0, "churned_customers": 0,
+                "active_customers_90d": 0, "base": 0}
     r = rows[0]
     r["churned_customers"] = r.get("churned_count")
+    r["active_customers_90d"] = int(r.get("active_count") or 0)
     return r
 
 @app.get("/api/customers/churn-events")
