@@ -313,7 +313,7 @@ const MerchStoreDetail = () => {
               sub={
                 <span>
                   <span>{selectedStore ? "Units on hand right now" : "Total units across all stores"}</span>
-                  <span className="flex flex-wrap gap-x-3 mt-1 text-[10px] opacity-70">
+                  <span className="flex flex-wrap gap-x-3 mt-1 text-[12px]">
                     {displayKPIs.optimal_stock != null && (
                       <span>Optimal: {fmtNum(displayKPIs.optimal_stock)}</span>
                     )}
