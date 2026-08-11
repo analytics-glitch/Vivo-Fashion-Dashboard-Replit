@@ -197,7 +197,7 @@ _SIX_MONTHS_DAYS = 182
 
 
 def _fetch_styles(brand=None, subcategory=None, tier=None, status=None,
-                  from_date=None, to_date=None, country=None):
+                  from_date=None, to_date=None, country=None, pos_location=None):
     today = date.today()
     six_mo_ago = str(today - timedelta(days=_SIX_MONTHS_DAYS))
     today_str  = str(today)
@@ -236,6 +236,16 @@ def _fetch_styles(brand=None, subcategory=None, tier=None, status=None,
         if cl:
             params["countries"] = cl
             country_clause = " AND s.country = ANY(%(countries)s)"
+
+    # POS location filter — narrows store stock and sales to specific locations
+    pos_store_clause = ""  # applied to the stock CTE's soh_stores FILTER
+    pos_sales_clause = ""  # applied to every sales CTE WHERE
+    if pos_location:
+        pl = [p.strip() for p in pos_location.split(",") if p.strip()]
+        if pl:
+            params["pos_locations"] = pl
+            pos_store_clause = " AND i.pos_location_name = ANY(%(pos_locations)s)"
+            pos_sales_clause = " AND s.pos_location_name = ANY(%(pos_locations)s)"
 
     sql = f"""
 WITH
@@ -290,7 +300,9 @@ prod AS (
         mode() WITHIN GROUP (ORDER BY p.price)
             FILTER (WHERE p.price > 0)                    AS full_price,
         BOOL_OR(COALESCE(p.is_noos, FALSE))               AS is_noos,
-        rc.reorder_count
+        rc.reorder_count,
+        COUNT(DISTINCT p.color_print)
+            FILTER (WHERE COALESCE(p.color_print,'') <> '') AS colour_count
     FROM all_products_clean p
     JOIN style_nums sn     ON sn.style_name = p.style_name
     JOIN reorder_counts rc ON rc.style_name = p.style_name
@@ -302,6 +314,7 @@ stock AS (
         COALESCE(m.style_name, i.style_name) AS style_name,
         COALESCE(SUM(i.available) FILTER (
             WHERE i.pos_location_name NOT IN ({_WAREHOUSE_LOCATIONS})
+            {pos_store_clause}
         ), 0) AS soh_stores,
         COALESCE(SUM(i.available) FILTER (
             WHERE i.pos_location_name = 'Warehouse Finished Goods'
@@ -342,6 +355,7 @@ sales_6m AS (
     WHERE s.sale_date BETWEEN %(six_mo_ago)s AND %(today)s
         AND {_BASE_FILTERS}
         {country_clause}
+        {pos_sales_clause}
     GROUP BY p2.style_name
 ),
 sales_period AS (
@@ -358,6 +372,7 @@ sales_period AS (
     WHERE s.sale_date BETWEEN %(period_from)s AND %(period_to)s
         AND {_BASE_FILTERS}
         {country_clause}
+        {pos_sales_clause}
     GROUP BY p2.style_name
 ),
 sales_life AS (
@@ -373,6 +388,7 @@ sales_life AS (
         AND COALESCE(p2.brand,'') NOT ILIKE '%%third party%%'
     WHERE {_BASE_FILTERS}
         {country_clause}
+        {pos_sales_clause}
     GROUP BY p2.style_name
 )
 SELECT
@@ -387,6 +403,7 @@ SELECT
     p.full_price,
     p.is_noos,
     p.reorder_count,
+    p.colour_count,
     COALESCE(st.soh_stores,    0) AS soh_stores,
     COALESCE(st.soh_warehouse, 0) AS soh_warehouse,
     COALESCE(s6.units_6m,    0)   AS units_6m,
@@ -482,6 +499,7 @@ ORDER BY revenue_6m DESC NULLS LAST
             "full_price":          float(r["full_price"]) if r.get("full_price") else None,
             "is_noos":             is_noos,
             "reorder_count":       reorder_count,
+            "colour_count":        int(r.get("colour_count") or 0),
             "soh_stores":          soh_stores,
             "soh_warehouse":       soh_warehouse,
             "current_stock":       current_stock,
@@ -521,6 +539,7 @@ def _compute_summary(styles):
     launched_current = launched_prior = 0
     woc_vals = []; fp_vals = []; sor_vals = []; gm_pct_vals = []
     total_cogs = 0.0; total_gm = 0.0
+    active_styles = 0; active_colour_styles = 0; warehouse_stock = 0
 
     for s in styles:
         st = s["action_status"]
@@ -531,6 +550,12 @@ def _compute_summary(styles):
         total_stock  += s["current_stock"] or 0
         revenue_6m   += s["revenue_6m"] or 0
         units_6m     += s["units_6m"] or 0
+        warehouse_stock += s.get("soh_warehouse") or 0
+
+        is_active = (s.get("odoo_status") or "active").lower() != "retired"
+        if is_active:
+            active_styles += 1
+            active_colour_styles += s.get("colour_count") or 0
 
         if (s["current_stock"] or 0) == 0:   zero_stock  += 1
         if s["last_sale_days"] is not None and s["last_sale_days"] >= 30: no_sale_30d += 1
@@ -556,6 +581,9 @@ def _compute_summary(styles):
     def _avg(lst): return round(sum(lst) / len(lst), 1) if lst else None
     return {
         "total_styles":                 len(styles),
+        "active_styles_count":          active_styles,
+        "active_colour_styles_count":   active_colour_styles,
+        "warehouse_stock_units":        warehouse_stock,
         "on_track_count":               on_track,
         "at_risk_count":                at_risk,
         "overdue_count":                overdue,
@@ -580,7 +608,9 @@ def _compute_summary(styles):
 
 def _empty_summary():
     return {k: None for k in [
-        "total_styles", "on_track_count", "at_risk_count", "overdue_count",
+        "total_styles", "active_styles_count", "active_colour_styles_count",
+        "warehouse_stock_units",
+        "on_track_count", "at_risk_count", "overdue_count",
         "total_stock_units", "revenue_6m", "units_6m", "weekly_velocity",
         "avg_woc", "avg_full_price_pct", "avg_sor_6m", "zero_stock_count",
         "no_sale_30d_count", "woc_lt4_count", "woc_gt20_count",
@@ -1270,95 +1300,104 @@ def register_merch_routes(app, api_pg_module):
 
     @app.get("/api/merch/styles")
     async def merch_styles(
-        request:     Request,
-        brand:       Optional[str] = Query(None),
-        subcategory: Optional[str] = Query(None),
-        tier:        Optional[str] = Query(None),
-        status:      Optional[str] = Query(None),
-        from_date:   Optional[str] = Query(None),
-        to_date:     Optional[str] = Query(None),
-        country:     Optional[str] = Query(None),
+        request:      Request,
+        brand:        Optional[str] = Query(None),
+        subcategory:  Optional[str] = Query(None),
+        tier:         Optional[str] = Query(None),
+        status:       Optional[str] = Query(None),
+        from_date:    Optional[str] = Query(None),
+        to_date:      Optional[str] = Query(None),
+        country:      Optional[str] = Query(None),
+        pos_location: Optional[str] = Query(None),
     ):
         """Full style universe — one row per style with all merchandising metrics."""
-        key = f"merch_styles|{brand}|{subcategory}|{tier}|{status}|{from_date}|{to_date}|{country}"
+        key = f"merch_styles|{brand}|{subcategory}|{tier}|{status}|{from_date}|{to_date}|{country}|{pos_location}"
         result = _cached(key, _TTL, lambda: _fetch_styles(
             brand=brand, subcategory=subcategory, tier=tier, status=status,
-            from_date=from_date, to_date=to_date, country=country,
+            from_date=from_date, to_date=to_date, country=country, pos_location=pos_location,
         ))
         return JSONResponse({"styles": result, "count": len(result)})
 
     @app.get("/api/merch/summary")
     async def merch_summary(
-        request:     Request,
-        brand:       Optional[str] = Query(None),
-        subcategory: Optional[str] = Query(None),
-        tier:        Optional[str] = Query(None),
-        status:      Optional[str] = Query(None),
-        from_date:   Optional[str] = Query(None),
-        to_date:     Optional[str] = Query(None),
-        country:     Optional[str] = Query(None),
+        request:      Request,
+        brand:        Optional[str] = Query(None),
+        subcategory:  Optional[str] = Query(None),
+        tier:         Optional[str] = Query(None),
+        status:       Optional[str] = Query(None),
+        from_date:    Optional[str] = Query(None),
+        to_date:      Optional[str] = Query(None),
+        country:      Optional[str] = Query(None),
+        pos_location: Optional[str] = Query(None),
     ):
         """Portfolio-level aggregates for the Executive Overview KPI band."""
-        key = f"merch_summary|{brand}|{subcategory}|{tier}|{status}|{from_date}|{to_date}|{country}"
+        key = f"merch_summary|{brand}|{subcategory}|{tier}|{status}|{from_date}|{to_date}|{country}|{pos_location}"
         result = _cached(key, _TTL, lambda: _compute_summary(
             _fetch_styles(brand=brand, subcategory=subcategory, tier=tier, status=status,
-                          from_date=from_date, to_date=to_date, country=country)
+                          from_date=from_date, to_date=to_date, country=country,
+                          pos_location=pos_location)
         ))
         return JSONResponse(result)
 
     @app.get("/api/merch/by-brand")
     async def merch_by_brand(
-        request:     Request,
-        brand:       Optional[str] = Query(None),
-        subcategory: Optional[str] = Query(None),
-        tier:        Optional[str] = Query(None),
-        status:      Optional[str] = Query(None),
-        from_date:   Optional[str] = Query(None),
-        to_date:     Optional[str] = Query(None),
-        country:     Optional[str] = Query(None),
+        request:      Request,
+        brand:        Optional[str] = Query(None),
+        subcategory:  Optional[str] = Query(None),
+        tier:         Optional[str] = Query(None),
+        status:       Optional[str] = Query(None),
+        from_date:    Optional[str] = Query(None),
+        to_date:      Optional[str] = Query(None),
+        country:      Optional[str] = Query(None),
+        pos_location: Optional[str] = Query(None),
     ):
-        key = f"merch_by_brand|{brand}|{subcategory}|{tier}|{status}|{from_date}|{to_date}|{country}"
+        key = f"merch_by_brand|{brand}|{subcategory}|{tier}|{status}|{from_date}|{to_date}|{country}|{pos_location}"
         result = _cached(key, _TTL, lambda: _agg_by_dim(
             _fetch_styles(brand=brand, subcategory=subcategory, tier=tier, status=status,
-                          from_date=from_date, to_date=to_date, country=country),
+                          from_date=from_date, to_date=to_date, country=country,
+                          pos_location=pos_location),
             "brand",
         ))
         return JSONResponse({"rows": result})
 
     @app.get("/api/merch/by-subcategory")
     async def merch_by_subcategory(
-        request:     Request,
-        brand:       Optional[str] = Query(None),
-        subcategory: Optional[str] = Query(None),
-        tier:        Optional[str] = Query(None),
-        status:      Optional[str] = Query(None),
-        from_date:   Optional[str] = Query(None),
-        to_date:     Optional[str] = Query(None),
-        country:     Optional[str] = Query(None),
+        request:      Request,
+        brand:        Optional[str] = Query(None),
+        subcategory:  Optional[str] = Query(None),
+        tier:         Optional[str] = Query(None),
+        status:       Optional[str] = Query(None),
+        from_date:    Optional[str] = Query(None),
+        to_date:      Optional[str] = Query(None),
+        country:      Optional[str] = Query(None),
+        pos_location: Optional[str] = Query(None),
     ):
-        key = f"merch_by_sub|{brand}|{subcategory}|{tier}|{status}|{from_date}|{to_date}|{country}"
+        key = f"merch_by_sub|{brand}|{subcategory}|{tier}|{status}|{from_date}|{to_date}|{country}|{pos_location}"
         result = _cached(key, _TTL, lambda: _agg_by_dim(
             _fetch_styles(brand=brand, subcategory=subcategory, tier=tier, status=status,
-                          from_date=from_date, to_date=to_date, country=country),
+                          from_date=from_date, to_date=to_date, country=country,
+                          pos_location=pos_location),
             "subcategory",
         ))
         return JSONResponse({"rows": result})
 
     @app.get("/api/merch/by-tier")
     async def merch_by_tier(
-        request:     Request,
-        brand:       Optional[str] = Query(None),
-        subcategory: Optional[str] = Query(None),
-        tier:        Optional[str] = Query(None),
-        status:      Optional[str] = Query(None),
-        from_date:   Optional[str] = Query(None),
-        to_date:     Optional[str] = Query(None),
-        country:     Optional[str] = Query(None),
+        request:      Request,
+        brand:        Optional[str] = Query(None),
+        subcategory:  Optional[str] = Query(None),
+        tier:         Optional[str] = Query(None),
+        status:       Optional[str] = Query(None),
+        from_date:    Optional[str] = Query(None),
+        to_date:      Optional[str] = Query(None),
+        country:      Optional[str] = Query(None),
+        pos_location: Optional[str] = Query(None),
     ):
-        key = f"merch_by_tier|{brand}|{subcategory}|{tier}|{status}|{from_date}|{to_date}|{country}"
+        key = f"merch_by_tier|{brand}|{subcategory}|{tier}|{status}|{from_date}|{to_date}|{country}|{pos_location}"
         result = _cached(key, _TTL, lambda: _agg_by_dim(
             _fetch_styles(brand=brand, subcategory=subcategory, tier=tier, status=status,
-                          from_date=from_date, to_date=to_date, country=country),
+                          from_date=from_date, to_date=to_date, country=country,
+                          pos_location=pos_location),
             "tier",
         ))
         return JSONResponse({"rows": result})

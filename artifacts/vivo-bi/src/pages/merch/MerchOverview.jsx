@@ -24,6 +24,7 @@ import {
   useMerchData, MerchKPICard, ChartCard,
   C, fmtKESM, fmtPct1, fmtNum, fmtAxisM,
 } from "./MerchHelpers";
+import { useMerchFilters } from "@/pages/MerchandisingHub";
 
 // ── Tooltips ──────────────────────────────────────────────────────────────────
 const KesTooltip = ({ active, payload, label }) => {
@@ -68,6 +69,7 @@ const WOC_BUCKET_COLORS = [C.green, "#60a5fa", C.amber, C.amber, C.red];
 const FP_BUCKET_COLORS = [C.red, C.amber, C.blue, C.green];
 
 export default function MerchOverview() {
+  const filters = useMerchFilters();
   const { summary, styles, byBrand, bySubcategory, byTier, loading, error } =
     useMerchData(["summary", "styles", "by-brand", "by-subcategory", "by-tier"]);
 
@@ -168,51 +170,87 @@ export default function MerchOverview() {
   const atRiskPct = s.total_styles ? ((s.at_risk_count || 0) / s.total_styles * 100).toFixed(1) : "0";
   const avgRevPerStyle = s.total_styles ? s.revenue_6m / s.total_styles : 0;
 
+  // Build subtitle from active filters
+  const fmtDate = (d) => d ? new Date(d).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }) : null;
+  const dateLabel = filters.from_date
+    ? (filters.from_date === filters.to_date
+        ? fmtDate(filters.from_date)
+        : `${fmtDate(filters.from_date)} – ${fmtDate(filters.to_date)}`)
+    : "Last 6 months";
+  const locationLabel = filters.pos_location
+    ? filters.pos_location.split(",").length === 1
+      ? filters.pos_location
+      : `${filters.pos_location.split(",").length} locations`
+    : filters.country
+      ? filters.country.split(",").join(", ")
+      : "All Locations";
+
   return (
     <div className="space-y-5 pb-8">
       <div className="text-[11px] text-slate-400">
-        Active Styles Portfolio · Brand: All · Status: All
+        Active Styles Portfolio · {dateLabel} · {locationLabel}
       </div>
 
       {/* ── KPI cards ── */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-8 gap-3">
         <MerchKPICard
-          label="Total Styles"
-          value={fmtNum(s.total_styles)}
-          sub={`On Track: ${fmtNum(s.on_track_count)} (${s.total_styles ? Math.round((s.on_track_count || 0) / s.total_styles * 100) : 0}%)`}
-          sub2={`At Risk: ${fmtNum(s.at_risk_count)} (${atRiskPct}%)`}
+          label="Active Styles"
+          value={fmtNum(s.active_styles_count)}
+          sub={`Total incl. Retired: ${fmtNum(s.total_styles)}`}
           accentColor={C.blue}
-          testId="merch-kpi-styles"
+          testId="merch-kpi-active-styles"
+        />
+        <MerchKPICard
+          label="Active Colour Styles"
+          value={fmtNum(s.active_colour_styles_count)}
+          sub="Distinct style × colour"
+          accentColor={C.teal}
+          testId="merch-kpi-colour-styles"
+        />
+        <MerchKPICard
+          label="Warehouse Units"
+          value={fmtNum(s.warehouse_stock_units)}
+          sub="Warehouse Finished Goods"
+          accentColor={C.purple}
+          testId="merch-kpi-warehouse"
         />
         <MerchKPICard
           label="Total Stock Units"
           value={fmtNum(s.total_stock_units)}
           sub={`WOC > 20: ${fmtNum(s.woc_gt20_count)} styles`}
-          accentColor={C.teal}
+          accentColor="#0891b2"
           testId="merch-kpi-stock"
         />
         <MerchKPICard
-          label="Revenue (6m)"
+          label="Style Health"
+          value={fmtNum(s.on_track_count)}
+          sub={`On Track (${s.total_styles ? Math.round((s.on_track_count || 0) / s.total_styles * 100) : 0}%)`}
+          sub2={`At Risk: ${fmtNum(s.at_risk_count)} (${atRiskPct}%)`}
+          accentColor={C.green}
+          testId="merch-kpi-styles"
+        />
+        <MerchKPICard
+          label="Revenue (period)"
           value={fmtKESM(s.revenue_6m)}
           sub="Avg per Style"
           sub2={fmtKESM(avgRevPerStyle)}
-          accentColor={C.green}
+          accentColor="#16a34a"
           testId="merch-kpi-revenue"
         />
         <MerchKPICard
-          label="Units Sold (6m)"
+          label="Units Sold (period)"
           value={fmtNum(s.units_6m)}
           sub="Weekly Vel."
           sub2={`${fmtNum(s.weekly_velocity)} /wk`}
-          accentColor={C.purple}
+          accentColor={C.amber}
           testId="merch-kpi-units"
         />
         <MerchKPICard
           label="Avg Full Price %"
           value={fmtPct1(s.avg_full_price_pct)}
-          sub="Avg SOR (6m)"
+          sub="Avg SOR (period)"
           sub2={fmtPct1(s.avg_sor_6m)}
-          accentColor={C.amber}
+          accentColor={C.red}
           testId="merch-kpi-fp"
         />
       </div>

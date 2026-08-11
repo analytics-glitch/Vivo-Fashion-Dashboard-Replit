@@ -109,9 +109,10 @@ export const useMerchData = (endpoints = []) => {
   const [state, setState] = useState({ loading: true, error: null });
 
   const params = {};
-  if (filters.from_date) params.from_date = filters.from_date;
-  if (filters.to_date)   params.to_date   = filters.to_date;
-  if (filters.country)   params.country   = filters.country;
+  if (filters.from_date)    params.from_date    = filters.from_date;
+  if (filters.to_date)      params.to_date      = filters.to_date;
+  if (filters.country)      params.country      = filters.country;
+  if (filters.pos_location) params.pos_location = filters.pos_location;
 
   // Stable serialisation for the dep array
   const paramsKey = JSON.stringify(params) + filters.dataVersion;

@@ -118,15 +118,16 @@ const MerchandisingHub = () => {
 
   // ── Global filter bar — published down to tab components ─────────────────
   const { applied } = useFilters();
-  const { dateFrom, dateTo, countries, dataVersion } = applied;
+  const { dateFrom, dateTo, countries, channels, dataVersion } = applied;
 
   // Normalise filter values into the shapes /api/merch/* expects
   const merchFilters = useMemo(() => ({
-    from_date: dateFrom || undefined,
-    to_date:   dateTo   || undefined,
-    country:   countries && countries.length ? countries.join(",") : undefined,
+    from_date:    dateFrom || undefined,
+    to_date:      dateTo   || undefined,
+    country:      countries && countries.length ? countries.join(",") : undefined,
+    pos_location: channels && channels.length  ? channels.join(",")  : undefined,
     dataVersion,   // bump triggers re-fetch in tab components
-  }), [dateFrom, dateTo, countries, dataVersion]);
+  }), [dateFrom, dateTo, countries, channels, dataVersion]);
 
   // ── Tab selection ─────────────────────────────────────────────────────────
   const visibleTabs = MERCH_TABS.filter((t) => canAccessPage(user, t.pageId));
