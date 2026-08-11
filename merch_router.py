@@ -1213,9 +1213,11 @@ store_sales_cmp AS (
         COALESCE(SUM(s.ordered_item_quantity) FILTER (
             WHERE s.sale_kind IN ('sale','order')
         ), 0)                                            AS units_cmp,
-        COALESCE(SUM(CASE WHEN s.sale_kind IN ('sale','order')
-                         THEN s.total_sales_kes::numeric ELSE 0 END
-        ), 0.0)                                          AS revenue_cmp
+        COALESCE(
+            SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric    ELSE 0 END)
+          - SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN COALESCE(s.discounts_kes,0)::numeric ELSE 0 END)
+          - SUM(CASE WHEN s.sale_kind = 'return'          THEN COALESCE(s.returns_kes,0)::numeric   ELSE 0 END)
+        , 0.0)                                           AS revenue_cmp
     FROM all_sales s
     WHERE s.sale_date BETWEEN %(compare_from)s AND %(compare_to)s
         AND {_BASE_FILTERS}
@@ -1265,9 +1267,11 @@ store_sales AS (
         COALESCE(SUM(s.ordered_item_quantity) FILTER (
             WHERE s.sale_kind IN ('sale','order')
         ), 0)                                            AS units_3m,
-        COALESCE(SUM(CASE WHEN s.sale_kind IN ('sale','order')
-                         THEN s.total_sales_kes::numeric ELSE 0 END), 0.0)
-                                                         AS revenue_3m
+        COALESCE(
+            SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric    ELSE 0 END)
+          - SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN COALESCE(s.discounts_kes,0)::numeric ELSE 0 END)
+          - SUM(CASE WHEN s.sale_kind = 'return'          THEN COALESCE(s.returns_kes,0)::numeric   ELSE 0 END)
+        , 0.0)                                           AS revenue_3m
     FROM all_sales s
     LEFT JOIN all_products_clean p ON p.sku = s.variant_sku
     WHERE s.sale_date BETWEEN %(period_from)s AND %(period_to)s

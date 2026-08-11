@@ -325,7 +325,7 @@ const MerchStoreDetail = () => {
     { key: "subcategory",  label: "Category",     sortable: true },
     { key: "tier",         label: "Tier",          sortable: true,
       render: r => <span className="text-[11px]">{r.tier || "—"}</span> },
-    { key: "revenue_6m",   label: "Revenue",      sortable: true, numeric: true,
+    { key: "revenue_6m",   label: "Total Sales",  sortable: true, numeric: true,
       render: r => fmtKES(r.revenue_6m) },
     { key: "units_6m",     label: "Units Sold",   sortable: true, numeric: true,
       render: r => fmtNum(r.units_6m) },
@@ -379,13 +379,13 @@ const MerchStoreDetail = () => {
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
 
             {/* ── Revenue & Units ── always first ───────────────────────── */}
-            <KPICard label="Gross Revenue"
+            <KPICard label="Total Sales"
               value={totalRevenue != null ? fmtKES(totalRevenue) : "—"}
               valueFull={totalRevenue != null ? fmtKESLong(totalRevenue) : undefined}
               showDelta={false}
               sub={
                 <span>
-                  <span>Gross revenue incl. VAT · {displayRange}</span>
+                  <span>Net of discounts & returns · {displayRange}</span>
                   {totalRevenue != null && (
                     <span className="block mt-1 text-[14px] font-semibold">
                       Avg {fmtKES(Math.round(totalRevenue / numMonths))} / month
@@ -498,11 +498,11 @@ const MerchStoreDetail = () => {
               }
               icon={Package} showDelta={false} testId="sd-actual-stock" />
 
-            <KPICard label="Gross Revenue / Sq Ft"
+            <KPICard label="Total Sales / Sq Ft"
               value={revPerSqft != null ? fmtKESLong(revPerSqft) : "—"}
               sub={
                 <span>
-                  <span>Total gross revenue per sq ft · {displayRange}</span>
+                  <span>Net sales per sq ft · {displayRange}</span>
                   {selectedStore && avgRevPerSqftAllStores != null && (
                     <span className="block mt-1 text-[14px] font-semibold">
                       All-store avg {fmtKESLong(avgRevPerSqftAllStores)}
