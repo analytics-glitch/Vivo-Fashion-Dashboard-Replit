@@ -796,10 +796,11 @@ _VIEWER_PAGES = ["overview", "exec-summary", "locations", "footfall", "trend-ana
 # it lives in _LEADERSHIP_PAGES below (and therefore in ALL_PAGE_IDS, so admins
 # can also grant it to other groups via Group Access). The server-side
 # /api/finance gate independently restricts the API to leadership + admin.
-_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "quarter-scorecard", "product-analysis", "range-mgmt", "size-health", "inventory", "warehouse-returns", "excess-inventory", "rebalancing", "store-flow", "marketing", "social", "crm", "order-explorer", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "style-tracker", "pd-flow", "partner-brands", "finance", "margin", "l10", "rota", "growth", "retail-desk", "product-desk", "workforce-desk", "customer-desk", "marketing-desk", "supply-chain-desk", "production-desk", "the-chair", "quality", "store-profiling", "store-feedback"])
+_MERCH_PAGES = ["merchandising", "merch-overview", "merch-sales", "merch-inventory", "merch-sellthrough", "merch-category", "merch-lifecycle", "merch-atrisk", "merch-replen", "merch-financial", "merch-arrivals", "merch-deepdive", "merch-store"]
+_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "quarter-scorecard", "product-analysis", "range-mgmt", "size-health", "inventory", "warehouse-returns", "excess-inventory", "rebalancing", "store-flow", "marketing", "social", "crm", "order-explorer", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "style-tracker", "pd-flow", "partner-brands", "finance", "margin", "l10", "rota", "growth", "retail-desk", "product-desk", "workforce-desk", "customer-desk", "marketing-desk", "supply-chain-desk", "production-desk", "the-chair", "quality", "store-profiling", "store-feedback"] + _MERCH_PAGES)
 
 DEFAULT_ROLE_PAGES = {
-    "product_development": ["product-analysis", "range-mgmt", "catalogue", "gallery", "inventory", "size-health", "data-quality", "fabric", "exports", "production", "production-report", "style-tracker", "pd-flow", "partner-brands", "sops"],
+    "product_development": ["product-analysis", "range-mgmt", "catalogue", "gallery", "inventory", "size-health", "data-quality", "fabric", "exports", "production", "production-report", "style-tracker", "pd-flow", "partner-brands", "sops"] + _MERCH_PAGES,
     "retail": ["store-flow", "overview", "exec-summary", "locations", "footfall", "store-profiling", "trend-analysis", "customers", "product-analysis", "gallery", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "exports", "partner-brands", "sops", "ask", "store-feedback"],
     "warehouse": ["store-flow", "inventory", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "re-order", "allocations", "data-quality", "exports", "sops"],
     "store_manager": ["overview", "store-flow", "locations", "footfall", "store-profiling", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "sops", "store-feedback"],
@@ -1605,6 +1606,10 @@ async def clerk_auth_gate(request: Request, call_next):
     # Growth Model (/api/growth/*) is a leadership + admin surface.
     if path.startswith("/api/growth") and user.get("role") not in ("admin", "leadership"):
         return JSONResponse({"detail": "Growth Model access requires a leadership or admin role"}, status_code=403)
+
+    # Merchandising Hub (/api/merch/*) — product_development, leadership, smt, admin.
+    if path.startswith("/api/merch") and user.get("role") not in ("admin", "leadership", "smt", "product_development"):
+        return JSONResponse({"detail": "Merchandising access requires a product development, leadership, SMT or admin role"}, status_code=403)
 
     # IBT Done Report mirrors the completed-moves UI gate (admin + leadership).
     if path.startswith("/api/ibt/done-report") and user.get("role") not in ("admin", "leadership"):
@@ -37477,6 +37482,11 @@ import production_desk_router
 production_desk_router.register_production_desk_routes(app, _sys.modules[__name__])
 import chair_router
 chair_router.register_chair_routes(app, _sys.modules[__name__])
+
+# Merchandising Hub endpoints (/api/merch/*). Gated to product_development,
+# leadership, smt and admin in clerk_auth_gate.
+import merch_router
+merch_router.register_merch_routes(app, _sys.modules[__name__])
 
 
 @_deferred_startup

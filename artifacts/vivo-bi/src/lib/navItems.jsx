@@ -89,6 +89,25 @@ export const PRIMARY_NAV = [
       { pageId: "size-health",       label: "Size Health" },
     ],
   },
+  {
+    to: "/merchandising", label: "Merchandising", icon: Tag, id: "merchandising",
+    anyOfPageIds: ["merch-overview", "merch-sales", "merch-inventory", "merch-sellthrough", "merch-category", "merch-lifecycle", "merch-atrisk", "merch-replen", "merch-financial", "merch-arrivals", "merch-deepdive", "merch-store"],
+    group: "Products & Range", desc: "Merchandising hub — portfolio health, sales performance, inventory, markdown, category strategy, lifecycle, at-risk actions, replenishment, financials, new arrivals, and style deep dive",
+    subReports: [
+      { pageId: "merch-overview",    label: "Executive Overview" },
+      { pageId: "merch-sales",       label: "Sales Performance" },
+      { pageId: "merch-inventory",   label: "Inventory & Stock Health" },
+      { pageId: "merch-sellthrough", label: "Sell-Through & Markdown" },
+      { pageId: "merch-category",    label: "Category Performance" },
+      { pageId: "merch-lifecycle",   label: "Style Lifecycle & Age" },
+      { pageId: "merch-atrisk",      label: "At-Risk & Actions" },
+      { pageId: "merch-replen",      label: "Replenishment Planning" },
+      { pageId: "merch-financial",   label: "Financial Performance" },
+      { pageId: "merch-arrivals",    label: "New Arrivals & Pipeline" },
+      { pageId: "merch-deepdive",    label: "Style Deep Dive" },
+      { pageId: "merch-store",       label: "Store Detail" },
+    ],
+  },
   { to: "/fabric", label: "Fabric", icon: ChartBar, id: "fabric", external: true, group: "Products & Range", desc: "Standalone Fabric BI dashboard (opens full-page)" },
 
   // Retail pages
