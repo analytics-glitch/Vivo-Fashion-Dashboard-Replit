@@ -103,10 +103,11 @@ const MerchStoreDetail = () => {
   useEffect(() => {
     let cancelled = false;
     setStoreListLoading(true);
+    // Revenue (6m) must always be the trailing 180-day window — do NOT pass
+    // from_date/to_date here so the backend uses its own six_mo_ago default.
+    // Country, brand and subcategory still narrow the scope correctly.
     apiFetch("/merch/by-store", {
       params: {
-        from_date:   filters.from_date,
-        to_date:     filters.to_date,
         country:     filters.country,
         brand:       filters.brand,
         subcategory: filters.subcategory,
@@ -116,7 +117,7 @@ const MerchStoreDetail = () => {
       .catch(() => { if (!cancelled) setAllStores([]); })
       .finally(() => { if (!cancelled) setStoreListLoading(false); });
     return () => { cancelled = true; };
-  }, [filters.from_date, filters.to_date, filters.country, filters.brand, filters.subcategory, filters.dataVersion]);
+  }, [filters.country, filters.brand, filters.subcategory, filters.dataVersion]);
 
   // Load styles for the selected store
   useEffect(() => {
