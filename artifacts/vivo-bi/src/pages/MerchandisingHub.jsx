@@ -84,6 +84,7 @@ const PlaceholderTab = ({ name }) => (
 // Each entry: { id, label, pageId, el }
 // All start as PlaceholderTab; swap in real implementations as tasks land.
 
+// ── Merch-native tab components ───────────────────────────────────────────────
 const MerchandisingOverview    = React.lazy(() => import("./merch/MerchOverview"));
 const MerchandisingSales       = React.lazy(() => import("./merch/MerchSales"));
 const MerchandisingInventory   = React.lazy(() => import("./merch/MerchInventory"));
@@ -97,19 +98,45 @@ const MerchandisingArrivals    = React.lazy(() => import("./MerchArrivals"));
 const MerchandisingDeepDive    = React.lazy(() => import("./MerchDeepDive"));
 const MerchandisingStore       = React.lazy(() => import("./MerchStoreCockpit"));
 
+// ── Product-development pages embedded as hub tabs ───────────────────────────
+const PdStyleCockpit    = React.lazy(() => import("./ProductAnalysis"));
+const PdRangeMgmt       = React.lazy(() => import("./RangeManagement"));
+const PdStyleTracker    = React.lazy(() => import("./StyleTracker"));
+const PdSORReport       = React.lazy(() => import("./Exports"));
+const PdAllocations     = React.lazy(() => import("./Allocations"));
+const PdReOrder         = React.lazy(() => import("./ReOrder"));
+const PdProductCat      = React.lazy(() => import("./ProductCatalogue"));
+const PdFlow            = React.lazy(() => import("./PDFlow"));
+
 const MERCH_TABS = [
-  { id: "merch-overview",    label: "Executive Overview",       pageId: "merch-overview",    el: MerchandisingOverview },
-  { id: "merch-sales",       label: "Sales Performance",        pageId: "merch-sales",       el: MerchandisingSales },
-  { id: "merch-inventory",   label: "Inventory & Stock Health", pageId: "merch-inventory",   el: MerchandisingInventory },
-  { id: "merch-sellthrough", label: "Sell-Through & Markdown",  pageId: "merch-sellthrough", el: MerchandisingSellThrough },
-  { id: "merch-category",    label: "Category Performance",     pageId: "merch-category",    el: MerchandisingCategory },
-  { id: "merch-lifecycle",   label: "Style Lifecycle & Age",    pageId: "merch-lifecycle",   el: MerchandisingLifecycle },
-  { id: "merch-atrisk",      label: "At-Risk & Actions",        pageId: "merch-atrisk",      el: MerchandisingAtRisk },
-  { id: "merch-replen",      label: "Replenishment Planning",   pageId: "merch-replen",      el: MerchandisingReplen },
-  { id: "merch-financial",   label: "Financial Performance",    pageId: "merch-financial",   el: MerchandisingFinancial },
-  { id: "merch-arrivals",    label: "New Arrivals & Pipeline",  pageId: "merch-arrivals",    el: MerchandisingArrivals },
-  { id: "merch-deepdive",    label: "Style Deep Dive",          pageId: "merch-deepdive",    el: MerchandisingDeepDive },
-  { id: "merch-store",       label: "Store Detail",             pageId: "merch-store",       el: MerchandisingStore },
+  // ── 1. Overview ───────────────────────────────────────────────────────────
+  { id: "merch-overview",      label: "Overview",               pageId: "merch-overview",    el: MerchandisingOverview },
+
+  // ── 2–12. Product Development sections ───────────────────────────────────
+  { id: "pd-style-cockpit",    label: "Style Cockpit",          pageId: "product-analysis",  el: PdStyleCockpit },
+  { id: "pd-range-mgmt",       label: "Range Management",       pageId: "range-mgmt",        el: PdRangeMgmt },
+  { id: "pd-style-tracker",    label: "Weekly Style Tracker",   pageId: "style-tracker",     el: PdStyleTracker },
+  { id: "pd-catalog-sor",      label: "Catalog & SOR",          pageId: "product-analysis",  el: () => <PlaceholderTab name="Catalog & SOR" /> },
+  { id: "pd-sor-report",       label: "SOR Report",             pageId: "exports",           el: PdSORReport },
+  { id: "pd-sor-new",          label: "SOR New Styles",         pageId: "product-analysis",  el: () => <PlaceholderTab name="SOR New Styles" /> },
+  { id: "pd-retired-stock",    label: "Retired Stock",          pageId: "product-analysis",  el: () => <PlaceholderTab name="Retired Stock" /> },
+  { id: "pd-allocations",      label: "Allocations",            pageId: "allocations",       el: PdAllocations },
+  { id: "pd-reorder",          label: "Re-Order",               pageId: "re-order",          el: PdReOrder },
+  { id: "pd-product-cat",      label: "Product Catalogue",      pageId: "gallery",           el: PdProductCat },
+  { id: "pd-flow",             label: "PDFlow",                 pageId: "pd-flow",           el: PdFlow },
+
+  // ── Merch-native deep-dive tabs ───────────────────────────────────────────
+  { id: "merch-sales",         label: "Sales Performance",      pageId: "merch-sales",       el: MerchandisingSales },
+  { id: "merch-inventory",     label: "Inventory & Stock Health",pageId: "merch-inventory",  el: MerchandisingInventory },
+  { id: "merch-sellthrough",   label: "Sell-Through & Markdown",pageId: "merch-sellthrough", el: MerchandisingSellThrough },
+  { id: "merch-category",      label: "Category Performance",   pageId: "merch-category",    el: MerchandisingCategory },
+  { id: "merch-lifecycle",     label: "Style Lifecycle & Age",  pageId: "merch-lifecycle",   el: MerchandisingLifecycle },
+  { id: "merch-atrisk",        label: "At-Risk & Actions",      pageId: "merch-atrisk",      el: MerchandisingAtRisk },
+  { id: "merch-replen",        label: "Replenishment Planning", pageId: "merch-replen",      el: MerchandisingReplen },
+  { id: "merch-financial",     label: "Financial Performance",  pageId: "merch-financial",   el: MerchandisingFinancial },
+  { id: "merch-arrivals",      label: "New Arrivals & Pipeline",pageId: "merch-arrivals",    el: MerchandisingArrivals },
+  { id: "merch-deepdive",      label: "Style Deep Dive",        pageId: "merch-deepdive",    el: MerchandisingDeepDive },
+  { id: "merch-store",         label: "Store Detail",           pageId: "merch-store",       el: MerchandisingStore },
 ];
 
 // ── Hub shell ─────────────────────────────────────────────────────────────────
