@@ -246,12 +246,26 @@ def _fetch_styles(brand=None, subcategory=None, tier=None, status=None,
     # POS location filter — narrows store stock and sales to specific locations
     pos_store_clause = ""  # applied to the stock CTE's soh_stores FILTER
     pos_sales_clause = ""  # applied to every sales CTE WHERE
+    # When a specific POS location is selected, warehouse stock doesn't belong to
+    # that store, so soh_warehouse is forced to 0 to avoid inflating the total.
+    pos_has_filter = False
     if pos_location:
         pl = [p.strip() for p in pos_location.split(",") if p.strip()]
         if pl:
             params["pos_locations"] = pl
             pos_store_clause = " AND i.pos_location_name = ANY(%(pos_locations)s)"
             pos_sales_clause = " AND s.pos_location_name = ANY(%(pos_locations)s)"
+            pos_has_filter   = True
+
+    # soh_warehouse expression — 0 when a POS location filter is active, full
+    # warehouse aggregate otherwise.
+    soh_warehouse_expr = (
+        "0"
+        if pos_has_filter else
+        f"COALESCE(SUM(i.available) FILTER ("
+        f"WHERE i.pos_location_name = 'Warehouse Finished Goods'"
+        f"), 0)"
+    )
 
     sql = f"""
 WITH
@@ -323,9 +337,7 @@ stock AS (
             WHERE i.pos_location_name NOT IN ({_WAREHOUSE_LOCATIONS})
             {pos_store_clause}
         ), 0) AS soh_stores,
-        COALESCE(SUM(i.available) FILTER (
-            WHERE i.pos_location_name = 'Warehouse Finished Goods'
-        ), 0) AS soh_warehouse
+        {soh_warehouse_expr} AS soh_warehouse
     FROM all_inventory i
     LEFT JOIN (
         SELECT DISTINCT sku,
@@ -542,6 +554,7 @@ def _compute_summary(styles):
     today = date.today()
     on_track = at_risk = overdue = 0
     total_stock = revenue_6m = units_6m = 0
+    revenue_period = units_period = 0
     zero_stock = no_sale_30d = woc_lt4 = woc_gt20 = 0
     launched_current = launched_prior = 0
     woc_vals = []; fp_vals = []; sor_vals = []; gm_pct_vals = []
@@ -559,9 +572,11 @@ def _compute_summary(styles):
         elif st == "at_risk":   at_risk  += 1
         elif st == "overdue":   overdue  += 1
 
-        total_stock  += s["current_stock"] or 0
-        revenue_6m   += s["revenue_6m"] or 0
-        units_6m     += s["units_6m"] or 0
+        total_stock    += s["current_stock"] or 0
+        revenue_6m     += s["revenue_6m"] or 0
+        units_6m       += s["units_6m"] or 0
+        revenue_period += s.get("revenue_period") or 0
+        units_period   += s.get("units_period") or 0
         warehouse_stock += s.get("soh_warehouse") or 0
 
         # Mirror Range Management classify's universe:
@@ -610,6 +625,8 @@ def _compute_summary(styles):
         "total_stock_units":            total_stock,
         "revenue_6m":                   round(revenue_6m, 0),
         "units_6m":                     units_6m,
+        "revenue_period":               round(revenue_period, 0),
+        "units_period":                 units_period,
         "weekly_velocity":              round(units_6m / 26.0, 1) if units_6m else 0,
         "avg_woc":                      _avg(woc_vals),
         "avg_full_price_pct":           _avg(fp_vals),
@@ -631,7 +648,7 @@ def _empty_summary():
         "total_styles", "active_styles_count", "active_colour_styles_count",
         "warehouse_stock_units",
         "on_track_count", "at_risk_count", "overdue_count",
-        "total_stock_units", "revenue_6m", "units_6m", "weekly_velocity",
+        "total_stock_units", "revenue_6m", "units_6m", "revenue_period", "units_period", "weekly_velocity",
         "avg_woc", "avg_full_price_pct", "avg_sor_6m", "zero_stock_count",
         "no_sale_30d_count", "woc_lt4_count", "woc_gt20_count",
         "styles_launched_current_year", "styles_launched_prior_year",

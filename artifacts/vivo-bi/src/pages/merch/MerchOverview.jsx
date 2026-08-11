@@ -168,7 +168,7 @@ export default function MerchOverview() {
 
   const s = summary || {};
   const atRiskPct = s.total_styles ? ((s.at_risk_count || 0) / s.total_styles * 100).toFixed(1) : "0";
-  const avgRevPerStyle = s.total_styles ? s.revenue_6m / s.total_styles : 0;
+  const avgRevPerStyle = s.total_styles ? (s.revenue_period ?? s.revenue_6m) / s.total_styles : 0;
 
   // Build subtitle from active filters
   const fmtDate = (d) => d ? new Date(d).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }) : null;
@@ -231,7 +231,7 @@ export default function MerchOverview() {
         />
         <MerchKPICard
           label="Revenue (period)"
-          value={fmtKESM(s.revenue_6m)}
+          value={fmtKESM(s.revenue_period ?? s.revenue_6m)}
           sub="Avg per Style"
           sub2={fmtKESM(avgRevPerStyle)}
           accentColor="#16a34a"
@@ -239,8 +239,8 @@ export default function MerchOverview() {
         />
         <MerchKPICard
           label="Units Sold (period)"
-          value={fmtNum(s.units_6m)}
-          sub="Weekly Vel."
+          value={fmtNum(s.units_period ?? s.units_6m)}
+          sub="Trailing 6m Vel."
           sub2={`${fmtNum(s.weekly_velocity)} /wk`}
           accentColor={C.amber}
           testId="merch-kpi-units"
