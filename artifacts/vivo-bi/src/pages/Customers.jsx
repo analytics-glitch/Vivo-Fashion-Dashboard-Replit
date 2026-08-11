@@ -291,7 +291,7 @@ const Customers = () => {
       ["freq", api.get("/customer-frequency", { params: { date_from: dateFrom, date_to: dateTo, country, channel } }).catch(() => ({ data: [] }))],
       ["byLoc", api.get("/customers-by-location", { params: { date_from: dateFrom, date_to: dateTo, channel } }).catch(() => ({ data: [] }))],
       ["churned", api.get("/churned-customers", {
-        params: { days: churnDays, limit: 5000, ...(revealToken ? { reveal: true } : {}) },
+        params: { days: churnDays, ...(revealToken ? { reveal: true } : {}) },
         ...(revealToken ? { headers: { "X-PII-Reveal-Token": revealToken } } : {}),
       }).catch(() => ({ data: [] }))],
       ["np", api.get("/new-customer-products", { params: { date_from: dateFrom, date_to: dateTo, limit: 20 } }).catch(() => ({ data: [] }))],
@@ -470,7 +470,7 @@ const Customers = () => {
       channel: channels.length ? channels.join(",") : undefined };
     Promise.all([
       api.get("/churned-customers", {
-        params: { days: churnDays, limit: 5000, reveal: true },
+        params: { days: churnDays, reveal: true },
         headers,
       }).catch(() => ({ data: null })),
       api.get("/top-customers", {

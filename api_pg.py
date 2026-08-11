@@ -7335,7 +7335,6 @@ def get_customers_by_location(
 def get_churned_customers(
     request: Request,
     days:  int = Query(default=90),
-    limit: int = Query(default=20),
     reveal: bool = Query(default=False),
 ):
     rows = run_query("""
@@ -7361,8 +7360,7 @@ def get_churned_customers(
         FROM last_purchase lp
         LEFT JOIN all_customers c ON lp.customer_id = c.customer_id
         WHERE CURRENT_DATE - lp.last_purchase_date > """ + str(days) + """
-        ORDER BY lp.lifetime_spend DESC
-        LIMIT """ + str(limit), ttl=HEAVY_DASH_TTL)
+        ORDER BY lp.lifetime_spend DESC""", ttl=HEAVY_DASH_TTL)
     return mask_pii_rows(rows, request)
 
 @app.get("/api/analytics/customer-details")
