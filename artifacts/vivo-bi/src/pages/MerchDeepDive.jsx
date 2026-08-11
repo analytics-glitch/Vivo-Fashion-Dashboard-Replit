@@ -174,11 +174,18 @@ const MerchDeepDive = () => {
     setLoading(true);
     setError(null);
     Promise.all([
-      // Use the shared module-level cache — the backend /merch/styles route does
-      // not accept style_number as a filter, so we load all styles once and
-      // find the selected one client-side.
-      loadStyles(),
-      apiFetch("/merch/style-sales-weekly", { params: { style_number: styleNumber } }),
+      // Fetch filtered styles so metrics (revenue, sor, etc.) respect the active filters.
+      apiFetch("/merch/styles", { params: {
+        from_date: filters.from_date,
+        to_date:   filters.to_date,
+        country:   filters.country,
+      } }).then(d => d.styles || []),
+      apiFetch("/merch/style-sales-weekly", { params: {
+        style_number: styleNumber,
+        from_date: filters.from_date,
+        to_date:   filters.to_date,
+        country:   filters.country,
+      } }),
       apiFetch("/merch/by-subcategory", { params: filters }),
     ])
       .then(([allStylesList, wk, sc]) => {

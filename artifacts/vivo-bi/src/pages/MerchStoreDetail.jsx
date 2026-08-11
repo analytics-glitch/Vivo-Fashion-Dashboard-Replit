@@ -103,10 +103,18 @@ const MerchStoreDetail = () => {
     setLoading(true);
     setError(null);
     Promise.all([
-      apiFetch("/merch/style-stores", { params: { style_number: styleNumber } }),
-      // The backend /merch/styles route does not accept style_number as a filter,
-      // so we load all styles from the shared cache and find the selected one client-side.
-      loadStyles(),
+      apiFetch("/merch/style-stores", { params: {
+        style_number: styleNumber,
+        from_date: filters.from_date,
+        to_date:   filters.to_date,
+        country:   filters.country,
+      } }),
+      // Fetch filtered styles so metrics (revenue, sor, etc.) respect the active filters.
+      apiFetch("/merch/styles", { params: {
+        from_date: filters.from_date,
+        to_date:   filters.to_date,
+        country:   filters.country,
+      } }).then(d => d.styles || []),
     ])
       .then(([sd, allStylesList]) => {
         if (cancelled) return;

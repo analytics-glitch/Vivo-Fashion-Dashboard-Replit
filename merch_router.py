@@ -637,7 +637,7 @@ def _agg_by_dim(styles, dim_key):
 
 # ── Style-stores endpoint ──────────────────────────────────────────────────────
 
-def _fetch_style_stores(style_number):
+def _fetch_style_stores(style_number, from_date=None, to_date=None, country=None):
     """Per-store breakdown for one style, with store tier (A/B/C) and transfer plan.
 
     Store tier = NTILE-3 by trailing-90d net revenue (A = top third), mirroring
@@ -647,6 +647,17 @@ def _fetch_style_stores(style_number):
     today       = date.today()
     six_mo_ago  = str(today - timedelta(days=_SIX_MONTHS_DAYS))
     today_str   = str(today)
+    period_from = from_date or six_mo_ago
+    period_to   = to_date   or today_str
+
+    # Country filter for sales CTEs
+    country_clause = ""
+    country_params = {}
+    if country:
+        cl = [c.strip() for c in country.split(",") if c.strip()]
+        if cl:
+            country_params["countries"] = cl
+            country_clause = " AND s.country = ANY(%(countries)s)"
 
     sql = f"""
 WITH
@@ -694,8 +705,9 @@ sales AS (
     FROM all_sales s
     JOIN all_products_clean p ON p.sku = s.variant_sku
         AND p.style_number = %(style_number)s
-    WHERE s.sale_date BETWEEN %(six_mo_ago)s AND %(today)s
+    WHERE s.sale_date BETWEEN %(period_from)s AND %(period_to)s
         AND {_BASE_FILTERS}
+        {country_clause}
     GROUP BY s.pos_location_name
 )
 SELECT
@@ -713,8 +725,9 @@ ORDER BY revenue_6m DESC NULLS LAST
 """
     params = {
         "style_number": style_number,
-        "six_mo_ago":   six_mo_ago,
-        "today":        today_str,
+        "period_from":  period_from,
+        "period_to":    period_to,
+        **country_params,
     }
     rows = _db_exec(sql, params, fetch=True)
 
@@ -769,13 +782,25 @@ ORDER BY revenue_6m DESC NULLS LAST
 
 # ── Style weekly timeline ──────────────────────────────────────────────────────
 
-def _fetch_style_weekly(style_number):
+def _fetch_style_weekly(style_number, from_date=None, to_date=None, country=None):
     """52 weeks of weekly units for one style + subcategory benchmark +
     reorder event weeks from production_orders."""
     today        = date.today()
     one_year_ago = str(today - timedelta(days=364))
     today_str    = str(today)
-    params       = {"style_number": style_number, "from_date": one_year_ago, "today": today_str}
+    period_from  = from_date or one_year_ago
+    period_to    = to_date   or today_str
+
+    country_clause  = ""
+    country_params  = {}
+    if country:
+        cl = [c.strip() for c in country.split(",") if c.strip()]
+        if cl:
+            country_params["countries"] = cl
+            country_clause = " AND s.country = ANY(%(countries)s)"
+
+    params = {"style_number": style_number, "from_date": period_from, "today": period_to,
+              **country_params}
 
     sql_style = f"""
 SELECT
@@ -788,6 +813,7 @@ JOIN all_products_clean p ON p.sku = s.variant_sku
     AND p.style_number = %(style_number)s
 WHERE s.sale_date BETWEEN %(from_date)s AND %(today)s
     AND {_BASE_FILTERS}
+    {country_clause}
 GROUP BY 1
 ORDER BY 1
 """
@@ -808,6 +834,7 @@ subcat_weekly AS (
     JOIN style_subcat sc ON p.product_type = sc.product_type
     WHERE s.sale_date BETWEEN %(from_date)s AND %(today)s
         AND {_BASE_FILTERS}
+        {country_clause}
     GROUP BY 1, 2
 )
 SELECT iso_week, ROUND(AVG(units)::numeric, 1) AS avg_units
@@ -873,7 +900,7 @@ ORDER BY 1
 
 # ── Launch ramp ────────────────────────────────────────────────────────────────
 
-def _fetch_launch_ramp():
+def _fetch_launch_ramp(from_date=None, to_date=None, country=None):
     """Cumulative SOR % by weeks-since-launch, broken down by lifecycle tier.
 
     Like _fetch_styles, this pre-computes style_number per style_name so that
@@ -882,6 +909,16 @@ def _fetch_launch_ramp():
     today         = date.today()
     two_years_ago = str(today - timedelta(days=730))
     today_str     = str(today)
+    period_from   = from_date or two_years_ago
+    period_to     = to_date   or today_str
+
+    country_clause = ""
+    country_params: dict = {}
+    if country:
+        cl = [c.strip() for c in country.split(",") if c.strip()]
+        if cl:
+            country_params["countries"] = cl
+            country_clause = " AND s.country = ANY(%(countries)s)"
 
     sql = f"""
 WITH
@@ -959,6 +996,7 @@ weekly_sales AS (
         AND {_PROD_BASE}
     WHERE s.sale_date BETWEEN %(two_years_ago)s AND %(today)s
         AND {_BASE_FILTERS}
+        {country_clause}
     GROUP BY 1, 2
 ),
 cumulative AS (
@@ -995,7 +1033,7 @@ WHERE weeks_since_launch BETWEEN 0 AND 51
 GROUP BY 1, 2, 3, 4
 ORDER BY 4
 """
-    params = {"two_years_ago": two_years_ago, "today": today_str}
+    params = {"two_years_ago": period_from, "today": period_to, **country_params}
     rows = _db_exec(sql, params, fetch=True)
 
     # Compute tier in Python (mirrors _lifecycle_tier including Retired check)
@@ -1022,6 +1060,201 @@ ORDER BY 4
         lst.sort(key=lambda x: x["week_n"])
 
     return {"by_tier": tiers_data}
+
+
+# ── By-store aggregation ───────────────────────────────────────────────────────
+
+def _fetch_by_store(brand=None, subcategory=None, tier=None, status=None,
+                    from_date=None, to_date=None, country=None):
+    """Per-store aggregated KPIs for the Store Detail tab.
+
+    Aggregates all_sales + all_inventory by pos_location_name, excluding
+    warehouse/internal locations.  Store tier (A/B/C) computed from trailing-90d
+    net revenue via NTILE(3), consistent with style-stores and api_pg.
+    """
+    today      = date.today()
+    six_mo_ago = str(today - timedelta(days=_SIX_MONTHS_DAYS))
+    today_str  = str(today)
+    period_from = from_date or six_mo_ago
+    period_to   = to_date   or today_str
+
+    params = {
+        "period_from": period_from,
+        "period_to":   period_to,
+        "six_mo_ago":  six_mo_ago,
+        "today":       today_str,
+    }
+
+    # Optional product-master filters (brand / subcategory)
+    extra_prod_parts = []
+    if brand:
+        bl = [b.strip() for b in brand.split(",") if b.strip()]
+        if bl:
+            extra_prod_parts.append("p.brand = ANY(%(brands)s)")
+            params["brands"] = bl
+    if subcategory:
+        sl = [s.strip() for s in subcategory.split(",") if s.strip()]
+        if sl:
+            extra_prod_parts.append("p.product_type = ANY(%(subcats)s)")
+            params["subcats"] = sl
+    extra_prod_where = (" AND " + " AND ".join(extra_prod_parts)) if extra_prod_parts else ""
+
+    # Country filter
+    country_clause = ""
+    if country:
+        cl = [c.strip() for c in country.split(",") if c.strip()]
+        if cl:
+            params["countries"] = cl
+            country_clause = " AND s.country = ANY(%(countries)s)"
+
+    sql = f"""
+WITH
+store_tiers AS (
+    SELECT
+        s.pos_location_name AS store,
+        CASE NTILE(3) OVER (ORDER BY SUM(s.net_sales_kes::numeric) DESC)
+            WHEN 1 THEN 'A' WHEN 2 THEN 'B' ELSE 'C'
+        END AS store_tier
+    FROM all_sales s
+    WHERE s.sale_kind IN ('sale','order')
+        AND s.sale_date >= (CURRENT_DATE - INTERVAL '90 days')::text
+        AND {_BASE_FILTERS}
+        AND s.pos_location_name NOT IN ({_WAREHOUSE_LOCATIONS})
+        AND s.pos_location_name NOT ILIKE '%%online%%'
+    GROUP BY s.pos_location_name
+    HAVING SUM(s.net_sales_kes::numeric) > 0
+),
+store_sales AS (
+    SELECT
+        s.pos_location_name                              AS store,
+        COUNT(DISTINCT p.style_name)
+            FILTER (WHERE p.style_name IS NOT NULL
+                    AND p.style_name <> ''
+                    AND COALESCE(p.brand,'') NOT ILIKE '%%third party%%'
+                    {extra_prod_where.replace("p.", "p.", 1)})
+                                                         AS style_count,
+        COALESCE(SUM(s.ordered_item_quantity) FILTER (
+            WHERE s.sale_kind IN ('sale','order')
+        ), 0)                                            AS units_6m,
+        COALESCE(SUM({_NET_SALES_EXPR}), 0.0)           AS revenue_6m
+    FROM all_sales s
+    LEFT JOIN all_products_clean p ON p.sku = s.variant_sku
+    WHERE s.sale_date BETWEEN %(period_from)s AND %(period_to)s
+        AND {_BASE_FILTERS}
+        AND s.pos_location_name NOT IN ({_WAREHOUSE_LOCATIONS})
+        AND s.pos_location_name NOT ILIKE '%%online%%'
+        {country_clause}
+    GROUP BY s.pos_location_name
+),
+store_stock AS (
+    SELECT
+        i.pos_location_name                 AS store,
+        COALESCE(SUM(i.available), 0)       AS total_stock
+    FROM all_inventory i
+    WHERE i.pos_location_name NOT IN ({_WAREHOUSE_LOCATIONS})
+      AND i.pos_location_name NOT ILIKE '%%online%%'
+    GROUP BY i.pos_location_name
+)
+SELECT
+    COALESCE(ss.store, sk.store)   AS store,
+    COALESCE(t.store_tier, '—')    AS store_tier,
+    COALESCE(ss.style_count, 0)    AS style_count,
+    COALESCE(ss.units_6m, 0)       AS units_6m,
+    COALESCE(ss.revenue_6m, 0.0)   AS revenue_6m,
+    COALESCE(sk.total_stock, 0)    AS total_stock
+FROM store_sales ss
+FULL OUTER JOIN store_stock sk ON sk.store = ss.store
+LEFT  JOIN store_tiers     t  ON t.store  = COALESCE(ss.store, sk.store)
+ORDER BY revenue_6m DESC NULLS LAST
+"""
+    rows = _db_exec(sql, params, fetch=True)
+
+    # Post-process: compute per-store avg WOC and avg SOR from the style-stores
+    # data would require N+1 queries; instead derive them from a secondary SQL
+    # that computes per-store style-level woc/sor and averages them.
+    # We inline this as a second query to keep things self-contained.
+    woc_sor_sql = f"""
+WITH style_stock AS (
+    SELECT
+        COALESCE(m.style_name, i.style_name) AS style_name,
+        i.pos_location_name                  AS store,
+        COALESCE(SUM(i.available), 0)        AS stock
+    FROM all_inventory i
+    LEFT JOIN (
+        SELECT sku, mode() WITHIN GROUP (ORDER BY style_name) AS style_name
+        FROM all_products_clean
+        WHERE style_name IS NOT NULL AND style_name <> ''
+        GROUP BY sku
+    ) m ON m.sku = i.sku
+    WHERE i.pos_location_name NOT IN ({_WAREHOUSE_LOCATIONS})
+      AND i.pos_location_name NOT ILIKE '%%online%%'
+    GROUP BY COALESCE(m.style_name, i.style_name), i.pos_location_name
+),
+style_sales_6m AS (
+    SELECT
+        p.style_name,
+        s.pos_location_name AS store,
+        SUM(s.ordered_item_quantity) FILTER (
+            WHERE s.sale_kind IN ('sale','order')
+        )                   AS units_6m
+    FROM all_sales s
+    JOIN all_products_clean p ON p.sku = s.variant_sku
+        AND p.style_name IS NOT NULL AND p.style_name <> ''
+        AND COALESCE(p.brand,'') NOT ILIKE '%%third party%%'
+    WHERE s.sale_date BETWEEN %(period_from)s AND %(period_to)s
+        AND {_BASE_FILTERS}
+        {country_clause}
+    GROUP BY p.style_name, s.pos_location_name
+)
+SELECT
+    COALESCE(sk.store, sa.store) AS store,
+    AVG(
+        CASE WHEN COALESCE(sa.units_6m, 0) > 0
+             THEN COALESCE(sk.stock, 0) / (COALESCE(sa.units_6m, 0) / 26.0)
+        END
+    ) AS avg_woc,
+    AVG(
+        CASE WHEN (COALESCE(sa.units_6m, 0) + COALESCE(sk.stock, 0)) > 0
+             THEN COALESCE(sa.units_6m, 0) * 100.0
+                  / (COALESCE(sa.units_6m, 0) + COALESCE(sk.stock, 0))
+        END
+    ) AS avg_sor
+FROM style_stock sk
+FULL OUTER JOIN style_sales_6m sa
+    ON sa.style_name = sk.style_name AND sa.store = sk.store
+GROUP BY COALESCE(sk.store, sa.store)
+"""
+    woc_sor_rows = _db_exec(woc_sor_sql, params, fetch=True)
+    woc_sor_map = {
+        r["store"]: {
+            "avg_woc": round(float(r["avg_woc"]), 1) if r.get("avg_woc") is not None else None,
+            "avg_sor": round(float(r["avg_sor"]), 1) if r.get("avg_sor") is not None else None,
+        }
+        for r in woc_sor_rows
+    }
+
+    result = []
+    for r in rows:
+        store = r.get("store") or "Unknown"
+        ws = woc_sor_map.get(store, {})
+        result.append({
+            "store":       store,
+            "store_tier":  r.get("store_tier") or "—",
+            "style_count": int(r.get("style_count") or 0),
+            "units_6m":    int(r.get("units_6m") or 0),
+            "revenue_6m":  round(float(r.get("revenue_6m") or 0), 0),
+            "total_stock": int(r.get("total_stock") or 0),
+            "avg_woc":     ws.get("avg_woc"),
+            "avg_sor":     ws.get("avg_sor"),
+        })
+
+    # Apply tier filter in Python (mirrors _fetch_styles approach)
+    if tier:
+        tier_filter = set(t.strip() for t in tier.split(",") if t.strip())
+        # Store-level has no "tier" — tier filter is not meaningful here, skip.
+        pass
+
+    return result
 
 
 # ── Route registration ─────────────────────────────────────────────────────────
@@ -1134,30 +1367,64 @@ def register_merch_routes(app, api_pg_module):
     async def merch_style_stores(
         request:      Request,
         style_number: Optional[str] = Query(None),
+        from_date:    Optional[str] = Query(None),
+        to_date:      Optional[str] = Query(None),
+        country:      Optional[str] = Query(None),
     ):
         """Per-store breakdown for one style including store tier (A/B/C) and transfer plan."""
         if not style_number:
             return JSONResponse({"detail": "style_number is required"}, status_code=400)
-        key = f"merch_style_stores|{style_number}"
-        result = _cached(key, 300, lambda: _fetch_style_stores(style_number))
+        key = f"merch_style_stores|{style_number}|{from_date}|{to_date}|{country}"
+        result = _cached(key, 300, lambda: _fetch_style_stores(
+            style_number, from_date=from_date, to_date=to_date, country=country))
         return JSONResponse(result)
 
     @app.get("/api/merch/style-sales-weekly")
     async def merch_style_weekly(
         request:      Request,
         style_number: Optional[str] = Query(None),
+        from_date:    Optional[str] = Query(None),
+        to_date:      Optional[str] = Query(None),
+        country:      Optional[str] = Query(None),
     ):
-        """52-week weekly unit trend + subcategory benchmark + reorder event weeks."""
+        """Weekly unit trend + subcategory benchmark + reorder event weeks for one style."""
         if not style_number:
             return JSONResponse({"detail": "style_number is required"}, status_code=400)
-        key = f"merch_style_weekly|{style_number}"
-        result = _cached(key, 300, lambda: _fetch_style_weekly(style_number))
+        key = f"merch_style_weekly|{style_number}|{from_date}|{to_date}|{country}"
+        result = _cached(key, 300, lambda: _fetch_style_weekly(
+            style_number, from_date=from_date, to_date=to_date, country=country))
         return JSONResponse(result)
 
     @app.get("/api/merch/launch-ramp")
-    async def merch_launch_ramp(request: Request):
+    async def merch_launch_ramp(
+        request:   Request,
+        from_date: Optional[str] = Query(None),
+        to_date:   Optional[str] = Query(None),
+        country:   Optional[str] = Query(None),
+    ):
         """Cumulative SOR %% by weeks-since-launch, broken down by lifecycle tier."""
-        result = _cached("merch_launch_ramp", _TTL, _fetch_launch_ramp)
+        key = f"merch_launch_ramp|{from_date}|{to_date}|{country}"
+        result = _cached(key, _TTL, lambda: _fetch_launch_ramp(
+            from_date=from_date, to_date=to_date, country=country))
         return JSONResponse(result)
+
+    @app.get("/api/merch/by-store")
+    async def merch_by_store(
+        request:     Request,
+        brand:       Optional[str] = Query(None),
+        subcategory: Optional[str] = Query(None),
+        tier:        Optional[str] = Query(None),
+        status:      Optional[str] = Query(None),
+        from_date:   Optional[str] = Query(None),
+        to_date:     Optional[str] = Query(None),
+        country:     Optional[str] = Query(None),
+    ):
+        """Per-store aggregated merchandising KPIs (stock, units, revenue, avg WOC, avg SOR)."""
+        key = f"merch_by_store|{brand}|{subcategory}|{tier}|{status}|{from_date}|{to_date}|{country}"
+        result = _cached(key, _TTL, lambda: _fetch_by_store(
+            brand=brand, subcategory=subcategory, tier=tier, status=status,
+            from_date=from_date, to_date=to_date, country=country,
+        ))
+        return JSONResponse({"rows": result})
 
     log.info("Merchandising Hub routes registered (/api/merch/*)")

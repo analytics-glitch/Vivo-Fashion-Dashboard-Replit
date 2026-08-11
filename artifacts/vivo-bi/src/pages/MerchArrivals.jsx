@@ -61,7 +61,11 @@ const MerchArrivals = () => {
     Promise.all([
       apiFetch("/merch/summary", { params }),
       apiFetch("/merch/styles",  { params }),
-      apiFetch("/merch/launch-ramp"),
+      apiFetch("/merch/launch-ramp", { params: {
+        from_date: params.from_date,
+        to_date:   params.to_date,
+        country:   params.country,
+      } }),
     ])
       .then(([sum, st, rampData]) => {
         if (cancelled) return;
