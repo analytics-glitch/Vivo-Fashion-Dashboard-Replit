@@ -119,6 +119,33 @@ const MerchStoreDetail = () => {
     return `${fmt(pageFrom)} – ${fmt(pageTo)}`;
   }, [pageFrom, pageTo]);
 
+  // True all-stores totals: pull from /api/kpis (same query as the Overview hub)
+  // so the headline revenue matches exactly — per-store summing misses returns
+  // that flow through warehouse locations (attributed to non-store pos_location_name).
+  const [kpiTotals, setKpiTotals] = useState(null);
+  const [kpiCmpTotals, setKpiCmpTotals] = useState(null);
+  useEffect(() => {
+    if (!pageFrom || !pageTo) return;
+    let cancelled = false;
+    const kpiParams = {
+      date_from: pageFrom,
+      date_to:   pageTo,
+      country:   filters.country     || undefined,
+      channel:   filters.pos_location || undefined,  // mirrors global filter bar channel scope
+    };
+    apiFetch("/kpis", { params: kpiParams })
+      .then(d => { if (!cancelled) setKpiTotals(d); })
+      .catch(() => {});
+    if (compareFrom && compareTo) {
+      apiFetch("/kpis", { params: { ...kpiParams, date_from: compareFrom, date_to: compareTo } })
+        .then(d => { if (!cancelled) setKpiCmpTotals(d); })
+        .catch(() => {});
+    } else {
+      setKpiCmpTotals(null);
+    }
+    return () => { cancelled = true; };
+  }, [pageFrom, pageTo, compareFrom, compareTo, filters.country, filters.dataVersion]);
+
   // Load store list
   useEffect(() => {
     let cancelled = false;
@@ -236,10 +263,16 @@ const MerchStoreDetail = () => {
     [styles],
   );
 
-  // Derived: units from the by-store KPI aggregate (same source as revenue)
-  const totalUnits = displayKPIs?.units_3m ?? 0;
+  // When no store is selected, use /api/kpis totals (exact same query as the
+  // Overview hub) so the headline Revenue and Units match. Per-store summing
+  // misses returns that flow through warehouse pos_location_names.
+  const totalRevenue = selectedStore
+    ? (displayKPIs?.revenue_3m ?? null)
+    : (kpiTotals?.total_sales   ?? displayKPIs?.revenue_3m ?? null);
 
-  const totalRevenue = displayKPIs?.revenue_3m ?? null;
+  const totalUnits = selectedStore
+    ? (displayKPIs?.units_3m ?? 0)
+    : (kpiTotals?.total_units ?? displayKPIs?.units_3m ?? 0);
 
   // Comparison-period label + deltas (shown on Revenue and Units cards)
   const compareLabel = useMemo(() => {
@@ -253,29 +286,34 @@ const MerchStoreDetail = () => {
     return null;
   }, [compareMode, compareFrom, compareTo]);
 
+  // For the all-stores view, use kpiCmpTotals from /api/kpis so comparison
+  // revenue/units also exclude warehouse-attributed returns consistently.
+  const compareRevenue = selectedStore
+    ? displayKPIs?.compare_revenue_3m
+    : (kpiCmpTotals?.total_sales ?? displayKPIs?.compare_revenue_3m);
+  const compareUnits = selectedStore
+    ? displayKPIs?.compare_units_3m
+    : (kpiCmpTotals?.total_units ?? displayKPIs?.compare_units_3m);
+
   const revDelta = useMemo(() => {
-    const prev = displayKPIs?.compare_revenue_3m;
-    if (!compareLabel || prev == null || prev === 0) return null;
-    return Math.round(((( totalRevenue ?? 0) - prev) / prev) * 100);
-  }, [compareLabel, totalRevenue, displayKPIs]);
+    if (!compareLabel || compareRevenue == null || compareRevenue === 0) return null;
+    return Math.round((((totalRevenue ?? 0) - compareRevenue) / compareRevenue) * 100);
+  }, [compareLabel, totalRevenue, compareRevenue]);
 
   const unitsDelta = useMemo(() => {
-    const prev = displayKPIs?.compare_units_3m;
-    if (!compareLabel || prev == null || prev === 0) return null;
-    return Math.round(((totalUnits - prev) / prev) * 100);
-  }, [compareLabel, totalUnits, displayKPIs]);
+    if (!compareLabel || compareUnits == null || compareUnits === 0) return null;
+    return Math.round(((totalUnits - compareUnits) / compareUnits) * 100);
+  }, [compareLabel, totalUnits, compareUnits]);
 
   const revAbsDelta = useMemo(() => {
-    const prev = displayKPIs?.compare_revenue_3m;
-    if (prev == null || totalRevenue == null) return null;
-    return Math.round(totalRevenue - prev);
-  }, [totalRevenue, displayKPIs]);
+    if (compareRevenue == null || totalRevenue == null) return null;
+    return Math.round(totalRevenue - compareRevenue);
+  }, [totalRevenue, compareRevenue]);
 
   const unitsAbsDelta = useMemo(() => {
-    const prev = displayKPIs?.compare_units_3m;
-    if (prev == null) return null;
-    return totalUnits - prev;
-  }, [totalUnits, displayKPIs]);
+    if (compareUnits == null) return null;
+    return totalUnits - compareUnits;
+  }, [totalUnits, compareUnits]);
 
   // All-stores actual vs optimal chart data (only stores with optimal set)
   const allStoresOptChart = useMemo(() =>
@@ -391,9 +429,9 @@ const MerchStoreDetail = () => {
                       Avg {fmtKES(Math.round(totalRevenue / numMonths))} / month
                     </span>
                   )}
-                  {compareLabel && displayKPIs?.compare_revenue_3m != null && (
+                  {compareLabel && compareRevenue != null && (
                     <span className="block mt-0.5 text-[13px] text-muted">
-                      Prior: {fmtKES(displayKPIs.compare_revenue_3m)}
+                      Prior: {fmtKES(compareRevenue)}
                     </span>
                   )}
                 </span>
@@ -416,9 +454,9 @@ const MerchStoreDetail = () => {
                       ASP {fmtKESLong(Math.round(totalRevenue / totalUnits))}
                     </span>
                   )}
-                  {compareLabel && displayKPIs?.compare_units_3m != null && (
+                  {compareLabel && compareUnits != null && (
                     <span className="block mt-0.5 text-[13px] text-muted">
-                      Prior: {fmtNum(displayKPIs.compare_units_3m)} units
+                      Prior: {fmtNum(compareUnits)} units
                     </span>
                   )}
                 </span>

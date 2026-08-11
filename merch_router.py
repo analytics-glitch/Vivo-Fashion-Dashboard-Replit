@@ -105,8 +105,11 @@ _WAREHOUSE_LOCATIONS = (
     "'Sew/Stock/A','Sew/Stock/B','Sew/Stock/C','Sew/Stock/D','Sew/Stock/E'"
 )
 
-# Internal holding/transfer locations that must never appear as sellable stores
+# Internal holding/transfer locations that must never appear as sellable stores.
+# Exact-case version kept for display; LOWER version used in SQL so a casing
+# mismatch in all_inventory / all_sales can never let them slip through.
 _HOLDING_STORES = "'MarKT/Stock','Retired Stock','ARANA/Stock'"
+_HOLDING_STORES_LOWER = "'markt/stock','retired stock','arana/stock'"
 
 _VAT_DIV = "(CASE WHEN s.country IN ('Uganda','Rwanda') THEN 1.18 ELSE 1.16 END)"
 
@@ -1222,7 +1225,7 @@ store_sales_cmp AS (
     WHERE s.sale_date BETWEEN %(compare_from)s AND %(compare_to)s
         AND {_BASE_FILTERS}
         AND s.pos_location_name NOT IN ({_WAREHOUSE_LOCATIONS})
-        AND s.pos_location_name NOT IN ({_HOLDING_STORES})
+        AND LOWER(s.pos_location_name) NOT IN ({_HOLDING_STORES_LOWER})
         AND s.pos_location_name NOT ILIKE '%%online%%'
         {country_clause}
     GROUP BY s.pos_location_name
@@ -1243,7 +1246,7 @@ store_tiers AS (
         AND s.sale_date >= (CURRENT_DATE - INTERVAL '90 days')::text
         AND {_BASE_FILTERS}
         AND s.pos_location_name NOT IN ({_WAREHOUSE_LOCATIONS})
-        AND s.pos_location_name NOT IN ({_HOLDING_STORES})
+        AND LOWER(s.pos_location_name) NOT IN ({_HOLDING_STORES_LOWER})
         AND s.pos_location_name NOT ILIKE '%%online%%'
     GROUP BY s.pos_location_name
     HAVING SUM(s.net_sales_kes::numeric) > 0
@@ -1277,7 +1280,7 @@ store_sales AS (
     WHERE s.sale_date BETWEEN %(period_from)s AND %(period_to)s
         AND {_BASE_FILTERS}
         AND s.pos_location_name NOT IN ({_WAREHOUSE_LOCATIONS})
-        AND s.pos_location_name NOT IN ({_HOLDING_STORES})
+        AND LOWER(s.pos_location_name) NOT IN ({_HOLDING_STORES_LOWER})
         AND s.pos_location_name NOT ILIKE '%%online%%'
         {country_clause}
     GROUP BY s.pos_location_name
@@ -1288,7 +1291,7 @@ store_stock AS (
         COALESCE(SUM(i.available), 0)       AS total_stock
     FROM all_inventory i
     WHERE i.pos_location_name NOT IN ({_WAREHOUSE_LOCATIONS})
-      AND i.pos_location_name NOT IN ({_HOLDING_STORES})
+      AND LOWER(i.pos_location_name) NOT IN ({_HOLDING_STORES_LOWER})
       AND i.pos_location_name NOT ILIKE '%%online%%'
     GROUP BY i.pos_location_name
 ),
@@ -1336,6 +1339,7 @@ WITH style_stock AS (
         GROUP BY sku
     ) m ON m.sku = i.sku
     WHERE i.pos_location_name NOT IN ({_WAREHOUSE_LOCATIONS})
+      AND LOWER(i.pos_location_name) NOT IN ({_HOLDING_STORES_LOWER})
       AND i.pos_location_name NOT ILIKE '%%online%%'
     GROUP BY COALESCE(m.style_name, i.style_name), i.pos_location_name
 ),
