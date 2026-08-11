@@ -242,16 +242,12 @@ const MerchStoreDetail = () => {
     [styles],
   );
 
-  // When no store is selected, use /api/kpis totals (exact same query as the
-  // Overview hub) so the headline Revenue and Units match. Per-store summing
-  // misses returns that flow through warehouse pos_location_names.
-  const totalRevenue = selectedStore
-    ? (displayKPIs?.revenue_3m ?? null)
-    : (kpiTotals?.total_sales   ?? displayKPIs?.revenue_3m ?? null);
-
-  const totalUnits = selectedStore
-    ? (displayKPIs?.units_3m ?? 0)
-    : (kpiTotals?.total_units ?? displayKPIs?.units_3m ?? 0);
+  // Always use /api/kpis totals for the headline so that Total Sales and
+  // Units Sold match the Overview page exactly — regardless of whether a
+  // specific store is selected. Per-store revenue / units are visible in
+  // the store table and individual store cards below the headline grid.
+  const totalRevenue = kpiTotals?.total_sales ?? null;
+  const totalUnits   = kpiTotals?.total_units ?? 0;
 
   // Comparison-period label + deltas (shown on Revenue and Units cards)
   const compareLabel = useMemo(() => {
@@ -265,14 +261,9 @@ const MerchStoreDetail = () => {
     return null;
   }, [compareMode, compareFrom, compareTo]);
 
-  // For the all-stores view, use kpiCmpTotals from /api/kpis so comparison
-  // revenue/units also exclude warehouse-attributed returns consistently.
-  const compareRevenue = selectedStore
-    ? displayKPIs?.compare_revenue_3m
-    : (kpiCmpTotals?.total_sales ?? displayKPIs?.compare_revenue_3m);
-  const compareUnits = selectedStore
-    ? displayKPIs?.compare_units_3m
-    : (kpiCmpTotals?.total_units ?? displayKPIs?.compare_units_3m);
+  // Comparison values: always from useKpis so the delta matches Overview.
+  const compareRevenue = kpiCmpTotals?.total_sales ?? null;
+  const compareUnits   = kpiCmpTotals?.total_units ?? null;
 
   const revDelta = useMemo(() => {
     if (!compareLabel || compareRevenue == null || compareRevenue === 0) return null;
