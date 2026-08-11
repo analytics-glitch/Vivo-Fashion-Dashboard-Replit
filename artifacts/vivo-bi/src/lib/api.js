@@ -321,20 +321,20 @@ export const apiFetch = (url, config) => api.get(url, config).then((r) => r.data
 // desktop and mobile. Use `fmtKESLong` when you need full precision for
 // tables, exports, or audit lines.
 export const fmtKES = (n) => {
-  if (n === null || n === undefined || isNaN(Number(n))) return "KES 0";
+  if (n === null || n === undefined || isNaN(Number(n))) return "Kes\u00A00";
   const v = Number(n);
   const abs = Math.abs(v);
-  if (abs >= 1_000_000_000) return "KES " + (v / 1_000_000_000).toFixed(2) + "B";
-  if (abs >= 1_000_000) return "KES " + (v / 1_000_000).toFixed(2) + "M";
-  if (abs >= 1_000) return "KES " + (v / 1_000).toFixed(2) + "K";
-  return "KES " + Math.round(v).toLocaleString("en-US");
+  if (abs >= 1_000_000_000) return "Kes\u00A0" + (v / 1_000_000_000).toFixed(2) + "B";
+  if (abs >= 1_000_000) return "Kes\u00A0" + (v / 1_000_000).toFixed(2) + "M";
+  if (abs >= 1_000) return "Kes\u00A0" + (v / 1_000).toFixed(2) + "K";
+  return "Kes\u00A0" + Math.round(v).toLocaleString("en-US");
 };
 
 // Full-precision currency — keep for CSV/XLSX exports, audit lines, and
 // any place a reader needs the exact shilling figure.
 export const fmtKESLong = (n) => {
-  if (n === null || n === undefined || isNaN(Number(n))) return "KES 0";
-  return "KES " + Math.round(Number(n)).toLocaleString("en-US");
+  if (n === null || n === undefined || isNaN(Number(n))) return "Kes\u00A00";
+  return "Kes\u00A0" + Math.round(Number(n)).toLocaleString("en-US");
 };
 
 export const fmtNum = (n) => {

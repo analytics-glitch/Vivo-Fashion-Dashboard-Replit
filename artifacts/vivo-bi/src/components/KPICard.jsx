@@ -177,7 +177,7 @@ export const KPICard = ({
         )}
       </div>
       <div
-        className={`mt-3 kpi-value num ${small ? "text-[16px] sm:text-[20px]" : "text-[18px] sm:text-[22px] md:text-[28px]"} break-words leading-tight`}
+        className={`mt-3 kpi-value num ${small ? "text-[16px] sm:text-[20px]" : "text-[18px] sm:text-[22px] md:text-[28px]"} leading-tight`}
         data-testid={`${testId}-value`}
         title={valueFull || (typeof value === "string" ? value : undefined)}
       >
