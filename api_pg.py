@@ -36370,7 +36370,7 @@ async def production_bulk_move(request: Request):
 # and are session-gated by clerk_auth_gate like every other /api path.
 _STYLE_TRACKER_STATUSES = [
     "Cutting", "Team B", "Team D", "Trimming",
-    "Trimming/Bartack", "Finishing", "Warehouse",
+    "Trimming/Bartack", "Finishing", "Warehouse In Transit", "Warehouse",
 ]
 _STYLE_TRACKER_BRANDS = ["VIVO", "SBV", "STUDIO"]
 _STYLE_TRACKER_CATEGORIES = ["WOVEN", "KNIT"]
@@ -36399,33 +36399,60 @@ def _st_is_privileged(request):
 _ST_WAREHOUSE_GATE_ENABLED = True
 
 
-def _style_warehouse_pct(style_name, quantity):
-    """Fraction (0–100) of the style's order qty in Warehouse Finished Goods.
+def _style_warehouse_pct(style_name, quantity, order_type=None, order_date=None):
+    """Fraction (0–100) of the style's order qty transferred to Warehouse Finished Goods.
     Returns (pct_float, wh_units). Best-effort — returns (0.0, 0) on failure.
 
-    Matching is case-insensitive and tolerates suffix words that appear in the
-    tracker name but not in Odoo's style_name (e.g. tracker stores "Vivo Basic
-    Leisure Pants In Ponte" while Odoo has "Vivo Basic Leisure Pants").  The
-    query accepts a row when:
-      • exact case-insensitive match, OR
-      • the tracker name starts with the Odoo style_name (Odoo name is shorter), OR
-      • the Odoo style_name starts with the tracker name (tracker name is shorter).
+    Matching is case-insensitive and tolerates suffix words (tracker name vs Odoo name).
+
+    For Re-Order and Replenishment styles with a known order_date:
+      • Compares against recent finishing→warehouse transfers SINCE order_date, not
+        total warehouse stock (which may include pre-existing inventory from prior runs).
+    For New styles (or when order_date is unknown):
+      • Original behaviour — compares against total Warehouse Finished Goods stock.
     """
     if not style_name or not quantity or int(quantity or 0) <= 0:
         return 0.0, 0
+    qty = int(quantity)
+    _sn_match = (
+        "(LOWER(p.style_name) = LOWER(%s) "
+        " OR LOWER(%s) LIKE LOWER(p.style_name) || ' %%' "
+        " OR LOWER(p.style_name) LIKE LOWER(%s) || ' %%')"
+    )
     try:
-        rows = _users_exec(
-            "SELECT COALESCE(SUM(GREATEST(i.available, 0)), 0)::int AS wh_units "
-            "FROM all_inventory i "
-            "JOIN all_products_clean p ON i.sku = p.sku "
-            "WHERE (LOWER(p.style_name) = LOWER(%s) "
-            "       OR LOWER(%s) LIKE LOWER(p.style_name) || ' %%' "
-            "       OR LOWER(p.style_name) LIKE LOWER(%s) || ' %%') "
-            "  AND i.pos_location_name = 'Warehouse Finished Goods'",
-            (style_name, style_name, style_name), fetch=True)
-        wh = int((rows or [{}])[0].get("wh_units") or 0)
-        pct = min(wh / int(quantity) * 100, 100.0)
-        return pct, wh
+        is_replen = order_type in ("Re-Order", "Replenishment")
+        if is_replen and order_date is not None:
+            # Use recent finishing→warehouse transfers since the order date so
+            # pre-existing warehouse stock doesn't falsely satisfy the gate.
+            since = order_date.isoformat() if hasattr(order_date, "isoformat") else str(order_date)
+            rows = _users_exec(
+                "SELECT COALESCE(SUM(t.qty_done), 0)::int AS transferred_units "
+                "FROM stock_transfers t "
+                "LEFT JOIN LATERAL ("
+                "    SELECT style_name FROM all_products_clean "
+                "    WHERE sku = t.sku "
+                "    ORDER BY (active IS TRUE) DESC, barcode LIMIT 1"
+                ") p ON TRUE "
+                "WHERE t.transfer_type = 'finishing_to_warehouse' "
+                "  AND t.state = 'done' "
+                "  AND " + _sn_match +
+                "  AND (t.date_done + interval '3 hours')::date >= %s",
+                (style_name, style_name, style_name, since), fetch=True)
+            transferred = int((rows or [{}])[0].get("transferred_units") or 0)
+            pct = min(transferred / qty * 100, 100.0)
+            return pct, transferred
+        else:
+            # Original: total warehouse stock
+            rows = _users_exec(
+                "SELECT COALESCE(SUM(GREATEST(i.available, 0)), 0)::int AS wh_units "
+                "FROM all_inventory i "
+                "JOIN all_products_clean p ON i.sku = p.sku "
+                "WHERE " + _sn_match +
+                "  AND i.pos_location_name = 'Warehouse Finished Goods'",
+                (style_name, style_name, style_name), fetch=True)
+            wh = int((rows or [{}])[0].get("wh_units") or 0)
+            pct = min(wh / qty * 100, 100.0)
+            return pct, wh
     except Exception:
         return 0.0, 0
 
@@ -36502,6 +36529,36 @@ def _ensure_style_tracker_tables():
                 "INSERT INTO style_tracker_finishing_options (label, sort_order) "
                 "VALUES (%s, %s) ON CONFLICT (label) DO NOTHING",
                 (_lbl, _i))
+    # Idempotent migration: ensure "Warehouse In Transit" exists between
+    # "Finishing" and "Warehouse" in the finishing options table.
+    _wit_exists = _users_exec(
+        "SELECT COUNT(*) AS cnt FROM style_tracker_finishing_options "
+        "WHERE label = 'Warehouse In Transit'", fetch=True)
+    if int((_wit_exists or [{}])[0].get("cnt") or 0) == 0:
+        _wh_row = _users_exec(
+            "SELECT sort_order FROM style_tracker_finishing_options "
+            "WHERE label = 'Warehouse'", fetch=True)
+        if _wh_row:
+            _wh_sort = int(_wh_row[0]["sort_order"] or 0)
+            # Shift all options at or after Warehouse's sort_order up by 1 to
+            # make room, then insert Warehouse In Transit at the freed slot.
+            _users_exec(
+                "UPDATE style_tracker_finishing_options "
+                "SET sort_order = sort_order + 1 WHERE sort_order >= %s",
+                (_wh_sort,))
+            _users_exec(
+                "INSERT INTO style_tracker_finishing_options (label, sort_order) "
+                "VALUES (%s, %s) ON CONFLICT (label) DO NOTHING",
+                ("Warehouse In Transit", _wh_sort))
+        else:
+            _max_ord = _users_exec(
+                "SELECT COALESCE(MAX(sort_order), -1) AS mx "
+                "FROM style_tracker_finishing_options", fetch=True)
+            _next_ord = int((_max_ord or [{}])[0].get("mx") or -1) + 1
+            _users_exec(
+                "INSERT INTO style_tracker_finishing_options (label, sort_order) "
+                "VALUES (%s, %s) ON CONFLICT (label) DO NOTHING",
+                ("Warehouse In Transit", _next_ord))
     # Seed-marker home. app_config already exists on every long-lived DB; the
     # IF NOT EXISTS covers a brand-new (prod) database bootstrapping itself.
     _users_exec("""
@@ -36658,6 +36715,16 @@ def _st_row_out(r):
     out.setdefault("notes", [])
     # Ensure style_number key always present (may be absent on DBs before migration)
     out.setdefault("style_number", None)
+    # Days elapsed since BO creation date (order_date preferred, created_at fallback)
+    try:
+        today = _st_today_eat()
+        ref = r.get("order_date")
+        if ref is None and r.get("created_at"):
+            ca = r["created_at"]
+            ref = ca.date() if hasattr(ca, "date") else None
+        out["days_elapsed"] = (today - ref).days if ref is not None else None
+    except Exception:
+        out["days_elapsed"] = None
     return out
 
 
@@ -36825,15 +36892,18 @@ def _st_validate_payload(body, partial=False, current=None, valid_statuses=None)
         if status not in valid_statuses:
             return None, f"status must be one of: {', '.join(valid_statuses)}"
         fields["status"] = status
-    if "order_type" in body:
+    if "order_type" in body or not partial:
         ot = body.get("order_type")
-        if ot is not None and ot != "":
+        if ot is None or str(ot).strip() == "":
+            if not partial:
+                return None, "order_type is required — choose New, Re-Order, or Replenishment"
+            if "order_type" in body:
+                return None, "order_type cannot be cleared — choose New, Re-Order, or Replenishment"
+        else:
             ot = str(ot).strip()
             if ot not in _STYLE_TRACKER_ORDER_TYPES:
                 return None, f"order_type must be one of: {', '.join(_STYLE_TRACKER_ORDER_TYPES)}"
             fields["order_type"] = ot
-        else:
-            fields["order_type"] = None
     for key in ("order_date", "deliver_by"):
         if key in body:
             try:
@@ -36909,11 +36979,17 @@ async def style_tracker_update(style_id: int, request: Request):
     # Auto-fill deliver_by when order_date changes and deliver_by not in body
     if "order_date" in fields and fields["order_date"] and "deliver_by" not in body:
         fields.setdefault("deliver_by", fields["order_date"] + timedelta(days=14))
-    # Warehouse gate: must have ≥90% of order qty transferred to warehouse
+    # Warehouse gate: must have ≥90% of order qty transferred to warehouse.
+    # For Re-Order/Replenishment the gate compares against recent transfers since
+    # order_date rather than total warehouse stock (pre-existing stock is excluded).
     new_status = fields.get("status")
     if (_ST_WAREHOUSE_GATE_ENABLED
             and new_status == "Warehouse" and ex.get("status") != "Warehouse"):
-        pct, wh_units = _style_warehouse_pct(ex["style_name"], ex["quantity"])
+        eff_order_type = fields.get("order_type", ex.get("order_type"))
+        eff_order_date = fields.get("order_date", ex.get("order_date"))
+        pct, wh_units = _style_warehouse_pct(
+            ex["style_name"], ex["quantity"],
+            order_type=eff_order_type, order_date=eff_order_date)
         if pct < 90.0:
             return JSONResponse({
                 "detail": (
@@ -37067,20 +37143,26 @@ async def style_tracker_finishing_options_rename(option_id: int, request: Reques
 
 @app.get("/api/style-tracker/styles/{style_id}/warehouse-pct")
 def style_tracker_warehouse_pct_endpoint(style_id: int):
-    """Live warehouse transfer percentage for a style (vs its order quantity)."""
+    """Live warehouse transfer percentage for a style (vs its order quantity).
+    For Re-Order/Replenishment styles the percentage is computed from recent
+    finishing→warehouse transfers since the order_date, not total warehouse stock."""
     _ensure_style_tracker_tables()
     style = _users_exec(
-        "SELECT id, style_name, quantity FROM style_tracker_styles WHERE id = %s",
+        "SELECT id, style_name, quantity, order_type, order_date "
+        "FROM style_tracker_styles WHERE id = %s",
         (style_id,), fetch=True)
     if not style:
         raise HTTPException(status_code=404, detail="Style not found")
     s = style[0]
-    pct, wh_units = _style_warehouse_pct(s["style_name"], s["quantity"])
+    pct, wh_units = _style_warehouse_pct(
+        s["style_name"], s["quantity"],
+        order_type=s.get("order_type"), order_date=s.get("order_date"))
     return {
         "style_id": style_id,
         "pct": round(pct, 1),
         "wh_units": wh_units,
         "quantity": s["quantity"],
+        "order_type": s.get("order_type"),
         "meets_threshold": (pct >= 90.0) or (not _ST_WAREHOUSE_GATE_ENABLED),
     }
 

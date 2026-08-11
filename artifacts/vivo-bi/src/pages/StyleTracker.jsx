@@ -17,7 +17,9 @@ import {
   ChatText,
   CheckCircle,
   Circle,
+  Clock,
   ClockClockwise,
+  Funnel,
   PencilSimple,
   Plus,
   Table,
@@ -197,9 +199,24 @@ function WeekStats({ week, compact = false }) {
   );
 }
 
-/** Table view */
-function WeekTable({ weeks, today, finishingOptions, busyIds, onUpdate, isPrivileged }) {
+/** Table view — inline editing, clickable style names, notes, and days elapsed */
+function WeekTable({ weeks, today, finishingOptions, busyIds, onUpdate, isPrivileged, orderTypes, brands, onNoteAdded, onOpenFulfillment }) {
   const statuses = finishingOptions.map((f) => f.label);
+  const [expandedNotes, setExpandedNotes] = useState(() => new Set());
+
+  const toggleNotes = (id) => setExpandedNotes((prev) => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+
+  const calcDays = (s) => {
+    if (s.days_elapsed !== null && s.days_elapsed !== undefined) return s.days_elapsed;
+    const ref = s.order_date || (s.created_at ? s.created_at.slice(0, 10) : null);
+    if (!ref || !today) return null;
+    return Math.floor((new Date(today) - new Date(ref)) / 86400000);
+  };
+
   const totals = weeks.reduce(
     (t, w) => ({
       count: t.count + w.count,
@@ -211,6 +228,8 @@ function WeekTable({ weeks, today, finishingOptions, busyIds, onUpdate, isPrivil
   );
   const totPct = totals.units > 0 ? Math.round((100 * totals.cUnits) / totals.units) : null;
   const thCls = "px-3 py-2.5 font-bold";
+  const COLS = 9;
+
   return (
     <div className="rounded-xl border border-line bg-white overflow-x-auto" data-testid="style-tracker-table-view">
       <table className="w-full text-[12px]">
@@ -222,6 +241,8 @@ function WeekTable({ weeks, today, finishingOptions, busyIds, onUpdate, isPrivil
             <th className={`${thCls} text-right`}>Qty</th>
             <th className={thCls}>Status</th>
             <th className={thCls}>Deliver by</th>
+            <th className={`${thCls} text-right`} title="Days elapsed since BO creation date">Days</th>
+            <th className={thCls}>Notes</th>
             <th className={`${thCls} text-center`}>In WH</th>
           </tr>
         </thead>
@@ -231,6 +252,7 @@ function WeekTable({ weeks, today, finishingOptions, busyIds, onUpdate, isPrivil
             const pct = weekPct(week);
             return (
               <React.Fragment key={wk}>
+                {/* Week header row */}
                 <tr className={`border-y border-line ${week.overdue ? "bg-amber-50" : week.is_current ? "bg-brand/5" : "bg-panel/60"}`}>
                   <td className="px-3 py-2" colSpan={3}>
                     <span className="font-bold text-[12.5px] text-[#0f3d24]">{week.label}</span>
@@ -239,7 +261,7 @@ function WeekTable({ weeks, today, finishingOptions, busyIds, onUpdate, isPrivil
                     <span className="ml-2 text-[11px] text-muted">{week.count} style{week.count === 1 ? "" : "s"}</span>
                   </td>
                   <td className="px-3 py-2 text-right font-bold text-[#0f3d24]">{fmtUnits(week.total_units)}</td>
-                  <td className="px-3 py-2 text-[11px] text-muted" colSpan={2}>
+                  <td className="px-3 py-2 text-[11px] text-muted" colSpan={4}>
                     <div className="flex items-center gap-2 min-w-[160px]">
                       <div className="flex-1 h-1.5 rounded-full bg-line/70 overflow-hidden">
                         <div className={`h-full rounded-full ${pct === null ? "bg-line" : barTone(pct)}`} style={{ width: `${Math.min(pct || 0, 100)}%` }} />
@@ -249,41 +271,110 @@ function WeekTable({ weeks, today, finishingOptions, busyIds, onUpdate, isPrivil
                   </td>
                   <td className={`px-3 py-2 text-center font-bold ${pctTone(pct)}`}>{pct === null ? "—" : `${pct}%`}</td>
                 </tr>
+
+                {/* Style rows */}
                 {week.styles.map((s) => {
                   const late = isLateStyle(s, today);
                   const busy = busyIds.has(s.id);
                   const canDone = s.status === "Warehouse";
+                  const daysEl = calcDays(s);
+                  const noteCount = (s.notes || []).length;
+                  const notesOpen = expandedNotes.has(s.id);
                   return (
-                    <tr key={s.id} className={`border-b border-line/60 hover:bg-panel/40 ${late ? "bg-rose-50/50" : ""}`}>
-                      <td className="px-3 py-2 font-semibold text-[#0f3d24]">
-                        {s.style_name}
-                        {late && <span className="ml-2 inline-flex items-center gap-0.5 text-[9px] font-bold uppercase text-rose-800 bg-rose-100 border border-rose-300 rounded-full px-1.5 py-0.5"><Warning size={9} weight="fill" /> Late</span>}
-                      </td>
-                      <td className="px-3 py-2">
-                        <span className={`text-[9px] font-bold uppercase tracking-wide border rounded-full px-1.5 py-0.5 ${BRAND_BADGE[s.brand] || "bg-panel text-muted border-line"}`}>{s.brand}</span>
-                      </td>
-                      <td className="px-3 py-2">
-                        {s.order_type && <span className={`text-[9px] font-bold uppercase tracking-wide border rounded-full px-1.5 py-0.5 ${ORDER_TYPE_BADGE[s.order_type] || "bg-panel text-muted border-line"}`}>{s.order_type}</span>}
-                      </td>
-                      <td className="px-3 py-2 text-right font-semibold">{fmtUnits(s.quantity)}</td>
-                      <td className="px-3 py-2">
-                        <StatusSelect style={s} statuses={statuses} busy={busy} onUpdate={onUpdate} />
-                      </td>
-                      <td className={`px-3 py-2 whitespace-nowrap ${late ? "font-semibold text-rose-700" : "text-muted"}`}>
-                        {s.deliver_by ? fmtShortDate(s.deliver_by) : "—"}
-                      </td>
-                      <td className="px-3 py-2 text-center">
-                        <button
-                          type="button"
-                          onClick={() => canDone && onUpdate(s, { completed: !s.completed })}
-                          disabled={busy || (!s.completed && !canDone)}
-                          title={!canDone && !s.completed ? "Style must be in Warehouse status before marking as done" : s.completed ? "Mark as not completed" : "Mark as completed"}
-                          className="disabled:opacity-40"
-                        >
-                          {s.completed ? <CheckCircle size={17} weight="fill" className="text-emerald-600" /> : <Circle size={17} className={`${canDone ? "text-muted/60 hover:text-emerald-600" : "text-muted/30"}`} />}
-                        </button>
-                      </td>
-                    </tr>
+                    <React.Fragment key={s.id}>
+                      <tr className={`border-b border-line/60 hover:bg-panel/40 ${late ? "bg-rose-50/50" : ""}`}>
+                        {/* Style name — clickable, opens FulfillmentDrawer like board view */}
+                        <td className="px-3 py-2 min-w-[180px]">
+                          <button
+                            type="button"
+                            onClick={() => onOpenFulfillment && onOpenFulfillment(s)}
+                            className="font-semibold text-[12px] text-[#0f3d24] text-left hover:underline underline-offset-2 leading-snug"
+                            title="Click to view fulfillment drill-down"
+                          >
+                            {s.style_name}
+                          </button>
+                          {s.style_number && <div className="text-[10px] font-mono text-[#1a5c38] mt-0.5">{s.style_number}</div>}
+                          {late && <span className="mt-0.5 inline-flex items-center gap-0.5 text-[9px] font-bold uppercase text-rose-800 bg-rose-100 border border-rose-300 rounded-full px-1.5 py-0.5"><Warning size={9} weight="fill" /> Late</span>}
+                        </td>
+
+                        {/* Brand — inline editable select */}
+                        <td className="px-3 py-1.5 min-w-[80px]">
+                          <select
+                            value={s.brand || ""}
+                            onChange={(e) => !busy && onUpdate(s, { brand: e.target.value })}
+                            disabled={busy}
+                            className={`text-[9px] font-bold uppercase tracking-wide border rounded-full px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-brand/40 disabled:opacity-50 cursor-pointer ${BRAND_BADGE[s.brand] || "bg-panel text-muted border-line"}`}
+                          >
+                            {(brands || ["VIVO", "SBV", "STUDIO"]).map((b) => (
+                              <option key={b} value={b}>{b}</option>
+                            ))}
+                          </select>
+                        </td>
+
+                        {/* Type — inline editable via OrderTypeSelect */}
+                        <td className="px-3 py-1.5 min-w-[120px]">
+                          <OrderTypeSelect style={s} orderTypes={orderTypes || ["New", "Re-Order", "Replenishment"]} busy={busy} onUpdate={onUpdate} />
+                        </td>
+
+                        <td className="px-3 py-2 text-right font-semibold">{fmtUnits(s.quantity)}</td>
+
+                        {/* Status — inline editable */}
+                        <td className="px-3 py-2 min-w-[150px]">
+                          <StatusSelect style={s} statuses={statuses} busy={busy} onUpdate={onUpdate} />
+                        </td>
+
+                        <td className={`px-3 py-2 whitespace-nowrap ${late ? "font-semibold text-rose-700" : "text-muted"}`}>
+                          {s.deliver_by ? fmtShortDate(s.deliver_by) : "—"}
+                        </td>
+
+                        {/* Days elapsed since BO creation date */}
+                        <td className="px-3 py-2 text-right whitespace-nowrap">
+                          {daysEl !== null ? (
+                            <span
+                              className={`text-[11px] font-semibold ${daysEl > 60 ? "text-rose-700" : daysEl > 30 ? "text-amber-700" : "text-[#0f3d24]"}`}
+                              title={`Days since BO creation${s.order_date ? ` (${s.order_date})` : ""}`}
+                            >
+                              {daysEl}d
+                            </span>
+                          ) : <span className="text-muted">—</span>}
+                        </td>
+
+                        {/* Notes toggle */}
+                        <td className="px-3 py-2">
+                          <button
+                            type="button"
+                            onClick={() => toggleNotes(s.id)}
+                            className={`flex items-center gap-1 text-[11px] rounded px-1.5 py-0.5 transition-colors ${notesOpen ? "bg-[#1a5c38]/10 text-[#1a5c38] font-semibold" : "text-muted hover:text-[#0f3d24]"}`}
+                            title={notesOpen ? "Collapse notes" : "View / add notes"}
+                          >
+                            <ChatText size={13} />
+                            {noteCount > 0 && <span className="font-semibold">{noteCount}</span>}
+                          </button>
+                        </td>
+
+                        {/* Done / in WH */}
+                        <td className="px-3 py-2 text-center">
+                          <button
+                            type="button"
+                            onClick={() => canDone && onUpdate(s, { completed: !s.completed })}
+                            disabled={busy || (!s.completed && !canDone)}
+                            title={!canDone && !s.completed ? "Style must be in Warehouse status before marking as done" : s.completed ? "Mark as not completed" : "Mark as completed"}
+                            className="disabled:opacity-40"
+                          >
+                            {s.completed ? <CheckCircle size={17} weight="fill" className="text-emerald-600" /> : <Circle size={17} className={`${canDone ? "text-muted/60 hover:text-emerald-600" : "text-muted/30"}`} />}
+                          </button>
+                        </td>
+                      </tr>
+
+                      {/* Expanded notes row */}
+                      {notesOpen && (
+                        <tr className="border-b border-line/60 bg-panel/30">
+                          <td colSpan={COLS} className="px-4 pb-3 pt-1">
+                            <NotesPanel style={s} onNoteAdded={onNoteAdded} />
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
                   );
                 })}
               </React.Fragment>
@@ -294,7 +385,7 @@ function WeekTable({ weeks, today, finishingOptions, busyIds, onUpdate, isPrivil
           <tr className="border-t-2 border-line bg-panel/70 font-bold text-[#0f3d24]">
             <td className="px-3 py-2.5" colSpan={3}>All weeks · {totals.count} style{totals.count === 1 ? "" : "s"} ({totals.cCount} in WH)</td>
             <td className="px-3 py-2.5 text-right">{fmtUnits(totals.units)}</td>
-            <td className="px-3 py-2.5 text-[11px] text-muted font-semibold" colSpan={2}>{fmtUnits(totals.cUnits)} pcs in WH</td>
+            <td className="px-3 py-2.5 text-[11px] text-muted font-semibold" colSpan={4}>{fmtUnits(totals.cUnits)} pcs in WH</td>
             <td className={`px-3 py-2.5 text-center ${pctTone(totPct)}`}>{totPct === null ? "—" : `${totPct}%`}</td>
           </tr>
         </tfoot>
@@ -1337,6 +1428,19 @@ function StyleCard({
         )}
       </div>
 
+      {/* Days elapsed since BO creation */}
+      {style.days_elapsed !== null && style.days_elapsed !== undefined && (
+        <div className="flex items-center gap-1 mt-1 text-[10.5px] text-muted">
+          <Clock size={12} className="shrink-0" />
+          <span>
+            <span className={`font-semibold ${style.days_elapsed > 60 ? "text-rose-700" : style.days_elapsed > 30 ? "text-amber-700" : "text-[#0f3d24]"}`}>
+              {style.days_elapsed}d
+            </span>
+            {" "}since BO
+          </span>
+        </div>
+      )}
+
       {/* Move to week */}
       {weeks && weeks.length > 1 && (
         <div className="mt-1.5">
@@ -1388,6 +1492,7 @@ function AddStyleForm({ week, finishingOptions, brands, categories, orderTypes, 
     e.preventDefault();
     setErr(null);
     if (!form.style_name.trim()) { setErr("Style name is required."); return; }
+    if (!form.order_type) { setErr("Order Type is required."); return; }
     setSaving(true);
     try {
       await onCreate(week, {
@@ -1438,8 +1543,9 @@ function AddStyleForm({ week, finishingOptions, brands, categories, orderTypes, 
           <input className={inputCls} type="number" min="0" value={form.quantity} onChange={set("quantity")} placeholder="0" />
         </div>
         <div>
-          <label className={labelCls}>Order Type</label>
-          <select className={inputCls} value={form.order_type} onChange={set("order_type")}>
+          <label className={labelCls}>Order Type <span className="text-rose-600">*</span></label>
+          <select className={inputCls} value={form.order_type} onChange={set("order_type")} required>
+            <option value="">— select type —</option>
             {orderTypes.map((t) => <option key={t} value={t}>{t}</option>)}
           </select>
         </div>
@@ -1479,6 +1585,7 @@ const StyleTracker = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [view, setView] = useState("board");
+  const [stageFilter, setStageFilter] = useState("");
   const [archived, setArchived] = useState(null);
   const [archivedLoading, setArchivedLoading] = useState(false);
   const [addingWeek, setAddingWeek] = useState(null);
@@ -1702,6 +1809,23 @@ const StyleTracker = () => {
     [board]
   );
 
+  // Stage-filtered weeks — applies across both board and table views
+  const filteredWeeks = useMemo(() => {
+    if (!board) return [];
+    if (!stageFilter) return board.weeks;
+    return board.weeks.map((w) => {
+      const styles = w.styles.filter((s) => s.status === stageFilter);
+      return {
+        ...w,
+        styles,
+        count: styles.length,
+        total_units: styles.reduce((a, s) => a + (Number(s.quantity) || 0), 0),
+        completed_count: styles.filter((s) => s.completed).length,
+        completed_units: styles.reduce((a, s) => a + (s.completed ? Number(s.quantity) || 0 : 0), 0),
+      };
+    });
+  }, [board, stageFilter]);
+
   if (loading) return <Loading label="Loading style tracker…" />;
   if (error) return <ErrorBox message={error} />;
   if (!board) return null;
@@ -1721,7 +1845,25 @@ const StyleTracker = () => {
         title="Weekly Style Tracker"
         subtitle={`Styles by launch week — use "Move to week" on a card to re-plan. Today: ${fmtShortDate(board.today)} (WK ${board.current?.iso_week})`}
         action={
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
+            {/* Stage filter — visible in board + table views */}
+            {view !== "archived" && (
+              <div className="flex items-center gap-1.5">
+                <Funnel size={13} className="text-muted shrink-0" />
+                <select
+                  value={stageFilter}
+                  onChange={(e) => setStageFilter(e.target.value)}
+                  className="text-[11.5px] font-semibold text-[#0f3d24] bg-white border border-line rounded-lg px-2 py-1.5 focus:outline-none focus:ring-1 focus:ring-brand/40"
+                  title="Filter by stage"
+                  data-testid="style-tracker-stage-filter"
+                >
+                  <option value="">All stages</option>
+                  {(board?.finishing_options || []).map((fo) => (
+                    <option key={fo.label} value={fo.label}>{fo.label}</option>
+                  ))}
+                </select>
+              </div>
+            )}
             <div className="flex rounded-lg border border-line overflow-hidden">
               <button type="button" onClick={() => setView("board")} className={`text-[11.5px] font-semibold px-3 py-1.5 ${view === "board" ? "bg-[#1a5c38] text-white" : "bg-white text-[#0f3d24] hover:bg-panel"}`} data-testid="style-tracker-view-board">Board</button>
               <button type="button" onClick={() => setView("table")} className={`text-[11.5px] font-semibold px-3 py-1.5 border-l border-line ${view === "table" ? "bg-[#1a5c38] text-white" : "bg-white text-[#0f3d24] hover:bg-panel"}`} data-testid="style-tracker-view-table">Table</button>
@@ -1750,6 +1892,14 @@ const StyleTracker = () => {
               <span><span className="font-bold">{lateCount} late style{lateCount === 1 ? "" : "s"}</span> past the deliver-by date and not completed — look for the red <span className="font-bold">Late</span> cards.</span>
             </div>
           )}
+          {stageFilter && (
+            <div className="flex items-center gap-2 rounded-lg border border-[#1a5c38]/30 bg-[#1a5c38]/5 px-3 py-2 text-[12px] text-[#0f3d24]">
+              <Funnel size={13} weight="fill" className="shrink-0 text-[#1a5c38]" />
+              <span>Showing only <span className="font-bold">{stageFilter}</span> styles.{" "}
+                <button type="button" onClick={() => setStageFilter("")} className="underline underline-offset-2 hover:no-underline font-semibold ml-0.5">Clear filter</button>
+              </span>
+            </div>
+          )}
 
           {/* Board-level summary panel */}
           <WeekSummaryPanel
@@ -1766,11 +1916,12 @@ const StyleTracker = () => {
               onSelect={setSelectedWeekKey}
             />
             {selectedWeekKey && (() => {
-              const sw = board.weeks.find((w) => weekKey(w) === selectedWeekKey);
+              const sw = filteredWeeks.find((w) => weekKey(w) === selectedWeekKey);
               if (!sw) return null;
               return (
                 <span className="text-[11.5px] text-muted">
                   {sw.count} style{sw.count === 1 ? "" : "s"} · {fmtUnits(sw.total_units)} pcs
+                  {stageFilter ? ` (filtered to ${stageFilter})` : ""}
                 </span>
               );
             })()}
@@ -1778,7 +1929,7 @@ const StyleTracker = () => {
 
           {/* Single-week board column */}
           {(() => {
-            const week = board.weeks.find((w) => weekKey(w) === selectedWeekKey);
+            const week = filteredWeeks.find((w) => weekKey(w) === selectedWeekKey);
             if (!week) return null;
             const wk = weekKey(week);
             const isDragTarget = dragOverWeek === wk;
@@ -1872,14 +2023,33 @@ const StyleTracker = () => {
           })()}
         </>
       ) : view === "table" ? (
-        <WeekTable
-          weeks={board.weeks}
-          today={board.today}
-          finishingOptions={finishingOptions}
-          busyIds={busyIds}
-          onUpdate={updateStyle}
-          isPrivileged={isPrivileged}
-        />
+        <>
+          {stageFilter && (
+            <div className="flex items-center gap-2 rounded-lg border border-[#1a5c38]/30 bg-[#1a5c38]/5 px-3 py-2 text-[12px] text-[#0f3d24]">
+              <Funnel size={13} weight="fill" className="shrink-0 text-[#1a5c38]" />
+              <span>Showing only <span className="font-bold">{stageFilter}</span> styles.{" "}
+                <button type="button" onClick={() => setStageFilter("")} className="underline underline-offset-2 hover:no-underline font-semibold ml-0.5">Clear filter</button>
+              </span>
+            </div>
+          )}
+          <WeekSummaryPanel
+            weeks={board.weeks}
+            selectedKey={selectedWeekKey}
+            onSelect={setSelectedWeekKey}
+          />
+          <WeekTable
+            weeks={filteredWeeks}
+            today={board.today}
+            finishingOptions={finishingOptions}
+            busyIds={busyIds}
+            onUpdate={updateStyle}
+            isPrivileged={isPrivileged}
+            orderTypes={orderTypes}
+            brands={brands}
+            onNoteAdded={handleNoteAdded}
+            onOpenFulfillment={(style) => setFulfillmentStyle({ id: style.id, style_name: style.style_name, style_number: style.style_number })}
+          />
+        </>
       ) : (
         <div className="rounded-xl border border-line bg-white" data-testid="style-tracker-archived-view">
           {archivedLoading ? (
