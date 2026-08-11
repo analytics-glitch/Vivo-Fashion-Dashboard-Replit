@@ -204,6 +204,7 @@ export const ADMIN_NAV = [
   { to: "/admin/data-health", label: "Data Health", icon: Gauge, id: "admin-data-health", group: "Administration", desc: "Row counts & freshness per table — check prod matches dev after publishing" },
   { to: "/admin/validation-audit", label: "Audit Findings", icon: ShieldWarning, id: "admin-validation-audit", group: "Administration", desc: "Findings raised by the data-validation agent — metric mismatches, anomalies and cross-page inconsistencies" },
   { to: "/admin/thumbnails", label: "Custom Style Photos", icon: ImageSquare, id: "admin-thumbnails", group: "Administration", desc: "Review, edit and remove manually-set product photos; spot broken links" },
+  { to: "/admin/store-profiles", label: "Store Profiles", icon: Storefront, id: "admin-store-profiles", group: "Administration", desc: "Edit square footage and optimal stock targets per store" },
 ];
 
 // Group display order for the Home landing page.

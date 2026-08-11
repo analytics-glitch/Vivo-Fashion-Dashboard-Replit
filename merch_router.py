@@ -704,6 +704,14 @@ def _agg_by_dim(styles, dim_key):
 
 # ── Style-stores endpoint ──────────────────────────────────────────────────────
 
+def _invalidate_style_stores_cache():
+    """Remove all merch_style_stores|* entries from the module-level cache."""
+    prefix = "merch_style_stores|"
+    stale = [k for k in list(_cache_store.keys()) if k.startswith(prefix)]
+    for k in stale:
+        _cache_store.pop(k, None)
+
+
 def _fetch_style_stores(style_number, from_date=None, to_date=None, country=None):
     """Per-store breakdown for one style, with store tier (A/B/C) and transfer plan.
 
@@ -776,6 +784,10 @@ sales AS (
         AND {_BASE_FILTERS}
         {country_clause}
     GROUP BY s.pos_location_name
+),
+store_meta AS (
+    SELECT location_name, sqft, optimal_stock
+    FROM pos_locations
 )
 SELECT
     COALESCE(st.store, sa.store)   AS store,
@@ -783,11 +795,14 @@ SELECT
     COALESCE(sa.units_6m, 0)       AS units_6m,
     COALESCE(sa.revenue_6m, 0.0)   AS revenue_6m,
     COALESCE(t.store_tier, '—')    AS store_tier,
-    sm.cost_kes
+    sm.cost_kes,
+    smeta.sqft,
+    smeta.optimal_stock
 FROM stock st
 FULL OUTER JOIN sales sa ON sa.store = st.store
 LEFT  JOIN store_tiers t  ON t.store  = COALESCE(st.store, sa.store)
 CROSS JOIN style_meta sm
+LEFT  JOIN store_meta smeta ON smeta.location_name = COALESCE(st.store, sa.store)
 ORDER BY revenue_6m DESC NULLS LAST
 """
     params = {
@@ -805,6 +820,8 @@ ORDER BY revenue_6m DESC NULLS LAST
         units_6m      = int(r["units_6m"] or 0)
         revenue_6m    = float(r["revenue_6m"] or 0)
         cost          = float(r["cost_kes"]) if r.get("cost_kes") is not None else None
+        sqft          = int(r["sqft"]) if r.get("sqft") is not None else None
+        optimal_stock = int(r["optimal_stock"]) if r.get("optimal_stock") is not None else None
 
         weekly_avg = round(units_6m / 26.0, 2) if units_6m else 0
         woc = round(current_stock / weekly_avg, 1) if weekly_avg > 0 else None
@@ -815,6 +832,8 @@ ORDER BY revenue_6m DESC NULLS LAST
             avg_asp = revenue_6m / units_6m
             if avg_asp > 0:
                 gm_contrib = round((avg_asp - cost) * units_6m)
+
+        stock_variance = (current_stock - optimal_stock) if optimal_stock is not None else None
 
         # Store action label
         if current_stock == 0 and units_6m > 0:
@@ -838,6 +857,9 @@ ORDER BY revenue_6m DESC NULLS LAST
             "woc":                 woc,
             "action":              action,
             "gross_margin_contribution_kes": gm_contrib,
+            "sqft":                sqft,
+            "optimal_stock":       optimal_stock,
+            "stock_variance":      stock_variance,
         })
 
     # Transfer plan
@@ -1475,6 +1497,66 @@ def register_merch_routes(app, api_pg_module):
         result = _cached(key, 300, lambda: _fetch_style_stores(
             style_number, from_date=from_date, to_date=to_date, country=country))
         return JSONResponse(result)
+
+    @app.get("/api/admin/store-profiles")
+    async def admin_store_profiles_list(request: Request):
+        """List all active pos_locations with sqft and optimal_stock.
+        Admin-only — gated by clerk_auth_gate path prefix check."""
+        rows = _db_exec("""
+            SELECT location_name, country, sqft, optimal_stock
+            FROM pos_locations
+            WHERE active = TRUE
+            ORDER BY country, location_name
+        """)
+        return JSONResponse({"stores": [dict(r) for r in (rows or [])]})
+
+    @app.patch("/api/admin/store-profiles/{location_name:path}")
+    async def admin_store_profiles_update(
+        request: Request,
+        location_name: str,
+    ):
+        """Update sqft and/or optimal_stock for a store.
+        Admin-only — gated by clerk_auth_gate path prefix check.
+        Invalidates the merch style-stores cache after save."""
+        body = await request.json()
+        updates = {}
+        for field in ("sqft", "optimal_stock"):
+            if field in body:
+                val = body[field]
+                if val is not None:
+                    try:
+                        iv = int(val)
+                        if iv < 0:
+                            return JSONResponse(
+                                {"detail": f"{field} must be a positive integer"},
+                                status_code=422)
+                        updates[field] = iv
+                    except (ValueError, TypeError):
+                        return JSONResponse(
+                            {"detail": f"{field} must be an integer"},
+                            status_code=422)
+                else:
+                    updates[field] = None
+        if not updates:
+            return JSONResponse({"detail": "No valid fields provided"}, status_code=422)
+
+        set_clause = ", ".join(f"{k} = %({k})s" for k in updates)
+        params = {**updates, "location_name": location_name}
+        _db_exec(
+            f"UPDATE pos_locations SET {set_clause} WHERE location_name = %(location_name)s",
+            params, fetch=False)
+
+        # Invalidate cached style-stores payloads so drill-down reflects the change
+        _invalidate_style_stores_cache()
+
+        # Return the updated row
+        rows = _db_exec(
+            "SELECT location_name, country, sqft, optimal_stock FROM pos_locations "
+            "WHERE location_name = %(location_name)s",
+            {"location_name": location_name})
+        if not rows:
+            return JSONResponse({"detail": "Store not found"}, status_code=404)
+        return JSONResponse(dict(rows[0]))
 
     @app.get("/api/merch/style-sales-weekly")
     async def merch_style_weekly(

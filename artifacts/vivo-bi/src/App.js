@@ -28,6 +28,7 @@ const ValidationAudit = React.lazy(() => import("@/pages/ValidationAudit"));
 const ThumbnailManager = React.lazy(() => import("@/pages/ThumbnailManager"));
 const Feedback = React.lazy(() => import("@/pages/Feedback"));
 const AdminFeedback = React.lazy(() => import("@/pages/AdminFeedback"));
+const AdminStoreProfiles = React.lazy(() => import("@/pages/AdminStoreProfiles"));
 const StoreClusters = React.lazy(() => import("@/pages/StoreClusters"));
 const ExecutiveSummary = React.lazy(() => import("@/pages/ExecutiveSummary"));
 const Marketing = React.lazy(() => import("@/pages/Marketing"));
@@ -257,6 +258,7 @@ function App() {
                 <Route path="/admin/data-health" element={<ProtectedShell adminOnly pageId="admin-data-health"><DataHealth /></ProtectedShell>} />
                 <Route path="/admin/validation-audit" element={<ProtectedShell adminOnly pageId="admin-validation-audit"><ValidationAudit /></ProtectedShell>} />
                 <Route path="/admin/thumbnails" element={<ProtectedShell adminOnly pageId="admin-thumbnails"><ThumbnailManager /></ProtectedShell>} />
+                <Route path="/admin/store-profiles" element={<ProtectedShell adminOnly pageId="admin-store-profiles"><AdminStoreProfiles /></ProtectedShell>} />
                 <Route path="*" element={<Navigate to="/" replace />} />
               </Routes>
             </FiltersProvider>

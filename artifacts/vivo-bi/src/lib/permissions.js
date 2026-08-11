@@ -39,7 +39,7 @@ const HR = ["hr", "sops", "rota"];
 // only surface is the Salary Advance form in the HR app (/hr/salary-advance).
 // The backend employee API fence refuses everything else server-side.
 const EMPLOYEE = [];
-const ADMIN = [...new Set([...LEADERSHIP, "feedback", "admin-users", "admin-activity-logs", "admin-feedback", "admin-store-clusters", "admin-data-health", "admin-thumbnails", "admin-validation-audit"])];
+const ADMIN = [...new Set([...LEADERSHIP, "feedback", "admin-users", "admin-activity-logs", "admin-feedback", "admin-store-clusters", "admin-data-health", "admin-thumbnails", "admin-validation-audit", "admin-store-profiles"])];
 
 export const ROLE_PAGES = {
   product_development: PRODUCT_DEVELOPMENT,

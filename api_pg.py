@@ -836,7 +836,7 @@ _LEGACY_PAGE_ALIASES = {"products": "product-analysis", "velocity": "inventory"}
 
 # Admin management page ids (admin- prefix). These are route-guarded as
 # adminOnly anyway and can NEVER be assigned to a non-admin group.
-ADMIN_PAGE_IDS = ["admin-users", "admin-activity-logs", "admin-feedback", "admin-store-clusters", "admin-page-visibility", "admin-group-access"]
+ADMIN_PAGE_IDS = ["admin-users", "admin-activity-logs", "admin-feedback", "admin-store-clusters", "admin-page-visibility", "admin-group-access", "admin-store-profiles"]
 
 # The full catalog of valid page ids — every non-admin page that can appear in
 # nav/Home plus the admin pages. Used to validate PUT payloads and to compute
@@ -41494,6 +41494,67 @@ def production_hourly_tracker(
         "status": status,
         "slots": slots,
     }
+
+
+@_deferred_startup
+def _ensure_pos_locations_meta():
+    """Add sqft and optimal_stock columns to pos_locations and seed all 28 known stores.
+
+    Uses IF NOT EXISTS so it is safe to run on every restart (idempotent).
+    UPDATE … WHERE location_name = … only touches matching rows, so stores not
+    in the seed list retain whatever values they already have.
+    """
+    SEED = [
+        ("Vivo Meru",              704,  1374),
+        ("Vivo T-Mall",            486,  1503),
+        ("Vivo Greenspan",         506,  1353),
+        ("Vivo Acacia",           1500,  2589),
+        ("Vivo MSA Digo Road",    1497,  1943),
+        ("Vivo Kileleshwa",        800,  1357),
+        ("Vivo City Mall",         840,  1619),
+        ("Vivo Signature Mall",   1100,  1250),
+        ("The Oasis Mall",        1500,  2691),
+        ("Vivo Hub",               397,  1351),
+        ("Vivo Nakuru",            517,  1427),
+        ("Vivo Capital Centre",    650,  1173),
+        ("Vivo Kisumu",            568,  1521),
+        ("Vivo Eldoret",           517,  1327),
+        ("Vivo TRM",              1549,  1908),
+        ("Vivo Galleria",          667,  1410),
+        ("Vivo Runda",            1042,  1172),
+        ("Vivo Village Market",    780,  1549),
+        ("Vivo Two Rivers",        775,  1205),
+        ("Vivo Imaara",           1916,  1530),
+        ("Vivo Yaya",              797,  1480),
+        ("Vivo Kigali Heights",   2000,  2005),
+        ("Vivo Garden City",       678,  1254),
+        ("Vivo Mama Ngina St",    1291,  2206),
+        ("Vivo Junction",         1830,  3117),
+        ("Vivo Moi Avenue",       2500,  2114),
+        ("Vivo Sarit",            1096,  1666),
+        ("Safari Sarit & Zoya",   3596,  1574),
+    ]
+    try:
+        conn = get_conn()
+        try:
+            conn.autocommit = True
+            cur = conn.cursor()
+            cur.execute(
+                "ALTER TABLE pos_locations "
+                "ADD COLUMN IF NOT EXISTS sqft INT, "
+                "ADD COLUMN IF NOT EXISTS optimal_stock INT"
+            )
+            for location_name, sqft, optimal_stock in SEED:
+                cur.execute(
+                    "UPDATE pos_locations SET sqft = %s, optimal_stock = %s "
+                    "WHERE location_name = %s",
+                    (sqft, optimal_stock, location_name))
+            cur.close()
+        finally:
+            conn.close()
+        log.info("pos_locations meta columns ensured and seeded (%d stores)", len(SEED))
+    except Exception as e:
+        log.error("_ensure_pos_locations_meta failed: %s", e)
 
 
 if __name__ == "__main__":

@@ -153,6 +153,11 @@ const MerchStoreDetail = () => {
   }, [stores]);
   const totalRev6m = useMemo(() => stores.reduce((a, s) => a + (s.revenue_6m || 0), 0), [stores]);
   const totalUnits = useMemo(() => stores.reduce((a, s) => a + (s.units_6m || 0), 0), [stores]);
+  const totalOptimal = useMemo(() =>
+    stores.reduce((a, s) => s.optimal_stock != null ? a + s.optimal_stock : a, 0),
+    [stores]);
+  const hasOptimal = useMemo(() => stores.some(s => s.optimal_stock != null), [stores]);
+  const totalVariance = useMemo(() => totalStock - totalOptimal, [totalStock, totalOptimal]);
 
   // Revenue per store chart — sorted by revenue desc (already sorted)
   const revChart = useMemo(() =>
@@ -241,6 +246,17 @@ const MerchStoreDetail = () => {
       render: r => (r.rate_of_sale || 0).toFixed(1) },
     { key: "current_stock", label: "Stock",        sortable: true, numeric: true,
       render: r => fmtNum(r.current_stock) },
+    { key: "sqft",       label: "Sq Ft",           sortable: true, numeric: true,
+      render: r => r.sqft != null ? fmtNum(r.sqft) : "—" },
+    { key: "optimal_stock", label: "Optimal",      sortable: true, numeric: true,
+      render: r => r.optimal_stock != null ? fmtNum(r.optimal_stock) : "—" },
+    { key: "stock_variance", label: "Variance",    sortable: true, numeric: true,
+      render: r => {
+        if (r.stock_variance == null) return "—";
+        const v = r.stock_variance;
+        const color = v >= 0 ? "#1a5c38" : "#ef4444";
+        return <span style={{ color, fontWeight: 600 }}>{v >= 0 ? "+" : ""}{fmtNum(v)}</span>;
+      } },
     { key: "woc",        label: "WOC",             sortable: true, numeric: true,
       render: r => r.woc > 0 ? r.woc.toFixed(1) + " wk" : "OOS" },
     { key: "action",     label: "Action",          sortable: true,
@@ -317,6 +333,20 @@ const MerchStoreDetail = () => {
         <KPICard label="Total Stock (all stores)" value={fmtNum(totalStock)}
           sub={`WOC ${avgROS > 0 ? (totalStock / avgROS).toFixed(1) : "—"} wks overall`}
           icon={Package} showDelta={false} testId="sd-total-stock" />
+        <KPICard label="Total Optimal Stock" value={hasOptimal ? fmtNum(totalOptimal) : "—"}
+          sub="Target unit capacity"
+          icon={ArrowsLeftRight} showDelta={false} testId="sd-total-optimal" />
+        <KPICard
+          label="Stock Variance"
+          value={hasOptimal
+            ? <span style={{ color: totalVariance >= 0 ? "#1a5c38" : "#ef4444" }}>
+                {totalVariance >= 0 ? "+" : ""}{fmtNum(totalVariance)}
+              </span>
+            : "—"}
+          sub={hasOptimal
+            ? totalVariance >= 0 ? "vs optimal · over capacity" : "vs optimal · under capacity"
+            : "vs optimal · over/under"}
+          showDelta={false} testId="sd-stock-variance" />
         <KPICard label="Stores Out of Stock" value={<span className="text-rose-600">{storesOOS} stores</span>}
           sub="Need immediate supply"
           showDelta={false} testId="sd-oos" />
@@ -326,12 +356,6 @@ const MerchStoreDetail = () => {
         <KPICard label="Best Store (Revenue)" value={bestStore}
           sub={stores[0] ? fmtKES(stores[0].revenue_6m) + "/6m" : ""}
           icon={Storefront} showDelta={false} testId="sd-best-store" />
-        <KPICard label="Avg ROS per Store" value={avgROS.toFixed(1) + " units/wk"}
-          sub={`Range ${Math.min(...stores.map(s=>s.rate_of_sale||0)).toFixed(1)}–${Math.max(...stores.map(s=>s.rate_of_sale||0)).toFixed(1)}`}
-          icon={ChartBar} showDelta={false} testId="sd-avg-ros" />
-        <KPICard label="Gross Margin (6m est.)" value="—"
-          sub="Cost N/A · not available"
-          showDelta={false} testId="sd-gm" />
       </div>
 
       {/* ── Revenue per Store + ROS per Store ───────────────────────────── */}
