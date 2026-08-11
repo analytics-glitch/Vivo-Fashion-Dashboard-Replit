@@ -9,7 +9,7 @@
 import React, { useEffect, useState, useMemo } from "react";
 import { useSearchParams } from "react-router-dom";
 import { apiFetch, fmtKES, fmtKESLong, fmtNum, fmtPct, fmtDelta } from "@/lib/api";
-import { useKpis } from "@/lib/useKpis";
+import { useKpis, fetchKpis } from "@/lib/useKpis";
 import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import { SortableTable } from "@/components/SortableTable";
@@ -120,10 +120,41 @@ const MerchStoreDetail = () => {
     return `${fmt(pageFrom)} – ${fmt(pageTo)}`;
   }, [pageFrom, pageTo]);
 
-  // True all-stores totals: use the EXACT same hook as Overview so that
-  // date range, country, channel, and caching are byte-for-byte identical.
-  // useKpis reads applied directly from useFilters() — no manual params needed.
+  // All-stores totals — same hook as Overview (byte-identical params + cache).
   const { kpis: kpiTotals, prevKpis: kpiCmpTotals } = useKpis({ compare: true });
+
+  // Per-store KPIs — use /api/kpis?channel=<store> so the formula is
+  // identical to Overview. This replaces revenue_3m from /api/merch/by-store
+  // which uses a slightly different scope and will never exactly match.
+  const [storeKpiTotals, setStoreKpiTotals]     = useState(null);
+  const [storeKpiCmpTotals, setStoreKpiCmpTotals] = useState(null);
+  useEffect(() => {
+    if (!selectedStore || !pageFrom || !pageTo) {
+      setStoreKpiTotals(null);
+      setStoreKpiCmpTotals(null);
+      return;
+    }
+    let cancelled = false;
+    const baseParams = {
+      date_from: pageFrom,
+      date_to:   pageTo,
+      channel:   selectedStore,
+      country:   filters.country || undefined,
+      _v:        filters.dataVersion,
+    };
+    fetchKpis(baseParams)
+      .then(d => { if (!cancelled) setStoreKpiTotals(d); })
+      .catch(() => {});
+    if (compareFrom && compareTo) {
+      fetchKpis({ ...baseParams, date_from: compareFrom, date_to: compareTo })
+        .then(d => { if (!cancelled) setStoreKpiCmpTotals(d); })
+        .catch(() => {});
+    } else {
+      setStoreKpiCmpTotals(null);
+    }
+    return () => { cancelled = true; };
+  }, [selectedStore, pageFrom, pageTo, compareFrom, compareTo,
+      filters.country, filters.dataVersion]);
 
   // Load store list
   useEffect(() => {
@@ -242,12 +273,16 @@ const MerchStoreDetail = () => {
     [styles],
   );
 
-  // Always use /api/kpis totals for the headline so that Total Sales and
-  // Units Sold match the Overview page exactly — regardless of whether a
-  // specific store is selected. Per-store revenue / units are visible in
-  // the store table and individual store cards below the headline grid.
-  const totalRevenue = kpiTotals?.total_sales ?? null;
-  const totalUnits   = kpiTotals?.total_units ?? 0;
+  // Headline revenue + units — both cases now use /api/kpis so the formula
+  // is byte-identical to Overview regardless of whether a store is selected.
+  //   • No store  → useKpis hook result (all-stores, respects channel filter)
+  //   • Store     → fetchKpis(channel=<store>) result
+  const totalRevenue = selectedStore
+    ? (storeKpiTotals?.total_sales  ?? null)
+    : (kpiTotals?.total_sales       ?? null);
+  const totalUnits = selectedStore
+    ? (storeKpiTotals?.total_units  ?? 0)
+    : (kpiTotals?.total_units       ?? 0);
 
   // Comparison-period label + deltas (shown on Revenue and Units cards)
   const compareLabel = useMemo(() => {
@@ -261,9 +296,13 @@ const MerchStoreDetail = () => {
     return null;
   }, [compareMode, compareFrom, compareTo]);
 
-  // Comparison values: always from useKpis so the delta matches Overview.
-  const compareRevenue = kpiCmpTotals?.total_sales ?? null;
-  const compareUnits   = kpiCmpTotals?.total_units ?? null;
+  // Comparison values — same /api/kpis source as the headline.
+  const compareRevenue = selectedStore
+    ? (storeKpiCmpTotals?.total_sales ?? null)
+    : (kpiCmpTotals?.total_sales      ?? null);
+  const compareUnits = selectedStore
+    ? (storeKpiCmpTotals?.total_units ?? null)
+    : (kpiCmpTotals?.total_units      ?? null);
 
   const revDelta = useMemo(() => {
     if (!compareLabel || compareRevenue == null || compareRevenue === 0) return null;
@@ -387,7 +426,7 @@ const MerchStoreDetail = () => {
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
 
             {/* ── Revenue & Units ── always first ───────────────────────── */}
-            <KPICard label="Total Sales"
+            <KPICard label={selectedStore ? "Store Revenue" : "Total Sales"}
               value={totalRevenue != null ? fmtKES(totalRevenue) : "—"}
               valueFull={totalRevenue != null ? fmtKESLong(totalRevenue) : undefined}
               showDelta={false}
@@ -397,6 +436,11 @@ const MerchStoreDetail = () => {
                   {totalRevenue != null && (
                     <span className="block mt-1 text-[14px] font-semibold">
                       Avg {fmtKES(Math.round(totalRevenue / numMonths))} / month
+                    </span>
+                  )}
+                  {selectedStore && kpiTotals?.total_sales != null && (
+                    <span className="block mt-0.5 text-[13px] text-muted">
+                      All stores: {fmtKES(kpiTotals.total_sales)}
                     </span>
                   )}
                   {compareLabel && compareRevenue != null && (
