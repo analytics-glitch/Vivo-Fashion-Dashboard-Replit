@@ -544,7 +544,7 @@ const MerchStoreDetail = () => {
                     </span>}
               sub={!selectedStore
                 ? "Select a store to see"
-                : atRiskCount === 1 ? "1 style needs action" : `${atRiskCount} styles need action`}
+                : <><span className="block">Low cover or slow-moving — likely dead stock without a markdown or transfer</span><span className="block mt-0.5">{atRiskCount === 1 ? "1 style needs action" : `${atRiskCount} styles need action`}</span></>}
               icon={Warning} showDelta={false} testId="sd-at-risk" />
 
             <KPICard label="Avg Sell-Through"
