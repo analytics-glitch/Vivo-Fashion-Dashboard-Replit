@@ -191,8 +191,8 @@ const MerchandisingHub = () => {
           style={{ top: "var(--app-navbar-h, 0px)" }}
         >
           {/* Tab row — dropdown on < lg, wrapped pills on lg+ */}
-          {/* Mobile / tablet: select dropdown */}
-          <div className="lg:hidden border-b border-border px-2 py-1.5" data-testid="merch-tabs-select">
+          {/* Phones only (<480px): select dropdown */}
+          <div className="xs:hidden border-b border-border px-2 py-1.5 block sm:hidden" data-testid="merch-tabs-select">
             <select
               value={active?.id || ""}
               onChange={e => handleTabClick(e.target.value)}
@@ -204,9 +204,9 @@ const MerchandisingHub = () => {
             </select>
           </div>
 
-          {/* Desktop: wrapped tab pills */}
+          {/* Tablet + desktop: wrapped tab pills */}
           <div
-            className="hidden lg:flex flex-wrap items-center gap-0.5 border-b border-border"
+            className="hidden sm:flex flex-wrap items-center gap-0.5 border-b border-border"
             data-testid="merch-tabs"
           >
             {visibleTabs.map((t) => (
@@ -216,7 +216,7 @@ const MerchandisingHub = () => {
                 onClick={() => handleTabClick(t.id)}
                 data-testid={`merch-tab-${t.id}`}
                 className={
-                  "px-3 py-2 text-[12.5px] font-medium border-b-2 -mb-px transition-colors whitespace-nowrap " +
+                  "px-2.5 py-2 text-[12px] font-medium border-b-2 -mb-px transition-colors whitespace-nowrap " +
                   (t.id === active?.id
                     ? "border-[#1a5c38] text-[#1a5c38]"
                     : "border-transparent text-muted hover:text-foreground")
