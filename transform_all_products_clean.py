@@ -217,6 +217,17 @@ def main():
     cur  = conn.cursor()
     now  = datetime.now(timezone.utc)
 
+    # ── Idempotent schema migration ───────────────────────────────────────────
+    # ADD COLUMN IF NOT EXISTS is safe to run on every extract so new environments
+    # and database restores get the columns automatically, without a manual step.
+    cur.execute("""
+        ALTER TABLE all_products_clean
+        ADD COLUMN IF NOT EXISTS standard_cost_kes NUMERIC DEFAULT NULL,
+        ADD COLUMN IF NOT EXISTS last_order_date DATE DEFAULT NULL
+    """)
+    conn.commit()
+    log.info("Schema: standard_cost_kes and last_order_date columns ensured")
+
     log.info("Building all_products_clean...")
     cur.execute("TRUNCATE all_products_clean")
     conn.commit()  # release the exclusive lock immediately; subsequent inserts use row locks only
@@ -676,6 +687,42 @@ def main():
         WHERE product_type IS NOT NULL
     """)
     log.info("Final category sync done")
+
+    # ── Populate standard_cost_kes from raw_odoo_products ────────────────────
+    # standard_price is already in the raw table; copy it to the dedicated cost
+    # column (keyed on sku = default_code, newest write_date wins for any dupe).
+    log.info("Populating standard_cost_kes...")
+    cur.execute("""
+        UPDATE all_products_clean apc
+        SET standard_cost_kes = rop.standard_price
+        FROM (
+            SELECT DISTINCT ON (default_code) default_code, standard_price
+            FROM raw_odoo_products
+            WHERE default_code IS NOT NULL
+              AND standard_price IS NOT NULL
+              AND standard_price > 0
+            ORDER BY default_code, write_date DESC
+        ) rop
+        WHERE apc.sku = rop.default_code
+    """)
+    log.info("standard_cost_kes populated: %d rows", cur.rowcount)
+    conn.commit()
+
+    # ── Populate last_order_date from production_orders ───────────────────────
+    log.info("Populating last_order_date...")
+    cur.execute("""
+        UPDATE all_products_clean apc
+        SET last_order_date = po.max_date
+        FROM (
+            SELECT style_number, MAX(date_ordered)::date AS max_date
+            FROM production_orders
+            WHERE style_number IS NOT NULL AND date_ordered IS NOT NULL
+            GROUP BY style_number
+        ) po
+        WHERE apc.style_number = po.style_number
+    """)
+    log.info("last_order_date populated: %d rows", cur.rowcount)
+    conn.commit()
 
     # ── Durable product-master overrides (WS8 T810) ──────────────────────────
     # Odoo attribute data carries a few wrong brand/subcategory values; the

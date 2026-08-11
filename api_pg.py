@@ -10439,6 +10439,11 @@ def analytics_product_analysis(
         " WHERE substring(style_launch_date,1,10) ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$') AS launch_date,"
         " COUNT(DISTINCT NULLIF(TRIM(size),'')) AS sizes_count,"
         " COUNT(DISTINCT NULLIF(TRIM(color_print),'')) AS colors_count,"
+        # standard_cost_kes: landed cost per unit from Odoo finance team.
+        # MAX() is safe because all SKUs of a style share the same cost (or near-enough).
+        # last_order_date: most recent production buying order date per style.
+        " MAX(standard_cost_kes) AS standard_cost_kes,"
+        " MAX(last_order_date) AS last_order_date,"
         # Representative SKU for the row's product image. Prefer a SKU that
         # actually has an image (Odoo image_512 OR a Shopify image URL, matched
         # V-prefix-insensitively the same way the image endpoints expand), so a
@@ -10488,7 +10493,9 @@ def analytics_product_analysis(
         " COALESCE(st.soh_pipeline,0) AS soh_pipeline,"
         " COALESCE(st.soh_stores,0) AS soh_stores," + pos_out + " sa.current_price,"
         " COALESCE(nos.months_active_12,0) AS months_active_12,"
-        " COALESCE(p.is_noos, FALSE) AS is_noos"
+        " COALESCE(p.is_noos, FALSE) AS is_noos,"
+        " p.standard_cost_kes,"
+        " p.last_order_date"
         + from_join + activity_where
     )
 
@@ -10542,6 +10549,16 @@ def analytics_product_analysis(
         sales_life = float(r["sales_life"] or 0)
         asp_6m = round(revenue_6m / gross_units_6m) if gross_units_6m > 0 else None
         asp_24m = round(revenue_24m / gross_units_24m) if gross_units_24m > 0 else None
+        # Margin & cost derivatives (all None when standard_cost_kes is not set)
+        _cost = float(r["standard_cost_kes"]) if r.get("standard_cost_kes") is not None else None
+        _asp_for_margin = asp_6m  # use 6-month ASP as the representative selling price
+        if _cost is not None and _asp_for_margin and _asp_for_margin > 0:
+            gross_margin_pct = round((_asp_for_margin - _cost) / _asp_for_margin * 100, 1)
+            gross_margin_kes = round((_asp_for_margin - _cost) * gross_units_6m)
+        else:
+            gross_margin_pct = None
+            gross_margin_kes = None
+        cogs_6m_kes = round(_cost * gross_units_6m) if _cost is not None else None
         avg_price_life = round(sales_life / units_life) if units_life > 0 else None
         # Full Price % = lifetime avg selling price ÷ full ticket price (capped at
         # 100), matching the Range Management report's definition.
@@ -10619,6 +10636,12 @@ def analytics_product_analysis(
             "sizes_count": int(r["sizes_count"] or 0),
             "colors_count": int(r["colors_count"] or 0),
             "months_active_12": months_active_12,
+            # Cost & margin fields (None when cost not yet set in Odoo)
+            "standard_cost_kes": _cost,
+            "last_order_date": str(r["last_order_date"]) if r.get("last_order_date") else None,
+            "gross_margin_pct": gross_margin_pct,
+            "gross_margin_kes": gross_margin_kes,
+            "cogs_6m_kes": cogs_6m_kes,
         })
 
     # Roll the (possibly dim-grain) rows up to STYLE grain so the status filter
