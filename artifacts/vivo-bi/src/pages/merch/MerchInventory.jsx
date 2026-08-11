@@ -11,7 +11,7 @@
  *   by-subcategory → { rows: [{ subcategory, avg_woc }] }
  *   by-tier  → { rows: [{ tier, current_stock }] }
  */
-import React, { useMemo } from "react";
+import React, { useMemo, useState } from "react";
 import {
   BarChart, Bar, XAxis, YAxis, ResponsiveContainer, CartesianGrid,
   Tooltip, Cell, PieChart, Pie, Legend, LabelList,
@@ -19,7 +19,7 @@ import {
 } from "recharts";
 import { Loading, ErrorBox } from "@/components/common";
 import {
-  useMerchData, MerchKPICard, ChartCard,
+  useMerchData, MerchKPICard, ChartCard, SubcatFilter,
   C, fmtNum, fmtWoc, fmtPct1, wocColor,
 } from "./MerchHelpers";
 
@@ -59,8 +59,9 @@ const TIER_COLORS = [C.blue, C.teal, C.purple, C.amber];
 const RECENCY_COLORS = [C.green, "#60a5fa", C.amber, C.red, "#94a3b8"];
 
 export default function MerchInventory() {
+  const [localSubcat, setLocalSubcat] = useState(null);
   const { summary, styles, byBrand, bySubcategory, byTier, loading, error } =
-    useMerchData(["summary", "styles", "by-brand", "by-subcategory", "by-tier"]);
+    useMerchData(["summary", "styles", "by-brand", "by-subcategory", "by-tier"], localSubcat);
 
   // styles → { styles: [...] }
   const styleRows = useMemo(() => styles?.styles || [], [styles]);
@@ -140,8 +141,11 @@ export default function MerchInventory() {
 
   return (
     <div className="space-y-5 pb-8">
-      <div className="text-[11px] text-slate-400">
-        Stock Levels, Weeks of Cover &amp; Risk Flags
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="text-[11px] text-slate-400">
+          Stock Levels, Weeks of Cover &amp; Risk Flags
+        </div>
+        <SubcatFilter value={localSubcat} onChange={setLocalSubcat} />
       </div>
 
       {/* ── KPI cards ── */}

@@ -13,7 +13,7 @@
  * NOTE: There is no "lifetime SOR" field on the aggregate endpoints.
  * We derive it per-style from units_life / (units_life + current_stock).
  */
-import React, { useMemo } from "react";
+import React, { useMemo, useState } from "react";
 import {
   BarChart, Bar, XAxis, YAxis, ResponsiveContainer, CartesianGrid,
   Tooltip, Cell, LabelList, ReferenceLine, ScatterChart, Scatter, ZAxis,
@@ -21,7 +21,7 @@ import {
 } from "recharts";
 import { Loading, ErrorBox } from "@/components/common";
 import {
-  useMerchData, MerchKPICard, ChartCard,
+  useMerchData, MerchKPICard, ChartCard, SubcatFilter,
   C, fmtPct1, fmtNum, sorColor,
 } from "./MerchHelpers";
 
@@ -81,8 +81,9 @@ const bandColorByValue = (val) => {
 const SOR_DIST_COLORS = [C.red, C.amber, C.green, "#22d3ee"];
 
 export default function MerchSellThrough() {
+  const [localSubcat, setLocalSubcat] = useState(null);
   const { summary, styles, byBrand, bySubcategory, byTier, loading, error } =
-    useMerchData(["summary", "styles", "by-brand", "by-subcategory", "by-tier"]);
+    useMerchData(["summary", "styles", "by-brand", "by-subcategory", "by-tier"], localSubcat);
 
   // styles → { styles: [...] }
   const styleRows = useMemo(() => styles?.styles || [], [styles]);
@@ -170,8 +171,11 @@ export default function MerchSellThrough() {
 
   return (
     <div className="space-y-5 pb-8">
-      <div className="text-[11px] text-slate-400">
-        Sell-Through Rates, Markdown Depth &amp; Price Management
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="text-[11px] text-slate-400">
+          Sell-Through Rates, Markdown Depth &amp; Price Management
+        </div>
+        <SubcatFilter value={localSubcat} onChange={setLocalSubcat} />
       </div>
 
       {/* ── KPI cards ── */}

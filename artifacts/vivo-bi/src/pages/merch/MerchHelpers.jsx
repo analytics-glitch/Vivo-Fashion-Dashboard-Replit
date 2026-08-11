@@ -48,6 +48,13 @@ export const fmtNum = (n) => {
   return Math.round(Number(n)).toLocaleString("en-US");
 };
 
+// Full-format price — "KES 4,125" (no abbreviation). Use for per-unit prices
+// where the raw number is a meaningful KES figure, not a large aggregate.
+export const fmtKESFull = (n) => {
+  if (n == null || isNaN(Number(n))) return "—";
+  return "KES " + Math.round(Number(n)).toLocaleString("en-US");
+};
+
 export const fmtAxisM = (n) => {
   const v = Number(n);
   if (Math.abs(v) >= 1_000_000) return (v / 1_000_000).toFixed(0) + "M";
@@ -67,6 +74,8 @@ export const MerchKPICard = ({
   sub2,
   accentColor = C.blue,
   testId,
+  trend,       // optional number: % change vs compare period (null = hide)
+  trendLabel,  // optional string: e.g. "vs Last Month"
 }) => (
   <div
     className="bg-white rounded-xl shadow-sm overflow-hidden flex"
@@ -90,9 +99,64 @@ export const MerchKPICard = ({
       {sub2 && (
         <div className="mt-0.5 text-[11px] font-semibold text-slate-500">{sub2}</div>
       )}
+      {trend != null && !isNaN(trend) && (
+        <div className="mt-2 flex items-center gap-1.5 flex-wrap">
+          <span className={`text-[13px] font-bold leading-none ${
+            trend > 0.05 ? "text-emerald-600" : trend < -0.05 ? "text-rose-500" : "text-slate-400"
+          }`}>
+            {trend > 0.05 ? "↑" : trend < -0.05 ? "↓" : "→"}
+          </span>
+          <span className={`text-[11px] font-semibold ${
+            trend > 0.05 ? "text-emerald-600" : trend < -0.05 ? "text-rose-500" : "text-slate-400"
+          }`}>
+            {Math.abs(trend).toFixed(1)}%
+          </span>
+          {trendLabel && (
+            <span className="text-[10px] text-slate-400 truncate">{trendLabel}</span>
+          )}
+        </div>
+      )}
     </div>
   </div>
 );
+
+// ── SubcatFilter ─────────────────────────────────────────────────────────────
+/**
+ * Compact subcategory selector for per-tab local scope filtering.
+ * Reads the category list from the hub context (no extra fetch needed).
+ * value: null = "not set, hub-level applies"; "" = "explicitly all"; "Dresses" = specific.
+ * onChange: receives a string value or null (when "All" is selected).
+ */
+export const SubcatFilter = ({ value, onChange }) => {
+  const filters = useMerchFilters();
+  const categories = filters.filterOptions?.categories || [];
+  if (!categories.length) return null;
+  return (
+    <div className="flex items-center gap-2 flex-wrap mb-4">
+      <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide shrink-0">
+        Subcategory
+      </span>
+      <select
+        value={value ?? ""}
+        onChange={(e) => onChange(e.target.value || null)}
+        className="text-[12px] border border-slate-200 rounded-lg px-2.5 py-1 bg-white text-slate-700 focus:outline-none focus:ring-1 focus:ring-brand min-w-[160px]"
+      >
+        <option value="">All Subcategories</option>
+        {categories.map((c) => (
+          <option key={c} value={c}>{c}</option>
+        ))}
+      </select>
+      {value && (
+        <button
+          onClick={() => onChange(null)}
+          className="text-[11px] text-slate-400 hover:text-slate-600"
+        >
+          ✕ Clear
+        </button>
+      )}
+    </div>
+  );
+};
 
 // ── useMerchData ─────────────────────────────────────────────────────────────
 /**
@@ -100,11 +164,16 @@ export const MerchKPICard = ({
  * hub filters. Returns { data, loading, error } for each URL keyed by
  * the last path segment.
  *
+ * localSubcat: optional per-tab subcategory override.
+ *   null      → not set; hub-level filters.subcategory is used.
+ *   ""        → explicitly "All"; overrides hub-level (clears it for this tab).
+ *   "Dresses" → narrow to that subcategory for this tab only.
+ *
  * Usage:
  *   const { summary, styles, byBrand, bySubcategory, byTier, loading, error }
- *     = useMerchData(["summary","styles","by-brand","by-subcategory","by-tier"]);
+ *     = useMerchData(["summary","styles","by-brand","by-subcategory","by-tier"], localSubcat);
  */
-export const useMerchData = (endpoints = []) => {
+export const useMerchData = (endpoints = [], localSubcat = null) => {
   const filters = useMerchFilters();
   const [state, setState] = useState({ loading: true, error: null });
 
@@ -114,7 +183,9 @@ export const useMerchData = (endpoints = []) => {
   if (filters.country)      params.country      = filters.country;
   if (filters.pos_location) params.pos_location = filters.pos_location;
   if (filters.brand)        params.brand        = filters.brand;
-  if (filters.subcategory)  params.subcategory  = filters.subcategory;
+  // Local override wins; null = fall back to hub-level
+  const effectiveSubcat = localSubcat !== null ? localSubcat : (filters.subcategory || "");
+  if (effectiveSubcat)      params.subcategory  = effectiveSubcat;
 
   // Stable serialisation for the dep array
   const paramsKey = JSON.stringify(params) + filters.dataVersion;

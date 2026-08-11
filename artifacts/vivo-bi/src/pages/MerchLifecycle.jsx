@@ -16,6 +16,7 @@ import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle } from "@/components/common";
 import { apiFetch, fmtNum, fmtDec } from "@/lib/api";
 import { useMerchFilters } from "./MerchandisingHub";
+import { SubcatFilter } from "./merch/MerchHelpers";
 
 // ── Colours ───────────────────────────────────────────────────────────────────
 const ERA_COLOR = (year) => {
@@ -58,14 +59,16 @@ const MerchLifecycle = () => {
   const [tierRows, setTierRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [sortKey, setSortKey] = useState("reorder_count");
+  const [sortKey, setSortKey]     = useState("reorder_count");
+  const [localSubcat, setLocalSubcat] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
+    const effSubcat = localSubcat !== null ? localSubcat : (filters.subcategory || "");
     const params = { country: filters.country, from_date: filters.from_date, to_date: filters.to_date,
-      brand: filters.brand, subcategory: filters.subcategory };
+      brand: filters.brand, ...(effSubcat ? { subcategory: effSubcat } : {}) };
     Promise.all([
       apiFetch("/merch/styles", { params }),
       apiFetch("/merch/by-tier", { params }),
@@ -78,7 +81,7 @@ const MerchLifecycle = () => {
       .catch((e) => { if (!cancelled) setError(e?.response?.data?.detail || e.message); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [filters.country, filters.from_date, filters.to_date, filters.brand, filters.subcategory, filters.dataVersion]);
+  }, [filters.country, filters.from_date, filters.to_date, filters.brand, filters.subcategory, filters.dataVersion, localSubcat]);
 
   // ── Derived metrics ───────────────────────────────────────────────────────
   const enriched = useMemo(() =>
@@ -172,10 +175,14 @@ const MerchLifecycle = () => {
   if (loading) return <Loading label="Loading lifecycle data…" />;
   if (error)   return <ErrorBox message={error} />;
 
+  // ── Local subcategory selector rendered at top of page content ───────────
+  const subcatSelector = <SubcatFilter value={localSubcat} onChange={setLocalSubcat} />;
+
   const today = new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
 
   return (
     <div className="space-y-6 pb-10">
+      {subcatSelector}
       <div>
         <h2 className="text-[22px] font-bold text-foreground">Style Lifecycle &amp; Age Analysis</h2>
         <p className="text-[13px] text-muted mt-0.5">Launch Cohorts, Age Distribution &amp; Reorder Performance · As at {today}</p>

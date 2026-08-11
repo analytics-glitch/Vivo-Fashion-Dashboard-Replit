@@ -17,6 +17,7 @@ import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle } from "@/components/common";
 import { apiFetch, fmtNum, fmtDec } from "@/lib/api";
 import { useMerchFilters } from "./MerchandisingHub";
+import { SubcatFilter } from "./merch/MerchHelpers";
 
 // ── Colour helpers ────────────────────────────────────────────────────────────
 const WOC_COLOR = (woc) => {
@@ -57,13 +58,15 @@ const MerchReplen = () => {
   const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState(null);
+  const [localSubcat, setLocalSubcat] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
+    const effSubcat = localSubcat !== null ? localSubcat : (filters.subcategory || "");
     const params = { country: filters.country, from_date: filters.from_date, to_date: filters.to_date,
-      brand: filters.brand, subcategory: filters.subcategory };
+      brand: filters.brand, ...(effSubcat ? { subcategory: effSubcat } : {}) };
     Promise.all([
       apiFetch("/merch/styles",          { params }),
       apiFetch("/merch/by-subcategory",  { params }),
@@ -80,7 +83,7 @@ const MerchReplen = () => {
       .catch(e => { if (!cancelled) setError(e?.response?.data?.detail || e.message); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [filters.country, filters.from_date, filters.to_date, filters.brand, filters.subcategory, filters.dataVersion]);
+  }, [filters.country, filters.from_date, filters.to_date, filters.brand, filters.subcategory, filters.dataVersion, localSubcat]);
 
   // ── KPIs ─────────────────────────────────────────────────────────────────
   const kpis = useMemo(() => {
@@ -172,10 +175,13 @@ const MerchReplen = () => {
   if (loading) return <Loading label="Loading replenishment data…" />;
   if (error)   return <ErrorBox message={error} />;
 
+  const subcatSelector = <SubcatFilter value={localSubcat} onChange={setLocalSubcat} />;
+
   const today = new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
 
   return (
     <div className="space-y-6 pb-10">
+      {subcatSelector}
       <div>
         <h2 className="text-[22px] font-bold text-foreground">Replenishment &amp; Reorder Planning</h2>
         <p className="text-[13px] text-muted mt-0.5">Stock Coverage, Velocity &amp; Reorder Prioritisation · As at {today}</p>

@@ -11,16 +11,19 @@
  *   by-subcategory → { rows: [{ subcategory, revenue_6m, units_6m }] }
  *   by-tier  → { rows: [{ tier, revenue_6m, units_6m, avg_full_price_pct }] }
  */
-import React, { useMemo } from "react";
+import React, { useMemo, useState, useEffect } from "react";
 import {
   BarChart, Bar, XAxis, YAxis, ResponsiveContainer, CartesianGrid,
   Tooltip, Cell, PieChart, Pie, Legend, LabelList,
 } from "recharts";
 import { Loading, ErrorBox } from "@/components/common";
 import {
-  useMerchData, MerchKPICard, ChartCard,
-  C, fmtKESM, fmtPct1, fmtNum, fmtAxisM,
+  useMerchData, MerchKPICard, ChartCard, SubcatFilter,
+  C, fmtKESM, fmtKESFull, fmtPct1, fmtNum, fmtAxisM,
 } from "./MerchHelpers";
+import { useMerchFilters } from "@/pages/MerchandisingHub";
+import { useFilters } from "@/lib/filters";
+import { api, comparePeriod } from "@/lib/api";
 
 const KesTooltip = ({ active, payload, label }) => {
   if (!active || !payload?.length) return null;
@@ -89,8 +92,13 @@ const PctTooltip = ({ active, payload, label }) => {
 const FP_MIX_COLORS = [C.red, C.amber, C.blue, C.green];
 
 export default function MerchSales() {
+  const filters     = useMerchFilters();
+  const { applied } = useFilters();
+  const [localSubcat,   setLocalSubcat]   = useState(null);
+  const [prevStyleRows, setPrevStyleRows] = useState([]);
+
   const { summary, styles, byBrand, bySubcategory, byTier, loading, error } =
-    useMerchData(["summary", "styles", "by-brand", "by-subcategory", "by-tier"]);
+    useMerchData(["summary", "styles", "by-brand", "by-subcategory", "by-tier"], localSubcat);
 
   // styles → { styles: [...] }
   const styleRows = useMemo(() => styles?.styles || [], [styles]);
@@ -189,6 +197,68 @@ export default function MerchSales() {
     return sumUnits > 0 ? Math.round(sumWt / sumUnits) : 0;
   }, [styleRows]);
 
+  // ── Compare period ────────────────────────────────────────────────────────
+  // Derive the compare date range from the global filter-bar compare mode.
+  const compareRange = useMemo(() =>
+    comparePeriod(
+      applied.dateFrom, applied.dateTo,
+      applied.compareMode, applied.compareDateFrom, applied.compareDateTo
+    ),
+    [applied.dateFrom, applied.dateTo, applied.compareMode,
+     applied.compareDateFrom, applied.compareDateTo]);
+
+  // Fetch /merch/styles for the compare period whenever the range changes.
+  useEffect(() => {
+    if (!compareRange) { setPrevStyleRows([]); return; }
+    let cancelled = false;
+    const effSubcat = localSubcat !== null ? localSubcat : (filters.subcategory || "");
+    const params = {
+      from_date:    compareRange.date_from,
+      to_date:      compareRange.date_to,
+      country:      filters.country,
+      pos_location: filters.pos_location,
+      brand:        filters.brand,
+      ...(effSubcat ? { subcategory: effSubcat } : {}),
+    };
+    api.get("/merch/styles", { params })
+      .then((r) => { if (!cancelled) setPrevStyleRows(r.data?.styles || []); })
+      .catch(() => { if (!cancelled) setPrevStyleRows([]); });
+    return () => { cancelled = true; };
+  }, [
+    applied.dateFrom, applied.dateTo, applied.compareMode,
+    applied.compareDateFrom, applied.compareDateTo,
+    filters.country, filters.pos_location, filters.brand,
+    filters.subcategory, filters.dataVersion, localSubcat,
+    // compareRange is stable (memoized) but listed deps are the real triggers
+  ]);
+
+  // Compare period weighted averages
+  const prevAvgUnitPrice = useMemo(() => {
+    const totalRev   = prevStyleRows.reduce((s, r) => s + (r.revenue_6m || 0), 0);
+    const totalUnits = prevStyleRows.reduce((s, r) => s + (r.units_6m   || 0), 0);
+    return totalUnits > 0 ? Math.round(totalRev / totalUnits) : null;
+  }, [prevStyleRows]);
+
+  const prevAvgFullPriceKES = useMemo(() => {
+    let sumWt = 0, sumUnits = 0;
+    for (const r of prevStyleRows) {
+      const fp = r.full_price;
+      const u  = r.units_6m || 0;
+      if (fp == null || fp <= 0) continue;
+      sumWt    += fp * u;
+      sumUnits += u;
+    }
+    return sumUnits > 0 ? Math.round(sumWt / sumUnits) : null;
+  }, [prevStyleRows]);
+
+  // Trend %: positive = up vs compare period, negative = down
+  const aupTrend = (avgUnitPrice && prevAvgUnitPrice)
+    ? ((avgUnitPrice - prevAvgUnitPrice) / prevAvgUnitPrice * 100)
+    : null;
+  const afpTrend = (avgFullPriceKES && prevAvgFullPriceKES)
+    ? ((avgFullPriceKES - prevAvgFullPriceKES) / prevAvgFullPriceKES * 100)
+    : null;
+
   if (loading) return <Loading label="Loading Sales Performance…" />;
   if (error)   return <ErrorBox message={error} />;
 
@@ -196,8 +266,11 @@ export default function MerchSales() {
 
   return (
     <div className="space-y-5 pb-8">
-      <div className="text-[11px] text-slate-400">
-        Revenue &amp; Units Analysis · 6-Month View · All Brands · All Subcategories
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="text-[11px] text-slate-400">
+          Revenue &amp; Units Analysis · 6-Month View
+        </div>
+        <SubcatFilter value={localSubcat} onChange={setLocalSubcat} />
       </div>
 
       {/* ── KPI cards ── */}
@@ -220,9 +293,11 @@ export default function MerchSales() {
         />
         <MerchKPICard
           label="Avg Unit Price"
-          value={fmtKESM(avgUnitPrice)}
-          sub="Avg Full Price (KES)"
-          sub2={fmtKESM(avgFullPriceKES)}
+          value={fmtKESFull(avgUnitPrice)}
+          sub="Avg Full Price"
+          sub2={fmtKESFull(avgFullPriceKES)}
+          trend={aupTrend}
+          trendLabel={compareRange?.label}
           accentColor={C.purple}
           testId="merch-sales-kpi-aup"
         />

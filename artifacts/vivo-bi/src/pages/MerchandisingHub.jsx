@@ -144,7 +144,9 @@ const MerchandisingHub = () => {
     brand:        hubBrand       || undefined,
     subcategory:  hubSubcategory || undefined,
     dataVersion,   // bump triggers re-fetch in tab components
-  }), [dateFrom, dateTo, countries, channels, hubBrand, hubSubcategory, dataVersion]);
+    filterOptions, // expose to tab pages so they can build local subcategory selectors
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [dateFrom, dateTo, countries, channels, hubBrand, hubSubcategory, dataVersion, filterOptions]);
 
   // ── Tab selection ─────────────────────────────────────────────────────────
   const visibleTabs = MERCH_TABS.filter((t) => canAccessPage(user, t.pageId));

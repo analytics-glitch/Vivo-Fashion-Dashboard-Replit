@@ -14,14 +14,14 @@
  *   by-subcategory → same shape with subcategory key
  *   by-tier  → same shape with tier key
  */
-import React, { useMemo } from "react";
+import React, { useMemo, useState } from "react";
 import {
   BarChart, Bar, XAxis, YAxis, ResponsiveContainer, CartesianGrid,
   Tooltip, Cell, PieChart, Pie, Legend, LabelList,
 } from "recharts";
 import { Loading, ErrorBox } from "@/components/common";
 import {
-  useMerchData, MerchKPICard, ChartCard,
+  useMerchData, MerchKPICard, ChartCard, SubcatFilter,
   C, fmtKESM, fmtPct1, fmtNum, fmtAxisM,
 } from "./MerchHelpers";
 import { useMerchFilters } from "@/pages/MerchandisingHub";
@@ -70,8 +70,9 @@ const FP_BUCKET_COLORS = [C.red, C.amber, C.blue, C.green];
 
 export default function MerchOverview() {
   const filters = useMerchFilters();
+  const [localSubcat, setLocalSubcat] = useState(null);
   const { summary, styles, byBrand, bySubcategory, byTier, loading, error } =
-    useMerchData(["summary", "styles", "by-brand", "by-subcategory", "by-tier"]);
+    useMerchData(["summary", "styles", "by-brand", "by-subcategory", "by-tier"], localSubcat);
 
   // ── styles is { styles: [...], count } ────────────────────────────────────
   const styleRows = useMemo(() => styles?.styles || [], [styles]);
@@ -187,8 +188,11 @@ export default function MerchOverview() {
 
   return (
     <div className="space-y-5 pb-8">
-      <div className="text-[11px] text-slate-400">
-        Active Style Lines · {dateLabel} · {locationLabel}
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="text-[11px] text-slate-400">
+          Active Style Lines · {dateLabel} · {locationLabel}
+        </div>
+        <SubcatFilter value={localSubcat} onChange={setLocalSubcat} />
       </div>
 
       {/* ── KPI cards ── */}

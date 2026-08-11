@@ -17,6 +17,7 @@ import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle } from "@/components/common";
 import { apiFetch, fmtNum } from "@/lib/api";
 import { useMerchFilters } from "./MerchandisingHub";
+import { SubcatFilter } from "./merch/MerchHelpers";
 
 // ── Colour helpers ────────────────────────────────────────────────────────────
 const DAYS_COLOR = (days) => {
@@ -56,19 +57,21 @@ const MerchAtRisk = () => {
   const [styles, setStyles] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [localSubcat, setLocalSubcat] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
+    const effSubcat = localSubcat !== null ? localSubcat : (filters.subcategory || "");
     const params = { country: filters.country, from_date: filters.from_date, to_date: filters.to_date,
-      brand: filters.brand, subcategory: filters.subcategory };
+      brand: filters.brand, ...(effSubcat ? { subcategory: effSubcat } : {}) };
     apiFetch("/merch/styles", { params })
       .then(d => { if (!cancelled) setStyles(d.styles || []); })
       .catch(e => { if (!cancelled) setError(e?.response?.data?.detail || e.message); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [filters.country, filters.from_date, filters.to_date, filters.brand, filters.subcategory, filters.dataVersion]);
+  }, [filters.country, filters.from_date, filters.to_date, filters.brand, filters.subcategory, filters.dataVersion, localSubcat]);
 
   // ── KPI derivations ───────────────────────────────────────────────────────
   const kpis = useMemo(() => {
@@ -159,6 +162,8 @@ const MerchAtRisk = () => {
   if (loading) return <Loading label="Loading at-risk data…" />;
   if (error)   return <ErrorBox message={error} />;
 
+  const subcatSelector = <SubcatFilter value={localSubcat} onChange={setLocalSubcat} />;
+
   const today = new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
   const dateSlug = new Date().toISOString().slice(0, 10);
 
@@ -185,6 +190,7 @@ const MerchAtRisk = () => {
 
   return (
     <div className="space-y-6 pb-10">
+      {subcatSelector}
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
           <h2 className="text-[22px] font-bold text-foreground">At-Risk Styles &amp; Action Required</h2>

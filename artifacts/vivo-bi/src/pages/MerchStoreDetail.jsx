@@ -33,6 +33,7 @@ const wocColor = (woc, stock) => {
 
 const wocLabel = (woc, stock) => {
   if (!stock || stock === 0) return "OOS";
+  if (woc == null) return "—";
   if (woc < 1)  return woc.toFixed(1);
   if (woc < 2)  return woc.toFixed(1);
   return woc.toFixed(1);

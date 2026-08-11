@@ -3,6 +3,7 @@ import { apiFetch, fmtKES, fmtNum, fmtPct } from "@/lib/api";
 import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import { useMerchFilters } from "./MerchandisingHub";
+import { SubcatFilter } from "./merch/MerchHelpers";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, ResponsiveContainer,
   LineChart, Line, ReferenceLine, Legend, LabelList, Cell,
@@ -43,7 +44,16 @@ const monthLabel = (iso) => {
 // ── main component ─────────────────────────────────────────────────────────────
 const MerchArrivals = () => {
   const filters = useMerchFilters();
-  const params  = { ...filters };
+  const [localSubcat, setLocalSubcat] = useState(null);
+  const effectiveSubcat = localSubcat !== null ? localSubcat : (filters.subcategory || "");
+  const params = {
+    from_date:    filters.from_date,
+    to_date:      filters.to_date,
+    country:      filters.country,
+    pos_location: filters.pos_location,
+    brand:        filters.brand,
+    ...(effectiveSubcat ? { subcategory: effectiveSubcat } : {}),
+  };
 
   const [summary, setSummary]  = useState(null);
   const [styles, setStyles]    = useState([]);
@@ -77,7 +87,7 @@ const MerchArrivals = () => {
       .finally(() => !cancelled && setLoading(false));
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filters.from_date, filters.to_date, filters.country, filters.dataVersion]);
+  }, [filters.from_date, filters.to_date, filters.country, filters.brand, filters.dataVersion, localSubcat]);
 
   // ── current-year launches ────────────────────────────────────────────────
   const cyLaunches = useMemo(() =>
@@ -190,8 +200,11 @@ const MerchArrivals = () => {
   if (loading) return <Loading label="Loading New Arrivals & Pipeline…" />;
   if (error)   return <ErrorBox message={error} />;
 
+  const subcatSelector = <SubcatFilter value={localSubcat} onChange={setLocalSubcat} />;
+
   return (
     <div className="space-y-6 pb-8">
+      {subcatSelector}
       {/* Header */}
       <div>
         <h2 className="text-[22px] font-bold text-foreground">New Arrivals &amp; Pipeline Performance</h2>
