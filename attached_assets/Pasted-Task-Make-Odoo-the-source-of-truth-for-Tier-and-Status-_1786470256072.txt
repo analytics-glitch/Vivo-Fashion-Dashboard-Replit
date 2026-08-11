@@ -1,0 +1,22 @@
+Task: Make Odoo the source of truth for Tier and Status across all reports; use the real reorder table for reorder counts.
+
+Context: Tier and Status are now set directly in Odoo and synced to the database. Currently the dashboard computes tiers from a reorder-count proxy based on style age (in _lifecycle_tier in api_pg.py, around line 3788). This causes tier numbers to drift on every data refresh. We're replacing that rule-based logic with direct reads from Odoo.
+
+1. Tier — read from Odoo, not rules.
+
+Odoo field: x_vivo_attr_99 (values: NOOS, Core Performer, Recent Performer, New, Retired, N/A).
+Map to the dashboard's tiers: NOOS → Tier 1, Core Performer → Tier 2, Recent Performer → Tier 3, New → Tier 4.
+In _lifecycle_tier (api_pg.py ~3788), remove the reorder-count branches (reorder_count >= 4 → Tier 2, >= 1 → Tier 3, else Tier 4). Replace with a lookup of the style's Odoo tier value, sourced the same way _odoo_retired_styles / the is_noos flag already pull from Odoo (build a cached style→tier map, mirror _ODOO_RETIRED_STYLES_SQL / _RETIRED_SET_CACHE at ~3760–3778).
+No fallback rules. If a style has no Odoo tier, classify it as N/A/Untiered — do not compute one.
+
+2. Status — read from Odoo.
+
+Odoo field: x_vivo_attr_97 (Active / Retired). Retired classification must come from this Odoo status only (it already does via _odoo_retired_styles — keep that, and make sure nothing else re-derives Active/Retired from rules).
+
+3. Reorder count — use the real reorder table, not the age proxy.
+
+Replace the "≈12-week-cycle proxy from style age" reorder count with the actual count from the order tracker table central_tracker_orders (count of distinct orders per style_number). Reorder count is now display/analytics only — it must not drive tier classification anymore (Odoo does that).
+
+4. Apply everywhere, not just Range Management. Because _lifecycle_tier is the single shared definition, Range Management and Product Analysis should both update automatically. Verify any other report/endpoint that classifies by Tier or Status also flows through the Odoo-sourced values — grep for Recent Performer, Core Performer, reorder_count, tier/status classification, and the footnote text, and make sure none independently re-computes tier/status from rules.
+
+Constraints: Verify in both dev (helium) and prod (Neon). Don't change the write-back scripts. Show the diff before applying.

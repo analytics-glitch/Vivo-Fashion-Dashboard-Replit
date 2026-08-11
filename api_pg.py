@@ -3796,37 +3796,93 @@ def _is_manually_retired(style_name):
     # Name kept for the many call sites; source is now the Odoo status field.
     return _norm_style(style_name) in _odoo_retired_styles()
 
+# ── Odoo tier cache ──────────────────────────────────────────────────────────
+# Reads x_vivo_attr_99 (stored as all_products_clean.tier by the Odoo sync).
+# Values in the data: NOOS, Core Performer, Recent Performer, New, Retired, N/A.
+# Two known typo variants (Perfomer) are mapped defensively.
+# No fallback rules — a style with no Odoo tier becomes "Untiered".
+_ODOO_TIER_MAP = {
+    "NOOS":             "Tier 1",
+    "Core Performer":   "Tier 2",
+    "Core Perfomer":    "Tier 2",   # typo variant in live data
+    "Recent Performer": "Tier 3",
+    "Recent Perfomer":  "Tier 3",   # typo variant in live data
+    "New":              "Tier 4",
+    "Retired":          "Retired",  # belt-and-suspenders; status check fires first
+}
+_ODOO_STYLE_TIER_SQL = (
+    "SELECT style_name, MAX(tier) AS tier "
+    "FROM all_products_clean "
+    "WHERE COALESCE(style_name,'') <> '' "
+    "  AND COALESCE(tier,'') NOT IN ('','N/A') "
+    "GROUP BY style_name"
+)
+_ODOO_STYLE_TIER_CACHE: dict = {"at": 0.0, "map": {}}
+_ODOO_STYLE_TIER_TTL = 300  # seconds (products sync hourly, 5 min is fresh enough)
+
+def _odoo_style_tiers():
+    """Cached map: normalized style_name → Odoo tier string (e.g. 'Core Performer')."""
+    now = time.time()
+    if now - _ODOO_STYLE_TIER_CACHE["at"] > _ODOO_STYLE_TIER_TTL:
+        rows = run_query(_ODOO_STYLE_TIER_SQL, ttl=_ODOO_STYLE_TIER_TTL) or []
+        _ODOO_STYLE_TIER_CACHE["map"] = {
+            _norm_style(r["style_name"]): r["tier"]
+            for r in rows if r.get("tier")
+        }
+        _ODOO_STYLE_TIER_CACHE["at"] = now
+    return _ODOO_STYLE_TIER_CACHE["map"]
+
+# ── Real reorder counts from central_tracker_orders ──────────────────────────
+# Replaces the ≈12-week age proxy (age_weeks // 12).
+# Display/analytics only — tier classification comes exclusively from Odoo.
+_REORDER_COUNT_SQL = (
+    "SELECT style_number, COUNT(*) AS reorder_count "
+    "FROM central_tracker_orders "
+    "WHERE COALESCE(style_number,'') <> '' "
+    "GROUP BY style_number"
+)
+_REORDER_COUNT_CACHE: dict = {"at": 0.0, "map": {}}
+_REORDER_COUNT_TTL = 300  # seconds
+
+def _real_reorder_counts():
+    """Cached map: style_number → real buying-order count from central_tracker_orders."""
+    now = time.time()
+    if now - _REORDER_COUNT_CACHE["at"] > _REORDER_COUNT_TTL:
+        rows = run_query(_REORDER_COUNT_SQL, ttl=_REORDER_COUNT_TTL) or []
+        _REORDER_COUNT_CACHE["map"] = {
+            r["style_number"]: int(r["reorder_count"])
+            for r in rows if r.get("style_number")
+        }
+        _REORDER_COUNT_CACHE["at"] = now
+    return _REORDER_COUNT_CACHE["map"]
+
 def _lifecycle_tier(style_name, brand, age_weeks, reorder_count, months_active_12,
                     *, is_noos=False):
     """Unified, dashboard-wide style lifecycle tier — Product Analysis and Range
     Management share this ONE definition so their tiers always agree.
 
-    Buckets (evaluated top-down; every in-scope style gets exactly one, so
-    Active [Tier 1..4] + Retired == the total style universe):
-      Retired              — hard retirement ONLY: the Odoo product status field
-                             marks the style Retired (see _odoo_retired_styles).
-      Tier 1 / NOOS        — flagged as NOOS directly in Odoo
-                             (all_products_clean.is_noos = TRUE, synced from
-                             the noos_styles table). Strictly Odoo-sourced; no
-                             age / months-active rule applies.
-      Tier 2 / Core        — reordered ≥4 times (a proven, established style).
-      Tier 3 / Recent Performer — reordered ≥1 time (has at least one repeat
-                             purchase order, gaining traction).
-      Tier 4 / New Styles  — everything else: not yet reordered.
+    Tiers come exclusively from Odoo (x_vivo_attr_99 → all_products_clean.tier):
+      Retired              — Odoo status field marks the style Retired
+                             (see _odoo_retired_styles / _is_manually_retired).
+      Tier 1 / NOOS        — Odoo tier = NOOS (also confirmed by is_noos flag,
+                             synced from noos_styles). Strictly Odoo-sourced.
+      Tier 2 / Core Performer  — Odoo tier = Core Performer.
+      Tier 3 / Recent Performer — Odoo tier = Recent Performer.
+      Tier 4 / New         — Odoo tier = New.
+      Untiered             — No Odoo tier set (N/A or blank in Odoo).
+
+    The reorder_count and age_weeks parameters are retained for call-site
+    compatibility and advisory overlays (_retirement_flag_reason,
+    _tier_transition_flags) but no longer drive tier classification.
     """
     if _is_manually_retired(style_name):
         return "Retired"
-    # Tier 1 — NOOS: strictly from Odoo flag (is_noos on all_products_clean)
+    # Tier 1 — NOOS: Odoo is_noos flag (synced from noos_styles via all_products_clean)
     if is_noos:
         return "Tier 1"
-    # Tier 2 — Core: ≥4 reorder cycles — proven, established demand
-    if (reorder_count or 0) >= 4:
-        return "Tier 2"
-    # Tier 3 — Recent Performer: at least one reorder completed
-    if (reorder_count or 0) >= 1:
-        return "Tier 3"
-    # Tier 4 — New Styles: brand new or not yet reordered
-    return "Tier 4"
+    # Tier 2–4 / Untiered: from Odoo x_vivo_attr_99 (all_products_clean.tier)
+    odoo_tier = _odoo_style_tiers().get(_norm_style(style_name))
+    return _ODOO_TIER_MAP.get(odoo_tier, "Untiered")
 
 
 def _retirement_flag_reason(age_weeks, *, lifetime_sor, last_sale_days, woc,
@@ -10520,6 +10576,7 @@ def analytics_product_analysis(
     raw = run_query(sql)
     today = date.today()
     wk = vel / 7.0
+    reorder_counts = _real_reorder_counts()  # style_number → real order count
 
     def _woc(stock, uvel):
         wa = (uvel / wk) if wk > 0 else 0
@@ -10586,7 +10643,7 @@ def analytics_product_analysis(
         weeks_since_launch = round(days_since_launch / 7.0) if days_since_launch is not None else None
         age_years = round(days_since_launch / 365.25, 1) if days_since_launch is not None else None
         units_per_week = round(units_vel / wk, 1) if wk > 0 else None
-        reorder_count = int(age_weeks // 12) if age_weeks else 0
+        reorder_count = reorder_counts.get(r.get("style_number") or "", 0)
         price_min = round(float(r["price_min"])) if r["price_min"] is not None else None
         price_max = round(float(r["price_max"])) if r["price_max"] is not None else None
         # The displayed "Price Range" top comes from MAX(price), which a
@@ -10673,7 +10730,8 @@ def analytics_product_analysis(
             g = {"units": 0, "gross_units_period": 0, "revenue": 0, "net_revenue": 0, "stock": 0, "units_vel": 0,
                  "units_life": 0, "units_6m": 0, "sales_life": 0, "months_active_12": 0,
                  "age_weeks": None, "full_price": None, "last_sale": None, "is_noos": False,
-                 "brand": row["brand"], "category": row["category"], "subcategory": row["subcategory"]}
+                 "brand": row["brand"], "category": row["category"], "subcategory": row["subcategory"],
+                 "style_number": row.get("style_number")}
             styles[k] = g
         g["units"] += row["units_sold"]
         g["gross_units_period"] += row["gross_units_period"]
@@ -10711,7 +10769,7 @@ def analytics_product_analysis(
     tier_by_style = {}
     for k, g in styles.items():
         aw = g["age_weeks"]
-        rc = int(aw // 12) if aw else 0
+        rc = reorder_counts.get(g.get("style_number") or "", 0)
         t = _lifecycle_tier(k, g["brand"], aw, rc, g.get("months_active_12", 0),
                             is_noos=g.get("is_noos", False))
         if t != "Retired":
@@ -22098,6 +22156,7 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
         keep_fields=["brand", "subcategory", "price", "sku_variants"],
     )
     today = date.today()
+    reorder_counts = _real_reorder_counts()  # style_number → real order count
     active, retired, pipeline, candidates = [], [], [], []
     for r in raw:
         units_life = int(r["units_life"] or 0)
@@ -22120,7 +22179,7 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
         last_sale_days = (today - last_sale).days if last_sale else None
         weekly_avg = round(units_30d / (30.0 / 7.0), 1)
         woc = round(current_stock / weekly_avg, 1) if weekly_avg > 0 else None
-        reorder_count = int(age_weeks // 12) if age_weeks else 0
+        reorder_count = reorder_counts.get(r.get("style_number") or "", 0)
 
         def _sor(u):
             denom = u + current_stock
