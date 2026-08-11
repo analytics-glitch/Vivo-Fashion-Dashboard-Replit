@@ -190,9 +190,23 @@ const MerchandisingHub = () => {
           className="sticky z-30 bg-background/95 backdrop-blur-sm"
           style={{ top: "var(--app-navbar-h, 0px)" }}
         >
-          {/* Tab row */}
+          {/* Tab row — dropdown on < lg, wrapped pills on lg+ */}
+          {/* Mobile / tablet: select dropdown */}
+          <div className="lg:hidden border-b border-border px-2 py-1.5" data-testid="merch-tabs-select">
+            <select
+              value={active?.id || ""}
+              onChange={e => handleTabClick(e.target.value)}
+              className="w-full text-[13px] font-medium border border-line rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand"
+            >
+              {visibleTabs.map(t => (
+                <option key={t.id} value={t.id}>{t.label}</option>
+              ))}
+            </select>
+          </div>
+
+          {/* Desktop: wrapped tab pills */}
           <div
-            className="flex items-center gap-0.5 border-b border-border overflow-x-auto lg:flex-wrap lg:overflow-x-visible"
+            className="hidden lg:flex flex-wrap items-center gap-0.5 border-b border-border"
             data-testid="merch-tabs"
           >
             {visibleTabs.map((t) => (
@@ -202,7 +216,7 @@ const MerchandisingHub = () => {
                 onClick={() => handleTabClick(t.id)}
                 data-testid={`merch-tab-${t.id}`}
                 className={
-                  "px-3.5 py-2 lg:px-3 text-[13px] font-medium border-b-2 -mb-px transition-colors whitespace-nowrap lg:whitespace-normal " +
+                  "px-3 py-2 text-[12.5px] font-medium border-b-2 -mb-px transition-colors whitespace-nowrap " +
                   (t.id === active?.id
                     ? "border-[#1a5c38] text-[#1a5c38]"
                     : "border-transparent text-muted hover:text-foreground")
