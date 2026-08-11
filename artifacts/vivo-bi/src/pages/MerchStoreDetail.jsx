@@ -236,11 +236,11 @@ const MerchStoreDetail = () => {
     [allStores],
   );
 
-  // Revenue by subcategory chart (selected store)
+  // Revenue by category chart (selected store)
   const subcatChart = useMemo(() => {
     const map = {};
     for (const s of styles) {
-      const cat = s.subcategory || "Other";
+      const cat = s.category || "Other";
       map[cat] = (map[cat] || 0) + (s.revenue_6m || 0);
     }
     return Object.entries(map)
@@ -457,7 +457,7 @@ const MerchStoreDetail = () => {
           : (
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
               <div className="lg:col-span-4 card-white p-5">
-                <SectionTitle title="Revenue by Category" subtitle="6-month net revenue · top 10 categories" />
+                <SectionTitle title="Revenue by Category" subtitle="Top 10 categories by revenue" />
                 {subcatChart.length === 0
                   ? <Empty />
                   : (
