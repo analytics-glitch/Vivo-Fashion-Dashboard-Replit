@@ -80,7 +80,7 @@ const StorePicker = ({ stores, value, onChange }) => (
     <option value="">All Stores</option>
     {stores.map(s => (
       <option key={s.store} value={s.store}>
-        {s.store}{s.store_tier && s.store_tier !== "—" ? `  [Tier ${s.store_tier}]` : ""}
+        {s.store}
       </option>
     ))}
   </select>
