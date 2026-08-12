@@ -1,5 +1,5 @@
 import React from "react";
-import { NavLink, Link, useNavigate } from "react-router-dom";
+import { NavLink, Link, useNavigate, useLocation } from "react-router-dom";
 import {
   ChartPieSlice,
   MapPin,
@@ -47,7 +47,7 @@ import CacheStatsPill from "@/components/CacheStatsPill";
 import DataQualityStatusPill from "@/components/DataQualityStatusPill";
 // Top-nav tabs come from the shared nav definition (lib/navItems.jsx), the same
 // source the Home landing page uses, so the two never drift apart.
-import { PRIMARY_NAV as tabs } from "@/lib/navItems";
+import { PRIMARY_NAV as tabs, HOME_GROUP_ORDER } from "@/lib/navItems";
 
 const relativeTime = (d) => {
   if (!d) return "—";
@@ -106,6 +106,210 @@ const prefetchForRoute = (routeId, filters) => {
       api.get("/analytics/annual-targets").catch(() => {});
     }
   } catch { /* prefetch is best-effort */ }
+};
+
+// Desktop page picker — collapses the old rows of page-pill tabs into a single
+// compact dropdown so the header stays ~one row tall. Lists every permitted
+// page (Overview first, then the same group headings the Home landing page
+// uses), keeps the per-row badges / pin stars / hover-prefetch the pills had.
+const PagePicker = ({
+  items,
+  prefetchFilters,
+  lateCount,
+  replenPending,
+  togglePin,
+  isPinned,
+}) => {
+  const location = useLocation();
+  const [open, setOpen] = React.useState(false);
+  const ref = React.useRef(null);
+  const menuRef = React.useRef(null);
+  const triggerRef = React.useRef(null);
+
+  // Close on outside click.
+  React.useEffect(() => {
+    if (!open) return;
+    const onClick = (e) => ref.current && !ref.current.contains(e.target) && setOpen(false);
+    document.addEventListener("mousedown", onClick);
+    return () => document.removeEventListener("mousedown", onClick);
+  }, [open]);
+
+  // Close when the route changes (selection navigated).
+  React.useEffect(() => { setOpen(false); }, [location.pathname]);
+
+  const isActiveTab = React.useCallback(
+    (t) => (t.to === "/"
+      ? location.pathname === "/"
+      : location.pathname === t.to || location.pathname.startsWith(`${t.to.replace(/\/$/, "")}/`)),
+    [location.pathname],
+  );
+  const activeTab = React.useMemo(() => items.find(isActiveTab), [items, isActiveTab]);
+
+  // Overview first, then the remaining pages under the Home-page group order.
+  const grouped = React.useMemo(() => {
+    const rest = items.filter((t) => t.id !== "overview");
+    const groups = [];
+    for (const g of HOME_GROUP_ORDER) {
+      const inGroup = rest.filter((t) => (t.group || "Tools") === g);
+      if (inGroup.length) groups.push([g, inGroup]);
+    }
+    const known = new Set(HOME_GROUP_ORDER);
+    const orphans = rest.filter((t) => t.group && !known.has(t.group));
+    if (orphans.length) groups.push(["Other", orphans]);
+    return groups;
+  }, [items]);
+  const overviewTab = items.find((t) => t.id === "overview");
+
+  const hasAlerts = lateCount > 0 || replenPending > 0;
+
+  // Keyboard support: Escape closes (refocuses trigger); ArrowUp/Down move
+  // focus between menu rows.
+  const onMenuKeyDown = (e) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      setOpen(false);
+      triggerRef.current?.focus();
+      return;
+    }
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+    e.preventDefault();
+    const nodes = Array.from(menuRef.current?.querySelectorAll("[data-nav-item]") || []);
+    if (!nodes.length) return;
+    const idx = nodes.indexOf(document.activeElement);
+    const next = e.key === "ArrowDown"
+      ? nodes[Math.min(idx + 1, nodes.length - 1)] || nodes[0]
+      : nodes[Math.max(idx - 1, 0)];
+    next?.focus();
+  };
+
+  const renderRow = (t) => {
+    const active = isActiveTab(t);
+    return (
+      <NavLink
+        key={t.id}
+        to={t.to}
+        end={t.to === "/"}
+        reloadDocument={t.external}
+        data-testid={`nav-${t.id}`}
+        data-nav-item
+        onClick={() => setOpen(false)}
+        onMouseEnter={() => prefetchForRoute(t.id, prefetchFilters)}
+        onFocus={() => prefetchForRoute(t.id, prefetchFilters)}
+        className={`group flex items-center gap-2 px-3 py-1.5 text-[12.5px] font-medium transition-colors ${
+          active ? "bg-brand text-white" : "text-foreground/80 hover:bg-panel hover:text-foreground"
+        }`}
+        aria-current={active ? "page" : undefined}
+      >
+        <t.icon size={14} weight={active ? "fill" : "regular"} />
+        <span className="truncate">{t.label}</span>
+        {t.wip && (
+          <span
+            className="ml-1 inline-flex items-center justify-center px-1.5 h-[16px] rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-400 text-[9px] font-bold leading-none uppercase tracking-wide"
+            title="Work in progress"
+            data-testid={`wip-badge-${t.id}`}
+          >
+            WIP
+          </span>
+        )}
+        {t.id === "ibt" && lateCount > 0 && (
+          <span
+            className="ml-1 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-rose-600 text-white text-[10px] font-bold leading-none"
+            title={`${lateCount} transfer${lateCount === 1 ? "" : "s"} suggested >5 days ago and not yet marked done`}
+            data-testid="ibt-late-badge"
+          >
+            {lateCount > 99 ? "99+" : lateCount}
+          </span>
+        )}
+        {t.id === "replenishments" && replenPending > 0 && (
+          <span
+            className="ml-1 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-brand text-white text-[10px] font-bold leading-none"
+            title={`${replenPending} replenishment recommendation${replenPending === 1 ? "" : "s"} pending review`}
+            data-testid="replen-pending-badge"
+          >
+            {replenPending > 99 ? "99+" : replenPending}
+          </span>
+        )}
+        <span
+          role="button"
+          tabIndex={0}
+          aria-label={isPinned(t.id) ? `Unpin ${t.label} from Favorites` : `Pin ${t.label} to Favorites`}
+          title={isPinned(t.id) ? "Unpin from Favorites" : "Pin to Favorites"}
+          data-testid={`pin-${t.id}`}
+          onClick={(e) => { e.preventDefault(); e.stopPropagation(); togglePin(t.id); }}
+          onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); togglePin(t.id); } }}
+          className={`ml-auto p-0.5 rounded transition-opacity ${
+            isPinned(t.id) ? "opacity-100" : "opacity-0 group-hover:opacity-100 focus:opacity-100"
+          } ${active ? "text-amber-200 hover:text-white" : "text-amber-500 hover:text-amber-600"}`}
+        >
+          <Star size={13} weight={isPinned(t.id) ? "fill" : "regular"} />
+        </span>
+      </NavLink>
+    );
+  };
+
+  const TriggerIcon = activeTab?.icon || MenuIcon;
+
+  return (
+    <div className="relative hidden lg:block shrink-0" ref={ref}>
+      <button
+        type="button"
+        ref={triggerRef}
+        onClick={() => setOpen((v) => !v)}
+        onKeyDown={(e) => {
+          if (e.key === "ArrowDown") {
+            e.preventDefault();
+            if (!open) {
+              setOpen(true);
+              // Focus the first row once the menu has rendered.
+              requestAnimationFrame(() => menuRef.current?.querySelector("[data-nav-item]")?.focus());
+            } else {
+              menuRef.current?.querySelector("[data-nav-item]")?.focus();
+            }
+          }
+          if (e.key === "Escape") setOpen(false);
+        }}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        data-testid="page-picker-btn"
+        className={`relative flex items-center gap-1.5 pl-2.5 pr-2 py-1.5 rounded-lg border text-[12.5px] font-semibold transition-colors whitespace-nowrap ${
+          open
+            ? "bg-white border-brand text-foreground"
+            : "bg-white/60 border-border text-foreground/85 hover:bg-panel hover:text-foreground"
+        }`}
+        title="Choose a page"
+      >
+        <TriggerIcon size={14} weight={activeTab ? "fill" : "regular"} />
+        <span className="max-w-[180px] truncate">{activeTab?.label || "Pages"}</span>
+        <CaretDown size={11} className="text-muted" />
+        {hasAlerts && (
+          <span
+            className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-rose-600 border-2 border-[#fed7aa]"
+            data-testid="page-picker-alert-dot"
+            title="There are pending alerts inside the page menu"
+          />
+        )}
+      </button>
+      {open && (
+        <div
+          ref={menuRef}
+          role="menu"
+          onKeyDown={onMenuKeyDown}
+          className="absolute left-0 mt-2 w-72 max-h-[70vh] overflow-y-auto rounded-xl border border-border bg-white shadow-lg py-1 z-50"
+          data-testid="page-picker-menu"
+        >
+          {overviewTab && renderRow(overviewTab)}
+          {grouped.map(([group, groupTabs]) => (
+            <React.Fragment key={group}>
+              <div className="px-3 pt-2 pb-1 text-[10.5px] font-semibold uppercase tracking-wider text-foreground/50 select-none border-t border-border/60 mt-1">
+                {group}
+              </div>
+              {groupTabs.map(renderRow)}
+            </React.Fragment>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 };
 
 const UserMenu = ({ onResetTabOrder, hasCustomTabOrder }) => {
@@ -267,41 +471,10 @@ const TopNav = () => {
     return pinned.map((id) => byId.get(id)).filter(Boolean);
   }, [pinned, visibleTabs]);
 
-  // Per-user drag-reorder of top nav tabs.
-  const [orderedVisible, setTabOrder, resetTabOrder, hasCustomTabOrder] = useTabOrder(user, visibleTabs);
-
-  // Drag-and-drop state — track which tab id is being dragged.
-  const dragSrcRef = React.useRef(null);
-
-  const handleDragStart = React.useCallback((e, id) => {
-    dragSrcRef.current = id;
-    e.dataTransfer.effectAllowed = "move";
-    // Minimal ghost — use the element itself (browser default).
-  }, []);
-
-  const handleDragOver = React.useCallback((e) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = "move";
-  }, []);
-
-  const handleDrop = React.useCallback((e, targetId) => {
-    e.preventDefault();
-    const srcId = dragSrcRef.current;
-    if (!srcId || srcId === targetId) return;
-    const ids = orderedVisible.map((t) => t.id);
-    const srcIdx = ids.indexOf(srcId);
-    const tgtIdx = ids.indexOf(targetId);
-    if (srcIdx === -1 || tgtIdx === -1) return;
-    const next = [...ids];
-    next.splice(srcIdx, 1);
-    next.splice(tgtIdx, 0, srcId);
-    setTabOrder(next);
-    dragSrcRef.current = null;
-  }, [orderedVisible, setTabOrder]);
-
-  const handleDragEnd = React.useCallback(() => {
-    dragSrcRef.current = null;
-  }, []);
+  // Per-user saved tab order — the desktop pills that offered drag-reorder are
+  // gone (replaced by the page-picker dropdown), but any saved order still
+  // drives the mobile menu ordering and the user-menu "Reset tab order" item.
+  const [orderedVisible, , resetTabOrder, hasCustomTabOrder] = useTabOrder(user, visibleTabs);
 
   const [mobileOpen, setMobileOpen] = React.useState(false);
   // Force the relative-time label to re-render every 30s.
@@ -391,6 +564,14 @@ const TopNav = () => {
             </span>
           </span>
         </Link>
+        <PagePicker
+          items={orderedVisible}
+          prefetchFilters={prefetchFilters}
+          lateCount={lateCount}
+          replenPending={replenPending}
+          togglePin={togglePin}
+          isPinned={isPinned}
+        />
       </div>
 
       <div className="flex items-center gap-1.5 sm:gap-2 text-[11.5px] text-muted shrink-0">
@@ -482,84 +663,6 @@ const TopNav = () => {
           ))}
         </div>
       )}
-
-      {/* Row 2: page-name tabs (full viewport width, max 2 rows) */}
-      <div
-        className="hidden lg:flex items-center gap-x-1 gap-y-1 justify-start flex-wrap mt-2 -mx-1 px-1"
-        data-testid="top-nav-tabs"
-      >
-        {orderedVisible.map((t) => (
-          <NavLink
-            key={t.id}
-            to={t.to}
-            end={t.to === "/"}
-            reloadDocument={t.external}
-            data-testid={`nav-${t.id}`}
-            draggable
-            onDragStart={(e) => handleDragStart(e, t.id)}
-            onDragOver={handleDragOver}
-            onDrop={(e) => handleDrop(e, t.id)}
-            onDragEnd={handleDragEnd}
-            onMouseEnter={() => prefetchForRoute(t.id, prefetchFilters)}
-            onFocus={() => prefetchForRoute(t.id, prefetchFilters)}
-            className={({ isActive }) =>
-              `group flex items-center gap-1 px-1.5 xl:px-2 py-1 rounded-md text-[11px] xl:text-[12px] font-medium transition-colors whitespace-nowrap cursor-grab active:cursor-grabbing ${
-                isActive
-                  ? "bg-brand text-white shadow-sm"
-                  : "text-foreground/70 hover:bg-panel hover:text-foreground"
-              }`
-            }
-          >
-            {({ isActive }) => (
-              <>
-                <t.icon size={13} weight={isActive ? "fill" : "regular"} />
-                <span>{t.label}</span>
-                {t.wip && (
-                  <span
-                    className="ml-1 inline-flex items-center justify-center px-1.5 h-[16px] rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-400 text-[9px] font-bold leading-none uppercase tracking-wide"
-                    title="Work in progress"
-                    data-testid={`wip-badge-${t.id}`}
-                  >
-                    WIP
-                  </span>
-                )}
-                {t.id === "ibt" && lateCount > 0 && (
-                  <span
-                    className="ml-1 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-rose-600 text-white text-[10px] font-bold leading-none animate-pulse"
-                    title={`${lateCount} transfer${lateCount === 1 ? "" : "s"} suggested >5 days ago and not yet marked done`}
-                    data-testid="ibt-late-badge"
-                  >
-                    {lateCount > 99 ? "99+" : lateCount}
-                  </span>
-                )}
-                {t.id === "replenishments" && replenPending > 0 && (
-                  <span
-                    className="ml-1 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-brand text-white text-[10px] font-bold leading-none"
-                    title={`${replenPending} replenishment recommendation${replenPending === 1 ? "" : "s"} pending review`}
-                    data-testid="replen-pending-badge"
-                  >
-                    {replenPending > 99 ? "99+" : replenPending}
-                  </span>
-                )}
-                <span
-                  role="button"
-                  tabIndex={0}
-                  aria-label={isPinned(t.id) ? `Unpin ${t.label} from Favorites` : `Pin ${t.label} to Favorites`}
-                  title={isPinned(t.id) ? "Unpin from Favorites" : "Pin to Favorites"}
-                  data-testid={`pin-${t.id}`}
-                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); togglePin(t.id); }}
-                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); togglePin(t.id); } }}
-                  className={`ml-0.5 -mr-0.5 p-0.5 rounded transition-opacity ${
-                    isPinned(t.id) ? "opacity-100" : "opacity-0 group-hover:opacity-100 focus:opacity-100"
-                  } ${isActive ? "text-amber-200 hover:text-white" : "text-amber-500 hover:text-amber-600"}`}
-                >
-                  <Star size={12} weight={isPinned(t.id) ? "fill" : "regular"} />
-                </span>
-              </>
-            )}
-          </NavLink>
-        ))}
-      </div>
 
       {mobileOpen && (
         <div
