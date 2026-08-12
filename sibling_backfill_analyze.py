@@ -34,6 +34,20 @@ def sname(r):
     if r.get("x_studio_style_name_gi"): return r["x_studio_style_name_gi"][1]
     if r.get("x_vivo_attr_16"): return r["x_vivo_attr_16"][1]
     return ""
+STYLE_RE = re.compile(r"^[A-Za-z]\d{6,7}$")
+def valid_num(n):
+    return bool(n) and bool(STYLE_RE.match(n.strip()))
+
+# generic placeholder base names that are NOT real styles (category buckets)
+PLACEHOLDER_BASES = {
+    "vivo knee length skirts","vivo jumpsuit","safari full length pants",
+    "vivo full length pants","vivo shorts","vivo loose tops","vivo maxi dress",
+    "vivo joggers","vivo wide-leg pants","vivo trench coat","vivo sleeveless blazer",
+    "vivo long sleeve blazer","vivo knee length dress","vivo knee length skirts",
+    "vivo bodysuits t- shirts & tank tops","vivo waterfalls & kimonos","safari reversible shirt jacket",
+}
+def is_placeholder(base): return base.strip().lower() in PLACEHOLDER_BASES
+
 def base_of(nm):
     return re.sub(r"\s*-\s*[^-]+$","",(nm or "")).strip()
 
@@ -42,10 +56,11 @@ base_to_nums=defaultdict(set); base_to_names=defaultdict(set)
 for r in recs:
     if brand_of(r["name"])=="Other": continue
     n=snum(r)
-    if n and not n.lower().startswith("sample"):
-        base_to_nums[base_of(r["name"]).lower()].add(n)
+    b_=base_of(r["name"]).lower()
+    if valid_num(n) and not is_placeholder(b_):
+        base_to_nums[b_].add(n.strip())
         nm=sname(r)
-        if nm: base_to_names[base_of(r["name"]).lower()].add(nm)
+        if nm: base_to_names[b_].add(nm)
 
 # now classify the MISSING ones
 recoverable=[]; ambiguous=[]; orphaned=[]
@@ -54,6 +69,8 @@ for r in recs:
     if b=="Other": continue
     if snum(r): continue  # not missing
     base=base_of(r["name"]).lower()
+    if is_placeholder(base):
+        orphaned.append((b,r["name"])); continue
     cand=base_to_nums.get(base,set())
     if len(cand)==1:
         num=next(iter(cand))

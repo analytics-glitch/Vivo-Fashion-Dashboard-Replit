@@ -22213,6 +22213,19 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
     )
     today = date.today()
     reorder_counts = _real_reorder_counts()  # style_number → real order count
+
+    # Load tier overrides imported from the merchandising spreadsheet.
+    # style_number → {ov_tier, ov_status} where ov_status in Active/Retired/Archived.
+    # Archived is treated as Retired for Range Management (not part of the live range).
+    try:
+        _ov_rows = run_query(
+            "SELECT style_number, ov_tier, ov_status FROM style_tier_overrides"
+            " WHERE style_number IS NOT NULL",
+            ttl=300)
+        _tier_overrides_by_sn = {row["style_number"]: row for row in _ov_rows}
+    except Exception:
+        _tier_overrides_by_sn = {}
+
     active, retired, pipeline, candidates = [], [], [], []
     for r in raw:
         units_life = int(r["units_life"] or 0)
@@ -22275,6 +22288,18 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
         life_tier = _lifecycle_tier(
             r["style_name"], r["brand"], age_weeks, reorder_count, months_active_12,
             is_noos=is_noos)
+
+        # Apply spreadsheet tier override (from style_tier_overrides import).
+        # ov_status Active → use the spreadsheet tier; Retired or Archived →
+        # force into the retired bucket (not part of the live active range).
+        _sn = r.get("style_number") or ""
+        _ov = _tier_overrides_by_sn.get(_sn) if _sn else None
+        if _ov:
+            if _ov["ov_status"] == "Active":
+                life_tier = _ov["ov_tier"]   # Tier 1 / 2 / 3 / 4
+            else:                             # Retired or Archived
+                life_tier = "Retired"
+
         is_retired = (life_tier == "Retired")
 
         if is_retired:

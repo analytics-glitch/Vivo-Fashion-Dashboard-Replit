@@ -1,7 +1,6 @@
 kind,template_id,product_name,proposed_number,proposed_name_or_alts
 recoverable,342705,Safari Bush Asymmetrical Sweater Poncho  - FS,S0424050,Safari Bush Asymmetrical Sweater Poncho
 recoverable,342684,Safari By Vivo Mens Cotton Pants  - FS,S0925061,Safari By Vivo Mens Cotton Pants
-recoverable,344991,Safari Full Length Pants - Sample 2,S,Safari Full Length Pants
 recoverable,342708,Safari Kamari Sleeveless Cropped Jacket  - FS,S0224182,Safari Kamari Sleeveless Cropped Jacket
 recoverable,342964,Safari Kaya Long Sleeve Collar Shirt  - FS,S0522015,Safari Kaya Long Sleeve Collar Shirt
 recoverable,88284,Safari Kikoy Wide Elastic Shorts - Pink Print,S0923106,Safari Kikoy Wide Elastic Shorts
@@ -16,7 +15,6 @@ recoverable,342701,Safari Lounge Pants  - FS,S0424081,Safari Lounge Pants
 recoverable,342703,Safari Lounge Pants In Jersey  - FS,S0424081,Safari Lounge Pants In Jersey
 recoverable,320384,Safari Mali Gathered Flounce Sleeve Shirt Dress - Mustard,S0223171,Safari Mali Gathered Flounce Sleeve Shirt Dress
 recoverable,88910,Safari Mali Wrap Lapel Top - Navy Blue,S0123091,Safari Mali Wrap Lapel Top
-recoverable,89038,Safari Men's Cargo Shorts - Beige,S,Safari Men's Cargo Shorts
 recoverable,342691,Safari Nazari Bubble Midi Dress  - FS,S0825007,Safari Nazari Bubble Midi Dress
 recoverable,342692,Safari Nazari Coat Dress  - FS,S0825005,Safari Nazari Coat Dress
 recoverable,342696,Safari Nazari Maxi Shirt Dress  - FS,S0725012,Safari Nazari Maxi Shirt Dress
@@ -357,6 +355,7 @@ recoverable,238921,Vivo Basic Puff Sleeved Bodycon - Taupe,V0919039,Vivo Basic P
 recoverable,342516,Vivo Basic Round Neck Maxi Dress  - FS,V0525075,Vivo Basic Round Neck Maxi Dress
 recoverable,238939,Vivo Basic Round Neck Maxi Dress - Black / Orange,V0525075,Vivo Basic Round Neck Maxi Dress
 recoverable,238942,Vivo Basic Round Neck Maxi Dress - Chocolate / Orange,V0525075,Vivo Basic Round Neck Maxi Dress
+recoverable,342517,Vivo Basic Round Neck Maxi Dress In Crepe  - FS,V0525075,
 recoverable,342668,Vivo Basic Satin Bishop Sleeved Top  - FS,V0121119,Vivo Basic Satin Bishop Sleeved Top
 recoverable,239006,Vivo Basic Satin Bishop Sleeved Top - Blue / Rust Floral Print,V0121119,Vivo Basic Satin Bishop Sleeved Top
 recoverable,239018,Vivo Basic Satin Bishop Sleeved Top - Dark Teal,V0121119,Vivo Basic Satin Bishop Sleeved Top
@@ -487,7 +486,6 @@ recoverable,342374,Vivo Cotton 3/4 Sleeve Wrap Top  - FS,V0925065,Vivo Cotton 3/
 recoverable,342581,Vivo Cowl Neck Camisole in Satin  - FS,V0326004,Vivo Cowl Neck Camisole in Satin
 recoverable,230252,Vivo Cuffed Wide Sweater - Fuschia / Light Navy,V0524194,Vivo Cuffed Wide Sweater
 recoverable,230257,Vivo Cuffed Wide Sweater - Raspberry,V0524194,Vivo Cuffed Wide Sweater
-recoverable,230282,Vivo Culottes - Aldabra,VE0036,Vivo Culottes
 recoverable,230309,Vivo Dali 3/4 Cut Out Sleeve Maxi Dress - Burgundy / Peach Print,V1222304,Vivo Dali 3/4 Cut Out Sleeve Maxi Dress
 recoverable,230312,Vivo Dali 3/4 Cut Out Sleeve Maxi Dress - Green / Orange Print,V1222304,Vivo Dali 3/4 Cut Out Sleeve Maxi Dress
 recoverable,342356,Vivo Dalia Cap Sleeve Gathered Dress  - FS,V1024065,Vivo Dalia Cap Sleeve Gathered Tent Dress
@@ -563,15 +561,6 @@ recoverable,254727,Vivo Jira Hooded Poncho - Burnt Orange,V0723054,Vivo Jira Hoo
 recoverable,254728,Vivo Jira Hooded Poncho - Hunters Green,V0723054,Vivo Jira Hooded Poncho
 recoverable,254729,Vivo Jira Hooded Poncho - Navy Blue,V0723054,Vivo Jira Hooded Poncho
 recoverable,254731,Vivo Jira Hooded Poncho - Tan,V0723054,Vivo Jira Hooded Poncho
-recoverable,254775,Vivo Jumpsuit - FS 2,V,
-recoverable,254776,Vivo Jumpsuit - FS 3,V,
-recoverable,344984,Vivo Jumpsuit - FS 4,V,
-recoverable,254779,Vivo Jumpsuit - FS 6,V,
-recoverable,254780,Vivo Jumpsuit - RFS 1,V,
-recoverable,254781,Vivo Jumpsuit - RFS 2,V,
-recoverable,344967,Vivo Jumpsuit - Sample 1,V,
-recoverable,344608,Vivo Jumpsuit - Sample 3,V,
-recoverable,344968,Vivo Jumpsuit - Sample 4,V,
 recoverable,342585,Vivo Kaisa Maxi Skirt  - FS,V0325040,Vivo Kaisa Maxi Skirt
 recoverable,342586,Vivo Kaisa Mock Neck Sleeveless Top  - FS,V0325034,Vivo Kaisa Mock Neck Sleeveless Top
 recoverable,342981,Vivo Kaisa Short Sleeve Maxi Bodycon In Polyester Stretch  - FS,V0126023,Vivo Kaisa Short Sleeve Maxi Bodycon In Polyester Stretch
@@ -591,24 +580,7 @@ recoverable,342535,Vivo Keza Circular Loose Top in Satin  - FS,V0525008,
 recoverable,342529,Vivo Keza Satin Border Maxi Kaftan  - FS,V0525021,Vivo Keza Satin Border Maxi Kaftan
 recoverable,342527,Vivo Keza V Neck Maxi Kaftan In Satin  - FS,V0525028,Vivo Keza V Neck Maxi Kaftan In Satin
 recoverable,342528,Vivo Keza V-Neck Maxi Kaftan  - FS,V0525028,Vivo Keza V-Neck Maxi Kaftan
-recoverable,254957,Vivo Kitenge Shirred Waist Maxi Skirt - Tana Print,VE0039,Vivo Kitenge Shirred Waist Maxi Skirt
-recoverable,342471,Vivo Knee Length Dress  - FS,V0720039,Vivo Knee length Dress
-recoverable,345004,Vivo Knee Length Dress - SAMPLE1 B.,V0720039,Vivo Knee length Dress
-recoverable,344962,Vivo Knee Length Dress - SAMPLE2,V0720039,Vivo Knee length Dress
 recoverable,342640,Vivo Knee Length Kaftan in Satin  - FS,V0126028,Vivo Knee Length Kaftan in Satin
-recoverable,344981,Vivo Knee length Dress - FS 2,V0720039,Vivo Knee length Dress
-recoverable,254975,Vivo Knee length Dress - FS 3,V0720039,Vivo Knee length Dress
-recoverable,254976,Vivo Knee length Dress - FS 4,V0720039,Vivo Knee length Dress
-recoverable,254978,Vivo Knee length Dress - FS 6,V0720039,Vivo Knee length Dress
-recoverable,254979,Vivo Knee length Dress - FS 7,V0720039,Vivo Knee length Dress
-recoverable,254981,Vivo Knee length Dress - FS 9,V0720039,Vivo Knee length Dress
-recoverable,254982,Vivo Knee length Dress - RFS 1,V0720039,Vivo Knee length Dress
-recoverable,254983,Vivo Knee length Dress - RFS 2,V0720039,Vivo Knee length Dress
-recoverable,254984,Vivo Knee length Dress - RFS 3,V0720039,Vivo Knee length Dress
-recoverable,254985,Vivo Knee length Dress - RFS 4,V0720039,Vivo Knee length Dress
-recoverable,254986,Vivo Knee length Dress - RFS 5,V0720039,Vivo Knee length Dress
-recoverable,254987,Vivo Knee length Dress - RFS 6,V0720039,Vivo Knee length Dress
-recoverable,344983,Vivo Knee length Dress - RFS 7,V0720039,Vivo Knee length Dress
 recoverable,342548,Vivo Laika 3/4 Sleeve Tent Dress  - FS,V0523165,Vivo Laika 3/4 Sleeve Tent Dress
 recoverable,342547,Vivo Laika 3/4 Sleeve Tent Dress In Crepe  - FS,V0523165,
 recoverable,342546,Vivo Laika Bishop Sleeve Shift Dress in Crepe  - FS,V0523168,
@@ -620,6 +592,8 @@ recoverable,342362,Vivo Lani Maxi Top  - FS,V1021160,Vivo Lani Maxi Top
 recoverable,342363,Vivo Lani Maxi Top  - FS,V1021160,Vivo Lani Maxi Top
 recoverable,342562,Vivo Leila Cap Sleeve Tent Maxi Dress  - FS,V0423053,Vivo Leila Cap Sleeve Tent Maxi Dress
 recoverable,342324,Vivo Lindi High Low Dress In Ponte  - FS,V1120122,
+recoverable,342296,Vivo Liora Asymmetrical Kaftan Top in Satin  - FS,V1125028,Vivo Liora Asymmetrical Satin Kaftan Top
+recoverable,342297,Vivo Liora Asymmetrical Kaftan Top in Satin  - FS,V1125028,Vivo Liora Asymmetrical Satin Kaftan Top
 recoverable,342350,Vivo Liora Drawstring Kimono Sleeve Top  - FS,V1025006,Vivo Liora Drawstring Kimono Sleeve Top
 recoverable,342984,Vivo Liora Drawstring Midi Dress  - FS,V1025005,Vivo Liora Drawstring Midi Dress
 recoverable,342349,Vivo Liora Drawstring Pants  - FS,V1025007,Vivo Liora Drawstring Pants
@@ -634,7 +608,7 @@ recoverable,342989,Vivo Liora Satin Drawstring Kimono Sleeve Top  - FS,V1125042,
 recoverable,342292,Vivo Liora Scalloped Maxi Top  - FS,V1125041,Vivo Liora Scalloped Maxi Top
 recoverable,342291,Vivo Liora Scalloped Maxi Top in Chiffon  - FS,V1125041,Vivo Liora Scalloped Maxi Top in Chiffon
 recoverable,342612,Vivo Liora Scooped Neck Tank Top in Crepe  - FS,V0226005,Vivo Liora Scooped Neck Tank Top in Crepe
-recoverable,342339,Vivo Liora Side Drawstring Kaftan Dress in Satin  - FS,V,Vivo Liora Side Drawstring Kaftan Dress in Satin
+recoverable,342991,Vivo Liora Side Drawstring Kaftan Dress  - FS,V1025025,Vivo Liora Side Drawstring Kaftan Dress
 recoverable,342342,Vivo Liora Sleeveless Drawstring Top  - FS,V1025020,Vivo Liora Sleeveless Drawstring Top
 recoverable,342646,Vivo Liora Sleeveless Drawstring Top In Satin  - FS,V0126018,Vivo Liora Sleeveless Drawstring Top In Satin
 recoverable,342599,Vivo Liora Tiered Maxi Skirt in Crepe  - FS,V0226040,Vivo Liora Tiered Maxi Skirt in Crepe
@@ -652,31 +626,16 @@ recoverable,333732,Vivo Lumi Drop Shoulder Maxi Dress - Purple / White Lifi Prin
 recoverable,272810,Vivo Lumi Drop Shoulder Maxi Dress - Teal / Purple Kita Print,V1222199,Vivo Lumi Drop Shoulder Maxi Dress
 recoverable,342993,Vivo Maisha 3/4 Sleeve Maxi Dress  - FS,V0525047,Vivo Maisha 3/4 Sleeve Maxi Dress
 recoverable,342550,Vivo Maisha Drop Shoulder Maxi Dress In Rayon  - FS,V0523033,Vivo Maisha Drop Shoulder Maxi Dress In Rayon
+recoverable,342289,Vivo Maisha Kimono in Crepe  - FS,V1125046,Vivo Maisha Kimono in Crepe
 recoverable,342504,Vivo Maisha Long Sleeve High Low Kimono  - FS,V0623026,Vivo Maisha Long Sleeve High Low Kimono
 recoverable,342518,Vivo Maisha Straight Leg Pants in Crepe  - FS,V0525071,Vivo Maisha Straight Leg Pants in Crepe
 recoverable,342519,Vivo Maisha Straight Leg Pants in Crepe - FS,V0525071,Vivo Maisha Straight Leg Pants in Crepe
 recoverable,342639,Vivo Maisha Strappy Cover Up Jumpsuit In Rayon  - FS,V0126029,Vivo Maisha Strappy Cover Up Jumpsuit In Rayon
 recoverable,342534,Vivo Maisha Wide High Low Top  - FS,V0525009,Vivo Maisha Wide High Low Top
 recoverable,256112,Vivo Maua Sleeveless Tent Knee Length Dress - Purple,V0223165,Vivo Maua Sleeveless Tent Knee Length Dress
-recoverable,305537,Vivo Maxi Dress - FS 1,V0720041,Vivo Maxi Dress
-recoverable,256115,Vivo Maxi Dress - FS 3,V0720041,Vivo Maxi Dress
-recoverable,256116,Vivo Maxi Dress - FS 4,V0720041,Vivo Maxi Dress
-recoverable,256117,Vivo Maxi Dress - FS 5,V0720041,Vivo Maxi Dress
-recoverable,256118,Vivo Maxi Dress - FS 6,V0720041,Vivo Maxi Dress
-recoverable,344985,Vivo Maxi Dress - FS 7,V0720041,Vivo Maxi Dress
-recoverable,256121,Vivo Maxi Dress - RFS 3,V0720041,Vivo Maxi Dress
-recoverable,256122,Vivo Maxi Dress - RFS 4,V0720041,Vivo Maxi Dress
-recoverable,256123,Vivo Maxi Dress - RFS 5,V0720041,Vivo Maxi Dress
-recoverable,256124,Vivo Maxi Dress - RFS 6,V0720041,Vivo Maxi Dress
-recoverable,256125,Vivo Maxi Dress - RFS 7,V0720041,Vivo Maxi Dress
-recoverable,345008,Vivo Maxi Dress - SAMPLE1 B.,V0720041,Vivo Maxi Dress
-recoverable,344965,Vivo Maxi Dress - SAMPLE3,V0720041,Vivo Maxi Dress
 recoverable,342607,Vivo Maxi Dress in Stretch Rib  - FS,V0226016,Vivo Maxi Dress in Stretch Rib
 recoverable,342648,Vivo Maxi Kaftan in Satin  - FS,V0126012,Vivo Maxi Kaftan in Satin
 recoverable,342634,Vivo Maxi Kimono in Chiffon  - FS,V0126041,Vivo Maxi Kimono in Chiffon
-recoverable,305548,Vivo Maxi Skirts - FS 2,V,Vivo Maxi Skirts
-recoverable,343761,Vivo Maxi Skirts - FS 3,V,Vivo Maxi Skirts
-recoverable,343762,Vivo Maxi Skirts - FS 5,V,Vivo Maxi Skirts
 recoverable,342359,Vivo Merika Knee Length Wrap Dress  - FS,V1024002,Vivo Merika Knee Length Wrap Dress
 recoverable,342614,Vivo Midi Bodycon in Stretch Rib  - FS,V0226001,Vivo Midi Bodycon in Stretch Rib
 recoverable,342510,Vivo Mistari 3/4 Sleeve V - Neck Collared Tunic Top  - FS,V0622041,Vivo Mistari 3/4 Sleeve V - Neck Collared Tunic Top
@@ -728,6 +687,9 @@ recoverable,334345,Vivo Ria Drawstring Pants in Stretch Rib - Olive,V0426031,Viv
 recoverable,273082,Vivo Ria Drawstring Pants in Stretch Rib - Pink,V0426031,Vivo Ria Drawstring Pants in Stretch Rib
 recoverable,273084,Vivo Ria Drawstring Pants in Stretch Rib - Taupe,V0426031,Vivo Ria Drawstring Pants in Stretch Rib
 recoverable,342411,Vivo Ria Drop Shoulder Top  - FS,V0825022,Vivo Ria Drop Shoulder Top
+recoverable,342995,Vivo Ruched Maxi Top in Textured Satin  - FS,V0126011,Vivo Ruched Maxi Top in Textured Satin
+recoverable,320213,Vivo Ruched Maxi Top in Textured Satin - Taupe / Black Print,V0126011,Vivo Ruched Maxi Top in Textured Satin
+recoverable,320209,Vivo Ruched Maxi Top in Textured Satin -Beige / Black Print,V0126011,Vivo Ruched Maxi Top in Textured Satin
 recoverable,257380,Vivo Ruwa Flounce Sleeve Tent Maxi Dress - Buttermilk / Blue Ua Print,V0222311,Vivo Ruwa Flounce Sleeve Tent Maxi Dress
 recoverable,257381,Vivo Ruwa Flounce Sleeve Tent Maxi Dress - Green Abstract Print,V0222311,Vivo Ruwa Flounce Sleeve Tent Maxi Dress
 recoverable,257382,Vivo Ruwa Flounce Sleeve Tent Maxi Dress - Mustard / Black Sese Print,V0222311,Vivo Ruwa Flounce Sleeve Tent Maxi Dress
@@ -773,8 +735,6 @@ recoverable,342393,Vivo Serwa Tent Dress  - FS,V0924096,Vivo Serwa Tent Dress
 recoverable,342391,Vivo Serwa Tent Dress  - FS,V0924096,Vivo Serwa Tent Dress
 recoverable,342392,Vivo Serwa Tent Dress In Crepe  - FS,V0924096,Vivo Serwa Tent Dress In Crepe
 recoverable,344972,Vivo Short Jacket/ Coat - Sample 2,V0720056,Vivo Short Jacket/ Coat
-recoverable,258572,Vivo Short Kimono - Ashai,VE0033,Vivo Short Kimono
-recoverable,258576,Vivo Short Kimono - Tana Print,VE0033,Vivo Short Kimono
 recoverable,342628,Vivo Sierra Cap Sleeve Tent Chiffon Dress  - FS,V0221084,Vivo Sierra Cap Sleeve Tent Chiffon Dress
 recoverable,342629,Vivo Sierra Cap Sleeve Tent Chiffon Dress  - FS,V0221084,Vivo Sierra Cap Sleeve Tent Chiffon Dress
 recoverable,342385,Vivo Sierra Long Sleeve Top in Chiffon (Double Layered)  - FS,V0925019,Vivo Sierra Long Sleeve Top in Chiffon (Double Layered)
@@ -786,7 +746,6 @@ recoverable,342611,Vivo Sleeveless Bodycon in Stretch Rib  - FS,V0226007,Vivo Sl
 recoverable,342514,Vivo Sleeveless Godet Midi Dress in Jersey  - FS,V0526008,Vivo Sleeveless Godet Midi Dress in Jersey
 recoverable,342335,Vivo Spaghetti Tank Top in Jersey  - FS,V1025037,
 recoverable,342608,Vivo Straight Pants in Scuba  - FS,V0226010,
-recoverable,259493,Vivo Strappy Tiered Maxi Dress - Casablanca,VE0044,Vivo Strappy Tiered Maxi Dress
 recoverable,342332,Vivo Studio Bodysuit In Jersey  - FS,V1025049,Vivo Studio Bodysuit In Jersey
 recoverable,305732,Vivo Studio Bodysuit In Jersey - Teal,V1025049,Vivo Studio Bodysuit In Jersey
 recoverable,342578,Vivo Studio Drawstring Pants in Velvet  - FS,V0326025,Vivo Studio Drawstring Pants in Velvet
@@ -836,6 +795,9 @@ recoverable,342307,Vivo Wena Wrap Dress  - FS,V1124097,Vivo Wena Wrap Dress
 recoverable,259745,Vivo Wena Wrap Dress - Dark Green,V1124097,Vivo Wena Wrap Dress
 recoverable,259746,Vivo Wena Wrap Dress - Rose Pink,V1124097,Vivo Wena Wrap Dress
 recoverable,259752,Vivo Wide Leg Pants With Short Lining - White,V0524166,Vivo Wide Leg Pants With Short Lining
+recoverable,320215,Vivo Wide Leg Pants in Textured Satin - Dusty Green / Black Print,V0126017,Vivo Wide Leg Pants in Textured Satin
+recoverable,320433,Vivo Wide Leg Pants in Textured Satin - Light Gold / Black Print,V0126017,Vivo Wide Leg Pants in Textured Satin
+recoverable,342602,Vivo Wide Top in Satin  - FS,V0226027,Vivo Wide Top in Satin
 recoverable,343103,Vivo Wrap Poncho in Sweater - Dark Red,V1025045,Vivo Wrap Poncho in Sweater
 recoverable,342299,Vivo Wrap Shawl in Sweater  - FS,V1125014,Vivo Wrap Shawl in Sweater
 recoverable,342300,Vivo Wrap Shawl in Sweater  - FS,V1125014,Vivo Wrap Shawl in Sweater
@@ -882,53 +844,27 @@ recoverable,340670,Zoya Basic Bodycon - Taupe,Z0220118,Zoya Basic Bodycon
 recoverable,344692,Zoya Basic Tank Top - Burgundy,Z0819065,Zoya Basic Tank Top
 recoverable,261077,Zoya Capri Leggings - Black,Z0220060,Zoya Capri Leggings
 recoverable,261079,Zoya Capri Leggings - Deep Teal,Z0220060,Zoya Capri Leggings
-recoverable,344997,Zoya Jumpsuit - Sample 1,Z,
-recoverable,344998,Zoya Playsuit - Sample 3,Z,Zoya Playsuit
 ambiguous,,Safari Tawi Bishop Sleeve Tiered Dress - Chocolate,,S0322133|S0424055
 ambiguous,,Safari Tawi Bishop Sleeve Tiered Dress - Purple,,S0322133|S0424055
 ambiguous,,Vivo Basic Dolman Sweater  - FS,,V0326019|V0819145
 ambiguous,,Vivo Basic Double Layered Wrap Poncho  - FS,,V0523123|V0819102
-ambiguous,,Vivo Basic Round Neck Maxi Dress In Crepe  - FS,,V0525075|Vivo Basic Round Neck Maxi Dress In Crepe
 ambiguous,,Vivo High Low Top In Crepe  - FS,,V0126039|V1026039
-ambiguous,,Vivo Knee Length Skirts - FS 1,,0720043|V
-ambiguous,,Vivo Knee Length Skirts - FS 2,,0720043|V
-ambiguous,,Vivo Knee Length Skirts - FS 5,,0720043|V
-ambiguous,,Vivo Knee Length Skirts - RFS 1,,0720043|V
-ambiguous,,Vivo Knee Length Skirts - RFS 2,,0720043|V
-ambiguous,,Vivo Knee Length Skirts - RFS 3,,0720043|V
-ambiguous,,Vivo Knee Length Skirts - RFS 4,,0720043|V
-ambiguous,,Vivo Liora Asymmetrical Kaftan Top in Satin  - FS,,V|V1125028
-ambiguous,,Vivo Liora Asymmetrical Kaftan Top in Satin  - FS,,V|V1125028
-ambiguous,,Vivo Liora Side Drawstring Kaftan Dress  - FS,,V|V1025025
 ambiguous,,Vivo Loose Top - Sample 3,,V0720063|V0720064
 ambiguous,,Vivo Loose Top - Sample 5,,V0720063|V0720064
-ambiguous,,Vivo Maisha Kimono in Crepe  - FS,,V|V1125046
 ambiguous,,Vivo Merika Satin Wrap Top  - FS,,V1024048|V1024105
 ambiguous,,Vivo Merika Satin Wrap Top  - FS,,V1024048|V1024105
 ambiguous,,Vivo Mini Butterfly Sweater  - FS,,V0171954|V0719544
 ambiguous,,Vivo Rema Straight Leg Pants  - FS,,V0425006|V0525011
-ambiguous,,Vivo Ruched Maxi Top in Textured Satin  - FS,,V|V0126011
-ambiguous,,Vivo Ruched Maxi Top in Textured Satin - Taupe / Black Print,,V|V0126011
-ambiguous,,Vivo Ruched Maxi Top in Textured Satin -Beige / Black Print,,V|V0126011
 ambiguous,,Vivo Samira Pants  - FS,,V0525015|V0525077
-ambiguous,,Vivo Shorts - Atbara,,V|VE0034
-ambiguous,,Vivo Shorts - Kidal,,V|VE0034
-ambiguous,,Vivo Shorts - Moabi,,V|VE0034
-ambiguous,,Vivo Shorts - Mvua,,V|VE0034
-ambiguous,,Vivo Shorts - RFS 3,,V|VE0034
-ambiguous,,Vivo Shorts - RFS 4,,V|VE0034
-ambiguous,,Vivo Shorts - RFS 5,,V|VE0034
-ambiguous,,Vivo Wide Leg Pants in Textured Satin - Dusty Green / Black Print,,V|V0126017
-ambiguous,,Vivo Wide Leg Pants in Textured Satin - Light Gold / Black Print,,V|V0126017
-ambiguous,,Vivo Wide Top in Satin  - FS,,V|V0226027
-ambiguous,,Vivo Zawadi Shift Dress - Black,,V|V0525036|V0620059
-ambiguous,,Vivo Zawadi Shift Dress - Black / Yellow Print,,V|V0525036|V0620059
-ambiguous,,Vivo Zawadi Shift Dress - Dark Navy ,,V|V0525036|V0620059
-ambiguous,,Vivo Zawadi Shift Dress - Dark Red,,V|V0525036|V0620059
+ambiguous,,Vivo Zawadi Shift Dress - Black,,V0525036|V0620059
+ambiguous,,Vivo Zawadi Shift Dress - Black / Yellow Print,,V0525036|V0620059
+ambiguous,,Vivo Zawadi Shift Dress - Dark Navy ,,V0525036|V0620059
+ambiguous,,Vivo Zawadi Shift Dress - Dark Red,,V0525036|V0620059
 orphaned,,Safari Anga Drawstring Cargo Pants - Black,,
 orphaned,,Safari Anga Drawstring Cargo Pants - Red,,
 orphaned,,Safari Anga Drawstring Cargo Pants - White,,
 orphaned,,Safari Basic Bishop Sleeve Top - Burgundy Animal Print,,
+orphaned,,Safari Full Length Pants - Sample 2,,
 orphaned,,Safari Hawi 3/4 Sleeve Reversible Kimono - Blue / Black Ankara Print,,
 orphaned,,Safari Hawi 3/4 Sleeve Reversible Kimono - Green / Brown Ankara Print,,
 orphaned,,Safari Hawi 3/4 Sleeve Reversible Kimono - Orange / Taupe Ankara Print,,
@@ -948,6 +884,7 @@ orphaned,,Safari Lira Drawstring Jacket - Black,,
 orphaned,,Safari Lira Drawstring Jacket - Hunters,,
 orphaned,,Safari Maisha Tunic Top - Black Print,,
 orphaned,,Safari Mali Turn Up Hem Pants - Navy Blue,,
+orphaned,,Safari Men's Cargo Shorts - Beige,,
 orphaned,,Safari Midi & Capri Skirts - SAMPLE 1,,
 orphaned,,Safari Mini Dress - SAMPLE 1,,
 orphaned,,Safari Mini Skirts - Sample1,,
@@ -1063,6 +1000,7 @@ orphaned,,Vivo Chesi V-Neck Maxi Dress - Lilac / Navy Print,,
 orphaned,,Vivo Chidii Cape Dress - Red / Black Ameli Print,,
 orphaned,,Vivo Chidii Maxi Kaftan  - FS,,
 orphaned,,Vivo Chidii Maxi Kaftan  - FS,,
+orphaned,,Vivo Culottes - Aldabra,,
 orphaned,,Vivo Dali Panel Dress - Dark Green,,
 orphaned,,Vivo Dali Strappy Cold Shoulder Top - Black,,
 orphaned,,Vivo Dali Tie Kimono - Grey,,
@@ -1126,14 +1064,47 @@ orphaned,,Vivo Joggers - Lamu,,
 orphaned,,Vivo Joggers - Natal,,
 orphaned,,Vivo Joggers - Nile,,
 orphaned,,Vivo Joggers - Sabie,,
+orphaned,,Vivo Jumpsuit - FS 2,,
+orphaned,,Vivo Jumpsuit - FS 3,,
+orphaned,,Vivo Jumpsuit - FS 4,,
+orphaned,,Vivo Jumpsuit - FS 6,,
+orphaned,,Vivo Jumpsuit - RFS 1,,
+orphaned,,Vivo Jumpsuit - RFS 2,,
+orphaned,,Vivo Jumpsuit - Sample 1,,
+orphaned,,Vivo Jumpsuit - Sample 3,,
+orphaned,,Vivo Jumpsuit - Sample 4,,
 orphaned,,Vivo Kitenge Bubble Sleeve Tent Dress - Lashi Print,,
 orphaned,,Vivo Kitenge Bubble Sleeve Tent Dress - Obu Print,,
 orphaned,,Vivo Kitenge Bubble Sleeve Tent Dress - Shama Print,,
 orphaned,,Vivo Kitenge Bubble Sleeve Tent Dress - Teal / Navy Blue Ankara Print,,
 orphaned,,Vivo Kitenge Midi Kimono - Shama Print,,
 orphaned,,Vivo Kitenge Midi Kimono - Tana Print,,
+orphaned,,Vivo Kitenge Shirred Waist Maxi Skirt - Tana Print,,
 orphaned,,Vivo Kitenge Strappy Jumpsuit - Alizeti Print,,
 orphaned,,Vivo Kitenge Strappy Tiered Maxi Dress - Dark Mustard / Navy Blue Ankara Print,,
+orphaned,,Vivo Knee Length Dress  - FS,,
+orphaned,,Vivo Knee Length Dress - SAMPLE1 B.,,
+orphaned,,Vivo Knee Length Dress - SAMPLE2,,
+orphaned,,Vivo Knee Length Skirts - FS 1,,
+orphaned,,Vivo Knee Length Skirts - FS 2,,
+orphaned,,Vivo Knee Length Skirts - FS 5,,
+orphaned,,Vivo Knee Length Skirts - RFS 1,,
+orphaned,,Vivo Knee Length Skirts - RFS 2,,
+orphaned,,Vivo Knee Length Skirts - RFS 3,,
+orphaned,,Vivo Knee Length Skirts - RFS 4,,
+orphaned,,Vivo Knee length Dress - FS 2,,
+orphaned,,Vivo Knee length Dress - FS 3,,
+orphaned,,Vivo Knee length Dress - FS 4,,
+orphaned,,Vivo Knee length Dress - FS 6,,
+orphaned,,Vivo Knee length Dress - FS 7,,
+orphaned,,Vivo Knee length Dress - FS 9,,
+orphaned,,Vivo Knee length Dress - RFS 1,,
+orphaned,,Vivo Knee length Dress - RFS 2,,
+orphaned,,Vivo Knee length Dress - RFS 3,,
+orphaned,,Vivo Knee length Dress - RFS 4,,
+orphaned,,Vivo Knee length Dress - RFS 5,,
+orphaned,,Vivo Knee length Dress - RFS 6,,
+orphaned,,Vivo Knee length Dress - RFS 7,,
 orphaned,,Vivo Laika Cap Sleeve Shift Dress - Dark Hunters,,
 orphaned,,Vivo Lalea Cap Sleeve Hi-Low Top - Black,,
 orphaned,,Vivo Lalea Drawstring Top - Teal / Orange Print,,
@@ -1151,6 +1122,7 @@ orphaned,,Vivo Leggings - SAMPLE 1,,
 orphaned,,Vivo Lena Pleated Wide Pants - Black,,
 orphaned,,Vivo Lesley Top - Purple (Special Offer),,
 orphaned,,Vivo Liora Kaftan Border Maxi Dress  - FS,,
+orphaned,,Vivo Liora Side Drawstring Kaftan Dress in Satin  - FS,,
 orphaned,,Vivo Lome Shawl Jacket - Blue Print,,
 orphaned,,Vivo Long Sleeve Blazer - Atbara,,
 orphaned,,Vivo Long Sleeve Blazer - Savannah,,
@@ -1207,6 +1179,22 @@ orphaned,,Vivo Maua Sleeveless High Low Dress - Orange,,
 orphaned,,Vivo Maua Sleeveless High Low Dress - Purple,,
 orphaned,,Vivo Maua Sleeveless High Low Dress - Royal Blue,,
 orphaned,,Vivo Maua Sleeveless High Low Dress - Rust,,
+orphaned,,Vivo Maxi Dress - FS 1,,
+orphaned,,Vivo Maxi Dress - FS 3,,
+orphaned,,Vivo Maxi Dress - FS 4,,
+orphaned,,Vivo Maxi Dress - FS 5,,
+orphaned,,Vivo Maxi Dress - FS 6,,
+orphaned,,Vivo Maxi Dress - FS 7,,
+orphaned,,Vivo Maxi Dress - RFS 3,,
+orphaned,,Vivo Maxi Dress - RFS 4,,
+orphaned,,Vivo Maxi Dress - RFS 5,,
+orphaned,,Vivo Maxi Dress - RFS 6,,
+orphaned,,Vivo Maxi Dress - RFS 7,,
+orphaned,,Vivo Maxi Dress - SAMPLE1 B.,,
+orphaned,,Vivo Maxi Dress - SAMPLE3,,
+orphaned,,Vivo Maxi Skirts - FS 2,,
+orphaned,,Vivo Maxi Skirts - FS 3,,
+orphaned,,Vivo Maxi Skirts - FS 5,,
 orphaned,,Vivo Maxi Waterfall/ Kimono - Sample 1,,
 orphaned,,Vivo Meli Cowl Top - White,,
 orphaned,,Vivo Meli Cowl Top in Satin MG - Black,,
@@ -1360,7 +1348,16 @@ orphaned,,Vivo Shaa Drop Shoulder Knee Length Dress - Black / Orange Print,,
 orphaned,,Vivo Shaa Drop Shoulder Knee Length Dress - Rust / Black Print,,
 orphaned,,Vivo Shaa Drop Shoulder Knee Length Dress - Taupe / Cream Print,,
 orphaned,,Vivo Shaa Drop Shoulder Knee Length Dress - Yellow / Navy Floral Print,,
+orphaned,,Vivo Short Kimono - Ashai,,
+orphaned,,Vivo Short Kimono - Tana Print,,
 orphaned,,Vivo Short Waterfall/ Kimono - Sample 1,,
+orphaned,,Vivo Shorts - Atbara,,
+orphaned,,Vivo Shorts - Kidal,,
+orphaned,,Vivo Shorts - Moabi,,
+orphaned,,Vivo Shorts - Mvua,,
+orphaned,,Vivo Shorts - RFS 3,,
+orphaned,,Vivo Shorts - RFS 4,,
+orphaned,,Vivo Shorts - RFS 5,,
 orphaned,,Vivo Sia 3/4 Bishop Sleeve Shift Dress (Petite) - Beige / Rust Gola Print,,
 orphaned,,Vivo Sierra Tent Knee Length Dress - Yellow,,
 orphaned,,Vivo Situ Off Shoulder Top - Black / Purple Tiri Print,,
@@ -1400,6 +1397,7 @@ orphaned,,Vivo Spandex Slip Dress - Black,,
 orphaned,,Vivo Spandex Tank Top - Black,,
 orphaned,,Vivo Strappy Sun Dress - Bahari,,
 orphaned,,Vivo Strappy Sun Dress - Zanzibar,,
+orphaned,,Vivo Strappy Tiered Maxi Dress - Casablanca,,
 orphaned,,Vivo Studio Crew Neck Tee in Rib - Black,,
 orphaned,,Vivo Studio Crew Neck Tee in Rib - Dark Taupe,,
 orphaned,,Vivo Studio Crew Neck Tee in Rib - Maroon,,
@@ -1642,6 +1640,7 @@ orphaned,,Zoya Full Length Pants - Sample 1,,
 orphaned,,Zoya Heart Fitness Bra - Black / White,,
 orphaned,,Zoya High Rise Fitness Tights - Black / Animal Print,,
 orphaned,,Zoya Hoodie/ Sweatshirt - Sample 1,,
+orphaned,,Zoya Jumpsuit - Sample 1,,
 orphaned,,Zoya Knee Length Dress - SAMPLE 1,,
 orphaned,,Zoya Knee Length Dress - SAMPLE 4,,
 orphaned,,Zoya Kyro Cropped Shirt - Tan,,
@@ -1668,6 +1667,7 @@ orphaned,,Zoya Party Halter Crop Top - Black,,
 orphaned,,Zoya Party One Sleeved Side Cut Dress - Royal Blue,,
 orphaned,,Zoya Party Tie Back Bodycon - Buttermilk,,
 orphaned,,Zoya Party Turtle Neck Maxi Top - Buttermilk,,
+orphaned,,Zoya Playsuit - Sample 3,,
 orphaned,,Zoya Ribbed Long Sleeve One Shoulder Bodysuit (Special offer) - Dark Green,,
 orphaned,,Zoya Ribbed Long Sleeve Turtleneck Bodysuit - White,,
 orphaned,,Zoya Ribbed Racerback Mini Bodycon (Special Offer) - Black,,

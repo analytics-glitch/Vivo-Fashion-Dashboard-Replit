@@ -229,6 +229,7 @@ export default function MerchOverview() {
           label="Warehouse Units"
           value={fmtNum(s.warehouse_stock_units)}
           sub="Warehouse Finished Goods"
+          sub2={`${s.total_stock_units ? Math.round((s.warehouse_stock_units || 0) / s.total_stock_units * 100) : 0}% of total stock`}
           accentColor={C.purple}
           testId="merch-kpi-warehouse"
         />
