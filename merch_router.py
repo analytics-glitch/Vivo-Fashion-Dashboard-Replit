@@ -6,6 +6,8 @@ Provides all backend data for the 12-tab Merchandising Hub:
   GET /api/merch/summary         — portfolio-level aggregates
   GET /api/merch/by-brand        — aggregates broken down by brand
   GET /api/merch/by-subcategory  — aggregates broken down by subcategory
+                                   (both: ?trend=1 adds revenue_prev + trend_pct
+                                    vs the consecutive previous window)
   GET /api/merch/by-tier         — aggregates broken down by lifecycle tier
   GET /api/merch/style-stores    — per-store breakdown for one style (?style_number=X)
   GET /api/merch/style-sales-weekly — 52-week weekly units for one style (?style_number=X)
@@ -603,7 +605,25 @@ def _has_stock(s):
     return (s.get("current_stock") or 0) > 0
 
 
-# kpi id → { label, dedup (by style number), pred }
+def _has_any_stock(s):
+    """Stores-or-warehouse stock — the Active-universe gate _compute_summary
+    uses (mirrors RM; can differ from current_stock for warehouse-only rows)."""
+    return (s.get("soh_stores") or 0) > 0 or (s.get("soh_warehouse") or 0) > 0
+
+
+def _is_archived_tier(s):
+    return (s.get("tier") or "Tier 4") == "Archived"
+
+
+def _row_period_value(s, kind):
+    """Selected-period revenue/units contribution of a style row — EXACTLY the
+    expression _compute_summary sums (rows always carry the *_period keys,
+    COALESCE'd in _fetch_styles). No 6m fallback here, or file sums could
+    diverge from the card total."""
+    return s.get(f"{kind}_period") or 0
+
+
+# kpi id → { label, dedup (by style number), pred, extra?: [(header, fn)] }
 _KPI_BUCKETS = {
     "total_stock": {
         "label": "Total Stock on Hand",
@@ -640,6 +660,64 @@ _KPI_BUCKETS = {
         "pred":  lambda s: (_is_retired_tier(s) and _has_stock(s)
                             and s.get("last_sale_days") is not None
                             and s["last_sale_days"] >= 30),
+    },
+    # ── Overview-tab KPI cards ───────────────────────────────────────────────
+    # Preds mirror _compute_summary's counting EXACTLY — enforced by
+    # OverviewKpiBucketParityTests in test_merch_router_schema_smoke.py.
+    "active_styles": {
+        "label": "Active Style Lines",
+        "dedup": True,
+        "pred":  lambda s: _is_active_tier(s) and _has_any_stock(s),
+    },
+    "retired_styles": {
+        "label": "Retired Style Lines",
+        "dedup": True,
+        "pred":  _is_retired_tier,
+    },
+    "archived_styles": {
+        "label": "Archived Style Lines",
+        "dedup": True,
+        "pred":  _is_archived_tier,
+    },
+    "active_colours": {
+        "label": "Active Colour Styles",
+        "dedup": True,
+        "pred":  lambda s: _is_active_tier(s) and _has_any_stock(s),
+        # style-grain rows; this column sums to the card's style×colour count
+        "extra": [("Colours (per style)", lambda s: s.get("colour_count"))],
+    },
+    "warehouse_units": {
+        "label": "Warehouse Units",
+        "dedup": False,
+        # != 0 (not > 0): negative availability rows count in the card total,
+        # so they must appear in the file or the sum can't reconcile.
+        "pred":  lambda s: (s.get("soh_warehouse") or 0) != 0,
+        "extra": [("Warehouse Units", lambda s: s.get("soh_warehouse"))],
+    },
+    "on_track": {
+        "label": "On Track Styles",
+        "dedup": False,
+        "pred":  lambda s: s.get("action_status") == "on_track",
+    },
+    "revenue_period": {
+        "label": "Revenue Period",
+        "dedup": False,
+        # != 0: net-negative period revenue (returns) still moves the card
+        # total, so those rows belong in the file. Zero rows can't affect the
+        # sum and are omitted to keep the export focused.
+        "pred":  lambda s: _row_period_value(s, "revenue") != 0,
+        "extra": [("Revenue (period)", lambda s: _row_period_value(s, "revenue"))],
+    },
+    "units_period": {
+        "label": "Units Sold Period",
+        "dedup": False,
+        "pred":  lambda s: _row_period_value(s, "units") != 0,
+        "extra": [("Units (period)", lambda s: _row_period_value(s, "units"))],
+    },
+    "full_price": {
+        "label": "Full Price Pct",
+        "dedup": False,
+        "pred":  lambda s: s.get("full_price_pct") is not None,
     },
 }
 
@@ -884,6 +962,55 @@ def _agg_by_dim(styles, dim_key):
         })
     result.sort(key=lambda x: x["revenue_6m"] or 0, reverse=True)
     return result
+
+
+# ── Chart trend helpers (Overview mix charts) ─────────────────────────────────
+
+def _prev_window(from_date=None, to_date=None):
+    """Consecutive previous window of equal length, mirroring _fetch_styles'
+    defaults (no dates → trailing 6 months ending today). Returns (from, to)
+    ISO date strings."""
+    today = date.today()
+    try:
+        pf = date.fromisoformat(from_date) if from_date else today - timedelta(days=_SIX_MONTHS_DAYS)
+    except (TypeError, ValueError):
+        pf = today - timedelta(days=_SIX_MONTHS_DAYS)
+    try:
+        pt = date.fromisoformat(to_date) if to_date else today
+    except (TypeError, ValueError):
+        pt = today
+    length = max((pt - pf).days + 1, 1)
+    prev_to = pf - timedelta(days=1)
+    prev_from = prev_to - timedelta(days=length - 1)
+    return str(prev_from), str(prev_to)
+
+
+def _merge_trend(cur_rows, prev_rows, dim_key):
+    """Annotate _agg_by_dim rows with previous-window revenue + % trend.
+    trend_pct is None when the bucket had no positive revenue in the previous
+    window (new dim value, or a net-returns prev period) — a % change against
+    a zero/negative base is meaningless."""
+    prev_rev = {r[dim_key]: (r.get("revenue_period") or 0) for r in prev_rows}
+    for r in cur_rows:
+        pv = prev_rev.get(r[dim_key]) or 0
+        r["revenue_prev"] = round(pv, 0)
+        r["trend_pct"] = (round((((r.get("revenue_period") or 0) - pv) / pv) * 100.0, 1)
+                          if pv > 0 else None)
+    return cur_rows
+
+
+def _styles_cached(brand=None, subcategory=None, tier=None, status=None,
+                   from_date=None, to_date=None, country=None, pos_location=None,
+                   ttl=600):
+    """_fetch_styles behind the SAME cache key format /api/merch/styles uses
+    (ttl mirrors the handlers' _TTL), so the prev-window rows fetched for chart
+    trends are shared between by-brand and by-subcategory instead of running
+    the heavy query twice."""
+    key = f"merch_styles|{brand}|{subcategory}|{tier}|{status}|{from_date}|{to_date}|{country}|{pos_location}"
+    return _cached(key, ttl, lambda: _fetch_styles(
+        brand=brand, subcategory=subcategory, tier=tier, status=status,
+        from_date=from_date, to_date=to_date, country=country,
+        pos_location=pos_location))
 
 
 # ── Style-stores endpoint ──────────────────────────────────────────────────────
@@ -2021,8 +2148,9 @@ def register_merch_routes(app, api_pg_module):
         country:      Optional[str] = Query(None),
         pos_location: Optional[str] = Query(None),
     ):
-        """CSV of the styles behind one Inventory & Stock Health KPI card.
-        Columns replicate the Style_Report_Details spreadsheet (22 cols).
+        """CSV of the styles behind one KPI card (Inventory & Stock Health +
+        Overview). Columns replicate the Style_Report_Details spreadsheet
+        (22 cols) plus optional per-KPI extra columns.
         Reuses the cached _fetch_styles rows + the shared _KPI_BUCKETS
         predicates so the file always matches the on-card count."""
         if kpi not in _KPI_BUCKETS:
@@ -2045,6 +2173,10 @@ def register_merch_routes(app, api_pg_module):
             "Inventory Value (at Full Price)", "SOR Since Launch %", "Brand",
             "Recommendation",
         ]
+        # Optional per-KPI extra columns (e.g. Warehouse Units) so the figure
+        # a card sums is visible in its own file.
+        extra_cols = _KPI_BUCKETS[kpi].get("extra") or []
+        headers += [h for h, _fn in extra_cols]
         today = date.today()
         buf = _io.StringIO()
         w = _csv.writer(buf)
@@ -2092,6 +2224,7 @@ def register_merch_routes(app, api_pg_module):
                 sor_life,
                 _v(s.get("brand")),
                 _v(s.get("recommended_action")),
+                *[_v(fn(s)) for _h, fn in extra_cols],
             ])
 
         from fastapi.responses import Response as _Resp
@@ -2114,14 +2247,28 @@ def register_merch_routes(app, api_pg_module):
         to_date:      Optional[str] = Query(None),
         country:      Optional[str] = Query(None),
         pos_location: Optional[str] = Query(None),
+        trend:        Optional[int] = Query(0),
     ):
-        key = f"merch_by_brand|{brand}|{subcategory}|{tier}|{status}|{from_date}|{to_date}|{country}|{pos_location}"
-        result = _cached(key, _TTL, lambda: _agg_by_dim(
-            _fetch_styles(brand=brand, subcategory=subcategory, tier=tier, status=status,
-                          from_date=from_date, to_date=to_date, country=country,
-                          pos_location=pos_location),
-            "brand",
-        ))
+        key = f"merch_by_brand|{brand}|{subcategory}|{tier}|{status}|{from_date}|{to_date}|{country}|{pos_location}|{trend}"
+
+        def _build():
+            rows = _agg_by_dim(
+                _fetch_styles(brand=brand, subcategory=subcategory, tier=tier, status=status,
+                              from_date=from_date, to_date=to_date, country=country,
+                              pos_location=pos_location),
+                "brand",
+            )
+            if trend:  # opt-in (Overview charts) — adds revenue_prev + trend_pct
+                pf, pt = _prev_window(from_date, to_date)
+                rows = _merge_trend(rows, _agg_by_dim(
+                    _styles_cached(brand=brand, subcategory=subcategory, tier=tier,
+                                   status=status, from_date=pf, to_date=pt,
+                                   country=country, pos_location=pos_location),
+                    "brand",
+                ), "brand")
+            return rows
+
+        result = _cached(key, _TTL, _build)
         return JSONResponse({"rows": result})
 
     @app.get("/api/merch/by-subcategory")
@@ -2135,14 +2282,28 @@ def register_merch_routes(app, api_pg_module):
         to_date:      Optional[str] = Query(None),
         country:      Optional[str] = Query(None),
         pos_location: Optional[str] = Query(None),
+        trend:        Optional[int] = Query(0),
     ):
-        key = f"merch_by_sub|{brand}|{subcategory}|{tier}|{status}|{from_date}|{to_date}|{country}|{pos_location}"
-        result = _cached(key, _TTL, lambda: _agg_by_dim(
-            _fetch_styles(brand=brand, subcategory=subcategory, tier=tier, status=status,
-                          from_date=from_date, to_date=to_date, country=country,
-                          pos_location=pos_location),
-            "subcategory",
-        ))
+        key = f"merch_by_sub|{brand}|{subcategory}|{tier}|{status}|{from_date}|{to_date}|{country}|{pos_location}|{trend}"
+
+        def _build():
+            rows = _agg_by_dim(
+                _fetch_styles(brand=brand, subcategory=subcategory, tier=tier, status=status,
+                              from_date=from_date, to_date=to_date, country=country,
+                              pos_location=pos_location),
+                "subcategory",
+            )
+            if trend:  # opt-in (Overview charts) — adds revenue_prev + trend_pct
+                pf, pt = _prev_window(from_date, to_date)
+                rows = _merge_trend(rows, _agg_by_dim(
+                    _styles_cached(brand=brand, subcategory=subcategory, tier=tier,
+                                   status=status, from_date=pf, to_date=pt,
+                                   country=country, pos_location=pos_location),
+                    "subcategory",
+                ), "subcategory")
+            return rows
+
+        result = _cached(key, _TTL, _build)
         return JSONResponse({"rows": result})
 
     @app.get("/api/merch/by-tier")

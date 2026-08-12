@@ -8,6 +8,9 @@
  *   • At-Risk by Subcategory · Status by Style Age Group
  *   • Priority Actions panel (supersedes the old Recommended Actions summary)
  *   • At-risk CSV export
+ *   • Labeled CSV download links on every KPI card — portfolio row via
+ *     /api/merch/export/kpi.csv buckets (server-side, count-lockstep);
+ *     at-risk row serialises the same client-derived arrays it renders
  * All at-risk derivations reuse the SAME /api/merch/styles rows the overview
  * already fetches — no second fetch.
  *
@@ -20,6 +23,8 @@
  *   by-brand → { rows: [{ brand, style_count, units_6m, revenue_6m,
  *                          current_stock, avg_woc, avg_sor_6m,
  *                          avg_full_price_pct }] }
+ *                (+ revenue_prev / trend_pct because this page passes trend=1
+ *                 — trend is vs the consecutive previous window of equal length)
  *   by-subcategory → same shape with subcategory key
  *   by-tier  → same shape with tier key
  */
@@ -31,9 +36,12 @@ import {
 import { DownloadSimple } from "@phosphor-icons/react";
 import { Loading, ErrorBox, SectionTitle } from "@/components/common";
 import {
-  useMerchData, MerchKPICard, ChartCard, SubcatFilter,
+  useMerchData, useMerchParams, MerchKPICard, ChartCard, SubcatFilter,
   C, fmtKESM, fmtPct1, fmtNum, fmtAxisM,
 } from "./MerchHelpers";
+// fmtDate aliased: the component body declares its own local fmtDate helper
+import { api, datePresets, fmtDate as fmtDateApi } from "@/lib/api";
+import { useFilters } from "@/lib/filters";
 import { useMerchFilters } from "@/pages/MerchandisingHub";
 
 // ── Tooltips ──────────────────────────────────────────────────────────────────
@@ -50,6 +58,52 @@ const KesTooltip = ({ active, payload, label }) => {
         </div>
       ))}
     </div>
+  );
+};
+
+// Tooltip for the Revenue-by-Brand / Top-5-Subcategories bars: revenue, share
+// of total revenue, and trend vs the consecutive previous period (server
+// fields revenue_prev / trend_pct — trend_pct is null when the prev window
+// had no positive revenue for that bucket).
+const ShareTrendTooltip = ({ active, payload, label }) => {
+  if (!active || !payload?.length) return null;
+  const r = payload[0]?.payload || {};
+  const t = r.trend_pct;
+  return (
+    <div className="bg-white shadow-lg rounded-lg px-3 py-2 text-[11px] border border-slate-100 leading-4">
+      <div className="font-semibold text-slate-700 mb-1 max-w-[200px] truncate">{label}</div>
+      <div className="text-slate-500">Revenue: <span className="font-semibold text-slate-800">{fmtKESM(r.revenue_sel || 0)}</span></div>
+      <div className="text-slate-500">Share of revenue: <span className="font-semibold text-slate-800">{r.share_pct == null ? "—" : `${r.share_pct.toFixed(1)}%`}</span></div>
+      <div className="text-slate-500">
+        Prev period: <span className="font-semibold text-slate-800">{fmtKESM(r.revenue_prev || 0)}</span>
+        {t == null
+          ? <span className="text-slate-400"> · trend n/a</span>
+          : <span className={t >= 0 ? "text-emerald-600 font-semibold" : "text-red-600 font-semibold"}> · {t >= 0 ? "▲" : "▼"}{Math.abs(t).toFixed(1)}%</span>}
+      </div>
+    </div>
+  );
+};
+
+// Two-line end-of-bar label: revenue on top, "share% · trend" underneath.
+// Recharts passes the bar rect (x/y/width/height) + row index; the factory
+// closes over the chart's data array to reach share_pct / trend_pct.
+const barEndLabel = (rows) => ({ x = 0, y = 0, width = 0, height = 0, index }) => {
+  const r = rows[index] || {};
+  const tx = x + Math.max(width, 0) + 6;
+  const cy = y + height / 2;
+  const t = r.trend_pct == null ? null : Math.round(r.trend_pct);
+  const share = r.share_pct == null ? "—"
+    : `${r.share_pct.toFixed(r.share_pct < 10 ? 1 : 0)}%`;
+  return (
+    <g>
+      <text x={tx} y={cy - 1} fontSize={9} fontWeight={600} fill="#334155">{fmtKESM(r.revenue_sel || 0)}</text>
+      <text x={tx} y={cy + 9} fontSize={8.5}>
+        <tspan fill="#64748b">{share}</tspan>
+        {t == null
+          ? <tspan fill="#94a3b8"> · –</tspan>
+          : <tspan fill={t >= 0 ? "#16a34a" : "#dc2626"}> · {t >= 0 ? "▲" : "▼"}{Math.abs(t)}%</tspan>}
+      </text>
+    </g>
   );
 };
 
@@ -114,7 +168,29 @@ export default function MerchOverview() {
   const filters = useMerchFilters();
   const [localSubcat, setLocalSubcat] = useState(null);
   const { summary, styles, byBrand, bySubcategory, byTier, loading, error } =
-    useMerchData(["summary", "styles", "by-brand", "by-subcategory", "by-tier"], localSubcat);
+    useMerchData(["summary", "styles", "by-brand", "by-subcategory", "by-tier"], localSubcat,
+                 { trend: 1 }); // by-brand/by-subcategory add prev-window trend fields
+  // Exact params useMerchData sends (incl. tab-local subcategory override) —
+  // reused by the KPI CSV downloads so each file matches its on-card scope.
+  const merchParams = useMerchParams(localSubcat);
+
+  // Authenticated blob download (plain <a href> drops auth in the preview
+  // iframe) — same pattern as the Inventory tab's KPI card exports.
+  const downloadKpiCsv = (kpiId, fileLabel) => async () => {
+    const r = await api.get("/merch/export/kpi.csv", {
+      params: { kpi: kpiId, ...merchParams },
+      responseType: "blob",
+      forceFresh: true,
+    });
+    const url = URL.createObjectURL(new Blob([r.data], { type: "text/csv" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${fileLabel}_${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
 
   // ── styles is { styles: [...], count } ────────────────────────────────────
   const styleRows = useMemo(() => styles?.styles || [], [styles]);
@@ -147,25 +223,42 @@ export default function MerchOverview() {
     return Object.entries(buckets).map(([name, value], i) => ({ name, value, color: FP_BUCKET_COLORS[i] }));
   }, [styleRows]);
 
+  // ── Chart period label ────────────────────────────────────────────────────
+  // Same wording as the global filter bar's date pill: preset label when one
+  // is active ("Today", "Last 30 days"…), explicit range for custom dates,
+  // and the backend's trailing-6-months default when no dates are applied.
+  const { preset: gPreset } = useFilters(); // same field the FilterBar pill reads
+  const periodLabel = useMemo(() => {
+    const presets = datePresets();
+    if (gPreset && gPreset !== "custom" && presets[gPreset]) {
+      return presets[gPreset].label;
+    }
+    const f = filters.from_date, t = filters.to_date;
+    if (f && t) return f === t ? fmtDateApi(f) : `${fmtDateApi(f)} – ${fmtDateApi(t)}`;
+    return "Last 6 months";
+  }, [gPreset, filters.from_date, filters.to_date]);
+
   // ── Brand data ────────────────────────────────────────────────────────────
   // Charts follow the global date filter: revenue_period is scoped to the
   // selected range (defaults to the trailing 6 months when no dates are set).
+  // share_pct = % of the FULL universe's revenue (all brands / all
+  // subcategories in scope), not just the sliced top rows shown.
   const selRev = (r) => (r.revenue_period ?? r.revenue_6m) || 0;
+  const withShare = (rows, keep) => {
+    const mapped = rows.map((r) => ({ ...r, revenue_sel: selRev(r) }));
+    const total = mapped.reduce((sum, r) => sum + r.revenue_sel, 0);
+    return mapped
+      .sort((a, b) => b.revenue_sel - a.revenue_sel)
+      .slice(0, keep)
+      .map((r) => ({ ...r, share_pct: total > 0 ? (r.revenue_sel / total) * 100 : null }));
+  };
 
-  const brandData = useMemo(() => {
-    if (!byBrand?.rows) return [];
-    return [...byBrand.rows]
-      .map((r) => ({ ...r, revenue_sel: selRev(r) }))
-      .sort((a, b) => b.revenue_sel - a.revenue_sel).slice(0, 6);
-  }, [byBrand]);
+  const brandData = useMemo(
+    () => (byBrand?.rows ? withShare(byBrand.rows, 6) : []), [byBrand]);
 
   // ── Top 5 subcategories ───────────────────────────────────────────────────
-  const top5SubcatData = useMemo(() => {
-    if (!bySubcategory?.rows) return [];
-    return [...bySubcategory.rows]
-      .map((r) => ({ ...r, revenue_sel: selRev(r) }))
-      .sort((a, b) => b.revenue_sel - a.revenue_sel).slice(0, 5);
-  }, [bySubcategory]);
+  const top5SubcatData = useMemo(
+    () => (bySubcategory?.rows ? withShare(bySubcategory.rows, 5) : []), [bySubcategory]);
 
   // ── Tier donut ────────────────────────────────────────────────────────────
   const tierPieData = useMemo(() => {
@@ -196,6 +289,9 @@ export default function MerchOverview() {
       stockAtRisk,
       healthyCount: healthy.length,
       total,
+      // arrays kept for the per-card CSV downloads — serialising these exact
+      // rows guarantees each file matches its card count
+      atRiskRows: atRisk, overdueRows: overdue, onReviewRows: onReview, healthyRows: healthy,
     };
   }, [styleRows]);
 
@@ -286,11 +382,12 @@ export default function MerchOverview() {
   const today = new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
   const dateSlug = new Date().toISOString().slice(0, 10);
 
-  // At-risk CSV export (unchanged from the retired At-Risk & Actions tab)
-  const handleDownload = () => {
-    const atRiskStyles = styleRows.filter(r => r.action_status === "at_risk" || r.action_status === "overdue");
+  // Client-side CSVs: the at-risk row's numbers are derived from styleRows in
+  // this component, so each card download serialises the exact array it
+  // renders — the server buckets cover the portfolio KPI row instead.
+  const buildStyleCsv = (rows) => {
     const headers = ["Style Name", "Subcategory", "Tier", "Current Stock", "WOC (weeks)", "Last Sale (days)", "Action Status", "Recommended Action"];
-    const rows = atRiskStyles.map(r => [
+    const body = rows.map(r => [
       `"${(r.style_name || "").replace(/"/g, '""')}"`,
       `"${(r.subcategory || "").replace(/"/g, '""')}"`,
       r.tier || "",
@@ -300,12 +397,23 @@ export default function MerchOverview() {
       r.action_status || "",
       `"${(r.recommended_action || "").replace(/"/g, '""')}"`,
     ]);
-    const csv = [headers.join(","), ...rows.map(r => r.join(","))].join("\n");
+    return [headers.join(","), ...body.map(r => r.join(","))].join("\n");
+  };
+  const downloadCsvText = (csv, fname) => {
     const blob = new Blob([csv], { type: "text/csv" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
-    a.download = `at-risk-styles-${dateSlug}.csv`;
+    a.download = `${fname}.csv`;
+    document.body.appendChild(a);
     a.click();
+    a.remove();
+    URL.revokeObjectURL(a.href);
+  };
+
+  // At-risk section export (filename unchanged from the retired tab)
+  const handleDownload = () => {
+    const atRiskStyles = styleRows.filter(r => r.action_status === "at_risk" || r.action_status === "overdue");
+    downloadCsvText(buildStyleCsv(atRiskStyles), `at-risk-styles-${dateSlug}`);
   };
 
   return (
@@ -325,6 +433,7 @@ export default function MerchOverview() {
           sub={`Stock: ${fmtNum(s.active_stock_units)} units`}
           accentColor={C.blue}
           testId="merch-kpi-active-styles"
+          onDownload={downloadKpiCsv("active_styles", "Active_Style_Lines")}
         />
         <MerchKPICard
           label="Retired Style Lines"
@@ -332,6 +441,7 @@ export default function MerchOverview() {
           sub={`Stock: ${fmtNum(s.retired_stock_units)} units`}
           accentColor="#94a3b8"
           testId="merch-kpi-retired-styles"
+          onDownload={downloadKpiCsv("retired_styles", "Retired_Style_Lines")}
         />
         <MerchKPICard
           label="Archived Style Lines"
@@ -339,6 +449,7 @@ export default function MerchOverview() {
           sub={`Stock: ${fmtNum(s.archived_stock_units)} units`}
           accentColor="#64748b"
           testId="merch-kpi-archived-styles"
+          onDownload={downloadKpiCsv("archived_styles", "Archived_Style_Lines")}
         />
         <MerchKPICard
           label="Active Colour Styles"
@@ -346,6 +457,7 @@ export default function MerchOverview() {
           sub="Distinct style × colour"
           accentColor={C.teal}
           testId="merch-kpi-colour-styles"
+          onDownload={downloadKpiCsv("active_colours", "Active_Colour_Styles")}
         />
         <MerchKPICard
           label="Warehouse Units"
@@ -354,6 +466,7 @@ export default function MerchOverview() {
           sub2={`${s.total_stock_units ? Math.round((s.warehouse_stock_units || 0) / s.total_stock_units * 100) : 0}% of total stock`}
           accentColor={C.purple}
           testId="merch-kpi-warehouse"
+          onDownload={downloadKpiCsv("warehouse_units", "Warehouse_Units")}
         />
         <MerchKPICard
           label="Total Stock Units"
@@ -361,6 +474,7 @@ export default function MerchOverview() {
           sub={`WOC > 20 (active): ${fmtNum(s.woc_gt20_count)} styles`}
           accentColor="#0891b2"
           testId="merch-kpi-stock"
+          onDownload={downloadKpiCsv("total_stock", "Total_Stock_Units")}
         />
         <MerchKPICard
           label="Style Health"
@@ -369,6 +483,7 @@ export default function MerchOverview() {
           sub2={`At Risk: ${fmtNum(s.at_risk_count)} (${atRiskPct}%)`}
           accentColor={C.green}
           testId="merch-kpi-styles"
+          onDownload={downloadKpiCsv("on_track", "On_Track_Styles")}
         />
         <MerchKPICard
           label="Revenue (period)"
@@ -377,6 +492,7 @@ export default function MerchOverview() {
           sub2={fmtKESM(avgRevPerStyle)}
           accentColor="#16a34a"
           testId="merch-kpi-revenue"
+          onDownload={downloadKpiCsv("revenue_period", "Revenue_Period_Styles")}
         />
         <MerchKPICard
           label="Units Sold (period)"
@@ -385,6 +501,7 @@ export default function MerchOverview() {
           sub2={`${fmtNum(s.weekly_velocity)} /wk`}
           accentColor={C.amber}
           testId="merch-kpi-units"
+          onDownload={downloadKpiCsv("units_period", "Units_Sold_Period_Styles")}
         />
         <MerchKPICard
           label="Avg Full Price %"
@@ -393,44 +510,45 @@ export default function MerchOverview() {
           sub2={fmtPct1(s.avg_sor_6m)}
           accentColor={C.red}
           testId="merch-kpi-fp"
+          onDownload={downloadKpiCsv("full_price", "Full_Price_Pct_Styles")}
         />
       </div>
 
       {/* ── Row 1 charts ── */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {/* Revenue by Brand */}
-        <ChartCard title={`Revenue by Brand (${filters.from_date ? "Selected Period" : "6m"})`}>
+        <ChartCard title={`Revenue by Brand (${periodLabel})`}>
           <ResponsiveContainer width="100%" height={220}>
             <BarChart
               data={brandData}
               layout="vertical"
-              margin={{ top: 0, right: 65, left: 45, bottom: 0 }}
+              margin={{ top: 0, right: 84, left: 45, bottom: 0 }}
             >
               <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f1f5f9" />
               <XAxis type="number" tickFormatter={fmtAxisM} tick={{ fontSize: 10 }} />
               <YAxis type="category" dataKey="brand" tick={{ fontSize: 10 }} width={50} />
-              <Tooltip content={<KesTooltip />} />
+              <Tooltip content={<ShareTrendTooltip />} />
               <Bar dataKey="revenue_sel" name="Revenue" fill={C.blue} radius={[0, 3, 3, 0]}>
-                <LabelList dataKey="revenue_sel" position="right" formatter={fmtKESM} style={{ fontSize: 9, fill: "#64748b" }} />
+                <LabelList dataKey="revenue_sel" content={barEndLabel(brandData)} />
               </Bar>
             </BarChart>
           </ResponsiveContainer>
         </ChartCard>
 
         {/* Top 5 Subcategories */}
-        <ChartCard title={`Top 5 Subcategories by Revenue (${filters.from_date ? "Selected Period" : "6m"})`}>
+        <ChartCard title={`Top 5 Subcategories by Revenue (${periodLabel})`}>
           <ResponsiveContainer width="100%" height={220}>
             <BarChart
               data={top5SubcatData}
               layout="vertical"
-              margin={{ top: 0, right: 65, left: 80, bottom: 0 }}
+              margin={{ top: 0, right: 84, left: 80, bottom: 0 }}
             >
               <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f1f5f9" />
               <XAxis type="number" tickFormatter={fmtAxisM} tick={{ fontSize: 10 }} />
               <YAxis type="category" dataKey="subcategory" tick={{ fontSize: 9 }} width={80} tickFormatter={(v) => v?.length > 18 ? v.slice(0, 18) + "…" : v} />
-              <Tooltip content={<KesTooltip />} />
+              <Tooltip content={<ShareTrendTooltip />} />
               <Bar dataKey="revenue_sel" name="Revenue" fill={C.blue} radius={[0, 3, 3, 0]}>
-                <LabelList dataKey="revenue_sel" position="right" formatter={fmtKESM} style={{ fontSize: 9, fill: "#64748b" }} />
+                <LabelList dataKey="revenue_sel" content={barEndLabel(top5SubcatData)} />
               </Bar>
             </BarChart>
           </ResponsiveContainer>
@@ -507,30 +625,38 @@ export default function MerchOverview() {
           sub={`${riskKpis.total > 0 ? ((riskKpis.atRiskCount / riskKpis.total) * 100).toFixed(1) : 0}% of portfolio`}
           accentColor={C.amber}
           testId="merch-kpi-atrisk"
+          onDownload={async () => downloadCsvText(buildStyleCsv(riskKpis.atRiskRows), `At_Risk_Styles_${dateSlug}`)}
         />
         <MerchKPICard
           label="Overdue Styles" value={fmtNum(riskKpis.overdueCount)}
           sub="Immediate action"
           accentColor={C.red}
           testId="merch-kpi-overdue"
+          onDownload={async () => downloadCsvText(buildStyleCsv(riskKpis.overdueRows), `Overdue_Styles_${dateSlug}`)}
         />
         <MerchKPICard
           label="On Review" value={fmtNum(riskKpis.onReviewCount)}
           sub={`${riskKpis.total > 0 ? ((riskKpis.onReviewCount / riskKpis.total) * 100).toFixed(1) : 0}% of portfolio`}
           accentColor="#4b7bec"
           testId="merch-kpi-onreview"
+          onDownload={async () => downloadCsvText(buildStyleCsv(riskKpis.onReviewRows), `On_Review_Styles_${dateSlug}`)}
         />
         <MerchKPICard
           label="Stock at Risk" value={`~${fmtNum(Math.round(riskKpis.stockAtRisk / 500) * 500)} units`}
           sub="Estimated exposure"
           accentColor={C.purple}
           testId="merch-kpi-stockatrisk"
+          onDownload={async () => downloadCsvText(
+            buildStyleCsv([...riskKpis.atRiskRows, ...riskKpis.overdueRows]
+              .sort((a, b) => (b.current_stock || 0) - (a.current_stock || 0))),
+            `Stock_at_Risk_Styles_${dateSlug}`)}
         />
         <MerchKPICard
           label="Healthy Styles" value={fmtNum(riskKpis.healthyCount)}
           sub={`${riskKpis.total > 0 ? ((riskKpis.healthyCount / riskKpis.total) * 100).toFixed(1) : 0}% of portfolio`}
           accentColor={C.green}
           testId="merch-kpi-healthy"
+          onDownload={async () => downloadCsvText(buildStyleCsv(riskKpis.healthyRows), `Healthy_Styles_${dateSlug}`)}
         />
       </div>
 

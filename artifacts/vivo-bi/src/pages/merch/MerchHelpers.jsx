@@ -230,11 +230,16 @@ export const useMerchParams = (localSubcat = null) => {
   return params;
 };
 
-export const useMerchData = (endpoints = [], localSubcat = null) => {
+export const useMerchData = (endpoints = [], localSubcat = null, extraParams = null) => {
   const filters = useMerchFilters();
   const [state, setState] = useState({ loading: true, error: null });
 
-  const params = useMerchParams(localSubcat);
+  // extraParams: optional additional query params sent to every endpoint in
+  // the list (FastAPI silently ignores params an endpoint doesn't declare) —
+  // e.g. Overview passes { trend: 1 } so by-brand / by-subcategory include
+  // prev-period trend fields without changing any other caller.
+  const baseParams = useMerchParams(localSubcat);
+  const params = extraParams ? { ...baseParams, ...extraParams } : baseParams;
 
   // Stable serialisation for the dep array
   const paramsKey = JSON.stringify(params) + filters.dataVersion;

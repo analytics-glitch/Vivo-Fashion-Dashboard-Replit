@@ -33,6 +33,17 @@ chromium_headless_shell-1228 for @playwright/test 1.61). A full-chromium nix
 binary works fine as the headless shell despite the version gap (140 vs 149) —
 7/7 smoke tests pass.
 
+**Shim BOTH layouts** — the test runner wants
+`chromium_headless_shell-<REV>/chrome-headless-shell-linux64/chrome-headless-shell`,
+but a direct `chromium.launch()` from a standalone node script resolves
+`chromium-<REV>/chrome-linux64/chrome`. Symlink the same nix chrome binary into
+both paths. Standalone scripts outside the repo also need
+`NODE_PATH=/home/runner/workspace/node_modules` to resolve `@playwright/test`.
+One-off page checks this way (session insert → localStorage `vivo_token` →
+goto → assert/screenshot) catch real bugs full-suite runs are too slow for —
+`page.on("pageerror")` surfaced a module-scope TDZ crash (blank page) that
+backend curl checks could never see.
+
 **Why:** nix binaries are patched to link against nix-store libs; Playwright
 only checks the executable path exists. Rebuild the shim if /tmp is wiped.
 

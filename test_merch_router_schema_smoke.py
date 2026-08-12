@@ -306,6 +306,105 @@ class ScopedKpiSemanticsTests(unittest.TestCase):
         self.assertEqual(s["zero_stock_count"], 1)
 
 
+class OverviewKpiBucketParityTests(unittest.TestCase):
+    """Overview CSV buckets must match _compute_summary's card values on the
+    same rows — the lockstep contract behind the KPI-card download links."""
+
+    def _rows(self):
+        return [
+            _style(style_number="SN-1", tier="Tier 1", colour_count=3),
+            _style(style_number="SN-1", tier="Tier 1", style_name="renamed twin",
+                   colour_count=2),                                            # dedup → counts once
+            _style(style_number="SN-2", tier="Tier 2", current_stock=0,
+                   soh_stores=0),                                              # stockless active → excluded
+            _style(style_number="SN-3", tier="Retired", current_stock=0,
+                   soh_stores=0),                                              # stockless retired → still counts
+            _style(style_number="SN-4", tier="Archived"),
+            _style(style_number="SN-5", tier="Tier 3", soh_warehouse=40,
+                   current_stock=50),
+        ]
+
+    def test_lifecycle_buckets_match_summary_counts(self):
+        rows = self._rows()
+        summary = merch_router._compute_summary(rows)
+        for kpi, key in [("active_styles",   "active_styles_count"),
+                         ("retired_styles",  "retired_styles_count"),
+                         ("archived_styles", "archived_styles_count")]:
+            got = len(merch_router._kpi_bucket_rows(rows, kpi))
+            self.assertEqual(got, summary[key], f"{kpi} rows != summary {key}")
+
+    def test_colour_and_warehouse_sums_match_summary(self):
+        rows = self._rows()
+        summary = merch_router._compute_summary(rows)
+        colours = sum((r.get("colour_count") or 0)
+                      for r in merch_router._kpi_bucket_rows(rows, "active_colours"))
+        self.assertEqual(colours, summary["active_colour_styles_count"])
+        wh = sum((r.get("soh_warehouse") or 0)
+                 for r in merch_router._kpi_bucket_rows(rows, "warehouse_units"))
+        self.assertEqual(wh, summary["warehouse_stock_units"])
+
+    def test_on_track_bucket_matches_summary(self):
+        rows = self._rows()
+        summary = merch_router._compute_summary(rows)
+        self.assertEqual(len(merch_router._kpi_bucket_rows(rows, "on_track")),
+                         summary["on_track_count"])
+
+    def test_prev_window_custom_range(self):
+        self.assertEqual(merch_router._prev_window("2026-08-01", "2026-08-10"),
+                         ("2026-07-22", "2026-07-31"))
+
+    def test_prev_window_single_day(self):
+        self.assertEqual(merch_router._prev_window("2026-08-12", "2026-08-12"),
+                         ("2026-08-11", "2026-08-11"))
+
+    def test_prev_window_default_six_months(self):
+        from datetime import date, timedelta
+        today = date.today()
+        pf, pt = merch_router._prev_window(None, None)
+        self.assertEqual(pt, str(today - timedelta(days=merch_router._SIX_MONTHS_DAYS + 1)))
+        self.assertEqual(pf, str(today - timedelta(days=2 * merch_router._SIX_MONTHS_DAYS + 1)))
+
+    def test_merge_trend_annotates_rows(self):
+        cur = [{"brand": "A", "revenue_period": 200.0},
+               {"brand": "B", "revenue_period": 50.0},
+               {"brand": "C", "revenue_period": -30.0}]
+        prev = [{"brand": "A", "revenue_period": 100.0},
+                {"brand": "B", "revenue_period": 0.0},
+                {"brand": "D", "revenue_period": 40.0}]
+        by = {r["brand"]: r for r in merch_router._merge_trend(cur, prev, "brand")}
+        self.assertEqual(by["A"]["revenue_prev"], 100.0)
+        self.assertEqual(by["A"]["trend_pct"], 100.0)
+        self.assertIsNone(by["B"]["trend_pct"])   # zero prev base
+        self.assertIsNone(by["C"]["trend_pct"])   # brand absent from prev window
+
+    def test_merge_trend_negative_current_vs_positive_prev(self):
+        out = merch_router._merge_trend(
+            [{"brand": "E", "revenue_period": -50.0}],
+            [{"brand": "E", "revenue_period": 100.0}], "brand")
+        self.assertEqual(out[0]["trend_pct"], -150.0)
+
+    def test_negative_contributions_stay_in_sum_buckets(self):
+        """Net-return revenue, negative units and negative warehouse
+        availability count in the card totals, so the != 0 bucket preds must
+        keep those rows in the files or the sums can't reconcile."""
+        rows = self._rows() + [
+            _style(style_number="SN-6", tier="Tier 1", revenue_period=-500,
+                   units_period=-3, soh_warehouse=-5),
+            _style(style_number="SN-7", tier="Tier 2", revenue_period=1200,
+                   units_period=8, soh_warehouse=12),
+        ]
+        summary = merch_router._compute_summary(rows)
+        rev = sum(merch_router._row_period_value(r, "revenue")
+                  for r in merch_router._kpi_bucket_rows(rows, "revenue_period"))
+        self.assertEqual(round(rev, 0), summary["revenue_period"])
+        units = sum(merch_router._row_period_value(r, "units")
+                    for r in merch_router._kpi_bucket_rows(rows, "units_period"))
+        self.assertEqual(units, summary["units_period"])
+        wh = sum((r.get("soh_warehouse") or 0)
+                 for r in merch_router._kpi_bucket_rows(rows, "warehouse_units"))
+        self.assertEqual(wh, summary["warehouse_stock_units"])
+
+
 if __name__ == "__main__":
     unittest.main()
 
