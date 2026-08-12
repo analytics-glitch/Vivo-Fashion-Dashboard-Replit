@@ -100,6 +100,16 @@ const MerchStoreCockpit = () => {
       .catch(() => setStores([]));
   }, [pageFrom, pageTo, filters.brand, filters.subcategory, filters.dataVersion]);
 
+  // WOC velocity basis: when the selected range ends before today, WOC should
+  // reflect that window's run-rate (in-period units ÷ weeks in range). A range
+  // ending today keeps the legacy trailing-30-day velocity so default numbers
+  // don't shift.
+  const todayStr = useMemo(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  }, []);
+  const periodVelocity = Boolean(pageFrom && pageTo && pageTo < todayStr);
+
   // ── PA params — shared by both primary + compare fetches ─────────────────
   const paBase = useMemo(() => ({
     store:        selectedStore || undefined,
@@ -119,13 +129,16 @@ const MerchStoreCockpit = () => {
     setLoading(true);
     setError(null);
     apiFetch("/analytics/product-analysis", {
-      params: { ...paBase, date_from: pageFrom, date_to: pageTo },
+      params: {
+        ...paBase, date_from: pageFrom, date_to: pageTo,
+        velocity_basis: periodVelocity ? "period" : undefined,
+      },
     })
       .then(d  => { if (!cancelled) setData(d); })
       .catch(e => { if (!cancelled) setError(e?.response?.data?.detail || e.message); })
       .finally(()=> { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [paBase, pageFrom, pageTo, filters.dataVersion]);
+  }, [paBase, pageFrom, pageTo, periodVelocity, filters.dataVersion]);
 
   // ── Compare period ────────────────────────────────────────────────────────
   const [cmpData, setCmpData] = useState(null);
@@ -274,8 +287,10 @@ const MerchStoreCockpit = () => {
             />
             <KPICard
               small showDelta={false} label="Avg WOC" value={fmtWoc(summary.avg_woc)} icon={ChartBar}
-              sub="Velocity: last 30 days"
-              formula="Weeks of cover = current stock ÷ weekly velocity. Velocity is always units sold over the trailing 30 days (÷ 4.3 weeks), regardless of the date filter — cover is a 'today' metric."
+              sub={periodVelocity ? `Velocity: ${periodLabel}` : "Velocity: last 30 days"}
+              formula={periodVelocity
+                ? "Weeks of cover = current stock ÷ weekly velocity. Velocity = units sold in the selected date range ÷ weeks in the range, so cover reflects the chosen period's run-rate. The WOC columns in the tables below use the same basis."
+                : "Weeks of cover = current stock ÷ weekly velocity. When the range ends today, velocity is units sold over the trailing 30 days (÷ 4.3 weeks) — cover is a 'today' metric. Pick a range ending in the past to base velocity on that period instead."}
               testId="msc-woc"
             />
           </div>

@@ -10219,12 +10219,25 @@ def analytics_product_analysis(
     grain: str = Query(default="style"),
     dims: str = Query(default=None),
     velocity_days: int = Query(default=30),
+    velocity_basis: str = Query(default="trailing"),
     include_warehouse: bool = Query(default=False),
 ):
     df = _pa_safe_date(date_from, str(date.today() - timedelta(days=89)))
     dt = _pa_safe_date(date_to, str(date.today()))
     vel = velocity_days if isinstance(velocity_days, int) and velocity_days > 0 else 30
     vel = min(vel, 3650)
+    # velocity_basis:
+    #   "trailing" (default) — WOC velocity = units sold in the trailing
+    #     `velocity_days` window anchored to CURRENT_DATE (legacy behaviour).
+    #   "period" — WOC velocity = units sold in the selected df..dt range ÷ weeks
+    #     in that range, so cover reflects the chosen window's run-rate (needed
+    #     for past months, where a trailing window can't approximate the range).
+    # Applies to every WOC in the response (per-row, summary avg_woc, by_brand,
+    # by_subcategory) so the header card and tables always share one basis.
+    velocity_basis = (velocity_basis or "trailing").strip().lower()
+    if velocity_basis not in ("trailing", "period"):
+        velocity_basis = "trailing"
+    period_basis = velocity_basis == "period"
     grain = (grain or "style").strip().lower()
     # Row-explosion model: the table can be exploded to one value per row for any
     # subset of {colour, print, size} via the `dims` CSV param (driven by the
@@ -10269,7 +10282,8 @@ def analytics_product_analysis(
     # Keying on the snapshot keeps every slice coherent with the same data.
     _pa_ck = "pa:" + _inventory_version() + ":" + "|".join(str(x) for x in (
         df, dt, country, store, brand, category, subcategory, tier, rev_pct,
-        style_status, grain, ",".join(all_sel), vel, int(include_warehouse)))
+        style_status, grain, ",".join(all_sel), vel, velocity_basis,
+        int(include_warehouse)))
     _pa_cached, _pa_fresh = cache_get_swr(_pa_ck)
     if _pa_cached is not None:
         if not _pa_fresh:
@@ -10278,7 +10292,7 @@ def analytics_product_analysis(
                 store=store, brand=brand, category=category,
                 subcategory=subcategory, tier=tier, rev_pct=rev_pct,
                 style_status=style_status, grain=grain, dims=dims,
-                velocity_days=velocity_days,
+                velocity_days=velocity_days, velocity_basis=velocity_basis,
                 include_warehouse=include_warehouse), label="pa")
         return _pa_cached
 
@@ -10610,10 +10624,16 @@ def analytics_product_analysis(
     raw = run_query(sql)
     today = date.today()
     wk = vel / 7.0
+    # Period-basis WOC divides in-range units by the weeks in the selected range.
+    try:
+        _period_days = max(1, (date.fromisoformat(dt) - date.fromisoformat(df)).days + 1)
+    except Exception:
+        _period_days = vel
+    woc_wk = (_period_days / 7.0) if period_basis else wk
     reorder_counts = _real_reorder_counts()  # style_number → real order count
 
     def _woc(stock, uvel):
-        wa = (uvel / wk) if wk > 0 else 0
+        wa = (uvel / woc_wk) if woc_wk > 0 else 0
         return round(stock / wa, 1) if wa > 0 else None
 
     def _sor(units, stock):
@@ -10720,7 +10740,7 @@ def analytics_product_analysis(
             "pos_location": r["pos_location"] or None,
             "units_vel": units_vel,
             "units_life": units_life,
-            "woc": _woc(stock, units_vel),
+            "woc": _woc(stock, units if period_basis else units_vel),
             "sor": _sor(units, stock),
             "sor_since_launch": _sor(units_life, stock),
             "asp": asp,
@@ -10889,7 +10909,7 @@ def analytics_product_analysis(
     tot_rev = sum(g["revenue"] for g in kept.values())
     tot_net = sum(g["net_revenue"] for g in kept.values())
     tot_stock = sum(g["stock"] for g in kept.values())
-    tot_vel = sum(g["units_vel"] for g in kept.values())
+    tot_vel = sum((g["units"] if period_basis else g["units_vel"]) for g in kept.values())
 
     # Canonical Net Sales for the SAME date/country/store window over ALL sales
     # (no product-master join, no style scoping) — identical to /api/kpis
@@ -10952,7 +10972,7 @@ def analytics_product_analysis(
     by_brand = []
     for bb in brands_map.values():
         bb["sor"] = _sor(bb["units"], bb["stock"])
-        bb["woc"] = _woc(bb["stock"], bb["units_vel"])
+        bb["woc"] = _woc(bb["stock"], bb["units"] if period_basis else bb["units_vel"])
         by_brand.append(bb)
     by_brand.sort(key=lambda x: -x["revenue"])
 
@@ -11013,7 +11033,7 @@ def analytics_product_analysis(
         ss["pct_stock"] = round(ss["stock"] * 100.0 / tot_stock, 1) if tot_stock else 0.0
         ss["pct_units"] = round(ss["units"] * 100.0 / tot_units, 1) if tot_units else 0.0
         ss["pct_revenue"] = round(ss["revenue"] * 100.0 / tot_rev, 1) if tot_rev else 0.0
-        ss["woc"] = _woc(ss["stock"], ss["units_vel"])
+        ss["woc"] = _woc(ss["stock"], ss["units"] if period_basis else ss["units_vel"])
         by_subcategory.append(ss)
     by_subcategory.sort(key=lambda x: -x["revenue"])
 
@@ -11047,6 +11067,8 @@ def analytics_product_analysis(
         "scope": {
             "store": store or None, "country": country or None,
             "date_from": df, "date_to": dt, "velocity_days": vel,
+            "velocity_basis": velocity_basis,
+            "velocity_window_days": _period_days if period_basis else vel,
             "grain": grain, "dims": ",".join(all_sel), "style_status": style_status,
         },
     }
@@ -41366,7 +41388,6 @@ async def store_profile_ai_diagnosis(store: str = Query(...)):
     return out
 
 
-
 # Attendance ingest/health live ONLY in the mounted attendance_ingest_api
 # sub-app (mounted at /api/public/attendance near the top of this file, which
 # owns the whole prefix). The auth gate enforces the internal token for that
@@ -41794,8 +41815,6 @@ def _ensure_planning_calendar():
         log.info("planning_calendar ensured and seeded (%d weeks)", len(ROWS))
     except Exception as e:
         log.error("_ensure_planning_calendar failed: %s", e)
-
-
 
 
 if __name__ == "__main__":
