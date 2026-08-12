@@ -196,13 +196,27 @@ export default function MerchOverview() {
       </div>
 
       {/* ── KPI cards ── */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-8 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 xl:grid-cols-5 gap-3">
         <MerchKPICard
           label="Active Style Lines"
           value={fmtNum(s.active_styles_count)}
-          sub={`Total incl. Retired: ${fmtNum(s.total_styles)}`}
+          sub={`Stock: ${fmtNum(s.active_stock_units)} units`}
           accentColor={C.blue}
           testId="merch-kpi-active-styles"
+        />
+        <MerchKPICard
+          label="Retired Style Lines"
+          value={fmtNum(s.retired_styles_count)}
+          sub={`Stock: ${fmtNum(s.retired_stock_units)} units`}
+          accentColor="#94a3b8"
+          testId="merch-kpi-retired-styles"
+        />
+        <MerchKPICard
+          label="Archived Style Lines"
+          value={fmtNum(s.archived_styles_count)}
+          sub={`Stock: ${fmtNum(s.archived_stock_units)} units`}
+          accentColor="#64748b"
+          testId="merch-kpi-archived-styles"
         />
         <MerchKPICard
           label="Active Colour Styles"

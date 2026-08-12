@@ -415,6 +415,13 @@ sales_life AS (
         {country_clause}
         {pos_sales_clause}
     GROUP BY p2.style_name
+),
+/* Manual tier/status overrides loaded from the import spreadsheet.
+   A row here wins over the computed _compute_tier() result. */
+tier_overrides AS (
+    SELECT style_number, tier AS ov_tier, status AS ov_status
+    FROM style_tier_overrides
+    WHERE style_number IS NOT NULL AND style_number <> ''
 )
 SELECT
     p.style_name,
@@ -439,12 +446,15 @@ SELECT
     COALESCE(sp.units_period,   0)   AS units_period,
     COALESCE(sp.revenue_period, 0.0) AS revenue_period,
     COALESCE(sl.units_life,     0)   AS units_life,
-    COALESCE(sl.revenue_life,   0.0) AS revenue_life
+    COALESCE(sl.revenue_life,   0.0) AS revenue_life,
+    tov.ov_tier,
+    tov.ov_status
 FROM prod p
-LEFT JOIN stock        st ON st.style_name = p.style_name
-LEFT JOIN sales_6m     s6 ON s6.style_name = p.style_name
-LEFT JOIN sales_period sp ON sp.style_name = p.style_name
-LEFT JOIN sales_life   sl ON sl.style_name = p.style_name
+LEFT JOIN stock          st  ON st.style_name   = p.style_name
+LEFT JOIN sales_6m       s6  ON s6.style_name   = p.style_name
+LEFT JOIN sales_period   sp  ON sp.style_name   = p.style_name
+LEFT JOIN sales_life     sl  ON sl.style_name   = p.style_name
+LEFT JOIN tier_overrides tov ON tov.style_number = p.style_number
 ORDER BY revenue_6m DESC NULLS LAST
 """
     raw = _db_exec(sql, params, fetch=True)
@@ -458,8 +468,16 @@ ORDER BY revenue_6m DESC NULLS LAST
         odoo_status   = r.get("status") or "active"
         is_noos       = bool(r.get("is_noos"))
         reorder_count = int(r.get("reorder_count") or 0)
-        # _compute_tier mirrors api_pg._lifecycle_tier: Retired beats NOOS beats reorders
-        computed_tier = _compute_tier(is_noos, reorder_count, odoo_status=odoo_status)
+        # Manual override wins when present (loaded from style_tier_overrides).
+        ov_tier   = r.get("ov_tier")
+        ov_status = r.get("ov_status")
+        if ov_tier:
+            computed_tier = ov_tier
+            if ov_status:
+                odoo_status = ov_status
+        else:
+            # _compute_tier mirrors api_pg._lifecycle_tier: Retired beats NOOS beats reorders
+            computed_tier = _compute_tier(is_noos, reorder_count, odoo_status=odoo_status)
 
         # Apply tier filter in Python (never relies on DB column)
         if tier_filter and computed_tier not in tier_filter:
@@ -565,12 +583,15 @@ def _compute_summary(styles):
     launched_current = launched_prior = 0
     woc_vals = []; fp_vals = []; sor_vals = []; gm_pct_vals = []
     total_cogs = 0.0; total_gm = 0.0
-    active_styles = 0; active_colour_styles = 0; warehouse_stock = 0
-    # Dedup active-style counts by style_number — mirrors Range Management's
-    # _dedup_raw_by_style_number() so renamed styles (same style_number, different
-    # style_name) count as one line. Falls back to style_name when style_number
-    # is blank (brand-new styles not yet in a buying order).
-    _seen_active_keys: set = set()
+    active_styles = 0; active_colour_styles = 0; active_stock_units = 0
+    retired_styles = 0; retired_stock_units = 0
+    archived_styles = 0; archived_stock_units = 0
+    warehouse_stock = 0
+    # Dedup counts by style_number — mirrors Range Management's
+    # _dedup_raw_by_style_number(). Falls back to style_name when blank.
+    _seen_active_keys:   set = set()
+    _seen_retired_keys:  set = set()
+    _seen_archived_keys: set = set()
 
     for s in styles:
         st = s["action_status"]
@@ -578,25 +599,36 @@ def _compute_summary(styles):
         elif st == "at_risk":   at_risk  += 1
         elif st == "overdue":   overdue  += 1
 
-        total_stock    += s["current_stock"] or 0
-        revenue_6m     += s["revenue_6m"] or 0
-        units_6m       += s["units_6m"] or 0
-        revenue_period += s.get("revenue_period") or 0
-        units_period   += s.get("units_period") or 0
+        total_stock     += s["current_stock"] or 0
+        revenue_6m      += s["revenue_6m"] or 0
+        units_6m        += s["units_6m"] or 0
+        revenue_period  += s.get("revenue_period") or 0
+        units_period    += s.get("units_period") or 0
         warehouse_stock += s.get("soh_warehouse") or 0
 
-        # Mirror Range Management classify's universe:
-        # • only styles with stock in stores OR warehouse (not pipeline-only / zero)
-        # • dedup by style_number so renamed styles count as one product line
-        has_stock = (s.get("soh_stores") or 0) > 0 or (s.get("soh_warehouse") or 0) > 0
-        is_active = (s.get("odoo_status") or "active").lower() != "retired"
-        if is_active and has_stock:
-            snum = (s.get("style_number") or "").strip()
-            dedup_key = snum if snum else s.get("style_name", "")
-            if dedup_key not in _seen_active_keys:
+        tier        = s.get("tier") or "Tier 4"
+        has_stock   = (s.get("soh_stores") or 0) > 0 or (s.get("soh_warehouse") or 0) > 0
+        current_stk = s.get("current_stock") or 0
+        snum        = (s.get("style_number") or "").strip()
+        dedup_key   = snum if snum else s.get("style_name", "")
+
+        if tier in ("Tier 1", "Tier 2", "Tier 3", "Tier 4"):
+            # Active styles: only count those with physical stock (mirrors RM universe)
+            if has_stock and dedup_key not in _seen_active_keys:
                 _seen_active_keys.add(dedup_key)
-                active_styles += 1
+                active_styles        += 1
                 active_colour_styles += s.get("colour_count") or 0
+                active_stock_units   += current_stk
+        elif tier == "Retired":
+            if dedup_key not in _seen_retired_keys:
+                _seen_retired_keys.add(dedup_key)
+                retired_styles      += 1
+                retired_stock_units += current_stk
+        elif tier == "Archived":
+            if dedup_key not in _seen_archived_keys:
+                _seen_archived_keys.add(dedup_key)
+                archived_styles      += 1
+                archived_stock_units += current_stk
 
         if (s["current_stock"] or 0) == 0:   zero_stock  += 1
         if s["last_sale_days"] is not None and s["last_sale_days"] >= 30: no_sale_30d += 1
@@ -624,6 +656,11 @@ def _compute_summary(styles):
         "total_styles":                 len(styles),
         "active_styles_count":          active_styles,
         "active_colour_styles_count":   active_colour_styles,
+        "active_stock_units":           active_stock_units,
+        "retired_styles_count":         retired_styles,
+        "retired_stock_units":          retired_stock_units,
+        "archived_styles_count":        archived_styles,
+        "archived_stock_units":         archived_stock_units,
         "warehouse_stock_units":        warehouse_stock,
         "on_track_count":               on_track,
         "at_risk_count":                at_risk,
@@ -652,6 +689,8 @@ def _compute_summary(styles):
 def _empty_summary():
     return {k: None for k in [
         "total_styles", "active_styles_count", "active_colour_styles_count",
+        "active_stock_units", "retired_styles_count", "retired_stock_units",
+        "archived_styles_count", "archived_stock_units",
         "warehouse_stock_units",
         "on_track_count", "at_risk_count", "overdue_count",
         "total_stock_units", "revenue_6m", "units_6m", "revenue_period", "units_period", "weekly_velocity",
@@ -660,6 +699,21 @@ def _empty_summary():
         "styles_launched_current_year", "styles_launched_prior_year",
         "avg_gross_margin_pct", "total_cogs_6m_kes", "total_gross_margin_kes",
     ]}
+
+
+def _ensure_tier_overrides_table():
+    """Create style_tier_overrides if it doesn't exist yet (safe to call repeatedly)."""
+    try:
+        _db_exec("""
+            CREATE TABLE IF NOT EXISTS style_tier_overrides (
+                style_number  TEXT PRIMARY KEY,
+                tier          TEXT NOT NULL,
+                status        TEXT NOT NULL,
+                imported_at   TIMESTAMPTZ DEFAULT NOW()
+            )
+        """, fetch=False)
+    except Exception as exc:
+        log.warning("Could not ensure style_tier_overrides table: %s", exc)
 
 
 # ── Dimension aggregation ──────────────────────────────────────────────────────
@@ -1434,6 +1488,9 @@ def register_merch_routes(app, api_pg_module):
     from fastapi.responses import JSONResponse
 
     _TTL = 600  # seconds
+
+    # Ensure the tier-overrides table exists on first registration.
+    _ensure_tier_overrides_table()
 
     @app.get("/api/merch/filter-options")
     async def merch_filter_options(request: Request):
