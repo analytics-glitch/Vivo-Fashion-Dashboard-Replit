@@ -863,7 +863,7 @@ export default function ProductionOverview({ onOpenReport }) {
       {/* ── Styles KPI row ── */}
       <div>
         <div className="text-[12px] font-semibold text-muted uppercase tracking-wide mb-1.5 px-0.5">Styles</div>
-        <div className="grid gap-2 grid-cols-2 lg:grid-cols-4">
+        <div className="grid gap-2 grid-cols-2 md:grid-cols-4">
           <MetricCard
             testId="prod-ov-kpi-styles-total"
             accent
@@ -982,7 +982,7 @@ export default function ProductionOverview({ onOpenReport }) {
       </div>
 
       {/* ── Stage snapshot + delivery outlook ── */}
-      <div className="grid gap-3 grid-cols-1 lg:grid-cols-2">
+      <div className="grid gap-3 grid-cols-1 md:grid-cols-2">
         <StageSnapshot byStage={data?.by_stage} terminalKeys={terminalKeys} />
         <DeliveryOutlook
           overdue={overdue}
