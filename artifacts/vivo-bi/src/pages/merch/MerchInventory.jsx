@@ -30,10 +30,10 @@ import {
 } from "recharts";
 import { Loading, ErrorBox } from "@/components/common";
 import {
-  useMerchData, MerchKPICard, ChartCard, SubcatFilter,
+  useMerchData, useMerchParams, MerchKPICard, ChartCard, SubcatFilter,
   C, fmtNum, fmtWoc, fmtPct1, wocColor,
 } from "./MerchHelpers";
-import { fmtDec } from "@/lib/api";
+import { api, fmtDec } from "@/lib/api";
 import MerchStockMix from "./MerchStockMix";
 
 const NumTooltip = ({ active, payload, label }) => {
@@ -108,6 +108,27 @@ export default function MerchInventory() {
   // Fetched separately so the (heavier) drill-down tree never blocks the KPI
   // band + charts; the section renders its own skeleton / error state.
   const mixState = useMerchData(["stock-mix"], localSubcat);
+  // Exact params useMerchData sends (incl. tab-local subcategory override) —
+  // reused by the KPI CSV downloads so the file matches the on-card scope.
+  const merchParams = useMerchParams(localSubcat);
+
+  // Authenticated blob download (plain <a href> drops auth in the preview
+  // iframe) — same pattern as Store Feedback's export.
+  const downloadKpiCsv = (kpiId, fileLabel) => async () => {
+    const r = await api.get("/merch/export/kpi.csv", {
+      params: { kpi: kpiId, ...merchParams },
+      responseType: "blob",
+      forceFresh: true,
+    });
+    const url = URL.createObjectURL(new Blob([r.data], { type: "text/csv" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${fileLabel}_${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
 
   // styles → { styles: [...] }
   const styleRows = useMemo(() => styles?.styles || [], [styles]);
@@ -281,6 +302,7 @@ export default function MerchInventory() {
           sub2={`Retired Styles: ${s.retired_styles_count != null ? fmtNum(s.retired_styles_count) : "—"}`}
           accentColor={C.blue}
           testId="merch-inv-kpi-stock"
+          onDownload={downloadKpiCsv("total_stock", "Total_Stock_on_Hand")}
         />
         <MerchKPICard
           label="Avg WOC"
@@ -288,6 +310,7 @@ export default function MerchInventory() {
           sub="Across active styles"
           accentColor={C.purple}
           testId="merch-inv-kpi-woc"
+          onDownload={downloadKpiCsv("avg_woc", "Avg_WOC")}
         />
         <MerchKPICard
           label="Styles WOC > 20"
@@ -295,6 +318,7 @@ export default function MerchInventory() {
           sub={`${overstockPct}% of active styles`}
           accentColor={C.teal}
           testId="merch-inv-kpi-overstock"
+          onDownload={downloadKpiCsv("woc_gt20", "Styles_WOC_over_20")}
         />
         <MerchKPICard
           label="Styles WOC < 3"
@@ -302,6 +326,7 @@ export default function MerchInventory() {
           sub={`${lowCoverPct}% of active styles`}
           accentColor={C.red}
           testId="merch-inv-kpi-lowcover"
+          onDownload={downloadKpiCsv("woc_lt3", "Styles_WOC_under_3")}
         />
         <MerchKPICard
           label="Active: No Sale 7d+"
@@ -309,6 +334,7 @@ export default function MerchInventory() {
           sub={`${noSale7Pct}% of active styles`}
           accentColor="#f97316"
           testId="merch-inv-kpi-nosale7"
+          onDownload={downloadKpiCsv("no_sale_7d", "Active_No_Sale_7d_plus")}
         />
         <MerchKPICard
           label="Retired: No Sale 30d"
@@ -316,6 +342,7 @@ export default function MerchInventory() {
           sub={`${noSalePct}% of retired styles`}
           accentColor={C.amber}
           testId="merch-inv-kpi-nosale"
+          onDownload={downloadKpiCsv("no_sale_30d", "Retired_No_Sale_30d")}
         />
       </div>
 

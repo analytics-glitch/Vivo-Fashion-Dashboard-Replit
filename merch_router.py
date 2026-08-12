@@ -576,6 +576,94 @@ ORDER BY revenue_6m DESC NULLS LAST
 
 # ── Summary aggregates ─────────────────────────────────────────────────────────
 
+# ── Shared KPI bucket membership ─────────────────────────────────────────────
+# Single source of truth for which styles sit behind each Inventory & Stock
+# Health KPI card. _compute_summary consumes these predicates for its counts
+# and the CSV export endpoint reuses them, so card counts and export rows can
+# never diverge.
+_ACTIVE_TIERS = ("Tier 1", "Tier 2", "Tier 3", "Tier 4")
+
+
+def _kpi_dedup_key(s):
+    """Dedup by style_number, falling back to style_name when blank —
+    mirrors Range Management's _dedup_raw_by_style_number()."""
+    snum = (s.get("style_number") or "").strip()
+    return snum if snum else s.get("style_name", "")
+
+
+def _is_active_tier(s):
+    return (s.get("tier") or "Tier 4") in _ACTIVE_TIERS
+
+
+def _is_retired_tier(s):
+    return (s.get("tier") or "Tier 4") == "Retired"
+
+
+def _has_stock(s):
+    return (s.get("current_stock") or 0) > 0
+
+
+# kpi id → { label, dedup (by style number), pred }
+_KPI_BUCKETS = {
+    "total_stock": {
+        "label": "Total Stock on Hand",
+        "dedup": False,
+        "pred":  lambda s: True,
+    },
+    "avg_woc": {
+        "label": "Avg WOC",
+        "dedup": False,
+        "pred":  lambda s: s.get("woc") is not None,
+    },
+    "woc_gt20": {
+        "label": "Styles WOC over 20",
+        "dedup": True,
+        "pred":  lambda s: (_is_active_tier(s) and _has_stock(s)
+                            and s.get("woc") is not None and s["woc"] > 20),
+    },
+    "woc_lt3": {
+        "label": "Styles WOC under 3",
+        "dedup": True,
+        "pred":  lambda s: (_is_active_tier(s) and _has_stock(s)
+                            and s.get("woc") is not None and s["woc"] < 3),
+    },
+    "no_sale_7d": {
+        "label": "Active No Sale 7d plus",
+        "dedup": True,
+        "pred":  lambda s: (_is_active_tier(s) and _has_stock(s)
+                            and s.get("last_sale_days") is not None
+                            and s["last_sale_days"] >= 7),
+    },
+    "no_sale_30d": {
+        "label": "Retired No Sale 30d",
+        "dedup": True,
+        "pred":  lambda s: (_is_retired_tier(s) and _has_stock(s)
+                            and s.get("last_sale_days") is not None
+                            and s["last_sale_days"] >= 30),
+    },
+}
+
+
+def _kpi_bucket_rows(styles, kpi_id):
+    """Rows behind a KPI card — filtered via the shared predicate and, for the
+    deduped cards, one row per style_number key (first occurrence wins; the
+    input list is already ordered by revenue_6m desc)."""
+    spec = _KPI_BUCKETS[kpi_id]
+    pred = spec["pred"]
+    if not spec["dedup"]:
+        return [s for s in styles if pred(s)]
+    out, seen = [], set()
+    for s in styles:
+        if not pred(s):
+            continue
+        k = _kpi_dedup_key(s)
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(s)
+    return out
+
+
 def _compute_summary(styles):
     if not styles:
         return _empty_summary()
@@ -653,20 +741,15 @@ def _compute_summary(styles):
         #     stock that still isn't moving)
         # zero_stock / woc_lt4 keep their all-styles row-grain semantics for
         # legacy consumers (e.g. the Replen header chips).
-        is_active_tier  = tier in ("Tier 1", "Tier 2", "Tier 3", "Tier 4")
-        is_retired_tier = tier == "Retired"
-        if (is_retired_tier and current_stk > 0
-                and s["last_sale_days"] is not None and s["last_sale_days"] >= 30):
+        if _KPI_BUCKETS["no_sale_30d"]["pred"](s):
             _k_nosale30.add(dedup_key)
-        if (is_active_tier and current_stk > 0
-                and s["last_sale_days"] is not None and s["last_sale_days"] >= 7):
+        if _KPI_BUCKETS["no_sale_7d"]["pred"](s):
             _k_nosale7.add(dedup_key)
         if s["woc"] is not None:
             woc_vals.append(s["woc"])
             if s["woc"] < 4:  woc_lt4  += 1
-            if is_active_tier and current_stk > 0:
-                if s["woc"] > 20: _k_gt20.add(dedup_key)
-                if s["woc"] < 3:  _k_lt3.add(dedup_key)
+            if _KPI_BUCKETS["woc_gt20"]["pred"](s): _k_gt20.add(dedup_key)
+            if _KPI_BUCKETS["woc_lt3"]["pred"](s):  _k_lt3.add(dedup_key)
         if s["full_price_pct"]   is not None: fp_vals.append(s["full_price_pct"])
         if s["sor_6m"]           is not None: sor_vals.append(s["sor_6m"])
         if s["gross_margin_pct"] is not None: gm_pct_vals.append(s["gross_margin_pct"])
@@ -1924,6 +2007,101 @@ def register_merch_routes(app, api_pg_module):
                           pos_location=pos_location)
         ))
         return JSONResponse(result)
+
+    @app.get("/api/merch/export/kpi.csv")
+    async def merch_export_kpi_csv(
+        request:      Request,
+        kpi:          str,
+        brand:        Optional[str] = Query(None),
+        subcategory:  Optional[str] = Query(None),
+        tier:         Optional[str] = Query(None),
+        status:       Optional[str] = Query(None),
+        from_date:    Optional[str] = Query(None),
+        to_date:      Optional[str] = Query(None),
+        country:      Optional[str] = Query(None),
+        pos_location: Optional[str] = Query(None),
+    ):
+        """CSV of the styles behind one Inventory & Stock Health KPI card.
+        Columns replicate the Style_Report_Details spreadsheet (22 cols).
+        Reuses the cached _fetch_styles rows + the shared _KPI_BUCKETS
+        predicates so the file always matches the on-card count."""
+        if kpi not in _KPI_BUCKETS:
+            return JSONResponse({"detail": f"Unknown kpi '{kpi}'"}, status_code=400)
+
+        key = f"merch_styles|{brand}|{subcategory}|{tier}|{status}|{from_date}|{to_date}|{country}|{pos_location}"
+        styles = _cached(key, _TTL, lambda: _fetch_styles(
+            brand=brand, subcategory=subcategory, tier=tier, status=status,
+            from_date=from_date, to_date=to_date, country=country, pos_location=pos_location,
+        ))
+        rows = _kpi_bucket_rows(styles, kpi)
+
+        import csv as _csv
+        import io as _io
+        headers = [
+            "Style Name", "Subcategory", "Style Number", "Tier", "SOH",
+            "Launch Date", "Age (Weeks)", "6m SOR", "6m Units Sold", "6m Rev",
+            "Full Price (Kes)", "ASP (6m)", "% Full Price", "Mark Down",
+            "Weekly Units Sold", "6m WOC", "Last Sale (days)", "Last Order Date",
+            "Inventory Value (at Full Price)", "SOR Since Launch %", "Brand",
+            "Recommendation",
+        ]
+        today = date.today()
+        buf = _io.StringIO()
+        w = _csv.writer(buf)
+        w.writerow(headers)
+        for s in rows:
+            # Age (Weeks) — whole weeks since launch date
+            age_weeks = ""
+            ld = s.get("launch_date")
+            if ld:
+                try:
+                    age_weeks = max((today - date.fromisoformat(str(ld)[:10])).days // 7, 0)
+                except Exception:
+                    age_weeks = ""
+            fp_pct = s.get("full_price_pct")
+            markdown = round(100 - fp_pct, 1) if fp_pct is not None else ""
+            full_price = s.get("full_price")
+            soh = s.get("current_stock") or 0
+            inv_value = round(soh * full_price) if full_price is not None else ""
+            # SOR Since Launch — same gross-units basis as the tab's 6m SOR
+            units_life = s.get("units_life") or 0
+            sl_denom = units_life + soh
+            sor_life = round(units_life * 100.0 / sl_denom, 1) if sl_denom > 0 else ""
+            def _v(x):
+                return "" if x is None else x
+            w.writerow([
+                _v(s.get("style_name")),
+                _v(s.get("subcategory")),
+                _v(s.get("style_number")),
+                _v(s.get("tier")),
+                soh,
+                _v(s.get("launch_date")),
+                age_weeks,
+                _v(s.get("sor_6m")),
+                _v(s.get("units_6m")),
+                _v(s.get("revenue_6m")),
+                _v(full_price),
+                _v(s.get("avg_selling_price")),
+                _v(fp_pct),
+                markdown,
+                _v(s.get("weekly_avg")),
+                _v(s.get("woc")),
+                _v(s.get("last_sale_days")),
+                _v(s.get("last_order_date")),
+                inv_value,
+                sor_life,
+                _v(s.get("brand")),
+                _v(s.get("recommended_action")),
+            ])
+
+        from fastapi.responses import Response as _Resp
+        slug = _KPI_BUCKETS[kpi]["label"].replace(" ", "_")
+        fname = f"{slug}_{today.isoformat()}.csv"
+        return _Resp(
+            content=buf.getvalue(),
+            media_type="text/csv; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+        )
 
     @app.get("/api/merch/by-brand")
     async def merch_by_brand(

@@ -3,6 +3,7 @@
  * Formatting helpers, the MerchKPICard wrapper, and the useMerchData hook.
  */
 import React, { useEffect, useState, useCallback } from "react";
+import { DownloadSimple, CircleNotch } from "@phosphor-icons/react";
 import { useMerchFilters } from "@/pages/MerchandisingHub";
 import { api } from "@/lib/api";
 
@@ -76,7 +77,24 @@ export const MerchKPICard = ({
   testId,
   trend,       // optional number: % change vs compare period (null = hide)
   trendLabel,  // optional string: e.g. "vs Last Month"
-}) => (
+  onDownload,  // optional async fn → shows a small CSV download icon button
+}) => {
+  const [dlBusy, setDlBusy]   = useState(false);
+  const [dlError, setDlError] = useState(false);
+  const handleDownload = async () => {
+    if (dlBusy || !onDownload) return;
+    setDlBusy(true);
+    setDlError(false);
+    try {
+      await onDownload();
+    } catch {
+      setDlError(true);
+      setTimeout(() => setDlError(false), 4000);
+    } finally {
+      setDlBusy(false);
+    }
+  };
+  return (
   <div
     className="bg-white rounded-xl shadow-sm overflow-hidden flex"
     data-testid={testId}
@@ -85,7 +103,28 @@ export const MerchKPICard = ({
     {/* left accent bar */}
     <div className="w-1 shrink-0" style={{ backgroundColor: accentColor }} />
     <div className="flex-1 p-4 sm:p-5">
-      <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">{label}</div>
+      <div className="flex items-start justify-between gap-1">
+        <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">{label}</div>
+        {onDownload && (
+          <button
+            type="button"
+            onClick={handleDownload}
+            disabled={dlBusy}
+            title={dlError ? "Download failed — try again" : "Download CSV"}
+            aria-label={`Download ${label} CSV`}
+            className={`shrink-0 -mt-1 -mr-1 p-1 rounded-md transition-colors ${
+              dlError ? "text-rose-500" : "text-slate-300 hover:text-slate-500 hover:bg-slate-50"
+            } disabled:opacity-50`}
+            data-testid={testId ? `${testId}-download` : undefined}
+          >
+            {dlBusy ? (
+              <CircleNotch size={14} className="animate-spin" />
+            ) : (
+              <DownloadSimple size={14} weight={dlError ? "bold" : "regular"} />
+            )}
+          </button>
+        )}
+      </div>
       <div
         className="mt-2 text-[22px] sm:text-[28px] font-extrabold leading-none tabular-nums"
         style={{ color: accentColor }}
@@ -118,7 +157,8 @@ export const MerchKPICard = ({
       )}
     </div>
   </div>
-);
+  );
+};
 
 // ── SubcatFilter ─────────────────────────────────────────────────────────────
 /**
@@ -173,10 +213,11 @@ export const SubcatFilter = ({ value, onChange }) => {
  *   const { summary, styles, byBrand, bySubcategory, byTier, loading, error }
  *     = useMerchData(["summary","styles","by-brand","by-subcategory","by-tier"], localSubcat);
  */
-export const useMerchData = (endpoints = [], localSubcat = null) => {
+// Build the exact query params useMerchData sends for the current hub filters
+// (+ optional tab-local subcategory override). Exported so one-off fetches
+// (e.g. the KPI CSV downloads) hit the API with identical scope.
+export const useMerchParams = (localSubcat = null) => {
   const filters = useMerchFilters();
-  const [state, setState] = useState({ loading: true, error: null });
-
   const params = {};
   if (filters.from_date)    params.from_date    = filters.from_date;
   if (filters.to_date)      params.to_date      = filters.to_date;
@@ -186,6 +227,14 @@ export const useMerchData = (endpoints = [], localSubcat = null) => {
   // Local override wins; null = fall back to hub-level
   const effectiveSubcat = localSubcat !== null ? localSubcat : (filters.subcategory || "");
   if (effectiveSubcat)      params.subcategory  = effectiveSubcat;
+  return params;
+};
+
+export const useMerchData = (endpoints = [], localSubcat = null) => {
+  const filters = useMerchFilters();
+  const [state, setState] = useState({ loading: true, error: null });
+
+  const params = useMerchParams(localSubcat);
 
   // Stable serialisation for the dep array
   const paramsKey = JSON.stringify(params) + filters.dataVersion;
