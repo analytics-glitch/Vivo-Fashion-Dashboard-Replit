@@ -362,7 +362,19 @@ export default function MerchOverview() {
 
   const s = summary || {};
   const atRiskPct = s.total_styles ? ((s.at_risk_count || 0) / s.total_styles * 100).toFixed(1) : "0";
-  const avgRevPerStyle = s.total_styles ? (s.revenue_period ?? s.revenue_6m) / s.total_styles : 0;
+  // Lifecycle-split card derivations (Aug 2026 rework) — every ratio guards a
+  // zero/missing denominator, mirroring how the warehouse % was derived before.
+  // Avg/Style denominators use the deduped ALL-style universe counts (zero-stock
+  // styles included) so they match the exhaustive revenue numerators:
+  // active_styles_all_count for Active; retired_styles_count already counts all
+  // Retired styles (no stock gate) so it is the matching Retired denominator.
+  const totalRevPeriod        = (s.revenue_period ?? s.revenue_6m) || 0;
+  const avgRevPerActiveStyle  = s.active_styles_all_count ? (s.active_revenue_period || 0) / s.active_styles_all_count : 0;
+  const avgRevPerRetiredStyle = s.retired_styles_count ? (s.retired_revenue_period || 0) / s.retired_styles_count : 0;
+  const activeRevSharePct     = totalRevPeriod ? Math.round((s.active_revenue_period  || 0) / totalRevPeriod * 100) : 0;
+  const retiredRevSharePct    = totalRevPeriod ? Math.round((s.retired_revenue_period || 0) / totalRevPeriod * 100) : 0;
+  const activeWhPct           = s.active_stock_units  ? Math.round((s.active_warehouse_stock_units  || 0) / s.active_stock_units  * 100) : 0;
+  const retiredWhPct          = s.retired_stock_units ? Math.round((s.retired_warehouse_stock_units || 0) / s.retired_stock_units * 100) : 0;
 
   // Build subtitle from active filters
   const fmtDate = (d) => d ? new Date(d).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }) : null;
@@ -426,27 +438,28 @@ export default function MerchOverview() {
       </div>
 
       {/* ── KPI cards ── */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 xl:grid-cols-5 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
         <MerchKPICard
-          label="Active Style Lines"
+          label="Active Styles"
           value={fmtNum(s.active_styles_count)}
-          sub={`Stock: ${fmtNum(s.active_stock_units)} units`}
+          sub={`SOH: ${fmtNum(s.active_stock_units)} units`}
           accentColor={C.blue}
           testId="merch-kpi-active-styles"
           onDownload={downloadKpiCsv("active_styles", "Active_Style_Lines")}
         />
         <MerchKPICard
-          label="Retired Style Lines"
+          label="Retired Styles"
           value={fmtNum(s.retired_styles_count)}
-          sub={`Stock: ${fmtNum(s.retired_stock_units)} units`}
+          sub={`SOH: ${fmtNum(s.retired_stock_units)} units`}
+          sub2={`${retiredWhPct}% of SOH in Warehouse`}
           accentColor="#94a3b8"
           testId="merch-kpi-retired-styles"
           onDownload={downloadKpiCsv("retired_styles", "Retired_Style_Lines")}
         />
         <MerchKPICard
-          label="Archived Style Lines"
+          label="Archived Styles"
           value={fmtNum(s.archived_styles_count)}
-          sub={`Stock: ${fmtNum(s.archived_stock_units)} units`}
+          sub={`SOH: ${fmtNum(s.archived_stock_units)} units`}
           accentColor="#64748b"
           testId="merch-kpi-archived-styles"
           onDownload={downloadKpiCsv("archived_styles", "Archived_Style_Lines")}
@@ -455,26 +468,57 @@ export default function MerchOverview() {
           label="Active Colour Styles"
           value={fmtNum(s.active_colour_styles_count)}
           sub="Distinct style × colour"
+          sub2="In stock · Active styles only"
           accentColor={C.teal}
           testId="merch-kpi-colour-styles"
           onDownload={downloadKpiCsv("active_colours", "Active_Colour_Styles")}
         />
         <MerchKPICard
-          label="Warehouse Units"
-          value={fmtNum(s.warehouse_stock_units)}
-          sub="Warehouse Finished Goods"
-          sub2={`${s.total_stock_units ? Math.round((s.warehouse_stock_units || 0) / s.total_stock_units * 100) : 0}% of total stock`}
+          label="Warehouse Active SOH"
+          value={fmtNum(s.active_warehouse_stock_units)}
+          sub={`${activeWhPct}% of Active SOH`}
           accentColor={C.purple}
           testId="merch-kpi-warehouse"
           onDownload={downloadKpiCsv("warehouse_units", "Warehouse_Units")}
         />
         <MerchKPICard
-          label="Total Stock Units"
+          label="Total SOH"
           value={fmtNum(s.total_stock_units)}
           sub={`WOC > 20 (active): ${fmtNum(s.woc_gt20_count)} styles`}
           accentColor="#0891b2"
           testId="merch-kpi-stock"
           onDownload={downloadKpiCsv("total_stock", "Total_Stock_Units")}
+        />
+        <MerchKPICard
+          label="Active Units Sold (Period)"
+          value={fmtNum(s.active_units_period)}
+          sub="Trailing 6m Vel. (Active)"
+          sub2={`${fmtNum(s.active_weekly_velocity)} /wk`}
+          accentColor={C.amber}
+          testId="merch-kpi-units"
+        />
+        <MerchKPICard
+          label="Active Style Revenue (Period)"
+          value={fmtKESM(s.active_revenue_period)}
+          sub={`Avg/Active Style: ${fmtKESM(avgRevPerActiveStyle)}`}
+          sub2={`${activeRevSharePct}% of total revenue`}
+          accentColor="#16a34a"
+          testId="merch-kpi-revenue"
+        />
+        <MerchKPICard
+          label="Retired Style Revenue"
+          value={fmtKESM(s.retired_revenue_period)}
+          sub={`Avg/Retired Style: ${fmtKESM(avgRevPerRetiredStyle)}`}
+          sub2={`${retiredRevSharePct}% of total revenue`}
+          accentColor="#a16207"
+          testId="merch-kpi-retired-revenue"
+        />
+        <MerchKPICard
+          label="SOR (Period)"
+          value={fmtPct1(s.avg_sor_period_active)}
+          sub="Active Styles Only"
+          accentColor="#0ea5e9"
+          testId="merch-kpi-sor"
         />
         <MerchKPICard
           label="Style Health"
@@ -484,24 +528,6 @@ export default function MerchOverview() {
           accentColor={C.green}
           testId="merch-kpi-styles"
           onDownload={downloadKpiCsv("on_track", "On_Track_Styles")}
-        />
-        <MerchKPICard
-          label="Revenue (period)"
-          value={fmtKESM(s.revenue_period ?? s.revenue_6m)}
-          sub="Avg per Style"
-          sub2={fmtKESM(avgRevPerStyle)}
-          accentColor="#16a34a"
-          testId="merch-kpi-revenue"
-          onDownload={downloadKpiCsv("revenue_period", "Revenue_Period_Styles")}
-        />
-        <MerchKPICard
-          label="Units Sold (period)"
-          value={fmtNum(s.units_period ?? s.units_6m)}
-          sub="Trailing 6m Vel."
-          sub2={`${fmtNum(s.weekly_velocity)} /wk`}
-          accentColor={C.amber}
-          testId="merch-kpi-units"
-          onDownload={downloadKpiCsv("units_period", "Units_Sold_Period_Styles")}
         />
         <MerchKPICard
           label="Avg Full Price %"

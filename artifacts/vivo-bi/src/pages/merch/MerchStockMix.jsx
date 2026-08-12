@@ -5,18 +5,21 @@
  * Category → Sub Category → Style → Colour, showing how stock is distributed
  * vs how sales are distributed. Shares are measured against the GRAND total
  * at every level (a sub-category's % is its share of ALL stock), and
- * Gap (pp) = % of Stock − % of Sales — positive = overstocked (house
+ * Gap (pp) = % of SOH − % of Units Sold — positive = overstocked (house
  * convention shared with the fabric page).
  *
  * API contract (/api/merch/stock-mix):
- *   { categories: [{ name, stock_units, stock_value, units_period, woc,
+ *   { categories: [{ name, stock_units, stock_value, units_period,
+ *       revenue_period, woc,
  *       subcategories: [{ ..., styles: [{ ..., style_number,
  *         colours: [{ ..., skus_in_stock, skus_sold }] }] }] }],
- *     totals: { stock_units, stock_value, units_period },
+ *     totals: { stock_units, stock_value, units_period, revenue_period },
  *     period: { from, to } }
  *
- * % of Stock / % of Sales / Gap are derived here from `totals` (same as the
- * fabric page derives shares client-side), so rows and totals always agree.
+ * % of SOH / % of Units Sold / Gap are derived here from `totals` (same as
+ * the fabric page derives shares client-side), so rows and totals always
+ * agree. The TOTAL row is pinned in the sticky thead so it stays visible
+ * while drilling and scrolling.
  */
 import React, { useMemo, useState } from "react";
 import { ChevronRight, Search, X } from "lucide-react";
@@ -29,12 +32,13 @@ const LEVEL_LABEL = ["Category", "Sub Category", "Style", "Colour"];
 const MAX_ROWS = 600;
 
 const FX = {
-  stock:    "Stock Units = current stock on hand (stores + sellable warehouse; pipeline excluded) — same basis as the Total Stock on Hand KPI.",
+  stock:    "Total SOH = current stock on hand (stores + sellable warehouse; pipeline excluded) — same basis as the Total Stock on Hand KPI.",
   value:    "Stock Value = stock units × unit cost (KES, at cost).",
   sold:     "Units Sold = gross units sold in the selected period (returns not netted).",
-  pctStock: "% of Stock = this row's stock ÷ TOTAL stock across all categories. Every level is measured against the grand total.",
-  pctSales: "% of Sales = this row's period units ÷ TOTAL period units across all categories.",
-  gap:      "Gap (pp) = % of Stock − % of Sales (percentage points). Positive = overstocked (holds a larger share of stock than of sales); negative = under-stocked vs demand.",
+  revenue:  "Total Revenue = net sales in the selected period (after discounts & returns, ex-VAT) — same basis as the hub's revenue figures.",
+  pctStock: "% of SOH = this row's SOH ÷ TOTAL SOH across all categories. Every level is measured against the grand total.",
+  pctSales: "% of Units Sold = this row's period units ÷ TOTAL period units across all categories.",
+  gap:      "Gap (pp) = % of SOH − % of Units Sold (percentage points). Positive = overstocked (holds a larger share of stock than of sales); negative = under-stocked vs demand.",
   woc:      "Weeks of Cover = stock ÷ weekly run-rate (trailing 6 months ÷ 26) — independent of the selected period, matching the tab's WOC.",
   skus:     "SKUs (stock / sold) = distinct SKUs (sizes) of this colour with stock on hand / sold in the period.",
 };
@@ -110,7 +114,7 @@ export default function MerchStockMix({ data, loading, error }) {
   // Colour-only column stays hidden until colour rows are actually on screen
   // (a style drilled open, or a search surfacing colours) — fabric behaviour.
   const showSkus = shown.some((r) => r.level === 3);
-  const nCols = 8 + (showSkus ? 1 : 0);
+  const nCols = 9 + (showSkus ? 1 : 0);
 
   const toggle = (path) => setOpen((o) => ({ ...o, [path]: !o[path] }));
 
@@ -159,23 +163,43 @@ export default function MerchStockMix({ data, loading, error }) {
         <ErrorBox message={error} />
       ) : (
         <div className="overflow-auto max-h-[600px] rounded-lg border border-slate-100">
-          <table className="w-full min-w-[860px] text-[11.5px] border-collapse">
+          <table className="w-full min-w-[940px] text-[11.5px] border-collapse">
             <thead className="sticky top-0 z-10 bg-white shadow-[0_1px_0_#e2e8f0]">
               <tr className="text-[10px] uppercase tracking-wide text-slate-400">
                 <th className="text-left font-semibold px-2 py-2">
                   Category / Sub / Style / Colour
                 </th>
-                <th className="text-right font-semibold px-2 py-2" title={FX.stock}>Stock Units</th>
+                <th className="text-right font-semibold px-2 py-2" title={FX.stock}>Total SOH</th>
                 <th className="text-right font-semibold px-2 py-2" title={FX.value}>Stock Value</th>
                 <th className="text-right font-semibold px-2 py-2" title={FX.sold}>Units Sold</th>
-                <th className="text-right font-semibold px-2 py-2" title={FX.pctStock}>% of Stock</th>
-                <th className="text-right font-semibold px-2 py-2" title={FX.pctSales}>% of Sales</th>
+                <th className="text-right font-semibold px-2 py-2" title={FX.revenue}>Total Revenue</th>
+                <th className="text-right font-semibold px-2 py-2" title={FX.pctStock}>% of SOH</th>
+                <th className="text-right font-semibold px-2 py-2" title={FX.pctSales}>% of Units Sold</th>
                 <th className="text-right font-semibold px-2 py-2" title={FX.gap}>Gap (pp)</th>
                 <th className="text-right font-semibold px-2 py-2" title={FX.woc}>WOC</th>
                 {showSkus && (
                   <th className="text-right font-semibold px-2 py-2" title={FX.skus}>SKUs</th>
                 )}
               </tr>
+              {shown.length > 0 && (
+                <tr
+                  className="bg-slate-50 font-bold text-slate-800 shadow-[0_1px_0_#cbd5e1]"
+                  data-testid="mix-total-row"
+                >
+                  <td className="px-2 py-2">Total</td>
+                  <td className="text-right px-2 py-2 tabular-nums" data-testid="mix-total-stock">
+                    {fmtNum(totals.stock_units)}
+                  </td>
+                  <td className="text-right px-2 py-2 tabular-nums">{fmtKESM(totals.stock_value)}</td>
+                  <td className="text-right px-2 py-2 tabular-nums">{fmtNum(totals.units_period)}</td>
+                  <td className="text-right px-2 py-2 tabular-nums">{fmtKESM(totals.revenue_period)}</td>
+                  <td className="text-right px-2 py-2 tabular-nums">100.0%</td>
+                  <td className="text-right px-2 py-2 tabular-nums">100.0%</td>
+                  <td className="text-right px-2 py-2 text-slate-300 font-normal" title="Gap nets to 0 across all categories.">—</td>
+                  <td className="text-right px-2 py-2 text-slate-300 font-normal" title="Cover is a ratio — no meaningful grand total.">—</td>
+                  {showSkus && <td className="px-2 py-2" />}
+                </tr>
+              )}
             </thead>
             <tbody>
               {shown.length === 0 && (
@@ -229,6 +253,7 @@ export default function MerchStockMix({ data, loading, error }) {
                     <td className="text-right px-2 py-1.5 tabular-nums">{fmtNum(n.stock_units)}</td>
                     <td className="text-right px-2 py-1.5 tabular-nums">{fmtKESM(n.stock_value)}</td>
                     <td className="text-right px-2 py-1.5 tabular-nums">{fmtNum(n.units_period)}</td>
+                    <td className="text-right px-2 py-1.5 tabular-nums">{fmtKESM(n.revenue_period)}</td>
                     <td className="text-right px-2 py-1.5 tabular-nums">{pctS.toFixed(1)}%</td>
                     <td className="text-right px-2 py-1.5 tabular-nums">{pctU.toFixed(1)}%</td>
                     <td className="text-right px-2 py-1.5"><GapPill v={gap} /></td>
@@ -250,26 +275,6 @@ export default function MerchStockMix({ data, loading, error }) {
                 );
               })}
             </tbody>
-            {shown.length > 0 && (
-              <tfoot className="sticky bottom-0 z-10">
-                <tr
-                  className="bg-slate-50 font-bold text-slate-800 border-t-2 border-slate-200 shadow-[0_-1px_0_#e2e8f0]"
-                  data-testid="mix-total-row"
-                >
-                  <td className="px-2 py-2">Total</td>
-                  <td className="text-right px-2 py-2 tabular-nums" data-testid="mix-total-stock">
-                    {fmtNum(totals.stock_units)}
-                  </td>
-                  <td className="text-right px-2 py-2 tabular-nums">{fmtKESM(totals.stock_value)}</td>
-                  <td className="text-right px-2 py-2 tabular-nums">{fmtNum(totals.units_period)}</td>
-                  <td className="text-right px-2 py-2 tabular-nums">100.0%</td>
-                  <td className="text-right px-2 py-2 tabular-nums">100.0%</td>
-                  <td className="text-right px-2 py-2 text-slate-300 font-normal" title="Gap nets to 0 across all categories.">—</td>
-                  <td className="text-right px-2 py-2 text-slate-300 font-normal" title="Cover is a ratio — no meaningful grand total.">—</td>
-                  {showSkus && <td className="px-2 py-2" />}
-                </tr>
-              </tfoot>
-            )}
           </table>
         </div>
       )}

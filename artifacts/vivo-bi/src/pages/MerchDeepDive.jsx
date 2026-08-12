@@ -145,12 +145,18 @@ function buildRecommendationCards(style, weeklyAvg) {
 const MON = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 const isoWeekToDate = (isoWeek) => {
   if (!isoWeek) return null;
-  const [yr, wk] = isoWeek.split("-W").map(Number);
+  // Backend emits Postgres IYYY-IW ("2026-32", no "W"); tolerate "2026-W32"
+  // too. The old split("-W") parse yielded NaN for the real format, and the
+  // resulting Invalid Date is TRUTHY — it slipped past `!d` guards and
+  // collapsed every week into one "NaN-NaN" month bucket downstream.
+  const m = String(isoWeek).match(/^(\d{4})-W?(\d{1,2})$/);
+  if (!m) return null;
+  const yr = +m[1], wk = +m[2];
   const jan4 = new Date(yr, 0, 4);
   const day = jan4.getDay() || 7;
   const d = new Date(jan4);
   d.setDate(jan4.getDate() - (day - 1) + (wk - 1) * 7);
-  return d;
+  return Number.isFinite(d.getTime()) ? d : null;
 };
 const weekLabel = (isoWeek, i) => {
   if (i % 4 !== 0) return "";
@@ -187,10 +193,13 @@ const MerchDeepDive = () => {
         to_date:   filters.to_date,
         country:   filters.country,
       } }).then(d => d.styles || []),
+      // Deliberately NO from_date/to_date here: the weekly feed backs the
+      // fixed trailing-window charts ("Trailing 52 Weeks", "Monthly Revenue —
+      // Last 12 Months"), which must not shrink with the hub's date filter
+      // (a 1-day/1-month filter left them a single lump). Country still
+      // applies; the endpoint defaults to the trailing 364 days.
       apiFetch("/merch/style-sales-weekly", { params: {
         style_number: styleNumber,
-        from_date: filters.from_date,
-        to_date:   filters.to_date,
         country:   filters.country,
       } }),
       apiFetch("/merch/by-subcategory", { params: filters }),
@@ -334,6 +343,30 @@ const MerchDeepDive = () => {
       }));
   }, [storePerf, storeMetric]);
 
+  // Per-store SOR for the selected period — same rows as the Store Performance
+  // chart. SOR = units ÷ (units + stock on hand), the codebase's sell-through
+  // canon; a store with zero units AND zero stock has no signal and is
+  // excluded (mirrors sor_period's None convention on the backend).
+  const storeSorChart = useMemo(() => {
+    return storePerf
+      .map(r => {
+        const units = r.units_6m || 0;
+        const stock = r.current_stock || 0;
+        const denom = units + stock;
+        if (denom <= 0) return null;
+        return {
+          name:     r.store,
+          tier:     r.store_tier || "—",
+          value:    +(units * 100 / denom).toFixed(1),
+          units,
+          stock,
+          revenueK: Math.round((r.revenue_6m || 0) / 1000),
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.value - a.value);
+  }, [storePerf]);
+
   const monthlyRevChart = useMemo(() => {
     const map = {};
     for (const w of weeks) {
@@ -455,7 +488,7 @@ const MerchDeepDive = () => {
         </div>
       </div>
 
-      {/* ── 6 KPI cards ─────────────────────────────────────────────────── */}
+      {/* ── KPI cards ───────────────────────────────────────────────────── */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
         <KPICard
           label={`Revenue (${periodLabel})`}
@@ -468,6 +501,18 @@ const MerchDeepDive = () => {
           icon={CurrencyCircleDollar}
           showDelta={false}
           testId="dd-rev-6m"
+        />
+        {/* Ported from Sales & Pricing (card removed there) — lifetime only
+            makes sense at style level. revenue_life comes from the style row's
+            unbounded lifetime CTE, so it ignores the hub date filter. */}
+        <KPICard
+          label="Revenue (Lifetime)"
+          value={fmtKES(style.revenue_life)}
+          valueFull={fmtKESLong(style.revenue_life)}
+          sub="Since first launch"
+          icon={CurrencyCircleDollar}
+          showDelta={false}
+          testId="dd-rev-life"
         />
         <KPICard
           label={`Units Sold (${periodLabel})`}
@@ -669,6 +714,69 @@ const MerchDeepDive = () => {
                     }} />
                     <Bar dataKey="value" radius={[3, 3, 0, 0]}>
                       {storeChart.map((d, i) => (
+                        <Cell key={i} fill={STORE_TIER_COLOR[d.tier] || "#d1d5db"} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+                <div className="mt-1 flex items-center flex-wrap gap-x-4 gap-y-1 text-[10.5px] text-foreground/60">
+                  {Object.entries(STORE_TIER_COLOR).map(([t, c]) => (
+                    <span key={t} className="inline-flex items-center gap-1.5">
+                      <span className="w-2.5 h-2.5 rounded-sm inline-block" style={{ background: c }} />
+                      Tier {t} store
+                    </span>
+                  ))}
+                  <span className="text-foreground/40">Store tier = trailing-90-day revenue rank</span>
+                </div>
+              </>
+            )}
+        </div>
+      </div>
+
+      {/* ── Row 1b: Store Performance — SOR (selected period) ───────────── */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+        <div className="lg:col-span-12 card-white p-5">
+          <SectionTitle
+            title={`Store Performance — SOR (${periodLabel})`}
+            subtitle="Sell-through % per store · units ÷ (units + stock on hand) · sorted best to worst"
+          />
+          {storeSorChart.length === 0
+            ? <Empty />
+            : (
+              <>
+                <ResponsiveContainer width="100%" height={240}>
+                  <BarChart data={storeSorChart} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                    <XAxis
+                      dataKey="name"
+                      tick={{ fontSize: 8 }}
+                      interval={0}
+                      angle={-60}
+                      textAnchor="end"
+                      height={84}
+                    />
+                    <YAxis
+                      tick={{ fontSize: 9 }}
+                      domain={[0, 100]}
+                      tickFormatter={v => v + "%"}
+                    />
+                    <Tooltip content={({ active, payload, label }) => {
+                      if (!active || !payload?.length) return null;
+                      const d = payload[0].payload;
+                      return (
+                        <div className="bg-white border border-border rounded-lg shadow-md px-3 py-2 text-[11px]">
+                          <div className="font-bold mb-0.5">
+                            {label}{d.tier && d.tier !== "—" ? ` · Tier ${d.tier}` : ""}
+                          </div>
+                          <div>SOR: {d.value}%</div>
+                          <div>Units sold: {fmtNum(d.units)}</div>
+                          <div>Stock on hand: {fmtNum(d.stock)}</div>
+                          <div>Revenue: KES {fmtNum(d.revenueK)}K</div>
+                        </div>
+                      );
+                    }} />
+                    <Bar dataKey="value" radius={[3, 3, 0, 0]}>
+                      {storeSorChart.map((d, i) => (
                         <Cell key={i} fill={STORE_TIER_COLOR[d.tier] || "#d1d5db"} />
                       ))}
                     </Bar>

@@ -139,6 +139,7 @@
 - [Product colour name-authoritative](product-color-name-authoritative.md) — color_print derives from the product NAME (Odoo attr = stale-on-rename fallback); nightly transform self-heals dev+prod; beware "Off - Shoulder" wrong-split wart.
 - [all_inventory quantity canon](inventory-quantity-column-canon.md) — stock qty column is `available`; on_hand is not the canon and available_quantity does NOT exist (latent 500 raw SQL misses).
 - [Task commits sweep stray worktree changes](task-commit-sweeps-worktree.md) — completion commits include ANY uncommitted env leftovers; diff vs merge base before markTaskComplete or review rejects on unrelated code.
+- [Rebase-replay vs main drift](rebase-replay-main-drift.md) — main missing your already-merged content in a conflict = another task's merge clobbered it; union ours+graft, realign main-authored tests to the restored canon.
 - [Deploy image 8 GiB limit](deploy-image-size-limit.md) — publish "image size over limit" = workspace bloat; prune .vscode-server/pnpm store/legacy node_modules (safe list inside); builds need BASE_PATH env when run by hand.
 - [Port-cleanup kill hazards](port-cleanup-kill-hazards.md) — never kill a PID off lsof alone (low-PID "node" = platform infra; killing it downs ALL workflows); inspect ps args first, restart everything after.
 - [Prod Overview style cards](production-overview-style-cards.md) — partition styles one-bucket-per-style (New›Repl›Re-order) on style_number identity so cards always sum to Total; style_name is often blank.
@@ -148,3 +149,4 @@
 - [<img> to gated /api 401s without cookies](img-src-cookieless-auth.md) — preview iframe/Safari strip the session cookie from native image loads; ProductThumbnail's Bearer-blob fallback is the canonical fix.
 - [API routes must precede the SPA catch-all](api-route-catchall-order.md) — @app.get defined after the "/{full_path:path}" SPA route silently 404s ({"detail":"Not found"} with valid auth); register above the static block.
 - [Merch stock-mix tree](merch-stock-mix-tree.md) — stock CTE mirrors _fetch_styles scoping exactly so tree total == Stock Units KPI; dims = product-master modes; % + gap derived client-side (fabric pattern).
+- [Colour-style status is derived](colour-style-status-derived.md) — no stored colour status: colourway Active iff parent style Active-tier AND that colour has SOH>0; style-level retirement cascades to all colourways.

@@ -133,11 +133,31 @@ export default function MerchInventory() {
   // styles → { styles: [...] }
   const styleRows = useMemo(() => styles?.styles || [], [styles]);
 
-  // Top 10 styles by current_stock, colour-coded by WOC risk
-  const top10Stock = useMemo(() =>
+  // Row counts for the KPI CSV downloads — shown as "· N rows" on the button.
+  // Mirrors the server's _KPI_BUCKETS (merch_router.py; keep in lockstep):
+  // total_stock/avg_woc export the raw (non-deduped) style rows, so count the
+  // same client-held rows; the four count-style KPIs export exactly the
+  // deduped style set behind the on-card summary counts, so reuse those
+  // counts verbatim. null (data not loaded yet) hides the suffix.
+  const kpiCsvCounts = useMemo(() => {
+    const sm = summary || {};
+    return {
+      total_stock: styles?.styles ? styleRows.length : null,
+      avg_woc:     styles?.styles
+        ? styleRows.filter(r => r.woc !== null && r.woc !== undefined).length
+        : null,
+      woc_gt20:    sm.woc_gt20_count ?? null,
+      woc_lt3:     sm.woc_lt3_active_count ?? null,
+      no_sale_7d:  sm.no_sale_7d_active_count ?? null,
+      no_sale_30d: sm.no_sale_30d_count ?? null,
+    };
+  }, [styles, styleRows, summary]);
+
+  // Top 20 styles by current_stock, colour-coded by WOC risk
+  const topStock = useMemo(() =>
     [...styleRows]
       .sort((a, b) => (b.current_stock || 0) - (a.current_stock || 0))
-      .slice(0, 10)
+      .slice(0, 20)
       .map((r) => ({
         ...r,
         _wocColor:  wocColor(r.woc),
@@ -145,26 +165,61 @@ export default function MerchInventory() {
       })),
     [styleRows]);
 
-  // Avg WOC by Subcategory (highest risk = highest WOC, sorted desc)
+  // Avg WOC by Subcategory — ALL subcats except Men's + Accessories,
+  // sorted desc (highest risk on top), coloured by WOC risk band.
+  // \bmen'?s\b matches "Men's Tops" but NOT "Women's Tops" (no word
+  // boundary inside "Women's").
   const subcatWoc = useMemo(() => {
     if (!bySubcategory?.rows) return [];
+    const mens = /\bmen'?s\b/i;
+    const riskColor = (w) =>
+      Number(w) >= 16 ? C.red : Number(w) >= 8 ? C.amber : C.green;
     return [...bySubcategory.rows]
       .filter((r) => r.avg_woc != null)
+      .filter((r) => (r.category || "") !== "Accessories" && !mens.test(r.subcategory || ""))
       .sort((a, b) => (b.avg_woc || 0) - (a.avg_woc || 0))
-      .slice(0, 10)
-      .map((r) => ({ ...r, color: wocColor(r.avg_woc) }));
+      .map((r) => ({ ...r, color: riskColor(r.avg_woc) }));
   }, [bySubcategory]);
 
   // Current stock by brand
+  // "Safari by Vivo" is the same brand as "Safari" — merge its units in
+  // (display-level merge for this chart; the brand filter still lists both).
   const brandStock = useMemo(() => {
     if (!byBrand?.rows) return [];
-    return [...byBrand.rows].sort((a, b) => (b.current_stock || 0) - (a.current_stock || 0));
+    const merged = {};
+    for (const r of byBrand.rows) {
+      const raw = (r.brand || "—").trim();
+      const name = raw.toLowerCase() === "safari by vivo" ? "Safari" : raw;
+      if (!merged[name]) merged[name] = { brand: name, current_stock: 0 };
+      merged[name].current_stock += r.current_stock || 0;
+    }
+    const rows = Object.values(merged).sort((a, b) => b.current_stock - a.current_stock);
+    const total = rows.reduce((s, r) => s + r.current_stock, 0);
+    return rows.map((r) => ({
+      ...r,
+      pct: total > 0 ? (r.current_stock / total) * 100 : 0,
+    }));
   }, [byBrand]);
 
-  // Styles by last sale recency — computed from styleRows using last_sale_days
+  // Active styles only (tier Tier 1–4 — mirrors the summary's Active
+  // definition; Retired/Archived excluded) for the recency chart + its CSV.
+  const activeStyleRows = useMemo(
+    () => styleRows.filter((r) => /^Tier [1-4]$/.test(r.tier || "")),
+    [styleRows]);
+
+  const recencyBucketLabel = (d) => {
+    if (d === null || d === undefined) return "No sale >90d";
+    if (d <= 7)  return "Sold in last 7d";
+    if (d <= 30) return "Sold 8-30d ago";
+    if (d <= 60) return "Sold 31-60d ago";
+    if (d <= 90) return "Sold 61-90d ago";
+    return "No sale >90d";
+  };
+
+  // Active styles by last sale recency — from activeStyleRows.last_sale_days
   const recencyData = useMemo(() => {
     const buckets = { "7d": 0, "8_30d": 0, "31_60d": 0, "61_90d": 0, "gt_90d": 0 };
-    for (const r of styleRows) {
+    for (const r of activeStyleRows) {
       const d = r.last_sale_days;
       if (d === null || d === undefined) { buckets["gt_90d"]++; continue; }
       if (d <= 7)       buckets["7d"]++;
@@ -173,21 +228,52 @@ export default function MerchInventory() {
       else if (d <= 90) buckets["61_90d"]++;
       else              buckets["gt_90d"]++;
     }
+    const total = activeStyleRows.length;
+    const pct = (v) => (total > 0 ? (v / total) * 100 : 0);
     return [
-      { name: "Sold in\nlast 7d",  value: buckets["7d"],     color: RECENCY_COLORS[0] },
-      { name: "Sold 8-30d\nago",   value: buckets["8_30d"],  color: RECENCY_COLORS[1] },
-      { name: "Sold 31-60d\nago",  value: buckets["31_60d"], color: RECENCY_COLORS[2] },
-      { name: "Sold 61-90d\nago",  value: buckets["61_90d"], color: RECENCY_COLORS[3] },
-      { name: "No sale\n>90d",     value: buckets["gt_90d"], color: RECENCY_COLORS[4] },
+      { name: "Sold in\nlast 7d",  value: buckets["7d"],     pct: pct(buckets["7d"]),     color: RECENCY_COLORS[0] },
+      { name: "Sold 8-30d\nago",   value: buckets["8_30d"],  pct: pct(buckets["8_30d"]),  color: RECENCY_COLORS[1] },
+      { name: "Sold 31-60d\nago",  value: buckets["31_60d"], pct: pct(buckets["31_60d"]), color: RECENCY_COLORS[2] },
+      { name: "Sold 61-90d\nago",  value: buckets["61_90d"], pct: pct(buckets["61_90d"]), color: RECENCY_COLORS[3] },
+      { name: "No sale\n>90d",     value: buckets["gt_90d"], pct: pct(buckets["gt_90d"]), color: RECENCY_COLORS[4] },
     ];
-  }, [styleRows]);
+  }, [activeStyleRows]);
+
+  // Per-style CSV behind the recency chart (client-side, Overview pattern).
+  const downloadRecencyCsv = () => {
+    const headers = [
+      "Style Name", "Style Number", "Brand", "Subcategory", "Tier",
+      "Current Stock", "WOC (weeks)", "Last Sale Date", "Last Sale (days)",
+      "Recency Bucket",
+    ];
+    const q = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const rows = activeStyleRows.map((r) => [
+      q(r.style_name), q(r.style_number), q(r.brand), q(r.subcategory),
+      r.tier || "",
+      r.current_stock ?? "", r.woc ?? "", r.last_sale_date || "",
+      r.last_sale_days ?? "", q(recencyBucketLabel(r.last_sale_days)),
+    ]);
+    const csv = [headers.join(","), ...rows.map((r) => r.join(","))].join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `Active_Styles_Last_Sale_Recency_${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  };
 
   // Stock by Tier pie — from by-tier rows
+  // Stock by Tier pie — Archived styles excluded; % = share of charted units.
   const tierStockPie = useMemo(() => {
     if (!byTier?.rows) return [];
-    return byTier.rows.map((r, i) => ({
+    const rows = byTier.rows.filter(
+      (r) => (r.tier || "").toLowerCase() !== "archived");
+    const total = rows.reduce((s, r) => s + (r.current_stock || 0), 0);
+    return rows.map((r, i) => ({
       name:  r.tier,
       value: r.current_stock || 0,
+      pct:   total > 0 ? ((r.current_stock || 0) / total) * 100 : 0,
       color: TIER_COLORS[i] || C.muted,
     }));
   }, [byTier]);
@@ -200,30 +286,65 @@ export default function MerchInventory() {
 
   // ── Replenishment derivations (from the retired Replenishment tab) ──────
 
+  // Replenishment KPIs — ACTIVE styles only (Tier 1–4, same universe as the
+  // recency chart). Velocity uses the summary's active_weekly_velocity so it
+  // matches the Overview; the WOC buckets + avg reorder are computed from the
+  // client-held active rows so each card's CSV exports exactly its own rows.
   const replenKpis = useMemo(() => {
     if (!summary) return {};
+    const act  = activeStyleRows;
+    const nAct = act.length;
+    const lt4Rows = act.filter(r => r.woc !== null && r.woc < 4);
+    const b48Rows = act.filter(r => r.woc !== null && r.woc >= 4 && r.woc <= 8);
     return {
-      totalVelocity: summary.weekly_velocity || 0,
-      wocLt4:        summary.woc_lt4_count   || 0,
-      wocLt8:        styleRows.filter(r => r.woc !== null && r.woc >= 4 && r.woc <= 8).length,
-      avgReorder:    styleRows.length
-        ? styleRows.reduce((acc, r) => acc + (r.reorder_count || 0), 0) / styleRows.length
+      totalVelocity: summary.active_weekly_velocity || 0,
+      wocLt4:  lt4Rows.length,
+      pctLt4:  nAct ? (lt4Rows.length / nAct) * 100 : 0,
+      wocLt8:  b48Rows.length,
+      pctLt8:  nAct ? (b48Rows.length / nAct) * 100 : 0,
+      avgReorder: nAct
+        ? act.reduce((acc, r) => acc + (r.reorder_count || 0), 0) / nAct
         : 0,
+      lt4Rows,
+      b48Rows,
     };
-  }, [summary, styleRows]);
+  }, [summary, activeStyleRows]);
+
+  // Replen KPI CSVs — one shared 9-column schema, rows/sort vary per card.
+  const downloadReplenCsv = (rows, fileLabel) => () => {
+    const headers = [
+      "Style Name", "Style Number", "Brand", "Subcategory", "Tier",
+      "Current Stock", "WOC (weeks)", "Weekly Velocity", "Reorder Count",
+    ];
+    const q = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const body = rows.map((r) => [
+      q(r.style_name), q(r.style_number), q(r.brand), q(r.subcategory),
+      r.tier || "", r.current_stock ?? "", r.woc ?? "",
+      r.weekly_avg ?? "", r.reorder_count ?? "",
+    ]);
+    const csv = [headers.join(","), ...body.map((r) => r.join(","))].join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `${fileLabel}_${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  };
 
   // High-velocity top 15 sorted by weekly_avg desc
+  // High-velocity top 20 — only styles with WOC < 7 (the reorder-pressure
+  // zone); full name kept, the axis tick truncates to a single line.
   const highVelData = useMemo(() => {
-    const withStock = styleRows.filter(r => r.weekly_avg > 0);
-    return [...withStock].sort((a, b) => (b.weekly_avg || 0) - (a.weekly_avg || 0))
-      .slice(0, 15)
+    const lowCover = styleRows.filter(
+      r => r.weekly_avg > 0 && r.woc !== null && r.woc < 7);
+    return [...lowCover].sort((a, b) => (b.weekly_avg || 0) - (a.weekly_avg || 0))
+      .slice(0, 20)
       .map(r => ({
-        name:  truncate(r.style_name, 26),
+        name:  r.style_name || "",
         woc:   r.woc,
         fill:  WOC_COLOR(r.woc),
-        label: r.woc !== null
-          ? `${fmtNum(r.current_stock)} (${fmtDec(r.woc, 1)}w)`
-          : `${fmtNum(r.current_stock)} (—)`,
+        label: `${fmtNum(r.current_stock)} (${fmtDec(r.woc, 1)}w)`,
         vel:   r.weekly_avg,
       }));
   }, [styleRows]);
@@ -293,6 +414,56 @@ export default function MerchInventory() {
         <SubcatFilter value={localSubcat} onChange={setLocalSubcat} />
       </div>
 
+      {/* ── Replenishment Planning KPIs (moved to page top; active styles) ── */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <MerchKPICard
+          label="Total Weekly Velocity"
+          value={`${fmtNum(Math.round(replenKpis.totalVelocity || 0))} /wk`}
+          sub="Across active styles"
+          accentColor={C.blue}
+          testId="merch-replen-kpi-vel"
+          onDownload={downloadReplenCsv(
+            [...activeStyleRows].sort((a, b) => (b.weekly_avg || 0) - (a.weekly_avg || 0)),
+            "Active_Weekly_Velocity")}
+          downloadCount={activeStyleRows.length}
+        />
+        <MerchKPICard
+          label="Styles WOC < 4 wks"
+          value={`${fmtNum(replenKpis.wocLt4)} styles`}
+          sub={replenKpis.pctLt4 != null ? `${replenKpis.pctLt4.toFixed(1)}% of active styles` : "—"}
+          sub2="Urgent reorder needed"
+          accentColor={C.red}
+          testId="merch-replen-kpi-woc4"
+          onDownload={downloadReplenCsv(
+            [...(replenKpis.lt4Rows || [])].sort((a, b) => (a.woc ?? 0) - (b.woc ?? 0)),
+            "Active_Styles_WOC_under_4")}
+          downloadCount={replenKpis.lt4Rows ? replenKpis.lt4Rows.length : null}
+        />
+        <MerchKPICard
+          label="Styles WOC 4–8 wks"
+          value={`${fmtNum(replenKpis.wocLt8)} styles`}
+          sub={replenKpis.pctLt8 != null ? `${replenKpis.pctLt8.toFixed(1)}% of active styles` : "—"}
+          sub2="Reorder soon"
+          accentColor={C.amber}
+          testId="merch-replen-kpi-woc8"
+          onDownload={downloadReplenCsv(
+            [...(replenKpis.b48Rows || [])].sort((a, b) => (a.woc ?? 0) - (b.woc ?? 0)),
+            "Active_Styles_WOC_4_to_8")}
+          downloadCount={replenKpis.b48Rows ? replenKpis.b48Rows.length : null}
+        />
+        <MerchKPICard
+          label="Avg Reorder Count"
+          value={`${fmtDec(replenKpis.avgReorder || 0, 1)}×`}
+          sub="Per active style"
+          accentColor={C.purple}
+          testId="merch-replen-kpi-reorder"
+          onDownload={downloadReplenCsv(
+            [...activeStyleRows].sort((a, b) => (b.reorder_count || 0) - (a.reorder_count || 0)),
+            "Active_Styles_Reorder_Count")}
+          downloadCount={activeStyleRows.length}
+        />
+      </div>
+
       {/* ── KPI cards ── */}
       <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
         <MerchKPICard
@@ -303,6 +474,7 @@ export default function MerchInventory() {
           accentColor={C.blue}
           testId="merch-inv-kpi-stock"
           onDownload={downloadKpiCsv("total_stock", "Total_Stock_on_Hand")}
+          downloadCount={kpiCsvCounts.total_stock}
         />
         <MerchKPICard
           label="Avg WOC"
@@ -311,6 +483,7 @@ export default function MerchInventory() {
           accentColor={C.purple}
           testId="merch-inv-kpi-woc"
           onDownload={downloadKpiCsv("avg_woc", "Avg_WOC")}
+          downloadCount={kpiCsvCounts.avg_woc}
         />
         <MerchKPICard
           label="Styles WOC > 20"
@@ -319,6 +492,7 @@ export default function MerchInventory() {
           accentColor={C.teal}
           testId="merch-inv-kpi-overstock"
           onDownload={downloadKpiCsv("woc_gt20", "Styles_WOC_over_20")}
+          downloadCount={kpiCsvCounts.woc_gt20}
         />
         <MerchKPICard
           label="Styles WOC < 3"
@@ -327,6 +501,7 @@ export default function MerchInventory() {
           accentColor={C.red}
           testId="merch-inv-kpi-lowcover"
           onDownload={downloadKpiCsv("woc_lt3", "Styles_WOC_under_3")}
+          downloadCount={kpiCsvCounts.woc_lt3}
         />
         <MerchKPICard
           label="Active: No Sale 7d+"
@@ -335,6 +510,7 @@ export default function MerchInventory() {
           accentColor="#f97316"
           testId="merch-inv-kpi-nosale7"
           onDownload={downloadKpiCsv("no_sale_7d", "Active_No_Sale_7d_plus")}
+          downloadCount={kpiCsvCounts.no_sale_7d}
         />
         <MerchKPICard
           label="Retired: No Sale 30d"
@@ -343,6 +519,7 @@ export default function MerchInventory() {
           accentColor={C.amber}
           testId="merch-inv-kpi-nosale"
           onDownload={downloadKpiCsv("no_sale_30d", "Retired_No_Sale_30d")}
+          downloadCount={kpiCsvCounts.no_sale_30d}
         />
       </div>
 
@@ -353,9 +530,9 @@ export default function MerchInventory() {
         error={mixState.error}
       />
 
-      {/* ── Top 10 stock + Avg WOC by Subcat ── */}
+      {/* ── Top 20 stock + Avg WOC by Subcat ── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <ChartCard title="Top 10 Styles by Current Stock (colour = WOC risk)">
+        <ChartCard title="Top 20 Styles by Current Stock (colour = WOC risk)">
           <div className="flex gap-3 mb-2">
             {wocLegend.map((l, i) => (
               <div key={i} className="flex items-center gap-1">
@@ -364,20 +541,31 @@ export default function MerchInventory() {
               </div>
             ))}
           </div>
-          <ResponsiveContainer width="100%" height={280}>
+          <ResponsiveContainer width="100%" height={520}>
             <BarChart
-              data={top10Stock}
+              data={topStock}
               layout="vertical"
-              margin={{ top: 0, right: 70, left: 130, bottom: 0 }}
+              margin={{ top: 0, right: 85, left: 190, bottom: 0 }}
             >
               <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f1f5f9" />
               <XAxis type="number" tickFormatter={fmtNum} tick={{ fontSize: 10 }} />
               <YAxis
                 type="category"
                 dataKey="style_name"
-                tick={{ fontSize: 9 }}
-                width={130}
-                tickFormatter={(v) => v?.length > 24 ? v.slice(0, 24) + "…" : v}
+                width={190}
+                interval={0}
+                /* Single-line tick: plain SVG <text> never word-wraps (recharts'
+                   default tick wraps long names onto two rows). Truncate at 42
+                   chars; the tooltip shows the full name. */
+                tick={({ x, y, payload }) => {
+                  const v = String(payload.value ?? "");
+                  const label = v.length > 42 ? v.slice(0, 42) + "…" : v;
+                  return (
+                    <text x={x} y={y} dy={3} textAnchor="end" fontSize={9} fill="#64748b">
+                      {label}
+                    </text>
+                  );
+                }}
               />
               <Tooltip
                 content={({ active, payload, label }) => {
@@ -393,7 +581,7 @@ export default function MerchInventory() {
                 }}
               />
               <Bar dataKey="current_stock" name="Current Stock" radius={[0, 3, 3, 0]}>
-                {top10Stock.map((entry, i) => <Cell key={i} fill={entry._wocColor} />)}
+                {topStock.map((entry, i) => <Cell key={i} fill={entry._wocColor} />)}
                 <LabelList
                   dataKey="stockLabel"
                   position="right"
@@ -404,21 +592,42 @@ export default function MerchInventory() {
           </ResponsiveContainer>
         </ChartCard>
 
-        <ChartCard title="Avg WOC by Subcategory (highest risk)">
-          <ResponsiveContainer width="100%" height={300}>
+        <ChartCard title="Avg WOC by Subcategory (colour = risk · excl. Men's & Accessories)">
+          <div className="flex gap-3 mb-2">
+            {[
+              { label: "Healthy (< 8 wks)",    color: C.green },
+              { label: "Elevated (8–16 wks)",  color: C.amber },
+              { label: "At risk (≥ 16 wks)",   color: C.red },
+            ].map((l, i) => (
+              <div key={i} className="flex items-center gap-1">
+                <span className="w-3 h-2 rounded-sm inline-block" style={{ backgroundColor: l.color }} />
+                <span className="text-[9px] text-slate-500">{l.label}</span>
+              </div>
+            ))}
+          </div>
+          <ResponsiveContainer width="100%" height={Math.max(300, subcatWoc.length * 24 + 40)}>
             <BarChart
               data={subcatWoc}
               layout="vertical"
-              margin={{ top: 0, right: 50, left: 100, bottom: 0 }}
+              margin={{ top: 0, right: 50, left: 140, bottom: 0 }}
             >
               <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f1f5f9" />
               <XAxis type="number" tick={{ fontSize: 10 }} />
               <YAxis
                 type="category"
                 dataKey="subcategory"
-                tick={{ fontSize: 9 }}
-                width={100}
-                tickFormatter={(v) => v?.length > 18 ? v.slice(0, 18) + "…" : v}
+                width={140}
+                interval={0}
+                /* Single-line tick (plain SVG <text> never word-wraps). */
+                tick={({ x, y, payload }) => {
+                  const v = String(payload.value ?? "");
+                  const label = v.length > 30 ? v.slice(0, 30) + "…" : v;
+                  return (
+                    <text x={x} y={y} dy={3} textAnchor="end" fontSize={9} fill="#64748b">
+                      {label}
+                    </text>
+                  );
+                }}
               />
               <ReferenceLine
                 x={12}
@@ -445,28 +654,78 @@ export default function MerchInventory() {
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         <ChartCard title="Current Stock by Brand">
           <ResponsiveContainer width="100%" height={220}>
-            <BarChart data={brandStock} margin={{ top: 16, right: 8, left: -5, bottom: 20 }}>
+            <BarChart data={brandStock} margin={{ top: 30, right: 8, left: -5, bottom: 20 }}>
               <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
               <XAxis dataKey="brand" tick={{ fontSize: 9 }} interval={0} angle={-20} textAnchor="end" />
               <YAxis tickFormatter={(v) => v >= 1000 ? (v / 1000).toFixed(0) + "K" : v} tick={{ fontSize: 10 }} />
               <Tooltip content={<NumTooltip />} />
               <Bar dataKey="current_stock" name="Stock Units" fill={C.blue} radius={[4, 4, 0, 0]}>
-                <LabelList dataKey="current_stock" position="top" formatter={fmtNum} style={{ fontSize: 9, fontWeight: 700 }} />
+                {/* % share on top, units beneath it */}
+                <LabelList
+                  dataKey="current_stock"
+                  position="top"
+                  content={({ x, y, width, value, index }) => {
+                    const cx = Number(x) + Number(width) / 2;
+                    const pct = brandStock[index]?.pct;
+                    return (
+                      <text x={cx} y={Number(y) - 4} textAnchor="middle" fontSize={9}>
+                        <tspan x={cx} dy={-10} fill="#64748b">
+                          {pct != null ? `${pct.toFixed(1)}%` : ""}
+                        </tspan>
+                        <tspan x={cx} dy={10} fontWeight={700} fill="#334155">
+                          {fmtNum(value)}
+                        </tspan>
+                      </text>
+                    );
+                  }}
+                />
               </Bar>
             </BarChart>
           </ResponsiveContainer>
         </ChartCard>
 
-        <ChartCard title="Styles by Last Sale Recency">
+        <ChartCard
+          title={
+            <div className="flex items-center justify-between gap-2">
+              <span>Active Styles by Last Sale Recency</span>
+              <button
+                type="button"
+                onClick={downloadRecencyCsv}
+                className="text-[10px] font-semibold text-indigo-600 hover:text-indigo-800 whitespace-nowrap"
+                data-testid="recency-csv-btn"
+              >
+                Download CSV · {activeStyleRows.length} rows
+              </button>
+            </div>
+          }
+        >
           <ResponsiveContainer width="100%" height={220}>
-            <BarChart data={recencyData} margin={{ top: 16, right: 8, left: -10, bottom: 30 }}>
+            <BarChart data={recencyData} margin={{ top: 30, right: 8, left: -10, bottom: 30 }}>
               <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
               <XAxis dataKey="name" tick={{ fontSize: 9 }} interval={0} />
               <YAxis tick={{ fontSize: 10 }} />
               <Tooltip content={<NumTooltip />} />
               <Bar dataKey="value" name="Styles" radius={[4, 4, 0, 0]}>
                 {recencyData.map((entry, i) => <Cell key={i} fill={entry.color} />)}
-                <LabelList dataKey="value" position="top" style={{ fontSize: 11, fontWeight: 700 }} />
+                {/* % share on top, style count beneath it */}
+                <LabelList
+                  dataKey="value"
+                  position="top"
+                  content={({ x, y, width, value, index }) => {
+                    const cx = Number(x) + Number(width) / 2;
+                    const pct = recencyData[index]?.pct;
+                    return (
+                      <text x={cx} y={Number(y) - 4} textAnchor="middle" fontSize={9}>
+                        <tspan x={cx} dy={-10} fill="#64748b">
+                          {pct != null ? `${pct.toFixed(1)}%` : ""}
+                        </tspan>
+                        <tspan x={cx} dy={10} fontWeight={700} fill="#334155" fontSize={11}>
+                          {fmtNum(value)}
+                        </tspan>
+                      </text>
+                    );
+                  }}
+                />
               </Bar>
             </BarChart>
           </ResponsiveContainer>
@@ -491,7 +750,22 @@ export default function MerchInventory() {
                 formatter={(val, name) => [`${fmtNum(val)} units`, name]}
                 contentStyle={{ fontSize: 11, borderRadius: 8, border: "1px solid #e2e8f0" }}
               />
-              <Legend formatter={(v) => <span style={{ fontSize: 10 }}>{v}</span>} iconSize={8} />
+              <Legend
+                layout="vertical"
+                align="right"
+                verticalAlign="middle"
+                iconSize={10}
+                formatter={(v, entry) => {
+                  const p = entry?.payload;
+                  return (
+                    <span style={{ fontSize: 12, color: "#334155" }}>
+                      <span style={{ fontWeight: 600 }}>{v}</span>
+                      {" · "}{fmtNum(p?.value)} units
+                      {" · "}{p?.pct != null ? `${p.pct.toFixed(1)}%` : "—"}
+                    </span>
+                  );
+                }}
+              />
             </PieChart>
           </ResponsiveContainer>
         </ChartCard>
@@ -503,53 +777,37 @@ export default function MerchInventory() {
         <p className="text-[13px] text-muted mt-0.5">Stock Coverage, Velocity &amp; Reorder Prioritisation</p>
       </div>
 
-      {/* ── Replenishment KPI cards ── */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <MerchKPICard
-          label="Total Weekly Velocity"
-          value={`${fmtNum(Math.round(replenKpis.totalVelocity || 0))} /wk`}
-          sub="Across all styles"
-          accentColor={C.blue}
-          testId="merch-replen-kpi-vel"
-        />
-        <MerchKPICard
-          label="Styles WOC < 4 wks"
-          value={`${fmtNum(replenKpis.wocLt4)} styles`}
-          sub="Urgent reorder needed"
-          accentColor={C.red}
-          testId="merch-replen-kpi-woc4"
-        />
-        <MerchKPICard
-          label="Styles WOC 4–8 wks"
-          value={`${fmtNum(replenKpis.wocLt8)} styles`}
-          sub="Reorder soon"
-          accentColor={C.amber}
-          testId="merch-replen-kpi-woc8"
-        />
-        <MerchKPICard
-          label="Avg Reorder Count"
-          value={`${fmtDec(replenKpis.avgReorder || 0, 1)}×`}
-          sub="Per active style"
-          accentColor={C.purple}
-          testId="merch-replen-kpi-reorder"
-        />
-      </div>
-
       {/* ── High-Velocity WOC + WOC Bucket Mix ── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <ChartCard title="High-Velocity Styles — Current WOC">
-          <div className="mt-1" style={{ height: 380 }}>
+        <ChartCard title="Top 20 High-Velocity Styles — Current WOC (< 7 wks only)">
+          <div className="mt-1" style={{ height: 520 }}>
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={highVelData} layout="vertical" margin={{ left: 8, right: 100, top: 4, bottom: 4 }}>
                 <XAxis type="number" domain={[0, 'auto']} tick={{ fontSize: 10 }}
                   label={{ value: "Weeks of Cover (WOC)", position: "insideBottom", offset: -3, fontSize: 10 }} />
-                <YAxis type="category" dataKey="name" tick={{ fontSize: 9 }} width={145} />
+                <YAxis
+                  type="category"
+                  dataKey="name"
+                  width={180}
+                  interval={0}
+                  /* Single-line tick: plain SVG <text> never word-wraps (recharts'
+                     default tick wraps long names onto two rows). Truncate at 38
+                     chars; the tooltip shows the full name. */
+                  tick={({ x, y, payload }) => {
+                    const v = String(payload.value ?? "");
+                    const label = v.length > 38 ? v.slice(0, 38) + "…" : v;
+                    return (
+                      <text x={x} y={y} dy={3} textAnchor="end" fontSize={9} fill="#64748b">
+                        {label}
+                      </text>
+                    );
+                  }}
+                />
                 <Tooltip formatter={(v, n, p) => [
                   v !== null ? `${fmtDec(v, 1)} weeks` : "No WOC",
                   `WOC (${p.payload.vel !== undefined ? fmtDec(p.payload.vel, 1) + ' /wk' : '—'})`
                 ]} />
                 <ReferenceLine x={4} stroke="#ef4444" strokeDasharray="5 3" label={{ value: "Urgent 4 wks", position: "top", fontSize: 9, fill: "#ef4444" }} />
-                <ReferenceLine x={8} stroke="#d97706" strokeDasharray="5 3" label={{ value: "Reorder trigger 8 wks", position: "top", fontSize: 9, fill: "#d97706" }} />
                 <Bar dataKey="woc" radius={[0, 3, 3, 0]}>
                   {highVelData.map((d, i) => <Cell key={i} fill={d.fill} />)}
                   <LabelList dataKey="label" position="right" style={{ fontSize: 9, fill: "#475569" }} />
@@ -559,8 +817,7 @@ export default function MerchInventory() {
           </div>
           <div className="flex items-center gap-4 mt-2 text-[10.5px] text-muted flex-wrap">
             <span className="flex items-center gap-1"><span className="w-3 h-3 rounded inline-block bg-[#ef4444]" /> &lt; 4 wks (urgent)</span>
-            <span className="flex items-center gap-1"><span className="w-3 h-3 rounded inline-block bg-[#d97706]" /> 4–8 wks</span>
-            <span className="flex items-center gap-1"><span className="w-3 h-3 rounded inline-block bg-[#1a5c38]" /> &gt; 8 wks</span>
+            <span className="flex items-center gap-1"><span className="w-3 h-3 rounded inline-block bg-[#d97706]" /> 4–7 wks</span>
           </div>
         </ChartCard>
 

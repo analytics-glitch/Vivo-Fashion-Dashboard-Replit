@@ -313,10 +313,9 @@ export default function MerchSales() {
       })),
     [subRows]);
 
-  // Lifetime revenue + portfolio price averages (from the retired Financial tab)
-  const lifetimeRev = useMemo(() =>
-    styleRows.reduce((s, r) => s + (r.revenue_life || 0), 0), [styleRows]);
-
+  // Portfolio price averages (from the retired Financial tab). The Revenue
+  // (Lifetime) card moved to the Style Deep Dive — lifetime revenue only
+  // makes sense at style level.
   const avgFullPrice = useMemo(() => {
     const valid = styleRows.filter(s => s.full_price > 0);
     if (!valid.length) return 0;
@@ -590,13 +589,6 @@ export default function MerchSales() {
           sub2={s.total_styles ? fmtKESM((s.revenue_period ?? s.revenue_6m) / s.total_styles) : "—"}
           accentColor={C.blue}
           testId="merch-sales-kpi-revenue"
-        />
-        <MerchKPICard
-          label="Revenue (Lifetime)"
-          value={fmtKESM(lifetimeRev)}
-          sub="Since first launch"
-          accentColor="#16a34a"
-          testId="fin-rev-life"
         />
         <MerchKPICard
           label={`Units Sold (${periodTag})`}

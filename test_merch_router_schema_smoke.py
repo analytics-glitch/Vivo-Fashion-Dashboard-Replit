@@ -34,6 +34,7 @@ _FAKE_STYLE_ROW = {
     "style_number":      "TS001",
     "brand":             "Vivo",
     "subcategory":       "Dresses",
+    "category":          "Dresses",
     "status":            "Active",
     "launch_date":       "2024-01-15",
     "standard_cost_kes": 1200.0,   # aliased from MAX(p.cost) in the prod CTE
@@ -43,6 +44,7 @@ _FAKE_STYLE_ROW = {
     "reorder_count":     2,
     # stock
     "soh_stores":        10,
+    "soh_online":        2,   # subset of soh_stores (Online - Shop Zetu)
     "soh_warehouse":     5,
     # 6-month sales
     "units_6m":          50,
@@ -84,10 +86,11 @@ class TestMerchRouterSchemaSmoke(unittest.TestCase):
     def test_fetch_styles_row_has_required_keys(self):
         """Every output row must carry the keys the /api/merch/styles client reads."""
         required = {
-            "style_name", "style_number", "brand", "subcategory", "tier",
+            "style_name", "style_number", "brand", "subcategory", "category",
+            "tier",
             "odoo_status", "launch_date", "last_order_date", "standard_cost_kes",
             "full_price", "is_noos", "reorder_count",
-            "soh_stores", "soh_warehouse", "current_stock",
+            "soh_stores", "soh_online", "soh_warehouse", "current_stock",
             "units_6m", "revenue_6m", "orders_6m",
             "units_period", "revenue_period",
             "units_life", "revenue_life",
@@ -144,7 +147,7 @@ class TestMerchRouterSchemaSmoke(unittest.TestCase):
 
     def test_agg_by_subcategory_has_required_keys(self):
         required = {
-            "subcategory", "style_count", "units_6m", "revenue_6m",
+            "subcategory", "category", "style_count", "units_6m", "revenue_6m",
             "current_stock", "avg_woc", "avg_sor_6m", "avg_full_price_pct",
             "avg_gross_margin_pct", "total_cogs_6m_kes", "total_gross_margin_kes",
         }
@@ -305,6 +308,103 @@ class ScopedKpiSemanticsTests(unittest.TestCase):
         self.assertEqual(s["woc_lt4_count"], 2)
         self.assertEqual(s["zero_stock_count"], 1)
 
+class LifecycleSplitKpiTests(unittest.TestCase):
+    """Aug 2026 lifecycle-split card fields: revenue/units bucket by tier at row
+    grain (exhaustive vs the all-styles totals), Avg/Style denominators use the
+    matching deduped ALL-style universes, velocity is Active-scoped, and
+    warehouse-SOH splits accumulate only inside the deduped card branches."""
+
+    def test_revenue_and_units_bucket_by_tier_exhaustively(self):
+        rows = [
+            _style(style_number="SN-1", revenue_period=100, units_period=10),
+            _style(style_number="SN-2", tier="Retired", revenue_period=50, units_period=5),
+            _style(style_number="SN-3", tier="Archived", revenue_period=25, units_period=2),
+        ]
+        s = merch_router._compute_summary(rows)
+        self.assertEqual(s["active_revenue_period"], 100)
+        self.assertEqual(s["retired_revenue_period"], 50)
+        self.assertEqual(s["active_units_period"], 10)
+        # Active + Retired never exceeds the all-styles total (Archived = remainder)
+        self.assertLessEqual(
+            s["active_revenue_period"] + s["retired_revenue_period"], s["revenue_period"]
+        )
+
+    def test_zero_stock_active_seller_in_revenue_and_avg_denominator(self):
+        rows = [
+            _style(style_number="SN-1", revenue_period=100),
+            _style(style_number="SN-2", revenue_period=50,
+                   current_stock=0, soh_stores=0, soh_warehouse=0),  # sold out, still earned
+        ]
+        s = merch_router._compute_summary(rows)
+        self.assertEqual(s["active_revenue_period"], 150)  # revenue stays exhaustive
+        self.assertEqual(s["active_styles_count"], 1)      # card count = in-stock only
+        self.assertEqual(s["active_styles_all_count"], 2)  # avg denominator = ALL active
+
+    def test_active_styles_all_count_deduped_by_style_number(self):
+        rows = [
+            _style(style_number="SN-1", style_name="A"),
+            _style(style_number="SN-1", style_name="A (renamed)",
+                   current_stock=0, soh_stores=0),
+        ]
+        s = merch_router._compute_summary(rows)
+        self.assertEqual(s["active_styles_all_count"], 1)
+
+    def test_active_velocity_excludes_non_active_tiers(self):
+        rows = [
+            _style(style_number="SN-1", units_6m=26),
+            _style(style_number="SN-2", tier="Retired", units_6m=260),
+        ]
+        s = merch_router._compute_summary(rows)
+        self.assertEqual(s["active_units_6m"], 26)
+        self.assertEqual(s["active_weekly_velocity"], 1.0)
+        self.assertEqual(s["weekly_velocity"], 11.0)  # legacy all-styles velocity intact
+
+    def test_warehouse_splits_follow_dedup_branches_and_bounds(self):
+        rows = [
+            _style(style_number="SN-1", soh_warehouse=5, soh_stores=5, current_stock=10),
+            _style(style_number="SN-1", style_name="A (renamed)",
+                   soh_warehouse=7, soh_stores=0, current_stock=7),  # dup number → skipped
+            _style(style_number="SN-2", tier="Retired",
+                   soh_warehouse=3, soh_stores=1, current_stock=4),
+        ]
+        s = merch_router._compute_summary(rows)
+        self.assertEqual(s["active_warehouse_stock_units"], 5)
+        self.assertEqual(s["active_stock_units"], 10)
+        self.assertEqual(s["retired_warehouse_stock_units"], 3)
+        self.assertLessEqual(s["retired_warehouse_stock_units"], s["retired_stock_units"])
+
+    def test_avg_sor_period_over_active_rows_only(self):
+        rows = [
+            _style(style_number="SN-1", sor_period=50.0),
+            _style(style_number="SN-2", sor_period=70.0),
+            _style(style_number="SN-3", tier="Retired", sor_period=10.0),
+        ]
+        s = merch_router._compute_summary(rows)
+        self.assertEqual(s["avg_sor_period_active"], 60.0)
+
+    def test_active_colour_styles_derive_from_in_stock_colourways(self):
+        rows = [
+            # 5 colourways ever made, only 2 with SOH → only those 2 count
+            _style(style_number="SN-1", colour_count=5, colours_in_stock=2),
+            # Retired at STYLE level → ALL colourways excluded, stocked or not
+            _style(style_number="SN-2", tier="Retired",
+                   colour_count=4, colours_in_stock=3),
+            # Active style with zero stock → contributes no colourways
+            _style(style_number="SN-3", colour_count=3, colours_in_stock=0,
+                   current_stock=0, soh_stores=0, soh_warehouse=0),
+        ]
+        s = merch_router._compute_summary(rows)
+        self.assertEqual(s["active_colour_styles_count"], 2)
+
+    def test_empty_summary_has_lifecycle_split_keys(self):
+        s = merch_router._compute_summary([])
+        for k in ("active_warehouse_stock_units", "retired_warehouse_stock_units",
+                  "active_revenue_period", "retired_revenue_period",
+                  "active_units_period", "active_units_6m", "active_weekly_velocity",
+                  "active_styles_all_count", "avg_sor_period_active"):
+            self.assertIn(k, s)
+            self.assertIsNone(s[k])
+
 
 class OverviewKpiBucketParityTests(unittest.TestCase):
     """Overview CSV buckets must match _compute_summary's card values on the
@@ -312,16 +412,17 @@ class OverviewKpiBucketParityTests(unittest.TestCase):
 
     def _rows(self):
         return [
-            _style(style_number="SN-1", tier="Tier 1", colour_count=3),
+            _style(style_number="SN-1", tier="Tier 1", colour_count=3,
+                   colours_in_stock=2),
             _style(style_number="SN-1", tier="Tier 1", style_name="renamed twin",
-                   colour_count=2),                                            # dedup → counts once
+                   colour_count=2, colours_in_stock=2),                        # dedup → counts once
             _style(style_number="SN-2", tier="Tier 2", current_stock=0,
-                   soh_stores=0),                                              # stockless active → excluded
+                   soh_stores=0, colours_in_stock=5),                          # stockless active → excluded
             _style(style_number="SN-3", tier="Retired", current_stock=0,
                    soh_stores=0),                                              # stockless retired → still counts
             _style(style_number="SN-4", tier="Archived"),
             _style(style_number="SN-5", tier="Tier 3", soh_warehouse=40,
-                   current_stock=50),
+                   current_stock=50, colours_in_stock=1),
         ]
 
     def test_lifecycle_buckets_match_summary_counts(self):
@@ -336,7 +437,9 @@ class OverviewKpiBucketParityTests(unittest.TestCase):
     def test_colour_and_warehouse_sums_match_summary(self):
         rows = self._rows()
         summary = merch_router._compute_summary(rows)
-        colours = sum((r.get("colour_count") or 0)
+        # Card counts DERIVED colour styles (colours_in_stock — colourways
+        # with SOH > 0), so the bucket's file must sum the same field.
+        colours = sum((r.get("colours_in_stock") or 0)
                       for r in merch_router._kpi_bucket_rows(rows, "active_colours"))
         self.assertEqual(colours, summary["active_colour_styles_count"])
         wh = sum((r.get("soh_warehouse") or 0)

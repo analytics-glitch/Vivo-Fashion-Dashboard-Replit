@@ -316,6 +316,8 @@ prod AS (
         sn.style_number,
         mode() WITHIN GROUP (ORDER BY p.brand)           AS brand,
         mode() WITHIN GROUP (ORDER BY p.product_type)    AS subcategory,
+        mode() WITHIN GROUP (ORDER BY p.category)
+            FILTER (WHERE COALESCE(p.category,'') <> '') AS category,
         /* Retirement rule: Active wins — style is Retired only when every
            SKU is Retired (mirrors api_pg._lifecycle_tier / _odoo_retired_styles). */
         CASE WHEN BOOL_OR(LOWER(COALESCE(p.status,'active')) = 'retired')
@@ -345,6 +347,11 @@ stock AS (
             WHERE i.pos_location_name NOT IN ({_WAREHOUSE_LOCATIONS})
             {pos_store_clause}
         ), 0) AS soh_stores,
+        COALESCE(SUM(i.available) FILTER (
+            WHERE i.pos_location_name NOT IN ({_WAREHOUSE_LOCATIONS})
+            {pos_store_clause}
+            AND i.pos_location_name ILIKE '%%online%%'
+        ), 0) AS soh_online,
         {soh_warehouse_expr} AS soh_warehouse
     FROM all_inventory i
     LEFT JOIN (
@@ -355,6 +362,39 @@ stock AS (
         GROUP BY sku
     ) m ON m.sku = i.sku{country_inv_where}
     GROUP BY COALESCE(m.style_name, i.style_name)
+),
+/* Per-colour stock — feeds Active Colour Styles (DERIVED status; there is no
+   stored colour-level status field). A colourway is "in stock" when its
+   stores + warehouse SOH (same location/country/POS scoping as the stock CTE
+   above) is > 0. Colour comes from the product master via SKU (never
+   all_inventory's colour column). Zero-stock colourways are treated as
+   retired; colourways of Retired/Archived styles are excluded downstream —
+   _compute_summary only sums colours_in_stock inside the Active-tier branch,
+   so style-level retirement automatically cascades to every colourway. */
+colour_stock AS (
+    SELECT style_name, COUNT(*) AS colours_in_stock
+    FROM (
+        SELECT
+            cm.style_name,
+            cm.colour,
+            COALESCE(SUM(i.available) FILTER (
+                WHERE i.pos_location_name NOT IN ({_WAREHOUSE_LOCATIONS})
+                {pos_store_clause}
+            ), 0) + {soh_warehouse_expr} AS colour_soh
+        FROM all_inventory i
+        JOIN (
+            SELECT sku,
+                mode() WITHIN GROUP (ORDER BY style_name)  AS style_name,
+                mode() WITHIN GROUP (ORDER BY color_print) AS colour
+            FROM all_products_clean
+            WHERE style_name IS NOT NULL
+              AND COALESCE(color_print,'') <> ''
+            GROUP BY sku
+        ) cm ON cm.sku = i.sku{country_inv_where}
+        GROUP BY cm.style_name, cm.colour
+    ) c
+    WHERE c.colour_soh > 0
+    GROUP BY style_name
 ),
 sales_6m AS (
     SELECT
@@ -430,6 +470,7 @@ SELECT
     p.style_number,
     p.brand,
     p.subcategory,
+    p.category,
     p.status,
     p.launch_date,
     p.standard_cost_kes,
@@ -438,7 +479,9 @@ SELECT
     p.is_noos,
     p.reorder_count,
     p.colour_count,
+    COALESCE(cs.colours_in_stock, 0) AS colours_in_stock,
     COALESCE(st.soh_stores,    0) AS soh_stores,
+    COALESCE(st.soh_online,    0) AS soh_online,
     COALESCE(st.soh_warehouse, 0) AS soh_warehouse,
     COALESCE(s6.units_6m,    0)   AS units_6m,
     COALESCE(s6.revenue_6m,  0.0) AS revenue_6m,
@@ -453,6 +496,7 @@ SELECT
     tov.ov_status
 FROM prod p
 LEFT JOIN stock          st  ON st.style_name   = p.style_name
+LEFT JOIN colour_stock   cs  ON cs.style_name   = p.style_name
 LEFT JOIN sales_6m       s6  ON s6.style_name   = p.style_name
 LEFT JOIN sales_period   sp  ON sp.style_name   = p.style_name
 LEFT JOIN sales_life     sl  ON sl.style_name   = p.style_name
@@ -492,6 +536,7 @@ ORDER BY revenue_6m DESC NULLS LAST
         units_period     = int(r["units_period"] or 0)
         revenue_period   = float(r["revenue_period"] or 0)
         soh_stores       = int(r["soh_stores"] or 0)
+        soh_online       = int(r["soh_online"] or 0)   # subset of soh_stores
         soh_warehouse    = int(r["soh_warehouse"] or 0)
         current_stock    = soh_stores + soh_warehouse
         units_full_price = int(r["units_full_price"] or 0)
@@ -539,6 +584,7 @@ ORDER BY revenue_6m DESC NULLS LAST
             "style_number":        r.get("style_number") or "",
             "brand":               r.get("brand") or "",
             "subcategory":         r.get("subcategory") or "",
+            "category":            r.get("category") or "",
             "tier":                computed_tier,
             "odoo_status":         odoo_status,
             "launch_date":         str(r["launch_date"]) if r.get("launch_date") else None,
@@ -548,7 +594,9 @@ ORDER BY revenue_6m DESC NULLS LAST
             "is_noos":             is_noos,
             "reorder_count":       reorder_count,
             "colour_count":        int(r.get("colour_count") or 0),
+            "colours_in_stock":    int(r.get("colours_in_stock") or 0),
             "soh_stores":          soh_stores,
+            "soh_online":          soh_online,
             "soh_warehouse":       soh_warehouse,
             "current_stock":       current_stock,
             "units_6m":            units_6m,
@@ -683,8 +731,9 @@ _KPI_BUCKETS = {
         "label": "Active Colour Styles",
         "dedup": True,
         "pred":  lambda s: _is_active_tier(s) and _has_any_stock(s),
-        # style-grain rows; this column sums to the card's style×colour count
-        "extra": [("Colours (per style)", lambda s: s.get("colour_count"))],
+        # style-grain rows; this column sums to the card's DERIVED colour
+        # count (colourways with SOH > 0 — colours_in_stock, not colour_count)
+        "extra": [("Colours in Stock (per style)", lambda s: s.get("colours_in_stock"))],
     },
     "warehouse_units": {
         "label": "Warehouse Units",
@@ -761,6 +810,24 @@ def _compute_summary(styles):
     retired_styles = 0; retired_stock_units = 0
     archived_styles = 0; archived_stock_units = 0
     warehouse_stock = 0
+    # Lifecycle-split accumulators (Aug 2026 KPI card rework):
+    #   • warehouse-SOH splits accumulate inside the SAME dedup branches as the
+    #     per-status stock-unit counts, so they stay consistent with the cards.
+    #   • period revenue/units (and active 6m units for the velocity sub-line)
+    #     bucket by computed tier for EVERY row (no dedup, no stock gate — the
+    #     same grain as revenue_period/units_6m), so Active + Retired
+    #     (+ Archived remainder) reconciles against the all-styles totals.
+    #   • active_styles_all_count = deduped count of ALL Tier 1–4 styles,
+    #     zero-stock included — the denominator that matches the exhaustive
+    #     active revenue numerator for the "Avg/Active Style" line.
+    #     (retired_styles_count already counts ALL retired styles — no stock
+    #     gate — so it is the matching retired denominator as-is.)
+    active_warehouse_stock = 0; retired_warehouse_stock = 0
+    active_revenue_period = 0.0; retired_revenue_period = 0.0
+    active_units_period = 0
+    active_units_6m = 0
+    sor_period_active_vals = []
+    _seen_active_all_keys: set = set()
     # Dedup counts by style_number — mirrors Range Management's
     # _dedup_raw_by_style_number(). Falls back to style_name when blank.
     _seen_active_keys:   set = set()
@@ -787,17 +854,31 @@ def _compute_summary(styles):
         dedup_key   = snum if snum else s.get("style_name", "")
 
         if tier in ("Tier 1", "Tier 2", "Tier 3", "Tier 4"):
+            active_revenue_period += s.get("revenue_period") or 0
+            active_units_period   += s.get("units_period") or 0
+            active_units_6m       += s.get("units_6m") or 0
+            _seen_active_all_keys.add(dedup_key)
+            if s.get("sor_period") is not None:
+                sor_period_active_vals.append(s["sor_period"])
             # Active styles: only count those with physical stock (mirrors RM universe)
             if has_stock and dedup_key not in _seen_active_keys:
                 _seen_active_keys.add(dedup_key)
-                active_styles        += 1
-                active_colour_styles += s.get("colour_count") or 0
-                active_stock_units   += current_stk
+                active_styles           += 1
+                # Colour styles use DERIVED status: count only this style's
+                # colourways with SOH > 0 (colours_in_stock, not colour_count).
+                # Retired/Archived styles never reach this branch, so their
+                # colourways are automatically excluded — style-level
+                # retirement cascades to every colourway.
+                active_colour_styles    += s.get("colours_in_stock") or 0
+                active_stock_units      += current_stk
+                active_warehouse_stock  += s.get("soh_warehouse") or 0
         elif tier == "Retired":
+            retired_revenue_period += s.get("revenue_period") or 0
             if dedup_key not in _seen_retired_keys:
                 _seen_retired_keys.add(dedup_key)
-                retired_styles      += 1
-                retired_stock_units += current_stk
+                retired_styles          += 1
+                retired_stock_units     += current_stk
+                retired_warehouse_stock += s.get("soh_warehouse") or 0
         elif tier == "Archived":
             if dedup_key not in _seen_archived_keys:
                 _seen_archived_keys.add(dedup_key)
@@ -854,6 +935,15 @@ def _compute_summary(styles):
         "archived_styles_count":        archived_styles,
         "archived_stock_units":         archived_stock_units,
         "warehouse_stock_units":        warehouse_stock,
+        "active_warehouse_stock_units": active_warehouse_stock,
+        "retired_warehouse_stock_units": retired_warehouse_stock,
+        "active_revenue_period":        round(active_revenue_period, 0),
+        "retired_revenue_period":       round(retired_revenue_period, 0),
+        "active_units_period":          active_units_period,
+        "active_units_6m":              active_units_6m,
+        "active_weekly_velocity":       round(active_units_6m / 26.0, 1) if active_units_6m else 0,
+        "active_styles_all_count":      len(_seen_active_all_keys),
+        "avg_sor_period_active":        _avg(sor_period_active_vals),
         "on_track_count":               on_track,
         "at_risk_count":                at_risk,
         "overdue_count":                overdue,
@@ -886,6 +976,10 @@ def _empty_summary():
         "active_stock_units", "retired_styles_count", "retired_stock_units",
         "archived_styles_count", "archived_stock_units",
         "warehouse_stock_units",
+        "active_warehouse_stock_units", "retired_warehouse_stock_units",
+        "active_revenue_period", "retired_revenue_period",
+        "active_units_period", "active_units_6m", "active_weekly_velocity",
+        "active_styles_all_count", "avg_sor_period_active",
         "on_track_count", "at_risk_count", "overdue_count",
         "total_stock_units", "revenue_6m", "units_6m", "revenue_period", "units_period", "weekly_velocity",
         "woc_lt3_active_count", "no_sale_7d_active_count",
@@ -924,8 +1018,12 @@ def _agg_by_dim(styles, dim_key):
                 "units_period": 0, "revenue_period": 0.0,
                 "_woc": [], "_sor": [], "_sor_p": [], "_fp": [], "_gm": [],
                 "total_cogs": 0.0, "_has_cogs": False, "total_gm": 0.0,
+                "_cats": {},
             }
         b = buckets[key]
+        if dim_key == "subcategory":
+            _cat = s.get("category") or ""
+            b["_cats"][_cat] = b["_cats"].get(_cat, 0) + 1
         b["style_count"]   += 1
         b["units_6m"]      += s["units_6m"] or 0
         b["revenue_6m"]    += s["revenue_6m"] or 0
@@ -946,6 +1044,10 @@ def _agg_by_dim(styles, dim_key):
     for b in buckets.values():
         result.append({
             dim_key:                   b[dim_key],
+            # Modal parent category (subcategory grouping only) so clients can
+            # filter subcats by category without duplicating CATEGORY_MAP.
+            **({"category": max(b["_cats"], key=b["_cats"].get)}
+               if b["_cats"] else {}),
             "style_count":             b["style_count"],
             "units_6m":                b["units_6m"],
             "revenue_6m":              round(b["revenue_6m"], 0),
@@ -1898,13 +2000,16 @@ stock AS (
     GROUP BY 1, 2
 ),
 /* Period sales at (style, colour) grain — gross units canon
-   (ordered_item_quantity, sale_kind IN ('sale','order')). */
+   (ordered_item_quantity, sale_kind IN ('sale','order')); revenue = net
+   sales canon summed over ALL rows (returns net out), matching
+   _fetch_styles' revenue_period exactly. */
 sales_period AS (
     SELECT
         m.style_name,
         COALESCE(m.colour, '') AS colour,
         COALESCE(SUM(s.ordered_item_quantity) FILTER (
             WHERE s.sale_kind IN ('sale','order')), 0)             AS units_period,
+        COALESCE(SUM({_NET_SALES_EXPR}), 0)                        AS revenue_period,
         COUNT(DISTINCT s.variant_sku) FILTER (
             WHERE s.sale_kind IN ('sale','order'))                 AS skus_sold
     FROM all_sales s
@@ -1950,6 +2055,7 @@ SELECT
     COALESCE(st.stock_value, 0)    AS stock_value,
     COALESCE(st.skus_in_stock, 0)  AS skus_in_stock,
     COALESCE(sp.units_period, 0)   AS units_period,
+    COALESCE(sp.revenue_period, 0) AS revenue_period,
     COALESCE(sp.skus_sold, 0)      AS skus_sold,
     COALESCE(s6.units_6m, 0)       AS units_6m
 FROM grain g
@@ -1962,13 +2068,14 @@ LEFT JOIN sales_6m s6     ON s6.style_name = g.style_name AND s6.colour = g.colo
 
     # ── Assemble the nested tree ──────────────────────────────────────────────
     cats = {}
-    tot_su = 0; tot_sv = 0.0; tot_up = 0
+    tot_su = 0; tot_sv = 0.0; tot_up = 0; tot_rp = 0.0
 
     def _bucket(store, name, child_key):
         node = store.get(name)
         if node is None:
             node = {"name": name, "stock_units": 0, "stock_value": 0.0,
-                    "units_period": 0, "_u6": 0, child_key: {}}
+                    "units_period": 0, "revenue_period": 0.0, "_u6": 0,
+                    child_key: {}}
             store[name] = node
         return node
 
@@ -1976,13 +2083,14 @@ LEFT JOIN sales_6m s6     ON s6.style_name = g.style_name AND s6.colour = g.colo
         su = int(r.get("stock_units") or 0)
         sv = float(r.get("stock_value") or 0)
         up = int(r.get("units_period") or 0)
+        rp = float(r.get("revenue_period") or 0)
         u6 = int(r.get("units_6m") or 0)
         cat_name = r.get("category") or "Uncategorised"
         sub_name = r.get("subcategory") or "Uncategorised"
         sty_name = r.get("style_name")
         col_name = r.get("colour") or "Unspecified"
 
-        tot_su += su; tot_sv += sv; tot_up += up
+        tot_su += su; tot_sv += sv; tot_up += up; tot_rp += rp
 
         c  = _bucket(cats, cat_name, "subcategories")
         sb = _bucket(c["subcategories"], sub_name, "styles")
@@ -1992,13 +2100,15 @@ LEFT JOIN sales_6m s6     ON s6.style_name = g.style_name AND s6.colour = g.colo
         col = st["colours"].get(col_name)
         if col is None:
             col = {"name": col_name, "stock_units": 0, "stock_value": 0.0,
-                   "units_period": 0, "_u6": 0, "skus_in_stock": 0, "skus_sold": 0}
+                   "units_period": 0, "revenue_period": 0.0, "_u6": 0,
+                   "skus_in_stock": 0, "skus_sold": 0}
             st["colours"][col_name] = col
         for node in (c, sb, st, col):
-            node["stock_units"]  += su
-            node["stock_value"]  += sv
-            node["units_period"] += up
-            node["_u6"]          += u6
+            node["stock_units"]    += su
+            node["stock_value"]    += sv
+            node["units_period"]   += up
+            node["revenue_period"] += rp
+            node["_u6"]            += u6
         col["skus_in_stock"] += int(r.get("skus_in_stock") or 0)
         col["skus_sold"]     += int(r.get("skus_sold") or 0)
 
@@ -2008,13 +2118,15 @@ LEFT JOIN sales_6m s6     ON s6.style_name = g.style_name AND s6.colour = g.colo
     # denominator (matching the tab's style-level WOC semantics).
     def _keep(n):
         return (n["stock_units"] != 0 or n["units_period"] != 0
-                or abs(n["stock_value"]) >= 0.5)
+                or abs(n["stock_value"]) >= 0.5
+                or abs(n.get("revenue_period", 0)) >= 0.5)
 
     counts = {"categories": 0, "subcategories": 0, "styles": 0, "colours": 0}
 
     def _finish(node):
         u6 = node.pop("_u6", 0)
         node["stock_value"] = round(node["stock_value"])
+        node["revenue_period"] = round(node["revenue_period"])
         node["woc"] = round(node["stock_units"] / (u6 / 26.0), 1) if u6 > 0 else None
 
     def _sorted(nodes):
@@ -2052,9 +2164,10 @@ LEFT JOIN sales_6m s6     ON s6.style_name = g.style_name AND s6.colour = g.colo
     return {
         "categories": _sorted(cat_list),
         "totals": {
-            "stock_units":  tot_su,
-            "stock_value":  round(tot_sv),
-            "units_period": tot_up,
+            "stock_units":    tot_su,
+            "stock_value":    round(tot_sv),
+            "units_period":   tot_up,
+            "revenue_period": round(tot_rp),
         },
         "period": {"from": period_from, "to": period_to},
         "counts": counts,
@@ -2167,6 +2280,9 @@ def register_merch_routes(app, api_pg_module):
         import io as _io
         headers = [
             "Style Name", "Subcategory", "Style Number", "Tier", "SOH",
+            "Warehouse SOH", "Warehouse % of Total",
+            "Stores SOH", "Stores % of Total",
+            "Online SOH", "Online % of Total",
             "Launch Date", "Age (Weeks)", "6m SOR", "6m Units Sold", "6m Rev",
             "Full Price (Kes)", "ASP (6m)", "% Full Price", "Mark Down",
             "Weekly Units Sold", "6m WOC", "Last Sale (days)", "Last Order Date",
@@ -2201,12 +2317,22 @@ def register_merch_routes(app, api_pg_module):
             sor_life = round(units_life * 100.0 / sl_denom, 1) if sl_denom > 0 else ""
             def _v(x):
                 return "" if x is None else x
+            # SOH location split — soh_online is a subset of soh_stores;
+            # Stores here = physical stores only (excl. online & warehouse).
+            wh  = s.get("soh_warehouse") or 0
+            onl = s.get("soh_online") or 0
+            sto = max(soh - wh - onl, 0)
+            def _pct(x):
+                return round(x * 100.0 / soh, 1) if soh > 0 else ""
             w.writerow([
                 _v(s.get("style_name")),
                 _v(s.get("subcategory")),
                 _v(s.get("style_number")),
                 _v(s.get("tier")),
                 soh,
+                wh, _pct(wh),
+                sto, _pct(sto),
+                onl, _pct(onl),
                 _v(s.get("launch_date")),
                 age_weeks,
                 _v(s.get("sor_6m")),

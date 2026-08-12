@@ -77,7 +77,8 @@ export const MerchKPICard = ({
   testId,
   trend,       // optional number: % change vs compare period (null = hide)
   trendLabel,  // optional string: e.g. "vs Last Month"
-  onDownload,  // optional async fn → shows a small CSV download icon button
+  onDownload,  // optional async fn → shows a "Download CSV" button
+  downloadCount, // optional number → appends "· N rows" to the download button
 }) => {
   const [dlBusy, setDlBusy]   = useState(false);
   const [dlError, setDlError] = useState(false);
@@ -103,7 +104,7 @@ export const MerchKPICard = ({
     {/* left accent bar */}
     <div className="w-1 shrink-0" style={{ backgroundColor: accentColor }} />
     <div className="flex-1 p-4 sm:p-5">
-      <div className="flex items-start justify-between gap-1">
+      <div className="flex items-start justify-between gap-1 flex-wrap">
         <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">{label}</div>
         {onDownload && (
           <button
@@ -112,8 +113,8 @@ export const MerchKPICard = ({
             disabled={dlBusy}
             title={dlError ? "Download failed — try again" : "Download CSV"}
             aria-label={`Download ${label} CSV`}
-            className={`shrink-0 -mt-1 -mr-1 p-1 rounded-md transition-colors ${
-              dlError ? "text-rose-500" : "text-slate-300 hover:text-slate-500 hover:bg-slate-50"
+            className={`shrink-0 -mt-1 -mr-1 px-1.5 py-1 rounded-md transition-colors inline-flex items-center gap-1 ${
+              dlError ? "text-rose-500" : "text-slate-400 hover:text-slate-600 hover:bg-slate-50"
             } disabled:opacity-50`}
             data-testid={testId ? `${testId}-download` : undefined}
           >
@@ -122,6 +123,12 @@ export const MerchKPICard = ({
             ) : (
               <DownloadSimple size={14} weight={dlError ? "bold" : "regular"} />
             )}
+            <span className="text-[10.5px] font-semibold whitespace-nowrap">
+              {dlError ? "Retry download" : "Download CSV"}
+              {!dlError && downloadCount != null
+                ? ` · ${fmtNum(downloadCount)} ${downloadCount === 1 ? "row" : "rows"}`
+                : ""}
+            </span>
           </button>
         )}
       </div>
