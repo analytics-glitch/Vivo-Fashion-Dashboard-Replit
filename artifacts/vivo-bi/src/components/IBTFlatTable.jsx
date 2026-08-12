@@ -200,6 +200,7 @@ export default function IBTFlatTable({
           from_available: sk.from_available,
           to_available: sk.to_available,
           suggested_qty: sk.suggested_qty,
+          recently_received: sk.recently_received || false,
           // Days-lapsed badge — only present on the parent suggestion;
           // mirror it onto every SKU row of that suggestion so the
           // picker can see how long this transfer has been overdue.
@@ -506,7 +507,17 @@ export default function IBTFlatTable({
                     : fmtNum(r.to_available)}
                 </td>
                 <td className="px-3 py-3 text-right tabular-nums">
-                  <span className="pill-green font-bold">{fmtNum(r.suggested_qty || 0)}</span>
+                  {r.recently_received ? (
+                    <span
+                      className="inline-block px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 text-[9.5px] font-bold uppercase tracking-wide whitespace-nowrap"
+                      title="This store received this SKU within the last 3 weeks — not eligible to send out yet"
+                      data-testid={`${testId}-recently-received-${idx}`}
+                    >
+                      just in
+                    </span>
+                  ) : (
+                    <span className="pill-green font-bold">{fmtNum(r.suggested_qty || 0)}</span>
+                  )}
                 </td>
                 <td className="px-3 py-2 text-right">
                   <input

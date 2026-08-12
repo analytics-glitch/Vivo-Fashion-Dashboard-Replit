@@ -109,6 +109,13 @@ const IBTSkuBreakdown = ({ row }) => {
                 <td className="text-right num">
                   {s.suggested_qty > 0 ? (
                     <span className="pill-green font-bold">{fmtNum(s.suggested_qty)}</span>
+                  ) : s.recently_received ? (
+                    <span
+                      className="inline-block px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 text-[9.5px] font-bold uppercase tracking-wide"
+                      title="Received at this store within the last 3 weeks — not eligible to send out yet"
+                    >
+                      just in
+                    </span>
                   ) : (
                     <span className="text-muted">—</span>
                   )}

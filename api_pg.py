@@ -14609,7 +14609,7 @@ def _ibt_edge_sql(date_from, date_to, country, low, high, use_clustering=True):
     colour/size/barcode/bin and the store countries. Online/Shop Zetu and
     Zoya/third-party brand are excluded as BOTH donor and receiver. The Python
     solver then debits a shared destination budget + donor ledger per sku."""
-    return _ibt_base_ctes(date_from, date_to, country, low, high, use_clustering) + """
+    return _ibt_base_ctes(date_from, date_to, country, low, high, use_clustering) + f"""
     SELECT sc.style AS style_name, pp.brand, pp.category AS subcategory,
            sc.from_store, sc.from_tier, sc.to_store, sc.to_tier, sc.score,
            COALESCE(sc.asp, 0)::numeric AS asp,
@@ -14645,6 +14645,20 @@ def _ibt_edge_sql(date_from, date_to, country, low, high, use_clustering=True):
       AND sc.to_store NOT ILIKE '%online%'
       AND sc.from_store NOT ILIKE '%zetu%'
       AND sc.to_store NOT ILIKE '%zetu%'
+      -- Donor receipt cooldown: never recommend moving a SKU OUT of a store
+      -- that itself received that SKU within the last {IBT_RECEIPT_COOLDOWN_DAYS}
+      -- days (inbound = warehouse replen, IBT-in, or supplier drop). Filtering
+      -- the edge here removes it from BOTH the assignment pass AND the
+      -- markdown/stuck-stock fork — a just-landed item is neither movable nor
+      -- "stuck".
+      AND NOT EXISTS (
+        SELECT 1 FROM stock_transfers rt
+        WHERE rt.to_store_name = sc.from_store
+          AND rt.sku = fav.sku
+          AND rt.transfer_type IN {_IBT_INBOUND_TRANSFER_TYPES}
+          AND rt.qty_done > 0
+          AND rt.date_done >= NOW() - INTERVAL '{IBT_RECEIPT_COOLDOWN_DAYS} days'
+      )
     ORDER BY sc.score DESC, sc.style, fav.sku, sc.from_store, sc.to_store
     """
 
@@ -14656,6 +14670,15 @@ def _ibt_edge_sql(date_from, date_to, country, low, high, use_clustering=True):
 IBT_TRANSPORT_PER_UNIT_DOMESTIC = 40.0    # KES/unit intra-country pick+freight
 IBT_TRANSPORT_PER_UNIT_CROSS    = 180.0   # KES/unit cross-border freight+clearing
 IBT_DUTY_PCT_CROSS              = 0.25     # ad-valorem duty/VAT drag on cross-border
+# Donor receipt cooldown (business rule): a store that RECEIVED a SKU within
+# this window must not be asked to ship that SKU back out — give new stock a
+# selling chance before relocating it. Sourced from stock_transfers inbound
+# rows (warehouse_to_store / store_to_store / supplier_to_store, qty_done > 0).
+# Applied donor-side in _ibt_edge_sql (all live IBT surfaces flow through the
+# global solve) and mirrored in ibt-sku-breakdown so the drilldown stays in
+# lockstep with what the solve will actually recommend.
+IBT_RECEIPT_COOLDOWN_DAYS = 21
+_IBT_INBOUND_TRANSFER_TYPES = "('warehouse_to_store','store_to_store','supplier_to_store')"
 # Cap on source-days-freed so a non-selling donor cell (velocity ~ 0) cannot
 # return an unbounded cash-conversion benefit — bounded at one selling season.
 IBT_SOURCE_DAYS_CAP            = 120.0
@@ -15645,24 +15668,39 @@ def ibt_sku_breakdown(
       FROM all_products_clean p WHERE p.style_name = '{st}'
     ),
     fi AS (SELECT sku, SUM(available) AS av FROM all_inventory WHERE pos_location_name = '{fs}' GROUP BY sku),
-    ti AS (SELECT sku, SUM(available) AS av FROM all_inventory WHERE pos_location_name = '{ts}' GROUP BY sku)
+    ti AS (SELECT sku, SUM(available) AS av FROM all_inventory WHERE pos_location_name = '{ts}' GROUP BY sku),
+    -- Donor receipt cooldown (lockstep with _ibt_edge_sql): SKUs the DONOR
+    -- store itself received in the last {IBT_RECEIPT_COOLDOWN_DAYS} days are
+    -- not sendable — suggested_qty forced to 0 + flagged recently_received.
+    -- For the warehouse→store flow (from_store = warehouse) this CTE is empty
+    -- because inbound-to-STORE transfer types never target the warehouse.
+    ri AS (
+      SELECT DISTINCT sku FROM stock_transfers
+      WHERE to_store_name = '{fs}'
+        AND transfer_type IN {_IBT_INBOUND_TRANSFER_TYPES}
+        AND qty_done > 0
+        AND date_done >= NOW() - INTERVAL '{IBT_RECEIPT_COOLDOWN_DAYS} days'
+    )
     SELECT s.sku, s.color, s.size, s.barcode,
            COALESCE(wb.bin, '') AS bin,
            COALESCE(fi.av, 0)::int AS from_available,
            COALESCE(ti.av, 0)::int AS to_available,
-           LEAST(
+           CASE WHEN ri.sku IS NOT NULL THEN 0 ELSE LEAST(
              GREATEST(COALESCE(fi.av,0) - 1, 0),
              GREATEST(2 - COALESCE(ti.av,0), 0)
-           )::int AS suggested_qty,
-           (COALESCE(fi.av,0) >= 1
+           ) END::int AS suggested_qty,
+           (ri.sku IS NULL
+            AND COALESCE(fi.av,0) >= 1
             AND COALESCE(ti.av,0) < 2
             AND LEAST(
                   GREATEST(COALESCE(fi.av,0) - 1, 0),
                   GREATEST(2 - COALESCE(ti.av,0), 0)
-                ) = 0) AS size_run_protected
+                ) = 0) AS size_run_protected,
+           (ri.sku IS NOT NULL) AS recently_received
     FROM skus s
     LEFT JOIN fi ON fi.sku = s.sku
     LEFT JOIN ti ON ti.sku = s.sku
+    LEFT JOIN ri ON ri.sku = s.sku
     LEFT JOIN warehouse_bins wb ON wb.barcode = s.barcode
     WHERE COALESCE(fi.av,0) > 0 OR COALESCE(ti.av,0) > 0
     ORDER BY suggested_qty DESC, from_available DESC

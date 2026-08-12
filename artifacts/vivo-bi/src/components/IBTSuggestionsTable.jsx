@@ -248,6 +248,8 @@ const PairRow = ({ pair, idx, enabled, selected, onToggleSelect, onMarkDone, act
                   <tbody>
                     {skus.map((sk, j) => {
                       const protectedRun = sk.size_run_protected;
+                      const recentlyReceived = sk.recently_received;
+                      const rowHeld = protectedRun || recentlyReceived;
                       return (
                         <tr key={sk.sku || j} className="border-t border-border/50">
                           <td className="px-3 py-2 whitespace-nowrap">{sk.color || "—"}</td>
@@ -262,13 +264,24 @@ const PairRow = ({ pair, idx, enabled, selected, onToggleSelect, onMarkDone, act
                                   data-testid={`ibt-size-run-protected-${idx}-${j}`}
                                 />
                               )}
+                              {recentlyReceived && (
+                                <span
+                                  className="inline-block px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 text-[9.5px] font-bold uppercase tracking-wide"
+                                  title="This store received this SKU within the last 3 weeks — not eligible to send out yet"
+                                  data-testid={`ibt-recently-received-${idx}-${j}`}
+                                >
+                                  just in
+                                </span>
+                              )}
                             </span>
                           </td>
                           <td className="px-3 py-2 whitespace-nowrap font-mono text-[11px]">{sk.sku || "—"}</td>
                           <td className="px-3 py-2 text-right tabular-nums">{fmtNum(sk.from_available ?? 0)}</td>
                           <td className="px-3 py-2 text-right tabular-nums">{fmtNum(sk.to_available ?? 0)}</td>
                           <td className="px-3 py-2 text-right tabular-nums">
-                            {protectedRun ? (
+                            {recentlyReceived ? (
+                              <span className="text-[10.5px] text-amber-700" title="Received at this store less than 3 weeks ago">just in</span>
+                            ) : protectedRun ? (
                               <span className="text-[10.5px] text-slate-500" title="Size run protected">held</span>
                             ) : (
                               <span className="pill-green font-bold">{fmtNum(sk.suggested_qty || 0)}</span>
@@ -282,7 +295,7 @@ const PairRow = ({ pair, idx, enabled, selected, onToggleSelect, onMarkDone, act
                               placeholder={String(sk.suggested_qty || 0)}
                               value={actuals[sk.sku] ?? ""}
                               onChange={(e) => setActuals((p) => ({ ...p, [sk.sku]: e.target.value }))}
-                              disabled={protectedRun}
+                              disabled={rowHeld}
                               className="w-16 h-8 px-2 text-right tabular-nums border border-border rounded bg-white disabled:bg-panel disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-brand/40"
                               aria-label={`Actual transferred for ${sk.sku}`}
                             />
@@ -291,9 +304,9 @@ const PairRow = ({ pair, idx, enabled, selected, onToggleSelect, onMarkDone, act
                             <button
                               type="button"
                               onClick={() => handleMarkDone(sk)}
-                              disabled={protectedRun || !(sk.suggested_qty > 0)}
+                              disabled={rowHeld || !(sk.suggested_qty > 0)}
                               className="inline-flex items-center gap-1 text-[11px] font-bold text-white bg-emerald-700 hover:bg-emerald-800 disabled:opacity-40 disabled:cursor-not-allowed px-2.5 py-1.5 rounded"
-                              title={protectedRun ? "Size run protected — not transferable" : "Mark this SKU's transfer as completed"}
+                              title={recentlyReceived ? "Received at this store less than 3 weeks ago — not eligible to send out yet" : protectedRun ? "Size run protected — not transferable" : "Mark this SKU's transfer as completed"}
                               data-testid={`ibt-pair-markdone-${idx}-${j}`}
                             >
                               <CheckCircle size={12} weight="fill" /> Done
