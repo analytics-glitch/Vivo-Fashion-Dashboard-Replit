@@ -5762,12 +5762,13 @@ def get_inventory_summary(country: str = Query(default=None), locations: str = Q
         ],
     }
 
-@app.get("/api/footfall")
-def get_footfall(
-    date_from: str = Query(default=str(date.today().replace(day=1))),
-    date_to:   str = Query(default=str(date.today())),
-    channel:   str = Query(default=None),
-):
+def footfall_clean_rows(date_from, date_to, channel=None):
+    """Per-store footfall×sales day-level rows with the ONE broken-counter rule
+    applied (WS5/T503). Shared by /api/footfall AND the Stock Movement report's
+    Conversion Rate column (/api/analytics/store-flow, T1304) so the two
+    surfaces cannot drift apart. Returns one row per canonical store that has
+    footfall rows in the window; `clean_conversion_rate` is None when the
+    counter was dark (ff=0 while selling) on >25% of the window days."""
     ff_where = "f.time BETWEEN '" + date_from + "' AND '" + date_to + "'"
     # Channel filter is applied on the CANONICAL name (post-alias) so it also
     # matches the renamed sensor spellings introduced 2026-06-07.
@@ -5836,7 +5837,10 @@ def get_footfall(
     #     → turn-in suppressed + flagged, and the store's outside traffic is
     #     EXCLUDED from any group turn-in denominator (raw values retained in
     #     raw_* fields for tooltips/diagnostics).
-    rows = rows or []
+    # run_query serves cached rows BY REFERENCE — copy before the suppression
+    # pass below mutates them, or the cached raw_* fields get poisoned on the
+    # next hit (footfall + store-flow now share this cache entry).
+    rows = [dict(r) for r in (rows or [])]
     try:
         _days = (date.fromisoformat(date_to[:10])
                  - date.fromisoformat(date_from[:10])).days + 1
@@ -5863,6 +5867,15 @@ def get_footfall(
         r["outside_counter_ok"] = out_ok
         r["counter_flags"] = flags
     return rows
+
+
+@app.get("/api/footfall")
+def get_footfall(
+    date_from: str = Query(default=str(date.today().replace(day=1))),
+    date_to:   str = Query(default=str(date.today())),
+    channel:   str = Query(default=None),
+):
+    return footfall_clean_rows(date_from, date_to, channel)
 
 @app.get("/api/footfall/weekday-pattern")
 def get_footfall_weekday(
@@ -13353,6 +13366,16 @@ def analytics_store_flow(
     """, date_to=d56_to)
     up4w = {r["pos_location"]: int(r["units_prev_4w"] or 0) for r in sales_p4w}
 
+    # T1304 — per-store Conversion Rate (distinct sale/order transactions ÷
+    # footfall visitors) over the SELECTED period, via the SAME shared helper
+    # the Footfall page uses (footfall_clean_rows): canonical sensor names at
+    # the join site, day-level footfall×sales join, sensor-gap days excluded
+    # from the clean rate, and the rate suppressed (None) when the counter was
+    # dark on >25% of the window days. Stores with no footfall rows (Online /
+    # Shop Zetu, stores without a counter) have no entry → None → "—" in the
+    # UI. Country scoping is implicit: rows join by store name below.
+    conv_map = {r["location"]: r for r in footfall_clean_rows(date_from, date_to)}
+
     for name, r in by.items():
         r["units_4w"] = u4w.get(name, 0)
         weekly = r["units_4w"] / 4.0
@@ -13364,6 +13387,21 @@ def analytics_store_flow(
         r["woc_4w_ago"] = round(soh_4w_ago / prev_weekly, 1) if prev_weekly > 0 else None
         r["prev_week_sold"] = pw_map.get(name, 0)
         r["daily_transfers"] = daily_map.get(name, {})
+        fr = conv_map.get(name)
+        _ccr = fr.get("clean_conversion_rate") if fr else None
+        r["conversion_rate"] = float(_ccr) if _ccr is not None else None
+        # True only when the rate was suppressed for counter gaps (vs having no
+        # counter at all) — lets the UI title the "—" precisely.
+        r["ff_counter_gaps"] = bool(fr) and not fr.get("ff_counter_ok", True)
+        # Clean numerator/denominator so the client can roll up a network-level
+        # conversion from clean totals (Excel Summary row); None whenever the
+        # store's own rate isn't shown.
+        if r["conversion_rate"] is not None:
+            r["ff_clean_orders"] = int(fr.get("clean_orders") or 0)
+            r["ff_footfall"] = int(fr.get("total_footfall") or 0)
+        else:
+            r["ff_clean_orders"] = None
+            r["ff_footfall"] = None
 
     # Suppress non-retail holding locations from the store-level table.
     _EXCLUDED_SET = {"MarKT/Stock", "Retired Stock"}

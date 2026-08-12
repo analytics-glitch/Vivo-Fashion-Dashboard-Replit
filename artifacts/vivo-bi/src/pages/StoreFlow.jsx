@@ -188,6 +188,7 @@ const StoreFlow = () => {
       }
       else if (sortKey === "woc") { av = a.woc ?? -1; bv = b.woc ?? -1; }
       else if (sortKey === "current_stock") { av = a.current_stock || 0; bv = b.current_stock || 0; }
+      else if (sortKey === "conversion_rate") { av = a.conversion_rate ?? -1; bv = b.conversion_rate ?? -1; }
       else { av = 0; bv = 0; }
       if (typeof av === "string") return sortDir === "asc" ? av.localeCompare(bv) : bv.localeCompare(av);
       return sortDir === "asc" ? av - bv : bv - av;
@@ -249,6 +250,20 @@ const StoreFlow = () => {
     return weekly > 0 ? Math.round((soh / weekly) * 10) / 10 : null;
   }, [wocRows]);
 
+  // Network conversion — clean totals (Σ clean transactions ÷ Σ visitors)
+  // across stores whose footfall counter was reliable for the period; null
+  // when no footfall in scope (e.g. Online / Uganda / Rwanda filters).
+  const networkConversion = useMemo(() => {
+    let orders = 0, ff = 0;
+    for (const r of filtered) {
+      if (r.conversion_rate != null && r.ff_clean_orders != null && r.ff_footfall != null) {
+        orders += r.ff_clean_orders;
+        ff += r.ff_footfall;
+      }
+    }
+    return ff > 0 ? (orders * 100) / ff : null;
+  }, [filtered]);
+
   // Quick date presets
   const PRESETS = [
     { label: "This week", apply: () => { const r = getThisWeekRange(); setDateFrom(r.from); setDateTo(r.to); } },
@@ -280,6 +295,7 @@ const StoreFlow = () => {
         "Status": pctVal == null ? "—" : pctVal > 110 ? "Over" : pctVal < 90 ? "Under" : "On track",
         "WOC (weeks)": r.woc != null ? +r.woc.toFixed(1) : null,
         "Current Stock": r.current_stock,
+        "Conversion %": r.conversion_rate != null ? +(r.conversion_rate / 100).toFixed(4) : null,
       };
     });
 
@@ -331,15 +347,22 @@ const StoreFlow = () => {
     const ws = XLSX.utils.json_to_sheet(rows);
     // Format "vs Prev Week %" column as percentage
     const range = XLSX.utils.decode_range(ws["!ref"] || "A1");
-    const pctColIdx = Object.keys(rows[0]).indexOf("vs Prev Week % (net)");
+    // Percent-formatted columns: pacing % and Conversion %
+    const headerKeys = Object.keys(rows[0]);
+    const pctCols = ["vs Prev Week % (net)", "Conversion %"]
+      .map((h) => headerKeys.indexOf(h))
+      .filter((i) => i >= 0);
     for (let rowIdx = range.s.r + 1; rowIdx <= range.e.r; rowIdx++) {
-      const cell = ws[XLSX.utils.encode_cell({ r: rowIdx, c: pctColIdx })];
-      if (cell && cell.v != null) cell.z = "0.0%";
+      for (const c of pctCols) {
+        const cell = ws[XLSX.utils.encode_cell({ r: rowIdx, c })];
+        if (cell && cell.v != null) cell.z = "0.0%";
+      }
     }
     ws["!cols"] = [
       { wch: 28 }, { wch: 16 }, { wch: 16 },
       { wch: 6 }, { wch: 6 }, { wch: 6 }, { wch: 6 }, { wch: 6 }, { wch: 6 }, { wch: 6 },
       { wch: 18 }, { wch: 14 }, { wch: 12 }, { wch: 14 },
+      { wch: 14 }, { wch: 10 }, { wch: 10 }, { wch: 13 }, { wch: 12 },
     ];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Stock Movement");
@@ -361,6 +384,7 @@ const StoreFlow = () => {
       { Field: "WOC — Stores on target", Value: wocSummary.ok },
       { Field: "WOC — Stores over target", Value: wocSummary.over },
       { Field: "Network WOC", Value: totalWoc != null ? +totalWoc.toFixed(1) : null },
+      { Field: "Network Conversion %", Value: networkConversion != null ? `${networkConversion.toFixed(1)}%` : "—" },
     ];
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(meta), "Summary");
     XLSX.writeFile(wb, `store-flow-${dateFrom}-to-${dateTo}.xlsx`);
@@ -604,6 +628,11 @@ const StoreFlow = () => {
                         className="py-2 pr-3 text-right">
                         Current Stock
                       </SortTh>
+                      <SortTh sk="conversion_rate" cur={sortKey} dir={sortDir} onSort={handleSort}
+                        className="py-2 pr-3 text-right whitespace-nowrap"
+                        title="Conversion rate: transactions ÷ store visitors (footfall counter) over the selected period — same definition as the Footfall page. Sensor-dark days are excluded. '—' = no footfall counter (e.g. Online / Shop Zetu) or counter unreliable (dark on >25% of the period's days).">
+                        Conversion ⓘ
+                      </SortTh>
                     </tr>
                   </thead>
                   <tbody>
@@ -642,6 +671,18 @@ const StoreFlow = () => {
                             {r.woc == null ? "—" : r.woc.toLocaleString(undefined, { maximumFractionDigits: 1 })}
                           </td>
                           <td className="py-1.5 pr-3 text-right tabular-nums">{fmtNum(r.current_stock)}</td>
+                          <td className="py-1.5 pr-3 text-right tabular-nums" data-testid={`cell-conversion-${r.pos_location}`}>
+                            {r.conversion_rate == null ? (
+                              <span
+                                className="text-slate-300"
+                                title={r.ff_counter_gaps
+                                  ? "Footfall counter was dark on >25% of the period's days — conversion suppressed (unreliable)."
+                                  : "No footfall counter data for this store in the selected period."}
+                              >—</span>
+                            ) : (
+                              `${Number(r.conversion_rate).toFixed(1)}%`
+                            )}
+                          </td>
                         </tr>
                       );
                     })}
@@ -687,6 +728,9 @@ const StoreFlow = () => {
                       <td className="py-2 pr-3" />
                       <td className="py-2 pr-3 text-right tabular-nums">
                         {fmtNum(filtered.reduce((a, r) => a + r.current_stock, 0))}
+                      </td>
+                      <td className="py-2 pr-3 text-right tabular-nums" title="Network conversion — clean totals across stores with a reliable counter" data-testid="cell-conversion-total">
+                        {networkConversion != null ? `${networkConversion.toFixed(1)}%` : "—"}
                       </td>
                     </tr>
                   </tfoot>
