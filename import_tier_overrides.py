@@ -9,7 +9,7 @@ import openpyxl
 import psycopg2
 import psycopg2.extras
 
-EXCEL_PATH = "attached_assets/Product_Status_12_Aug_2026_1786511838530.xlsx"
+EXCEL_PATH = "attached_assets/Product_Status_12_Aug_2026_1786516175744.xlsx"
 
 TIER_MAP = {
     "TIER 1": "Tier 1",
