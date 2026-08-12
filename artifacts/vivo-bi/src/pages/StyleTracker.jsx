@@ -1292,11 +1292,14 @@ function MoveToWeekMenu({ style, weeks, busy, onUpdate }) {
 function StyleCard({
   style, finishingOptions, orderTypes, busy, late, onUpdate, onDelete,
   onDragStart, onDragEnd, isPrivileged, onNoteAdded, onOpenFulfillment,
-  onOptionsChange, weeks,
+  onOptionsChange, weeks, canArchive, onArchive,
 }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmArchive, setConfirmArchive] = useState(false);
   const done = !!style.completed;
   const canDone = style.status === "Warehouse";
+  // Archive is only offered on Warehouse-stage cards, to authorized users
+  const showArchive = !!canArchive && style.status === "Warehouse";
   const statuses = finishingOptions.map((f) => f.label);
 
   const handleComplete = () => {
@@ -1388,10 +1391,33 @@ function StyleCard({
         )}
       </div>
 
-      {/* Delete (privileged only) */}
-      {isPrivileged && (
-        <div className="flex items-center justify-end mt-1.5">
-          {confirmDelete ? (
+      {/* Archive (Warehouse stage, authorized users) + Delete (privileged only) */}
+      {(isPrivileged || showArchive) && (
+        <div className="flex items-center justify-end gap-2 mt-1.5">
+          {showArchive && (confirmArchive ? (
+            <span className="flex items-center gap-1 shrink-0">
+              <button
+                type="button"
+                onClick={() => { setConfirmArchive(false); onArchive(style); }}
+                disabled={busy}
+                className="text-[10px] font-bold text-white bg-amber-600 hover:bg-amber-700 rounded px-1.5 py-1 disabled:opacity-50"
+                data-testid={`style-card-archive-confirm-${style.id}`}
+              >Archive</button>
+              <button type="button" onClick={() => setConfirmArchive(false)} className="text-muted hover:text-[#0f3d24]"><X size={13} /></button>
+            </span>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setConfirmArchive(true)}
+              disabled={busy}
+              title="Archive style — clears it off the board (find it in the Archived tab)"
+              className="flex items-center gap-1 text-[10px] font-semibold text-amber-800 hover:text-amber-900 bg-amber-50 hover:bg-amber-100 border border-amber-300 rounded px-1.5 py-0.5 disabled:opacity-50"
+              data-testid={`style-card-archive-${style.id}`}
+            >
+              <Archive size={12} /> Archive
+            </button>
+          ))}
+          {isPrivileged && (confirmDelete ? (
             <span className="flex items-center gap-1 shrink-0">
               <button
                 type="button"
@@ -1411,7 +1437,7 @@ function StyleCard({
             >
               <Trash size={13} />
             </button>
-          )}
+          ))}
         </div>
       )}
 
@@ -1604,6 +1630,15 @@ const StyleTracker = () => {
     return PRIVILEGED_EMAILS.includes((user.email || "").toLowerCase());
   }, [user]);
 
+  // Who may archive individual Warehouse-stage styles (mirrors the server's
+  // _ST_ARCHIVER_EMAILS gate — hiding here is UX only, the server enforces)
+  const ARCHIVER_EMAILS = ["amos.kiliswa@vivofashiongroup.com", "esthert@vivofashiongroup.com"];
+  const canArchive = useMemo(() => {
+    if (!user) return false;
+    if (user.role === "admin") return true;
+    return ARCHIVER_EMAILS.includes((user.email || "").toLowerCase());
+  }, [user]);
+
   const loadBoard = useCallback((forceFresh = false, silent = false) => {
     if (!silent) { setLoading(true); setError(null); }
     return api
@@ -1709,6 +1744,19 @@ const StyleTracker = () => {
       await loadBoard(true, true);
     } catch (e) {
       toast.error(e?.response?.data?.detail || e.message || "Failed to delete style");
+    } finally {
+      markBusy(style.id, false);
+    }
+  };
+
+  const archiveStyle = async (style) => {
+    markBusy(style.id, true);
+    try {
+      await api.post(`/style-tracker/styles/${style.id}/archive`);
+      toast.success(`"${style.style_name}" archived — find it in the Archived tab`);
+      await loadBoard(true, true);
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || e.message || "Failed to archive style");
     } finally {
       markBusy(style.id, false);
     }
@@ -1985,6 +2033,8 @@ const StyleTracker = () => {
                         onDragStart={onCardDragStart}
                         onDragEnd={onCardDragEnd}
                         isPrivileged={isPrivileged}
+                        canArchive={canArchive}
+                        onArchive={archiveStyle}
                         onNoteAdded={handleNoteAdded}
                         onOpenFulfillment={(style) => setFulfillmentStyle({ id: style.id, style_name: style.style_name, style_number: style.style_number })}
                         onOptionsChange={() => loadBoard(true, true)}

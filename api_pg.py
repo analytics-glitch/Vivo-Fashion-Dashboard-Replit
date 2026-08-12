@@ -36694,6 +36694,24 @@ def _st_is_privileged(request):
     }
 
 
+# Emails allowed to archive a single Warehouse-stage style straight off the
+# board (admin role is always allowed). Deliberately its own set — do NOT
+# fold into _STYLE_TRACKER_PRIVILEGED_EMAILS or reuse _ROSTER_EDITOR_EMAILS —
+# so each feature's access list can evolve independently.
+_ST_ARCHIVER_EMAILS = {
+    "amos.kiliswa@vivofashiongroup.com",
+    "esthert@vivofashiongroup.com",
+}
+
+
+def _st_can_archive(request):
+    """True if user is admin OR in the per-style archive email set."""
+    u = getattr(request.state, "user", None) or {}
+    if u.get("role") == "admin":
+        return True
+    return (u.get("email") or "").strip().lower() in _ST_ARCHIVER_EMAILS
+
+
 # TEMPORARILY DISABLED 2026-08-04 (user request): the ≥90% warehouse-transfer
 # gate is off so old styles that already shipped warehouse→stores can be moved
 # to Warehouse status during cleanup. RESTORE by setting this back to True.
@@ -37614,6 +37632,46 @@ def style_tracker_fulfillment(style_id: int):
         "has_data": bool(stages or matrix or linked_orders),
         "linked_orders": linked_orders,
     }
+
+
+@app.post("/api/style-tracker/styles/{style_id}/archive")
+async def style_tracker_archive_style(style_id: int, request: Request):
+    """Archive ONE style straight off the board.
+
+    Admins plus the emails in _ST_ARCHIVER_EMAILS only. The style must
+    currently be in Warehouse status — being marked completed is NOT
+    required (unlike archive-week) — and not already archived.
+    """
+    if not _st_can_archive(request):
+        return JSONResponse(
+            {"detail": "Only admins and designated operators can archive styles"},
+            status_code=403)
+    _ensure_style_tracker_tables()
+    rows = _users_exec(
+        "SELECT id, status, archived FROM style_tracker_styles WHERE id = %s",
+        (style_id,), fetch=True)
+    if not rows:
+        return JSONResponse({"detail": "Style not found"}, status_code=404)
+    cur = rows[0]
+    if cur.get("archived"):
+        return JSONResponse(
+            {"detail": "Style is already archived"}, status_code=409)
+    if (cur.get("status") or "") != "Warehouse":
+        return JSONResponse(
+            {"detail": ("Only styles in Warehouse status can be archived "
+                        f"(currently: {cur.get('status') or 'unknown'})")},
+            status_code=422)
+    updated = _users_exec(
+        "UPDATE style_tracker_styles "
+        "SET archived = TRUE, archived_at = now(), updated_at = now() "
+        "WHERE id = %s AND NOT archived AND status = 'Warehouse' "
+        "RETURNING *", (style_id,), fetch=True)
+    if not updated:
+        # Raced with a concurrent status change / archive between check & write
+        return JSONResponse(
+            {"detail": "Style is no longer in Warehouse status or was already archived"},
+            status_code=409)
+    return {"ok": True, "style": _st_row_out(updated[0])}
 
 
 @app.post("/api/style-tracker/archive-week")
