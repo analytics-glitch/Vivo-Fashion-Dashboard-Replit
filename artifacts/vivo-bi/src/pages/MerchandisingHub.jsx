@@ -110,12 +110,19 @@ const PdAllocations     = React.lazy(() => import("./Allocations"));
 const PdReOrder         = React.lazy(() => import("./ReOrder"));
 const PdProductCat      = React.lazy(() => import("./ProductCatalogue"));
 const PdFlow            = React.lazy(() => import("./PDFlow"));
+// Buying Order Status — the Product Development hub's "Overview" page (BO
+// summary cards, stage flow, delivery outlook, drill-downs & Excel export)
+// reused verbatim under a clearer name so the two locations stay in sync.
+// The "+N more in the Production Report" jump link auto-hides because the hub
+// doesn't pass onOpenReport — same as the Product Development hub embed.
+const PdBuyingOrders    = React.lazy(() => import("./ProductionOverview"));
 
 const MERCH_TABS = [
   // ── 1. Overview ───────────────────────────────────────────────────────────
   { id: "merch-overview",      label: "Overview",               pageId: "merch-overview",    el: MerchandisingOverview },
 
-  // ── 2–12. Product Development sections ───────────────────────────────────
+  // ── 2–13. Product Development sections ───────────────────────────────────
+  { id: "pd-buying-orders",    label: "Buying Order Status",    pageId: "production",        el: PdBuyingOrders },
   { id: "pd-style-cockpit",    label: "Style Cockpit",          pageId: "product-analysis",  el: PdStyleCockpit },
   { id: "pd-range-mgmt",       label: "Range Management",       pageId: "range-mgmt",        el: PdRangeMgmt },
   { id: "pd-style-tracker",    label: "Weekly Style Tracker",   pageId: "style-tracker",     el: PdStyleTracker },

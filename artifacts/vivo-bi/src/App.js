@@ -205,7 +205,11 @@ function App() {
                 <Route path="/production-desk" element={<ProtectedShell pageId="production-desk"><ProductionDesk /></ProtectedShell>} />
                 <Route path="/the-chair" element={<ProtectedShell pageId="the-chair"><TheChair /></ProtectedShell>} />
                 <Route path="/partner-brands" element={<ProtectedShell pageId="partner-brands"><PartnerBrandsReport /></ProtectedShell>} />
-                <Route path="/merchandising" element={<ProtectedShell anyOfPageIds={["merch-overview", "merch-sales", "merch-inventory", "merch-sellthrough", "merch-category", "merch-lifecycle", "merch-atrisk", "merch-replen", "merch-financial", "merch-arrivals", "merch-deepdive", "merch-store"]}><MerchandisingHub /></ProtectedShell>} />
+                {/* "production" grants entry for the embedded Buying Order Status tab
+                    (?tab=pd-buying-orders) so everyone who can see that tab can open its
+                    deep link — mirrors /product-analysis, whose allowlist also ORs the
+                    page id of its embedded Buying Order "Overview" tab. */}
+                <Route path="/merchandising" element={<ProtectedShell anyOfPageIds={["merch-overview", "merch-sales", "merch-inventory", "merch-sellthrough", "merch-category", "merch-lifecycle", "merch-atrisk", "merch-replen", "merch-financial", "merch-arrivals", "merch-deepdive", "merch-store", "production"]}><MerchandisingHub /></ProtectedShell>} />
                 <Route path="/gallery" element={<Navigate to="/product-analysis?tab=gallery" replace />} />
                 <Route path="/exec-summary" element={<ProtectedShell pageId="exec-summary"><ExecutiveSummary /></ProtectedShell>} />
                 <Route path="/overview" element={<ProtectedShell pageId="overview"><Overview /></ProtectedShell>} />

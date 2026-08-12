@@ -16,6 +16,10 @@ An admin "Group Access" screen lets an admin pick one of the department groups a
 **Why:** the backend `DEFAULT_ROLE_PAGES` (in api_pg.py) is a hand-maintained mirror of the frontend `ROLE_PAGES` (permissions.js). For a group with no override they must agree, or behavior would differ depending on whether `allowed_pages` was sent.
 **How to apply:** if you change a group's default pages in permissions.js, change `DEFAULT_ROLE_PAGES` in api_pg.py in lockstep (and vice-versa). New page ids must also be added to the backend `ALL_PAGE_IDS` catalog or PUT validation will silently strip them.
 
+## Stored overrides FREEZE the page set (new pages don't propagate)
+**Why:** an override is a literal page-id list. Page ids shipped AFTER the override was saved are absent from it, so overridden groups silently never see new pages/tabs — while groups on defaults gain them immediately.
+**How to apply:** when shipping a new page id, check which groups are `overridden` and extend those overrides (or flag it to the admin) — never assume a role sees a new page just because the default maps include it. When verifying role visibility, read the effective set from `/auth/me.allowed_pages`, not the static maps.
+
 ## Guard rails (enforced server-side, not just UI)
 - Non-admin groups can never be assigned `admin-` prefixed pages — they're stripped on save (admin routes are `adminOnly` anyway). Unknown page ids are also stripped.
 - Reset = `PUT {role, reset:true}` deletes that group's override key so it reverts to the built-in default (future default changes then propagate).
