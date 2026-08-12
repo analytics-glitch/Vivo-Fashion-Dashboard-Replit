@@ -16,7 +16,10 @@
 // Base analytical set shared by the broadest groups.
 const VIEWER = ["overview", "exec-summary", "locations", "footfall", "trend-analysis", "product-analysis", "customers", "customer-details", "catalogue", "gallery", "fabric", "sops", "ask"];
 
-const _MERCH_TABS = ["merchandising", "merch-overview", "merch-sales", "merch-inventory", "merch-sellthrough", "merch-category", "merch-lifecycle", "merch-atrisk", "merch-replen", "merch-financial", "merch-arrivals", "merch-deepdive", "merch-store"];
+// Consolidated in Task 1286: sellthrough/category/financial merged into
+// merch-sales, atrisk into merch-overview, replen into merch-inventory,
+// arrivals into merch-lifecycle. Retired ids alias to successors server-side.
+const _MERCH_TABS = ["merchandising", "merch-overview", "merch-sales", "merch-inventory", "merch-lifecycle", "merch-deepdive", "merch-store"];
 const PRODUCT_DEVELOPMENT = ["product-analysis", "range-mgmt", "catalogue", "gallery", "inventory", "size-health", "data-quality", "fabric", "exports", "production", "production-report", "style-tracker", "pd-flow", "partner-brands", "sops", "central-tracker", ..._MERCH_TABS];
 const RETAIL = ["store-flow", "overview", "exec-summary", "locations", "footfall", "store-profiling", "trend-analysis", "customers", "product-analysis", "gallery", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "exports", "partner-brands", "sops", "ask", "store-feedback"];
 const WAREHOUSE = ["store-flow", "inventory", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "re-order", "allocations", "data-quality", "exports", "sops"];

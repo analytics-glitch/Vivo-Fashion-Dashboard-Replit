@@ -1,22 +1,32 @@
 /**
- * MerchLifecycle — Style Lifecycle & Age Analysis tab
+ * MerchLifecycle — Lifecycle & Launches tab
  * ?tab=merch-lifecycle
  *
- * Data: /api/merch/styles (full list), /api/merch/by-tier
- * Charts: Launched by Year bar, Age Distribution bar,
- *         Reorder Count Distribution donut, Avg Reorder by Tier bar,
- *         Age vs Lifetime SOR scatter, Tier 1 Top Performers table
+ * Consolidates the former Style Lifecycle & Age and New Arrivals & Pipeline
+ * tabs (Task 1286), organised in two sections:
+ *   1. Style Lifecycle & Age — launch cohorts, age distribution, reorder
+ *      analysis, age-vs-SOR scatter, Tier 1 top performers table
+ *   2. New Arrivals & Pipeline — CY/PY launch KPIs, launches by subcategory,
+ *      SOR ramp by tier, launch status, top recent launches, monthly launch
+ *      cadence, launches by brand
+ * Both sections share ONE fetch of /merch/styles, /merch/by-tier,
+ * /merch/summary and /merch/launch-ramp.
+ *
+ * Data: /api/merch/styles (full list), /api/merch/by-tier,
+ *       /api/merch/summary, /api/merch/launch-ramp
  */
 import React, { useEffect, useMemo, useState } from "react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, Legend, ScatterChart, Scatter, ZAxis, LabelList,
+  LineChart, Line, ReferenceLine,
 } from "recharts";
 import { KPICard } from "@/components/KPICard";
-import { Loading, ErrorBox, SectionTitle } from "@/components/common";
-import { apiFetch, fmtNum, fmtDec } from "@/lib/api";
+import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
+import { apiFetch, fmtNum, fmtDec, fmtKES } from "@/lib/api";
 import { useMerchFilters } from "./MerchandisingHub";
 import { SubcatFilter } from "./merch/MerchHelpers";
+import { Rocket, CalendarBlank, CurrencyCircleDollar, CheckCircle } from "@phosphor-icons/react";
 
 // ── Colours ───────────────────────────────────────────────────────────────────
 const ERA_COLOR = (year) => {
@@ -28,6 +38,11 @@ const ERA_COLOR = (year) => {
 const AGE_COLORS = ["#1a5c38", "#00c853", "#d97706", "#7c3aed", "#94a3b8"];
 const REORDER_COLORS = ["#94a3b8", "#1a5c38", "#00c853", "#d97706", "#ef4444"];
 const TIER_COLORS = { "Tier 1": "#1a5c38", "Tier 2": "#4b7bec", "Tier 3": "#0891b2", "Tier 4": "#d97706", "Retired": "#94a3b8" };
+
+// Arrivals-section colours (from the retired New Arrivals & Pipeline tab)
+const STATUS_COLORS  = { "On Track": "#1a5c38", "At Risk": "#d97706", "Overdue": "#ef4444" };
+const TIER_LINE_COLORS = { "Tier 1": "#1a5c38", "Tier 2": "#4b7bec", "Tier 3/4": "#d97706" };
+const BRAND_COLORS   = ["#1a5c38", "#4b7bec", "#d97706", "#7c3aed"];
 
 const REORDER_BUCKETS = [
   { label: "0×",    test: (r) => r === 0 },
@@ -53,14 +68,27 @@ const ageWeeks = (launchDate) => {
   } catch { return null; }
 };
 
+// ── month label helper ─────────────────────────────────────────────────────────
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const monthLabel = (iso) => {
+  if (!iso) return "";
+  const [, m] = iso.split("-");
+  return MONTHS[parseInt(m, 10) - 1] || iso;
+};
+
 const MerchLifecycle = () => {
   const filters = useMerchFilters();
   const [styles, setStyles] = useState([]);
   const [tierRows, setTierRows] = useState([]);
+  const [summary, setSummary] = useState(null);
+  const [ramp, setRamp] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [sortKey, setSortKey]     = useState("reorder_count");
   const [localSubcat, setLocalSubcat] = useState(null);
+
+  const currentYear = new Date().getFullYear();
+  const priorYear   = currentYear - 1;
 
   useEffect(() => {
     let cancelled = false;
@@ -68,15 +96,25 @@ const MerchLifecycle = () => {
     setError(null);
     const effSubcat = localSubcat !== null ? localSubcat : (filters.subcategory || "");
     const params = { country: filters.country, from_date: filters.from_date, to_date: filters.to_date,
+      pos_location: filters.pos_location,
       brand: filters.brand, ...(effSubcat ? { subcategory: effSubcat } : {}) };
     Promise.all([
       apiFetch("/merch/styles", { params }),
       apiFetch("/merch/by-tier", { params }),
+      apiFetch("/merch/summary", { params }),
+      // launch-ramp only accepts date-range + country
+      apiFetch("/merch/launch-ramp", { params: {
+        from_date: params.from_date,
+        to_date:   params.to_date,
+        country:   params.country,
+      } }),
     ])
-      .then(([sData, tData]) => {
+      .then(([sData, tData, sumData, rampData]) => {
         if (cancelled) return;
         setStyles(sData.styles || []);
         setTierRows(tData.rows || []);
+        setSummary(sumData);
+        setRamp(rampData.by_tier || {});
       })
       .catch((e) => { if (!cancelled) setError(e?.response?.data?.detail || e.message); })
       .finally(() => { if (!cancelled) setLoading(false); });
@@ -171,6 +209,115 @@ const MerchLifecycle = () => {
       return 0;
     }).slice(0, 8);
   }, [enriched, sortKey]);
+
+  // ── Arrivals derivations (from the retired New Arrivals & Pipeline tab) ──
+
+  const cyLaunches = useMemo(() =>
+    styles.filter(s => s.launch_date && s.launch_date.startsWith(String(currentYear))),
+    [styles, currentYear]);
+
+  const pyLaunches = useMemo(() =>
+    styles.filter(s => s.launch_date && s.launch_date.startsWith(String(priorYear))),
+    [styles, priorYear]);
+
+  const avgAgeCY = useMemo(() => {
+    if (!cyLaunches.length) return 0;
+    const now = Date.now();
+    const total = cyLaunches.reduce((a, s) => {
+      const d = new Date(s.launch_date);
+      return a + (now - d.getTime()) / (7 * 24 * 3600 * 1000);
+    }, 0);
+    return Math.round(total / cyLaunches.length);
+  }, [cyLaunches]);
+
+  const revCY = useMemo(() => cyLaunches.reduce((a, s) => a + (s.revenue_6m || 0), 0), [cyLaunches]);
+
+  const onTrackCY = useMemo(() =>
+    cyLaunches.filter(s => s.action_status === "on_track").length,
+    [cyLaunches]);
+  const onTrackPct = cyLaunches.length ? Math.round(onTrackCY / cyLaunches.length * 100) : 0;
+
+  // Launches by subcategory
+  const bySubcatChart = useMemo(() => {
+    const map = {};
+    for (const s of cyLaunches) {
+      map[s.subcategory || "Other"] = (map[s.subcategory || "Other"] || 0) + 1;
+    }
+    return Object.entries(map)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10)
+      .map(([name, count]) => ({ name, count }));
+  }, [cyLaunches]);
+
+  // SOR ramp chart
+  const rampChart = useMemo(() => {
+    const tiers = Object.keys(ramp || {});
+    const maxWeek = 32;
+    const weekSet = new Set();
+    for (const tier of tiers) {
+      for (const pt of (ramp[tier] || [])) {
+        if (pt.week_n <= maxWeek) weekSet.add(pt.week_n);
+      }
+    }
+    const weeks = [...weekSet].sort((a, b) => a - b);
+    return weeks.map(w => {
+      const row = { week: w };
+      for (const tier of tiers) {
+        const pt = (ramp[tier] || []).find(p => p.week_n === w);
+        row[tier] = pt ? +pt.avg_cumulative_sor_pct.toFixed(1) : undefined;
+      }
+      return row;
+    });
+  }, [ramp]);
+
+  // Launch status donut
+  const statusDonut = useMemo(() => {
+    const map = {};
+    for (const s of cyLaunches) {
+      const key = s.action_status === "on_track" ? "On Track" :
+                  s.action_status === "overdue"  ? "Overdue"  : "At Risk";
+      map[key] = (map[key] || 0) + 1;
+    }
+    return Object.entries(map).map(([name, value]) => ({ name, value }));
+  }, [cyLaunches]);
+
+  // Top recent launches by SOR
+  const topSOR = useMemo(() =>
+    [...cyLaunches]
+      .filter(s => s.sor_6m > 0)
+      .sort((a, b) => b.sor_6m - a.sor_6m)
+      .slice(0, 8)
+      .map(s => {
+        const ageWks = s.launch_date
+          ? Math.round((Date.now() - new Date(s.launch_date).getTime()) / (7 * 24 * 3600 * 1000))
+          : 0;
+        return { name: s.style_name, sor: +s.sor_6m.toFixed(1), age: ageWks };
+      }),
+    [cyLaunches]);
+
+  // Monthly launch cadence
+  const cadenceChart = useMemo(() => {
+    const map = {};
+    for (const s of cyLaunches) {
+      if (!s.launch_date) continue;
+      const mon = s.launch_date.slice(0, 7); // YYYY-MM
+      if (!map[mon]) map[mon] = { on: 0, risk: 0 };
+      if (s.action_status === "on_track") map[mon].on++;
+      else map[mon].risk++;
+    }
+    return Object.entries(map)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([mon, v]) => ({ name: monthLabel(mon), onTrack: v.on, atRisk: v.risk }));
+  }, [cyLaunches]);
+
+  // By brand donut
+  const brandDonut = useMemo(() => {
+    const map = {};
+    for (const s of cyLaunches) {
+      map[s.brand || "Other"] = (map[s.brand || "Other"] || 0) + 1;
+    }
+    return Object.entries(map).map(([name, value]) => ({ name, value }));
+  }, [cyLaunches]);
 
   if (loading) return <Loading label="Loading lifecycle data…" />;
   if (error)   return <ErrorBox message={error} />;
@@ -350,6 +497,231 @@ const MerchLifecycle = () => {
               </tbody>
             </table>
           </div>
+        </div>
+      </div>
+
+      {/* ════ New Arrivals & Pipeline (from the retired Arrivals tab) ════ */}
+      <div className="border-t border-slate-200 pt-5">
+        <h2 className="text-[18px] font-bold text-foreground">New Arrivals &amp; Pipeline Performance</h2>
+        <p className="text-[12px] text-muted mt-0.5">
+          {priorYear}–{currentYear} Launches, Early SOR &amp; Velocity Ramp
+        </p>
+      </div>
+
+      {/* Arrivals KPI Row */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+        <KPICard
+          label={`Styles Launched ${currentYear}`}
+          value={fmtNum(summary?.styles_launched_current_year ?? cyLaunches.length)}
+          sub={`In first 52 weeks`}
+          icon={Rocket}
+          accent showDelta={false}
+          testId="arr-cy-count"
+        />
+        <KPICard
+          label={`Styles Launched ${priorYear}`}
+          value={fmtNum(summary?.styles_launched_prior_year ?? pyLaunches.length)}
+          sub="Full year"
+          icon={CalendarBlank}
+          accent showDelta={false}
+          testId="arr-py-count"
+        />
+        <KPICard
+          label={`Avg Age (${currentYear} styles)`}
+          value={avgAgeCY + " wks"}
+          sub="Early lifecycle"
+          accent showDelta={false}
+          testId="arr-avg-age"
+        />
+        <KPICard
+          label={`${currentYear} Revenue`}
+          value={fmtKES(revCY) + "+"}
+          sub="Estimated 6m"
+          icon={CurrencyCircleDollar}
+          accent showDelta={false}
+          testId="arr-cy-rev"
+        />
+        <KPICard
+          label="Styles On Track"
+          value={onTrackPct + "%"}
+          sub={`Of ${currentYear} launches`}
+          icon={CheckCircle}
+          accent showDelta={false}
+          testId="arr-on-track"
+        />
+      </div>
+
+      {/* Arrivals Row 1: Launches by subcategory + SOR Ramp by Tier + Status donut */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+        {/* Launches by subcategory — 4 */}
+        <div className="lg:col-span-4 card-white p-5">
+          <SectionTitle title={`${currentYear} Launches by Subcategory`} subtitle={`Styles Launched in ${currentYear}`} />
+          {bySubcatChart.length === 0
+            ? <Empty />
+            : (
+              <ResponsiveContainer width="100%" height={260}>
+                <BarChart
+                  data={bySubcatChart}
+                  layout="vertical"
+                  margin={{ top: 4, right: 40, left: 8, bottom: 4 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" horizontal={false} />
+                  <XAxis type="number" tick={{ fontSize: 10 }} />
+                  <YAxis type="category" dataKey="name" tick={{ fontSize: 10 }} width={110} />
+                  <Tooltip />
+                  <Bar dataKey="count" name="Launches" fill="#1a5c38" radius={[0, 3, 3, 0]}>
+                    <LabelList dataKey="count" position="right" style={{ fontSize: 10 }} />
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+        </div>
+
+        {/* SOR Ramp — 5 */}
+        <div className="lg:col-span-5 card-white p-5">
+          <SectionTitle title={`SOR Ramp by Tier — ${currentYear} Launches`} subtitle="Cumulative SOR %" />
+          {rampChart.length === 0
+            ? <Empty />
+            : (
+              <ResponsiveContainer width="100%" height={260}>
+                <LineChart data={rampChart} margin={{ top: 8, right: 16, left: 0, bottom: 8 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                  <XAxis dataKey="week" tick={{ fontSize: 10 }} label={{ value: "Weeks Since Launch", position: "insideBottom", offset: -4, style: { fontSize: 10 } }} />
+                  <YAxis tick={{ fontSize: 10 }} tickFormatter={v => v + "%"} domain={[0, 100]} />
+                  <Tooltip formatter={(v, n) => [v + "%", n]} />
+                  <Legend wrapperStyle={{ fontSize: 10, paddingTop: 8 }} />
+                  <ReferenceLine y={60} stroke="#d97706" strokeDasharray="5 3"
+                    label={{ value: "Target 60%", position: "right", style: { fontSize: 9, fill: "#d97706" } }} />
+                  {Object.keys(ramp || {}).map(tier => (
+                    <Line
+                      key={tier}
+                      type="monotone"
+                      dataKey={tier}
+                      name={tier}
+                      stroke={TIER_LINE_COLORS[tier] || "#4b7bec"}
+                      strokeWidth={2}
+                      dot={false}
+                      connectNulls
+                    />
+                  ))}
+                </LineChart>
+              </ResponsiveContainer>
+            )}
+        </div>
+
+        {/* Launch Status donut — 3 */}
+        <div className="lg:col-span-3 card-white p-5">
+          <SectionTitle title={`${currentYear} Launch Status`} />
+          {statusDonut.length === 0
+            ? <Empty />
+            : (
+              <ResponsiveContainer width="100%" height={260}>
+                <PieChart>
+                  <Pie
+                    data={statusDonut}
+                    cx="50%"
+                    cy="42%"
+                    innerRadius={55}
+                    outerRadius={82}
+                    dataKey="value"
+                    nameKey="name"
+                    label={({ name, value }) => `${name} (${value})`}
+                    labelLine
+                  >
+                    {statusDonut.map((entry, i) => (
+                      <Cell key={i} fill={STATUS_COLORS[entry.name] || "#4b7bec"} />
+                    ))}
+                  </Pie>
+                  <Tooltip formatter={(v, n) => [v + " styles", n]} />
+                </PieChart>
+              </ResponsiveContainer>
+            )}
+        </div>
+      </div>
+
+      {/* Arrivals Row 2: Top SOR + Monthly Cadence + Brand Donut */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+        {/* Top Recent Launches by SOR — 4 */}
+        <div className="lg:col-span-4 card-white p-5">
+          <SectionTitle title="Top Recent Launches by SOR" subtitle="Lifetime SOR %" />
+          {topSOR.length === 0
+            ? <Empty />
+            : (
+              <ResponsiveContainer width="100%" height={260}>
+                <BarChart
+                  data={topSOR}
+                  layout="vertical"
+                  margin={{ top: 4, right: 70, left: 8, bottom: 4 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" horizontal={false} />
+                  <XAxis type="number" tick={{ fontSize: 10 }} domain={[97, 101]}
+                    tickFormatter={v => v + "%"} />
+                  <YAxis type="category" dataKey="name" tick={{ fontSize: 9 }} width={130} />
+                  <Tooltip formatter={(v, n) => [v + "%", n]} />
+                  <Bar dataKey="sor" name="SOR %" fill="#4b7bec" radius={[0, 3, 3, 0]}>
+                    <LabelList
+                      dataKey="sor"
+                      position="right"
+                      style={{ fontSize: 9 }}
+                      formatter={(v, _, row) => `${v}% (${topSOR.find(s => s.sor === v)?.age ?? "?"}wks)`}
+                    />
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+        </div>
+
+        {/* Monthly Cadence stacked — 5 */}
+        <div className="lg:col-span-5 card-white p-5">
+          <SectionTitle title={`${currentYear} Monthly Launch Cadence`} subtitle="Styles Launched" />
+          {cadenceChart.length === 0
+            ? <Empty />
+            : (
+              <ResponsiveContainer width="100%" height={260}>
+                <BarChart data={cadenceChart} margin={{ top: 16, right: 8, left: 0, bottom: 8 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                  <XAxis dataKey="name" tick={{ fontSize: 10 }} />
+                  <YAxis tick={{ fontSize: 10 }} />
+                  <Tooltip />
+                  <Legend wrapperStyle={{ fontSize: 10 }} />
+                  <Bar dataKey="onTrack" name="On Track" stackId="a" fill="#1a5c38" radius={[0, 0, 0, 0]}>
+                    <LabelList dataKey="onTrack" position="inside" style={{ fontSize: 9, fill: "#fff" }} />
+                  </Bar>
+                  <Bar dataKey="atRisk" name="At Risk" stackId="a" fill="#ef4444" radius={[3, 3, 0, 0]}>
+                    <LabelList dataKey="atRisk" position="top" style={{ fontSize: 9 }} />
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+        </div>
+
+        {/* Brand Donut — 3 */}
+        <div className="lg:col-span-3 card-white p-5">
+          <SectionTitle title={`${currentYear} Launches by Brand`} />
+          {brandDonut.length === 0
+            ? <Empty />
+            : (
+              <ResponsiveContainer width="100%" height={260}>
+                <PieChart>
+                  <Pie
+                    data={brandDonut}
+                    cx="50%"
+                    cy="42%"
+                    innerRadius={55}
+                    outerRadius={82}
+                    dataKey="value"
+                    nameKey="name"
+                    label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                    labelLine={false}
+                  >
+                    {brandDonut.map((_, i) => (
+                      <Cell key={i} fill={BRAND_COLORS[i % BRAND_COLORS.length]} />
+                    ))}
+                  </Pie>
+                  <Tooltip formatter={(v, n) => [v + " styles", n]} />
+                </PieChart>
+              </ResponsiveContainer>
+            )}
         </div>
       </div>
     </div>

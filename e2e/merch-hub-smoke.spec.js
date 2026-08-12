@@ -1,13 +1,17 @@
 // @ts-check
 /**
- * Smoke test: Merchandising Hub tabs 5–8 in the vivo-bi React SPA.
+ * Smoke test: consolidated Merchandising Hub analytics tabs (Task 1286).
  *
- * Covers four tabs that were introduced together:
- *   merch-category    — Category Performance      (/api/merch/by-subcategory + /api/merch/summary)
- *   merch-lifecycle   — Style Lifecycle & Age     (/api/merch/styles + /api/merch/by-tier)
- *   merch-atrisk      — At-Risk & Actions         (/api/merch/styles)
- *   merch-replen      — Replenishment Planning    (/api/merch/styles + /api/merch/by-subcategory
- *                                                   + /api/merch/by-tier + /api/merch/summary)
+ * The ten analytics tabs were merged into four:
+ *   merch-overview   — Overview + At-Risk & Actions
+ *   merch-sales      — Sales & Pricing (Sales/Financial/Sell-Through/Category)
+ *   merch-inventory  — Inventory & Replenishment
+ *   merch-lifecycle  — Lifecycle & Launches (Lifecycle + New Arrivals)
+ *
+ * Navigation deliberately uses the RETIRED tab ids (merch-category,
+ * merch-atrisk, merch-replen, merch-arrivals, …) so the smoke test also
+ * proves the deep-link alias map resolves old bookmarks to the merged
+ * successor tab instead of falling back to the first tab.
  *
  * For each tab the test asserts:
  *   1. No ErrorBox is visible (no data-testid="error-box").
@@ -24,12 +28,19 @@ const { test, expect } = require("@playwright/test");
 
 // ── constants ────────────────────────────────────────────────────────────────
 
-/** Tabs to exercise: { id, heading, kpiLabel } */
+/** Tabs to exercise: { id, heading } — ids are retired aliases on purpose. */
 const MERCH_TABS = [
   {
+    // Category Performance → merged into Sales & Pricing (merch-sales)
     id: "merch-category",
-    heading: "Category Performance",
-    kpiLabel: "Top Category",
+    heading: "Sell-Through",
+    headingContains: true,
+  },
+  {
+    // Financial Performance → merged into Sales & Pricing (merch-sales)
+    id: "merch-financial",
+    heading: "Pricing & Realisation",
+    headingContains: true,
   },
   {
     id: "merch-lifecycle",
@@ -38,16 +49,22 @@ const MERCH_TABS = [
     headingContains: true,
   },
   {
+    // New Arrivals & Pipeline → merged into Lifecycle & Launches
+    id: "merch-arrivals",
+    heading: "New Arrivals",
+    headingContains: true,
+  },
+  {
+    // At-Risk & Actions → merged into Overview
     id: "merch-atrisk",
     heading: "At-Risk Styles",
     headingContains: true,
-    kpiLabel: "At Risk Styles",
   },
   {
+    // Replenishment Planning → merged into Inventory & Replenishment
     id: "merch-replen",
     heading: "Replenishment",
     headingContains: true,
-    kpiLabel: "Total Weekly Velocity",
   },
 ];
 
@@ -85,14 +102,16 @@ async function openMerchTab(page, tabId) {
   // Wait for the SPA auth check to complete — the merch tab bar should appear.
   await page.waitForSelector('[data-testid="merch-tabs"]', { timeout: 30_000 });
 
-  // The tab's loading state clears once the API responses arrive (5–10 s on a
-  // cold cache). We wait for the loading spinner text to disappear, then add a
-  // small settle pause for Recharts to paint.  The per-step assertions use
-  // generous timeouts as the final safety net.
+  // The tab's loading state clears once the API responses arrive (5–10 s
+  // warm, but the first tab hit after an api-server restart can take well
+  // over a minute while the pool and merch aggregates warm up). We wait for
+  // the loading spinner text to disappear, then add a small settle pause for
+  // Recharts to paint.  The per-step assertions use generous timeouts as the
+  // final safety net.
   await page
     .waitForFunction(
       () => !document.body.innerText.includes("Loading "),
-      { timeout: 45_000 }
+      { timeout: 120_000 }
     )
     .catch(() => {
       // Proceed even if still loading — heading/chart assertions will surface
@@ -140,6 +159,38 @@ test("merch API endpoints return HTTP 200 with expected response shapes", async 
 
 // ── per-tab UI smoke tests ────────────────────────────────────────────────────
 
+// ── SOR Report tab: must render the real SOR report, not the Exports page ────
+
+test("pd-sor-report: renders the real SOR report component", async ({ page }) => {
+  await openMerchTab(page, "pd-sor-report");
+  await expect(
+    page.locator('[data-testid="sor-report-tab"]'),
+    "SOR Report tab must mount SORReportExport"
+  ).toBeVisible({ timeout: 45_000 });
+  // The Data Exports page it used to embed must NOT be present.
+  await expect(page.locator('[data-testid="exports-page"]')).toHaveCount(0);
+});
+
+// ── retired pd-sor-new deep link → Catalog & SOR, which hosts the tracker ────
+
+test("pd-sor-new alias: lands on Catalog & SOR with the 6–7-week sub-tab", async ({
+  page,
+}) => {
+  await openMerchTab(page, "pd-sor-new");
+  // Alias must resolve to the Catalog & SOR tab, whose sub-tab strip now
+  // hosts the 6–7-week SOR tracker.
+  const subTab = page.locator('[data-testid="subtab-sor-6wk"]');
+  await expect(
+    subTab,
+    "Catalog & SOR must show the SOR New Styles (6–7 Wk) sub-tab"
+  ).toBeVisible({ timeout: 45_000 });
+  await subTab.click();
+  await expect(
+    page.locator('[data-testid="sor-new-styles-report-tab"]'),
+    "6–7-week SOR tracker must render inside Catalog & SOR"
+  ).toBeVisible({ timeout: 45_000 });
+});
+
 for (const tab of MERCH_TABS) {
   test(`${tab.id}: heading, KPI card, and chart render without errors`, async ({
     page,
@@ -166,8 +217,11 @@ for (const tab of MERCH_TABS) {
     // card containing a value element.  We look for any card whose value
     // text is not "—" and not blank.
     const nonEmptyKpi = await page.evaluate(() => {
-      // KPI values: look for short bold/large text inside a card-white div
+      // KPI cards carry data-testid attributes containing "kpi"
+      // (MerchKPICard testId prop); fall back to class-name matching for
+      // any page still using bare card divs.
       const cards = [
+        ...document.querySelectorAll('[data-testid*="kpi"]'),
         ...document.querySelectorAll('[class*="card"]'),
         ...document.querySelectorAll('[class*="kpi"]'),
       ];

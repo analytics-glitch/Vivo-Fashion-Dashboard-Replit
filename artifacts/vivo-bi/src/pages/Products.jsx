@@ -13,6 +13,7 @@ import SortableTable from "@/components/SortableTable";
 import ProductThumbnail from "@/components/ProductThumbnail";
 import StockToSalesDrillTable from "@/components/StockToSalesDrillTable";
 import SorNewStylesL10 from "@/components/SorNewStylesL10";
+import SORNewStylesReport from "@/components/SORNewStylesReport";
 import SorAllStyles from "@/components/SorAllStyles";
 import NewStylesSalesCurve from "@/components/NewStylesSalesCurve";
 import CategoryCountryMatrix from "@/components/CategoryCountryMatrix";
@@ -401,6 +402,16 @@ const Products = () => {
         <button
           type="button"
           role="tab"
+          aria-selected={tab === "sor-6wk"}
+          onClick={() => setTab("sor-6wk")}
+          className={`px-4 py-2 text-[12.5px] font-medium border-l border-border ${tab === "sor-6wk" ? "bg-brand text-white" : "bg-white hover:bg-panel"}`}
+          data-testid="subtab-sor-6wk"
+        >
+          SOR New Styles (6–7 Wk)
+        </button>
+        <button
+          type="button"
+          role="tab"
           aria-selected={tab === "all-styles"}
           onClick={() => setTab("all-styles")}
           className={`px-4 py-2 text-[12.5px] font-medium border-l border-border ${tab === "all-styles" ? "bg-brand text-white" : "bg-white hover:bg-panel"}`}
@@ -441,6 +452,7 @@ const Products = () => {
       </div>
 
       {tab === "l10" && <SorNewStylesL10 brand={brandCsv} styleStatus={styleStatus} />}
+      {tab === "sor-6wk" && <SORNewStylesReport />}
       {tab === "all-styles" && <SorAllStyles brand={brandCsv} styleStatus={styleStatus} />}
       {tab === "sales-curve" && <NewStylesSalesCurve />}
       {tab === "matrix" && <CategoryCountryMatrix />}

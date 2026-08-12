@@ -1453,7 +1453,6 @@ const ReOrderTab = React.lazy(() => import("./ReOrder"));
 const StyleTrackerTab = React.lazy(() => import("./StyleTracker"));
 const CatalogueTab = React.lazy(() => import("./ProductCatalogue"));
 const SORReportTab = React.lazy(() => import("@/components/SORReportExport"));
-const SORNewStylesTab = React.lazy(() => import("@/components/SORNewStylesReport"));
 const RetiredStockTab = React.lazy(() => import("@/components/RetiredStockReport"));
 const PDFlowTab = React.lazy(() => import("./PDFlow"));
 
@@ -1472,7 +1471,8 @@ const PA_TABS = [
   { id: "pd-flow", label: "PD Flow", pageId: "pd-flow", el: PDFlowTab },
   { id: "catalog", label: "Catalog & SOR", pageId: "product-analysis", el: ProductsCatalog },
   { id: "sor-report",      label: "SOR Report",      pageId: "exports", el: SORReportTab },
-  { id: "sor-new-styles",  label: "SOR New Styles",  pageId: "exports", el: SORNewStylesTab },
+  // SOR New Styles (6–7 wk tracker) now lives as a sub-tab inside Catalog &
+  // SOR (Products.jsx) — the standalone tab was folded there in Task 1286.
   // Retired Stock rides the range-mgmt page id — retirement is a Range
   // Management concern, so whoever can see Range Mgmt sees this report.
   { id: "retired-stock",   label: "Retired Stock",   pageId: "range-mgmt", el: RetiredStockTab },
@@ -1485,7 +1485,9 @@ const ProductAnalysisPage = () => {
   const { user } = useAuth();
   const visibleTabs = PA_TABS.filter((t) => canAccessPage(user, t.pageId));
   const initialTab = (() => {
-    const wanted = new URLSearchParams(window.location.search).get("tab");
+    const raw = new URLSearchParams(window.location.search).get("tab");
+    // Folded tab (Task 1286): SOR New Styles is now a sub-tab of Catalog & SOR
+    const wanted = raw === "sor-new-styles" ? "catalog" : raw;
     return visibleTabs.some((t) => t.id === wanted) ? wanted : (visibleTabs[0]?.id ?? "");
   })();
   const [tab, setTab] = useState(initialTab);

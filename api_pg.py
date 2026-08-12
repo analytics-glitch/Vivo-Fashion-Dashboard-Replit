@@ -796,7 +796,11 @@ _VIEWER_PAGES = ["overview", "exec-summary", "locations", "footfall", "trend-ana
 # it lives in _LEADERSHIP_PAGES below (and therefore in ALL_PAGE_IDS, so admins
 # can also grant it to other groups via Group Access). The server-side
 # /api/finance gate independently restricts the API to leadership + admin.
-_MERCH_PAGES = ["merchandising", "merch-overview", "merch-sales", "merch-inventory", "merch-sellthrough", "merch-category", "merch-lifecycle", "merch-atrisk", "merch-replen", "merch-financial", "merch-arrivals", "merch-deepdive", "merch-store"]
+# Consolidated in Task 1286: sellthrough/category/financial merged into
+# merch-sales, atrisk into merch-overview, replen into merch-inventory,
+# arrivals into merch-lifecycle. Retired ids live on only as
+# _LEGACY_PAGE_ALIASES entries so stored group grants keep working.
+_MERCH_PAGES = ["merchandising", "merch-overview", "merch-sales", "merch-inventory", "merch-lifecycle", "merch-deepdive", "merch-store"]
 _LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "quarter-scorecard", "product-analysis", "range-mgmt", "size-health", "inventory", "warehouse-returns", "excess-inventory", "rebalancing", "store-flow", "marketing", "social", "crm", "order-explorer", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "style-tracker", "pd-flow", "partner-brands", "finance", "margin", "l10", "rota", "growth", "retail-desk", "product-desk", "workforce-desk", "customer-desk", "marketing-desk", "supply-chain-desk", "production-desk", "the-chair", "quality", "store-profiling", "store-feedback", "central-tracker"] + _MERCH_PAGES)
 
 DEFAULT_ROLE_PAGES = {
@@ -832,7 +836,17 @@ DEFAULT_ROLE_PAGES = {
 # to its new home on read, so no group silently loses access after the merge.
 #   products → merged into Product Analysis (Catalog & SOR tab)
 #   velocity → merged into Inventory (Velocity & Cover tab)
-_LEGACY_PAGE_ALIASES = {"products": "product-analysis", "velocity": "inventory"}
+#   merch-* retired tabs → their merged successor (Task 1286)
+_LEGACY_PAGE_ALIASES = {
+    "products": "product-analysis",
+    "velocity": "inventory",
+    "merch-atrisk": "merch-overview",
+    "merch-sellthrough": "merch-sales",
+    "merch-category": "merch-sales",
+    "merch-financial": "merch-sales",
+    "merch-replen": "merch-inventory",
+    "merch-arrivals": "merch-lifecycle",
+}
 
 # Admin management page ids (admin- prefix). These are route-guarded as
 # adminOnly anyway and can NEVER be assigned to a non-admin group.

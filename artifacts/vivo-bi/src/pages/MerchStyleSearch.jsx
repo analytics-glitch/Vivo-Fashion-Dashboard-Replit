@@ -22,7 +22,7 @@ let _styleListPromise = null;
 
 /**
  * loadStyles — fetches the full style list once, caches it for the session.
- * Exported so MerchDeepDive and MerchStoreDetail can find a specific style
+ * Exported so MerchDeepDive can find a specific style
  * by style_number without needing a separate (unsupported) style_number filter
  * on the /api/merch/styles endpoint.
  */

@@ -7,18 +7,20 @@ import { Loading } from "@/components/common";
 import { apiFetch, comparePeriod } from "@/lib/api";
 
 /**
- * Merchandising Hub — tabbed container for all 12 merchandising sub-pages.
+ * Merchandising Hub — tabbed container for all merchandising sub-pages.
+ *
+ * Analytics are consolidated into four tabs (Task 1286):
+ *   Overview · Sales & Pricing · Inventory & Replenishment · Lifecycle & Launches
+ * plus Style Deep Dive, Store Detail and the embedded Product Development pages.
  *
  * The hub shell:
  *   • reads the global filter bar (useFilters) and publishes a MerchFiltersContext
  *     that every tab component can consume via useMerchFilters()
  *   • keeps ?tab= in the URL so deep-links and back/forward work correctly
+ *     (retired tab ids alias to their merged successor — see RETIRED_TAB_ALIASES)
  *   • gates each tab via canAccessPage so roles without a tab's page-id never
  *     see that tab button
  *   • renders a sticky tab bar that sits flush under the top nav (top: var(--app-navbar-h))
- *
- * Sub-page components are lazily imported; each starts as a PlaceholderTab
- * until the feature task for that page ships.
  */
 
 // ── Deep-dive navigation helper ───────────────────────────────────────────────
@@ -88,13 +90,7 @@ const PlaceholderTab = ({ name }) => (
 const MerchandisingOverview    = React.lazy(() => import("./merch/MerchOverview"));
 const MerchandisingSales       = React.lazy(() => import("./merch/MerchSales"));
 const MerchandisingInventory   = React.lazy(() => import("./merch/MerchInventory"));
-const MerchandisingSellThrough = React.lazy(() => import("./merch/MerchSellThrough"));
-const MerchandisingCategory    = React.lazy(() => import("./MerchCategory"));
 const MerchandisingLifecycle   = React.lazy(() => import("./MerchLifecycle"));
-const MerchandisingAtRisk      = React.lazy(() => import("./MerchAtRisk"));
-const MerchandisingReplen      = React.lazy(() => import("./MerchReplen"));
-const MerchandisingFinancial   = React.lazy(() => import("./MerchFinancial"));
-const MerchandisingArrivals    = React.lazy(() => import("./MerchArrivals"));
 const MerchandisingDeepDive    = React.lazy(() => import("./MerchDeepDive"));
 const MerchandisingStore       = React.lazy(() => import("./MerchStoreCockpit"));
 
@@ -103,8 +99,7 @@ const PdStyleCockpit    = React.lazy(() => import("./ProductAnalysis"));
 const PdRangeMgmt       = React.lazy(() => import("./RangeManagement"));
 const PdStyleTracker    = React.lazy(() => import("./StyleTracker"));
 const PdCatalogSOR      = React.lazy(() => import("./Products"));
-const PdSORReport       = React.lazy(() => import("./Exports"));
-const PdSORNewStyles    = React.lazy(() => import("@/components/SORNewStylesReport"));
+const PdSORReport       = React.lazy(() => import("@/components/SORReportExport"));
 const PdRetiredStock    = React.lazy(() => import("@/components/RetiredStockReport"));
 const PdAllocations     = React.lazy(() => import("./Allocations"));
 const PdReOrder         = React.lazy(() => import("./ReOrder"));
@@ -128,26 +123,32 @@ const MERCH_TABS = [
   { id: "pd-style-tracker",    label: "Weekly Style Tracker",   pageId: "style-tracker",     el: PdStyleTracker },
   { id: "pd-catalog-sor",      label: "Catalog & SOR",          pageId: "product-analysis",  el: PdCatalogSOR },
   { id: "pd-sor-report",       label: "SOR Report",             pageId: "exports",           el: PdSORReport },
-  { id: "pd-sor-new",          label: "SOR New Styles",         pageId: "exports",           el: PdSORNewStyles },
   { id: "pd-retired-stock",    label: "Retired Stock",          pageId: "range-mgmt",        el: PdRetiredStock },
   { id: "pd-allocations",      label: "Allocations",            pageId: "allocations",       el: PdAllocations },
   { id: "pd-reorder",          label: "Re-Order",               pageId: "re-order",          el: PdReOrder },
   { id: "pd-product-cat",      label: "Product Catalogue",      pageId: "gallery",           el: PdProductCat },
   { id: "pd-flow",             label: "PDFlow",                 pageId: "pd-flow",           el: PdFlow },
 
-  // ── Merch-native deep-dive tabs ───────────────────────────────────────────
-  { id: "merch-sales",         label: "Sales Performance",      pageId: "merch-sales",       el: MerchandisingSales },
-  { id: "merch-inventory",     label: "Inventory & Stock Health",pageId: "merch-inventory",  el: MerchandisingInventory },
-  { id: "merch-sellthrough",   label: "Sell-Through & Markdown",pageId: "merch-sellthrough", el: MerchandisingSellThrough },
-  { id: "merch-category",      label: "Category Performance",   pageId: "merch-category",    el: MerchandisingCategory },
-  { id: "merch-lifecycle",     label: "Style Lifecycle & Age",  pageId: "merch-lifecycle",   el: MerchandisingLifecycle },
-  { id: "merch-atrisk",        label: "At-Risk & Actions",      pageId: "merch-atrisk",      el: MerchandisingAtRisk },
-  { id: "merch-replen",        label: "Replenishment Planning", pageId: "merch-replen",      el: MerchandisingReplen },
-  { id: "merch-financial",     label: "Financial Performance",  pageId: "merch-financial",   el: MerchandisingFinancial },
-  { id: "merch-arrivals",      label: "New Arrivals & Pipeline",pageId: "merch-arrivals",    el: MerchandisingArrivals },
+  // ── Merch-native deep-dive tabs (consolidated, Task 1286) ────────────────
+  { id: "merch-sales",         label: "Sales & Pricing",        pageId: "merch-sales",       el: MerchandisingSales },
+  { id: "merch-inventory",     label: "Inventory & Replenishment", pageId: "merch-inventory", el: MerchandisingInventory },
+  { id: "merch-lifecycle",     label: "Lifecycle & Launches",   pageId: "merch-lifecycle",   el: MerchandisingLifecycle },
   { id: "merch-deepdive",      label: "Style Deep Dive",        pageId: "merch-deepdive",    el: MerchandisingDeepDive },
   { id: "merch-store",         label: "Store Detail",           pageId: "merch-store",       el: MerchandisingStore },
 ];
+
+// ── Retired tab ids → merged successor (Task 1286) ───────────────────────────
+// Old deep links / bookmarks like ?tab=merch-financial resolve to the merged
+// tab instead of falling back to the first visible tab.
+export const RETIRED_TAB_ALIASES = {
+  "merch-atrisk":      "merch-overview",   // At-Risk & Actions      → Overview
+  "merch-sellthrough": "merch-sales",      // Sell-Through & Markdown → Sales & Pricing
+  "merch-category":    "merch-sales",      // Category Performance   → Sales & Pricing
+  "merch-financial":   "merch-sales",      // Financial Performance  → Sales & Pricing
+  "merch-replen":      "merch-inventory",  // Replenishment Planning → Inventory & Replenishment
+  "merch-arrivals":    "merch-lifecycle",  // New Arrivals & Pipeline → Lifecycle & Launches
+  "pd-sor-new":        "pd-catalog-sor",   // SOR New Styles → Catalog & SOR (sub-tab)
+};
 
 // ── Hub shell ─────────────────────────────────────────────────────────────────
 const MerchandisingHub = () => {
@@ -207,7 +208,8 @@ const MerchandisingHub = () => {
   // ── Tab selection ─────────────────────────────────────────────────────────
   const visibleTabs = MERCH_TABS.filter((t) => canAccessPage(user, t.pageId));
 
-  const wantedTab = searchParams.get("tab");
+  const rawWantedTab = searchParams.get("tab");
+  const wantedTab = RETIRED_TAB_ALIASES[rawWantedTab] || rawWantedTab;
   const resolvedTab =
     visibleTabs.some((t) => t.id === wantedTab)
       ? wantedTab
@@ -226,7 +228,8 @@ const MerchandisingHub = () => {
 
   // Sync state when the URL changes externally (e.g. browser back button)
   useEffect(() => {
-    const wanted = searchParams.get("tab");
+    const rawWanted = searchParams.get("tab");
+    const wanted = RETIRED_TAB_ALIASES[rawWanted] || rawWanted;
     if (wanted && visibleTabs.some((t) => t.id === wanted) && wanted !== activeId) {
       setActiveId(wanted);
     }
