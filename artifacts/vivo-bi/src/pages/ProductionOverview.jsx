@@ -108,17 +108,17 @@ function TargetCard({ label, value, targetLabel, status, detail, onClick }) {
     <div
       role="button"
       tabIndex={0}
-      className={`rounded-xl border ${c.border} ${c.bg} p-3 flex flex-col gap-1 ${onClick ? "cursor-pointer transition-shadow hover:shadow-md" : ""}`}
+      className={`rounded-xl border ${c.border} ${c.bg} p-2 flex flex-col gap-0.5 ${onClick ? "cursor-pointer transition-shadow hover:shadow-md" : ""}`}
       onClick={onClick}
       onKeyDown={onClick ? (e) => { if (e.key === "Enter" || e.key === " ") onClick(); } : undefined}
     >
       <div className="flex items-start justify-between gap-1">
-        <span className="text-[12.5px] font-semibold text-[#0f3d24] leading-tight">{label}</span>
-        <span className={`shrink-0 mt-0.5 w-2.5 h-2.5 rounded-full ${c.dot}`} title={c.label} />
+        <span className="text-[11.5px] font-semibold text-[#0f3d24] leading-tight">{label}</span>
+        <span className={`shrink-0 mt-0.5 w-2 h-2 rounded-full ${c.dot}`} title={c.label} />
       </div>
-      <div className={`text-[24px] font-extrabold tabular-nums leading-none ${status === "green" ? "text-emerald-700" : "text-red-600"}`}>{value}</div>
-      <div className="text-[11px] text-muted">Target: {targetLabel}</div>
-      {detail && <div className="text-[11px] text-slate-500">{detail}</div>}
+      <div className={`text-[19px] font-extrabold tabular-nums leading-none ${status === "green" ? "text-emerald-700" : "text-red-600"}`}>{value}</div>
+      <div className="text-[10.5px] text-muted">Target: {targetLabel}</div>
+      {detail && <div className="text-[10.5px] text-slate-500">{detail}</div>}
     </div>
   );
 }
@@ -919,7 +919,7 @@ export default function ProductionOverview({ onOpenReport }) {
             <span className="inline-block w-2 h-2 rounded-full bg-red-500 mr-1 ml-2" />Off Track
           </span>
         </div>
-        <div className="grid gap-2 grid-cols-2 lg:grid-cols-4">
+        <div className="grid gap-1.5 grid-cols-2 md:grid-cols-4">
           {targets.map((t) => (
             <TargetCard
               key={t.label}
