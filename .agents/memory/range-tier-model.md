@@ -42,6 +42,15 @@ YYYY-MM of sale_date over trailing 365d), computed in each endpoint's SQL.
 **Every in-scope style gets exactly one bucket**, so the banner math holds:
 Active [Tier 1..4] + Retired == Total; sum(Tier 1..4 counts) == Active.
 
+# Spreadsheet override layer (Aug 2026) — `style_tier_overrides` WINS
+
+The imported buying-sheet table (style_number → status + tier) is applied LAST
+on BOTH Range Management and Product Analysis, after `_lifecycle_tier` and
+`_RANGE_OVERRIDES`: Active+tier → sheet tier (can un-retire); Retired/Archived
+→ Retired; not-on-sheet → Retired (only when the table is populated; probe =
+any override row in the result set). See manual-style-retirement.md for full
+precedence, the PA row-projection trap, and which endpoints still diverge.
+
 # Where it's used (all consistent, no divergence)
 
 - **Range Management** `/api/range-mgmt/classify` (`range_mgmt_classify`): `tier` =

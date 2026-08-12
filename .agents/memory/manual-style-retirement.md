@@ -1,36 +1,44 @@
 ---
-name: Style retirement source (Odoo status field)
-description: Retirement now comes ONLY from Odoo product status (all_products_clean.status); rule, mixed-style handling, and the multi-endpoint consistency trap.
+name: Style status source of truth (sheet overrides > Odoo base)
+description: style_tier_overrides (imported buying sheet) is the authoritative Active/Retired layer on RM + PA; Odoo status is only the base model. Precedence rules, the PA projection trap, and which endpoints still diverge.
 ---
 
-# Style retirement = Odoo status field
+# Style Active/Retired: `style_tier_overrides` wins; Odoo status is the base
 
-Retirement is sourced from the Odoo product status attribute (x_vivo_attr_97 →
-`raw_odoo_products.status` → `all_products_clean.status`, values
-'Active'/'Retired', synced hourly). The old durable code-level manual list AND
-the "all Zoya is retired" rule were REMOVED at the user's request (July 2026) —
-Odoo is the single source of truth; the merch team maintains it there, and the
-hourly sync propagates it to dev AND prod (no code-ship needed anymore).
+Since Aug 2026 the imported buying-sheet table `style_tier_overrides`
+(style_number → status Active/Retired/Archived + tier) is the SOURCE OF TRUTH
+for Active vs Retired on **Range Management AND Product Analysis** (PA powers
+the PA page, Store Detail cockpit, Style Cockpit, exec summary). Precedence,
+applied LAST after the base model, identical on both surfaces:
 
-**Style-level rule:** a style is Retired iff at least one of its SKUs has
-`status='Retired'` AND none has `status='Active'` (Active wins for mixed
-styles; NULL/blank status alone never retires). Expressed once as
-`_ODOO_RETIRED_STYLES_SQL` in `api_pg.py`, shared verbatim by:
-- the cached Python set `_odoo_retired_styles()` (300s TTL, normalized via
-  `_norm_style`) backing the predicate `_is_manually_retired(style)` — the
-  function KEPT its legacy name so the many call sites needed no change;
-- the Warehouse Returns retired-mode SQL (`IN (subquery)`), so Python and SQL
-  consumers can never drift.
+- Active + tier → use the sheet tier (CAN un-retire an Odoo-retired style)
+- Retired / Archived → Retired
+- not on the sheet → Retired, but ONLY when the table is populated
+  (probe = any override row observed in the result set, same as RM)
 
-**Consistency rule (the trap):** retirement is determined in MULTIPLE endpoints
-and they must ALL go through `_is_manually_retired` / `_ODOO_RETIRED_STYLES_SQL`,
-or one screen shows a style retired while another shows it active. Known sites:
-`/api/range-mgmt/classify`, `/api/analytics/product-analysis`,
-`/api/analytics/sor-all-styles`, `/api/inventory-style-counts` (Python-side
-because the normalized match can't be raw SQL equality),
-`/api/analytics/warehouse-return-candidates` (retired mode force-includes
-Odoo-Retired styles even if still selling; aged mode excludes them).
+Business-wide PA "active" can read one or two BELOW RM's Active count: RM
+force-includes zero-stock sheet-Active styles (`OR tov.status='Active'` in its
+universe); PA's universe still requires stock or in-window sales.
 
-**How to apply:** any NEW endpoint bucketing active-vs-retired must use the
-shared predicate/SQL, never re-derive from `active`, sales recency, or brand.
-Zoya styles are NOT auto-retired anymore — 35+ are Odoo-Active by design.
+**Base model (fallback / legacy consumers):** Odoo product status
+(`all_products_clean.status`, hourly sync). Style-level rule: Retired iff ≥1
+SKU 'Retired' AND none 'Active' (Active wins mixed; NULL never retires) —
+`_ODOO_RETIRED_STYLES_SQL` / `_is_manually_retired`. The old manual list and
+"all Zoya retired" rules stay REMOVED.
+
+**Known divergent endpoints (still Odoo-base only):**
+`/api/analytics/sor-all-styles` (SOR report), `/api/inventory-style-counts`,
+`/api/analytics/warehouse-return-candidates`. If a user reports a style
+Active on one screen and Retired on another, check which layer that surface
+uses before touching data.
+
+**The PA projection trap:** `analytics_product_analysis` RE-PROJECTS raw SQL
+rows into explicit dicts before the style-grouping/classification loops. A new
+SQL output column that is not added to that projection dict silently vanishes
+downstream (the override layer no-ops and status falls back to the base model
+with NO error). When adding columns to the PA SQL, thread them through the
+projection too, then verify counts via the live endpoint, not just the SQL.
+
+**How to apply:** any NEW endpoint bucketing active-vs-retired must apply the
+override precedence above on top of the shared base predicate — never
+re-derive from `active`, sales recency, or brand.

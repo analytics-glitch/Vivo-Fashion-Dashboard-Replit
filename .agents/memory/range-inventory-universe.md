@@ -58,3 +58,12 @@ filter (all/active/retired — 3 heavy scans, endpoint has a 10-min cache) and a
 explicit `INTENTIONAL_SKIPS` entry (different defs by design) — never reconcile them.
 **Why:** the lifecycle Active/Retired redefinition intentionally decoupled PA's
 Retired from RM's hard/manual-only Retired; only the total universe must agree.
+
+## Store-scoped universe (Aug 2026)
+When PA receives a single `store` param (Store Detail cockpit / PA store
+filter), the universe gate switches to store-scoped stock (`soh_current`) OR
+any in-window transaction at that store — NOT business-wide stock. Business-wide
+(no store) keeps the stores+warehouse gate that reconciles to RM's Total.
+**Why:** the global gate made a store's "Active Styles" read ~the whole
+catalogue (Junction showed 1,184). Sold-out-in-period styles must stay in the
+store universe or the cockpit's Revenue/Units undercount.

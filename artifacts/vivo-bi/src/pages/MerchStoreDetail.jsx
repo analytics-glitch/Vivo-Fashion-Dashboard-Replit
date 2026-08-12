@@ -252,17 +252,24 @@ const MerchStoreDetail = () => {
   // Active KPIs: specific store or all-stores aggregate
   const displayKPIs = selectedStore ? storeKPIs : allStoresKPIs;
 
+  // All-stores average rev/sqft — used as a benchmark when a store is selected.
+  // Numerator and denominator MUST come from the same store subset: a store
+  // with unknown sqft (e.g. Zoya Sarit) would otherwise add revenue to a
+  // denominator it is absent from, overstating the average.
+  const avgRevPerSqftAllStores = useMemo(() => {
+    if (!allStores.length) return null;
+    const withSqft = allStores.filter(r => r.sqft > 0);
+    const rev  = withSqft.reduce((s, r) => s + (r.revenue_3m || 0), 0);
+    const area = withSqft.reduce((s, r) => s + r.sqft, 0);
+    return rev > 0 && area > 0 ? Math.round(rev / area) : null;
+  }, [allStores]);
+
   // Derived: total period gross revenue per sq ft (selected store or all-stores)
   const revPerSqft = useMemo(() => {
+    if (!selectedStore) return avgRevPerSqftAllStores; // paired-subset math above
     if (!displayKPIs?.revenue_3m || !displayKPIs?.sqft) return null;
     return Math.round(displayKPIs.revenue_3m / displayKPIs.sqft);
-  }, [displayKPIs]);
-
-  // All-stores average rev/sqft — used as a benchmark when a store is selected
-  const avgRevPerSqftAllStores = useMemo(() => {
-    if (!allStoresKPIs?.revenue_3m || !allStoresKPIs?.sqft) return null;
-    return Math.round(allStoresKPIs.revenue_3m / allStoresKPIs.sqft);
-  }, [allStoresKPIs]);
+  }, [selectedStore, displayKPIs, avgRevPerSqftAllStores]);
 
   // Derived: at-risk style count (only meaningful for a specific store)
   const atRiskCount = useMemo(() =>

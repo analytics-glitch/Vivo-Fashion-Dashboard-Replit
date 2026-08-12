@@ -10387,13 +10387,26 @@ def analytics_product_analysis(
         from_join = (" FROM prod p LEFT JOIN sales sa" + join_keys +
                      " LEFT JOIN stock st" + join_keys)
         pos_out = " st.store_locations AS pos_location,"
-        # Only styles that currently hold inventory (stores or warehouse) are in scope.
-        # Match RM's universe: styles with stock in stores OR warehouse only.
-        # soh_current can include pipeline locations; using soh_stores/soh_warehouse
-        # directly excludes pipeline-only styles, aligning the PA style count
-        # with the Range Management total (xsurf_pa_vs_rm_total invariant).
-        activity_where = (" WHERE (COALESCE(st.soh_stores,0) > 0"
-                          " OR COALESCE(st.soh_warehouse,0) > 0)")
+        if store:
+            # Store-scoped universe: with a single store selected (Store Detail
+            # cockpit / PA store filter), a style is part of THAT store's range
+            # only if it holds stock at the store now (soh_current is already
+            # store-scoped via current_loc_clause) OR it transacted there in
+            # the selected window (sold-out styles must keep contributing
+            # revenue/units). Previously this gate used business-wide stock,
+            # so a store's "Active Styles" card read ~the whole catalogue.
+            activity_where = (" WHERE (COALESCE(st.soh_current,0) > 0"
+                              " OR COALESCE(sa.gross_units_period,0) > 0"
+                              " OR COALESCE(sa.units_period,0) <> 0"
+                              " OR COALESCE(sa.revenue_period,0) <> 0)")
+        else:
+            # Only styles that currently hold inventory (stores or warehouse) are in scope.
+            # Match RM's universe: styles with stock in stores OR warehouse only.
+            # soh_current can include pipeline locations; using soh_stores/soh_warehouse
+            # directly excludes pipeline-only styles, aligning the PA style count
+            # with the Range Management total (xsurf_pa_vs_rm_total invariant).
+            activity_where = (" WHERE (COALESCE(st.soh_stores,0) > 0"
+                              " OR COALESCE(st.soh_warehouse,0) > 0)")
 
     # months_active_12 = the count of DISTINCT calendar months (trailing 365d) in
     # which the style recorded a sale/order. Drives the unified Tier-1 ("NOOS",
@@ -10413,6 +10426,11 @@ def analytics_product_analysis(
         ")"
     )
     from_join += " LEFT JOIN nos ON nos.style_name = p.style_name"
+    # Spreadsheet status/tier overrides — the SAME source of truth Range
+    # Management uses (style_tier_overrides, imported from the buying sheet),
+    # joined on the style's canonical style_number so PA's Active/Retired split
+    # can never disagree with the Range page.
+    from_join += " LEFT JOIN style_tier_overrides tov ON tov.style_number = p.style_number"
 
     # The sales CTE is the heavy lifetime full-scan. When the table is NOT exploded
     # by any product dim / POS, is not store-scoped, and uses the default 30-day
@@ -10583,6 +10601,7 @@ def analytics_product_analysis(
         " COALESCE(st.soh_stores,0) AS soh_stores," + pos_out + " sa.current_price,"
         " COALESCE(nos.months_active_12,0) AS months_active_12,"
         " COALESCE(p.is_noos, FALSE) AS is_noos,"
+        " tov.status AS override_status, tov.tier AS override_tier,"
         " p.standard_cost_kes,"
         " p.last_order_date"
         + from_join + activity_where
@@ -10676,6 +10695,11 @@ def analytics_product_analysis(
             "style_name": r["style_name"],
             "sku": r["rep_sku"],
             "style_number": r["style_number"],
+            # Spreadsheet override passthrough — consumed by the style-grain
+            # classification loop below (style_tier_overrides is the source of
+            # truth for Active/Retired, same as Range Management).
+            "override_status": r.get("override_status"),
+            "override_tier": r.get("override_tier"),
             "brand": r["brand"],
             "category": r["category"],
             "subcategory": r["subcategory"],
@@ -10746,8 +10770,12 @@ def analytics_product_analysis(
                  "units_life": 0, "units_6m": 0, "sales_life": 0, "months_active_12": 0,
                  "age_weeks": None, "full_price": None, "last_sale": None, "is_noos": False,
                  "brand": row["brand"], "category": row["category"], "subcategory": row["subcategory"],
-                 "style_number": row.get("style_number")}
+                 "style_number": row.get("style_number"),
+                 "override_status": None, "override_tier": None}
             styles[k] = g
+        if g["override_status"] is None and row.get("override_status") is not None:
+            g["override_status"] = row.get("override_status")
+            g["override_tier"] = row.get("override_tier")
         g["units"] += row["units_sold"]
         g["gross_units_period"] += row["gross_units_period"]
         g["revenue"] += row["revenue"]
@@ -10770,18 +10798,21 @@ def analytics_product_analysis(
         if row["last_sale"] is not None:
             g["last_sale"] = row["last_sale"] if g["last_sale"] is None else max(g["last_sale"], row["last_sale"])
 
-    # Active vs Retired + the displayed Tier both come from the UNIFIED
-    # _lifecycle_tier model shared with Range Management (Retired = manual list /
-    # Zoya only; Tier 1..4 by NOOS-consistency / reorder cycles). Every style in
-    # the (inventory-only) universe gets exactly one bucket, so Active [Tier 1..4]
-    # + Retired == Total. A manual tier override (_RANGE_OVERRIDES, Tier 1..4 only)
-    # re-buckets within the active range, exactly like Range Management.
+    # Active vs Retired + the displayed Tier: base classification comes from the
+    # UNIFIED _lifecycle_tier model, then the spreadsheet override table
+    # (style_tier_overrides — the same source of truth Range Management uses) is
+    # applied LAST and wins. Every style in the universe gets exactly one bucket,
+    # so Active [Tier 1..4] + Retired == Total. A manual tier override
+    # (_RANGE_OVERRIDES, Tier 1..4 only) re-buckets within the active range.
     # "Actively selling" (units_vel > 0) is a separate overlay, NOT part of the
     # Active/Retired partition.
     keep = set()
     status_by_style = {}
     selling_by_style = {}
     tier_by_style = {}
+    # Detect whether the spreadsheet override table is in use (same probe as
+    # Range Management: any style in this result set carrying an override row).
+    _tov_populated = any(g.get("override_status") is not None for g in styles.values())
     for k, g in styles.items():
         aw = g["age_weeks"]
         rc = reorder_counts.get(g.get("style_number") or "", 0)
@@ -10793,6 +10824,18 @@ def analytics_product_analysis(
                                      ("Tier 1", "Tier 2", "Tier 3", "Tier 4")) else None
             if ov_tier:
                 t = ov_tier
+        # Spreadsheet override (style_tier_overrides) — applied LAST with the
+        # exact Range Management rules, so the two surfaces always agree:
+        #   Active + tier      → use the sheet tier (can un-retire a style)
+        #   Retired / Archived → force Retired
+        #   not on the sheet   → Retired (only when the table is populated)
+        _ovs = g.get("override_status")
+        if _ovs == "Active" and g.get("override_tier"):
+            t = g["override_tier"]
+        elif _ovs in ("Retired", "Archived"):
+            t = "Retired"
+        elif _ovs is None and _tov_populated:
+            t = "Retired"
         retired = (t == "Retired")
         status_by_style[k] = "Retired" if retired else "Active"
         tier_by_style[k] = t
@@ -41421,6 +41464,95 @@ def get_central_tracker(request: Request, year: str = Query(None)):
     return result
 
 
+@app.get("/api/transfers/store-returns")
+def transfers_store_returns(
+    store: str = Query(default=None),
+    state: str = Query(default=None),
+):
+    """Store→warehouse returns: pickings from retail stores back to WHREC.
+
+    (Relocated: this was originally defined after the SPA catch-all route and
+    therefore unreachable; filters also switched to bind parameters.)
+    """
+    filters = ["transfer_type = 'store_to_warehouse'"]
+    params = []
+    if store:
+        filters.append("to_store_name = %s")
+        params.append(store)
+    if state:
+        filters.append("state = %s")
+        params.append(state)
+    where = " AND ".join(filters)
+    summary = _users_exec(f"""
+        SELECT
+            to_store_name AS store,
+            state,
+            COUNT(DISTINCT picking_id) AS pickings,
+            ROUND(SUM(qty_planned)) AS qty_planned,
+            ROUND(SUM(qty_done)) AS qty_done,
+            MIN(scheduled_date) AS earliest,
+            MAX(scheduled_date) AS latest,
+            MAX(date_done) AS last_done
+        FROM stock_transfers
+        WHERE {where}
+        GROUP BY to_store_name, state
+        ORDER BY to_store_name, state
+    """, tuple(params), fetch=True)
+    totals = _users_exec(f"""
+        SELECT
+            COUNT(DISTINCT picking_id) AS total_pickings,
+            ROUND(SUM(qty_planned)) AS total_qty_planned,
+            ROUND(SUM(qty_done)) AS total_qty_done
+        FROM stock_transfers
+        WHERE {where}
+    """, tuple(params), fetch=True)
+    return {
+        "summary": summary,
+        "totals": totals[0] if totals else {},
+    }
+
+
+@app.get("/api/planning-calendar")
+def api_planning_calendar(year: int = None, date_str: str = Query(None, alias="date")):
+    """Company planning calendar (quarters + Mon–Sun trading weeks).
+
+    Optional `year` narrows the week list; optional `date=YYYY-MM-DD` returns
+    that date's planning week under `resolved`. `current` always resolves
+    today (EAT). Weeks carry `week_label` ("Wk 33") for display.
+
+    NOTE: must be registered BEFORE the SPA catch-all route below, or the
+    catch-all's api/ guard 404s it (Starlette matches in registration order).
+    """
+    from datetime import datetime as _dt
+    rows = run_query(
+        "SELECT year, week_no, quarter, start_date::text AS start_date,"
+        " end_date::text AS end_date FROM planning_calendar"
+        " ORDER BY year, week_no", ttl=3600) or []
+
+    def _shape(r):
+        return {**r, "week_label": "Wk %d" % r["week_no"]}
+
+    def _resolve(d_iso):
+        for r in rows:
+            if r["start_date"] <= d_iso <= r["end_date"]:
+                return _shape(r)
+        return None
+
+    today_eat = (_dt.utcnow() + timedelta(hours=3)).date().isoformat()
+    out = {
+        "weeks": [_shape(r) for r in rows
+                  if year is None or r["year"] == year],
+        "current": _resolve(today_eat),
+    }
+    if date_str:
+        try:
+            d_iso = _dt.strptime(date_str.strip(), "%Y-%m-%d").date().isoformat()
+            out["resolved"] = _resolve(d_iso)
+        except ValueError:
+            out["resolved"] = None
+    return out
+
+
 # Serve React build as static files
 build_dir = pathlib.Path(__file__).parent / "dashboard" / "build"
 if build_dir.exists():
@@ -41481,201 +41613,61 @@ if build_dir.exists():
         return response
 
 
-@app.get("/api/transfers/store-returns")
-def transfers_store_returns(
-    store: str = Query(default=None),
-    state: str = Query(default=None),
-):
-    """Store→warehouse returns: pickings from retail stores back to WHREC."""
-    filters = ["transfer_type = 'store_to_warehouse'"]
-    if store:
-        filters.append(f"to_store_name = {repr(store)}")
-    if state:
-        filters.append(f"state = {repr(state)}")
-    where = " AND ".join(filters)
-    summary = _users_exec(f"""
-        SELECT
-            to_store_name AS store,
-            state,
-            COUNT(DISTINCT picking_id) AS pickings,
-            ROUND(SUM(qty_planned)) AS qty_planned,
-            ROUND(SUM(qty_done)) AS qty_done,
-            MIN(scheduled_date) AS earliest,
-            MAX(scheduled_date) AS latest,
-            MAX(date_done) AS last_done
-        FROM stock_transfers
-        WHERE {where}
-        GROUP BY to_store_name, state
-        ORDER BY to_store_name, state
-    """, fetch=True)
-    totals = _users_exec(f"""
-        SELECT
-            COUNT(DISTINCT picking_id) AS total_pickings,
-            ROUND(SUM(qty_planned)) AS total_qty_planned,
-            ROUND(SUM(qty_done)) AS total_qty_done
-        FROM stock_transfers
-        WHERE {where}
-    """, fetch=True)
-    return {
-        "summary": summary,
-        "totals": totals[0] if totals else {},
-    }
+# NOTE: /api/transfers/store-returns used to be defined here — AFTER the SPA
+# catch-all above, so it was unreachable (404). It now lives before the
+# catch-all, next to /api/planning-calendar.
 
 
-# ---- Production hourly tracker (Google Sheet fed) ----
-PRODUCTION_PRODUCTIVE_HOURS = 8  # 08:00-17:00 minus 13:00-14:00 lunch
-
-
-@app.get("/api/production/hourly-tracker")
-def production_hourly_tracker(
-    work_date: str = Query(default=None),
-    sewing_line: str = Query(default=None),
-):
-    """Live production output vs target for one sewing line on one day.
-    Defaults: latest day that has actuals (else max date, else today), and the
-    first sewing line present for that day if none is given."""
-    line_filter = (
-        ("AND sewing_line = '" + _sql_str(sewing_line) + "'") if sewing_line else ""
-    )
-
-    # Resolve the day.
-    if work_date:
-        day = _sql_str(work_date)
-    else:
-        drow = run_query(
-            "SELECT COALESCE("
-            "  (SELECT MAX(work_date) FROM production_hourly "
-            f"    WHERE actual IS NOT NULL {line_filter}),"
-            "  (SELECT MAX(work_date) FROM production_hourly),"
-            "  CURRENT_DATE) AS d"
-        )
-        day = str(drow[0]["d"]) if drow else None
-    if not day:
-        return {"work_date": None, "slots": [], "daily_target": 0, "made_so_far": 0}
-
-    # Resolve the sewing line if not specified: first line present that day.
-    line = sewing_line
-    if not line:
-        lrow = run_query(
-            "SELECT MIN(sewing_line) AS ln FROM production_hourly "
-            f"WHERE work_date = '{_sql_str(day)}'"
-        )
-        line = lrow[0]["ln"] if lrow and lrow[0]["ln"] else "A"
-
-    rows = run_query(
-        "SELECT slot, slot_index, target, actual, style "
-        "FROM production_hourly "
-        f"WHERE work_date = '{_sql_str(day)}' AND sewing_line = '{_sql_str(line)}' "
-        "ORDER BY slot_index"
-    )
-
-    slots, cum_actual, cum_target, hours_done, made_so_far, style = [], 0, 0, 0, 0, None
-    for r in rows or []:
-        a, t = r.get("actual"), r.get("target")
-        if r.get("style"):
-            style = r["style"]
-        if a is not None:
-            cum_actual += a
-            made_so_far += a
-            hours_done += 1
-        if t is not None:
-            cum_target += t
-        slots.append(
-            {
-                "slot": r["slot"],
-                "target": t,
-                "actual": a,
-                "cumulative_actual": cum_actual if a is not None else None,
-                "cumulative_target": cum_target if t is not None else None,
-                "pct_of_slot": (
-                    round(100 * a / t, 1) if (a is not None and t) else None
-                ),
-            }
-        )
-
-    daily_target = cum_target
-    pace = (made_so_far / hours_done) if hours_done else 0
-    projected = round(pace * PRODUCTION_PRODUCTIVE_HOURS)
-    pct_achieved = round(100 * made_so_far / daily_target, 1) if daily_target else None
-    projected_pct = round(100 * projected / daily_target, 1) if daily_target else None
-    expected_by_now = (
-        round((daily_target / PRODUCTION_PRODUCTIVE_HOURS) * hours_done)
-        if daily_target
-        else 0
-    )
-
-    if hours_done == 0:
-        status = "Not started"
-    elif made_so_far >= expected_by_now:
-        status = "On track"
-    elif made_so_far >= 0.85 * expected_by_now:
-        status = "Slightly behind"
-    else:
-        status = "Behind"
-
-    # Which sewing lines exist for the day (for a line selector in the UI).
-    lines = run_query(
-        "SELECT DISTINCT sewing_line FROM production_hourly "
-        f"WHERE work_date = '{_sql_str(day)}' ORDER BY sewing_line"
-    )
-    available_lines = [x["sewing_line"] for x in (lines or [])]
-
-    return {
-        "work_date": day,
-        "sewing_line": line,
-        "available_lines": available_lines,
-        "style": style,
-        "productive_hours": PRODUCTION_PRODUCTIVE_HOURS,
-        "hours_completed": hours_done,
-        "daily_target": daily_target,
-        "made_so_far": made_so_far,
-        "pct_achieved": pct_achieved,
-        "expected_by_now": expected_by_now,
-        "pace_per_hour": round(pace, 1),
-        "projected_landing": projected,
-        "projected_pct": projected_pct,
-        "status": status,
-        "slots": slots,
-    }
+# NOTE: the legacy DB-backed /api/production/hourly-tracker endpoint that
+# lived here (reading the defunct production_hourly table) was removed: it was
+# registered AFTER the SPA catch-all so it could never be reached, and the
+# live wallboard endpoint in production_wallboard.py (sheet-fed, registered
+# early via include_router) supersedes it entirely.
 
 
 @_deferred_startup
 def _ensure_pos_locations_meta():
-    """Add sqft and optimal_stock columns to pos_locations and seed all 28 known stores.
+    """Add sqft and optimal_stock columns to pos_locations and seed all 29 known stores.
 
     Uses IF NOT EXISTS so it is safe to run on every restart (idempotent).
     UPDATE … WHERE location_name = … only touches matching rows, so stores not
     in the seed list retain whatever values they already have.
+
+    Names must match pos_locations.location_name EXACTLY (note 'Vivo T- Mall'
+    with the space, and the separate 'Safari Sarit' / 'Zoya Sarit' rows — the
+    old combined 'Safari Sarit & Zoya' POS no longer exists).
+    Optimal stock levels last updated from the merch team's sheet, Aug 2026.
     """
     SEED = [
-        ("Vivo Meru",              704,  1374),
-        ("Vivo T-Mall",            486,  1503),
-        ("Vivo Greenspan",         506,  1353),
-        ("Vivo Acacia",           1500,  2589),
-        ("Vivo MSA Digo Road",    1497,  1943),
-        ("Vivo Kileleshwa",        800,  1357),
-        ("Vivo City Mall",         840,  1619),
-        ("Vivo Signature Mall",   1100,  1250),
-        ("The Oasis Mall",        1500,  2691),
-        ("Vivo Hub",               397,  1351),
-        ("Vivo Nakuru",            517,  1427),
-        ("Vivo Capital Centre",    650,  1173),
-        ("Vivo Kisumu",            568,  1521),
-        ("Vivo Eldoret",           517,  1327),
-        ("Vivo TRM",              1549,  1908),
-        ("Vivo Galleria",          667,  1410),
-        ("Vivo Runda",            1042,  1172),
-        ("Vivo Village Market",    780,  1549),
-        ("Vivo Two Rivers",        775,  1205),
-        ("Vivo Imaara",           1916,  1530),
-        ("Vivo Yaya",              797,  1480),
-        ("Vivo Kigali Heights",   2000,  2005),
-        ("Vivo Garden City",       678,  1254),
-        ("Vivo Mama Ngina St",    1291,  2206),
-        ("Vivo Junction",         1830,  3117),
-        ("Vivo Moi Avenue",       2500,  2114),
-        ("Vivo Sarit",            1096,  1666),
-        ("Safari Sarit & Zoya",   3596,  1574),
+        ("Vivo Meru",              704,  1056),
+        ("Vivo T- Mall",           486,   729),
+        ("Vivo Greenspan",         506,   759),
+        ("Vivo Acacia",           1500,  2250),
+        ("Vivo MSA Digo Road",    1497,  2246),
+        ("Vivo Kileleshwa",        800,  1200),
+        ("Vivo City Mall",         840,  1260),
+        ("Vivo Signature Mall",   1100,  1650),
+        ("The Oasis Mall",        1500,  2250),
+        ("Vivo Hub",               397,   596),
+        ("Vivo Nakuru",            517,   776),
+        ("Vivo Capital Centre",    650,   975),
+        ("Vivo Kisumu",            568,   852),
+        ("Vivo Eldoret",           517,   776),
+        ("Vivo TRM",              1549,  2324),
+        ("Vivo Galleria",          667,  1001),
+        ("Vivo Runda",            1042,  1563),
+        ("Vivo Village Market",    780,  1170),
+        ("Vivo Two Rivers",        775,  1163),
+        ("Vivo Imaara",           1916,  2874),
+        ("Vivo Yaya",              797,  1196),
+        ("Vivo Kigali Heights",   2000,  3000),
+        ("Vivo Garden City",       678,  1017),
+        ("Vivo Mama Ngina St",    1291,  1937),
+        ("Vivo Junction",         1830,  2745),
+        ("Vivo Moi Avenue",       2500,  3750),
+        ("Vivo Sarit",            1096,  1644),
+        ("Safari Sarit",          3596,   822),
+        ("Zoya Sarit",            None,   822),
     ]
     try:
         conn = get_conn()
@@ -41687,17 +41679,123 @@ def _ensure_pos_locations_meta():
                 "ADD COLUMN IF NOT EXISTS sqft INT, "
                 "ADD COLUMN IF NOT EXISTS optimal_stock INT"
             )
+            unmatched = []
             for location_name, sqft, optimal_stock in SEED:
                 cur.execute(
                     "UPDATE pos_locations SET sqft = %s, optimal_stock = %s "
                     "WHERE location_name = %s",
                     (sqft, optimal_stock, location_name))
+                if cur.rowcount == 0:
+                    unmatched.append(location_name)
             cur.close()
+            if unmatched:
+                # Exact-name matching means a renamed/missing POS silently keeps
+                # stale metadata — surface it loudly instead.
+                log.error(
+                    "_ensure_pos_locations_meta: %d seed name(s) matched NO "
+                    "pos_locations row (POS rename or missing row?): %s",
+                    len(unmatched), ", ".join(unmatched))
         finally:
             conn.close()
         log.info("pos_locations meta columns ensured and seeded (%d stores)", len(SEED))
     except Exception as e:
         log.error("_ensure_pos_locations_meta failed: %s", e)
+
+
+@_deferred_startup
+def _ensure_planning_calendar():
+    """Company planning calendar: Mon–Sun trading weeks grouped into quarters.
+
+    Source: the merch team's weekly calendar sheet (2026: 52 weeks, 13 per
+    quarter, Wk 1 = 2025-12-29 → 2026-01-04). Upsert-seeded on every boot so
+    dev AND prod carry it (publish ships code, not rows). Future years: append
+    tuples here, or INSERT directly — extra rows are never deleted.
+    """
+    ROWS = [
+        (2026,  1, "Q1", "2025-12-29", "2026-01-04"),
+        (2026,  2, "Q1", "2026-01-05", "2026-01-11"),
+        (2026,  3, "Q1", "2026-01-12", "2026-01-18"),
+        (2026,  4, "Q1", "2026-01-19", "2026-01-25"),
+        (2026,  5, "Q1", "2026-01-26", "2026-02-01"),
+        (2026,  6, "Q1", "2026-02-02", "2026-02-08"),
+        (2026,  7, "Q1", "2026-02-09", "2026-02-15"),
+        (2026,  8, "Q1", "2026-02-16", "2026-02-22"),
+        (2026,  9, "Q1", "2026-02-23", "2026-03-01"),
+        (2026, 10, "Q1", "2026-03-02", "2026-03-08"),
+        (2026, 11, "Q1", "2026-03-09", "2026-03-15"),
+        (2026, 12, "Q1", "2026-03-16", "2026-03-22"),
+        (2026, 13, "Q1", "2026-03-23", "2026-03-29"),
+        (2026, 14, "Q2", "2026-03-30", "2026-04-05"),
+        (2026, 15, "Q2", "2026-04-06", "2026-04-12"),
+        (2026, 16, "Q2", "2026-04-13", "2026-04-19"),
+        (2026, 17, "Q2", "2026-04-20", "2026-04-26"),
+        (2026, 18, "Q2", "2026-04-27", "2026-05-03"),
+        (2026, 19, "Q2", "2026-05-04", "2026-05-10"),
+        (2026, 20, "Q2", "2026-05-11", "2026-05-17"),
+        (2026, 21, "Q2", "2026-05-18", "2026-05-24"),
+        (2026, 22, "Q2", "2026-05-25", "2026-05-31"),
+        (2026, 23, "Q2", "2026-06-01", "2026-06-07"),
+        (2026, 24, "Q2", "2026-06-08", "2026-06-14"),
+        (2026, 25, "Q2", "2026-06-15", "2026-06-21"),
+        (2026, 26, "Q2", "2026-06-22", "2026-06-28"),
+        (2026, 27, "Q3", "2026-06-29", "2026-07-05"),
+        (2026, 28, "Q3", "2026-07-06", "2026-07-12"),
+        (2026, 29, "Q3", "2026-07-13", "2026-07-19"),
+        (2026, 30, "Q3", "2026-07-20", "2026-07-26"),
+        (2026, 31, "Q3", "2026-07-27", "2026-08-02"),
+        (2026, 32, "Q3", "2026-08-03", "2026-08-09"),
+        (2026, 33, "Q3", "2026-08-10", "2026-08-16"),
+        (2026, 34, "Q3", "2026-08-17", "2026-08-23"),
+        (2026, 35, "Q3", "2026-08-24", "2026-08-30"),
+        (2026, 36, "Q3", "2026-08-31", "2026-09-06"),
+        (2026, 37, "Q3", "2026-09-07", "2026-09-13"),
+        (2026, 38, "Q3", "2026-09-14", "2026-09-20"),
+        (2026, 39, "Q3", "2026-09-21", "2026-09-27"),
+        (2026, 40, "Q4", "2026-09-28", "2026-10-04"),
+        (2026, 41, "Q4", "2026-10-05", "2026-10-11"),
+        (2026, 42, "Q4", "2026-10-12", "2026-10-18"),
+        (2026, 43, "Q4", "2026-10-19", "2026-10-25"),
+        (2026, 44, "Q4", "2026-10-26", "2026-11-01"),
+        (2026, 45, "Q4", "2026-11-02", "2026-11-08"),
+        (2026, 46, "Q4", "2026-11-09", "2026-11-15"),
+        (2026, 47, "Q4", "2026-11-16", "2026-11-22"),
+        (2026, 48, "Q4", "2026-11-23", "2026-11-29"),
+        (2026, 49, "Q4", "2026-11-30", "2026-12-06"),
+        (2026, 50, "Q4", "2026-12-07", "2026-12-13"),
+        (2026, 51, "Q4", "2026-12-14", "2026-12-20"),
+        (2026, 52, "Q4", "2026-12-21", "2026-12-27"),
+    ]
+    try:
+        conn = get_conn()
+        try:
+            conn.autocommit = True
+            cur = conn.cursor()
+            cur.execute(
+                "CREATE TABLE IF NOT EXISTS planning_calendar ("
+                " year INT NOT NULL,"
+                " week_no INT NOT NULL,"
+                " quarter TEXT NOT NULL,"
+                " start_date DATE NOT NULL,"
+                " end_date DATE NOT NULL,"
+                " PRIMARY KEY (year, week_no))")
+            for year, week_no, quarter, start_dt, end_dt in ROWS:
+                cur.execute(
+                    "INSERT INTO planning_calendar"
+                    " (year, week_no, quarter, start_date, end_date)"
+                    " VALUES (%s, %s, %s, %s, %s)"
+                    " ON CONFLICT (year, week_no) DO UPDATE SET"
+                    " quarter = EXCLUDED.quarter,"
+                    " start_date = EXCLUDED.start_date,"
+                    " end_date = EXCLUDED.end_date",
+                    (year, week_no, quarter, start_dt, end_dt))
+            cur.close()
+        finally:
+            conn.close()
+        log.info("planning_calendar ensured and seeded (%d weeks)", len(ROWS))
+    except Exception as e:
+        log.error("_ensure_planning_calendar failed: %s", e)
+
+
 
 
 if __name__ == "__main__":

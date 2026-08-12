@@ -11,6 +11,8 @@ import { useSearchParams } from "react-router-dom";
 import { apiFetch, fmtKES, fmtKESLong, fmtNum, fmtPct, fmtDate } from "@/lib/api";
 import { KPICard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
+import ProductThumbnail from "@/components/ProductThumbnail";
+import { useThumbnails } from "@/lib/useThumbnails";
 import { useMerchFilters } from "./MerchandisingHub";
 import MerchStyleSearch, { loadStyles } from "./MerchStyleSearch";
 import {
@@ -25,6 +27,9 @@ import {
 
 // ── Tier colours ─────────────────────────────────────────────────────────────
 const TIER_COLOR = { "Tier 1": "#1a5c38", "Tier 2": "#4b7bec", "Tier 3": "#d97706", "Tier 4": "#9ca3af" };
+
+// Store tier (A/B/C by trailing-90d revenue) → bar colour
+const STORE_TIER_COLOR = { A: "#1a5c38", B: "#4b7bec", C: "#9ca3af" };
 
 // ── Status badge ──────────────────────────────────────────────────────────────
 const StatusBadge = ({ status }) => {
@@ -164,6 +169,8 @@ const MerchDeepDive = () => {
   const [weeks,   setWeeks]   = useState([]);
   const [subcat,  setSubcat]  = useState([]);
   const [styles,  setStyles]  = useState([]);  // same-subcategory styles for percentile
+  const [storePerf, setStorePerf] = useState([]);           // per-store rows for this style
+  const [storeMetric, setStoreMetric] = useState("revenue"); // store chart: "revenue" | "units"
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState(null);
 
@@ -187,14 +194,21 @@ const MerchDeepDive = () => {
         country:   filters.country,
       } }),
       apiFetch("/merch/by-subcategory", { params: filters }),
+      apiFetch("/merch/style-stores", { params: {
+        style_number: styleNumber,
+        from_date: filters.from_date,
+        to_date:   filters.to_date,
+        country:   filters.country,
+      } }),
     ])
-      .then(([allStylesList, wk, sc]) => {
+      .then(([allStylesList, wk, sc, sp]) => {
         if (cancelled) return;
         const found = allStylesList.find(s => s.style_number === styleNumber) || null;
         setStyle(found);
         setWeeks(wk.weeks || []);
         setSubcat(sc.rows || []);
         setStyles(allStylesList);
+        setStorePerf(sp.stores || []);
       })
       .catch(e => !cancelled && setError(e?.response?.data?.detail || e.message))
       .finally(() => !cancelled && setLoading(false));
@@ -289,6 +303,37 @@ const MerchDeepDive = () => {
   );
 
   // Monthly revenue (last 12m from weekly data)
+  // Compact label for the currently selected filter period, e.g. "30d" / "3m".
+  // Falls back to "6m" when no dates are set (matches the backend default).
+  const periodLabel = useMemo(() => {
+    if (!filters.from_date || !filters.to_date) return "6m";
+    const from = new Date(filters.from_date);
+    const to   = new Date(filters.to_date);
+    const days = Math.round((to - from) / 86400000) + 1;
+    if (!Number.isFinite(days) || days <= 0) return "6m";
+    if (days <= 62) return `${days}d`;
+    return `${Math.round(days / 30.44)}m`;
+  }, [filters.from_date, filters.to_date]);
+
+  // Per-store bars, sorted best→worst on the selected metric. The API field
+  // names are units_6m/revenue_6m for legacy reasons, but the values are
+  // scoped to the from_date→to_date window passed to /merch/style-stores.
+  const storeChart = useMemo(() => {
+    const key = storeMetric === "units" ? "units_6m" : "revenue_6m";
+    return [...storePerf]
+      .sort((a, b) => (b[key] || 0) - (a[key] || 0))
+      .map(r => ({
+        name:     r.store,
+        tier:     r.store_tier || "—",
+        value:    storeMetric === "units"
+          ? (r.units_6m || 0)
+          : Math.round((r.revenue_6m || 0) / 1000),
+        units:    r.units_6m || 0,
+        revenueK: Math.round((r.revenue_6m || 0) / 1000),
+        stock:    r.current_stock || 0,
+      }));
+  }, [storePerf, storeMetric]);
+
   const monthlyRevChart = useMemo(() => {
     const map = {};
     for (const w of weeks) {
@@ -323,6 +368,9 @@ const MerchDeepDive = () => {
     const avg = weeks.length ? weeks.reduce((a, w) => a + w.units, 0) / weeks.length : 0;
     return buildRecommendationCards(style, avg);
   }, [style, weeks]);
+
+  // Product image for the header (custom thumbnail → Odoo image → placeholder)
+  const { urlFor } = useThumbnails(style?.style_name ? [style.style_name] : []);
 
   // WOC colour
   const wocColor = !style ? "" :
@@ -361,6 +409,12 @@ const MerchDeepDive = () => {
     <div className="space-y-5 pb-8">
       {/* ── Style header row ─────────────────────────────────────────────── */}
       <div className="flex items-start justify-between gap-4 flex-wrap">
+        <ProductThumbnail
+          style={style.style_name}
+          url={urlFor(style.style_name)}
+          size={84}
+          className="rounded-lg"
+        />
         <div className="flex-1 min-w-0">
           <h2 className="text-[22px] font-bold text-foreground leading-tight truncate">
             {style.style_name}
@@ -404,11 +458,11 @@ const MerchDeepDive = () => {
       {/* ── 6 KPI cards ─────────────────────────────────────────────────── */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
         <KPICard
-          label="Revenue (6m)"
-          value={fmtKES(style.revenue_6m)}
-          valueFull={fmtKESLong(style.revenue_6m)}
+          label={`Revenue (${periodLabel})`}
+          value={fmtKES(style.revenue_period)}
+          valueFull={fmtKESLong(style.revenue_period)}
           sub={`vs subcat avg ${fmtKES(
-            (subcat.find(s => s.subcategory === style.subcategory)?.revenue_6m || 0) /
+            (subcat.find(s => s.subcategory === style.subcategory)?.revenue_period || 0) /
             Math.max(1, subcat.find(s => s.subcategory === style.subcategory)?.style_count || 1)
           )}`}
           icon={CurrencyCircleDollar}
@@ -416,10 +470,10 @@ const MerchDeepDive = () => {
           testId="dd-rev-6m"
         />
         <KPICard
-          label="Units Sold (6m)"
-          value={fmtNum(style.units_6m)}
+          label={`Units Sold (${periodLabel})`}
+          value={fmtNum(style.units_period)}
           sub={`vs subcat avg ${fmtNum(
-            (subcat.find(s => s.subcategory === style.subcategory)?.units_6m || 0) /
+            (subcat.find(s => s.subcategory === style.subcategory)?.units_period || 0) /
             Math.max(1, subcat.find(s => s.subcategory === style.subcategory)?.style_count || 1)
           )}`}
           icon={Package}
@@ -427,9 +481,9 @@ const MerchDeepDive = () => {
           testId="dd-units-6m"
         />
         <KPICard
-          label="SOR (6m)"
-          value={fmtPct(style.sor_6m)}
-          sub={`vs subcat avg ${fmtPct(subcat.find(s => s.subcategory === style.subcategory)?.avg_sor_6m || 0)}`}
+          label={`SOR (${periodLabel})`}
+          value={fmtPct(style.sor_period)}
+          sub={`vs subcat avg ${fmtPct(subcat.find(s => s.subcategory === style.subcategory)?.avg_sor_period || 0)}`}
           icon={Percent}
           showDelta={false}
           testId="dd-sor"
@@ -617,9 +671,16 @@ const MerchDeepDive = () => {
             ? <Empty />
             : (
               <ResponsiveContainer width="100%" height={200}>
-                <ComposedChart data={monthlyRevChart} margin={{ top: 8, right: 8, left: 0, bottom: 8 }}>
+                <ComposedChart data={monthlyRevChart} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                  <XAxis dataKey="name" tick={{ fontSize: 9 }} />
+                  <XAxis
+                    dataKey="name"
+                    tick={{ fontSize: 8.5 }}
+                    interval={0}
+                    angle={-45}
+                    textAnchor="end"
+                    height={36}
+                  />
                   <YAxis tick={{ fontSize: 9 }} tickFormatter={v => v + "K"} />
                   <Tooltip formatter={(v) => [v + "K", "Revenue"]} />
                   <Bar dataKey="revenue" name="Revenue" fill="#1a5c38" radius={[3, 3, 0, 0]} />
@@ -694,6 +755,85 @@ const MerchDeepDive = () => {
             ))}
           </div>
         </div>
+      </div>
+
+      {/* ── Row 3: Store Performance ─────────────────────────────────────── */}
+      <div className="card-white p-5">
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <SectionTitle
+            title={`Store Performance — ${storeMetric === "units" ? "Units Sold" : "Revenue"} (${periodLabel})`}
+            subtitle={storeMetric === "units"
+              ? "Units per store · sorted best to worst"
+              : "KES Thousands per store · sorted best to worst"}
+          />
+          <div className="flex gap-1">
+            {[["revenue", "Revenue"], ["units", "Units"]].map(([m, lbl]) => (
+              <button
+                key={m}
+                type="button"
+                onClick={() => setStoreMetric(m)}
+                className={`px-3 py-1 text-[11px] font-semibold rounded-full border transition-all ${
+                  storeMetric === m
+                    ? "bg-brand/10 text-brand-deep border-brand/30"
+                    : "text-foreground/50 border-transparent hover:bg-muted"
+                }`}
+              >
+                {lbl}
+              </button>
+            ))}
+          </div>
+        </div>
+        {storeChart.length === 0
+          ? <Empty />
+          : (
+            <>
+              <ResponsiveContainer width="100%" height={270}>
+                <BarChart data={storeChart} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                  <XAxis
+                    dataKey="name"
+                    tick={{ fontSize: 8.5 }}
+                    interval={0}
+                    angle={-45}
+                    textAnchor="end"
+                    height={72}
+                  />
+                  <YAxis
+                    tick={{ fontSize: 9 }}
+                    tickFormatter={v => (storeMetric === "units" ? v : v + "K")}
+                  />
+                  <Tooltip content={({ active, payload, label }) => {
+                    if (!active || !payload?.length) return null;
+                    const d = payload[0].payload;
+                    return (
+                      <div className="bg-white border border-border rounded-lg shadow-md px-3 py-2 text-[11px]">
+                        <div className="font-bold mb-0.5">
+                          {label}{d.tier && d.tier !== "—" ? ` · Tier ${d.tier}` : ""}
+                        </div>
+                        <div>Revenue: KES {fmtNum(d.revenueK)}K</div>
+                        <div>Units sold: {fmtNum(d.units)}</div>
+                        <div>Stock on hand: {fmtNum(d.stock)}</div>
+                      </div>
+                    );
+                  }} />
+                  <Bar dataKey="value" radius={[3, 3, 0, 0]}>
+                    {storeChart.map((d, i) => (
+                      <Cell key={i} fill={STORE_TIER_COLOR[d.tier] || "#d1d5db"} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+              <div className="mt-1 flex items-center gap-4 text-[10.5px] text-foreground/60">
+                {Object.entries(STORE_TIER_COLOR).map(([t, c]) => (
+                  <span key={t} className="inline-flex items-center gap-1.5">
+                    <span className="w-2.5 h-2.5 rounded-sm inline-block" style={{ background: c }} />
+                    Tier {t} store
+                  </span>
+                ))}
+                <span className="text-foreground/40">Store tier = trailing-90-day revenue rank</span>
+              </div>
+            </>
+          )}
       </div>
     </div>
   );

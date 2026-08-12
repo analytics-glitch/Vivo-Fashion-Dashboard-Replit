@@ -499,6 +499,9 @@ ORDER BY revenue_6m DESC NULLS LAST
         woc = round(current_stock / weekly_avg, 1) if weekly_avg > 0 else None
         sor_denom = units_6m + current_stock
         sor_6m    = round(units_6m * 100.0 / sor_denom, 1) if sor_denom > 0 else None
+        # Period-scoped sell-through (same formula, selected date range)
+        sor_p_denom = units_period + current_stock
+        sor_period  = round(units_period * 100.0 / sor_p_denom, 1) if sor_p_denom > 0 else None
         full_price_pct = round(units_full_price * 100.0 / units_6m, 1) if units_6m > 0 else None
         avg_selling_price = round(revenue_6m / units_6m, 0) if units_6m > 0 else None
 
@@ -556,6 +559,7 @@ ORDER BY revenue_6m DESC NULLS LAST
             "weekly_avg":          weekly_avg,
             "woc":                 woc,
             "sor_6m":              sor_6m,
+            "sor_period":          sor_period,
             "last_sale_date":      str(last_sale)[:10] if last_sale else None,
             "last_sale_days":      last_sale_days,
             "full_price_pct":      full_price_pct,
@@ -726,16 +730,20 @@ def _agg_by_dim(styles, dim_key):
             buckets[key] = {
                 dim_key: key, "style_count": 0, "units_6m": 0,
                 "revenue_6m": 0.0, "current_stock": 0,
-                "_woc": [], "_sor": [], "_fp": [], "_gm": [],
+                "units_period": 0, "revenue_period": 0.0,
+                "_woc": [], "_sor": [], "_sor_p": [], "_fp": [], "_gm": [],
                 "total_cogs": 0.0, "_has_cogs": False, "total_gm": 0.0,
             }
         b = buckets[key]
         b["style_count"]   += 1
         b["units_6m"]      += s["units_6m"] or 0
         b["revenue_6m"]    += s["revenue_6m"] or 0
+        b["units_period"]  += s.get("units_period") or 0
+        b["revenue_period"] += s.get("revenue_period") or 0
         b["current_stock"] += s["current_stock"] or 0
         if s["woc"] is not None:              b["_woc"].append(s["woc"])
         if s["sor_6m"] is not None:           b["_sor"].append(s["sor_6m"])
+        if s.get("sor_period") is not None:   b["_sor_p"].append(s["sor_period"])
         if s["full_price_pct"] is not None:   b["_fp"].append(s["full_price_pct"])
         if s["gross_margin_pct"] is not None: b["_gm"].append(s["gross_margin_pct"])
         if s["cogs_6m_kes"] is not None:
@@ -750,9 +758,12 @@ def _agg_by_dim(styles, dim_key):
             "style_count":             b["style_count"],
             "units_6m":                b["units_6m"],
             "revenue_6m":              round(b["revenue_6m"], 0),
+            "units_period":            b["units_period"],
+            "revenue_period":          round(b["revenue_period"], 0),
             "current_stock":           b["current_stock"],
             "avg_woc":                 _avg(b["_woc"]),
             "avg_sor_6m":              _avg(b["_sor"]),
+            "avg_sor_period":          _avg(b["_sor_p"]),
             "avg_full_price_pct":      _avg(b["_fp"]),
             "avg_gross_margin_pct":    _avg(b["_gm"]),
             "total_cogs_6m_kes":       round(b["total_cogs"], 0) if b["_has_cogs"] else None,

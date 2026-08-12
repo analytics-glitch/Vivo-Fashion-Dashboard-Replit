@@ -184,6 +184,15 @@ const MerchStoreCockpit = () => {
     return `vs ${fmt(compareFrom)} – ${fmt(compareTo)}`;
   }, [compareMode, compareFrom, compareTo]);
 
+  // Compact "14 Jul – 12 Aug 2026" label for the selected page period
+  const periodLabel = useMemo(() => {
+    if (!pageFrom || !pageTo) return null;
+    const d  = s => new Date(s + "T00:00:00");
+    const fmt  = s => d(s).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+    const fmtY = s => d(s).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+    return `${fmt(pageFrom)} – ${fmtY(pageTo)}`;
+  }, [pageFrom, pageTo]);
+
   const handleStoreChange = (name) => {
     setSearchParams(prev => {
       const n = new URLSearchParams(prev);
@@ -258,13 +267,15 @@ const MerchStoreCockpit = () => {
               testId="msc-styles"
             />
             <KPICard
-              small showDelta={false} label="Avg Sell-Out" value={fmtSor(summary.avg_sor)} icon={Percent}
-              formula="Sell-out rate = units sold ÷ (units sold + current stock)"
+              small showDelta={false} label="Rate of Sale" value={fmtSor(summary.avg_sor)} icon={Percent}
+              sub={periodLabel}
+              formula="Rate of sale = units sold in the selected period ÷ (units sold + current stock)"
               testId="msc-sor"
             />
             <KPICard
               small showDelta={false} label="Avg WOC" value={fmtWoc(summary.avg_woc)} icon={ChartBar}
-              formula="Weeks of cover = current stock ÷ weekly velocity"
+              sub="Velocity: last 30 days"
+              formula="Weeks of cover = current stock ÷ weekly velocity. Velocity is always units sold over the trailing 30 days (÷ 4.3 weeks), regardless of the date filter — cover is a 'today' metric."
               testId="msc-woc"
             />
           </div>
@@ -278,8 +289,9 @@ const MerchStoreCockpit = () => {
                   delta={aspDelta} showDelta={hasCompare}
                   sub={
                     <span>
+                      {periodLabel && <span className="block">{periodLabel}</span>}
                       {allStoresAsp != null && (
-                        <span>
+                        <span className={periodLabel ? "block mt-0.5" : ""}>
                           All-store avg: <span className="font-semibold">{fmtKESLong(allStoresAsp)}</span>
                           {asp > allStoresAsp
                             ? <span className="text-emerald-600 ml-1">(+{fmtNum(asp - allStoresAsp)} above)</span>
@@ -289,16 +301,16 @@ const MerchStoreCockpit = () => {
                         </span>
                       )}
                       {hasCompare && cmpAsp != null && (
-                        <span className={allStoresAsp != null ? "block mt-0.5 text-muted" : ""}>
+                        <span className={(allStoresAsp != null || periodLabel) ? "block mt-0.5 text-muted" : ""}>
                           Prior: {fmtKESLong(cmpAsp)}
                         </span>
                       )}
-                      {!allStoresAsp && !hasCompare && (
+                      {!allStoresAsp && !hasCompare && !periodLabel && (
                         <span>Revenue ÷ net units sold</span>
                       )}
                     </span>
                   }
-                  formula="ASP = period revenue ÷ net units sold, using the same revenue formula as the Style Cockpit (gross sales minus returns). All-store avg uses the same period from the by-store feed."
+                  formula="ASP = revenue ÷ net units sold over the selected period, using the same revenue formula as the Style Cockpit (gross sales minus returns). All-store avg uses the same period from the by-store feed."
                   testId="msc-asp"
                 />
               </div>

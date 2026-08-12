@@ -1,10 +1,79 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { useAuth } from "@/lib/auth";
-import { api } from "@/lib/api";
+import { api, API } from "@/lib/api";
 import { invalidateThumbnail, primeThumbnail } from "@/lib/useThumbnails";
 import { toast } from "sonner";
 import { Camera, CaretLeft, CaretRight, Pencil, Trash, UploadSimple, X } from "@phosphor-icons/react";
+
+// ─── authed-blob image fallback ───────────────────────────────────────
+// API-served images (/api/product-image/…) sit behind the auth middleware.
+// A plain <img src> relies on the httpOnly session cookie, which is absent
+// in cookie-blocked contexts (workspace preview iframe, Safari third-party
+// cookie blocking) even though the user IS signed in via the Bearer token.
+// When a direct load fails for an API URL we retry ONCE through the axios
+// client (which attaches the Bearer header) and swap in an object URL.
+// Bounded, session-scoped caches so list views never refetch the same image
+// and long browsing sessions can't grow blob memory without limit.
+const BLOB_CACHE = new Map();    // url -> object URL (Map = insertion order → LRU)
+const BLOB_INFLIGHT = new Map(); // url -> Promise<string|null>
+const BLOB_FAILED = new Set();   // urls that failed even with auth
+const BLOB_CACHE_MAX = 150;      // ~a few screenfuls of thumbnails
+const BLOB_FAILED_MAX = 500;
+
+const isApiImageUrl = (u) =>
+  typeof u === "string" && (u.startsWith(`${API}/`) || u.startsWith("/api/"));
+
+// LRU read: bump the entry to most-recently-used on hit.
+const blobCacheGet = (url) => {
+  const v = BLOB_CACHE.get(url);
+  if (v) {
+    BLOB_CACHE.delete(url);
+    BLOB_CACHE.set(url, v);
+  }
+  return v || null;
+};
+
+const blobCachePut = (url, obj) => {
+  BLOB_CACHE.set(url, obj);
+  while (BLOB_CACHE.size > BLOB_CACHE_MAX) {
+    const [oldUrl, oldObj] = BLOB_CACHE.entries().next().value;
+    BLOB_CACHE.delete(oldUrl);
+    try { URL.revokeObjectURL(oldObj); } catch { /* noop */ }
+  }
+};
+
+const blobMarkFailed = (url) => {
+  BLOB_FAILED.add(url);
+  while (BLOB_FAILED.size > BLOB_FAILED_MAX) {
+    BLOB_FAILED.delete(BLOB_FAILED.values().next().value);
+  }
+};
+
+const fetchAuthedBlob = (url) => {
+  const cached = blobCacheGet(url);
+  if (cached) return Promise.resolve(cached);
+  if (BLOB_FAILED.has(url)) return Promise.resolve(null);
+  if (BLOB_INFLIGHT.has(url)) return BLOB_INFLIGHT.get(url);
+  // The axios baseURL is already `${API}` — strip the prefix to avoid doubling.
+  const path = url.startsWith(`${API}/`)
+    ? url.slice(API.length)
+    : url.replace(/^\/api\//, "/");
+  const p = api
+    .get(path, { responseType: "blob" })
+    .then(({ data }) => {
+      const obj = URL.createObjectURL(data);
+      blobCachePut(url, obj);
+      return obj;
+    })
+    .catch(() => {
+      blobMarkFailed(url);
+      return null;
+    })
+    .finally(() => BLOB_INFLIGHT.delete(url));
+  BLOB_INFLIGHT.set(url, p);
+  return p;
+};
 
 // ─── deterministic placeholder ────────────────────────────────────────
 // Hash the style name once, pick a colour from the Vivo palette, and
@@ -585,8 +654,48 @@ const ProductThumbnail = ({
   const [editing, setEditing] = useState(false);
   const [failed, setFailed] = useState(false);
   const [lightbox, setLightbox] = useState(false);
-  const effectiveUrl = !failed ? (url || "") : "";
+  const [blobUrl, setBlobUrl] = useState(() => (url && blobCacheGet(url)) || null);
+
+  // Refs so a deferred blob resolution can verify it still applies: the
+  // component may have been reused for a different URL (list rows) or
+  // unmounted while the request was in flight.
+  const urlRef = useRef(url);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
+  // Reset failure/blob state when the component is reused with a new URL.
+  useEffect(() => {
+    urlRef.current = url;
+    setFailed(false);
+    setBlobUrl((url && blobCacheGet(url)) || null);
+  }, [url]);
+
+  const effectiveUrl = !failed ? (blobUrl || url || "") : "";
   const canExpand = expandable && !!effectiveUrl;
+
+  const onImgError = useCallback(() => {
+    // Direct load failed — likely a 401 from a cookie-less <img> request.
+    // Retry once with the Bearer-authenticated client before giving up.
+    const failedFor = url;
+    if (!blobUrl && isApiImageUrl(failedFor)) {
+      fetchAuthedBlob(failedFor).then((obj) => {
+        // Stale resolution guard: only apply if still mounted AND still
+        // showing the URL this fetch was started for.
+        if (!mountedRef.current || urlRef.current !== failedFor) return;
+        if (obj) setBlobUrl(obj);
+        else setFailed(true);
+      });
+    } else {
+      // The object URL itself failed (evicted/revoked) — drop the dead
+      // cache entry so the next mount refetches, and show the placeholder.
+      if (blobUrl) BLOB_CACHE.delete(failedFor);
+      setFailed(true);
+    }
+  }, [url, blobUrl]);
 
   const onChanged = useCallback(() => {
     setFailed(false);
@@ -605,7 +714,7 @@ const ProductThumbnail = ({
             alt={style}
             className={`w-full h-full object-cover ${canExpand ? "cursor-zoom-in" : ""}`}
             loading="lazy"
-            onError={() => setFailed(true)}
+            onError={onImgError}
             onClick={canExpand ? (e) => { e.stopPropagation(); setLightbox(true); } : undefined}
           />
         ) : (
