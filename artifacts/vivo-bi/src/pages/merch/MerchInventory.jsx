@@ -22,6 +22,7 @@ import {
   useMerchData, MerchKPICard, ChartCard, SubcatFilter,
   C, fmtNum, fmtWoc, fmtPct1, wocColor,
 } from "./MerchHelpers";
+import MerchStockMix from "./MerchStockMix";
 
 const NumTooltip = ({ active, payload, label }) => {
   if (!active || !payload?.length) return null;
@@ -62,6 +63,9 @@ export default function MerchInventory() {
   const [localSubcat, setLocalSubcat] = useState(null);
   const { summary, styles, byBrand, bySubcategory, byTier, loading, error } =
     useMerchData(["summary", "styles", "by-brand", "by-subcategory", "by-tier"], localSubcat);
+  // Fetched separately so the (heavier) drill-down tree never blocks the KPI
+  // band + charts; the section renders its own skeleton / error state.
+  const mixState = useMerchData(["stock-mix"], localSubcat);
 
   // styles → { styles: [...] }
   const styleRows = useMemo(() => styles?.styles || [], [styles]);
@@ -186,6 +190,13 @@ export default function MerchInventory() {
           testId="merch-inv-kpi-nosale"
         />
       </div>
+
+      {/* ── Stock Mix drill-down (Category → Sub Category → Style → Colour) ── */}
+      <MerchStockMix
+        data={mixState.stockMix}
+        loading={mixState.loading}
+        error={mixState.error}
+      />
 
       {/* ── Top 10 stock + Avg WOC by Subcat ── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

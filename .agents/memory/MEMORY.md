@@ -145,3 +145,4 @@
 - [Churn/gap window bounding](churn-window-bounding.md) — bound LAG/LEAD gap queries to [from−gap, to] + EXISTS history probe (exact, 10×); period-scope pseudo-regex/profile scans; slow query × no cold single-flight = hour-long "computing…".
 - [<img> to gated /api 401s without cookies](img-src-cookieless-auth.md) — preview iframe/Safari strip the session cookie from native image loads; ProductThumbnail's Bearer-blob fallback is the canonical fix.
 - [API routes must precede the SPA catch-all](api-route-catchall-order.md) — @app.get defined after the "/{full_path:path}" SPA route silently 404s ({"detail":"Not found"} with valid auth); register above the static block.
+- [Merch stock-mix tree](merch-stock-mix-tree.md) — stock CTE mirrors _fetch_styles scoping exactly so tree total == Stock Units KPI; dims = product-master modes; % + gap derived client-side (fabric pattern).

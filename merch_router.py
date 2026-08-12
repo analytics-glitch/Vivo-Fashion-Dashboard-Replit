@@ -1491,6 +1491,305 @@ GROUP BY COALESCE(sk.store, sa.store)
 
 # ── Route registration ─────────────────────────────────────────────────────────
 
+# ── Stock Mix drill-down tree ─────────────────────────────────────────────────
+
+def _fetch_stock_mix(brand=None, subcategory=None, from_date=None, to_date=None,
+                     country=None, pos_location=None):
+    """Nested Category → Sub Category → Style → Colour stock-mix tree.
+
+    Brings the fabric Stock Mix drill-down pattern to finished goods: every
+    node carries stock units (stores + sellable warehouse — the same basis as
+    the tab's Total Stock Units KPI), stock value at cost, gross units sold in
+    the selected period, and weeks of cover on the tab's trailing-6-month
+    run-rate (units_6m / 26). Shares (% of stock / % of sales) are derived
+    CLIENT-side from the grand totals in the payload so every level is
+    measured against the grand total — mirroring the fabric page.
+
+    Reconciliation contract: the tree's grand-total stock units must equal
+    _compute_summary()['total_stock_units'] under the same filters. The stock
+    CTE below therefore mirrors _fetch_styles' stock CTE exactly (same
+    location exclusions, same COALESCE sku→style mapping, same country/pos
+    scoping) just at (style, colour) grain, and the final INNER JOIN to prod
+    applies the same universe semantics as _fetch_styles (stock outside the
+    style universe drops out there via the LEFT JOIN from prod).
+
+    Dims come from the product master only: category = p.category,
+    subcategory = p.product_type, colour = per-SKU mode of p.color_print
+    (NEVER all_inventory's colour column). A style resolves to exactly ONE
+    category/subcategory via mode() of its SKU dims, so it never splits
+    across branches.
+    """
+    today = date.today()
+    six_mo_ago = str(today - timedelta(days=_SIX_MONTHS_DAYS))
+    today_str  = str(today)
+    period_from = from_date or six_mo_ago
+    period_to   = to_date   or today_str
+
+    params = {
+        "period_from": period_from,
+        "period_to":   period_to,
+        "six_mo_ago":  six_mo_ago,
+        "today":       today_str,
+    }
+
+    # Brand / subcategory narrow the style universe exactly like _fetch_styles:
+    # applied per SKU row BEFORE GROUP BY style_name (style included when ANY
+    # of its SKUs matches; mode() dims are then taken over the matching rows).
+    extra_prod_parts = []
+    if brand:
+        bl = [b.strip() for b in brand.split(",") if b.strip()]
+        if bl:
+            extra_prod_parts.append("p.brand = ANY(%(brands)s)")
+            params["brands"] = bl
+    if subcategory:
+        sl = [s.strip() for s in subcategory.split(",") if s.strip()]
+        if sl:
+            extra_prod_parts.append("p.product_type = ANY(%(subcats)s)")
+            params["subcats"] = sl
+    extra_prod_where = (" AND " + " AND ".join(extra_prod_parts)) if extra_prod_parts else ""
+
+    country_clause = ""
+    country_inv_where = ""
+    if country:
+        cl = [c.strip() for c in country.split(",") if c.strip()]
+        if cl:
+            params["countries"] = cl
+            country_clause = " AND s.country = ANY(%(countries)s)"
+            inv_cs = ", ".join(f"'{c.lower().replace(chr(39), chr(39)*2)}'" for c in cl)
+            country_inv_where = f" WHERE LOWER(i.country) IN ({inv_cs})"
+
+    pos_store_clause = ""
+    pos_sales_clause = ""
+    pos_has_filter = False
+    if pos_location:
+        pl = [p.strip() for p in pos_location.split(",") if p.strip()]
+        if pl:
+            params["pos_locations"] = pl
+            pos_store_clause = " AND i.pos_location_name = ANY(%(pos_locations)s)"
+            pos_sales_clause = " AND s.pos_location_name = ANY(%(pos_locations)s)"
+            pos_has_filter   = True
+
+    # Same predicates as _fetch_styles' stock CTE. When a POS location filter
+    # is active, warehouse stock doesn't belong to that store → forced to 0.
+    stores_pred = f"i.pos_location_name NOT IN ({_WAREHOUSE_LOCATIONS}){pos_store_clause}"
+    wh_pred = "FALSE" if pos_has_filter else "i.pos_location_name = 'Warehouse Finished Goods'"
+    soh_warehouse_expr = (
+        "0" if pos_has_filter else
+        f"COALESCE(SUM(i.available) FILTER (WHERE {wh_pred}), 0)"
+    )
+
+    sql = f"""
+WITH
+/* Style universe + one canonical category/subcategory per style (mode of its
+   SKU dims over the SAME filtered rowset _fetch_styles' prod CTE uses, so a
+   spot-check against /api/merch/by-subcategory buckets identically). */
+prod AS (
+    SELECT
+        p.style_name,
+        mode() WITHIN GROUP (ORDER BY p.style_number)  AS style_number,
+        mode() WITHIN GROUP (ORDER BY p.category)      AS category,
+        mode() WITHIN GROUP (ORDER BY p.product_type)  AS subcategory
+    FROM all_products_clean p
+    WHERE {_PROD_BASE}{extra_prod_where}
+    GROUP BY p.style_name
+),
+/* Per-SKU master map: style + colour + cost. Mirrors the stock CTE's `m`
+   subquery in _fetch_styles (all styled rows, NO third-party filter — the
+   universe join handles that) extended with colour + cost. is_third_party
+   drives the sales joins below, matching the per-row p2 join conditions of
+   the sibling sales CTEs (SKUs are unique in all_products_clean). */
+msku AS (
+    SELECT sku,
+        mode() WITHIN GROUP (ORDER BY style_name)   AS style_name,
+        mode() WITHIN GROUP (ORDER BY color_print)  AS colour,
+        mode() WITHIN GROUP (ORDER BY cost)         AS cost,
+        BOOL_OR(COALESCE(brand,'') ILIKE '%%third party%%') AS is_third_party
+    FROM all_products_clean
+    WHERE style_name IS NOT NULL
+    GROUP BY sku
+),
+/* Stock at (style, colour) grain — pre-aggregated on its own (never join
+   inventory to sales then SUM). Same row scope + filters as the KPI's stock
+   CTE; stock value = available × per-SKU cost over the SAME rows. */
+stock AS (
+    SELECT
+        COALESCE(m.style_name, i.style_name)  AS style_name,
+        COALESCE(m.colour, '')                AS colour,
+        COALESCE(SUM(i.available) FILTER (WHERE {stores_pred}), 0) AS soh_stores,
+        {soh_warehouse_expr} AS soh_warehouse,
+        COALESCE(SUM(i.available * COALESCE(m.cost, 0)) FILTER (
+            WHERE ({stores_pred}) OR {wh_pred}), 0)                AS stock_value,
+        COUNT(DISTINCT i.sku) FILTER (
+            WHERE (({stores_pred}) OR {wh_pred})
+              AND i.available > 0)                                 AS skus_in_stock
+    FROM all_inventory i
+    LEFT JOIN msku m ON m.sku = i.sku{country_inv_where}
+    GROUP BY 1, 2
+),
+/* Period sales at (style, colour) grain — gross units canon
+   (ordered_item_quantity, sale_kind IN ('sale','order')). */
+sales_period AS (
+    SELECT
+        m.style_name,
+        COALESCE(m.colour, '') AS colour,
+        COALESCE(SUM(s.ordered_item_quantity) FILTER (
+            WHERE s.sale_kind IN ('sale','order')), 0)             AS units_period,
+        COUNT(DISTINCT s.variant_sku) FILTER (
+            WHERE s.sale_kind IN ('sale','order'))                 AS skus_sold
+    FROM all_sales s
+    JOIN msku m ON m.sku = s.variant_sku
+        AND m.style_name <> '' AND NOT m.is_third_party
+    WHERE s.sale_date BETWEEN %(period_from)s AND %(period_to)s
+        AND {_BASE_FILTERS}
+        {country_clause}
+        {pos_sales_clause}
+    GROUP BY 1, 2
+),
+/* Trailing-6-month units — WOC denominator (units_6m / 26), matching the
+   tab's per-style WOC basis regardless of the selected date range. */
+sales_6m AS (
+    SELECT
+        m.style_name,
+        COALESCE(m.colour, '') AS colour,
+        COALESCE(SUM(s.ordered_item_quantity) FILTER (
+            WHERE s.sale_kind IN ('sale','order')), 0)             AS units_6m
+    FROM all_sales s
+    JOIN msku m ON m.sku = s.variant_sku
+        AND m.style_name <> '' AND NOT m.is_third_party
+    WHERE s.sale_date BETWEEN %(six_mo_ago)s AND %(today)s
+        AND {_BASE_FILTERS}
+        {country_clause}
+        {pos_sales_clause}
+    GROUP BY 1, 2
+),
+grain AS (
+    SELECT style_name, colour FROM stock
+    UNION
+    SELECT style_name, colour FROM sales_period
+    UNION
+    SELECT style_name, colour FROM sales_6m
+)
+SELECT
+    p.category,
+    p.subcategory,
+    p.style_name,
+    p.style_number,
+    g.colour,
+    COALESCE(st.soh_stores, 0) + COALESCE(st.soh_warehouse, 0) AS stock_units,
+    COALESCE(st.stock_value, 0)    AS stock_value,
+    COALESCE(st.skus_in_stock, 0)  AS skus_in_stock,
+    COALESCE(sp.units_period, 0)   AS units_period,
+    COALESCE(sp.skus_sold, 0)      AS skus_sold,
+    COALESCE(s6.units_6m, 0)       AS units_6m
+FROM grain g
+JOIN prod p               ON p.style_name  = g.style_name
+LEFT JOIN stock st        ON st.style_name = g.style_name AND st.colour = g.colour
+LEFT JOIN sales_period sp ON sp.style_name = g.style_name AND sp.colour = g.colour
+LEFT JOIN sales_6m s6     ON s6.style_name = g.style_name AND s6.colour = g.colour
+"""
+    raw = _db_exec(sql, params, fetch=True)
+
+    # ── Assemble the nested tree ──────────────────────────────────────────────
+    cats = {}
+    tot_su = 0; tot_sv = 0.0; tot_up = 0
+
+    def _bucket(store, name, child_key):
+        node = store.get(name)
+        if node is None:
+            node = {"name": name, "stock_units": 0, "stock_value": 0.0,
+                    "units_period": 0, "_u6": 0, child_key: {}}
+            store[name] = node
+        return node
+
+    for r in raw:
+        su = int(r.get("stock_units") or 0)
+        sv = float(r.get("stock_value") or 0)
+        up = int(r.get("units_period") or 0)
+        u6 = int(r.get("units_6m") or 0)
+        cat_name = r.get("category") or "Uncategorised"
+        sub_name = r.get("subcategory") or "Uncategorised"
+        sty_name = r.get("style_name")
+        col_name = r.get("colour") or "Unspecified"
+
+        tot_su += su; tot_sv += sv; tot_up += up
+
+        c  = _bucket(cats, cat_name, "subcategories")
+        sb = _bucket(c["subcategories"], sub_name, "styles")
+        st = _bucket(sb["styles"], sty_name, "colours")
+        if "style_number" not in st:
+            st["style_number"] = r.get("style_number")
+        col = st["colours"].get(col_name)
+        if col is None:
+            col = {"name": col_name, "stock_units": 0, "stock_value": 0.0,
+                   "units_period": 0, "_u6": 0, "skus_in_stock": 0, "skus_sold": 0}
+            st["colours"][col_name] = col
+        for node in (c, sb, st, col):
+            node["stock_units"]  += su
+            node["stock_value"]  += sv
+            node["units_period"] += up
+            node["_u6"]          += u6
+        col["skus_in_stock"] += int(r.get("skus_in_stock") or 0)
+        col["skus_sold"]     += int(r.get("skus_sold") or 0)
+
+    # Only nodes with stock or period sales are shown. Pruned nodes carry 0
+    # stock and 0 period units, so grand totals (and KPI reconciliation) are
+    # unaffected; parents keep the pruned leaves' units_6m in their WOC
+    # denominator (matching the tab's style-level WOC semantics).
+    def _keep(n):
+        return (n["stock_units"] != 0 or n["units_period"] != 0
+                or abs(n["stock_value"]) >= 0.5)
+
+    counts = {"categories": 0, "subcategories": 0, "styles": 0, "colours": 0}
+
+    def _finish(node):
+        u6 = node.pop("_u6", 0)
+        node["stock_value"] = round(node["stock_value"])
+        node["woc"] = round(node["stock_units"] / (u6 / 26.0), 1) if u6 > 0 else None
+
+    def _sorted(nodes):
+        return sorted(nodes, key=lambda x: (-x["stock_units"], -x["units_period"], x["name"]))
+
+    cat_list = []
+    for c in cats.values():
+        sub_list = []
+        for sb in c["subcategories"].values():
+            sty_list = []
+            for st in sb["styles"].values():
+                col_list = [col for col in st["colours"].values() if _keep(col)]
+                for col in col_list:
+                    _finish(col)
+                st["colours"] = _sorted(col_list)
+                if not _keep(st):
+                    continue
+                _finish(st)
+                counts["colours"] += len(col_list)
+                sty_list.append(st)
+            sb["styles"] = _sorted(sty_list)
+            if not _keep(sb):
+                continue
+            _finish(sb)
+            counts["styles"] += len(sty_list)
+            sub_list.append(sb)
+        c["subcategories"] = _sorted(sub_list)
+        if not _keep(c):
+            continue
+        _finish(c)
+        counts["subcategories"] += len(sub_list)
+        cat_list.append(c)
+    counts["categories"] = len(cat_list)
+
+    return {
+        "categories": _sorted(cat_list),
+        "totals": {
+            "stock_units":  tot_su,
+            "stock_value":  round(tot_sv),
+            "units_period": tot_up,
+        },
+        "period": {"from": period_from, "to": period_to},
+        "counts": counts,
+    }
+
+
 def register_merch_routes(app, api_pg_module):
     global A
     A = api_pg_module
@@ -1754,5 +2053,27 @@ def register_merch_routes(app, api_pg_module):
             compare_from=compare_from, compare_to=compare_to,
         ))
         return JSONResponse({"rows": result})
+
+    @app.get("/api/merch/stock-mix")
+    def merch_stock_mix(
+        request:      Request,
+        brand:        Optional[str] = Query(None),
+        subcategory:  Optional[str] = Query(None),
+        from_date:    Optional[str] = Query(None),
+        to_date:      Optional[str] = Query(None),
+        country:      Optional[str] = Query(None),
+        pos_location: Optional[str] = Query(None),
+    ):
+        """Category → Sub Category → Style → Colour stock-mix drill-down tree
+        (the fabric Stock Mix pattern for finished goods). Plain `def` on
+        purpose: the cache-miss query is heavy, and a sync route runs in
+        Starlette's threadpool instead of blocking the event loop."""
+        key = f"merch_stock_mix|{brand}|{subcategory}|{from_date}|{to_date}|{country}|{pos_location}"
+        result = _cached(key, _TTL, lambda: _fetch_stock_mix(
+            brand=brand, subcategory=subcategory,
+            from_date=from_date, to_date=to_date,
+            country=country, pos_location=pos_location,
+        ))
+        return JSONResponse(result)
 
     log.info("Merchandising Hub routes registered (/api/merch/*)")
