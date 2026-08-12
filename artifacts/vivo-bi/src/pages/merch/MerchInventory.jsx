@@ -4,7 +4,8 @@
  *
  * API contracts:
  *   summary  → { total_styles, total_stock_units, avg_woc, woc_gt20_count,
- *                zero_stock_count, no_sale_30d_count, ... }
+ *                woc_lt3_active_count, no_sale_7d_active_count,
+ *                no_sale_30d_count (retired-scoped), ... }
  *   styles   → { styles: [...] }   each row: current_stock, woc,
  *               last_sale_days, full_price_pct, subcategory, brand, tier
  *   by-brand → { rows: [{ brand, current_stock, avg_woc }] }
@@ -140,8 +141,14 @@ export default function MerchInventory() {
 
   const s = summary || {};
   const total = s.total_styles || 0;
-  const overstockPct = total ? ((s.woc_gt20_count  || 0) / total * 100).toFixed(1) : "0";
-  const noSalePct    = total ? ((s.no_sale_30d_count || 0) / total * 100).toFixed(1) : "0";
+  // Risk KPIs are lifecycle-scoped (active vs retired), so their % pills use
+  // the matching universe as denominator — not the whole portfolio.
+  const activeCt  = s.active_styles_count  || 0;
+  const retiredCt = s.retired_styles_count || 0;
+  const overstockPct = activeCt ? ((s.woc_gt20_count || 0) / activeCt * 100).toFixed(1) : "0";
+  const lowCoverPct  = activeCt ? ((s.woc_lt3_active_count || 0) / activeCt * 100).toFixed(1) : "0";
+  const noSale7Pct   = activeCt ? ((s.no_sale_7d_active_count || 0) / activeCt * 100).toFixed(1) : "0";
+  const noSalePct    = retiredCt ? ((s.no_sale_30d_count || 0) / retiredCt * 100).toFixed(1) : "0";
 
   return (
     <div className="space-y-5 pb-8">
@@ -153,7 +160,7 @@ export default function MerchInventory() {
       </div>
 
       {/* ── KPI cards ── */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-3">
         <MerchKPICard
           label="Total Stock on Hand"
           value={fmtNum(s.total_stock_units)}
@@ -172,21 +179,28 @@ export default function MerchInventory() {
         <MerchKPICard
           label="Styles WOC > 20"
           value={`${fmtNum(s.woc_gt20_count)} styles`}
-          sub={`${overstockPct}% of portfolio`}
+          sub={`${overstockPct}% of active styles`}
           accentColor={C.teal}
           testId="merch-inv-kpi-overstock"
         />
         <MerchKPICard
-          label="Zero Stock Styles"
-          value={fmtNum(s.zero_stock_count)}
-          sub="All styles vs stock"
+          label="Styles WOC < 3"
+          value={`${fmtNum(s.woc_lt3_active_count)} styles`}
+          sub={`${lowCoverPct}% of active styles`}
           accentColor={C.red}
-          testId="merch-inv-kpi-zero"
+          testId="merch-inv-kpi-lowcover"
         />
         <MerchKPICard
-          label="Styles No Sale 30d"
+          label="Active: No Sale 7d+"
+          value={`${fmtNum(s.no_sale_7d_active_count)} styles`}
+          sub={`${noSale7Pct}% of active styles`}
+          accentColor="#f97316"
+          testId="merch-inv-kpi-nosale7"
+        />
+        <MerchKPICard
+          label="Retired: No Sale 30d"
           value={`${fmtNum(s.no_sale_30d_count)} styles`}
-          sub={`${noSalePct}% of portfolio`}
+          sub={`${noSalePct}% of retired styles`}
           accentColor={C.amber}
           testId="merch-inv-kpi-nosale"
         />

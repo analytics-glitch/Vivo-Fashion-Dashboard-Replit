@@ -124,6 +124,7 @@ class TestMerchRouterSchemaSmoke(unittest.TestCase):
             "avg_woc", "avg_full_price_pct", "avg_sor_6m",
             "zero_stock_count", "no_sale_30d_count",
             "woc_lt4_count", "woc_gt20_count",
+            "woc_lt3_active_count", "no_sale_7d_active_count",
             "styles_launched_current_year", "styles_launched_prior_year",
             "avg_gross_margin_pct", "total_cogs_6m_kes", "total_gross_margin_kes",
         }
@@ -233,6 +234,76 @@ class TestMerchRouterSchemaSmoke(unittest.TestCase):
             result = merch_router._fetch_styles()
         self.assertTrue(len(result) > 0)
         self.assertEqual(result[0]["recommended_action"], "Discontinue")
+
+
+def _style(**over):
+    """Minimal style dict for driving _compute_summary directly."""
+    base = {
+        "action_status": "on_track", "current_stock": 10, "soh_stores": 10,
+        "soh_warehouse": 0, "revenue_6m": 1000, "units_6m": 26,
+        "revenue_period": 0, "units_period": 0, "tier": "Tier 2",
+        "style_number": "SN-1", "style_name": "Style A", "colour_count": 1,
+        "last_sale_days": 2, "woc": 10.0, "full_price_pct": None,
+        "sor_6m": None, "gross_margin_pct": None, "cogs_6m_kes": None,
+        "gross_margin_kes": None, "launch_date": None,
+    }
+    base.update(over)
+    return base
+
+
+class ScopedKpiSemanticsTests(unittest.TestCase):
+    """Lifecycle-scoped risk KPIs (Aug 2026): active/retired scoping, in-stock
+    gates, and style_number dedup must hold — not just key presence."""
+
+    def test_woc_gt20_active_only_and_deduped(self):
+        rows = [
+            _style(style_number="SN-1", style_name="A", woc=25.0),
+            _style(style_number="SN-1", style_name="A (renamed)", woc=30.0),  # same number → 1
+            _style(style_number="SN-2", tier="Retired", woc=40.0),            # retired → out
+        ]
+        s = merch_router._compute_summary(rows)
+        self.assertEqual(s["woc_gt20_count"], 1)
+
+    def test_woc_lt3_excludes_stockless_and_retired(self):
+        rows = [
+            _style(style_number="SN-1", woc=1.5),                                        # counts
+            _style(style_number="SN-2", woc=0.0, current_stock=0, soh_stores=0),         # stockout ≠ low cover
+            _style(style_number="SN-3", tier="Retired", woc=1.0),                        # retired → out
+        ]
+        s = merch_router._compute_summary(rows)
+        self.assertEqual(s["woc_lt3_active_count"], 1)
+
+    def test_no_sale_7d_active_in_stock_only(self):
+        rows = [
+            _style(style_number="SN-1", last_sale_days=8),                               # counts
+            _style(style_number="SN-2", last_sale_days=8, current_stock=0, soh_stores=0),
+            _style(style_number="SN-3", last_sale_days=8, tier="Retired"),
+            _style(style_number="SN-4", last_sale_days=None),                            # never sold in window
+        ]
+        s = merch_router._compute_summary(rows)
+        self.assertEqual(s["no_sale_7d_active_count"], 1)
+
+    def test_no_sale_30d_retired_in_stock_only_and_deduped(self):
+        rows = [
+            _style(style_number="SN-1", tier="Retired", last_sale_days=45),
+            _style(style_number="SN-1", tier="Retired", last_sale_days=60,
+                   style_name="dup name"),                                               # same number → 1
+            _style(style_number="SN-2", tier="Retired", last_sale_days=45,
+                   current_stock=0, soh_stores=0),                                       # stockless → out
+            _style(style_number="SN-3", last_sale_days=45),                              # active → out
+        ]
+        s = merch_router._compute_summary(rows)
+        self.assertEqual(s["no_sale_30d_count"], 1)
+
+    def test_legacy_all_style_counters_unchanged(self):
+        rows = [
+            _style(style_number="SN-1", woc=3.5),                                        # woc_lt4 (all styles)
+            _style(style_number="SN-2", tier="Retired", woc=2.0),                        # woc_lt4 too
+            _style(style_number="SN-3", current_stock=0, soh_stores=0, woc=None),        # zero stock
+        ]
+        s = merch_router._compute_summary(rows)
+        self.assertEqual(s["woc_lt4_count"], 2)
+        self.assertEqual(s["zero_stock_count"], 1)
 
 
 if __name__ == "__main__":

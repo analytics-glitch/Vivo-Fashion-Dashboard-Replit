@@ -236,7 +236,7 @@ export default function MerchOverview() {
         <MerchKPICard
           label="Total Stock Units"
           value={fmtNum(s.total_stock_units)}
-          sub={`WOC > 20: ${fmtNum(s.woc_gt20_count)} styles`}
+          sub={`WOC > 20 (active): ${fmtNum(s.woc_gt20_count)} styles`}
           accentColor="#0891b2"
           testId="merch-kpi-stock"
         />

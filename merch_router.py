@@ -583,7 +583,11 @@ def _compute_summary(styles):
     on_track = at_risk = overdue = 0
     total_stock = revenue_6m = units_6m = 0
     revenue_period = units_period = 0
-    zero_stock = no_sale_30d = woc_lt4 = woc_gt20 = 0
+    zero_stock = woc_lt4 = 0
+    # Scoped risk KPIs count DISTINCT styles (deduped like the Active/Retired
+    # cards) — sets of dedup_key, materialised to counts in the return dict.
+    _k_gt20: set = set(); _k_lt3: set = set()
+    _k_nosale7: set = set(); _k_nosale30: set = set()
     launched_current = launched_prior = 0
     woc_vals = []; fp_vals = []; sor_vals = []; gm_pct_vals = []
     total_cogs = 0.0; total_gm = 0.0
@@ -635,11 +639,34 @@ def _compute_summary(styles):
                 archived_stock_units += current_stk
 
         if (s["current_stock"] or 0) == 0:   zero_stock  += 1
-        if s["last_sale_days"] is not None and s["last_sale_days"] >= 30: no_sale_30d += 1
+        # Lifecycle-scoped risk KPIs (Aug 2026 spec) — deduped by style_number
+        # (fallback style_name) so renamed styles sharing a number count once,
+        # keeping numerators consistent with the Active/Retired card universes:
+        #   • woc_gt20 / woc_lt3 → ACTIVE (Tier 1–4), in-stock only, so the
+        #     "% of active styles" pill is a true subset of Active Styles.
+        #     (A stocked-out seller reads woc=0 — that's a stockout, not low
+        #     cover; zero-stock counting was deliberately dropped with the
+        #     old Zero Stock KPI.)
+        #   • no_sale_7d  → ACTIVE, in-stock (a sold-out style can't sell —
+        #     stockless rows would drown the signal)
+        #   • no_sale_30d → RETIRED, in-stock (clearance watchlist: retired
+        #     stock that still isn't moving)
+        # zero_stock / woc_lt4 keep their all-styles row-grain semantics for
+        # legacy consumers (e.g. the Replen header chips).
+        is_active_tier  = tier in ("Tier 1", "Tier 2", "Tier 3", "Tier 4")
+        is_retired_tier = tier == "Retired"
+        if (is_retired_tier and current_stk > 0
+                and s["last_sale_days"] is not None and s["last_sale_days"] >= 30):
+            _k_nosale30.add(dedup_key)
+        if (is_active_tier and current_stk > 0
+                and s["last_sale_days"] is not None and s["last_sale_days"] >= 7):
+            _k_nosale7.add(dedup_key)
         if s["woc"] is not None:
             woc_vals.append(s["woc"])
             if s["woc"] < 4:  woc_lt4  += 1
-            if s["woc"] > 20: woc_gt20 += 1
+            if is_active_tier and current_stk > 0:
+                if s["woc"] > 20: _k_gt20.add(dedup_key)
+                if s["woc"] < 3:  _k_lt3.add(dedup_key)
         if s["full_price_pct"]   is not None: fp_vals.append(s["full_price_pct"])
         if s["sor_6m"]           is not None: sor_vals.append(s["sor_6m"])
         if s["gross_margin_pct"] is not None: gm_pct_vals.append(s["gross_margin_pct"])
@@ -679,9 +706,11 @@ def _compute_summary(styles):
         "avg_full_price_pct":           _avg(fp_vals),
         "avg_sor_6m":                   _avg(sor_vals),
         "zero_stock_count":             zero_stock,
-        "no_sale_30d_count":            no_sale_30d,
+        "no_sale_30d_count":            len(_k_nosale30),
         "woc_lt4_count":                woc_lt4,
-        "woc_gt20_count":               woc_gt20,
+        "woc_gt20_count":               len(_k_gt20),
+        "woc_lt3_active_count":         len(_k_lt3),
+        "no_sale_7d_active_count":      len(_k_nosale7),
         "styles_launched_current_year": launched_current,
         "styles_launched_prior_year":   launched_prior,
         "avg_gross_margin_pct":         _avg(gm_pct_vals),
@@ -698,6 +727,7 @@ def _empty_summary():
         "warehouse_stock_units",
         "on_track_count", "at_risk_count", "overdue_count",
         "total_stock_units", "revenue_6m", "units_6m", "revenue_period", "units_period", "weekly_velocity",
+        "woc_lt3_active_count", "no_sale_7d_active_count",
         "avg_woc", "avg_full_price_pct", "avg_sor_6m", "zero_stock_count",
         "no_sale_30d_count", "woc_lt4_count", "woc_gt20_count",
         "styles_launched_current_year", "styles_launched_prior_year",
