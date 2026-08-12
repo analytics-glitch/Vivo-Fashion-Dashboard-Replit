@@ -155,9 +155,10 @@ export default function MerchInventory() {
       {/* ── KPI cards ── */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
         <MerchKPICard
-          label="Total Stock Units"
+          label="Total Stock on Hand"
           value={fmtNum(s.total_stock_units)}
-          sub={`Across ${fmtNum(s.total_styles)} styles`}
+          sub={`Active Styles: ${s.active_styles_count != null ? fmtNum(s.active_styles_count) : "—"}`}
+          sub2={`Retired Styles: ${s.retired_styles_count != null ? fmtNum(s.retired_styles_count) : "—"}`}
           accentColor={C.blue}
           testId="merch-inv-kpi-stock"
         />

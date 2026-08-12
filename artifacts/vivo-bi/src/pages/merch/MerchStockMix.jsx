@@ -29,7 +29,7 @@ const LEVEL_LABEL = ["Category", "Sub Category", "Style", "Colour"];
 const MAX_ROWS = 600;
 
 const FX = {
-  stock:    "Stock Units = current stock on hand (stores + sellable warehouse; pipeline excluded) — same basis as the Total Stock Units KPI.",
+  stock:    "Stock Units = current stock on hand (stores + sellable warehouse; pipeline excluded) — same basis as the Total Stock on Hand KPI.",
   value:    "Stock Value = stock units × unit cost (KES, at cost).",
   sold:     "Units Sold = gross units sold in the selected period (returns not netted).",
   pctStock: "% of Stock = this row's stock ÷ TOTAL stock across all categories. Every level is measured against the grand total.",
