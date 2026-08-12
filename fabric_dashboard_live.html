@@ -537,6 +537,20 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
   #l10-todo-add>div{flex-direction:column !important;align-items:stretch !important;}
   #l10-todo-add input,#l10-todo-add select{width:100% !important;}
 }
+/* PO multi-select chip-input (QC + Receiving tab filter) */
+.po-chip-wrap{display:inline-flex;flex-wrap:wrap;align-items:center;gap:4px;min-height:34px;padding:3px 7px;border:1px solid var(--fab-line);border-radius:8px;background:#fff;cursor:text;transition:border-color .12s,box-shadow .12s;}
+.po-chip-wrap:focus-within{border-color:var(--accent);box-shadow:0 0 0 2px rgba(26,92,56,.1);}
+.po-chip{display:inline-flex;align-items:center;gap:3px;height:22px;padding:0 7px 0 8px;border-radius:6px;background:rgba(26,92,56,.12);color:var(--accent);font-size:11.5px;font-weight:600;white-space:nowrap;line-height:1;}
+.po-chip-x{background:none;border:none;padding:0;width:14px;height:14px;line-height:1;cursor:pointer;color:inherit;font-size:13px;display:inline-flex;align-items:center;justify-content:center;border-radius:3px;opacity:.65;}
+.po-chip-x:hover{opacity:1;background:rgba(26,92,56,.15);}
+.po-chip-inp{height:24px;border:none;outline:none;box-shadow:none;font-family:inherit;font-size:12.5px;background:transparent;color:var(--text);min-width:110px;flex:1;}
+.po-chip-dd{position:absolute;top:calc(100% + 3px);left:0;z-index:32;min-width:280px;max-width:440px;max-height:270px;overflow:auto;background:#fff;border:1px solid var(--border);border-radius:9px;box-shadow:0 8px 24px rgba(0,0,0,.12);}
+.po-chip-opt{padding:7px 11px;cursor:pointer;border-bottom:1px solid var(--border);font-size:13px;}
+.po-chip-opt:last-child{border-bottom:none;}
+.po-chip-opt:hover,.po-chip-opt.po-chip-active{background:rgba(26,92,56,.07);}
+.po-chip-opt .pc-name{font-weight:700;color:var(--text);}
+.po-chip-opt .pc-date{font-size:11px;color:var(--text-sub);margin-top:1px;}
+.po-chip-empty{padding:10px 12px;font-size:12.5px;color:var(--text-sub);}
 </style>
 </head>
 <body>
@@ -911,6 +925,7 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
      <label class="muted" style="font-size:12px;">From <input type="date" id="qc-from" class="btn" onchange="loadFabricQC()"></label>
      <label class="muted" style="font-size:12px;">To <input type="date" id="qc-to" class="btn" onchange="loadFabricQC()"></label>
      <select id="qc-supplier" class="btn" onchange="loadFabricQC()" title="Filter by supplier"><option value="">All suppliers</option></select>
+     <div id="qc-po-chip-wrap" style="display:inline-flex;align-items:center;"></div>
      <input type="text" id="qc-fabric" class="btn" placeholder="Fabric name or barcode…" style="min-width:200px;" onchange="loadFabricQC()">
      <select id="qc-status" class="btn" onchange="loadFabricQC()" title="Filter by inspection status">
       <option value="">All statuses</option>
@@ -1248,6 +1263,10 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
      </div>
     </div>
     <div class="section-head" style="margin-top:1.3rem;"><h3>Purchase Order batches</h3><span class="muted">every saved sheet lives under its PO — expand a PO to see its fabrics, sheets and rolls, or review &amp; upload the summed totals onto the draft PO</span><span style="margin-left:auto;"></span><button class="btn" id="recv-bin-btn" style="display:none;" onclick="openRecvRecoveryBin()" title="Deleted receiving sheets &amp; rolls are kept here for 90 days — restore or permanently remove them (admin only)">🗑 Recovery Bin</button> <button class="btn" id="recv-lc-btn" onclick="openLandedCost(null)" title="Attach clearing, duty &amp; freight charges to a confirmed PO's receipt as a draft landed cost in Odoo">💰 Landed cost upload</button></div>
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:.6rem;">
+     <span class="muted" style="font-size:12px;white-space:nowrap;">Filter POs</span>
+     <div id="recv-po-chip-wrap" style="display:inline-flex;align-items:center;"></div>
+    </div>
     <div class="card" style="padding:0;overflow:hidden;margin-bottom:1rem;">
      <div style="display:flex;align-items:center;gap:.8rem;padding:.7rem 1rem;cursor:pointer;user-select:none;background:#fff;border-radius:8px;" onclick="toggleRecvSupplierSummary()">
       <span id="recv-ss-chevron" style="font-weight:700;font-size:12px;color:#555;width:14px;display:inline-block;flex-shrink:0;">▶</span>
@@ -1593,6 +1612,96 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
 </div>
 
 <script>
+// ── PoChipInput: reusable multi-select PO typeahead chip widget ──
+// Usage: new PoChipInput(containerEl). API: .getIds(), .clear(), .onChange(fn)
+class PoChipInput{
+  constructor(container){
+    this._chips=[];this._cb=null;this._dd=null;this._active=-1;this._dbt=null;
+    const wrap=document.createElement('div');
+    wrap.className='po-chip-wrap';wrap.style.position='relative';
+    const inp=document.createElement('input');
+    inp.className='po-chip-inp';inp.placeholder='PO number\u2026';inp.autocomplete='off';
+    inp.setAttribute('aria-label','Filter by PO number');
+    wrap.appendChild(inp);container.appendChild(wrap);
+    this._wrap=wrap;this._inp=inp;
+    inp.addEventListener('input',()=>{clearTimeout(this._dbt);this._dbt=setTimeout(()=>this._fetch(inp.value.trim()),260);});
+    inp.addEventListener('keydown',e=>this._onKey(e));
+    inp.addEventListener('blur',()=>setTimeout(()=>this._closeDd(),180));
+    inp.addEventListener('focus',()=>{if(!inp.value.trim())this._fetch('');});
+    wrap.addEventListener('click',e=>{if(e.target!==inp)inp.focus();});
+  }
+  onChange(fn){this._cb=fn;}
+  getIds(){return this._chips.map(c=>c.po_id);}
+  clear(){this._chips=[];this._renderChips();this._closeDd();this._inp.value='';}
+  _fire(){if(this._cb)this._cb(this.getIds());}
+  _onKey(e){
+    if(e.key==='Backspace'&&!this._inp.value&&this._chips.length){this._chips.pop();this._renderChips();this._fire();e.preventDefault();return;}
+    if(e.key==='ArrowDown'){this._moveActive(1);e.preventDefault();return;}
+    if(e.key==='ArrowUp'){this._moveActive(-1);e.preventDefault();return;}
+    if((e.key==='Enter'||e.key==='Tab')&&this._dd){
+      const opts=this._dd.querySelectorAll('.po-chip-opt');
+      const idx=this._active>=0?this._active:0;
+      if(opts[idx]){this._pick(opts[idx]._data);e.preventDefault();}
+      return;
+    }
+    if(e.key==='Escape'){this._closeDd();}
+  }
+  _moveActive(d){
+    if(!this._dd)return;
+    const opts=Array.from(this._dd.querySelectorAll('.po-chip-opt'));
+    this._active=Math.max(0,Math.min(opts.length-1,this._active+d));
+    opts.forEach((o,i)=>o.classList.toggle('po-chip-active',i===this._active));
+    if(opts[this._active])opts[this._active].scrollIntoView({block:'nearest'});
+  }
+  async _fetch(q_){
+    try{
+      const url='/api/fabric/receiving/po-names'+(q_?'?q='+encodeURIComponent(q_):'');
+      const d=await apiFetch(url);
+      const items=((d&&d.items)||[]).filter(it=>!this._chips.find(c=>c.po_id===it.po_id));
+      this._showDd(items);
+    }catch(_){this._closeDd();}
+  }
+  _showDd(items){
+    this._closeDd();this._active=-1;
+    const dd=document.createElement('div');dd.className='po-chip-dd';
+    if(!items.length){
+      const em=document.createElement('div');em.className='po-chip-empty';em.textContent='No matching POs';dd.appendChild(em);
+    }else{
+      items.forEach(it=>{
+        const opt=document.createElement('div');opt.className='po-chip-opt';opt._data=it;
+        opt.innerHTML='<div class="pc-name">'+esc(it.po_name)+'</div>'+(it.po_date?'<div class="pc-date">'+esc(it.po_date)+'</div>':'');
+        opt.addEventListener('mousedown',e=>{e.preventDefault();this._pick(it);});
+        dd.appendChild(opt);
+      });
+    }
+    this._wrap.appendChild(dd);this._dd=dd;
+  }
+  _closeDd(){if(this._dd){this._dd.remove();this._dd=null;}this._active=-1;}
+  _pick(it){
+    if(!this._chips.find(c=>c.po_id===it.po_id)){this._chips.push(it);this._renderChips();this._fire();}
+    this._inp.value='';this._closeDd();
+  }
+  _renderChips(){
+    Array.from(this._wrap.querySelectorAll('.po-chip')).forEach(c=>c.remove());
+    this._chips.forEach(c=>{
+      const chip=document.createElement('span');chip.className='po-chip';
+      const lbl=document.createElement('span');lbl.textContent=c.po_name;chip.appendChild(lbl);
+      const x=document.createElement('button');x.type='button';x.className='po-chip-x';
+      x.setAttribute('aria-label','Remove '+c.po_name);x.innerHTML='&times;';
+      x.addEventListener('click',e=>{e.stopPropagation();this._remove(c.po_id);});
+      chip.appendChild(x);this._wrap.insertBefore(chip,this._inp);
+    });
+  }
+  _remove(po_id){this._chips=this._chips.filter(c=>c.po_id!==po_id);this._renderChips();this._fire();}
+}
+// Instantiate chip inputs after DOM is ready (script is after body, so DOM exists).
+window.poChipInputQC=null;window.poChipInputRecv=null;
+(function(){
+  const qcEl=document.getElementById('qc-po-chip-wrap');
+  if(qcEl){window.poChipInputQC=new PoChipInput(qcEl);window.poChipInputQC.onChange(()=>loadFabricQC());}
+  const rvEl=document.getElementById('recv-po-chip-wrap');
+  if(rvEl){window.poChipInputRecv=new PoChipInput(rvEl);window.poChipInputRecv.onChange(ids=>applyRecvPoFilter(ids));}
+})();
 const PAGE_SIZE=50;
 let regOffset=0, regTotal=0, lastRegItems=[], poCache=[];
 const fmt=n=>n==null?'—':Number(n).toLocaleString(undefined,{maximumFractionDigits:0});
@@ -2177,6 +2286,8 @@ function qcParams(){
   const f=document.getElementById('qc-from').value, t=document.getElementById('qc-to').value;
   if(f)p.set('date_from',f); if(t)p.set('date_to',t);
   const s=document.getElementById('qc-supplier').value; if(s)p.set('supplier',s);
+  const pi=window.poChipInputQC?window.poChipInputQC.getIds():[];
+  if(pi.length)p.set('po_ids',pi.join(','));
   const fb=document.getElementById('qc-fabric').value.trim(); if(fb)p.set('fabric',fb);
   const st=document.getElementById('qc-status').value; if(st)p.set('status',st);
   return p.toString();
@@ -2185,6 +2296,7 @@ function qcResetFilters(){
   ['qc-from','qc-to','qc-fabric'].forEach(id=>document.getElementById(id).value='');
   document.getElementById('qc-supplier').value='';
   document.getElementById('qc-status').value='';
+  if(window.poChipInputQC)window.poChipInputQC.clear();
   loadFabricQC();
 }
 function qcShowPending(){
@@ -5895,17 +6007,42 @@ async function printReceivingSheet(d){
 // one "No PO" group row (key 'none'). recvPoExpanded / recvFabExpanded keep
 // the open state across reloads (save / edit / delete refreshes).
 let recvPoExpanded=new Set(), recvFabExpanded=new Set();
+// Active PO filter IDs (integer po_id values). When non-empty every
+// loadRecvPoBatches() call fetches only those POs and auto-expands them —
+// including accordion toggles and post-mutation refreshes.
+let _recvPoFilterIds=[];
+// Expansion snapshot saved before the first filter is applied; restored on clear.
+let _recvPoExpandedSnapshot=null;
 function recvPoKey(r){return r.po_id==null?'none':String(Number(r.po_id));}
 async function loadRecvPoBatches(){
   const body=document.getElementById('recv-po-body');
   try{
-    const d=await apiFetch('/api/fabric/receiving/po-batches');
-    const items=((d&&d.items)||[]).slice();
-    if(d&&d.no_po)items.push(d.no_po);
-    if(!items.length){body.innerHTML='<tr><td colspan="11" class="muted" style="padding:1rem;">No receiving sheets saved yet — pick a draft PO and record the first delivery above.</td></tr>';return;}
-    // Drop expansion state for groups that no longer exist.
-    const keys=new Set(items.map(recvPoKey));
-    Array.from(recvPoExpanded).forEach(k=>{if(!keys.has(k))recvPoExpanded.delete(k);});
+    let items;
+    if(_recvPoFilterIds.length){
+      // Filter active: fetch only the selected POs and auto-expand all of them.
+      const url='/api/fabric/receiving/po-batches?po_ids='+encodeURIComponent(_recvPoFilterIds.join(','));
+      const d=await apiFetch(url);
+      items=((d&&d.items)||[]).slice();
+      // Auto-expand every matched row so the inline detail is always visible.
+      recvPoExpanded=new Set(items.map(recvPoKey));
+    }else{
+      const d=await apiFetch('/api/fabric/receiving/po-batches');
+      items=((d&&d.items)||[]).slice();
+      if(d&&d.no_po)items.push(d.no_po);
+    }
+    if(!items.length){
+      const msg=_recvPoFilterIds.length
+        ?'No receiving sheets found for the selected PO(s).'
+        :'No receiving sheets saved yet \u2014 pick a draft PO and record the first delivery above.';
+      body.innerHTML='<tr><td colspan="11" class="muted" style="padding:1rem;">'+msg+'</td></tr>';
+      return;
+    }
+    // Drop expansion state for groups that no longer exist (unfiltered mode only;
+    // in filtered mode recvPoExpanded was just rebuilt from the result).
+    if(!_recvPoFilterIds.length){
+      const keys=new Set(items.map(recvPoKey));
+      Array.from(recvPoExpanded).forEach(k=>{if(!keys.has(k))recvPoExpanded.delete(k);});
+    }
     body.innerHTML=items.map(r=>{
       const key=recvPoKey(r);
       const isNoPo=r.po_id==null;
@@ -6158,6 +6295,31 @@ async function loadRecvPoBatches(){
       }catch(e){box.innerHTML='<div class="banner banner-err">Could not load this PO\u2019s sheets: '+esc(e.message)+'</div>';}
     });
   }catch(e){rowErr('recv-po-body',11,e);}
+}
+// PO filter for the Receiving accordion: when IDs supplied, fetch filtered
+// batches, auto-expand each matched PO and load its detail. Empty IDs restores
+// the normal unfiltered list in its previous expanded state.
+// PO filter for the Receiving accordion.
+// Sets the authoritative _recvPoFilterIds state and calls loadRecvPoBatches().
+// Every subsequent refresh (accordion toggle, post-mutation reload, etc.) reads
+// _recvPoFilterIds and re-applies the filter automatically, so the filtered
+// view is stable across all interactions.
+function applyRecvPoFilter(ids){
+  if(!ids||!ids.length){
+    // Restore expansion state that was saved before the filter was first applied.
+    if(_recvPoExpandedSnapshot!==null){
+      recvPoExpanded=_recvPoExpandedSnapshot;
+      _recvPoExpandedSnapshot=null;
+    }
+    _recvPoFilterIds=[];
+  }else{
+    // Save expansion state only on the first filter application (not on chip changes).
+    if(!_recvPoFilterIds.length){
+      _recvPoExpandedSnapshot=new Set(recvPoExpanded);
+    }
+    _recvPoFilterIds=ids.slice();
+  }
+  loadRecvPoBatches();
 }
 // Lot (delivery average) 4-Point badge for one fabric section: average
 // pts/100 sq.yd over the sheet's submitted tickets vs the lot limit

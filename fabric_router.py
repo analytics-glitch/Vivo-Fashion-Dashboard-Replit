@@ -9558,14 +9558,55 @@ def receiving_draft_pos(q_: str = Query(default="", alias="q"),
         "line_count": len(p.get("order_line") or []),
     } for p in pos]}
 
+@fabric_router.get("/api/fabric/receiving/po-names")
+def receiving_po_names(q_: str = Query(default="", alias="q"),
+                       limit: int = Query(default=100)):
+    """Distinct POs that have at least one receiving sheet (Postgres only).
+    Used for the multi-select PO chip-input typeahead on the QC and Receiving
+    tabs. Accepts an optional `q` param that ILIKE-matches po_name; ordered by
+    po_date DESC. Only returns POs with actual sheets (not Odoo draft POs)."""
+    limit = max(1, min(int(limit or 100), 200))
+    term = (q_ or "").strip()
+    where_extra = ""
+    params: list = []
+    if term:
+        where_extra = " AND s.po_name ILIKE %s"
+        params.append(f"%{term}%")
+    params.append(limit)
+    with _get_conn() as conn:
+        _ensure_receiving_tables(conn)
+        rows = q(conn, f"""
+            SELECT s.po_id,
+                   MAX(s.po_name) AS po_name,
+                   MAX(s.po_date) AS po_date
+            FROM fabric_receiving_sheets s
+            WHERE s.po_id IS NOT NULL AND s.deleted_at IS NULL{where_extra}
+            GROUP BY s.po_id
+            ORDER BY MAX(s.po_date) DESC NULLS LAST, s.po_id DESC
+            LIMIT %s
+        """, tuple(params))
+    return {"items": [{
+        "po_id": r["po_id"],
+        "po_name": r.get("po_name") or f"PO #{r['po_id']}",
+        "po_date": r["po_date"].isoformat() if hasattr(r.get("po_date"), "isoformat") else (str(r["po_date"])[:10] if r.get("po_date") else None),
+    } for r in rows]}
+
 @fabric_router.get("/api/fabric/receiving/po-batches")
-def receiving_po_batches():
+def receiving_po_batches(po_ids: str = Query(default="")):
     """POs that have at least one linked receiving sheet (Postgres only — no
     Odoo round-trip), with sheet/product counts, summed kgs and the latest
     upload attempt, for the batches table on the Receiving tab."""
+    # Parse optional po_ids filter (comma-separated integers).
+    _po_id_list: list = []
+    for _p in (po_ids or "").split(","):
+        _p = _p.strip()
+        if _p.isdigit():
+            _po_id_list.append(int(_p))
+    _po_filter = " AND s.po_id = ANY(%s)" if _po_id_list else ""
+    _po_params = (_po_id_list,) if _po_id_list else ()
     with _get_conn() as conn:
         _ensure_receiving_tables(conn)
-        rows = q(conn, """
+        rows = q(conn, f"""
             WITH g AS (
                 SELECT s.po_id,
                        MAX(s.po_name)  as po_name,
@@ -9574,7 +9615,7 @@ def receiving_po_batches():
                        COUNT(DISTINCT s.product_id) as products,
                        SUM(s.total_kg) as total_kg
                 FROM fabric_receiving_sheets s
-                WHERE s.po_id IS NOT NULL AND s.deleted_at IS NULL
+                WHERE s.po_id IS NOT NULL AND s.deleted_at IS NULL{_po_filter}
                 GROUP BY s.po_id
             ),
             rc AS (
@@ -9582,7 +9623,7 @@ def receiving_po_batches():
                 FROM fabric_receiving_sheets s
                 JOIN fabric_receiving_rolls r
                      ON r.sheet_id = s.id AND r.deleted_at IS NULL
-                WHERE s.po_id IS NOT NULL AND s.deleted_at IS NULL
+                WHERE s.po_id IS NOT NULL AND s.deleted_at IS NULL{_po_filter}
                 GROUP BY s.po_id
             )
             SELECT g.po_id, g.po_name,
@@ -9649,20 +9690,24 @@ def receiving_po_batches():
                 ORDER BY u.id DESC LIMIT 1
             ) lu ON true
             ORDER BY g.po_date DESC NULLS LAST, g.po_id DESC
-        """)
+        """, _po_params + _po_params if _po_id_list else ())
         # Legacy sheets saved before the PO link became mandatory: surface
         # them as one "No PO" group row so they stay reachable (no upload).
-        nopo = q(conn, """
-            SELECT COUNT(*)                    as sheets,
-                   COUNT(DISTINCT s.product_id) as products,
-                   SUM(s.total_kg)             as total_kg,
-                   (SELECT COUNT(*) FROM fabric_receiving_rolls r
-                    JOIN fabric_receiving_sheets s2 ON s2.id = r.sheet_id
-                    WHERE s2.po_id IS NULL AND s2.deleted_at IS NULL
-                      AND r.deleted_at IS NULL) as rolls
-            FROM fabric_receiving_sheets s
-            WHERE s.po_id IS NULL AND s.deleted_at IS NULL
-        """)
+        # When a PO filter is active, skip the no-PO group (it can't match).
+        if _po_id_list:
+            nopo = [{"sheets": 0}]
+        else:
+            nopo = q(conn, """
+                SELECT COUNT(*)                    as sheets,
+                       COUNT(DISTINCT s.product_id) as products,
+                       SUM(s.total_kg)             as total_kg,
+                       (SELECT COUNT(*) FROM fabric_receiving_rolls r
+                        JOIN fabric_receiving_sheets s2 ON s2.id = r.sheet_id
+                        WHERE s2.po_id IS NULL AND s2.deleted_at IS NULL
+                          AND r.deleted_at IS NULL) as rolls
+                FROM fabric_receiving_sheets s
+                WHERE s.po_id IS NULL AND s.deleted_at IS NULL
+            """)
         # Compute value_kes and value_yuan for each PO in one pass.
         all_po_ids = [int(r["po_id"]) for r in rows if r.get("po_id") is not None]
         kes_data, yuan_data = {}, {}
@@ -11665,7 +11710,8 @@ def fabric_qc_report(date_from: str = Query(default=""),
                      date_to: str = Query(default=""),
                      supplier: str = Query(default=""),
                      fabric: str = Query(default=""),
-                     status: str = Query(default="")):
+                     status: str = Query(default=""),
+                     po_ids: str = Query(default="")):
     """Fabric QC report over per-roll inspection data. Filters: receiving date
     window (PO date, falling back to the sheet's EAT save date), supplier
     (derived from the PO's supplier in raw_fabric_purchase_orders via po_name),
@@ -11694,6 +11740,15 @@ def fabric_qc_report(date_from: str = Query(default=""),
     elif st:
         where.append("r.quality_status = %s")
         params.append(st)
+    # Optional po_ids filter: comma-separated integer po_id values.
+    _qc_po_ids: list = []
+    for _p in (po_ids or "").split(","):
+        _p = _p.strip()
+        if _p.isdigit():
+            _qc_po_ids.append(int(_p))
+    if _qc_po_ids:
+        where.append("s.po_id = ANY(%s)")
+        params.append(_qc_po_ids)
     extra = (" AND " + " AND ".join(where)) if where else ""
     with _get_conn() as conn:
         _ensure_receiving_tables(conn)
