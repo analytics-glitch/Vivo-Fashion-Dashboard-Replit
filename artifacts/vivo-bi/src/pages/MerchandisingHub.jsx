@@ -19,8 +19,11 @@ import { apiFetch, comparePeriod } from "@/lib/api";
  *   • keeps ?tab= in the URL so deep-links and back/forward work correctly
  *     (retired tab ids alias to their merged successor — see RETIRED_TAB_ALIASES)
  *   • gates each tab via canAccessPage so roles without a tab's page-id never
- *     see that tab button
- *   • renders a sticky tab bar that sits flush under the top nav (top: var(--app-navbar-h))
+ *     see that page in the picker
+ *   • renders ONE slim sticky row — a compact page-picker dropdown merged into
+ *     the Brand/Category "Scope" strip — flush under the top nav
+ *     (top: var(--app-navbar-h)). The old wrapped tab-pill rows were removed
+ *     in Task 1293.
  */
 
 // ── Deep-dive navigation helper ───────────────────────────────────────────────
@@ -244,51 +247,47 @@ const MerchandisingHub = () => {
   return (
     <MerchFiltersContext.Provider value={merchFilters}>
       <div className="space-y-4">
-        {/* ── Sticky tab bar + hub-scope filter strip ── */}
+        {/* ── Sticky slim header: page picker + hub-scope filters in ONE row ── */}
         <div
           className="sticky z-30 bg-background/95 backdrop-blur-sm"
           style={{ top: "var(--app-navbar-h, 0px)" }}
         >
-          {/* Tab row — dropdown on < lg, wrapped pills on lg+ */}
-          {/* Phones only (<480px): select dropdown */}
-          <div className="xs:hidden border-b border-border px-2 py-1.5 block sm:hidden" data-testid="merch-tabs-select">
-            <select
-              value={active?.id || ""}
-              onChange={e => handleTabClick(e.target.value)}
-              className="w-full text-[13px] font-medium border border-line rounded-lg px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-brand/30 focus:border-brand"
-            >
-              {visibleTabs.map(t => (
-                <option key={t.id} value={t.id}>{t.label}</option>
-              ))}
-            </select>
-          </div>
-
-          {/* Tablet + desktop: wrapped tab pills */}
+          {/* Single filter-style strip — Page picker + Brand + Category + Clear.
+              The old wrapped tab-pill rows are gone (Task 1293); the page
+              picker below is the ONE navigation mechanism at all breakpoints. */}
           <div
-            className="hidden sm:flex flex-wrap items-center gap-0.5 border-b border-border"
+            className="flex flex-wrap items-center gap-2 px-1 py-2 border-b border-border/50 bg-slate-50/60"
             data-testid="merch-tabs"
           >
-            {visibleTabs.map((t) => (
-              <button
-                key={t.id}
-                type="button"
-                onClick={() => handleTabClick(t.id)}
-                data-testid={`merch-tab-${t.id}`}
+            {/* Page picker — styled like the scope selects; role-gated list */}
+            <div className="relative min-w-0 flex-shrink" data-testid="merch-tabs-select">
+              <select
+                value={active?.id || ""}
+                onChange={(e) => handleTabClick(e.target.value)}
+                aria-label="Merchandising page"
                 className={
-                  "px-2.5 py-2 text-[12px] font-medium border-b-2 -mb-px transition-colors whitespace-nowrap " +
-                  (t.id === active?.id
-                    ? "border-[#1a5c38] text-[#1a5c38]"
-                    : "border-transparent text-muted hover:text-foreground")
+                  "appearance-none max-w-[240px] sm:max-w-none truncate text-[12px] pl-2.5 pr-6 py-1 rounded-full border transition-colors cursor-pointer " +
+                  "bg-white focus:outline-none focus:ring-1 focus:ring-[#1a5c38]/40 " +
+                  "border-[#1a5c38] text-[#1a5c38] font-semibold"
                 }
               >
-                {t.label}
-              </button>
-            ))}
-          </div>
+                <optgroup label="Merchandising">
+                  {visibleTabs.filter((t) => t.id.startsWith("merch-")).map((t) => (
+                    <option key={t.id} value={t.id}>{t.label}</option>
+                  ))}
+                </optgroup>
+                <optgroup label="Product Development">
+                  {visibleTabs.filter((t) => !t.id.startsWith("merch-")).map((t) => (
+                    <option key={t.id} value={t.id}>{t.label}</option>
+                  ))}
+                </optgroup>
+              </select>
+              <svg className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 w-3 h-3 text-[#1a5c38]" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M4 6l4 4 4-4" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round"/>
+              </svg>
+            </div>
 
-          {/* Hub-scope filter strip — Brand + Category + Date Range */}
-          <div className="flex flex-wrap items-center gap-2 px-1 py-2 border-b border-border/50 bg-slate-50/60">
-            <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400 select-none pr-1">
+            <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400 select-none px-1">
               Scope
             </span>
 
