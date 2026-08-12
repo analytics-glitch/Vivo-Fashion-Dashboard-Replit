@@ -102,12 +102,8 @@ const MerchLifecycle = () => {
       apiFetch("/merch/styles", { params }),
       apiFetch("/merch/by-tier", { params }),
       apiFetch("/merch/summary", { params }),
-      // launch-ramp only accepts date-range + country
-      apiFetch("/merch/launch-ramp", { params: {
-        from_date: params.from_date,
-        to_date:   params.to_date,
-        country:   params.country,
-      } }),
+      // launch-ramp honours the same filter params as the other endpoints
+      apiFetch("/merch/launch-ramp", { params }),
     ])
       .then(([sData, tData, sumData, rampData]) => {
         if (cancelled) return;
@@ -119,7 +115,7 @@ const MerchLifecycle = () => {
       .catch((e) => { if (!cancelled) setError(e?.response?.data?.detail || e.message); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [filters.country, filters.from_date, filters.to_date, filters.brand, filters.subcategory, filters.dataVersion, localSubcat]);
+  }, [filters.country, filters.from_date, filters.to_date, filters.brand, filters.subcategory, filters.pos_location, filters.dataVersion, localSubcat]);
 
   // ── Derived metrics ───────────────────────────────────────────────────────
   const enriched = useMemo(() =>

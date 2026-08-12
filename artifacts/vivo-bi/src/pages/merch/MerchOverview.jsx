@@ -148,15 +148,23 @@ export default function MerchOverview() {
   }, [styleRows]);
 
   // ── Brand data ────────────────────────────────────────────────────────────
+  // Charts follow the global date filter: revenue_period is scoped to the
+  // selected range (defaults to the trailing 6 months when no dates are set).
+  const selRev = (r) => (r.revenue_period ?? r.revenue_6m) || 0;
+
   const brandData = useMemo(() => {
     if (!byBrand?.rows) return [];
-    return [...byBrand.rows].sort((a, b) => (b.revenue_6m || 0) - (a.revenue_6m || 0)).slice(0, 6);
+    return [...byBrand.rows]
+      .map((r) => ({ ...r, revenue_sel: selRev(r) }))
+      .sort((a, b) => b.revenue_sel - a.revenue_sel).slice(0, 6);
   }, [byBrand]);
 
   // ── Top 5 subcategories ───────────────────────────────────────────────────
   const top5SubcatData = useMemo(() => {
     if (!bySubcategory?.rows) return [];
-    return [...bySubcategory.rows].sort((a, b) => (b.revenue_6m || 0) - (a.revenue_6m || 0)).slice(0, 5);
+    return [...bySubcategory.rows]
+      .map((r) => ({ ...r, revenue_sel: selRev(r) }))
+      .sort((a, b) => b.revenue_sel - a.revenue_sel).slice(0, 5);
   }, [bySubcategory]);
 
   // ── Tier donut ────────────────────────────────────────────────────────────
@@ -164,7 +172,7 @@ export default function MerchOverview() {
     if (!byTier?.rows) return [];
     return byTier.rows.map((r, i) => ({
       name:  r.tier,
-      value: r.revenue_6m || 0,
+      value: selRev(r),
       color: TIER_COLOR_ARR[i] || C.muted,
     }));
   }, [byTier]);
@@ -391,7 +399,7 @@ export default function MerchOverview() {
       {/* ── Row 1 charts ── */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {/* Revenue by Brand */}
-        <ChartCard title="Revenue by Brand (6m)">
+        <ChartCard title={`Revenue by Brand (${filters.from_date ? "Selected Period" : "6m"})`}>
           <ResponsiveContainer width="100%" height={220}>
             <BarChart
               data={brandData}
@@ -402,15 +410,15 @@ export default function MerchOverview() {
               <XAxis type="number" tickFormatter={fmtAxisM} tick={{ fontSize: 10 }} />
               <YAxis type="category" dataKey="brand" tick={{ fontSize: 10 }} width={50} />
               <Tooltip content={<KesTooltip />} />
-              <Bar dataKey="revenue_6m" name="Revenue 6m" fill={C.blue} radius={[0, 3, 3, 0]}>
-                <LabelList dataKey="revenue_6m" position="right" formatter={fmtKESM} style={{ fontSize: 9, fill: "#64748b" }} />
+              <Bar dataKey="revenue_sel" name="Revenue" fill={C.blue} radius={[0, 3, 3, 0]}>
+                <LabelList dataKey="revenue_sel" position="right" formatter={fmtKESM} style={{ fontSize: 9, fill: "#64748b" }} />
               </Bar>
             </BarChart>
           </ResponsiveContainer>
         </ChartCard>
 
         {/* Top 5 Subcategories */}
-        <ChartCard title="Top 5 Subcategories by Revenue (6m)">
+        <ChartCard title={`Top 5 Subcategories by Revenue (${filters.from_date ? "Selected Period" : "6m"})`}>
           <ResponsiveContainer width="100%" height={220}>
             <BarChart
               data={top5SubcatData}
@@ -421,15 +429,15 @@ export default function MerchOverview() {
               <XAxis type="number" tickFormatter={fmtAxisM} tick={{ fontSize: 10 }} />
               <YAxis type="category" dataKey="subcategory" tick={{ fontSize: 9 }} width={80} tickFormatter={(v) => v?.length > 18 ? v.slice(0, 18) + "…" : v} />
               <Tooltip content={<KesTooltip />} />
-              <Bar dataKey="revenue_6m" name="Revenue 6m" fill={C.blue} radius={[0, 3, 3, 0]}>
-                <LabelList dataKey="revenue_6m" position="right" formatter={fmtKESM} style={{ fontSize: 9, fill: "#64748b" }} />
+              <Bar dataKey="revenue_sel" name="Revenue" fill={C.blue} radius={[0, 3, 3, 0]}>
+                <LabelList dataKey="revenue_sel" position="right" formatter={fmtKESM} style={{ fontSize: 9, fill: "#64748b" }} />
               </Bar>
             </BarChart>
           </ResponsiveContainer>
         </ChartCard>
 
         {/* Revenue by Tier donut */}
-        <ChartCard title="Revenue by Tier (6m)">
+        <ChartCard title={`Revenue by Tier (${filters.from_date ? "Selected Period" : "6m"})`}>
           <ResponsiveContainer width="100%" height={220}>
             <PieChart>
               <Pie data={tierPieData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80} innerRadius={40} paddingAngle={2}>

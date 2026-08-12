@@ -308,3 +308,45 @@ class ScopedKpiSemanticsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LaunchRampFilterScopeTests(unittest.TestCase):
+    """Assert _fetch_launch_ramp threads brand/subcategory/pos_location into
+    the SQL (params + clauses), including the stock denominator: SOR =
+    sold / (sold + stock), so a store-scoped request must scope stock too."""
+
+    def _capture(self, **kwargs):
+        captured = {}
+
+        def fake_exec(sql, params=None, **_kw):
+            captured["sql"] = sql
+            captured["params"] = params or {}
+            return []
+
+        with mock.patch.object(merch_router, "_db_exec", side_effect=fake_exec):
+            merch_router._fetch_launch_ramp(**kwargs)
+        return captured
+
+    def test_brand_filter_in_style_universe(self):
+        cap = self._capture(brand="Vivo,Zoya")
+        self.assertEqual(cap["params"].get("brands"), ["Vivo", "Zoya"])
+        self.assertIn("p.brand = ANY(%(brands)s)", cap["sql"])
+
+    def test_subcategory_filter_in_style_universe(self):
+        cap = self._capture(subcategory="Dresses")
+        self.assertEqual(cap["params"].get("subcats"), ["Dresses"])
+        self.assertIn("p.product_type = ANY(%(subcats)s)", cap["sql"])
+
+    def test_pos_location_scopes_sales_and_stock(self):
+        cap = self._capture(pos_location="Vivo Junction")
+        self.assertEqual(cap["params"].get("pos_locations"), ["Vivo Junction"])
+        # sales feed clause
+        self.assertIn("s.pos_location_name = ANY(%(pos_locations)s)", cap["sql"])
+        # stock denominator clause (stock_now CTE)
+        self.assertIn("i.pos_location_name = ANY(%(pos_locations)s)", cap["sql"])
+
+    def test_no_filters_no_extra_clauses(self):
+        cap = self._capture()
+        self.assertNotIn("%(brands)s", cap["sql"])
+        self.assertNotIn("%(subcats)s", cap["sql"])
+        self.assertNotIn("%(pos_locations)s", cap["sql"])

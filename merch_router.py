@@ -1090,11 +1090,15 @@ ORDER BY 1
 
 # ── Launch ramp ────────────────────────────────────────────────────────────────
 
-def _fetch_launch_ramp(from_date=None, to_date=None, country=None):
+def _fetch_launch_ramp(from_date=None, to_date=None, country=None,
+                       brand=None, subcategory=None, pos_location=None):
     """Cumulative SOR % by weeks-since-launch, broken down by lifecycle tier.
 
     Like _fetch_styles, this pre-computes style_number per style_name so that
     production_orders can be joined without aggregate functions in ON clauses.
+    Honours the same filter params as the other /api/merch/* endpoints:
+    brand/subcategory narrow the style universe (product master), country and
+    pos_location narrow the sales feed.
     """
     today         = date.today()
     two_years_ago = str(today - timedelta(days=730))
@@ -1110,6 +1114,33 @@ def _fetch_launch_ramp(from_date=None, to_date=None, country=None):
             country_params["countries"] = cl
             country_clause = " AND s.country = ANY(%(countries)s)"
 
+    # POS-location filter — applied to the sales feed AND the stock
+    # denominator (mirrors _fetch_styles): SOR = sold / (sold + stock),
+    # so a store-scoped request must also use store-scoped stock.
+    pos_sales_clause = ""
+    pos_stock_clause = ""
+    if pos_location:
+        pl = [p.strip() for p in pos_location.split(",") if p.strip()]
+        if pl:
+            country_params["pos_locations"] = pl
+            pos_sales_clause = " AND s.pos_location_name = ANY(%(pos_locations)s)"
+            pos_stock_clause = " AND i.pos_location_name = ANY(%(pos_locations)s)"
+
+    # Product-master filters (brand / subcategory) — applied to the style
+    # universe CTE so downstream CTEs inherit the narrowed set.
+    extra_prod_parts = []
+    if brand:
+        bl = [b.strip() for b in brand.split(",") if b.strip()]
+        if bl:
+            extra_prod_parts.append("p.brand = ANY(%(brands)s)")
+            country_params["brands"] = bl
+    if subcategory:
+        sl = [s.strip() for s in subcategory.split(",") if s.strip()]
+        if sl:
+            extra_prod_parts.append("p.product_type = ANY(%(subcats)s)")
+            country_params["subcats"] = sl
+    extra_prod_where = (" AND " + " AND ".join(extra_prod_parts)) if extra_prod_parts else ""
+
     sql = f"""
 WITH
 /*
@@ -1121,6 +1152,7 @@ style_nums AS (
         mode() WITHIN GROUP (ORDER BY p.style_number) AS style_number
     FROM all_products_clean p
     WHERE {_PROD_BASE}
+        {extra_prod_where}
     GROUP BY p.style_name
 ),
 /*
@@ -1172,6 +1204,8 @@ stock_now AS (
         FROM all_products_clean WHERE style_name IS NOT NULL
         GROUP BY sku
     ) m ON m.sku = i.sku
+    WHERE TRUE
+        {pos_stock_clause}
     GROUP BY COALESCE(m.style_name, i.style_name)
 ),
 weekly_sales AS (
@@ -1187,6 +1221,7 @@ weekly_sales AS (
     WHERE s.sale_date BETWEEN %(two_years_ago)s AND %(today)s
         AND {_BASE_FILTERS}
         {country_clause}
+        {pos_sales_clause}
     GROUP BY 1, 2
 ),
 cumulative AS (
@@ -1311,11 +1346,9 @@ store_sales_cmp AS (
         COALESCE(SUM(s.ordered_item_quantity) FILTER (
             WHERE s.sale_kind IN ('sale','order')
         ), 0)                                            AS units_cmp,
-        COALESCE(
-            SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric    ELSE 0 END)
-          - SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN COALESCE(s.discounts_kes,0)::numeric ELSE 0 END)
-          - SUM(CASE WHEN s.sale_kind = 'return'          THEN COALESCE(s.returns_kes,0)::numeric   ELSE 0 END)
-        , 0.0)                                           AS revenue_cmp
+        /* Net Sales canon: (total − discounts − returns) EX-VAT — same basis
+           as every other surface (see net-sales-canonical). */
+        COALESCE(SUM({_NET_SALES_EXPR}), 0.0)            AS revenue_cmp
     FROM all_sales s
     LEFT JOIN all_products_clean p ON p.sku = s.variant_sku
     WHERE s.sale_date BETWEEN %(compare_from)s AND %(compare_to)s
@@ -1367,11 +1400,9 @@ store_sales AS (
         COALESCE(SUM(s.ordered_item_quantity) FILTER (
             WHERE s.sale_kind IN ('sale','order')
         ), 0)                                            AS units_3m,
-        COALESCE(
-            SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric    ELSE 0 END)
-          - SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN COALESCE(s.discounts_kes,0)::numeric ELSE 0 END)
-          - SUM(CASE WHEN s.sale_kind = 'return'          THEN COALESCE(s.returns_kes,0)::numeric   ELSE 0 END)
-        , 0.0)                                           AS revenue_3m
+        /* Net Sales canon: (total − discounts − returns) EX-VAT — same basis
+           as every other surface (see net-sales-canonical). */
+        COALESCE(SUM({_NET_SALES_EXPR}), 0.0)            AS revenue_3m
     FROM all_sales s
     LEFT JOIN all_products_clean p ON p.sku = s.variant_sku
     WHERE s.sale_date BETWEEN %(period_from)s AND %(period_to)s
@@ -2051,15 +2082,19 @@ def register_merch_routes(app, api_pg_module):
 
     @app.get("/api/merch/launch-ramp")
     async def merch_launch_ramp(
-        request:   Request,
-        from_date: Optional[str] = Query(None),
-        to_date:   Optional[str] = Query(None),
-        country:   Optional[str] = Query(None),
+        request:      Request,
+        from_date:    Optional[str] = Query(None),
+        to_date:      Optional[str] = Query(None),
+        country:      Optional[str] = Query(None),
+        brand:        Optional[str] = Query(None),
+        subcategory:  Optional[str] = Query(None),
+        pos_location: Optional[str] = Query(None),
     ):
         """Cumulative SOR %% by weeks-since-launch, broken down by lifecycle tier."""
-        key = f"merch_launch_ramp|{from_date}|{to_date}|{country}"
+        key = f"merch_launch_ramp|{from_date}|{to_date}|{country}|{brand}|{subcategory}|{pos_location}"
         result = _cached(key, _TTL, lambda: _fetch_launch_ramp(
-            from_date=from_date, to_date=to_date, country=country))
+            from_date=from_date, to_date=to_date, country=country,
+            brand=brand, subcategory=subcategory, pos_location=pos_location))
         return JSONResponse(result)
 
     @app.get("/api/merch/by-store")

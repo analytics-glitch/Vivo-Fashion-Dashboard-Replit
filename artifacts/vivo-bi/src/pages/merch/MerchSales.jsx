@@ -129,7 +129,7 @@ const BubbleTooltip = ({ active, payload }) => {
   return (
     <div className="bg-white border border-border rounded-lg shadow-lg p-3 text-[12px] min-w-[160px]">
       <p className="font-bold text-foreground mb-1">{d.subcategory}</p>
-      <p className="text-muted">Revenue 6m: <span className="text-foreground font-medium">{fmtKES(d.revenue_6m_raw)}</span></p>
+      <p className="text-muted">Revenue: <span className="text-foreground font-medium">{fmtKES(d.revenue_6m_raw)}</span></p>
       <p className="text-muted">SOR: <span className="text-foreground font-medium">{d.sor !== null ? fmtDec(d.sor, 1) + "%" : "—"}</span></p>
       <p className="text-muted">Stock: <span className="text-foreground font-medium">{fmtNum(d.current_stock)}</span></p>
       <p className="text-muted">Styles: <span className="text-foreground font-medium">{d.style_count}</span></p>
@@ -208,27 +208,37 @@ export default function MerchSales() {
 
   // ════════════════ SALES derivations ════════════════
 
-  // Top 10 styles by revenue_6m
+  // Charts follow the global date filter: *_period fields are scoped to the
+  // selected range (default = trailing 6 months when no dates are set).
+  const selRev   = (r) => (r.revenue_period ?? r.revenue_6m) || 0;
+  const selUnits = (r) => (r.units_period   ?? r.units_6m)   || 0;
+  // Suffix for chart/KPI labels — "6m" only when no date filter is active.
+  const periodTag = filters.from_date ? "Selected Period" : "6m";
+
+  // Top 10 styles by period revenue
   const top10Styles = useMemo(() =>
-    [...styleRows].sort((a, b) => (b.revenue_6m || 0) - (a.revenue_6m || 0)).slice(0, 10),
+    [...styleRows].map((r) => ({ ...r, revenue_sel: selRev(r) }))
+      .sort((a, b) => b.revenue_sel - a.revenue_sel).slice(0, 10),
     [styleRows]);
 
   // Revenue by Subcategory
   const subcatRevenue = useMemo(() =>
-    [...subRows].sort((a, b) => (b.revenue_6m || 0) - (a.revenue_6m || 0)).slice(0, 10),
+    [...subRows].map((r) => ({ ...r, revenue_sel: selRev(r) }))
+      .sort((a, b) => b.revenue_sel - a.revenue_sel).slice(0, 10),
     [subRows]);
 
   // Units by Brand
   const brandUnits = useMemo(() =>
-    [...brandRows].sort((a, b) => (b.units_6m || 0) - (a.units_6m || 0)),
+    [...brandRows].map((r) => ({ ...r, units_sel: selUnits(r) }))
+      .sort((a, b) => b.units_sel - a.units_sel),
     [brandRows]);
 
   // Bubble matrix: Revenue vs SOR per subcategory (bubble size = stock)
   const bubbleData = useMemo(() =>
     subRows.map(r => ({
       subcategory:    r.subcategory,
-      revenue_6m:     Math.round((r.revenue_6m || 0) / 1_000_000),   // KES M (axis only)
-      revenue_6m_raw: r.revenue_6m || 0,                              // raw KES for tooltip
+      revenue_6m:     Math.round(selRev(r) / 1_000_000),   // KES M (axis only)
+      revenue_6m_raw: selRev(r),                            // raw KES for tooltip
       sor:            r.avg_sor_6m,
       current_stock:  r.current_stock || 0,
       style_count:    r.style_count || 0,
@@ -449,8 +459,8 @@ export default function MerchSales() {
   // ════════════════ KPI extras + compare period ════════════════
 
   const avgUnitsPerStyle = useMemo(() =>
-    (summary?.total_styles && summary?.units_6m)
-      ? Math.round(summary.units_6m / summary.total_styles)
+    (summary?.total_styles && (summary?.units_period ?? summary?.units_6m))
+      ? Math.round((summary.units_period ?? summary.units_6m) / summary.total_styles)
       : 0,
     [summary]);
 
@@ -459,8 +469,8 @@ export default function MerchSales() {
 
   // Average unit (selling) price — weighted by units sold
   const avgUnitPrice = useMemo(() => {
-    const totalRev   = styleRows.reduce((s, r) => s + (r.revenue_6m || 0), 0);
-    const totalUnits = styleRows.reduce((s, r) => s + (r.units_6m   || 0), 0);
+    const totalRev   = styleRows.reduce((s, r) => s + selRev(r), 0);
+    const totalUnits = styleRows.reduce((s, r) => s + selUnits(r), 0);
     return totalUnits > 0 ? Math.round(totalRev / totalUnits) : 0;
   }, [styleRows]);
 
@@ -513,8 +523,8 @@ export default function MerchSales() {
 
   // Compare period weighted averages
   const prevAvgUnitPrice = useMemo(() => {
-    const totalRev   = prevStyleRows.reduce((s, r) => s + (r.revenue_6m || 0), 0);
-    const totalUnits = prevStyleRows.reduce((s, r) => s + (r.units_6m   || 0), 0);
+    const totalRev   = prevStyleRows.reduce((s, r) => s + ((r.revenue_period ?? r.revenue_6m) || 0), 0);
+    const totalUnits = prevStyleRows.reduce((s, r) => s + ((r.units_period ?? r.units_6m) || 0), 0);
     return totalUnits > 0 ? Math.round(totalRev / totalUnits) : null;
   }, [prevStyleRows]);
 
@@ -564,7 +574,7 @@ export default function MerchSales() {
     <div className="space-y-5 pb-8">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="text-[11px] text-slate-400">
-          Sales, Pricing &amp; Sell-Through Analysis · 6-Month View
+          Sales, Pricing &amp; Sell-Through Analysis · follows the global date filter (defaults to last 6 months); SOR/velocity metrics use a fixed 6-month basis
         </div>
         <SubcatFilter value={localSubcat} onChange={setLocalSubcat} />
       </div>
@@ -574,10 +584,10 @@ export default function MerchSales() {
       {/* ── KPI cards ── */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
         <MerchKPICard
-          label="Revenue (6m)"
-          value={fmtKESM(s.revenue_6m)}
+          label={`Revenue (${periodTag})`}
+          value={fmtKESM(s.revenue_period ?? s.revenue_6m)}
           sub="Avg per Style"
-          sub2={s.total_styles ? fmtKESM(s.revenue_6m / s.total_styles) : "—"}
+          sub2={s.total_styles ? fmtKESM((s.revenue_period ?? s.revenue_6m) / s.total_styles) : "—"}
           accentColor={C.blue}
           testId="merch-sales-kpi-revenue"
         />
@@ -589,8 +599,8 @@ export default function MerchSales() {
           testId="fin-rev-life"
         />
         <MerchKPICard
-          label="Units Sold (6m)"
-          value={fmtNum(s.units_6m)}
+          label={`Units Sold (${periodTag})`}
+          value={fmtNum(s.units_period ?? s.units_6m)}
           sub="Avg per Style"
           sub2={`${fmtNum(avgUnitsPerStyle)} units`}
           accentColor={C.teal}
@@ -634,7 +644,7 @@ export default function MerchSales() {
 
       {/* ── Top 10 styles + Revenue by Subcat ── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <ChartCard title="Top 10 Revenue Generating Styles (6m)">
+        <ChartCard title={`Top 10 Revenue Generating Styles (${periodTag})`}>
           <ResponsiveContainer width="100%" height={320}>
             <BarChart data={top10Styles} layout="vertical" margin={{ top: 0, right: 65, left: 130, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f1f5f9" />
@@ -647,14 +657,14 @@ export default function MerchSales() {
                 tickFormatter={(v) => v?.length > 24 ? v.slice(0, 24) + "…" : v}
               />
               <Tooltip content={<KesTooltip />} />
-              <Bar dataKey="revenue_6m" name="Revenue 6m" fill={C.teal} radius={[0, 3, 3, 0]}>
-                <LabelList dataKey="revenue_6m" position="right" formatter={fmtKESM} style={{ fontSize: 9, fill: "#64748b" }} />
+              <Bar dataKey="revenue_sel" name="Revenue" fill={C.teal} radius={[0, 3, 3, 0]}>
+                <LabelList dataKey="revenue_sel" position="right" formatter={fmtKESM} style={{ fontSize: 9, fill: "#64748b" }} />
               </Bar>
             </BarChart>
           </ResponsiveContainer>
         </ChartCard>
 
-        <ChartCard title="Revenue by Subcategory (6m)">
+        <ChartCard title={`Revenue by Subcategory (${periodTag})`}>
           <ResponsiveContainer width="100%" height={320}>
             <BarChart data={subcatRevenue} margin={{ top: 10, right: 10, left: 0, bottom: 60 }}>
               <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
@@ -667,8 +677,8 @@ export default function MerchSales() {
               />
               <YAxis tickFormatter={fmtAxisM} tick={{ fontSize: 10 }} />
               <Tooltip content={<KesTooltip />} />
-              <Bar dataKey="revenue_6m" name="Revenue 6m" fill={C.blue} radius={[4, 4, 0, 0]}>
-                <LabelList dataKey="revenue_6m" position="top" formatter={fmtAxisM} style={{ fontSize: 9, fill: "#64748b" }} />
+              <Bar dataKey="revenue_sel" name="Revenue" fill={C.blue} radius={[4, 4, 0, 0]}>
+                <LabelList dataKey="revenue_sel" position="top" formatter={fmtAxisM} style={{ fontSize: 9, fill: "#64748b" }} />
               </Bar>
             </BarChart>
           </ResponsiveContainer>
@@ -677,15 +687,15 @@ export default function MerchSales() {
 
       {/* ── Units by Brand + Weekly Velocity by Subcategory ── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <ChartCard title="Units Sold by Brand (6m)">
+        <ChartCard title={`Units Sold by Brand (${periodTag})`}>
           <ResponsiveContainer width="100%" height={300}>
             <BarChart data={brandUnits} margin={{ top: 16, right: 8, left: -5, bottom: 20 }}>
               <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
               <XAxis dataKey="brand" tick={{ fontSize: 9 }} interval={0} angle={-20} textAnchor="end" />
               <YAxis tickFormatter={(v) => v >= 1000 ? (v / 1000).toFixed(0) + "K" : v} tick={{ fontSize: 10 }} />
               <Tooltip content={<NumTooltip />} />
-              <Bar dataKey="units_6m" name="Units Sold" fill={C.blue} radius={[4, 4, 0, 0]}>
-                <LabelList dataKey="units_6m" position="top" formatter={fmtNum} style={{ fontSize: 9, fontWeight: 700 }} />
+              <Bar dataKey="units_sel" name="Units Sold" fill={C.blue} radius={[4, 4, 0, 0]}>
+                <LabelList dataKey="units_sel" position="top" formatter={fmtNum} style={{ fontSize: 9, fontWeight: 700 }} />
               </Bar>
             </BarChart>
           </ResponsiveContainer>
@@ -723,7 +733,7 @@ export default function MerchSales() {
           <ResponsiveContainer width="100%" height="100%">
             <ScatterChart margin={{ top: 10, right: 20, bottom: 30, left: 10 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-              <XAxis dataKey="revenue_6m" name="Revenue 6m" label={{ value: "Revenue 6m (KES M)", position: "insideBottom", offset: -10, fontSize: 11 }} tick={{ fontSize: 11 }} />
+              <XAxis dataKey="revenue_6m" name="Revenue" label={{ value: "Revenue (KES M, selected period)", position: "insideBottom", offset: -10, fontSize: 11 }} tick={{ fontSize: 11 }} />
               <YAxis dataKey="sor" name="SOR %" domain={[0, 100]} label={{ value: "SOR 6m %", angle: -90, position: "insideLeft", offset: 10, fontSize: 11 }} tick={{ fontSize: 11 }} />
               <ZAxis dataKey="z" range={[40, 600]} />
               <Tooltip content={<BubbleTooltip />} />
