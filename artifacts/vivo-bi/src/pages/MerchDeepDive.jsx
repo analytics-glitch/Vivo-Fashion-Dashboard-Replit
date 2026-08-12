@@ -528,10 +528,10 @@ const MerchDeepDive = () => {
         )}
       </div>
 
-      {/* ── Row 1: Weekly trend + Subcategory percentile + Gross Margin waterfall ── */}
+      {/* ── Row 1: Weekly trend + Store Performance ─────────────────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-        {/* 52-week weekly sales trend — 5 */}
-        <div className="lg:col-span-5 card-white p-5">
+        {/* 52-week weekly sales trend — 6 */}
+        <div className="lg:col-span-6 card-white p-5">
           <SectionTitle
             title="Weekly Sales Trend — Trailing 52 Weeks"
             subtitle={`Current avg ${avgUnits}/wk`}
@@ -608,8 +608,90 @@ const MerchDeepDive = () => {
             )}
         </div>
 
-        {/* Subcategory percentile ranking — 4 */}
-        <div className="lg:col-span-4 card-white p-5">
+        {/* Store Performance — 6 (promoted from the bottom full-width row) */}
+        <div className="lg:col-span-6 card-white p-5">
+          <div className="flex items-start justify-between gap-3 flex-wrap">
+            <SectionTitle
+              title={`Store Performance — ${storeMetric === "units" ? "Units Sold" : "Revenue"} (${periodLabel})`}
+              subtitle={storeMetric === "units"
+                ? "Units per store · sorted best to worst"
+                : "KES Thousands per store · sorted best to worst"}
+            />
+            <div className="flex gap-1">
+              {[["revenue", "Revenue"], ["units", "Units"]].map(([m, lbl]) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => setStoreMetric(m)}
+                  className={`px-3 py-1 text-[11px] font-semibold rounded-full border transition-all ${
+                    storeMetric === m
+                      ? "bg-brand/10 text-brand-deep border-brand/30"
+                      : "text-foreground/50 border-transparent hover:bg-muted"
+                  }`}
+                >
+                  {lbl}
+                </button>
+              ))}
+            </div>
+          </div>
+          {storeChart.length === 0
+            ? <Empty />
+            : (
+              <>
+                <ResponsiveContainer width="100%" height={240}>
+                  <BarChart data={storeChart} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                    <XAxis
+                      dataKey="name"
+                      tick={{ fontSize: 8 }}
+                      interval={0}
+                      angle={-60}
+                      textAnchor="end"
+                      height={84}
+                    />
+                    <YAxis
+                      tick={{ fontSize: 9 }}
+                      tickFormatter={v => (storeMetric === "units" ? v : v + "K")}
+                    />
+                    <Tooltip content={({ active, payload, label }) => {
+                      if (!active || !payload?.length) return null;
+                      const d = payload[0].payload;
+                      return (
+                        <div className="bg-white border border-border rounded-lg shadow-md px-3 py-2 text-[11px]">
+                          <div className="font-bold mb-0.5">
+                            {label}{d.tier && d.tier !== "—" ? ` · Tier ${d.tier}` : ""}
+                          </div>
+                          <div>Revenue: KES {fmtNum(d.revenueK)}K</div>
+                          <div>Units sold: {fmtNum(d.units)}</div>
+                          <div>Stock on hand: {fmtNum(d.stock)}</div>
+                        </div>
+                      );
+                    }} />
+                    <Bar dataKey="value" radius={[3, 3, 0, 0]}>
+                      {storeChart.map((d, i) => (
+                        <Cell key={i} fill={STORE_TIER_COLOR[d.tier] || "#d1d5db"} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+                <div className="mt-1 flex items-center flex-wrap gap-x-4 gap-y-1 text-[10.5px] text-foreground/60">
+                  {Object.entries(STORE_TIER_COLOR).map(([t, c]) => (
+                    <span key={t} className="inline-flex items-center gap-1.5">
+                      <span className="w-2.5 h-2.5 rounded-sm inline-block" style={{ background: c }} />
+                      Tier {t} store
+                    </span>
+                  ))}
+                  <span className="text-foreground/40">Store tier = trailing-90-day revenue rank</span>
+                </div>
+              </>
+            )}
+        </div>
+      </div>
+
+      {/* ── Row 2: Subcategory percentile + Gross Margin waterfall + Monthly Revenue ── */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+        {/* Subcategory percentile ranking — 5 */}
+        <div className="lg:col-span-5 card-white p-5">
           <SectionTitle
             title={`Subcategory Ranking (${style.subcategory || "—"}, n=${subcatPeerCount})`}
             subtitle="Percentile vs peers (higher = better)"
@@ -660,10 +742,6 @@ const MerchDeepDive = () => {
             Cost price not available in current data — Gross Margin cannot be calculated.
           </div>
         </div>
-      </div>
-
-      {/* ── Row 2: Monthly Revenue + Lifecycle Timeline + Transfer table + AI Recs ── */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
         {/* Monthly Revenue — 4 */}
         <div className="lg:col-span-4 card-white p-5">
           <SectionTitle title="Monthly Revenue — Last 12 Months" subtitle="KES Thousands" />
@@ -690,8 +768,12 @@ const MerchDeepDive = () => {
             )}
         </div>
 
-        {/* Style Lifecycle Timeline — 5 */}
-        <div className="lg:col-span-5 card-white p-5">
+      </div>
+
+      {/* ── Row 3: Lifecycle Timeline + AI Recommendations ───────────────── */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+        {/* Style Lifecycle Timeline — 9 */}
+        <div className="lg:col-span-9 card-white p-5">
           <SectionTitle title="Style Lifecycle Timeline" subtitle="Weeks since launch / Cumulative units" />
           {lifecycleData.length === 0
             ? <Empty />
@@ -755,85 +837,6 @@ const MerchDeepDive = () => {
             ))}
           </div>
         </div>
-      </div>
-
-      {/* ── Row 3: Store Performance ─────────────────────────────────────── */}
-      <div className="card-white p-5">
-        <div className="flex items-start justify-between gap-3 flex-wrap">
-          <SectionTitle
-            title={`Store Performance — ${storeMetric === "units" ? "Units Sold" : "Revenue"} (${periodLabel})`}
-            subtitle={storeMetric === "units"
-              ? "Units per store · sorted best to worst"
-              : "KES Thousands per store · sorted best to worst"}
-          />
-          <div className="flex gap-1">
-            {[["revenue", "Revenue"], ["units", "Units"]].map(([m, lbl]) => (
-              <button
-                key={m}
-                type="button"
-                onClick={() => setStoreMetric(m)}
-                className={`px-3 py-1 text-[11px] font-semibold rounded-full border transition-all ${
-                  storeMetric === m
-                    ? "bg-brand/10 text-brand-deep border-brand/30"
-                    : "text-foreground/50 border-transparent hover:bg-muted"
-                }`}
-              >
-                {lbl}
-              </button>
-            ))}
-          </div>
-        </div>
-        {storeChart.length === 0
-          ? <Empty />
-          : (
-            <>
-              <ResponsiveContainer width="100%" height={270}>
-                <BarChart data={storeChart} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                  <XAxis
-                    dataKey="name"
-                    tick={{ fontSize: 8.5 }}
-                    interval={0}
-                    angle={-45}
-                    textAnchor="end"
-                    height={72}
-                  />
-                  <YAxis
-                    tick={{ fontSize: 9 }}
-                    tickFormatter={v => (storeMetric === "units" ? v : v + "K")}
-                  />
-                  <Tooltip content={({ active, payload, label }) => {
-                    if (!active || !payload?.length) return null;
-                    const d = payload[0].payload;
-                    return (
-                      <div className="bg-white border border-border rounded-lg shadow-md px-3 py-2 text-[11px]">
-                        <div className="font-bold mb-0.5">
-                          {label}{d.tier && d.tier !== "—" ? ` · Tier ${d.tier}` : ""}
-                        </div>
-                        <div>Revenue: KES {fmtNum(d.revenueK)}K</div>
-                        <div>Units sold: {fmtNum(d.units)}</div>
-                        <div>Stock on hand: {fmtNum(d.stock)}</div>
-                      </div>
-                    );
-                  }} />
-                  <Bar dataKey="value" radius={[3, 3, 0, 0]}>
-                    {storeChart.map((d, i) => (
-                      <Cell key={i} fill={STORE_TIER_COLOR[d.tier] || "#d1d5db"} />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-              <div className="mt-1 flex items-center gap-4 text-[10.5px] text-foreground/60">
-                {Object.entries(STORE_TIER_COLOR).map(([t, c]) => (
-                  <span key={t} className="inline-flex items-center gap-1.5">
-                    <span className="w-2.5 h-2.5 rounded-sm inline-block" style={{ background: c }} />
-                    Tier {t} store
-                  </span>
-                ))}
-                <span className="text-foreground/40">Store tier = trailing-90-day revenue rank</span>
-              </div>
-            </>
-          )}
       </div>
     </div>
   );
