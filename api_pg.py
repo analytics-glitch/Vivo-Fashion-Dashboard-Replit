@@ -22190,12 +22190,18 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
             COALESCE(st.soh_stores, 0) AS soh_stores, COALESCE(st.soh_warehouse, 0) AS soh_warehouse,
             COALESCE(st.soh_pipeline, 0) AS soh_pipeline,
             COALESCE(nos.months_active_12, 0) AS months_active_12,
-            COALESCE(p.is_noos, FALSE) AS is_noos
+            COALESCE(p.is_noos, FALSE) AS is_noos,
+            tov.tier   AS override_tier,
+            tov.status AS override_status
         FROM prod p
         LEFT JOIN sales sa USING (style_name)
         LEFT JOIN stock st USING (style_name)
         LEFT JOIN nos USING (style_name)
-        WHERE (COALESCE(st.soh_stores, 0) > 0 OR COALESCE(st.soh_warehouse, 0) > 0)
+        LEFT JOIN style_tier_overrides tov ON tov.style_number = p.style_number
+        WHERE (
+            COALESCE(st.soh_stores, 0) > 0 OR COALESCE(st.soh_warehouse, 0) > 0
+            OR tov.status = 'Active'
+        )
           AND COALESCE(p.brand, '') NOT ILIKE '%third party%'
     """, ttl=HEAVY_DASH_TTL)
     # One Style Number → One Style Name: collapse rows that share the same
@@ -22214,17 +22220,10 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
     today = date.today()
     reorder_counts = _real_reorder_counts()  # style_number → real order count
 
-    # Load tier overrides imported from the merchandising spreadsheet.
-    # style_number → {ov_tier, ov_status} where ov_status in Active/Retired/Archived.
-    # Archived is treated as Retired for Range Management (not part of the live range).
-    try:
-        _ov_rows = run_query(
-            "SELECT style_number, ov_tier, ov_status FROM style_tier_overrides"
-            " WHERE style_number IS NOT NULL",
-            ttl=300)
-        _tier_overrides_by_sn = {row["style_number"]: row for row in _ov_rows}
-    except Exception:
-        _tier_overrides_by_sn = {}
+    # Detect whether the override table is in use by checking if any row in the
+    # result has a non-NULL override_status (the SQL LEFT JOIN sets it NULL when
+    # the style has no entry in style_tier_overrides).
+    _overrides_populated = any(r.get("override_status") is not None for r in raw)
 
     active, retired, pipeline, candidates = [], [], [], []
     for r in raw:
@@ -22289,16 +22288,20 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
             r["style_name"], r["brand"], age_weeks, reorder_count, months_active_12,
             is_noos=is_noos)
 
-        # Apply spreadsheet tier override (from style_tier_overrides import).
-        # ov_status Active → use the spreadsheet tier; Retired or Archived →
-        # force into the retired bucket (not part of the live active range).
-        _sn = r.get("style_number") or ""
-        _ov = _tier_overrides_by_sn.get(_sn) if _sn else None
-        if _ov:
-            if _ov["ov_status"] == "Active":
-                life_tier = _ov["ov_tier"]   # Tier 1 / 2 / 3 / 4
-            else:                             # Retired or Archived
-                life_tier = "Retired"
+        # Apply spreadsheet tier override joined directly from style_tier_overrides.
+        # override_status = NULL  → style not on the sheet.
+        # Active  → use the spreadsheet tier (Tier 1–4).
+        # Retired / Archived → force into the retired bucket.
+        # No override when table is populated → treat as Archived (upload is
+        # the source of truth; the SQL already excluded zero-stock non-active styles).
+        override_status = r.get("override_status")
+        override_tier   = r.get("override_tier")
+        if override_status == "Active" and override_tier:
+            life_tier = override_tier        # Tier 1 / 2 / 3 / 4
+        elif override_status in ("Retired", "Archived"):
+            life_tier = "Retired"
+        elif override_status is None and _overrides_populated:
+            life_tier = "Retired"            # not on sheet → Archived
 
         is_retired = (life_tier == "Retired")
 

@@ -17,7 +17,7 @@ TIER_MAP = {
     "TIER 3": "Tier 3",
     "TIER 4": "Tier 4",
     "RETIRED": "Retired",
-    "SAMPLE":  "Tier 4",   # single outlier — treat as newest active tier
+    "SAMPLE":  "Retired",  # sample styles are not part of the active range
 }
 
 def tier_to_status(tier: str) -> str:

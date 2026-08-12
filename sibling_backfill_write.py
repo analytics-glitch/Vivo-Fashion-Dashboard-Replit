@@ -20,7 +20,7 @@ uid=common.authenticate(db,user,pw,{})
 models=xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/object")
 def ex(m,meth,*a,**k): return models.execute_kw(db,uid,pw,m,meth,list(a),k or {})
 
-DRY = True   # flip to False to write
+DRY = False   # flip to False to write
 
 STYLE_RE = re.compile(r"^[A-Za-z]\d{6,7}$")
 def valid_num(n): return bool(n) and bool(STYLE_RE.match((n or "").strip()))
