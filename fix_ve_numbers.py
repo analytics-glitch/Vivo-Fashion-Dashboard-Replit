@@ -15,7 +15,7 @@ uid=common.authenticate(db,user,pw,{})
 models=xmlrpc.client.ServerProxy(f"{url}/xmlrpc/2/object")
 def ex(m,meth,*a,**k): return models.execute_kw(db,uid,pw,m,meth,list(a),k or {})
 
-DRY=True
+DRY=False
 
 ids=ex("product.template","search",[["x_style_number_text","like","VE%"]])
 recs=ex("product.template","read",ids,fields=["id","name","x_style_number_text","product_variant_ids"])
