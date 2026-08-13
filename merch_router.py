@@ -32,6 +32,7 @@ Registered via register_merch_routes(app, api_pg_module) from api_pg.py.
 
 import logging
 import os
+import re
 from datetime import date, timedelta
 from typing import Optional
 
@@ -770,9 +771,12 @@ _KPI_BUCKETS = {
         "label": "Active Colour Styles",
         "dedup": True,
         "pred":  lambda s: _is_active_tier(s) and _has_any_stock(s),
-        # style-grain rows; this column sums to the card's DERIVED colour
-        # count (colourways with SOH > 0 — colours_in_stock, not colour_count)
-        "extra": [("Colours in Stock (per style)", lambda s: s.get("colours_in_stock"))],
+        # COLOUR-grain file: the export endpoint branches to
+        # _active_colour_rows (one row per in-stock colourway of these
+        # deduped Active styles), so the file's row count equals the card's
+        # DERIVED colourway count — the same colours_in_stock figure
+        # _compute_summary sums. This bucket still defines the PARENT-style
+        # membership the branch expands.
     },
     "warehouse_units": {
         "label": "Warehouse Units",
@@ -833,6 +837,231 @@ def _kpi_bucket_rows(styles, kpi_id):
     return out
 
 
+# ── Colour-grain rows — Active Colour Styles CSV ──────────────────────────────
+
+_COLOUR_CODE_TOKEN = re.compile(r"^\S*\d\S*$")                     # 0819102, V0223151, 1X…
+_COLOUR_SIZE_TOKEN = re.compile(r"^[smlx]{1,4}$", re.IGNORECASE)   # S, M, L, Xl, XXL…
+_COLOUR_ONE_LETTER = re.compile(r"^[A-Za-z]$")                     # bare size letter: F…
+
+
+def _tidy_colour_label(raw):
+    """Display-only tidy-up for colourway labels that carry style-number/size
+    noise — a Python port of tidyColorLabel in MerchDeepDive.jsx (the
+    established deep-dive pattern), e.g. "Mustard / 0819102 / F" → "Mustard",
+    "Hunters Green - Hunters Green / V0323019 / L" → "Hunters Green".
+    Noise is stripped from the END only, so genuine multi-colour names like
+    "Navy / White" keep all their segments. The RAW colour value stays the
+    data key on every row — this only affects what the CSV prints."""
+    s = str(raw or "").strip()
+    if not s:
+        return "—"
+    parts = [p.strip() for p in s.split("/") if p.strip()]
+    while len(parts) > 1:
+        last = parts[-1]
+        if (_COLOUR_CODE_TOKEN.match(last) or _COLOUR_SIZE_TOKEN.match(last)
+                or _COLOUR_ONE_LETTER.match(last)):
+            parts.pop()
+        else:
+            break
+    out = " / ".join(parts)
+    out = re.sub(r"^(.+?) - \1$", r"\1", out)
+    return out or s
+
+
+def _active_colour_rows(styles, colour_rows):
+    """One row per ACTIVE colourway — the colour-grain rows behind the Active
+    Colour Styles card's CSV.
+
+    Parent-style membership = _kpi_bucket_rows(styles, "active_colours"): the
+    deduped Active-tier in-stock set (first style_number occurrence wins; the
+    input is already revenue-ordered) — exactly the styles whose
+    colours_in_stock _compute_summary sums for the card, so len(result) ==
+    active_colour_styles_count by construction (colour_rows carries each
+    style's in-stock colourways from the same SQL predicate). Colourways of a
+    dropped duplicate twin (same style_number, different style_name) are
+    excluded with their twin, and style-level retirement / stockless styles
+    cascade to every colourway, matching the card.
+
+    Colour keys stay RAW (noisy twins are distinct colourways — never
+    merged); colour_label is the tidied display value, falling back to the
+    raw key when two colourways of one style would tidy to the same label
+    (the deep-dive collision-fallback pattern)."""
+    by_style = {}
+    for c in colour_rows or []:
+        by_style.setdefault(c.get("style_name"), []).append(c)
+
+    today = date.today()
+    out = []
+    for s in _kpi_bucket_rows(styles, "active_colours"):
+        cols = by_style.get(s.get("style_name")) or []
+        cols = sorted(cols, key=lambda c: (-(float(c.get("revenue_6m") or 0)),
+                                           str(c.get("colour") or "")))
+        tidies = [_tidy_colour_label(c.get("colour")) for c in cols]
+        seen = {}
+        for t in tidies:
+            seen[t] = seen.get(t, 0) + 1
+        for c, tidy in zip(cols, tidies):
+            raw_colour = str(c.get("colour") or "").strip()
+            label = tidy if seen[tidy] == 1 else (raw_colour or "—")
+            soh_stores = int(c.get("soh_stores") or 0)
+            soh_wh     = int(c.get("soh_warehouse") or 0)
+            soh        = soh_stores + soh_wh
+            units_6m   = int(c.get("units_6m") or 0)
+            revenue_6m = round(float(c.get("revenue_6m") or 0), 0)
+            # Deep-dive colourway arithmetic (_fetch_style_colors): weekly avg
+            # rounded to 2dp BEFORE the divide, WOC to 1dp.
+            weekly_avg = round(units_6m / 26.0, 2)
+            woc = round(soh / weekly_avg, 1) if weekly_avg > 0 else None
+            last_sale = c.get("last_sale_date")
+            last_sale_days = None
+            if last_sale:
+                try:
+                    ls = (last_sale if isinstance(last_sale, date)
+                          else date.fromisoformat(str(last_sale)[:10]))
+                    last_sale_days = (today - ls).days
+                except Exception:
+                    last_sale_days = None
+            out.append({
+                # style context (from the deduped Active style row)
+                "style_name":     s.get("style_name"),
+                "style_number":   s.get("style_number") or "",
+                "subcategory":    s.get("subcategory") or "",
+                "tier":           s.get("tier"),
+                "brand":          s.get("brand") or "",
+                "launch_date":    s.get("launch_date"),
+                "full_price":     s.get("full_price"),
+                # per-colour figures
+                "colour":         c.get("colour"),   # RAW key — never merged
+                "colour_label":   label,
+                "soh":            soh,
+                "soh_stores":     soh_stores,
+                "soh_warehouse":  soh_wh,
+                "units_6m":       units_6m,
+                "revenue_6m":     revenue_6m,
+                "weekly_avg":     weekly_avg,
+                "woc":            woc,
+                "last_sale_days": last_sale_days,
+            })
+    return out
+
+def _fetch_colour_rows(country=None, pos_location=None):
+    """Colour-grain rows behind the Active Colour Styles CSV — one row per
+    (style, colour) with SOH > 0.
+
+    The stock derivation mirrors _fetch_styles' colour_stock CTE EXACTLY
+    (colour = per-SKU mode() of color_print from the product master — never
+    all_inventory's colour column — same location exclusions, same
+    country/POS scoping, same SOH > 0 predicate), so each style's row count
+    here equals its colours_in_stock figure and the export reconciles with
+    the card by construction. Membership scoping (brand/subcategory/tier/
+    status filters, the Active-tier gate and the style_number dedup) is
+    applied by _active_colour_rows via the shared _KPI_BUCKETS predicate,
+    NOT here — only country/pos_location shape this SQL, so callers cache
+    on (country, pos_location) alone.
+
+    Sales enrichment reuses the deep-dive colourway basis
+    (_fetch_style_colors): fixed trailing-6-month window, gross-units canon,
+    net-sales revenue canon, BASE_FILTERS + country/POS scoping; inventory
+    and sales stay pre-aggregated in their own CTEs (never joined then
+    summed). last_sale_date includes return rows, mirroring _fetch_styles'
+    sales_6m. Colour keys stay RAW — noisy twins are distinct colourways."""
+    today       = date.today()
+    six_mo_ago  = str(today - timedelta(days=_SIX_MONTHS_DAYS))
+    today_str   = str(today)
+    params = {"six_mo_ago": six_mo_ago, "today": today_str}
+
+    country_clause = ""
+    country_inv_where = ""
+    if country:
+        cl = [c.strip() for c in country.split(",") if c.strip()]
+        if cl:
+            params["countries"] = cl
+            country_clause = " AND s.country = ANY(%(countries)s)"
+            inv_cs = ", ".join(f"'{c.lower().replace(chr(39), chr(39)*2)}'" for c in cl)
+            country_inv_where = f" WHERE LOWER(i.country) IN ({inv_cs})"
+
+    pos_store_clause = ""
+    pos_sales_clause = ""
+    pos_has_filter = False
+    if pos_location:
+        pl = [p.strip() for p in pos_location.split(",") if p.strip()]
+        if pl:
+            params["pos_locations"] = pl
+            pos_store_clause = " AND i.pos_location_name = ANY(%(pos_locations)s)"
+            pos_sales_clause = " AND s.pos_location_name = ANY(%(pos_locations)s)"
+            pos_has_filter   = True
+
+    # Warehouse stock doesn't belong to a specific store → forced to 0 under a
+    # POS location filter, exactly like colour_stock in _fetch_styles.
+    soh_warehouse_expr = (
+        "0"
+        if pos_has_filter else
+        "COALESCE(SUM(i.available) FILTER ("
+        "WHERE i.pos_location_name = 'Warehouse Finished Goods'"
+        "), 0)"
+    )
+
+    sql = f"""
+WITH
+/* Per-SKU master map — byte-identical to colour_stock's cm subquery in
+   _fetch_styles: colour from the product master via SKU, blanks excluded. */
+cm AS (
+    SELECT sku,
+        mode() WITHIN GROUP (ORDER BY style_name)  AS style_name,
+        mode() WITHIN GROUP (ORDER BY color_print) AS colour
+    FROM all_products_clean
+    WHERE style_name IS NOT NULL
+      AND COALESCE(color_print,'') <> ''
+    GROUP BY sku
+),
+/* Stock at (style, colour) grain — same rowset, location exclusions and
+   country/POS scoping as colour_stock; pre-aggregated on its own. */
+stock AS (
+    SELECT
+        cm.style_name,
+        cm.colour,
+        COALESCE(SUM(i.available) FILTER (
+            WHERE i.pos_location_name NOT IN ({_WAREHOUSE_LOCATIONS})
+            {pos_store_clause}
+        ), 0) AS soh_stores,
+        {soh_warehouse_expr} AS soh_warehouse
+    FROM all_inventory i
+    JOIN cm ON cm.sku = i.sku{country_inv_where}
+    GROUP BY cm.style_name, cm.colour
+),
+/* Fixed trailing-6-month sales per colourway (deep-dive basis). */
+sales_6m AS (
+    SELECT
+        cm.style_name,
+        cm.colour,
+        SUM(s.ordered_item_quantity) FILTER (
+            WHERE s.sale_kind IN ('sale','order')
+        )                      AS units_6m,
+        SUM({_NET_SALES_EXPR}) AS revenue_6m,
+        MAX(s.sale_date::date) AS last_sale_date
+    FROM all_sales s
+    JOIN cm ON cm.sku = s.variant_sku
+    WHERE s.sale_date BETWEEN %(six_mo_ago)s AND %(today)s
+        AND {_BASE_FILTERS}
+        {country_clause}
+        {pos_sales_clause}
+    GROUP BY cm.style_name, cm.colour
+)
+SELECT
+    st.style_name,
+    st.colour,
+    st.soh_stores,
+    st.soh_warehouse,
+    COALESCE(s6.units_6m, 0)     AS units_6m,
+    COALESCE(s6.revenue_6m, 0.0) AS revenue_6m,
+    s6.last_sale_date
+FROM stock st
+LEFT JOIN sales_6m s6
+       ON s6.style_name = st.style_name AND s6.colour = st.colour
+WHERE st.soh_stores + st.soh_warehouse > 0
+"""
+    rows = _db_exec(sql, params, fetch=True)
+    return [dict(r) for r in (rows or [])]
 def _compute_summary(styles):
     if not styles:
         return _empty_summary()
@@ -2737,7 +2966,12 @@ def register_merch_routes(app, api_pg_module):
         Percent columns are emitted with an explicit % suffix ("10.9%") —
         Excel / Google Sheets still parse those cells as percentages.
         Reuses the cached _fetch_styles rows + the shared _KPI_BUCKETS
-        predicates so the file always matches the on-card count."""
+        predicates so the file always matches the on-card count.
+
+        `active_colours` branches to COLOUR-grain rows (one row per in-stock
+        colourway of the deduped Active styles — _active_colour_rows), so
+        that file's data-row count equals the card's derived colourway
+        count."""
         if kpi not in _KPI_BUCKETS:
             return JSONResponse({"detail": f"Unknown kpi '{kpi}'"}, status_code=400)
 
@@ -2747,6 +2981,71 @@ def register_merch_routes(app, api_pg_module):
         styles = await _styles_async(
             brand, subcategory, tier, status,
             from_date, to_date, country, pos_location, _TTL)
+        if kpi == "active_colours":
+            # ── Colour-grain branch — one row per Active colourway ──────────
+            # brand/subcategory/tier/status/date-range scoping rides on the
+            # (already filtered) universe rows via the shared bucket
+            # predicate; only country/POS shape the colour SQL, so its cache
+            # key carries just those two. A cold colour fetch is heavy
+            # blocking SQL → threadpool (same rule as the universe); warm
+            # hits skip the worker hop entirely.
+            colour_key = f"merch_colour_rows|{country}|{pos_location}"
+            entry = _cache_store.get(colour_key)
+            if entry and (_time.monotonic() - entry[0]) < _TTL:
+                colour_rows = entry[1]
+            else:
+                from starlette.concurrency import run_in_threadpool
+                colour_rows = await run_in_threadpool(
+                    lambda: _cached(colour_key, _TTL,
+                                    lambda: _fetch_colour_rows(
+                                        country=country,
+                                        pos_location=pos_location)))
+            crows = _active_colour_rows(styles, colour_rows)
+
+            import csv as _csv
+            import io as _io
+            from fastapi.responses import Response as _Resp
+            headers = [
+                "Style Name", "Style Number", "Colour",
+                "Subcategory", "Tier", "Brand", "Launch Date",
+                "Full Price (Kes)",
+                "SOH", "Stores SOH", "Warehouse SOH",
+                "6m Units Sold", "6m Rev",
+                "Weekly Units Sold", "6m WOC", "Last Sale (days)",
+            ]
+            buf = _io.StringIO()
+            w = _csv.writer(buf)
+            w.writerow(headers)
+
+            def _cv(x):
+                return "" if x is None else x
+            for c in crows:
+                w.writerow([
+                    _cv(c["style_name"]),
+                    _cv(c["style_number"]),
+                    _cv(c["colour_label"]),
+                    _cv(c["subcategory"]),
+                    _cv(c["tier"]),
+                    _cv(c["brand"]),
+                    _cv(c["launch_date"]),
+                    _cv(c["full_price"]),
+                    c["soh"],
+                    c["soh_stores"],
+                    c["soh_warehouse"],
+                    c["units_6m"],
+                    c["revenue_6m"],
+                    c["weekly_avg"],
+                    _cv(c["woc"]),
+                    _cv(c["last_sale_days"]),
+                ])
+            slug  = _KPI_BUCKETS[kpi]["label"].replace(" ", "_")
+            fname = f"{slug}_{date.today().isoformat()}.csv"
+            return _Resp(
+                content=buf.getvalue(),
+                media_type="text/csv; charset=utf-8",
+                headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+            )
+
         rows = _kpi_bucket_rows(styles, kpi)
 
         import csv as _csv

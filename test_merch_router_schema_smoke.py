@@ -413,18 +413,21 @@ class OverviewKpiBucketParityTests(unittest.TestCase):
     same rows — the lockstep contract behind the KPI-card download links."""
 
     def _rows(self):
+        # Distinct style_names (except the deliberate SN-1 twin pair): the
+        # colour-grain CSV keys colourways by style_name, so the fixture must
+        # not alias unrelated styles onto one name.
         return [
             _style(style_number="SN-1", tier="Tier 1", colour_count=3,
                    colours_in_stock=2),
             _style(style_number="SN-1", tier="Tier 1", style_name="renamed twin",
                    colour_count=2, colours_in_stock=2),                        # dedup → counts once
-            _style(style_number="SN-2", tier="Tier 2", current_stock=0,
-                   soh_stores=0, colours_in_stock=5),                          # stockless active → excluded
-            _style(style_number="SN-3", tier="Retired", current_stock=0,
-                   soh_stores=0),                                              # stockless retired → still counts
-            _style(style_number="SN-4", tier="Archived"),
-            _style(style_number="SN-5", tier="Tier 3", soh_warehouse=40,
-                   current_stock=50, colours_in_stock=1),
+            _style(style_number="SN-2", tier="Tier 2", style_name="Style B",
+                   current_stock=0, soh_stores=0, colours_in_stock=5),         # stockless active → excluded
+            _style(style_number="SN-3", tier="Retired", style_name="Style C",
+                   current_stock=0, soh_stores=0),                             # stockless retired → still counts
+            _style(style_number="SN-4", tier="Archived", style_name="Style D"),
+            _style(style_number="SN-5", tier="Tier 3", style_name="Style E",
+                   soh_warehouse=40, current_stock=50, colours_in_stock=1),
         ]
 
     def test_lifecycle_buckets_match_summary_counts(self):
@@ -436,14 +439,39 @@ class OverviewKpiBucketParityTests(unittest.TestCase):
             got = len(merch_router._kpi_bucket_rows(rows, kpi))
             self.assertEqual(got, summary[key], f"{kpi} rows != summary {key}")
 
-    def test_colour_and_warehouse_sums_match_summary(self):
+    def test_active_colours_csv_rows_match_summary(self):
+        """The active_colours card downloads a COLOUR-grain CSV: its data-row
+        count must equal the card's derived colourway count. In production
+        both sides derive from the same SQL predicate (colours_in_stock and
+        _fetch_colour_rows share the colour_stock derivation); the fixture
+        mirrors that by giving each kept style exactly colours_in_stock
+        colour rows. Covers the style_number dedup (the dropped twin's
+        colourways go with it), the stockless-style exclusion and the
+        retired-style cascade."""
         rows = self._rows()
         summary = merch_router._compute_summary(rows)
-        # Card counts DERIVED colour styles (colours_in_stock — colourways
-        # with SOH > 0), so the bucket's file must sum the same field.
-        colours = sum((r.get("colours_in_stock") or 0)
-                      for r in merch_router._kpi_bucket_rows(rows, "active_colours"))
-        self.assertEqual(colours, summary["active_colour_styles_count"])
+
+        def _c(style, colour):
+            return {"style_name": style, "colour": colour, "soh_stores": 1,
+                    "soh_warehouse": 0, "units_6m": 0, "revenue_6m": 0.0,
+                    "last_sale_date": None}
+
+        colour_rows = [
+            _c("Style A", "Red"), _c("Style A", "Blue"),            # SN-1 kept twin → 2
+            _c("renamed twin", "Red"), _c("renamed twin", "Blue"),  # deduped twin → dropped
+            _c("Style B", "Green"),                                 # stockless parent → dropped
+            _c("Style C", "Black"),                                 # retired parent → dropped
+            _c("Style E", "White"),                                 # → 1
+        ]
+        out = merch_router._active_colour_rows(rows, colour_rows)
+        self.assertEqual(len(out), summary["active_colour_styles_count"])
+        self.assertEqual(len(out), 3)
+        # Every emitted row belongs to a kept Active parent.
+        self.assertEqual({r["style_name"] for r in out}, {"Style A", "Style E"})
+
+    def test_warehouse_sums_match_summary(self):
+        rows = self._rows()
+        summary = merch_router._compute_summary(rows)
         wh = sum((r.get("soh_warehouse") or 0)
                  for r in merch_router._kpi_bucket_rows(rows, "warehouse_units"))
         self.assertEqual(wh, summary["warehouse_stock_units"])
@@ -576,6 +604,26 @@ class LaunchRampFilterScopeTests(unittest.TestCase):
         self.assertNotIn("%(brands)s", cap["sql"])
         self.assertNotIn("%(subcats)s", cap["sql"])
         self.assertNotIn("%(pos_locations)s", cap["sql"])
+
+
+# ── Colour-grain CSV (Active Colour Styles card) ──────────────────────────────
+
+_FAKE_COLOUR_ROW = {
+    # must match exactly what the _fetch_colour_rows SQL SELECTs
+    "style_name":     "Test Style A",
+    "colour":         "Mustard / 0819102 / F",
+    "soh_stores":     4,
+    "soh_warehouse":  2,
+    "units_6m":       13,
+    "revenue_6m":     123456.0,
+    "last_sale_date": "2026-08-10",
+}
+
+
+def _colour(**over):
+    row = dict(_FAKE_COLOUR_ROW)
+    row.update(over)
+    return row
 
 
 # ── /api/merch/style-colors — colourway recommendation rule inputs ───────────
@@ -716,3 +764,162 @@ class StyleColorsSchemaTests(unittest.TestCase):
         self.assertEqual(p["countries"], ["Kenya"])
         self.assertEqual(sql.count("s.country = ANY(%(countries)s)"), 3,
                          "country clause must hit sales, sales_6m AND sales_wk")
+
+class ActiveColourGrainCsvTests(unittest.TestCase):
+    """_active_colour_rows — the assembly behind the Active Colour Styles
+    card's colour-grain CSV (arithmetic, ordering, raw-key preservation)."""
+
+    def test_fetch_colour_rows_returns_dicts(self):
+        """Canary: post-processing only touches columns the SQL SELECTs."""
+        with _patch_db([dict(_FAKE_COLOUR_ROW)]):
+            rows = merch_router._fetch_colour_rows()
+        self.assertIsInstance(rows, list)
+        self.assertEqual(len(rows), 1)
+        for k in ("style_name", "colour", "soh_stores", "soh_warehouse",
+                  "units_6m", "revenue_6m", "last_sale_date"):
+            self.assertIn(k, rows[0])
+
+    def test_style_context_and_per_colour_arithmetic(self):
+        from datetime import date, timedelta
+        style = _style(style_number="SN-1", tier="Tier 1", subcategory="Dresses",
+                       brand="Vivo", full_price=3500.0, launch_date="2024-01-15")
+        c = _colour(style_name="Style A", colour="Mustard / 0819102 / F",
+                    soh_stores=4, soh_warehouse=2, units_6m=13,
+                    revenue_6m=123456.4,
+                    last_sale_date=date.today() - timedelta(days=3))
+        out = merch_router._active_colour_rows([style], [c])
+        self.assertEqual(len(out), 1)
+        r = out[0]
+        # style context comes from the deduped Active style row
+        self.assertEqual(r["style_name"], "Style A")
+        self.assertEqual(r["style_number"], "SN-1")
+        self.assertEqual(r["subcategory"], "Dresses")
+        self.assertEqual(r["tier"], "Tier 1")
+        self.assertEqual(r["brand"], "Vivo")
+        self.assertEqual(r["launch_date"], "2024-01-15")
+        self.assertEqual(r["full_price"], 3500.0)
+        # raw colour key preserved; label tidied (deep-dive pattern)
+        self.assertEqual(r["colour"], "Mustard / 0819102 / F")
+        self.assertEqual(r["colour_label"], "Mustard")
+        # deep-dive colourway arithmetic: weekly avg 2dp BEFORE divide
+        self.assertEqual(r["soh"], 6)
+        self.assertEqual(r["soh_stores"], 4)
+        self.assertEqual(r["soh_warehouse"], 2)
+        self.assertEqual(r["units_6m"], 13)
+        self.assertEqual(r["revenue_6m"], 123456.0)   # whole KES
+        self.assertEqual(r["weekly_avg"], 0.5)        # round(13/26, 2)
+        self.assertEqual(r["woc"], 12.0)              # round(6/0.5, 1)
+        self.assertEqual(r["last_sale_days"], 3)
+
+    def test_zero_sales_colourway_has_null_woc(self):
+        style = _style()
+        c = _colour(style_name="Style A", units_6m=0, revenue_6m=0.0,
+                    last_sale_date=None)
+        r = merch_router._active_colour_rows([style], [c])[0]
+        self.assertEqual(r["weekly_avg"], 0.0)
+        self.assertIsNone(r["woc"])
+        self.assertIsNone(r["last_sale_days"])
+
+    def test_colourways_sorted_by_revenue_within_style(self):
+        style = _style()
+        cols = [_colour(style_name="Style A", colour="Low",  revenue_6m=100.0),
+                _colour(style_name="Style A", colour="High", revenue_6m=200.0)]
+        out = merch_router._active_colour_rows([style], cols)
+        self.assertEqual([r["colour"] for r in out], ["High", "Low"])
+
+    def test_unknown_or_excluded_parent_styles_emit_nothing(self):
+        styles = [_style(style_number="SN-1"),                      # Active, in bucket
+                  _style(style_number="SN-2", tier="Retired",
+                         style_name="Style R")]                     # retired → out
+        cols = [_colour(style_name="Style A", colour="Red"),
+                _colour(style_name="Style R", colour="Black"),      # retired cascade
+                _colour(style_name="Never Heard Of It", colour="Blue")]
+        out = merch_router._active_colour_rows(styles, cols)
+        self.assertEqual([r["style_name"] for r in out], ["Style A"])
+
+class TidyColourLabelTests(unittest.TestCase):
+    """_tidy_colour_label — Python port of the deep-dive tidyColorLabel:
+    strips style-number/size noise from the END only; display-only."""
+
+    def test_strips_code_and_size_noise(self):
+        self.assertEqual(merch_router._tidy_colour_label("Mustard / 0819102 / F"),
+                         "Mustard")
+        self.assertEqual(merch_router._tidy_colour_label("Teal / V0223151 / XL"),
+                         "Teal")
+
+    def test_collapses_duplicated_pair(self):
+        self.assertEqual(
+            merch_router._tidy_colour_label(
+                "Hunters Green - Hunters Green / V0323019 / L"),
+            "Hunters Green")
+
+    def test_multicolour_names_survive(self):
+        self.assertEqual(merch_router._tidy_colour_label("Navy / White"),
+                         "Navy / White")
+        self.assertEqual(merch_router._tidy_colour_label("Black / Gold"),
+                         "Black / Gold")
+
+    def test_blank_becomes_em_dash(self):
+        self.assertEqual(merch_router._tidy_colour_label(""), "—")
+        self.assertEqual(merch_router._tidy_colour_label(None), "—")
+
+    def test_single_code_segment_kept_verbatim(self):
+        # noise is only stripped while another segment remains
+        self.assertEqual(merch_router._tidy_colour_label("0819102"), "0819102")
+
+    def test_collision_falls_back_to_raw_values(self):
+        """Two colourways of one style that tidy to the same label must stay
+        distinguishable in the CSV: label falls back to the RAW colour key
+        (noisy twins are never merged)."""
+        style = _style()
+        cols = [_colour(style_name="Style A", colour="Black / 001 / S",
+                        revenue_6m=200.0),
+                _colour(style_name="Style A", colour="Black / 002 / M",
+                        revenue_6m=100.0)]
+        out = merch_router._active_colour_rows([style], cols)
+        self.assertEqual(len(out), 2)
+        labels = [r["colour_label"] for r in out]
+        self.assertEqual(labels, ["Black / 001 / S", "Black / 002 / M"])
+        self.assertEqual(len(set(labels)), 2)
+        # raw keys always intact regardless of labelling
+        self.assertEqual([r["colour"] for r in out],
+                         ["Black / 001 / S", "Black / 002 / M"])
+
+class ColourRowsFilterScopeTests(unittest.TestCase):
+    """_fetch_colour_rows must thread country/pos_location into the SQL the
+    same way _fetch_styles' colour_stock CTE does (membership filters ride on
+    the cached styles via the bucket predicate, not this SQL)."""
+
+    def _capture(self, **kwargs):
+        captured = {}
+
+        def fake_exec(sql, params=None, **_kw):
+            captured["sql"] = sql
+            captured["params"] = params or {}
+            return []
+
+        with mock.patch.object(merch_router, "_db_exec", side_effect=fake_exec):
+            merch_router._fetch_colour_rows(**kwargs)
+        return captured
+
+    def test_country_scopes_sales_and_inventory(self):
+        cap = self._capture(country="Kenya")
+        self.assertEqual(cap["params"].get("countries"), ["Kenya"])
+        self.assertIn("s.country = ANY(%(countries)s)", cap["sql"])
+        self.assertIn("LOWER(i.country) IN ('kenya')", cap["sql"])
+
+    def test_pos_location_scopes_stock_and_sales_and_zeroes_warehouse(self):
+        cap = self._capture(pos_location="Vivo Junction")
+        self.assertEqual(cap["params"].get("pos_locations"), ["Vivo Junction"])
+        self.assertIn("i.pos_location_name = ANY(%(pos_locations)s)", cap["sql"])
+        self.assertIn("s.pos_location_name = ANY(%(pos_locations)s)", cap["sql"])
+        # warehouse stock belongs to no store → forced to 0 under a POS filter
+        self.assertIn("0 AS soh_warehouse", cap["sql"])
+
+    def test_no_filters_no_extra_clauses(self):
+        cap = self._capture()
+        self.assertNotIn("%(countries)s", cap["sql"])
+        self.assertNotIn("%(pos_locations)s", cap["sql"])
+        # in-stock predicate + real warehouse split present
+        self.assertIn("st.soh_stores + st.soh_warehouse > 0", cap["sql"])
+        self.assertIn("Warehouse Finished Goods", cap["sql"])
