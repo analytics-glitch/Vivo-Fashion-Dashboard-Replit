@@ -41,8 +41,15 @@ A = None  # api_pg module reference — set in register_merch_routes()
 
 # ── Module-level TTL cache ─────────────────────────────────────────────────────
 
+import asyncio
 import time as _time
+import threading as _threading
 _cache_store = {}
+
+# Per-key single-flight locks for the heavy style-universe computation
+# (see _styles_cached). Guard protects the dict itself.
+_SF_LOCKS = {}
+_SF_LOCKS_GUARD = _threading.Lock()
 
 
 def _cached(key, ttl, fn):
@@ -396,6 +403,16 @@ colour_stock AS (
     WHERE c.colour_soh > 0
     GROUP BY style_name
 ),
+/* Modal full price per SKU — computed ONCE here and hash-joined into
+   sales_6m. Was a correlated per-sales-row subquery (re-executed for every
+   6-month sales line), the single most expensive part of this query. */
+sku_mode_price AS (
+    SELECT sku,
+           mode() WITHIN GROUP (ORDER BY price)
+               FILTER (WHERE price > 0) AS mode_price
+    FROM all_products_clean
+    GROUP BY sku
+),
 sales_6m AS (
     SELECT
         p2.style_name,
@@ -409,16 +426,13 @@ sales_6m AS (
         MAX(s.sale_date::date)                         AS last_sale_date,
         SUM(s.ordered_item_quantity) FILTER (
             WHERE s.sale_kind IN ('sale','order')
-            AND s.total_sales_kes::numeric >= COALESCE(
-                (SELECT mode() WITHIN GROUP (ORDER BY price)
-                    FILTER (WHERE price > 0)
-                 FROM all_products_clean pp WHERE pp.sku = s.variant_sku), 0
-            ) * 0.95
+            AND s.total_sales_kes::numeric >= COALESCE(smp.mode_price, 0) * 0.95
         )                                              AS units_full_price
     FROM all_sales s
     JOIN all_products_clean p2 ON p2.sku = s.variant_sku
         AND p2.style_name IS NOT NULL AND p2.style_name <> ''
         AND COALESCE(p2.brand,'') NOT ILIKE '%%third party%%'
+    LEFT JOIN sku_mode_price smp ON smp.sku = s.variant_sku
     WHERE s.sale_date BETWEEN %(six_mo_ago)s AND %(today)s
         AND {_BASE_FILTERS}
         {country_clause}
@@ -1146,14 +1160,82 @@ def _styles_cached(brand=None, subcategory=None, tier=None, status=None,
                    from_date=None, to_date=None, country=None, pos_location=None,
                    ttl=600):
     """_fetch_styles behind the SAME cache key format /api/merch/styles uses
-    (ttl mirrors the handlers' _TTL), so the prev-window rows fetched for chart
-    trends are shared between by-brand and by-subcategory instead of running
-    the heavy query twice."""
+    (ttl mirrors the handlers' _TTL), so ONE rowset per filter combo is shared
+    by styles / summary / by-brand / by-subcategory / by-tier and the
+    prev-window chart trends.
+
+    Single-flight: the Overview tab fires five endpoints in parallel that all
+    need this exact rowset. Without a per-key lock, a cold cache ran the ~15s
+    universe query five times concurrently (2026-08-13 merch slowness
+    incident). First caller computes; the rest block on the key's lock and
+    then read the freshly-cached result. Callers run in Starlette's threadpool
+    (sync-def routes), so blocking here never touches the event loop."""
     key = f"merch_styles|{brand}|{subcategory}|{tier}|{status}|{from_date}|{to_date}|{country}|{pos_location}"
-    return _cached(key, ttl, lambda: _fetch_styles(
-        brand=brand, subcategory=subcategory, tier=tier, status=status,
-        from_date=from_date, to_date=to_date, country=country,
-        pos_location=pos_location))
+    now = _time.monotonic()
+    entry = _cache_store.get(key)
+    if entry and (now - entry[0]) < ttl:
+        return entry[1]  # fast path — no locking on a warm cache
+    with _SF_LOCKS_GUARD:
+        # Bound the lock dict: keys embed dates/filters so they accumulate
+        # forever. Clearing is benign — a thread already holding a removed
+        # lock still works; worst case two threads compute the same fresh
+        # key once (duplicate query, no corruption).
+        if len(_SF_LOCKS) > 512:
+            _SF_LOCKS.clear()
+        lock = _SF_LOCKS.setdefault(key, _threading.Lock())
+    with lock:
+        # _cached re-checks freshness, so waiters get the winner's result.
+        return _cached(key, ttl, lambda: _fetch_styles(
+            brand=brand, subcategory=subcategory, tier=tier, status=status,
+            from_date=from_date, to_date=to_date, country=country,
+            pos_location=pos_location))
+
+
+# In-flight futures for the async fan-out layer (single event loop).
+_INFLIGHT = {}
+
+
+async def _styles_async(brand=None, subcategory=None, tier=None, status=None,
+                        from_date=None, to_date=None, country=None,
+                        pos_location=None, ttl=600):
+    """Async fan-out layer over _styles_cached for the Overview endpoints.
+
+    The Overview tab's five requests (plus the KPI CSV export) arrive
+    together and all need the same rowset. Only the FIRST occupies a
+    threadpool worker (running _styles_cached — whose per-key thread lock
+    also covers any sync/standalone callers); the rest await an in-flight
+    future on the event loop and hold NO worker thread. A burst of cold
+    Overview loads therefore costs one AnyIO token per distinct filter
+    combo instead of five, and cannot starve unrelated sync routes.
+
+    Safe without extra locking: handlers run on a single event loop and the
+    _INFLIGHT check-and-set below has no await point in between.
+    """
+    from starlette.concurrency import run_in_threadpool
+    key = f"merch_styles|{brand}|{subcategory}|{tier}|{status}|{from_date}|{to_date}|{country}|{pos_location}"
+    now = _time.monotonic()
+    entry = _cache_store.get(key)
+    if entry and (now - entry[0]) < ttl:
+        return entry[1]
+    fut = _INFLIGHT.get(key)
+    if fut is not None:
+        return await fut
+    fut = asyncio.get_running_loop().create_future()
+    # Mark exceptions as retrieved even if no sibling ever awaits the future,
+    # so asyncio never logs "exception was never retrieved".
+    fut.add_done_callback(lambda f: f.cancelled() or f.exception())
+    _INFLIGHT[key] = fut
+    try:
+        rows = await run_in_threadpool(
+            _styles_cached, brand, subcategory, tier, status,
+            from_date, to_date, country, pos_location, ttl)
+        fut.set_result(rows)
+        return rows
+    except BaseException as e:
+        fut.set_exception(e)
+        raise
+    finally:
+        _INFLIGHT.pop(key, None)
 
 
 # ── Style-stores endpoint ──────────────────────────────────────────────────────
@@ -2448,8 +2530,15 @@ def register_merch_routes(app, api_pg_module):
     # Ensure the tier-overrides table exists on first registration.
     _ensure_tier_overrides_table()
 
+    # NOTE: read endpoints here must never run heavy blocking SQL on the event
+    # loop (the async-def originals serialized the Overview tab's five parallel
+    # requests into a ~100s page load and froze every other request meanwhile).
+    # Per-style drill-downs are plain `def` (Starlette threadpool). The five
+    # Overview endpoints + KPI CSV export are async and share ONE universe
+    # computation via _styles_async — winner in the threadpool, siblings await
+    # a future holding no worker token.
     @app.get("/api/merch/filter-options")
-    async def merch_filter_options(request: Request):
+    def merch_filter_options(request: Request):
         """Distinct brands and categories for the hub-level filter dropdowns.
         Long TTL (1 hour) — product catalogue changes slowly."""
         def _fetch():
@@ -2482,11 +2571,9 @@ def register_merch_routes(app, api_pg_module):
         pos_location: Optional[str] = Query(None),
     ):
         """Full style universe — one row per style with all merchandising metrics."""
-        key = f"merch_styles|{brand}|{subcategory}|{tier}|{status}|{from_date}|{to_date}|{country}|{pos_location}"
-        result = _cached(key, _TTL, lambda: _fetch_styles(
-            brand=brand, subcategory=subcategory, tier=tier, status=status,
-            from_date=from_date, to_date=to_date, country=country, pos_location=pos_location,
-        ))
+        result = await _styles_async(
+            brand, subcategory, tier, status,
+            from_date, to_date, country, pos_location, _TTL)
         return JSONResponse({"styles": result, "count": len(result)})
 
     @app.get("/api/merch/summary")
@@ -2503,11 +2590,14 @@ def register_merch_routes(app, api_pg_module):
     ):
         """Portfolio-level aggregates for the Executive Overview KPI band."""
         key = f"merch_summary|{brand}|{subcategory}|{tier}|{status}|{from_date}|{to_date}|{country}|{pos_location}"
-        result = _cached(key, _TTL, lambda: _compute_summary(
-            _fetch_styles(brand=brand, subcategory=subcategory, tier=tier, status=status,
-                          from_date=from_date, to_date=to_date, country=country,
-                          pos_location=pos_location)
-        ))
+        entry = _cache_store.get(key)
+        if entry and (_time.monotonic() - entry[0]) < _TTL:
+            return JSONResponse(entry[1])
+        rows = await _styles_async(
+            brand, subcategory, tier, status,
+            from_date, to_date, country, pos_location, _TTL)
+        result = _compute_summary(rows)  # pure Python over ~3.5k rows — fast
+        _cache_store[key] = (_time.monotonic(), result)
         return JSONResponse(result)
 
     @app.get("/api/merch/export/kpi.csv")
@@ -2533,11 +2623,12 @@ def register_merch_routes(app, api_pg_module):
         if kpi not in _KPI_BUCKETS:
             return JSONResponse({"detail": f"Unknown kpi '{kpi}'"}, status_code=400)
 
-        key = f"merch_styles|{brand}|{subcategory}|{tier}|{status}|{from_date}|{to_date}|{country}|{pos_location}"
-        styles = _cached(key, _TTL, lambda: _fetch_styles(
-            brand=brand, subcategory=subcategory, tier=tier, status=status,
-            from_date=from_date, to_date=to_date, country=country, pos_location=pos_location,
-        ))
+        # Universe via the shared single-flight helper, computed off the event
+        # loop — a cold CSV click must never freeze the app or run its own
+        # duplicate of an in-flight Overview universe query.
+        styles = await _styles_async(
+            brand, subcategory, tier, status,
+            from_date, to_date, country, pos_location, _TTL)
         rows = _kpi_bucket_rows(styles, kpi)
 
         import csv as _csv
@@ -2650,26 +2741,31 @@ def register_merch_routes(app, api_pg_module):
         trend:        Optional[int] = Query(0),
     ):
         key = f"merch_by_brand|{brand}|{subcategory}|{tier}|{status}|{from_date}|{to_date}|{country}|{pos_location}|{trend}"
-
-        def _build():
-            rows = _agg_by_dim(
-                _fetch_styles(brand=brand, subcategory=subcategory, tier=tier, status=status,
-                              from_date=from_date, to_date=to_date, country=country,
-                              pos_location=pos_location),
-                "brand",
-            )
-            if trend:  # opt-in (Overview charts) — adds revenue_prev + trend_pct
-                pf, pt = _prev_window(from_date, to_date)
-                rows = _merge_trend(rows, _agg_by_dim(
-                    _styles_cached(brand=brand, subcategory=subcategory, tier=tier,
-                                   status=status, from_date=pf, to_date=pt,
-                                   country=country, pos_location=pos_location),
-                    "brand",
-                ), "brand")
-            return rows
-
-        result = _cached(key, _TTL, _build)
-        return JSONResponse({"rows": result})
+        entry = _cache_store.get(key)
+        if entry and (_time.monotonic() - entry[0]) < _TTL:
+            return JSONResponse({"rows": entry[1]})
+        if trend:  # opt-in (Overview charts) — adds revenue_prev + trend_pct
+            pf, pt = _prev_window(from_date, to_date)
+            # SEQUENTIAL on purpose: running current+prev concurrently makes
+            # the two heavy scans contend on the shared PG — measured cold,
+            # BOTH slowed to ~39s (so summary/styles/by-tier, which share the
+            # current-window future, painted at 39s instead of ~21s) for zero
+            # total-time win. Current first so the KPI-bearing endpoints
+            # resolve as early as possible; prev only delays trend charts.
+            cur_styles = await _styles_async(
+                brand, subcategory, tier, status,
+                from_date, to_date, country, pos_location, _TTL)
+            prev_styles = await _styles_async(
+                brand, subcategory, tier, status,
+                pf, pt, country, pos_location, _TTL)
+            rows = _merge_trend(_agg_by_dim(cur_styles, "brand"),
+                                _agg_by_dim(prev_styles, "brand"), "brand")
+        else:
+            rows = _agg_by_dim(await _styles_async(
+                brand, subcategory, tier, status,
+                from_date, to_date, country, pos_location, _TTL), "brand")
+        _cache_store[key] = (_time.monotonic(), rows)
+        return JSONResponse({"rows": rows})
 
     @app.get("/api/merch/by-subcategory")
     async def merch_by_subcategory(
@@ -2685,26 +2781,26 @@ def register_merch_routes(app, api_pg_module):
         trend:        Optional[int] = Query(0),
     ):
         key = f"merch_by_sub|{brand}|{subcategory}|{tier}|{status}|{from_date}|{to_date}|{country}|{pos_location}|{trend}"
-
-        def _build():
-            rows = _agg_by_dim(
-                _fetch_styles(brand=brand, subcategory=subcategory, tier=tier, status=status,
-                              from_date=from_date, to_date=to_date, country=country,
-                              pos_location=pos_location),
-                "subcategory",
-            )
-            if trend:  # opt-in (Overview charts) — adds revenue_prev + trend_pct
-                pf, pt = _prev_window(from_date, to_date)
-                rows = _merge_trend(rows, _agg_by_dim(
-                    _styles_cached(brand=brand, subcategory=subcategory, tier=tier,
-                                   status=status, from_date=pf, to_date=pt,
-                                   country=country, pos_location=pos_location),
-                    "subcategory",
-                ), "subcategory")
-            return rows
-
-        result = _cached(key, _TTL, _build)
-        return JSONResponse({"rows": result})
+        entry = _cache_store.get(key)
+        if entry and (_time.monotonic() - entry[0]) < _TTL:
+            return JSONResponse({"rows": entry[1]})
+        if trend:  # opt-in (Overview charts) — adds revenue_prev + trend_pct
+            pf, pt = _prev_window(from_date, to_date)
+            # Sequential — see the contention note in merch_by_brand.
+            cur_styles = await _styles_async(
+                brand, subcategory, tier, status,
+                from_date, to_date, country, pos_location, _TTL)
+            prev_styles = await _styles_async(
+                brand, subcategory, tier, status,
+                pf, pt, country, pos_location, _TTL)
+            rows = _merge_trend(_agg_by_dim(cur_styles, "subcategory"),
+                                _agg_by_dim(prev_styles, "subcategory"), "subcategory")
+        else:
+            rows = _agg_by_dim(await _styles_async(
+                brand, subcategory, tier, status,
+                from_date, to_date, country, pos_location, _TTL), "subcategory")
+        _cache_store[key] = (_time.monotonic(), rows)
+        return JSONResponse({"rows": rows})
 
     @app.get("/api/merch/by-tier")
     async def merch_by_tier(
@@ -2719,16 +2815,17 @@ def register_merch_routes(app, api_pg_module):
         pos_location: Optional[str] = Query(None),
     ):
         key = f"merch_by_tier|{brand}|{subcategory}|{tier}|{status}|{from_date}|{to_date}|{country}|{pos_location}"
-        result = _cached(key, _TTL, lambda: _agg_by_dim(
-            _fetch_styles(brand=brand, subcategory=subcategory, tier=tier, status=status,
-                          from_date=from_date, to_date=to_date, country=country,
-                          pos_location=pos_location),
-            "tier",
-        ))
-        return JSONResponse({"rows": result})
+        entry = _cache_store.get(key)
+        if entry and (_time.monotonic() - entry[0]) < _TTL:
+            return JSONResponse({"rows": entry[1]})
+        rows = _agg_by_dim(await _styles_async(
+            brand, subcategory, tier, status,
+            from_date, to_date, country, pos_location, _TTL), "tier")
+        _cache_store[key] = (_time.monotonic(), rows)
+        return JSONResponse({"rows": rows})
 
     @app.get("/api/merch/style-stores")
-    async def merch_style_stores(
+    def merch_style_stores(
         request:      Request,
         style_number: Optional[str] = Query(None),
         from_date:    Optional[str] = Query(None),
@@ -2762,7 +2859,7 @@ def register_merch_routes(app, api_pg_module):
         return JSONResponse(result)
 
     @app.get("/api/admin/store-profiles")
-    async def admin_store_profiles_list(request: Request):
+    def admin_store_profiles_list(request: Request):
         """List all active pos_locations with sqft and optimal_stock.
         Admin-only — gated by clerk_auth_gate path prefix check."""
         rows = _db_exec("""
@@ -2822,7 +2919,7 @@ def register_merch_routes(app, api_pg_module):
         return JSONResponse(dict(rows[0]))
 
     @app.get("/api/merch/style-sales-weekly")
-    async def merch_style_weekly(
+    def merch_style_weekly(
         request:      Request,
         style_number: Optional[str] = Query(None),
         from_date:    Optional[str] = Query(None),
@@ -2838,7 +2935,7 @@ def register_merch_routes(app, api_pg_module):
         return JSONResponse(result)
 
     @app.get("/api/merch/launch-ramp")
-    async def merch_launch_ramp(
+    def merch_launch_ramp(
         request:      Request,
         from_date:    Optional[str] = Query(None),
         to_date:      Optional[str] = Query(None),
@@ -2855,7 +2952,7 @@ def register_merch_routes(app, api_pg_module):
         return JSONResponse(result)
 
     @app.get("/api/merch/by-store")
-    async def merch_by_store(
+    def merch_by_store(
         request:      Request,
         brand:        Optional[str] = Query(None),
         subcategory:  Optional[str] = Query(None),
