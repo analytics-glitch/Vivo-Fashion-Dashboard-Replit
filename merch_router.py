@@ -1324,7 +1324,11 @@ ORDER BY revenue_6m DESC NULLS LAST
 
 def _fetch_style_colors(style_number, from_date=None, to_date=None, country=None):
     """Per-colourway breakdown for one style: period units/revenue, current SOH
-    (stores + sellable warehouse, pipeline excluded), and stock-to-sales ratio.
+    (stores + sellable warehouse, pipeline excluded), stock-to-sales ratio, and
+    fixed-window velocity/WOC (6-month units ÷ 26 — the same formula as the
+    style-level WOC in _fetch_styles, so a colour's WOC reconciles with the
+    header KPI). The 6-month window is independent of from_date/to_date (like
+    the header WOC) but still country-scoped.
 
     Colour comes from the product master (all_products_clean.color_print);
     sales and inventory join on SKU only (triad joins are SKU-only).
@@ -1378,20 +1382,40 @@ stock AS (
     FROM skus k
     JOIN all_inventory i ON i.sku = k.sku
     GROUP BY k.color
+),
+/* Fixed trailing-6-month window (NOT the selected period) — feeds the
+   per-colour weekly velocity + WOC, mirroring the style-level WOC formula
+   in _fetch_styles (units_6m ÷ 26). Country-scoped like the rest. */
+sales_6m AS (
+    SELECT
+        k.color,
+        SUM(s.ordered_item_quantity) FILTER (
+            WHERE s.sale_kind IN ('sale','order')
+        )                             AS units_6m
+    FROM skus k
+    JOIN all_sales s ON s.variant_sku = k.sku
+    WHERE s.sale_date BETWEEN %(six_mo_ago)s AND %(today)s
+        AND {_BASE_FILTERS}
+        {country_clause}
+    GROUP BY k.color
 )
 SELECT
     COALESCE(sa.color, st.color)   AS color,
     COALESCE(sa.units_sold, 0)     AS units_sold,
     COALESCE(sa.revenue, 0.0)      AS revenue,
     COALESCE(st.soh_stores, 0)     AS soh_stores,
-    COALESCE(st.soh_warehouse, 0)  AS soh_warehouse
+    COALESCE(st.soh_warehouse, 0)  AS soh_warehouse,
+    COALESCE(s6.units_6m, 0)       AS units_6m
 FROM sales sa
 FULL OUTER JOIN stock st ON st.color = sa.color
+LEFT JOIN sales_6m s6 ON s6.color = COALESCE(sa.color, st.color)
 """
     params = {
         "style_number": style_number,
         "period_from":  period_from,
         "period_to":    period_to,
+        "six_mo_ago":   six_mo_ago,
+        "today":        today_str,
         **country_params,
     }
     rows = _db_exec(sql, params, fetch=True)
@@ -1407,6 +1431,11 @@ FULL OUTER JOIN stock st ON st.color = sa.color
         if soh <= 0 and units <= 0 and revenue == 0:
             continue
         ratio = round(soh / units, 2) if units > 0 else None
+        # Fixed-window velocity + WOC — same arithmetic as the style-level
+        # KPI (_fetch_styles): weekly avg rounded to 2dp BEFORE the divide.
+        units_6m   = int(r["units_6m"] or 0)
+        weekly_avg = round(units_6m / 26.0, 2)
+        woc = round(soh / weekly_avg, 1) if weekly_avg > 0 else None
         result.append({
             "color":          r.get("color") or "—",
             "units_sold":     units,
@@ -1415,6 +1444,9 @@ FULL OUTER JOIN stock st ON st.color = sa.color
             "soh_stores":     soh_stores,
             "soh_warehouse":  soh_warehouse,
             "stock_to_sales": ratio,   # None ⇒ stock with no period sales
+            "units_6m":       units_6m,
+            "weekly_avg":     weekly_avg,  # units/week over fixed 6m window
+            "woc":            woc,     # None ⇒ no 6m velocity
         })
 
     result.sort(key=lambda r: r["revenue"], reverse=True)
@@ -2720,7 +2752,8 @@ def register_merch_routes(app, api_pg_module):
         country:      Optional[str] = Query(None),
     ):
         """Per-colourway breakdown for one style: period units/revenue, current
-        SOH (stores + sellable warehouse, pipeline excluded), stock-to-sales."""
+        SOH (stores + sellable warehouse, pipeline excluded), stock-to-sales,
+        plus fixed-6-month weekly velocity + WOC (style-level WOC formula)."""
         if not style_number:
             return JSONResponse({"detail": "style_number is required"}, status_code=400)
         key = f"merch_style_colors|{style_number}|{from_date}|{to_date}|{country}"

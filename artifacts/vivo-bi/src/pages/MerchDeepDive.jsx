@@ -32,6 +32,61 @@ const TIER_COLOR = { "Tier 1": "#1a5c38", "Tier 2": "#4b7bec", "Tier 3": "#d9770
 // Store tier (A/B/C by trailing-90d revenue) → bar colour
 const STORE_TIER_COLOR = { A: "#1a5c38", B: "#4b7bec", C: "#9ca3af" };
 
+// ── Colourway chart bands ─────────────────────────────────────────────────────
+// Sell-through % bands vs the style's own average for the same period.
+const ST_BAND = {
+  soldout: { fill: "#0d9488", label: "Sold out (100%, no stock left)" },
+  above:   { fill: "#1a5c38", label: "≥ style avg" },
+  below:   { fill: "#d97706", label: "Below avg" },
+  laggard: { fill: "#ef4444", label: "Laggard (<½ avg, ≥10 SOH)" },
+  none:    { fill: "#e5e7eb", label: "Stock, no sales in period" },
+};
+// WOC bands — same thresholds as the page/backend action rules:
+// <2 wks stock-out risk, >16 overstock (review), >26 severe (clearance).
+const WOC_BAND = {
+  low:        { fill: "#ef4444", label: "<2 wks — stock-out risk" },
+  ok:         { fill: "#1a5c38", label: "2–16 wks — healthy" },
+  over:       { fill: "#d97706", label: ">16 wks — overstock" },
+  severe:     { fill: "#881337", label: ">26 wks — severe" },
+  novelocity: { fill: "#e5e7eb", label: "No 6m velocity" },
+};
+
+// Small colour-chip legend used under the banded colourway charts.
+const BandLegend = ({ bands }) => (
+  <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] text-foreground/60">
+    {bands.map(({ fill, label }) => (
+      <span key={label} className="inline-flex items-center gap-1">
+        <span className="w-2.5 h-2.5 rounded-sm inline-block flex-shrink-0" style={{ background: fill }} />
+        {label}
+      </span>
+    ))}
+  </div>
+);
+
+// Display-only tidy-up for colour labels that carry style-number/size noise,
+// e.g. "Mustard / 0819102 / F" → "Mustard",
+//      "Hunters Green - Hunters Green / V0323019 / L" → "Hunters Green".
+// The RAW colour value stays the data key on every row (byte-identical to
+// the API) so tooltips and future drill-downs remain correct; this only
+// affects what the axis prints. Noise is stripped from the END only, so
+// genuine multi-colour names like "Navy / White" keep all their segments.
+const CODE_TOKEN = /^\S*\d\S*$/;     // digit-bearing token: 0819102, V0223151, 1X…
+const SIZE_TOKEN = /^[smlx]{1,4}$/i; // size token: S, M, L, Xl, XXL…
+const tidyColorLabel = (raw) => {
+  const s = String(raw || "").trim();
+  if (!s) return "—";
+  const parts = s.split("/").map(p => p.trim()).filter(Boolean);
+  while (parts.length > 1) {
+    const last = parts[parts.length - 1];
+    if (CODE_TOKEN.test(last) || SIZE_TOKEN.test(last) || /^[A-Za-z]$/.test(last)) {
+      parts.pop();
+    } else break;
+  }
+  // Collapse "X - X" duplication once the trailing noise is gone.
+  const out = parts.join(" / ").replace(/^(.+?) - \1$/, "$1");
+  return out || s;
+};
+
 // ── Status badge ──────────────────────────────────────────────────────────────
 const StatusBadge = ({ status }) => {
   const s = String(status || "").toLowerCase();
@@ -377,17 +432,78 @@ const MerchDeepDive = () => {
   }, [storePerf]);
 
   // Per-colourway bars — one consistent ordering (revenue desc, from backend)
-  // shared by all three charts so bars line up across Revenue / SOH / ratio.
+  // shared by all FOUR charts so bars line up across Revenue / SOH /
+  // Sell-through / WOC. `color` keeps the raw API value; `name` is the
+  // tidied display label (falls back to raw if two rows tidy to the same
+  // label, so the axis/tooltip never becomes ambiguous).
   const colorChart = useMemo(() => {
-    return colorPerf.map(r => ({
-      name:     r.color || "—",
-      revenueK: Math.round((r.revenue || 0) / 1000),
-      soh:      r.soh || 0,
-      units:    r.units_sold || 0,
-      // null ratio = stock but no period sales; keep the row, flag it.
-      ratio:    r.stock_to_sales,
-      noSales:  r.stock_to_sales === null || r.stock_to_sales === undefined,
-    }));
+    const tidy = colorPerf.map(r => tidyColorLabel(r.color));
+    const seen = {};
+    for (const t of tidy) seen[t] = (seen[t] || 0) + 1;
+
+    // Style-average sell-through for the same period, computed from the same
+    // rows the bars use (Σ units ÷ (Σ units + Σ SOH)) so the reference line
+    // reconciles with the chart exactly.
+    const totUnits = colorPerf.reduce((a, r) => a + (r.units_sold || 0), 0);
+    const totSoh   = colorPerf.reduce((a, r) => a + (r.soh || 0), 0);
+    const avg = (totUnits + totSoh) > 0
+      ? +(totUnits * 100 / (totUnits + totSoh)).toFixed(1)
+      : null;
+
+    const rows = colorPerf.map((r, i) => {
+      const units = r.units_sold || 0;
+      const soh   = r.soh || 0;
+      const denom = units + soh;
+      // Same sell-through formula as the backend's sor_period canon.
+      const sellThrough = denom > 0 ? +(units * 100 / denom).toFixed(1) : null;
+      const soldOut = units > 0 && soh === 0;   // 100% — possible missed sales
+      const noSales = units === 0;
+
+      let band;
+      if (sellThrough === null || noSales)                          band = "none";
+      else if (soldOut)                                             band = "soldout";
+      else if (avg !== null && sellThrough >= avg)                  band = "above";
+      else if (avg !== null && sellThrough < avg / 2 && soh >= 10)  band = "laggard";
+      else                                                          band = "below";
+
+      // WOC — fixed 6m velocity from the backend (null ⇒ no velocity).
+      const woc = (r.woc === null || r.woc === undefined) ? null : r.woc;
+      const noVelocity = woc === null;
+      const wocCapped  = !noVelocity && woc > 52;   // extreme — cap at 52+
+      let wocValue, wocBand;
+      if (noVelocity) {
+        // Stock with zero 6m sales = indefinite cover: grey bar at the cap
+        // (never a broken/infinite bar). No stock AND no velocity ⇒ 0.
+        wocValue = soh > 0 ? 52 : 0;
+        wocBand  = "novelocity";
+      } else {
+        wocValue = Math.min(woc, 52);
+        wocBand  = woc < 2 ? "low" : woc > 26 ? "severe" : woc > 16 ? "over" : "ok";
+      }
+
+      return {
+        color:    r.color || "—",                 // raw API key (byte-identical)
+        name:     seen[tidy[i]] > 1 ? (r.color || "—") : tidy[i],
+        revenueK: Math.round((r.revenue || 0) / 1000),
+        soh,
+        units,
+        // null ratio = stock but no period sales; kept for the tooltip.
+        ratio:    r.stock_to_sales,
+        noSales,
+        soldOut,
+        sellThrough,
+        band,
+        units6m:   r.units_6m || 0,
+        weeklyAvg: r.weekly_avg || 0,
+        woc,
+        wocValue,
+        wocBand,
+        wocCapped,
+        noVelocity,
+        wocTopLabel: (wocCapped || (noVelocity && soh > 0)) ? "52+" : "",
+      };
+    });
+    return { rows, avg };
   }, [colorPerf]);
 
   const monthlyRevChart = useMemo(() => {
@@ -951,29 +1067,29 @@ const MerchDeepDive = () => {
         <div className="card-white p-5">
           <SectionTitle
             title={`Colourway Performance (${periodLabel})`}
-            subtitle="Revenue, stock on hand and stock-to-sales ratio by colourway · colourways with no stock and no period sales are hidden"
+            subtitle="Revenue, stock on hand, sell-through and weeks of cover by colourway · colourways with no stock and no period sales are hidden"
           />
-          {colorChart.length === 0
+          {colorChart.rows.length === 0
             ? <Empty label="No colourways with stock or sales in the selected period." />
             : (
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mt-2">
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-4 gap-y-5 mt-2">
                 {/* Revenue */}
                 <div>
                   <div className="text-[11.5px] font-semibold text-foreground/70 mb-1">
                     Revenue (KES Thousands)
                   </div>
                   <ResponsiveContainer width="100%" height={220}>
-                    <BarChart data={colorChart} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                    <BarChart data={colorChart.rows} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
                       <XAxis dataKey="name" tick={{ fontSize: 8 }} interval={0}
                         angle={-45} textAnchor="end" height={64} />
                       <YAxis tick={{ fontSize: 9 }} tickFormatter={v => v + "K"} />
-                      <Tooltip content={({ active, payload, label }) => {
+                      <Tooltip content={({ active, payload }) => {
                         if (!active || !payload?.length) return null;
                         const d = payload[0].payload;
                         return (
                           <div className="bg-white border border-border rounded-lg shadow-md px-3 py-2 text-[11px]">
-                            <div className="font-bold mb-0.5">{label}</div>
+                            <div className="font-bold mb-0.5">{d.name}</div>
                             <div>Revenue: KES {fmtNum(d.revenueK)}K</div>
                             <div>Units sold: {fmtNum(d.units)}</div>
                             <div>Stock on hand: {fmtNum(d.soh)}</div>
@@ -990,17 +1106,17 @@ const MerchDeepDive = () => {
                     Stock on Hand (units)
                   </div>
                   <ResponsiveContainer width="100%" height={220}>
-                    <BarChart data={colorChart} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                    <BarChart data={colorChart.rows} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
                       <XAxis dataKey="name" tick={{ fontSize: 8 }} interval={0}
                         angle={-45} textAnchor="end" height={64} />
                       <YAxis tick={{ fontSize: 9 }} />
-                      <Tooltip content={({ active, payload, label }) => {
+                      <Tooltip content={({ active, payload }) => {
                         if (!active || !payload?.length) return null;
                         const d = payload[0].payload;
                         return (
                           <div className="bg-white border border-border rounded-lg shadow-md px-3 py-2 text-[11px]">
-                            <div className="font-bold mb-0.5">{label}</div>
+                            <div className="font-bold mb-0.5">{d.name}</div>
                             <div>Stock on hand: {fmtNum(d.soh)}</div>
                             <div>Units sold: {fmtNum(d.units)}</div>
                             <div>Revenue: KES {fmtNum(d.revenueK)}K</div>
@@ -1011,47 +1127,115 @@ const MerchDeepDive = () => {
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
-                {/* Stock-to-Sales Ratio */}
+                {/* Sell-through % — banded vs the style's own period average */}
                 <div>
                   <div className="text-[11.5px] font-semibold text-foreground/70 mb-1">
-                    Stock-to-Sales Ratio (SOH ÷ units sold)
+                    Sell-through % (units sold ÷ (units sold + SOH)) — higher is better
                   </div>
                   <ResponsiveContainer width="100%" height={220}>
-                    <BarChart data={colorChart} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                    <BarChart data={colorChart.rows} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
                       <XAxis dataKey="name" tick={{ fontSize: 8 }} interval={0}
                         angle={-45} textAnchor="end" height={64} />
-                      <YAxis tick={{ fontSize: 9 }} />
-                      <Tooltip content={({ active, payload, label }) => {
+                      <YAxis tick={{ fontSize: 9 }} domain={[0, 100]}
+                        ticks={[0, 25, 50, 75, 100]} tickFormatter={v => v + "%"} />
+                      <Tooltip content={({ active, payload }) => {
                         if (!active || !payload?.length) return null;
                         const d = payload[0].payload;
                         return (
                           <div className="bg-white border border-border rounded-lg shadow-md px-3 py-2 text-[11px]">
-                            <div className="font-bold mb-0.5">{label}</div>
+                            <div className="font-bold mb-0.5">{d.name}</div>
                             <div>
-                              {d.noSales
-                                ? <span className="text-rose-600 font-semibold">No sales in period</span>
-                                : <>Stock-to-sales: {d.ratio}</>}
+                              Sell-through:{" "}
+                              <span className="font-semibold">
+                                {d.sellThrough === null ? "—" : d.sellThrough + "%"}
+                              </span>
+                              {colorChart.avg !== null && (
+                                <span className="text-foreground/50"> · style avg {colorChart.avg}%</span>
+                              )}
                             </div>
+                            {d.soldOut && (
+                              <div className="text-teal-700 font-semibold">
+                                Sold out — top performer, possible missed sales
+                              </div>
+                            )}
+                            {d.noSales && (
+                              <div className="text-rose-600 font-semibold">No sales in period</div>
+                            )}
                             <div>Units sold: {fmtNum(d.units)}</div>
                             <div>Stock on hand: {fmtNum(d.soh)}</div>
                             <div>Revenue: KES {fmtNum(d.revenueK)}K</div>
+                            <div className="text-foreground/60">
+                              Stock-to-sales: {d.ratio === null || d.ratio === undefined ? "—" : d.ratio}
+                            </div>
                           </div>
                         );
                       }} />
-                      <Bar dataKey="ratio" radius={[3, 3, 0, 0]}>
-                        {colorChart.map((d, i) => (
-                          <Cell key={i} fill={d.noSales ? "#e5e7eb" : "#d97706"} />
+                      {colorChart.avg !== null && (
+                        <ReferenceLine y={colorChart.avg} stroke="#334155" strokeDasharray="4 4"
+                          label={{ value: `Style avg ${colorChart.avg}%`, position: "insideTopRight",
+                                   fontSize: 9, fill: "#334155" }} />
+                      )}
+                      <Bar dataKey="sellThrough" radius={[3, 3, 0, 0]} minPointSize={2}>
+                        {colorChart.rows.map((d, i) => (
+                          <Cell key={i} fill={ST_BAND[d.band].fill} />
                         ))}
                       </Bar>
                     </BarChart>
                   </ResponsiveContainer>
-                  {colorChart.some(d => d.noSales) && (
-                    <div className="mt-1 flex items-center gap-1.5 text-[10.5px] text-foreground/60">
-                      <span className="w-2.5 h-2.5 rounded-sm inline-block bg-slate-200" />
-                      Stock on hand but no sales in the selected period
-                    </div>
-                  )}
+                  <BandLegend bands={["soldout", "above", "below", "laggard", "none"]
+                    .map(k => ST_BAND[k])} />
+                </div>
+                {/* WOC per colourway — fixed 6m velocity, same formula as header WOC */}
+                <div>
+                  <div className="text-[11.5px] font-semibold text-foreground/70 mb-1">
+                    Weeks of Cover (SOH ÷ weekly velocity, fixed 6-month window)
+                  </div>
+                  <ResponsiveContainer width="100%" height={220}>
+                    <BarChart data={colorChart.rows} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                      <XAxis dataKey="name" tick={{ fontSize: 8 }} interval={0}
+                        angle={-45} textAnchor="end" height={64} />
+                      <YAxis tick={{ fontSize: 9 }}
+                        domain={[0, dataMax => (dataMax >= 52 ? 56 : Math.max(8, Math.ceil(dataMax * 1.15)))]} />
+                      <Tooltip content={({ active, payload }) => {
+                        if (!active || !payload?.length) return null;
+                        const d = payload[0].payload;
+                        return (
+                          <div className="bg-white border border-border rounded-lg shadow-md px-3 py-2 text-[11px]">
+                            <div className="font-bold mb-0.5">{d.name}</div>
+                            <div>
+                              Weeks of cover:{" "}
+                              <span className="font-semibold">
+                                {d.noVelocity
+                                  ? "—"
+                                  : d.wocCapped
+                                    ? `52+ wks (actual ≈ ${fmtNum(Math.round(d.woc))})`
+                                    : d.woc.toFixed(1) + " wks"}
+                              </span>
+                            </div>
+                            {d.noVelocity && (
+                              <div className="text-foreground/60 font-semibold">
+                                No sales in last 6 months — no velocity
+                              </div>
+                            )}
+                            <div>Weekly velocity: {d.weeklyAvg ? d.weeklyAvg.toFixed(2) + " u/wk" : "0 u/wk"}</div>
+                            <div>Units (6m): {fmtNum(d.units6m)}</div>
+                            <div>Stock on hand: {fmtNum(d.soh)}</div>
+                          </div>
+                        );
+                      }} />
+                      <Bar dataKey="wocValue" radius={[3, 3, 0, 0]} minPointSize={2}>
+                        {colorChart.rows.map((d, i) => (
+                          <Cell key={i} fill={WOC_BAND[d.wocBand].fill} />
+                        ))}
+                        <LabelList dataKey="wocTopLabel" position="top"
+                          style={{ fontSize: 8, fill: "#64748b", fontWeight: 700 }} />
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                  <BandLegend bands={["low", "ok", "over", "severe", "novelocity"]
+                    .map(k => WOC_BAND[k])} />
                 </div>
               </div>
             )}
