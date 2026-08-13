@@ -545,6 +545,20 @@ def main():
     log.info("style_name canonicalised: %d rows updated", cur.rowcount)
 
     # ── Enforce dominant subcat per style number ─────────────────────────────
+    # Live-preference vote: rows still present in the live Odoo master
+    # (active IS TRUE) decide the winner whenever the style has any such rows.
+    # Stale orphan rows (deleted/archived in Odoo, or sales/inventory-only)
+    # only vote when NO live rows exist, so a fully-discontinued style keeps
+    # its historical subcat while a live recategorisation in Odoo can never be
+    # outvoted by leftovers (e.g. V0819102 stamped Scarves by 26 stale rows
+    # despite all live rows reading Sweaters & Ponchos).
+    #
+    # NULL-subcat rows (sales-only SKUs no longer in Odoo) are ALSO stamped
+    # with the style winner. Leaving them NULL lets sync_incremental's
+    # categorise_products() keyword classifier re-label them from the product
+    # NAME on the next sync cycle ('Wrap Poncho' matches '%wrap%' → Scarves
+    # before the poncho rule fires), which recreates the mixed-subcat state
+    # daily and flips the merch endpoints' per-SKU mode() to the wrong subcat.
     log.info("Enforcing dominant subcat per style number...")
     cur.execute("""
         WITH global_freq AS (
@@ -554,30 +568,42 @@ def main():
             WHERE product_type IS NOT NULL
             GROUP BY product_type
         ),
+        votes AS (
+            SELECT style_number, product_type,
+                   COUNT(*)                                AS cnt,
+                   COUNT(*) FILTER (WHERE active IS TRUE)  AS live_cnt
+            FROM all_products_clean
+            WHERE style_number IS NOT NULL
+            AND product_type IS NOT NULL
+            AND product_type != 'Sample & Sale Items'
+            AND product_type != 'Gift Vouchers'
+            GROUP BY style_number, product_type
+        ),
+        style_live AS (
+            -- does this style have ANY live-Odoo rows carrying a valid subcat?
+            SELECT style_number, SUM(live_cnt) > 0 AS has_live
+            FROM votes
+            GROUP BY style_number
+        ),
         dominant AS (
-            SELECT d.style_number,
-                   d.product_type,
+            SELECT v.style_number,
+                   v.product_type,
                    ROW_NUMBER() OVER (
-                       PARTITION BY d.style_number
-                       ORDER BY d.cnt DESC, COALESCE(g.gfreq,0) DESC, d.product_type ASC
+                       PARTITION BY v.style_number
+                       ORDER BY CASE WHEN sl.has_live THEN v.live_cnt ELSE v.cnt END DESC,
+                                v.cnt DESC, COALESCE(g.gfreq,0) DESC, v.product_type ASC
                    ) as rn
-            FROM (
-                SELECT style_number, product_type, COUNT(*) AS cnt
-                FROM all_products_clean
-                WHERE style_number IS NOT NULL
-                AND product_type IS NOT NULL
-                AND product_type != 'Sample & Sale Items'
-                AND product_type != 'Gift Vouchers'
-                GROUP BY style_number, product_type
-            ) d
-            LEFT JOIN global_freq g ON g.product_type = d.product_type
+            FROM votes v
+            JOIN style_live sl ON sl.style_number = v.style_number
+            LEFT JOIN global_freq g ON g.product_type = v.product_type
         )
         UPDATE all_products_clean p
         SET product_type = d.product_type
         FROM dominant d
         WHERE p.style_number = d.style_number
         AND d.rn = 1
-        AND p.product_type NOT IN ('Sample & Sale Items', 'Gift Vouchers')
+        AND (p.product_type IS NULL
+             OR p.product_type NOT IN ('Sample & Sale Items', 'Gift Vouchers'))
     """)
     log.info("Dominant subcat enforced: %d rows updated", cur.rowcount)
 
@@ -648,31 +674,47 @@ def main():
         log.info("  %s: %d", row[0], row[1])
 
     # ── FINAL consolidation: one subcat + category per style_number ──────────
-    # Run last so no earlier pass can leave a style split. Deterministic winner:
-    # most common subcat in the style, ties broken by global subcat frequency
+    # Run last so no earlier pass can leave a style split. Deterministic winner
+    # with the same live-preference as the main vote above: rows present in the
+    # live Odoo master (active IS TRUE) decide when the style has any; else the
+    # all-rows vote. Ties broken by total count, then global subcat frequency,
     # then alphabetical. Samples/gift vouchers are left untouched (kept separate).
+    # Like the main vote, NULL-subcat rows are stamped with the winner so the
+    # per-cycle keyword classifier (sync_incremental.categorise_products) finds
+    # nothing to re-label and the style stays uniform between rebuilds.
     log.info("Final subcat consolidation (looped to convergence)...")
     consolidation_sql = """
         WITH global_freq AS (
             SELECT product_type, COUNT(*) AS gfreq FROM all_products_clean
             WHERE product_type IS NOT NULL GROUP BY product_type
         ),
+        votes AS (
+            SELECT style_number, product_type, COUNT(*) AS cnt,
+                   COUNT(*) FILTER (WHERE active IS TRUE) AS live_cnt
+            FROM all_products_clean
+            WHERE style_number IS NOT NULL AND product_type IS NOT NULL
+              AND product_type NOT IN ('Sample & Sale Items','Gift Vouchers')
+            GROUP BY style_number, product_type
+        ),
+        style_live AS (
+            SELECT style_number, SUM(live_cnt) > 0 AS has_live
+            FROM votes GROUP BY style_number
+        ),
         dominant AS (
-            SELECT d.style_number, d.product_type,
-                   ROW_NUMBER() OVER (PARTITION BY d.style_number
-                       ORDER BY d.cnt DESC, COALESCE(g.gfreq,0) DESC, d.product_type ASC) AS rn
-            FROM (SELECT style_number, product_type, COUNT(*) AS cnt
-                  FROM all_products_clean
-                  WHERE style_number IS NOT NULL AND product_type IS NOT NULL
-                    AND product_type NOT IN ('Sample & Sale Items','Gift Vouchers')
-                  GROUP BY style_number, product_type) d
-            LEFT JOIN global_freq g ON g.product_type=d.product_type
+            SELECT v.style_number, v.product_type,
+                   ROW_NUMBER() OVER (PARTITION BY v.style_number
+                       ORDER BY CASE WHEN sl.has_live THEN v.live_cnt ELSE v.cnt END DESC,
+                                v.cnt DESC, COALESCE(g.gfreq,0) DESC, v.product_type ASC) AS rn
+            FROM votes v
+            JOIN style_live sl ON sl.style_number = v.style_number
+            LEFT JOIN global_freq g ON g.product_type = v.product_type
         )
         UPDATE all_products_clean p
         SET product_type = d.product_type
         FROM dominant d
         WHERE p.style_number = d.style_number AND d.rn = 1
-          AND p.product_type NOT IN ('Sample & Sale Items','Gift Vouchers')
+          AND (p.product_type IS NULL
+               OR p.product_type NOT IN ('Sample & Sale Items','Gift Vouchers'))
           AND p.product_type IS DISTINCT FROM d.product_type
     """
     # Commit between iterations so each pass sees the previous pass's result

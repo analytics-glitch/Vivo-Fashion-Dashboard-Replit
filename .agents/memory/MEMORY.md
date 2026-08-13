@@ -137,6 +137,7 @@
 - [Product Catalogue page](product-catalogue-page.md) — page id stays "gallery"; launch = catalogue col (empty) → first-sale fallback; cost NEVER in popup (viewer-visible); 'Uncategorised' bucket expression must match on facet+filter sides.
 - [Store Feedback tool](store-feedback-tool.md) — submit open to ALL BI roles, review gate (admin/leadership/smt) in handlers; BYTEA attachments owner-or-reviewer; distinct from legacy "feedback" page id.
 - [Product colour name-authoritative](product-color-name-authoritative.md) — color_print derives from the product NAME (Odoo attr = stale-on-rename fallback); nightly transform self-heals dev+prod; beware "Off - Shoulder" wrong-split wart.
+- [Subcat vote vs classifier](product-subcat-vote-vs-classifier.md) — the transform's dominant-subcat vote must fill NULL rows too, or the per-cycle name-keyword classifier re-poisons styles daily ('wrap' beats 'poncho' → Scarves).
 - [all_inventory quantity canon](inventory-quantity-column-canon.md) — stock qty column is `available`; on_hand is not the canon and available_quantity does NOT exist (latent 500 raw SQL misses).
 - [Task commits sweep stray worktree changes](task-commit-sweeps-worktree.md) — completion commits include ANY uncommitted env leftovers; diff vs merge base before markTaskComplete or review rejects on unrelated code.
 - [Rebase-replay vs main drift](rebase-replay-main-drift.md) — main missing your already-merged content in a conflict = another task's merge clobbered it; union ours+graft, realign main-authored tests to the restored canon.

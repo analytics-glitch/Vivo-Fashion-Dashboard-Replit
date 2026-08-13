@@ -384,19 +384,6 @@ const MerchDeepDive = () => {
       }));
   }, [weeks, style]);
 
-  // Lifecycle timeline data
-  const lifecycleData = useMemo(() => {
-    if (!style?.launch_date || !weeks.length) return [];
-    const launchMs = new Date(style.launch_date).getTime();
-    let cumUnits = 0;
-    return weeks.map((w) => {
-      const d = isoWeekToDate(w.iso_week);
-      const weeksSince = d ? Math.round((d.getTime() - launchMs) / (7 * 24 * 3600 * 1000)) : 0;
-      cumUnits += w.units;
-      return { week: weeksSince, cumUnits, reorder: w.reorder ? cumUnits : undefined };
-    }).filter(d => d.week >= 0);
-  }, [weeks, style]);
-
   const aiCards = useMemo(() => {
     const avg = weeks.length ? weeks.reduce((a, w) => a + w.units, 0) / weeks.length : 0;
     return buildRecommendationCards(style, avg);
@@ -489,8 +476,12 @@ const MerchDeepDive = () => {
       </div>
 
       {/* ── KPI cards ───────────────────────────────────────────────────── */}
+      {/* `small` — deep-dive cards run 6-across, so the default md:28px bold
+          value overflows/oversizes; use the shared small size variant (16/20px).
+          Scoped to this page only — other pages' KPI cards are unchanged. */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
         <KPICard
+          small
           label={`Revenue (${periodLabel})`}
           value={fmtKES(style.revenue_period)}
           valueFull={fmtKESLong(style.revenue_period)}
@@ -506,6 +497,7 @@ const MerchDeepDive = () => {
             makes sense at style level. revenue_life comes from the style row's
             unbounded lifetime CTE, so it ignores the hub date filter. */}
         <KPICard
+          small
           label="Revenue (Lifetime)"
           value={fmtKES(style.revenue_life)}
           valueFull={fmtKESLong(style.revenue_life)}
@@ -515,6 +507,7 @@ const MerchDeepDive = () => {
           testId="dd-rev-life"
         />
         <KPICard
+          small
           label={`Units Sold (${periodLabel})`}
           value={fmtNum(style.units_period)}
           sub={`vs subcat avg ${fmtNum(
@@ -525,7 +518,22 @@ const MerchDeepDive = () => {
           showDelta={false}
           testId="dd-units-6m"
         />
+        {/* Lifetime Units — replaces the Style Lifecycle Timeline chart, which
+            accumulated only the trailing-52-week window and so never showed a
+            true lifetime figure. units_life = unbounded gross units from the
+            style row's lifetime CTE (same family as revenue_life); ignores the
+            hub date filter. */}
         <KPICard
+          small
+          label="Units Sold (Lifetime)"
+          value={fmtNum(style.units_life)}
+          sub="Since first launch"
+          icon={Package}
+          showDelta={false}
+          testId="dd-units-life"
+        />
+        <KPICard
+          small
           label={`SOR (${periodLabel})`}
           value={fmtPct(style.sor_period)}
           sub={`vs subcat avg ${fmtPct(subcat.find(s => s.subcategory === style.subcategory)?.avg_sor_period || 0)}`}
@@ -534,6 +542,7 @@ const MerchDeepDive = () => {
           testId="dd-sor"
         />
         <KPICard
+          small
           label="Gross Margin"
           value="—"
           sub="Cost N/A · GM not available"
@@ -541,6 +550,7 @@ const MerchDeepDive = () => {
           testId="dd-gm"
         />
         <KPICard
+          small
           label="Weeks of Cover"
           value={<span className={wocColor}>{style.woc ? style.woc.toFixed(1) + " wks" : "—"}</span>}
           sub={
@@ -552,6 +562,7 @@ const MerchDeepDive = () => {
           testId="dd-woc"
         />
         <KPICard
+          small
           label="Reorder Count"
           value={(style.reorder_count || 0) + "×"}
           sub={style.launch_date
@@ -563,6 +574,7 @@ const MerchDeepDive = () => {
         />
         {style.last_order_date && (
           <KPICard
+            small
             label="Last Ordered"
             value={fmtDate(style.last_order_date)}
             sub=""
@@ -878,72 +890,26 @@ const MerchDeepDive = () => {
 
       </div>
 
-      {/* ── Row 3: Lifecycle Timeline + AI Recommendations ───────────────── */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-        {/* Style Lifecycle Timeline — 9 */}
-        <div className="lg:col-span-9 card-white p-5">
-          <SectionTitle title="Style Lifecycle Timeline" subtitle="Weeks since launch / Cumulative units" />
-          {lifecycleData.length === 0
-            ? <Empty />
-            : (
-              <ResponsiveContainer width="100%" height={200}>
-                <AreaChart data={lifecycleData} margin={{ top: 8, right: 8, left: 0, bottom: 24 }}>
-                  <defs>
-                    <linearGradient id="lcGrad" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#4b7bec" stopOpacity={0.25} />
-                      <stop offset="95%" stopColor="#4b7bec" stopOpacity={0.02} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                  <XAxis
-                    dataKey="week"
-                    tick={{ fontSize: 9 }}
-                    label={{ value: "Weeks Since Launch", position: "insideBottom", offset: -12, style: { fontSize: 9 } }}
-                  />
-                  <YAxis tick={{ fontSize: 9 }} />
-                  <Tooltip formatter={(v, n) => [fmtNum(v), n]} />
-                  {/* Reorder event markers */}
-                  {lifecycleData.filter(d => d.reorder !== undefined).map((d, i) => (
-                    <ReferenceLine
-                      key={i}
-                      x={d.week}
-                      stroke="#d97706"
-                      strokeDasharray="4 2"
-                      label={{ value: `RO${i + 1}`, position: "top", style: { fontSize: 9, fill: "#d97706" } }}
-                    />
-                  ))}
-                  <Area
-                    type="monotone"
-                    dataKey="cumUnits"
-                    name="Cumulative Units"
-                    stroke="#4b7bec"
-                    strokeWidth={2}
-                    fill="url(#lcGrad)"
-                    dot={false}
-                  />
-                </AreaChart>
-              </ResponsiveContainer>
-            )}
-        </div>
-
-        {/* AI Recommendation Engine — 3 */}
-        <div className="lg:col-span-3 card-white p-5">
-          <SectionTitle title="AI Recommendation Engine" />
-          <div className="mt-3 space-y-2">
-            {aiCards.map(card => (
-              <div
-                key={card.key}
-                className={`rounded-lg border px-3 py-2 ${card.style.bg} ${card.style.border}`}
-              >
-                <div className={`text-[11px] font-extrabold uppercase tracking-wide mb-0.5 ${card.style.title}`}>
-                  {card.label}
-                </div>
-                {card.lines.map((l, i) => (
-                  <div key={i} className="text-[10.5px] text-foreground/80 leading-snug">{l}</div>
-                ))}
+      {/* ── Row 3: AI Recommendations ─────────────────────────────────────
+          (Style Lifecycle Timeline chart removed: it accumulated only the
+          trailing-52-week window, so it never showed true lifetime volume.
+          Replaced by the Units Sold (Lifetime) KPI card above.) */}
+      <div className="card-white p-5">
+        <SectionTitle title="AI Recommendation Engine" />
+        <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+          {aiCards.map(card => (
+            <div
+              key={card.key}
+              className={`rounded-lg border px-3 py-2 ${card.style.bg} ${card.style.border}`}
+            >
+              <div className={`text-[11px] font-extrabold uppercase tracking-wide mb-0.5 ${card.style.title}`}>
+                {card.label}
               </div>
-            ))}
-          </div>
+              {card.lines.map((l, i) => (
+                <div key={i} className="text-[10.5px] text-foreground/80 leading-snug">{l}</div>
+              ))}
+            </div>
+          ))}
         </div>
       </div>
     </div>
