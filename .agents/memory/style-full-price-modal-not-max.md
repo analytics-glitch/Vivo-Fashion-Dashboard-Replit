@@ -29,3 +29,14 @@ definition). For the PA "Price Range" column, `price_min` uses
 outlier either. `mode()` is a valid ordered-set aggregate inside these GROUP BY
 queries alongside the other aggregates; the pa_style rollup path shares the same
 prod CTE so it is covered too.
+
+**Colourway grain (Deep Dive style-colors feed):** the same modal rule applies
+per colourway — `merch_router._fetch_style_colors` computes `full_price` as the
+mode over that colourway's SKUs.
+
+**ASP-vs-full-price comparisons:** ticket/full prices are VAT-inclusive, so any
+"ASP as % of full price" metric must use a VAT-inclusive, discount-aware
+realized ASP — `SUM(total_sales_kes − discounts_kes) / units` — never the
+ex-VAT net-sales canon (`NET_SALES_CANON`). The 1.16/1.18 VAT divisor alone
+would put every item ~14–15% under ticket, making thresholds like "ASP > 90% of
+full" unreachable.

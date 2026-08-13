@@ -576,3 +576,143 @@ class LaunchRampFilterScopeTests(unittest.TestCase):
         self.assertNotIn("%(brands)s", cap["sql"])
         self.assertNotIn("%(subcats)s", cap["sql"])
         self.assertNotIn("%(pos_locations)s", cap["sql"])
+
+
+# ── /api/merch/style-colors — colourway recommendation rule inputs ───────────
+
+def _color_row(**over):
+    """Fake DB row matching exactly what the _fetch_style_colors SQL SELECTs."""
+    base = {
+        "color":         "Mustard",
+        "units_sold":    20,
+        "revenue":       50000.0,
+        "soh_stores":    30,
+        "soh_warehouse": 10,
+        "units_6m":      52,
+        # fixed 4/8/12-week recommendation windows
+        "units_4wk":     12,
+        "units_8wk":     20,
+        "units_12wk":    30,
+        "realized_4wk":  42000.0,   # VAT-inc, discount-aware (gross − discounts)
+        "last_sale_date": None,
+        "full_price":    3500.0,    # modal ticket price of the colourway's SKUs
+    }
+    base.update(over)
+    return base
+
+
+class StyleColorsSchemaTests(unittest.TestCase):
+    """_fetch_style_colors must return every field the Deep Dive's colourway
+    charts AND the rule-based Restock/Marketing/Retire panel read, with the
+    derived inputs (SOR windows, ASP vs full price, last-sale days) computed
+    on the documented canon."""
+
+    def test_row_has_required_keys(self):
+        required = {
+            # pre-existing chart fields
+            "color", "units_sold", "revenue", "soh", "soh_stores",
+            "soh_warehouse", "stock_to_sales", "units_6m", "weekly_avg", "woc",
+            # recommendation rule inputs (task: colourway restock/marketing/retire)
+            "units_4wk", "units_8wk", "units_12wk",
+            "sor_4wk", "sor_8wk", "sor_12wk",
+            "full_price", "asp_recent", "asp_pct_full",
+            "last_sale_date", "last_sale_days",
+        }
+        with _patch_db([_color_row()]):
+            out = merch_router._fetch_style_colors("TS001")
+        self.assertEqual(len(out["colors"]), 1)
+        missing = required - out["colors"][0].keys()
+        self.assertFalse(missing, f"style-colors row is missing keys: {missing}")
+
+    def test_sor_windows_use_units_over_units_plus_soh(self):
+        """SOR canon: window units ÷ (window units + current SOH), 1dp."""
+        with _patch_db([_color_row()]):
+            row = merch_router._fetch_style_colors("TS001")["colors"][0]
+        self.assertEqual(row["soh"], 40)                       # 30 stores + 10 wh
+        self.assertEqual(row["sor_4wk"],  round(12 * 100.0 / 52, 1))
+        self.assertEqual(row["sor_8wk"],  round(20 * 100.0 / 60, 1))
+        self.assertEqual(row["sor_12wk"], round(30 * 100.0 / 70, 1))
+
+    def test_asp_pct_full_is_vat_inclusive_realized_per_unit(self):
+        """ASP = realized_4wk ÷ units_4wk (VAT-inc, discount-aware) compared
+        straight against the VAT-inc modal full price — no VAT divisor."""
+        with _patch_db([_color_row()]):
+            row = merch_router._fetch_style_colors("TS001")["colors"][0]
+        self.assertEqual(row["asp_recent"], 3500.0)            # 42000 / 12
+        self.assertEqual(row["asp_pct_full"], 100.0)           # 3500 vs 3500
+        self.assertEqual(row["full_price"], 3500.0)
+
+    def test_last_sale_days_from_last_sale_date(self):
+        from datetime import date, timedelta
+        y = date.today() - timedelta(days=1)
+        with _patch_db([_color_row(last_sale_date=str(y))]):
+            row = merch_router._fetch_style_colors("TS001")["colors"][0]
+        self.assertEqual(row["last_sale_date"], str(y))
+        self.assertEqual(row["last_sale_days"], 1)
+
+    def test_none_states_fail_closed(self):
+        """No window sales / no stock / no full price ⇒ None inputs (the
+        client rules treat None as not-qualifying, never as 0-passes)."""
+        row_in = _color_row(
+            soh_stores=0, soh_warehouse=0,
+            units_4wk=0, units_8wk=0, units_12wk=0,
+            realized_4wk=0.0, last_sale_date=None, full_price=None,
+            units_6m=0,
+        )
+        with _patch_db([row_in]):
+            row = merch_router._fetch_style_colors("TS001")["colors"][0]
+        self.assertIsNone(row["sor_4wk"])       # 0 units + 0 SOH ⇒ no denom
+        self.assertIsNone(row["sor_8wk"])
+        self.assertIsNone(row["sor_12wk"])
+        self.assertIsNone(row["asp_recent"])    # no 4wk units ⇒ no ASP
+        self.assertIsNone(row["asp_pct_full"])
+        self.assertIsNone(row["last_sale_days"])
+        self.assertIsNone(row["woc"])           # no 6m velocity
+
+    def test_asp_pct_none_without_full_price(self):
+        with _patch_db([_color_row(full_price=None)]):
+            row = merch_router._fetch_style_colors("TS001")["colors"][0]
+        self.assertEqual(row["asp_recent"], 3500.0)
+        self.assertIsNone(row["asp_pct_full"])
+
+    def test_hidden_when_no_stock_no_period_sales(self):
+        """Visibility rule unchanged: zero SOH + zero period sales ⇒ dropped,
+        even if the fixed 12-week window saw sales."""
+        row_in = _color_row(units_sold=0, revenue=0, soh_stores=0, soh_warehouse=0)
+        with _patch_db([row_in]):
+            out = merch_router._fetch_style_colors("TS001")
+        self.assertEqual(out["colors"], [])
+
+    def test_sql_fixed_windows_modal_price_and_country_scope(self):
+        """The SQL must carry the fixed trailing windows (independent of the
+        selected period), a modal (never MAX) full price, a VAT-inclusive
+        discount-aware realized sum, and thread the country filter into ALL
+        sales CTEs (period, 6m, and the new 4-12wk window)."""
+        from datetime import date, timedelta
+        captured = {}
+
+        def fake_exec(sql, params=None, **_kw):
+            captured["sql"] = sql
+            captured["params"] = params or {}
+            return []
+
+        with mock.patch.object(merch_router, "_db_exec", side_effect=fake_exec):
+            merch_router._fetch_style_colors(
+                "TS001", from_date="2026-08-01", to_date="2026-08-10",
+                country="Kenya")
+        today = date.today()
+        p = captured["params"]
+        self.assertEqual(p["wk4_ago"],  str(today - timedelta(weeks=4)))
+        self.assertEqual(p["wk8_ago"],  str(today - timedelta(weeks=8)))
+        self.assertEqual(p["wk12_ago"], str(today - timedelta(weeks=12)))
+        # narrow hub date filter must NOT touch the fixed windows
+        self.assertEqual(p["period_from"], "2026-08-01")
+        self.assertEqual(p["period_to"],   "2026-08-10")
+        sql = captured["sql"]
+        self.assertIn("mode() WITHIN GROUP (ORDER BY price)", sql)
+        self.assertNotIn("MAX(price)", sql)
+        self.assertIn(
+            "s.total_sales_kes::numeric - COALESCE(s.discounts_kes,0)::numeric", sql)
+        self.assertEqual(p["countries"], ["Kenya"])
+        self.assertEqual(sql.count("s.country = ANY(%(countries)s)"), 3,
+                         "country clause must hit sales, sales_6m AND sales_wk")

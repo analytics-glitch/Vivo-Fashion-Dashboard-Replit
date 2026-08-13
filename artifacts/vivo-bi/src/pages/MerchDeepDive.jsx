@@ -23,7 +23,7 @@ import {
 import {
   CurrencyCircleDollar, Package, Percent, ArrowsLeftRight,
   Clock, ArrowCounterClockwise, Warning, CheckCircle, XCircle, CalendarBlank,
-  Stack, Palette,
+  Stack, Palette, Megaphone,
 } from "@phosphor-icons/react";
 
 // ── Tier colours ─────────────────────────────────────────────────────────────
@@ -85,6 +85,70 @@ const tidyColorLabel = (raw) => {
   // Collapse "X - X" duplication once the trailing noise is gone.
   const out = parts.join(" / ").replace(/^(.+?) - \1$/, "$1");
   return out || s;
+};
+
+// ── Colourway recommendation rules (user spec — advisory display only) ───────
+// All inputs are FIXED trailing windows from today (4/8/12-week sell-through,
+// 6-month WOC) — like the section's WOC convention they never shrink with the
+// hub's date filter; the country filter still applies. Precedence when a
+// colourway qualifies for several groups: Restock > Marketing > Retire, so
+// each colourway lands in at most one group.
+const COLOR_REC = {
+  // Performing very well — buy more of it.
+  restock:   { minSor4: 40, maxWoc: 4, minAspPct: 90, maxLastSaleDays: 2 },
+  // Recently produced but moving slowly — needs a push, not more stock.
+  // Requires a recorded production order within the last ~3 months.
+  marketing: { maxLastOrderDays: 91, minWoc: 8, maxSor8: 70 },
+  // New styles only (Tier 4 or launched < 12 months), and only once the
+  // style has been on sale ≥ 12 weeks — earlier, a 12-week SOR says nothing.
+  retire:    { maxSor12: 70, newStyleMaxDays: 365, minDaysOnSale: 84 },
+};
+
+// Group chrome — green restock / amber marketing / red retire (task spec).
+const REC_GROUP_STYLES = {
+  restock:   { bg: "bg-emerald-50", border: "border-emerald-300", title: "text-emerald-800", tag: "bg-emerald-700", chip: "border-emerald-200" },
+  marketing: { bg: "bg-amber-50",   border: "border-amber-300",   title: "text-amber-800",   tag: "bg-amber-600",   chip: "border-amber-200" },
+  retire:    { bg: "bg-rose-50",    border: "border-rose-300",    title: "text-rose-700",    tag: "bg-rose-600",    chip: "border-rose-200" },
+};
+
+const fmtDaysAgo = (d) =>
+  d === null || d === undefined ? "—"
+    : d <= 0 ? "today"
+    : d === 1 ? "1d ago"
+    : `${d}d ago`;
+
+// One recommendation group card: header + rule line + colourway chips carrying
+// the supporting figures, or a compact "none" state (a group never disappears).
+const RecGroup = ({ variant, icon: Icon, title, rule, items, emptyLabel, renderFigures }) => {
+  const st = REC_GROUP_STYLES[variant];
+  return (
+    <div className={`rounded-lg border px-3 py-2.5 ${st.bg} ${st.border}`}>
+      <div className={`flex items-center gap-1.5 text-[11px] font-extrabold uppercase tracking-wide ${st.title}`}>
+        <Icon size={13} weight="bold" className="flex-shrink-0" />
+        <span className="truncate">{title}</span>
+        <span className={`ml-auto flex-shrink-0 min-w-[18px] text-center text-[10px] px-1.5 py-0.5 rounded-full text-white ${st.tag}`}>
+          {items.length}
+        </span>
+      </div>
+      <div className="mt-0.5 text-[9.5px] leading-snug text-foreground/50">{rule}</div>
+      {items.length === 0 ? (
+        <div className="mt-2 text-[10.5px] italic text-foreground/50">{emptyLabel}</div>
+      ) : (
+        <div className="mt-2 space-y-1.5">
+          {items.map((c) => (
+            <div key={c.color} className={`bg-white/80 rounded-md border px-2 py-1.5 ${st.chip}`}>
+              <div className="text-[11px] font-bold text-foreground truncate" title={c.color}>
+                {c.name}
+              </div>
+              <div className="mt-0.5 text-[10px] text-foreground/70 flex flex-wrap gap-x-2 gap-y-0.5 tabular-nums">
+                {renderFigures(c)}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 };
 
 // ── Status badge ──────────────────────────────────────────────────────────────
@@ -506,10 +570,74 @@ const MerchDeepDive = () => {
         wocCapped,
         noVelocity,
         wocTopLabel: (wocCapped || (noVelocity && soh > 0)) ? "52+" : "",
+        // Recommendation rule inputs (fixed trailing windows, backend-derived)
+        sor4:         r.sor_4wk ?? null,
+        sor8:         r.sor_8wk ?? null,
+        sor12:        r.sor_12wk ?? null,
+        aspPctFull:   r.asp_pct_full ?? null,
+        fullPrice:    r.full_price ?? null,
+        lastSaleDays: r.last_sale_days ?? null,
       };
     });
     return { rows, avg };
   }, [colorPerf]);
+
+  // ── Colourway recommendations — rule-based buckets (COLOR_REC) ─────────────
+  // Combines the per-colour fixed-window inputs with style-level facts the
+  // page already loads (lifecycle tier, launch date incl. first-sale fallback,
+  // last production order). Precedence Restock > Marketing > Retire: the
+  // `continue`s guarantee each colourway lands in at most one group.
+  const colorRecs = useMemo(() => {
+    const out = {
+      restock: [], marketing: [], retire: [],
+      marketingEligible: false, retireEligible: false,
+      isNewStyle: false, lastOrderDays: null, launchDays: null,
+    };
+    if (!style) return out;
+    const dayDiff = (iso) => {
+      const d = new Date(String(iso).slice(0, 10));
+      return Number.isFinite(d.getTime())
+        ? Math.floor((Date.now() - d.getTime()) / 86400000)
+        : null;
+    };
+    out.lastOrderDays = style.last_order_date ? dayDiff(style.last_order_date) : null;
+    // Marketing needs a recorded production order in the last ~3 months —
+    // styles with no order history never qualify.
+    out.marketingEligible =
+      out.lastOrderDays !== null && out.lastOrderDays <= COLOR_REC.marketing.maxLastOrderDays;
+    out.launchDays = style.launch_date ? dayDiff(style.launch_date) : null;
+    // "New" style: lifecycle tier New (Tier 4) or launched < 12 months ago.
+    out.isNewStyle =
+      style.tier === "Tier 4" ||
+      (out.launchDays !== null && out.launchDays <= COLOR_REC.retire.newStyleMaxDays);
+    // Retire additionally needs ≥ 12 weeks on sale (launch_date falls back to
+    // the first-ever sale upstream); unknown launch fails closed — too early.
+    const onSale12wk =
+      out.launchDays !== null && out.launchDays >= COLOR_REC.retire.minDaysOnSale;
+    out.retireEligible = out.isNewStyle && onSale12wk;
+
+    for (const c of colorChart.rows) {
+      const R = COLOR_REC.restock;
+      if (c.sor4 != null && c.sor4 > R.minSor4 &&
+          c.woc != null && c.woc < R.maxWoc &&
+          c.aspPctFull != null && c.aspPctFull > R.minAspPct &&
+          c.lastSaleDays != null && c.lastSaleDays < R.maxLastSaleDays) {
+        out.restock.push(c);
+        continue;                        // precedence: restock wins
+      }
+      const M = COLOR_REC.marketing;
+      if (out.marketingEligible &&
+          c.woc != null && c.woc > M.minWoc &&
+          c.sor8 != null && c.sor8 < M.maxSor8) {
+        out.marketing.push(c);
+        continue;                        // precedence: marketing beats retire
+      }
+      if (out.retireEligible && c.sor12 != null && c.sor12 < COLOR_REC.retire.maxSor12) {
+        out.retire.push(c);
+      }
+    }
+    return out;
+  }, [colorChart, style]);
 
   const monthlyRevChart = useMemo(() => {
     const map = {};
@@ -1074,6 +1202,73 @@ const MerchDeepDive = () => {
             title={`Colourway Performance (${periodLabel})`}
             subtitle="Revenue, stock on hand, sell-through and weeks of cover by colourway · colourways with no stock and no period sales are hidden"
           />
+          {/* ── Colourway Recommendations — rule-based, above the chart grid ── */}
+          {colorChart.rows.length > 0 && (
+            <>
+              <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-2">
+                <RecGroup
+                  variant="restock"
+                  icon={ArrowCounterClockwise}
+                  title="Restock"
+                  rule="4-wk sell-through > 40% · WOC < 4 · ASP > 90% of full price · sold in last 2 days"
+                  items={colorRecs.restock}
+                  emptyLabel="None qualify."
+                  renderFigures={(c) => (<>
+                    <span>ST 4wk <b>{c.sor4 == null ? "—" : c.sor4 + "%"}</b></span>
+                    <span>WOC <b>{c.woc == null ? "—" : c.woc.toFixed(1)}</b></span>
+                    <span>ASP <b>{c.aspPctFull == null ? "—" : c.aspPctFull + "%"}</b> of full</span>
+                    <span>sold <b>{fmtDaysAgo(c.lastSaleDays)}</b></span>
+                  </>)}
+                />
+                <RecGroup
+                  variant="marketing"
+                  icon={Megaphone}
+                  title="Marketing push"
+                  rule="Production order < 3 months ago · WOC > 8 · 8-wk sell-through < 70%"
+                  items={colorRecs.marketing}
+                  emptyLabel={
+                    colorRecs.marketingEligible
+                      ? "None qualify."
+                      : colorRecs.lastOrderDays === null
+                        ? "n/a — no production order on record."
+                        : `n/a — last order ${fmtDaysAgo(colorRecs.lastOrderDays)} (> 3 months).`
+                  }
+                  renderFigures={(c) => (<>
+                    <span>ST 8wk <b>{c.sor8 == null ? "—" : c.sor8 + "%"}</b></span>
+                    <span>WOC <b>{c.woc == null ? "—" : c.woc.toFixed(1)}</b></span>
+                    <span>SOH <b>{fmtNum(c.soh)}</b></span>
+                    <span>ordered <b>{fmtDaysAgo(colorRecs.lastOrderDays)}</b></span>
+                  </>)}
+                />
+                <RecGroup
+                  variant="retire"
+                  icon={XCircle}
+                  title="Retire candidates"
+                  rule="New styles only (Tier 4 / launched < 12 mo, on sale ≥ 12 wks) · 12-wk sell-through < 70%"
+                  items={colorRecs.retire}
+                  emptyLabel={
+                    colorRecs.retireEligible
+                      ? "None qualify."
+                      : !colorRecs.isNewStyle
+                        ? "n/a — established style (rule applies to new styles)."
+                        : colorRecs.launchDays === null
+                          ? "n/a — launch date unknown."
+                          : "Too early — on sale under 12 weeks."
+                  }
+                  renderFigures={(c) => (<>
+                    <span>ST 12wk <b>{c.sor12 == null ? "—" : c.sor12 + "%"}</b></span>
+                    <span>WOC <b>{c.woc == null ? "—" : c.woc.toFixed(1)}</b></span>
+                    <span>SOH <b>{fmtNum(c.soh)}</b></span>
+                    <span>last sale <b>{c.lastSaleDays == null ? "none in 12 wks" : fmtDaysAgo(c.lastSaleDays)}</b></span>
+                  </>)}
+                />
+              </div>
+              <div className="mt-1.5 text-[9.5px] text-foreground/45">
+                Advisory only · fixed trailing windows (4/8/12-wk sell-through, 6-mo WOC) — independent of the
+                date filter, country filter applies · each colourway appears in at most one group (Restock › Marketing › Retire)
+              </div>
+            </>
+          )}
           {colorChart.rows.length === 0
             ? <Empty label="No colourways with stock or sales in the selected period." />
             : (

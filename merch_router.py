@@ -1412,6 +1412,22 @@ def _fetch_style_colors(style_number, from_date=None, to_date=None, country=None
     header KPI). The 6-month window is independent of from_date/to_date (like
     the header WOC) but still country-scoped.
 
+    Also returns the rule inputs for the Style Deep Dive's colourway
+    Restock / Marketing / Retire recommendations (classified client-side):
+      • units_4wk/8wk/12wk + sor_4wk/8wk/12wk — FIXED trailing windows from
+        today (like the WOC window they never shrink with the hub date
+        filter; country still applies), using the section's SOR canon:
+        units ÷ (units + current SOH).
+      • full_price — modal ticket price of the colourway's SKUs (modal, never
+        MAX — MAX surfaces the prod-only foreign-currency dup leak).
+      • asp_recent / asp_pct_full — realised ASP over the trailing 4 weeks on
+        a basis directly comparable to full_price: VAT-INCLUSIVE and
+        discount-aware (gross total minus discounts, per unit). Never compare
+        the ex-VAT net revenue to ticket price — the VAT divisor alone would
+        put every colourway ~14% under full price.
+      • last_sale_date / last_sale_days — latest sale within the 12-week
+        window (None ⇒ no sale in the last 12 weeks).
+
     Colour comes from the product master (all_products_clean.color_print);
     sales and inventory join on SKU only (triad joins are SKU-only).
     Only colourways with current stock or period sales are returned.
@@ -1419,6 +1435,9 @@ def _fetch_style_colors(style_number, from_date=None, to_date=None, country=None
     today       = date.today()
     six_mo_ago  = str(today - timedelta(days=_SIX_MONTHS_DAYS))
     today_str   = str(today)
+    wk4_ago     = str(today - timedelta(weeks=4))
+    wk8_ago     = str(today - timedelta(weeks=8))
+    wk12_ago    = str(today - timedelta(weeks=12))
     period_from = from_date or six_mo_ago
     period_to   = to_date   or today_str
 
@@ -1432,7 +1451,7 @@ def _fetch_style_colors(style_number, from_date=None, to_date=None, country=None
 
     sql = f"""
 WITH skus AS (
-    SELECT sku, COALESCE(NULLIF(TRIM(color_print), ''), '—') AS color
+    SELECT sku, COALESCE(NULLIF(TRIM(color_print), ''), '—') AS color, price
     FROM all_products_clean
     WHERE style_number = %(style_number)s
       AND sku IS NOT NULL AND sku <> ''
@@ -1480,6 +1499,48 @@ sales_6m AS (
         AND {_BASE_FILTERS}
         {country_clause}
     GROUP BY k.color
+),
+/* Fixed trailing 4/8/12-week windows (from today, NOT the selected period) —
+   the rule inputs for the colourway Restock/Marketing/Retire panel. One scan
+   of the widest (12-week) window with filtered sums; same sale-kind, base-
+   filter and country scoping as sales_6m. sale_date is TEXT but ISO dates
+   compare correctly as strings (same convention as every window above).
+   realized_4wk is VAT-INCLUSIVE and discount-aware (gross minus discounts):
+   it feeds an ASP compared against the VAT-inclusive ticket full price. */
+sales_wk AS (
+    SELECT
+        k.color,
+        SUM(s.ordered_item_quantity) FILTER (
+            WHERE s.sale_kind IN ('sale','order') AND s.sale_date >= %(wk4_ago)s
+        )                             AS units_4wk,
+        SUM(s.ordered_item_quantity) FILTER (
+            WHERE s.sale_kind IN ('sale','order') AND s.sale_date >= %(wk8_ago)s
+        )                             AS units_8wk,
+        SUM(s.ordered_item_quantity) FILTER (
+            WHERE s.sale_kind IN ('sale','order')
+        )                             AS units_12wk,
+        SUM(s.total_sales_kes::numeric - COALESCE(s.discounts_kes,0)::numeric) FILTER (
+            WHERE s.sale_kind IN ('sale','order') AND s.sale_date >= %(wk4_ago)s
+        )                             AS realized_4wk,
+        MAX(s.sale_date::date) FILTER (
+            WHERE s.sale_kind IN ('sale','order')
+        )                             AS last_sale_date
+    FROM skus k
+    JOIN all_sales s ON s.variant_sku = k.sku
+    WHERE s.sale_date BETWEEN %(wk12_ago)s AND %(today)s
+        AND {_BASE_FILTERS}
+        {country_clause}
+    GROUP BY k.color
+),
+/* Ticket full price per colourway — modal SKU price (modal, never MAX).
+   Product-master attribute: deliberately unscoped by date/country. */
+fullprice AS (
+    SELECT
+        color,
+        mode() WITHIN GROUP (ORDER BY price)
+            FILTER (WHERE price > 0) AS full_price
+    FROM skus
+    GROUP BY color
 )
 SELECT
     COALESCE(sa.color, st.color)   AS color,
@@ -1487,10 +1548,18 @@ SELECT
     COALESCE(sa.revenue, 0.0)      AS revenue,
     COALESCE(st.soh_stores, 0)     AS soh_stores,
     COALESCE(st.soh_warehouse, 0)  AS soh_warehouse,
-    COALESCE(s6.units_6m, 0)       AS units_6m
+    COALESCE(s6.units_6m, 0)       AS units_6m,
+    COALESCE(sw.units_4wk, 0)      AS units_4wk,
+    COALESCE(sw.units_8wk, 0)      AS units_8wk,
+    COALESCE(sw.units_12wk, 0)     AS units_12wk,
+    COALESCE(sw.realized_4wk, 0.0) AS realized_4wk,
+    sw.last_sale_date,
+    fp.full_price
 FROM sales sa
 FULL OUTER JOIN stock st ON st.color = sa.color
 LEFT JOIN sales_6m s6 ON s6.color = COALESCE(sa.color, st.color)
+LEFT JOIN sales_wk sw ON sw.color = COALESCE(sa.color, st.color)
+LEFT JOIN fullprice fp ON fp.color = COALESCE(sa.color, st.color)
 """
     params = {
         "style_number": style_number,
@@ -1498,6 +1567,9 @@ LEFT JOIN sales_6m s6 ON s6.color = COALESCE(sa.color, st.color)
         "period_to":    period_to,
         "six_mo_ago":   six_mo_ago,
         "today":        today_str,
+        "wk4_ago":      wk4_ago,
+        "wk8_ago":      wk8_ago,
+        "wk12_ago":     wk12_ago,
         **country_params,
     }
     rows = _db_exec(sql, params, fetch=True)
@@ -1518,6 +1590,40 @@ LEFT JOIN sales_6m s6 ON s6.color = COALESCE(sa.color, st.color)
         units_6m   = int(r["units_6m"] or 0)
         weekly_avg = round(units_6m / 26.0, 2)
         woc = round(soh / weekly_avg, 1) if weekly_avg > 0 else None
+
+        # Recommendation rule inputs — fixed trailing windows, SOR canon
+        # (units ÷ (units + current SOH)), same as the section's charts.
+        units_4wk  = int(r["units_4wk"] or 0)
+        units_8wk  = int(r["units_8wk"] or 0)
+        units_12wk = int(r["units_12wk"] or 0)
+
+        def _sor(u):
+            denom = u + soh
+            return round(u * 100.0 / denom, 1) if denom > 0 else None
+
+        sor_4wk, sor_8wk, sor_12wk = _sor(units_4wk), _sor(units_8wk), _sor(units_12wk)
+
+        # Recent ASP (trailing 4 weeks) — VAT-inclusive, discount-aware, so it
+        # is directly comparable to the VAT-inclusive ticket full_price.
+        realized_4wk = float(r["realized_4wk"] or 0)
+        asp_raw = (realized_4wk / units_4wk) if units_4wk > 0 else None
+        asp_recent = round(asp_raw, 0) if asp_raw is not None else None
+        full_price = float(r["full_price"]) if r.get("full_price") else None
+        asp_pct_full = (round(asp_raw * 100.0 / full_price, 1)
+                        if asp_raw is not None and full_price and full_price > 0
+                        else None)
+
+        # Days since last sale (12-week lookback; None ⇒ none in 12 weeks)
+        last_sale = r.get("last_sale_date")
+        last_sale_days = None
+        if last_sale:
+            try:
+                ls = (last_sale if isinstance(last_sale, date)
+                      else date.fromisoformat(str(last_sale)[:10]))
+                last_sale_days = (today - ls).days
+            except Exception:
+                last_sale = None
+
         result.append({
             "color":          r.get("color") or "—",
             "units_sold":     units,
@@ -1529,6 +1635,18 @@ LEFT JOIN sales_6m s6 ON s6.color = COALESCE(sa.color, st.color)
             "units_6m":       units_6m,
             "weekly_avg":     weekly_avg,  # units/week over fixed 6m window
             "woc":            woc,     # None ⇒ no 6m velocity
+            # ── Recommendation rule inputs (fixed trailing windows) ─────────
+            "units_4wk":      units_4wk,
+            "units_8wk":      units_8wk,
+            "units_12wk":     units_12wk,
+            "sor_4wk":        sor_4wk,      # None ⇒ no units and no stock
+            "sor_8wk":        sor_8wk,
+            "sor_12wk":       sor_12wk,
+            "full_price":     full_price,   # modal ticket price, None ⇒ unknown
+            "asp_recent":     asp_recent,   # VAT-inc, discount-aware, 4wk window
+            "asp_pct_full":   asp_pct_full, # ASP as % of full price
+            "last_sale_date": str(last_sale)[:10] if last_sale else None,
+            "last_sale_days": last_sale_days,
         })
 
     result.sort(key=lambda r: r["revenue"], reverse=True)
@@ -2850,7 +2968,10 @@ def register_merch_routes(app, api_pg_module):
     ):
         """Per-colourway breakdown for one style: period units/revenue, current
         SOH (stores + sellable warehouse, pipeline excluded), stock-to-sales,
-        plus fixed-6-month weekly velocity + WOC (style-level WOC formula)."""
+        plus fixed-6-month weekly velocity + WOC (style-level WOC formula) and
+        the fixed 4/8/12-week recommendation rule inputs (sor_4wk/8wk/12wk,
+        modal full_price, VAT-inc discount-aware asp_recent/asp_pct_full,
+        last_sale_date/days) for the Deep Dive's colourway panel."""
         if not style_number:
             return JSONResponse({"detail": "style_number is required"}, status_code=400)
         key = f"merch_style_colors|{style_number}|{from_date}|{to_date}|{country}"

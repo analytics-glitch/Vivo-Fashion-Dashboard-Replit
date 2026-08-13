@@ -89,7 +89,7 @@
 - [Preprod Accessories % auto-pick](preprod-accessories-autopick.md) — % picked ONCE at creation from prev-month Done-DPS pooled ratio (walk-back, 13% default); server ignores client %; meta NULL = legacy bare labels byte-identical.
 - [Costing style alias fold + union scope](costing-style-alias-universe.md) — renamed styles: fold rop universe entries into the apc twin by style_number (rop name = searchable alias), resolve style→SKUs apc∪rop via the shared scope helper.
 - [Style picker tolerant matching](style-picker-tolerant-matching.md) — canonical style names carry double/NBSP spaces & multiple style numbers; match normalized via the shared matcher, but store byte-identical names.
-- [Style full price = mode, not MAX](style-full-price-modal-not-max.md) — style "full/original price" must be modal SKU price; MAX(price) surfaces a prod-only foreign-currency leak (KES dup'd as UGX/RWF). PA/RM/SOR.
+- [Style full price = mode, not MAX](style-full-price-modal-not-max.md) — full price = modal SKU price (MAX = prod-only FX leak); ASP-vs-full % needs VAT-inc realized ASP, never ex-VAT net. PA/RM/SOR/colour recs.
 - [Product image style+colour matching](product-image-style-color-matching.md) — image endpoints expand a SKU to its style_name+color_print siblings (server-side) so all sizes share photos; keep lookups deterministic.
 - [Overlays must portal to body](overlay-portal-stacking.md) — full-screen fixed lightbox/modal trapped by a transform/filter ancestor lets a sticky table header paint over it; render via createPortal(document.body).
 - [SKU-with-slash breaks image route](sku-slash-path-param.md) — SKUs embed sizes like `1X/2X`/`M/L`; a `{sku}` str path param can't match the encoded slash (404 → photo placeholder); use `{sku:path}`.
