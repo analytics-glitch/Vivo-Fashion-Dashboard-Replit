@@ -801,7 +801,7 @@ _VIEWER_PAGES = ["overview", "exec-summary", "locations", "footfall", "trend-ana
 # arrivals into merch-lifecycle. Retired ids live on only as
 # _LEGACY_PAGE_ALIASES entries so stored group grants keep working.
 _MERCH_PAGES = ["merchandising", "merch-overview", "merch-sales", "merch-inventory", "merch-lifecycle", "merch-deepdive", "merch-store"]
-_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "quarter-scorecard", "product-analysis", "range-mgmt", "size-health", "inventory", "warehouse-returns", "excess-inventory", "rebalancing", "store-flow", "marketing", "social", "crm", "order-explorer", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "style-tracker", "pd-flow", "partner-brands", "finance", "margin", "l10", "rota", "growth", "retail-desk", "product-desk", "workforce-desk", "customer-desk", "marketing-desk", "supply-chain-desk", "production-desk", "the-chair", "quality", "store-profiling", "store-feedback", "central-tracker"] + _MERCH_PAGES)
+_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "quarter-scorecard", "product-analysis", "range-mgmt", "size-health", "inventory", "warehouse-returns", "excess-inventory", "rebalancing", "store-flow", "marketing", "social", "crm", "order-explorer", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "style-tracker", "pd-flow", "partner-brands", "finance", "margin", "l10", "rota", "growth", "retail-desk", "day-review", "product-desk", "workforce-desk", "customer-desk", "marketing-desk", "supply-chain-desk", "production-desk", "the-chair", "quality", "store-profiling", "store-feedback", "central-tracker"] + _MERCH_PAGES)
 
 DEFAULT_ROLE_PAGES = {
     "product_development": ["product-analysis", "range-mgmt", "catalogue", "gallery", "inventory", "size-health", "data-quality", "fabric", "exports", "production", "production-report", "style-tracker", "pd-flow", "partner-brands", "sops", "central-tracker"] + _MERCH_PAGES,
@@ -810,8 +810,9 @@ DEFAULT_ROLE_PAGES = {
     "store_manager": ["overview", "store-flow", "locations", "footfall", "store-profiling", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "sops", "store-feedback"],
     "leadership": _LEADERSHIP_PAGES,
     # SMT (Senior Management Team) — everything SLT (leadership) sees EXCEPT the
-    # Finance Reports Suite. The /api/finance gate below also excludes "smt".
-    "smt": [p for p in _LEADERSHIP_PAGES if p not in ("finance", "margin")],
+    # Finance Reports Suite and Day in Review. The /api/finance and
+    # /api/day-review gates below also exclude "smt".
+    "smt": [p for p in _LEADERSHIP_PAGES if p not in ("finance", "margin", "day-review")],
     # Production department — manufacturing board + report, style tracker, fabric warehouse view.
     "production": ["production", "production-report", "style-tracker", "pd-flow", "fabric", "quality", "sops"],
     # Fabric Warehouse department — fabric stock + general inventory.
@@ -1660,6 +1661,11 @@ async def clerk_auth_gate(request: Request, call_next):
         return JSONResponse({"detail": "Production Desk access requires a leadership or admin role"}, status_code=403)
     if path.startswith("/api/chair") and user.get("role") not in ("admin", "leadership"):
         return JSONResponse({"detail": "The Chair access requires a leadership or admin role"}, status_code=403)
+
+    # Day in Review (/api/day-review/*) — leadership + admin surface, same
+    # audience as the other performance desks.
+    if path.startswith("/api/day-review") and user.get("role") not in ("admin", "leadership"):
+        return JSONResponse({"detail": "Day in Review access requires a leadership or admin role"}, status_code=403)
 
     # L10 Meeting Tracker — leadership, smt + admin surface.
     # Three Supply Chain emails are also permitted but are STRICTLY SCOPED to
@@ -37851,6 +37857,12 @@ import production_desk_router
 production_desk_router.register_production_desk_routes(app, _sys.modules[__name__])
 import chair_router
 chair_router.register_chair_routes(app, _sys.modules[__name__])
+
+# Day in Review (/api/day-review/report) — deterministic daily trading-day
+# decomposition vs the same-weekday norm. Gated in clerk_auth_gate to
+# leadership + admin. Pure read layer over all_sales/footfall — no DDL.
+import day_review_router
+day_review_router.register_day_review_routes(app, _sys.modules[__name__])
 
 # Merchandising Hub endpoints (/api/merch/*). Gated to product_development,
 # leadership, smt and admin in clerk_auth_gate.

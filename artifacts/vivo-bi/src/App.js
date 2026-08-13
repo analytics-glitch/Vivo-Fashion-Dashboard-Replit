@@ -51,6 +51,7 @@ const Rota = React.lazy(() => import("@/pages/Rota"));
 const AskDashboard = React.lazy(() => import("@/pages/AskDashboard"));
 const GrowthModel  = React.lazy(() => import("@/pages/GrowthModel"));
 const RetailDesk      = React.lazy(() => import("@/pages/RetailDesk"));
+const DayInReview     = React.lazy(() => import("@/pages/DayInReview"));
 const ProductDesk      = React.lazy(() => import("@/pages/ProductDesk"));
 const WorkforceDesk    = React.lazy(() => import("@/pages/WorkforceDesk"));
 const CustomerDesk     = React.lazy(() => import("@/pages/CustomerDesk"));
@@ -197,6 +198,7 @@ function App() {
                 <Route path="/growth" element={<ProtectedShell pageId="growth"><GrowthModel /></ProtectedShell>} />
                 <Route path="/store-profiling" element={<Navigate to="/retail?tab=store-scorecard" replace />} />
                 <Route path="/retail-desk" element={<ProtectedShell pageId="retail-desk"><RetailDesk /></ProtectedShell>} />
+                <Route path="/day-review" element={<ProtectedShell pageId="day-review"><DayInReview /></ProtectedShell>} />
                 <Route path="/product-desk" element={<ProtectedShell pageId="product-desk"><ProductDesk /></ProtectedShell>} />
                 <Route path="/workforce-desk" element={<ProtectedShell pageId="workforce-desk"><WorkforceDesk /></ProtectedShell>} />
                 <Route path="/customer-desk" element={<ProtectedShell pageId="customer-desk"><CustomerDesk /></ProtectedShell>} />

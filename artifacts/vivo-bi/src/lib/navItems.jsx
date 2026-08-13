@@ -174,6 +174,8 @@ export const PRIMARY_NAV = [
   { to: "/growth", label: "Growth Model", icon: RocketLaunch, id: "growth", group: "Performance", desc: "KES 5 Billion north-star trajectory — revenue bridge, compound growth path, store contribution splits and editable levers" },
   // Retail Desk — leadership + admin (server-gated via /api/retail-desk)
   { to: "/retail-desk", label: "Retail Desk", icon: Storefront, id: "retail-desk", group: "Performance", desc: "Per-store growth path tracking, AI coaching notes, consecutive-weeks-behind alerts and issue register" },
+  // Day in Review — leadership + admin (server-gated via /api/day-review)
+  { to: "/day-review", label: "Day in Review", icon: CalendarBlank, id: "day-review", group: "Performance", desc: "Automatic decomposition of any trading day — headline vs weekday norm, store movers both directions, launches, online, customers, footfall, and what's not working" },
   // AI Desks — Phases 4-10, leadership + admin
   { to: "/product-desk", label: "Product Desk", icon: Tag, id: "product-desk", group: "AI Desks", desc: "Markdown risk board, WOC, velocity decline, dead stock value — daily AI coaching note" },
   { to: "/workforce-desk", label: "Workforce Desk", icon: UsersThree, id: "workforce-desk", group: "AI Desks", desc: "Branch attendance rates, avg hours, revenue per labour hour — daily AI coaching note" },
