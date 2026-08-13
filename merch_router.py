@@ -1314,9 +1314,103 @@ ORDER BY revenue_6m DESC NULLS LAST
 
     return {"stores": result, "donors": donors, "recipients": recipients}
 
+def _fetch_style_colors(style_number, from_date=None, to_date=None, country=None):
+    """Per-colourway breakdown for one style: period units/revenue, current SOH
+    (stores + sellable warehouse, pipeline excluded), and stock-to-sales ratio.
 
-# ── Style weekly timeline ──────────────────────────────────────────────────────
+    Colour comes from the product master (all_products_clean.color_print);
+    sales and inventory join on SKU only (triad joins are SKU-only).
+    Only colourways with current stock or period sales are returned.
+    """
+    today       = date.today()
+    six_mo_ago  = str(today - timedelta(days=_SIX_MONTHS_DAYS))
+    today_str   = str(today)
+    period_from = from_date or six_mo_ago
+    period_to   = to_date   or today_str
 
+    country_clause = ""
+    country_params = {}
+    if country:
+        cl = [c.strip() for c in country.split(",") if c.strip()]
+        if cl:
+            country_params["countries"] = cl
+            country_clause = " AND s.country = ANY(%(countries)s)"
+
+    sql = f"""
+WITH skus AS (
+    SELECT sku, COALESCE(NULLIF(TRIM(color_print), ''), '—') AS color
+    FROM all_products_clean
+    WHERE style_number = %(style_number)s
+      AND sku IS NOT NULL AND sku <> ''
+),
+sales AS (
+    SELECT
+        k.color,
+        SUM(s.ordered_item_quantity) FILTER (
+            WHERE s.sale_kind IN ('sale','order')
+        )                             AS units_sold,
+        SUM({_NET_SALES_EXPR})        AS revenue
+    FROM skus k
+    JOIN all_sales s ON s.variant_sku = k.sku
+    WHERE s.sale_date BETWEEN %(period_from)s AND %(period_to)s
+        AND {_BASE_FILTERS}
+        {country_clause}
+    GROUP BY k.color
+),
+stock AS (
+    SELECT
+        k.color,
+        COALESCE(SUM(i.available) FILTER (
+            WHERE i.pos_location_name NOT IN ({_WAREHOUSE_LOCATIONS})
+              AND LOWER(i.pos_location_name) NOT IN ({_HOLDING_STORES_LOWER})
+        ), 0) AS soh_stores,
+        COALESCE(SUM(i.available) FILTER (
+            WHERE i.pos_location_name = 'Warehouse Finished Goods'
+        ), 0) AS soh_warehouse
+    FROM skus k
+    JOIN all_inventory i ON i.sku = k.sku
+    GROUP BY k.color
+)
+SELECT
+    COALESCE(sa.color, st.color)   AS color,
+    COALESCE(sa.units_sold, 0)     AS units_sold,
+    COALESCE(sa.revenue, 0.0)      AS revenue,
+    COALESCE(st.soh_stores, 0)     AS soh_stores,
+    COALESCE(st.soh_warehouse, 0)  AS soh_warehouse
+FROM sales sa
+FULL OUTER JOIN stock st ON st.color = sa.color
+"""
+    params = {
+        "style_number": style_number,
+        "period_from":  period_from,
+        "period_to":    period_to,
+        **country_params,
+    }
+    rows = _db_exec(sql, params, fetch=True)
+
+    result = []
+    for r in rows or []:
+        units = int(r["units_sold"] or 0)
+        revenue = float(r["revenue"] or 0)
+        soh_stores = int(r["soh_stores"] or 0)
+        soh_warehouse = int(r["soh_warehouse"] or 0)
+        soh = soh_stores + soh_warehouse  # pipeline always excluded
+        # Only colourways with stock on hand and/or period sales appear
+        if soh <= 0 and units <= 0 and revenue == 0:
+            continue
+        ratio = round(soh / units, 2) if units > 0 else None
+        result.append({
+            "color":          r.get("color") or "—",
+            "units_sold":     units,
+            "revenue":        round(revenue, 0),
+            "soh":            soh,
+            "soh_stores":     soh_stores,
+            "soh_warehouse":  soh_warehouse,
+            "stock_to_sales": ratio,   # None ⇒ stock with no period sales
+        })
+
+    result.sort(key=lambda r: r["revenue"], reverse=True)
+    return {"colors": result}
 def _fetch_style_weekly(style_number, from_date=None, to_date=None, country=None):
     """52 weeks of weekly units for one style + subcategory benchmark +
     reorder event weeks from production_orders."""
@@ -2606,6 +2700,23 @@ def register_merch_routes(app, api_pg_module):
             return JSONResponse({"detail": "style_number is required"}, status_code=400)
         key = f"merch_style_stores|{style_number}|{from_date}|{to_date}|{country}"
         result = _cached(key, 300, lambda: _fetch_style_stores(
+            style_number, from_date=from_date, to_date=to_date, country=country))
+        return JSONResponse(result)
+
+    @app.get("/api/merch/style-colors")
+    async def merch_style_colors(
+        request:      Request,
+        style_number: Optional[str] = Query(None),
+        from_date:    Optional[str] = Query(None),
+        to_date:      Optional[str] = Query(None),
+        country:      Optional[str] = Query(None),
+    ):
+        """Per-colourway breakdown for one style: period units/revenue, current
+        SOH (stores + sellable warehouse, pipeline excluded), stock-to-sales."""
+        if not style_number:
+            return JSONResponse({"detail": "style_number is required"}, status_code=400)
+        key = f"merch_style_colors|{style_number}|{from_date}|{to_date}|{country}"
+        result = _cached(key, 300, lambda: _fetch_style_colors(
             style_number, from_date=from_date, to_date=to_date, country=country))
         return JSONResponse(result)
 

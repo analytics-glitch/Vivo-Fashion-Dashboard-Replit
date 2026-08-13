@@ -176,6 +176,7 @@ const MerchDeepDive = () => {
   const [subcat,  setSubcat]  = useState([]);
   const [styles,  setStyles]  = useState([]);  // same-subcategory styles for percentile
   const [storePerf, setStorePerf] = useState([]);           // per-store rows for this style
+  const [colorPerf, setColorPerf] = useState([]);           // per-colourway rows for this style
   const [storeMetric, setStoreMetric] = useState("revenue"); // store chart: "revenue" | "units"
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState(null);
@@ -209,8 +210,14 @@ const MerchDeepDive = () => {
         to_date:   filters.to_date,
         country:   filters.country,
       } }),
+      apiFetch("/merch/style-colors", { params: {
+        style_number: styleNumber,
+        from_date: filters.from_date,
+        to_date:   filters.to_date,
+        country:   filters.country,
+      } }),
     ])
-      .then(([allStylesList, wk, sc, sp]) => {
+      .then(([allStylesList, wk, sc, sp, cp]) => {
         if (cancelled) return;
         const found = allStylesList.find(s => s.style_number === styleNumber) || null;
         setStyle(found);
@@ -218,6 +225,7 @@ const MerchDeepDive = () => {
         setSubcat(sc.rows || []);
         setStyles(allStylesList);
         setStorePerf(sp.stores || []);
+        setColorPerf(cp.colors || []);
       })
       .catch(e => !cancelled && setError(e?.response?.data?.detail || e.message))
       .finally(() => !cancelled && setLoading(false));
@@ -366,6 +374,20 @@ const MerchDeepDive = () => {
       .filter(Boolean)
       .sort((a, b) => b.value - a.value);
   }, [storePerf]);
+
+  // Per-colourway bars — one consistent ordering (revenue desc, from backend)
+  // shared by all three charts so bars line up across Revenue / SOH / ratio.
+  const colorChart = useMemo(() => {
+    return colorPerf.map(r => ({
+      name:     r.color || "—",
+      revenueK: Math.round((r.revenue || 0) / 1000),
+      soh:      r.soh || 0,
+      units:    r.units_sold || 0,
+      // null ratio = stock but no period sales; keep the row, flag it.
+      ratio:    r.stock_to_sales,
+      noSales:  r.stock_to_sales === null || r.stock_to_sales === undefined,
+    }));
+  }, [colorPerf]);
 
   const monthlyRevChart = useMemo(() => {
     const map = {};
@@ -807,6 +829,118 @@ const MerchDeepDive = () => {
             )}
         </div>
       </div>
+
+      {/* ── Row 1c: Colourway Performance (Active styles only) ──────────── */}
+      {style.tier !== "Retired" && (
+        <div className="card-white p-5">
+          <SectionTitle
+            title={`Colourway Performance (${periodLabel})`}
+            subtitle="Revenue, stock on hand and stock-to-sales ratio by colourway · colourways with no stock and no period sales are hidden"
+          />
+          {colorChart.length === 0
+            ? <Empty label="No colourways with stock or sales in the selected period." />
+            : (
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mt-2">
+                {/* Revenue */}
+                <div>
+                  <div className="text-[11.5px] font-semibold text-foreground/70 mb-1">
+                    Revenue (KES Thousands)
+                  </div>
+                  <ResponsiveContainer width="100%" height={220}>
+                    <BarChart data={colorChart} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                      <XAxis dataKey="name" tick={{ fontSize: 8 }} interval={0}
+                        angle={-45} textAnchor="end" height={64} />
+                      <YAxis tick={{ fontSize: 9 }} tickFormatter={v => v + "K"} />
+                      <Tooltip content={({ active, payload, label }) => {
+                        if (!active || !payload?.length) return null;
+                        const d = payload[0].payload;
+                        return (
+                          <div className="bg-white border border-border rounded-lg shadow-md px-3 py-2 text-[11px]">
+                            <div className="font-bold mb-0.5">{label}</div>
+                            <div>Revenue: KES {fmtNum(d.revenueK)}K</div>
+                            <div>Units sold: {fmtNum(d.units)}</div>
+                            <div>Stock on hand: {fmtNum(d.soh)}</div>
+                          </div>
+                        );
+                      }} />
+                      <Bar dataKey="revenueK" fill="#1a5c38" radius={[3, 3, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+                {/* SOH */}
+                <div>
+                  <div className="text-[11.5px] font-semibold text-foreground/70 mb-1">
+                    Stock on Hand (units)
+                  </div>
+                  <ResponsiveContainer width="100%" height={220}>
+                    <BarChart data={colorChart} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                      <XAxis dataKey="name" tick={{ fontSize: 8 }} interval={0}
+                        angle={-45} textAnchor="end" height={64} />
+                      <YAxis tick={{ fontSize: 9 }} />
+                      <Tooltip content={({ active, payload, label }) => {
+                        if (!active || !payload?.length) return null;
+                        const d = payload[0].payload;
+                        return (
+                          <div className="bg-white border border-border rounded-lg shadow-md px-3 py-2 text-[11px]">
+                            <div className="font-bold mb-0.5">{label}</div>
+                            <div>Stock on hand: {fmtNum(d.soh)}</div>
+                            <div>Units sold: {fmtNum(d.units)}</div>
+                            <div>Revenue: KES {fmtNum(d.revenueK)}K</div>
+                          </div>
+                        );
+                      }} />
+                      <Bar dataKey="soh" fill="#4b7bec" radius={[3, 3, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+                {/* Stock-to-Sales Ratio */}
+                <div>
+                  <div className="text-[11.5px] font-semibold text-foreground/70 mb-1">
+                    Stock-to-Sales Ratio (SOH ÷ units sold)
+                  </div>
+                  <ResponsiveContainer width="100%" height={220}>
+                    <BarChart data={colorChart} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                      <XAxis dataKey="name" tick={{ fontSize: 8 }} interval={0}
+                        angle={-45} textAnchor="end" height={64} />
+                      <YAxis tick={{ fontSize: 9 }} />
+                      <Tooltip content={({ active, payload, label }) => {
+                        if (!active || !payload?.length) return null;
+                        const d = payload[0].payload;
+                        return (
+                          <div className="bg-white border border-border rounded-lg shadow-md px-3 py-2 text-[11px]">
+                            <div className="font-bold mb-0.5">{label}</div>
+                            <div>
+                              {d.noSales
+                                ? <span className="text-rose-600 font-semibold">No sales in period</span>
+                                : <>Stock-to-sales: {d.ratio}</>}
+                            </div>
+                            <div>Units sold: {fmtNum(d.units)}</div>
+                            <div>Stock on hand: {fmtNum(d.soh)}</div>
+                            <div>Revenue: KES {fmtNum(d.revenueK)}K</div>
+                          </div>
+                        );
+                      }} />
+                      <Bar dataKey="ratio" radius={[3, 3, 0, 0]}>
+                        {colorChart.map((d, i) => (
+                          <Cell key={i} fill={d.noSales ? "#e5e7eb" : "#d97706"} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                  {colorChart.some(d => d.noSales) && (
+                    <div className="mt-1 flex items-center gap-1.5 text-[10.5px] text-foreground/60">
+                      <span className="w-2.5 h-2.5 rounded-sm inline-block bg-slate-200" />
+                      Stock on hand but no sales in the selected period
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+        </div>
+      )}
 
       {/* ── Row 2: Subcategory percentile + Gross Margin waterfall + Monthly Revenue ── */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
