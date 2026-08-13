@@ -3,18 +3,36 @@
  *
  * Brings the fabric Stock Mix pattern to finished goods: one expandable table
  * Category → Sub Category → Style → Colour, showing how stock is distributed
- * vs how sales are distributed. Shares are measured against the GRAND total
- * at every level (a sub-category's % is its share of ALL stock), and
- * Gap (pp) = % of SOH − % of Units Sold — positive = overstocked (house
- * convention shared with the fabric page).
+ * vs how sales are distributed, so colour-level replenish/retire calls can be
+ * made in one place:
+ *   • Category / Sub Category rows (and the pinned Total row) keep
+ *     share-of-total semantics: % of SOH and % of Units Sold are this row's
+ *     share of the GRAND total, and Gap (pp) = % of SOH − % of Units Sold —
+ *     positive = overstocked (house convention shared with the fabric page).
+ *   • Style / Colour rows instead show the period sell-through (SOR) in the
+ *     "% of Units Sold" column: units sold ÷ (units sold + current SOH) —
+ *     the SOR report's formula — so colourways compare directly. Gap (pp)
+ *     stays share-of-total based at EVERY level.
+ *   • Style / Colour rows carry a "Last Ordered" date (most recent
+ *     production/buying order); colour rows a lazy product thumbnail.
+ *     Right-clicking a colour row — or clicking/tapping its thumbnail —
+ *     opens the MerchColourDetail popup (photos, master data, per-size
+ *     stock, this row's period numbers).
+ *   • "Download CSV" exports the ENTIRE tree (every row at every level,
+ *     independent of search/expansion) with hierarchy columns + all metrics.
  *
  * API contract (/api/merch/stock-mix):
  *   { categories: [{ name, stock_units, stock_value, units_period,
  *       revenue_period, woc,
- *       subcategories: [{ ..., styles: [{ ..., style_number,
- *         colours: [{ ..., skus_in_stock, skus_sold }] }] }] }],
+ *       subcategories: [{ ..., styles: [{ ..., style_number, last_order_date,
+ *         colours: [{ ..., skus_in_stock, skus_sold, last_order_date,
+ *           rep_sku }] }] }] }],
  *     totals: { stock_units, stock_value, units_period, revenue_period },
  *     period: { from, to } }
+ *
+ * `last_order_date` / `rep_sku` are nullable AND may be missing entirely from
+ * a briefly-cached old-shape payload — every consumer here null-guards them
+ * (missing → dash / no thumbnail); the table itself never depends on them.
  *
  * % of SOH / % of Units Sold / Gap are derived here from `totals` (same as
  * the fabric page derives shares client-side), so rows and totals always
@@ -22,9 +40,11 @@
  * while drilling and scrolling.
  */
 import React, { useMemo, useState } from "react";
-import { ChevronRight, Search, X } from "lucide-react";
+import { ChevronRight, Download, Search, X } from "lucide-react";
 import { ErrorBox } from "@/components/common";
-import { C, fmtNum, fmtKESM, wocColor } from "./MerchHelpers";
+import { fmtNum, fmtKESM, fmtSor, sorColor, wocColor } from "./MerchHelpers";
+import ProductImage from "@/components/ProductImage";
+import MerchColourDetail from "./MerchColourDetail";
 
 const SEP = "\u0001";
 const CHILD_KEYS = ["subcategories", "styles", "colours", null];
@@ -37,10 +57,30 @@ const FX = {
   sold:     "Units Sold = gross units sold in the selected period (returns not netted).",
   revenue:  "Total Revenue = net sales in the selected period (after discounts & returns, ex-VAT) — same basis as the hub's revenue figures.",
   pctStock: "% of SOH = this row's SOH ÷ TOTAL SOH across all categories. Every level is measured against the grand total.",
-  pctSales: "% of Units Sold = this row's period units ÷ TOTAL period units across all categories.",
-  gap:      "Gap (pp) = % of SOH − % of Units Sold (percentage points). Positive = overstocked (holds a larger share of stock than of sales); negative = under-stocked vs demand.",
+  pctSales: "Category & Sub Category rows: share of total = this row's period units ÷ TOTAL period units. Style & Colour rows: period sell-through (SOR) = units sold ÷ (units sold + current SOH) — the same formula as the SOR report — so colourways compare directly. Gap (pp) always uses share-of-total at every level.",
+  gap:      "Gap (pp) = % of SOH − % of Units Sold (percentage points), both as shares of the grand total at EVERY level (unchanged by the SOR display on style/colour rows). Positive = overstocked (holds a larger share of stock than of sales); negative = under-stocked vs demand.",
   woc:      "Weeks of Cover = stock ÷ weekly run-rate (trailing 6 months ÷ 26) — independent of the selected period, matching the tab's WOC.",
+  lastOrd:  "Last Ordered = date of the most recent production/buying order for this style (style rows) or this exact colourway (colour rows). Dash = no order on record; category rows don't aggregate order dates.",
   skus:     "SKUs (stock / sold) = distinct SKUs (sizes) of this colour with stock on hand / sold in the period.",
+};
+
+// Period sell-through for style/colour rows: units sold in the period ÷
+// (units sold + current SOH) — the SOR report's formula. Null when there is
+// neither demand nor stock; clamped to 0–100 so odd negative-stock rows
+// can't render impossible percentages.
+const sorOf = (node) => {
+  const u = Number(node?.units_period) || 0;
+  const s = Number(node?.stock_units) || 0;
+  const d = u + s;
+  if (d <= 0) return null;
+  return Math.max(0, Math.min(100, (u / d) * 100));
+};
+
+const fmtDate = (iso) => {
+  if (!iso) return null;
+  const d = new Date(`${iso}T00:00:00`);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "2-digit" });
 };
 
 // Gap chip — same sign convention + thresholds as the fabric Stock Mix page.
@@ -68,9 +108,17 @@ const LEVEL_ROW_CLS = [
   "text-slate-500",
 ];
 
+const CSV_HEADERS = [
+  "Level", "Category", "Sub Category", "Style", "Style Number", "Colour",
+  "SOH Units", "Stock Value KES", "Units Sold", "Revenue KES",
+  "% of SOH", "% of Units Sold / SOR", "Gap pp", "WOC", "Last Ordered",
+  "SKUs in Stock", "SKUs Sold",
+];
+
 export default function MerchStockMix({ data, loading, error }) {
   const [open, setOpen] = useState({});
   const [query, setQuery] = useState("");
+  const [detail, setDetail] = useState(null);
   const q = query.trim().toLowerCase();
 
   const cats   = data?.categories || [];
@@ -80,17 +128,20 @@ export default function MerchStockMix({ data, loading, error }) {
 
   // Flatten the tree into visible rows. In search mode a node is visible when
   // its own name matches, an ancestor matches, or a descendant matches — and
-  // the ancestry of every match auto-expands (fabric-page behaviour).
+  // the ancestry of every match auto-expands (fabric-page behaviour). Each
+  // row carries its parent style context so colour rows can open the popup
+  // with the full style + colour identity.
   const rows = useMemo(() => {
     const out = [];
-    const walk = (node, level, path, ancestorMatch) => {
+    const walk = (node, level, path, ancestorMatch, styleCtx) => {
       const ck = CHILD_KEYS[level];
       const kids = ck ? node[ck] || [] : [];
+      const nextCtx = level === 2 ? { name: node.name, number: node.style_number } : styleCtx;
       const selfMatch = q !== "" && String(node.name).toLowerCase().includes(q);
       const childRows = [];
       let descMatch = false;
       for (const k of kids) {
-        const r = walk(k, level + 1, path + SEP + k.name, ancestorMatch || selfMatch);
+        const r = walk(k, level + 1, path + SEP + k.name, ancestorMatch || selfMatch, nextCtx);
         if (r.rowList.length) childRows.push(...r.rowList);
         descMatch = descMatch || r.branchMatch;
       }
@@ -100,12 +151,12 @@ export default function MerchStockMix({ data, loading, error }) {
         : !!open[path];
       const rowList = [];
       if (visible) {
-        rowList.push({ node, level, path, expandable: kids.length > 0, expanded, hit: selfMatch });
+        rowList.push({ node, level, path, expandable: kids.length > 0, expanded, hit: selfMatch, styleCtx: nextCtx });
         if (expanded) rowList.push(...childRows);
       }
       return { rowList, branchMatch: selfMatch || descMatch };
     };
-    for (const c of cats) out.push(...walk(c, 0, c.name, false).rowList);
+    for (const c of cats) out.push(...walk(c, 0, c.name, false, null).rowList);
     return out;
   }, [cats, q, open]);
 
@@ -114,11 +165,95 @@ export default function MerchStockMix({ data, loading, error }) {
   // Colour-only column stays hidden until colour rows are actually on screen
   // (a style drilled open, or a search surfacing colours) — fabric behaviour.
   const showSkus = shown.some((r) => r.level === 3);
-  const nCols = 9 + (showSkus ? 1 : 0);
+  const nCols = 10 + (showSkus ? 1 : 0);
 
   const toggle = (path) => setOpen((o) => ({ ...o, [path]: !o[path] }));
 
   const pctOf = (v, tot) => (tot > 0 ? (Number(v) / tot) * 100 : 0);
+
+  // ── Full-tree CSV export ──────────────────────────────────────────────────
+  // Flattens the ENTIRE loaded tree — every node at every level, regardless
+  // of the current search or expansion state. Shares/SOR/gap mirror exactly
+  // what the table shows at each level.
+  const csvRows = useMemo(() => {
+    const out = [];
+    const walk = (node, level, ctx) => {
+      const pctS = pctOf(node.stock_units, totSu);
+      const pctU = pctOf(node.units_period, totUp);
+      const sor = level >= 2 ? sorOf(node) : null;
+      out.push([
+        LEVEL_LABEL[level],
+        level === 0 ? node.name : ctx.category,
+        level === 1 ? node.name : level > 1 ? ctx.sub : "",
+        level === 2 ? node.name : level > 2 ? ctx.style : "",
+        level === 2 ? node.style_number || "" : level > 2 ? ctx.styleNumber : "",
+        level === 3 ? node.name : "",
+        Math.round(Number(node.stock_units) || 0),
+        Math.round(Number(node.stock_value) || 0),
+        Math.round(Number(node.units_period) || 0),
+        Math.round(Number(node.revenue_period) || 0),
+        pctS.toFixed(1),
+        level >= 2 ? (sor == null ? "" : sor.toFixed(1)) : pctU.toFixed(1),
+        (pctS - pctU).toFixed(1),
+        node.woc == null ? "" : node.woc,
+        level >= 2 ? node.last_order_date || "" : "",
+        level === 3 ? (node.skus_in_stock ?? "") : "",
+        level === 3 ? (node.skus_sold ?? "") : "",
+      ]);
+      const ck = CHILD_KEYS[level];
+      for (const k of (ck && node[ck]) || []) {
+        walk(k, level + 1, {
+          category: level === 0 ? node.name : ctx.category,
+          sub: level === 1 ? node.name : ctx.sub,
+          style: level === 2 ? node.name : ctx.style,
+          styleNumber: level === 2 ? node.style_number || "" : ctx.styleNumber,
+        });
+      }
+    };
+    for (const c of cats) walk(c, 0, { category: "", sub: "", style: "", styleNumber: "" });
+    return out;
+  }, [cats, totSu, totUp]);
+
+  const downloadCsv = () => {
+    if (!csvRows.length) return;
+    const esc = (v) => {
+      const s = v == null ? "" : String(v);
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const csv = [CSV_HEADERS.join(","), ...csvRows.map((r) => r.map(esc).join(","))].join("\n");
+    const blob = new Blob([csv], { type: "text/csv" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = data?.period
+      ? `Stock_Mix_${data.period.from}_to_${data.period.to}.csv`
+      : `Stock_Mix_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+
+  // Open the product-detail popup for a colour row (right-click or thumbnail
+  // click). Works even without a rep_sku — the popup then shows the row's
+  // period numbers and explains that no product-master SKU matched.
+  const openDetail = (r) => {
+    const n = r.node;
+    setDetail({
+      sku: n.rep_sku || null,
+      colour: n.name,
+      styleName: r.styleCtx?.name || "",
+      styleNumber: r.styleCtx?.number || "",
+      metrics: {
+        stock_units: n.stock_units,
+        stock_value: n.stock_value,
+        units_period: n.units_period,
+        revenue_period: n.revenue_period,
+        sor: sorOf(n),
+        woc: n.woc,
+        last_order_date: n.last_order_date || null,
+        skus_in_stock: n.skus_in_stock,
+        skus_sold: n.skus_sold,
+      },
+    });
+  };
 
   return (
     <div className="bg-white rounded-xl shadow-sm p-4 sm:p-5" data-testid="merch-stock-mix">
@@ -128,28 +263,41 @@ export default function MerchStockMix({ data, loading, error }) {
             Stock Mix — where stock sits vs where sales happen
           </div>
           <div className="text-[10px] text-slate-400 mt-0.5">
-            Shares vs grand total at every level · click a row to drill Category → Sub Category → Style → Colour
+            Shares vs grand total on category rows · SOR on style & colour rows · click to drill
+            Category → Sub Category → Style → Colour · right-click a colour (or tap its photo) for the product card
             {data?.period ? ` · units sold ${data.period.from} → ${data.period.to}` : ""}
           </div>
         </div>
-        <div className="relative">
-          <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search category, style or colour…"
-            data-testid="mix-search-input"
-            className="text-[12px] border border-slate-200 rounded-lg pl-8 pr-7 py-1.5 bg-white text-slate-700 focus:outline-none focus:ring-1 focus:ring-brand w-[240px] max-w-full"
-          />
-          {query && (
-            <button
-              onClick={() => setQuery("")}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
-              aria-label="Clear search"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
-          )}
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            onClick={downloadCsv}
+            disabled={!csvRows.length}
+            data-testid="mix-csv-btn"
+            title="Export the full tree — every category, sub-category, style and colour row (not just the expanded ones) with all metrics."
+            className="inline-flex items-center gap-1.5 text-[11px] font-semibold border border-slate-200 rounded-lg px-2.5 py-1.5 text-slate-600 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            <Download className="w-3.5 h-3.5" />
+            Download CSV{csvRows.length ? ` · ${fmtNum(csvRows.length)} rows` : ""}
+          </button>
+          <div className="relative">
+            <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search category, style or colour…"
+              data-testid="mix-search-input"
+              className="text-[12px] border border-slate-200 rounded-lg pl-8 pr-7 py-1.5 bg-white text-slate-700 focus:outline-none focus:ring-1 focus:ring-brand w-[240px] max-w-full"
+            />
+            {query && (
+              <button
+                onClick={() => setQuery("")}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                aria-label="Clear search"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
@@ -163,7 +311,7 @@ export default function MerchStockMix({ data, loading, error }) {
         <ErrorBox message={error} />
       ) : (
         <div className="overflow-auto max-h-[600px] rounded-lg border border-slate-100">
-          <table className="w-full min-w-[940px] text-[11.5px] border-collapse">
+          <table className="w-full min-w-[1080px] text-[11.5px] border-collapse">
             <thead className="sticky top-0 z-10 bg-white shadow-[0_1px_0_#e2e8f0]">
               <tr className="text-[10px] uppercase tracking-wide text-slate-400">
                 <th className="text-left font-semibold px-2 py-2">
@@ -177,6 +325,7 @@ export default function MerchStockMix({ data, loading, error }) {
                 <th className="text-right font-semibold px-2 py-2" title={FX.pctSales}>% of Units Sold</th>
                 <th className="text-right font-semibold px-2 py-2" title={FX.gap}>Gap (pp)</th>
                 <th className="text-right font-semibold px-2 py-2" title={FX.woc}>WOC</th>
+                <th className="text-right font-semibold px-2 py-2" title={FX.lastOrd}>Last Ordered</th>
                 {showSkus && (
                   <th className="text-right font-semibold px-2 py-2" title={FX.skus}>SKUs</th>
                 )}
@@ -197,6 +346,7 @@ export default function MerchStockMix({ data, loading, error }) {
                   <td className="text-right px-2 py-2 tabular-nums">100.0%</td>
                   <td className="text-right px-2 py-2 text-slate-300 font-normal" title="Gap nets to 0 across all categories.">—</td>
                   <td className="text-right px-2 py-2 text-slate-300 font-normal" title="Cover is a ratio — no meaningful grand total.">—</td>
+                  <td className="text-right px-2 py-2 text-slate-300 font-normal" title="Order dates don't aggregate.">—</td>
                   {showSkus && <td className="px-2 py-2" />}
                 </tr>
               )}
@@ -214,11 +364,13 @@ export default function MerchStockMix({ data, loading, error }) {
                 const pctS = pctOf(n.stock_units, totSu);
                 const pctU = pctOf(n.units_period, totUp);
                 const gap = pctS - pctU;
+                const sor = r.level >= 2 ? sorOf(n) : null;
                 return (
                   <tr
                     key={r.path}
                     data-testid={`mix-row-l${r.level}`}
                     onClick={r.expandable ? () => toggle(r.path) : undefined}
+                    onContextMenu={r.level === 3 ? (e) => { e.preventDefault(); openDetail(r); } : undefined}
                     className={`border-t border-slate-100 ${LEVEL_ROW_CLS[r.level]} ${
                       r.expandable ? "cursor-pointer hover:bg-slate-50" : ""
                     }`}
@@ -237,6 +389,21 @@ export default function MerchStockMix({ data, loading, error }) {
                         ) : (
                           <span className="w-3.5 shrink-0 text-center text-slate-300">·</span>
                         )}
+                        {r.level === 3 && n.rep_sku ? (
+                          <span
+                            className="shrink-0 cursor-pointer"
+                            onClick={(e) => { e.stopPropagation(); openDetail(r); }}
+                            title="View product card"
+                            data-testid={`mix-thumb-${n.rep_sku}`}
+                          >
+                            <ProductImage
+                              sku={n.rep_sku}
+                              label={`${r.styleCtx?.name || ""} ${n.name}`.trim()}
+                              size={26}
+                              expandable={false}
+                            />
+                          </span>
+                        ) : null}
                         <span className={`break-words ${r.hit ? "bg-yellow-100 rounded px-0.5" : ""}`}>
                           {n.name}
                         </span>
@@ -255,7 +422,19 @@ export default function MerchStockMix({ data, loading, error }) {
                     <td className="text-right px-2 py-1.5 tabular-nums">{fmtNum(n.units_period)}</td>
                     <td className="text-right px-2 py-1.5 tabular-nums">{fmtKESM(n.revenue_period)}</td>
                     <td className="text-right px-2 py-1.5 tabular-nums">{pctS.toFixed(1)}%</td>
-                    <td className="text-right px-2 py-1.5 tabular-nums">{pctU.toFixed(1)}%</td>
+                    <td className="text-right px-2 py-1.5 tabular-nums">
+                      {r.level >= 2 ? (
+                        sor == null ? (
+                          <span className="text-slate-300">—</span>
+                        ) : (
+                          <span className="font-medium" style={{ color: sorColor(sor) }}>
+                            {fmtSor(sor)}
+                          </span>
+                        )
+                      ) : (
+                        `${pctU.toFixed(1)}%`
+                      )}
+                    </td>
                     <td className="text-right px-2 py-1.5"><GapPill v={gap} /></td>
                     <td className="text-right px-2 py-1.5 tabular-nums">
                       {n.woc == null ? (
@@ -264,6 +443,13 @@ export default function MerchStockMix({ data, loading, error }) {
                         <span className="font-medium" style={{ color: wocColor(n.woc) }}>
                           {Number(n.woc).toFixed(1)}w
                         </span>
+                      )}
+                    </td>
+                    <td className="text-right px-2 py-1.5 tabular-nums whitespace-nowrap">
+                      {r.level >= 2 && n.last_order_date ? (
+                        <span className="text-slate-500">{fmtDate(n.last_order_date)}</span>
+                      ) : (
+                        <span className="text-slate-300">—</span>
                       )}
                     </td>
                     {showSkus && (
@@ -284,6 +470,10 @@ export default function MerchStockMix({ data, loading, error }) {
           Showing the first {MAX_ROWS} rows — refine the search to narrow the tree.
         </div>
       )}
+
+      {detail ? (
+        <MerchColourDetail item={detail} period={data?.period} onClose={() => setDetail(null)} />
+      ) : null}
     </div>
   );
 }

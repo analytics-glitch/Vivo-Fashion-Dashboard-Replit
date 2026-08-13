@@ -21,7 +21,9 @@ const BLOB_FAILED = new Set();   // urls that failed even with auth
 const BLOB_CACHE_MAX = 150;      // ~a few screenfuls of thumbnails
 const BLOB_FAILED_MAX = 500;
 
-const isApiImageUrl = (u) =>
+// Exported for reuse by ProductImage (SKU-driven thumbnails) so every image
+// surface shares one blob cache + failure memory.
+export const isApiImageUrl = (u) =>
   typeof u === "string" && (u.startsWith(`${API}/`) || u.startsWith("/api/"));
 
 // LRU read: bump the entry to most-recently-used on hit.
@@ -50,7 +52,7 @@ const blobMarkFailed = (url) => {
   }
 };
 
-const fetchAuthedBlob = (url) => {
+export const fetchAuthedBlob = (url) => {
   const cached = blobCacheGet(url);
   if (cached) return Promise.resolve(cached);
   if (BLOB_FAILED.has(url)) return Promise.resolve(null);

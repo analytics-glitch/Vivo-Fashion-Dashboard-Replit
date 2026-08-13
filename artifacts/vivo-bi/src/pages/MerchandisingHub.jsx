@@ -10,7 +10,7 @@ import { apiFetch, comparePeriod } from "@/lib/api";
  * Merchandising Hub — tabbed container for all merchandising sub-pages.
  *
  * Analytics are consolidated into four tabs (Task 1286):
- *   Overview · Sales & Pricing · Inventory & Replenishment · Lifecycle & Launches
+ *   Overview · Sales & Pricing · Inventory & Stock Health · Lifecycle & Launches
  * plus Style Deep Dive, Store Detail and the embedded Product Development pages.
  *
  * The hub shell:
@@ -134,7 +134,7 @@ const MERCH_TABS = [
 
   // ── Merch-native deep-dive tabs (consolidated, Task 1286) ────────────────
   { id: "merch-sales",         label: "Sales & Pricing",        pageId: "merch-sales",       el: MerchandisingSales },
-  { id: "merch-inventory",     label: "Inventory & Replenishment", pageId: "merch-inventory", el: MerchandisingInventory },
+  { id: "merch-inventory",     label: "Inventory & Stock Health",  pageId: "merch-inventory", el: MerchandisingInventory },
   { id: "merch-lifecycle",     label: "Lifecycle & Launches",   pageId: "merch-lifecycle",   el: MerchandisingLifecycle },
   { id: "merch-deepdive",      label: "Style Deep Dive",        pageId: "merch-deepdive",    el: MerchandisingDeepDive },
   { id: "merch-store",         label: "Store Detail",           pageId: "merch-store",       el: MerchandisingStore },
@@ -148,7 +148,7 @@ export const RETIRED_TAB_ALIASES = {
   "merch-sellthrough": "merch-sales",      // Sell-Through & Markdown → Sales & Pricing
   "merch-category":    "merch-sales",      // Category Performance   → Sales & Pricing
   "merch-financial":   "merch-sales",      // Financial Performance  → Sales & Pricing
-  "merch-replen":      "merch-inventory",  // Replenishment Planning → Inventory & Replenishment
+  "merch-replen":      "merch-inventory",  // Replenishment Planning → Inventory & Stock Health
   "merch-arrivals":    "merch-lifecycle",  // New Arrivals & Pipeline → Lifecycle & Launches
   "pd-sor-new":        "pd-catalog-sor",   // SOR New Styles → Catalog & SOR (sub-tab)
 };

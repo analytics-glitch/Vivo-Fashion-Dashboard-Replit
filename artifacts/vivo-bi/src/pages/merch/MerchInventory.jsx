@@ -1,7 +1,9 @@
 /**
- * Inventory & Replenishment tab — Merchandising Hub
+ * Inventory & Stock Health tab — Merchandising Hub
  * Consolidates the former Inventory & Stock Health and Replenishment
- * Planning tabs (Task 1286), organised in two sections:
+ * Planning tabs (Task 1286; renamed from "Inventory & Replenishment" in
+ * Task 1324 — the merch-inventory pageId is unchanged), organised in two
+ * sections:
  *   1. Inventory & Stock Health — stock KPIs, Stock Mix drill-down,
  *      top stock styles, Avg WOC by subcategory, brand/recency/tier charts
  *   2. Replenishment Planning — velocity/reorder KPIs, high-velocity WOC,

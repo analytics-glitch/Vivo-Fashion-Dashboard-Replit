@@ -5,7 +5,7 @@
  * The ten analytics tabs were merged into four:
  *   merch-overview   — Overview + At-Risk & Actions
  *   merch-sales      — Sales & Pricing (Sales/Financial/Sell-Through/Category)
- *   merch-inventory  — Inventory & Replenishment
+ *   merch-inventory  — Inventory & Stock Health (renamed in Task 1324)
  *   merch-lifecycle  — Lifecycle & Launches (Lifecycle + New Arrivals)
  *
  * Navigation deliberately uses the RETIRED tab ids (merch-category,
@@ -61,10 +61,13 @@ const MERCH_TABS = [
     headingContains: true,
   },
   {
-    // Replenishment Planning → merged into Inventory & Replenishment
+    // Replenishment Planning → merged into Inventory & Stock Health
     id: "merch-replen",
     heading: "Replenishment",
     headingContains: true,
+    // Renamed tab (Task 1324): the alias must land on a tab whose picker
+    // option reads the new label.
+    selectedLabel: "Inventory & Stock Health",
   },
 ];
 
@@ -211,6 +214,25 @@ for (const tab of MERCH_TABS) {
       headingLocator.first(),
       `${tab.id}: heading "${tab.heading}" must be visible`
     ).toBeVisible({ timeout: 45_000 });
+
+    // 2b. Renamed tab label (Task 1324): the page picker's selected option
+    // must read the new label for tabs that declare one.
+    if (tab.selectedLabel) {
+      const pickerSelect = page.locator(
+        '[data-testid="merch-tabs-select"] select'
+      );
+      await expect(
+        pickerSelect,
+        `${tab.id}: tab picker must be visible`
+      ).toBeVisible({ timeout: 45_000 });
+      const selectedText = await pickerSelect.evaluate(
+        (el) => el.selectedOptions?.[0]?.textContent?.trim() || ""
+      );
+      expect(
+        selectedText,
+        `${tab.id}: selected tab label must read "${tab.selectedLabel}"`
+      ).toBe(tab.selectedLabel);
+    }
 
     // 3. At least one KPI card with a non-empty value
     // KPI cards are rendered by the KPICard component; they produce a

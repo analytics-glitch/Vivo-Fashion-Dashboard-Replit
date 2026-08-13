@@ -1924,6 +1924,20 @@ def _fetch_stock_mix(brand=None, subcategory=None, from_date=None, to_date=None,
     (NEVER all_inventory's colour column). A style resolves to exactly ONE
     category/subcategory via mode() of its SKU dims, so it never splits
     across branches.
+
+    Ordering context for replenish/retire calls (Inventory & Stock Health):
+    style nodes carry `last_order_date` = MAX(production_orders.date_ordered)
+    matched by style_number OR style_name (the reorder_counts pattern from
+    _fetch_styles); colour nodes carry their own `last_order_date` (order
+    variant SKUs resolved through the product master, with a normalised
+    order-line colour-name fallback for orders without variant rows) plus a
+    `rep_sku` — the colour's highest-stock SKU — which the frontend uses to
+    key product images and the style-card popup. SKU-derived colour dates
+    roll UP into the style date (assembly-side max) because the deterministic
+    SKU match out-covers the textual style match — a style must never show a
+    dash while one of its own colours shows a date. All three are nullable;
+    the frontend must render missing values as dashes (old cached payloads
+    may omit them entirely).
     """
     today = date.today()
     six_mo_ago = str(today - timedelta(days=_SIX_MONTHS_DAYS))
@@ -2071,6 +2085,68 @@ sales_6m AS (
         {pos_sales_clause}
     GROUP BY 1, 2
 ),
+/* Last production/buying order per style — the reorder_counts pattern from
+   _fetch_styles (match by style_number OR style_name), scoped to the
+   filtered style universe. Blank keys are guarded so the handful of orders
+   without a style_number can't cross-match styles whose mode() number
+   is also blank. */
+style_orders AS (
+    SELECT p.style_name, MAX(po.date_ordered) AS last_order_date
+    FROM prod p
+    JOIN production_orders po
+      ON (COALESCE(po.style_number, '') <> '' AND po.style_number = p.style_number)
+      OR (COALESCE(po.style_name,   '') <> '' AND po.style_name   = p.style_name)
+    GROUP BY p.style_name
+),
+/* Last order per (style, colour). Deterministic first: order variant SKUs
+   resolve to (style, colour) through the product master (verified: 100%% of
+   variant SKUs match all_products_clean). Orders without variant rows fall
+   back to the order-line colour NAME, normalised LOWER(BTRIM(..)), on
+   style-matched orders. MAX(date) over the union — normalised-equal colours
+   within one style are the same colourway. */
+colour_orders AS (
+    SELECT style_name, ncol, MAX(d) AS last_order_date
+    FROM (
+        SELECT m.style_name,
+               LOWER(BTRIM(COALESCE(m.colour, ''))) AS ncol,
+               po.date_ordered                      AS d
+        FROM production_order_variants v
+        JOIN production_orders po ON po.order_ref = v.order_ref
+        JOIN msku m               ON m.sku = v.product_sku
+        UNION ALL
+        SELECT p.style_name,
+               LOWER(BTRIM(l.colour)) AS ncol,
+               po.date_ordered        AS d
+        FROM production_order_lines l
+        JOIN production_orders po ON po.order_ref = l.order_ref
+        JOIN prod p
+          ON (COALESCE(po.style_number, '') <> '' AND po.style_number = p.style_number)
+          OR (COALESCE(po.style_name,   '') <> '' AND po.style_name   = p.style_name)
+        WHERE COALESCE(BTRIM(l.colour), '') <> ''
+    ) u
+    GROUP BY 1, 2
+),
+/* One representative SKU per (style, colour) — the colour's highest-stock
+   SKU (total availability across all locations; ties broken by SKU) so the
+   frontend can key product images / the style-card popup. Master SKUs only,
+   matching how images + style-card resolve. */
+rep_sku AS (
+    SELECT style_name, colour, sku
+    FROM (
+        SELECT m.style_name,
+               COALESCE(m.colour, '') AS colour,
+               m.sku,
+               ROW_NUMBER() OVER (
+                   PARTITION BY m.style_name, COALESCE(m.colour, '')
+                   ORDER BY COALESCE(inv.qty, 0) DESC, m.sku
+               ) AS rn
+        FROM msku m
+        LEFT JOIN (
+            SELECT sku, SUM(available) AS qty FROM all_inventory GROUP BY sku
+        ) inv ON inv.sku = m.sku
+    ) ranked
+    WHERE rn = 1
+),
 grain AS (
     SELECT style_name, colour FROM stock
     UNION
@@ -2090,12 +2166,19 @@ SELECT
     COALESCE(sp.units_period, 0)   AS units_period,
     COALESCE(sp.revenue_period, 0) AS revenue_period,
     COALESCE(sp.skus_sold, 0)      AS skus_sold,
-    COALESCE(s6.units_6m, 0)       AS units_6m
+    COALESCE(s6.units_6m, 0)       AS units_6m,
+    so.last_order_date::text       AS style_last_order,
+    co.last_order_date::text       AS colour_last_order,
+    rs.sku                         AS rep_sku
 FROM grain g
 JOIN prod p               ON p.style_name  = g.style_name
 LEFT JOIN stock st        ON st.style_name = g.style_name AND st.colour = g.colour
 LEFT JOIN sales_period sp ON sp.style_name = g.style_name AND sp.colour = g.colour
 LEFT JOIN sales_6m s6     ON s6.style_name = g.style_name AND s6.colour = g.colour
+LEFT JOIN style_orders so ON so.style_name = g.style_name
+LEFT JOIN colour_orders co ON co.style_name = g.style_name
+                          AND co.ncol = LOWER(BTRIM(g.colour))
+LEFT JOIN rep_sku rs      ON rs.style_name = g.style_name AND rs.colour = g.colour
 """
     raw = _db_exec(sql, params, fetch=True)
 
@@ -2130,11 +2213,23 @@ LEFT JOIN sales_6m s6     ON s6.style_name = g.style_name AND s6.colour = g.colo
         st = _bucket(sb["styles"], sty_name, "colours")
         if "style_number" not in st:
             st["style_number"] = r.get("style_number")
+            # Most recent production/buying order for the style (nullable).
+            st["last_order_date"] = r.get("style_last_order")
+        # The SKU-derived colour dates out-cover the textual style match
+        # (blank/mismatched PO style numbers), so roll them up: a style must
+        # never show a dash while one of its own colours shows a date.
+        # ISO yyyy-mm-dd strings compare correctly as text.
+        _clo = r.get("colour_last_order")
+        if _clo and (not st.get("last_order_date") or _clo > st["last_order_date"]):
+            st["last_order_date"] = _clo
         col = st["colours"].get(col_name)
         if col is None:
             col = {"name": col_name, "stock_units": 0, "stock_value": 0.0,
                    "units_period": 0, "revenue_period": 0.0, "_u6": 0,
-                   "skus_in_stock": 0, "skus_sold": 0}
+                   "skus_in_stock": 0, "skus_sold": 0,
+                   # Colour-grain ordering context + image key (nullable).
+                   "last_order_date": r.get("colour_last_order"),
+                   "rep_sku": r.get("rep_sku")}
             st["colours"][col_name] = col
         for node in (c, sb, st, col):
             node["stock_units"]    += su

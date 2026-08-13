@@ -92,11 +92,11 @@ export const PRIMARY_NAV = [
   {
     to: "/merchandising", label: "Merchandising", icon: Tag, id: "merchandising",
     anyOfPageIds: ["merch-overview", "merch-sales", "merch-inventory", "merch-lifecycle", "merch-deepdive", "merch-store"],
-    group: "Products & Range", desc: "Merchandising hub — portfolio health & at-risk actions, sales & pricing, inventory & replenishment, lifecycle & launches, plus style deep dive and store detail",
+    group: "Products & Range", desc: "Merchandising hub — portfolio health & at-risk actions, sales & pricing, inventory & stock health, lifecycle & launches, plus style deep dive and store detail",
     subReports: [
       { pageId: "merch-overview",    label: "Overview" },
       { pageId: "merch-sales",       label: "Sales & Pricing" },
-      { pageId: "merch-inventory",   label: "Inventory & Replenishment" },
+      { pageId: "merch-inventory",   label: "Inventory & Stock Health" },
       { pageId: "merch-lifecycle",   label: "Lifecycle & Launches" },
       { pageId: "merch-deepdive",    label: "Style Deep Dive" },
       { pageId: "merch-store",       label: "Store Detail" },
