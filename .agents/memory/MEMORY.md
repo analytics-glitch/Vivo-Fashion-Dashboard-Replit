@@ -1,5 +1,6 @@
 - [Advisory locks are pooler-unsafe](advisory-locks-pooler-unsafe.md) — session advisory locks no-op through Neon's txn-mode pooler (all workers "win"); single-flight must use the app_singleflight claim-row helper.
 - [Publish platform-failure triage](publish-platform-failure-triage.md) — diff-banner fails but explainSchemaDiff passes + Republish creates no builds = platform-side; probe, hand user a support summary, don't touch code.
+- [VM runtime death](vm-runtime-death-triage.md) — total log silence + dead watchdog = whole-VM kill; platform won't auto-restart, needs user Republish; restart:api rows = OOM early warning.
 - [Blocking I/O in async handlers](async-blocking-event-loop.md) — sync psycopg2 in async code freezes the whole worker; wrap in run_in_threadpool, Clerk proxy is pure-async httpx; /api/admin/slow-queries is the slowdown-diagnosis entry point.
 - [Rollup customer consistency rules](rollup-customer-consistency.md) — 5 invariants: 2h max age, rebuild rollup after REBUILD_ON_BOOT, unified-FP bridge in stale fallback, pseudo excl on all surfaces, never raw MIN(sale_date) for new/returning.
 - [RBAC last-admin & bootstrap concurrency](rbac-last-admin-toctou.md) — admin role/status/delete + first-login bootstrap must run in one advisory-locked tx, or concurrent requests can leave zero admins.
