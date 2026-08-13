@@ -27,7 +27,7 @@ const STORE_MANAGER = ["overview", "store-flow", "locations", "footfall", "store
 // "finance" (the Finance Reports Suite) is a leadership + admin surface, so it
 // lives in LEADERSHIP (ADMIN spreads LEADERSHIP). The server /api/finance gate
 // independently restricts the underlying API to leadership + admin.
-const LEADERSHIP = [...new Set([...VIEWER, "exec-summary", "targets", "quarter-scorecard", "product-analysis", "range-mgmt", "size-health", "inventory", "warehouse-returns", "excess-inventory", "rebalancing", "store-flow", "marketing", "social", "crm", "order-explorer", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "style-tracker", "pd-flow", "partner-brands", "finance", "margin", "l10", "rota", "growth", "retail-desk", "day-review", "product-desk", "workforce-desk", "customer-desk", "marketing-desk", "supply-chain-desk", "production-desk", "the-chair", "quality", "store-profiling", "store-feedback", "central-tracker", ..._MERCH_TABS])];
+const LEADERSHIP = [...new Set([...VIEWER, "exec-summary", "targets", "quarter-scorecard", "product-analysis", "range-mgmt", "size-health", "inventory", "warehouse-returns", "excess-inventory", "rebalancing", "store-flow", "marketing", "social", "crm", "order-explorer", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "style-tracker", "pd-flow", "partner-brands", "finance", "margin", "l10", "rota", "growth", "retail-desk", "day-review", "product-desk", "workforce-desk", "customer-desk", "marketing-desk", "supply-chain-desk", "production-desk", "the-chair", "quality", "store-profiling", "store-feedback", "central-tracker", "community-app", ..._MERCH_TABS])];
 // SMT (Senior Management Team) — everything SLT (leadership) sees EXCEPT the
 // Finance Reports Suite and Day in Review. The server /api/finance and
 // /api/day-review gates also exclude SMT.
@@ -37,7 +37,7 @@ const FABRIC_WAREHOUSE = ["fabric", "inventory", "sops"];
 const FABRIC_QUALITY_SUPERVISOR = ["fabric", "quality", "sops"];
 const QUALITY = ["quality", "sops"];
 const CUSTOMER_SERVICE = ["customers", "customer-details", "crm", "order-explorer", "footfall", "sops", "store-feedback"];
-const MARKETING = ["marketing", "social", "crm", "order-explorer", "customers", "customer-details", "product-analysis", "footfall", "trend-analysis", "sops", "ask", "store-feedback"];
+const MARKETING = ["marketing", "social", "crm", "order-explorer", "customers", "customer-details", "product-analysis", "footfall", "trend-analysis", "sops", "ask", "store-feedback", "community-app"];
 const HR = ["hr", "sops", "rota"];
 // Employee self-service (auto-approved Google sign-ups): NO BI pages — their
 // only surface is the Salary Advance form in the HR app (/hr/salary-advance).
