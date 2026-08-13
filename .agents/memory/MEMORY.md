@@ -153,3 +153,4 @@
 - [Colour-style status is derived](colour-style-status-derived.md) — no stored colour status: colourway Active iff parent style Active-tier AND that colour has SOH>0; style-level retirement cascades to all colourways.
 - [Colourway key noise](colourway-key-noise.md) — color_print keys carry "X - X / code / size" noise; clean+noisy twins coexist per style as distinct rows; tidy display only, raw keys stay, collision ⇒ raw label.
 - [Day in Review conventions](day-review-report-perf.md) — norm = prior-4-same-weekday ÷4; leadership+admin only (SMT-excluded like finance, keep gate+page lists in lockstep); wide scan fan-out is negative-sum on the shared PG.
+- [Prod healthcheck boot stall](prod-healthcheck-boot-stall.md) — deploy-log "healthcheck: context deadline exceeded" w/o crash = GIL/event-loop starvation, not real downtime; validation sweep needs boot grace + first-timeout abort.

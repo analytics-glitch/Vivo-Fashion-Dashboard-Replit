@@ -409,6 +409,22 @@ _LAST_SOCIAL_CRM_SYNC = None
 # inside that window. None on boot so the first cycle runs immediately (the agent
 # itself decides whether it is within active hours).
 _LAST_VALIDATION_RUN = None
+
+
+def _validation_gate(last_run, now_utc):
+    """Pure schedule gate for the data-validation agent (unit-tested).
+
+    Returns ``(due, stamp)``. On the first cycle after a (re)start
+    (``last_run is None``) the agent must NOT fire: a fresh prod VM has cold
+    API caches, and the agent's cross-surface HTTP sweep on top of the boot
+    prewarm burst starved the event loop long enough to fail the platform
+    runtime healthcheck (2026-08-13 uptime-monitor outage). The stamp is
+    back-dated 30 minutes instead, so the first audit lands ~30 min after
+    boot; afterwards the normal hourly cadence applies unchanged.
+    """
+    if last_run is None:
+        return False, now_utc - timedelta(minutes=30)
+    return (now_utc - last_run).total_seconds() >= 3600, last_run
 # Guards the X (Twitter) CRM inbox sync to once per hour even though main() runs
 # every 60s. The sync is idempotent + cursor-resumed, so hourly keeps the inbox
 # fresh without hammering X's rate-limited API tiers. None on boot so a fresh
@@ -2496,11 +2512,11 @@ def main():
     # failure or a hung LLM call can never crash the sync loop. The agent self-skips
     # outside active hours, so this hourly guard yields at most one audit per hour
     # in-window. Rate-limited to once per hour even though main() runs every 60s.
+    # BOOT GRACE: never fires on the first cycle after a (re)start — see
+    # _validation_gate for the 2026-08-13 healthcheck-outage rationale.
     global _LAST_VALIDATION_RUN
-    validation_due = (
-        _LAST_VALIDATION_RUN is None
-        or (now_utc - _LAST_VALIDATION_RUN).total_seconds() >= 3600
-    )
+    validation_due, _LAST_VALIDATION_RUN = _validation_gate(
+        _LAST_VALIDATION_RUN, now_utc)
     if validation_due:
         # Stamp up front so a transient failure waits an hour before retrying.
         _LAST_VALIDATION_RUN = now_utc

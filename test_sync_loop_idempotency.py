@@ -289,5 +289,41 @@ class ReplenSorSnapshotIdempotencyTests(unittest.TestCase):
         self.assertEqual(len(facts_after_2), 2)
 
 
+class ValidationBootGraceTests(unittest.TestCase):
+    """The data-validation agent must NOT fire on the first cycle after boot.
+
+    2026-08-13: the agent's cross-surface HTTP sweep on a fresh prod VM (cold
+    caches + boot prewarm + live traffic) starved the event loop and failed
+    the platform runtime healthcheck. ``_validation_gate`` back-dates the
+    first stamp 30 minutes so the first audit lands ~30 min after boot; the
+    hourly cadence is unchanged after that.
+    """
+
+    def test_first_cycle_not_due_and_backdates_stamp(self):
+        import sync_incremental as si
+        now = datetime(2026, 8, 13, 12, 4, tzinfo=timezone.utc)
+        due, stamp = si._validation_gate(None, now)
+        self.assertFalse(due)
+        self.assertEqual(stamp, now - timedelta(minutes=30))
+
+    def test_due_about_30_minutes_after_boot(self):
+        import sync_incremental as si
+        boot = datetime(2026, 8, 13, 12, 4, tzinfo=timezone.utc)
+        _, stamp = si._validation_gate(None, boot)
+        due29, s29 = si._validation_gate(stamp, boot + timedelta(minutes=29))
+        self.assertFalse(due29)
+        self.assertEqual(s29, stamp)  # stamp untouched until due
+        due30, _ = si._validation_gate(stamp, boot + timedelta(minutes=30))
+        self.assertTrue(due30)
+
+    def test_hourly_cadence_with_existing_stamp(self):
+        import sync_incremental as si
+        last = datetime(2026, 8, 13, 9, 0, tzinfo=timezone.utc)
+        due, _ = si._validation_gate(last, last + timedelta(minutes=59))
+        self.assertFalse(due)
+        due2, _ = si._validation_gate(last, last + timedelta(hours=1))
+        self.assertTrue(due2)
+
+
 if __name__ == "__main__":
     unittest.main()

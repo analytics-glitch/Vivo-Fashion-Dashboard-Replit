@@ -99,6 +99,13 @@ class _Skip(Exception):
 
 _TOKEN = None
 
+# Set on the first client-side timeout of a run: a timed-out heavy query keeps
+# running server-side, so firing the next heavy probe would pile more load on an
+# API that is already struggling (the 2026-08-13 cold-boot pile-up starved the
+# event loop and failed the platform healthcheck). Once set, every later _get of
+# this run short-circuits to _Skip; the sweep retries next hour.
+_BACKED_OFF = False
+
 
 def _login(session: requests.Session) -> str:
     if not config.CROSS_SURFACE_LOGIN_PASSWORD:
@@ -124,13 +131,19 @@ def _get(session: requests.Session, path: str, params: dict, timeout: float = No
 
     ``timeout`` overrides the default fast-endpoint budget (used for the heavy
     product-analysis scan, which has its own longer timeout)."""
-    global _TOKEN
+    global _TOKEN, _BACKED_OFF
+    if _BACKED_OFF:
+        raise _Skip("backing off — an earlier request this run timed out")
     tmo = timeout if timeout is not None else config.CROSS_SURFACE_TIMEOUT_SEC
     for attempt in (1, 2):
         headers = {"Authorization": f"Bearer {_TOKEN}"} if _TOKEN else {}
         try:
             r = session.get(config.CROSS_SURFACE_API_BASE + path, params=params,
                             headers=headers, timeout=tmo)
+        except requests.Timeout:
+            _BACKED_OFF = True
+            raise _Skip(f"GET {path}: timed out after {tmo}s — aborting the "
+                        "rest of this cross-surface run")
         except requests.RequestException as e:
             raise _Skip(f"GET {path}: {e}")
         if r.status_code == 401 and attempt == 1:
@@ -643,8 +656,9 @@ def run_checks(period: date):
     if not config.CROSS_SURFACE_LOGIN_PASSWORD:
         return [], "no api credentials"
 
-    global _TOKEN
+    global _TOKEN, _BACKED_OFF
     _TOKEN = None
+    _BACKED_OFF = False
     session = requests.Session()
     try:
         _TOKEN = _login(session)

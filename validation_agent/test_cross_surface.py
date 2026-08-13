@@ -215,6 +215,65 @@ class RetryTests(unittest.TestCase):
         self.assertEqual(len(session.get_calls), 2)     # one retry only
 
 
+class BackoffTests(unittest.TestCase):
+    """First client-side timeout aborts the ENTIRE run (2026-08-13 incident).
+
+    A timed-out heavy query keeps running server-side, so continuing the sweep
+    piles more load on an API that is already struggling — on a cold prod boot
+    that starved the event loop and failed the platform runtime healthcheck.
+    The first ``requests.Timeout`` must stop every later HTTP probe of the
+    run, and the flag must reset on the next run.
+    """
+
+    def setUp(self):
+        self._pw_patch = mock.patch.object(
+            config, "CROSS_SURFACE_LOGIN_PASSWORD", "test-secret")
+        self._pw_patch.start()
+        self.addCleanup(self._pw_patch.stop)
+        cross_surface._TOKEN = None
+        cross_surface._BACKED_OFF = False
+        self.addCleanup(lambda: setattr(cross_surface, "_TOKEN", None))
+        self.addCleanup(lambda: setattr(cross_surface, "_BACKED_OFF", False))
+
+    def _run_with_session(self, session):
+        with mock.patch.object(cross_surface.requests, "Session",
+                               return_value=session):
+            return cross_surface.run_checks(date(2026, 6, 27))
+
+    @staticmethod
+    def _timeout_get(url, **kw):
+        raise requests.Timeout("read timed out")
+
+    def test_first_timeout_stops_all_later_gets(self):
+        session = _FakeSession(
+            post=lambda url, **kw: FakeResponse(200, {"token": "tok"}),
+            get=self._timeout_get,
+        )
+        exceptions, skip = self._run_with_session(session)
+        self.assertEqual(exceptions, [])
+        # Exactly ONE GET went out — everything after the timeout was skipped
+        # without touching the network.
+        self.assertEqual(len(session.get_calls), 1)
+        self.assertIn("timed out", skip)
+        self.assertIn("backing off", skip)
+
+    def test_backoff_flag_resets_on_next_run(self):
+        s1 = _FakeSession(
+            post=lambda url, **kw: FakeResponse(200, {"token": "tok"}),
+            get=self._timeout_get,
+        )
+        self._run_with_session(s1)
+        self.assertTrue(cross_surface._BACKED_OFF)
+        # Run 2: healthy API — GETs flow again (flag reset by run_checks).
+        s2 = _FakeSession(
+            post=lambda url, **kw: FakeResponse(200, {"token": "tok"}),
+            get=lambda url, **kw: FakeResponse(200, {}),
+        )
+        self._run_with_session(s2)
+        self.assertFalse(cross_surface._BACKED_OFF)
+        self.assertGreater(len(s2.get_calls), 1)
+
+
 class ProductCheckTests(unittest.TestCase):
     """``_check_products`` field mappings and green/red behaviour.
 
