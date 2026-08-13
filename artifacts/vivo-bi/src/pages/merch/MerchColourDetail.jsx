@@ -4,11 +4,14 @@
  *
  * Opens from a right-click on a colour row or a click/tap on its thumbnail.
  * Shows the Product Catalogue-style card for the row's representative SKU —
- * photo gallery (Shopify gallery → Odoo single image with the Bearer-blob
- * fallback → placeholder), master-data attributes, fabric block and per-size
- * stock table (live, ALL locations) — plus a "This view" strip with the
- * tracker row's period numbers (SOH, stock value, units sold, revenue, SOR,
- * WOC, last ordered) under the tracker's current filters.
+ * a SINGLE product photo (first Shopify gallery image → Odoo single image
+ * with the Bearer-blob fallback → placeholder; click still zooms), a row of
+ * three KPI cards (Tier · Average Selling Price with its %-of-full-price
+ * note · Days since last sale — ASP is fetched under the tracker period this
+ * popup received), master-data attributes, fabric block and per-size stock
+ * table (live, ALL locations, Stores | Online | Warehouse) — plus a "This
+ * view" strip with the tracker row's period numbers (SOH, stock value, units
+ * sold, revenue, SOR, WOC, last ordered) under the tracker's current filters.
  *
  * Rendered via createPortal(document.body) so the tracker's sticky table
  * header can't paint over it (house overlay rule); closes on Esc or a
@@ -56,12 +59,23 @@ const Stat = ({ label, title, children }) => (
   </div>
 );
 
+const KpiCard = ({ label, note, title, testId, children }) => (
+  <div
+    className="rounded-lg border border-border bg-panel/50 px-3 py-2.5 min-w-0"
+    title={title}
+    data-testid={testId}
+  >
+    <div className="text-[10px] uppercase tracking-wide text-muted/80">{label}</div>
+    <div className="text-[17px] font-bold tabular-nums truncate mt-0.5">{children}</div>
+    {note ? <div className="text-[11px] text-muted mt-0.5 truncate">{note}</div> : null}
+  </div>
+);
+
 export default function MerchColourDetail({ item, period, onClose }) {
   const { sku, styleName, styleNumber, colour, metrics } = item;
   const [card, setCard] = useState(null);
   const [cardErr, setCardErr] = useState(null);
-  const [images, setImages] = useState([]);
-  const [imgIdx, setImgIdx] = useState(0);
+  const [imageUrl, setImageUrl] = useState(null); // single photo — first gallery image only
   const [zoom, setZoom] = useState(false);
   const zoomRef = useRef(false);
   zoomRef.current = zoom;
@@ -70,11 +84,17 @@ export default function MerchColourDetail({ item, period, onClose }) {
     let dead = false;
     setCard(null);
     setCardErr(null);
-    setImages([]);
-    setImgIdx(0);
+    setImageUrl(null);
     if (!sku) return undefined;
+    const params = { sku };
+    // Pass the tracker window through so the ASP KPI matches the viewed
+    // period (the backend defaults to trailing 12 months without it).
+    if (period?.from && period?.to) {
+      params.date_from = period.from;
+      params.date_to = period.to;
+    }
     api
-      .get("/gallery/style-card", { params: { sku } })
+      .get("/gallery/style-card", { params })
       .then(({ data }) => { if (!dead) setCard(data); })
       .catch((e) => {
         if (!dead) setCardErr(e?.response?.data?.detail || e.message || "Couldn't load product details.");
@@ -84,11 +104,11 @@ export default function MerchColourDetail({ item, period, onClose }) {
       .then(({ data }) => {
         if (dead) return;
         const urls = Array.isArray(data?.images) ? data.images.map((im) => im?.url).filter(Boolean) : [];
-        if (urls.length) { setImages(urls); setImgIdx(0); }
+        if (urls.length) setImageUrl(urls[0]); // first image only — no thumbnail strip
       })
       .catch(() => {}); // fall through to the single-image / placeholder chain
     return () => { dead = true; };
-  }, [sku]);
+  }, [sku, period?.from, period?.to]);
 
   // Esc closes the zoom lightbox first (it sits above), then the popup.
   useEffect(() => {
@@ -130,8 +150,19 @@ export default function MerchColourDetail({ item, period, onClose }) {
 
   const m = metrics || {};
   const caption = [styleName, colour].filter(Boolean).join(" · ") || sku || "Product";
-  const stepImg = (dir) =>
-    setImgIdx((cur) => (images.length ? (cur + dir + images.length) % images.length : cur));
+
+  // KPI card values degrade to "—" when data is missing (no rep SKU, load
+  // error, no sales / no tier). While the card is loading show a quiet
+  // ellipsis instead of a false "—". 0 is a real value (sold today).
+  const loadingCard = Boolean(sku) && !card && !cardErr;
+  const kpiVal = (v) => (loadingCard ? "…" : v == null || v === "" ? "—" : v);
+  const aspNote = !card
+    ? null
+    : card.asp_pct_of_full != null
+      ? `${Math.round(card.asp_pct_of_full)}% of full price`
+      : card.asp != null
+        ? "No full price on file"
+        : "No sales in this window";
 
   return createPortal(
     <div
@@ -160,6 +191,37 @@ export default function MerchColourDetail({ item, period, onClose }) {
           >
             <X className="w-5 h-5" />
           </button>
+        </div>
+
+        {/* KPI cards — lifecycle tier, achieved price vs ticket, recency */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 mb-4" data-testid="mix-detail-kpis">
+          <KpiCard
+            label="Tier"
+            testId="mix-kpi-tier"
+            title="Lifecycle tier from the range model (sheet overrides applied)."
+          >
+            {kpiVal(card?.tier)}
+          </KpiCard>
+          <KpiCard
+            label="Average Selling Price"
+            testId="mix-kpi-asp"
+            title={
+              card
+                ? `Achieved price incl. VAT — (sales − discounts) ÷ gross units, all locations, ${card.asp_from} → ${card.asp_to}.`
+                : undefined
+            }
+            note={aspNote}
+          >
+            {kpiVal(card?.asp != null ? fmtKES(card.asp) : null)}
+          </KpiCard>
+          <KpiCard
+            label="Days since last sale"
+            testId="mix-kpi-recency"
+            title="Across all locations — not scoped by the tracker's filters."
+            note={card?.last_sale ? `Last sold ${fmtDate(card.last_sale)}` : null}
+          >
+            {kpiVal(card?.days_since_last_sale)}
+          </KpiCard>
         </div>
 
         {/* This-view period metrics — the tracker row the popup was opened from */}
@@ -197,12 +259,12 @@ export default function MerchColourDetail({ item, period, onClose }) {
         </div>
 
         <div className="grid gap-5 md:grid-cols-[300px,1fr]">
-          {/* images */}
+          {/* image — single photo only (first gallery image), click to zoom */}
           <div className="space-y-2">
             <div className="w-full aspect-square overflow-hidden rounded-lg bg-panel grid place-items-center">
-              {images.length ? (
+              {imageUrl ? (
                 <img
-                  src={images[imgIdx]}
+                  src={imageUrl}
                   alt={caption}
                   className="w-full h-full object-cover cursor-zoom-in"
                   onClick={() => setZoom(true)}
@@ -217,22 +279,6 @@ export default function MerchColourDetail({ item, period, onClose }) {
                 <Placeholder style={caption} size={280} />
               )}
             </div>
-            {images.length > 1 && (
-              <div className="flex gap-1.5 overflow-x-auto pb-1">
-                {images.map((u, i) => (
-                  <img
-                    key={u}
-                    src={u}
-                    alt=""
-                    onClick={() => setImgIdx(i)}
-                    className={`h-12 w-12 rounded-md object-cover cursor-pointer border ${
-                      i === imgIdx ? "border-brand" : "border-border opacity-70 hover:opacity-100"
-                    }`}
-                    data-testid={`mix-detail-thumb-${i}`}
-                  />
-                ))}
-              </div>
-            )}
           </div>
 
           {/* master data */}
@@ -320,6 +366,7 @@ export default function MerchColourDetail({ item, period, onClose }) {
                     <th>SKU</th>
                     <th className="text-right">Price</th>
                     <th className="text-right">Stores</th>
+                    <th className="text-right">Online</th>
                     <th className="text-right">Warehouse</th>
                   </tr>
                 </thead>
@@ -330,6 +377,7 @@ export default function MerchColourDetail({ item, period, onClose }) {
                       <td className="p-2 text-muted">{z.sku}</td>
                       <td className="p-2 text-right">{fmtKES(z.price) || "—"}</td>
                       <td className="p-2 text-right tabular-nums">{z.soh_stores}</td>
+                      <td className="p-2 text-right tabular-nums">{z.soh_online ?? 0}</td>
                       <td className="p-2 text-right tabular-nums">{z.soh_warehouse}</td>
                     </tr>
                   ))}
@@ -344,17 +392,8 @@ export default function MerchColourDetail({ item, period, onClose }) {
         )}
       </div>
 
-      {zoom && images.length > 0 && (
-        <Lightbox
-          url={images[imgIdx]}
-          caption={images.length > 1 ? `${caption} · ${imgIdx + 1} / ${images.length}` : caption}
-          onClose={() => setZoom(false)}
-          onPrev={images.length > 1 ? () => stepImg(-1) : undefined}
-          onNext={images.length > 1 ? () => stepImg(1) : undefined}
-          thumbnails={images.length > 1 ? images : undefined}
-          activeIndex={imgIdx}
-          onSelect={(i) => setImgIdx(i)}
-        />
+      {zoom && imageUrl && (
+        <Lightbox url={imageUrl} caption={caption} onClose={() => setZoom(false)} />
       )}
     </div>,
     document.body,

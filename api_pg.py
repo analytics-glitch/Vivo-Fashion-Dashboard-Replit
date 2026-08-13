@@ -6534,15 +6534,30 @@ def _size_sort_key(sz):
 
 
 @app.get("/api/gallery/style-card")
-def get_gallery_style_card(sku: str = Query(default="")):
+def get_gallery_style_card(
+    sku: str = Query(default=""),
+    date_from: str = Query(default=""),
+    date_to: str = Query(default=""),
+):
     """Everything the Product Catalogue's product popup shows for one card:
     the style+colour's full master-data attributes, modal (most common) full
     price across its sizes — deliberately NOT MAX, which surfaces the known
     foreign-currency price leak — launch date (catalogue date falling back to
     first sale), first/last sale, a fabric block, and a per-size table (SKU,
-    barcode, price, live stock split stores / warehouse / pipeline, canonical
-    3-way split: warehouse = 'Finished Goods Production' dispatch stock ONLY,
-    Total = stores + warehouse, pipeline always excluded from the total).
+    barcode, price, live stock split stores / online / warehouse / pipeline).
+    Online is carved OUT of the old stores bucket (any online-named location
+    outside the warehouse list — today 'Online - Shop Zetu'), so
+    stores + online equals the previous stores figure exactly and
+    Total = stores + online + warehouse stays unchanged; pipeline is always
+    excluded from the total (canonical SOH rule).
+
+    Also returns Average Selling Price fields for the colour popup's KPI
+    cards: asp = VAT-INCLUSIVE achieved price — (total_sales − discounts) ÷
+    gross units over sale/order rows of these own-brand SKUs, ALL locations —
+    over the optional date_from/date_to window (defaults to the trailing 12
+    months), plus asp_pct_of_full vs the modal full price. Deliberately NOT
+    derived from tracker revenue (net ex-VAT — would read ~14–15% low against
+    the VAT-inclusive ticket price).
 
     Grain matches the card: the requested SKU expands to every size sharing
     its style_name + colour (same expansion the image endpoints use).
@@ -6552,6 +6567,18 @@ def get_gallery_style_card(sku: str = Query(default="")):
     s = (sku or "").strip()
     if not s:
         raise HTTPException(status_code=400, detail="sku required")
+    # ASP window: caller's period when both bounds parse, else trailing 12m.
+    # Invalid explicit dates are a caller bug — fail loudly, don't guess.
+    try:
+        asp_from = date.fromisoformat(date_from.strip()) if date_from.strip() else None
+        asp_to = date.fromisoformat(date_to.strip()) if date_to.strip() else None
+    except ValueError:
+        raise HTTPException(status_code=400, detail="date_from/date_to must be YYYY-MM-DD")
+    if not (asp_from and asp_to):
+        asp_to = date.today()
+        asp_from = asp_to - timedelta(days=365)
+    if asp_from > asp_to:
+        asp_from, asp_to = asp_to, asp_from
     conn = get_conn()
     try:
         siblings = _style_color_skus(conn, s)
@@ -6594,19 +6621,29 @@ def get_gallery_style_card(sku: str = Query(default="")):
         # style+colour would leak third-party sales history into launch/first/
         # last-sale fields on an own-brand popup.
         own_skus = [p["sku"] for p in prows]
+        # Store-bucket stock splits into physical stores vs online: any
+        # online-named location outside the warehouse list (today only
+        # 'Online - Shop Zetu') counts as Online, so a future online location
+        # can't silently land back in "Stores". Stores + Online == the old
+        # stores bucket exactly — the on-hand total is unchanged.
         cur.execute(
             "SELECT sku, "
             "COALESCE(SUM(available) FILTER (WHERE pos_location_name NOT IN ("
-            + WAREHOUSE_LOCATIONS + ")),0) AS soh_stores, "
+            + WAREHOUSE_LOCATIONS + ") AND pos_location_name NOT ILIKE %s),0) AS soh_stores, "
+            "COALESCE(SUM(available) FILTER (WHERE pos_location_name NOT IN ("
+            + WAREHOUSE_LOCATIONS + ") AND pos_location_name ILIKE %s),0) AS soh_online, "
             "COALESCE(SUM(available) FILTER (WHERE pos_location_name = "
             + WH_DISPATCH_LOCATION + "),0) AS soh_warehouse, "
             "COALESCE(SUM(available) FILTER (WHERE pos_location_name IN ("
             + WAREHOUSE_LOCATIONS + ") AND pos_location_name <> "
             + WH_DISPATCH_LOCATION + "),0) AS soh_pipeline "
             "FROM all_inventory WHERE sku = ANY(%s) GROUP BY sku",
-            (own_skus,),
+            ("%online%", "%online%", own_skus),
         )
-        stock = {r[0]: (int(r[1] or 0), int(r[2] or 0), int(r[3] or 0)) for r in cur.fetchall()}
+        stock = {
+            r[0]: (int(r[1] or 0), int(r[2] or 0), int(r[3] or 0), int(r[4] or 0))
+            for r in cur.fetchall()
+        }
         cur.execute(
             "SELECT MIN(sale_date::date)::text, MAX(sale_date::date)::text "
             "FROM all_sales WHERE variant_sku = ANY(%s) AND sale_kind IN ('sale','order')",
@@ -6614,6 +6651,19 @@ def get_gallery_style_card(sku: str = Query(default="")):
         )
         srow = cur.fetchone() or (None, None)
         first_sale, last_sale = srow[0], srow[1]
+        # ASP inputs: same math as the tracker's "asp" measure —
+        # (total_sales_kes − discounts_kes) ÷ gross ordered units, sale/order
+        # rows only (returns not netted; VAT-inclusive by construction).
+        cur.execute(
+            "SELECT COALESCE(SUM(total_sales_kes::numeric - COALESCE(discounts_kes,0)::numeric),0), "
+            "       COALESCE(SUM(ordered_item_quantity),0) "
+            "FROM all_sales WHERE variant_sku = ANY(%s) AND sale_kind IN ('sale','order') "
+            "  AND sale_date::date BETWEEN %s::date AND %s::date",
+            (own_skus, asp_from.isoformat(), asp_to.isoformat()),
+        )
+        arow = cur.fetchone() or (0, 0)
+        asp_revenue = float(arow[0] or 0)
+        asp_units = float(arow[1] or 0)
     finally:
         conn.close()
 
@@ -6636,15 +6686,20 @@ def get_gallery_style_card(sku: str = Query(default="")):
 
     sizes = []
     for p in sorted(prows, key=lambda r: _size_sort_key(r["size"])):
-        st = stock.get(p["sku"], (0, 0, 0))
+        st = stock.get(p["sku"], (0, 0, 0, 0))
         sizes.append({
             "sku": p["sku"], "size": p["size"], "barcode": p["barcode"],
             "price": float(p["price"]) if p.get("price") is not None else None,
-            "soh_stores": st[0], "soh_warehouse": st[1], "soh_pipeline": st[2],
+            "soh_stores": st[0], "soh_online": st[1],
+            "soh_warehouse": st[2], "soh_pipeline": st[3],
         })
     soh_stores = sum(z["soh_stores"] for z in sizes)
+    soh_online = sum(z["soh_online"] for z in sizes)
     soh_warehouse = sum(z["soh_warehouse"] for z in sizes)
     soh_pipeline = sum(z["soh_pipeline"] for z in sizes)
+    # Null-safe ASP: None when there are no gross units in the window; the
+    # %-of-full-price note additionally needs a usable modal price.
+    asp = (asp_revenue / asp_units) if asp_units > 0 else None
 
     fabric = {
         k: rep[k] for k in (
@@ -6678,13 +6733,22 @@ def get_gallery_style_card(sku: str = Query(default="")):
         "first_sale": first_sale,
         "last_sale": last_sale,
         "days_since_last_sale": (today - last_d).days if last_d else None,
+        "asp": round(asp, 2) if asp is not None else None,
+        "asp_pct_of_full": (
+            round(asp / float(modal_price) * 100.0, 1)
+            if asp is not None and modal_price else None
+        ),
+        "asp_units": int(asp_units),
+        "asp_from": asp_from.isoformat(),
+        "asp_to": asp_to.isoformat(),
         "fabric": fabric,
         "sizes": sizes,
         "totals": {
             "soh_stores": soh_stores,
+            "soh_online": soh_online,
             "soh_warehouse": soh_warehouse,
             "soh_pipeline": soh_pipeline,
-            "soh_total": soh_stores + soh_warehouse,
+            "soh_total": soh_stores + soh_online + soh_warehouse,
         },
     }
 

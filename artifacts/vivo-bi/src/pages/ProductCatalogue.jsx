@@ -330,6 +330,7 @@ const ProductDetailModal = ({ product, onClose }) => {
                     <th>Barcode</th>
                     <th className="text-right">Price</th>
                     <th className="text-right">Stores</th>
+                    <th className="text-right">Online</th>
                     <th className="text-right">Warehouse</th>
                   </tr>
                 </thead>
@@ -341,6 +342,7 @@ const ProductDetailModal = ({ product, onClose }) => {
                       <td className="p-2 font-mono text-[12.5px] text-muted">{z.barcode || "—"}</td>
                       <td className="p-2 text-right">{fmtKES(z.price) || "—"}</td>
                       <td className="p-2 text-right tabular-nums">{z.soh_stores}</td>
+                      <td className="p-2 text-right tabular-nums">{z.soh_online ?? 0}</td>
                       <td className="p-2 text-right tabular-nums">{z.soh_warehouse}</td>
                     </tr>
                   ))}

@@ -10,3 +10,5 @@ Some `all_products_clean.color_print` values embed product-name noise: `"<colour
 **Why:** merging or rewriting keys client-side silently conflates distinct SKU groups and breaks per-colour drill-downs; the Style Deep Dive colourway charts use exactly this display-tidy + collision-fallback pattern (`tidyColorLabel` in MerchDeepDive.jsx).
 
 **How to apply:** any surface listing colourways (drill-downs, exports, RM/PA colour views) should reuse this approach until the noise is fixed at the data source (transform-level canonicalization — see product-color-name-authoritative.md: colour derives from the product NAME).
+
+**E2E/UI testing caveat:** when a test must open a specific colourway (Stock Mix rows, popups), target the EXACT short label ("Black"), not a substring — the noisy twins ("Black - Black / V0121119 / M") are separate sparse rows (1 SKU, no sales, no tier) and make a correct feature look broken.
