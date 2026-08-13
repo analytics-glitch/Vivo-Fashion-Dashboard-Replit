@@ -527,6 +527,31 @@ const MerchDeepDive = () => {
         </div>
       </div>
 
+      {/* ── AI Recommendations ────────────────────────────────────────────
+          Rendered first (directly under the style header) so recommendations
+          are visible without scrolling past the charts.
+          (Style Lifecycle Timeline chart removed: it accumulated only the
+          trailing-52-week window, so it never showed true lifetime volume.
+          Replaced by the Units Sold (Lifetime) KPI card below.) */}
+      <div className="card-white p-5">
+        <SectionTitle title="AI Recommendation Engine" />
+        <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+          {aiCards.map(card => (
+            <div
+              key={card.key}
+              className={`rounded-lg border px-3 py-2 ${card.style.bg} ${card.style.border}`}
+            >
+              <div className={`text-[11px] font-extrabold uppercase tracking-wide mb-0.5 ${card.style.title}`}>
+                {card.label}
+              </div>
+              {card.lines.map((l, i) => (
+                <div key={i} className="text-[10.5px] text-foreground/80 leading-snug">{l}</div>
+              ))}
+            </div>
+          ))}
+        </div>
+      </div>
+
       {/* ── KPI cards ───────────────────────────────────────────────────── */}
       {/* `small` — deep-dive cards run 6-across, so the default md:28px bold
           value overflows/oversizes; use the shared small size variant (16/20px).
@@ -1110,29 +1135,6 @@ const MerchDeepDive = () => {
             )}
         </div>
 
-      </div>
-
-      {/* ── Row 3: AI Recommendations ─────────────────────────────────────
-          (Style Lifecycle Timeline chart removed: it accumulated only the
-          trailing-52-week window, so it never showed true lifetime volume.
-          Replaced by the Units Sold (Lifetime) KPI card above.) */}
-      <div className="card-white p-5">
-        <SectionTitle title="AI Recommendation Engine" />
-        <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-          {aiCards.map(card => (
-            <div
-              key={card.key}
-              className={`rounded-lg border px-3 py-2 ${card.style.bg} ${card.style.border}`}
-            >
-              <div className={`text-[11px] font-extrabold uppercase tracking-wide mb-0.5 ${card.style.title}`}>
-                {card.label}
-              </div>
-              {card.lines.map((l, i) => (
-                <div key={i} className="text-[10.5px] text-foreground/80 leading-snug">{l}</div>
-              ))}
-            </div>
-          ))}
-        </div>
       </div>
     </div>
   );
