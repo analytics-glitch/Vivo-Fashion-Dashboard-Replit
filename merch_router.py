@@ -458,6 +458,24 @@ sales_life AS (
         {pos_sales_clause}
     GROUP BY p2.style_name
 ),
+/* Launch-date fallback — all_products_clean.style_launch_date is empty for
+   the entire catalogue (0 of ~73.8k rows as of Aug 2026), so "launched"
+   falls back to the style's first EVER sale. Mirrors the Product Catalogue
+   rule (api_pg._gallery_attach_launch_dates) at style grain, with the same
+   join/brand-exclusion pattern as sales_life above. Deliberately UNSCOPED
+   (no BASE/country/POS/date filters): launch date is a stable product
+   attribute that must not shift with the hub's filter bar. */
+first_sale AS (
+    SELECT
+        p2.style_name,
+        MIN(s.sale_date::date) AS first_sale_date
+    FROM all_sales s
+    JOIN all_products_clean p2 ON p2.sku = s.variant_sku
+        AND p2.style_name IS NOT NULL AND p2.style_name <> ''
+        AND COALESCE(p2.brand,'') NOT ILIKE '%%third party%%'
+    WHERE s.sale_kind IN ('sale','order')
+    GROUP BY p2.style_name
+),
 /* Manual tier/status overrides loaded from the import spreadsheet.
    A row here wins over the computed _compute_tier() result. */
 tier_overrides AS (
@@ -472,7 +490,7 @@ SELECT
     p.subcategory,
     p.category,
     p.status,
-    p.launch_date,
+    COALESCE(p.launch_date, fs.first_sale_date::text) AS launch_date,
     p.standard_cost_kes,
     p.last_order_date,
     p.full_price,
@@ -500,6 +518,7 @@ LEFT JOIN colour_stock   cs  ON cs.style_name   = p.style_name
 LEFT JOIN sales_6m       s6  ON s6.style_name   = p.style_name
 LEFT JOIN sales_period   sp  ON sp.style_name   = p.style_name
 LEFT JOIN sales_life     sl  ON sl.style_name   = p.style_name
+LEFT JOIN first_sale     fs  ON fs.style_name   = p.style_name
 LEFT JOIN tier_overrides tov ON tov.style_number = p.style_number
 ORDER BY revenue_6m DESC NULLS LAST
 """
@@ -746,7 +765,10 @@ _KPI_BUCKETS = {
     "on_track": {
         "label": "On Track Styles",
         "dedup": False,
-        "pred":  lambda s: s.get("action_status") == "on_track",
+        # Active-tier gate matches _compute_summary's status counting (Aug
+        # 2026: health statuses count ACTIVE styles only — Retired/Archived
+        # rows are excluded from the card and therefore from its file).
+        "pred":  lambda s: _is_active_tier(s) and s.get("action_status") == "on_track",
     },
     "revenue_period": {
         "label": "Revenue Period",
@@ -826,6 +848,7 @@ def _compute_summary(styles):
     active_revenue_period = 0.0; retired_revenue_period = 0.0
     active_units_period = 0
     active_units_6m = 0
+    active_total_styles = 0
     sor_period_active_vals = []
     _seen_active_all_keys: set = set()
     # Dedup counts by style_number — mirrors Range Management's
@@ -835,11 +858,6 @@ def _compute_summary(styles):
     _seen_archived_keys: set = set()
 
     for s in styles:
-        st = s["action_status"]
-        if st == "on_track":    on_track += 1
-        elif st == "at_risk":   at_risk  += 1
-        elif st == "overdue":   overdue  += 1
-
         total_stock     += s["current_stock"] or 0
         revenue_6m      += s["revenue_6m"] or 0
         units_6m        += s["units_6m"] or 0
@@ -854,6 +872,17 @@ def _compute_summary(styles):
         dedup_key   = snum if snum else s.get("style_name", "")
 
         if tier in ("Tier 1", "Tier 2", "Tier 3", "Tier 4"):
+            # Health statuses count ACTIVE styles only (Aug 2026): Retired /
+            # Archived styles aren't actionable, and thousands of dead retired
+            # styles were drowning the risk cards (all reading "overdue").
+            # Same row grain as total_styles; mirrors the client-side At-Risk
+            # section filter in MerchOverview.jsx and the on_track KPI bucket,
+            # so on_track + at_risk + overdue == active_total_styles exactly.
+            active_total_styles += 1
+            st = s["action_status"]
+            if st == "on_track":    on_track += 1
+            elif st == "at_risk":   at_risk  += 1
+            elif st == "overdue":   overdue  += 1
             active_revenue_period += s.get("revenue_period") or 0
             active_units_period   += s.get("units_period") or 0
             active_units_6m       += s.get("units_6m") or 0
@@ -947,6 +976,9 @@ def _compute_summary(styles):
         "on_track_count":               on_track,
         "at_risk_count":                at_risk,
         "overdue_count":                overdue,
+        # Row-grain count of active-tier styles — the denominator for the
+        # status counts above (they partition it exactly).
+        "active_total_styles":          active_total_styles,
         "total_stock_units":            total_stock,
         "revenue_6m":                   round(revenue_6m, 0),
         "units_6m":                     units_6m,
@@ -981,6 +1013,7 @@ def _empty_summary():
         "active_units_period", "active_units_6m", "active_weekly_velocity",
         "active_styles_all_count", "avg_sor_period_active",
         "on_track_count", "at_risk_count", "overdue_count",
+        "active_total_styles",
         "total_stock_units", "revenue_6m", "units_6m", "revenue_period", "units_period", "weekly_velocity",
         "woc_lt3_active_count", "no_sale_7d_active_count",
         "avg_woc", "avg_full_price_pct", "avg_sor_6m", "zero_stock_count",
@@ -2263,7 +2296,9 @@ def register_merch_routes(app, api_pg_module):
     ):
         """CSV of the styles behind one KPI card (Inventory & Stock Health +
         Overview). Columns replicate the Style_Report_Details spreadsheet
-        (22 cols) plus optional per-KPI extra columns.
+        plus "Revenue Since Launch" and optional per-KPI extra columns.
+        Percent columns are emitted with an explicit % suffix ("10.9%") —
+        Excel / Google Sheets still parse those cells as percentages.
         Reuses the cached _fetch_styles rows + the shared _KPI_BUCKETS
         predicates so the file always matches the on-card count."""
         if kpi not in _KPI_BUCKETS:
@@ -2286,7 +2321,8 @@ def register_merch_routes(app, api_pg_module):
             "Launch Date", "Age (Weeks)", "6m SOR", "6m Units Sold", "6m Rev",
             "Full Price (Kes)", "ASP (6m)", "% Full Price", "Mark Down",
             "Weekly Units Sold", "6m WOC", "Last Sale (days)", "Last Order Date",
-            "Inventory Value (at Full Price)", "SOR Since Launch %", "Brand",
+            "Inventory Value (at Full Price)", "SOR Since Launch %",
+            "Revenue Since Launch", "Brand",
             "Recommendation",
         ]
         # Optional per-KPI extra columns (e.g. Warehouse Units) so the figure
@@ -2307,47 +2343,56 @@ def register_merch_routes(app, api_pg_module):
                 except Exception:
                     age_weeks = ""
             fp_pct = s.get("full_price_pct")
-            markdown = round(100 - fp_pct, 1) if fp_pct is not None else ""
+            markdown = round(100 - fp_pct, 1) if fp_pct is not None else None
             full_price = s.get("full_price")
             soh = s.get("current_stock") or 0
             inv_value = round(soh * full_price) if full_price is not None else ""
             # SOR Since Launch — same gross-units basis as the tab's 6m SOR
             units_life = s.get("units_life") or 0
             sl_denom = units_life + soh
-            sor_life = round(units_life * 100.0 / sl_denom, 1) if sl_denom > 0 else ""
+            sor_life = round(units_life * 100.0 / sl_denom, 1) if sl_denom > 0 else None
+            # Revenue Since Launch — lifetime net revenue (sales_life CTE),
+            # same net-sales basis + filter scope as 6m Rev, whole KES.
+            rev_life = s.get("revenue_life")
+            rev_since_launch = round(float(rev_life)) if rev_life is not None else ""
             def _v(x):
                 return "" if x is None else x
+            def _pct_s(x):
+                # Percent columns: explicit % suffix, one decimal, blanks stay
+                # blank (Excel/Sheets parse "10.9%" as a percentage cell).
+                return "" if x is None or x == "" else f"{float(x):.1f}%"
             # SOH location split — soh_online is a subset of soh_stores;
             # Stores here = physical stores only (excl. online & warehouse).
             wh  = s.get("soh_warehouse") or 0
             onl = s.get("soh_online") or 0
             sto = max(soh - wh - onl, 0)
             def _pct(x):
-                return round(x * 100.0 / soh, 1) if soh > 0 else ""
+                return round(x * 100.0 / soh, 1) if soh > 0 else None
             w.writerow([
                 _v(s.get("style_name")),
                 _v(s.get("subcategory")),
                 _v(s.get("style_number")),
                 _v(s.get("tier")),
                 soh,
-                wh, _pct(wh),
-                sto, _pct(sto),
-                onl, _pct(onl),
+                wh, _pct_s(_pct(wh)),
+                sto, _pct_s(_pct(sto)),
+                onl, _pct_s(_pct(onl)),
                 _v(s.get("launch_date")),
                 age_weeks,
-                _v(s.get("sor_6m")),
+                _pct_s(s.get("sor_6m")),
                 _v(s.get("units_6m")),
                 _v(s.get("revenue_6m")),
                 _v(full_price),
                 _v(s.get("avg_selling_price")),
-                _v(fp_pct),
-                markdown,
+                _pct_s(fp_pct),
+                _pct_s(markdown),
                 _v(s.get("weekly_avg")),
                 _v(s.get("woc")),
                 _v(s.get("last_sale_days")),
                 _v(s.get("last_order_date")),
                 inv_value,
-                sor_life,
+                _pct_s(sor_life),
+                rev_since_launch,
                 _v(s.get("brand")),
                 _v(s.get("recommended_action")),
                 *[_v(fn(s)) for _h, fn in extra_cols],

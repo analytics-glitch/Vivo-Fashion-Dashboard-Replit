@@ -16,6 +16,8 @@
  *
  * API contracts (from merch_router.py):
  *   summary  → { total_styles, on_track_count, at_risk_count, overdue_count,
+ *                active_total_styles (status counts are ACTIVE styles only and
+ *                partition active_total_styles exactly),
  *                total_stock_units, revenue_6m, units_6m, weekly_velocity,
  *                avg_woc, avg_full_price_pct, avg_sor_6m, zero_stock_count,
  *                no_sale_30d_count, woc_lt4_count, woc_gt20_count }
@@ -270,18 +272,27 @@ export default function MerchOverview() {
     }));
   }, [byTier]);
 
-  // ── At-Risk KPI derivations (from styles rows — same fetch) ───────────────
+  // ── At-Risk KPI derivations (ACTIVE styles only — same fetch) ─────────────
+  // The whole At-Risk & Actions section counts ACTIVE styles (Tier 1–4).
+  // Retired and Archived styles aren't actionable — thousands of dead retired
+  // styles all read "overdue" and were drowning the risk cards. The server
+  // summary applies the SAME gate to on_track/at_risk/overdue counts, so the
+  // Style Health card and this section always agree.
+  const activeStyleRows = useMemo(
+    () => styleRows.filter(s => s.tier !== "Retired" && s.tier !== "Archived"),
+    [styleRows]);
+
   const riskKpis = useMemo(() => {
-    const atRisk  = styleRows.filter(s => s.action_status === "at_risk");
-    const overdue = styleRows.filter(s => s.action_status === "overdue");
-    const healthy = styleRows.filter(s => s.action_status === "on_track");
+    const atRisk  = activeStyleRows.filter(s => s.action_status === "at_risk");
+    const overdue = activeStyleRows.filter(s => s.action_status === "overdue");
+    const healthy = activeStyleRows.filter(s => s.action_status === "on_track");
     // "On Review" mapped from at_risk (those with last_sale_days 60-89 or overstock)
-    const onReview = styleRows.filter(s =>
+    const onReview = activeStyleRows.filter(s =>
       s.action_status === "at_risk" &&
       ["At-Risk — Investigate", "Overstock — Review"].includes(s.recommended_action)
     );
     const stockAtRisk = [...atRisk, ...overdue].reduce((acc, s) => acc + (s.current_stock || 0), 0);
-    const total = styleRows.length;
+    const total = activeStyleRows.length;
     return {
       atRiskCount:  atRisk.length,
       overdueCount: overdue.length,
@@ -293,11 +304,11 @@ export default function MerchOverview() {
       // rows guarantees each file matches its card count
       atRiskRows: atRisk, overdueRows: overdue, onReviewRows: onReview, healthyRows: healthy,
     };
-  }, [styleRows]);
+  }, [activeStyleRows]);
 
-  // Top 10 at-risk by stock exposure
+  // Top 10 at-risk by stock exposure (active styles only)
   const top10AtRisk = useMemo(() => {
-    const risky = styleRows.filter(s => s.action_status === "at_risk" || s.action_status === "overdue");
+    const risky = activeStyleRows.filter(s => s.action_status === "at_risk" || s.action_status === "overdue");
     return [...risky].sort((a, b) => (b.current_stock || 0) - (a.current_stock || 0))
       .slice(0, 10)
       .map(s => ({
@@ -307,21 +318,22 @@ export default function MerchOverview() {
         daysLabel:     s.last_sale_days === null ? "No sale data" : `Last sale: ${s.last_sale_days}d`,
         fill:          DAYS_COLOR(s.last_sale_days),
       }));
-  }, [styleRows]);
+  }, [activeStyleRows]);
 
-  // Portfolio status donut — colors assigned by name before filtering so zero-count
-  // buckets don't shift later slices onto the wrong color.
+  // Portfolio status donut (active styles only) — colors assigned by name
+  // before filtering so zero-count buckets don't shift later slices onto the
+  // wrong color.
   const statusDonut = useMemo(() => {
-    const healthy  = styleRows.filter(s => s.action_status === "on_track").length;
-    const onReview = styleRows.filter(s =>
+    const healthy  = activeStyleRows.filter(s => s.action_status === "on_track").length;
+    const onReview = activeStyleRows.filter(s =>
       s.action_status === "at_risk" &&
       ["At-Risk — Investigate", "Overstock — Review"].includes(s.recommended_action)
     ).length;
-    const mktPush = styleRows.filter(s =>
+    const mktPush = activeStyleRows.filter(s =>
       s.action_status === "at_risk" &&
       !["At-Risk — Investigate", "Overstock — Review"].includes(s.recommended_action)
     ).length;
-    const overdue = styleRows.filter(s => s.action_status === "overdue").length;
+    const overdue = activeStyleRows.filter(s => s.action_status === "overdue").length;
     // Assign color per named status (not by array index after filtering)
     return [
       { name: `Healthy (${healthy})`,           value: healthy,  fill: STATUS_COLORS["Healthy"] },
@@ -329,22 +341,23 @@ export default function MerchOverview() {
       { name: `Marketing Push (${mktPush})`,     value: mktPush,  fill: STATUS_COLORS["Marketing Push"] },
       { name: `Overdue (${overdue})`,            value: overdue,  fill: STATUS_COLORS["Overdue"] },
     ].filter(d => d.value > 0);
-  }, [styleRows]);
+  }, [activeStyleRows]);
 
-  // At-risk by subcategory
+  // At-risk by subcategory (active styles only)
   const atRiskBySub = useMemo(() => {
     const map = {};
-    styleRows.filter(s => s.action_status === "at_risk" || s.action_status === "overdue")
+    activeStyleRows.filter(s => s.action_status === "at_risk" || s.action_status === "overdue")
       .forEach(s => { const k = s.subcategory || "—"; map[k] = (map[k] || 0) + 1; });
     return Object.entries(map).sort(([, a], [, b]) => b - a).slice(0, 10)
       .map(([name, value]) => ({ name: truncate(name, 22), value }));
-  }, [styleRows]);
+  }, [activeStyleRows]);
 
-  // Status by age group — three bars per group matching the three distinct action_status
-  // values (on_track/at_risk/overdue), labelled consistently with the donut and KPI cards.
+  // Status by age group (active styles only) — three bars per group matching
+  // the three distinct action_status values (on_track/at_risk/overdue),
+  // labelled consistently with the donut and KPI cards.
   const statusByAge = useMemo(() => {
     return AGE_GROUPS.map(g => {
-      const inGroup = styleRows.filter(s => {
+      const inGroup = activeStyleRows.filter(s => {
         const w = ageWeeks(s.launch_date);
         return w !== null && w >= g.min && w <= g.max;
       });
@@ -355,13 +368,14 @@ export default function MerchOverview() {
         Overdue:   inGroup.filter(s => s.action_status === "overdue").length,
       };
     });
-  }, [styleRows]);
+  }, [activeStyleRows]);
 
   if (loading) return <Loading label="Loading Overview…" />;
   if (error)   return <ErrorBox message={error} />;
 
   const s = summary || {};
-  const atRiskPct = s.total_styles ? ((s.at_risk_count || 0) / s.total_styles * 100).toFixed(1) : "0";
+  // Denominator = active-tier style rows (server-gated), matching the counts.
+  const atRiskPct = s.active_total_styles ? ((s.at_risk_count || 0) / s.active_total_styles * 100).toFixed(1) : "0";
   // Lifecycle-split card derivations (Aug 2026 rework) — every ratio guards a
   // zero/missing denominator, mirroring how the warehouse % was derived before.
   // Avg/Style denominators use the deduped ALL-style universe counts (zero-stock
@@ -523,7 +537,7 @@ export default function MerchOverview() {
         <MerchKPICard
           label="Style Health"
           value={fmtNum(s.on_track_count)}
-          sub={`On Track (${s.total_styles ? Math.round((s.on_track_count || 0) / s.total_styles * 100) : 0}%)`}
+          sub={`On Track (${s.active_total_styles ? Math.round((s.on_track_count || 0) / s.active_total_styles * 100) : 0}% of active)`}
           sub2={`At Risk: ${fmtNum(s.at_risk_count)} (${atRiskPct}%)`}
           accentColor={C.green}
           testId="merch-kpi-styles"
@@ -633,7 +647,7 @@ export default function MerchOverview() {
       <div className="flex items-start justify-between gap-3 flex-wrap border-t border-slate-200 pt-5">
         <div>
           <h2 className="text-[18px] font-bold text-foreground">At-Risk Styles &amp; Action Required</h2>
-          <p className="text-[13px] text-muted mt-0.5">Underperformers, Slow Movers &amp; Recommended Actions · As at {today}</p>
+          <p className="text-[13px] text-muted mt-0.5">Active styles only · Underperformers, Slow Movers &amp; Recommended Actions · As at {today}</p>
         </div>
         <button
           onClick={handleDownload}
@@ -648,7 +662,7 @@ export default function MerchOverview() {
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
         <MerchKPICard
           label="At Risk Styles" value={fmtNum(riskKpis.atRiskCount)}
-          sub={`${riskKpis.total > 0 ? ((riskKpis.atRiskCount / riskKpis.total) * 100).toFixed(1) : 0}% of portfolio`}
+          sub={`${riskKpis.total > 0 ? ((riskKpis.atRiskCount / riskKpis.total) * 100).toFixed(1) : 0}% of active styles`}
           accentColor={C.amber}
           testId="merch-kpi-atrisk"
           onDownload={async () => downloadCsvText(buildStyleCsv(riskKpis.atRiskRows), `At_Risk_Styles_${dateSlug}`)}
@@ -662,7 +676,7 @@ export default function MerchOverview() {
         />
         <MerchKPICard
           label="On Review" value={fmtNum(riskKpis.onReviewCount)}
-          sub={`${riskKpis.total > 0 ? ((riskKpis.onReviewCount / riskKpis.total) * 100).toFixed(1) : 0}% of portfolio`}
+          sub={`${riskKpis.total > 0 ? ((riskKpis.onReviewCount / riskKpis.total) * 100).toFixed(1) : 0}% of active styles`}
           accentColor="#4b7bec"
           testId="merch-kpi-onreview"
           onDownload={async () => downloadCsvText(buildStyleCsv(riskKpis.onReviewRows), `On_Review_Styles_${dateSlug}`)}
@@ -679,7 +693,7 @@ export default function MerchOverview() {
         />
         <MerchKPICard
           label="Healthy Styles" value={fmtNum(riskKpis.healthyCount)}
-          sub={`${riskKpis.total > 0 ? ((riskKpis.healthyCount / riskKpis.total) * 100).toFixed(1) : 0}% of portfolio`}
+          sub={`${riskKpis.total > 0 ? ((riskKpis.healthyCount / riskKpis.total) * 100).toFixed(1) : 0}% of active styles`}
           accentColor={C.green}
           testId="merch-kpi-healthy"
           onDownload={async () => downloadCsvText(buildStyleCsv(riskKpis.healthyRows), `Healthy_Styles_${dateSlug}`)}

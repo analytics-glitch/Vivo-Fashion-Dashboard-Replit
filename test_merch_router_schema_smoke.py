@@ -123,6 +123,7 @@ class TestMerchRouterSchemaSmoke(unittest.TestCase):
         """_compute_summary must return all keys the /api/merch/summary client reads."""
         required = {
             "total_styles", "on_track_count", "at_risk_count", "overdue_count",
+            "active_total_styles",
             "total_stock_units", "revenue_6m", "units_6m", "weekly_velocity",
             "avg_woc", "avg_full_price_pct", "avg_sor_6m",
             "zero_stock_count", "no_sale_30d_count",
@@ -451,6 +452,28 @@ class OverviewKpiBucketParityTests(unittest.TestCase):
         summary = merch_router._compute_summary(rows)
         self.assertEqual(len(merch_router._kpi_bucket_rows(rows, "on_track")),
                          summary["on_track_count"])
+
+    def test_status_counts_active_styles_only(self):
+        """on_track/at_risk/overdue count ACTIVE styles only (Aug 2026):
+        Retired and Archived rows must not move the health counters, and the
+        three counters must partition the active universe exactly."""
+        rows = [
+            _style(style_number="SN-1", action_status="on_track"),
+            _style(style_number="SN-2", action_status="at_risk"),
+            _style(style_number="SN-3", action_status="overdue"),
+            _style(style_number="SN-4", tier="Retired",  action_status="overdue"),
+            _style(style_number="SN-5", tier="Archived", action_status="overdue"),
+        ]
+        s = merch_router._compute_summary(rows)
+        self.assertEqual(s["on_track_count"], 1)
+        self.assertEqual(s["at_risk_count"], 1)
+        self.assertEqual(s["overdue_count"], 1)
+        self.assertEqual(s["active_total_styles"], 3)
+        self.assertEqual(s["on_track_count"] + s["at_risk_count"] + s["overdue_count"],
+                         s["active_total_styles"])
+        # The on_track CSV bucket applies the same gate (count-lockstep with
+        # the Style Health card).
+        self.assertEqual(len(merch_router._kpi_bucket_rows(rows, "on_track")), 1)
 
     def test_prev_window_custom_range(self):
         self.assertEqual(merch_router._prev_window("2026-08-01", "2026-08-10"),
