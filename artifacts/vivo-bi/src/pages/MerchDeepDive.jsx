@@ -23,6 +23,7 @@ import {
 import {
   CurrencyCircleDollar, Package, Percent, ArrowsLeftRight,
   Clock, ArrowCounterClockwise, Warning, CheckCircle, XCircle, CalendarBlank,
+  Stack, Palette,
 } from "@phosphor-icons/react";
 
 // ── Tier colours ─────────────────────────────────────────────────────────────
@@ -447,6 +448,35 @@ const MerchDeepDive = () => {
 
   const avgUnits = weeks.length ? (weeks.reduce((a, w) => a + w.units, 0) / weeks.length).toFixed(1) : "—";
 
+  // ── Total SOH split ────────────────────────────────────────────────────────
+  // soh_online is a SUBSET of soh_stores (the online channel is scoped as a
+  // store location upstream), so the split shows PHYSICAL stores =
+  // stores − online; the three rows then sum to the bold total
+  // (stores + sellable warehouse — pipeline stock already excluded upstream).
+  // Mirrors the CSV export's Warehouse/Stores/Online SOH columns.
+  const sohTotal = style.current_stock || 0;
+  const sohWh    = style.soh_warehouse || 0;
+  const sohOnl   = style.soh_online || 0;
+  const sohSto   = Math.max((style.soh_stores || 0) - sohOnl, 0);
+  // Percentages print to exactly 100.0%: round Warehouse & Online, Stores
+  // takes the balance (absorbs the rounding remainder). All "—" at zero stock.
+  let sohWhPct = null, sohStoPct = null, sohOnlPct = null;
+  if (sohTotal > 0) {
+    sohWhPct  = Math.round((sohWh  * 1000) / sohTotal) / 10;
+    sohOnlPct = Math.round((sohOnl * 1000) / sohTotal) / 10;
+    sohStoPct = Math.max(Math.round((100 - sohWhPct - sohOnlPct) * 10) / 10, 0);
+  }
+  const sohSplitRows = [
+    ["Warehouse", sohWh,  sohWhPct],
+    ["Stores",    sohSto, sohStoPct],
+    ["Online",    sohOnl, sohOnlPct],
+  ];
+  // Active Colour Ways — DERIVED status (there is no stored colour-level
+  // status): a colourway is active iff the parent style is an Active tier AND
+  // that colour has stock now, so Retired-tier styles always read 0
+  // (style-level retirement cascades to every colourway).
+  const activeColours = style.tier === "Retired" ? 0 : (style.colours_in_stock || 0);
+
   return (
     <div className="space-y-5 pb-8">
       {/* ── Style header row ─────────────────────────────────────────────── */}
@@ -502,6 +532,12 @@ const MerchDeepDive = () => {
           value overflows/oversizes; use the shared small size variant (16/20px).
           Scoped to this page only — other pages' KPI cards are unchanged. */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+        {/* Card order is canonical (period trio → lifetime trio → margin →
+            stock → colourways, then the trailing ops cards):
+            Revenue (period) → Units (period) → SOR (period) →
+            Revenue (Lifetime) → Units (Lifetime) → SOR (Lifetime) →
+            Gross Margin → Total SOH → Active Colour Ways →
+            Weeks of Cover → Reorder Count → Last Ordered. */}
         <KPICard
           small
           label={`Revenue (${periodLabel})`}
@@ -515,6 +551,27 @@ const MerchDeepDive = () => {
           showDelta={false}
           testId="dd-rev-6m"
         />
+        <KPICard
+          small
+          label={`Units Sold (${periodLabel})`}
+          value={fmtNum(style.units_period)}
+          sub={`vs subcat avg ${fmtNum(
+            (subcat.find(s => s.subcategory === style.subcategory)?.units_period || 0) /
+            Math.max(1, subcat.find(s => s.subcategory === style.subcategory)?.style_count || 1)
+          )}`}
+          icon={Package}
+          showDelta={false}
+          testId="dd-units-6m"
+        />
+        <KPICard
+          small
+          label={`SOR (${periodLabel})`}
+          value={fmtPct(style.sor_period)}
+          sub={`vs subcat avg ${fmtPct(subcat.find(s => s.subcategory === style.subcategory)?.avg_sor_period || 0)}`}
+          icon={Percent}
+          showDelta={false}
+          testId="dd-sor"
+        />
         {/* Ported from Sales & Pricing (card removed there) — lifetime only
             makes sense at style level. revenue_life comes from the style row's
             unbounded lifetime CTE, so it ignores the hub date filter. */}
@@ -527,18 +584,6 @@ const MerchDeepDive = () => {
           icon={CurrencyCircleDollar}
           showDelta={false}
           testId="dd-rev-life"
-        />
-        <KPICard
-          small
-          label={`Units Sold (${periodLabel})`}
-          value={fmtNum(style.units_period)}
-          sub={`vs subcat avg ${fmtNum(
-            (subcat.find(s => s.subcategory === style.subcategory)?.units_period || 0) /
-            Math.max(1, subcat.find(s => s.subcategory === style.subcategory)?.style_count || 1)
-          )}`}
-          icon={Package}
-          showDelta={false}
-          testId="dd-units-6m"
         />
         {/* Lifetime Units — replaces the Style Lifecycle Timeline chart, which
             accumulated only the trailing-52-week window and so never showed a
@@ -554,14 +599,18 @@ const MerchDeepDive = () => {
           showDelta={false}
           testId="dd-units-life"
         />
+        {/* SOR (Lifetime) — since-launch sell-through from the style payload:
+            lifetime units ÷ (lifetime units + current stock), the same formula
+            the hub's CSV export uses for "SOR Since Launch %". Lifetime basis
+            ⇒ ignores the hub date filter (like the other Lifetime cards). */}
         <KPICard
           small
-          label={`SOR (${periodLabel})`}
-          value={fmtPct(style.sor_period)}
-          sub={`vs subcat avg ${fmtPct(subcat.find(s => s.subcategory === style.subcategory)?.avg_sor_period || 0)}`}
+          label="SOR (Lifetime)"
+          value={fmtPct(style.sor_life)}
+          sub="Since first launch"
           icon={Percent}
           showDelta={false}
-          testId="dd-sor"
+          testId="dd-sor-life"
         />
         <KPICard
           small
@@ -570,6 +619,45 @@ const MerchDeepDive = () => {
           sub="Cost N/A · GM not available"
           showDelta={false}
           testId="dd-gm"
+        />
+        {/* Total SOH — stores + sellable warehouse (bold), split by location
+            in the footer. Split rows sum to the bold total and percentages to
+            100% (see the sohSplitRows derivation above the return). */}
+        <KPICard
+          small
+          label="Total SOH"
+          value={fmtNum(sohTotal)}
+          sub="Stores + sellable warehouse"
+          icon={Stack}
+          showDelta={false}
+          footer={
+            <div className="space-y-0.5 font-normal">
+              {sohSplitRows.map(([loc, units, pct]) => (
+                <div
+                  key={loc}
+                  className="flex items-center justify-between gap-2 text-[10.5px]"
+                  data-testid={`dd-soh-${loc.toLowerCase()}`}
+                >
+                  <span className="text-muted">{loc}</span>
+                  <span className="font-semibold tabular-nums">
+                    {fmtNum(units)} · {pct === null ? "—" : `${pct.toFixed(1)}%`}
+                  </span>
+                </div>
+              ))}
+            </div>
+          }
+          testId="dd-soh"
+        />
+        {/* Active Colour Ways — colourways with stock now (derived; Retired
+            styles read 0), with the style's total colourways as context. */}
+        <KPICard
+          small
+          label="Active Colour Ways"
+          value={fmtNum(activeColours)}
+          sub={`of ${fmtNum(style.colour_count)} total colour ways`}
+          icon={Palette}
+          showDelta={false}
+          testId="dd-colourways"
         />
         <KPICard
           small

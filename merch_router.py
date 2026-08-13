@@ -568,6 +568,11 @@ ORDER BY revenue_6m DESC NULLS LAST
         # Period-scoped sell-through (same formula, selected date range)
         sor_p_denom = units_period + current_stock
         sor_period  = round(units_period * 100.0 / sor_p_denom, 1) if sor_p_denom > 0 else None
+        # Lifetime (since-launch) sell-through — same formula & gross-units
+        # basis as the CSV export's "SOR Since Launch %" column: lifetime
+        # units ÷ (lifetime units + current stock).
+        sor_l_denom = units_life + current_stock
+        sor_life    = round(units_life * 100.0 / sor_l_denom, 1) if sor_l_denom > 0 else None
         full_price_pct = round(units_full_price * 100.0 / units_6m, 1) if units_6m > 0 else None
         avg_selling_price = round(revenue_6m / units_6m, 0) if units_6m > 0 else None
 
@@ -629,6 +634,7 @@ ORDER BY revenue_6m DESC NULLS LAST
             "woc":                 woc,
             "sor_6m":              sor_6m,
             "sor_period":          sor_period,
+            "sor_life":            sor_life,
             "last_sale_date":      str(last_sale)[:10] if last_sale else None,
             "last_sale_days":      last_sale_days,
             "full_price_pct":      full_price_pct,
