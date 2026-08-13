@@ -95,7 +95,15 @@ export default function TabProfile() {
           <div className="grid grid-cols-2 md:grid-cols-3 gap-3 sm:gap-4">
             {myPosts.map((_, i) => (
               <div key={i} className="rounded-xl overflow-hidden shadow-sm group relative">
-                <ImagePlaceholder aspectRatio="aspect-square" className="rounded-none group-hover:scale-105 transition-transform duration-500" />
+                {/* zoom lives on the img (imgClassName), not the container —
+                    a hover transform on the container would trap the z-20
+                    upload controls under the sibling "View" overlay */}
+                <ImagePlaceholder
+                  aspectRatio="aspect-square"
+                  className="rounded-none"
+                  imgClassName="group-hover:scale-105 transition-transform duration-500"
+                  slotId={`profile-journal-${i + 1}`}
+                />
                 <div className="absolute inset-0 bg-black/20 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center cursor-pointer">
                   <div className="bg-white/90 backdrop-blur rounded-full px-3 py-1 text-xs font-bold text-[#2c2a29]">
                     View

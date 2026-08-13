@@ -18,3 +18,17 @@ for an API URL, retries once through the authenticated API client
 and a stale-resolution guard (list rows get reused). The vivo-bi
 ProductThumbnail component carries the canonical implementation; new image
 surfaces should reuse it rather than raw `<img>` tags.
+
+## Reload trap (found via Community App slot images e2e, fixed)
+The axios GET wrapper used to cache blob responses like JSON: in-memory the
+Blob worked, but the sessionStorage persistence layer JSON.stringifies cached
+payloads, degrading a Blob to `{}`. After a reload within the 5-min TTL the
+rehydrated `{}` made `URL.createObjectURL` throw inside fetchAuthedBlob, which
+then memoized the URL in BLOB_FAILED for the whole session.
+**Symptom signature:** authed image renders fine on first visit, reverts to
+placeholder permanently after a reload, and the network/log trail shows ONLY
+the native `<img>` 401 — the blob retry never hits the wire (served from the
+poisoned cache).
+**Guard:** the api.get wrapper now bypasses the response cache for any
+non-JSON `responseType`; blob consumers (fetchAuthedBlob's object-URL LRU)
+do their own caching. Keep that bypass if the cache layer is reworked.

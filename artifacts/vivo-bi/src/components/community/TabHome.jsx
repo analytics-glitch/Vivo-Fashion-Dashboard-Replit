@@ -32,7 +32,7 @@ function PostCard({ post }) {
         </div>
       </div>
       
-      <ImagePlaceholder />
+      <ImagePlaceholder slotId={`home-post-${post.id}`} />
       
       <div className="mt-4">
         <p className="text-[#4a4643] text-[15px] leading-relaxed mb-3">

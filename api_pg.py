@@ -37938,6 +37938,14 @@ hr_attendance.register_hr_routes(app)
 import store_feedback
 store_feedback.register_store_feedback_routes(app)
 
+# Community App prototype dressing (/api/community-app/images*). Slot-keyed
+# BYTEA images so the team can fill the /community-app prototype's 📸
+# placeholders with real photos straight from the page. Session-authed AND
+# gated inside the module to users whose allowed pages include
+# "community-app". Same placement rationale as the CRM module.
+import community_app_images
+community_app_images.register_community_app_image_routes(app)
+
 # Staff Rota endpoints (/api/rota/*). Same placement rationale as the HR module.
 # Gated in clerk_auth_gate to leadership + hr + admin.
 import rota_router

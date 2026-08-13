@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { products, posts } from "./mockData";
-import { ImagePlaceholder } from "./ui";
+import { ImagePlaceholder, SlotImage } from "./ui";
 import { ShoppingCart, Heart } from "@phosphor-icons/react";
 
 function ShoppableLook({ post }) {
@@ -11,7 +11,15 @@ function ShoppableLook({ post }) {
       onClick={() => setRevealed(r => !r)}
       className="relative group rounded-2xl overflow-hidden aspect-[4/3] bg-black cursor-pointer"
     >
-      <ImagePlaceholder aspectRatio="h-full w-full opacity-70 group-hover:opacity-50 transition-opacity" className="rounded-none" />
+      {/* dim classes live on the img (imgClassName), not the container —
+          container opacity would also dim the hover upload controls */}
+      <ImagePlaceholder
+        aspectRatio="h-full w-full"
+        className="rounded-none"
+        imgClassName="opacity-70 group-hover:opacity-50 transition-opacity"
+        slotId={`shop-look-${post.id}`}
+        controlPos="top-right"
+      />
       <div
         className={`absolute top-4 right-4 bg-white/95 backdrop-blur text-[#2c2a29] text-xs font-bold px-3 py-1.5 rounded-full shadow-lg transition-opacity duration-300 ${
           revealed ? "opacity-0" : "opacity-100 group-hover:opacity-0"
@@ -29,7 +37,10 @@ function ShoppableLook({ post }) {
           <div className="flex gap-3 overflow-x-auto hide-scrollbar">
             {post.taggedProducts?.map(prod => (
               <div key={prod.id} className="bg-white/95 backdrop-blur rounded-xl p-2 flex items-center gap-3 min-w-[200px] shadow-lg">
-                <div className="w-10 h-10 bg-[#ebdcd0] rounded flex items-center justify-center text-xs">📸</div>
+                <div className="w-10 h-10 bg-[#ebdcd0] rounded flex items-center justify-center text-xs overflow-hidden shrink-0">
+                  {/* mirrors the product-card slot — display-only here */}
+                  <SlotImage slotId={`shop-product-${prod.id}`} className="w-full h-full object-cover" fallback={<span>📸</span>} />
+                </div>
                 <div className="flex-grow">
                   <div className="text-xs font-bold text-[#2c2a29] truncate max-w-[120px]">{prod.name}</div>
                   <div className="text-xs text-[#c25e30] font-bold">KES {prod.price.toLocaleString()}</div>
@@ -50,7 +61,7 @@ function ProductCard({ product }) {
   return (
     <div className="group flex flex-col bg-white rounded-2xl overflow-hidden shadow-[0_2px_10px_rgba(44,42,41,0.04)] hover:-translate-y-1 transition-all duration-300">
       <div className="relative">
-        <ImagePlaceholder aspectRatio="aspect-[3/4]" className="rounded-none" />
+        <ImagePlaceholder aspectRatio="aspect-[3/4]" className="rounded-none" slotId={`shop-product-${product.id}`} />
         <button 
           data-testid="wishlist-btn"
           onClick={() => setWishlist(!wishlist)}

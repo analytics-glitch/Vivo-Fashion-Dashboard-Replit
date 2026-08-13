@@ -75,13 +75,15 @@ export const posts = [
   }
 ];
 
+// `id` doubles as the stable image-slot key (community-board-<id>-tile-N) —
+// keep ids unchanged when renaming titles or uploaded photos will detach.
 export const styleBoards = [
-  { title: "Office to Evening", items: 12, followers: "3.2k" },
-  { title: "Weekend Errands", items: 8, followers: "1.9k" },
-  { title: "Vacation Ready", items: 15, followers: "4.7k" },
-  { title: "Curvy & Confident", items: 21, followers: "6.1k" },
-  { title: "Monochrome Magic", items: 9, followers: "2.4k" },
-  { title: "Print Mixing 101", items: 11, followers: "1.2k" },
+  { id: "office-to-evening", title: "Office to Evening", items: 12, followers: "3.2k" },
+  { id: "weekend-errands", title: "Weekend Errands", items: 8, followers: "1.9k" },
+  { id: "vacation-ready", title: "Vacation Ready", items: 15, followers: "4.7k" },
+  { id: "curvy-confident", title: "Curvy & Confident", items: 21, followers: "6.1k" },
+  { id: "monochrome-magic", title: "Monochrome Magic", items: 9, followers: "2.4k" },
+  { id: "print-mixing-101", title: "Print Mixing 101", items: 11, followers: "1.2k" },
 ];
 
 export const leaderboard = [

@@ -3,10 +3,10 @@ import { posts, challenges, leaderboard, styleBoards } from "./mockData";
 import { TierBadge, Avatar, PointsAction, ImagePlaceholder } from "./ui";
 import { Trophy, Users, Heart, ChatCircle } from "@phosphor-icons/react";
 
-function GridPost({ post }) {
+function GridPost({ post, slotId }) {
   return (
     <div className="bg-white rounded-2xl overflow-hidden shadow-sm hover:shadow-md transition-shadow group cursor-pointer relative">
-      <ImagePlaceholder aspectRatio="aspect-square" className="rounded-none" />
+      <ImagePlaceholder aspectRatio="aspect-square" className="rounded-none" slotId={slotId} />
       <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-4 text-white">
         <div className="flex items-center gap-1 font-bold"><Heart weight="fill" /> {post.likes}</div>
         <div className="flex items-center gap-1 font-bold"><ChatCircle weight="fill" /> {post.comments}</div>
@@ -46,8 +46,8 @@ export default function TabCommunity() {
       {/* Feed SubTab */}
       {subTab === "feed" && (
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-6">
-          {posts.map(p => <GridPost key={p.id} post={p} />)}
-          {posts.map(p => <GridPost key={p.id + 'dup'} post={{...p, likes: p.likes + 10}} />)}
+          {posts.map(p => <GridPost key={p.id} post={p} slotId={`community-feed-${p.id}`} />)}
+          {posts.map(p => <GridPost key={p.id + 'dup'} post={{...p, likes: p.likes + 10}} slotId={`community-feed-${p.id}-alt`} />)}
         </div>
       )}
       
@@ -131,12 +131,12 @@ export default function TabCommunity() {
       {/* Style Boards SubTab */}
       {subTab === "style_boards" && (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {styleBoards.map((board, i) => (
-            <div key={i} className="bg-white rounded-2xl shadow-sm overflow-hidden border border-[#f0e9e1] group">
+          {styleBoards.map((board) => (
+            <div key={board.id} className="bg-white rounded-2xl shadow-sm overflow-hidden border border-[#f0e9e1] group">
               <div className="grid grid-cols-2 grid-rows-2 h-48 gap-0.5 bg-[#e8dfd5] p-0.5">
-                <ImagePlaceholder className="rounded-none h-full w-full" aspectRatio="aspect-auto" />
-                <ImagePlaceholder className="rounded-none h-full w-full" aspectRatio="aspect-auto" />
-                <ImagePlaceholder className="rounded-none h-full w-full col-span-2" aspectRatio="aspect-auto" />
+                <ImagePlaceholder className="rounded-none h-full w-full" aspectRatio="aspect-auto" slotId={`community-board-${board.id}-tile-1`} />
+                <ImagePlaceholder className="rounded-none h-full w-full" aspectRatio="aspect-auto" slotId={`community-board-${board.id}-tile-2`} />
+                <ImagePlaceholder className="rounded-none h-full w-full col-span-2" aspectRatio="aspect-auto" slotId={`community-board-${board.id}-tile-3`} />
               </div>
               <div className="p-5 flex justify-between items-start">
                 <div>
@@ -145,14 +145,14 @@ export default function TabCommunity() {
                 </div>
                 <button
                   data-testid="follow-btn"
-                  onClick={() => setFollowed(f => ({ ...f, [i]: !f[i] }))}
+                  onClick={() => setFollowed(f => ({ ...f, [board.id]: !f[board.id] }))}
                   className={`text-xs font-bold px-3 py-1.5 rounded-full transition-colors ${
-                    followed[i]
+                    followed[board.id]
                       ? "bg-[#c25e30] text-white"
                       : "text-[#c25e30] bg-[#f5ece4] hover:bg-[#c25e30] hover:text-white"
                   }`}
                 >
-                  {followed[i] ? "Following" : "+ Follow"}
+                  {followed[board.id] ? "Following" : "+ Follow"}
                 </button>
               </div>
             </div>

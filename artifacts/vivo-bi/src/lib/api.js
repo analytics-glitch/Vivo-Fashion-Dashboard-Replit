@@ -242,6 +242,17 @@ api.get = (url, config = {}) => {
   if (_shouldSkipCache(url)) {
     return _origGet(url, config);
   }
+  // Binary responses (responseType blob/arraybuffer) must bypass the
+  // response cache entirely: the sessionStorage persistence layer
+  // JSON.stringifies cached payloads, which silently turns a Blob into
+  // `{}` — after a reload the rehydrated entry hands consumers an empty
+  // object instead of bytes, so the authed-image fallback
+  // (fetchAuthedBlob) throws in createObjectURL and permanently marks
+  // the URL as failed for the session. Blob consumers keep their own
+  // object-URL LRU caches, so they lose nothing by skipping this layer.
+  if (config.responseType && config.responseType !== "json") {
+    return _origGet(url, config);
+  }
   // Caller can force-bypass the response cache by passing
   // `forceFresh: true` in config. Used when an action just mutated
   // server state and we need the next read to actually hit the wire

@@ -4,6 +4,7 @@ import TabCommunity from "@/components/community/TabCommunity";
 import TabShop from "@/components/community/TabShop";
 import TabRewards from "@/components/community/TabRewards";
 import TabProfile from "@/components/community/TabProfile";
+import { SlotImagesProvider } from "@/components/community/ui";
 
 const TABS = [
   { id: "home", label: "Home" },
@@ -25,7 +26,9 @@ export default function CommunityApp() {
   }, [tab]);
 
   return (
-    <>
+    // One manifest fetch per page visit — every 📸 slot below reads from
+    // this provider instead of firing its own request.
+    <SlotImagesProvider>
       <style>{`
         @keyframes floatUp {
           0% { opacity: 1; transform: translate(-50%, 0) scale(1); }
@@ -76,6 +79,6 @@ export default function CommunityApp() {
           {tab === "profile" && <TabProfile />}
         </main>
       </div>
-    </>
+    </SlotImagesProvider>
   );
 }
