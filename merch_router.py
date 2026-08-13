@@ -852,7 +852,7 @@ def _compute_summary(styles):
     #     gate — so it is the matching retired denominator as-is.)
     active_warehouse_stock = 0; retired_warehouse_stock = 0
     active_revenue_period = 0.0; retired_revenue_period = 0.0
-    active_units_period = 0
+    active_units_period = 0; retired_units_period = 0
     active_units_6m = 0
     active_total_styles = 0
     sor_period_active_vals = []
@@ -909,6 +909,7 @@ def _compute_summary(styles):
                 active_warehouse_stock  += s.get("soh_warehouse") or 0
         elif tier == "Retired":
             retired_revenue_period += s.get("revenue_period") or 0
+            retired_units_period   += s.get("units_period") or 0
             if dedup_key not in _seen_retired_keys:
                 _seen_retired_keys.add(dedup_key)
                 retired_styles          += 1
@@ -974,6 +975,7 @@ def _compute_summary(styles):
         "retired_warehouse_stock_units": retired_warehouse_stock,
         "active_revenue_period":        round(active_revenue_period, 0),
         "retired_revenue_period":       round(retired_revenue_period, 0),
+        "retired_units_period":         retired_units_period,
         "active_units_period":          active_units_period,
         "active_units_6m":              active_units_6m,
         "active_weekly_velocity":       round(active_units_6m / 26.0, 1) if active_units_6m else 0,
@@ -1015,7 +1017,7 @@ def _empty_summary():
         "archived_styles_count", "archived_stock_units",
         "warehouse_stock_units",
         "active_warehouse_stock_units", "retired_warehouse_stock_units",
-        "active_revenue_period", "retired_revenue_period",
+        "active_revenue_period", "retired_revenue_period", "retired_units_period",
         "active_units_period", "active_units_6m", "active_weekly_velocity",
         "active_styles_all_count", "avg_sor_period_active",
         "on_track_count", "at_risk_count", "overdue_count",

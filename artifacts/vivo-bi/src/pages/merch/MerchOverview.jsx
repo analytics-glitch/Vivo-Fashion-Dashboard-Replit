@@ -39,7 +39,7 @@ import { DownloadSimple } from "@phosphor-icons/react";
 import { Loading, ErrorBox, SectionTitle } from "@/components/common";
 import {
   useMerchData, useMerchParams, MerchKPICard, ChartCard, SubcatFilter,
-  C, fmtKESM, fmtPct1, fmtNum, fmtAxisM,
+  C, fmtKESM, fmtKESFull, fmtPct1, fmtNum, fmtAxisM,
 } from "./MerchHelpers";
 // fmtDate aliased: the component body declares its own local fmtDate helper
 import { api, datePresets, fmtDate as fmtDateApi } from "@/lib/api";
@@ -63,7 +63,7 @@ const KesTooltip = ({ active, payload, label }) => {
   );
 };
 
-// Tooltip for the Revenue-by-Brand / Top-5-Subcategories bars: revenue, share
+// Tooltip for the Revenue-by-Brand / Subcategories bars: revenue, share
 // of total revenue, and trend vs the consecutive previous period (server
 // fields revenue_prev / trend_pct — trend_pct is null when the prev window
 // had no positive revenue for that bucket).
@@ -128,6 +128,29 @@ const NumTooltip = ({ active, payload, label }) => {
 // ── Tier / palette ────────────────────────────────────────────────────────────
 const TIER_COLOR_ARR = [C.blue, C.teal, C.purple, C.amber, C.green, C.red];
 
+// Outside labels for the Revenue-by-Tier donut (user request Aug 2026): tier
+// name + % of period revenue beside each slice, in the slice colour. Slices
+// under 2% skip the label (legend + tooltip still cover them); labelLine is
+// off so skipped slices don't leave stray pointer lines.
+const RADIAN = Math.PI / 180;
+const renderTierPieLabel = ({ cx, cy, midAngle, outerRadius, percent, name, fill, payload }) => {
+  if (!percent || percent < 0.02) return null;
+  const r = outerRadius + 14;
+  const x = cx + r * Math.cos(-midAngle * RADIAN);
+  const y = cy + r * Math.sin(-midAngle * RADIAN);
+  const color = payload?.color || payload?.payload?.color || fill;
+  return (
+    <text
+      x={x} y={y} fill={color}
+      textAnchor={x > cx ? "start" : "end"}
+      dominantBaseline="central"
+      style={{ fontSize: 10.5, fontWeight: 700 }}
+    >
+      {`${name} · ${(percent * 100).toFixed(percent < 0.10 ? 1 : 0)}%`}
+    </text>
+  );
+};
+
 // WOC bucket colours
 const WOC_BUCKET_COLORS = [C.green, "#60a5fa", C.amber, C.amber, C.red];
 
@@ -166,6 +189,11 @@ const ageWeeks = (launchDate) => {
 
 const truncate = (s, n = 22) => s && s.length > n ? s.slice(0, n - 1) + "…" : (s || "—");
 
+// Mens subcategories ("Men's Tops", "Mens …"): anchored + case-insensitive so
+// "Women's…" names can never match (task 1335 — these are excluded from the
+// Overview subcategory revenue chart only, nowhere else in the hub).
+const MENS_SUBCAT_RE = /^men['’]?s\b/i;
+
 export default function MerchOverview() {
   const filters = useMerchFilters();
   const [localSubcat, setLocalSubcat] = useState(null);
@@ -197,10 +225,22 @@ export default function MerchOverview() {
   // ── styles is { styles: [...], count } ────────────────────────────────────
   const styleRows = useMemo(() => styles?.styles || [], [styles]);
 
+  // ── ACTIVE style rows (Tier 1–4) ──────────────────────────────────────────
+  // Shared universe for the At-Risk & Actions section AND both distribution
+  // charts (user requests Aug 2026): Retired/Archived styles aren't
+  // actionable — thousands of dead retired styles all read "overdue" and were
+  // drowning the risk cards. The server summary applies the SAME gate to
+  // on_track/at_risk/overdue counts, so the Style Health card and the at-risk
+  // cards always agree.
+  const activeStyleRows = useMemo(
+    () => styleRows.filter(s => s.tier !== "Retired" && s.tier !== "Archived"),
+    [styleRows]);
+
   // ── Compute distributions from styles ─────────────────────────────────────
+  // Active styles only (user request Aug 2026, matching the FP% chart).
   const wocDist = useMemo(() => {
     const buckets = { "0-4 wks": 0, "4-8 wks": 0, "8-12 wks": 0, "12-20 wks": 0, "20+ wks": 0 };
-    for (const r of styleRows) {
+    for (const r of activeStyleRows) {
       const w = r.woc;
       if (w === null || w === undefined) continue;
       if (w < 4)       buckets["0-4 wks"]++;
@@ -210,11 +250,13 @@ export default function MerchOverview() {
       else             buckets["20+ wks"]++;
     }
     return Object.entries(buckets).map(([name, value], i) => ({ name, value, color: WOC_BUCKET_COLORS[i] }));
-  }, [styleRows]);
+  }, [activeStyleRows]);
 
+  // Active styles only (user request Aug 2026) — retired/archived styles'
+  // historical full-price % isn't actionable and was inflating the buckets.
   const fpDist = useMemo(() => {
     const buckets = { "<70%": 0, "70-85%": 0, "85-95%": 0, ">95%": 0 };
-    for (const r of styleRows) {
+    for (const r of activeStyleRows) {
       const fp = r.full_price_pct;
       if (fp === null || fp === undefined) continue;
       if (fp < 70)       buckets["<70%"]++;
@@ -223,7 +265,7 @@ export default function MerchOverview() {
       else               buckets[">95%"]++;
     }
     return Object.entries(buckets).map(([name, value], i) => ({ name, value, color: FP_BUCKET_COLORS[i] }));
-  }, [styleRows]);
+  }, [activeStyleRows]);
 
   // ── Chart period label ────────────────────────────────────────────────────
   // Same wording as the global filter bar's date pill: preset label when one
@@ -258,9 +300,26 @@ export default function MerchOverview() {
   const brandData = useMemo(
     () => (byBrand?.rows ? withShare(byBrand.rows, 6) : []), [byBrand]);
 
-  // ── Top 5 subcategories ───────────────────────────────────────────────────
-  const top5SubcatData = useMemo(
-    () => (bySubcategory?.rows ? withShare(bySubcategory.rows, 5) : []), [bySubcategory]);
+  // ── Subcategories (all, ex-Accessories/Mens) ──────────────────────────────
+  // Task 1335: list EVERY subcategory with revenue in the selected period —
+  // no top-N slice — minus Accessories-parented subcats (the server sends the
+  // modal parent `category` for exactly this) and mens subcats. share_pct is
+  // still computed over the FULL universe total (before the exclusions) so
+  // each bar reads as its true share of all revenue; zero-revenue rows are
+  // dropped to avoid empty bars.
+  const subcatData = useMemo(() => {
+    const mapped = (bySubcategory?.rows || []).map((r) => ({ ...r, revenue_sel: selRev(r) }));
+    const total = mapped.reduce((sum, r) => sum + r.revenue_sel, 0);
+    return mapped
+      .filter((r) => r.category !== "Accessories"
+                  && !MENS_SUBCAT_RE.test(r.subcategory || "")
+                  && r.revenue_sel > 0)
+      .sort((a, b) => b.revenue_sel - a.revenue_sel)
+      .map((r) => ({ ...r, share_pct: total > 0 ? (r.revenue_sel / total) * 100 : null }));
+  }, [bySubcategory]);
+  // Chart height scales with the row count (~28px/bar fits the two-line end
+  // labels) so ~20 bars render un-squashed; the old fixed 220px is the floor.
+  const subcatChartHeight = Math.max(220, subcatData.length * 28 + 40);
 
   // ── Tier donut ────────────────────────────────────────────────────────────
   const tierPieData = useMemo(() => {
@@ -272,16 +331,8 @@ export default function MerchOverview() {
     }));
   }, [byTier]);
 
-  // ── At-Risk KPI derivations (ACTIVE styles only — same fetch) ─────────────
-  // The whole At-Risk & Actions section counts ACTIVE styles (Tier 1–4).
-  // Retired and Archived styles aren't actionable — thousands of dead retired
-  // styles all read "overdue" and were drowning the risk cards. The server
-  // summary applies the SAME gate to on_track/at_risk/overdue counts, so the
-  // Style Health card and this section always agree.
-  const activeStyleRows = useMemo(
-    () => styleRows.filter(s => s.tier !== "Retired" && s.tier !== "Archived"),
-    [styleRows]);
-
+  // ── At-Risk KPI derivations (activeStyleRows — declared up with the
+  //    distributions, since the FP% chart shares the active-only universe) ──
   const riskKpis = useMemo(() => {
     const atRisk  = activeStyleRows.filter(s => s.action_status === "at_risk");
     const overdue = activeStyleRows.filter(s => s.action_status === "overdue");
@@ -389,6 +440,16 @@ export default function MerchOverview() {
   const retiredRevSharePct    = totalRevPeriod ? Math.round((s.retired_revenue_period || 0) / totalRevPeriod * 100) : 0;
   const activeWhPct           = s.active_stock_units  ? Math.round((s.active_warehouse_stock_units  || 0) / s.active_stock_units  * 100) : 0;
   const retiredWhPct          = s.retired_stock_units ? Math.round((s.retired_warehouse_stock_units || 0) / s.retired_stock_units * 100) : 0;
+  // Bottom-line card stats (user request Aug 2026): per-style averages + ASP.
+  // SOH/style and colours/style divide by the in-stock active count (the
+  // card's own headline); ASP = period revenue ÷ period units. The retired
+  // units/style note only renders when the API provides retired_units_period
+  // (older cached/prod payloads may lack it).
+  const avgSohPerActiveStyle     = s.active_styles_count ? (s.active_stock_units || 0) / s.active_styles_count : 0;
+  const avgColoursPerActiveStyle = s.active_styles_count ? (s.active_colour_styles_count || 0) / s.active_styles_count : 0;
+  const activeAsp                = s.active_units_period ? (s.active_revenue_period || 0) / s.active_units_period : 0;
+  const avgUnitsPerRetiredStyle  = s.retired_units_period != null && s.retired_styles_count
+    ? s.retired_units_period / s.retired_styles_count : null;
 
   // Build subtitle from active filters
   const fmtDate = (d) => d ? new Date(d).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }) : null;
@@ -442,6 +503,23 @@ export default function MerchOverview() {
     downloadCsvText(buildStyleCsv(atRiskStyles), `at-risk-styles-${dateSlug}`);
   };
 
+  // At-Risk-by-Subcategory card export: the exact active at-risk/overdue
+  // universe the chart aggregates, sorted in bar order (subcategory at-risk
+  // count desc, then stock desc) so filtering the file by a subcategory
+  // reconciles with its bar. All subcategories included — the chart trims to
+  // the top 10 only for display space. The Recommended Action column names
+  // the rule that flagged each style.
+  const downloadAtRiskBySubCsv = () => {
+    const risky = activeStyleRows.filter(s => s.action_status === "at_risk" || s.action_status === "overdue");
+    const counts = {};
+    risky.forEach(s => { const k = s.subcategory || "—"; counts[k] = (counts[k] || 0) + 1; });
+    const rows = [...risky].sort((a, b) =>
+      (counts[b.subcategory || "—"] - counts[a.subcategory || "—"]) ||
+      (a.subcategory || "—").localeCompare(b.subcategory || "—") ||
+      (b.current_stock || 0) - (a.current_stock || 0));
+    downloadCsvText(buildStyleCsv(rows), `at-risk-styles-by-subcategory-${dateSlug}`);
+  };
+
   return (
     <div className="space-y-5 pb-8">
       <div className="flex items-center justify-between flex-wrap gap-2">
@@ -452,6 +530,9 @@ export default function MerchOverview() {
       </div>
 
       {/* ── KPI cards ── */}
+      {/* Card order + bottom-line stats fixed by the user (Aug 2026): actives
+          first (styles → SOR → colours → revenue → units → full price), then
+          stock, then retired/archived, ending on Style Health. */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
         <MerchKPICard
           label="Active Styles"
@@ -460,6 +541,66 @@ export default function MerchOverview() {
           accentColor={C.blue}
           testId="merch-kpi-active-styles"
           onDownload={downloadKpiCsv("active_styles", "Active_Style_Lines")}
+          note={`Avg SOH/Style: ${fmtNum(avgSohPerActiveStyle)} units`}
+        />
+        <MerchKPICard
+          label="SOR (Period)"
+          value={fmtPct1(s.avg_sor_period_active)}
+          sub="Active Styles Only"
+          accentColor="#0ea5e9"
+          testId="merch-kpi-sor"
+        />
+        <MerchKPICard
+          label="Active Colour Styles"
+          value={fmtNum(s.active_colour_styles_count)}
+          sub="In stock · Active styles only"
+          accentColor={C.teal}
+          testId="merch-kpi-colour-styles"
+          onDownload={downloadKpiCsv("active_colours", "Active_Colour_Styles")}
+          note={`Avg Colours/Style: ${avgColoursPerActiveStyle.toFixed(1)}`}
+        />
+        <MerchKPICard
+          label="Active Style Revenue (Period)"
+          value={fmtKESM(s.active_revenue_period)}
+          sub={`Avg/Active Style: ${fmtKESM(avgRevPerActiveStyle)}`}
+          sub2={`${activeRevSharePct}% of total revenue`}
+          accentColor="#16a34a"
+          testId="merch-kpi-revenue"
+          note={`ASP (period): ${fmtKESFull(activeAsp)}`}
+        />
+        <MerchKPICard
+          label="Active Units Sold (Period)"
+          value={fmtNum(s.active_units_period)}
+          sub="Trailing 6m Vel. (Active)"
+          sub2={`${fmtNum(s.active_weekly_velocity)} /wk`}
+          accentColor={C.amber}
+          testId="merch-kpi-units"
+          note={`ASP (period): ${fmtKESFull(activeAsp)}`}
+        />
+        <MerchKPICard
+          label="Avg Full Price %"
+          value={fmtPct1(s.avg_full_price_pct)}
+          sub="Avg SOR (period)"
+          sub2={fmtPct1(s.avg_sor_6m)}
+          accentColor={C.red}
+          testId="merch-kpi-fp"
+          onDownload={downloadKpiCsv("full_price", "Full_Price_Pct_Styles")}
+        />
+        <MerchKPICard
+          label="Total SOH"
+          value={fmtNum(s.total_stock_units)}
+          sub={`WOC > 20 (active): ${fmtNum(s.woc_gt20_count)} styles`}
+          accentColor="#0891b2"
+          testId="merch-kpi-stock"
+          onDownload={downloadKpiCsv("total_stock", "Total_Stock_Units")}
+        />
+        <MerchKPICard
+          label="Warehouse Active SOH"
+          value={fmtNum(s.active_warehouse_stock_units)}
+          sub={`${activeWhPct}% of Active SOH`}
+          accentColor={C.purple}
+          testId="merch-kpi-warehouse"
+          onDownload={downloadKpiCsv("warehouse_units", "Warehouse_Units")}
         />
         <MerchKPICard
           label="Retired Styles"
@@ -471,68 +612,27 @@ export default function MerchOverview() {
           onDownload={downloadKpiCsv("retired_styles", "Retired_Style_Lines")}
         />
         <MerchKPICard
-          label="Archived Styles"
-          value={fmtNum(s.archived_styles_count)}
-          sub={`SOH: ${fmtNum(s.archived_stock_units)} units`}
-          accentColor="#64748b"
-          testId="merch-kpi-archived-styles"
-          onDownload={downloadKpiCsv("archived_styles", "Archived_Style_Lines")}
-        />
-        <MerchKPICard
-          label="Active Colour Styles"
-          value={fmtNum(s.active_colour_styles_count)}
-          sub="Distinct style × colour"
-          sub2="In stock · Active styles only"
-          accentColor={C.teal}
-          testId="merch-kpi-colour-styles"
-          onDownload={downloadKpiCsv("active_colours", "Active_Colour_Styles")}
-        />
-        <MerchKPICard
-          label="Warehouse Active SOH"
-          value={fmtNum(s.active_warehouse_stock_units)}
-          sub={`${activeWhPct}% of Active SOH`}
-          accentColor={C.purple}
-          testId="merch-kpi-warehouse"
-          onDownload={downloadKpiCsv("warehouse_units", "Warehouse_Units")}
-        />
-        <MerchKPICard
-          label="Total SOH"
-          value={fmtNum(s.total_stock_units)}
-          sub={`WOC > 20 (active): ${fmtNum(s.woc_gt20_count)} styles`}
-          accentColor="#0891b2"
-          testId="merch-kpi-stock"
-          onDownload={downloadKpiCsv("total_stock", "Total_Stock_Units")}
-        />
-        <MerchKPICard
-          label="Active Units Sold (Period)"
-          value={fmtNum(s.active_units_period)}
-          sub="Trailing 6m Vel. (Active)"
-          sub2={`${fmtNum(s.active_weekly_velocity)} /wk`}
-          accentColor={C.amber}
-          testId="merch-kpi-units"
-        />
-        <MerchKPICard
-          label="Active Style Revenue (Period)"
-          value={fmtKESM(s.active_revenue_period)}
-          sub={`Avg/Active Style: ${fmtKESM(avgRevPerActiveStyle)}`}
-          sub2={`${activeRevSharePct}% of total revenue`}
-          accentColor="#16a34a"
-          testId="merch-kpi-revenue"
-        />
-        <MerchKPICard
           label="Retired Style Revenue"
           value={fmtKESM(s.retired_revenue_period)}
           sub={`Avg/Retired Style: ${fmtKESM(avgRevPerRetiredStyle)}`}
           sub2={`${retiredRevSharePct}% of total revenue`}
           accentColor="#a16207"
           testId="merch-kpi-retired-revenue"
+          note={avgUnitsPerRetiredStyle != null
+            ? `Avg Units Sold/Style (period): ${
+                avgUnitsPerRetiredStyle > 0 && avgUnitsPerRetiredStyle < 0.05
+                  ? "<0.1" // tiny-but-real average (e.g. "Today" filter) — don't show a misleading 0.0
+                  : avgUnitsPerRetiredStyle < 10 ? avgUnitsPerRetiredStyle.toFixed(1) : fmtNum(avgUnitsPerRetiredStyle)
+              }`
+            : undefined}
         />
         <MerchKPICard
-          label="SOR (Period)"
-          value={fmtPct1(s.avg_sor_period_active)}
-          sub="Active Styles Only"
-          accentColor="#0ea5e9"
-          testId="merch-kpi-sor"
+          label="Archived Styles"
+          value={fmtNum(s.archived_styles_count)}
+          sub={`SOH: ${fmtNum(s.archived_stock_units)} units`}
+          accentColor="#64748b"
+          testId="merch-kpi-archived-styles"
+          onDownload={downloadKpiCsv("archived_styles", "Archived_Style_Lines")}
         />
         <MerchKPICard
           label="Style Health"
@@ -543,107 +643,13 @@ export default function MerchOverview() {
           testId="merch-kpi-styles"
           onDownload={downloadKpiCsv("on_track", "On_Track_Styles")}
         />
-        <MerchKPICard
-          label="Avg Full Price %"
-          value={fmtPct1(s.avg_full_price_pct)}
-          sub="Avg SOR (period)"
-          sub2={fmtPct1(s.avg_sor_6m)}
-          accentColor={C.red}
-          testId="merch-kpi-fp"
-          onDownload={downloadKpiCsv("full_price", "Full_Price_Pct_Styles")}
-        />
       </div>
 
-      {/* ── Row 1 charts ── */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {/* Revenue by Brand */}
-        <ChartCard title={`Revenue by Brand (${periodLabel})`}>
-          <ResponsiveContainer width="100%" height={220}>
-            <BarChart
-              data={brandData}
-              layout="vertical"
-              margin={{ top: 0, right: 84, left: 45, bottom: 0 }}
-            >
-              <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f1f5f9" />
-              <XAxis type="number" tickFormatter={fmtAxisM} tick={{ fontSize: 10 }} />
-              <YAxis type="category" dataKey="brand" tick={{ fontSize: 10 }} width={50} />
-              <Tooltip content={<ShareTrendTooltip />} />
-              <Bar dataKey="revenue_sel" name="Revenue" fill={C.blue} radius={[0, 3, 3, 0]}>
-                <LabelList dataKey="revenue_sel" content={barEndLabel(brandData)} />
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        </ChartCard>
-
-        {/* Top 5 Subcategories */}
-        <ChartCard title={`Top 5 Subcategories by Revenue (${periodLabel})`}>
-          <ResponsiveContainer width="100%" height={220}>
-            <BarChart
-              data={top5SubcatData}
-              layout="vertical"
-              margin={{ top: 0, right: 84, left: 80, bottom: 0 }}
-            >
-              <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f1f5f9" />
-              <XAxis type="number" tickFormatter={fmtAxisM} tick={{ fontSize: 10 }} />
-              <YAxis type="category" dataKey="subcategory" tick={{ fontSize: 9 }} width={80} tickFormatter={(v) => v?.length > 18 ? v.slice(0, 18) + "…" : v} />
-              <Tooltip content={<ShareTrendTooltip />} />
-              <Bar dataKey="revenue_sel" name="Revenue" fill={C.blue} radius={[0, 3, 3, 0]}>
-                <LabelList dataKey="revenue_sel" content={barEndLabel(top5SubcatData)} />
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        </ChartCard>
-
-        {/* Revenue by Tier donut */}
-        <ChartCard title={`Revenue by Tier (${filters.from_date ? "Selected Period" : "6m"})`}>
-          <ResponsiveContainer width="100%" height={220}>
-            <PieChart>
-              <Pie data={tierPieData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80} innerRadius={40} paddingAngle={2}>
-                {tierPieData.map((entry, i) => <Cell key={i} fill={entry.color} />)}
-              </Pie>
-              <Tooltip formatter={(val, name) => [fmtKESM(val), name]} contentStyle={{ fontSize: 11, borderRadius: 8, border: "1px solid #e2e8f0" }} />
-              <Legend formatter={(v) => <span style={{ fontSize: 10 }}>{v}</span>} iconSize={8} />
-            </PieChart>
-          </ResponsiveContainer>
-        </ChartCard>
-      </div>
-
-      {/* ── Row 2: distributions ── */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {/* WOC Distribution */}
-        <ChartCard title="Weeks of Cover Distribution">
-          <ResponsiveContainer width="100%" height={200}>
-            <BarChart data={wocDist} margin={{ top: 16, right: 8, left: -10, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-              <XAxis dataKey="name" tick={{ fontSize: 9 }} />
-              <YAxis tick={{ fontSize: 10 }} />
-              <Tooltip content={<NumTooltip />} />
-              <Bar dataKey="value" name="Styles" radius={[4, 4, 0, 0]}>
-                {wocDist.map((entry, i) => <Cell key={i} fill={entry.color} />)}
-                <LabelList dataKey="value" position="top" style={{ fontSize: 11, fontWeight: 700 }} />
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        </ChartCard>
-
-        {/* FP% Distribution */}
-        <ChartCard title="Full Price % Distribution">
-          <ResponsiveContainer width="100%" height={200}>
-            <BarChart data={fpDist} margin={{ top: 16, right: 8, left: -10, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-              <XAxis dataKey="name" tick={{ fontSize: 10 }} />
-              <YAxis tick={{ fontSize: 10 }} />
-              <Tooltip content={<NumTooltip />} />
-              <Bar dataKey="value" name="Styles" radius={[4, 4, 0, 0]}>
-                {fpDist.map((entry, i) => <Cell key={i} fill={entry.color} />)}
-                <LabelList dataKey="value" position="top" style={{ fontSize: 11, fontWeight: 700 }} />
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        </ChartCard>
-      </div>
-
-      {/* ════ At-Risk & Actions section (merged from the retired tab) ════ */}
+      {/* ── At-Risk & Action Required (moved above the charts so the
+             actionable cards lead the page — user request Aug 2026). Each card
+             carries a `note` summarising the merch_router _recommend rules
+             that feed its bucket. Detail charts stay below ("At-Risk
+             Breakdown"). ── */}
       <div className="flex items-start justify-between gap-3 flex-wrap border-t border-slate-200 pt-5">
         <div>
           <h2 className="text-[18px] font-bold text-foreground">At-Risk Styles &amp; Action Required</h2>
@@ -666,6 +672,7 @@ export default function MerchOverview() {
           accentColor={C.amber}
           testId="merch-kpi-atrisk"
           onDownload={async () => downloadCsvText(buildStyleCsv(riskKpis.atRiskRows), `At_Risk_Styles_${dateSlug}`)}
+          note="Any warning rule: out of stock but selling · cover < 1.5 wks (< 2 for hot sellers) · no sales 60–89 days · overstock (cover > 16 wks) · heavy markdown"
         />
         <MerchKPICard
           label="Overdue Styles" value={fmtNum(riskKpis.overdueCount)}
@@ -673,6 +680,7 @@ export default function MerchOverview() {
           accentColor={C.red}
           testId="merch-kpi-overdue"
           onDownload={async () => downloadCsvText(buildStyleCsv(riskKpis.overdueRows), `Overdue_Styles_${dateSlug}`)}
+          note="Critical rules: in stock but no sales for 90+ days · severe overstock (cover > 26 wks) · discontinue candidates (no stock, no sales 90+ days)"
         />
         <MerchKPICard
           label="On Review" value={fmtNum(riskKpis.onReviewCount)}
@@ -680,6 +688,7 @@ export default function MerchOverview() {
           accentColor="#4b7bec"
           testId="merch-kpi-onreview"
           onDownload={async () => downloadCsvText(buildStyleCsv(riskKpis.onReviewRows), `On_Review_Styles_${dateSlug}`)}
+          note="At-risk styles queued for weekly review: in stock but no sales for 60–89 days, or overstock (cover > 16 wks)"
         />
         <MerchKPICard
           label="Stock at Risk" value={`~${fmtNum(Math.round(riskKpis.stockAtRisk / 500) * 500)} units`}
@@ -690,6 +699,7 @@ export default function MerchOverview() {
             buildStyleCsv([...riskKpis.atRiskRows, ...riskKpis.overdueRows]
               .sort((a, b) => (b.current_stock || 0) - (a.current_stock || 0))),
             `Stock_at_Risk_Styles_${dateSlug}`)}
+          note="Total units currently held by all At Risk + Overdue styles (rounded to the nearest 500)"
         />
         <MerchKPICard
           label="Healthy Styles" value={fmtNum(riskKpis.healthyCount)}
@@ -697,7 +707,114 @@ export default function MerchOverview() {
           accentColor={C.green}
           testId="merch-kpi-healthy"
           onDownload={async () => downloadCsvText(buildStyleCsv(riskKpis.healthyRows), `Healthy_Styles_${dateSlug}`)}
+          note="No risk rule tripped — selling steadily with balanced cover; maintain replenishment"
         />
+      </div>
+
+      {/* ── Row 1 charts ── */}
+      {/* Task 1335: the subcategory chart lists every womenswear subcat, so it
+          spans half the row on desktop with Brand + Tier stacked in the other
+          half (everything single-column below lg). */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* Subcategories by Revenue (all, ex-Accessories/Mens) */}
+        <ChartCard title={`Subcategories by Revenue (${periodLabel})`}>
+          <ResponsiveContainer width="100%" height={subcatChartHeight}>
+            <BarChart
+              data={subcatData}
+              layout="vertical"
+              margin={{ top: 0, right: 84, left: 8, bottom: 0 }}
+            >
+              <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f1f5f9" />
+              <XAxis type="number" tickFormatter={fmtAxisM} tick={{ fontSize: 10 }} />
+              <YAxis type="category" dataKey="subcategory" interval={0} tick={{ fontSize: 10 }} width={140} tickFormatter={(v) => v?.length > 26 ? v.slice(0, 26) + "…" : v} />
+              <Tooltip content={<ShareTrendTooltip />} />
+              <Bar dataKey="revenue_sel" name="Revenue" fill={C.blue} radius={[0, 3, 3, 0]}>
+                <LabelList dataKey="revenue_sel" content={barEndLabel(subcatData)} />
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </ChartCard>
+
+        {/* Brand + Tier share the other half, stacked */}
+        <div className="flex flex-col gap-4">
+          {/* Revenue by Brand */}
+          <ChartCard title={`Revenue by Brand (${periodLabel})`}>
+            <ResponsiveContainer width="100%" height={220}>
+              <BarChart
+                data={brandData}
+                layout="vertical"
+                margin={{ top: 0, right: 84, left: 45, bottom: 0 }}
+              >
+                <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f1f5f9" />
+                <XAxis type="number" tickFormatter={fmtAxisM} tick={{ fontSize: 10 }} />
+                <YAxis type="category" dataKey="brand" tick={{ fontSize: 10 }} width={50} />
+                <Tooltip content={<ShareTrendTooltip />} />
+                <Bar dataKey="revenue_sel" name="Revenue" fill={C.blue} radius={[0, 3, 3, 0]}>
+                  <LabelList dataKey="revenue_sel" content={barEndLabel(brandData)} />
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </ChartCard>
+
+          {/* Revenue by Tier donut */}
+          <ChartCard title={`Revenue by Tier (${filters.from_date ? "Selected Period" : "6m"})`}>
+            <ResponsiveContainer width="100%" height={250}>
+              <PieChart>
+                <Pie
+                  data={tierPieData} dataKey="value" nameKey="name"
+                  cx="50%" cy="50%" outerRadius={70} innerRadius={40} paddingAngle={2}
+                  label={renderTierPieLabel} labelLine={false} isAnimationActive={false}
+                >
+                  {tierPieData.map((entry, i) => <Cell key={i} fill={entry.color} />)}
+                </Pie>
+                <Tooltip formatter={(val, name) => [fmtKESM(val), name]} contentStyle={{ fontSize: 11, borderRadius: 8, border: "1px solid #e2e8f0" }} />
+                <Legend formatter={(v) => <span style={{ fontSize: 10 }}>{v}</span>} iconSize={8} />
+              </PieChart>
+            </ResponsiveContainer>
+          </ChartCard>
+        </div>
+      </div>
+
+      {/* ── Row 2: distributions ── */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {/* WOC Distribution */}
+        <ChartCard title="Weeks of Cover Distribution (Active Styles)">
+          <ResponsiveContainer width="100%" height={200}>
+            <BarChart data={wocDist} margin={{ top: 16, right: 8, left: -10, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+              <XAxis dataKey="name" tick={{ fontSize: 9 }} />
+              <YAxis tick={{ fontSize: 10 }} />
+              <Tooltip content={<NumTooltip />} />
+              <Bar dataKey="value" name="Styles" radius={[4, 4, 0, 0]}>
+                {wocDist.map((entry, i) => <Cell key={i} fill={entry.color} />)}
+                <LabelList dataKey="value" position="top" style={{ fontSize: 11, fontWeight: 700 }} />
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </ChartCard>
+
+        {/* FP% Distribution */}
+        <ChartCard title="Full Price % Distribution (Active Styles)">
+          <ResponsiveContainer width="100%" height={200}>
+            <BarChart data={fpDist} margin={{ top: 16, right: 8, left: -10, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+              <XAxis dataKey="name" tick={{ fontSize: 10 }} />
+              <YAxis tick={{ fontSize: 10 }} />
+              <Tooltip content={<NumTooltip />} />
+              <Bar dataKey="value" name="Styles" radius={[4, 4, 0, 0]}>
+                {fpDist.map((entry, i) => <Cell key={i} fill={entry.color} />)}
+                <LabelList dataKey="value" position="top" style={{ fontSize: 11, fontWeight: 700 }} />
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </ChartCard>
+      </div>
+
+      {/* ── At-Risk Breakdown — drill-down charts for the At-Risk & Action
+             Required cards that now sit at the top of the page. ── */}
+      <div className="border-t border-slate-200 pt-5">
+        <h3 className="text-[15px] font-bold text-foreground">At-Risk Breakdown</h3>
+        <p className="text-[12px] text-muted mt-0.5">Drill-down for the At-Risk Styles &amp; Action Required cards at the top of the page</p>
       </div>
 
       {/* Top 10 exposure + Donut */}
@@ -757,7 +874,29 @@ export default function MerchOverview() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* At-risk by subcategory */}
         <div className="card-white p-5">
-          <SectionTitle title="At-Risk Styles by Subcategory" subtitle="No. of At-Risk Styles" />
+          <SectionTitle
+            title="At-Risk Styles by Subcategory"
+            subtitle="No. of At-Risk Styles"
+            action={
+              <button
+                onClick={downloadAtRiskBySubCsv}
+                data-testid="merch-atrisk-bysub-csv"
+                title="Download every at-risk style with its subcategory (all subcategories, not just the top 10 shown)"
+                className="shrink-0 flex items-center gap-1 px-2 py-1 rounded-md border border-border text-[11px] text-muted hover:text-foreground hover:border-foreground transition-colors bg-white"
+              >
+                <DownloadSimple size={12} /> CSV
+              </button>
+            }
+          />
+          {/* Flagging criteria — plain-language summary of merch_router.py's
+              _recommend rules 1-9 (any tripped rule ⇒ at_risk or overdue).
+              SectionTitle has mb-4, so pull the explainer up under it. */}
+          <p className="text-[10.5px] text-muted leading-4 -mt-2.5">
+            An active style is flagged when any rule trips: out of stock (still selling → reorder
+            · no sales 90+ days → discontinue) · cover &lt; 1.5 wks (&lt; 2 for hot sellers) · in
+            stock but no sales for 60+ days · overstock (cover &gt; 16 wks) · heavy markdown
+            (&lt; 30% sold at full price with cover &gt; 4 wks).
+          </p>
           <div className="mt-3" style={{ height: 300 }}>
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={atRiskBySub} layout="vertical" margin={{ left: 8, right: 40, top: 4, bottom: 4 }}>

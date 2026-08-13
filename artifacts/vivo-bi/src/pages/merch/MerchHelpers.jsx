@@ -79,6 +79,7 @@ export const MerchKPICard = ({
   trendLabel,  // optional string: e.g. "vs Last Month"
   onDownload,  // optional async fn → shows a "Download CSV" button
   downloadCount, // optional number → appends "· N rows" to the download button
+  note,        // optional string: small muted criteria/context line at the card foot
 }) => {
   const [dlBusy, setDlBusy]   = useState(false);
   const [dlError, setDlError] = useState(false);
@@ -144,6 +145,9 @@ export const MerchKPICard = ({
       )}
       {sub2 && (
         <div className="mt-0.5 text-[11px] font-semibold text-slate-500">{sub2}</div>
+      )}
+      {note && (
+        <div className="mt-2 pt-1.5 border-t border-slate-100 text-[10px] leading-[14px] text-slate-400">{note}</div>
       )}
       {trend != null && !isNaN(trend) && (
         <div className="mt-2 flex items-center gap-1.5 flex-wrap">
