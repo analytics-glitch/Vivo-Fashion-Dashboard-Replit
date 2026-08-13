@@ -106,6 +106,25 @@ other history — but ONLY when the bad rows are exactly expressible in a WHERE
 clause verified against BOTH dev and prod (check the store_id↔country mapping
 first so the predicate can't touch other markets).
 
+## Curated small tables: committed snapshot + guarded boot seed
+When a curated, operator-maintained table (hand-imported sheet data, e.g. style
+tier overrides) must match between dev and prod, ship it as data-in-code: the
+import script writes the table AND regenerates a committed JSON snapshot (rows +
+version stamp = the table's `MAX(imported_at)`); a deferred-startup seeder
+applies the snapshot only when it is strictly NEWER than what the DB holds,
+replacing the table contents in one advisory-locked transaction (DELETE, not
+TRUNCATE — MVCC-safe) and stamping applied rows with the snapshot version so the
+next boot no-ops. Refuse to write or apply an EMPTY snapshot (a broken export
+must never wipe prod). Keep the DDL + export/apply logic in one shared module
+(with an operator CLI) used by both the import script and the API boot, so they
+can't drift; add a live-parity unit test (snapshot == dev table) to the `test`
+workflow so a re-import without committing the refreshed snapshot fails CI.
+**Why:** publish never copies rows and the agent can't write to prod; the sync
+loop shouldn't own one-off curated data and REBUILD_ON_BOOT is overkill.
+**How to apply:** any "prod shows the computed fallback while dev shows curated
+data" divergence on a small table — reuse this pattern instead of running a
+script against prod.
+
 ## Same trap for any NEW raw source: it must be wired into the sync loop
 Adding a new Odoo/Shopify extract that writes its own `raw_*` tables (e.g.
 `extract_fabric.py` → `raw_fabric_*` feeding `/fabric`) and running it only by

@@ -17105,6 +17105,72 @@ def _seed_finance_account_map():
             conn.close()
 
 
+# --------------------------------------------------------------------------- #
+# Curated style tier overrides (Product Status sheet) seed.                    #
+# The sheet is imported into DEV by import_tier_overrides.py, which also       #
+# regenerates the committed snapshot in seed_data/style_tier_overrides.json.   #
+# Publish ships code + schema but never data rows, so without this seed        #
+# production's style_tier_overrides stays empty and every surface (Merch hub,  #
+# Range Management, Product Analysis) falls back to the computed lifecycle     #
+# model — preview said 346 active styles while production said 920.  The boot  #
+# seed applies the bundled snapshot when it is strictly NEWER than what the    #
+# DB holds (snapshot version stamp vs stored MAX(imported_at)) and REPLACES    #
+# the table contents — the curated sheet is authoritative.  Same-or-newer      #
+# data in the DB (dev right after an import, prod after the seed ran once)     #
+# makes it a strict no-op.  Logic lives in style_tier_seed.py, shared with     #
+# the import script and its operator CLI.                                      #
+# --------------------------------------------------------------------------- #
+
+def _ensure_style_tier_overrides_table():
+    try:
+        import style_tier_seed
+        conn = get_conn()
+        try:
+            conn.autocommit = True
+            cur = conn.cursor()
+            cur.execute(style_tier_seed.DDL)
+            cur.close()
+        finally:
+            conn.close()
+    except Exception as e:  # pragma: no cover - best effort, never block boot
+        print(f"[tiers] ensure style_tier_overrides table failed: {e}",
+              flush=True)
+
+
+def _seed_style_tier_overrides():
+    """Apply the bundled style-tier snapshot when it is newer than the DB.
+
+    Same boot-safe shape as the targets/finance seeds: the version check and
+    the write run in ONE advisory-locked transaction (concurrent boots
+    serialize; a crash rolls back and the next boot heals it).  Unlike those
+    additive seeds this one replaces the table contents when it applies —
+    the curated sheet is authoritative for the whole table — but it never
+    touches a database that already holds the same or newer import, so dev
+    is a no-op and newer production data is never clobbered by older code.
+    """
+    conn = None
+    try:
+        import style_tier_seed
+        snap = style_tier_seed.load_snapshot()
+        if snap is None:
+            print("[tiers] style_tier_overrides seed: no bundled snapshot — "
+                  "skipped", flush=True)
+            return
+        conn = get_conn()
+        res = style_tier_seed.apply_seed(conn, snap)
+        print(f"[tiers] style_tier_overrides seed: {res}", flush=True)
+    except Exception as e:  # pragma: no cover - best effort, never block boot
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        print(f"[tiers] seed style_tier_overrides failed: {e}", flush=True)
+    finally:
+        if conn is not None:
+            conn.close()
+
+
 @_deferred_startup
 def _targets_startup():
     _ensure_targets_table()
@@ -17118,6 +17184,12 @@ def _targets_startup():
                     "ADD COLUMN IF NOT EXISTS transfer_ref TEXT")
     except Exception as e:  # pragma: no cover - best effort
         print(f"[targets] ensure transfer_ref column failed: {e}", flush=True)
+
+
+@_deferred_startup
+def _style_tier_overrides_startup():
+    _ensure_style_tier_overrides_table()
+    _seed_style_tier_overrides()
 
 
 @app.get("/api/analytics/annual-targets")
