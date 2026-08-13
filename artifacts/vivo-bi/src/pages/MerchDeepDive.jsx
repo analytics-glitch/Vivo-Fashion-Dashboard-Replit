@@ -720,10 +720,10 @@ const MerchDeepDive = () => {
         )}
       </div>
 
-      {/* ── Row 1: Weekly trend + Store Performance ─────────────────────── */}
+      {/* ── Row 1: Weekly trend (own full-width row) ────────────────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-        {/* 52-week weekly sales trend — 6 */}
-        <div className="lg:col-span-6 card-white p-5">
+        {/* 52-week weekly sales trend — 12 */}
+        <div className="lg:col-span-12 card-white p-5">
           <SectionTitle
             title="Weekly Sales Trend — Trailing 52 Weeks"
             subtitle={`Current avg ${avgUnits}/wk`}
@@ -800,8 +800,11 @@ const MerchDeepDive = () => {
             )}
         </div>
 
-        {/* Store Performance — 6 (promoted from the bottom full-width row) */}
-        <div className="lg:col-span-6 card-white p-5">
+      </div>
+
+      {/* ── Row 1a: Store Performance — Revenue/Units (full width) ──────── */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+        <div className="lg:col-span-12 card-white p-5">
           <div className="flex items-start justify-between gap-3 flex-wrap">
             <SectionTitle
               title={`Store Performance — ${storeMetric === "units" ? "Units Sold" : "Revenue"} (${periodLabel})`}
@@ -830,19 +833,19 @@ const MerchDeepDive = () => {
             ? <Empty />
             : (
               <>
-                <ResponsiveContainer width="100%" height={240}>
+                <ResponsiveContainer width="100%" height={300}>
                   <BarChart data={storeChart} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
                     <XAxis
                       dataKey="name"
-                      tick={{ fontSize: 8 }}
+                      tick={{ fontSize: 10 }}
                       interval={0}
-                      angle={-60}
+                      angle={-45}
                       textAnchor="end"
-                      height={84}
+                      height={90}
                     />
                     <YAxis
-                      tick={{ fontSize: 9 }}
+                      tick={{ fontSize: 10 }}
                       tickFormatter={v => (storeMetric === "units" ? v : v + "K")}
                     />
                     <Tooltip content={({ active, payload, label }) => {
