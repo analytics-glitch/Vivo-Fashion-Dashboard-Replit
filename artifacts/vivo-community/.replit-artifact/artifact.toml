@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/app/"
+title = "Vivo Community"
+description = "Customer-facing Vivo Community app: phone + OTP login (demo mode), then the five-tab member experience — Home feed, Community challenges & leaderboard, Shop with live KES-priced products from the store catalogue, Rewards tiers, and the member's own Profile. Mobile-first, terracotta/cream Vivo brand look. Separate from the internal BI dashboard."
+version = "1.0.0"
+id = "artifacts/vivo-community"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/app/" ]
+localPort = 26110
+
+[services.development]
+run = "pnpm --filter @workspace/vivo-community run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/vivo-community", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/vivo-community/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "26110"
+BASE_PATH = "/app/"

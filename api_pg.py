@@ -1389,6 +1389,14 @@ async def clerk_auth_gate(request: Request, call_next):
     if path.startswith("/api/loyalty"):
         return await call_next(request)
 
+    # Customer-facing Vivo Community app (/app/): same model as /api/loyalty.
+    # Members sign in with phone + SMS one-time code; member-scoped handlers
+    # in community_app.py validate their OWN Bearer token (community_sessions)
+    # internally and fail closed with 401. Product browse + product images are
+    # intentionally public (non-sensitive catalogue data).
+    if path.startswith("/api/community/"):
+        return await call_next(request)
+
     # Attendance ingest (Laptop-1 headless pusher). It lives under /api/public/
     # for client-routing reasons but is NOT anonymous: it must present the
     # shared SESSION_SECRET. This check MUST run before the generic
@@ -38004,6 +38012,13 @@ day_review_router.register_day_review_routes(app, _sys.modules[__name__])
 # leadership, smt and admin in clerk_auth_gate.
 import merch_router
 merch_router.register_merch_routes(app, _sys.modules[__name__])
+
+# Customer-facing Vivo Community app endpoints (/api/community/*), consumed by
+# the standalone artifacts/vivo-community frontend at /app/. Public prefix —
+# see the /api/community/ bypass in clerk_auth_gate; member auth is handled
+# inside community_app (phone + OTP -> community_sessions Bearer token).
+import community_app
+community_app.register_community_routes(app, _sys.modules[__name__])
 
 
 @_deferred_startup

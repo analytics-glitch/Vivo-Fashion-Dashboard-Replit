@@ -156,3 +156,4 @@
 - [Day in Review conventions](day-review-report-perf.md) — norm = prior-4-same-weekday ÷4; leadership+admin only (SMT-excluded like finance, keep gate+page lists in lockstep); wide scan fan-out is negative-sum on the shared PG.
 - [Prod healthcheck boot stall](prod-healthcheck-boot-stall.md) — deploy-log "healthcheck: context deadline exceeded" w/o crash = GIL/event-loop starvation, not real downtime; validation sweep needs boot grace + first-timeout abort.
 - [Merch style-universe single-flight](merch-styles-single-flight.md) — /api/merch reads must be sync-def + fetch the universe via _styles_cached (single-flight), or 5-endpoint fan-out reruns the ~15s query per endpoint on the event loop.
+- [Community app public API](community-public-api.md) — /api/community/* self-auth prefix (staff-auth bypassed), demo OTP plug-in design, pooled conns, capped caches; rate-limit bucket keys must include the window.
