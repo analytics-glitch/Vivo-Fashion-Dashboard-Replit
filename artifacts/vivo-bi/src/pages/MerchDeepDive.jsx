@@ -4,7 +4,7 @@
  * Reads ?style= from the URL. Fetches:
  *   • /api/merch/styles?style_number=X   → style metadata
  *   • /api/merch/style-sales-weekly?style_number=X  → 52-week weekly data
- *   • /api/merch/by-subcategory          → subcategory peer data (for percentile)
+ *   • /api/merch/by-subcategory          → subcategory peer data (for ranking)
  */
 import React, { useEffect, useState, useMemo } from "react";
 import { useSearchParams } from "react-router-dom";
@@ -106,21 +106,24 @@ const StatusBadge = ({ status }) => {
   );
 };
 
-// ── Percentile bar chart ──────────────────────────────────────────────────────
-const PercentileBar = ({ value }) => {
-  const pct = Math.max(0, Math.min(100, value || 0));
-  const color = pct >= 66 ? "#1a5c38" : pct >= 33 ? "#d97706" : "#ef4444";
-  return (
-    <div className="flex items-center gap-2">
-      <div className="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden">
-        <div className="h-full rounded-full transition-all" style={{ width: pct + "%", background: color }} />
-      </div>
-      <span className="text-[11px] font-bold tabular-nums w-10 text-right" style={{ color }}>
-        {Math.round(pct)}th
-      </span>
-    </div>
-  );
+// ── Rank bar chart (rank 1 = best → full bar, worst rank → near-empty) ───────
+const rankFillPct = (rank, total) => {
+  const n = Math.max(1, total || 1);
+  const r = Math.min(Math.max(1, rank || n), n);
+  return ((n - r + 1) / n) * 100; // rank 1 → 100%, rank n → 1/n of the bar
 };
+const rankColor = (rank, total) => {
+  const pct = rankFillPct(rank, total);
+  return pct >= 66 ? "#1a5c38" : pct >= 33 ? "#d97706" : "#ef4444";
+};
+const RankBar = ({ rank, total }) => (
+  <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
+    <div
+      className="h-full rounded-full transition-all"
+      style={{ width: rankFillPct(rank, total) + "%", background: rankColor(rank, total) }}
+    />
+  </div>
+);
 
 // ── AI Recommendation Engine cards ────────────────────────────────────────────
 const AI_CARD_STYLES = {
@@ -230,7 +233,7 @@ const MerchDeepDive = () => {
   const [style,   setStyle]   = useState(null);
   const [weeks,   setWeeks]   = useState([]);
   const [subcat,  setSubcat]  = useState([]);
-  const [styles,  setStyles]  = useState([]);  // same-subcategory styles for percentile
+  const [styles,  setStyles]  = useState([]);  // same-subcategory styles for ranking
   const [storePerf, setStorePerf] = useState([]);           // per-store rows for this style
   const [colorPerf, setColorPerf] = useState([]);           // per-colourway rows for this style
   const [storeMetric, setStoreMetric] = useState("revenue"); // store chart: "revenue" | "units"
@@ -350,30 +353,32 @@ const MerchDeepDive = () => {
     return lines;
   }, [weeklyChart]);
 
-  // Percentile rankings vs same subcategory
-  const percentiles = useMemo(() => {
-    if (!style || !styles.length) return {};
-    const peers = styles.filter(s => s.subcategory === style.subcategory);
+  // Rank vs ACTIVE styles (tier ≠ "Retired") in the same subcategory — rank 1 =
+  // best (highest value). The viewed style is always part of the comparison set
+  // and the denominator, even when it is itself Retired. Ties share a rank
+  // (1 + count of strictly-higher peers) and null metrics count as 0.
+  const ranking = useMemo(() => {
+    if (!style || !styles.length) return { n: 0, ranks: {} };
+    const peers = styles.filter(s =>
+      s.subcategory === style.subcategory &&
+      (s.tier !== "Retired" || s.style_number === style.style_number)
+    );
+    if (!peers.some(s => s.style_number === style.style_number)) peers.push(style);
     const rank = (key) => {
-      if (!peers.length) return 50;
-      const vals = peers.map(s => s[key] || 0).sort((a, b) => a - b);
       const myVal = style[key] || 0;
-      const below = vals.filter(v => v < myVal).length;
-      return Math.round((below / vals.length) * 100);
+      return 1 + peers.filter(s => (s[key] || 0) > myVal).length;
     };
     return {
-      revenue:    rank("revenue_6m"),
-      units:      rank("units_6m"),
-      sor:        rank("sor_6m"),
-      velocity:   rank("weekly_avg"),
-      fullPricePct: rank("full_price_pct"),
+      n: peers.length,
+      ranks: {
+        revenue:      rank("revenue_6m"),
+        units:        rank("units_6m"),
+        sor:          rank("sor_6m"),
+        velocity:     rank("weekly_avg"),
+        fullPricePct: rank("full_price_pct"),
+      },
     };
   }, [style, styles]);
-
-  const subcatPeerCount = useMemo(
-    () => styles.filter(s => s.subcategory === style?.subcategory).length,
-    [style, styles]
-  );
 
   // Monthly revenue (last 12m from weekly data)
   // Compact label for the currently selected filter period, e.g. "30d" / "3m".
@@ -1242,33 +1247,39 @@ const MerchDeepDive = () => {
         </div>
       )}
 
-      {/* ── Row 2: Subcategory percentile + Gross Margin waterfall + Monthly Revenue ── */}
+      {/* ── Row 2: Subcategory rank + Gross Margin waterfall + Monthly Revenue ── */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-        {/* Subcategory percentile ranking — 5 */}
+        {/* Subcategory rank vs active peers — 5 */}
         <div className="lg:col-span-5 card-white p-5">
           <SectionTitle
-            title={`Subcategory Ranking (${style.subcategory || "—"}, n=${subcatPeerCount})`}
-            subtitle="Percentile vs peers (higher = better)"
+            title={`Subcategory Ranking (${style.subcategory || "—"}, n=${ranking.n})`}
+            subtitle="Rank vs active peers (1 = best)"
           />
           <div className="mt-4 space-y-3">
             {[
-              { label: "Revenue (6m)",     value: percentiles.revenue },
-              { label: "Units (6m)",       value: percentiles.units },
-              { label: "SOR (6m%)",        value: percentiles.sor },
-              { label: "Weekly Velocity",  value: percentiles.velocity },
-              { label: "Full Price %",     value: percentiles.fullPricePct },
-            ].map(({ label, value }) => (
-              <div key={label}>
-                <div className="flex justify-between text-[11px] text-muted mb-1">
-                  <span>{label}</span>
-                  <span className="font-semibold tabular-nums">{Math.round(value ?? 50)}th percentile</span>
+              { label: "Revenue (6m)",     rank: ranking.ranks.revenue },
+              { label: "Units (6m)",       rank: ranking.ranks.units },
+              { label: "SOR (6m%)",        rank: ranking.ranks.sor },
+              { label: "Weekly Velocity",  rank: ranking.ranks.velocity },
+              { label: "Full Price %",     rank: ranking.ranks.fullPricePct },
+            ].map(({ label, rank }) => {
+              const r = rank ?? ranking.n;
+              return (
+                <div key={label}>
+                  <div className="flex justify-between text-[11px] text-muted mb-1">
+                    <span>{label}</span>
+                    <span className="font-bold tabular-nums" style={{ color: rankColor(r, ranking.n) }}>
+                      {r}/{ranking.n}
+                    </span>
+                  </div>
+                  <RankBar rank={r} total={ranking.n} />
                 </div>
-                <PercentileBar value={value ?? 50} />
-              </div>
-            ))}
+              );
+            })}
           </div>
           <div className="mt-3 border-t border-line pt-2 text-[10.5px] text-muted">
-            — Subcat median (50th)
+            — Rank 1 = best of {ranking.n} active styles
+            {style.tier === "Retired" ? " (incl. this Retired style)" : ""} · ties share a rank
           </div>
         </div>
 
