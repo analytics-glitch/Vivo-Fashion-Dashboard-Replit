@@ -38234,7 +38234,8 @@ async def style_tracker_archive_style(style_id: int, request: Request):
 
 @app.post("/api/style-tracker/archive-week")
 async def style_tracker_archive_week(request: Request):
-    """Archive every unarchived style in one week, including incomplete styles."""
+    """Archive every COMPLETED style in one week; incomplete styles stay put
+    (so the week remains visible until they are completed)."""
     _ensure_style_tracker_tables()
     try:
         body = await request.json()
@@ -38245,10 +38246,20 @@ async def style_tracker_archive_week(request: Request):
         return JSONResponse(
             {"detail": "iso_year + iso_week must be a valid ISO week"},
             status_code=400)
+    pending = _users_exec(
+        "SELECT COUNT(*) AS pending_count "
+        "FROM style_tracker_styles "
+        "WHERE iso_year = %s AND iso_week = %s "
+        "AND NOT completed AND NOT archived",
+        wk, fetch=True) or []
+    if pending and int(pending[0].get("pending_count") or 0) > 0:
+        return JSONResponse(
+            {"detail": "Complete or re-plan all pending styles before archiving the week"},
+            status_code=422)
     rows = _users_exec(
         "UPDATE style_tracker_styles "
         "SET archived = TRUE, archived_at = now(), updated_at = now() "
-        "WHERE iso_year = %s AND iso_week = %s AND NOT archived "
+        "WHERE iso_year = %s AND iso_week = %s AND completed AND NOT archived "
         "RETURNING id", wk, fetch=True) or []
     return {"ok": True, "archived_count": len(rows),
             "iso_year": wk[0], "iso_week": wk[1]}
