@@ -1,3 +1,4 @@
+import { VivoLogo } from "@/components/community/ui";
 import React from 'react';
 import { AuthProvider, useAuth } from '@/context/AuthContext';
 import AuthFlow from '@/screens/AuthFlow';
@@ -14,14 +15,14 @@ class AppErrorBoundary extends React.Component<
   render() {
     if (this.state.hasError) {
       return (
-        <div className="min-h-[100dvh] bg-[#fbf9f6] flex flex-col items-center justify-center px-6 text-center">
-          <div className="text-3xl font-black tracking-[0.35em] text-[#2c2a29] mb-4">VIVO</div>
-          <p className="text-[#7a746e] mb-6">Something went wrong. Please refresh the page.</p>
+        <div className="min-h-[100dvh] bg-background flex flex-col items-center justify-center px-6 text-center">
+          <div className="mb-4"><VivoLogo size="md" /></div>
+          <p className="text-muted-foreground mb-8 text-[15px]">Something went wrong. Please refresh the page.</p>
           <button
             onClick={() => window.location.reload()}
-            className="px-6 py-3 rounded-xl font-bold text-sm bg-[#c25e30] text-white"
+            className="h-11 px-8 rounded bg-primary text-primary-foreground font-medium text-[15px] transition-all hover:opacity-90 active:scale-[0.98]"
           >
-            Refresh
+            Refresh Page
           </button>
         </div>
       );
@@ -32,8 +33,8 @@ class AppErrorBoundary extends React.Component<
 
 function Splash() {
   return (
-    <div className="min-h-[100dvh] bg-[#fbf9f6] flex items-center justify-center">
-      <div className="text-3xl font-black tracking-[0.35em] text-[#2c2a29] animate-pulse">VIVO</div>
+    <div className="min-h-[100dvh] bg-background flex items-center justify-center">
+      <div className="animate-pulse"><VivoLogo size="lg" /></div>
     </div>
   );
 }

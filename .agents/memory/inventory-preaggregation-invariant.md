@@ -16,3 +16,5 @@ description: Why every all_inventory aggregation in api_pg.py lives in its own C
 - Some endpoints query sales and inventory as two separate `run_query` calls and merge in Python.
 
 **Verification:** `rg` for `i.sku = s.variant_sku` / `s.variant_sku = i.sku` returns zero hits — inventory only ever joins `all_products_clean` (1:1-ish on sku). If you add an endpoint, keep inventory in its own pre-aggregated CTE.
+
+**Extension (catalogue-side fan-out):** the same trap exists joining inventory to the product catalogue — "1:1-ish" is not 1:1: duplicate catalogue rows for one SKU multiply even a pre-aggregated per-SKU inventory CTE once you SUM to style/colour grain. De-duplicate the catalogue side to one row per SKU before joining the inventory CTE.

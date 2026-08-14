@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { products, posts } from "./mockData";
 import { ImagePlaceholder, SlotImage } from "./ui";
-import { ShoppingCart, Heart } from "@phosphor-icons/react";
+import { ShoppingCart, Heart, Camera } from "@phosphor-icons/react";
 
 function ShoppableLook({ post }) {
   const [revealed, setRevealed] = useState(false);
@@ -39,11 +39,11 @@ function ShoppableLook({ post }) {
               <div key={prod.id} className="bg-white/95 backdrop-blur rounded-xl p-2 flex items-center gap-3 min-w-[200px] shadow-lg">
                 <div className="w-10 h-10 bg-[#ebdcd0] rounded flex items-center justify-center text-xs overflow-hidden shrink-0">
                   {/* mirrors the product-card slot — display-only here */}
-                  <SlotImage slotId={`shop-product-${prod.id}`} className="w-full h-full object-cover" fallback={<span>📸</span>} />
+                  <SlotImage slotId={`shop-product-${prod.id}`} className="w-full h-full object-cover" fallback={<Camera size={30} weight="light" />} />
                 </div>
                 <div className="flex-grow">
                   <div className="text-xs font-bold text-[#2c2a29] truncate max-w-[120px]">{prod.name}</div>
-                  <div className="text-xs text-[#c25e30] font-bold">KES {prod.price.toLocaleString()}</div>
+                  <div className="text-xs text-[#C43E00] font-bold">KES {prod.price.toLocaleString()}</div>
                 </div>
               </div>
             ))}
@@ -61,11 +61,11 @@ function ProductCard({ product }) {
   return (
     <div className="group flex flex-col bg-white rounded-2xl overflow-hidden shadow-[0_2px_10px_rgba(44,42,41,0.04)] hover:-translate-y-1 transition-all duration-300">
       <div className="relative">
-        <ImagePlaceholder aspectRatio="aspect-[3/4]" className="rounded-none" slotId={`shop-product-${product.id}`} />
+        <ImagePlaceholder aspectRatio="aspect-[3/4]" className="rounded-none" slotId={`shop-product-${product.id}`} fit="contain" />
         <button 
           data-testid="wishlist-btn"
           onClick={() => setWishlist(!wishlist)}
-          className="absolute top-3 right-3 w-8 h-8 rounded-full bg-white/80 backdrop-blur flex items-center justify-center text-[#c25e30] shadow-sm hover:bg-white transition-colors"
+          className="absolute top-3 right-3 w-8 h-8 rounded-full bg-white/80 backdrop-blur flex items-center justify-center text-[#C43E00] shadow-sm hover:bg-white transition-colors"
         >
           {wishlist ? <span>❤</span> : <Heart weight="bold" size={18} />}
         </button>
@@ -73,7 +73,7 @@ function ProductCard({ product }) {
       <div className="p-4 sm:p-5 flex flex-col flex-grow">
         <div className="text-xs font-bold uppercase tracking-widest text-[#a8a199] mb-1">{product.brand}</div>
         <h3 className="font-bold text-[#2c2a29] text-sm sm:text-base leading-snug mb-2 flex-grow">{product.name}</h3>
-        <div className="font-extrabold text-[#c25e30] mb-4">KES {product.price.toLocaleString()}</div>
+        <div className="font-extrabold text-[#C43E00] mb-4">KES {product.price.toLocaleString()}</div>
         
         <button 
           data-testid="add-to-cart-btn"
@@ -100,6 +100,16 @@ export default function TabShop() {
 
   return (
     <div className="animate-in fade-in duration-500">
+      <div className="flex justify-end mb-4">
+        <a
+          href="/app/?tab=shop"
+          target="_blank"
+          rel="noreferrer"
+          className="text-[11px] font-bold uppercase tracking-widest text-[#a8a199] hover:text-[#2d2a26] underline underline-offset-4 transition-colors"
+        >
+          Open the customer shop ↗
+        </a>
+      </div>
       {/* Filters */}
       <div className="flex gap-2 mb-8 overflow-x-auto hide-scrollbar pb-2">
         {brands.map(b => (

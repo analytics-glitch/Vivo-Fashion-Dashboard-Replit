@@ -38,12 +38,12 @@ export default function TabProfile() {
               <div className="bg-gradient-to-r from-[#ebdcd0] to-[#f5ece4] p-4 rounded-xl border border-[#d2ba9f] inline-block text-left w-full md:w-auto">
                 <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
                   <div>
-                    <div className="font-bold text-[#2c2a29]">Complete your Style Quiz</div>
-                    <div className="text-xs text-[#7a746e]">Personalize your feed and earn points.</div>
+                    <div className="font-bold text-[#2c2a29]">Find your Style DNA</div>
+                    <div className="text-xs text-[#7a746e]">Two minutes — your feed learns your taste, plus 50 pts.</div>
                   </div>
                   <PointsAction points={50} onClick={() => setQuizCompleted(true)}>
-                    <button data-testid="take-quiz-btn" className="bg-[#c25e30] text-white text-sm font-bold px-4 py-2 rounded-lg hover:bg-[#a64e26] transition-colors flex items-center gap-2 whitespace-nowrap">
-                      Take Quiz <ArrowRight size={14} weight="bold" />
+                    <button data-testid="take-quiz-btn" className="bg-[#FE5000] text-white text-sm font-bold px-4 py-2 rounded-lg hover:bg-[#C43E00] transition-colors flex items-center gap-2 whitespace-nowrap">
+                      Take the quiz <ArrowRight size={14} weight="bold" />
                     </button>
                   </PointsAction>
                 </div>
@@ -74,7 +74,7 @@ export default function TabProfile() {
             <div className="text-[10px] sm:text-xs font-bold uppercase text-[#a8a199] mt-1">Posts</div>
           </div>
           <div>
-            <div className="text-xl sm:text-2xl font-black text-[#c25e30]">2.8k</div>
+            <div className="text-xl sm:text-2xl font-black text-[#C43E00]">2.8k</div>
             <div className="text-[10px] sm:text-xs font-bold uppercase text-[#a8a199] mt-1">Lifetime Pts</div>
           </div>
           <div>
@@ -93,6 +93,14 @@ export default function TabProfile() {
         <div className="lg:col-span-2">
           <h2 className="text-xl font-bold text-[#2c2a29] mb-4">My Style Journal</h2>
           <div className="grid grid-cols-2 md:grid-cols-3 gap-3 sm:gap-4">
+            {/* Member-only pending entry: shared content earns points on publication */}
+            <div className="rounded-xl border-2 border-dashed border-[#e8dfd5] bg-[#fcfaf8] p-4 flex flex-col justify-between aspect-square" data-testid="journal-pending-entry">
+              <div>
+                <span className="inline-flex items-center gap-1 bg-[#f5ece4] text-[#C43E00] text-[10px] font-bold uppercase px-2 py-1 rounded">In review</span>
+                <p className="text-xs text-[#4a4643] leading-relaxed mt-3">Your #MyVivoStory entry is with our team — only you can see it here.</p>
+              </div>
+              <p className="text-[11px] text-[#7a746e] leading-relaxed">+50 pts the moment it's published.</p>
+            </div>
             {myPosts.map((_, i) => (
               <div key={i} className="rounded-xl overflow-hidden shadow-sm group relative">
                 {/* zoom lives on the img (imgClassName), not the container —
@@ -124,8 +132,8 @@ export default function TabProfile() {
               {orders.map(o => (
                 <div key={o.id} className="p-4 hover:bg-[#faf8f5] transition-colors cursor-pointer group">
                   <div className="flex justify-between items-start mb-2">
-                    <div className="font-bold text-[#2c2a29] text-sm group-hover:text-[#c25e30] transition-colors">{o.id}</div>
-                    <div className="text-[#c25e30] font-bold text-sm">+{o.pts} pts</div>
+                    <div className="font-bold text-[#2c2a29] text-sm group-hover:text-[#C43E00] transition-colors">{o.id}</div>
+                    <div className="text-[#C43E00] font-bold text-sm">+{o.pts} pts</div>
                   </div>
                   <div className="flex justify-between items-end text-xs">
                     <div className="text-[#7a746e]">{o.date} • {o.items} items</div>
@@ -134,7 +142,7 @@ export default function TabProfile() {
                 </div>
               ))}
               <div className="p-3 text-center bg-[#fcfaf8] hover:bg-[#f5ece4] transition-colors cursor-pointer">
-                <button className="text-sm font-bold text-[#c25e30]">View All Orders</button>
+                <button className="text-sm font-bold text-[#C43E00]">View All Orders</button>
               </div>
             </div>
           </div>

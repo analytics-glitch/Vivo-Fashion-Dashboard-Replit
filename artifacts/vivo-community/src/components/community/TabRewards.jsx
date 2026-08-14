@@ -1,6 +1,9 @@
-import React from 'react';
-import { TierBadge } from "./ui";
-import { Star, Gift, ShoppingBag, Receipt, Ticket, Sparkle, MagicWand, VideoCamera, Ruler, UsersThree, CalendarCheck } from "@phosphor-icons/react";
+import React, { useEffect, useState } from 'react';
+import { TierBadge, cardCls, JohariWordmark } from "./ui";
+import { getEntries } from "./EntryModal";
+import { api } from "@/lib/api";
+import TankRedeemFlow, { DesignThumb } from "./TankRedeemFlow";
+import { Star, Gift, ShoppingBag, Receipt, Ticket, Sparkles, Wand2, Video, Ruler, Users, CalendarCheck, Scissors, Truck, Shirt } from "lucide-react";
 
 function fmtDate(iso) {
   if (!iso) return "";
@@ -13,13 +16,60 @@ function fmtDate(iso) {
   }
 }
 
-export default function TabRewards({ member }) {
+export default function TabRewards({ member, onMemberUpdate }) {
   const m = member || {};
   const points = m.points ?? 0;
+  // Tier progress runs on lifetime earn — redeeming a reward never walks
+  // the bar (or the tier) backwards. `points` is the spendable balance.
+  const lifetimePoints = m.lifetime_points ?? points;
   const maxTierPoints = 1000;
-  const progressPercent = Math.min((points / maxTierPoints) * 100, 100);
+  const progressPercent = Math.min((lifetimePoints / maxTierPoints) * 100, 100);
+
+  const [tank, setTank] = useState(null);
+  const [redemptions, setRedemptions] = useState([]);
+  const [flow, setFlow] = useState(null); // null | {mode:'new'} | {mode:'adjust', redemption}
+
+  const loadRedemptions = () =>
+    api.myRedemptions().then((r) => setRedemptions(r.redemptions || [])).catch(() => {});
+
+  useEffect(() => {
+    api.rewardsTank().then(setTank).catch(() => {});
+    loadRedemptions();
+  }, []);
+
+  const handleRedeemed = () => {
+    loadRedemptions();
+    if (onMemberUpdate) api.me().then(onMemberUpdate).catch(() => {});
+  };
+
+  // Shared content earns its points on publication, never on submission —
+  // entries under review surface here as warm, clearly-pending rows.
+  const pendingEntries = getEntries().map((e) => ({
+    id: `entry-${e.id}`,
+    action: e.label || `Entered ${e.title}`,
+    date: fmtDate(e.date),
+    pts: `+${e.points}`,
+    status: "Pending",
+  }));
+
+  const STATUS_LABELS = {
+    in_review: "In review",
+    needs_changes: "Needs a tweak",
+    stitching: "Being stitched",
+    ready: "Ready",
+    collected: "Collected",
+    cancelled: "Cancelled",
+  };
 
   const transactions = [
+    ...redemptions.map((r) => ({
+      id: `rdm-${r.id}`,
+      action: "Redeemed Personalised Embroidered Tank",
+      date: fmtDate(r.created),
+      pts: `-${(r.points_cost || 0).toLocaleString()}`,
+      status: STATUS_LABELS[r.status] || "In review",
+    })),
+    ...pendingEntries,
     ...(m.recent_orders || []).map((o, i) => ({
       id: `order-${i}`,
       action: `Purchase ${o.order}`,
@@ -29,7 +79,7 @@ export default function TabRewards({ member }) {
     })),
     {
       id: "welcome",
-      action: "Joined Vivo Community 🎉",
+      action: "Joined Vivo Johari",
       date: m.joined || "",
       pts: "+200",
       status: "Posted",
@@ -37,148 +87,259 @@ export default function TabRewards({ member }) {
   ];
 
   const earnWays = [
-    { title: "Purchases", pts: "1 pt per 50 KES", icon: <ShoppingBag weight="fill" size={24} /> },
-    { title: "Text Review", pts: "10 pts", icon: <Receipt weight="fill" size={24} /> },
-    { title: "Photo Review", pts: "25 pts", icon: <Star weight="fill" size={24} /> },
-    { title: "Video Review", pts: "40 pts", icon: <VideoCamera weight="fill" size={24} /> },
-    { title: "Style Post", pts: "30 pts", icon: <Gift weight="fill" size={24} /> },
-    { title: "Fit Notes", pts: "15 pts", icon: <Ruler weight="fill" size={24} /> },
-    { title: "Join Challenge", pts: "Up to 150 pts", icon: <Ticket weight="fill" size={24} /> },
-    { title: "Refer a Friend", pts: "200 pts", icon: <UsersThree weight="fill" size={24} /> },
-    { title: "Weekly Missions", pts: "Up to 100 pts", icon: <CalendarCheck weight="fill" size={24} /> },
+    { title: "Purchases", pts: "1 pt per 100 KES", icon: <ShoppingBag size={20} strokeWidth={1.5} /> },
+    { title: "Text Review", pts: "10 pts when published", icon: <Receipt size={20} strokeWidth={1.5} /> },
+    { title: "Photo Review", pts: "25 pts when published", icon: <Star size={20} strokeWidth={1.5} /> },
+    { title: "Video Review", pts: "40 pts when published", icon: <Video size={20} strokeWidth={1.5} /> },
+    { title: "Style Post", pts: "30 pts when published", icon: <Gift size={20} strokeWidth={1.5} /> },
+    { title: "Fit Notes", pts: "15 pts when published", icon: <Ruler size={20} strokeWidth={1.5} /> },
+    { title: "Join Challenge", pts: "Up to 150 pts when published", icon: <Ticket size={20} strokeWidth={1.5} /> },
+    { title: "Refer a Friend", pts: "200 pts", icon: <Users size={20} strokeWidth={1.5} /> },
+    { title: "Weekly Missions", pts: "Up to 100 pts", icon: <CalendarCheck size={20} strokeWidth={1.5} /> },
   ];
 
   return (
-    <div className="animate-in fade-in duration-500 max-w-4xl mx-auto space-y-10">
+    <div className="animate-in fade-in duration-500 max-w-4xl mx-auto space-y-12">
 
-      {/* Hero Balance & Tier */}
-      <div className="bg-gradient-to-br from-[#d4af37] via-[#c25e30] to-[#8a3818] rounded-3xl p-8 sm:p-12 text-center text-white shadow-xl relative overflow-hidden">
-        {/* Abstract shapes */}
-        <div className="absolute top-0 left-0 w-full h-full opacity-10 pointer-events-none" style={{ backgroundImage: 'radial-gradient(circle at 20% 150%, white 20%, transparent 60%)' }} />
-
-        <div className="relative z-10">
-          <div className="text-white/80 font-bold uppercase tracking-widest text-sm mb-2">Available Balance</div>
-          <div data-testid="rewards-points" className="text-6xl sm:text-7xl font-black mb-4 tracking-tight">{points.toLocaleString()} <span className="text-2xl font-bold opacity-80">pts</span></div>
-          <TierBadge tier={m.tier} className="text-sm px-4 py-1.5 shadow-lg shadow-black/20" />
-
-          <div className="mt-10 bg-black/20 backdrop-blur-sm rounded-2xl p-6 text-left border border-white/10">
-            <div className="flex justify-between text-sm font-bold mb-3">
-              <span>Tier Progress</span>
-              <span>{points >= maxTierPoints ? 'Max Tier Reached' : `${(maxTierPoints - points).toLocaleString()} pts to next tier`}</span>
-            </div>
-            <div className="h-3 bg-black/30 rounded-full overflow-hidden relative">
-              <div className="absolute top-0 left-0 h-full bg-white rounded-full transition-all duration-1000 ease-out" style={{ width: `${progressPercent}%` }} />
-            </div>
-            <div className="flex justify-between mt-3 text-xs font-bold text-white/60">
-              <span>Bronze (0)</span>
-              <span>Silver (500)</span>
-              <span className={points >= 1000 ? 'text-white' : ''}>Gold (1000+)</span>
-            </div>
+      {/* Balance & tier — one compact band; the screen belongs to the rewards below */}
+      <div data-testid="rewards-balance-card" className={`${cardCls} p-5 sm:p-6`}>
+        <div className="flex items-center justify-between gap-4">
+          <div data-testid="johari-wordmark" className="text-[12px] text-muted-foreground"><JohariWordmark withVivo /></div>
+          <TierBadge tier={m.tier} />
+        </div>
+        <div className="mt-3 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+          <div data-testid="rewards-points" className="font-serif font-light text-3xl sm:text-4xl tracking-tight text-foreground">
+            {points.toLocaleString()} <span className="text-lg italic opacity-60">pts</span>
           </div>
-
-          <div className="mt-6 flex items-center justify-center gap-2 text-sm font-medium text-white/70">
-            <ShoppingBag size={16} /> Earn as you shop — 1 point for every 50 KES spent.
+          <span className="text-[10px] font-medium uppercase tracking-[0.2em] text-muted-foreground">Available Balance</span>
+        </div>
+        <div className="mt-4">
+          <div className="flex justify-between text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">
+            <span>Tier Progress</span>
+            <span className="text-primary-ink">{lifetimePoints >= maxTierPoints ? 'Max Tier Reached' : `${(maxTierPoints - lifetimePoints).toLocaleString()} pts to next tier`}</span>
           </div>
+          <div className="h-1 bg-secondary rounded-full overflow-hidden relative">
+            <div className="absolute top-0 left-0 h-full bg-primary rounded-full transition-all duration-1000 ease-out" style={{ width: `${progressPercent}%` }} />
+          </div>
+          <div className="flex justify-between mt-2 text-[10px] uppercase font-bold tracking-wider text-muted-foreground/70">
+            <span>Tsavorite</span>
+            <span className={lifetimePoints >= 500 ? 'text-primary-ink' : ''}>Ruby (500+)</span>
+            <span className={lifetimePoints >= 1000 ? 'text-primary-ink' : ''}>Tanzanite (1,000+)</span>
+          </div>
+        </div>
+        <div className="mt-3 flex items-center gap-1.5 text-[12px] text-muted-foreground">
+          <ShoppingBag size={13} /> Earn as you shop — 1 point for every 100 KES spent.
         </div>
       </div>
 
       {/* Active Missions */}
       <div>
-        <h2 className="text-xl font-bold text-[#2c2a29] mb-4">Active Weekly Missions</h2>
+        <h2 className="text-xl font-serif text-foreground mb-6">Active Weekly Missions</h2>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <div className="bg-white rounded-2xl p-5 border border-[#e8dfd5] shadow-sm">
-            <div className="flex justify-between items-start mb-4">
+          <div className={`${cardCls} p-6 border-border`}>
+            <div className="flex justify-between items-start mb-5">
               <div>
-                <h3 className="font-bold text-[#2c2a29]">Leave a review</h3>
-                <p className="text-sm text-[#7a746e] mt-0.5">Share your thoughts on recent purchases.</p>
+                <h3 className="font-semibold text-foreground text-[15px]">Leave a review</h3>
+                <p className="text-[13px] text-muted-foreground mt-1">Share your thoughts on recent purchases.</p>
               </div>
-              <span className="bg-[#f5ece4] text-[#c25e30] text-xs font-bold px-2 py-1 rounded">20pts</span>
+              <span className="bg-primary/10 text-primary-ink border border-primary/20 text-[10px] font-semibold leading-snug px-2.5 py-1.5 rounded-sm shrink-0 max-w-[110px] text-center">20 pts when published</span>
             </div>
-            <div className="flex justify-between text-xs font-bold mb-2 text-[#7a746e]">
+            <div className="flex justify-between text-[11px] font-bold uppercase tracking-wider mb-2 text-muted-foreground">
               <span>Progress</span>
               <span>0/1 done</span>
             </div>
-            <div className="h-2 bg-[#f0e9e1] rounded-full overflow-hidden">
-              <div className="h-full bg-[#c25e30] w-0" />
+            <div className="h-1.5 bg-secondary rounded-full overflow-hidden">
+              <div className="h-full bg-primary w-0" />
             </div>
           </div>
 
-          <div className="bg-white rounded-2xl p-5 border border-[#e8dfd5] shadow-sm">
-            <div className="flex justify-between items-start mb-4">
+          <div className={`${cardCls} p-6 border-border`}>
+            <div className="flex justify-between items-start mb-5">
               <div>
-                <h3 className="font-bold text-[#2c2a29]">Post a look</h3>
-                <p className="text-sm text-[#7a746e] mt-0.5">Show us how you style it.</p>
+                <h3 className="font-semibold text-foreground text-[15px]">Post a look</h3>
+                <p className="text-[13px] text-muted-foreground mt-1">Show us how you style it.</p>
               </div>
-              <span className="bg-[#f5ece4] text-[#c25e30] text-xs font-bold px-2 py-1 rounded">50pts</span>
+              <span className="bg-primary/10 text-primary-ink border border-primary/20 text-[10px] font-semibold leading-snug px-2.5 py-1.5 rounded-sm shrink-0 max-w-[110px] text-center">50 pts when published</span>
             </div>
-            <div className="flex justify-between text-xs font-bold mb-2 text-[#7a746e]">
+            <div className="flex justify-between text-[11px] font-bold uppercase tracking-wider mb-2 text-muted-foreground">
               <span>Progress</span>
               <span>0/3 done</span>
             </div>
-            <div className="h-2 bg-[#f0e9e1] rounded-full overflow-hidden">
-              <div className="h-full bg-[#c25e30] w-0" />
+            <div className="h-1.5 bg-secondary rounded-full overflow-hidden">
+              <div className="h-full bg-primary w-0" />
             </div>
           </div>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-10">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-12">
         {/* History */}
         <div>
-          <h2 className="text-xl font-bold text-[#2c2a29] mb-4">Points History</h2>
-          <div className="bg-white rounded-2xl border border-[#e8dfd5] overflow-hidden shadow-sm">
+          <h2 className="text-xl font-serif text-foreground mb-6">Points History</h2>
+          <div className={`${cardCls} overflow-hidden divide-y divide-border`}>
             {transactions.map((t, i) => (
-              <div key={t.id} className={`p-4 flex items-center justify-between ${i !== 0 ? 'border-t border-[#f0e9e1]' : ''}`}>
+              <div key={t.id} className="p-4 flex items-center justify-between hover:bg-secondary/30 transition-colors">
                 <div>
-                  <div className="font-bold text-[#2c2a29] text-sm">{t.action}</div>
-                  <div className="text-xs text-[#7a746e] mt-1">{t.date}</div>
+                  <div className="font-medium text-foreground text-[14px]">{t.action}</div>
+                  <div className="text-[12px] text-muted-foreground mt-1">{t.date}</div>
                 </div>
                 <div className="text-right">
-                  <div className={`font-bold ${t.pts.startsWith('+') ? 'text-[#047857]' : 'text-[#b91c1c]'}`}>{t.pts}</div>
-                  <div className={`text-[10px] font-bold uppercase mt-1 ${t.status.includes('Pending') ? 'text-[#c25e30]' : 'text-[#047857]'}`}>
-                    {t.status}
+                  <div className={`font-medium ${t.pts.startsWith('+') ? 'text-primary-ink' : 'text-destructive'}`}>{t.pts}</div>
+                  <div className={`text-[10px] uppercase font-bold tracking-widest mt-1 max-w-[150px] ml-auto ${t.status.includes('Pending') ? 'text-muted-foreground' : 'text-primary-ink'}`}>
+                    {t.status === "Pending" ? "Pending — awarded when published" : t.status}
                   </div>
                 </div>
               </div>
             ))}
           </div>
+          <p data-testid="pending-note" className="text-[12px] text-muted-foreground leading-relaxed mt-3">
+            Pending points land the moment your entry is published. If one doesn't go live, we'll let you know — you can tweak and reshare anytime.
+          </p>
         </div>
 
         {/* How to Earn */}
         <div>
-          <h2 className="text-xl font-bold text-[#2c2a29] mb-4">How to Earn</h2>
+          <h2 className="text-xl font-serif text-foreground mb-6">How to Earn</h2>
           <div className="grid grid-cols-2 gap-3">
             {earnWays.map(w => (
-              <div key={w.title} className="bg-[#fcfaf8] rounded-xl p-4 border border-[#f0e9e1] text-center flex flex-col items-center justify-center">
-                <div className="text-[#c25e30] mb-2">{w.icon}</div>
-                <div className="font-bold text-[#2c2a29] text-sm mb-1">{w.title}</div>
-                <div className="text-xs font-medium text-[#7a746e]">{w.pts}</div>
+              <div key={w.title} className="bg-secondary/50 rounded p-4 border border-border text-center flex flex-col items-center justify-center group hover:bg-secondary transition-colors">
+                <div className="text-muted-foreground group-hover:text-primary-ink transition-colors mb-3">{w.icon}</div>
+                <div className="font-medium text-foreground text-[13px] mb-1">{w.title}</div>
+                <div className="text-[11px] uppercase tracking-wider text-muted-foreground">{w.pts}</div>
               </div>
             ))}
+          </div>
+          <p className="text-[12px] text-muted-foreground leading-relaxed mt-4">
+            Reviews, photos, videos, fit notes, style posts and challenge entries are reviewed with love before they go live — each earns its points when it's published.
+          </p>
+        </div>
+      </div>
+
+      {/* Our gems — the story behind the tier names */}
+      <div data-testid="our-gems" className={`${cardCls} p-6 sm:p-8`}>
+        <h3 className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-2">Our Gems</h3>
+        <p className="text-[13px] text-muted-foreground leading-relaxed mb-6">
+          Every tier is a gemstone from East African soil — your journey moves through the treasures of our own region.
+        </p>
+        <div className="space-y-5">
+          <div className="flex items-start gap-4">
+            <TierBadge tier="Tsavorite" className="mt-0.5 shrink-0" />
+            <p className="text-[13px] text-foreground/80 leading-relaxed">The vivid green garnet discovered in Kenya's Tsavo — where everyone begins.</p>
+          </div>
+          <div className="flex items-start gap-4">
+            <TierBadge tier="Ruby" className="mt-0.5 shrink-0" />
+            <p className="text-[13px] text-foreground/80 leading-relaxed">Warm, deep red from East Africa's ruby heartlands.</p>
+          </div>
+          <div className="flex items-start gap-4">
+            <TierBadge tier="Tanzanite" className="mt-0.5 shrink-0" />
+            <p className="text-[13px] text-foreground/80 leading-relaxed">Found only at the foot of Kilimanjaro — rarer than diamond.</p>
           </div>
         </div>
       </div>
 
+      {/* Personalised-tank redemptions — live status from the studio */}
+      {redemptions.length > 0 && (
+        <div className="pt-4">
+          <h2 className="text-xl font-serif text-foreground mb-6">Your Redemptions</h2>
+          <div className="space-y-4">
+            {redemptions.map((r) => (
+              <div key={r.id} data-testid={`redemption-${r.id}`} className={`${cardCls} p-5 flex flex-col sm:flex-row sm:items-center gap-4`}>
+                {r.embroidery_type === "upload" && r.has_design ? (
+                  <DesignThumb id={r.id} className="w-16 h-16 rounded-sm border border-border bg-secondary object-contain shrink-0" />
+                ) : (
+                  <div className="w-16 h-16 rounded-sm border border-border bg-secondary flex items-center justify-center shrink-0">
+                    <span className={`text-foreground/80 text-[12px] text-center leading-tight px-1 break-words ${
+                      r.monogram_style === "block" ? "font-sans font-bold uppercase tracking-widest" :
+                      r.monogram_style === "script" ? "italic" : "font-serif italic"
+                    }`}>{r.monogram_text || "—"}</span>
+                  </div>
+                )}
+                <div className="flex-1 min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h3 className="font-medium text-foreground text-[14px]">Personalised Embroidered Tank</h3>
+                    <span data-testid={`redemption-status-${r.id}`} className={`px-2 py-0.5 rounded-sm text-[10px] font-semibold uppercase tracking-wider border ${
+                      r.status === "needs_changes" ? "border-primary/40 text-primary-ink bg-primary/5" :
+                      r.status === "ready" ? "border-foreground text-background bg-foreground" :
+                      "border-border text-muted-foreground bg-secondary"
+                    }`}>{STATUS_LABELS[r.status] || r.status}</span>
+                  </div>
+                  <p className="text-[12px] text-muted-foreground mt-1">
+                    {r.colour} · Size {r.size} · {r.collection_method === "pickup" ? `Pick up at ${r.pickup_store}` : "Delivery"} · {fmtDate(r.created)}
+                  </p>
+                  {r.status === "needs_changes" && (
+                    <p className="text-[12px] text-foreground mt-2 leading-relaxed">
+                      {r.status_note || "This design is tricky to stitch as-is."}{" "}
+                      <span className="text-muted-foreground">Tweak it and resend — your points are safe.</span>
+                    </p>
+                  )}
+                  {r.status === "in_review" && (
+                    <p className="text-[12px] text-muted-foreground mt-2">We'll review your design and get stitching — we'll let you know when your tank is ready.</p>
+                  )}
+                </div>
+                {r.status === "needs_changes" && (
+                  <button
+                    data-testid={`redemption-adjust-${r.id}`}
+                    onClick={() => setFlow({ mode: "adjust", redemption: r })}
+                    className="shrink-0 px-4 py-2 bg-primary text-primary-foreground text-[13px] font-medium rounded hover:opacity-90 transition-opacity"
+                  >
+                    Adjust design
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Redemption Options */}
-      <div>
-        <h2 className="text-xl font-bold text-[#2c2a29] mb-4">Redeem Rewards</h2>
+      <div className="pt-4">
+        <h2 className="text-xl font-serif text-foreground mb-1">Redeem Rewards</h2>
+        <p className="text-[13px] text-muted-foreground mb-6">From everyday value to insider access — the ladder climbs as you earn.</p>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-6">
           {[
-            { title: "10% off next order", pts: 500, icon: <Ticket weight="duotone" /> },
-            { title: "Early access to new drop", pts: 800, icon: <Sparkle weight="duotone" /> },
-            { title: "Free styling session", pts: 1200, icon: <MagicWand weight="duotone" /> }
+            { title: "KES 500 off voucher", pts: 300, icon: <Ticket size={24} strokeWidth={1.5} />, note: "A fixed KES 500 off your next order." },
+            { title: "Free delivery on your next order", pts: 500, icon: <Truck size={24} strokeWidth={1.5} /> },
+            { title: "Alteration on one style", pts: 800, icon: <Scissors size={24} strokeWidth={1.5} />, note: "Basic alterations only — hems, waists and simple adjustments. At participating stores. T&Cs apply." },
+            { title: "Personal styling session", pts: 1200, icon: <Wand2 size={24} strokeWidth={1.5} /> },
+            { title: "Personalised Embroidered Tank", pts: 1600, img: tank?.colourways?.[0]?.image, icon: <Shirt size={24} strokeWidth={1.5} />, note: "Vivo's ribbed tank finished with your own embroidered design, stitched in-house.", redeem: () => setFlow({ mode: "new" }) },
+            { title: "Members' event invitation", pts: 2000, icon: <Sparkles size={24} strokeWidth={1.5} />, note: "Styling evenings and first looks at new collections, in store." }
           ].map(r => (
-            <div key={r.title} className="bg-white rounded-2xl p-6 border border-[#e8dfd5] shadow-sm flex flex-col items-center text-center group hover:border-[#c25e30] transition-colors cursor-pointer">
-              <div className="text-4xl mb-4 text-[#a8a199] group-hover:text-[#c25e30] transition-all">{r.icon}</div>
-              <h3 className="font-bold text-[#2c2a29] mb-2">{r.title}</h3>
-              <div className="text-[#c25e30] font-extrabold mb-4">{r.pts} pts</div>
-              <button className="mt-auto w-full py-2 bg-[#f5ece4] text-[#c25e30] font-bold rounded-xl text-sm group-hover:bg-[#c25e30] group-hover:text-white transition-colors">
-                Redeem
-              </button>
+            <div key={r.title} className={`${cardCls} overflow-hidden flex flex-col items-center text-center group hover:border-primary/50 transition-colors ${r.redeem ? "" : "cursor-pointer"}`}>
+              {r.img && (
+                <img src={r.img} alt={r.title} className="w-full h-44 object-cover object-top" />
+              )}
+              <div className="p-6 flex flex-col items-center flex-1 w-full">
+                {!r.img && (
+                  <div className="mb-4 text-muted-foreground group-hover:text-primary-ink transition-colors">{r.icon}</div>
+                )}
+                <h3 className="font-medium text-foreground text-[14px] mb-2">{r.title}</h3>
+                <div className="text-primary-ink font-serif italic text-lg mb-6">{r.pts.toLocaleString()} pts</div>
+                {r.note && (
+                  <p className="text-[11px] text-muted-foreground leading-relaxed -mt-4 mb-6">{r.note}</p>
+                )}
+                <button
+                  data-testid={r.redeem ? "redeem-tank" : undefined}
+                  onClick={r.redeem}
+                  className="mt-auto w-full py-2 bg-secondary text-foreground font-medium rounded text-[13px] group-hover:bg-primary group-hover:text-primary-foreground transition-colors border border-border group-hover:border-primary"
+                >
+                  Redeem
+                </button>
+              </div>
             </div>
           ))}
         </div>
       </div>
+
+      {flow && (
+        <TankRedeemFlow
+          member={m}
+          tank={tank}
+          mode={flow.mode}
+          redemption={flow.redemption}
+          onClose={() => setFlow(null)}
+          onRedeemed={handleRedeemed}
+        />
+      )}
 
     </div>
   );

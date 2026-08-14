@@ -1,3 +1,5 @@
+// Century Gothic stand-in for the Vivo/Johari wordmark (font-logo stack).
+import "@fontsource/poppins/400.css";
 import { createRoot } from 'react-dom/client';
 
 import App from './App';

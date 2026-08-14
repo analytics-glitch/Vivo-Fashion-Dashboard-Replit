@@ -6,12 +6,12 @@ import { fetchAuthedBlob } from "@/components/ProductThumbnail";
 
 export function TierBadge({ tier, className = "" }) {
   const gradients = {
-    Bronze: "from-[#cd7f32] to-[#a0522d] text-white",
-    Silver: "from-[#c0c0c0] to-[#808080] text-white",
-    Gold: "from-[#d4af37] to-[#b8860b] text-white",
+    Tsavorite: "from-[#d7eedd] to-[#aeddbe] text-[#1e5b3c]",
+    Ruby: "from-[#e8b9c0] to-[#dfa3b0] text-[#701c31]",
+    Tanzanite: "from-[#d5daf6] to-[#b4bdf0] text-[#383c82]",
   };
   return (
-    <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-gradient-to-br ${gradients[tier] || gradients.Bronze} shadow-sm ${className}`}>
+    <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-gradient-to-br ${gradients[tier] || gradients.Tsavorite} shadow-sm ${className}`}>
       {tier}
     </span>
   );
@@ -33,8 +33,8 @@ export function PointsAction({ onClick, children, points = 10, className = "" })
     <div className={`relative inline-block ${className}`}>
       <div onClick={handleClick} className="cursor-pointer">{children}</div>
       {floats.map(id => (
-        <div key={id} className="absolute -top-6 left-1/2 -translate-x-1/2 text-[#c25e30] font-bold text-sm pointer-events-none animate-float-up whitespace-nowrap z-50 drop-shadow-md">
-          +{points}pts ✨
+        <div key={id} className="absolute -top-6 left-1/2 -translate-x-1/2 text-[#C43E00] font-bold text-sm pointer-events-none animate-float-up whitespace-nowrap z-50 drop-shadow-md">
+          +{points} pts
         </div>
       ))}
     </div>
@@ -48,9 +48,9 @@ export function Avatar({ initials, tier, size = "md" }) {
     lg: "w-20 h-20 text-xl",
   };
   const borders = {
-    Bronze: "border-[#cd7f32]",
-    Silver: "border-[#c0c0c0]",
-    Gold: "border-[#d4af37]",
+    Tsavorite: "border-[#aeddbe]",
+    Ruby: "border-[#dfa3b0]",
+    Tanzanite: "border-[#bfc7f1]",
   };
   return (
     <div className={`${sizes[size]} rounded-full flex items-center justify-center bg-[#e8dfd5] text-[#2c2a29] font-bold border-2 ${borders[tier] || "border-transparent"}`}>
@@ -151,16 +151,20 @@ export function SlotImage({ slotId, className = "", fallback = null }) {
 
 // The prototype's picture spot. Without `slotId` it is the plain beige 📸
 // box it always was. With `slotId` it becomes a live slot: shows the
-// uploaded photo (cropped to the spot's aspect) when the manifest has one,
-// and reveals upload / replace / remove controls on hover for everyone who
-// can view the page. `imgClassName` styles the photo only (useful when the
-// old container styles — dim/zoom effects — would also hit the controls).
+// uploaded photo when the manifest has one, and reveals upload / replace /
+// remove controls on hover for everyone who can view the page.
+// `fit="cover"` (default) crops to the spot's aspect; `fit="contain"`
+// letterboxes the full photo on the beige background — use it for product
+// shots so garments are never cropped. `imgClassName` styles the photo only
+// (useful when the old container styles — dim/zoom effects — would also hit
+// the controls).
 export function ImagePlaceholder({
   aspectRatio = "aspect-[4/5]",
   className = "",
   slotId,
   imgClassName = "",
   controlPos = "bottom-right",
+  fit = "cover",
 }) {
   const { slots, setSlot } = useSlotImages();
   const meta = slotId ? slots[slotId] : null;
@@ -233,14 +237,14 @@ export function ImagePlaceholder({
       className={`w-full bg-[#ebdcd0] rounded-xl flex items-center justify-center text-[#c9b4a1] ${aspectRatio} ${className} ${slotId ? "relative overflow-hidden group/slot" : ""}`}
       data-testid={slotId ? `slot-${slotId}` : undefined}
     >
-      {!hasImage && <span className="text-4xl">📸</span>}
+      {!hasImage && <Camera size={34} weight="light" />}
       {hasImage && (
         <img
           src={src}
           onError={onImgError}
           alt=""
           loading="lazy"
-          className={`absolute inset-0 w-full h-full object-cover ${imgClassName}`}
+          className={`absolute inset-0 w-full h-full ${fit === "contain" ? "object-contain" : "object-cover"} ${imgClassName}`}
           data-testid={`slot-img-${slotId}`}
         />
       )}
@@ -278,7 +282,7 @@ export function ImagePlaceholder({
               data-testid={`slot-upload-${slotId}`}
             >
               {busy
-                ? <span className="w-3.5 h-3.5 border-2 border-[#c25e30] border-t-transparent rounded-full animate-spin" />
+                ? <span className="w-3.5 h-3.5 border-2 border-[#FE5000] border-t-transparent rounded-full animate-spin" />
                 : <Camera size={16} weight="bold" />}
             </button>
             {meta && !busy && (

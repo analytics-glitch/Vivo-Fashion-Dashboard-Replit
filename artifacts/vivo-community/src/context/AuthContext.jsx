@@ -37,8 +37,10 @@ export function AuthProvider({ children }) {
     } catch { /* handled by unauthorized handler */ }
   }, []);
 
+  const updateMember = useCallback((m) => setMember(m), []);
+
   return (
-    <AuthContext.Provider value={{ member, loading, signIn, signOut, refresh }}>
+    <AuthContext.Provider value={{ member, loading, signIn, signOut, refresh, updateMember }}>
       {children}
     </AuthContext.Provider>
   );

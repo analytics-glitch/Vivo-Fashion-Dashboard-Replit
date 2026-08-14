@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from "react";
+import "@fontsource-variable/fraunces";
+import "@fontsource/poppins/400.css"; // Century Gothic stand-in for the Vivo wordmark
 import TabHome from "@/components/community/TabHome";
 import TabCommunity from "@/components/community/TabCommunity";
 import TabShop from "@/components/community/TabShop";
@@ -10,7 +12,7 @@ const TABS = [
   { id: "home", label: "Home" },
   { id: "community", label: "Community" },
   { id: "shop", label: "Shop" },
-  { id: "rewards", label: "Rewards" },
+  { id: "rewards", label: "Johari" },
   { id: "profile", label: "Profile" },
 ];
 
@@ -44,8 +46,22 @@ export default function CommunityApp() {
           -ms-overflow-style: none;
           scrollbar-width: none;
         }
+        .community-scope h1, .community-scope h2, .community-scope h3 {
+          font-family: 'Fraunces Variable', Georgia, serif;
+          font-weight: 500;
+          letter-spacing: -0.01em;
+        }
       `}</style>
-      <div className="min-h-[100dvh] bg-[#fbf9f6] text-[#2c2a29] font-sans selection:bg-[#d97706] selection:text-white" style={{ '--community-accent': '#c25e30' }}>
+      <div className="community-scope min-h-[100dvh] bg-[#fbf9f6] text-[#2c2a29] font-sans selection:bg-[#FE5000] selection:text-white" style={{ '--community-accent': '#FE5000' }}>
+        {/* Brand mark — official treatment: white Century Gothic (regular)
+            wordmark on Pantone 021C (#FE5000), no ® (dropped). */}
+        <div className="mx-auto max-w-[1200px] px-4 sm:px-6 lg:px-8 pt-5 pb-2 flex items-center gap-3">
+          <span role="img" aria-label="Vivo" className="inline-flex items-center justify-center rounded-lg bg-[#FE5000] h-9 px-3 select-none">
+            <span aria-hidden="true" className="text-white text-[19px] font-normal leading-none tracking-[0.02em]" style={{ fontFamily: "'Century Gothic','CenturyGothic','Poppins',sans-serif" }}>Vivo</span>
+          </span>
+          <span className="text-[13px] font-normal uppercase tracking-[0.3em] text-[#2c2a29]" style={{ fontFamily: "'Century Gothic','CenturyGothic','Poppins',sans-serif" }}>Johari</span>
+        </div>
+
         {/* Sticky Tab Bar */}
         <div 
           className="sticky border-b border-[#e8dfd5] bg-[#fbf9f6]/95 backdrop-blur-md z-30 flex items-center justify-center px-4 overflow-x-auto hide-scrollbar"
@@ -58,12 +74,12 @@ export default function CommunityApp() {
                 data-testid={`tab-${t.id}`}
                 onClick={() => setTab(t.id)}
                 className={`py-4 text-sm sm:text-base font-semibold whitespace-nowrap transition-colors relative ${
-                  tab === t.id ? "text-[#c25e30]" : "text-[#7a746e] hover:text-[#2c2a29]"
+                  tab === t.id ? "text-[#C43E00]" : "text-[#7a746e] hover:text-[#2c2a29]"
                 }`}
               >
                 {t.label}
                 {tab === t.id && (
-                  <span className="absolute bottom-0 left-0 w-full h-[3px] bg-[#c25e30] rounded-t-full" />
+                  <span className="absolute bottom-0 left-0 w-full h-[3px] bg-[#FE5000] rounded-t-full" />
                 )}
               </button>
             ))}
