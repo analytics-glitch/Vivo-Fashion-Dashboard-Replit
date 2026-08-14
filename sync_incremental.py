@@ -184,6 +184,138 @@ def heartbeat_keepalive(status, interval=60):
         t.join(timeout=5)
 
 
+# ── Durable per-source pull-failure trail ────────────────────────────────────
+# A dead sales source used to be a console-only `log.error(...)` line: on
+# 13-Aug-2026 the Odoo login lost POS read access and Kenya sales froze 19+
+# hours while every badge stayed green. These helpers persist source-tagged
+# failure/recovery rows into sync_health_log (the watchdog's table) so the
+# outage is queryable and /api/sync-status can surface it.
+#
+# Rate limiting: the sales worker retries every ~60s, so a broken source would
+# otherwise write ~1.4k rows/day. We log on the ok→failing transition, then at
+# most once per SOURCE_FAILURE_RELOG_SEC while it stays broken, and once on
+# recovery. State is in-process; all callers run under _SALES_SYNC_LOCK.
+# Both helpers use their own cursor, commit themselves, and NEVER raise —
+# callers have just rolled back (failure) or committed (success), so the
+# transaction is clean, and health bookkeeping must never break the sync.
+
+SOURCE_FAILURE_RELOG_SEC = int(os.environ.get("SOURCE_FAILURE_RELOG_SEC", "3600"))
+_SOURCE_FAIL_STATE = {}  # source -> {failing, first_failed_at, last_logged_at, fail_count}
+_HEALTH_LOG_SOURCE_COLS_READY = False
+
+
+def _ensure_health_log_source_cols(conn):
+    """sync_health_log is created by watchdog.py; make sure it exists here too
+    (fresh DBs) and carries the source/error columns (additive, same pattern
+    as api_pg's data_quality_score migration)."""
+    global _HEALTH_LOG_SOURCE_COLS_READY
+    if _HEALTH_LOG_SOURCE_COLS_READY:
+        return
+    with conn.cursor() as c:
+        c.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sync_health_log (
+                id BIGSERIAL PRIMARY KEY,
+                checked_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                api_healthy BOOLEAN,
+                sync_healthy BOOLEAN,
+                last_sync_at TIMESTAMPTZ,
+                action_taken TEXT,
+                notes TEXT
+            )
+        """
+        )
+        c.execute("ALTER TABLE sync_health_log ADD COLUMN IF NOT EXISTS source TEXT")
+        c.execute("ALTER TABLE sync_health_log ADD COLUMN IF NOT EXISTS error TEXT")
+    conn.commit()
+    _HEALTH_LOG_SOURCE_COLS_READY = True
+
+
+def record_source_failure(conn, source, error, now=None):
+    """Persist a rate-limited `source_failure` row. Returns True if written."""
+    try:
+        now = now or datetime.now(timezone.utc)
+        st = _SOURCE_FAIL_STATE.get(source)
+        if st is None or not st.get("failing"):
+            st = {
+                "failing": True,
+                "first_failed_at": now,
+                "last_logged_at": None,
+                "fail_count": 0,
+            }
+            _SOURCE_FAIL_STATE[source] = st
+        st["fail_count"] += 1
+        last = st["last_logged_at"]
+        if last is not None and (now - last).total_seconds() < SOURCE_FAILURE_RELOG_SEC:
+            return False
+        _ensure_health_log_source_cols(conn)
+        if st["fail_count"] == 1:
+            notes = f"{source} pull failed"
+        else:
+            first = st["first_failed_at"].strftime("%Y-%m-%d %H:%M")
+            notes = (
+                f"{source} pull still failing ({st['fail_count']} failures "
+                f"since {first}Z)"
+            )
+        with conn.cursor() as c:
+            c.execute(
+                """
+                INSERT INTO sync_health_log
+                    (action_taken, notes, source, error)
+                VALUES ('source_failure', %s, %s, %s)
+            """,
+                (notes, source, str(error)[:800]),
+            )
+        conn.commit()
+        st["last_logged_at"] = now
+        return True
+    except Exception as e:  # pragma: no cover - defensive
+        log.warning("record_source_failure(%s) could not write: %s", source, e)
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return False
+
+
+def record_source_success(conn, source, now=None):
+    """On a failing→ok transition, persist one `source_recovered` row."""
+    st = _SOURCE_FAIL_STATE.get(source)
+    if not st or not st.get("failing"):
+        return False
+    try:
+        now = now or datetime.now(timezone.utc)
+        # Flip state FIRST: rate-limit correctness beats a best-effort row.
+        st["failing"] = False
+        dur_min = int(
+            round((now - st["first_failed_at"]).total_seconds() / 60.0)
+        )
+        notes = (
+            f"{source} pull recovered after {st['fail_count']} failure(s) "
+            f"over ~{dur_min} min"
+        )
+        st["fail_count"] = 0
+        st["last_logged_at"] = None
+        _ensure_health_log_source_cols(conn)
+        with conn.cursor() as c:
+            c.execute(
+                """
+                INSERT INTO sync_health_log (action_taken, notes, source)
+                VALUES ('source_recovered', %s, %s)
+            """,
+                (notes, source),
+            )
+        conn.commit()
+        return True
+    except Exception as e:  # pragma: no cover - defensive
+        log.warning("record_source_success(%s) could not write: %s", source, e)
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return False
+
+
 STORES = [
     {
         "store_id": "vivo-uganda",
@@ -2083,24 +2215,31 @@ def sales_worker_loop(stop_event=None):
                 with conn.cursor() as cur:
                     rates = get_exchange_rates(cur)
 
+                    # Each source records success/failure into the durable
+                    # trail so a silently dead feed (like the 13-Aug Odoo
+                    # permission loss) leaves queryable evidence.
                     for store in STORES:
                         try:
                             process_shopify_store(
                                 store, cur, now, rates, since_override=shopify_since
                             )
                             conn.commit()
+                            record_source_success(conn, store["store_id"])
                         except Exception as e:
                             log.error(
                                 "Sales worker %s error: %s", store["store_id"], e
                             )
                             conn.rollback()
+                            record_source_failure(conn, store["store_id"], e)
 
                     try:
                         sync_odoo(cur, now, rates, since_override=odoo_since)
                         conn.commit()
+                        record_source_success(conn, "vivofashiongroup")
                     except Exception as e:
                         log.error("Sales worker Odoo error: %s", e)
                         conn.rollback()
+                        record_source_failure(conn, "vivofashiongroup", e)
 
                     # Shop Zetu ShopifyQL — slower cadence (subprocess re-walks
                     # a ~4-day window; ~10s normally, hard timeout so a hung
@@ -2122,8 +2261,10 @@ def sales_worker_loop(stop_event=None):
                                 timeout=SALES_WORKER_SZ_TIMEOUT_SEC,
                             )
                             log.info("Sales worker: Shop Zetu ShopifyQL sync done")
+                            record_source_success(conn, "shop-zetu")
                         except Exception as e:
                             log.error("Sales worker Shop Zetu error: %s", e)
+                            record_source_failure(conn, "shop-zetu", e)
 
                 write_heartbeat(conn, "sales", table="sales_heartbeat")
         except Exception as e:
@@ -2304,9 +2445,11 @@ def main():
                 process_shopify_store(store, cur, now, rates)
                 conn.commit()
                 write_heartbeat(conn, f"store:{store['store_id']}")
+                record_source_success(conn, store["store_id"])
             except Exception as e:
                 log.error("Error syncing %s: %s", store["store_id"], e)
                 conn.rollback()
+                record_source_failure(conn, store["store_id"], e)
 
         # Shop Zetu via ShopifyQL. Bounded: this runs while holding
         # _SALES_SYNC_LOCK, so a hung API walk would otherwise stall the
@@ -2321,16 +2464,20 @@ def main():
                 timeout=900,
             )
             log.info("Shop Zetu ShopifyQL sync done")
+            record_source_success(conn, "shop-zetu")
         except Exception as e:
             log.error("Shop Zetu ShopifyQL sync error: %s", e)
+            record_source_failure(conn, "shop-zetu", e)
 
         try:
             sync_odoo(cur, now, rates)
             conn.commit()
             write_heartbeat(conn, "odoo")
+            record_source_success(conn, "vivofashiongroup")
         except Exception as e:
             log.error("Odoo sync error: %s", e)
             conn.rollback()
+            record_source_failure(conn, "vivofashiongroup", e)
 
     # Categorise any new products
     try:

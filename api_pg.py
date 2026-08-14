@@ -8,6 +8,7 @@ from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from dq_cross_compare import cross_surface_compare
 from odoo_locations import ODOO_LOCATION_MAP
+import sync_source_health as _src_health
 import psycopg2
 import psycopg2.extras
 import os
@@ -4927,6 +4928,18 @@ def sync_status():
     legitimately stops advancing, so reporting that as CRITICAL would be a false
     alarm. Data freshness (last load) is still reported separately, for info.
     WARNING after 10 min without a heartbeat, CRITICAL after 30 min.
+
+    SEPARATE from loop health, each ACTIVE sales source (Kenya Odoo, Uganda,
+    Rwanda, Shop Zetu — never the retired vivowoman) is classified for
+    staleness with trading-hours-aware thresholds (sync_source_health): a
+    healthy pull rewrites its whole anchor window with fresh loaded_at stamps,
+    so a source whose MAX(loaded_at) freezes during its trading hours has
+    stopped landing rows (like the 13-Aug-2026 Odoo permission loss that froze
+    Kenya for 19h while this endpoint stayed green). Overnight/pre-open
+    freezes accrue nothing, so a closed store is never "stale". The response
+    carries `sources`, `sources_health`, `sources_stale` and `stale_summary`;
+    stale sources also fan out ONE deduped admin bell alert per incident (with
+    a recovery notice when rows resume) via _sweep_stale_source_alerts.
     """
     from datetime import datetime, timezone
     WARN_MIN, CRIT_MIN = 10, 30
@@ -4955,9 +4968,17 @@ def sync_status():
         last_check = None
         cur.execute("SELECT to_regclass('public.sync_health_log') AS t")
         if cur.fetchone()["t"]:
+            # last_check keeps its original meaning (latest watchdog/loop
+            # check) — the per-source failure trail rows are excluded. The
+            # trail itself (raw upstream error text) is NEVER exposed here:
+            # this route is on the public allowlist, so diagnostics live
+            # behind /api/admin/source-failures instead.
             cur.execute(
                 "SELECT checked_at, api_healthy, sync_healthy, action_taken, notes "
-                "FROM sync_health_log ORDER BY checked_at DESC LIMIT 1"
+                "FROM sync_health_log "
+                "WHERE action_taken IS NULL "
+                "   OR action_taken NOT IN ('source_failure', 'source_recovered') "
+                "ORDER BY checked_at DESC LIMIT 1"
             )
             h = cur.fetchone()
             if h:
@@ -5002,6 +5023,15 @@ def sync_status():
         for r in store_rows
     ]
 
+    # Per-source staleness (active sources only; vivowoman not in registry).
+    src_eval = _src_health.evaluate_sources(
+        {r["store_id"]: r["last"] for r in store_rows}, now
+    )
+    try:
+        _sweep_stale_source_alerts(src_eval, now)
+    except Exception as e:
+        log.debug("stale-source alert sweep failed: %s", e)
+
     return {
         "health": health,
         "last_sync_at": last_cycle.isoformat() if last_cycle else None,
@@ -5015,7 +5045,163 @@ def sync_status():
         },
         "stores": stores,
         "last_check": last_check,
+        "sources": src_eval["sources"],
+        "sources_stale": src_eval["sources_stale"],
+        "sources_health": src_eval["sources_health"],
+        "stale_summary": src_eval["stale_summary"],
     }
+
+
+@app.get("/api/admin/source-failures")
+def admin_source_failures():
+    """Recent per-source pull failure/recovery trail (last 48h).
+
+    Admin-only: enforced by the auth middleware's blanket /api/admin gate.
+    Deliberately separate from the public /api/sync-status payload because
+    these rows carry raw upstream error text (e.g. Odoo fault messages) that
+    must not be disclosed to unauthenticated callers. Rate-limited at the
+    writer (transition + hourly), so this stays tiny.
+    """
+    pool = _get_pool()
+    conn = pool.getconn()
+    try:
+        conn.autocommit = True
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        rows = []
+        cur.execute("SELECT to_regclass('public.sync_health_log') AS t")
+        if cur.fetchone()["t"]:
+            # Guarded: the source/error columns appear only after the sync
+            # loop first records a failure (conn is autocommit: safe).
+            try:
+                cur.execute(
+                    "SELECT checked_at, action_taken, source, error, notes "
+                    "FROM sync_health_log "
+                    "WHERE action_taken IN ('source_failure', 'source_recovered') "
+                    "  AND checked_at > now() - interval '48 hours' "
+                    "ORDER BY checked_at DESC LIMIT 50"
+                )
+                rows = [
+                    {
+                        "checked_at": r["checked_at"].isoformat() if r["checked_at"] else None,
+                        "action": r["action_taken"],
+                        "source": r["source"],
+                        "error": r["error"],
+                        "notes": r["notes"],
+                    }
+                    for r in cur.fetchall()
+                ]
+            except Exception:
+                rows = []
+        cur.close()
+    except Exception:
+        pool.putconn(conn, close=True)
+        raise
+    else:
+        pool.putconn(conn)
+    return {"failures": rows}
+
+
+# One deduped admin bell alert per stale-source incident. Swept from the
+# public /api/sync-status poll (topbar pill hits it every 60s from every open
+# dashboard), so it is TTL-gated per process and fully idempotent: incident
+# identity = the source's frozen MAX(loaded_at) stamp, and user_notifications
+# dedupe_key is UNIQUE with ON CONFLICT DO NOTHING.
+_SOURCE_ALERT_SWEEP = {"last": None}
+_SOURCE_ALERT_SWEEP_MIN_SEC = 120
+
+
+def _sweep_stale_source_alerts(src_eval, now):
+    global _SOURCE_ALERT_SWEEP
+    last = _SOURCE_ALERT_SWEEP["last"]
+    if last is not None and (now - last).total_seconds() < _SOURCE_ALERT_SWEEP_MIN_SEC:
+        return
+    _SOURCE_ALERT_SWEEP["last"] = now
+
+    sources = src_eval.get("sources") or []
+    stale = [s for s in sources if s.get("status") == "stale"]
+    fresh = [s for s in sources if s.get("status") == "ok"]
+    if not stale and not fresh:
+        return
+    _ensure_user_notifications()
+
+    if stale:
+        admins = _users_exec(
+            "SELECT user_id FROM app_users WHERE role = 'admin' AND status = 'active'",
+            fetch=True,
+        ) or []
+        for s in stale:
+            # Frozen stamp = stable incident identity: re-sweeps while the
+            # outage persists dedupe to no-ops; after recovery, new rows move
+            # the stamp so a later outage is a NEW incident.
+            incident = s.get("last_loaded_at") or "nodata"
+            title = f"Sales feed stale: {s['label']}"
+            message = (
+                f"No new {s['label']} sales rows since {s['last_loaded_eat']} EAT "
+                f"({s['age_label']} ago) despite trading hours. The sync loop is "
+                "running — the source itself has stopped landing rows. Check the "
+                "upstream connection/permissions; pull errors are recorded in "
+                "sync_health_log."
+            )
+            for a in admins:
+                _users_exec(
+                    """
+                    INSERT INTO user_notifications
+                        (user_id, type, title, message, link, dedupe_key)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (dedupe_key) DO NOTHING
+                """,
+                    (
+                        a["user_id"],
+                        "sync_source_stale",
+                        title,
+                        message,
+                        "/admin/data-health",
+                        f"sync_stale:{s['store_id']}:{incident}:{a['user_id']}",
+                    ),
+                )
+
+    if fresh:
+        # Recovery: mark this source's unread stale alerts read and follow up
+        # with a one-time recovery notice (deduped off the original incident
+        # key, so a re-poll can't double-notify).
+        unread = _users_exec(
+            "SELECT id, user_id, dedupe_key FROM user_notifications "
+            "WHERE type = 'sync_source_stale' AND read_at IS NULL",
+            fetch=True,
+        ) or []
+        for s in fresh:
+            prefix = f"sync_stale:{s['store_id']}:"
+            hits = [
+                r for r in unread if (r.get("dedupe_key") or "").startswith(prefix)
+            ]
+            if not hits:
+                continue
+            _users_exec(
+                "UPDATE user_notifications SET read_at = now() WHERE id = ANY(%s)",
+                ([r["id"] for r in hits],),
+            )
+            title = f"Sales feed recovered: {s['label']}"
+            message = (
+                f"{s['label']} is landing sales rows again "
+                f"(latest data {s['age_label']} ago)."
+            )
+            for r in hits:
+                _users_exec(
+                    """
+                    INSERT INTO user_notifications
+                        (user_id, type, title, message, link, dedupe_key)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (dedupe_key) DO NOTHING
+                """,
+                    (
+                        r["user_id"],
+                        "sync_source_recovered",
+                        title,
+                        message,
+                        "/admin/data-health",
+                        "sync_recovered:" + r["dedupe_key"][len("sync_stale:"):],
+                    ),
+                )
 
 @app.get("/api/locations")
 def get_locations():

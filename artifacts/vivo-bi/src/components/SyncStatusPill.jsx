@@ -4,12 +4,22 @@ import { api } from "@/lib/api";
 /**
  * Sync-pipeline health pill.
  *
- * Polls `/api/sync-status` every 60 s. Color reflects whether the sync LOOP is
- * alive (its heartbeat), so a quiet sales period never turns the pill red:
- *   • Green  (OK)       — sync ran within 10 min
- *   • Amber  (WARNING)  — sync last ran 10-30 min ago
- *   • Red    (CRITICAL) — sync last ran > 30 min ago, or the endpoint is down
- * The tooltip also reports data freshness (when sales data last loaded).
+ * Polls `/api/sync-status` every 60 s and reflects the WORSE of two separate
+ * signals:
+ *   1. Loop liveness (heartbeat) — is the sync loop itself running?
+ *      • Green (OK) ran <10 min ago · Amber 10-30 min · Red >30 min/endpoint down
+ *   2. Per-source data staleness (`sources_health`) — is every ACTIVE sales
+ *      source (Kenya Odoo, Uganda, Rwanda, Shop Zetu) still landing rows
+ *      during its trading hours? A healthy pull rewrites its anchor window
+ *      with fresh loaded_at stamps, so a frozen source means dead pulls (the
+ *      13-Aug-2026 Odoo permission loss froze Kenya ~19 h while the loop
+ *      heartbeat stayed green — this is the signal that catches that).
+ *
+ * When a source is stale the label names the worst offender and its data age
+ * (e.g. "Kenya feed 17h stale"); when the LOOP is the problem the label keeps
+ * the heartbeat age (stale sources are then just a consequence). A quiet
+ * overnight/pre-open period accrues no staleness server-side, so the pill
+ * stays green for merely-closed stores.
  *
  * Visible to every signed-in user (sync health is operational, not sensitive).
  * No emojis — a colored status dot per project conventions.
@@ -22,6 +32,8 @@ const fmtAgo = (m) => {
   const r = Math.round(m % 60);
   return r ? `${h}h ${r}m ago` : `${h}h ago`;
 };
+
+const RANK = { loading: 0, OK: 0, WARNING: 1, CRITICAL: 2 };
 
 const SyncStatusPill = () => {
   const [data, setData] = useState(null);
@@ -48,7 +60,14 @@ const SyncStatusPill = () => {
     };
   }, []);
 
-  const health = error ? "CRITICAL" : data?.health || "loading";
+  const loopHealth = error ? "CRITICAL" : data?.health || "loading";
+  const sourcesHealth = data?.sources_health || "OK";
+  const health =
+    loopHealth === "loading"
+      ? "loading"
+      : (RANK[sourcesHealth] || 0) > (RANK[loopHealth] || 0)
+        ? sourcesHealth
+        : loopHealth;
 
   const cls = {
     loading: "bg-panel text-muted border-border",
@@ -65,18 +84,26 @@ const SyncStatusPill = () => {
   }[health];
 
   const ago = fmtAgo(data?.minutes_since);
+  const staleOnly = loopHealth === "OK" && data?.sources_stale && data?.stale_summary;
   const label = error
     ? "Sync offline"
     : health === "loading"
       ? "Sync —"
-      : `Sync · ${ago}`;
+      : staleOnly
+        ? data.stale_summary
+        : `Sync · ${ago}`;
 
   const dataAgo = fmtAgo(data?.data_freshness?.minutes_since);
+  const staleDetail = (data?.sources || [])
+    .filter((s) => s.status === "stale")
+    .map((s) => `${s.short_label}: no new rows since ${s.last_loaded_eat} EAT (${s.age_label})`)
+    .join("; ");
   const title = error
     ? "Sync status endpoint unreachable"
     : `Sync pipeline: ${health}`
-      + (data?.last_sync_at ? ` — last ran ${ago}` : "")
-      + (data?.data_freshness?.last_loaded_at ? `; data loaded ${dataAgo}` : "");
+      + (data?.last_sync_at ? ` — loop ran ${ago}` : "")
+      + (data?.data_freshness?.last_loaded_at ? `; data loaded ${dataAgo}` : "")
+      + (staleDetail ? `. STALE — ${staleDetail}` : "");
 
   return (
     <div className="relative inline-block" title={title}>

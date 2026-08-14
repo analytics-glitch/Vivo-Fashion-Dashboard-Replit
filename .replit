@@ -78,7 +78,7 @@ isValidation = true
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "python -m unittest validation_agent.test_cross_surface validation_agent.test_governance validation_agent.test_learned_range test_ibt_nightly_reconcile validation_agent.test_ibt_calibration test_sync_loop_idempotency validation_agent.test_replen_calibration test_fabric_worker_loop test_production_intake_prune test_replen_item_history test_page_access_parity test_costing_signoff_rules test_costing_pdf_export test_sales_worker_loop test_preprod_costing_lines test_costing_multiplier_persistence test_costing_field_alignment test_merch_router_schema_smoke test_merch_buying_order_tab_access test_style_tier_seed test_community_style_quiz"
+args = "python -m unittest validation_agent.test_cross_surface validation_agent.test_governance validation_agent.test_learned_range test_ibt_nightly_reconcile validation_agent.test_ibt_calibration test_sync_loop_idempotency validation_agent.test_replen_calibration test_fabric_worker_loop test_production_intake_prune test_replen_item_history test_page_access_parity test_costing_signoff_rules test_costing_pdf_export test_sales_worker_loop test_sync_source_health test_preprod_costing_lines test_costing_multiplier_persistence test_costing_field_alignment test_merch_router_schema_smoke test_merch_buying_order_tab_access test_style_tier_seed test_community_style_quiz"
 
 [[workflows.workflow]]
 name = "loyalty-smoke"
@@ -99,46 +99,6 @@ integrations = ["google-sheet:1.0.0"]
 [postMerge]
 path = "scripts/post-merge.sh"
 timeoutMs = 20000
-
-[[ports]]
-localPort = 8002
-externalPort = 6000
-
-[[ports]]
-localPort = 8080
-externalPort = 8080
-
-[[ports]]
-localPort = 8081
-externalPort = 80
-
-[[ports]]
-localPort = 8082
-externalPort = 3002
-
-[[ports]]
-localPort = 18659
-externalPort = 3000
-
-[[ports]]
-localPort = 20838
-externalPort = 3001
-
-[[ports]]
-localPort = 20839
-externalPort = 3003
-
-[[ports]]
-localPort = 21438
-externalPort = 5000
-
-[[ports]]
-localPort = 22891
-externalPort = 5173
-
-[[ports]]
-localPort = 26235
-externalPort = 4200
 
 [nix]
 channel = "stable-25_05"
