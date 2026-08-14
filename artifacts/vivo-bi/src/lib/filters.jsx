@@ -21,6 +21,7 @@ const FiltersContext = createContext(null);
 // cu = currency code (default KES; cosmetic only for now)
 // cg = channelGroup ('all'|'retail'|'online') — segments channels NOT LIKE / LIKE '%Online%'
 // cx = clusters (comma-separated cluster ids — see @/lib/clusters)
+// st = Style Launch Planner types (comma-separated order types)
 const VALID_PRESETS = new Set([
   "today", "yesterday",
   "last_7d", "last_30d", "last_90d", "last_365d",
@@ -53,6 +54,7 @@ function readUrlParams() {
   const cu = pick("cu", "currency");
   const cg = pick("cg", "channel_group");
   const cx = pick("cx", "cluster");
+  const st = pick("st", "style_type");
   if (d) out.d = d;
   if (t) out.t = t;
   if (preset) out.p = preset;
@@ -64,6 +66,7 @@ function readUrlParams() {
   if (cu) out.cu = cu;
   if (cg) out.cg = cg;
   if (cx) out.cx = cx;
+  if (st) out.st = st;
   return Object.keys(out).length ? out : null;
 }
 
@@ -88,6 +91,7 @@ function writeUrlParams(state) {
   put("cu", state.currency, state.currency === "KES");
   put("cg", state.channelGroup, state.channelGroup === "all");
   put("cx", state.clusters.join(","), state.clusters.length === 0);
+  put("st", state.styleTypes.join(","), state.styleTypes.length === 0);
   const qs = next.toString();
   const url = window.location.pathname + (qs ? `?${qs}` : "") + window.location.hash;
   window.history.replaceState(null, "", url);
@@ -117,6 +121,9 @@ export const FiltersProvider = ({ children }) => {
   const initialClusters = urlParams?.cx
     ? urlParams.cx.split(",").map((s) => s.trim()).filter((c) => CLUSTERS[c])
     : [];
+  const initialStyleTypes = urlParams?.st
+    ? urlParams.st.split(",").map((s) => s.trim()).filter(Boolean)
+    : [];
 
   const [dateFrom, setDateFrom] = useState(initialFrom);
   const [dateTo, setDateTo] = useState(initialTo);
@@ -129,6 +136,7 @@ export const FiltersProvider = ({ children }) => {
   const [currency, setCurrency] = useState(initialCurrency);
   const [channelGroup, setChannelGroup] = useState(initialChannelGroup);
   const [clusters, setClusters] = useState(initialClusters);
+  const [styleTypes, setStyleTypes] = useState(initialStyleTypes);
   const [retailChannels, setRetailChannels] = useState([]);
   const [onlineChannels, setOnlineChannels] = useState([]);
   const [dataVersion, setDataVersion] = useState(0);
@@ -254,17 +262,18 @@ export const FiltersProvider = ({ children }) => {
     if (currency && currency !== "KES") p.set("currency", currency);
     if (channelGroup && channelGroup !== "all") p.set("channel_group", channelGroup);
     if (clusters.length) p.set("cluster", clusters.join(","));
+     if (styleTypes.length) p.set("style_type", styleTypes.join(","));
     const qs = p.toString();
     return window.location.origin + window.location.pathname + (qs ? `?${qs}` : "");
-  }, [preset, dateFrom, dateTo, countries, channels, compareMode, compareDateFrom, compareDateTo, currency, channelGroup, clusters]);
+  }, [preset, dateFrom, dateTo, countries, channels, compareMode, compareDateFrom, compareDateTo, currency, channelGroup, clusters, styleTypes]);
 
   // Sync state → URL on every meaningful change AND on every route change
   // (react-router's NavLink replaces the whole URL including the query
   // string, so we re-apply our params right after the pathname updates).
   const location = useLocation();
   useEffect(() => {
-    writeUrlParams({ dateFrom, dateTo, preset, countries, channels, compareMode, compareDateFrom, compareDateTo, currency, channelGroup, clusters });
-  }, [dateFrom, dateTo, preset, countries, channels, compareMode, compareDateFrom, compareDateTo, currency, channelGroup, clusters, location.pathname]);
+    writeUrlParams({ dateFrom, dateTo, preset, countries, channels, compareMode, compareDateFrom, compareDateTo, currency, channelGroup, clusters, styleTypes });
+  }, [dateFrom, dateTo, preset, countries, channels, compareMode, compareDateFrom, compareDateTo, currency, channelGroup, clusters, styleTypes, location.pathname]);
 
   // Derive the channel list that gets sent to the API.
   // Precedence: cluster scopes the store pool; a manual POS pick narrows
@@ -292,10 +301,11 @@ export const FiltersProvider = ({ children }) => {
       channels: effectiveChannels,
       manualChannels: channels,
       channelGroup, clusters,
+      styleTypes,
       compareMode, compareDateFrom, compareDateTo,
       currency, dataVersion,
     }),
-    [dateFrom, dateTo, countries, effectiveChannels, channels, channelGroup, clusters, compareMode, compareDateFrom, compareDateTo, currency, dataVersion]
+    [dateFrom, dateTo, countries, effectiveChannels, channels, channelGroup, clusters, styleTypes, compareMode, compareDateFrom, compareDateTo, currency, dataVersion]
   );
 
   const value = useMemo(
@@ -307,6 +317,7 @@ export const FiltersProvider = ({ children }) => {
       channels, setChannels,
       channelGroup, setChannelGroup,
       clusters, setClusters,
+      styleTypes, setStyleTypes,
       retailChannels, onlineChannels,
       compareMode, setCompareMode,
       compareDateFrom, setCompareDateFrom,
@@ -317,7 +328,7 @@ export const FiltersProvider = ({ children }) => {
       applied,
       buildShareableLink,
     }),
-    [dateFrom, dateTo, preset, countries, channels, channelGroup, clusters, retailChannels, onlineChannels, compareMode, compareDateFrom, compareDateTo, currency, dataVersion, refresh, lastUpdated, touchLastUpdated, applied, setPreset, buildShareableLink]
+    [dateFrom, dateTo, preset, countries, channels, channelGroup, clusters, styleTypes, retailChannels, onlineChannels, compareMode, compareDateFrom, compareDateTo, currency, dataVersion, refresh, lastUpdated, touchLastUpdated, applied, setPreset, buildShareableLink]
   );
   return <FiltersContext.Provider value={value}>{children}</FiltersContext.Provider>;
 };

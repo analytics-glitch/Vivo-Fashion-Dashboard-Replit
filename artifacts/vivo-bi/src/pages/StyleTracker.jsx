@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import { useFilters } from "@/lib/filters";
 import { toast } from "sonner";
 import { SectionTitle, Loading, ErrorBox } from "@/components/common";
 import {
@@ -123,27 +124,35 @@ const ORDER_TYPE_COLORS = {
 const stageTone = (status) => {
   const value = String(status || "").toLowerCase();
   if (value === "warehouse") {
-    return { card: "bg-emerald-50/90 border-emerald-300 border-l-emerald-600", dot: "bg-emerald-600", label: "text-emerald-800" };
+    return { card: "bg-emerald-50/90 border-emerald-300 border-l-emerald-600", dot: "bg-emerald-600", label: "text-emerald-800", control: "bg-emerald-50 text-emerald-900 border-emerald-400" };
   }
   if (value.includes("cut")) {
-    return { card: "bg-sky-50/70 border-sky-200 border-l-sky-500", dot: "bg-sky-500", label: "text-sky-800" };
+    return { card: "bg-sky-50/70 border-sky-200 border-l-sky-500", dot: "bg-sky-500", label: "text-sky-800", control: "bg-sky-50 text-sky-900 border-sky-300" };
   }
   if (value.includes("sew")) {
-    return { card: "bg-amber-50/70 border-amber-200 border-l-amber-500", dot: "bg-amber-500", label: "text-amber-800" };
+    return { card: "bg-amber-50/70 border-amber-200 border-l-amber-500", dot: "bg-amber-500", label: "text-amber-800", control: "bg-amber-50 text-amber-900 border-amber-300" };
   }
   if (value.includes("finish")) {
-    return { card: "bg-violet-50/70 border-violet-200 border-l-violet-500", dot: "bg-violet-500", label: "text-violet-800" };
+    return { card: "bg-violet-50/70 border-violet-200 border-l-violet-500", dot: "bg-violet-500", label: "text-violet-800", control: "bg-violet-50 text-violet-900 border-violet-300" };
   }
   if (value.includes("trim") || value.includes("bartack")) {
-    return { card: "bg-cyan-50/70 border-cyan-200 border-l-cyan-500", dot: "bg-cyan-500", label: "text-cyan-800" };
+    return { card: "bg-cyan-50/70 border-cyan-200 border-l-cyan-500", dot: "bg-cyan-500", label: "text-cyan-800", control: "bg-cyan-50 text-cyan-900 border-cyan-300" };
   }
   if (value.includes("team")) {
-    return { card: "bg-rose-50/70 border-rose-200 border-l-rose-500", dot: "bg-rose-500", label: "text-rose-800" };
+    return { card: "bg-rose-50/70 border-rose-200 border-l-rose-500", dot: "bg-rose-500", label: "text-rose-800", control: "bg-rose-50 text-rose-900 border-rose-300" };
   }
   if (value.includes("transit")) {
-    return { card: "bg-teal-50/70 border-teal-200 border-l-teal-500", dot: "bg-teal-500", label: "text-teal-800" };
+    return { card: "bg-teal-50/70 border-teal-200 border-l-teal-500", dot: "bg-teal-500", label: "text-teal-800", control: "bg-teal-50 text-teal-900 border-teal-300" };
   }
-  return { card: "bg-slate-50/80 border-slate-200 border-l-slate-400", dot: "bg-slate-400", label: "text-slate-700" };
+  return { card: "bg-slate-50/80 border-slate-200 border-l-slate-400", dot: "bg-slate-400", label: "text-slate-700", control: "bg-slate-50 text-slate-800 border-slate-300" };
+};
+
+const statusGroupRank = (status) => {
+  const value = String(status || "").toLowerCase();
+  if (value === "warehouse" || value.includes("completed")) return 0;
+  if (value.includes("transit")) return 1;
+  if (value.includes("team") || value.includes("trim") || value.includes("bartack") || value.includes("finish") || value.includes("sew")) return 2;
+  return 3;
 };
 
 const groupStylesByStage = (styles, finishingOptions) => {
@@ -162,6 +171,9 @@ const groupStylesByStage = (styles, finishingOptions) => {
   return [...groups.entries()]
     .map(([status, groupedStyles]) => ({ status, styles: groupedStyles }))
     .sort((a, b) => {
+      const aLogicalRank = statusGroupRank(a.status);
+      const bLogicalRank = statusGroupRank(b.status);
+      if (aLogicalRank !== bLogicalRank) return aLogicalRank - bLogicalRank;
       const aRank = stageOrder.get(a.status.toLowerCase());
       const bRank = stageOrder.get(b.status.toLowerCase());
       if (aRank !== undefined || bRank !== undefined) {
@@ -233,10 +245,11 @@ function WeekStats({ week, compact = false }) {
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
               {stEntries.map(([status, count]) => {
                 const p = stTotal > 0 ? Math.round((count / stTotal) * 100) : 0;
+                const tone = stageTone(status);
                 return (
                   <span key={status} className="flex items-center gap-1 text-[10px]">
-                    <span className="inline-block w-1.5 h-1.5 rounded-full bg-[#1a5c38]/40 shrink-0" />
-                    <span className="font-semibold text-[#0f3d24]">{status}</span>
+                    <span className={`inline-block w-1.5 h-1.5 rounded-full ${tone.dot} shrink-0`} />
+                    <span className={`font-semibold ${tone.label}`}>{status}</span>
                     <span className="text-muted">{p}%</span>
                     <span className="text-muted/60">({count})</span>
                   </span>
@@ -251,6 +264,140 @@ function WeekStats({ week, compact = false }) {
 }
 
 /** Table view — inline editing, clickable style names, notes, and days elapsed */
+function StyleTableRow({ style, today, statuses, orderTypes, brands, busy, onUpdate, notesOpen, toggleNotes, onNoteAdded, onOpenFulfillment }) {
+  const [draft, setDraft] = useState(() => ({
+    brand: style.brand || "",
+    order_type: style.order_type || "",
+    quantity: style.quantity ?? "",
+    status: style.status || "",
+    deliver_by: style.deliver_by || "",
+  }));
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setDraft({
+      brand: style.brand || "",
+      order_type: style.order_type || "",
+      quantity: style.quantity ?? "",
+      status: style.status || "",
+      deliver_by: style.deliver_by || "",
+    });
+  }, [style.id, style.brand, style.order_type, style.quantity, style.status, style.deliver_by]);
+
+  const late = isLateStyle({ ...style, ...draft }, today);
+  const quantity = Number(draft.quantity);
+  const validDate = /^\d{4}-\d{2}-\d{2}$/.test(String(draft.deliver_by || "")) &&
+    !Number.isNaN(new Date(`${draft.deliver_by}T00:00:00`).getTime());
+  const errors = {
+    brand: draft.brand.trim() ? "" : "Required",
+    order_type: draft.order_type.trim() ? "" : "Required",
+    quantity: Number.isFinite(quantity) && quantity > 0 ? "" : "Enter a quantity above 0",
+    status: draft.status.trim() ? "" : "Required",
+    deliver_by: validDate ? "" : "Required",
+  };
+  const canSave = Object.values(errors).every((message) => !message);
+  const fieldCls = (invalid) =>
+    `w-full text-[11px] bg-white border rounded-md px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-brand/40 disabled:opacity-50 ${
+      invalid ? "border-rose-500 bg-rose-50/60 focus:ring-rose-400" : "border-line"
+    }`;
+  const errorHint = (message) => message && <div className="mt-0.5 text-[9px] leading-tight text-rose-700">{message}</div>;
+
+  const setField = (field) => (event) => {
+    const value = event.target.value;
+    setDraft((current) => ({ ...current, [field]: value }));
+  };
+
+  const save = async () => {
+    if (!canSave || busy || saving) return;
+    setSaving(true);
+    try {
+      await onUpdate(style, {
+        brand: draft.brand.trim(),
+        order_type: draft.order_type.trim(),
+        quantity: quantity,
+        status: draft.status.trim(),
+        deliver_by: draft.deliver_by,
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const daysEl = style.days_elapsed !== null && style.days_elapsed !== undefined
+    ? style.days_elapsed
+    : (() => {
+        const ref = style.order_date || (style.created_at ? style.created_at.slice(0, 10) : null);
+        if (!ref || !today) return null;
+        return Math.floor((new Date(today) - new Date(ref)) / 86400000);
+      })();
+  const noteCount = (style.notes || []).length;
+  const canDone = style.status === "Warehouse";
+
+  return (
+    <tr className={`border-b border-line/60 hover:bg-panel/40 ${late ? "bg-rose-50/50" : ""}`}>
+      <td className="px-3 py-2 min-w-[180px]">
+        <button type="button" onClick={() => onOpenFulfillment && onOpenFulfillment(style)} className="font-semibold text-[12px] text-[#0f3d24] text-left hover:underline underline-offset-2 leading-snug" title="Click to view fulfillment drill-down">
+          {style.style_name}
+        </button>
+        {style.style_number && <div className="text-[10px] font-mono text-[#1a5c38] mt-0.5">{style.style_number}</div>}
+        {late && <span className="mt-0.5 inline-flex items-center gap-0.5 text-[9px] font-bold uppercase text-rose-800 bg-rose-100 border border-rose-300 rounded-full px-1.5 py-0.5"><Warning size={9} weight="fill" /> Late</span>}
+      </td>
+      <td className="px-3 py-1.5 min-w-[100px] align-top">
+        <select value={draft.brand} onChange={setField("brand")} disabled={busy || saving} aria-invalid={Boolean(errors.brand)} className={fieldCls(errors.brand)}>
+          <option value="">— brand —</option>
+          {(brands || ["VIVO", "SBV", "STUDIO"]).map((b) => <option key={b} value={b}>{b}</option>)}
+        </select>
+        {errorHint(errors.brand)}
+      </td>
+      <td className="px-3 py-1.5 min-w-[130px] align-top">
+        <select value={draft.order_type} onChange={setField("order_type")} disabled={busy || saving} aria-invalid={Boolean(errors.order_type)} className={`${fieldCls(errors.order_type)} ${ORDER_TYPE_BADGE[draft.order_type] || "text-[#0f3d24]"}`}>
+          <option value="">— type —</option>
+          {(orderTypes || ["New", "Re-Order", "Replenishment"]).map((t) => <option key={t} value={t}>{t}</option>)}
+        </select>
+        {errorHint(errors.order_type)}
+      </td>
+      <td className="px-3 py-1.5 text-right min-w-[92px] align-top">
+        <input type="number" min="1" step="1" value={draft.quantity} onChange={setField("quantity")} disabled={busy || saving} aria-invalid={Boolean(errors.quantity)} className={`${fieldCls(errors.quantity)} text-right`} />
+        {errorHint(errors.quantity)}
+      </td>
+      <td className="px-3 py-1.5 min-w-[160px] align-top">
+        <StatusSelect
+          style={{ ...style, status: draft.status }}
+          statuses={statuses}
+          busy={busy || saving}
+          onUpdate={(_, patch) => setDraft((current) => ({ ...current, ...patch }))}
+          className="w-full"
+          invalid={Boolean(errors.status)}
+          late={late}
+        />
+        {errorHint(errors.status)}
+      </td>
+      <td className="px-3 py-1.5 min-w-[145px] align-top">
+        <input type="date" value={draft.deliver_by} onChange={setField("deliver_by")} disabled={busy || saving} aria-invalid={Boolean(errors.deliver_by)} className={fieldCls(errors.deliver_by)} />
+        {errorHint(errors.deliver_by)}
+      </td>
+      <td className="px-3 py-2 text-right whitespace-nowrap align-top">
+        {daysEl !== null ? (
+          <span className={`text-[11px] font-semibold ${daysEl > 60 ? "text-rose-700" : daysEl > 30 ? "text-amber-700" : "text-[#0f3d24]"}`} title={`Days since BO creation${style.order_date ? ` (${style.order_date})` : ""}`}>{daysEl}d</span>
+        ) : <span className="text-muted">—</span>}
+      </td>
+      <td className="px-3 py-2 align-top">
+        <button type="button" onClick={() => toggleNotes(style.id)} className={`flex items-center gap-1 text-[11px] rounded px-1.5 py-0.5 transition-colors ${notesOpen ? "bg-[#1a5c38]/10 text-[#1a5c38] font-semibold" : "text-muted hover:text-[#0f3d24]"}`} title={notesOpen ? "Collapse notes" : "View / add notes"}>
+          <ChatText size={13} /> {noteCount > 0 && <span className="font-semibold">{noteCount}</span>}
+        </button>
+      </td>
+      <td className="px-3 py-1.5 text-center align-top">
+        <button type="button" onClick={() => canDone && onUpdate(style, { completed: !style.completed })} disabled={busy || saving || (!style.completed && !canDone)} title={!canDone && !style.completed ? "Style must be in Warehouse status before marking as done" : style.completed ? "Mark as not completed" : "Mark as completed"} className="disabled:opacity-40">
+          {style.completed ? <CheckCircle size={17} weight="fill" className="text-emerald-600" /> : <Circle size={17} className={`${canDone ? "text-muted/60 hover:text-emerald-600" : "text-muted/30"}`} />}
+        </button>
+        <button type="button" onClick={save} disabled={busy || saving || !canSave} title={!canSave ? "Complete all required fields to save" : "Save row"} className="mt-1 inline-flex items-center rounded-md bg-[#1a5c38] px-2 py-1 text-[10px] font-bold text-white hover:bg-[#0f3d24] disabled:cursor-not-allowed disabled:opacity-35">
+          {saving ? "Saving…" : "Save"}
+        </button>
+      </td>
+    </tr>
+  );
+}
+
 function WeekTable({ weeks, today, finishingOptions, busyIds, onUpdate, isPrivileged, orderTypes, brands, onNoteAdded, onOpenFulfillment }) {
   const statuses = finishingOptions.map((f) => f.label);
   const [expandedNotes, setExpandedNotes] = useState(() => new Set());
@@ -289,12 +436,12 @@ function WeekTable({ weeks, today, finishingOptions, busyIds, onUpdate, isPrivil
             <th className={thCls}>Style</th>
             <th className={thCls}>Brand</th>
             <th className={thCls}>Type</th>
-            <th className={`${thCls} text-right`}>Qty</th>
+            <th className={`${thCls} text-right`}>Quantity</th>
             <th className={thCls}>Status</th>
             <th className={thCls}>Deliver by</th>
             <th className={`${thCls} text-right`} title="Days elapsed since BO creation date">Days</th>
             <th className={thCls}>Notes</th>
-            <th className={`${thCls} text-center`}>In WH</th>
+            <th className={`${thCls} text-center`}>In WH / Save</th>
           </tr>
         </thead>
         <tbody>
@@ -323,108 +470,50 @@ function WeekTable({ weeks, today, finishingOptions, busyIds, onUpdate, isPrivil
                   <td className={`px-3 py-2 text-center font-bold ${pctTone(pct)}`}>{pct === null ? "—" : `${pct}%`}</td>
                 </tr>
 
-                {/* Style rows */}
-                {week.styles.map((s) => {
-                  const late = isLateStyle(s, today);
-                  const busy = busyIds.has(s.id);
-                  const canDone = s.status === "Warehouse";
-                  const daysEl = calcDays(s);
-                  const noteCount = (s.notes || []).length;
-                  const notesOpen = expandedNotes.has(s.id);
+                {/* Status groups keep the weekly table scannable by production stage. */}
+                {groupStylesByStage(week.styles, finishingOptions).map((group) => {
+                  const tone = stageTone(group.status);
+                  const groupUnits = group.styles.reduce((sum, style) => sum + (Number(style.quantity) || 0), 0);
                   return (
-                    <React.Fragment key={s.id}>
-                      <tr className={`border-b border-line/60 hover:bg-panel/40 ${late ? "bg-rose-50/50" : ""}`}>
-                        {/* Style name — clickable, opens FulfillmentDrawer like board view */}
-                        <td className="px-3 py-2 min-w-[180px]">
-                          <button
-                            type="button"
-                            onClick={() => onOpenFulfillment && onOpenFulfillment(s)}
-                            className="font-semibold text-[12px] text-[#0f3d24] text-left hover:underline underline-offset-2 leading-snug"
-                            title="Click to view fulfillment drill-down"
-                          >
-                            {s.style_name}
-                          </button>
-                          {s.style_number && <div className="text-[10px] font-mono text-[#1a5c38] mt-0.5">{s.style_number}</div>}
-                          {late && <span className="mt-0.5 inline-flex items-center gap-0.5 text-[9px] font-bold uppercase text-rose-800 bg-rose-100 border border-rose-300 rounded-full px-1.5 py-0.5"><Warning size={9} weight="fill" /> Late</span>}
-                        </td>
-
-                        {/* Brand — inline editable select */}
-                        <td className="px-3 py-1.5 min-w-[80px]">
-                          <select
-                            value={s.brand || ""}
-                            onChange={(e) => !busy && onUpdate(s, { brand: e.target.value })}
-                            disabled={busy}
-                            className={`text-[9px] font-bold uppercase tracking-wide border rounded-full px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-brand/40 disabled:opacity-50 cursor-pointer ${BRAND_BADGE[s.brand] || "bg-panel text-muted border-line"}`}
-                          >
-                            {(brands || ["VIVO", "SBV", "STUDIO"]).map((b) => (
-                              <option key={b} value={b}>{b}</option>
-                            ))}
-                          </select>
-                        </td>
-
-                        {/* Type — inline editable via OrderTypeSelect */}
-                        <td className="px-3 py-1.5 min-w-[120px]">
-                          <OrderTypeSelect style={s} orderTypes={orderTypes || ["New", "Re-Order", "Replenishment"]} busy={busy} onUpdate={onUpdate} />
-                        </td>
-
-                        <td className="px-3 py-2 text-right font-semibold">{fmtUnits(s.quantity)}</td>
-
-                        {/* Status — inline editable */}
-                        <td className="px-3 py-2 min-w-[150px]">
-                          <StatusSelect style={s} statuses={statuses} busy={busy} onUpdate={onUpdate} />
-                        </td>
-
-                        <td className={`px-3 py-2 whitespace-nowrap ${late ? "font-semibold text-rose-700" : "text-muted"}`}>
-                          {s.deliver_by ? fmtShortDate(s.deliver_by) : "—"}
-                        </td>
-
-                        {/* Days elapsed since BO creation date */}
-                        <td className="px-3 py-2 text-right whitespace-nowrap">
-                          {daysEl !== null ? (
-                            <span
-                              className={`text-[11px] font-semibold ${daysEl > 60 ? "text-rose-700" : daysEl > 30 ? "text-amber-700" : "text-[#0f3d24]"}`}
-                              title={`Days since BO creation${s.order_date ? ` (${s.order_date})` : ""}`}
-                            >
-                              {daysEl}d
+                    <React.Fragment key={`${wk}-${group.status}`}>
+                      <tr className="border-b border-line/70 bg-panel/60">
+                        <td colSpan={COLS} className={`px-3 py-2 ${tone.label}`}>
+                          <div className="flex items-center gap-2 text-[10.5px] font-bold uppercase tracking-wide">
+                            <span className={`inline-block h-2 w-2 rounded-full ${tone.dot}`} />
+                            <span>{group.status}</span>
+                            <span className="font-medium normal-case tracking-normal text-muted">
+                              {group.styles.length} style{group.styles.length === 1 ? "" : "s"} · {fmtUnits(groupUnits)} pcs
                             </span>
-                          ) : <span className="text-muted">—</span>}
-                        </td>
-
-                        {/* Notes toggle */}
-                        <td className="px-3 py-2">
-                          <button
-                            type="button"
-                            onClick={() => toggleNotes(s.id)}
-                            className={`flex items-center gap-1 text-[11px] rounded px-1.5 py-0.5 transition-colors ${notesOpen ? "bg-[#1a5c38]/10 text-[#1a5c38] font-semibold" : "text-muted hover:text-[#0f3d24]"}`}
-                            title={notesOpen ? "Collapse notes" : "View / add notes"}
-                          >
-                            <ChatText size={13} />
-                            {noteCount > 0 && <span className="font-semibold">{noteCount}</span>}
-                          </button>
-                        </td>
-
-                        {/* Done / in WH */}
-                        <td className="px-3 py-2 text-center">
-                          <button
-                            type="button"
-                            onClick={() => canDone && onUpdate(s, { completed: !s.completed })}
-                            disabled={busy || (!s.completed && !canDone)}
-                            title={!canDone && !s.completed ? "Style must be in Warehouse status before marking as done" : s.completed ? "Mark as not completed" : "Mark as completed"}
-                            className="disabled:opacity-40"
-                          >
-                            {s.completed ? <CheckCircle size={17} weight="fill" className="text-emerald-600" /> : <Circle size={17} className={`${canDone ? "text-muted/60 hover:text-emerald-600" : "text-muted/30"}`} />}
-                          </button>
+                          </div>
                         </td>
                       </tr>
-
-                      {/* Expanded notes row */}
-                      {notesOpen && (
-                        <tr className="border-b border-line/60 bg-panel/30">
-                          <td colSpan={COLS} className="px-4 pb-3 pt-1">
-                            <NotesPanel style={s} onNoteAdded={onNoteAdded} />
-                          </td>
-                        </tr>
-                      )}
+                      {group.styles.map((s) => {
+                        const notesOpen = expandedNotes.has(s.id);
+                        return (
+                          <React.Fragment key={s.id}>
+                            <StyleTableRow
+                              style={s}
+                              today={today}
+                              statuses={statuses}
+                              orderTypes={orderTypes}
+                              brands={brands}
+                              busy={busyIds.has(s.id)}
+                              onUpdate={onUpdate}
+                              notesOpen={notesOpen}
+                              toggleNotes={toggleNotes}
+                              onNoteAdded={onNoteAdded}
+                              onOpenFulfillment={onOpenFulfillment}
+                            />
+                            {notesOpen && (
+                              <tr className="border-b border-line/60 bg-panel/30">
+                                <td colSpan={COLS} className="px-4 pb-3 pt-1">
+                                  <NotesPanel style={s} onNoteAdded={onNoteAdded} />
+                                </td>
+                              </tr>
+                            )}
+                          </React.Fragment>
+                        );
+                      })}
                     </React.Fragment>
                   );
                 })}
@@ -592,7 +681,7 @@ function WeekSummaryPanel({ weeks, selectedKey, onSelect }) {
 }
 
 /** Inline Order Type select on the style card */
-function OrderTypeSelect({ style, orderTypes, busy, onUpdate }) {
+function OrderTypeSelect({ style, orderTypes, busy, onUpdate, invalid = false }) {
   const handleChange = (e) => {
     const val = e.target.value || null;
     onUpdate(style, { order_type: val });
@@ -607,7 +696,8 @@ function OrderTypeSelect({ style, orderTypes, busy, onUpdate }) {
       value={style.order_type || ""}
       onChange={handleChange}
       disabled={busy}
-      className={`text-[11px] font-medium border rounded-md px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-brand/40 disabled:opacity-50 w-full ${badgeCls}`}
+      aria-invalid={invalid}
+      className={`text-[11px] font-medium border rounded-md px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-brand/40 disabled:opacity-50 w-full ${invalid ? "border-rose-500 bg-rose-50 text-rose-900" : badgeCls}`}
       data-testid={`order-type-select-${style.id}`}
     >
       <option value="">— type —</option>
@@ -619,7 +709,7 @@ function OrderTypeSelect({ style, orderTypes, busy, onUpdate }) {
 }
 
 /** Inline status select with warehouse-pct gate */
-function StatusSelect({ style, statuses, busy, onUpdate, className = "" }) {
+function StatusSelect({ style, statuses, busy, onUpdate, className = "", invalid = false, late = false }) {
   const [checking, setChecking] = useState(false);
   const [whErr, setWhErr] = useState(null);
 
@@ -649,9 +739,12 @@ function StatusSelect({ style, statuses, busy, onUpdate, className = "" }) {
         value={style.status}
         onChange={handleChange}
         disabled={busy || checking}
-        className={`text-[11px] font-medium text-[#0f3d24] bg-white border border-line rounded-md px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-brand/40 disabled:opacity-50 ${className}`}
+        aria-invalid={invalid}
+        className={`text-[11px] font-medium border rounded-md px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-brand/40 disabled:opacity-50 ${late || invalid ? "bg-rose-50 text-rose-900 border-rose-500" : stageTone(style.status).control} ${className}`}
       >
+        <option value="">— status —</option>
         {statuses.map((s) => <option key={s} value={s}>{s}</option>)}
+        {style.status && !statuses.includes(style.status) && <option value={style.status}>{style.status}</option>}
       </select>
       {whErr && <div className="mt-1 text-[10px] text-rose-700">{whErr}</div>}
     </div>
@@ -659,7 +752,7 @@ function StatusSelect({ style, statuses, busy, onUpdate, className = "" }) {
 }
 
 /** Finishing-options dropdown for privileged users: add + rename inline */
-function FinishingOptionsSelect({ style, finishingOptions, busy, onUpdate, isPrivileged, onOptionsChange }) {
+function FinishingOptionsSelect({ style, finishingOptions, busy, onUpdate, isPrivileged, onOptionsChange, invalid = false, late = false }) {
   const statuses = finishingOptions.map((f) => f.label);
   const [showAdd, setShowAdd] = useState(false);
   const [showManage, setShowManage] = useState(false);
@@ -729,9 +822,12 @@ function FinishingOptionsSelect({ style, finishingOptions, busy, onUpdate, isPri
           value={style.status}
           onChange={handleChange}
           disabled={busy || checking}
-          className="flex-1 min-w-0 text-[11px] font-medium text-[#0f3d24] bg-white border border-line rounded-md px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-brand/40 disabled:opacity-50"
+          aria-invalid={invalid}
+          className={`flex-1 min-w-0 text-[11px] font-medium border rounded-md px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-brand/40 disabled:opacity-50 ${late || invalid ? "bg-rose-50 text-rose-900 border-rose-500" : stageTone(style.status).control}`}
         >
+          <option value="">— status —</option>
           {statuses.map((s) => <option key={s} value={s}>{s}</option>)}
+          {style.status && !statuses.includes(style.status) && <option value={style.status}>{style.status}</option>}
           {!statuses.includes(style.status) && (
             <option value={style.status}>{style.status}</option>
           )}
@@ -1423,7 +1519,7 @@ function StyleCard({
 
       {/* Order Type inline select */}
       <div className="mt-1.5">
-        <OrderTypeSelect style={style} orderTypes={orderTypes} busy={busy} onUpdate={onUpdate} />
+        <OrderTypeSelect style={style} orderTypes={orderTypes} busy={busy} onUpdate={onUpdate} invalid={!style.order_type} />
       </div>
 
       {/* Status select with finishing-options management */}
@@ -1436,9 +1532,11 @@ function StyleCard({
             onUpdate={onUpdate}
             isPrivileged={isPrivileged}
             onOptionsChange={onOptionsChange}
+            invalid={!style.status}
+            late={late}
           />
         ) : (
-          <StatusSelect style={style} statuses={statuses} busy={busy} onUpdate={onUpdate} className="w-full" />
+          <StatusSelect style={style} statuses={statuses} busy={busy} onUpdate={onUpdate} className="w-full" invalid={!style.status} late={late} />
         )}
       </div>
 
@@ -1558,7 +1656,11 @@ function AddStyleForm({ week, finishingOptions, brands, categories, orderTypes, 
     e.preventDefault();
     setErr(null);
     if (!form.style_name.trim()) { setErr("Style name is required."); return; }
+    if (!form.brand) { setErr("Brand is required."); return; }
     if (!form.order_type) { setErr("Order Type is required."); return; }
+    if (!(Number(form.quantity) > 0)) { setErr("Quantity must be greater than 0."); return; }
+    if (!form.status) { setErr("Status is required."); return; }
+    if (!form.deliver_by) { setErr("Deliver by is required."); return; }
     setSaving(true);
     try {
       await onCreate(week, {
@@ -1606,7 +1708,7 @@ function AddStyleForm({ week, finishingOptions, brands, categories, orderTypes, 
       <div className="grid grid-cols-2 gap-2">
         <div>
           <label className={labelCls}>Quantity</label>
-          <input className={inputCls} type="number" min="0" value={form.quantity} onChange={set("quantity")} placeholder="0" />
+           <input className={inputCls} type="number" min="1" value={form.quantity} onChange={set("quantity")} placeholder="1" required />
         </div>
         <div>
           <label className={labelCls}>Order Type <span className="text-rose-600">*</span></label>
@@ -1617,7 +1719,7 @@ function AddStyleForm({ week, finishingOptions, brands, categories, orderTypes, 
         </div>
       </div>
       <div>
-        <label className={labelCls}>Status</label>
+         <label className={labelCls}>Status <span className="text-rose-600">*</span></label>
         <select className={inputCls} value={form.status} onChange={set("status")}>
           {statuses.map((s) => <option key={s} value={s}>{s}</option>)}
         </select>
@@ -1628,13 +1730,13 @@ function AddStyleForm({ week, finishingOptions, brands, categories, orderTypes, 
           <input className={inputCls} type="date" value={form.order_date} onChange={set("order_date")} />
         </div>
         <div>
-          <label className={labelCls}>Deliver by</label>
-          <input className={inputCls} type="date" value={form.deliver_by} onChange={set("deliver_by")} />
+           <label className={labelCls}>Deliver by <span className="text-rose-600">*</span></label>
+           <input className={inputCls} type="date" value={form.deliver_by} onChange={set("deliver_by")} required />
         </div>
       </div>
       {err && <div className="text-[11px] text-rose-700">{err}</div>}
       <div className="flex items-center gap-1.5">
-        <button type="submit" disabled={saving} className="text-[11px] font-semibold text-white bg-[#1a5c38] hover:bg-[#0f3d24] px-2.5 py-1.5 rounded-md disabled:opacity-50">
+         <button type="submit" disabled={saving || !form.style_name.trim() || !form.brand || !form.order_type || !(Number(form.quantity) > 0) || !form.status || !form.deliver_by} className="text-[11px] font-semibold text-white bg-[#1a5c38] hover:bg-[#0f3d24] px-2.5 py-1.5 rounded-md disabled:opacity-50">
           {saving ? "Adding…" : "Add style"}
         </button>
         <button type="button" onClick={onCancel} disabled={saving} className="text-[11px] font-semibold text-[#0f3d24] border border-line hover:bg-white px-2.5 py-1.5 rounded-md disabled:opacity-50">
@@ -1647,6 +1749,7 @@ function AddStyleForm({ week, finishingOptions, brands, categories, orderTypes, 
 
 const StyleTracker = () => {
   const { user } = useAuth();
+  const { styleTypes, setStyleTypes } = useFilters();
   const [board, setBoard] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -1938,9 +2041,12 @@ const StyleTracker = () => {
   // Stage-filtered weeks — applies across both board and table views
   const filteredWeeks = useMemo(() => {
     if (!board) return [];
-    if (!stageFilter) return board.weeks;
+    if (!stageFilter && (!styleTypes || styleTypes.length === 0)) return board.weeks;
     return board.weeks.map((w) => {
-      const styles = w.styles.filter((s) => s.status === stageFilter);
+      const styles = w.styles.filter((s) =>
+        (!stageFilter || s.status === stageFilter) &&
+        (!styleTypes || styleTypes.length === 0 || styleTypes.includes(s.order_type))
+      );
       return {
         ...w,
         styles,
@@ -1950,7 +2056,7 @@ const StyleTracker = () => {
         completed_units: styles.reduce((a, s) => a + (s.completed ? Number(s.quantity) || 0 : 0), 0),
       };
     });
-  }, [board, stageFilter]);
+  }, [board, stageFilter, styleTypes]);
 
   if (loading) return <Loading label="Loading Style Launch Planner…" />;
   if (error) return <ErrorBox message={error} />;
@@ -2018,18 +2124,19 @@ const StyleTracker = () => {
               <span><span className="font-bold">{lateCount} late style{lateCount === 1 ? "" : "s"}</span> past the deliver-by date and not completed — look for the red <span className="font-bold">Late</span> cards.</span>
             </div>
           )}
-          {stageFilter && (
+          {(stageFilter || styleTypes?.length > 0) && (
             <div className="flex items-center gap-2 rounded-lg border border-[#1a5c38]/30 bg-[#1a5c38]/5 px-3 py-2 text-[12px] text-[#0f3d24]">
               <Funnel size={13} weight="fill" className="shrink-0 text-[#1a5c38]" />
-              <span>Showing only <span className="font-bold">{stageFilter}</span> styles.{" "}
-                <button type="button" onClick={() => setStageFilter("")} className="underline underline-offset-2 hover:no-underline font-semibold ml-0.5">Clear filter</button>
+              <span>
+                Showing only <span className="font-bold">{[stageFilter, ...(styleTypes || [])].filter(Boolean).join(" · ")}</span> styles.{" "}
+                <button type="button" onClick={() => { setStageFilter(""); setStyleTypes([]); }} className="underline underline-offset-2 hover:no-underline font-semibold ml-0.5">Clear filter</button>
               </span>
             </div>
           )}
 
           {/* Board-level summary panel */}
           <WeekSummaryPanel
-            weeks={board.weeks}
+            weeks={filteredWeeks}
             selectedKey={selectedWeekKey}
             onSelect={setSelectedWeekKey}
           />
@@ -2166,16 +2273,17 @@ const StyleTracker = () => {
         </>
       ) : view === "table" ? (
         <>
-          {stageFilter && (
+          {(stageFilter || styleTypes?.length > 0) && (
             <div className="flex items-center gap-2 rounded-lg border border-[#1a5c38]/30 bg-[#1a5c38]/5 px-3 py-2 text-[12px] text-[#0f3d24]">
               <Funnel size={13} weight="fill" className="shrink-0 text-[#1a5c38]" />
-              <span>Showing only <span className="font-bold">{stageFilter}</span> styles.{" "}
-                <button type="button" onClick={() => setStageFilter("")} className="underline underline-offset-2 hover:no-underline font-semibold ml-0.5">Clear filter</button>
+              <span>
+                Showing only <span className="font-bold">{[stageFilter, ...(styleTypes || [])].filter(Boolean).join(" · ")}</span> styles.{" "}
+                <button type="button" onClick={() => { setStageFilter(""); setStyleTypes([]); }} className="underline underline-offset-2 hover:no-underline font-semibold ml-0.5">Clear filter</button>
               </span>
             </div>
           )}
           <WeekSummaryPanel
-            weeks={board.weeks}
+            weeks={filteredWeeks}
             selectedKey={selectedWeekKey}
             onSelect={setSelectedWeekKey}
           />
@@ -2228,7 +2336,17 @@ const StyleTracker = () => {
                       </td>
                       <td className="px-3 py-2 text-right font-semibold">{fmtUnits(s.quantity)}</td>
                       <td className="px-3 py-2 text-muted whitespace-nowrap">{s.week_label}</td>
-                      <td className="px-3 py-2 text-muted">{s.status}</td>
+                      <td className="px-3 py-2">
+                        {(() => {
+                          const tone = stageTone(s.status);
+                          return (
+                            <span className={`inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[9px] font-bold ${tone.control}`}>
+                              <span className={`h-1.5 w-1.5 rounded-full ${tone.dot}`} />
+                              {s.status || "Unset"}
+                            </span>
+                          );
+                        })()}
+                      </td>
                       <td className="px-3 py-2 text-muted whitespace-nowrap">
                         {s.archived_at ? new Date(s.archived_at).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }) : "—"}
                       </td>

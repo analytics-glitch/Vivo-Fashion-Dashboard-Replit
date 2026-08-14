@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { useFilters } from "@/lib/filters";
 import { api, datePresets, fmtDate } from "@/lib/api";
 import MultiSelect from "@/components/MultiSelect";
@@ -569,8 +569,11 @@ const DataUpdatedPill = ({ className = "" }) => {
 
 const FilterBar = () => {
   const f = useFilters();
+  const location = useLocation();
   const [locations, setLocations] = useState([]);
+  const [styleTypeOptions, setStyleTypeOptions] = useState([]);
   const [shareCopied, setShareCopied] = useState(false);
+  const showStyleTypeFilter = ["/production", "/product-analysis", "/merchandising"].includes(location.pathname);
 
   const handleShare = async () => {
     const url = f.buildShareableLink?.() || window.location.href;
@@ -589,6 +592,14 @@ const FilterBar = () => {
       .then((r) => setLocations(r.data || []))
       .catch(() => setLocations([]));
   }, []);
+
+  useEffect(() => {
+    if (!showStyleTypeFilter) return;
+    api
+      .get("/style-tracker/board")
+      .then((r) => setStyleTypeOptions(r.data?.order_types || []))
+      .catch(() => setStyleTypeOptions([]));
+  }, [showStyleTypeFilter]);
 
   const channelOptions = useMemo(() => {
     const ONLINE_CHANNELS = [
@@ -653,6 +664,17 @@ const FilterBar = () => {
         placeholder="All clusters"
         width={250}
       />
+      {showStyleTypeFilter && (
+        <MultiSelect
+          testId="filter-style-types"
+          label="Type"
+          options={styleTypeOptions.map((type) => ({ value: type, label: type }))}
+          value={f.styleTypes || []}
+          onChange={f.setStyleTypes}
+          placeholder="All types"
+          width={180}
+        />
+      )}
       {/* WS8 T809 — the All/Retail/Online segment and the POS picker are ONE
           merged control: the segment scopes the channel population, the
           multiselect picks stores within it. */}
@@ -773,6 +795,17 @@ const FilterBar = () => {
             placeholder="All clusters"
             width={250}
           />
+          {showStyleTypeFilter && (
+            <MultiSelect
+              testId="filter-style-types-mobile"
+              label="Type"
+              options={styleTypeOptions.map((type) => ({ value: type, label: type }))}
+              value={f.styleTypes || []}
+              onChange={f.setStyleTypes}
+              placeholder="All types"
+              width={250}
+            />
+          )}
         </div>
         <div className="flex items-center gap-2" data-testid="pos-filter-group-mobile">
           <ChannelGroupToggle />

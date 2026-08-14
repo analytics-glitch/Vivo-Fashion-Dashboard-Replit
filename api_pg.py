@@ -37760,8 +37760,8 @@ def _st_validate_payload(body, partial=False, current=None, valid_statuses=None)
             qty = int(body.get("quantity") or 0)
         except (TypeError, ValueError):
             return None, "quantity must be a whole number"
-        if qty < 0 or qty > 1_000_000:
-            return None, "quantity must be between 0 and 1,000,000"
+        if qty <= 0 or qty > 1_000_000:
+            return None, "quantity must be between 1 and 1,000,000"
         fields["quantity"] = qty
     if "status" in body or not partial:
         status = str(body.get("status") or ("Cutting" if not partial else "")).strip()
@@ -37787,6 +37787,8 @@ def _st_validate_payload(body, partial=False, current=None, valid_statuses=None)
                 fields[key] = _st_parse_date(body.get(key), key)
             except ValueError as e:
                 return None, str(e)
+    if not partial and not fields.get("deliver_by") and not fields.get("order_date"):
+        return None, "deliver_by is required"
     if "iso_year" in body or "iso_week" in body or not partial:
         base = current or {}
         wk = _st_valid_week(
@@ -37856,6 +37858,33 @@ async def style_tracker_update(style_id: int, request: Request):
     # Auto-fill deliver_by when order_date changes and deliver_by not in body
     if "order_date" in fields and fields["order_date"] and "deliver_by" not in body:
         fields.setdefault("deliver_by", fields["order_date"] + timedelta(days=14))
+    # Every saved row must have the five operational fields required by the
+    # planner.  Updates remain patch-shaped for callers, but validation is
+    # performed against the resulting row so incomplete legacy rows can only
+    # be saved after the missing values are supplied together.
+    effective = {
+        "brand": fields.get("brand", ex.get("brand")),
+        "order_type": fields.get("order_type", ex.get("order_type")),
+        "quantity": fields.get("quantity", ex.get("quantity")),
+        "status": fields.get("status", ex.get("status")),
+        "deliver_by": fields.get("deliver_by", ex.get("deliver_by")),
+    }
+    missing = [
+        key for key in ("brand", "order_type", "status", "deliver_by")
+        if effective[key] is None or (isinstance(effective[key], str) and not effective[key].strip())
+    ]
+    if missing:
+        return JSONResponse(
+            {"detail": f"Required field(s) missing: {', '.join(missing)}"},
+            status_code=400)
+    try:
+        effective_qty = int(effective["quantity"])
+    except (TypeError, ValueError):
+        effective_qty = 0
+    if effective_qty <= 0:
+        return JSONResponse({"detail": "quantity must be between 1 and 1,000,000"}, status_code=400)
+    if _st_parse_date(effective["deliver_by"], "deliver_by") is None:
+        return JSONResponse({"detail": "deliver_by is required"}, status_code=400)
     # Warehouse gate: must have ≥90% of order qty transferred to warehouse.
     # For Re-Order/Replenishment the gate compares against recent transfers since
     # order_date rather than total warehouse stock (pre-existing stock is excluded).
