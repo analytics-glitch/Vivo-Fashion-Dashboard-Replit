@@ -120,6 +120,57 @@ const ORDER_TYPE_COLORS = {
   "Replenishment": { dot: "bg-teal-500",  text: "text-teal-800"  },
 };
 
+const stageTone = (status) => {
+  const value = String(status || "").toLowerCase();
+  if (value === "warehouse") {
+    return { card: "bg-emerald-50/90 border-emerald-300 border-l-emerald-600", dot: "bg-emerald-600", label: "text-emerald-800" };
+  }
+  if (value.includes("cut")) {
+    return { card: "bg-sky-50/70 border-sky-200 border-l-sky-500", dot: "bg-sky-500", label: "text-sky-800" };
+  }
+  if (value.includes("sew")) {
+    return { card: "bg-amber-50/70 border-amber-200 border-l-amber-500", dot: "bg-amber-500", label: "text-amber-800" };
+  }
+  if (value.includes("finish")) {
+    return { card: "bg-violet-50/70 border-violet-200 border-l-violet-500", dot: "bg-violet-500", label: "text-violet-800" };
+  }
+  if (value.includes("trim") || value.includes("bartack")) {
+    return { card: "bg-cyan-50/70 border-cyan-200 border-l-cyan-500", dot: "bg-cyan-500", label: "text-cyan-800" };
+  }
+  if (value.includes("team")) {
+    return { card: "bg-rose-50/70 border-rose-200 border-l-rose-500", dot: "bg-rose-500", label: "text-rose-800" };
+  }
+  if (value.includes("transit")) {
+    return { card: "bg-teal-50/70 border-teal-200 border-l-teal-500", dot: "bg-teal-500", label: "text-teal-800" };
+  }
+  return { card: "bg-slate-50/80 border-slate-200 border-l-slate-400", dot: "bg-slate-400", label: "text-slate-700" };
+};
+
+const groupStylesByStage = (styles, finishingOptions) => {
+  const stageOrder = new Map(
+    (finishingOptions || []).map((option, index) => [
+      String(option.label || "").toLowerCase(),
+      index,
+    ])
+  );
+  const groups = new Map();
+  for (const style of styles || []) {
+    const status = style.status || "Unset";
+    if (!groups.has(status)) groups.set(status, []);
+    groups.get(status).push(style);
+  }
+  return [...groups.entries()]
+    .map(([status, groupedStyles]) => ({ status, styles: groupedStyles }))
+    .sort((a, b) => {
+      const aRank = stageOrder.get(a.status.toLowerCase());
+      const bRank = stageOrder.get(b.status.toLowerCase());
+      if (aRank !== undefined || bRank !== undefined) {
+        return (aRank ?? Number.MAX_SAFE_INTEGER) - (bRank ?? Number.MAX_SAFE_INTEGER);
+      }
+      return a.status.localeCompare(b.status);
+    });
+};
+
 function WeekStats({ week, compact = false }) {
   const pct = weekPct(week);
   const styles = week.styles || [];
@@ -1297,6 +1348,7 @@ function StyleCard({
   const [confirmDelete, setConfirmDelete] = useState(false);
   const done = !!style.completed;
   const canDone = style.status === "Warehouse";
+  const tone = stageTone(style.status);
   // Archive is only offered on Warehouse-stage cards, to authorized users
   const showArchive = !!canArchive && style.status === "Warehouse";
   const statuses = finishingOptions.map((f) => f.label);
@@ -1311,8 +1363,8 @@ function StyleCard({
       draggable={!busy}
       onDragStart={(e) => onDragStart(e, style)}
       onDragEnd={onDragEnd}
-      className={`rounded-lg border border-line border-l-4 bg-white p-2.5 transition hover:shadow-sm ${
-        done ? "border-l-emerald-500 bg-emerald-50/40" : late ? "border-l-rose-500 bg-rose-50/40" : "border-l-[#1a5c38]/40"
+      className={`rounded-lg border border-l-4 p-2.5 transition hover:shadow-sm ${
+        tone.card
       } ${busy ? "opacity-60" : "cursor-grab active:cursor-grabbing"}`}
       data-testid={`style-card-${style.id}`}
     >
@@ -2045,28 +2097,42 @@ const StyleTracker = () => {
                       No styles this week — add one below
                     </div>
                   )}
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-                    {week.styles.map((s) => (
-                      <StyleCard
-                        key={s.id}
-                        style={s}
-                        finishingOptions={finishingOptions}
-                        orderTypes={orderTypes}
-                        busy={busyIds.has(s.id)}
-                        late={isLateStyle(s, board.today)}
-                        onUpdate={updateStyle}
-                        onDelete={deleteStyle}
-                        onDragStart={onCardDragStart}
-                        onDragEnd={onCardDragEnd}
-                        isPrivileged={isPrivileged}
-                        canArchive={canArchive}
-                        onArchive={archiveStyle}
-                        onNoteAdded={handleNoteAdded}
-                        onOpenFulfillment={(style) => setFulfillmentStyle({ id: style.id, style_name: style.style_name, style_number: style.style_number })}
-                        onOptionsChange={() => loadBoard(true, true)}
-                        weeks={board.weeks}
-                      />
-                    ))}
+                  <div className="space-y-3">
+                    {groupStylesByStage(week.styles, finishingOptions).map((group) => {
+                      const tone = stageTone(group.status);
+                      return (
+                        <section key={group.status} className="space-y-1.5" data-testid={`style-tracker-stage-${wk}-${group.status.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}`}>
+                          <div className="flex items-center gap-1.5 px-0.5">
+                            <span className={`h-2 w-2 rounded-full ${tone.dot}`} />
+                            <span className={`text-[10px] font-bold uppercase tracking-wide ${tone.label}`}>{group.status}</span>
+                            <span className="text-[10px] text-muted">· {group.styles.length} style{group.styles.length === 1 ? "" : "s"}</span>
+                          </div>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                            {group.styles.map((s) => (
+                              <StyleCard
+                                key={s.id}
+                                style={s}
+                                finishingOptions={finishingOptions}
+                                orderTypes={orderTypes}
+                                busy={busyIds.has(s.id)}
+                                late={isLateStyle(s, board.today)}
+                                onUpdate={updateStyle}
+                                onDelete={deleteStyle}
+                                onDragStart={onCardDragStart}
+                                onDragEnd={onCardDragEnd}
+                                isPrivileged={isPrivileged}
+                                canArchive={canArchive}
+                                onArchive={archiveStyle}
+                                onNoteAdded={handleNoteAdded}
+                                onOpenFulfillment={(style) => setFulfillmentStyle({ id: style.id, style_name: style.style_name, style_number: style.style_number })}
+                                onOptionsChange={() => loadBoard(true, true)}
+                                weeks={board.weeks}
+                              />
+                            ))}
+                          </div>
+                        </section>
+                      );
+                    })}
                   </div>
                   {addingWeek === wk ? (
                     <AddStyleForm
