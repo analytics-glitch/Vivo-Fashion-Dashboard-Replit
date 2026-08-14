@@ -2139,6 +2139,14 @@ def _start_cache_prewarmer():
                 ("production-flow",    lambda: production_flow()),
                 ("production-summary", lambda: production_summary()),
                 ("retail-desk-overview", retail_desk_router._overview_snapshot),
+                # Merch Hub: warm the default (all-filters-unset) core universe
+                # so the first visitor after a deploy never pays the cold cost.
+                # The full _styles_cached result is then built in <1 ms from the
+                # warm core (Python narrowing over ~3.5k rows).
+                ("merch-core", lambda: merch_router._styles_cached(
+                    brand=None, subcategory=None, tier=None, status=None,
+                    from_date=None, to_date=None, country=None,
+                    pos_location=None)),
             ]
             for name, fn in targets:
                 try:
@@ -4250,7 +4258,7 @@ ROLLUP_MAX_AGE_SEC = 2 * 3600    # rollups older than this → fall back to live
 # v2: rm_style +units_21d/units_42d; style_velocity +units_21d/units_30d/
 #     first_sale_date; sku_velocity +country; new store_style_sales/rm_months/
 #     rm_prod tables.
-_ROLLUP_SCHEMA_VER = 2
+_ROLLUP_SCHEMA_VER = 3
 
 # A row of all_sales contributes to PA-style sales the same CASE expression for
 # its signed KES value (sale/order add total_sales, returns subtract returns).
@@ -4451,6 +4459,77 @@ def _rollup_defs():
           AND COALESCE(apc.brand, '') NOT ILIKE '%third party%'
         GROUP BY apc.style_name
     """
+    # ── Merch Hub rollups ────────────────────────────────────────────────────
+    # Day-grain (style, sale_day, country, pos_location_name) with gross units,
+    # net revenue (ex-VAT, net of discounts/returns), and full-price units.
+    # Used by _fetch_styles_core_sql (rollup path) to avoid rescanning all_sales
+    # on every Merchandising Hub request.  sku_mode_price is pre-joined so
+    # full-price unit determination does not require a second products scan.
+    _merch_vat_div = (
+        "(CASE WHEN s.country IN ('Uganda','Rwanda') THEN 1.18 ELSE 1.16 END)")
+    _merch_net_expr = (
+        "CASE WHEN s.sale_kind IN ('sale','order') "
+        "THEN (s.total_sales_kes::numeric - COALESCE(s.discounts_kes,0)::numeric) "
+        "/ " + _merch_vat_div + " "
+        "WHEN s.sale_kind = 'return' "
+        "THEN -COALESCE(s.returns_kes,0)::numeric / " + _merch_vat_div + " "
+        "ELSE 0 END"
+    )
+    merch_style_day = """
+        SELECT
+            p.style_name,
+            s.sale_date::date                                       AS sale_day,
+            COALESCE(s.country, '')                                  AS country,
+            COALESCE(s.pos_location_name, '')                        AS pos_location_name,
+            COALESCE(SUM(s.ordered_item_quantity) FILTER (
+                WHERE s.sale_kind IN ('sale','order')
+            ), 0)::int                                               AS gross_units,
+            COALESCE(SUM(""" + _merch_net_expr + """), 0)            AS net_revenue,
+            COALESCE(SUM(s.ordered_item_quantity) FILTER (
+                WHERE s.sale_kind IN ('sale','order')
+                  AND s.total_sales_kes::numeric
+                      >= COALESCE(smp.mode_price, 0) * 0.95
+            ), 0)::int                                               AS units_fp
+        FROM all_sales s
+        JOIN all_products_clean p ON p.sku = s.variant_sku
+            AND p.style_name IS NOT NULL AND p.style_name <> ''
+            AND COALESCE(p.brand, '') NOT ILIKE '%third party%'
+        LEFT JOIN (
+            SELECT sku,
+                   mode() WITHIN GROUP (ORDER BY price)
+                       FILTER (WHERE price > 0) AS mode_price
+            FROM all_products_clean
+            GROUP BY sku
+        ) smp ON smp.sku = s.variant_sku
+        WHERE """ + BASE_FILTERS + """
+          AND (
+              -- Bound the scan to the pre-build watermark so that rows
+              -- arriving during the INSERT SELECT are NOT included.  This
+              -- makes the rollup disjoint from incr_sales (WHERE loaded_at >
+              -- merch.build_wm) and eliminates the double-count race.
+              -- set_config('merch.build_wm', ...) is called by
+              -- run_sales_rollup_refresh just before this INSERT.  When the
+              -- setting is absent (e.g. direct psql replay), NULL is returned
+              -- (missing_ok=true) and the OR-IS-NULL branch includes all rows.
+              current_setting('merch.build_wm', true) IS NULL
+              OR s.loaded_at <= current_setting('merch.build_wm', true)::timestamp
+          )
+        GROUP BY p.style_name, s.sale_date::date,
+                 COALESCE(s.country, ''), COALESCE(s.pos_location_name, '')
+    """
+    # Unscoped first-sale date per style — used as the launch_date fallback
+    # (deliberate NO BASE_FILTERS / country / POS: launch date is a stable
+    # product attribute and must not shift with the hub's filter bar).
+    merch_first_sale = """
+        SELECT p.style_name,
+               MIN(s.sale_date::date) AS first_sale_date
+        FROM all_sales s
+        JOIN all_products_clean p ON p.sku = s.variant_sku
+            AND p.style_name IS NOT NULL AND p.style_name <> ''
+            AND COALESCE(p.brand, '') NOT ILIKE '%third party%'
+        WHERE s.sale_kind IN ('sale','order')
+        GROUP BY p.style_name
+    """
     return [
         ("customer_lifetime",       "rollup_customer_lifetime",       cust_lifetime),
         ("customer_first_purchase", "rollup_customer_first_purchase", cust_first_purchase),
@@ -4461,6 +4540,9 @@ def _rollup_defs():
         ("store_style_sales",       "rollup_store_style_sales",       store_style_sales),
         ("rm_months",               "rollup_rm_months",               rm_months),
         ("rm_prod",                 "rollup_rm_prod",                 rm_prod),
+        # schema_ver 3
+        ("merch_style_day",  "rollup_merch_style_day",  merch_style_day),
+        ("merch_first_sale", "rollup_merch_first_sale", merch_first_sale),
     ]
 
 
@@ -4668,12 +4750,42 @@ def run_sales_rollup_refresh(only=None, force=False):
                             is_noos      boolean,
                             sku_variants json
                         )""",
+                    # schema_ver 3 — Merch Hub rollups (created lazily so the
+                    # live API never races with a hand-run CREATE TABLE on prod)
+                    "merch_style_day": """
+                        CREATE TABLE IF NOT EXISTS rollup_merch_style_day (
+                            style_name        text    NOT NULL,
+                            sale_day          date    NOT NULL,
+                            country           text    NOT NULL,
+                            pos_location_name text    NOT NULL,
+                            gross_units       int,
+                            net_revenue       numeric,
+                            units_fp          int,
+                            PRIMARY KEY (style_name, sale_day, country, pos_location_name)
+                        );
+                        CREATE INDEX IF NOT EXISTS idx_rmsd_style_country
+                            ON rollup_merch_style_day (style_name, country, sale_day)""",
+                    "merch_first_sale": """
+                        CREATE TABLE IF NOT EXISTS rollup_merch_first_sale (
+                            style_name      text PRIMARY KEY,
+                            first_sale_date date
+                        )""",
                 }
                 if name in _lazy_rollup_ddl:
                     cur.execute(_lazy_rollup_ddl[name])
                     conn.commit()
                 cur.execute("DROP TABLE IF EXISTS " + stage)
                 cur.execute("CREATE TABLE " + stage + " (LIKE " + table + " INCLUDING DEFAULTS)")
+                # For merch_style_day: bound the INSERT SELECT to rows whose
+                # loaded_at <= src_wm so the rollup is disjoint from the
+                # incr_sales gap (loaded_at > src_wm).  Without this, rows
+                # that arrive during the INSERT are included in both the
+                # rollup and the incremental scan → double-counted.
+                # The setting is transaction-local (TRUE flag) so it resets
+                # after this connection's next commit/rollback.
+                if name == "merch_style_day":
+                    wm_str = src_wm.isoformat() if src_wm else "1970-01-01 00:00:00"
+                    cur.execute("SELECT set_config('merch.build_wm', %s, TRUE)", (wm_str,))
                 cur.execute("INSERT INTO " + stage + " " + select_sql)
                 cur.execute("TRUNCATE " + table)
                 cur.execute("INSERT INTO " + table + " SELECT * FROM " + stage)
