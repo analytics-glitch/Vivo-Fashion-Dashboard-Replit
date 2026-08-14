@@ -1753,6 +1753,26 @@ const StyleTracker = () => {
     markBusy(style.id, true);
     try {
       await api.post(`/style-tracker/styles/${style.id}/archive`);
+      // Optimistically remove the style from local board state so it disappears
+      // immediately and stays gone even if a stale concurrent inflight board
+      // response races in before the forced reload resolves.
+      setBoard((b) => {
+        if (!b) return b;
+        return {
+          ...b,
+          weeks: b.weeks.map((w) => {
+            const styles = w.styles.filter((s) => s.id !== style.id);
+            return {
+              ...w,
+              styles,
+              count: styles.length,
+              total_units: styles.reduce((a, s) => a + (Number(s.quantity) || 0), 0),
+              completed_count: styles.filter((s) => s.completed).length,
+              completed_units: styles.reduce((a, s) => a + (s.completed ? Number(s.quantity) || 0 : 0), 0),
+            };
+          }),
+        };
+      });
       toast.success(`"${style.style_name}" archived — find it in the Archived tab`);
       await loadBoard(true, true);
     } catch (e) {
