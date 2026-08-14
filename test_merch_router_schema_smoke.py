@@ -560,8 +560,255 @@ class OverviewKpiBucketParityTests(unittest.TestCase):
         self.assertEqual(wh, summary["warehouse_stock_units"])
 
 
-if __name__ == "__main__":
-    unittest.main()
+class RollupColumnDriftTests(unittest.TestCase):
+    """Guard that rollup_merch_style_day and rollup_merch_first_sale column
+    registries stay in sync with their _rollup_defs() SELECT output.
+
+    The _MERCH_STYLE_DAY_COLS / _MERCH_FIRST_SALE_COLS constants in api_pg
+    serve as the canonical column list.  Readers depend on every column that
+    the SELECT produces being present in the table; _reconcile_merch_rollup_columns
+    (called before the watermark skip) uses the same list to self-heal existing
+    tables at deploy time — even when source data hasn't changed.
+
+    HOW TO ADD A COLUMN
+    -------------------
+    1. Add the column to the SELECT in _rollup_defs() (merch_style_day or
+       merch_first_sale section).
+    2. Add a ``(col_name, sql_type)`` entry to _MERCH_STYLE_DAY_COLS (or
+       _MERCH_FIRST_SALE_COLS) in api_pg.py.  The _reconcile_merch_rollup_columns
+       function and the lazy-DDL ALTER TABLE guard are both driven by this list.
+    3. Update the ``_PK_ALIASES_*`` sets below if the new column is part of the
+       primary key (unlikely), so the data-column derivation stays correct.
+
+    Forgetting step 2 causes the SQL-parse tests below to fail (CI gate).
+    """
+
+    # ── SQL parser ───────────────────────────────────────────────────────────
+    # Extracts column aliases declared with AS at parenthesis depth 0 inside
+    # the first SELECT … FROM block of a SQL string.  Subquery aliases (inside
+    # parentheses) are at depth > 0 and are not captured.
+    @staticmethod
+    def _parse_depth0_as_aliases(sql):
+        """Return frozenset of lowercase AS-alias names at depth 0 in the
+        first SELECT clause.  Stops at the first depth-0 FROM/WHERE/GROUP BY."""
+        import re
+        m = re.search(r'\bSELECT\b', sql, re.IGNORECASE)
+        if not m:
+            return frozenset()
+        aliases = []
+        depth = 0
+        i = m.end()
+        n = len(sql)
+        while i < n:
+            c = sql[i]
+            if c in ('(', '['):
+                depth += 1
+            elif c in (')', ']'):
+                depth -= 1
+            elif depth == 0:
+                # Guard: the preceding character must be non-word so we don't
+                # fire on, say, "TRANSFORM" containing "ROM".
+                prev_is_word = i > 0 and (sql[i - 1].isalnum() or sql[i - 1] == '_')
+                if not prev_is_word:
+                    rest = sql[i:]
+                    stop = re.match(
+                        r'(FROM|WHERE|GROUP\s+BY|ORDER\s+BY|HAVING|LIMIT)\b',
+                        rest, re.IGNORECASE)
+                    if stop:
+                        break
+                    am = re.match(r'AS\s+(\w+)', rest, re.IGNORECASE)
+                    if am:
+                        aliases.append(am.group(1).lower())
+                        i += am.end()
+                        continue
+            i += 1
+        return frozenset(aliases)
+
+    # Primary-key columns in each table that carry an explicit AS alias in the
+    # SELECT (style_name is unaliased so it never appears in the parsed set).
+    _PK_ALIASES_STYLE_DAY = frozenset({"sale_day", "country", "pos_location_name"})
+    _PK_ALIASES_FIRST_SALE = frozenset()  # style_name has no AS alias
+
+    def _get_rollup_sql(self, name):
+        """Return the SELECT SQL for the named rollup from _rollup_defs()."""
+        import api_pg
+        for n, _table, sql in api_pg._rollup_defs():
+            if n == name:
+                return sql
+        self.fail("Rollup %r not found in api_pg._rollup_defs()" % name)
+
+    # ── Core drift tests: registry ↔ _rollup_defs() SQL ─────────────────────
+
+    def test_style_day_registry_matches_select_cols(self):
+        """Every column in _MERCH_STYLE_DAY_COLS must appear as an AS alias in
+        the merch_style_day SELECT, and vice-versa (no extra aliases either).
+
+        This is the primary CI gate: adding a column to the SELECT without
+        updating the registry, or updating the registry without the SELECT,
+        both cause this test to fail before the code reaches production.
+        """
+        import api_pg
+        sql = self._get_rollup_sql("merch_style_day")
+        parsed = self._parse_depth0_as_aliases(sql)
+        data_aliases = parsed - self._PK_ALIASES_STYLE_DAY  # strip PK aliases
+        registry = frozenset(col for col, _ in api_pg._MERCH_STYLE_DAY_COLS)
+        self.assertEqual(
+            data_aliases, registry,
+            "merch_style_day SELECT data-column aliases ↔ registry mismatch.\n"
+            "  SQL AS-aliases (non-PK): %s\n"
+            "  Registry cols:           %s\n"
+            "  In SQL but not registry: %s\n"
+            "  In registry but not SQL: %s\n"
+            "Add missing columns to _MERCH_STYLE_DAY_COLS in api_pg.py "
+            "AND to the SELECT in _rollup_defs()." % (
+                sorted(data_aliases), sorted(registry),
+                sorted(data_aliases - registry),
+                sorted(registry - data_aliases),
+            ),
+        )
+
+    def test_first_sale_registry_matches_select_cols(self):
+        """Every column in _MERCH_FIRST_SALE_COLS must appear as an AS alias in
+        the merch_first_sale SELECT, and vice-versa."""
+        import api_pg
+        sql = self._get_rollup_sql("merch_first_sale")
+        parsed = self._parse_depth0_as_aliases(sql)
+        data_aliases = parsed - self._PK_ALIASES_FIRST_SALE
+        registry = frozenset(col for col, _ in api_pg._MERCH_FIRST_SALE_COLS)
+        self.assertEqual(
+            data_aliases, registry,
+            "merch_first_sale SELECT data-column aliases ↔ registry mismatch.\n"
+            "  SQL AS-aliases (non-PK): %s\n"
+            "  Registry cols:           %s\n"
+            "  In SQL but not registry: %s\n"
+            "  In registry but not SQL: %s\n"
+            "Add missing columns to _MERCH_FIRST_SALE_COLS in api_pg.py "
+            "AND to the SELECT in _rollup_defs()." % (
+                sorted(data_aliases), sorted(registry),
+                sorted(data_aliases - registry),
+                sorted(registry - data_aliases),
+            ),
+        )
+
+    # ── Reconciliation-before-skip regression tests ──────────────────────────
+
+    def test_reconcile_issues_alter_for_each_registered_column(self):
+        """_reconcile_merch_rollup_columns must issue ALTER TABLE ADD COLUMN IF
+        NOT EXISTS for every column in the registries when the tables exist.
+
+        Regression guard for the 'unchanged-watermark existing table missing a
+        registered column' scenario: a deploy that adds a column must migrate
+        the live table on the very first refresh, even when the watermark skip
+        would otherwise return early."""
+        import api_pg
+        executed = []
+
+        class _FakeCursor:
+            def __init__(self):
+                self._next_row = None
+
+            def execute(self, sql, params=None):
+                executed.append(sql.strip())
+                # Simulate "table exists" for every information_schema query
+                if "information_schema" in sql:
+                    self._next_row = (1,)
+                else:
+                    self._next_row = None
+
+            def fetchone(self):
+                return self._next_row
+
+            def close(self):
+                pass
+
+        class _FakeConn:
+            def cursor(self):
+                return _FakeCursor()
+            def commit(self):
+                pass
+
+        api_pg._reconcile_merch_rollup_columns(_FakeConn())
+
+        alter_sqls = " ".join(s.upper() for s in executed if "ALTER" in s.upper())
+
+        for col, _ in api_pg._MERCH_STYLE_DAY_COLS:
+            self.assertIn(
+                col.upper(), alter_sqls,
+                "_reconcile_merch_rollup_columns did not emit ALTER for "
+                "merch_style_day column '%s'" % col,
+            )
+        for col, _ in api_pg._MERCH_FIRST_SALE_COLS:
+            self.assertIn(
+                col.upper(), alter_sqls,
+                "_reconcile_merch_rollup_columns did not emit ALTER for "
+                "merch_first_sale column '%s'" % col,
+            )
+
+    def test_reconcile_skips_missing_tables(self):
+        """When a merch rollup table does not yet exist (first deploy before
+        the build loop runs), _reconcile_merch_rollup_columns must not error
+        — it silently skips the table."""
+        import api_pg
+        executed = []
+
+        class _FakeCursor:
+            def execute(self, sql, params=None):
+                executed.append(sql.strip())
+                self._is_schema = "information_schema" in sql
+
+            def fetchone(self):
+                return None  # table not found
+
+            def close(self):
+                pass
+
+        class _FakeConn:
+            def cursor(self):
+                return _FakeCursor()
+            def commit(self):
+                pass
+
+        # Must not raise
+        api_pg._reconcile_merch_rollup_columns(_FakeConn())
+        alter_sqls = [s for s in executed if "ALTER" in s.upper()]
+        self.assertEqual(alter_sqls, [],
+                         "No ALTER TABLE expected when tables are absent")
+
+    # ── Structural integrity ─────────────────────────────────────────────────
+
+    def test_col_registry_entries_are_two_tuples(self):
+        """Every entry in both registries must be a (name, sql_type) 2-tuple."""
+        import api_pg
+        for entry in api_pg._MERCH_STYLE_DAY_COLS:
+            self.assertEqual(len(entry), 2,
+                             "Bad entry in _MERCH_STYLE_DAY_COLS: %r" % (entry,))
+            self.assertIsInstance(entry[0], str)
+            self.assertIsInstance(entry[1], str)
+        for entry in api_pg._MERCH_FIRST_SALE_COLS:
+            self.assertEqual(len(entry), 2,
+                             "Bad entry in _MERCH_FIRST_SALE_COLS: %r" % (entry,))
+            self.assertIsInstance(entry[0], str)
+            self.assertIsInstance(entry[1], str)
+
+    def test_parser_correctly_excludes_subquery_aliases(self):
+        """Confirm the depth-0 parser does NOT capture AS aliases that appear
+        inside subqueries (parenthesised sub-SELECTs or FILTER clauses)."""
+        sql = (
+            "SELECT a, b AS col_b, (SELECT x AS subq_col FROM t) AS c "
+            "FROM outer_table"
+        )
+        aliases = self._parse_depth0_as_aliases(sql)
+        self.assertIn("col_b", aliases, "top-level alias should be captured")
+        self.assertIn("c", aliases, "outer alias of subquery should be captured")
+        self.assertNotIn("subq_col", aliases, "alias inside subquery must not be captured")
+
+    def test_parser_stops_at_from_keyword(self):
+        """The parser must stop collecting aliases when it hits the depth-0 FROM."""
+        sql = "SELECT a AS x, b AS y FROM t JOIN other AS j ON t.id = j.id"
+        aliases = self._parse_depth0_as_aliases(sql)
+        self.assertIn("x", aliases)
+        self.assertIn("y", aliases)
+        self.assertNotIn("j", aliases, "JOIN alias after FROM must not be captured")
 
 
 class LaunchRampFilterScopeTests(unittest.TestCase):
@@ -923,3 +1170,7 @@ class ColourRowsFilterScopeTests(unittest.TestCase):
         # in-stock predicate + real warehouse split present
         self.assertIn("st.soh_stores + st.soh_warehouse > 0", cap["sql"])
         self.assertIn("Warehouse Finished Goods", cap["sql"])
+
+
+if __name__ == "__main__":
+    unittest.main()

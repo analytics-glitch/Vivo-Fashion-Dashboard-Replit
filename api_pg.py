@@ -4260,6 +4260,27 @@ ROLLUP_MAX_AGE_SEC = 2 * 3600    # rollups older than this → fall back to live
 #     rm_prod tables.
 _ROLLUP_SCHEMA_VER = 3
 
+# ── Merch rollup column registries ────────────────────────────────────────────
+# Each entry is (column_name, sql_type) for the NON-PRIMARY-KEY data columns of
+# the corresponding rollup table. Keeping them here serves two purposes:
+#   1. Runtime self-heal: the lazy DDL emits ALTER TABLE ADD COLUMN IF NOT EXISTS
+#      for every entry, so deploying new code that adds a column to the SELECT
+#      automatically migrates the existing production table on the first refresh —
+#      no silent zeroes waiting for a forced rebuild.
+#   2. CI gate: test_merch_router_schema_smoke.RollupColumnDriftTests compares
+#      these lists against a hardcoded expected set, so adding a column to the
+#      SELECT without updating this registry fails the test immediately.
+# Column order here mirrors the SELECT output order in _rollup_defs().
+_MERCH_STYLE_DAY_COLS: tuple = (
+    # non-PK columns in the order the SELECT in _rollup_defs() produces them
+    ("gross_units", "int"),
+    ("net_revenue", "numeric"),
+    ("units_fp",    "int"),
+)
+_MERCH_FIRST_SALE_COLS: tuple = (
+    ("first_sale_date", "date"),
+)
+
 # A row of all_sales contributes to PA-style sales the same CASE expression for
 # its signed KES value (sale/order add total_sales, returns subtract returns).
 _PA_KES_CASE = ("CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes "
@@ -4546,6 +4567,34 @@ def _rollup_defs():
     ]
 
 
+def _reconcile_merch_rollup_columns(conn):
+    """Ensure every column in the merch-rollup registries exists in the
+    corresponding live table.
+
+    Called in run_sales_rollup_refresh BEFORE the watermark-unchanged skip so
+    a deploy that adds a new column to a registry migrates the production table
+    even when no new sales have arrived and the skip would otherwise return
+    early.  All DDL is ADD COLUMN IF NOT EXISTS — safe to run on every refresh
+    cycle.  Tables that don't yet exist are skipped here; the lazy-DDL path
+    inside the build loop creates them with the full column set on first build.
+    """
+    cur = conn.cursor()
+    for table, cols in (
+        ("rollup_merch_style_day",  _MERCH_STYLE_DAY_COLS),
+        ("rollup_merch_first_sale", _MERCH_FIRST_SALE_COLS),
+    ):
+        cur.execute(
+            "SELECT 1 FROM information_schema.tables "
+            "WHERE table_schema = 'public' AND table_name = %s", (table,))
+        if cur.fetchone() is None:
+            continue  # table will be created by the build loop
+        for col, typ in cols:
+            cur.execute(
+                "ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s %s" % (table, col, typ))
+    conn.commit()
+    cur.close()
+
+
 def _ensure_rollup_tables(conn):
     cur = conn.cursor()
     cur.execute("""
@@ -4625,6 +4674,11 @@ def run_sales_rollup_refresh(only=None, force=False):
     locked = False
     try:
         _ensure_rollup_tables(conn)
+        # Schema self-heal: ensure every registered merch-rollup column exists
+        # in the live table BEFORE the watermark skip.  This guarantees that a
+        # deploy adding a column to a registry migrates the table immediately,
+        # even when source data hasn't changed and the skip would return early.
+        _reconcile_merch_rollup_columns(conn)
         # Serialise refreshes so a manual run and the hourly sync-loop subprocess
         # never overlap and collide on the shared <table>_stage tables
         # (build-then-swap). Uses the pooler-safe claim-row gate — session
@@ -4751,8 +4805,13 @@ def run_sales_rollup_refresh(only=None, force=False):
                             sku_variants json
                         )""",
                     # schema_ver 3 — Merch Hub rollups (created lazily so the
-                    # live API never races with a hand-run CREATE TABLE on prod)
-                    "merch_style_day": """
+                    # live API never races with a hand-run CREATE TABLE on prod).
+                    # ALTER TABLE ADD COLUMN IF NOT EXISTS is generated from
+                    # _MERCH_STYLE_DAY_COLS so that adding a column to the list
+                    # automatically migrates an existing production table on the
+                    # very next refresh — no manual migration required.
+                    "merch_style_day": (
+                        """
                         CREATE TABLE IF NOT EXISTS rollup_merch_style_day (
                             style_name        text    NOT NULL,
                             sale_day          date    NOT NULL,
@@ -4764,12 +4823,25 @@ def run_sales_rollup_refresh(only=None, force=False):
                             PRIMARY KEY (style_name, sale_day, country, pos_location_name)
                         );
                         CREATE INDEX IF NOT EXISTS idx_rmsd_style_country
-                            ON rollup_merch_style_day (style_name, country, sale_day)""",
-                    "merch_first_sale": """
+                            ON rollup_merch_style_day (style_name, country, sale_day)"""
+                        + "".join(
+                            "\n; ALTER TABLE rollup_merch_style_day"
+                            " ADD COLUMN IF NOT EXISTS %s %s" % (col, typ)
+                            for col, typ in _MERCH_STYLE_DAY_COLS
+                        )
+                    ),
+                    "merch_first_sale": (
+                        """
                         CREATE TABLE IF NOT EXISTS rollup_merch_first_sale (
                             style_name      text PRIMARY KEY,
                             first_sale_date date
-                        )""",
+                        )"""
+                        + "".join(
+                            "\n; ALTER TABLE rollup_merch_first_sale"
+                            " ADD COLUMN IF NOT EXISTS %s %s" % (col, typ)
+                            for col, typ in _MERCH_FIRST_SALE_COLS
+                        )
+                    ),
                 }
                 if name in _lazy_rollup_ddl:
                     cur.execute(_lazy_rollup_ddl[name])
