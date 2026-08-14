@@ -123,7 +123,7 @@ const MERCH_TABS = [
   { id: "pd-buying-orders",    label: "Buying Order Status",    pageId: "production",        el: PdBuyingOrders },
   { id: "pd-style-cockpit",    label: "Style Cockpit",          pageId: "product-analysis",  el: PdStyleCockpit },
   { id: "pd-range-mgmt",       label: "Range Management",       pageId: "range-mgmt",        el: PdRangeMgmt },
-  { id: "pd-style-tracker",    label: "Weekly Style Tracker",   pageId: "style-tracker",     el: PdStyleTracker },
+  { id: "pd-style-tracker",    label: "Style Launch Planner",   pageId: "style-tracker",     el: PdStyleTracker },
   { id: "pd-catalog-sor",      label: "Catalog & SOR",          pageId: "product-analysis",  el: PdCatalogSOR },
   { id: "pd-sor-report",       label: "SOR Report",             pageId: "exports",           el: PdSORReport },
   { id: "pd-retired-stock",    label: "Retired Stock",          pageId: "range-mgmt",        el: PdRetiredStock },

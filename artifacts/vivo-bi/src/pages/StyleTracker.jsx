@@ -29,7 +29,7 @@ import {
 } from "@phosphor-icons/react";
 
 /**
- * Weekly Style Tracker — manually-maintained kanban of production styles by
+ * Style Launch Planner — manually-maintained kanban of production styles by
  * launch ISO week. Current week + next 4; older weeks with incomplete styles
  * surface as "Overdue". Cards drag between week columns (HTML5 DnD).
  *
@@ -1900,7 +1900,7 @@ const StyleTracker = () => {
     });
   }, [board, stageFilter]);
 
-  if (loading) return <Loading label="Loading style tracker…" />;
+  if (loading) return <Loading label="Loading Style Launch Planner…" />;
   if (error) return <ErrorBox message={error} />;
   if (!board) return null;
 
@@ -1916,7 +1916,7 @@ const StyleTracker = () => {
       )}
 
       <SectionTitle
-        title="Weekly Style Tracker"
+        title="Style Launch Planner"
         subtitle={`Styles by launch week — use "Move to week" on a card to re-plan. Today: ${fmtShortDate(board.today)} (WK ${board.current?.iso_week})`}
         action={
           <div className="flex items-center gap-2 flex-wrap">

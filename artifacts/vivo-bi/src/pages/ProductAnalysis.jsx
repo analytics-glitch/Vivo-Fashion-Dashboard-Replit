@@ -1440,7 +1440,7 @@ const ProductAnalysis = () => {
 // ── Page wrapper: Product Development hub — question-driven tabs ─────────────
 // "What's selling and what's it worth?" — the canonical Style Cockpit above.
 // The former standalone pages Range Management, Allocations, Re-Order,
-// Weekly Style Tracker, Gallery and the SOR Report (from Exports) are merged
+// Style Launch Planner, Gallery and the SOR Report (from Exports) are merged
 // here as tabs (same pattern as the earlier Products → "Catalog & SOR" merge).
 // Old URLs redirect here with ?tab=… (see App.js). Each tab keeps its ORIGINAL
 // page id for permissions, so existing role/group grants keep working — the
@@ -1467,7 +1467,7 @@ const PA_TABS = [
   { id: "production-overview", label: "Overview", pageId: "production", el: ProductionOverviewTab },
   { id: "cockpit", label: "Style Cockpit", pageId: "product-analysis", el: null },
   { id: "range", label: "Range Management", pageId: "range-mgmt", el: RangeManagementTab },
-  { id: "tracker", label: "Weekly Style Tracker", pageId: "style-tracker", el: StyleTrackerTab },
+  { id: "tracker", label: "Style Launch Planner", pageId: "style-tracker", el: StyleTrackerTab },
   { id: "pd-flow", label: "PD Flow", pageId: "pd-flow", el: PDFlowTab },
   { id: "catalog", label: "Catalog & SOR", pageId: "product-analysis", el: ProductsCatalog },
   { id: "sor-report",      label: "SOR Report",      pageId: "exports", el: SORReportTab },

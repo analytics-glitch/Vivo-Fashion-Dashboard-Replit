@@ -562,7 +562,7 @@ const PROD_TABS = [
   { id: "tracker", label: "Production Tracker", pageId: "production", el: null },
   { id: "wallboard", label: "Wallboard", pageId: "production", el: ProductionWallboardTab },
   { id: "report", label: "Production Report", pageId: "production-report", el: ProductionReportTab },
-  { id: "style-tracker", label: "Weekly Style Tracker", pageId: "style-tracker", el: StyleTrackerTab },
+  { id: "style-tracker", label: "Style Launch Planner", pageId: "style-tracker", el: StyleTrackerTab },
 ];
 
 const ProductionPipelinePage = () => {

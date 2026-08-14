@@ -65,11 +65,11 @@ export const PRIMARY_NAV = [
   {
     to: "/product-analysis", label: "Product Development", icon: ChartBar, id: "product-analysis",
     anyOfPageIds: ["product-analysis", "production", "range-mgmt", "allocations", "re-order", "style-tracker", "gallery", "exports", "pd-flow"],
-    group: "Products & Range", desc: "Product development hub — Style Cockpit, Range Management, Weekly Style Tracker, PD Flow, Catalog & SOR, SOR Report, Retired Stock, Allocations, Re-Order and Product Catalogue tabs",
+    group: "Products & Range", desc: "Product development hub — Style Cockpit, Range Management, Style Launch Planner, PD Flow, Catalog & SOR, SOR Report, Retired Stock, Allocations, Re-Order and Product Catalogue tabs",
     subReports: [
       { pageId: "product-analysis", label: "Style Cockpit & Catalog" },
       { pageId: "range-mgmt",       label: "Range Management" },
-      { pageId: "style-tracker",    label: "Weekly Style Tracker" },
+      { pageId: "style-tracker",    label: "Style Launch Planner" },
       { pageId: "pd-flow",          label: "PD Flow" },
       { pageId: "production",       label: "Production Overview" },
       { pageId: "allocations",      label: "Allocations" },
@@ -148,11 +148,11 @@ export const PRIMARY_NAV = [
   {
     to: "/production", label: "Production Pipeline", icon: Factory, id: "production",
     anyOfPageIds: ["production", "production-report", "style-tracker"],
-    group: "Operations & Production", desc: "Kanban tracker of buying orders through the manufacturing stages, plus the detailed production report and weekly style tracker",
+    group: "Operations & Production", desc: "Kanban tracker of buying orders through the manufacturing stages, plus the detailed production report and Style Launch Planner",
     subReports: [
       { pageId: "production",        label: "Overview & Tracker" },
       { pageId: "production-report", label: "Production Report" },
-      { pageId: "style-tracker",     label: "Weekly Style Tracker" },
+      { pageId: "style-tracker",     label: "Style Launch Planner" },
     ],
   },
   { to: "/quality", label: "Quality", icon: Medal, id: "quality", group: "Operations & Production", desc: "Production quality dashboard — repairs, defect rates, complaints and washing trackers" },
