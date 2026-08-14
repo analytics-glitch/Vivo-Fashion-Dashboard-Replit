@@ -1295,7 +1295,6 @@ function StyleCard({
   onOptionsChange, weeks, canArchive, onArchive,
 }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const [confirmArchive, setConfirmArchive] = useState(false);
   const done = !!style.completed;
   const canDone = style.status === "Warehouse";
   // Archive is only offered on Warehouse-stage cards, to authorized users
@@ -1394,21 +1393,10 @@ function StyleCard({
       {/* Archive (Warehouse stage, authorized users) + Delete (privileged only) */}
       {(isPrivileged || showArchive) && (
         <div className="flex items-center justify-end gap-2 mt-1.5">
-          {showArchive && (confirmArchive ? (
-            <span className="flex items-center gap-1 shrink-0">
-              <button
-                type="button"
-                onClick={() => { setConfirmArchive(false); onArchive(style); }}
-                disabled={busy}
-                className="text-[10px] font-bold text-white bg-amber-600 hover:bg-amber-700 rounded px-1.5 py-1 disabled:opacity-50"
-                data-testid={`style-card-archive-confirm-${style.id}`}
-              >Archive</button>
-              <button type="button" onClick={() => setConfirmArchive(false)} className="text-muted hover:text-[#0f3d24]"><X size={13} /></button>
-            </span>
-          ) : (
+          {showArchive && (
             <button
               type="button"
-              onClick={() => setConfirmArchive(true)}
+              onClick={() => onArchive(style)}
               disabled={busy}
               title="Archive style — clears it off the board (find it in the Archived tab)"
               className="flex items-center gap-1 text-[10px] font-semibold text-amber-800 hover:text-amber-900 bg-amber-50 hover:bg-amber-100 border border-amber-300 rounded px-1.5 py-0.5 disabled:opacity-50"
@@ -1416,7 +1404,7 @@ function StyleCard({
             >
               <Archive size={12} /> Archive
             </button>
-          ))}
+          )}
           {isPrivileged && (confirmDelete ? (
             <span className="flex items-center gap-1 shrink-0">
               <button
