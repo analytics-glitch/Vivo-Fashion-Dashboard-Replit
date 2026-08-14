@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import * as XLSX from "xlsx";
 import { api, fmtNum } from "@/lib/api";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import FinishingToWarehouse from "@/components/FinishingToWarehouse";
@@ -341,36 +340,49 @@ const StoreFlow = () => {
     URL.revokeObjectURL(url);
   };
 
-  const exportExcel = () => {
+  const exportExcel = async () => {
     const rows = _buildReportRows();
     if (!rows.length) return;
-    const ws = XLSX.utils.json_to_sheet(rows);
-    // Format "vs Prev Week %" column as percentage
-    const range = XLSX.utils.decode_range(ws["!ref"] || "A1");
-    // Percent-formatted columns: pacing % and Conversion %
+
+    const _mod = await import("exceljs");
+    const ExcelJS = _mod.default || _mod;
+    const wb = new ExcelJS.Workbook();
+    const _XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+
+    // ── Stock Movement sheet ──────────────────────────────────────────────────
+    const ws = wb.addWorksheet("Stock Movement");
     const headerKeys = Object.keys(rows[0]);
-    const pctCols = ["vs Prev Week % (net)", "Conversion %"]
-      .map((h) => headerKeys.indexOf(h))
-      .filter((i) => i >= 0);
-    for (let rowIdx = range.s.r + 1; rowIdx <= range.e.r; rowIdx++) {
-      for (const c of pctCols) {
-        const cell = ws[XLSX.utils.encode_cell({ r: rowIdx, c })];
-        if (cell && cell.v != null) cell.z = "0.0%";
-      }
-    }
-    ws["!cols"] = [
-      { wch: 28 }, { wch: 16 }, { wch: 16 },
-      { wch: 6 }, { wch: 6 }, { wch: 6 }, { wch: 6 }, { wch: 6 }, { wch: 6 }, { wch: 6 },
-      { wch: 18 }, { wch: 14 }, { wch: 12 }, { wch: 14 },
-      { wch: 14 }, { wch: 10 }, { wch: 10 }, { wch: 13 }, { wch: 12 },
+    const colWidths = [
+      28, 16, 16,
+      6, 6, 6, 6, 6, 6, 6,
+      18, 14, 12, 14,
+      14, 10, 10, 13, 12,
     ];
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Stock Movement");
-    // WOC sheet
-    const wocWs = XLSX.utils.json_to_sheet(_buildWocRows());
-    wocWs["!cols"] = [{ wch: 28 }, { wch: 10 }, { wch: 16 }, { wch: 14 }, { wch: 12 }, { wch: 14 }];
-    XLSX.utils.book_append_sheet(wb, wocWs, "Stock Cover (WOC)");
-    // Summary sheet
+    ws.columns = headerKeys.map((h, i) => ({ header: h, key: h, width: colWidths[i] ?? 14 }));
+    ws.getRow(1).font = { bold: true };
+    const pctColSet = new Set(["vs Prev Week % (net)", "Conversion %"]);
+    rows.forEach((r) => {
+      const exRow = ws.addRow(r);
+      headerKeys.forEach((h, ci) => {
+        if (pctColSet.has(h)) {
+          const cell = exRow.getCell(ci + 1);
+          if (cell.value != null) cell.numFmt = "0.0%";
+        }
+      });
+    });
+
+    // ── Stock Cover (WOC) sheet ───────────────────────────────────────────────
+    const wocRows = _buildWocRows();
+    const wocWs = wb.addWorksheet("Stock Cover (WOC)");
+    if (wocRows.length > 0) {
+      const wocKeys = Object.keys(wocRows[0]);
+      const wocWidths = [28, 10, 16, 14, 12, 14];
+      wocWs.columns = wocKeys.map((h, i) => ({ header: h, key: h, width: wocWidths[i] ?? 14 }));
+      wocWs.getRow(1).font = { bold: true };
+      wocRows.forEach((r) => wocWs.addRow(r));
+    }
+
+    // ── Summary sheet ─────────────────────────────────────────────────────────
     const meta = [
       { Field: "Period (transfers)", Value: `${dateFrom} → ${dateTo}` },
       { Field: "Prev Week Sales", Value: prevWeekLabel || "" },
@@ -386,8 +398,21 @@ const StoreFlow = () => {
       { Field: "Network WOC", Value: totalWoc != null ? +totalWoc.toFixed(1) : null },
       { Field: "Network Conversion %", Value: networkConversion != null ? `${networkConversion.toFixed(1)}%` : "—" },
     ];
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(meta), "Summary");
-    XLSX.writeFile(wb, `store-flow-${dateFrom}-to-${dateTo}.xlsx`);
+    const metaWs = wb.addWorksheet("Summary");
+    metaWs.columns = [{ header: "Field", key: "Field", width: 28 }, { header: "Value", key: "Value", width: 24 }];
+    metaWs.getRow(1).font = { bold: true };
+    meta.forEach((r) => metaWs.addRow(r));
+
+    const buf = await wb.xlsx.writeBuffer();
+    const blob = new Blob([buf], { type: _XLSX_MIME });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `store-flow-${dateFrom}-to-${dateTo}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   };
 
   // ── Daily transfer drill-down ──

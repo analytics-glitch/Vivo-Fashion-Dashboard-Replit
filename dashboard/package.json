@@ -33,7 +33,7 @@
     "@radix-ui/react-toggle-group": "^1.1.7",
     "@radix-ui/react-tooltip": "^1.2.4",
     "ajv": "^8.20.0",
-    "axios": "^1.8.4",
+    "axios": "^1.19.0",
     "canvas-confetti": "^1.9.4",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
@@ -42,7 +42,7 @@
     "date-fns": "^4.1.0",
     "embla-carousel-react": "^8.6.0",
     "html2canvas": "^1.4.1",
-    "http-proxy-middleware": "^4.1.0",
+    "http-proxy-middleware": "^4.2.0",
     "input-otp": "^1.4.2",
     "jspdf": "^4.2.1",
     "lucide-react": "^0.507.0",
@@ -91,8 +91,15 @@
     "eslint-plugin-react": "7.37.4",
     "eslint-plugin-react-hooks": "5.2.0",
     "globals": "15.15.0",
-    "postcss": "^8.4.49",
+    "postcss": "^8.5.26",
     "tailwindcss": "^3.4.17"
   },
-  "packageManager": "yarn@1.22.22+sha512.a6b2f7906b721bba3d67d4aff083df04dad64c399707841b7acf00f6b133b7ac24255f2652fa22ae3534329dc6180534e98d17432037ff6fd140556e2bb3137e"
+  "overrides": {
+    "brace-expansion": "^1.1.18",
+    "form-data": "^4.0.6",
+    "http-proxy-middleware": "^4.2.0",
+    "js-yaml": "^4.3.1",
+    "postcss": "^8.5.26",
+    "react-router": ">=7.18.2 <8"
+  }
 }

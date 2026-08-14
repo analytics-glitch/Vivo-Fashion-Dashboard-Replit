@@ -1,6 +1,5 @@
 import React, { useEffect, useState, useCallback, useMemo } from "react";
 import ReactDOM from "react-dom";
-import * as XLSX from "xlsx";
 import { PieChart, Pie, Cell, Tooltip } from "recharts";
 import { api } from "@/lib/api";
 import { SectionTitle, Loading, ErrorBox } from "@/components/common";
@@ -379,16 +378,32 @@ function DeliveryOutlook({ overdue, dueSoon, onOpenReport, onDrillLanding }) {
 }
 
 function DrillModal({ title, subtitle, rows, columns, onClose }) {
-  const exportExcel = () => {
+  const exportExcel = async () => {
     const data = rows.map((r) => {
       const row = {};
       for (const c of columns) { row[c.label] = c.csv ? c.csv(r) : (r[c.key] ?? ""); }
       return row;
     });
-    const ws = XLSX.utils.json_to_sheet(data);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Orders");
-    XLSX.writeFile(wb, `${title.replace(/\s+/g, "-").toLowerCase()}.xlsx`);
+    const _mod = await import("exceljs");
+    const ExcelJS = _mod.default || _mod;
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet("Orders");
+    if (data.length > 0) {
+      const headers = Object.keys(data[0]);
+      ws.columns = headers.map((h) => ({ header: h, key: h, width: 18 }));
+      ws.getRow(1).font = { bold: true };
+      data.forEach((row) => ws.addRow(row));
+    }
+    const buf = await wb.xlsx.writeBuffer();
+    const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${title.replace(/\s+/g, "-").toLowerCase()}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   };
   useEffect(() => {
     const h = (e) => { if (e.key === "Escape") onClose(); };
