@@ -538,7 +538,6 @@ export default function MerchOverview() {
           label="Active Styles"
           value={fmtNum(s.active_styles_count)}
           sub={`SOH: ${fmtNum(s.active_stock_units)} units`}
-          accentColor={C.blue}
           testId="merch-kpi-active-styles"
           onDownload={downloadKpiCsv("active_styles", "Active_Style_Lines")}
           note={`Avg SOH/Style: ${fmtNum(avgSohPerActiveStyle)} units`}
@@ -547,14 +546,12 @@ export default function MerchOverview() {
           label="SOR (Period)"
           value={fmtPct1(s.avg_sor_period_active)}
           sub="Active Styles Only"
-          accentColor="#0ea5e9"
           testId="merch-kpi-sor"
         />
         <MerchKPICard
           label="Active Colour Styles"
           value={fmtNum(s.active_colour_styles_count)}
           sub="In stock · Active styles only"
-          accentColor={C.teal}
           testId="merch-kpi-colour-styles"
           onDownload={downloadKpiCsv("active_colours", "Active_Colour_Styles")}
           note={`Avg Colours/Style: ${avgColoursPerActiveStyle.toFixed(1)}`}
@@ -564,7 +561,6 @@ export default function MerchOverview() {
           value={fmtKESM(s.active_revenue_period)}
           sub={`Avg/Active Style: ${fmtKESM(avgRevPerActiveStyle)}`}
           sub2={`${activeRevSharePct}% of total revenue`}
-          accentColor="#16a34a"
           testId="merch-kpi-revenue"
           note={`ASP (period): ${fmtKESFull(activeAsp)}`}
         />
@@ -573,7 +569,6 @@ export default function MerchOverview() {
           value={fmtNum(s.active_units_period)}
           sub="Trailing 6m Vel. (Active)"
           sub2={`${fmtNum(s.active_weekly_velocity)} /wk`}
-          accentColor={C.amber}
           testId="merch-kpi-units"
           note={`ASP (period): ${fmtKESFull(activeAsp)}`}
         />
@@ -582,7 +577,6 @@ export default function MerchOverview() {
           value={fmtPct1(s.avg_full_price_pct)}
           sub="Avg SOR (period)"
           sub2={fmtPct1(s.avg_sor_6m)}
-          accentColor={C.red}
           testId="merch-kpi-fp"
           onDownload={downloadKpiCsv("full_price", "Full_Price_Pct_Styles")}
         />
@@ -590,7 +584,6 @@ export default function MerchOverview() {
           label="Total SOH"
           value={fmtNum(s.total_stock_units)}
           sub={`WOC > 20 (active): ${fmtNum(s.woc_gt20_count)} styles`}
-          accentColor="#0891b2"
           testId="merch-kpi-stock"
           onDownload={downloadKpiCsv("total_stock", "Total_Stock_Units")}
         />
@@ -598,7 +591,6 @@ export default function MerchOverview() {
           label="Warehouse Active SOH"
           value={fmtNum(s.active_warehouse_stock_units)}
           sub={`${activeWhPct}% of Active SOH`}
-          accentColor={C.purple}
           testId="merch-kpi-warehouse"
           onDownload={downloadKpiCsv("warehouse_units", "Warehouse_Units")}
         />
@@ -607,7 +599,6 @@ export default function MerchOverview() {
           value={fmtNum(s.retired_styles_count)}
           sub={`SOH: ${fmtNum(s.retired_stock_units)} units`}
           sub2={`${retiredWhPct}% of SOH in Warehouse`}
-          accentColor="#94a3b8"
           testId="merch-kpi-retired-styles"
           onDownload={downloadKpiCsv("retired_styles", "Retired_Style_Lines")}
         />
@@ -616,7 +607,6 @@ export default function MerchOverview() {
           value={fmtKESM(s.retired_revenue_period)}
           sub={`Avg/Retired Style: ${fmtKESM(avgRevPerRetiredStyle)}`}
           sub2={`${retiredRevSharePct}% of total revenue`}
-          accentColor="#a16207"
           testId="merch-kpi-retired-revenue"
           note={avgUnitsPerRetiredStyle != null
             ? `Avg Units Sold/Style (period): ${
@@ -630,7 +620,6 @@ export default function MerchOverview() {
           label="Archived Styles"
           value={fmtNum(s.archived_styles_count)}
           sub={`SOH: ${fmtNum(s.archived_stock_units)} units`}
-          accentColor="#64748b"
           testId="merch-kpi-archived-styles"
           onDownload={downloadKpiCsv("archived_styles", "Archived_Style_Lines")}
         />
@@ -639,7 +628,6 @@ export default function MerchOverview() {
           value={fmtNum(s.on_track_count)}
           sub={`On Track (${s.active_total_styles ? Math.round((s.on_track_count || 0) / s.active_total_styles * 100) : 0}% of active)`}
           sub2={`At Risk: ${fmtNum(s.at_risk_count)} (${atRiskPct}%)`}
-          accentColor={C.green}
           testId="merch-kpi-styles"
           onDownload={downloadKpiCsv("on_track", "On_Track_Styles")}
         />
@@ -669,7 +657,7 @@ export default function MerchOverview() {
         <MerchKPICard
           label="At Risk Styles" value={fmtNum(riskKpis.atRiskCount)}
           sub={`${riskKpis.total > 0 ? ((riskKpis.atRiskCount / riskKpis.total) * 100).toFixed(1) : 0}% of active styles`}
-          accentColor={C.amber}
+          statusAccent={C.red}
           testId="merch-kpi-atrisk"
           onDownload={async () => downloadCsvText(buildStyleCsv(riskKpis.atRiskRows), `At_Risk_Styles_${dateSlug}`)}
           note="Any warning rule: out of stock but selling · cover < 1.5 wks (< 2 for hot sellers) · no sales 60–89 days · overstock (cover > 16 wks) · heavy markdown"
@@ -677,7 +665,7 @@ export default function MerchOverview() {
         <MerchKPICard
           label="Overdue Styles" value={fmtNum(riskKpis.overdueCount)}
           sub="Immediate action"
-          accentColor={C.red}
+          statusAccent={C.red}
           testId="merch-kpi-overdue"
           onDownload={async () => downloadCsvText(buildStyleCsv(riskKpis.overdueRows), `Overdue_Styles_${dateSlug}`)}
           note="Critical rules: in stock but no sales for 90+ days · severe overstock (cover > 26 wks) · discontinue candidates (no stock, no sales 90+ days)"
@@ -685,7 +673,7 @@ export default function MerchOverview() {
         <MerchKPICard
           label="On Review" value={fmtNum(riskKpis.onReviewCount)}
           sub={`${riskKpis.total > 0 ? ((riskKpis.onReviewCount / riskKpis.total) * 100).toFixed(1) : 0}% of active styles`}
-          accentColor="#4b7bec"
+          statusAccent={C.amber}
           testId="merch-kpi-onreview"
           onDownload={async () => downloadCsvText(buildStyleCsv(riskKpis.onReviewRows), `On_Review_Styles_${dateSlug}`)}
           note="At-risk styles queued for weekly review: in stock but no sales for 60–89 days, or overstock (cover > 16 wks)"
@@ -693,7 +681,7 @@ export default function MerchOverview() {
         <MerchKPICard
           label="Stock at Risk" value={`~${fmtNum(Math.round(riskKpis.stockAtRisk / 500) * 500)} units`}
           sub="Estimated exposure"
-          accentColor={C.purple}
+          statusAccent={C.red}
           testId="merch-kpi-stockatrisk"
           onDownload={async () => downloadCsvText(
             buildStyleCsv([...riskKpis.atRiskRows, ...riskKpis.overdueRows]
@@ -704,7 +692,7 @@ export default function MerchOverview() {
         <MerchKPICard
           label="Healthy Styles" value={fmtNum(riskKpis.healthyCount)}
           sub={`${riskKpis.total > 0 ? ((riskKpis.healthyCount / riskKpis.total) * 100).toFixed(1) : 0}% of active styles`}
-          accentColor={C.green}
+          statusAccent={C.green}
           testId="merch-kpi-healthy"
           onDownload={async () => downloadCsvText(buildStyleCsv(riskKpis.healthyRows), `Healthy_Styles_${dateSlug}`)}
           note="No risk rule tripped — selling steadily with balanced cover; maintain replenishment"

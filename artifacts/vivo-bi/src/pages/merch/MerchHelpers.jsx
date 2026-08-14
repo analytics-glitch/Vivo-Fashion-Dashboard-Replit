@@ -65,15 +65,20 @@ export const fmtAxisM = (n) => {
 
 // ── MerchKPICard ─────────────────────────────────────────────────────────────
 /**
- * KPI card with a 4px left accent bar.
- * accentColor: any CSS colour string, defaults to blue.
+ * Shared KPI card. Cards stay neutral by default; statusAccent is reserved for
+ * meaningful status communication (the Overview's At-Risk cards).
+ *
+ * accentColor remains supported for the other Merchandising Hub tabs, but the
+ * Overview passes no accentColor to portfolio cards so their values stay dark
+ * and readable.
  */
 export const MerchKPICard = ({
   label,
   value,
   sub,
   sub2,
-  accentColor = C.blue,
+  accentColor = null,
+  statusAccent = null,
   testId,
   trend,       // optional number: % change vs compare period (null = hide)
   trendLabel,  // optional string: e.g. "vs Last Month"
@@ -96,17 +101,27 @@ export const MerchKPICard = ({
       setDlBusy(false);
     }
   };
+  const cardAccent = statusAccent || accentColor;
   return (
   <div
-    className="bg-white rounded-xl shadow-sm overflow-hidden flex"
+    className={`bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden flex ${
+      cardAccent ? "border-l-4" : ""
+    }`}
     data-testid={testId}
-    style={{ minHeight: 120 }}
+    style={cardAccent ? { minHeight: 120, borderLeftColor: cardAccent } : { minHeight: 120 }}
   >
-    {/* left accent bar */}
-    <div className="w-1 shrink-0" style={{ backgroundColor: accentColor }} />
-    <div className="flex-1 p-4 sm:p-5">
+    <div className="flex-1 p-4">
       <div className="flex items-start justify-between gap-1 flex-wrap">
-        <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">{label}</div>
+        <div className="flex min-w-0 items-center gap-1.5">
+          {statusAccent && (
+            <span
+              className="h-2 w-2 shrink-0 rounded-full"
+              style={{ backgroundColor: statusAccent }}
+              aria-hidden="true"
+            />
+          )}
+          <div className="text-xs font-medium text-gray-500">{label}</div>
+        </div>
         {onDownload && (
           <button
             type="button"
@@ -134,20 +149,19 @@ export const MerchKPICard = ({
         )}
       </div>
       <div
-        className="mt-2 text-[22px] sm:text-[28px] font-extrabold leading-none tabular-nums"
-        style={{ color: accentColor }}
+        className="mt-2 text-2xl font-bold leading-none tabular-nums text-gray-900"
         data-testid={testId ? `${testId}-value` : undefined}
       >
         {value}
       </div>
       {sub && (
-        <div className="mt-2 text-[11px] text-slate-400">{sub}</div>
+        <div className="mt-2 text-xs text-gray-500">{sub}</div>
       )}
       {sub2 && (
-        <div className="mt-0.5 text-[11px] font-semibold text-slate-500">{sub2}</div>
+        <div className="mt-0.5 text-xs font-medium text-gray-600">{sub2}</div>
       )}
       {note && (
-        <div className="mt-2 pt-1.5 border-t border-slate-100 text-[10px] leading-[14px] text-slate-400">{note}</div>
+        <div className="mt-2 border-t border-slate-200 pt-2 text-[11px] leading-4 text-gray-500">{note}</div>
       )}
       {trend != null && !isNaN(trend) && (
         <div className="mt-2 flex items-center gap-1.5 flex-wrap">
