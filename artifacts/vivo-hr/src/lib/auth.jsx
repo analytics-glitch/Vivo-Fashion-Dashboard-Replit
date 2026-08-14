@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from "react";
-import { apiClient } from "./api";
+import { apiClient, clearLegacyToken } from "./api";
 
 const AuthCtx = createContext(null);
 
@@ -38,11 +38,8 @@ export const AuthProvider = ({ children }) => {
   const [loading, setLoading] = useState(true);
 
   const fetchMe = useCallback(async () => {
-    if (!localStorage.getItem("vivo_token")) {
-      setUser(null);
-      setLoading(false);
-      return null;
-    }
+    // Cookie-only session: /auth/me resolves the httpOnly cookie (401 = signed out).
+    clearLegacyToken();
     try {
       const { data } = await apiClient.get("/auth/me");
       const u = normalizeUser(data);
@@ -66,24 +63,22 @@ export const AuthProvider = ({ children }) => {
   }, [fetchMe]);
 
   const login = async (email, password) => {
+    // The backend sets the httpOnly session cookie on this response; the token
+    // in the JSON body is intentionally ignored (mobile-only path).
     const { data } = await apiClient.post("/auth/login", { email, password });
-    if (data?.token) localStorage.setItem("vivo_token", data.token);
     const u = normalizeUser(data.user);
     setUser(u);
     setLoading(false);
     return u;
   };
 
-  // Complete Google OAuth: the backend callback redirects to
-  // <base>/auth/callback#token=<session>; the callback page hands us that token.
-  const completeGoogleLogin = async (token) => {
-    if (token) localStorage.setItem("vivo_token", token);
-    return fetchMe();
-  };
+  // Complete Google OAuth: the backend callback already set the httpOnly
+  // session cookie on its redirect (no token in the URL); just resolve it.
+  const completeGoogleLogin = async () => fetchMe();
 
   const logout = async () => {
     try { await apiClient.post("/auth/logout"); } catch {}
-    localStorage.removeItem("vivo_token");
+    clearLegacyToken();
     setUser(null);
   };
 

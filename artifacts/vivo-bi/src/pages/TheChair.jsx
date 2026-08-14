@@ -26,7 +26,6 @@ function QuestionCard({ q, onAnswer, onRefresh }) {
   const [showAnswer, setShowAnswer] = useState(false);
   const [answer, setAnswer] = useState("");
   const [loading, setLoading] = useState(false);
-  const token = () => localStorage.getItem("vivo_token") || "";
   const answeredBy = () => localStorage.getItem("vivo_user_email") || "Stephen";
 
   async function submit() {
@@ -35,7 +34,7 @@ function QuestionCard({ q, onAnswer, onRefresh }) {
     try {
       await fetch(`${API_FETCH}/questions/${q.id}/answer`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: "Bearer " + token() },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ answer, answered_by: answeredBy() }),
       });
       setShowAnswer(false);
@@ -117,7 +116,6 @@ export default function TheChair() {
   const [running, setRunning] = useState(false);
   const [runResult, setRunResult] = useState(null);
 
-  const token = () => localStorage.getItem("vivo_token") || "";
 
   async function triggerRun() {
     setRunning(true);
@@ -125,7 +123,7 @@ export default function TheChair() {
     try {
       const resp = await fetch(API_FETCH + "/run", {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: "Bearer " + token() },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({}),
       });
       const result = await resp.json();

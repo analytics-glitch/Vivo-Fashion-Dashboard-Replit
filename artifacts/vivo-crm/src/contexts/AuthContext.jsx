@@ -1,5 +1,5 @@
 import React, { createContext, useCallback, useContext, useEffect, useState } from "react";
-import { api, setStoredToken, getStoredToken } from "@/lib/api";
+import { api, clearLegacyToken } from "@/lib/api";
 
 const AuthContext = createContext({
   user: null,
@@ -32,11 +32,8 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true);
 
   const refresh = useCallback(async () => {
-    if (!getStoredToken()) {
-      setUser(null);
-      setLoading(false);
-      return null;
-    }
+    // Cookie-only session: /auth/me resolves the httpOnly cookie (401 = signed out).
+    clearLegacyToken();
     try {
       const r = await api.get("/auth/me");
       const u = normalizeUser(r.data);
@@ -60,22 +57,19 @@ export function AuthProvider({ children }) {
   }, [refresh]);
 
   const loginWithPassword = useCallback(async (email, password) => {
+    // The backend sets the httpOnly session cookie on this response; the token
+    // in the JSON body is intentionally ignored (mobile-only path).
     const r = await api.post("/auth/login", { email, password });
-    const token = r?.data?.token;
-    if (token) setStoredToken(token);
     const u = normalizeUser(r?.data?.user);
     setUser(u);
     setLoading(false);
     return u;
   }, []);
 
-  // Complete Google OAuth: the backend callback redirects to
-  // <base>/auth/callback#token=<session>; the callback page hands us that token.
+  // Complete Google OAuth: the backend callback already set the httpOnly
+  // session cookie on its redirect (no token in the URL); just resolve it.
   const completeGoogleLogin = useCallback(
-    async (token) => {
-      if (token) setStoredToken(token);
-      return refresh();
-    },
+    async () => refresh(),
     [refresh],
   );
 
@@ -85,7 +79,7 @@ export function AuthProvider({ children }) {
     } catch {
       /* best-effort server-side destroy */
     }
-    setStoredToken(null);
+    clearLegacyToken();
     setUser(null);
     window.location.href = import.meta.env.BASE_URL + "login";
   }, []);

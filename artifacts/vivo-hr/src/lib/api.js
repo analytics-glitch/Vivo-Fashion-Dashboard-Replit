@@ -5,29 +5,28 @@ import axios from "axios";
 // MongoDB; here both are served by this project's FastAPI backend.)
 export const API = "/api";
 
-// Backend client — used for auth, notes, leaves. Token from localStorage attached via header.
+// Backend client — used for auth, notes, leaves. Authentication rides on the
+// httpOnly `session_token` cookie, attached automatically on these same-origin
+// requests. The token is deliberately NOT kept in localStorage or sent as a
+// Bearer header — a JS-readable copy would defeat the cookie's XSS protection.
 export const apiClient = axios.create({
   baseURL: API,
 });
 
-apiClient.interceptors.request.use((config) => {
-  const token = localStorage.getItem("vivo_token");
-  if (token) config.headers.Authorization = `Bearer ${token}`;
-  return config;
-});
+// Legacy builds stored the session token under this key; clear stale copies.
+export const clearLegacyToken = () => {
+  try {
+    localStorage.removeItem("vivo_token");
+  } catch {
+    /* storage blocked — nothing to clear */
+  }
+};
 
 // Vivo Attendance analytics — this project's SQL endpoints over vivo_attendance.
+// Gated by the same staff session cookie (sent automatically; no Bearer header).
 export const VIVO_API = "/api/hr";
 
 export const vivoClient = axios.create({ baseURL: VIVO_API });
-
-// The attendance analytics endpoints are gated behind the same staff session,
-// so attach the Bearer token here too.
-vivoClient.interceptors.request.use((config) => {
-  const token = localStorage.getItem("vivo_token");
-  if (token) config.headers.Authorization = `Bearer ${token}`;
-  return config;
-});
 
 export const todayISO = () => new Date().toISOString().slice(0, 10);
 export const monthStartISO = () => {

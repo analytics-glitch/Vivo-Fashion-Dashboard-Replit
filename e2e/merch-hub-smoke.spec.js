@@ -97,7 +97,9 @@ async function openMerchTab(page, tabId) {
 
   // Set token before navigation so the SPA picks it up on mount.
   await page.goto("/");
-  await page.evaluate((t) => window.localStorage.setItem("vivo_token", t), token);
+  // The SPA now authenticates via the httpOnly session cookie (localStorage
+  // token removed for XSS hardening).
+  await page.context().addCookies([{ name: "session_token", value: token, url: page.url() }]);
 
   // Navigate directly to the Merchandising Hub with the target tab.
   await page.goto(`/merchandising?tab=${tabId}`);

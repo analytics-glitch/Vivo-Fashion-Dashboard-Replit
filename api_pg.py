@@ -1034,6 +1034,10 @@ def _ensure_users_table():
     # Local email/password accounts store a PBKDF2 hash here; Google-only
     # identities leave it NULL (they authenticate via OAuth, never a password).
     _users_exec("ALTER TABLE app_users ADD COLUMN IF NOT EXISTS password_hash TEXT")
+    # Brute-force throttle state for the staff password login (mirrors the
+    # loyalty member lockout): consecutive failed attempts + temporary lock.
+    _users_exec("ALTER TABLE app_users ADD COLUMN IF NOT EXISTS failed_logins INTEGER NOT NULL DEFAULT 0")
+    _users_exec("ALTER TABLE app_users ADD COLUMN IF NOT EXISTS locked_until TIMESTAMPTZ")
     # Google profile photo URL, captured from the OAuth userinfo `picture` field
     # at sign-in. Nullable: password-only accounts and pre-existing Google users
     # (until their next Google sign-in) leave it NULL and fall back to initials.
@@ -8980,6 +8984,50 @@ def auth_me_status(request: Request):
     return {"status": u.get("status", "active"), "role": u.get("role"), "user": u}
 
 
+# ── Staff login brute-force protection ────────────────────────────────────────
+# Per-account lockout (persisted on app_users, mirrors the loyalty login) plus a
+# per-IP sliding-window throttle. The IP throttle also covers guesses against
+# unknown emails, where no account row exists to carry a counter. In-memory is
+# acceptable for the IP layer: it resets on restart, but the durable per-account
+# lock is what protects any real account.
+_LOGIN_MAX_FAILS = 10          # consecutive per-account failures before lockout
+_LOGIN_LOCK_MINUTES = 15       # per-account lockout duration
+_LOGIN_IP_MAX_FAILS = 20       # failed attempts per IP per window
+_LOGIN_IP_WINDOW_SEC = 15 * 60
+_login_ip_fails = {}           # ip -> [monotonic-ish timestamps]
+_login_ip_lock = threading.Lock()
+
+
+def _login_client_ip(request):
+    # Trusted-proxy contract: the platform proxy in front of this app APPENDS
+    # the real client address to X-Forwarded-For. Earlier (leftmost) entries
+    # are client-supplied and spoofable, so take the RIGHTMOST entry only.
+    fwd = (request.headers.get("x-forwarded-for") or "").split(",")
+    last = fwd[-1].strip() if fwd else ""
+    if last:
+        return last
+    return getattr(getattr(request, "client", None), "host", None) or "unknown"
+
+
+def _login_ip_throttled(ip):
+    """True if this IP has exhausted its failed-attempt budget."""
+    now = time.time()
+    with _login_ip_lock:
+        hits = [t for t in _login_ip_fails.get(ip, []) if now - t < _LOGIN_IP_WINDOW_SEC]
+        _login_ip_fails[ip] = hits
+        # Opportunistic GC so the map can't grow unboundedly under a spray.
+        if len(_login_ip_fails) > 10000:
+            for k in [k for k, v in _login_ip_fails.items()
+                      if not v or now - v[-1] >= _LOGIN_IP_WINDOW_SEC]:
+                _login_ip_fails.pop(k, None)
+        return len(hits) >= _LOGIN_IP_MAX_FAILS
+
+
+def _login_ip_record_fail(ip):
+    with _login_ip_lock:
+        _login_ip_fails.setdefault(ip, []).append(time.time())
+
+
 @app.post("/api/auth/login")
 async def auth_login(request: Request):
     try:
@@ -8990,12 +9038,44 @@ async def auth_login(request: Request):
     password = body.get("password") or ""
     if not email or not password:
         return JSONResponse({"detail": "Email and password are required"}, status_code=400)
-    rows = _users_exec(
-        "SELECT user_id, email, name, role, status, password_hash, extra_pages "
-        "FROM app_users WHERE email=%s", (email,), fetch=True)
-    rec = rows[0] if rows else None
-    if not rec or not _verify_password(password, rec.get("password_hash")):
-        return JSONResponse({"detail": "Invalid email or password"}, status_code=401)
+    ip = _login_client_ip(request)
+    if _login_ip_throttled(ip):
+        return JSONResponse(
+            {"detail": "Too many attempts. Try again later."}, status_code=429)
+    # Check-and-bump runs inside one locked tx (row FOR UPDATE) so concurrent
+    # guesses can't race past the counter — same pattern as the loyalty login.
+    with _users_tx(lock=True) as cur:
+        cur.execute(
+            "SELECT user_id, email, name, role, status, password_hash, extra_pages, "
+            "failed_logins, "
+            "(locked_until IS NOT NULL AND locked_until > now()) AS is_locked "
+            "FROM app_users WHERE email=%s FOR UPDATE", (email,))
+        rec = cur.fetchone()
+        if not rec:
+            # Uniform 401 (no account enumeration); still costs the IP budget.
+            _login_ip_record_fail(ip)
+            return JSONResponse({"detail": "Invalid email or password"}, status_code=401)
+        if rec.get("is_locked"):
+            return JSONResponse(
+                {"detail": "Too many attempts. Try again later."}, status_code=429)
+        if not _verify_password(password, rec.get("password_hash")):
+            _login_ip_record_fail(ip)
+            fails = int(rec.get("failed_logins") or 0) + 1
+            if fails >= _LOGIN_MAX_FAILS:
+                cur.execute(
+                    "UPDATE app_users SET failed_logins=0, "
+                    "locked_until=now() + (%s || ' minutes')::interval WHERE user_id=%s",
+                    (_LOGIN_LOCK_MINUTES, rec["user_id"]))
+                return JSONResponse(
+                    {"detail": "Too many attempts. Try again later."}, status_code=429)
+            cur.execute(
+                "UPDATE app_users SET failed_logins=%s WHERE user_id=%s",
+                (fails, rec["user_id"]))
+            return JSONResponse({"detail": "Invalid email or password"}, status_code=401)
+        # Success: clear throttle state.
+        cur.execute(
+            "UPDATE app_users SET failed_logins=0, locked_until=NULL WHERE user_id=%s",
+            (rec["user_id"],))
     if rec["status"] == "rejected":
         return JSONResponse({"detail": "account_rejected"}, status_code=403)
     if rec["status"] == "disabled":
@@ -9097,6 +9177,20 @@ def auth_google_login(request: Request):
     return resp
 
 
+def _oauth_success_redirect(base, is_native, token):
+    """Build the post-OAuth redirect URL.
+
+    Web targets (same-origin SPA paths) get NO token in the URL — the httpOnly
+    ``session_token`` cookie set on this response is the sole credential, so
+    the token is never exposed to page JavaScript (XSS hardening). Only native
+    app deep links (``scheme://…``) carry the token, as a query param, because
+    a separate process receives that URL and cannot read our cookies.
+    """
+    if is_native:
+        return f"{base}?token={quote(token)}"
+    return base
+
+
 @app.get("/api/auth/google/callback")
 def auth_google_callback(request: Request):
     client_id = os.environ.get("GOOGLE_CLIENT_ID")
@@ -9169,7 +9263,8 @@ def auth_google_callback(request: Request):
         logging.error("google oauth provisioning failed for %s (%s)",
                       _redact_email(email), type(_e).__name__)
         return _back("error=provisioning")
-    resp = _back("token=" + quote(token))
+    resp = RedirectResponse(_oauth_success_redirect(base, is_native, token))
+    resp.delete_cookie("g_oauth_return", path="/")
     resp.set_cookie("session_token", token, **_login_cookie_kwargs())
     resp.delete_cookie("g_oauth_state", path="/")
     return resp

@@ -150,21 +150,9 @@ api.interceptors.request.use((cfg) => {
   if ((cfg.method || "get").toLowerCase() === "get") {
     cfg.params = { ...(cfg.params || {}), _t: Date.now() };
   }
-  // Attach the session token (set on login / Google callback) as a Bearer
-  // header. The backend also accepts the httpOnly session cookie, but the
-  // Bearer header is the primary path and survives cookie-blocking browsers.
-  try {
-    const t =
-      typeof window !== "undefined"
-        ? window.localStorage.getItem("vivo_token")
-        : null;
-    if (t) {
-      cfg.headers = cfg.headers || {};
-      cfg.headers.Authorization = `Bearer ${t}`;
-    }
-  } catch {
-    /* storage blocked — fall back to the cookie */
-  }
+  // Authentication rides on the httpOnly `session_token` cookie, which the
+  // browser attaches automatically on these same-origin requests. No Bearer
+  // header: the token is deliberately not exposed to JavaScript (XSS-safe).
   return cfg;
 });
 

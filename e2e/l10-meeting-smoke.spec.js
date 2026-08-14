@@ -202,10 +202,10 @@ test.describe("L10 Meeting — Fabric BI smoke", () => {
 
       // The vivo-bi React SPA is served at the root path.
       await page.goto("/");
-      await page.evaluate(
-        (t) => window.localStorage.setItem("vivo_token", t),
-        token
-      );
+      // SPA auth rides on the httpOnly session cookie now (no localStorage token).
+      await page.context().addCookies([
+        { name: "session_token", value: token, url: page.url() },
+      ]);
       await page.reload();
 
       // Wait for the SPA to mount and paint at least part of the nav.

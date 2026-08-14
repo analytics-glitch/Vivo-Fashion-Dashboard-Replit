@@ -8,40 +8,20 @@ export const API_BASE = "/api";
 
 export const api = axios.create({ baseURL: API_BASE });
 
-// --- Session token (custom Postgres auth) ----------------------------------
-// The backend issues an opaque session token on login (also set as an httpOnly
-// cookie). We persist it in localStorage and attach it as a Bearer header on
-// every request so the app works even where third-party cookies are blocked.
-const TOKEN_KEY = "vivo_token";
-
-export const getStoredToken = () => {
+// --- Session (custom Postgres auth) ----------------------------------------
+// Authentication rides on the httpOnly `session_token` cookie the backend sets
+// at login; the browser attaches it automatically on these same-origin
+// requests. The token is deliberately NOT kept in localStorage or sent as a
+// Bearer header — a JS-readable copy would defeat the cookie's XSS protection.
+// Legacy builds stored it under this key; clear any stale copy.
+const LEGACY_TOKEN_KEY = "vivo_token";
+export const clearLegacyToken = () => {
   try {
-    return typeof window !== "undefined"
-      ? window.localStorage.getItem(TOKEN_KEY)
-      : null;
+    if (typeof window !== "undefined") window.localStorage.removeItem(LEGACY_TOKEN_KEY);
   } catch {
-    return null;
+    /* storage blocked — nothing to clear */
   }
 };
-
-export const setStoredToken = (t) => {
-  try {
-    if (typeof window === "undefined") return;
-    if (t) window.localStorage.setItem(TOKEN_KEY, t);
-    else window.localStorage.removeItem(TOKEN_KEY);
-  } catch {
-    /* storage blocked — Bearer falls back to the cookie */
-  }
-};
-
-api.interceptors.request.use((config) => {
-  const t = getStoredToken();
-  if (t) {
-    config.headers = config.headers || {};
-    config.headers.Authorization = `Bearer ${t}`;
-  }
-  return config;
-});
 
 // On an expired/invalid session the backend returns 401. Clear the stale token
 // and bounce to THIS app's login (base-path aware) so the user gets a clean
@@ -54,7 +34,7 @@ api.interceptors.response.use(
     const url = error?.config?.url || "";
     const isAuthCall = /\/auth\/(login|me|logout|google)/.test(url);
     if (status === 401 && !isAuthCall && typeof window !== "undefined") {
-      setStoredToken(null);
+      clearLegacyToken();
       const loginPath = import.meta.env.BASE_URL + "login";
       if (!window.location.pathname.endsWith("/login")) {
         window.location.href = loginPath;

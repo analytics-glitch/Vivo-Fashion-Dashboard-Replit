@@ -200,13 +200,12 @@ const ChatWidget = () => {
   };
 
   const sendStream = async (msg, atts) => {
-    let token = null;
-    try { token = localStorage.getItem("vivo_token"); } catch { /* noop */ }
+    // Auth rides on the httpOnly session cookie (sent automatically on
+    // same-origin fetch) — no Bearer token in JS.
     const res = await fetch(`${API}/chat/stream`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
       body: JSON.stringify({
         message: msg,

@@ -13,9 +13,10 @@ import { api, clearApiCache } from "@/lib/api";
  * ----------------------------------------------
  * Authentication is handled entirely by our own FastAPI backend (`api_pg.py`):
  * email/password accounts (PBKDF2) and real Google OAuth. The backend issues an
- * opaque session token, returned on login and set as an httpOnly cookie. We also
- * keep the token in localStorage so it can be sent as a `Bearer` header (the
- * api.js request interceptor attaches it). No Clerk, no Mongo, no third-party
+ * opaque session token set as an httpOnly `session_token` cookie. The web app
+ * relies solely on that cookie — the token is deliberately NOT persisted in
+ * localStorage (a stored copy would be readable by any injected script,
+ * defeating the httpOnly protection). No Clerk, no Mongo, no third-party
  * identity service.
  */
 
@@ -25,23 +26,14 @@ export const isAllowedEmail = (email) => {
   return ALLOWED_DOMAINS.includes(email.split("@").pop().trim().toLowerCase());
 };
 
-const TOKEN_KEY = "vivo_token";
-export const getStoredToken = () => {
+// Legacy cleanup: earlier builds persisted the session token in localStorage.
+// Remove any stale copy so it can't be exfiltrated by injected script.
+const LEGACY_TOKEN_KEY = "vivo_token";
+const clearLegacyToken = () => {
   try {
-    return typeof window !== "undefined"
-      ? window.localStorage.getItem(TOKEN_KEY)
-      : null;
+    if (typeof window !== "undefined") window.localStorage.removeItem(LEGACY_TOKEN_KEY);
   } catch {
-    return null;
-  }
-};
-export const setStoredToken = (t) => {
-  try {
-    if (typeof window === "undefined") return;
-    if (t) window.localStorage.setItem(TOKEN_KEY, t);
-    else window.localStorage.removeItem(TOKEN_KEY);
-  } catch {
-    /* storage blocked (iOS private mode) — Bearer falls back to the cookie */
+    /* storage blocked — nothing to clear */
   }
 };
 
@@ -55,12 +47,7 @@ export const AuthProvider = ({ children }) => {
   // null). /auth/me is a self-path: a pending/rejected/disabled user still gets
   // a 200 with their record, so the route guard can route them correctly.
   const checkAuth = useCallback(async () => {
-    const token = getStoredToken();
-    if (!token) {
-      setUser(null);
-      setLoading(false);
-      return null;
-    }
+    clearLegacyToken();
     try {
       const r = await api.get("/auth/me");
       const u = r?.data && r.data.user_id ? r.data : null;
@@ -76,9 +63,9 @@ export const AuthProvider = ({ children }) => {
   }, []);
 
   const loginWithPassword = useCallback(async (email, password) => {
+    // The backend sets the httpOnly session cookie on this response; the
+    // token in the JSON body is intentionally ignored (mobile-only path).
     const r = await api.post("/auth/login", { email, password });
-    const token = r?.data?.token;
-    if (token) setStoredToken(token);
     clearApiCache();
     const u = r?.data?.user || null;
     setUser(u);
@@ -86,11 +73,12 @@ export const AuthProvider = ({ children }) => {
     return u;
   }, []);
 
-  // Complete the Google OAuth flow: the backend callback redirects to
-  // /auth/callback#token=<session>, the callback page hands us that token.
+  // Complete the Google OAuth flow: the backend callback already set the
+  // httpOnly session cookie on its redirect response, so we only need to
+  // resolve the session to a user. The `#token=` fragment (kept for the
+  // mobile deep-link flow) is ignored and never persisted.
   const completeGoogleLogin = useCallback(
-    async (token) => {
-      if (token) setStoredToken(token);
+    async () => {
       clearApiCache();
       return checkAuth();
     },
@@ -103,7 +91,7 @@ export const AuthProvider = ({ children }) => {
     } catch {
       /* best-effort server-side destroy */
     }
-    setStoredToken(null);
+    clearLegacyToken();
     clearApiCache();
     setUser(null);
     if (typeof window !== "undefined") window.location.assign("/login");

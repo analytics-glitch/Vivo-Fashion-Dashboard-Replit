@@ -418,7 +418,6 @@ export function DeskCoachingPanel({ coaching, desk }) {
 
   const slug = DESK_SLUG[desk] || (desk || "").toLowerCase().replace(/\s+/g, "-") + "-desk";
   const reportBase = `/api/${slug}`;
-  const token = () => localStorage.getItem("vivo_token") || "";
 
   async function generateReport() {
     setReportLoading(true);
@@ -426,7 +425,6 @@ export function DeskCoachingPanel({ coaching, desk }) {
     try {
       const res = await fetch(reportBase + "/report", {
         method: "POST",
-        headers: { Authorization: "Bearer " + token() },
       });
       const json = await res.json();
       if (!res.ok || json.error) {
@@ -444,7 +442,6 @@ export function DeskCoachingPanel({ coaching, desk }) {
   async function loadLatestReport() {
     try {
       const res = await fetch(reportBase + "/report/latest", {
-        headers: { Authorization: "Bearer " + token() },
       });
       const json = await res.json();
       if (json.report) { setReportData(json); setReportOpen(true); }
@@ -760,7 +757,6 @@ export function DeskIssuePanel({ issues = [], desk, apiBase, onRefresh }) {
   const [form, setForm] = useState({ title: "", body: "", severity: "medium", owner_email: "" });
   const [loading, setLoading] = useState(false);
 
-  const token = () => localStorage.getItem("vivo_token") || "";
 
   async function handleCreate() {
     if (!form.title.trim()) return;
@@ -768,7 +764,7 @@ export function DeskIssuePanel({ issues = [], desk, apiBase, onRefresh }) {
     try {
       await fetch(apiBase + "/issues", {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: "Bearer " + token() },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(form),
       });
       setForm({ title: "", body: "", severity: "medium", owner_email: "" });
@@ -782,7 +778,7 @@ export function DeskIssuePanel({ issues = [], desk, apiBase, onRefresh }) {
     const by = localStorage.getItem("vivo_user_email") || "leadership";
     await fetch(`${apiBase}/issues/${id}/close`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: "Bearer " + token() },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ closed_by: by }),
     });
     onRefresh?.();

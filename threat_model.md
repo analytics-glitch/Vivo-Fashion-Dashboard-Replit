@@ -6,7 +6,7 @@ Vivo Fashion Group BI is a multi-tenant executive BI cockpit for a multi-brand f
 
 ## Assets
 
-- **Staff session tokens** — short-lived opaque tokens stored both as an httpOnly cookie and in `localStorage`. Compromise allows impersonation of any staff role.
+- **Staff session tokens** — short-lived opaque tokens delivered to the web SPA solely as an httpOnly `session_token` cookie (no `localStorage` copy; the mobile app uses its own Bearer/AsyncStorage flow). Compromise allows impersonation of any staff role.
 - **Customer/member data** — PII including names, phone numbers, email addresses, purchase history, and loyalty points for customers across all brands. Stored in PostgreSQL.
 - **Business intelligence data** — multi-brand sales figures, inventory, margins, and financials. A data breach could expose competitive pricing and vendor relationships.
 - **Application secrets** — `DATABASE_URL`, `SESSION_SECRET`, `GOOGLE_CLIENT_ID`/`SECRET`, `FACEBOOK_PAGE_ACCESS_TOKEN`, Stripe-adjacent loyalty config. Compromise allows database access or OAuth impersonation.
@@ -34,7 +34,7 @@ Vivo Fashion Group BI is a multi-tenant executive BI cockpit for a multi-brand f
 
 ### Spoofing
 
-Authentication uses PBKDF2-SHA256 (200k iterations) for staff passwords, Google OAuth for SSO, and opaque session tokens stored as httpOnly cookies. The `POST /api/auth/login` endpoint has no rate limiting or account lockout, making it susceptible to password spraying. Google OAuth state is validated via a short-lived httpOnly cookie (CSRF protection is present). The loyalty login (`/api/loyalty/login`) implements per-account lockout (5 attempts, 15-minute lock).
+Authentication uses PBKDF2-SHA256 (200k iterations) for staff passwords, Google OAuth for SSO, and opaque session tokens stored as httpOnly cookies. The `POST /api/auth/login` endpoint enforces a per-account lockout (10 consecutive failures → 15-minute lock, tracked in `app_users.failed_logins`/`locked_until`) plus a per-IP failed-attempt throttle (20 fails per 15 minutes, client IP taken from the trusted proxy's rightmost `X-Forwarded-For` entry). Google OAuth state is validated via a short-lived httpOnly cookie (CSRF protection is present). The loyalty login (`/api/loyalty/login`) implements per-account lockout (5 attempts, 15-minute lock).
 
 **Guarantees required**: Staff login MUST implement IP-based rate limiting or account lockout to prevent credential brute-force. Session tokens MUST NOT be stored in localStorage (XSS-accessible); the httpOnly cookie alone is sufficient.
 
@@ -48,7 +48,7 @@ SQL queries throughout `api_pg.py` use parameterized statements (`%s` placeholde
 
 Email addresses are logged at `INFO` level at multiple points in `api_pg.py` (lines 1935, 1948, 1951, 1987, 9153). The community throttle log at `community_app.py` line 674 logs the composite rate-limit key which includes the member's phone number. In a compromised or externally shipped log environment, this constitutes PII leakage.
 
-The `vivo_token` session token is stored in `localStorage` in the browser (readable by any JavaScript on the page), in addition to the httpOnly session cookie. An XSS vulnerability anywhere in the SPA would allow an attacker to exfiltrate the session token.
+The staff web SPA no longer persists the session token in `localStorage` (legacy `vivo_token` keys are actively removed) and the Google OAuth web callback redirect carries no token in the URL — the httpOnly session cookie is the sole web credential, so an XSS payload cannot read the session token. Native mobile deep links still receive the token as a query param (a separate process that cannot read cookies).
 
 **Guarantees required**: PII (email, phone) MUST NOT appear in logs. Session tokens MUST be stored only in httpOnly cookies, not in localStorage.
 

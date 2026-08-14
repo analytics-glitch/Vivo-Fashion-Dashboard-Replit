@@ -28,13 +28,10 @@ const AuthCallback = () => {
         setError(friendly || code);
         return;
       }
-      const token = params.get("token");
-      if (!token) {
-        setError("Missing token from redirect");
-        return;
-      }
+      // The backend already set the httpOnly session cookie on its redirect;
+      // any `#token=` fragment (kept for the mobile deep-link flow) is ignored.
       try {
-        const u = await completeGoogleLogin(token);
+        const u = await completeGoogleLogin();
         // Clear the hash so a reload doesn't re-process the token.
         window.history.replaceState(null, "", "/");
         // Pending/rejected users still land in the app — ProtectedRoute

@@ -81,7 +81,8 @@ test.describe("Style Tracker — past week disappears when last style is done", 
   test.beforeEach(async ({ page }) => {
     const token = process.env.VIVO_E2E_TOKEN;
     await page.goto("/");
-    await page.evaluate((t) => window.localStorage.setItem("vivo_token", t), token);
+    // SPA auth rides on the httpOnly session cookie now (no localStorage token).
+    await page.context().addCookies([{ name: "session_token", value: token, url: page.url() }]);
     await page.goto("/style-tracker");
     await page.waitForSelector('[data-testid="style-tracker-page"]', { timeout: 20_000 });
   });

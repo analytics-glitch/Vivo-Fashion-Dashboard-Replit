@@ -20,15 +20,11 @@ export default function AuthCallback() {
       navigate(`/login?error=${errMatch[1]}`, { replace: true });
       return;
     }
-    const m = hash.match(/token=([^&]+)/);
-    if (!m) {
-      navigate("/login", { replace: true });
-      return;
-    }
-    const token = decodeURIComponent(m[1]);
-
+    // Web flow: the backend already set the httpOnly session cookie on its
+    // redirect and no longer puts the token in the URL. Any legacy #token=
+    // fragment is ignored — the cookie is the sole credential.
     (async () => {
-      const u = await completeGoogleLogin(token);
+      const u = await completeGoogleLogin();
       // Clear the hash so it isn't re-processed.
       window.history.replaceState(null, "", window.location.pathname);
       navigate(u ? "/" : "/login", { replace: true });
