@@ -1,9 +1,10 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { posts } from "./mockData";
 import { ImagePlaceholder, MerchBadge, kes } from "./ui";
-import { ShoppingBag, Heart, ChevronRight, Sparkles } from "lucide-react";
+import { ShoppingBag, Heart, ChevronRight, ChevronDown, Sparkles, SlidersHorizontal } from "lucide-react";
 import { api } from "@/lib/api";
 import { useWishlist } from "@/context/WishlistContext";
+import { FilterSheet, AppliedChips, emptyFilters, countActive, filtersToParams, MY_SIZE_LABELS } from "./ShopFilters";
 
 const PAGE = 24;
 
@@ -122,18 +123,14 @@ function ProductCard({ product, onOpen }) {
         )}
         <MerchBadge badge={product.badge} testId={`card-badge-${product.sku}`} className="absolute bottom-3 left-3" />
       </div>
+      {/* Card reads: name → colour/print → price. No category eyebrow, no
+          "View" affordance — the whole card is the tap target. */}
       <div className="p-4 flex flex-col flex-grow bg-card border border-t-0 border-border">
-        <div className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground mb-1.5">{product.category}</div>
         <h3 className="font-serif text-foreground text-[15px] leading-snug mb-1 flex-grow line-clamp-2">{product.style_name}</h3>
         {product.color && (
           <div className="text-xs text-muted-foreground mb-3 truncate">{product.color}</div>
         )}
-        <div className="flex items-center justify-between">
-          <div className="font-medium text-foreground">{kes(product.price)}</div>
-          <span className="text-[11px] font-semibold uppercase tracking-wider text-primary-ink flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-            View <ChevronRight size={12} />
-          </span>
-        </div>
+        <div className="font-medium text-foreground">{kes(product.price)}</div>
       </div>
       </button>
       <button
@@ -154,7 +151,6 @@ function SkeletonCard() {
     <div className="bg-card rounded overflow-hidden border border-border">
       <div className="aspect-[3/4] bg-secondary animate-pulse" />
       <div className="p-4 space-y-3">
-        <div className="h-2 w-1/3 bg-secondary rounded animate-pulse" />
         <div className="h-4 w-4/5 bg-secondary rounded animate-pulse" />
         <div className="h-3 w-1/2 bg-secondary rounded animate-pulse" />
       </div>
@@ -163,7 +159,8 @@ function SkeletonCard() {
 }
 
 export default function TabShop({ onOpenProduct, onOpenTryOn }) {
-  const [filter, setFilter] = useState("All");
+  const [filters, setFilters] = useState(emptyFilters());
+  const [sort, setSort] = useState("new");
   const [items, setItems] = useState([]);
   const [cats, setCats] = useState([]);
   const [hasMore, setHasMore] = useState(false);
@@ -171,43 +168,85 @@ export default function TabShop({ onOpenProduct, onOpenTryOn }) {
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState("");
   const [personalized, setPersonalized] = useState(false);
+  const [facets, setFacets] = useState(null);
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const [draft, setDraft] = useState(null); // the sheet's in-progress selection
+  const [draftCount, setDraftCount] = useState(null);
+  const [counting, setCounting] = useState(false);
+  const [sizeRange, setSizeRange] = useState(null); // Style-Quiz size_range id
 
-  const load = async (category, offset) => {
+  const filtersKey = JSON.stringify(filters);
+  const nActive = countActive(filters);
+  // Bumped whenever the query (filters/sort) changes; an in-flight load-more
+  // from an older query must never append into the new grid.
+  const queryVer = useRef(0);
+  const countSeq = useRef(0);
+
+  const load = (offset) =>
     // personalize is a request, not a demand: without a signed-in member and
-    // a finished quiz the server returns the curated order (personalized:false).
-    const d = await api.products({ category: category === "All" ? "" : category, limit: PAGE, offset, personalize: true });
-    setPersonalized(!!d.personalized);
-    return d;
-  };
+    // a finished quiz the server returns the curated order (personalized:false)
+    // — and an explicit sort always wins over the Style-DNA re-rank.
+    api.products(filtersToParams(filters, { limit: PAGE, offset, sort, personalize: true }));
 
   useEffect(() => {
+    queryVer.current += 1;
     let alive = true;
     setLoading(true);
     setError("");
-    load(filter, 0)
+    load(0)
       .then((d) => {
         if (!alive) return;
         setItems(d.items);
         setCats(d.categories || []);
         setHasMore(d.has_more);
+        setPersonalized(!!d.personalized);
       })
       .catch((e) => alive && setError(e.message))
       .finally(() => alive && setLoading(false));
     return () => { alive = false; };
-  }, [filter]);
+  }, [filtersKey, sort]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Drawer options + her quiz size range, once. Both are decoration — the
+  // shop works fine if either fetch fails.
+  useEffect(() => {
+    api.productFacets().then(setFacets).catch(() => {});
+    api.styleQuiz().then((d) => setSizeRange(d?.answers?.size_range || null)).catch(() => {});
+  }, []);
+
+  // Live "Show N styles" count while she tweaks the drawer selection. The
+  // total is sort-independent; the seq guard drops out-of-order responses.
+  useEffect(() => {
+    if (!sheetOpen || !draft) return;
+    setCounting(true);
+    const my = ++countSeq.current;
+    const t = setTimeout(() => {
+      api.productsCount(filtersToParams(draft))
+        .then((r) => { if (my === countSeq.current) setDraftCount(r.total); })
+        .catch(() => { if (my === countSeq.current) setDraftCount(null); })
+        .finally(() => { if (my === countSeq.current) setCounting(false); });
+    }, 350);
+    return () => clearTimeout(t);
+  }, [sheetOpen, JSON.stringify(draft)]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const loadMore = async () => {
+    const ver = queryVer.current;
     setLoadingMore(true);
     try {
-      const d = await load(filter, items.length);
-      setItems((prev) => [...prev, ...d.items]);
-      setHasMore(d.has_more);
+      const d = await load(items.length);
+      if (ver === queryVer.current) {
+        setItems((prev) => [...prev, ...d.items]);
+        setHasMore(d.has_more);
+        setPersonalized(!!d.personalized);
+      }
     } catch (e) {
-      setError(e.message);
+      if (ver === queryVer.current) setError(e.message);
     }
     setLoadingMore(false);
   };
 
+  const mySizes = (facets && sizeRange && facets.size_ranges?.[sizeRange]) || null;
+  const mySizeOn = !!mySizes && mySizes.length === filters.sizes.length && mySizes.every((s) => filters.sizes.includes(s));
+  const activeCat = filters.cats.length === 1 ? filters.cats[0] : filters.cats.length === 0 ? "All" : null;
   const chips = ["All", ...cats.slice(0, 8).map((c) => c.name)];
 
   return (
@@ -241,15 +280,71 @@ export default function TabShop({ onOpenProduct, onOpenTryOn }) {
         </button>
       )}
 
-      {/* Category filters */}
+      {/* Filter + sort controls */}
+      <div className="flex items-center gap-2 mb-4 px-1">
+        <button
+          type="button"
+          data-testid="shop-filter-open"
+          onClick={() => { setDraft(filters); setDraftCount(null); setSheetOpen(true); }}
+          className={`inline-flex items-center gap-2 px-4 h-10 rounded-sm border text-[12px] font-bold uppercase tracking-wider whitespace-nowrap transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
+            nActive > 0
+              ? "border-primary text-primary-ink bg-primary/5"
+              : "border-border bg-background text-foreground hover:bg-secondary"
+          }`}
+        >
+          <SlidersHorizontal size={14} strokeWidth={2} />
+          Filter
+          {nActive > 0 && (
+            <span data-testid="shop-filter-count" className="min-w-5 h-5 px-1 rounded-full bg-primary text-primary-foreground text-[10px] font-bold flex items-center justify-center">
+              {nActive}
+            </span>
+          )}
+        </button>
+        {mySizes && (
+          <button
+            type="button"
+            data-testid="shop-my-size"
+            aria-pressed={mySizeOn}
+            onClick={() => setFilters((f) => ({ ...f, sizes: mySizeOn ? [] : [...mySizes] }))}
+            className={`inline-flex items-center px-4 h-10 rounded-sm border text-[12px] font-bold uppercase tracking-wider whitespace-nowrap transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
+              mySizeOn
+                ? "border-primary text-primary-ink bg-primary/5"
+                : "border-border bg-background text-foreground hover:bg-secondary"
+            }`}
+          >
+            My size · {MY_SIZE_LABELS[sizeRange] || sizeRange}
+          </button>
+        )}
+        <div className="ml-auto relative shrink-0">
+          <select
+            data-testid="shop-sort"
+            aria-label="Sort styles"
+            value={sort}
+            onChange={(e) => setSort(e.target.value)}
+            className="appearance-none h-10 pl-4 pr-9 rounded-sm border border-border bg-background text-[12px] font-bold uppercase tracking-wider text-foreground hover:bg-secondary transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          >
+            {(facets?.sorts || [
+              { id: "new", label: "Newest first" },
+              { id: "price_asc", label: "Price low to high" },
+              { id: "price_desc", label: "Price high to low" },
+              { id: "best", label: "Best sellers" },
+            ]).map((s) => (
+              <option key={s.id} value={s.id}>{s.label}</option>
+            ))}
+          </select>
+          <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-muted-foreground" />
+        </div>
+      </div>
+
+      {/* Category pills — quick single-category shortcut into the same filter model */}
       <div className="flex gap-2 mb-10 overflow-x-auto hide-scrollbar pb-2 px-1">
         {chips.map((b) => (
           <button
             key={b}
             data-testid={`shop-filter-${b}`}
-            onClick={() => setFilter(b)}
+            onClick={() => setFilters((f) => ({ ...f, cats: b === "All" ? [] : [b] }))}
             className={`px-5 py-2 rounded-sm text-[11px] font-bold uppercase tracking-wider whitespace-nowrap transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
-              filter === b
+              activeCat === b
                 ? "bg-foreground text-background shadow-sm"
                 : "bg-background text-muted-foreground hover:bg-secondary border border-border"
             }`}
@@ -258,6 +353,8 @@ export default function TabShop({ onOpenProduct, onOpenTryOn }) {
           </button>
         ))}
       </div>
+
+      <AppliedChips filters={filters} facets={facets} onChange={setFilters} className="-mt-4 mb-8" />
 
       {error && (
         <div className="mb-8 rounded bg-destructive/5 border border-destructive/20 text-destructive text-[13px] font-medium px-4 py-3">
@@ -273,7 +370,21 @@ export default function TabShop({ onOpenProduct, onOpenTryOn }) {
         {!loading && !error && items.length === 0 && (
           <div className="col-span-full py-20 text-center text-muted-foreground flex flex-col items-center gap-3">
             <ShoppingBag size={32} className="opacity-20" />
-            <p>Nothing in this category right now — check back soon.</p>
+            {nActive > 0 ? (
+              <>
+                <p>Nothing matches just yet — try removing a filter.</p>
+                <button
+                  type="button"
+                  data-testid="empty-clear-filters"
+                  onClick={() => setFilters(emptyFilters())}
+                  className="text-[13px] font-medium text-primary-ink hover:underline"
+                >
+                  Clear all filters
+                </button>
+              </>
+            ) : (
+              <p>Nothing in this category right now — check back soon.</p>
+            )}
           </div>
         )}
       </div>
@@ -310,6 +421,17 @@ export default function TabShop({ onOpenProduct, onOpenTryOn }) {
           </div>
         </div>
       )}
+
+      <FilterSheet
+        open={sheetOpen}
+        onClose={() => setSheetOpen(false)}
+        facets={facets}
+        draft={draft}
+        setDraft={setDraft}
+        count={draftCount}
+        counting={counting}
+        onApply={(d) => { setFilters(d); setSheetOpen(false); }}
+      />
     </div>
   );
 }

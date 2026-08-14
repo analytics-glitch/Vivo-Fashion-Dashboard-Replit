@@ -26,6 +26,11 @@ function CartLine({ item, onQty, onRemove }) {
             <div className="text-[12px] text-muted-foreground mt-1">
               {item.color ? `${item.color} · ` : ""}Size {item.size}
             </div>
+            {item.style_number && (
+              <div data-testid={`cart-style-${item.key}`} className="text-[11px] text-muted-foreground/80 mt-0.5">
+                Style {item.style_number}
+              </div>
+            )}
             <div className="text-[13px] text-foreground/80 mt-1">{kes(item.price)} each</div>
           </div>
           <button

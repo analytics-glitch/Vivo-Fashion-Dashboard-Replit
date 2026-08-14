@@ -1,99 +1,113 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Heart, MessageCircle, Share, ArrowRight, ChevronRight, Cake, Gift, Ruler, Layers, X } from "lucide-react";
-import { posts as feedPosts, challenges, styleBoards, fitFor } from "./mockData";
-import { TierBadge, Avatar, ImagePlaceholder, PointsAction, cardCls } from "./ui";
+import { Heart, MessageCircle, Share, ArrowRight, ChevronRight, Cake, Gift, Ruler, Layers, X, Sparkles, ClipboardList, Trophy, HandHeart } from "lucide-react";
+import { styleBoards, fitFor } from "./mockData";
+import PostDetailModal from "./PostDetailModal";
+import { PostVisual, timeAgo } from "./PostBits";
+import { TierBadge, Avatar, ImagePlaceholder, cardCls } from "./ui";
 import { api } from "@/lib/api";
 import { NEWS, newsPageId } from "./newsData";
 import ReelsRow from "./ReelsRow";
 import NewsSection, { NewsCardCompact } from "./NewsSection";
 import JustLandedRow from "./JustLandedRow";
+import { FabulasHomeCard } from "./FabulasStory";
+import { fabulasOfTheDay } from "./fabulasStories";
+
+const fmtShort = (iso) => {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime())
+    ? ""
+    : d.toLocaleDateString("en-KE", { day: "numeric", month: "long" });
+};
+const initialsOf = (u) =>
+  (u || "?").split(/[._\s-]+/).filter(Boolean).slice(0, 2)
+    .map((x) => x[0].toUpperCase()).join("") || "?";
 
 /* Post visual — placeholder art in two tones so a photo-less demo feed still
    has rhythm. Aspect ratio comes from the post's layout variant. */
-function PostVisual({ post }) {
-  const ar =
-    post.variant === "square" ? "aspect-square" :
-    post.variant === "landscape" ? "aspect-[4/3]" :
-    "aspect-[4/5]";
-  if (post.visual === "dark") {
-    return (
-      <div className={`w-full ${ar} rounded bg-foreground relative overflow-hidden flex items-center justify-center mb-4`}>
-        <div className="absolute -top-10 -right-10 w-40 h-40 bg-white/5 rounded-full blur-2xl pointer-events-none" />
-        <span className="font-serif italic text-lg text-background/60">Look by @{post.author.username}</span>
-      </div>
-    );
-  }
-  return <ImagePlaceholder aspectRatio={ar} text={`Look by @${post.author.username}`} className="mb-4" />;
-}
-
-function PostCard({ post, onShopTap }) {
-  const [liked, setLiked] = useState(post?.isLiked ?? false);
-  const [likesCount, setLikesCount] = useState(post?.likes ?? 0);
+function PostCard({ post, onShopTap, onOpenProduct, onOpen, onCounts }) {
+  const [likeBump, setLikeBump] = useState(0);
   if (!post) return null;
 
+  /* Liked state lives on the shared feed list (via onCounts) so the card
+     and the detail modal stay in sync. Optimistic flip, server truth on
+     answer, revert on error. Deliberately NO points for likes. */
   const toggleLike = () => {
-    if (liked) {
-      setLiked(false);
-      setLikesCount(c => c - 1);
-    } else {
-      setLiked(true);
-      setLikesCount(c => c + 1);
-    }
+    const wasLiked = post.my_liked;
+    const wasCount = post.like_count;
+    onCounts?.(post.id, { my_liked: !wasLiked, like_count: wasCount + (wasLiked ? -1 : 1) });
+    if (!wasLiked) setLikeBump((b) => b + 1);
+    api.likePost(post.id)
+      .then((r) => onCounts?.(post.id, { my_liked: r.liked, like_count: r.like_count }))
+      .catch(() => onCounts?.(post.id, { my_liked: wasLiked, like_count: wasCount }));
+  };
+  const open = () => onOpen?.(post);
+  const onOpenKey = (e) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
   };
 
   return (
-    <div className={`${cardCls} p-5 transition-transform hover:-translate-y-0.5 duration-300`}>
+    <div className={`${cardCls} p-5 transition-transform hover:-translate-y-0.5 duration-300`} data-testid={`post-card-${post.id}`}>
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-3">
           {/* Privacy: public surfaces show username only; tier appears only if opted in */}
-          <Avatar initials={post.author.initials} tier={post.author.showTier ? post.author.tier : undefined} />
+          <Avatar initials={post.author.initials} tier={post.author.show_tier ? post.author.tier : undefined} />
           <div>
             <div className="flex items-center gap-2 mb-0.5">
               <span className="font-semibold text-foreground text-[15px]">@{post.author.username}</span>
-              {post.author.showTier && <TierBadge tier={post.author.tier} />}
+              {post.author.show_tier && <TierBadge tier={post.author.tier} />}
             </div>
-            <span className="text-xs text-muted-foreground">{post.time}</span>
+            <span className="text-xs text-muted-foreground">{timeAgo(post.created_at)}</span>
           </div>
         </div>
       </div>
 
       {post.variant === "quote" ? (
-        <blockquote className="font-serif text-xl sm:text-2xl italic leading-snug text-foreground/90 border-l-2 border-primary pl-5 py-1.5 mb-5">
+        <blockquote role="button" tabIndex={0} onClick={open} onKeyDown={onOpenKey}
+                    onPointerDown={(e) => e.preventDefault()}
+                    aria-label="Open post"
+                    className="font-serif text-xl sm:text-2xl italic leading-snug text-foreground/90 border-l-2 border-primary pl-5 py-1.5 mb-5 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary rounded-sm">
           "{post.caption}"
         </blockquote>
       ) : (
-        <>
+        <div role="button" tabIndex={0} onClick={open} onKeyDown={onOpenKey}
+             onPointerDown={(e) => e.preventDefault()}
+             aria-label="Open post"
+             className="cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary rounded">
           <PostVisual post={post} />
           <p className="text-foreground/90 text-[15px] leading-relaxed mb-4">
             {post.caption}
           </p>
-        </>
+        </div>
       )}
 
-      {post.taggedProducts?.length > 0 && (
+      {post.tagged?.length > 0 && (
         <div className="flex flex-wrap gap-2 mb-5">
-          {post.taggedProducts.map(prod => (
+          {post.tagged.map(t => (
             <button
-              key={prod.id}
-              onClick={onShopTap}
+              key={t.sku}
+              onClick={() => (onOpenProduct ? onOpenProduct(t.sku) : onShopTap?.())}
               className="bg-secondary border border-border text-foreground text-xs font-medium px-3 min-h-[36px] rounded-full hover:bg-border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
             >
-              {prod.name}
+              {t.name}
             </button>
           ))}
         </div>
       )}
 
       <div className="flex items-center gap-6 pt-4 border-t border-border">
-        <PointsAction onClick={toggleLike} points={5}>
-          <button data-testid="like-btn" aria-label="Like this post" className={`flex items-center gap-1.5 min-h-[44px] rounded font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 ${liked ? "text-primary-ink" : "text-muted-foreground hover:text-foreground"}`}>
-            <Heart size={20} className={liked ? "fill-primary text-primary-ink" : ""} strokeWidth={1.5} />
-            <span className="text-sm">{likesCount}</span>
-          </button>
-        </PointsAction>
-        <button className="flex items-center gap-1.5 font-medium text-muted-foreground hover:text-foreground transition-colors">
+        <button type="button" onClick={toggleLike} data-testid="like-btn"
+                aria-label={post.my_liked ? "Unlike this post" : "Like this post"}
+                aria-pressed={!!post.my_liked}
+                className={`flex items-center gap-1.5 min-h-[44px] rounded font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 ${post.my_liked ? "text-primary-ink" : "text-muted-foreground hover:text-foreground"}`}>
+          <span key={likeBump} className={likeBump ? "inline-flex animate-in zoom-in-50 duration-300" : "inline-flex"}>
+            <Heart size={20} className={post.my_liked ? "fill-primary text-primary-ink" : ""} strokeWidth={1.5} />
+          </span>
+          <span className="text-sm">{post.like_count}</span>
+        </button>
+        <button type="button" onClick={open} aria-label="View comments"
+                className="flex items-center gap-1.5 font-medium text-muted-foreground hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary rounded">
           <MessageCircle size={20} strokeWidth={1.5} />
-          <span className="text-sm">{post.comments}</span>
+          <span className="text-sm">{post.comment_count}</span>
         </button>
         <button className="flex items-center gap-1.5 font-medium text-muted-foreground hover:text-foreground transition-colors ml-auto">
           <Share size={20} strokeWidth={1.5} />
@@ -151,6 +165,71 @@ function CelebrationCard({ member }) {
         className="w-9 h-9 shrink-0 rounded-full border border-border flex items-center justify-center text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
         <X size={14} />
       </button>
+    </div>
+  );
+}
+
+/* Challenge-winner vigelegele — self-fetching; shows the member's newest
+   un-celebrated win, once. The +200 bonus itself landed server-side when the
+   team picked her — this card is purely the cheer. */
+function WinnerCongratsCard() {
+  const [win, setWin] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    api.myEntries().then((d) => {
+      if (!alive) return;
+      const w = (d.items || []).find((e) => {
+        if ((e.winner_position || 0) < 1 || !e.challenge_title) return false;
+        try { return localStorage.getItem(`johari_winner_seen_${e.post_id}`) !== "1"; }
+        catch { return false; }
+      });
+      if (w) setWin(w);
+    }).catch(() => {});
+    return () => { alive = false; };
+  }, []);
+  if (!win) return null;
+  const dismiss = () => {
+    try { localStorage.setItem(`johari_winner_seen_${win.post_id}`, "1"); } catch { /* private mode */ }
+    setWin(null);
+  };
+  const place = { 1: "took 1st place", 2: "took 2nd place", 3: "took 3rd place" }[win.winner_position] || "won";
+  return (
+    <div data-testid="winner-congrats" className={`${cardCls} border-l-2 border-l-primary p-5 flex items-center gap-4`}>
+      <span className="w-11 h-11 rounded-full bg-primary/10 border border-primary/20 flex items-center justify-center text-primary-ink shrink-0">
+        <Trophy size={18} strokeWidth={1.5} />
+      </span>
+      <div className="flex-grow min-w-0">
+        <div className="font-serif text-lg text-foreground leading-snug">
+          Vigelegele — your look {place} in {win.challenge_title}!
+        </div>
+        <p className="text-[13px] text-muted-foreground mt-0.5">Your 200-point winner's bonus is already on your card.</p>
+      </div>
+      <button data-testid="winner-congrats-dismiss" onClick={dismiss} aria-label="Dismiss"
+              className="w-9 h-9 shrink-0 rounded-full border border-border flex items-center justify-center text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
+        <X size={14} />
+      </button>
+    </div>
+  );
+}
+
+/* Give Your Vivo a Second Life — quiet, warm entry into the giving page. */
+function SecondLifeCard({ onOpenPage }) {
+  return (
+    <div data-testid="home-secondlife-card" className={`${cardCls} p-5 sm:p-6 flex items-start gap-4`}>
+      <span className="w-11 h-11 rounded-full bg-secondary border border-border flex items-center justify-center text-primary-ink shrink-0">
+        <HandHeart size={18} strokeWidth={1.5} />
+      </span>
+      <div className="flex-grow min-w-0">
+        <div className="text-[10px] font-bold uppercase tracking-widest text-primary-ink mb-1">Give back</div>
+        <h3 className="font-serif text-[17px] text-foreground leading-snug mb-1">Give your Vivo a second life</h3>
+        <p className="text-[13px] text-muted-foreground leading-relaxed mb-3">
+          Pieces you've outgrown can lift another woman up — bring them to any Vivo store.
+        </p>
+        <button data-testid="home-secondlife-cta" onClick={() => onOpenPage?.("givingback")}
+                className="inline-flex items-center gap-1 text-[13px] font-medium text-primary-ink hover:underline">
+          How it works <ChevronRight size={14} />
+        </button>
+      </div>
     </div>
   );
 }
@@ -235,7 +314,7 @@ function MissionCard({ challenge, onNavigate }) {
           </div>
           <h3 className="font-serif text-xl text-foreground mb-1.5">Post a look, tell your story</h3>
           <p className="text-sm text-muted-foreground leading-relaxed">
-            {challenge.title} is live — earn {challenge.points} pts when your entry is published. {challenge.entries} members are already in.
+            {challenge.title} is live — earn {challenge.points} pts when your entry is published.{challenge.entries_display ? ` ${challenge.entries_display} so far.` : ""}
           </p>
         </div>
         <button
@@ -390,11 +469,91 @@ function UpcomingEventCard({ ev, onOpen }) {
   );
 }
 
-export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage, onOpenEvent }) {
-  const featuredChallenge = challenges.find(c => c.isFlagship);
+/* Virtual Try-On promo — prototype-evaluation prominence: a discoverable
+   entry card high in the feed so reviewers find the feature immediately.
+   Easy to demote/remove once the business decides its place (the allowance
+   ladder itself is server config, not baked in here). */
+function TryOnPromoCard({ onOpenPage }) {
+  return (
+    <div data-testid="home-tryon-card" className={`${cardCls} relative overflow-hidden p-6 sm:p-7 border-l-2 border-l-primary`}>
+      <div className="absolute top-0 right-0 w-40 h-40 bg-primary/5 rounded-full blur-2xl translate-x-1/3 -translate-y-1/3 pointer-events-none" />
+      <div className="inline-flex items-center gap-1.5 px-2 py-1 bg-primary-ink text-primary-foreground text-[10px] font-bold uppercase tracking-wider rounded-sm mb-4">
+        <Sparkles size={11} /> New
+      </div>
+      <h3 className="font-serif text-2xl text-foreground leading-tight mb-2">See it on you</h3>
+      <p className="text-[13px] text-muted-foreground leading-relaxed max-w-md mb-5">
+        Try Vivo pieces on virtually — pick a piece, add your photo, and see the look.
+        A bit of fun, not a fitting room.
+      </p>
+      <button
+        data-testid="home-tryon-cta"
+        onClick={() => onOpenPage?.("tryon")}
+        className="w-full sm:w-auto sm:px-8 bg-primary text-primary-foreground h-11 rounded font-medium text-[15px] flex items-center justify-center gap-2 hover:opacity-90 transition-all active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+      >
+        <Sparkles size={15} /> Try it on
+      </button>
+    </div>
+  );
+}
+
+/* Survey promo — wave-scoped "Help us dress you better" card. Self-fetching:
+   renders only while the member hasn't completed the active wave AND the
+   server says the Home card should show ("Maybe later" hides it, it
+   re-surfaces once after a quiet few days, a second dismissal retires it —
+   the Rewards mission and Profile entry points always remain). */
+function SurveyPromoCard({ onOpenPage }) {
+  const [s, setS] = useState(null);
+  const [hidden, setHidden] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    api.surveyState().then((d) => { if (alive) setS(d); }).catch(() => {});
+    return () => { alive = false; };
+  }, []);
+  if (hidden || !s?.wave || s.completed || !s.show_home_card) return null;
+  const later = () => {
+    setHidden(true); // gentle: card slips away now, the server remembers
+    api.surveyDismiss(s.wave.id).catch(() => {});
+  };
+  return (
+    <div data-testid="home-survey-card" className={`${cardCls} relative overflow-hidden p-6 sm:p-7 border-l-2 border-l-primary`}>
+      <div className="absolute top-0 right-0 w-40 h-40 bg-primary/5 rounded-full blur-2xl translate-x-1/3 -translate-y-1/3 pointer-events-none" />
+      <div className="inline-flex items-center gap-1.5 px-2 py-1 bg-primary-ink text-primary-foreground text-[10px] font-bold uppercase tracking-wider rounded-sm mb-4">
+        <ClipboardList size={11} /> +{s.points ?? 30} points
+      </div>
+      <h3 className="font-serif text-2xl text-foreground leading-tight mb-2">{s.wave.title}</h3>
+      <p className="text-[13px] text-muted-foreground leading-relaxed max-w-md mb-5">
+        Ten quick taps, under three minutes — tell us how Vivo fits your life
+        and earn {s.points ?? 30} points, instantly. Private to Vivo, always.
+      </p>
+      <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+        <button
+          data-testid="home-survey-cta"
+          onClick={() => onOpenPage?.("survey")}
+          className="w-full sm:w-auto sm:px-8 bg-primary text-primary-foreground h-11 rounded font-medium text-[15px] flex items-center justify-center gap-2 hover:opacity-90 transition-all active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+        >
+          Take the survey <ArrowRight size={15} />
+        </button>
+        <button
+          data-testid="home-survey-later"
+          onClick={later}
+          className="w-full sm:w-auto sm:px-5 h-11 rounded text-[13px] text-muted-foreground hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+        >
+          Maybe later
+        </button>
+      </div>
+    </div>
+  );
+}
+
+export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage, onOpenEvent, onOpenFabulas }) {
   const [products, setProducts] = useState([]);
   const [picked, setPicked] = useState([]);
   const [events, setEvents] = useState([]);
+  // Live challenges — the mission card and sidebar feature the first open one.
+  const [liveChallenges, setLiveChallenges] = useState([]);
+  // Celebrations feed the sidebar jewel (same rotation the wall shows).
+  const [cel, setCel] = useState(null);
+  const featuredChallenge = liveChallenges.find((c) => !c.closed) || null;
 
   // Live catalogue enriches the feed (Just Landed + fit-note highlight).
   // If the fetch fails these rows simply don't render — the Shop tab is
@@ -408,6 +567,12 @@ export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage,
     // rule — the Events sub-tab owns loading/error states.
     api.events()
       .then((d) => { if (alive) setEvents(d.items || []); })
+      .catch(() => {});
+    api.challenges()
+      .then((d) => { if (alive) setLiveChallenges(d.items || []); })
+      .catch(() => {});
+    api.celebrations()
+      .then((d) => { if (alive) setCel(d); })
       .catch(() => {});
     return () => { alive = false; };
   }, []);
@@ -433,7 +598,23 @@ export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage,
 
   const openNews = (id) => onOpenPage?.(newsPageId(id));
   const shopTap = () => onNavigate("shop");
-  const P = feedPosts;
+  // Interactive feed — same DB-backed list the Community tab shows.
+  const [feed, setFeed] = useState([]);
+  const [detailIdx, setDetailIdx] = useState(-1);
+  const [restoreY, setRestoreY] = useState(0); // captured at tap time
+  useEffect(() => {
+    let on = true;
+    api.feed(12).then((d) => { if (on) setFeed(d.items || []); }).catch(() => {});
+    return () => { on = false; };
+  }, []);
+  const patchPost = (id, patch) =>
+    setFeed((list) => list.map((p) => (p.id === id ? { ...p, ...patch } : p)));
+  const openPost = (post) => {
+    setRestoreY(window.scrollY);
+    const i = feed.findIndex((p) => p.id === post.id);
+    if (i >= 0) setDetailIdx(i);
+  };
+  const P = feed;
 
   /* Feed composition (spec): member content leads; the reels row and news
      section sit as labeled sections near the top but below the first member
@@ -447,21 +628,31 @@ export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage,
         <h2 className="text-2xl font-serif mb-6 text-foreground tracking-tight">The Latest</h2>
         <div className="space-y-8">
           <CelebrationCard member={member} />
+          <WinnerCongratsCard />
           <PersonalCard member={member} onNavigate={onNavigate} />
-          <PostCard post={P[0]} onShopTap={shopTap} />
-          <PostCard post={P[1]} onShopTap={shopTap} />
+          <SurveyPromoCard onOpenPage={onOpenPage} />
+          <TryOnPromoCard onOpenPage={onOpenPage} />
+          <PostCard post={P[0]} onShopTap={shopTap} onOpenProduct={onOpenProduct} onOpen={openPost} onCounts={patchPost} />
+          <PostCard post={P[1]} onShopTap={shopTap} onOpenProduct={onOpenProduct} onOpen={openPost} onCounts={patchPost} />
           <ReelsRow member={member} />
-          <PostCard post={P[2]} onShopTap={shopTap} />
+          <PostCard post={P[2]} onShopTap={shopTap} onOpenProduct={onOpenProduct} onOpen={openPost} onCounts={patchPost} />
           <MissionCard challenge={featuredChallenge} onNavigate={onNavigate} />
-          <PostCard post={P[3]} onShopTap={shopTap} />
-          <PostCard post={P[4]} onShopTap={shopTap} />
+          <PostCard post={P[3]} onShopTap={shopTap} onOpenProduct={onOpenProduct} onOpen={openPost} onCounts={patchPost} />
+          <PostCard post={P[4]} onShopTap={shopTap} onOpenProduct={onOpenProduct} onOpen={openPost} onCounts={patchPost} />
           <NewsSection onOpenNews={openNews} />
-          <PostCard post={P[5]} onShopTap={shopTap} />
-          <PostCard post={P[6]} onShopTap={shopTap} />
+          <FabulasHomeCard story={fabulasOfTheDay()} onOpenStory={onOpenFabulas} />
+          <PostCard post={P[5]} onShopTap={shopTap} onOpenProduct={onOpenProduct} onOpen={openPost} onCounts={patchPost} />
+          <PostCard post={P[6]} onShopTap={shopTap} onOpenProduct={onOpenProduct} onOpen={openPost} onCounts={patchPost} />
           <UpcomingEventCard ev={nextEvent} onOpen={onOpenEvent} />
-          <PostCard post={P[7]} onShopTap={shopTap} />
+          <SecondLifeCard onOpenPage={onOpenPage} />
+          <PostCard post={P[7]} onShopTap={shopTap} onOpenProduct={onOpenProduct} onOpen={openPost} onCounts={patchPost} />
           <FitNoteHighlight product={fitPick} onOpenProduct={onOpenProduct} />
-          <PostCard post={P[8]} onShopTap={shopTap} />
+          <PostCard post={P[8]} onShopTap={shopTap} onOpenProduct={onOpenProduct} onOpen={openPost} onCounts={patchPost} />
+          {detailIdx >= 0 && P[detailIdx] && (
+            <PostDetailModal restoreY={restoreY} posts={P} index={detailIdx} onIndex={setDetailIdx}
+                             onClose={() => setDetailIdx(-1)} onOpenProduct={onOpenProduct}
+                             onCounts={patchPost} />
+          )}
           <JustLandedRow products={products} onOpenProduct={onOpenProduct} onSeeAll={shopTap} />
           {picked.length > 0 && (
             <JustLandedRow
@@ -500,7 +691,7 @@ export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage,
             <h3 className="text-xl font-serif text-foreground mb-2">{featuredChallenge.title}</h3>
             <p className="text-muted-foreground text-sm mb-5 leading-relaxed">{featuredChallenge.description}</p>
             <div className="flex items-center justify-between gap-3 mb-6 text-sm">
-              <span className="font-semibold text-primary-ink">{featuredChallenge.deadline}</span>
+              <span className="font-semibold text-primary-ink">{featuredChallenge.closed ? "Closed" : `Ends ${fmtShort(featuredChallenge.deadline)}`}</span>
               <span className="text-[11px] font-medium text-muted-foreground text-right">Earn {featuredChallenge.points} pts when published</span>
             </div>
             <button
@@ -527,21 +718,23 @@ export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage,
           </div>
         </div>
 
-        {/* Spotlight */}
-        <div className={`${cardCls} p-6`}>
-          <h3 className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-5">This Week's Jewel</h3>
-          <div className="flex items-center gap-4 mb-4">
-            {/* Spotlighted member has opted in to showing her tier */}
-            <Avatar initials="NK" tier="Tanzanite" size="md" />
-            <div>
-              <div className="font-semibold text-foreground text-base mb-1">@nyambura.k</div>
-              <TierBadge tier="Tanzanite" />
+        {/* Spotlight — the same rotating jewel the celebration wall crowns */}
+        {cel?.jewel && (
+          <div className={`${cardCls} p-6`}>
+            <h3 className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-5">This Week's Jewel</h3>
+            <div className="flex items-center gap-4 mb-4">
+              {/* Tier shows only when the jewel opted in */}
+              <Avatar initials={initialsOf(cel.jewel.username)} tier={cel.jewel.show_tier ? cel.jewel.tier : undefined} size="md" />
+              <div>
+                <div className="font-semibold text-foreground text-base mb-1">@{cel.jewel.username}</div>
+                {cel.jewel.show_tier && cel.jewel.tier && <TierBadge tier={cel.jewel.tier} />}
+              </div>
             </div>
+            <blockquote className="italic text-foreground/80 text-sm border-l border-primary pl-4 py-1 leading-relaxed">
+              "{cel.jewel.quote}"
+            </blockquote>
           </div>
-          <blockquote className="italic text-foreground/80 text-sm border-l border-primary pl-4 py-1 leading-relaxed">
-            "Finding a community that celebrates African curves has completely changed how I shop. Vivo is more than fashion, it's family."
-          </blockquote>
-        </div>
+        )}
       </aside>
     </div>
   );

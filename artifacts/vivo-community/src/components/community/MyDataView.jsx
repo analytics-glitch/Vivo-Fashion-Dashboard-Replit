@@ -4,11 +4,11 @@
 // deletion. Copy is deliberately warm and plain: reassurance, not legalese.
 //
 // Data contract: GET /api/community/mydata → { tryon_photos, tryon_looks,
-// designs, messages, style_quiz, requests }. Deletes reuse the per-type
+// designs, messages, style_quiz, surveys, requests }. Deletes reuse the per-type
 // routes; consent goes through POST /mydata/consent (forward-only withdraw).
 import { useCallback, useEffect, useState } from "react";
 import {
-  ArrowLeft, Camera, Download, Loader2, Lock, MessageSquare,
+  ArrowLeft, Camera, ClipboardList, Download, Loader2, Lock, MessageSquare,
   Palette, Share2, Sparkles, Trash2, UserX,
 } from "lucide-react";
 import { api } from "@/lib/api";
@@ -157,9 +157,10 @@ export default function MyDataView({ onBack, onOpenPage }) {
   const designs = data?.designs || [];
   const messages = data?.messages || [];
   const quiz = data?.style_quiz;
+  const surveys = data?.surveys || [];
   const downloadReq = openRequest("download");
   const deleteReq = openRequest("delete_account");
-  const hasAnything = photos.length || looks.length || designs.length || messages.length || quiz;
+  const hasAnything = photos.length || looks.length || designs.length || messages.length || quiz || surveys.length;
 
   return (
     <div className="max-w-xl mx-auto space-y-4" data-testid="mydata-view">
@@ -413,6 +414,34 @@ export default function MyDataView({ onBack, onOpenPage }) {
               label="Delete my answers"
               armedLabel="Tap again to delete"
               testid="mydata-quiz-del"
+            />
+          </div>
+        </SectionCard>
+      )}
+
+      {/* Survey answers */}
+      {surveys.length > 0 && (
+        <SectionCard
+          icon={ClipboardList}
+          title="Survey answers"
+          sub="Your answers guide what we make and stock — always reported in anonymous totals only. Deleting them removes you from those totals; points you earned stay yours."
+          testid="mydata-survey-card"
+        >
+          <div className="px-5 pb-5 flex items-center justify-between gap-4">
+            <div className="text-[12px] text-muted-foreground space-y-0.5">
+              {surveys.map((s) => (
+                <div key={s.wave_key}>{s.title} — completed {fmt(s.completed_at)}</div>
+              ))}
+            </div>
+            <ArmDelete
+              id="survey"
+              armed={armed}
+              setArmed={setArmed}
+              busy={busyKey === "survey"}
+              onDelete={() => run("survey", () => api.surveyDataDelete())}
+              label="Delete my answers"
+              armedLabel="Tap again to delete"
+              testid="mydata-survey-del"
             />
           </div>
         </SectionCard>

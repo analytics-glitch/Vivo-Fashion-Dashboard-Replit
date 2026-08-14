@@ -439,6 +439,7 @@ export default function ProductDetail({ sku, onBack, onOpenProduct, onTryOn }) {
       sku: detail.sku,
       name: detail.name,
       color: detail.color,
+      style_number: detail.style_number || "",
       size: displaySize(selSize.size),
       qty,
       price: detail.price,
@@ -502,6 +503,7 @@ export default function ProductDetail({ sku, onBack, onOpenProduct, onTryOn }) {
     detail.fabric?.fiber_content && ["Fibre", detail.fabric.fiber_content],
     detail.fabric?.fabric_structure && ["Weave", detail.fabric.fabric_structure],
     detail.fabric?.gsm && ["Weight", `${detail.fabric.gsm} gsm`],
+    detail.style_number && ["Style", detail.style_number],
     detail.color && ["Colour", detail.color],
     detail.collection && ["Collection", detail.collection],
     detail.season && ["Season", detail.season],
@@ -529,17 +531,29 @@ export default function ProductDetail({ sku, onBack, onOpenProduct, onTryOn }) {
               <MerchBadge badge={detail.badge} testId="pdp-badge" />
             </div>
           )}
-          <h1 data-testid="pdp-name" className="font-serif text-3xl sm:text-4xl text-foreground leading-tight mb-2">
+          <h1 data-testid="pdp-name" className="font-serif text-3xl sm:text-4xl text-foreground leading-tight mb-1.5">
             {detail.name}
           </h1>
-          {colorLabel && <div className="text-muted-foreground text-sm mb-4">{colorLabel}</div>}
+          {detail.style_number && (
+            <div data-testid="pdp-style-number" className="text-[12px] tracking-wide text-muted-foreground mb-2">
+              Style {detail.style_number}
+            </div>
+          )}
+          {colorLabel && (
+            <div data-testid="pdp-color" className="text-[15px] text-foreground mb-4">{colorLabel}</div>
+          )}
           <div data-testid="pdp-price" className="text-xl font-medium text-foreground mb-8">{kes(detail.price)}</div>
 
           {/* Colourways — swatches navigate to that colour's page */}
           {colorways.length > 1 && (
             <div className="mb-7" data-testid="pdp-colorways">
-              <div className="text-[12px] font-bold uppercase tracking-wider text-foreground mb-3">
-                Colour{colorLabel ? ` — ${colorLabel}` : ""}
+              <div className="flex items-baseline gap-2 mb-3">
+                <span className="text-[12px] font-bold uppercase tracking-wider text-muted-foreground">Colour</span>
+                {colorLabel && (
+                  <span data-testid="pdp-colorway-label" className="text-[15px] text-foreground font-medium">
+                    {colorLabel}
+                  </span>
+                )}
               </div>
               <div className="flex flex-wrap gap-2">
                 {colorways.map((c) => {
@@ -630,6 +644,19 @@ export default function ProductDetail({ sku, onBack, onOpenProduct, onTryOn }) {
           <button data-testid="add-to-cart-btn" onClick={onAdd} disabled={out} className={btnPrimary}>
             {out ? "Out of Stock" : <><ShoppingBag size={16} /> Add to Bag</>}
           </button>
+          {/* Try It On sits right under Add to Bag with its own accent
+              treatment — prototype-evaluation prominence, unmissable. */}
+          {typeof onTryOn === "function" && (
+            <button
+              data-testid="pdp-tryon-btn"
+              onClick={() => onTryOn(sku)}
+              className="relative h-11 w-full px-6 mt-3 rounded border border-primary/50 bg-primary/5 text-primary-ink font-medium text-[15px] flex items-center justify-center gap-2 transition-all hover:bg-primary/10 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+            >
+              <Sparkles size={16} /> Try It On — see it on you
+              <span className="absolute -top-2 right-3 bg-primary-ink text-primary-foreground text-[9px] font-bold uppercase tracking-widest px-1.5 py-0.5 rounded-sm">New</span>
+            </button>
+          )}
+
           <button
             data-testid="pdp-add-wishlist"
             onClick={toggleWish}
@@ -639,16 +666,6 @@ export default function ProductDetail({ sku, onBack, onOpenProduct, onTryOn }) {
             <Heart size={16} className={wish ? "fill-primary text-primary-ink" : ""} />
             {wish ? "Saved to Wishlist" : "Add to Wishlist"}
           </button>
-
-          {typeof onTryOn === "function" && (
-            <button
-              data-testid="pdp-tryon-btn"
-              onClick={() => onTryOn(sku)}
-              className={`${btnSecondary} mt-3`}
-            >
-              <Sparkles size={16} /> Try It On — see it on you
-            </button>
-          )}
 
           {/* Details — collapsible, PDP-style */}
           <div className="mt-10 border-t border-border">

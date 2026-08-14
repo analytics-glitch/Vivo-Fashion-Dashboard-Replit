@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Check, Clock, Hourglass, Lock, MapPin, ArrowRight } from "lucide-react";
 import { api } from "@/lib/api";
-import { challenges } from "./mockData";
 import { NewsCover } from "./NewsSection";
 import { cardCls } from "./ui";
 import EventSpots, { evImgUrl } from "./EventSpots";
@@ -12,19 +11,18 @@ import EventSpots, { evImgUrl } from "./EventSpots";
    venue and a live "18 of 30 spots taken" indicator. Tapping opens the
    event detail page, where the full story and the RSVP live. Server events
    (api.events) carry pre-formatted EAT labels + public spot counts;
-   challenge deadlines from the demo community layer are woven in
-   client-side as full-width entries so the list is one honest calendar.
+   live challenge deadlines (api.challenges) are woven in client-side as
+   full-width entries so the list is one honest calendar.
    ========================================================================== */
 
-/* Challenge deadlines ride the same calendar as lightweight entries. The demo
-   challenge data speaks in "N days left", so the date is computed at render. */
-function challengeEntries() {
+/* Challenge deadlines ride the same calendar as lightweight entries —
+   live challenges from the API, open ones only. */
+function challengeEntries(items) {
   const out = [];
-  for (const c of challenges) {
-    const m = /(\d+)\s*day/i.exec(c.deadline || "");
-    if (!m) continue;
-    const d = new Date();
-    d.setDate(d.getDate() + parseInt(m[1], 10));
+  for (const c of items || []) {
+    if (c.closed || !c.deadline) continue;
+    const d = new Date(c.deadline);
+    if (Number.isNaN(d.getTime())) continue;
     out.push({
       kind: "challenge",
       id: `challenge-${c.id}`,
@@ -121,7 +119,7 @@ function ChallengeDeadlineCard({ entry, onEnterChallenge }) {
       </div>
       <button
         data-testid={`enter-${entry.id}`}
-        onClick={onEnterChallenge}
+        onClick={() => onEnterChallenge?.(entry.challengeId)}
         className="shrink-0 inline-flex items-center gap-1.5 bg-background border border-border text-foreground hover:bg-secondary transition-colors text-[13px] font-medium px-4 h-10 rounded active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
       >
         Enter now <ArrowRight size={14} />
@@ -132,6 +130,7 @@ function ChallengeDeadlineCard({ entry, onEnterChallenge }) {
 
 export default function EventsList({ onEnterChallenge, onOpenEvent }) {
   const [items, setItems] = useState(null);   // null = loading
+  const [chal, setChal] = useState([]);
   const [loadErr, setLoadErr] = useState("");
 
   const load = useCallback(() => {
@@ -139,6 +138,9 @@ export default function EventsList({ onEnterChallenge, onOpenEvent }) {
     api.events()
       .then((d) => setItems(d.items || []))
       .catch((e) => { setItems([]); setLoadErr(e.message || "Events couldn't load"); });
+    api.challenges()
+      .then((d) => setChal(d.items || []))
+      .catch(() => {});
   }, []);
 
   useEffect(() => { load(); }, [load]);
@@ -147,7 +149,7 @@ export default function EventsList({ onEnterChallenge, onOpenEvent }) {
     if (!items) return [];
     const all = [
       ...items.map((ev) => ({ kind: "event", sort: ev.starts_at, ev })),
-      ...challengeEntries().map((c) => ({ kind: "challenge", sort: c.date.toISOString(), c })),
+      ...challengeEntries(chal).map((c) => ({ kind: "challenge", sort: c.date.toISOString(), c })),
     ].sort((a, b) => (a.sort < b.sort ? -1 : 1));
     const out = [];
     for (const row of all) {
@@ -161,7 +163,7 @@ export default function EventsList({ onEnterChallenge, onOpenEvent }) {
       bucket.rows.push(row);
     }
     return out;
-  }, [items]);
+  }, [items, chal]);
 
   if (items === null) {
     return (

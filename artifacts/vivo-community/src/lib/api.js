@@ -49,6 +49,26 @@ async function req(path, { method = "GET", body, auth = false } = {}) {
   return data;
 }
 
+// Shop grid query builder — the grid fetch and the drawer's live count share
+// this so a selection can never mean two different things.
+const buildProductQuery = ({
+  category = "", categories = [], brands = [], sizes = [], colors = [],
+  prints = [], priceBands = [], sort = "new", limit = 24, offset = 0,
+  personalize = false,
+} = {}) => {
+  const q = new URLSearchParams();
+  if (category) q.set("category", category);
+  const csv = { categories, brands, sizes, colors, prints, price_bands: priceBands };
+  for (const [k, v] of Object.entries(csv)) {
+    if (v && v.length) q.set(k, v.join(","));
+  }
+  if (sort && sort !== "new") q.set("sort", sort);
+  q.set("limit", String(limit));
+  q.set("offset", String(offset));
+  if (personalize) q.set("personalize", "1");
+  return q;
+};
+
 export const api = {
   requestCode: (phone) => req("/auth/request-code", { method: "POST", body: { phone } }),
   verify: (phone, code) => req("/auth/verify", { method: "POST", body: { phone, code } }),
@@ -57,17 +77,20 @@ export const api = {
   logout: () => req("/auth/logout", { method: "POST", auth: true }),
   usernameCheck: (u) => req("/auth/username-check?u=" + encodeURIComponent(u), { auth: true }),
   updateSettings: (payload) => req("/me/settings", { method: "PUT", body: payload, auth: true }),
-  products: ({ category = "", limit = 24, offset = 0, personalize = false } = {}) => {
-    const q = new URLSearchParams();
-    if (category) q.set("category", category);
-    q.set("limit", String(limit));
-    q.set("offset", String(offset));
-    if (personalize) q.set("personalize", "1");
+  products: (opts = {}) => {
     // personalize needs the Bearer token so the server can find her Style DNA;
     // without it (or without a finished quiz) the server just returns the
     // curated default order with personalized:false.
-    return req("/products?" + q.toString(), { auth: !!personalize });
+    return req("/products?" + buildProductQuery(opts).toString(), { auth: !!opts.personalize });
   },
+  // Same filter params, but only the matching-styles total — feeds the live
+  // "Show N styles" label on the filter drawer's Apply button.
+  productsCount: (opts = {}) => {
+    const q = buildProductQuery({ ...opts, personalize: false });
+    q.set("count_only", "1");
+    return req("/products?" + q.toString());
+  },
+  productFacets: () => req("/products/facets"),
   styleQuiz: () => req("/style-quiz", { auth: true }),
   styleQuizSave: (answers) => req("/style-quiz", { method: "PUT", body: { answers }, auth: true }),
   styleQuizShare: () => req("/style-quiz/share", { method: "POST", auth: true }),
@@ -100,6 +123,19 @@ export const api = {
       auth: true,
     }),
   tryonShared: () => req("/tryon/shared", { auth: true }),
+  // Interactive feed — reads carry my_liked when signed in; writes are
+  // member-token gated. Likes and comments never earn points (anti-spam).
+  feed: (limit = 24, offset = 0, type = "") =>
+    req(`/feed?limit=${limit}&offset=${offset}${type ? `&type=${encodeURIComponent(type)}` : ""}`, { auth: true }),
+  postComments: (id) => req(`/posts/${id}/comments`, { auth: true }),
+  likePost: (id) => req(`/posts/${id}/like`, { method: "POST", auth: true }),
+  addComment: (id, body) => req(`/posts/${id}/comments`, { method: "POST", body: { body }, auth: true }),
+  likeComment: (id) => req(`/comments/${id}/like`, { method: "POST", auth: true }),
+  reportComment: (id, reason) => req(`/comments/${id}/report`, { method: "POST", body: reason ? { reason } : {}, auth: true }),
+  surveyState: () => req("/survey/state", { auth: true }),
+  surveyComplete: (payload) => req("/survey/complete", { method: "POST", body: payload, auth: true }),
+  surveyDismiss: (waveId) => req("/survey/dismiss", { method: "POST", body: { wave_id: waveId }, auth: true }),
+  surveyDataDelete: () => req("/survey/response", { method: "DELETE", auth: true }),
   // My data (DPA): grouped uploads, per-item marketing consent, data requests.
   myData: () => req("/mydata", { auth: true }),
   myDataConsent: (content_type, content_id, marketing_ok) =>
@@ -109,4 +145,22 @@ export const api = {
   deleteRedemptionDesign: (id) => req("/rewards/redemptions/" + id + "/design", { method: "DELETE", auth: true }),
   deleteContactPhoto: (id) => req("/contact/" + id + "/photo", { method: "DELETE", auth: true }),
   deleteStyleQuiz: () => req("/style-quiz", { method: "DELETE", auth: true }),
+  // Challenges — real entries (photo riding the same b64-JSON lane as
+  // try-on uploads), review-then-publish, one vote per member per voting
+  // challenge. Reads work signed-out; my_entry/my_vote appear signed-in.
+  challenges: () => req("/challenges", { auth: true }),
+  challenge: (id) => req("/challenges/" + encodeURIComponent(id), { auth: true }),
+  enterChallenge: (id, body) =>
+    req("/challenges/" + encodeURIComponent(id) + "/entries", { method: "POST", body, auth: true }),
+  challengeVote: (id, post_id) =>
+    req("/challenges/" + encodeURIComponent(id) + "/vote", { method: "POST", body: { post_id }, auth: true }),
+  myEntries: () => req("/my-entries", { auth: true }),
+  // Standalone feed posts (share a look / ask the community / haul) — same
+  // review-then-publish lane as challenge entries. Points by media kind
+  // (photo 50 / video 100) land on publish; questions never earn points.
+  createPost: (body) => req("/posts", { method: "POST", body, auth: true }),
+  // "Shining This Week" celebration wall — appreciation, never rankings.
+  celebrations: () => req("/celebrations", { auth: true }),
+  // Zetu Studios photoshoot — 3000 pts, lands as a personal booking.
+  zetuRedeem: () => req("/rewards/zetu/redeem", { method: "POST", body: {}, auth: true }),
 };

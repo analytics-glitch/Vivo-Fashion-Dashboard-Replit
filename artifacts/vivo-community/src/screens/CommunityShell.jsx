@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { CartProvider, useCart } from "@/context/CartContext";
 import { WishlistProvider, useWishlist } from "@/context/WishlistContext";
-import { Avatar, VivoLogo } from "@/components/community/ui";
+import { Avatar, VivoLogo, JohariWordmark } from "@/components/community/ui";
 import TabHome from "@/components/community/TabHome";
 import TabCommunity from "@/components/community/TabCommunity";
 import TabShop from "@/components/community/TabShop";
@@ -14,25 +14,29 @@ import EventDetail from "@/components/community/EventDetail";
 import CartView from "@/components/community/CartView";
 import WishlistView from "@/components/community/WishlistView";
 import HelpFaqView from "@/components/community/HelpFaqView";
+import HelpLandingView from "@/components/community/HelpLandingView";
+import GivingBackView from "@/components/community/GivingBackView";
+import { FabulasStoryView } from "@/components/community/FabulasStory";
 import ContactView from "@/components/community/ContactView";
 import TryOnView from "@/components/community/TryOnView";
+import SurveyView from "@/components/community/SurveyView";
 import MyDataView from "@/components/community/MyDataView";
 import LegalPage from "@/components/community/LegalPage";
 import NewsArticle from "@/components/community/NewsArticle";
 import { isNewsPageId } from "@/components/community/newsData";
-import { Home, Users, ShoppingBag, Gift, User, Heart } from "lucide-react";
+import { Home, Users, ShoppingBag, Gift, User, Heart, HelpCircle } from "lucide-react";
 
 const TABS = [
   { id: "home", label: "Home", icon: Home },
   { id: "community", label: "Community", icon: Users },
   { id: "shop", label: "Shop", icon: ShoppingBag },
-  { id: "rewards", label: "Johari", icon: Gift },
+  { id: "rewards", label: "Rewards", icon: Gift },
   { id: "profile", label: "Profile", icon: User },
 ];
 
 // Static help & legal pages routed via the ?page= param. News articles ride
 // the same param as "news-{id}", validated against the NEWS list.
-const PAGES = ["faq", "contact", "terms", "privacy", "guidelines", "tryon", "mydata"];
+const PAGES = ["faq", "contact", "terms", "privacy", "guidelines", "tryon", "mydata", "survey", "help", "givingback"];
 const isValidPage = (v) => PAGES.includes(v) || isNewsPageId(v);
 
 const badgeCls = "absolute top-0.5 right-0 min-w-[18px] h-[18px] px-1 rounded-full bg-primary-ink text-primary-foreground text-[10px] font-bold flex items-center justify-center";
@@ -97,6 +101,10 @@ function ShellInner() {
   // repeat request lands even when TabCommunity is already mounted.
   const initialSub = params.get("sub") || "";
   const [subNav, setSubNav] = useState(() => (initialSub ? { id: initialSub, n: 1 } : null));
+  const [helpOpen, setHelpOpen] = useState(false);
+  // #FabulasAtAnyAge story overlay — plain shell state (an overlay, not a
+  // route): Escape/close never disturbs the URL underneath.
+  const [fabulasId, setFabulasId] = useState("");
   const viewRef = useRef({
     tab: safeTab,
     sku: params.get("product") || "",
@@ -249,6 +257,15 @@ function ShellInner() {
     );
   }, [applyView]);
 
+  // A Fabulas story's "share yours" hand-off — land on Community →
+  // Challenges where the #FabulasAtAnyAge flagship lives (push: Back
+  // returns to wherever she was reading).
+  const openChallengesFromFabulas = useCallback(() => {
+    setFabulasId("");
+    setSubNav((sn) => ({ id: "challenges", n: (sn?.n || 0) + 1 }));
+    applyView({ tab: "community", sku: "", ev: "", cart: false, wl: false, page: "", sub: "challenges" }, "push");
+  }, [applyView]);
+
   // Keep the URL truthful when the member switches Community sub-tabs
   // themselves. Same history semantics as goTab: lateral tab moves replace
   // (never push), so refresh/share restores the sub-tab without Back having
@@ -301,7 +318,7 @@ function ShellInner() {
         <div className="mx-auto max-w-6xl px-6 h-16 flex items-center justify-between">
           <button onClick={() => goTab("home")} className="flex items-center gap-2.5 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2">
             <VivoLogo size="sm" />
-            <span className="text-[10px] font-bold uppercase tracking-[0.1em] text-muted-foreground">Community</span>
+            <JohariWordmark className="text-[13px] text-foreground/85 pt-0.5" />
           </button>
 
           <div className="flex items-center gap-8 h-full">
@@ -320,6 +337,44 @@ function ShellInner() {
                 )}
               </button>
             ))}
+            <div className="relative h-full flex items-center">
+              <button
+                data-testid="nav-help"
+                onClick={() => setHelpOpen((v) => !v)}
+                aria-expanded={helpOpen}
+                aria-haspopup="menu"
+                className={`h-full flex items-center gap-1 text-[13px] font-semibold uppercase tracking-wider whitespace-nowrap transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset ${
+                  helpOpen ? "text-foreground" : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                Help
+              </button>
+              {helpOpen && (
+                <>
+                  <div className="fixed inset-0 z-10" onClick={() => setHelpOpen(false)} aria-hidden="true" />
+                  <div role="menu" className="absolute right-0 top-full z-20 w-60 bg-background border border-border rounded shadow-lg py-2 animate-in fade-in slide-in-from-top-1 duration-150">
+                    {[
+                      ["help", "Help home"],
+                      ["faq", "Help & FAQs"],
+                      ["contact", "Contact Us"],
+                      ["mydata", "My Data & Privacy"],
+                      ["guidelines", "Community Guidelines"],
+                      ["givingback", "Give Your Vivo a Second Life"],
+                    ].map(([id, label]) => (
+                      <button
+                        key={id}
+                        role="menuitem"
+                        data-testid={`nav-help-${id}`}
+                        onClick={() => { setHelpOpen(false); openPage(id); }}
+                        className="w-full text-left px-4 py-2.5 text-[13px] text-foreground hover:bg-secondary transition-colors"
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
           </div>
 
           <div className="flex items-center gap-3">
@@ -342,10 +397,19 @@ function ShellInner() {
 
       {/* Mobile Header (Brand + points + wishlist + bag) */}
       <header className="sticky top-0 z-40 bg-background/95 backdrop-blur-md border-b border-border sm:hidden flex items-center justify-between px-4 h-14">
-        <button onClick={() => goTab("home")} className="flex items-center min-h-[44px] rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2">
+        <button onClick={() => goTab("home")} className="flex items-center gap-2 min-h-[44px] rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2">
           <VivoLogo size="sm" />
+          <JohariWordmark className="text-[11px] text-foreground/85 pt-0.5" />
         </button>
         <div className="flex items-center gap-0.5">
+          <button
+            data-testid="nav-help-mobile"
+            aria-label="Help"
+            onClick={() => openPage("help")}
+            className={iconBtnCls}
+          >
+            <HelpCircle size={19} strokeWidth={1.5} />
+          </button>
           <button
             data-testid="header-points"
             onClick={() => goTab("rewards")}
@@ -363,10 +427,16 @@ function ShellInner() {
         {page ? (
           page === "tryon" ? (
             <TryOnView onBack={closePage} member={member} />
+          ) : page === "survey" ? (
+            <SurveyView onBack={closePage} member={member} onMemberUpdate={updateMember} />
           ) : page === "mydata" ? (
             <MyDataView onBack={closePage} onOpenPage={openPage} />
           ) : page === "contact" ? (
             <ContactView onBack={closePage} member={member} />
+          ) : page === "help" ? (
+            <HelpLandingView onBack={closePage} onOpenPage={openPage} />
+          ) : page === "givingback" ? (
+            <GivingBackView onBack={closePage} />
           ) : page === "faq" ? (
             <HelpFaqView onBack={closePage} onOpenPage={openPage} />
           ) : isNewsPageId(page) ? (
@@ -384,10 +454,10 @@ function ShellInner() {
           <EventDetail eventId={eventId} onBack={closeEventDetail} onOpenPage={openPage} />
         ) : (
           <>
-            {tab === "home" && <TabHome onNavigate={goTab} member={member} onOpenProduct={openProduct} onOpenPage={openPage} onOpenEvent={openEventDetail} />}
-            {tab === "community" && <TabCommunity member={member} subNav={subNav} onSubChange={syncSub} onOpenEvent={openEventDetail} />}
+            {tab === "home" && <TabHome onNavigate={goTab} member={member} onOpenProduct={openProduct} onOpenPage={openPage} onOpenEvent={openEventDetail} onOpenFabulas={setFabulasId} />}
+            {tab === "community" && <TabCommunity member={member} subNav={subNav} onSubChange={syncSub} onOpenEvent={openEventDetail} onOpenProduct={openProduct} onOpenPage={openPage} onOpenFabulas={setFabulasId} />}
             {tab === "shop" && <TabShop onOpenProduct={openProduct} onOpenTryOn={() => openTryOn("")} />}
-            {tab === "rewards" && <TabRewards member={member} onMemberUpdate={updateMember} />}
+            {tab === "rewards" && <TabRewards member={member} onMemberUpdate={updateMember} onOpenPage={openPage} />}
             {tab === "profile" && (
               <TabProfile
                 member={member}
@@ -404,6 +474,13 @@ function ShellInner() {
         )}
         {quizOpen && member && (
           <StyleQuiz member={member} onClose={closeQuiz} onMemberUpdate={updateMember} onSeeFeed={quizSeeFeed} />
+        )}
+        {fabulasId && (
+          <FabulasStoryView
+            storyId={fabulasId}
+            onClose={() => setFabulasId("")}
+            onShareStory={openChallengesFromFabulas}
+          />
         )}
       </main>
 

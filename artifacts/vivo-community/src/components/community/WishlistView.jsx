@@ -116,9 +116,10 @@ function StockLine({ det }) {
   const d = det.data;
   if (!d.in_stock) return <span className="text-[12px] font-medium text-muted-foreground">Out of stock</span>;
   const avail = (d.sizes || []).filter((s) => s.in_stock);
-  // "Almost gone" only when every size still available is running low.
+  // Refined scarcity only — exact badge phrase, never counts or "almost gone"
+  // embellishments; shown only when every size still available runs low.
   if (avail.length > 0 && avail.every((s) => s.low)) {
-    return <span className="text-[12px] font-medium text-primary-ink">Selling fast — almost gone</span>;
+    return <span className="text-[12px] font-medium text-primary-ink">Selling fast</span>;
   }
   return <span className="text-[12px] font-medium text-foreground/70">In stock</span>;
 }

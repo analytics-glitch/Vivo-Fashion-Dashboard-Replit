@@ -54,6 +54,7 @@ const NAV = [
   { to: "/cohorts", label: "Cohorts", icon: Layers, testid: "nav-cohorts", manager: true, group: "analytics" },
   { to: "/operations", label: "Operations", icon: ClipboardList, testid: "nav-operations", manager: true, group: "analytics" },
   { to: "/csat", label: "CSAT", icon: SmilePlus, testid: "nav-csat", manager: true, group: "analytics" },
+  { to: "/survey-results", label: "Survey", icon: ClipboardList, testid: "nav-survey-results", manager: true, group: "analytics" },
   { to: "/reports", label: "Reports", icon: FileBarChart, testid: "nav-reports", manager: true, group: "analytics" },
   // Act 4 — Team & admin
   { to: "/training", label: "Training", icon: GraduationCap, testid: "nav-training", manager: true, group: "admin" },

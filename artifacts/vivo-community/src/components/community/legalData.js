@@ -16,7 +16,7 @@
 
 export const LEGAL_META = {
   terms: {
-    version: "0.9.6",
+    version: "0.9.7",
     effective: "14 August 2026",
     status: "draft-pending-legal-review",
   },
@@ -43,9 +43,14 @@ export const FAQ_SECTIONS = [
         a: "Shopping is the simplest way — give your phone number at the till and you earn 1 point for every KES 100 you spend. On top of that: share looks, write reviews, add fit notes, enter style challenges, complete weekly missions and refer friends.",
       },
       {
+        id: "earn-survey",
+        q: "What's the member survey, and what do I get for it?",
+        a: "Every so often we run a short survey — \"Help us dress you better\" — about ten taps and under three minutes. Completing it earns you 30 points instantly, once per survey round. Your answers are private: we only ever read them anonymously and in aggregate, to decide what to make, stock and improve next. You'll find it on your Home feed, in Rewards, or under Profile.",
+      },
+      {
         id: "earn-published",
         q: "When do shared posts and reviews earn their points?",
-        a: "The moment they're published — never on submission. Everything you share is reviewed by our team first, and your points land as soon as it goes live in the community. You can watch pending entries in your Style Journal.",
+        a: "The moment they're published — never on submission. Everything you share is reviewed by our team first, and your points land as soon as it goes live in the community: 50 points for a photo look, 100 for a video. You can watch pending entries in your Style Journal. (Questions you ask the community are just conversation — they're shared for answers, not points.)",
       },
       {
         id: "earn-declined",
@@ -92,7 +97,7 @@ export const FAQ_SECTIONS = [
       {
         id: "redeem-what",
         q: "What can I redeem my points for?",
-        a: "The ladder runs from everyday value to insider access: a KES 500 voucher off your next order, free delivery, a basic alteration on one piece, a personal styling session, a personalised embroidered tank stitched in-house, and — at the top — invitations to members' events like styling evenings and first looks at new collections in store. Point costs rise as you climb, and the Rewards tab always shows the current set.",
+        a: "The ladder runs from everyday value to insider access: a KES 500 voucher off your next order, free delivery, a basic alteration on one piece, a personal styling session, a personalised embroidered tank stitched in-house, invitations to members' events like styling evenings and first looks — and, at the very top, a professional photoshoot at Zetu Studios. Point costs rise as you climb, and the Rewards tab always shows the current set.",
       },
       {
         id: "redeem-alterations",
@@ -103,6 +108,11 @@ export const FAQ_SECTIONS = [
         id: "redeem-tank",
         q: "How does the personalised embroidered tank work?",
         a: "Redeem it and you'll pick your size and colour of our ribbed Chela tank, then add your embroidery — upload your own design or choose a monogram in one of three lettering styles. Small, chest-placed artwork with simple shapes and a few colours stitches best, and the finished embroidery can vary slightly from what's on screen. Every design is reviewed before we stitch: if yours is too intricate or doesn't meet our design standards, we'll ask you to adjust it rather than cancel, and your points stay put. Stitching happens in-house and usually takes about two weeks — then collect at a Vivo store or have it delivered.",
+      },
+      {
+        id: "redeem-zetu",
+        q: "How does the Zetu Studios photoshoot work?",
+        a: "It's the top of the Johari ladder — 3,000 points for a professional solo session at Zetu Studios. Redeem it in the Rewards tab and our team calls you within two working days to schedule a date that suits you. On the day you'll be styled in Vivo pieces and photographed by the studio team, and your favourite images are yours to keep and share. One session per redemption, at Zetu Studios.",
       },
     ],
   },
@@ -164,8 +174,8 @@ export const FAQ_SECTIONS = [
       },
       {
         id: "privacy-leaderboard",
-        q: "Can I stay off the leaderboard?",
-        a: "Absolutely. Turn off 'Appear on leaderboards' in Profile, under Privacy — you'll still earn points for everything you do, just privately.",
+        q: "Can I stay out of community celebrations?",
+        a: "Absolutely. Turn off 'Appear in community celebrations' in Profile, under Privacy — we'll never feature you as jewel of the week, in weekly celebrations or winner spotlights, and you'll still earn points for everything you do, just privately. And a quiet promise either way: there are no public leaderboards or point tallies here at all. Shining This Week celebrates moments, never numbers.",
       },
       {
         id: "privacy-username",
@@ -182,6 +192,11 @@ export const FAQ_SECTIONS = [
         id: "sharing-review",
         q: "What happens after I share a look or enter a challenge?",
         a: "Our team gives every share a quick look before it goes live — it's how we keep this space warm and genuine. Once it's published it appears in the community and your points land instantly.",
+      },
+      {
+        id: "sharing-winners",
+        q: "How are challenge winners chosen?",
+        a: "Each challenge says so right on its page. Some are picked by our styling team; for others the community's votes shape a shortlist and our team chooses from it. Votes are never shown as public tallies and there are no scoreboards — winners are simply celebrated when the challenge closes, with a 200-point bonus and a ribbon on the winning look. One vote per member per challenge, and you can change yours any time while voting is open.",
       },
       {
         id: "sharing-featuring",
@@ -323,6 +338,7 @@ export const TERMS_SECTIONS = [
           "Purchases earn points at the published rate when your phone number is attached to the sale.",
           "Shared content — reviews, fit notes, looks and challenge entries — earns points only once it has been reviewed and published in the app. Submission alone earns nothing.",
           "Some activities carry caps (for example weekly missions), and we apply fair-play limits. Points earned through gaming, fraud or abuse of the programme may be reversed.",
+          "Challenge winners are selected by Vivo's team — for some challenges from a shortlist shaped by community votes — and winner bonuses land when winners are announced. Curation decisions are final; they're celebration, not judgement.",
           "Points expire after 12 months without any earning or redemption activity on your account. We will remind you before that happens.",
         ],
       },
@@ -337,6 +353,10 @@ export const TERMS_SECTIONS = [
       {
         t: "p",
         text: "Money-off vouchers and free-delivery rewards are single-use and apply to one order only; they have no cash value and can't be exchanged for money or combined with other vouchers. Members' event invitations are personal to you, non-transferable and subject to capacity.",
+      },
+      {
+        t: "p",
+        text: "Zetu Studios photoshoot: the session is personal to you and non-transferable, one session per redemption, scheduled with the studio after you redeem and subject to studio availability. The images are for your personal use — Vivo features them only with the same optional, per-item marketing consent as anything else you share.",
       },
       {
         t: "p",
@@ -422,6 +442,7 @@ export const PRIVACY_SECTIONS = [
         items: [
           "Identity & contact — your phone number, full name, email address and date of birth, given at sign-up.",
           "Profile — your username, privacy choices, style preferences and preferred sizes.",
+          "Survey answers — what you tell us in member surveys, like fit, occasions and shopping preferences.",
           "Content you upload — posts, challenge entries, reviews, fit notes, style boards, try-on photos and looks, embroidery designs, and photos you send our support team. Section 2 covers each type: what it's for, how long we keep it, and how you delete it.",
           "Shopping — purchases linked to your phone number at the till or online, so points can land automatically.",
           "Technical basics — device and usage information that keeps the app working and secure.",
@@ -448,6 +469,7 @@ export const PRIVACY_SECTIONS = [
           "Embroidery & monogram designs — used to make the personalised piece you ordered. They stay attached to your order record for as long as tax and consumer law require (typically up to five years in Kenya), and you can remove the artwork itself once your order is finished.",
           "Messages & photos you send our support team — used to resolve your query, and kept for up to 24 months after it's resolved. You can remove an attachment anytime; the message stays so the conversation still makes sense.",
           "Style quiz answers — used to personalise what you see. Kept until you retake the quiz or delete your answers.",
+          "Survey answers — used to improve what we design, make and stock, and only ever reported as anonymous totals; no report links an answer to you. Kept until you delete them in Profile → My data.",
         ],
       },
       {
@@ -469,6 +491,7 @@ export const PRIVACY_SECTIONS = [
         items: [
           "To run your membership: points, tiers, rewards, and reminders before points expire.",
           "To personalise your experience — like showing pieces and content that fit your style.",
+          "To improve what we design, make and stock — survey answers are used in anonymous, aggregated form only.",
           "To operate the community: displaying your username on what you publish, never your real name.",
           "To feature your content in marketing outside the app — only with the separate optional consent you give on that specific item, which you can switch off anytime in Profile → My data.",
           "To meet legal obligations and keep the community safe.",

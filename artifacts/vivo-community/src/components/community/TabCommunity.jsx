@@ -1,21 +1,102 @@
-import React, { useEffect, useState } from 'react';
-import { posts, challenges, leaderboard, styleBoards } from "./mockData";
+import { useCallback, useEffect, useState } from "react";
+import { styleBoards } from "./mockData";
+import PostDetailModal from "./PostDetailModal";
+import ChallengeDetail from "./ChallengeDetail";
 import { api } from "@/lib/api";
 import { useAuthImage } from "./authImage";
-import { TierBadge, Avatar, ImagePlaceholder, cardCls, btnPrimary } from "./ui";
-import { Trophy, Users, Heart, MessageCircle, Clock, Sparkles } from "lucide-react";
-import EntryModal, { getEntries } from "./EntryModal";
+import { TierBadge, Avatar, ImagePlaceholder, cardCls } from "./ui";
+import {
+  Trophy, Users, Heart, MessageCircle, Clock, Sparkles, Plus, X,
+  ChevronRight, HandHeart, Camera, HelpCircle, Play,
+} from "lucide-react";
+import EntryModal, { ENTRY_STATUS_COPY } from "./EntryModal";
 import EventsList from "./EventsList";
+import { FabulasCarousel } from "./FabulasStory";
 
-function GridPost({ post }) {
-  return (
-    <div className="bg-card rounded overflow-hidden shadow-sm hover:shadow-md transition-shadow group cursor-pointer relative border border-border">
-      <ImagePlaceholder aspectRatio="aspect-[4/5]" className="rounded-none border-none" text="Post" />
-      <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex items-center justify-center gap-6 text-white backdrop-blur-[2px]">
-        <div className="flex items-center gap-2 font-medium"><Heart className="fill-white" size={20} /> {post.likes}</div>
-        <div className="flex items-center gap-2 font-medium"><MessageCircle className="fill-white" size={20} /> {post.comments}</div>
+const WELCOME_KEY = "vivo_community_welcome_dismissed";
+
+const initialsOf = (u) =>
+  (u || "?").split(/[._\s-]+/).filter(Boolean).slice(0, 2)
+    .map((s) => s[0].toUpperCase()).join("") || "?";
+
+const POSITION_LABEL = { 1: "1st place", 2: "2nd place", 3: "3rd place" };
+
+const fmtDate = (iso) => {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime())
+    ? ""
+    : d.toLocaleDateString("en-KE", { day: "numeric", month: "long" });
+};
+
+// Deterministic weekly-ish rotation for the celebrated list — everyone gets
+// their turn near the top without any notion of rank.
+const rotate = (arr, n) => {
+  if (!arr?.length) return arr || [];
+  const k = n % arr.length;
+  return arr.slice(k).concat(arr.slice(0, k));
+};
+const dayOfYear = () => {
+  const now = new Date();
+  return Math.floor((now - new Date(now.getFullYear(), 0, 0)) / 864e5);
+};
+
+/* ---------- feed tiles ---------- */
+
+// Uniform 4:5 tile. Member media (photo/video) comes straight off the public
+// entry-photo endpoint; seeded posts carry image_url; questions render as a
+// text card — no media expected, ever.
+function GridVisual({ post }) {
+  if (post.post_type === "question") {
+    return (
+      <div className="aspect-[4/5] bg-secondary/70 flex flex-col justify-center p-4 sm:p-5">
+        <HelpCircle size={18} className="text-primary-ink mb-3" strokeWidth={1.5} />
+        <p className="font-serif text-[15px] sm:text-base text-foreground leading-snug line-clamp-6">
+          {post.caption}
+        </p>
       </div>
-    </div>
+    );
+  }
+  if (post.has_photo && post.photo_path) {
+    const src = "/api/community" + post.photo_path;
+    return (
+      <div className="aspect-[4/5] bg-secondary relative">
+        {post.media_kind === "video" ? (
+          <>
+            <video src={src} muted playsInline preload="metadata" className="w-full h-full object-cover" />
+            <span className="absolute top-2 right-2 w-7 h-7 rounded-full bg-black/55 text-white flex items-center justify-center">
+              <Play size={13} className="fill-white ml-0.5" />
+            </span>
+          </>
+        ) : (
+          <img src={src} alt={`Look by @${post.author.username}`} loading="lazy" className="w-full h-full object-cover" />
+        )}
+      </div>
+    );
+  }
+  if (post.image_url) {
+    return (
+      <div className="aspect-[4/5] bg-secondary">
+        <img src={post.image_url} alt={`Look by @${post.author.username}`} loading="lazy" className="w-full h-full object-cover" />
+      </div>
+    );
+  }
+  return <ImagePlaceholder aspectRatio="aspect-[4/5]" className="rounded-none border-none" text={`Look by @${post.author.username}`} />;
+}
+
+function GridPost({ post, onOpen }) {
+  return (
+    <button type="button" onPointerDown={(e) => e.preventDefault()} onClick={onOpen} data-testid={`grid-post-${post.id}`}
+            aria-label={`Open post by @${post.author.username}`}
+            className="bg-card rounded overflow-hidden shadow-sm hover:shadow-md transition-shadow group cursor-pointer relative border border-border block w-full text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
+      <GridVisual post={post} />
+      <div className="px-2.5 py-2 flex items-center justify-between gap-2">
+        <span className="text-[11px] font-medium text-muted-foreground truncate">@{post.author.username}</span>
+        <span className="flex items-center gap-2 text-[11px] text-muted-foreground shrink-0">
+          <span className="flex items-center gap-1"><Heart size={12} /> {post.like_count}</span>
+          <span className="flex items-center gap-1"><MessageCircle size={12} /> {post.comment_count}</span>
+        </span>
+      </div>
+    </button>
   );
 }
 
@@ -49,28 +130,45 @@ const SUB_TABS = [
   { id: "feed", label: "Feed" },
   { id: "events", label: "Events" },
   { id: "challenges", label: "Challenges" },
-  { id: "leaderboard", label: "Leaderboard" },
+  { id: "leaderboard", label: "Shining This Week" },
   { id: "style_boards", label: "Style Boards" },
 ];
 const SUB_IDS = SUB_TABS.map((t) => t.id);
 
-export default function TabCommunity({ member, subNav, onSubChange, onOpenEvent }) {
+const FEED_CHIPS = [
+  ["", "All"],
+  ["look", "Looks"],
+  ["question", "Style questions"],
+  ["haul", "Hauls"],
+];
+
+export default function TabCommunity({ member, subNav, onSubChange, onOpenEvent, onOpenProduct, onOpenPage, onOpenFabulas }) {
   const [subTab, setSubTab] = useState(() => (SUB_IDS.includes(subNav?.id) ? subNav.id : "feed"));
   const [followed, setFollowed] = useState({});
-  const [entryFor, setEntryFor] = useState(null);
-  const [enteredIds, setEnteredIds] = useState(() => new Set(getEntries().map((e) => e.challengeId)));
+  const [entryFor, setEntryFor] = useState(null);    // challenge entry composer
+  const [composeType, setComposeType] = useState(""); // standalone composer: "look" | "question"
 
   // Shell-driven sub-navigation (e.g. Home's "What's on" card → Events).
   // subNav carries a nonce (n) so repeat requests for the same sub-tab land.
   useEffect(() => {
-    if (subNav?.id && SUB_IDS.includes(subNav.id)) setSubTab(subNav.id);
+    if (subNav?.id && SUB_IDS.includes(subNav.id)) {
+      setSubTab(subNav.id);
+      setOpenChallenge(null); // fresh outside request always lands on the list
+    }
   }, [subNav]);
 
   // Member-initiated switches also tell the shell, so the URL's ?sub= stays
   // truthful and refresh/share restores the same view.
   const selectSub = (id) => { setSubTab(id); onSubChange?.(id); };
 
-  const refreshEntered = () => setEnteredIds(new Set(getEntries().map((e) => e.challengeId)));
+  // Pinned welcome card — dismiss persists per device.
+  const [welcomeDismissed, setWelcomeDismissed] = useState(() => {
+    try { return localStorage.getItem(WELCOME_KEY) === "1"; } catch { return true; }
+  });
+  const dismissWelcome = () => {
+    setWelcomeDismissed(true);
+    try { localStorage.setItem(WELCOME_KEY, "1"); } catch { /* private mode */ }
+  };
 
   // Shared try-on looks — members who opted in from their result card.
   const [sharedLooks, setSharedLooks] = useState([]);
@@ -79,6 +177,46 @@ export default function TabCommunity({ member, subNav, onSubChange, onOpenEvent 
     api.tryonShared().then((d) => { if (alive) setSharedLooks(d.items || []); }).catch(() => {});
     return () => { alive = false; };
   }, []);
+
+  // Interactive feed — DB-backed posts; likes and comments are real
+  // per-member state shared with the detail modal via patchPost.
+  const [feed, setFeed] = useState(null); // null = first load
+  const [feedType, setFeedType] = useState("");
+  const [detailIdx, setDetailIdx] = useState(-1);
+  const [restoreY, setRestoreY] = useState(0); // captured at tap time
+  useEffect(() => {
+    let alive = true;
+    setFeed(null);
+    setDetailIdx(-1);
+    api.feed(50, 0, feedType).then((d) => { if (alive) setFeed(d.items || []); })
+      .catch(() => { if (alive) setFeed([]); });
+    return () => { alive = false; };
+  }, [feedType]);
+  const patchPost = (id, patch) =>
+    setFeed((list) => (list || []).map((p) => (p.id === id ? { ...p, ...patch } : p)));
+
+  // Live challenges — my_entry rides along per member.
+  const [chList, setChList] = useState(null);
+  const [openChallenge, setOpenChallenge] = useState(null);
+  const loadChallenges = useCallback(() => {
+    api.challenges().then((d) => setChList(d.items || [])).catch(() => setChList([]));
+  }, []);
+  useEffect(() => { loadChallenges(); }, [loadChallenges]);
+
+  // Shining This Week — appreciation wall + past winners strip.
+  const [cel, setCel] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    api.celebrations()
+      .then((d) => { if (alive) setCel(d); })
+      .catch(() => { if (alive) setCel({ jewel: null, celebrated: [], winners: [], new_jewels: [] }); });
+    return () => { alive = false; };
+  }, []);
+
+  const closeComposer = () => { setEntryFor(null); setComposeType(""); };
+  const handleSubmitted = () => { loadChallenges(); };
+
+  const celebrated = rotate(cel?.celebrated || [], dayOfYear());
 
   return (
     <div className="animate-in fade-in duration-500">
@@ -99,11 +237,69 @@ export default function TabCommunity({ member, subNav, onSubChange, onOpenEvent 
           </button>
         ))}
       </div>
-      
+
       {/* Feed SubTab */}
       {subTab === "feed" && (
         <>
-          {sharedLooks.length > 0 && (
+          {!welcomeDismissed && (
+            <div data-testid="feed-welcome" className="relative bg-primary/5 border border-primary/20 rounded p-5 sm:p-6 mb-6">
+              <button aria-label="Dismiss welcome" data-testid="welcome-dismiss" onClick={dismissWelcome}
+                      className="absolute top-2.5 right-2.5 w-9 h-9 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
+                <X size={16} />
+              </button>
+              <div className="text-[11px] font-bold uppercase tracking-wider text-primary-ink mb-1.5">Karibu to Johari</div>
+              <h3 className="font-serif text-xl text-foreground mb-1.5">This is where Vivo women shine</h3>
+              <p className="text-sm text-muted-foreground leading-relaxed max-w-xl">
+                Share your looks, ask the honest style questions, cheer each other on — and earn Johari points along the way.
+              </p>
+              <div className="flex flex-wrap gap-2 mt-4">
+                <button data-testid="welcome-share" onClick={() => setComposeType("look")}
+                        className="h-10 px-4 rounded bg-primary text-primary-foreground text-[13px] font-medium inline-flex items-center gap-1.5 hover:opacity-90 active:scale-[0.98] transition-all">
+                  <Camera size={15} /> Share your first look
+                </button>
+                <button onClick={() => selectSub("challenges")}
+                        className="h-10 px-4 rounded bg-background border border-border text-foreground text-[13px] font-medium inline-flex items-center gap-1.5 hover:bg-secondary transition-colors">
+                  See challenges
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Composer — always in reach at the top of the feed */}
+          <div data-testid="feed-composer" className={`${cardCls} p-3.5 sm:p-4 mb-5 flex flex-wrap items-center gap-2.5`}>
+            <Avatar initials={initialsOf(member?.username)} size="sm" />
+            <button data-testid="composer-look" onClick={() => setComposeType("look")}
+                    className="flex-1 min-w-[150px] h-11 px-4 rounded bg-secondary/70 border border-border text-left text-[13px] text-muted-foreground hover:bg-secondary transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
+              Share a look with the community…
+            </button>
+            <div className="flex gap-2">
+              <button data-testid="composer-look-btn" onClick={() => setComposeType("look")}
+                      className="h-11 px-3.5 rounded bg-primary text-primary-foreground text-[13px] font-medium inline-flex items-center gap-1.5 hover:opacity-90 active:scale-[0.98] transition-all">
+                <Camera size={15} /> Share a look
+              </button>
+              <button data-testid="composer-question-btn" onClick={() => setComposeType("question")}
+                      className="h-11 px-3.5 rounded bg-background border border-border text-foreground text-[13px] font-medium inline-flex items-center gap-1.5 hover:bg-secondary transition-colors">
+                <HelpCircle size={15} /> Ask
+              </button>
+            </div>
+          </div>
+
+          {/* Filter chips */}
+          <div data-testid="feed-chips" className="flex gap-2 overflow-x-auto hide-scrollbar mb-6">
+            {FEED_CHIPS.map(([v, label]) => (
+              <button key={v || "all"} data-testid={`chip-${v || "all"}`} aria-pressed={feedType === v}
+                      onClick={() => setFeedType(v)}
+                      className={`h-9 px-3.5 rounded-full text-[12px] font-semibold whitespace-nowrap border transition-colors ${
+                        feedType === v
+                          ? "bg-foreground text-background border-foreground"
+                          : "bg-background text-muted-foreground border-border hover:text-foreground hover:bg-secondary"
+                      }`}>
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {sharedLooks.length > 0 && feedType === "" && (
             <section data-testid="shared-looks-strip" className="mb-8">
               <div className="flex items-center gap-2 mb-3">
                 <Sparkles size={14} className="text-primary-ink" />
@@ -115,119 +311,238 @@ export default function TabCommunity({ member, subNav, onSubChange, onOpenEvent 
               </div>
             </section>
           )}
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-6">
-            {posts.map(p => <GridPost key={p.id} post={p} />)}
-            {posts.map(p => <GridPost key={p.id + 'dup'} post={{...p, likes: p.likes + 10}} />)}
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-6 items-start" data-testid="community-feed-grid">
+            {feed === null
+              ? Array.from({ length: 8 }).map((_, i) => (
+                  <div key={i} className="bg-card rounded border border-border overflow-hidden animate-pulse">
+                    <div className="aspect-[4/5] bg-secondary/60" />
+                  </div>
+                ))
+              : feed.map((p, i) => <GridPost key={p.id} post={p} onOpen={() => { setRestoreY(window.scrollY); setDetailIdx(i); }} />)}
           </div>
+          {feed !== null && feed.length === 0 && (
+            <p className="text-muted-foreground text-sm italic mt-4">Nothing here yet — be the first to share.</p>
+          )}
+
+          {/* Give Your Vivo a Second Life */}
+          <section data-testid="feed-givingback" className={`${cardCls} mt-10 p-5 sm:p-6 flex items-start gap-4`}>
+            <HandHeart className="text-primary-ink shrink-0 mt-0.5" size={22} strokeWidth={1.5} />
+            <div className="flex-1">
+              <h3 className="font-serif text-lg text-foreground mb-1">Give your Vivo a second life</h3>
+              <p className="text-sm text-muted-foreground leading-relaxed max-w-xl">
+                Loved pieces you've outgrown can lift another woman up. Bring them to any Vivo store and we'll take it from there.
+              </p>
+              <button data-testid="givingback-open" onClick={() => onOpenPage?.("givingback")}
+                      className="mt-3 inline-flex items-center gap-1 text-[13px] font-medium text-primary-ink hover:underline">
+                How it works <ChevronRight size={14} />
+              </button>
+            </div>
+          </section>
+
+          {detailIdx >= 0 && feed && feed[detailIdx] && (
+            <PostDetailModal restoreY={restoreY} posts={feed} index={detailIdx} onIndex={setDetailIdx}
+                             onClose={() => setDetailIdx(-1)} onOpenProduct={onOpenProduct}
+                             onCounts={patchPost} />
+          )}
+
+          {/* Mobile FAB — composer in thumb's reach */}
+          <button data-testid="feed-fab" aria-label="Share with the community" onClick={() => setComposeType("look")}
+                  className="fixed md:hidden bottom-24 right-4 z-30 w-14 h-14 rounded-full bg-primary text-primary-foreground shadow-lg flex items-center justify-center active:scale-95 transition-transform focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2">
+            <Plus size={26} />
+          </button>
         </>
       )}
-      
+
       {/* Events SubTab */}
       {subTab === "events" && (
         <EventsList onEnterChallenge={() => selectSub("challenges")} onOpenEvent={onOpenEvent} />
       )}
 
       {/* Challenges SubTab */}
-      {subTab === "challenges" && (
+      {subTab === "challenges" && openChallenge && (
+        <ChallengeDetail challengeId={openChallenge} onBack={() => { setOpenChallenge(null); loadChallenges(); }} onOpenProduct={onOpenProduct} />
+      )}
+      {subTab === "challenges" && !openChallenge && (
         <div className="space-y-10">
           <div>
             <p data-testid="challenges-review-note" className="text-muted-foreground text-sm leading-relaxed max-w-2xl mb-6">
               Every entry is reviewed with love before it goes live — your points are added the moment your entry is published.
             </p>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {challenges.map(c => (
-                <div key={c.id} className={`${cardCls} p-6 flex flex-col`}>
-                  <div className="flex justify-between items-start mb-4 gap-4">
-                    <h3 className="text-xl font-serif text-foreground leading-tight">{c.title}</h3>
-                    <span className="bg-primary/10 text-primary-ink border border-primary/20 text-[10px] font-semibold leading-snug px-2.5 py-1.5 rounded-sm shrink-0 max-w-[120px] text-center">
-                      Earn {c.points} pts when published
-                    </span>
-                  </div>
-                  <p className="text-muted-foreground text-[15px] mb-8 flex-grow leading-relaxed">{c.description}</p>
-                  <div className="flex items-center justify-between mt-auto pt-5 border-t border-border">
-                    <div className="flex items-center gap-4 text-xs font-medium text-muted-foreground">
-                      <span className="flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-primary" /> {c.deadline}</span>
-                      <span className="flex items-center gap-1.5"><Users size={14}/> {c.entries} entries</span>
+              {chList === null
+                ? Array.from({ length: 2 }).map((_, i) => (
+                    <div key={i} className={`${cardCls} p-6 h-52 animate-pulse`} />
+                  ))
+                : chList.map((c) => (
+                    <div key={c.id} className={`${cardCls} p-6 flex flex-col`} data-testid={`challenge-card-${c.id}`}>
+                      <div className="flex justify-between items-start mb-3 gap-4">
+                        <h3 className="text-xl font-serif text-foreground leading-tight">{c.title}</h3>
+                        <span className="bg-primary/10 text-primary-ink border border-primary/20 text-[10px] font-semibold leading-snug px-2.5 py-1.5 rounded-sm shrink-0 max-w-[120px] text-center">
+                          Earn {c.points} pts when published
+                        </span>
+                      </div>
+                      {c.hashtag && (
+                        <div className="text-[12px] font-semibold text-primary-ink mb-2">{c.hashtag}</div>
+                      )}
+                      <p className="text-muted-foreground text-[15px] mb-8 flex-grow leading-relaxed line-clamp-3">{c.description}</p>
+                      <div className="flex items-center justify-between mt-auto pt-5 border-t border-border gap-3 flex-wrap">
+                        <div className="flex items-center gap-4 text-xs font-medium text-muted-foreground">
+                          <span className="flex items-center gap-1.5">
+                            <span className={`w-1.5 h-1.5 rounded-full ${c.closed ? "bg-muted-foreground" : "bg-primary"}`} />
+                            {c.closed ? "Closed" : `Ends ${fmtDate(c.deadline)}`}
+                          </span>
+                          {c.entries_display && (
+                            <span className="flex items-center gap-1.5"><Users size={14}/> {c.entries_display}</span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2.5">
+                          {c.my_entry && (
+                            <span data-testid={`entered-${c.id}`} className="inline-flex items-center gap-1.5 text-[12px] font-medium text-muted-foreground bg-secondary border border-border px-3 h-9 rounded whitespace-nowrap">
+                              <Clock size={13} strokeWidth={1.5} /> {ENTRY_STATUS_COPY[c.my_entry.status] || "Entered"}
+                            </span>
+                          )}
+                          <button data-testid={`challenge-open-${c.id}`} onClick={() => setOpenChallenge(c.id)}
+                                  className="bg-foreground text-background hover:bg-foreground/90 transition-colors text-[13px] font-medium px-4 h-9 rounded active:scale-[0.98]">
+                            {c.closed ? "See winners" : c.my_entry ? "View challenge" : "Enter challenge"}
+                          </button>
+                        </div>
+                      </div>
                     </div>
-                    {enteredIds.has(c.id) ? (
-                      <span data-testid={`entered-${c.id}`} className="inline-flex items-center gap-1.5 text-[12px] font-medium text-muted-foreground bg-secondary border border-border px-3 h-9 rounded whitespace-nowrap">
-                        <Clock size={13} strokeWidth={1.5} /> Entered — in review
-                      </span>
-                    ) : (
-                      <button data-testid={`enter-${c.id}`} onClick={() => setEntryFor(c)} className="bg-foreground text-background hover:bg-foreground/90 transition-colors text-[13px] font-medium px-4 h-9 rounded active:scale-[0.98]">
-                        Enter Challenge
-                      </button>
-                    )}
-                  </div>
-                </div>
-              ))}
+                  ))}
             </div>
           </div>
-          
+
           <div>
             <h3 className="text-lg font-serif text-foreground mb-4">Past Winners</h3>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              {[
-                { username: "achieng.o", initials: "AO", tier: "Ruby", showTier: false },
-                { username: "wanjiku.m", initials: "WM", tier: "Tanzanite", showTier: false },
-                { username: "makena_w", initials: "MW", tier: "Tanzanite", showTier: true },
-              ].map((w) => (
-                <div key={w.username} className="bg-secondary rounded p-4 flex items-center gap-4 border border-border">
-                  {/* Privacy: tier styling only for members who opted in */}
-                  <Avatar initials={w.initials} tier={w.showTier ? w.tier : undefined} />
-                  <div>
-                    <div className="font-semibold text-[13px] text-foreground">@{w.username}</div>
-                    <div className="text-[11px] text-muted-foreground mt-1">Won "Style It 3 Ways" · 150pts prize</div>
+            {cel === null ? (
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                {Array.from({ length: 3 }).map((_, i) => <div key={i} className="h-20 bg-secondary rounded animate-pulse" />)}
+              </div>
+            ) : (cel.winners || []).length === 0 ? (
+              <p className="text-sm text-muted-foreground italic">Winners from our latest challenge land here soon.</p>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4" data-testid="past-winners">
+                {(cel.winners || []).slice(0, 6).map((w) => (
+                  <div key={`${w.challenge_id}-${w.post_id}`} className="bg-secondary rounded p-4 flex items-center gap-4 border border-border">
+                    <Avatar initials={initialsOf(w.username)} />
+                    <div className="min-w-0">
+                      <div className="font-semibold text-[13px] text-foreground truncate">@{w.username}</div>
+                      <div className="text-[11px] text-muted-foreground mt-1 leading-snug">
+                        <Trophy size={11} className="inline -mt-0.5 mr-1 text-[#d1a657]" />
+                        {POSITION_LABEL[w.winner_position] || "Winner"} · “{w.title}”
+                      </div>
+                    </div>
                   </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}
-      
-      {/* Leaderboard SubTab */}
+
+      {/* Shining This Week SubTab (id kept as "leaderboard" for URL stability) */}
       {subTab === "leaderboard" && (
-        <div className="max-w-3xl mx-auto">
-          <div className={`${cardCls} overflow-hidden`}>
-            <div className="p-6 bg-secondary/50 border-b border-border">
-              <h2 className="text-xl font-serif text-foreground flex items-center gap-2 mb-1">
-                <Trophy className="text-primary-ink" size={24} strokeWidth={1.5} /> Weekly Top Contributors
-              </h2>
-              <p className="text-muted-foreground text-sm">Ranked by community activity this week — posts, comments and challenge entries. Points balances stay private.</p>
+        <div className="max-w-3xl mx-auto space-y-8" data-testid="celebration-wall">
+          <div>
+            <div className="text-[11px] font-bold uppercase tracking-wider text-primary-ink mb-1.5">Shining this week</div>
+            <h2 className="text-2xl font-serif text-foreground mb-1.5">A little love for the women of Johari</h2>
+            <p className="text-muted-foreground text-sm leading-relaxed">
+              No ranks, no numbers — just the community celebrating each other. Celebrations rotate every week.
+            </p>
+          </div>
+
+          {cel === null ? (
+            <div className="space-y-4">
+              <div className="h-40 bg-secondary rounded animate-pulse" />
+              <div className="h-64 bg-secondary rounded animate-pulse" />
             </div>
-            <div className="divide-y divide-border">
-              {leaderboard.map((user, idx) => (
-                <div key={user.username} className={`flex items-center justify-between p-4 sm:p-6 transition-colors hover:bg-secondary/30 ${idx < 3 ? 'bg-background' : ''}`}>
-                  <div className="flex items-center gap-4 sm:gap-6">
-                    <div className={`text-lg font-serif italic w-6 text-center ${idx === 0 ? 'text-[#d1a657]' : idx === 1 ? 'text-[#a1a7b0]' : idx === 2 ? 'text-[#c28662]' : 'text-muted-foreground'}`}>
-                      #{user.rank}
-                    </div>
-                    {/* Privacy: username only; tier badge is opt-in */}
-                    <Avatar initials={user.initials} tier={user.showTier ? user.tier : undefined} size="md" />
+          ) : (
+            <>
+              {cel.jewel && (
+                <div data-testid="jewel-card" className="bg-primary/5 border border-primary/20 rounded p-5 sm:p-7">
+                  <div className="text-[11px] font-bold uppercase tracking-wider text-primary-ink mb-3 flex items-center gap-1.5">
+                    <Sparkles size={13} /> Jewel of the week
+                  </div>
+                  <div className="flex items-center gap-4 mb-4">
+                    <Avatar initials={initialsOf(cel.jewel.username)} tier={cel.jewel.show_tier ? cel.jewel.tier : undefined} size="md" />
                     <div>
-                      <div className="font-semibold text-foreground text-sm sm:text-[15px]">@{user.username}</div>
-                      {user.showTier && <TierBadge tier={user.tier} className="mt-1 inline-block" />}
+                      <div className="font-semibold text-foreground text-[15px]">@{cel.jewel.username}</div>
+                      {cel.jewel.show_tier && cel.jewel.tier && <TierBadge tier={cel.jewel.tier} className="mt-1 inline-block" />}
                     </div>
                   </div>
-                  <div className="text-right">
-                    <div className="text-foreground font-medium text-lg">{user.contributions}</div>
-                    <div className="text-[11px] uppercase tracking-widest text-muted-foreground">contributions</div>
+                  <blockquote className="font-serif text-lg text-foreground leading-relaxed">
+                    “{cel.jewel.quote}”
+                  </blockquote>
+                </div>
+              )}
+
+              {/* #FabulasAtAnyAge — stories from our partner community */}
+              <FabulasCarousel onOpenStory={onOpenFabulas} />
+
+              {(celebrated.length > 0) && (
+                <div className={`${cardCls} overflow-hidden`} data-testid="celebrated-list">
+                  <div className="p-5 border-b border-border">
+                    <h3 className="font-serif text-lg text-foreground">Celebrated this week</h3>
+                  </div>
+                  <div className="divide-y divide-border">
+                    {celebrated.map((c) => (
+                      <div key={c.username} className="flex items-start gap-4 p-4 sm:px-5">
+                        <Avatar initials={initialsOf(c.username)} size="sm" />
+                        <div className="min-w-0">
+                          <span className="font-semibold text-[13px] text-foreground">@{c.username}</span>
+                          <span className="text-[13px] text-muted-foreground"> — {c.reason}</span>
+                        </div>
+                        <Heart size={14} className="ml-auto shrink-0 text-primary-ink mt-1" />
+                      </div>
+                    ))}
                   </div>
                 </div>
-              ))}
-            </div>
-            <div data-testid="leaderboard-you" className="p-4 sm:p-5 bg-secondary/30 border-t border-border text-[13px] text-muted-foreground leading-relaxed">
-              {member?.show_leaderboard === false ? (
-                <>You're hidden from the leaderboard. You can change this any time in <span className="font-medium text-foreground">Profile → Privacy</span>.</>
-              ) : (
-                <>You appear here as <span className="font-medium text-foreground">@{member?.username}</span>{member?.show_tier ? ", with your tier badge" : " — tier badge hidden"}. Manage this in <span className="font-medium text-foreground">Profile → Privacy</span>.</>
               )}
-            </div>
+
+              {(cel.winners || []).length > 0 && (
+                <div data-testid="winners-list">
+                  <h3 className="font-serif text-lg text-foreground mb-3">Fresh challenge winners</h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                    {cel.winners.slice(0, 3).map((w) => (
+                      <div key={`${w.challenge_id}-${w.post_id}`} className="bg-secondary rounded p-4 border border-border">
+                        <Trophy size={16} className="text-[#d1a657] mb-2" strokeWidth={1.5} />
+                        <div className="font-semibold text-[13px] text-foreground">@{w.username}</div>
+                        <div className="text-[11px] text-muted-foreground mt-1 leading-snug">
+                          {POSITION_LABEL[w.winner_position] || "Winner"} · “{w.title}”
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {(cel.new_jewels || []).length > 0 && (
+                <div data-testid="new-jewels">
+                  <h3 className="font-serif text-lg text-foreground mb-3">New jewels this week</h3>
+                  <div className="flex flex-wrap gap-2">
+                    {cel.new_jewels.map((n) => (
+                      <span key={n.username} className="inline-flex items-center gap-2 bg-secondary border border-border rounded-full pl-1.5 pr-3.5 py-1.5">
+                        <Avatar initials={initialsOf(n.username)} size="sm" />
+                        <span className="text-[12px] font-medium text-foreground">@{n.username}</span>
+                        <span className="text-[11px] text-muted-foreground">joined {n.joined}</span>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+
+          <div data-testid="celebrations-you" className={`${cardCls} p-4 sm:p-5 text-[13px] text-muted-foreground leading-relaxed`}>
+            {member?.show_leaderboard === false ? (
+              <>You've chosen not to appear in community celebrations. You can change this any time in <span className="font-medium text-foreground">Profile → Privacy</span>.</>
+            ) : (
+              <>You may be celebrated here as <span className="font-medium text-foreground">@{member?.username}</span>{member?.show_tier ? ", with your tier gem" : " — tier kept private"}. Manage this in <span className="font-medium text-foreground">Profile → Privacy</span>.</>
+            )}
           </div>
         </div>
       )}
-      
+
       {/* Style Boards SubTab */}
       {subTab === "style_boards" && (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -260,7 +575,9 @@ export default function TabCommunity({ member, subNav, onSubChange, onOpenEvent 
         </div>
       )}
 
-      <EntryModal challenge={entryFor} onClose={() => setEntryFor(null)} onSubmitted={refreshEntered} />
+      {(entryFor || composeType) && (
+        <EntryModal challenge={entryFor} postType={composeType} onClose={closeComposer} onSubmitted={handleSubmitted} />
+      )}
     </div>
   );
 }

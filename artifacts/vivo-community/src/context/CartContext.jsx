@@ -71,7 +71,7 @@ export function CartProvider({ memberId, children }) {
     setPeek(null);
   }, []);
 
-  // line: { key (size-level sku), sku, name, color, size, qty, price, image, maxStock }
+  // line: { key (size-level sku), sku, name, color, style_number, size, qty, price, image, maxStock }
   const add = useCallback((line) => {
     const cap = Math.max(1, Number(line.maxStock) || 99);
     setItems((prev) => {

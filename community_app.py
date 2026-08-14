@@ -54,8 +54,8 @@ DEMO_CODE = "123456"
 # it names a published version; anything else (missing, forged, unknown)
 # records the current version instead — arbitrary strings can never be stored.
 # Lockstep: artifacts/vivo-community/src/components/community/legalData.js
-COMMUNITY_TERMS_VERSION = "0.9.6"
-COMMUNITY_TERMS_PUBLISHED = {"0.9", "0.9.1", "0.9.2", "0.9.3", "0.9.4", "0.9.5", "0.9.6"}
+COMMUNITY_TERMS_VERSION = "0.9.7"
+COMMUNITY_TERMS_PUBLISHED = {"0.9", "0.9.1", "0.9.2", "0.9.3", "0.9.4", "0.9.5", "0.9.6", "0.9.7"}
 OTP_TTL_SEC = 10 * 60          # code valid 10 minutes
 OTP_MAX_ATTEMPTS = 5
 OTP_RESEND_GAP_SEC = 30
@@ -71,13 +71,84 @@ TIER_LADDER = [("Tsavorite", 0), ("Ruby", 500), ("Tanzanite", 1000)]
 # ---------- Virtual Try-On ----------
 # Weekly generation allowance per Johari tier (resets Monday, EAT). The cap
 # is the cost control: every real generation is a billed Gemini image call.
-TRYON_WEEK_LIMITS = {"Tsavorite": 3, "Ruby": 5, "Tanzanite": 10}
+# ── ADMIN NOTE: this dict is the ONE switch for the try-on business model ──
+# Value = try-ons per week; None = unlimited; 0 = not included on that tier
+# (members there see an upgrade nudge instead of a counter). The API serves
+# this ladder live to the app (allowance endpoint → Rewards perk card, try-on
+# counters, upsell copy), so changing the split — e.g. Tanzanite-exclusive:
+# {"Tsavorite": 0, "Ruby": 0, "Tanzanite": None} — needs no other code change
+# and no frontend rebuild.
+TRYON_WEEK_LIMITS = {"Tsavorite": 2, "Ruby": 5, "Tanzanite": None}
 TRYON_PHOTO_CAP = 12                 # stored photos per member
 TRYON_MODEL = "gemini-2.5-flash-image"
 TRYON_PENDING_STALE_SEC = 300        # pending older than this self-heals to failed
 # Force demo composites even when the AI integration is configured (testing).
 TRYON_FORCE_DEMO = os.environ.get("TRYON_DEMO_MODE", "").strip() == "1"
 QUIZ_BONUS_PTS = 50            # one-time Style Quiz completion bonus (instant, no moderation)
+SURVEY_BONUS_PTS = 30          # per-wave customer survey bonus (instant, once per wave)
+
+# ---- Customer survey ("Help us dress you better") --------------------------
+# Waves are DB rows (community_survey_waves): each wave carries its own
+# question schema, so a future wave can change content with NO frontend
+# rebuild. The boot seed keeps wave 1 in sync with these constants so
+# additive mid-wave edits (like appending an optional question) reach every
+# environment on boot. Never rename/remove ids or options mid-wave — that
+# orphans collected answers; breaking changes = a NEW wave row (close the
+# old one).
+# Home-card "Maybe later": first dismiss hides the card, it re-surfaces once
+# after SURVEY_RESURFACE_DAYS, a second dismiss retires it for the wave
+# (the Rewards mission and Profile entry points always remain).
+SURVEY_RESURFACE_DAYS = 3
+SURVEY_WAVE1_KEY = "2026-w1"
+SURVEY_WAVE1_TITLE = "Help us dress you better"
+SURVEY_WAVE1_QUESTIONS = [
+    {"id": "tenure", "kind": "single",
+     "title": "How long have you been shopping with Vivo?",
+     "options": ["Under a year", "1–3 years", "3–5 years", "5+ years",
+                 "This is my first time browsing"]},
+    {"id": "channel", "kind": "single",
+     "title": "Where do you usually shop with us?",
+     "options": ["In store", "Online", "Both"],
+     "followup": {"id": "store", "title": "Which store do you visit most?",
+                  "when": ["In store", "Both"],
+                  "options": ["Galleria", "The Junction", "Moi Avenue",
+                              "Another Kenya store", "Uganda", "Rwanda"]}},
+    {"id": "occasions", "kind": "multi",
+     "title": "What do you mostly buy Vivo for?",
+     "hint": "Pick all that apply.",
+     "options": ["Work", "Everyday", "Events & celebrations",
+                 "Church & Sunday best", "Gifts"]},
+    {"id": "fit", "kind": "single",
+     "title": "How do Vivo pieces usually fit you?",
+     "options": ["Perfectly", "Usually right, sometimes off", "Hit or miss",
+                 "I often have trouble with fit"]},
+    {"id": "loves", "kind": "multi", "max": 2,
+     "title": "What keeps you coming back?",
+     "hint": "Pick up to two.",
+     "options": ["Fit", "Quality", "Designs & prints", "Price", "Service",
+                 "Made in Africa", "Size range"]},
+    {"id": "improve", "kind": "multi", "max": 2,
+     "title": "Where should we improve first?",
+     "hint": "Pick up to two.",
+     "options": ["Fit", "Quality", "Designs & prints", "Price", "Service",
+                 "Stock availability", "Sizing consistency", "Delivery"]},
+    {"id": "nps", "kind": "nps",
+     "title": "How likely are you to recommend Vivo to a friend?",
+     "low": "Not at all likely", "high": "Extremely likely"},
+    {"id": "nps_why", "kind": "text", "optional": True,
+     "title": "What's the main reason for your score?",
+     "placeholder": "Tell us as much or as little as you like…"},
+    {"id": "services", "kind": "multi",
+     "title": "Which of these would you use?",
+     "hint": "Pick any that catch your eye.",
+     "options": ["Tailoring & alterations", "Personal styling",
+                 "Personalised embroidery", "Members' events",
+                 "Virtual try-on"]},
+    {"id": "anything_else", "kind": "text", "optional": True,
+     "title": "Anything else you'd like to share or ask us?",
+     "hint": "Totally optional — and we read every single one.",
+     "placeholder": "A thought, a wish, a question — the floor is yours…"},
+]
 
 # ---- Personalised embroidered tank reward ---------------------------------
 # The first real, fulfillable redemption: Vivo's ribbed Chela tank finished
@@ -87,6 +158,40 @@ QUIZ_BONUS_PTS = 50            # one-time Style Quiz completion bonus (instant, 
 # balance = lifetime earn − non-cancelled redemptions.
 EMB_TANK_STYLE = "Vivo Chela Tank Top in Stretch Rib"
 EMB_TANK_POINTS = 1600
+ZETU_SHOOT_POINTS = 3000           # top of the ladder: photoshoot at Zetu Studios
+
+# "Shining This Week" — editorial celebration content. Warm reasons, zero
+# numbers, zero ranks; rotated weekly (jewel) and shuffled per visit
+# (celebrated, client-side). Fictional launch voices, same as the feed seeds.
+_CELEBRATION_JEWELS = [
+    {"username": "nyambura.k", "tier": "Tanzanite", "show_tier": True,
+     "quote": "Finding a community that celebrates African curves has "
+              "completely changed how I shop. Vivo is more than fashion, "
+              "it's family."},
+    {"username": "halima.s", "tier": None, "show_tier": False,
+     "quote": "I used to buy clothes to hide. These days I dress to "
+              "arrive — and this community did that."},
+    {"username": "asha.k", "tier": "Tanzanite", "show_tier": True,
+     "quote": "Every woman here taught me something about wearing my own "
+              "story proudly."},
+]
+_CELEBRATED = [
+    {"username": "asha.k",
+     "reason": "for welcoming every new member in the comments like an old friend"},
+    {"username": "halima.s",
+     "reason": "for fit notes so honest half of Nairobi shops on her word"},
+    {"username": "makena_w",
+     "reason": "for styling advice that always starts with 'you already look lovely'"},
+    {"username": "njoki.g",
+     "reason": "for turning every haul into a masterclass in mixing prints"},
+    {"username": "wanjiku.m",
+     "reason": "for cheering loudest on other women's wins, every single week"},
+    {"username": "zawadi.n",
+     "reason": "for asking the brave questions everyone else was quietly wondering"},
+]
+CHALLENGE_WINNER_BONUS_PTS = 200   # hybrid model: team picks from the shortlist
+POST_PHOTO_PTS = 50                # community look with a photo, on publication
+POST_VIDEO_PTS = 100               # community look with a video, on publication
 EMB_TANK_MIN_SIZES = 3          # a colourway needs this many stocked sizes to be offered
 EMB_TANK_MAX_DESIGN_BYTES = 3 * 1024 * 1024   # decoded upload cap
 EMB_TANK_MONOGRAM_STYLES = [
@@ -365,6 +470,57 @@ def _compute_badges():
     out = {k: "selling_fast" for k in taken}
     out.update({(r["style_name"], r["color"]): "best_seller" for r in best})
     return out
+
+
+# ---- Shop filter canon -------------------------------------------------
+# Colour facet buckets: customer-facing colour families matched by keyword
+# against all_products_clean.color_print (which mixes colours and print
+# names). A colourway may fall in several families; filters OR the selected
+# families' keywords. Keep keywords lowercase substrings.
+COMMUNITY_COLOR_BUCKETS = {
+    "Black": ["black"],
+    "White & Cream": ["white", "ivory", "cream", "ecru"],
+    "Blue": ["blue", "navy", "teal", "denim", "cobalt", "indigo",
+             "turquoise", "sky", "aqua", "petrol"],
+    "Green": ["green", "olive", "sage", "emerald", "mint", "lime",
+              "forest", "jade"],
+    "Red": ["red", "maroon", "burgundy", "wine", "crimson", "scarlet",
+            "cherry", "berry"],
+    "Pink": ["pink", "blush", "rose", "fuchsia", "magenta", "coral"],
+    "Orange": ["orange", "rust", "terracotta", "tangerine", "apricot",
+               "peach"],
+    "Yellow": ["yellow", "mustard", "gold", "ochre", "lemon"],
+    "Purple": ["purple", "lilac", "lavender", "plum", "violet", "mauve",
+               "aubergine", "grape"],
+    "Brown": ["brown", "chocolate", "choco", "coffee", "mocha", "tan",
+              "camel", "caramel", "toffee", "cognac"],
+    "Neutrals": ["beige", "taupe", "nude", "sand", "stone", "natural",
+                 "oat", "khaki", "cappuccino", "mushroom"],
+    "Grey": ["grey", "gray", "charcoal", "silver", "slate"],
+}
+
+# Preset KES bands (id, low, high-exclusive, label). Multi-select ORs bands.
+COMMUNITY_PRICE_BANDS = [
+    ("u1000", 0, 1000, "Under KSh 1,000"),
+    ("1k_3k", 1000, 3000, "KSh 1,000 \u2013 3,000"),
+    ("3k_6k", 3000, 6000, "KSh 3,000 \u2013 6,000"),
+    ("6k_up", 6000, None, "KSh 6,000+"),
+]
+_PRICE_BAND_MAP = {b[0]: (b[1], b[2]) for b in COMMUNITY_PRICE_BANDS}
+
+COMMUNITY_SIZE_ORDER = ["XXS", "XS", "XS/S", "S", "S/M", "M", "M/L", "L",
+                        "L/1X", "1X", "1X/2X", "2X", "2X/3X", "3X", "3X/4X",
+                        "4X", "5X", "F"]
+
+# Style-Quiz size_range -> concrete size labels (split sizes overlap ranges).
+QUIZ_SIZE_RANGE_SIZES = {
+    "xs_s": ["XXS", "XS", "XS/S", "S", "S/M"],
+    "m_l": ["S/M", "M", "M/L", "L", "L/1X"],
+    "xl_2x": ["L/1X", "1X", "1X/2X", "2X", "2X/3X"],
+    "3x_up": ["2X/3X", "3X", "3X/4X", "4X", "5X"],
+}
+
+COMMUNITY_SHOP_SORTS = ("new", "price_asc", "price_desc", "best")
 
 
 def _refresh_badges():
@@ -718,12 +874,606 @@ def _ensure_tables():
             ON community_data_requests (member_id, created_at DESC);
         CREATE INDEX IF NOT EXISTS community_contact_messages_member_idx
             ON community_contact_messages (member_id, created_at DESC);
+        CREATE TABLE IF NOT EXISTS community_survey_waves (
+            id SERIAL PRIMARY KEY,
+            wave_key TEXT NOT NULL UNIQUE,
+            title TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active',
+            questions JSONB NOT NULL DEFAULT '[]'::jsonb,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            closed_at TIMESTAMPTZ
+        );
+        CREATE TABLE IF NOT EXISTS community_survey_responses (
+            id SERIAL PRIMARY KEY,
+            wave_id INT NOT NULL REFERENCES community_survey_waves(id),
+            member_id INT NOT NULL REFERENCES community_members(id) ON DELETE CASCADE,
+            answers JSONB NOT NULL DEFAULT '{}'::jsonb,
+            nps INT,
+            tier_at TEXT,
+            member_since TIMESTAMPTZ,
+            duration_secs INT,
+            completed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            UNIQUE (wave_id, member_id)
+        );
+        CREATE INDEX IF NOT EXISTS community_survey_responses_wave_idx
+            ON community_survey_responses (wave_id, completed_at DESC);
+        CREATE TABLE IF NOT EXISTS community_survey_dismissals (
+            wave_id INT NOT NULL REFERENCES community_survey_waves(id),
+            member_id INT NOT NULL REFERENCES community_members(id) ON DELETE CASCADE,
+            count INT NOT NULL DEFAULT 1,
+            last_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            PRIMARY KEY (wave_id, member_id)
+        );
+        -- Interactive feed: DB-backed posts (seeded from the launch content
+        -- set), real per-member likes and comments, member reports feeding
+        -- the staff review queue in the CRM app.
+        CREATE TABLE IF NOT EXISTS community_feed_posts (
+            id SERIAL PRIMARY KEY,
+            mock_key TEXT UNIQUE,
+            author_member_id INT REFERENCES community_members(id) ON DELETE SET NULL,
+            author_username TEXT NOT NULL,
+            author_initials TEXT NOT NULL DEFAULT 'V',
+            author_tier TEXT,
+            author_show_tier BOOLEAN NOT NULL DEFAULT FALSE,
+            caption TEXT NOT NULL DEFAULT '',
+            variant TEXT NOT NULL DEFAULT 'standard',
+            visual TEXT NOT NULL DEFAULT 'light',
+            tagged JSONB NOT NULL DEFAULT '[]'::jsonb,
+            like_seed INT NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'approved',
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+        CREATE INDEX IF NOT EXISTS community_feed_posts_status_idx
+            ON community_feed_posts (status, created_at DESC);
+        CREATE TABLE IF NOT EXISTS community_post_likes (
+            post_id INT NOT NULL REFERENCES community_feed_posts(id) ON DELETE CASCADE,
+            member_id INT NOT NULL REFERENCES community_members(id) ON DELETE CASCADE,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            PRIMARY KEY (post_id, member_id)
+        );
+        CREATE TABLE IF NOT EXISTS community_post_comments (
+            id SERIAL PRIMARY KEY,
+            post_id INT NOT NULL REFERENCES community_feed_posts(id) ON DELETE CASCADE,
+            member_id INT NOT NULL REFERENCES community_members(id) ON DELETE CASCADE,
+            body TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'visible',
+            removed_by TEXT,
+            removed_at TIMESTAMPTZ,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+        CREATE INDEX IF NOT EXISTS community_post_comments_post_idx
+            ON community_post_comments (post_id, status, created_at);
+        CREATE TABLE IF NOT EXISTS community_comment_likes (
+            comment_id INT NOT NULL REFERENCES community_post_comments(id) ON DELETE CASCADE,
+            member_id INT NOT NULL REFERENCES community_members(id) ON DELETE CASCADE,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            PRIMARY KEY (comment_id, member_id)
+        );
+        CREATE TABLE IF NOT EXISTS community_comment_reports (
+            id SERIAL PRIMARY KEY,
+            comment_id INT NOT NULL REFERENCES community_post_comments(id) ON DELETE CASCADE,
+            reporter_member_id INT NOT NULL REFERENCES community_members(id) ON DELETE CASCADE,
+            reason TEXT,
+            status TEXT NOT NULL DEFAULT 'open',
+            resolved_by TEXT,
+            resolved_at TIMESTAMPTZ,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            UNIQUE (comment_id, reporter_member_id)
+        );
+        -- Interactive challenges. Entries ARE community_feed_posts rows
+        -- (challenge_id set) so likes, comments, reports and the CRM
+        -- moderation queue reuse the feed machinery unchanged. Photos sit
+        -- in a sidecar table to keep BYTEA out of feed row scans. The
+        -- main feed excludes entry rows (challenge_id IS NULL filter).
+        CREATE TABLE IF NOT EXISTS community_challenges (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            hashtag TEXT,
+            description TEXT NOT NULL DEFAULT '',
+            rules TEXT NOT NULL DEFAULT '',
+            caption_prompt TEXT,
+            points INT NOT NULL DEFAULT 50,
+            prize TEXT,
+            deadline TIMESTAMPTZ NOT NULL,
+            voting_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+            is_flagship BOOLEAN NOT NULL DEFAULT FALSE,
+            entry_seed INT NOT NULL DEFAULT 0,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+        ALTER TABLE community_feed_posts
+            ADD COLUMN IF NOT EXISTS challenge_id TEXT
+                REFERENCES community_challenges(id) ON DELETE SET NULL,
+            ADD COLUMN IF NOT EXISTS entry_status TEXT,
+            ADD COLUMN IF NOT EXISTS marketing_ok BOOLEAN,
+            ADD COLUMN IF NOT EXISTS winner_position SMALLINT,
+            ADD COLUMN IF NOT EXISTS published_at TIMESTAMPTZ,
+            ADD COLUMN IF NOT EXISTS post_type TEXT NOT NULL DEFAULT 'look',
+            ADD COLUMN IF NOT EXISTS fit_note JSONB,
+            ADD COLUMN IF NOT EXISTS image_url TEXT,
+            ADD COLUMN IF NOT EXISTS media_kind TEXT;
+        ALTER TABLE community_challenges
+            ADD COLUMN IF NOT EXISTS deciding TEXT NOT NULL
+                DEFAULT 'community_shortlist';
+        CREATE INDEX IF NOT EXISTS community_feed_posts_challenge_idx
+            ON community_feed_posts (challenge_id, entry_status)
+            WHERE challenge_id IS NOT NULL;
+        -- one ACTIVE (pending or published) entry per member per challenge;
+        -- a rejected entry frees the slot so she can try again
+        CREATE UNIQUE INDEX IF NOT EXISTS community_one_active_entry_idx
+            ON community_feed_posts (challenge_id, author_member_id)
+            WHERE challenge_id IS NOT NULL AND author_member_id IS NOT NULL
+              AND entry_status IN ('pending', 'published');
+        CREATE TABLE IF NOT EXISTS community_entry_photos (
+            post_id INT PRIMARY KEY
+                REFERENCES community_feed_posts(id) ON DELETE CASCADE,
+            image BYTEA NOT NULL,
+            mime TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+        CREATE TABLE IF NOT EXISTS community_challenge_votes (
+            challenge_id TEXT NOT NULL
+                REFERENCES community_challenges(id) ON DELETE CASCADE,
+            member_id INT NOT NULL
+                REFERENCES community_members(id) ON DELETE CASCADE,
+            post_id INT NOT NULL
+                REFERENCES community_feed_posts(id) ON DELETE CASCADE,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            PRIMARY KEY (challenge_id, member_id)
+        );
         """
         with _db() as conn:
             with conn.cursor() as cur:
                 cur.execute(ddl)
+                # Survey wave 1 seed — idempotent, and it keeps wave 1's
+                # title/questions in sync with the constants (additive
+                # mid-wave edits only; future waves are new rows).
+                cur.execute(
+                    """INSERT INTO community_survey_waves (wave_key, title, questions)
+                       VALUES (%s, %s, %s::jsonb)
+                       ON CONFLICT (wave_key) DO UPDATE
+                           SET title = EXCLUDED.title,
+                               questions = EXCLUDED.questions
+                         WHERE community_survey_waves.title IS DISTINCT FROM EXCLUDED.title
+                            OR community_survey_waves.questions IS DISTINCT FROM EXCLUDED.questions""",
+                    (SURVEY_WAVE1_KEY, SURVEY_WAVE1_TITLE,
+                     json.dumps(SURVEY_WAVE1_QUESTIONS)))
+                _seed_feed_posts(cur)
+                _seed_challenges(cur)
             conn.commit()
             _tables_ready = True
+
+
+# ---------------------------------------------------------------------------
+# Interactive feed seed — the launch content set (previously frontend mock
+# data). Inserts once when community_feed_posts is empty; shoppable tags come
+# from the live catalogue, and posts seeded before the catalogue was loaded
+# (fresh production boots) get their tags healed on a later boot.
+_SEED_MEMBER_ROWS = [
+    # (phone, username, full_name) — real member rows so seeded comments
+    # have genuine authors (comment reads join community_members). Reserved
+    # 2547000001xx range; excluded from "new jewels" in celebrations.
+    ("254700000101", "asha.k", "Asha Kamau"),
+    ("254700000102", "wanjiku.m", "Wanjiku Mwangi"),
+    ("254700000103", "achieng.o", "Achieng Odhiambo"),
+    ("254700000104", "zawadi.n", "Zawadi Njeri"),
+    ("254700000105", "makena_w", "Makena Wambui"),
+    ("254700000106", "nyambura.k", "Nyambura Kariuki"),
+    ("254700000107", "halima.s", "Halima Said"),
+    ("254700000108", "njoki.g", "Njoki Gathoni"),
+]
+
+_FEED_SEED_POSTS = [
+    # v2 launch content: the feed teaches its own purpose — outfit moments
+    # with occasions, #MyVivoStory posts, style questions with genuine
+    # answers, and hauls. Tags + product imagery resolve from the live
+    # catalogue; a few authors show their tier gem, most don't (privacy
+    # model in the samples).
+    dict(key="fp2_kimono", u="asha.k", ini="AK", tier="Tanzanite", show=True,
+         type="look", variant="standard", visual="light", likes=134, hrs=3,
+         tags=1, fit=None,
+         cap="Wore the Safari Print Kimono to my daughter's graduation — "
+             "proudest day of my life, best-dressed mum on the lawn 😄 "
+             "#MyVivoStory",
+         comments=[("wanjiku.m", "Congratulations mama! You must have "
+                                 "glowed 🧡"),
+                   ("njoki.g", "The kimono was MADE for days like this")]),
+    dict(key="fp2_wrap3", u="wanjiku.m", ini="WM", tier="Ruby", show=False,
+         type="look", variant="standard", visual="dark", likes=98, hrs=7,
+         tags=1, fit=None,
+         cap="Three weddings this year, one Vivo wrap dress. Different "
+             "shoes, different lipstick, zero repeats noticed — and "
+             "honestly I'd wear it to a fourth. #MyVivoStory",
+         comments=[]),
+    dict(key="fp2_q_anga", u="halima.s", ini="HS", tier="Tsavorite",
+         show=False, type="question", variant="quote", visual="light",
+         likes=21, hrs=10, tags=1, fit=None,
+         cap="Style question: how would you style the Anga Top for a work "
+             "dinner? First dinner with the new team and I want "
+             "easy-elegant, not trying-too-hard.",
+         comments=[("asha.k", "High-waisted wide-leg trousers, one gold "
+                              "cuff, done. You'll look like the "
+                              "decision-maker you are"),
+                   ("makena_w", "I did mine with a midi pencil skirt and "
+                                "flats — elegant and you can still eat 😄")]),
+    dict(key="fp2_q_maxi", u="zawadi.n", ini="ZN", tier="Tsavorite",
+         show=False, type="question", variant="quote", visual="light",
+         likes=33, hrs=14, tags=1, fit=None,
+         cap="Fit question, honest answers please: I'm between sizes in "
+             "the Amara Maxi. Size up for the flow or stay true for the "
+             "shape?",
+         comments=[("makena_w", "I sized up and belted it — best of both, "
+                                "it flows when you walk"),
+                   ("achieng.o", "True to size for me; the fabric relaxes "
+                                 "about half a size by evening"),
+                   ("njoki.g", "The store team let me try both — go with "
+                               "your shoulders, the rest follows")]),
+    dict(key="fp2_haul_moi", u="makena_w", ini="MW", tier="Tanzanite",
+         show=True, type="haul", variant="landscape", visual="light",
+         likes=76, hrs=20, tags=2, fit=None,
+         cap="Little haul from the Moi Avenue store 😄 the ladies there "
+             "deserve medals for their patience. Three prints, one denim, "
+             "zero regrets.",
+         comments=[("zawadi.n", "The Moi Avenue team is a national "
+                                "treasure, agreed")]),
+    dict(key="fp2_boardroom", u="achieng.o", ini="AO", tier="Ruby",
+         show=True, type="look", variant="standard", visual="light",
+         likes=145, hrs=26, tags=1, fit=None,
+         cap="Kitenge blazer, boardroom Monday. If the quarterly review "
+             "must happen, it will happen in print.",
+         comments=[]),
+    dict(key="fp2_sunday", u="njoki.g", ini="NG", tier="Tsavorite",
+         show=False, type="look", variant="square", visual="light",
+         likes=54, hrs=31, tags=1, fit=None,
+         cap="Sunday brunch co-ord. Comfortable enough for seconds, chic "
+             "enough for the group photo.",
+         comments=[]),
+    dict(key="fp2_q_shoes", u="wanjiku.m", ini="WM", tier="Ruby",
+         show=False, type="question", variant="quote", visual="dark",
+         likes=18, hrs=38, tags=0, fit=None,
+         cap="Which shoes with a bold print midi — nude flats or a colour "
+             "picked from the print? Wedding-guest duty on Saturday.",
+         comments=[("halima.s", "Pick the quietest colour IN the print and "
+                                "match it — always works")]),
+    dict(key="fp2_haul_gift", u="nyambura.k", ini="NK", tier="Tanzanite",
+         show=True, type="haul", variant="landscape", visual="dark",
+         likes=112, hrs=48, tags=2, fit=None,
+         cap="Gift-shopping haul: one piece for mum, one for my sister, "
+             "and fine, two for me. Balance.",
+         comments=[]),
+    dict(key="fp2_travel", u="halima.s", ini="HS", tier="Tsavorite",
+         show=False, type="look", variant="standard", visual="light",
+         likes=87, hrs=55, tags=1, fit={"fit": "true", "size": "L"},
+         cap="Nairobi to Kigali in the Amara Maxi — airport, meetings, "
+             "dinner, same dress. Runs true to size and doesn't crease, "
+             "which is frankly showing off.",
+         comments=[]),
+    dict(key="fp2_friday", u="zawadi.n", ini="ZN", tier="Tsavorite",
+         show=False, type="look", variant="square", visual="light",
+         likes=41, hrs=70, tags=1, fit=None,
+         cap="Casual Friday but make it Vivo. The co-ord does all the "
+             "work, I just answer emails.",
+         comments=[]),
+    dict(key="fp2_q_care", u="njoki.g", ini="NG", tier="Tsavorite",
+         show=False, type="question", variant="quote", visual="light",
+         likes=26, hrs=78, tags=0, fit=None,
+         cap="How do you all care for your wax print pieces? First wash "
+             "coming up and I'm nervous to lose the crispness.",
+         comments=[("asha.k", "Cold hand wash, inside out, shade dry — "
+                              "mine still look brand new after two years")]),
+    dict(key="fp2_date", u="nyambura.k", ini="NK", tier="Tanzanite",
+         show=True, type="look", variant="standard", visual="dark",
+         likes=203, hrs=96, tags=1, fit=None,
+         cap="Anniversary dinner in the Lamu Sunset Gown. Fifteen years "
+             "and he still reached for my chair first 🧡",
+         comments=[]),
+    dict(key="fp2_story_first", u="asha.k", ini="AK", tier="Tanzanite",
+         show=False, type="look", variant="quote", visual="light",
+         likes=92, hrs=120, tags=0, fit=None,
+         cap="My first Vivo piece was a graduation gift to myself in 2019. "
+             "Six years later half my wardrobe is Vivo and every piece has "
+             "a story. #MyVivoStory",
+         comments=[]),
+]
+
+
+def _heal_seed_winners(cur):
+    """Restore seeded demo winner ribbons when a podium slot is vacant.
+
+    Fill-only: an existing (e.g. staff-picked) winner holds the slot; the
+    heal never displaces a winner row, it only refills empty positions
+    left by crashes or manual clearing."""
+    for e in _ENTRY_SEEDS:
+        key, wpos = e[0], e[-1]
+        if not wpos:
+            continue
+        cur.execute(
+            """UPDATE community_feed_posts fp SET winner_position = %s
+                WHERE fp.mock_key = %s AND fp.winner_position IS NULL
+                  AND NOT EXISTS (SELECT 1 FROM community_feed_posts x
+                                   WHERE x.challenge_id = fp.challenge_id
+                                     AND x.winner_position = %s)""",
+            (wpos, key, wpos))
+
+
+def _seed_feed_posts(cur):
+    """Idempotent v2 launch-content seed. Retires the v1 'postN' rows,
+    creates the seed-member cast (for genuine comment authorship), inserts
+    the rich post set with catalogue tags + product imagery, and seeds the
+    conversations. Runs inside _ensure_tables' transaction on a plain tuple
+    cursor — catalogue presence is probed via to_regclass, never try/except."""
+    from urllib.parse import quote
+    keys = [p["key"] for p in _FEED_SEED_POSTS]
+    cur.execute(
+        "SELECT COUNT(*) FROM community_feed_posts WHERE mock_key = ANY(%s)",
+        (keys,))
+    have = int(cur.fetchone()[0] or 0)
+    tag_keys = [p["key"] for p in _FEED_SEED_POSTS if p["tags"] > 0]
+    if have == len(keys):
+        cur.execute(
+            """SELECT COUNT(*) FROM community_feed_posts
+                WHERE mock_key = ANY(%s)
+                  AND (tagged = '[]'::jsonb
+                       OR (tagged <> '[]'::jsonb AND image_url IS NULL))""",
+            (tag_keys,))
+        _need = int(cur.fetchone()[0] or 0)
+        _heal_seed_winners(cur)
+        if not _need:
+            return  # fully seeded, tagged and imaged — nothing to do
+
+    # v1 rows retire (fictional-author posts only — member content is never
+    # touched; real members were never able to write mock_key rows).
+    cur.execute("""DELETE FROM community_feed_posts
+                    WHERE mock_key LIKE 'post%'
+                      AND author_member_id IS NULL
+                      AND challenge_id IS NULL""")
+
+    # Seed-member cast — guarded insert (phone OR username may already
+    # exist; a real member always wins the name).
+    for phone, uname, full in _SEED_MEMBER_ROWS:
+        cur.execute(
+            """INSERT INTO community_members
+                   (phone, full_name, email, consent_at, username,
+                    consent_terms_version)
+               SELECT %s, %s, %s, now(), %s, 'launch-seed'
+                WHERE NOT EXISTS (SELECT 1 FROM community_members
+                                   WHERE phone = %s
+                                      OR LOWER(username) = LOWER(%s))""",
+            (phone, full, f"{uname}@members.vivo.example", uname,
+             phone, uname))
+
+    # Live-catalogue tags + product imagery (image column probed so the
+    # seed works whatever the products table exposes).
+    tags = []
+    cur.execute("SELECT to_regclass('public.all_products_clean') IS NOT NULL"
+                " AND to_regclass('public.all_inventory') IS NOT NULL"
+                " AND to_regclass('public.product_image_map') IS NOT NULL"
+                " AND to_regclass('public.product_images') IS NOT NULL")
+    if cur.fetchone()[0]:
+        cur.execute("""SELECT sku, style_name, price FROM (
+                           SELECT DISTINCT ON (p.style_name) p.sku,
+                                  p.style_name, p.price::float AS price
+                           FROM all_products_clean p
+                           JOIN (SELECT sku, SUM(COALESCE(available,0)) AS soh
+                                   FROM all_inventory GROUP BY sku) i
+                             ON i.sku = p.sku AND i.soh > 0
+                           JOIN product_image_map pim ON pim.sku = p.sku
+                           JOIN product_images pi
+                             ON pi.tmpl_id = pim.tmpl_id
+                                AND COALESCE(pi.image_512, '') <> ''
+                           WHERE p.active IS TRUE
+                             AND COALESCE(p.price::float, 0) > 0
+                             AND COALESCE(p.style_name, '') <> ''
+                           ORDER BY p.style_name, p.sku
+                       ) t ORDER BY random() LIMIT 30""")
+        tags = [{"sku": r[0], "name": r[1], "price": float(r[2] or 0),
+                 "img": "/api/community/product-image/"
+                        + quote(str(r[0]), safe="")}
+                for r in cur.fetchall()]
+
+    ti = 0
+
+    def _take(n):
+        nonlocal ti
+        if not tags or n <= 0:
+            return []
+        out = [tags[(ti + k) % len(tags)] for k in range(n)]
+        ti += n
+        return out
+
+    for p in _FEED_SEED_POSTS:
+        picked = _take(p["tags"])
+        clean = [{k: v for k, v in t.items() if k != "img"} for t in picked]
+        img_url = next((t["img"] for t in picked if t.get("img")), None)
+        cur.execute(
+            """INSERT INTO community_feed_posts
+                   (mock_key, author_username, author_initials, author_tier,
+                    author_show_tier, caption, variant, visual, tagged,
+                    like_seed, created_at, post_type, fit_note, image_url)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s,
+                       now() - (%s || ' hours')::interval, %s, %s::jsonb, %s)
+               ON CONFLICT (mock_key) DO NOTHING""",
+            (p["key"], p["u"], p["ini"], p["tier"], p["show"], p["cap"],
+             p["variant"], p["visual"], json.dumps(clean), p["likes"],
+             p["hrs"], p["type"],
+             json.dumps(p["fit"]) if p.get("fit") else None, img_url))
+
+    # Tag/image self-heal — rows seeded on a fresh boot before the
+    # catalogue existed pick their products up on a later boot.
+    if tags:
+        for p in _FEED_SEED_POSTS:
+            if p["tags"] <= 0:
+                continue
+            picked = _take(p["tags"])
+            clean = [{k: v for k, v in t.items() if k != "img"}
+                     for t in picked]
+            img_url = next((t["img"] for t in picked if t.get("img")), None)
+            cur.execute(
+                """UPDATE community_feed_posts
+                      SET tagged = %s::jsonb,
+                          image_url = COALESCE(image_url, %s)
+                    WHERE mock_key = %s AND tagged = '[]'::jsonb""",
+                (json.dumps(clean), img_url, p["key"]))
+        # image-only heal: rows tagged by an earlier seed version pick up
+        # their first tag's product image (sku URL-encoded — slash sizes).
+        cur.execute(
+            """SELECT mock_key, tagged->0->>'sku'
+                 FROM community_feed_posts
+                WHERE mock_key = ANY(%s) AND image_url IS NULL
+                  AND tagged <> '[]'::jsonb""", (tag_keys,))
+        for mk_, sku_ in cur.fetchall():
+            if sku_:
+                cur.execute(
+                    """UPDATE community_feed_posts SET image_url = %s
+                        WHERE mock_key = %s""",
+                    ("/api/community/product-image/"
+                     + quote(str(sku_), safe=""), mk_))
+
+    # Seeded conversation — idempotent by (post, author, body).
+    for p in _FEED_SEED_POSTS:
+        for cu, body in p.get("comments") or ():
+            cur.execute(
+                """INSERT INTO community_post_comments
+                       (post_id, member_id, body)
+                   SELECT fp.id, m.id, %s
+                     FROM community_feed_posts fp, community_members m
+                    WHERE fp.mock_key = %s AND LOWER(m.username) = LOWER(%s)
+                      AND NOT EXISTS (
+                          SELECT 1 FROM community_post_comments c
+                           WHERE c.post_id = fp.id AND c.member_id = m.id
+                             AND c.body = %s)""",
+                (body, p["key"], cu, body))
+
+
+# Challenge catalogue + launch entries. Challenge rows are inserted ONCE
+# (ON CONFLICT DO NOTHING) so deadlines are fixed at first boot and age
+# naturally into the closed state. Seeded entries are showcase content by
+# fictional authors (same approach as the feed seeds) so every gallery is
+# browsable on day one; c3 closed three weeks ago with decided winners —
+# the same three names the Past Winners section always showed.
+_CHALLENGE_SEEDS = [
+    # id, title, hashtag, description, rules, caption_prompt, points,
+    # prize, days_from_now, voting, flagship, entry_seed
+    ("c1", "#MyVivoStory", "#MyVivoStory",
+     "Share why your Vivo piece makes you feel good. Earn 50 points when "
+     "your story is published — plus a chance to be This Week's Jewel.",
+     "Post a photo of you in your favourite Vivo piece and tell us the "
+     "story behind it. One entry per member — our team reviews every "
+     "entry before it goes live, and your points land the moment it's "
+     "published.",
+     "Tell us why this piece makes you feel good", 50,
+     "This Week's Jewel feature", 4, False, True, 124),
+    ("c2", "Style It 3 Ways", "#StyleIt3Ways",
+     "Show us how you style one piece for work, weekend, and evening. The "
+     "most versatile looks win — and you'll earn 75 points when your entry "
+     "goes live.",
+     "Pick one piece and photograph it styled three different ways. "
+     "Community voting picks the crowd favourite; one vote per member.",
+     "Which piece did you style — and how?", 75,
+     "150pts style bonus + a feature in the app", 2, True, False, 42),
+    ("c3", "Holiday Lights Edit", "#HolidayLights",
+     "December's challenge: your festive Vivo look, from office parties to "
+     "family lunches. Community votes crowned three winners.",
+     "Closed — winners announced. Thank you to everyone who entered!",
+     "Where did this festive look take you?", 50,
+     "Featured looks + 150pts bonus", -21, True, False, 31),
+]
+
+_ENTRY_SEEDS = [
+    # mock_key, challenge, username, initials, tier, show, caption,
+    # variant, visual, like_seed, days_ago, winner_position
+    ("entry_c1_1", "c1", "amina.k", "AK", "Ruby", False,
+     "Three job interviews and a promotion later, this blazer is basically "
+     "my lucky charm. It sits like it was cut for me. #MyVivoStory",
+     "standard", "light", 31, 3, None),
+    ("entry_c1_2", "c1", "njeri_styles", "NS", "Tsavorite", False,
+     "Bought this dress the week I moved to Nairobi. Every time I wear it "
+     "I remember how brave that felt. #MyVivoStory",
+     "square", "dark", 24, 2, None),
+    ("entry_c1_3", "c1", "zawadi.m", "ZM", "Tanzanite", True,
+     "My mum said this print reminded her of her own mother's kitenge. Now "
+     "it's the piece I wear when I need to feel held. #MyVivoStory",
+     "standard", "light", 42, 2, None),
+    ("entry_c1_4", "c1", "kui_wears", "KW", "Ruby", False,
+     "First thing I ever saved up for after my first salary. Still my "
+     "favourite thing I own. #MyVivoStory",
+     "landscape", "dark", 18, 1, None),
+    ("entry_c2_1", "c2", "wanjiku.m", "WM", "Tanzanite", False,
+     "One wrap skirt: boardroom with a blazer, market day with a tee, "
+     "dinner with heels and gold hoops. #StyleIt3Ways",
+     "standard", "light", 27, 1, None),
+    ("entry_c2_2", "c2", "makena_w", "MW", "Tanzanite", True,
+     "The shirt dress that refuses to stay in one lane — belted, open as "
+     "a duster, then knotted at the waist. #StyleIt3Ways",
+     "square", "dark", 21, 1, None),
+    ("entry_c2_3", "c2", "achieng.o", "AO", "Ruby", False,
+     "Same palazzo trousers, three completely different moods. Proof you "
+     "don't need a big wardrobe, just a clever one. #StyleIt3Ways",
+     "standard", "light", 33, 0, None),
+    ("entry_c3_1", "c3", "achieng.o", "AO", "Ruby", False,
+     "Office party in emerald green — the compliments have not stopped. "
+     "#HolidayLights",
+     "standard", "dark", 58, 24, 1),
+    ("entry_c3_2", "c3", "wanjiku.m", "WM", "Tanzanite", False,
+     "Christmas lunch hosting look: comfortable enough for the kitchen, "
+     "elegant enough for the photos. #HolidayLights",
+     "square", "light", 46, 25, 2),
+    ("entry_c3_3", "c3", "makena_w", "MW", "Tanzanite", True,
+     "New Year's Eve in gold pleats. If you can't shine tonight, when? "
+     "#HolidayLights",
+     "standard", "dark", 41, 23, 3),
+    ("entry_c3_4", "c3", "kui_wears", "KW", "Ruby", False,
+     "Family photo day co-ordinated around my dress — no regrets. "
+     "#HolidayLights",
+     "landscape", "light", 22, 26, None),
+    ("entry_c3_5", "c3", "njeri_styles", "NS", "Tsavorite", False,
+     "Midnight service then straight to the afterparty. One look, both "
+     "worlds. #HolidayLights",
+     "square", "dark", 17, 24, None),
+]
+
+
+def _seed_challenges(cur):
+    for (cid, title, tag, desc, rules, prompt, pts, prize, days, voting,
+         flagship, eseed) in _CHALLENGE_SEEDS:
+        cur.execute(
+            """INSERT INTO community_challenges
+                   (id, title, hashtag, description, rules, caption_prompt,
+                    points, prize, deadline, voting_enabled, is_flagship,
+                    entry_seed)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s,
+                       now() + (%s || ' days')::interval, %s, %s, %s)
+               ON CONFLICT (id) DO NOTHING""",
+            (cid, title, tag, desc, rules, prompt, pts, prize, days,
+             voting, flagship, eseed))
+    # Winner model per challenge: community_shortlist (votes shortlist the
+    # top ten, the team picks) is the default; team_pick skips public voting.
+    # Idempotent UPDATE so existing rows adopt the config on any boot.
+    for cid, dec in (("c1", "team_pick"), ("c2", "community_shortlist"),
+                     ("c3", "community_shortlist")):
+        cur.execute("""UPDATE community_challenges SET deciding = %s
+                        WHERE id = %s AND deciding IS DISTINCT FROM %s""",
+                    (dec, cid, dec))
+    keys = [e[0] for e in _ENTRY_SEEDS]
+    cur.execute(
+        "SELECT COUNT(*) FROM community_feed_posts WHERE mock_key = ANY(%s)",
+        (keys,))
+    if int(cur.fetchone()[0]) >= len(keys):
+        return
+    for (key, cid, uname, ini, tier, show, caption, variant, visual,
+         like_seed, days_ago, winner) in _ENTRY_SEEDS:
+        cur.execute(
+            """INSERT INTO community_feed_posts
+                   (mock_key, author_username, author_initials, author_tier,
+                    author_show_tier, caption, variant, visual, tagged,
+                    like_seed, status, challenge_id, entry_status,
+                    winner_position, published_at, created_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, '[]'::jsonb, %s,
+                       'approved', %s, 'published', %s,
+                       now() - (%s || ' days')::interval,
+                       now() - (%s || ' days')::interval)
+               ON CONFLICT (mock_key) DO NOTHING""",
+            (key, uname, ini, tier, show, caption, variant, visual,
+             like_seed, cid, winner, days_ago, days_ago))
 
 
 def _norm_phone(raw):
@@ -1092,17 +1842,32 @@ def _member_payload(cur, m):
                     pass
             try:
                 cur.execute(
-                    """SELECT order_name,
-                              MIN(sale_date::date) AS day,
-                              SUM(COALESCE(total_sales_kes,0)
-                                  - COALESCE(discounts_kes,0)
-                                  - COALESCE(returns_kes,0))::float AS total_kes,
-                              SUM(COALESCE(ordered_item_quantity,0))::int AS items
-                       FROM all_sales
-                       WHERE customer_id = %s AND store_id = %s
-                         AND COALESCE(order_name,'') <> ''
-                       GROUP BY order_name
-                       ORDER BY MIN(sale_date::date) DESC
+                    """WITH ord AS (
+                           SELECT s.order_name, s.sale_date, s.variant_sku,
+                                  s.total_sales_kes, s.discounts_kes,
+                                  s.returns_kes, s.ordered_item_quantity
+                           FROM all_sales s
+                           WHERE s.customer_id = %s AND s.store_id = %s
+                             AND COALESCE(s.order_name,'') <> ''
+                       ), p AS (
+                           -- dedup by sku (twin rows exist) but only over the
+                           -- member's own SKUs — never the whole catalogue
+                           SELECT sku, MAX(style_number) AS style_number
+                           FROM all_products_clean
+                           WHERE sku IN (SELECT DISTINCT variant_sku FROM ord)
+                           GROUP BY sku
+                       )
+                       SELECT o.order_name AS order_name,
+                              MIN(o.sale_date::date) AS day,
+                              SUM(COALESCE(o.total_sales_kes,0)
+                                  - COALESCE(o.discounts_kes,0)
+                                  - COALESCE(o.returns_kes,0))::float AS total_kes,
+                              SUM(COALESCE(o.ordered_item_quantity,0))::int AS items,
+                              STRING_AGG(DISTINCT NULLIF(TRIM(p.style_number),''), ', ') AS styles
+                       FROM ord o
+                       LEFT JOIN p ON p.sku = o.variant_sku
+                       GROUP BY o.order_name
+                       ORDER BY MIN(o.sale_date::date) DESC
                        LIMIT 3""",
                     (m["customer_id"], m.get("customer_store_id")),
                 )
@@ -1113,6 +1878,7 @@ def _member_payload(cur, m):
                         "date": str(r["day"]),
                         "total_kes": round(total, 2),
                         "items": int(r["items"] or 0),
+                        "styles": r.get("styles") or None,
                         "pts": int(total // KES_PER_POINT),
                     })
             except Exception as e:
@@ -1236,6 +2002,35 @@ def _decode_design(image_b64, noun="design"):
     if raw[:3] == b"\xff\xd8\xff":
         return raw, "image/jpeg"
     raise HTTPException(status_code=400, detail=f"PNG or JPG {noun}s only")
+
+
+def _decode_media(media_b64, noun="photo"):
+    """Accept a photo (PNG/JPEG, design-cap size) or a short video (MP4 or
+    WebM, ≤12MB). Returns (raw, mime, kind) with kind 'photo' | 'video'.
+    Photos delegate to _decode_design so both paths share one size rule."""
+    s = str(media_b64 or "")
+    if s.startswith("data:") and "," in s[:96]:
+        s = s.split(",", 1)[1]
+    try:
+        raw = base64.b64decode(s or "", validate=True)
+    except Exception:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Couldn't read that {noun} — try another file")
+    if len(raw) >= 12 and raw[4:8] == b"ftyp":
+        if len(raw) > 12 * 1024 * 1024:
+            raise HTTPException(
+                status_code=400,
+                detail="That video is a little heavy — keep it under 12MB")
+        return raw, "video/mp4", "video"
+    if raw[:4] == b"\x1a\x45\xdf\xa3":
+        if len(raw) > 12 * 1024 * 1024:
+            raise HTTPException(
+                status_code=400,
+                detail="That video is a little heavy — keep it under 12MB")
+        return raw, "video/webm", "video"
+    raw2, mime = _decode_design(media_b64, noun=noun)
+    return raw2, mime, "photo"
 
 
 def _set_content_consent(cur, member_id, ctype, cid, ok):
@@ -1514,7 +2309,8 @@ def _tryon_heal_stale(cur, member_id):
 
 def _tryon_allowance(cur, m):
     """(tier, weekly limit, used-this-week). Week = Monday 00:00 EAT;
-    everything except failed attempts counts (pending blocks parallel spam)."""
+    everything except failed attempts counts (pending blocks parallel spam).
+    limit is None for unlimited tiers, 0 for tiers the perk excludes."""
     tier, _ = _tier_for(_lifetime_points(cur, m))
     limit = TRYON_WEEK_LIMITS.get(tier, TRYON_WEEK_LIMITS["Tsavorite"])
     cur.execute(
@@ -2058,18 +2854,49 @@ def register_community_routes(app, api_pg_module):
     @app.get("/api/community/products")
     def community_products(request: Request, category: str = "",
                            limit: int = 24, offset: int = 0,
-                           personalize: str = ""):
+                           personalize: str = "", categories: str = "",
+                           brands: str = "", sizes: str = "",
+                           colors: str = "", prints: str = "",
+                           price_bands: str = "", sort: str = "new",
+                           count_only: int = 0):
         _ensure_tables()
         _throttle(request, "prod", [("ip", 120, 60)])
         limit = max(1, min(int(limit or 24), 48))
         offset = max(0, min(int(offset or 0), 960))
         category = (category or "").strip()[:60]
+
+        def _csv(v, cap=12, ln=60):
+            out, seen = [], set()
+            for t in str(v or "").split(","):
+                t = t.strip()[:ln]
+                if t and t.lower() not in seen:
+                    seen.add(t.lower())
+                    out.append(t)
+                if len(out) >= cap:
+                    break
+            return out
+
+        f_cats = _csv(categories)
+        if category and category not in f_cats:
+            # Legacy single-category param (pills, cached clients) folds in.
+            f_cats.append(category)
+        f_brands = _csv(brands)
+        f_sizes = [s.upper() for s in _csv(sizes, cap=20, ln=10)]
+        f_colors = [c for c in _csv(colors) if c in COMMUNITY_COLOR_BUCKETS]
+        f_prints = [x for x in _csv(prints, cap=2) if x in ("Print", "Plain")]
+        f_bands = [b for b in _csv(price_bands, cap=4, ln=10) if b in _PRICE_BAND_MAP]
+        sort = (sort or "new").strip()
+        if sort not in COMMUNITY_SHOP_SORTS:
+            sort = "new"
+        count_only = 1 if str(count_only) in ("1", "true") else 0
+        filtered = bool(f_cats or f_brands or f_sizes or f_colors
+                        or f_prints or f_bands)
         # Optional Style-DNA re-ranking: only when asked for, and only when
         # the Bearer token resolves to a member with a completed quiz. Public
         # callers and quiz-skippers keep the curated default order — and only
         # that default order touches the shared response cache.
         quiz = None
-        if str(personalize or "").strip() in ("1", "true", "yes"):
+        if sort == "new" and str(personalize or "").strip() in ("1", "true", "yes"):
             with _db() as conn:
                 with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                     try:
@@ -2082,14 +2909,73 @@ def register_community_routes(app, api_pg_module):
                         qrow = cur.fetchone()
                         if qrow and qrow.get("completed_at"):
                             quiz = _quiz_clean_answers(qrow["answers"])
-        key = (category, limit, offset)
-        if quiz is None:
+        key = (category, limit, offset, sort)
+        cacheable = (quiz is None and not filtered and not count_only
+                     and sort in ("new", "best"))
+        if cacheable:
             cached = _products_cache.get(key)
             if cached and time.time() - cached[0] < _PRODUCTS_TTL:
                 return _stamp_badges(cached[1])
 
+        extra, extra_params = [], {}
+        if f_cats:
+            extra.append("AND c.category = ANY(%(f_cats)s)")
+            extra_params["f_cats"] = f_cats
+        if f_brands:
+            extra.append("AND c.brand = ANY(%(f_brands)s)")
+            extra_params["f_brands"] = f_brands
+        if f_prints:
+            extra.append("AND c.print_plain = ANY(%(f_prints)s)")
+            extra_params["f_prints"] = f_prints
+        if f_colors:
+            kws = sorted({kw for b in f_colors
+                          for kw in COMMUNITY_COLOR_BUCKETS[b]})
+            extra.append("AND c.color ILIKE ANY(%(f_colkws)s)")
+            extra_params["f_colkws"] = ["%" + k + "%" for k in kws]
+        if f_bands:
+            ors = []
+            for b in f_bands:
+                lo, hi = _PRICE_BAND_MAP[b]
+                clause = "c.price >= {:.0f}".format(lo)
+                if hi is not None:
+                    clause += " AND c.price < {:.0f}".format(hi)
+                ors.append("(" + clause + ")")
+            extra.append("AND (" + " OR ".join(ors) + ")")
+        if f_sizes:
+            extra.append(
+                """AND EXISTS (
+                SELECT 1 FROM all_products_clean sp
+                JOIN inv iv ON iv.sku = sp.sku
+                WHERE sp.style_name = c.style_name
+                  AND COALESCE(sp.color_print,'') = c.color
+                  AND sp.active IS TRUE AND sp.price::float > 0
+                  AND UPPER(TRIM(COALESCE(sp.size,''))) = ANY(%(f_sizes)s)
+                  AND iv.soh > 0)""")
+            extra_params["f_sizes"] = f_sizes
+
+        best_cte = """units30 AS (
+            SELECT pp.style_name, COALESCE(pp.color_print,'') AS color,
+                   SUM(CASE WHEN s.sale_kind IN ('sale','order')
+                            THEN COALESCE(s.ordered_item_quantity,0)
+                            ELSE 0 END) AS units
+            FROM all_sales s
+            JOIN all_products_clean pp ON pp.sku = s.variant_sku
+            WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '30 days'
+            GROUP BY 1, 2
+        ),
+        """
+
+        order_sql = "ORDER BY c.launch DESC NULLS LAST, c.style_name, c.color"
+        if sort == "price_asc":
+            order_sql = "ORDER BY c.price ASC, c.style_name, c.color"
+        elif sort == "price_desc":
+            order_sql = "ORDER BY c.price DESC, c.style_name, c.color"
+        elif sort == "best":
+            order_sql = ("ORDER BY COALESCE(u.units,0) DESC, "
+                         "c.launch DESC NULLS LAST, c.style_name, c.color")
+
         sql = """
-        WITH inv AS (
+        WITH """ + (best_cte if sort == "best" and not count_only else "") + """inv AS (
             SELECT sku, SUM(COALESCE(available,0)) AS soh
             FROM all_inventory
             GROUP BY sku
@@ -2114,6 +3000,8 @@ def register_community_routes(app, api_pg_module):
                 p.sku,
                 COALESCE(NULLIF(TRIM(p.category),''),'Uncategorised') AS category,
                 COALESCE(NULLIF(TRIM(p.product_type),''),'') AS subcategory,
+                COALESCE(NULLIF(TRIM(p.brand),''),'') AS brand,
+                COALESCE(NULLIF(TRIM(p.print_plain),''),'') AS print_plain,
                 p.price::float AS price,
                 NULLIF(TRIM(COALESCE(p.style_launch_date,'')),'') AS launch
             FROM all_products_clean p
@@ -2126,13 +3014,21 @@ def register_community_routes(app, api_pg_module):
               AND p.price::float > 0
             ORDER BY p.style_name, COALESCE(p.color_print,''), p.sku
         )
-        SELECT c.style_name, c.color, c.sku, c.category, c.subcategory,
-               c.price, c.launch, s.soh::int AS soh
-        FROM cards c
-        JOIN stock s ON s.style_name = c.style_name AND s.color = c.color
+        """
+        where_sql = """
         WHERE s.soh > 0
           AND (%(cat)s = '' OR c.category = %(cat)s)
-        ORDER BY c.launch DESC NULLS LAST, c.style_name, c.color
+          """ + "\n          ".join(extra)
+        if count_only:
+            sql += """SELECT COUNT(*) AS n
+        FROM cards c
+        JOIN stock s ON s.style_name = c.style_name AND s.color = c.color""" + where_sql
+        else:
+            sql += """SELECT c.style_name, c.color, c.sku, c.category, c.subcategory,
+               c.price, c.launch, s.soh::int AS soh
+        FROM cards c
+        """ + ("""LEFT JOIN units30 u ON u.style_name = c.style_name AND u.color = c.color
+        """ if sort == "best" else "") + """JOIN stock s ON s.style_name = c.style_name AND s.color = c.color""" + where_sql + "\n        " + order_sql + """
         LIMIT %(lim)s OFFSET %(off)s
         """
         if quiz is not None:
@@ -2182,7 +3078,11 @@ def register_community_routes(app, api_pg_module):
         from urllib.parse import quote
         with _db() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-                cur.execute(sql, {"cat": category, "lim": limit + 1, "off": offset})
+                if count_only:
+                    cur.execute(sql, {"cat": category, **extra_params})
+                    return {"total": int(cur.fetchone()["n"])}
+                cur.execute(sql, {"cat": category, "lim": limit + 1,
+                                  "off": offset, **extra_params})
                 rows = [dict(r) for r in cur.fetchall()]
                 cur.execute(facet_sql)
                 cats = [{"name": r["category"], "count": int(r["n"])} for r in cur.fetchall()]
@@ -2196,11 +3096,122 @@ def register_community_routes(app, api_pg_module):
             r.pop("soh", None)
         resp = {"items": items, "categories": cats, "has_more": has_more,
                 "limit": limit, "offset": offset, "personalized": quiz is not None}
-        if quiz is None:
+        if cacheable:
             _cache_put(_products_cache, key, resp)
         # Badges are overlaid at response time so this cached payload never
         # freezes a cold (empty) badge map.
         return _stamp_badges(resp)
+
+    _facets_cache = {}
+
+    @app.get("/api/community/products/facets")
+    def community_product_facets(request: Request):
+        """Filter options for the Shop drawer, mirroring the grid universe
+        exactly (active, priced, imaged, non-third-party, in stock). Colour
+        families are bucketed server-side from color_print keywords; sizes
+        count colourways with that size in stock. Values are decorative
+        counts — filters re-check everything server-side. Cached ~15 min."""
+        _ensure_tables()
+        _throttle(request, "prod", [("ip", 120, 60)])
+        cached = _facets_cache.get("v")
+        if cached and time.time() - cached[0] < 900:
+            return cached[1]
+        sql = """
+        WITH inv AS (
+            SELECT sku, SUM(COALESCE(available,0)) AS soh
+            FROM all_inventory GROUP BY sku
+        ),
+        stock AS (
+            SELECT sk.style_name, sk.color, SUM(COALESCE(i.soh,0)) AS soh
+            FROM (
+                SELECT DISTINCT p.style_name, COALESCE(p.color_print,'') AS color, p.sku
+                FROM all_products_clean p
+                WHERE p.active IS TRUE AND p.price::float > 0
+            ) sk
+            LEFT JOIN inv i ON i.sku = sk.sku
+            GROUP BY 1, 2
+        ),
+        cards AS (
+            SELECT DISTINCT ON (p.style_name, COALESCE(p.color_print,''))
+                p.style_name,
+                COALESCE(p.color_print,'') AS color,
+                COALESCE(NULLIF(TRIM(p.category),''),'Uncategorised') AS category,
+                COALESCE(NULLIF(TRIM(p.brand),''),'') AS brand,
+                COALESCE(NULLIF(TRIM(p.print_plain),''),'') AS print_plain
+            FROM all_products_clean p
+            JOIN product_image_map m ON m.sku = p.sku
+            JOIN product_images img ON img.tmpl_id = m.tmpl_id
+                 AND COALESCE(img.image_512,'') <> ''
+            WHERE p.style_name IS NOT NULL AND p.style_name <> ''
+              AND COALESCE(p.brand,'') NOT ILIKE '%%third party%%'
+              AND p.active IS TRUE
+              AND p.price::float > 0
+            ORDER BY p.style_name, COALESCE(p.color_print,''), p.sku
+        ),
+        live AS (
+            SELECT c.* FROM cards c
+            JOIN stock s ON s.style_name = c.style_name AND s.color = c.color
+            WHERE s.soh > 0
+        ),
+        size_rows AS (
+            SELECT DISTINCT l.style_name, l.color, UPPER(TRIM(sp.size)) AS size
+            FROM live l
+            JOIN all_products_clean sp
+                 ON sp.style_name = l.style_name
+                AND COALESCE(sp.color_print,'') = l.color
+                AND sp.active IS TRUE AND sp.price::float > 0
+            JOIN inv iv ON iv.sku = sp.sku AND iv.soh > 0
+            WHERE NULLIF(TRIM(COALESCE(sp.size,'')),'') IS NOT NULL
+        )
+        SELECT 'category' AS facet, category AS val, COUNT(*) AS n FROM live GROUP BY 2
+        UNION ALL SELECT 'brand', brand, COUNT(*) FROM live WHERE brand <> '' GROUP BY 2
+        UNION ALL SELECT 'print', print_plain, COUNT(*) FROM live
+                  WHERE print_plain IN ('Print','Plain') GROUP BY 2
+        UNION ALL SELECT 'size', size, COUNT(*) FROM size_rows GROUP BY 2
+        UNION ALL SELECT 'color_raw', color, COUNT(*) FROM live WHERE color <> '' GROUP BY 2
+        """
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(sql)
+                rows = [dict(r) for r in cur.fetchall()]
+
+        def _facet(name):
+            return {r["val"]: int(r["n"]) for r in rows if r["facet"] == name}
+
+        cats = sorted(_facet("category").items(), key=lambda kv: -kv[1])
+        brands_f = sorted(_facet("brand").items(), key=lambda kv: -kv[1])
+        prints_f = _facet("print")
+        sizes_f = _facet("size")
+        size_rank = {s: i for i, s in enumerate(COMMUNITY_SIZE_ORDER)}
+        sizes_out = sorted(sizes_f.items(),
+                           key=lambda kv: (size_rank.get(kv[0], 99), kv[0]))
+        color_counts = {}
+        for val, n in _facet("color_raw").items():
+            low = val.lower()
+            for bucket, kws in COMMUNITY_COLOR_BUCKETS.items():
+                if any(k in low for k in kws):
+                    color_counts[bucket] = color_counts.get(bucket, 0) + n
+        colors_out = [(b, color_counts[b]) for b in COMMUNITY_COLOR_BUCKETS
+                      if color_counts.get(b)]
+        resp = {
+            "categories": [{"name": k, "count": n} for k, n in cats],
+            "brands": [{"name": k, "count": n} for k, n in brands_f],
+            "sizes": [{"name": k, "count": n} for k, n in sizes_out],
+            "colors": [{"name": k, "count": n} for k, n in colors_out],
+            "prints": [{"name": k, "count": prints_f[k]}
+                       for k in ("Print", "Plain") if prints_f.get(k)],
+            "price_bands": [{"id": b[0], "label": b[3]}
+                            for b in COMMUNITY_PRICE_BANDS],
+            "size_ranges": QUIZ_SIZE_RANGE_SIZES,
+            "sorts": [
+                {"id": "new", "label": "Newest first"},
+                {"id": "price_asc", "label": "Price low to high"},
+                {"id": "price_desc", "label": "Price high to low"},
+                {"id": "best", "label": "Best sellers"},
+            ],
+        }
+        _facets_cache["v"] = (time.time(), resp)
+        return resp
 
     @app.get("/api/community/product/{sku:path}")
     def community_product_detail(request: Request, sku: str):
@@ -2230,7 +3241,8 @@ def register_community_routes(app, api_pg_module):
                               NULLIF(TRIM(COALESCE(season,'')),'') AS season,
                               NULLIF(TRIM(COALESCE(fiber_content,'')),'') AS fiber_content,
                               NULLIF(TRIM(COALESCE(fabric_structure,'')),'') AS fabric_structure,
-                              NULLIF(TRIM(COALESCE(gsm,'')),'') AS gsm
+                              NULLIF(TRIM(COALESCE(gsm,'')),'') AS gsm,
+                              NULLIF(TRIM(COALESCE(style_number,'')),'') AS style_number
                        FROM all_products_clean
                        WHERE sku = %s AND style_name IS NOT NULL AND style_name <> ''
                        LIMIT 1""",
@@ -2363,6 +3375,7 @@ def register_community_routes(app, api_pg_module):
         resp = {
             "sku": sku,
             "name": style,
+            "style_number": head.get("style_number"),
             "brand": head["brand"],
             "color": color,
             "category": head["category"],
@@ -2989,6 +4002,182 @@ def register_community_routes(app, api_pg_module):
 
     # ---------------- Contact Us ----------------
 
+    # ---- Customer survey ("Help us dress you better") ----------------------
+    # Responses are linked to the member for segmentation (tier at completion,
+    # join date) but staff reporting is aggregate-only — the CRM summary never
+    # exposes who said what. One completion per wave per member; the +30 rides
+    # community_points_events UNIQUE(member_id, kind) with a per-wave kind, so
+    # a re-post can never double-award.
+
+    def _survey_active_wave(cur):
+        cur.execute("""SELECT id, wave_key, title, status, questions
+                         FROM community_survey_waves
+                        WHERE status = 'active'
+                     ORDER BY id DESC LIMIT 1""")
+        return cur.fetchone()
+
+    def _survey_validate(questions, raw):
+        """Whitelist answers against the wave's question schema. Unknown keys
+        drop; multi picks are de-duped and trimmed to their cap; warm 400s."""
+        out, nps_val = {}, None
+        for q in questions:
+            qid, kind = q.get("id"), q.get("kind")
+            v = raw.get(qid)
+            if kind == "single":
+                if not isinstance(v, str) or v not in (q.get("options") or []):
+                    raise HTTPException(status_code=400,
+                                        detail="Please answer every question — each one really helps")
+                out[qid] = v
+                f = q.get("followup") or {}
+                if f and v in (f.get("when") or []):
+                    fv = raw.get(f.get("id"))
+                    if not isinstance(fv, str) or fv not in (f.get("options") or []):
+                        raise HTTPException(status_code=400,
+                                            detail="Please pick the store you visit most")
+                    out[f["id"]] = fv
+            elif kind == "multi":
+                opts = q.get("options") or []
+                picks = [x for x in (v if isinstance(v, list) else []) if isinstance(x, str) and x in opts]
+                seen = set()
+                picks = [x for x in picks if not (x in seen or seen.add(x))]
+                cap = q.get("max")
+                if cap:
+                    picks = picks[:int(cap)]
+                if not picks:
+                    raise HTTPException(status_code=400,
+                                        detail="Please answer every question — each one really helps")
+                out[qid] = picks
+            elif kind == "nps":
+                try:
+                    nv = int(v)
+                except (TypeError, ValueError):
+                    raise HTTPException(status_code=400, detail="Tap a number from 0 to 10")
+                if nv < 0 or nv > 10:
+                    raise HTTPException(status_code=400, detail="Tap a number from 0 to 10")
+                out[qid] = nv
+                nps_val = nv
+            elif kind == "text":
+                s = str(v or "").strip()[:2000]
+                if s:
+                    out[qid] = s
+                elif not q.get("optional"):
+                    raise HTTPException(status_code=400, detail="A few words would really help")
+        return out, nps_val
+
+    @app.get("/api/community/survey/state")
+    def community_survey_state(request: Request):
+        """Everything the app needs to render survey entry points: the active
+        wave (with questions), whether this member completed it, and whether
+        the Home card should show (dismiss/re-surface logic lives here)."""
+        _ensure_tables()
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                m = _require_member(cur, request)
+                _throttle(request, "svs", [("ip", 120, 60)])
+                w = _survey_active_wave(cur)
+                if not w:
+                    return {"wave": None, "completed": False,
+                            "points": SURVEY_BONUS_PTS, "show_home_card": False}
+                cur.execute("""SELECT 1 FROM community_survey_responses
+                                WHERE wave_id = %s AND member_id = %s""",
+                            (w["id"], m["id"]))
+                completed = cur.fetchone() is not None
+                show_home = not completed
+                if show_home:
+                    cur.execute(
+                        """SELECT count,
+                                  (last_at <= now() - make_interval(days => %s)) AS quiet
+                             FROM community_survey_dismissals
+                            WHERE wave_id = %s AND member_id = %s""",
+                        (SURVEY_RESURFACE_DAYS, w["id"], m["id"]))
+                    d = cur.fetchone()
+                    if d:
+                        show_home = bool(d["quiet"]) if d["count"] < 2 else False
+        return {"wave": {"id": w["id"], "wave_key": w["wave_key"],
+                         "title": w["title"], "questions": w["questions"]},
+                "completed": completed,
+                "points": SURVEY_BONUS_PTS,
+                "show_home_card": show_home}
+
+    @app.post("/api/community/survey/complete")
+    def community_survey_complete(request: Request, payload: dict = Body(...)):
+        """Store the wave response and award the bonus exactly once."""
+        _ensure_tables()
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                m = _require_member(cur, request)
+                _throttle(request, "svc",
+                          [("ip", 20, 3600), ("phone", 8, 3600)],
+                          phone=m.get("phone"))
+                w = _survey_active_wave(cur)
+                if not w:
+                    raise HTTPException(status_code=409,
+                                        detail="This survey has closed — asante for wanting to help!")
+                if int(payload.get("wave_id") or 0) != int(w["id"]):
+                    raise HTTPException(status_code=409,
+                                        detail="This survey round has moved on — please reopen it and try again")
+                raw = payload.get("answers")
+                if not isinstance(raw, dict):
+                    raise HTTPException(status_code=400, detail="answers must be an object")
+                answers, nps_val = _survey_validate(w["questions"] or [], raw)
+                duration = payload.get("duration_secs")
+                try:
+                    duration = max(0, min(int(duration), 3600)) if duration is not None else None
+                except (TypeError, ValueError):
+                    duration = None
+                tier = _tier_for(_lifetime_points(cur, m))[0]
+                cur.execute(
+                    """INSERT INTO community_survey_responses
+                           (wave_id, member_id, answers, nps, tier_at, member_since, duration_secs)
+                       VALUES (%s, %s, %s::jsonb, %s, %s,
+                               (SELECT created_at FROM community_members WHERE id = %s), %s)
+                       ON CONFLICT (wave_id, member_id) DO NOTHING
+                       RETURNING id""",
+                    (w["id"], m["id"], json.dumps(answers), nps_val, tier,
+                     m["id"], duration))
+                stored = cur.fetchone() is not None
+                awarded = False
+                if stored:
+                    cur.execute(
+                        """INSERT INTO community_points_events (member_id, kind, points)
+                           VALUES (%s, %s, %s)
+                           ON CONFLICT (member_id, kind) DO NOTHING
+                           RETURNING id""",
+                        (m["id"], "survey_" + str(w["wave_key"]), SURVEY_BONUS_PTS))
+                    awarded = cur.fetchone() is not None
+                conn.commit()
+                _me_cache.pop(m["id"], None)
+                member = _member_payload(cur, m)
+        return {"ok": True, "already": not stored, "awarded": awarded,
+                "points": SURVEY_BONUS_PTS if awarded else 0, "member": member}
+
+    @app.post("/api/community/survey/dismiss")
+    def community_survey_dismiss(request: Request, payload: dict = Body(default={})):
+        """The Home card's "Maybe later". First dismiss hides the card; it
+        re-surfaces once after the quiet window; a second dismiss retires it
+        for this wave. Rewards and Profile entry points are unaffected."""
+        _ensure_tables()
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                m = _require_member(cur, request)
+                _throttle(request, "svd", [("ip", 60, 3600)])
+                w = _survey_active_wave(cur)
+                if w and int(payload.get("wave_id") or 0) != int(w["id"]):
+                    # A stale client (older wave still on screen) must not
+                    # burn a dismissal of a wave it has never shown.
+                    raise HTTPException(status_code=409,
+                                        detail="This survey round has moved on — please refresh")
+                if w:
+                    cur.execute(
+                        """INSERT INTO community_survey_dismissals (wave_id, member_id)
+                           VALUES (%s, %s)
+                           ON CONFLICT (wave_id, member_id)
+                           DO UPDATE SET count = LEAST(community_survey_dismissals.count + 1, 2),
+                                         last_at = now()""",
+                        (w["id"], m["id"]))
+            conn.commit()
+        return {"ok": True}
+
     @app.post("/api/community/contact")
     def community_contact_submit(request: Request, payload: dict = Body(...)):
         """The in-app "Contact Us" form. The member's account is attached
@@ -3026,10 +4215,1329 @@ def register_community_routes(app, api_pg_module):
         return {"ok": True, "id": new_id,
                 "note": "Thank you — our team will get back to you within 1 working day."}
 
+    # ---------------- Interactive community feed ----------------
+    # DB-backed posts with real per-member likes and comments. Comments
+    # publish immediately (posts stay curated); every comment has a Report
+    # action feeding the staff queue below. Deliberately NO points for likes
+    # or comments — points stay on the defined earning actions only, so
+    # conversation can't be farmed.
+
+    def _feed_member_id(cur, request):
+        """Optional member id — feed reads personalise when signed in."""
+        try:
+            sess = _session_for(cur, _bearer(request), purpose="member")
+            return int(sess["member_id"]) if sess and sess["member_id"] else None
+        except HTTPException:
+            return None
+
+    _FEED_SELECT = """
+        SELECT p.id, p.author_username, p.author_initials, p.author_tier,
+               p.author_show_tier, p.caption, p.variant, p.visual,
+               p.tagged, p.created_at, p.post_type, p.fit_note,
+               p.image_url, p.media_kind,
+               EXISTS (SELECT 1 FROM community_entry_photos ph
+                        WHERE ph.post_id = p.id) AS has_photo,
+               (p.like_seed
+                + (SELECT COUNT(*) FROM community_post_likes pl
+                    WHERE pl.post_id = p.id))::int AS like_count,
+               (SELECT COUNT(*) FROM community_post_comments c
+                 WHERE c.post_id = p.id AND c.status = 'visible')::int AS comment_count,
+               EXISTS (SELECT 1 FROM community_post_likes pl2
+                        WHERE pl2.post_id = p.id AND pl2.member_id = %s) AS my_liked
+        FROM community_feed_posts p
+        WHERE p.status = 'approved' AND p.challenge_id IS NULL"""
+
+    def _post_row(r):
+        return {
+            "id": r["id"],
+            "author": {"username": r["author_username"],
+                       "initials": r["author_initials"],
+                       "tier": r["author_tier"],
+                       "show_tier": bool(r["author_show_tier"])},
+            "caption": r["caption"],
+            "variant": r["variant"],
+            "visual": r["visual"],
+            "tagged": r["tagged"] or [],
+            "post_type": r.get("post_type") or "look",
+            "fit_note": r.get("fit_note"),
+            "image_url": r.get("image_url"),
+            "media_kind": r.get("media_kind"),
+            "has_photo": bool(r.get("has_photo")),
+            "photo_path": (f"/entry-photo/{r['id']}"
+                           if r.get("has_photo") else None),
+            "like_count": int(r["like_count"] or 0),
+            "comment_count": int(r["comment_count"] or 0),
+            "my_liked": bool(r["my_liked"]),
+            "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+        }
+
+    @app.get("/api/community/feed")
+    def community_feed_list(request: Request, limit: int = 24,
+                            offset: int = 0, type: str = ""):
+        _ensure_tables()
+        _throttle(request, "fee", [("ip", 120, 60), ("global", 6000, 60)])
+        lim = max(1, min(int(limit or 24), 50))
+        off = max(0, int(offset or 0))
+        tf = type if type in ("look", "question", "haul") else ""
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                mid = _feed_member_id(cur, request) or -1
+                q = _FEED_SELECT
+                params = [mid]
+                if tf:
+                    q += " AND p.post_type = %s"
+                    params.append(tf)
+                q += """
+                     ORDER BY p.created_at DESC, p.id DESC
+                     LIMIT %s OFFSET %s"""
+                cur.execute(q, params + [lim, off])
+                rows = cur.fetchall()
+                cq = """SELECT COUNT(*) AS n FROM community_feed_posts
+                         WHERE status = 'approved'
+                           AND challenge_id IS NULL"""
+                cur.execute(cq + (" AND post_type = %s" if tf else ""),
+                            ((tf,) if tf else None))
+                total = int(cur.fetchone()["n"])
+        return {"items": [_post_row(r) for r in rows], "total": total}
+
+    @app.get("/api/community/posts/{pid}")
+    def community_feed_post_detail(pid: int, request: Request):
+        _ensure_tables()
+        _throttle(request, "fee", [("ip", 120, 60), ("global", 6000, 60)])
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                mid = _feed_member_id(cur, request) or -1
+                cur.execute(_FEED_SELECT + " AND p.id = %s", (mid, pid))
+                row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Post not found")
+        return _post_row(row)
+
+    @app.get("/api/community/posts/{pid}/comments")
+    def community_feed_comments(pid: int, request: Request):
+        _ensure_tables()
+        _throttle(request, "fee", [("ip", 120, 60), ("global", 6000, 60)])
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                mid = _feed_member_id(cur, request) or -1
+                cur.execute("""SELECT 1 FROM community_feed_posts
+                                WHERE id = %s AND status = 'approved'""", (pid,))
+                if not cur.fetchone():
+                    raise HTTPException(status_code=404, detail="Post not found")
+                cur.execute("""
+                    SELECT c.id, c.body, c.created_at, c.member_id,
+                           m.username, m.full_name,
+                           (SELECT COUNT(*) FROM community_comment_likes cl
+                             WHERE cl.comment_id = c.id)::int AS like_count,
+                           EXISTS (SELECT 1 FROM community_comment_likes cl2
+                                    WHERE cl2.comment_id = c.id
+                                      AND cl2.member_id = %s) AS my_liked
+                    FROM community_post_comments c
+                    JOIN community_members m ON m.id = c.member_id
+                    WHERE c.post_id = %s AND c.status = 'visible'
+                    ORDER BY c.created_at ASC, c.id ASC
+                    LIMIT 500""", (mid, pid))
+                rows = cur.fetchall()
+        return {"items": [{
+            "id": r["id"],
+            "body": r["body"],
+            "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+            "username": (r["username"] or "").strip() or "vivomember",
+            "initials": _initials(r["full_name"] or r["username"]),
+            "like_count": int(r["like_count"] or 0),
+            "my_liked": bool(r["my_liked"]),
+            "mine": bool(mid > 0 and r["member_id"] == mid),
+        } for r in rows]}
+
+    @app.post("/api/community/posts/{pid}/like")
+    def community_feed_post_like(pid: int, request: Request):
+        _ensure_tables()
+        _throttle(request, "fpl", [("ip", 60, 60), ("global", 4000, 3600)])
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                m = _require_member(cur, request)
+                cur.execute("""SELECT like_seed FROM community_feed_posts
+                                WHERE id = %s AND status = 'approved'""", (pid,))
+                post = cur.fetchone()
+                if not post:
+                    raise HTTPException(status_code=404, detail="Post not found")
+                cur.execute("""DELETE FROM community_post_likes
+                                WHERE post_id = %s AND member_id = %s""",
+                            (pid, m["id"]))
+                liked = cur.rowcount == 0
+                if liked:
+                    cur.execute("""INSERT INTO community_post_likes (post_id, member_id)
+                                   VALUES (%s, %s) ON CONFLICT DO NOTHING""",
+                                (pid, m["id"]))
+                cur.execute("""SELECT COUNT(*)::int AS n FROM community_post_likes
+                                WHERE post_id = %s""", (pid,))
+                n = int(post["like_seed"] or 0) + int(cur.fetchone()["n"])
+            conn.commit()
+        # No points event — likes never earn.
+        return {"ok": True, "liked": liked, "like_count": n}
+
+    @app.post("/api/community/posts/{pid}/comments")
+    def community_feed_comment_add(pid: int, request: Request,
+                                   payload: dict = Body(...)):
+        _ensure_tables()
+        _throttle(request, "fca", [("ip", 10, 60), ("ip", 200, 86400),
+                                   ("global", 2000, 3600)])
+        body = re.sub(r"\s+", " ", str((payload or {}).get("body") or "")).strip()
+        if not body:
+            raise HTTPException(status_code=400, detail="Say something first")
+        if len(body) > 500:
+            raise HTTPException(status_code=400,
+                                detail="Keep it under 500 characters")
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                m = _require_member(cur, request)
+                cur.execute("""SELECT 1 FROM community_feed_posts
+                                WHERE id = %s AND status = 'approved'""", (pid,))
+                if not cur.fetchone():
+                    raise HTTPException(status_code=404, detail="Post not found")
+                cur.execute("""INSERT INTO community_post_comments
+                                   (post_id, member_id, body)
+                               VALUES (%s, %s, %s)
+                               RETURNING id, created_at""", (pid, m["id"], body))
+                row = cur.fetchone()
+                cur.execute("""SELECT COUNT(*)::int AS n FROM community_post_comments
+                                WHERE post_id = %s AND status = 'visible'""", (pid,))
+                n = int(cur.fetchone()["n"])
+            conn.commit()
+        # Deliberately NO points event — comments never earn (anti-spam).
+        return {"ok": True, "comment_count": n, "comment": {
+            "id": row["id"], "body": body,
+            "created_at": row["created_at"].isoformat(),
+            "username": (m.get("username") or "").strip() or "you",
+            "initials": _initials(m.get("full_name") or m.get("username")),
+            "like_count": 0, "my_liked": False, "mine": True}}
+
+    @app.post("/api/community/comments/{cid}/like")
+    def community_feed_comment_like(cid: int, request: Request):
+        _ensure_tables()
+        _throttle(request, "fcl", [("ip", 60, 60), ("global", 4000, 3600)])
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                m = _require_member(cur, request)
+                cur.execute("""SELECT 1 FROM community_post_comments
+                                WHERE id = %s AND status = 'visible'""", (cid,))
+                if not cur.fetchone():
+                    raise HTTPException(status_code=404, detail="Comment not found")
+                cur.execute("""DELETE FROM community_comment_likes
+                                WHERE comment_id = %s AND member_id = %s""",
+                            (cid, m["id"]))
+                liked = cur.rowcount == 0
+                if liked:
+                    cur.execute("""INSERT INTO community_comment_likes
+                                       (comment_id, member_id)
+                                   VALUES (%s, %s) ON CONFLICT DO NOTHING""",
+                                (cid, m["id"]))
+                cur.execute("""SELECT COUNT(*)::int AS n FROM community_comment_likes
+                                WHERE comment_id = %s""", (cid,))
+                n = int(cur.fetchone()["n"])
+            conn.commit()
+        return {"ok": True, "liked": liked, "like_count": n}
+
+    @app.post("/api/community/comments/{cid}/report")
+    def community_feed_comment_report(cid: int, request: Request,
+                                      payload: dict = Body(default={})):
+        _ensure_tables()
+        _throttle(request, "fcr", [("ip", 20, 3600), ("global", 1000, 3600)])
+        reason = str((payload or {}).get("reason") or "").strip()[:300]
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                m = _require_member(cur, request)
+                cur.execute("""SELECT 1 FROM community_post_comments
+                                WHERE id = %s AND status = 'visible'""", (cid,))
+                if not cur.fetchone():
+                    raise HTTPException(status_code=404, detail="Comment not found")
+                cur.execute("""INSERT INTO community_comment_reports
+                                   (comment_id, reporter_member_id, reason)
+                               VALUES (%s, %s, %s)
+                               ON CONFLICT (comment_id, reporter_member_id)
+                               DO NOTHING""", (cid, m["id"], reason or None))
+            conn.commit()
+        return {"ok": True, "note": "Thank you — our team will take a look."}
+
+    # Flagged-comment review lives under /api/crm/ (staff session + CRM role
+    # gates run upstream, same as the contact-message queue below).
+
+    # ---- Challenges: catalogue, gallery, enter flow, voting ------------
+    # Entries reuse the feed machinery (same post ids → same like/comment
+    # endpoints and the same CRM flagged-comments queue). Pending entries
+    # are status='pending', so the existing status='approved' guards on
+    # likes/comments/detail block interaction until publication for free.
+
+    _CH_SELECT = """
+        SELECT c.id, c.title, c.hashtag, c.description, c.rules,
+               c.caption_prompt, c.points, c.prize, c.deadline,
+               c.voting_enabled, c.is_flagship, c.deciding,
+               (c.deadline <= now()) AS closed,
+               (c.entry_seed
+                + (SELECT COUNT(*) FROM community_feed_posts e
+                    WHERE e.challenge_id = c.id
+                      AND e.entry_status = 'published'))::int AS entries_display
+        FROM community_challenges c"""
+
+    def _challenge_row(r):
+        return {
+            "id": r["id"], "title": r["title"], "hashtag": r["hashtag"],
+            "description": r["description"], "rules": r["rules"],
+            "caption_prompt": r["caption_prompt"],
+            "points": int(r["points"] or 0), "prize": r["prize"],
+            "deadline": r["deadline"].isoformat() if r["deadline"] else None,
+            "closed": bool(r["closed"]),
+            "voting_enabled": bool(r["voting_enabled"]),
+            "is_flagship": bool(r["is_flagship"]),
+            "deciding": r["deciding"] or "community_shortlist",
+            "entries_display": int(r["entries_display"] or 0),
+        }
+
+    # Params, in order: my_liked mid, my_vote mid — then WHERE params.
+    _ENTRY_SELECT = """
+        SELECT p.id, p.author_username, p.author_initials, p.author_tier,
+               p.author_show_tier, p.caption, p.variant, p.visual,
+               p.tagged, p.created_at, p.challenge_id, p.entry_status,
+               p.winner_position, p.author_member_id,
+               (p.like_seed
+                + (SELECT COUNT(*) FROM community_post_likes pl
+                    WHERE pl.post_id = p.id))::int AS like_count,
+               (SELECT COUNT(*) FROM community_post_comments c
+                 WHERE c.post_id = p.id AND c.status = 'visible')::int
+                   AS comment_count,
+               EXISTS (SELECT 1 FROM community_post_likes pl2
+                        WHERE pl2.post_id = p.id AND pl2.member_id = %s)
+                   AS my_liked,
+               EXISTS (SELECT 1 FROM community_entry_photos ph
+                        WHERE ph.post_id = p.id) AS has_photo,
+               (SELECT COUNT(*) FROM community_challenge_votes v
+                 WHERE v.post_id = p.id)::int AS vote_count,
+               EXISTS (SELECT 1 FROM community_challenge_votes v2
+                        WHERE v2.post_id = p.id AND v2.member_id = %s)
+                   AS my_vote
+        FROM community_feed_posts p"""
+
+    def _entry_extra(r, mid):
+        base = _post_row(r)
+        base.update({
+            "challenge_id": r["challenge_id"],
+            "entry_status": r["entry_status"],
+            "winner_position": r["winner_position"],
+            "mine": bool(mid and mid > 0 and r["author_member_id"] == mid),
+            "has_photo": bool(r["has_photo"]),
+            "photo_path": (f"/entry-photo/{r['id']}" if r["has_photo"] else None),
+            "my_vote": bool(r["my_vote"]),
+        })
+        return base
+
+    def _challenge_winners(cur, mid, cid):
+        cur.execute(_ENTRY_SELECT + """
+             WHERE p.challenge_id = %s AND p.entry_status = 'published'
+               AND p.winner_position IS NOT NULL
+             ORDER BY p.winner_position ASC LIMIT 3""", (mid, mid, cid))
+        return [_entry_extra(r, mid) for r in cur.fetchall()]
+
+    def _my_entry_brief(cur, mid, cid):
+        if not mid or mid <= 0:
+            return None
+        cur.execute(
+            """SELECT id, entry_status, winner_position
+                 FROM community_feed_posts
+                WHERE challenge_id = %s AND author_member_id = %s
+                  AND entry_status IN ('pending', 'published')
+                ORDER BY created_at DESC LIMIT 1""", (cid, mid))
+        r = cur.fetchone()
+        return ({"post_id": r["id"], "entry_status": r["entry_status"],
+                 "winner_position": r["winner_position"]} if r else None)
+
+    @app.get("/api/community/challenges")
+    def community_challenges_list(request: Request):
+        _ensure_tables()
+        _throttle(request, "fee", [("ip", 120, 60), ("global", 6000, 60)])
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                mid = _feed_member_id(cur, request) or -1
+                cur.execute(_CH_SELECT + """
+                     ORDER BY (c.deadline <= now()) ASC, c.deadline ASC""")
+                rows = cur.fetchall()
+                items = []
+                for r in rows:
+                    d = _challenge_row(r)
+                    d["my_entry"] = _my_entry_brief(cur, mid, d["id"])
+                    d["winners"] = (_challenge_winners(cur, mid, d["id"])
+                                    if d["closed"] else [])
+                    items.append(d)
+        return {"items": items}
+
+    @app.get("/api/community/challenges/{cid}")
+    def community_challenge_detail(cid: str, request: Request):
+        _ensure_tables()
+        _throttle(request, "fee", [("ip", 120, 60), ("global", 6000, 60)])
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                mid = _feed_member_id(cur, request) or -1
+                cur.execute(_CH_SELECT + " WHERE c.id = %s", (cid,))
+                ch = cur.fetchone()
+                if not ch:
+                    raise HTTPException(status_code=404,
+                                        detail="Challenge not found")
+                d = _challenge_row(ch)
+                d["my_entry"] = _my_entry_brief(cur, mid, cid)
+                d["winners"] = (_challenge_winners(cur, mid, cid)
+                                if d["closed"] else [])
+                # Gallery: everyone's published entries, plus HER pending
+                # one (visible only to her, pinned first). Winners lead.
+                cur.execute(_ENTRY_SELECT + """
+                     WHERE p.challenge_id = %s
+                       AND (p.entry_status = 'published'
+                            OR (p.entry_status = 'pending'
+                                AND p.author_member_id = %s))
+                     ORDER BY (p.entry_status = 'pending') DESC,
+                              COALESCE(p.winner_position, 99) ASC,
+                              p.created_at DESC
+                     LIMIT 120""", (mid, mid, cid, mid))
+                d["entries"] = [_entry_extra(r, mid) for r in cur.fetchall()]
+                my_vote = None
+                if mid > 0:
+                    cur.execute(
+                        """SELECT post_id FROM community_challenge_votes
+                            WHERE challenge_id = %s AND member_id = %s""",
+                        (cid, mid))
+                    vr = cur.fetchone()
+                    my_vote = vr["post_id"] if vr else None
+                d["my_vote"] = my_vote
+        return d
+
+    @app.post("/api/community/challenges/{cid}/entries")
+    def community_challenge_enter(cid: str, request: Request,
+                                  payload: dict = Body(...)):
+        _ensure_tables()
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                m = _require_member(cur, request)
+                _throttle(request, "cen",
+                          [("ip", 10, 3600), ("phone", 6, 3600),
+                           ("global", 400, 3600)], phone=m.get("phone"))
+                cur.execute(_CH_SELECT + " WHERE c.id = %s", (cid,))
+                ch = cur.fetchone()
+                if not ch:
+                    raise HTTPException(status_code=404,
+                                        detail="Challenge not found")
+                if bool(ch["closed"]):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Entries have closed — winners announced soon")
+                raw, mime, mkind = _decode_media(
+                    payload.get("media_b64") or payload.get("photo_b64"),
+                    noun="photo")
+                caption = str(payload.get("caption") or "").strip()[:600]
+                marketing_ok = bool(payload.get("marketing_ok"))
+                tagged = []
+                tags_in = payload.get("tagged") or []
+                if len(tags_in) > 3:
+                    raise HTTPException(status_code=400,
+                                        detail="Tag up to 3 products")
+                for t in tags_in:
+                    if not isinstance(t, dict):
+                        continue
+                    sku = str(t.get("sku") or "").strip()[:64]
+                    name = str(t.get("name") or "").strip()[:120]
+                    if not sku:
+                        continue
+                    item = {"sku": sku, "name": name or sku}
+                    try:
+                        if t.get("price") is not None:
+                            item["price"] = float(t["price"])
+                    except (TypeError, ValueError):
+                        pass
+                    tagged.append(item)
+                # Serialize per member: without the row lock two rapid
+                # submits can both see "no active entry" and overshoot the
+                # one-entry rule (the partial unique index is the backstop).
+                cur.execute("SELECT id FROM community_members WHERE id = %s FOR UPDATE",
+                            (m["id"],))
+                cur.execute(
+                    """SELECT entry_status FROM community_feed_posts
+                        WHERE challenge_id = %s AND author_member_id = %s
+                          AND entry_status IN ('pending', 'published')
+                        LIMIT 1""", (cid, m["id"]))
+                ex = cur.fetchone()
+                if ex:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=("Your entry is already live in the gallery"
+                                if ex["entry_status"] == "published" else
+                                "You've already entered — your entry is in review"))
+                uname = (m.get("username") or "").strip() or "member"
+                cur.execute(
+                    """INSERT INTO community_feed_posts
+                           (author_member_id, author_username,
+                            author_initials, author_show_tier, caption,
+                            variant, visual, tagged, like_seed, status,
+                            challenge_id, entry_status, marketing_ok,
+                            media_kind)
+                       VALUES (%s, %s, %s, FALSE, %s, 'standard', 'light',
+                               %s::jsonb, 0, 'pending', %s, 'pending', %s,
+                               %s)
+                       RETURNING id""",
+                    (m["id"], uname,
+                     _initials(m.get("full_name") or uname), caption,
+                     json.dumps(tagged), cid, marketing_ok, mkind))
+                pid = int(cur.fetchone()["id"])
+                cur.execute(
+                    """INSERT INTO community_entry_photos (post_id, image, mime)
+                       VALUES (%s, %s, %s)""", (pid, raw, mime))
+                # DPA ledger: the form always asks, so record both answers —
+                # a FALSE row documents "asked and said no".
+                _set_content_consent(cur, m["id"], "challenge_entry", pid,
+                                     marketing_ok)
+                cur.execute(_ENTRY_SELECT + " WHERE p.id = %s",
+                            (m["id"], m["id"], pid))
+                row = cur.fetchone()
+            conn.commit()
+        # Points arrive at PUBLICATION (review), never at submission.
+        return {"ok": True, "entry": _entry_extra(row, m["id"])}
+
+    @app.post("/api/community/posts")
+    def community_post_create(request: Request, payload: dict = Body(...)):
+        """Member-created feed post. Two shapes: 'Share a look' (media
+        required — that's the point) and 'Ask the community' (words are
+        enough, photo optional). Both take the same review pipeline as
+        challenge entries; points land at publication, and only for looks."""
+        _ensure_tables()
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                m = _require_member(cur, request)
+                _throttle(request, "cpo",
+                          [("ip", 10, 3600), ("phone", 6, 3600),
+                           ("global", 600, 3600)], phone=m.get("phone"))
+                ptype = str(payload.get("post_type") or "look").strip()
+                if ptype not in ("look", "question", "haul"):
+                    raise HTTPException(status_code=400,
+                                        detail="post_type must be look, question or haul")
+                caption = str(payload.get("caption") or "").strip()[:600]
+                media_b64 = payload.get("media_b64") or payload.get("photo_b64")
+                if ptype == "question":
+                    if not caption:
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Ask away — a question needs a few words")
+                elif not media_b64:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="A look needs a photo or a short video")
+                raw = mime = mkind = None
+                if media_b64:
+                    raw, mime, mkind = _decode_media(media_b64, noun="photo")
+                marketing_ok = bool(payload.get("marketing_ok"))
+                tags_in = payload.get("tagged") or []
+                if len(tags_in) > 3:
+                    raise HTTPException(status_code=400,
+                                        detail="Tag up to 3 products")
+                tagged = []
+                for t in tags_in:
+                    if not isinstance(t, dict):
+                        continue
+                    sku = str(t.get("sku") or "").strip()[:64]
+                    name = str(t.get("name") or "").strip()[:120]
+                    if not sku:
+                        continue
+                    item = {"sku": sku, "name": name or sku}
+                    try:
+                        if t.get("price") is not None:
+                            item["price"] = float(t["price"])
+                    except (TypeError, ValueError):
+                        pass
+                    tagged.append(item)
+                fit_note = None
+                fn = payload.get("fit_note")
+                if isinstance(fn, dict) and (fn.get("fit") or fn.get("size")):
+                    fv = str(fn.get("fit") or "").strip()
+                    sz = str(fn.get("size") or "").strip()[:12]
+                    if fv not in ("small", "true", "large"):
+                        raise HTTPException(
+                            status_code=400,
+                            detail="fit must be small, true or large")
+                    fit_note = {"fit": fv}
+                    if sz:
+                        fit_note["size"] = sz
+                uname = (m.get("username") or "").strip() or "member"
+                cur.execute(
+                    """INSERT INTO community_feed_posts
+                           (author_member_id, author_username,
+                            author_initials, author_show_tier, caption,
+                            variant, visual, tagged, like_seed, status,
+                            challenge_id, entry_status, marketing_ok,
+                            post_type, fit_note, media_kind)
+                       VALUES (%s, %s, %s, FALSE, %s, 'standard', 'light',
+                               %s::jsonb, 0, 'pending', NULL, 'pending', %s,
+                               %s, %s::jsonb, %s)
+                       RETURNING id""",
+                    (m["id"], uname,
+                     _initials(m.get("full_name") or uname), caption,
+                     json.dumps(tagged), marketing_ok, ptype,
+                     json.dumps(fit_note) if fit_note else None, mkind))
+                pid = int(cur.fetchone()["id"])
+                if raw is not None:
+                    cur.execute(
+                        """INSERT INTO community_entry_photos
+                               (post_id, image, mime)
+                           VALUES (%s, %s, %s)""", (pid, raw, mime))
+                    # DPA ledger — the form always asks when media rides
+                    # along, so record both answers.
+                    _set_content_consent(cur, m["id"], "community_post",
+                                         pid, marketing_ok)
+            conn.commit()
+        return {"ok": True, "post_id": pid, "entry_status": "pending",
+                "post_type": ptype,
+                "note": "Thank you — our team gives every share a quick look"
+                        " before it goes live."}
+
+    @app.post("/api/community/rewards/zetu/redeem")
+    def community_zetu_redeem(request: Request, payload: dict = Body(default={})):
+        """Photoshoot at Zetu Studios — top of the rewards ladder. Same
+        affordability rule as the tank (lifetime − non-cancelled spends,
+        under the member row lock); lands as a 'booking' the team follows
+        up on personally within two working days."""
+        _ensure_tables()
+        _throttle(request, "redeem", [("ip", 10, 3600), ("global", 200, 3600)])
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                m = _require_member(cur, request)
+                cur.execute("SELECT id FROM community_members WHERE id = %s FOR UPDATE",
+                            (m["id"],))
+                cur.execute(
+                    """SELECT id FROM community_redemptions
+                        WHERE member_id = %s AND reward_key = 'zetu_shoot'
+                          AND status <> 'cancelled' LIMIT 1""", (m["id"],))
+                if cur.fetchone():
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Your shoot is already booked — we'll be in touch")
+                lifetime = _lifetime_points(cur, m)
+                cur.execute(
+                    """SELECT COALESCE(SUM(points_cost), 0) AS spent
+                       FROM community_redemptions
+                       WHERE member_id = %s AND status <> 'cancelled'""",
+                    (m["id"],))
+                spent = int(cur.fetchone()["spent"])
+                short = ZETU_SHOOT_POINTS - (lifetime - spent)
+                if short > 0:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"You need {short:,} more points for this one")
+                cur.execute(
+                    """INSERT INTO community_redemptions
+                           (member_id, reward_key, points_cost, status)
+                       VALUES (%s, 'zetu_shoot', %s, 'booking')
+                       RETURNING id""",
+                    (m["id"], ZETU_SHOOT_POINTS))
+                rid = cur.fetchone()["id"]
+            conn.commit()
+        _me_cache.pop(m["id"], None)
+        return {
+            "id": rid,
+            "status": "booking",
+            "points_cost": ZETU_SHOOT_POINTS,
+            "message": "Your moment in front of the lens is booked in — "
+                       "we'll be in touch within 2 working days to arrange "
+                       "your session at Zetu Studios.",
+        }
+
+    @app.get("/api/community/celebrations")
+    def community_celebrations(request: Request):
+        """The 'Shining This Week' wall — appreciation, never comparison.
+        No ranks, no numbers: a curated jewel of the week, warm editorial
+        reasons, real challenge winners and a welcome for new members
+        (only those who chose to appear in celebrations)."""
+        _ensure_tables()
+        _throttle(request, "fee", [("ip", 120, 60), ("global", 6000, 60)])
+        import datetime as _dt
+        week = _dt.date.today().isocalendar()
+        jewel = _CELEBRATION_JEWELS[(week[0] * 53 + week[1])
+                                    % len(_CELEBRATION_JEWELS)]
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    """SELECT p.id AS post_id, p.author_username AS username,
+                              p.winner_position, c.id AS challenge_id,
+                              c.title, c.hashtag
+                         FROM community_feed_posts p
+                         JOIN community_challenges c ON c.id = p.challenge_id
+                        WHERE p.winner_position IS NOT NULL
+                          AND p.entry_status = 'published'
+                          AND c.deadline <= now()
+                        ORDER BY c.deadline DESC, p.winner_position ASC
+                        LIMIT 9""")
+                winners = [dict(r) for r in cur.fetchall()]
+                cur.execute(
+                    """SELECT username,
+                              to_char(created_at, 'FMDD Mon') AS joined
+                         FROM community_members
+                        WHERE username IS NOT NULL
+                          AND COALESCE(show_leaderboard, TRUE)
+                          AND phone NOT LIKE '2547000001%'
+                          AND created_at >= now() - interval '7 days'
+                        ORDER BY created_at DESC LIMIT 6""")
+                new_jewels = [dict(r) for r in cur.fetchall()]
+        return {"jewel": jewel, "celebrated": list(_CELEBRATED),
+                "winners": winners, "new_jewels": new_jewels}
+
+    @app.post("/api/community/challenges/{cid}/vote")
+    def community_challenge_vote(cid: str, request: Request,
+                                 payload: dict = Body(...)):
+        _ensure_tables()
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                m = _require_member(cur, request)
+                _throttle(request, "cvt",
+                          [("ip", 60, 60), ("global", 4000, 3600)],
+                          phone=m.get("phone"))
+                cur.execute(_CH_SELECT + " WHERE c.id = %s", (cid,))
+                ch = cur.fetchone()
+                if not ch:
+                    raise HTTPException(status_code=404,
+                                        detail="Challenge not found")
+                if not bool(ch["voting_enabled"]):
+                    raise HTTPException(status_code=400,
+                                        detail="This challenge doesn't have community voting")
+                if bool(ch["closed"]):
+                    raise HTTPException(status_code=400,
+                                        detail="Voting closed with the challenge")
+                try:
+                    pid = int(payload.get("post_id"))
+                except (TypeError, ValueError):
+                    raise HTTPException(status_code=400,
+                                        detail="post_id required")
+                cur.execute(
+                    """SELECT author_member_id FROM community_feed_posts
+                        WHERE id = %s AND challenge_id = %s
+                          AND entry_status = 'published'""", (pid, cid))
+                target = cur.fetchone()
+                if not target:
+                    raise HTTPException(status_code=404,
+                                        detail="Entry not found")
+                if target["author_member_id"] == m["id"]:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="You can't vote for your own entry — but we love the confidence")
+                cur.execute(
+                    """SELECT post_id FROM community_challenge_votes
+                        WHERE challenge_id = %s AND member_id = %s
+                        FOR UPDATE""", (cid, m["id"]))
+                existing = cur.fetchone()
+                if existing and existing["post_id"] == pid:
+                    cur.execute(
+                        """DELETE FROM community_challenge_votes
+                            WHERE challenge_id = %s AND member_id = %s""",
+                        (cid, m["id"]))
+                    my_vote = None
+                else:
+                    cur.execute(
+                        """INSERT INTO community_challenge_votes
+                               (challenge_id, member_id, post_id)
+                           VALUES (%s, %s, %s)
+                           ON CONFLICT (challenge_id, member_id)
+                           DO UPDATE SET post_id = EXCLUDED.post_id,
+                                         created_at = now()""",
+                        (cid, m["id"], pid))
+                    my_vote = pid
+            conn.commit()
+        # No public tallies — votes shortlist quietly (top ten on close) and
+        # the Vivo team announces winners. Counts are staff-only, in the CRM.
+        return {"ok": True, "my_vote": my_vote}
+
+    @app.get("/api/community/entry-photo/{pid}")
+    def community_entry_photo(pid: int, request: Request):
+        _ensure_tables()
+        _throttle(request, "fee", [("ip", 120, 60), ("global", 6000, 60)])
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                mid = _feed_member_id(cur, request) or -1
+                cur.execute(
+                    """SELECT ph.image, ph.mime FROM community_entry_photos ph
+                        JOIN community_feed_posts p ON p.id = ph.post_id
+                       WHERE ph.post_id = %s
+                         AND (p.entry_status = 'published'
+                              OR p.author_member_id = %s)""", (pid, mid))
+                row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="No photo")
+        return Response(content=bytes(row["image"]),
+                        media_type=row.get("mime") or "image/jpeg",
+                        headers={"Cache-Control": "private, max-age=3600"})
+
+    @app.get("/api/community/my-entries")
+    def community_my_entries(request: Request):
+        _ensure_tables()
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                m = _require_member(cur, request)
+                cur.execute(
+                    """SELECT p.id, p.challenge_id, p.caption,
+                              p.entry_status, p.winner_position,
+                              p.created_at, p.published_at,
+                              p.post_type, p.media_kind,
+                              EXISTS (SELECT 1 FROM community_entry_photos ph
+                                       WHERE ph.post_id = p.id) AS has_media,
+                              c.title AS challenge_title, c.points
+                         FROM community_feed_posts p
+                         LEFT JOIN community_challenges c
+                                ON c.id = p.challenge_id
+                        WHERE p.author_member_id = %s
+                          AND p.entry_status IS NOT NULL
+                        ORDER BY p.created_at DESC LIMIT 50""", (m["id"],))
+                rows = cur.fetchall()
+        items = []
+        for r in rows:
+            ptype = r["post_type"] or "look"
+            if r["challenge_id"]:
+                pts = int(r["points"] or 0)
+            elif ptype == "question" or not r["has_media"]:
+                pts = 0
+            elif (r["media_kind"] or "") == "video":
+                pts = POST_VIDEO_PTS
+            else:
+                pts = POST_PHOTO_PTS
+            items.append({
+                "post_id": r["id"], "challenge_id": r["challenge_id"],
+                "challenge_title": r["challenge_title"],
+                "post_type": ptype,
+                "media_kind": r["media_kind"],
+                "points": pts,
+                "caption": r["caption"],
+                "entry_status": r["entry_status"],
+                "winner_position": r["winner_position"],
+                "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+                "published_at": r["published_at"].isoformat() if r["published_at"] else None,
+            })
+        return {"items": items}
+
+    @app.get("/api/crm/community-flagged-comments")
+    def crm_flagged_comments(request: Request, status: str = "open",
+                             limit: int = 200):
+        _ensure_tables()
+        st = status if status in ("open", "dismissed", "removed") else "open"
+        lim = max(1, min(int(limit or 200), 1000))
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT c.id AS comment_id, c.body,
+                           c.created_at AS commented_at,
+                           c.status AS comment_status,
+                           m.username AS author_username,
+                           p.id AS post_id, LEFT(p.caption, 90) AS post_caption,
+                           p.author_username AS post_author,
+                           COUNT(r.id)::int AS report_count,
+                           MIN(r.created_at) AS first_reported,
+                           STRING_AGG(DISTINCT NULLIF(TRIM(r.reason), ''),
+                                      ' · ') AS reasons
+                    FROM community_comment_reports r
+                    JOIN community_post_comments c ON c.id = r.comment_id
+                    JOIN community_members m ON m.id = c.member_id
+                    JOIN community_feed_posts p ON p.id = c.post_id
+                    WHERE r.status = %s
+                    GROUP BY c.id, c.body, c.created_at, c.status, m.username,
+                             p.id, p.caption, p.author_username
+                    ORDER BY MIN(r.created_at) ASC
+                    LIMIT %s""", (st, lim))
+                rows = cur.fetchall()
+        items = []
+        for r in rows:
+            d = dict(r)
+            for k in ("commented_at", "first_reported"):
+                if d.get(k):
+                    d[k] = d[k].isoformat()
+            items.append(d)
+        return {"items": items, "status": st}
+
+    @app.post("/api/crm/community-flagged-comments/{cid}/resolve")
+    def crm_flagged_comment_resolve(cid: int, request: Request,
+                                    payload: dict = Body(...)):
+        _ensure_tables()
+        action = str((payload or {}).get("action") or "").strip()
+        if action not in ("dismiss", "remove"):
+            raise HTTPException(status_code=400,
+                                detail="action must be dismiss or remove")
+        u = getattr(request.state, "user", None) or {}
+        staff = u.get("email") or u.get("username") or "staff"
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("""SELECT id, status FROM community_post_comments
+                                WHERE id = %s""", (cid,))
+                c = cur.fetchone()
+                if not c:
+                    raise HTTPException(status_code=404, detail="Comment not found")
+                if action == "remove" and c["status"] == "visible":
+                    cur.execute("""UPDATE community_post_comments
+                                      SET status = 'removed', removed_by = %s,
+                                          removed_at = now()
+                                    WHERE id = %s""", (staff, cid))
+                cur.execute("""UPDATE community_comment_reports
+                                  SET status = %s, resolved_by = %s,
+                                      resolved_at = now()
+                                WHERE comment_id = %s AND status = 'open'""",
+                            ("removed" if action == "remove" else "dismissed",
+                             staff, cid))
+                n = cur.rowcount
+            conn.commit()
+        return {"ok": True, "action": action, "reports_resolved": n}
+
     # Staff review lives OUTSIDE the /api/community/ member-token bypass, under
     # /api/crm/ on purpose: the global staff-session gate AND the CRM role gate
     # (customer_service / marketing / leadership / smt / admin) both run before
     # these handlers do.
+
+    @app.get("/api/crm/community-challenges")
+    def crm_community_challenges(request: Request):
+        """Challenge board for staff: status, entry pipeline and the winner
+        model (deciding) per challenge."""
+        _ensure_tables()
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT c.id, c.title, c.hashtag, c.points, c.prize,
+                           c.deadline, c.voting_enabled, c.deciding,
+                           (c.deadline <= now()) AS closed,
+                           COUNT(*) FILTER (WHERE p.entry_status = 'pending')::int
+                               AS pending,
+                           COUNT(*) FILTER (WHERE p.entry_status = 'published')::int
+                               AS published,
+                           COUNT(*) FILTER (WHERE p.winner_position IS NOT NULL)::int
+                               AS winners_set
+                    FROM community_challenges c
+                    LEFT JOIN community_feed_posts p ON p.challenge_id = c.id
+                    GROUP BY c.id
+                    ORDER BY (c.deadline <= now()) ASC, c.deadline ASC""")
+                rows = [dict(r) for r in cur.fetchall()]
+        for r in rows:
+            if r.get("deadline"):
+                r["deadline"] = r["deadline"].isoformat()
+        return {"items": rows}
+
+    @app.get("/api/crm/community-challenges/{cid}/shortlist")
+    def crm_community_challenge_shortlist(cid: str, request: Request):
+        """Winner-picking view. community_shortlist challenges surface the
+        community's top ten by votes (ties broken by earliest entry) once
+        closed; team_pick (and still-open) challenges list every published
+        entry. Vote counts are staff-only — members never see tallies."""
+        _ensure_tables()
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("""SELECT id, title, hashtag, points, prize,
+                                      deciding, voting_enabled,
+                                      (deadline <= now()) AS closed, deadline
+                                 FROM community_challenges WHERE id = %s""",
+                            (cid,))
+                ch = cur.fetchone()
+                if not ch:
+                    raise HTTPException(status_code=404,
+                                        detail="Challenge not found")
+                shortlisted = (ch["deciding"] == "community_shortlist"
+                               and bool(ch["closed"]))
+                cur.execute("""
+                    SELECT p.id AS post_id, p.author_username, p.caption,
+                           p.created_at, p.winner_position, p.marketing_ok,
+                           p.media_kind,
+                           EXISTS (SELECT 1 FROM community_entry_photos ph
+                                    WHERE ph.post_id = p.id) AS has_photo,
+                           (SELECT COUNT(*) FROM community_challenge_votes v
+                             WHERE v.post_id = p.id)::int AS vote_count
+                    FROM community_feed_posts p
+                    WHERE p.challenge_id = %s
+                      AND p.entry_status = 'published'
+                    ORDER BY vote_count DESC, p.created_at ASC
+                    LIMIT %s""", (cid, 10 if shortlisted else 200))
+                entries = []
+                for r in cur.fetchall():
+                    d = dict(r)
+                    if d.get("created_at"):
+                        d["created_at"] = d["created_at"].isoformat()
+                    entries.append(d)
+        ch = dict(ch)
+        if ch.get("deadline"):
+            ch["deadline"] = ch["deadline"].isoformat()
+        ch["closed"] = bool(ch["closed"])
+        return {"challenge": ch, "shortlist": shortlisted,
+                "winner_bonus": CHALLENGE_WINNER_BONUS_PTS,
+                "entries": entries}
+
+    @app.get("/api/crm/community-redemptions")
+    def crm_community_redemptions(request: Request, status: str = "",
+                                  reward_key: str = "", limit: int = 200):
+        """Redemption queue for staff — Zetu shoots to schedule, tanks to
+        stitch. Member contact details ride along so the team can call;
+        design bytes never do (has_design flag only)."""
+        _ensure_tables()
+        lim = max(1, min(int(limit or 200), 500))
+        conds, args = [], []
+        if status:
+            conds.append("r.status = %s")
+            args.append(status)
+        if reward_key:
+            conds.append("r.reward_key = %s")
+            args.append(reward_key)
+        where = (" WHERE " + " AND ".join(conds)) if conds else ""
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT r.id, r.member_id, r.reward_key, r.points_cost,
+                           r.sku, r.size, r.colour, r.embroidery_type,
+                           r.monogram_text, r.monogram_style,
+                           (r.design_image IS NOT NULL) AS has_design,
+                           r.collection_method, r.pickup_store,
+                           r.status, r.status_note, r.created_at,
+                           m.full_name, m.username, m.phone
+                    FROM community_redemptions r
+                    JOIN community_members m ON m.id = r.member_id""" + where + """
+                    ORDER BY (r.status IN ('in_review', 'booking')) DESC,
+                             r.created_at DESC
+                    LIMIT %s""", (*args, lim))
+                rows = []
+                for r in cur.fetchall():
+                    d = dict(r)
+                    if d.get("created_at"):
+                        d["created_at"] = d["created_at"].isoformat()
+                    rows.append(d)
+                cur.execute("""SELECT status, COUNT(*)::int AS n
+                                 FROM community_redemptions
+                                GROUP BY status""")
+                counts = {r["status"]: int(r["n"]) for r in cur.fetchall()}
+        return {"items": rows, "counts": counts}
+
+    @app.put("/api/crm/community-redemptions/{rid}/status")
+    def crm_community_redemption_status(rid: int, request: Request,
+                                        payload: dict = Body(...)):
+        """Staff move a redemption along (Zetu shoots: booking → scheduled →
+        done). Cancelling refunds automatically — spendable points are
+        derived from non-cancelled redemptions."""
+        _ensure_tables()
+        status = str((payload or {}).get("status") or "").strip()
+        note = str((payload or {}).get("note") or "").strip()[:300] or None
+        allowed = ("in_review", "needs_changes", "stitching", "booking",
+                   "scheduled", "ready", "collected", "done", "cancelled")
+        if status not in allowed:
+            raise HTTPException(status_code=400,
+                                detail=f"status must be one of {', '.join(allowed)}")
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    """UPDATE community_redemptions
+                          SET status = %s, status_note = %s
+                        WHERE id = %s
+                        RETURNING id, member_id, reward_key, status""",
+                    (status, note, rid))
+                row = cur.fetchone()
+                if not row:
+                    raise HTTPException(status_code=404,
+                                        detail="Redemption not found")
+            conn.commit()
+        _me_cache.pop(row["member_id"], None)
+        return {"ok": True, "id": row["id"], "status": row["status"],
+                "reward_key": row["reward_key"]}
+
+    @app.get("/api/crm/community-entries")
+    def crm_community_entries(request: Request, status: str = "pending",
+                              limit: int = 200, scope: str = "all"):
+        _ensure_tables()
+        st = status if status in ("pending", "published", "rejected") else "pending"
+        lim = max(1, min(int(limit or 200), 1000))
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                sc = scope if scope in ("all", "challenges", "posts") else "all"
+                extra = {"challenges": " AND p.challenge_id IS NOT NULL",
+                         "posts": " AND p.challenge_id IS NULL"}.get(sc, "")
+                cur.execute("""
+                    SELECT p.id AS post_id, p.caption, p.created_at,
+                           p.published_at, p.entry_status, p.marketing_ok,
+                           p.winner_position, p.author_username,
+                           p.author_member_id, p.tagged,
+                           p.post_type, p.media_kind, p.fit_note, p.image_url,
+                           c.id AS challenge_id, c.title AS challenge_title,
+                           c.points, (c.deadline <= now()) AS challenge_closed,
+                           EXISTS (SELECT 1 FROM community_entry_photos ph
+                                    WHERE ph.post_id = p.id) AS has_photo,
+                           (SELECT COUNT(*) FROM community_challenge_votes v
+                             WHERE v.post_id = p.id)::int AS vote_count
+                    FROM community_feed_posts p
+                    LEFT JOIN community_challenges c ON c.id = p.challenge_id
+                    WHERE p.entry_status = %s""" + extra + """
+                    ORDER BY p.created_at ASC LIMIT %s""", (st, lim))
+                rows = cur.fetchall()
+                counts = {}
+                cur.execute("""SELECT entry_status, COUNT(*)::int AS n
+                                 FROM community_feed_posts
+                                WHERE entry_status IS NOT NULL
+                                GROUP BY entry_status""")
+                for r in cur.fetchall():
+                    counts[r["entry_status"]] = int(r["n"])
+        items = []
+        for r in rows:
+            d = dict(r)
+            for k in ("created_at", "published_at"):
+                if d.get(k):
+                    d[k] = d[k].isoformat()
+            items.append(d)
+        return {"items": items, "status": st, "counts": counts}
+
+    @app.get("/api/crm/community-entries/{pid}/photo")
+    def crm_community_entry_photo(pid: int, request: Request):
+        _ensure_tables()
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("""SELECT image, mime FROM community_entry_photos
+                                WHERE post_id = %s""", (pid,))
+                row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="No photo on this entry")
+        return Response(content=bytes(row["image"]),
+                        media_type=row.get("mime") or "image/jpeg")
+
+    @app.post("/api/crm/community-entries/{pid}/review")
+    def crm_community_entry_review(pid: int, request: Request,
+                                   payload: dict = Body(...)):
+        _ensure_tables()
+        action = str((payload or {}).get("action") or "").strip()
+        if action not in ("publish", "reject"):
+            raise HTTPException(status_code=400,
+                                detail="action must be publish or reject")
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    """SELECT p.id, p.entry_status, p.author_member_id,
+                              p.challenge_id, p.post_type,
+                              (SELECT ph.mime FROM community_entry_photos ph
+                                WHERE ph.post_id = p.id) AS media_mime,
+                              c.points
+                         FROM community_feed_posts p
+                         LEFT JOIN community_challenges c
+                                ON c.id = p.challenge_id
+                        WHERE p.id = %s FOR UPDATE OF p""", (pid,))
+                row = cur.fetchone()
+                if not row:
+                    raise HTTPException(status_code=404,
+                                        detail="Entry not found")
+                if row["entry_status"] != "pending":
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"Entry already {row['entry_status']}")
+                awarded = False
+                if action == "publish":
+                    cur.execute(
+                        """UPDATE community_feed_posts
+                              SET status = 'approved',
+                                  entry_status = 'published',
+                                  published_at = now()
+                            WHERE id = %s""", (pid,))
+                    # Points land HERE — on publication, never submission.
+                    # kind is per-entry so the award is idempotent forever.
+                    # Typed award: challenge entries pay the challenge's
+                    # points; community looks pay by media (video > photo);
+                    # questions are conversation, never paid (and the UI
+                    # never mentions points around them).
+                    pts, kind = 0, None
+                    if row["challenge_id"]:
+                        pts = int(row["points"] or 0)
+                        kind = f"challenge_entry_{pid}"
+                    elif (row["post_type"] or "look") != "question":
+                        mime = row["media_mime"] or ""
+                        pts = (POST_VIDEO_PTS if mime.startswith("video/")
+                               else POST_PHOTO_PTS if mime else 0)
+                        kind = f"post_{pid}"
+                    if row["author_member_id"] and kind and pts > 0:
+                        cur.execute(
+                            """INSERT INTO community_points_events
+                                   (member_id, kind, points)
+                               VALUES (%s, %s, %s)
+                               ON CONFLICT (member_id, kind) DO NOTHING
+                               RETURNING id""",
+                            (row["author_member_id"], kind, pts))
+                        awarded = cur.fetchone() is not None
+                        _me_cache.pop(row["author_member_id"], None)
+                else:
+                    cur.execute(
+                        """UPDATE community_feed_posts
+                              SET status = 'rejected',
+                                  entry_status = 'rejected'
+                            WHERE id = %s""", (pid,))
+            conn.commit()
+        return {"ok": True, "action": action, "points_awarded": awarded}
+
+    @app.post("/api/crm/community-entries/{pid}/winner")
+    def crm_community_entry_winner(pid: int, request: Request,
+                                   payload: dict = Body(...)):
+        _ensure_tables()
+        pos = (payload or {}).get("position")
+        if pos is not None:
+            try:
+                pos = int(pos)
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400,
+                                    detail="position must be 1-3 or null")
+            if pos not in (1, 2, 3):
+                raise HTTPException(status_code=400,
+                                    detail="position must be 1-3 or null")
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    """SELECT p.id, p.challenge_id, p.entry_status,
+                              p.author_member_id,
+                              (c.deadline <= now()) AS closed
+                         FROM community_feed_posts p
+                         JOIN community_challenges c ON c.id = p.challenge_id
+                        WHERE p.id = %s FOR UPDATE OF p""", (pid,))
+                row = cur.fetchone()
+                if not row:
+                    raise HTTPException(status_code=404,
+                                        detail="Entry not found")
+                if row["entry_status"] != "published":
+                    raise HTTPException(status_code=400,
+                                        detail="Only published entries can win")
+                if not bool(row["closed"]):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Winners are picked after the challenge closes")
+                displaced = []
+                if pos is not None:
+                    cur.execute(
+                        """UPDATE community_feed_posts
+                              SET winner_position = NULL
+                            WHERE challenge_id = %s AND winner_position = %s
+                              AND id <> %s
+                            RETURNING id, author_member_id""",
+                        (row["challenge_id"], pos, pid))
+                    displaced = cur.fetchall()
+                cur.execute(
+                    """UPDATE community_feed_posts SET winner_position = %s
+                        WHERE id = %s""", (pos, pid))
+                # Winner bonus reconciles with the ribbon: +200 lands when a
+                # position is set (idempotent — kind is entry-scoped and
+                # UNIQUE per member), and is removed when the position is
+                # cleared or the entry is displaced by a re-pick.
+                touched = set()
+                if pos is not None and row["author_member_id"]:
+                    cur.execute(
+                        """INSERT INTO community_points_events
+                               (member_id, kind, points)
+                           VALUES (%s, %s, %s)
+                           ON CONFLICT (member_id, kind) DO NOTHING""",
+                        (row["author_member_id"],
+                         f"challenge_winner_{pid}",
+                         CHALLENGE_WINNER_BONUS_PTS))
+                    touched.add(row["author_member_id"])
+                clear_ids = [d["id"] for d in displaced]
+                if pos is None:
+                    clear_ids.append(pid)
+                if clear_ids:
+                    cur.execute(
+                        """DELETE FROM community_points_events
+                            WHERE kind = ANY(%s)
+                            RETURNING member_id""",
+                        ([f"challenge_winner_{i}" for i in clear_ids],))
+                    touched.update(r["member_id"] for r in cur.fetchall())
+            conn.commit()
+        for mid_ in touched:
+            _me_cache.pop(mid_, None)
+        return {"ok": True, "position": pos,
+                "winner_bonus": CHALLENGE_WINNER_BONUS_PTS}
+
+    @app.get("/api/crm/community-survey/summary")
+    def crm_community_survey_summary(request: Request, wave_id: int = 0):
+        """Aggregate-only survey results for staff: counts per option, NPS
+        (%promoters − %detractors), tier split, anonymous comments.
+        Individual member rows are deliberately never exposed here."""
+        _ensure_tables()
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("""SELECT w.id, w.wave_key, w.title, w.status, w.created_at,
+                                      COUNT(r.id) AS responses
+                                 FROM community_survey_waves w
+                                 LEFT JOIN community_survey_responses r ON r.wave_id = w.id
+                             GROUP BY w.id
+                             ORDER BY w.id DESC""")
+                waves = [dict(r) for r in cur.fetchall()]
+                if not waves:
+                    return {"waves": [], "wave": None, "n": 0, "questions": [],
+                            "nps": None, "by_tier": [], "median_duration_secs": None}
+                sel = next((x for x in waves if x["id"] == wave_id), waves[0])
+                cur.execute("SELECT questions FROM community_survey_waves WHERE id = %s",
+                            (sel["id"],))
+                questions = (cur.fetchone() or {}).get("questions") or []
+                cur.execute("""SELECT answers, nps, tier_at, duration_secs
+                                 FROM community_survey_responses
+                                WHERE wave_id = %s""", (sel["id"],))
+                rows = cur.fetchall()
+        n = len(rows)
+        qs = []
+        for q in questions:
+            entries = [q]
+            f = q.get("followup")
+            if f:
+                entries.append({"id": f.get("id"), "kind": "single",
+                                "title": f.get("title"), "options": f.get("options")})
+            for e in entries:
+                qid, kind = e.get("id"), e.get("kind")
+                if kind in ("single", "multi"):
+                    counts = {o: 0 for o in (e.get("options") or [])}
+                    answered = 0
+                    for r in rows:
+                        v = (r.get("answers") or {}).get(qid)
+                        if v is None:
+                            continue
+                        answered += 1
+                        for x in (v if isinstance(v, list) else [v]):
+                            if x in counts:
+                                counts[x] += 1
+                    qs.append({"id": qid, "title": e.get("title"), "kind": kind,
+                               "answered": answered,
+                               "options": [{"label": o, "n": c,
+                                            "pct": round(100.0 * c / answered, 1) if answered else 0.0}
+                                           for o, c in counts.items()]})
+                elif kind == "nps":
+                    vals = [r["nps"] for r in rows if r.get("nps") is not None]
+                    qs.append({"id": qid, "title": e.get("title"), "kind": "nps",
+                               "answered": len(vals),
+                               "options": [{"label": str(i),
+                                            "n": sum(1 for v in vals if v == i),
+                                            "pct": round(100.0 * sum(1 for v in vals if v == i) / len(vals), 1) if vals else 0.0}
+                                           for i in range(11)]})
+                elif kind == "text":
+                    comments = [c for c in
+                                ((r.get("answers") or {}).get(qid) for r in rows) if c]
+                    qs.append({"id": qid, "title": e.get("title"), "kind": "text",
+                               "answered": len(comments),
+                               "comments": comments[-50:][::-1]})
+        vals = [r["nps"] for r in rows if r.get("nps") is not None]
+        nps = None
+        if vals:
+            promoters = sum(1 for v in vals if v >= 9)
+            detractors = sum(1 for v in vals if v <= 6)
+            nps = {"score": int(round(100.0 * (promoters - detractors) / len(vals))),
+                   "promoters": promoters,
+                   "passives": len(vals) - promoters - detractors,
+                   "detractors": detractors,
+                   "avg": round(sum(vals) / float(len(vals)), 1),
+                   "n": len(vals)}
+        tiers = {}
+        for r in rows:
+            t = r.get("tier_at") or "—"
+            b = tiers.setdefault(t, {"tier": t, "n": 0, "vals": []})
+            b["n"] += 1
+            if r.get("nps") is not None:
+                b["vals"].append(r["nps"])
+        by_tier = []
+        for t in ("Tsavorite", "Ruby", "Tanzanite", "—"):
+            b = tiers.get(t)
+            if not b:
+                continue
+            tv = b.pop("vals")
+            b["nps"] = (int(round(100.0 * (sum(1 for v in tv if v >= 9) - sum(1 for v in tv if v <= 6)) / len(tv)))
+                        if tv else None)
+            by_tier.append(b)
+        durations = sorted(r["duration_secs"] for r in rows if r.get("duration_secs") is not None)
+        return {"waves": waves, "wave": sel, "n": n, "questions": qs, "nps": nps,
+                "by_tier": by_tier,
+                "median_duration_secs": durations[len(durations) // 2] if durations else None}
 
     @app.get("/api/crm/community-contact")
     def crm_community_contact_list(request: Request, status: str = "all", limit: int = 200):
@@ -3200,7 +5708,13 @@ def register_community_routes(app, api_pg_module):
                 tier, limit, used = _tryon_allowance(cur, m)
             conn.commit()
         return {"tier": tier, "limit": limit, "used": used,
-                "remaining": max(0, limit - used),
+                "remaining": (None if limit is None else max(0, limit - used)),
+                "unlimited": limit is None,
+                "locked": limit == 0,
+                # Full per-tier ladder (TIER_LADDER order) so app copy always
+                # mirrors TRYON_WEEK_LIMITS — no rebuild when the split changes.
+                "ladder": [{"tier": t, "limit": TRYON_WEEK_LIMITS.get(t)}
+                           for t, _ in TIER_LADDER],
                 "demo": TRYON_FORCE_DEMO or not (
                     os.environ.get("AI_INTEGRATIONS_GEMINI_BASE_URL")
                     and os.environ.get("AI_INTEGRATIONS_GEMINI_API_KEY"))}
@@ -3246,7 +5760,11 @@ def register_community_routes(app, api_pg_module):
                     raise HTTPException(status_code=409,
                                         detail="One look is already being styled — give it a moment")
                 tier, limit, used = _tryon_allowance(cur, m)
-                if used >= limit:
+                if limit == 0:
+                    raise HTTPException(
+                        status_code=403,
+                        detail="Virtual try-on unlocks at a higher Johari tier — keep earning to get there")
+                if limit is not None and used >= limit:
                     raise HTTPException(
                         status_code=403,
                         detail=f"You've used all {limit} try-ons this week — your allowance resets on Monday")
@@ -3255,7 +5773,7 @@ def register_community_routes(app, api_pg_module):
                        VALUES (%s, %s, %s, %s) RETURNING id""",
                     (m["id"], photo_id, sku, prod["style_name"] or sku))
                 new_id = cur.fetchone()["id"]
-                remaining = max(0, limit - used - 1)
+                remaining = None if limit is None else max(0, limit - used - 1)
             conn.commit()
         threading.Thread(target=_tryon_worker, args=(new_id,), daemon=True).start()
         return {"ok": True, "id": new_id, "status": "pending", "remaining": remaining}
@@ -3438,6 +5956,14 @@ def register_community_routes(app, api_pg_module):
                         WHERE member_id = %s""", (mid,))
                 quiz = cur.fetchone()
                 cur.execute(
+                    """SELECT r.answers, r.nps, r.duration_secs, r.completed_at,
+                              w.wave_key, w.title
+                         FROM community_survey_responses r
+                         JOIN community_survey_waves w ON w.id = r.wave_id
+                        WHERE r.member_id = %s
+                        ORDER BY r.completed_at DESC""", (mid,))
+                surveys = [dict(r) for r in cur.fetchall()]
+                cur.execute(
                     """SELECT id, kind, status, created_at
                          FROM community_data_requests
                         WHERE member_id = %s
@@ -3449,6 +5975,7 @@ def register_community_routes(app, api_pg_module):
             "designs": designs,
             "messages": messages,
             "style_quiz": dict(quiz) if quiz else None,
+            "surveys": surveys,
             "requests": reqs,
         }
 
@@ -3593,6 +6120,23 @@ def register_community_routes(app, api_pg_module):
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 m = _require_member(cur, request)
                 cur.execute("DELETE FROM community_style_quiz WHERE member_id = %s", (m["id"],))
+                gone = cur.rowcount
+            conn.commit()
+        if not gone:
+            raise HTTPException(status_code=404, detail="Nothing to delete")
+        return {"ok": True}
+
+    @app.delete("/api/community/survey/response")
+    def community_survey_response_delete(request: Request):
+        """DPA: delete her survey answers (every wave). Points already
+        earned stay put — UNIQUE(member_id, kind) on the points ledger
+        means a later retake never re-awards."""
+        _ensure_tables()
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                m = _require_member(cur, request)
+                cur.execute("DELETE FROM community_survey_responses WHERE member_id = %s",
+                            (m["id"],))
                 gone = cur.rowcount
             conn.commit()
         if not gone:

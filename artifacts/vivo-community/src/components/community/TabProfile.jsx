@@ -1,14 +1,16 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { api } from "@/lib/api";
 import { TierBadge, Avatar, cardCls, btnSecondary, inputCls } from "./ui";
-import { MapPin, Package, ArrowRight, LogOut, Camera, Ruler, Check, Loader2, ShieldCheck, AtSign, Clock, Heart, ChevronRight, HelpCircle, Hourglass, MessageCircle, Sparkles } from "lucide-react";
+import { MapPin, Package, ArrowRight, LogOut, Camera, Ruler, Check, Loader2, ShieldCheck, AtSign, Clock, Heart, ChevronRight, HelpCircle, Hourglass, MessageCircle, Sparkles, ClipboardList, Trophy } from "lucide-react";
 import { useWishlist } from "@/context/WishlistContext";
-import EntryModal, { getEntries } from "./EntryModal";
+import EntryModal, { ENTRY_STATUS_COPY } from "./EntryModal";
+
+const WIN_LABEL = { 1: "1st place", 2: "2nd place", 3: "3rd place" };
 
 function fmtDate(iso) {
   if (!iso) return "";
   try {
-    return new Date(iso + "T00:00:00").toLocaleDateString("en-GB", {
+    return new Date(String(iso).includes("T") ? iso : iso + "T00:00:00").toLocaleDateString("en-GB", {
       day: "numeric", month: "short", year: "numeric",
     });
   } catch {
@@ -186,24 +188,24 @@ function PrivacySettings({ member, onMemberUpdate }) {
         <div>
           <div className="text-[13px] font-semibold text-foreground mb-1 flex items-center gap-2">Show my tier badge <SavedTick show={saved === "show_tier"} /></div>
           <p className="text-[13px] text-muted-foreground leading-relaxed">
-            Adds your Tsavorite, Ruby or Tanzanite badge beside your username on posts and the leaderboard. Off means only you see your tier.
+            Adds your Tsavorite, Ruby or Tanzanite gem beside your username on posts and celebrations. Off means only you see your tier.
           </p>
         </div>
         <Toggle checked={!!m.show_tier} disabled={busy === "show_tier"} testId="toggle-show-tier"
-          label="Show my tier badge on my posts and the leaderboard"
+          label="Show my tier badge on my posts and celebrations"
           onChange={(v) => save({ show_tier: v }, "show_tier")} />
       </div>
 
-      {/* Leaderboard visibility */}
+      {/* Celebration visibility */}
       <div className="p-5 flex items-start justify-between gap-4">
         <div>
-          <div className="text-[13px] font-semibold text-foreground mb-1 flex items-center gap-2">Appear on leaderboards <SavedTick show={saved === "show_leaderboard"} /></div>
+          <div className="text-[13px] font-semibold text-foreground mb-1 flex items-center gap-2">Appear in community celebrations <SavedTick show={saved === "show_leaderboard"} /></div>
           <p className="text-[13px] text-muted-foreground leading-relaxed">
-            When this is off, you're left off the community leaderboard entirely. Your activity still earns points — privately.
+            When this is off, we never feature you on the celebration wall — jewel of the week, weekly celebrations or winner spotlights. Your activity still earns points — privately.
           </p>
         </div>
         <Toggle checked={m.show_leaderboard !== false} disabled={busy === "show_leaderboard"} testId="toggle-show-leaderboard"
-          label="Appear on leaderboards"
+          label="Appear in community celebrations"
           onChange={(v) => save({ show_leaderboard: v }, "show_leaderboard")} />
       </div>
 
@@ -215,7 +217,11 @@ function PrivacySettings({ member, onMemberUpdate }) {
 export default function TabProfile({ member, onSignOut, onMemberUpdate, onOpenWishlist, onOpenPage, onOpenEvents, onOpenEvent, onOpenQuiz }) {
   const { count: wishCount } = useWishlist();
   const [shareOpen, setShareOpen] = useState(false);
-  const [myEntries, setMyEntries] = useState(getEntries);
+  // Live style journal — everything she's shared, pending or published.
+  const [myEntries, setMyEntries] = useState([]);
+  const loadEntries = () =>
+    api.myEntries().then((d) => setMyEntries(d.items || [])).catch(() => {});
+  useEffect(() => { loadEntries(); }, []);
 
   // Upcoming events where this member holds a spot — confirmed RSVPs and
   // waitlist places alike. Quiet on failure — the Events tab owns
@@ -304,7 +310,7 @@ export default function TabProfile({ member, onSignOut, onMemberUpdate, onOpenWi
         {/* Stats Row */}
         <div className="grid grid-cols-4 gap-4 mt-12 pt-8 border-t border-border text-center relative z-10">
           <div>
-            <div className="text-2xl font-serif text-foreground">0</div>
+            <div data-testid="profile-posts" className="text-2xl font-serif text-foreground">{myEntries.filter((e) => e.entry_status === "published").length}</div>
             <div className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground mt-2">Posts</div>
           </div>
           <div>
@@ -329,23 +335,42 @@ export default function TabProfile({ member, onSignOut, onMemberUpdate, onOpenWi
           {myEntries.length > 0 ? (
             <div className="space-y-4">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                {myEntries.map((e) => (
-                  <div key={e.id} className={`${cardCls} p-5`} data-testid={`journal-entry-${e.id}`}>
-                    <div className="flex items-center justify-between gap-3 mb-3">
-                      <span className="inline-flex items-center gap-1.5 bg-secondary border border-border text-muted-foreground text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-sm">
-                        <Clock size={11} strokeWidth={2} /> {e.status === "not_published" ? "Not published this time" : "In review"}
-                      </span>
-                      <span className="text-[11px] text-muted-foreground">{fmtDate(e.date)}</span>
+                {myEntries.map((e) => {
+                  const won = (e.winner_position || 0) >= 1;
+                  const title = e.challenge_title
+                    ? e.challenge_title
+                    : e.post_type === "question" ? "Question to the community"
+                    : e.media_kind === "video" ? "Video look" : "Shared look";
+                  return (
+                    <div key={e.post_id} className={`${cardCls} p-5`} data-testid={`journal-entry-${e.post_id}`}>
+                      <div className="flex items-center justify-between gap-3 mb-3">
+                        {won ? (
+                          <span data-testid={`journal-winner-${e.post_id}`} className="inline-flex items-center gap-1.5 bg-[#d1a657]/15 border border-[#d1a657]/40 text-foreground text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-sm">
+                            <Trophy size={11} strokeWidth={2} className="text-[#d1a657]" /> {WIN_LABEL[e.winner_position] || "Winner"}
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1.5 bg-secondary border border-border text-muted-foreground text-[10px] font-bold uppercase tracking-wider px-2 py-1 rounded-sm">
+                            <Clock size={11} strokeWidth={2} /> {ENTRY_STATUS_COPY[e.entry_status] || "In review"}
+                          </span>
+                        )}
+                        <span className="text-[11px] text-muted-foreground">{fmtDate(e.created_at)}</span>
+                      </div>
+                      <div className="font-medium text-foreground text-[14px] mb-1">{title}</div>
+                      {e.caption && <p className="text-[13px] text-muted-foreground leading-relaxed mb-3 line-clamp-2">{e.caption}</p>}
+                      <p className="text-[12px] text-muted-foreground leading-relaxed border-t border-border pt-3">
+                        {e.entry_status === "rejected"
+                          ? "This one didn't go live — tweak it and reshare anytime, we'd love to see it again."
+                          : e.entry_status === "published"
+                            ? (won
+                                ? "Celebrated in the community — vigelegele!"
+                                : e.points > 0 ? `Live in the community — ${e.points} pts earned.` : "Live in the community.")
+                            : e.points > 0
+                              ? `Only you can see this while our team takes a look. You'll earn ${e.points} pts the moment it's published.`
+                              : "Only you can see this while our team takes a look."}
+                      </p>
                     </div>
-                    <div className="font-medium text-foreground text-[14px] mb-1">{e.title}</div>
-                    {e.caption && <p className="text-[13px] text-muted-foreground leading-relaxed mb-3">{e.caption}</p>}
-                    <p className="text-[12px] text-muted-foreground leading-relaxed border-t border-border pt-3">
-                      {e.status === "not_published"
-                        ? "This one didn't go live — tweak it and reshare anytime, we'd love to see it again."
-                        : `Only you can see this while our team takes a look. You'll earn ${e.points} pts the moment it's published.`}
-                    </p>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
               <div className="flex flex-col sm:flex-row sm:items-center gap-4 justify-between">
                 <p className="text-[12px] text-muted-foreground leading-relaxed max-w-md">
@@ -369,7 +394,7 @@ export default function TabProfile({ member, onSignOut, onMemberUpdate, onOpenWi
                 Share your first look
               </button>
               <p className="text-[11px] text-muted-foreground mt-4">
-                Earn 30 pts when your look is published — every share is reviewed with love first.
+                Earn 50 pts when your photo look is published — 100 for a video. Every share is reviewed with love first.
               </p>
             </div>
           )}
@@ -406,6 +431,11 @@ export default function TabProfile({ member, onSignOut, onMemberUpdate, onOpenWi
                     <div className="font-medium text-foreground text-[14px] group-hover:text-primary-ink transition-colors">{o.order}</div>
                     <div className="text-primary-ink font-medium text-[13px]">+{o.pts} pts</div>
                   </div>
+                  {o.styles && (
+                    <div className="text-[11px] text-muted-foreground -mt-2 mb-3 truncate">
+                      Style{String(o.styles).includes(",") ? "s" : ""} {o.styles}
+                    </div>
+                  )}
                   <div className="flex justify-between items-end text-[12px]">
                     <div className="text-muted-foreground flex items-center gap-1.5"><Package size={14} /> {fmtDate(o.date)}</div>
                     <div className="font-medium text-foreground">KES {Math.round(o.total_kes).toLocaleString()}</div>
@@ -522,6 +552,20 @@ export default function TabProfile({ member, onSignOut, onMemberUpdate, onOpenWi
               <ChevronRight size={16} className="text-muted-foreground group-hover:text-foreground transition-colors shrink-0" />
             </button>
             <button
+              data-testid="profile-survey-link"
+              onClick={() => onOpenPage?.("survey")}
+              className="w-full p-5 flex items-center gap-4 text-left border-t border-border hover:bg-secondary/50 transition-colors group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset"
+            >
+              <span className="w-11 h-11 rounded-full bg-secondary border border-border flex items-center justify-center text-primary-ink shrink-0">
+                <ClipboardList size={18} strokeWidth={1.5} />
+              </span>
+              <span className="flex-grow min-w-0">
+                <span className="block font-medium text-foreground text-[15px]">Help us dress you better</span>
+                <span className="block text-[13px] text-muted-foreground mt-0.5">A three-minute survey — 30 points, instantly.</span>
+              </span>
+              <ChevronRight size={16} className="text-muted-foreground group-hover:text-foreground transition-colors shrink-0" />
+            </button>
+            <button
               data-testid="profile-contact-link"
               onClick={() => onOpenPage?.("contact")}
               className="w-full p-5 flex items-center gap-4 text-left border-t border-border hover:bg-secondary/50 transition-colors group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset"
@@ -552,11 +596,13 @@ export default function TabProfile({ member, onSignOut, onMemberUpdate, onOpenWi
         </div>
       </div>
 
-      <EntryModal
-        challenge={shareOpen ? { id: "style-post", title: "My Style Journal", points: 30, kind: "look" } : null}
-        onClose={() => setShareOpen(false)}
-        onSubmitted={() => setMyEntries(getEntries())}
-      />
+      {shareOpen && (
+        <EntryModal
+          postType="look"
+          onClose={() => setShareOpen(false)}
+          onSubmitted={loadEntries}
+        />
+      )}
 
     </div>
   );

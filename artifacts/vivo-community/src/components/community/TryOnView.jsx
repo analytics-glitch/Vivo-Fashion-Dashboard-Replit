@@ -13,6 +13,10 @@ const PRIVACY_COPY = "Your photos are private. We use them only to create your t
 const FRAMING_COPY = "See it on you — a fun AI preview of the look. For the perfect fit, check the size guide and community fit notes.";
 const LOADING_LINES = ["Styling you…", "Draping the fabric…", "Perfecting the fall…", "Almost there…"];
 const HANDOFF_KEY = "vivo_tryon_sku";
+// Hand-off stash: the mount effect moves the sessionStorage key here at once
+// so a discarded double-mount pass (StrictMode/remount) can't swallow it;
+// the surviving pass consumes it (see the mount effect).
+let _pendingHandoff = "";
 const displaySize = (s) => (s === "F" ? "One Size" : s);
 
 // Client-side downscale before upload: phone photos are 3–12MB straight off
@@ -266,11 +270,14 @@ export default function TryOnView({ onBack, member }) {
   // matters for this one entry).
   useEffect(() => {
     let alive = true;
-    let handoff = "";
+    // Double-mount-safe hand-off consume (StrictMode or any quick remount):
+    // the key moves to module scope immediately; only the pass that survives
+    // to the resolve consumes it, so a discarded pass can't swallow it.
     try {
-      handoff = sessionStorage.getItem(HANDOFF_KEY) || "";
-      sessionStorage.removeItem(HANDOFF_KEY);
+      const k = sessionStorage.getItem(HANDOFF_KEY);
+      if (k) { _pendingHandoff = k; sessionStorage.removeItem(HANDOFF_KEY); }
     } catch { /* private mode */ }
+    const handoff = _pendingHandoff;
     Promise.all([
       api.tryonAllowance().catch(() => null),
       api.tryonPhotos().catch(() => ({ items: [] })),
@@ -278,6 +285,7 @@ export default function TryOnView({ onBack, member }) {
       handoff ? api.product(handoff).catch(() => null) : Promise.resolve(null),
     ]).then(([a, p, l, prod]) => {
       if (!alive) return;
+      if (handoff) _pendingHandoff = ""; // consumed by the surviving mount
       if (a) setAllowance(a);
       setPhotos(p.items || []);
       setLooks(l.items || []);
@@ -447,8 +455,16 @@ export default function TryOnView({ onBack, member }) {
     step === "result" && currentLook ? `/tryon/looks/${currentLook.id}/image` : ""
   );
 
-  const remaining = allowance ? Math.max(0, allowance.limit - allowance.used) : null;
-  const outOfTries = remaining !== null && remaining <= 0;
+  // limit === null ⇒ unlimited tier; limit === 0 ⇒ this tier doesn't include
+  // try-on (the server config can make it Tanzanite-exclusive later — the
+  // ladder copy below comes from the API so that switch needs no rebuild).
+  const unlimited = !!allowance && allowance.limit == null;
+  const locked = !!allowance && allowance.limit === 0;
+  const remaining = allowance && !unlimited ? Math.max(0, allowance.limit - allowance.used) : null;
+  const outOfTries = !unlimited && remaining !== null && remaining <= 0;
+  const ladderText = (allowance?.ladder || [])
+    .map((l) => `${l.tier} ${l.limit == null ? "unlimited" : l.limit === 0 ? "not included" : `${l.limit}/week`}`)
+    .join(" · ");
 
   if (!ready) {
     return (
@@ -470,9 +486,9 @@ export default function TryOnView({ onBack, member }) {
         >
           <ArrowLeft size={15} /> {step === "result" ? "Try-On" : "Back"}
         </button>
-        {allowance && step !== "generating" && (
+        {allowance && !locked && step !== "generating" && (
           <span data-testid="tryon-remaining" className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-            {remaining} of {allowance.limit} left this week
+            {unlimited ? "Unlimited this week" : `${remaining} of ${allowance.limit} left this week`}
           </span>
         )}
       </div>
@@ -659,12 +675,17 @@ export default function TryOnView({ onBack, member }) {
           >
             <Sparkles size={15} /> Style me in this
           </button>
-          {outOfTries && allowance && (
-            <p data-testid="tryon-out-of-tries" className="text-[13px] text-muted-foreground text-center -mt-2">
-              You've used all {allowance.limit} try-ons this week — your allowance resets on Monday.
-              {allowance.tier !== "Tanzanite" && " Ruby members get 5 a week, Tanzanite 10."}
+          {locked && allowance ? (
+            <p data-testid="tryon-locked" className="text-[13px] text-muted-foreground text-center -mt-2">
+              Virtual try-on isn&apos;t part of {allowance.tier} yet — keep earning to unlock it.
+              <span className="block mt-1 text-[12px]">A Johari perk: {ladderText}.</span>
             </p>
-          )}
+          ) : outOfTries && allowance ? (
+            <p data-testid="tryon-out-of-tries" className="text-[13px] text-muted-foreground text-center -mt-2">
+              You&apos;ve used all {allowance.limit} try-ons this week — your allowance resets on Monday.
+              <span className="block mt-1 text-[12px]">The Johari ladder: {ladderText}.</span>
+            </p>
+          ) : null}
         </div>
       )}
 
@@ -778,7 +799,11 @@ export default function TryOnView({ onBack, member }) {
 
           {allowance && (
             <p className="text-[12px] text-muted-foreground text-center">
-              {remaining} of {allowance.limit} try-ons left this week — a {allowance.tier} Johari perk.
+              {locked
+                ? `Virtual try-on isn't part of ${allowance.tier} yet — a perk for higher Johari tiers.`
+                : unlimited
+                  ? `Unlimited try-ons — a ${allowance.tier} Johari perk.`
+                  : `${remaining} of ${allowance.limit} try-ons left this week — a ${allowance.tier} Johari perk.`}
             </p>
           )}
         </div>

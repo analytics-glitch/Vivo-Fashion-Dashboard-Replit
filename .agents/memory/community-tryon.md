@@ -16,3 +16,9 @@ Rules that must survive future edits:
 - Prod note: published deployment needs the `AI_INTEGRATIONS_GEMINI_*` secrets in its deployment env (Republish after provisioning) or the feature runs in labeled demo mode.
 
 **Why:** the pool-starvation and privacy rules are invisible in a quick read of any single route; the tier alias caused naming confusion in the original request.
+
+## Tier allowance ladder (single business switch)
+- `TRYON_WEEK_LIMITS = {"Tsavorite": 2, "Ruby": 5, "Tanzanite": None}` in community_app.py is the ONE config for try-on allowances. Semantics: `None` = unlimited, `0` = tier excluded (403 with upgrade-nudge copy). Flipping to Tanzanite-exclusive = `{"Tsavorite": 0, "Ruby": 0, "Tanzanite": None}` — no other change, no frontend rebuild.
+- **Why rebuild-free:** GET /tryon/allowance serves `remaining` (null when unlimited), `unlimited`, `locked`, and the full per-tier `ladder`; all UI copy (TryOnView chip/blocks/result footer, Rewards perk card) derives from that payload, nothing hardcoded.
+- **How to apply:** any new allowance surface must branch THREE ways — locked (0), unlimited (None), finite — or a config flip shows "0 of 0 left" nonsense (the result-footer initially missed the locked branch). `locked ⇒ outOfTries` for button-disable, but locked gets its own copy.
+- Prominence surfaces: Home feed TryOnPromoCard, PDP accented Try It On above Wishlist, Rewards "Johari Perk" ladder card, TabShop banner.

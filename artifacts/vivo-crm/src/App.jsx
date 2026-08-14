@@ -24,6 +24,7 @@ import Service from "@/pages/Service";
 import TeamQueue from "@/pages/TeamQueue";
 import Reports from "@/pages/Reports";
 import CSAT from "@/pages/CSAT";
+import SurveyResults from "@/pages/SurveyResults";
 import Overview from "@/pages/Overview";
 import FollowUps from "@/pages/FollowUps";
 import DataQuality from "@/pages/DataQuality";
@@ -59,6 +60,7 @@ function ProtectedRoutes() {
         <Route path="/data-quality" element={user.role === "manager" ? <DataQuality /> : <Navigate to="/dashboard" replace />} />
         <Route path="/training" element={user.role === "manager" ? <Training /> : <Navigate to="/dashboard" replace />} />
         <Route path="/csat" element={user.role === "manager" ? <CSAT /> : <Navigate to="/dashboard" replace />} />
+        <Route path="/survey-results" element={user.role === "manager" ? <SurveyResults /> : <Navigate to="/dashboard" replace />} />
         <Route path="/loyalty" element={user.role === "manager" ? <Loyalty /> : <Navigate to="/dashboard" replace />} />
         <Route path="/loyalty/app-preview" element={user.role === "manager" ? <LoyaltyAppPreview /> : <Navigate to="/dashboard" replace />} />
         <Route path="/data-requests" element={user.role === "manager" ? <DataRequests /> : <Navigate to="/dashboard" replace />} />
