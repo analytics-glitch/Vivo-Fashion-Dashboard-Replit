@@ -1806,9 +1806,20 @@ const StyleTracker = () => {
       const n = data?.archived_count || 0;
       toast.success(
         n > 0
-          ? `Archived ${n} completed style${n === 1 ? "" : "s"} from WK ${week.iso_week}`
-          : `No completed styles to archive in WK ${week.iso_week}`
+          ? `Archived ${n} style${n === 1 ? "" : "s"} from WK ${week.iso_week}`
+          : `No styles to archive in WK ${week.iso_week}`
       );
+      setBoard((b) => {
+        if (!b) return b;
+        return {
+          ...b,
+          weeks: b.weeks.map((w) =>
+            weekKey(w) === wk
+              ? { ...w, styles: [], count: 0, total_units: 0, completed_count: 0, completed_units: 0 }
+              : w
+          ),
+        };
+      });
       await loadBoard(true, true);
     } catch (e) {
       toast.error(e?.response?.data?.detail || e.message || "Failed to archive week");
@@ -1939,7 +1950,7 @@ const StyleTracker = () => {
           {overdueCount > 0 && (
             <div className="flex items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-[12px] text-amber-900">
               <Warning size={15} weight="fill" className="shrink-0 text-amber-600" />
-              <span><span className="font-bold">{overdueCount} overdue week{overdueCount === 1 ? "" : "s"}</span> with incomplete styles — complete or re-plan them, then archive the week.</span>
+              <span><span className="font-bold">{overdueCount} overdue week{overdueCount === 1 ? "" : "s"}</span> with incomplete styles — use “Archive week” to bulk-archive everything in a past week, including pending styles.</span>
             </div>
           )}
           {lateCount > 0 && (
@@ -2012,7 +2023,7 @@ const StyleTracker = () => {
                     <button
                       type="button"
                       onClick={() => archiveWeek(week)}
-                      disabled={archivingWeek === wk || !week.styles.some((s) => s.completed)}
+                      disabled={archivingWeek === wk || week.styles.length === 0}
                       className="mt-1.5 flex items-center gap-1 text-[10.5px] font-semibold text-amber-900 bg-white border border-amber-300 hover:bg-amber-100 rounded-md px-2 py-1 disabled:opacity-45 disabled:cursor-not-allowed"
                     >
                       <Archive size={12} />

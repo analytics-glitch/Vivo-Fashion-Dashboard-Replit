@@ -38234,8 +38234,7 @@ async def style_tracker_archive_style(style_id: int, request: Request):
 
 @app.post("/api/style-tracker/archive-week")
 async def style_tracker_archive_week(request: Request):
-    """Archive every COMPLETED style in one week; incomplete styles stay put
-    (so the week keeps showing as Overdue until they're done)."""
+    """Archive every unarchived style in one week, including incomplete styles."""
     _ensure_style_tracker_tables()
     try:
         body = await request.json()
@@ -38249,7 +38248,7 @@ async def style_tracker_archive_week(request: Request):
     rows = _users_exec(
         "UPDATE style_tracker_styles "
         "SET archived = TRUE, archived_at = now(), updated_at = now() "
-        "WHERE iso_year = %s AND iso_week = %s AND completed AND NOT archived "
+        "WHERE iso_year = %s AND iso_week = %s AND NOT archived "
         "RETURNING id", wk, fetch=True) or []
     return {"ok": True, "archived_count": len(rows),
             "iso_year": wk[0], "iso_week": wk[1]}
