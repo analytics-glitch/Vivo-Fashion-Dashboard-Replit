@@ -1913,11 +1913,24 @@ def _seed_fabric_quality_supervisor():
                     "UPDATE app_users SET role=%s WHERE LOWER(email)=%s",
                     ("fabric_quality_supervisor",
                      "marywamuyu@vivofashiongroup.com"))
-                log.warning("Seeded fabric_quality_supervisor role for "
-                            "marywamuyu@vivofashiongroup.com "
-                            "(was: %s)", current)
+                log.warning("Seeded fabric_quality_supervisor role for %s "
+                            "(was: %s)",
+                            _redact_email("marywamuyu@vivofashiongroup.com"),
+                            current)
     except Exception as e:
         log.error("fabric_quality_supervisor seed failed: %s", e)
+
+
+def _redact_email(email):
+    """Mask an email for log output (PII minimisation): keep the first char
+    of the local part and the first 4 chars of the domain."""
+    try:
+        local, _, domain = (email or "").partition("@")
+        if not domain:
+            return "<redacted>"
+        return f"{local[:1]}***@{domain[:4]}***"
+    except Exception:
+        return "<redacted>"
 
 
 @_deferred_startup
@@ -1933,7 +1946,8 @@ def _seed_stephen_extra_pages():
             (_target_email,), fetch=True)
         if not rows:
             log.info("_seed_stephen_extra_pages: user %s not found yet; "
-                     "will apply on next boot after first sign-in.", _target_email)
+                     "will apply on next boot after first sign-in.",
+                     _redact_email(_target_email))
             return
         row = rows[0]
         existing = list(row.get("extra_pages") or [])
@@ -1946,10 +1960,10 @@ def _seed_stephen_extra_pages():
                 (f'["{_grant_page}"]', _target_email, f'["{_grant_page}"]'))
             _invalidate_user_cache()
             log.info("_seed_stephen_extra_pages: granted '%s' to %s",
-                     _grant_page, _target_email)
+                     _grant_page, _redact_email(_target_email))
         else:
             log.info("_seed_stephen_extra_pages: '%s' already present for %s",
-                     _grant_page, _target_email)
+                     _grant_page, _redact_email(_target_email))
     except Exception as e:
         log.error("_seed_stephen_extra_pages failed: %s", e)
 
@@ -1984,7 +1998,7 @@ def _seed_admin():
                 password_hash=EXCLUDED.password_hash
         """, ("seed:" + email, email, "Administrator", ph))
         _invalidate_user_cache()
-        log.info("Seed admin ensured for %s", email)
+        log.info("Seed admin ensured for %s", _redact_email(email))
     except Exception as e:
         log.error("Seed admin failed: %s", e)
 
@@ -9149,8 +9163,11 @@ def auth_google_callback(request: Request):
     try:
         rec = resolve_app_user(sub, email, name, picture)
         token = _create_session(rec["user_id"])
-    except Exception:
-        logging.exception("google oauth provisioning failed for %s", email)
+    except Exception as _e:
+        # PII minimisation: no traceback/exception text — DB errors can embed
+        # the submitted email/name in their message or SQL parameters.
+        logging.error("google oauth provisioning failed for %s (%s)",
+                      _redact_email(email), type(_e).__name__)
         return _back("error=provisioning")
     resp = _back("token=" + quote(token))
     resp.set_cookie("session_token", token, **_login_cookie_kwargs())

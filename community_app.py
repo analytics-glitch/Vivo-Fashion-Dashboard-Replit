@@ -671,7 +671,13 @@ def _throttle(request, scope, rules, phone=None):
         else:
             key = f"{scope}:g:{window}"
         if not _rate_ok(key, limit, window):
-            log.warning("community throttle hit: %s", key)
+            # PII minimisation: never log the raw key — the phone-dimension
+            # key embeds the customer's phone number. Log scope/dim/window
+            # plus a short hash of the key so distinct offenders remain
+            # correlatable without exposing the identifier.
+            key_h = hashlib.sha256(key.encode()).hexdigest()[:12]
+            log.warning("community throttle hit: scope=%s dim=%s window=%s key_hash=%s",
+                        scope, dim, window, key_h)
             raise HTTPException(status_code=429,
                                 detail="Too many requests — please try again shortly")
 
@@ -2228,7 +2234,11 @@ def _send_member_email(to_addr, subject, body):
             s.send_message(msg)
         log.info("member email sent (%s)", subject)
     except Exception as e:
-        log.warning("member email failed: %s", e)
+        # PII minimisation: SMTP exceptions (e.g. SMTPRecipientsRefused)
+        # embed the recipient address in their repr — log only the
+        # exception class, never its message/args.
+        log.warning("member email failed (%s) subject=%s",
+                    type(e).__name__, subject)
 
 
 def _notify_promoted(member_row, ev):
