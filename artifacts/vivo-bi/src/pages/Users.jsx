@@ -110,6 +110,14 @@ const Users = () => {
     } catch (e) { alert(e?.response?.data?.detail || e.message); }
   };
 
+  const resetTwoFactor = async (u) => {
+    if (!window.confirm(`Reset two-step verification for ${u.email}? They will set it up again on their next sign-in.`)) return;
+    try {
+      await api.post(`/admin/users/${u.user_id}/2fa-reset`);
+      load();
+    } catch (e) { alert(e?.response?.data?.detail || e.message); }
+  };
+
   // Pending users — newest first. Surfaces as a banner above the
   // standard users table so the admin can approve/reject in one click.
   const pendingUsers = users.filter((u) => (u.status || "active") === "pending");
@@ -244,6 +252,14 @@ const Users = () => {
                 align: "left",
                 render: (r) => <span className="pill-neutral">{r.auth_method || "—"}</span>,
               },
+              {
+                key: "totp_enabled",
+                label: "2FA",
+                align: "left",
+                render: (r) => r.totp_enabled
+                  ? <span className="pill-green inline-flex items-center gap-1"><ShieldCheck size={11} /> enabled</span>
+                  : <span className="pill-neutral">not set</span>,
+              },
               { key: "active", label: "Status", align: "left", render: (r) => (
                 <span className={r.active ? "pill-green" : "pill-red"}>{r.active ? "active" : "disabled"}</span>
               ) },
@@ -316,6 +332,16 @@ const Users = () => {
                     >
                       {r.active ? "Disable" : "Enable"}
                     </button>
+                    {r.totp_enabled && (
+                      <button
+                        className="text-[11px] px-1.5 py-1 rounded border border-amber-400 text-amber-700 hover:bg-amber-50"
+                        onClick={() => resetTwoFactor(r)}
+                        title="Clear 2FA enrollment; existing sessions stay active"
+                        data-testid={`reset-2fa-${r.user_id}`}
+                      >
+                        Reset 2FA
+                      </button>
+                    )}
                     <button
                       className="text-[11px] px-1.5 py-1 rounded border border-danger text-danger disabled:opacity-40"
                       onClick={() => deleteUser(r)}

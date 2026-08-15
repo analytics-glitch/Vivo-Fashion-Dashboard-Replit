@@ -12,6 +12,7 @@ import React, {
 import {
   AuthUser,
   fetchMe,
+  verifyTwoFactorRequest,
   loginRequest,
   logoutRequest,
   setAuthToken,
@@ -25,7 +26,8 @@ type Status = "loading" | "authenticated" | "unauthenticated";
 interface AuthValue {
   status: Status;
   user: AuthUser | null;
-  login: (email: string, password: string) => Promise<void>;
+  login: (email: string, password: string) => Promise<{ twoFactorRequired?: boolean; mode?: string; challengeToken?: string }>;
+  completeTwoFactor: (code: string, challengeToken: string) => Promise<void>;
   completeGoogleLogin: (token: string) => Promise<void>;
   logout: () => Promise<void>;
 }
@@ -123,6 +125,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       let u: AuthUser;
       try {
         const res = await loginRequest(email, password);
+        if (res.two_factor_required) {
+          return {
+            twoFactorRequired: true,
+            mode: res.two_factor?.mode,
+            challengeToken: res.challenge_token,
+          };
+        }
+        if (!res.token) throw new Error("Sign in requires two-step verification.");
         token = res.token;
         u = res.user;
       } catch (e) {
@@ -144,8 +154,26 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
       setUser(u);
       setStatus("authenticated");
+      return {};
     },
     [clear, queryClient],
+  );
+
+  const completeTwoFactor = useCallback(
+    async (code: string, challengeToken: string) => {
+      const res = await verifyTwoFactorRequest(code, challengeToken);
+      if (!res.token || !res.user) throw new Error("Two-step verification failed.");
+      queryClient.clear();
+      setAuthToken(res.token);
+      try {
+        await AsyncStorage.setItem(TOKEN_KEY, res.token);
+      } catch {
+        // ignore storage errors; session still works for this launch
+      }
+      setUser(res.user);
+      setStatus("authenticated");
+    },
+    [queryClient],
   );
 
   const completeGoogleLogin = useCallback(
@@ -186,8 +214,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [clear]);
 
   const value = useMemo<AuthValue>(
-    () => ({ status, user, login, completeGoogleLogin, logout }),
-    [status, user, login, completeGoogleLogin, logout],
+    () => ({ status, user, login, completeTwoFactor, completeGoogleLogin, logout }),
+    [status, user, login, completeTwoFactor, completeGoogleLogin, logout],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

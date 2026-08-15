@@ -14,6 +14,7 @@ in tearDown.
 
 import unittest
 import uuid
+import time
 
 from fastapi.testclient import TestClient
 
@@ -27,6 +28,7 @@ class CookieOnlySessionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.client = TestClient(api_pg.app)
+        api_pg._ensure_users_table()
         cls.EMAIL = f"cookie-test-{uuid.uuid4().hex[:10]}@example.com"
         cls.user_id = "test:" + uuid.uuid4().hex[:12]
         api_pg._users_exec(
@@ -47,10 +49,22 @@ class CookieOnlySessionTests(unittest.TestCase):
         r = c.post("/api/auth/login",
                    json={"email": self.EMAIL, "password": self.PASSWORD})
         self.assertEqual(r.status_code, 200, r.text)
-        # httpOnly session cookie is set on the login response.
-        self.assertIn("session_token", r.cookies)
+        # The password response is a short-lived httpOnly 2FA challenge. The
+        # normal session is issued only after the authenticator code succeeds.
+        self.assertNotIn("session_token", r.cookies)
+        self.assertIn("staff_2fa_challenge", r.cookies)
         set_cookie = r.headers.get("set-cookie", "")
         self.assertIn("HttpOnly", set_cookie)
+
+        setup = c.post("/api/auth/2fa/enroll")
+        self.assertEqual(setup.status_code, 200, setup.text)
+        self.assertEqual(len(setup.json().get("backup_codes") or []), 8)
+        secret = setup.json()["manual_key"]
+        counter = int(time.time()) // api_pg._TOTP_STEP_SECONDS
+        code = api_pg._totp_code(secret, counter)
+        verified = c.post("/api/auth/2fa/verify", json={"code": code})
+        self.assertEqual(verified.status_code, 200, verified.text)
+        self.assertIn("session_token", verified.cookies)
 
         # The cookie alone authenticates /auth/me — no Authorization header.
         me = c.get("/api/auth/me")

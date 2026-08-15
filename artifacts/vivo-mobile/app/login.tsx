@@ -16,7 +16,7 @@ import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { useColors } from "@/hooks/useColors";
-import { fetchAllowedDomains, googleLoginUrl } from "@/lib/api";
+import { enrollTwoFactorRequest, fetchAllowedDomains, googleLoginUrl } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 
 const LOGO = require("@/assets/images/vivo-logo.png");
@@ -25,7 +25,7 @@ export default function LoginScreen() {
   const c = useColors();
   const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { login, completeGoogleLogin } = useAuth();
+  const { login, completeTwoFactor, completeGoogleLogin } = useAuth();
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -33,6 +33,10 @@ export default function LoginScreen() {
   const [submitting, setSubmitting] = useState(false);
   const [googleBusy, setGoogleBusy] = useState(false);
   const [domains, setDomains] = useState<string[]>([]);
+  const [twoFactor, setTwoFactor] = useState<{ mode: "enroll" | "verify"; challengeToken: string } | null>(null);
+  const [enrollment, setEnrollment] = useState<{ manual_key: string; backup_codes: string[] } | null>(null);
+  const [verificationCode, setVerificationCode] = useState("");
+  const [codesSaved, setCodesSaved] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -53,9 +57,38 @@ export default function LoginScreen() {
     }
     setSubmitting(true);
     try {
-      await login(email.trim(), password);
+      const result = await login(email.trim(), password);
+      if (result.twoFactorRequired) {
+        if (!result.challengeToken) throw new Error("Two-step verification could not start.");
+        const mode = result.mode === "enroll" ? "enroll" : "verify";
+        setTwoFactor({ mode, challengeToken: result.challengeToken });
+        if (mode === "enroll") {
+          const setup = await enrollTwoFactorRequest(result.challengeToken);
+          setEnrollment(setup);
+        }
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Sign in failed.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const onTwoFactor = async () => {
+    if (!twoFactor || submitting || !verificationCode.trim()) {
+      if (!verificationCode.trim()) setError("Enter your authenticator or backup code.");
+      return;
+    }
+    if (twoFactor.mode === "enroll" && !codesSaved) {
+      setError("Save your backup codes before finishing setup.");
+      return;
+    }
+    setSubmitting(true);
+    setError(null);
+    try {
+      await completeTwoFactor(verificationCode.trim(), twoFactor.challengeToken);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "That verification code was not accepted.");
     } finally {
       setSubmitting(false);
     }
@@ -88,6 +121,16 @@ export default function LoginScreen() {
       const err = params.get("error");
       if (err) {
         setError(googleErrorMessage(err));
+        return;
+      }
+      const challengeToken = params.get("challenge_token");
+      const twoFactorMode = params.get("mode") === "enroll" ? "enroll" : "verify";
+      if (params.get("two_factor") === "1" && challengeToken) {
+        setTwoFactor({ mode: twoFactorMode, challengeToken });
+        if (twoFactorMode === "enroll") {
+          const setup = await enrollTwoFactorRequest(challengeToken);
+          setEnrollment(setup);
+        }
         return;
       }
       if (!token) {
@@ -146,6 +189,70 @@ export default function LoginScreen() {
           email domains.
         </Text>
 
+        {twoFactor ? (
+          <View style={{ gap: 14 }}>
+            <View style={[styles.twoFactorBox, { backgroundColor: c.panel, borderColor: c.border }]}>
+              <Ionicons name="shield-checkmark-outline" size={24} color={c.primary} />
+              <Text style={[styles.twoFactorTitle, { color: c.foreground }]}>
+                {twoFactor.mode === "enroll" ? "Set up two-step verification" : "Verify your sign-in"}
+              </Text>
+              <Text style={[styles.twoFactorText, { color: c.mutedForeground }]}>
+                {twoFactor.mode === "enroll"
+                  ? "Add this account to your authenticator app, save the backup codes, then enter the 6-digit code."
+                  : "Enter the 6-digit code from your authenticator app, or use one backup code."}
+              </Text>
+            </View>
+            {enrollment ? (
+              <View style={[styles.backupBox, { borderColor: "#fbbf24", backgroundColor: "#fffbeb" }]}>
+                <Text style={[styles.backupTitle, { color: "#78350f" }]}>Manual setup key</Text>
+                <Text style={[styles.manualKey, { color: "#78350f" }]}>{enrollment.manual_key}</Text>
+                <Text style={[styles.backupTitle, { color: "#78350f", marginTop: 10 }]}>Save these 8 backup codes</Text>
+                <Text style={[styles.backupText, { color: "#92400e" }]}>Each works once and will not be shown again.</Text>
+                <View style={styles.codeGrid}>
+                  {enrollment.backup_codes.map((code) => (
+                    <Text key={code} style={[styles.code, { color: "#78350f" }]}>{code}</Text>
+                  ))}
+                </View>
+                <Pressable onPress={() => setCodesSaved((v) => !v)} style={styles.savedRow}>
+                  <Ionicons name={codesSaved ? "checkbox" : "square-outline"} size={20} color={c.primary} />
+                  <Text style={[styles.backupText, { color: "#78350f" }]}>I saved my backup codes securely.</Text>
+                </Pressable>
+              </View>
+            ) : null}
+            <TextInput
+              value={verificationCode}
+              onChangeText={setVerificationCode}
+              placeholder="123456 or ABCD-EFGH-JKLM"
+              placeholderTextColor={c.mutedForeground}
+              autoCapitalize="characters"
+              autoCorrect={false}
+              keyboardType="numbers-and-punctuation"
+              style={[styles.input, { color: c.foreground, borderColor: c.input, backgroundColor: c.card, paddingLeft: 14 }]}
+              editable={!busy}
+              onSubmitEditing={onTwoFactor}
+              autoFocus
+            />
+            {error ? (
+              <View style={[styles.errorBox, { borderColor: c.destructive, backgroundColor: "#fef2f2", borderRadius: 10 }]}>
+                <Ionicons name="warning-outline" size={15} color={c.destructive} />
+                <Text style={[styles.errorText, { color: c.destructive }]}>{error}</Text>
+              </View>
+            ) : null}
+            <Pressable onPress={onTwoFactor} disabled={busy} style={({ pressed }) => [
+              styles.button, { backgroundColor: pressed ? c.primaryDeep : c.primary, borderRadius: c.radius, opacity: busy ? 0.6 : 1 },
+            ]}>
+              {submitting ? <ActivityIndicator color={c.primaryForeground} /> : (
+                <>
+                  <Ionicons name="shield-checkmark-outline" size={16} color={c.primaryForeground} />
+                  <Text style={[styles.buttonText, { color: c.primaryForeground }]}>
+                    {twoFactor.mode === "enroll" ? "Finish setup" : "Verify and sign in"}
+                  </Text>
+                </>
+              )}
+            </Pressable>
+          </View>
+        ) : (
+          <>
         {/* Google */}
         <Pressable
           onPress={onGoogle}
@@ -171,6 +278,8 @@ export default function LoginScreen() {
             </>
           )}
         </Pressable>
+          </>
+        )}
 
         {/* Divider */}
         <View style={styles.divider}>
@@ -389,6 +498,16 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   buttonText: { fontFamily: "Jakarta_700Bold", fontSize: 15 },
+  twoFactorBox: { borderWidth: 1, borderRadius: 12, padding: 16, gap: 7, alignItems: "center" },
+  twoFactorTitle: { fontFamily: "Jakarta_700Bold", fontSize: 16, textAlign: "center" },
+  twoFactorText: { fontFamily: "Jakarta_500Medium", fontSize: 12.5, lineHeight: 18, textAlign: "center" },
+  backupBox: { borderWidth: 1, borderRadius: 10, padding: 12 },
+  backupTitle: { fontFamily: "Jakarta_700Bold", fontSize: 12 },
+  backupText: { fontFamily: "Jakarta_500Medium", fontSize: 11, lineHeight: 16 },
+  manualKey: { fontFamily: "Jakarta_700Bold", fontSize: 14, letterSpacing: 1.2, marginTop: 5 },
+  codeGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 8 },
+  code: { fontFamily: "Jakarta_600SemiBold", fontSize: 11, width: "47%" },
+  savedRow: { flexDirection: "row", alignItems: "center", gap: 7, marginTop: 11 },
   note: { fontFamily: "Jakarta_500Medium", fontSize: 11.5, lineHeight: 17, marginTop: 2 },
   poweredBy: {
     flexDirection: "row",

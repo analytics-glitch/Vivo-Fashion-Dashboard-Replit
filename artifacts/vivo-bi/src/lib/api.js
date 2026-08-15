@@ -74,6 +74,8 @@ const NO_CACHE_PATHS = [
   "/auth/me",
   "/auth/me/status",
   "/auth/login",
+  "/auth/2fa/enroll",
+  "/auth/2fa/verify",
   "/auth/logout",
   "/auth/google/callback",
 ];

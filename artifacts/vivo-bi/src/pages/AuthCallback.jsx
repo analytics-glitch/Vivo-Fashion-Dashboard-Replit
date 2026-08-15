@@ -13,6 +13,12 @@ const AuthCallback = () => {
       const hash = (window.location.hash || "").replace(/^#/, "");
       const params = new URLSearchParams(hash);
       const errParam = params.get("error");
+      if (params.get("two_factor") === "1") {
+        const mode = params.get("mode") === "enroll" ? "enroll" : "verify";
+        window.history.replaceState(null, "", `/login?two_factor=1&mode=${mode}`);
+        navigate(`/login?two_factor=1&mode=${mode}`, { replace: true });
+        return;
+      }
       if (errParam) {
         // WS9 T901 — map backend error codes to friendly copy (a raw code like
         // "provisioning" means nothing to a store manager).

@@ -91,8 +91,12 @@ export async function apiGet<T>(path: string, params?: Params): Promise<T> {
   return (await res.json()) as T;
 }
 
-export async function apiPost<T>(path: string, body?: unknown): Promise<T> {
-  return apiWrite<T>("POST", path, body);
+export async function apiPost<T>(
+  path: string,
+  body?: unknown,
+  extraHeaders?: Record<string, string>,
+): Promise<T> {
+  return apiWrite<T>("POST", path, body, extraHeaders);
 }
 
 export async function apiPatch<T>(path: string, body?: unknown): Promise<T> {
@@ -103,12 +107,13 @@ async function apiWrite<T>(
   method: "POST" | "PATCH",
   path: string,
   body?: unknown,
+  extraHeaders?: Record<string, string>,
 ): Promise<T> {
   let res: Response;
   try {
     res = await fetch(`${API_BASE}${path}`, {
       method,
-      headers: { "Content-Type": "application/json", ...authHeaders() },
+      headers: { "Content-Type": "application/json", ...authHeaders(), ...extraHeaders },
       body: body === undefined ? undefined : JSON.stringify(body),
     });
   } catch {
@@ -164,11 +169,34 @@ export interface AuthUser {
 export async function loginRequest(
   email: string,
   password: string,
-): Promise<{ token: string; user: AuthUser }> {
-  return apiPost<{ token: string; user: AuthUser }>("/auth/login", {
+): Promise<{
+  token?: string;
+  user: AuthUser;
+  two_factor_required?: boolean;
+  two_factor?: { mode: "enroll" | "verify" };
+  challenge_token?: string;
+}> {
+  return apiPost("/auth/login", {
     email,
     password,
-  });
+  }, { "X-Vivo-Mobile": "1" });
+}
+
+export async function enrollTwoFactorRequest(challengeToken: string) {
+  return apiPost<{
+    mode: "enroll";
+    manual_key: string;
+    provisioning_uri: string;
+    qr_svg: string;
+    backup_codes: string[];
+  }>("/auth/2fa/enroll", undefined, { "X-Vivo-2FA-Challenge": challengeToken });
+}
+
+export async function verifyTwoFactorRequest(code: string, challengeToken: string) {
+  return apiPost<{ token: string; user: AuthUser }>("/auth/2fa/verify", {
+    code,
+    challenge_token: challengeToken,
+  }, { "X-Vivo-2FA-Challenge": challengeToken });
 }
 
 export async function fetchMe(): Promise<AuthUser> {

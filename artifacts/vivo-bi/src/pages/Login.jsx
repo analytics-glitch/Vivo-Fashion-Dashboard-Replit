@@ -2,17 +2,22 @@ import React, { useEffect, useRef, useState } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
 import { useAuth } from "@/lib/auth";
 import { homePageFor } from "@/lib/permissions";
-import { GoogleLogo, Envelope, Lock, SignIn, Warning } from "@phosphor-icons/react";
+import { GoogleLogo, Envelope, Lock, SignIn, Warning, ShieldCheck, Key } from "@phosphor-icons/react";
 import { api, API } from "@/lib/api";
 
 const Login = () => {
-  const { user, loginWithPassword } = useAuth();
+  const { user, loginWithPassword, completeTwoFactor } = useAuth();
   const navigate = useNavigate();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
   const [domains, setDomains] = useState([]);
+  const [twoFactor, setTwoFactor] = useState(null);
+  const [enrollment, setEnrollment] = useState(null);
+  const [verificationCode, setVerificationCode] = useState("");
+  const [codesSaved, setCodesSaved] = useState(false);
+  const [twoFactorLoading, setTwoFactorLoading] = useState(false);
   // Iter 78 — surface a friendly explanation when the API client
   // 401-redirects us here mid-session. URL is set by the axios
   // interceptor in `lib/api.js`. Suppressed once the user clicks
@@ -26,8 +31,26 @@ const Login = () => {
     try {
       const params = new URLSearchParams(window.location.search);
       if (params.get("session_expired") === "1") setSessionExpired(true);
+      const mode = params.get("mode");
+      if (params.get("two_factor") === "1" && (mode === "enroll" || mode === "verify")) {
+        setTwoFactor({ mode });
+        if (mode === "enroll") startEnrollment();
+      }
     } catch { /* noop */ }
   }, []);
+
+  const startEnrollment = async () => {
+    setTwoFactorLoading(true);
+    setError(null);
+    try {
+      const r = await api.post("/auth/2fa/enroll");
+      setEnrollment(r.data || null);
+    } catch (err) {
+      setError(err?.response?.data?.detail || "Could not start two-factor enrollment.");
+    } finally {
+      setTwoFactorLoading(false);
+    }
+  };
 
   if (user) return <Navigate to="/" replace />;
 
@@ -45,8 +68,13 @@ const Login = () => {
         setError("Please enter both email and password.");
         return;
       }
-      const loggedInUser = await loginWithPassword(em, pw);
-      navigate(homePageFor(loggedInUser), { replace: true });
+      const result = await loginWithPassword(em, pw);
+      if (result?.two_factor_required) {
+        setTwoFactor(result.two_factor || { mode: "verify" });
+        if ((result.two_factor?.mode || "verify") === "enroll") await startEnrollment();
+        return;
+      }
+      navigate(homePageFor(result?.user), { replace: true });
     } catch (err) {
       // Surface the ACTUAL failure cause so iOS Safari issues are debuggable
       // instead of a generic "Login failed". Pick the most specific source
@@ -70,6 +98,29 @@ const Login = () => {
         msg = `Login failed: ${err?.message || "unknown error"}`;
       }
       setError(msg);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const verifyTwoFactor = async (e) => {
+    e.preventDefault();
+    const code = verificationCode.trim();
+    if (!code) {
+      setError("Enter the 6-digit code from your authenticator app, or a backup code.");
+      return;
+    }
+    if (twoFactor?.mode === "enroll" && (!enrollment || !codesSaved)) {
+      setError("Save your backup codes before finishing enrollment.");
+      return;
+    }
+    setSubmitting(true);
+    setError(null);
+    try {
+      const loggedInUser = await completeTwoFactor(code);
+      navigate(homePageFor(loggedInUser), { replace: true });
+    } catch (err) {
+      setError(err?.response?.data?.detail || "That verification code was not accepted.");
     } finally {
       setSubmitting(false);
     }
@@ -102,23 +153,125 @@ const Login = () => {
           ))} email domains.
         </p>
 
-        <button
-          type="button"
-          onClick={googleSignIn}
-          data-testid="google-signin-btn"
-          className="w-full flex items-center justify-center gap-3 py-3 rounded-xl border border-border hover:border-brand hover:bg-brand-soft transition-colors font-semibold text-[14px]"
-        >
-          <GoogleLogo size={18} weight="bold" />
-          Sign in with Google
-        </button>
+        {twoFactor ? (
+          <div className="space-y-4" data-testid="two-factor-panel">
+            <div className="rounded-xl border border-brand/20 bg-brand-soft/40 p-4">
+              <div className="flex items-center gap-2 font-bold text-[15px]">
+                <ShieldCheck size={19} weight="bold" className="text-brand" />
+                {twoFactor.mode === "enroll" ? "Set up two-step verification" : "Verify your sign-in"}
+              </div>
+              <p className="text-muted text-[12.5px] mt-1.5 leading-relaxed">
+                {twoFactor.mode === "enroll"
+                  ? "Protect your Vivo BI account with an authenticator app. This is required the first time you sign in after two-step verification is enabled."
+                  : "Enter the 6-digit code from your authenticator app. You can use a backup code instead if you no longer have your app."}
+              </p>
+            </div>
 
-        <div className="flex items-center gap-3 my-5">
-          <div className="h-px flex-1 bg-border" />
-          <span className="text-[11px] text-muted uppercase tracking-wider">or email</span>
-          <div className="h-px flex-1 bg-border" />
-        </div>
+            {twoFactor.mode === "enroll" && (
+              <div className="space-y-3">
+                {twoFactorLoading && <div className="text-muted text-[13px]">Preparing your secure setup…</div>}
+                {enrollment && (
+                  <>
+                    <div className="flex flex-col sm:flex-row gap-4 items-center">
+                      <div className="bg-white border border-border rounded-lg p-2 shrink-0">
+                        <img
+                          src={`data:image/svg+xml;charset=utf-8,${encodeURIComponent(enrollment.qr_svg || "")}`}
+                          alt="Authenticator setup QR code"
+                          className="w-36 h-36"
+                        />
+                      </div>
+                      <div className="text-[12px] leading-relaxed">
+                        <p className="font-semibold mb-1">Scan with Google Authenticator, 1Password, or Authy.</p>
+                        <p className="text-muted">If you cannot scan, enter this setup key manually:</p>
+                        <div className="mt-2 flex items-center gap-1.5 rounded-md bg-muted/40 px-2 py-1.5 font-mono text-[11px] break-all">
+                          <Key size={13} className="shrink-0 text-brand" />
+                          {enrollment.manual_key}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="rounded-lg border border-amber-300/70 bg-amber-50 p-3">
+                      <div className="font-semibold text-[12px] text-amber-950">Save these 8 backup codes</div>
+                      <p className="text-[11px] text-amber-900 mt-1">Each code works once if you lose access to your authenticator. They will not be shown again.</p>
+                      <div className="grid grid-cols-2 gap-1.5 mt-2 font-mono text-[12px] text-amber-950">
+                        {(enrollment.backup_codes || []).map((backup) => <span key={backup}>{backup}</span>)}
+                      </div>
+                      <label className="flex items-start gap-2 mt-3 text-[12px] text-amber-950">
+                        <input type="checkbox" checked={codesSaved} onChange={(e) => setCodesSaved(e.target.checked)} />
+                        <span>I have saved my backup codes somewhere secure.</span>
+                      </label>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
 
-        <form onSubmit={onSubmit} className="space-y-3" data-testid="login-form">
+            {twoFactor.mode === "verify" && (
+              <p className="text-[12px] text-muted">
+                Backup codes are accepted in the same field and are single-use.
+              </p>
+            )}
+
+            {error && (
+              <div className="rounded-lg border border-danger/30 bg-danger/5 text-danger px-3 py-2 text-[12.5px] flex items-start gap-2" data-testid="login-error">
+                <Warning size={14} className="mt-0.5 shrink-0" />
+                <span>{error}</span>
+              </div>
+            )}
+
+            <form onSubmit={verifyTwoFactor} className="space-y-3" data-testid="two-factor-form">
+              <div>
+                <label htmlFor="two-factor-code" className="text-[11px] font-semibold text-muted uppercase tracking-wider">
+                  Authenticator or backup code
+                </label>
+                <input
+                  id="two-factor-code"
+                  value={verificationCode}
+                  onChange={(e) => setVerificationCode(e.target.value)}
+                  className="w-full mt-1 px-3 py-2.5 rounded-lg border border-border focus:border-brand outline-none text-[16px] font-mono tracking-widest"
+                  placeholder={twoFactor.mode === "enroll" ? "123456" : "123456 or ABCD-EFGH-JKLM"}
+                  inputMode="text"
+                  autoComplete="one-time-code"
+                  autoFocus
+                  required
+                />
+              </div>
+              <button
+                type="submit"
+                disabled={submitting || twoFactorLoading || (twoFactor.mode === "enroll" && !enrollment)}
+                className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg bg-brand text-white font-semibold text-[14px] hover:bg-brand-deep disabled:opacity-60"
+                data-testid="two-factor-submit"
+              >
+                <ShieldCheck size={15} weight="bold" />
+                {submitting ? "Verifying…" : twoFactor.mode === "enroll" ? "Finish setup" : "Verify and sign in"}
+              </button>
+            </form>
+            <button
+              type="button"
+              onClick={() => { setTwoFactor(null); setEnrollment(null); setVerificationCode(""); setError(null); }}
+              className="w-full text-[12px] text-muted hover:text-foreground"
+            >
+              Start over
+            </button>
+          </div>
+        ) : (
+          <>
+          <button
+            type="button"
+            onClick={googleSignIn}
+            data-testid="google-signin-btn"
+            className="w-full flex items-center justify-center gap-3 py-3 rounded-xl border border-border hover:border-brand hover:bg-brand-soft transition-colors font-semibold text-[14px]"
+          >
+            <GoogleLogo size={18} weight="bold" />
+            Sign in with Google
+          </button>
+
+          <div className="flex items-center gap-3 my-5">
+            <div className="h-px flex-1 bg-border" />
+            <span className="text-[11px] text-muted uppercase tracking-wider">or email</span>
+            <div className="h-px flex-1 bg-border" />
+          </div>
+
+          <form onSubmit={onSubmit} className="space-y-3" data-testid="login-form">
           <div>
             <label htmlFor="login-email" className="text-[11px] font-semibold text-muted uppercase tracking-wider">Email</label>
             <div className="mt-1 relative">
@@ -190,7 +343,9 @@ const Login = () => {
             <SignIn size={15} weight="bold" />
             {submitting ? "Signing in…" : "Sign in"}
           </button>
-        </form>
+          </form>
+          </>
+        )}
 
         <p className="mt-5 text-[11.5px] text-muted leading-relaxed">
           Email/password accounts are created by your administrator. Contact them if you need access.

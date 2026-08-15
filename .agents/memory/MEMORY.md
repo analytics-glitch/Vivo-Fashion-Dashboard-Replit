@@ -117,3 +117,4 @@
 - [Community winner model](community-winner-model.md) — votes→staff-only shortlist→team pick; +200 follows the pick (idempotent, displacing); members see ribbons, never tallies.
 - [Community entry/redemption pipeline](community-entry-pipeline.md) — points ONLY on CRM publish (questions never), redemption PUT ladder ⊋ member labels, vivo-crm build needs BASE_PATH=/crm/.
 - [vivo-bi cookie-only web auth](vivo-bi-cookie-only-auth.md) — staff SPA uses only the httpOnly session cookie (no vivo_token/Bearer); login has account+IP lockout; e2e auth via addCookies.
+- [Staff 2FA flow](staff-2fa-flow.md) — password/Google/native auth share a short-lived challenge before normal session creation; existing sessions survive reset.

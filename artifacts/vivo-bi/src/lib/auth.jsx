@@ -63,9 +63,20 @@ export const AuthProvider = ({ children }) => {
   }, []);
 
   const loginWithPassword = useCallback(async (email, password) => {
-    // The backend sets the httpOnly session cookie on this response; the
-    // token in the JSON body is intentionally ignored (mobile-only path).
+    // Password verification now ends in a short-lived, httpOnly 2FA challenge.
+    // The normal session cookie is only set after completeTwoFactor succeeds.
     const r = await api.post("/auth/login", { email, password });
+    clearApiCache();
+    const data = r?.data || {};
+    if (!data.two_factor_required) {
+      setUser(data.user || null);
+    }
+    setLoading(false);
+    return data;
+  }, []);
+
+  const completeTwoFactor = useCallback(async (code) => {
+    const r = await api.post("/auth/2fa/verify", { code });
     clearApiCache();
     const u = r?.data?.user || null;
     setUser(u);
@@ -111,9 +122,10 @@ export const AuthProvider = ({ children }) => {
       logout,
       checkAuth,
       loginWithPassword,
+      completeTwoFactor,
       completeGoogleLogin,
     }),
-    [user, loading, logout, checkAuth, loginWithPassword, completeGoogleLogin],
+    [user, loading, logout, checkAuth, loginWithPassword, completeTwoFactor, completeGoogleLogin],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

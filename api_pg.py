@@ -4,7 +4,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 import calendar
 import logging
 from collections import deque
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from dq_cross_compare import cross_surface_compare
 from odoo_locations import ODOO_LOCATION_MAP
@@ -16,6 +16,7 @@ import json
 import time
 import hashlib
 import threading
+import struct
 import unicodedata
 import hmac
 import base64
@@ -23,6 +24,7 @@ import re
 import secrets
 import uuid
 import requests
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from security_config import cors_config, fastapi_docs_config
 from urllib.parse import urlencode, quote
 
@@ -876,6 +878,8 @@ _AUTH_SELF_PATHS = {
 # initiator + callback, and the allowed-domains hint shown on the sign-in page.
 _AUTH_PUBLIC_AUTH_PATHS = {
     "/api/auth/login",
+    "/api/auth/2fa/enroll",
+    "/api/auth/2fa/verify",
     "/api/auth/google/login",
     "/api/auth/google/callback",
     "/api/auth/allowed-domains",
@@ -903,6 +907,20 @@ _SESSION_TTL = 7 * 24 * 3600   # 7 days
 _SESSION_CACHE_TTL = 30        # seconds
 _session_cache = {}            # token -> (user, ts)
 _session_cache_lock = threading.Lock()
+
+# RFC 6238 staff 2FA. The challenge cookie is httpOnly and short-lived; the
+# normal session is not issued until one of these challenges is completed.
+_TWO_FACTOR_CHALLENGE_TTL = 10 * 60
+_TWO_FACTOR_MAX_ATTEMPTS = 5
+_TWO_FACTOR_WINDOW_SECONDS = 15 * 60
+_TOTP_STEP_SECONDS = 30
+_TOTP_DIGITS = 6
+_TOTP_SECRET_BYTES = 20
+_TOTP_ISSUER = "Vivo Fashion Group BI"
+
+
+def time_now_utc():
+    return datetime.now(timezone.utc)
 
 
 def _admin_bootstrap_emails():
@@ -1053,6 +1071,39 @@ def _ensure_users_table():
     _users_exec(
         "ALTER TABLE app_users ADD COLUMN IF NOT EXISTS "
         "extra_pages JSONB NOT NULL DEFAULT '[]'")
+    # Staff TOTP enrollment state. The secret is encrypted with a key derived
+    # from SESSION_SECRET; backup codes are PBKDF2 hashes only and are never
+    # recoverable from the database.
+    _users_exec("ALTER TABLE app_users ADD COLUMN IF NOT EXISTS totp_secret_enc TEXT")
+    _users_exec(
+        "ALTER TABLE app_users ADD COLUMN IF NOT EXISTS "
+        "totp_enabled BOOLEAN NOT NULL DEFAULT FALSE")
+    _users_exec("ALTER TABLE app_users ADD COLUMN IF NOT EXISTS totp_enrolled_at TIMESTAMPTZ")
+    _users_exec(
+        "ALTER TABLE app_users ADD COLUMN IF NOT EXISTS "
+        "totp_backup_codes JSONB NOT NULL DEFAULT '[]'::jsonb")
+    _users_exec(
+        "ALTER TABLE app_users ADD COLUMN IF NOT EXISTS "
+        "totp_failed_attempts INTEGER NOT NULL DEFAULT 0")
+    _users_exec("ALTER TABLE app_users ADD COLUMN IF NOT EXISTS totp_last_failed_at TIMESTAMPTZ")
+    _users_exec("ALTER TABLE app_users ADD COLUMN IF NOT EXISTS totp_locked_until TIMESTAMPTZ")
+    _users_exec("""
+        CREATE TABLE IF NOT EXISTS user_2fa_challenges (
+            challenge_hash TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL REFERENCES app_users(user_id) ON DELETE CASCADE,
+            mode TEXT NOT NULL CHECK (mode IN ('enroll', 'verify')),
+            secret_enc TEXT,
+            backup_codes JSONB,
+            backup_codes_shown BOOLEAN NOT NULL DEFAULT FALSE,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            first_attempt_at TIMESTAMPTZ,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            expires_at TIMESTAMPTZ NOT NULL
+        )
+    """)
+    _users_exec(
+        "CREATE INDEX IF NOT EXISTS idx_user_2fa_challenges_expires "
+        "ON user_2fa_challenges(expires_at)")
     # One-time seed: promote any existing hardcoded CRM_ADMIN_EMAILS entries into
     # the DB flag so the column immediately reflects the intended state.
     try:
@@ -1091,6 +1142,7 @@ def _ensure_users_table():
     # Reap expired sessions on boot so the table cannot grow unbounded.
     try:
         _users_exec("DELETE FROM user_sessions WHERE expires_at <= now()")
+        _users_exec("DELETE FROM user_2fa_challenges WHERE expires_at <= now()")
     except Exception:
         pass
 
@@ -1280,6 +1332,144 @@ def _verify_password(password, stored):
         return False
 
 
+def _totp_crypto_key():
+    """Derive the AES-GCM key used for staff TOTP secrets.
+
+    SESSION_SECRET is already required for server-side sessions and signed
+    step-up tokens. Deriving a separate context-bound key prevents a database
+    dump from exposing the TOTP seed while avoiding another secret to rotate.
+    """
+    secret = (os.environ.get("SESSION_SECRET") or "").encode("utf-8")
+    if not secret:
+        raise RuntimeError("SESSION_SECRET is required for TOTP encryption")
+    return hashlib.sha256(b"vivo-staff-totp-aes-gcm-v1:" + secret).digest()
+
+
+def _encrypt_totp_secret(secret):
+    nonce = secrets.token_bytes(12)
+    ciphertext = AESGCM(_totp_crypto_key()).encrypt(
+        nonce, secret.encode("ascii"), b"vivo-staff-totp-v1")
+    return "v1:" + _b64u(nonce + ciphertext)
+
+
+def _decrypt_totp_secret(stored):
+    if not stored or not str(stored).startswith("v1:"):
+        return None
+    try:
+        raw = _b64u_dec(str(stored)[3:])
+        if len(raw) < 13:
+            return None
+        return AESGCM(_totp_crypto_key()).decrypt(
+            raw[:12], raw[12:], b"vivo-staff-totp-v1").decode("ascii")
+    except Exception:
+        # A corrupted or key-mismatched secret must fail closed, never fall
+        # back to plaintext or silently enrol a different secret.
+        return None
+
+
+def _new_totp_secret():
+    return base64.b32encode(secrets.token_bytes(_TOTP_SECRET_BYTES)).decode(
+        "ascii").rstrip("=")
+
+
+def _totp_code(secret, counter):
+    try:
+        raw = base64.b32decode(str(secret).upper() + "=" * (-len(str(secret)) % 8))
+        digest = hmac.new(raw, int(counter).to_bytes(8, "big"), hashlib.sha1).digest()
+        offset = digest[-1] & 0x0F
+        value = (int.from_bytes(digest[offset:offset + 4], "big") & 0x7FFFFFFF)
+        return f"{value % (10 ** _TOTP_DIGITS):0{_TOTP_DIGITS}d}"
+    except Exception:
+        return None
+
+
+def _verify_totp(secret, code, now=None):
+    code = re.sub(r"\s+", "", str(code or ""))
+    if not re.fullmatch(r"\d{6}", code):
+        return False
+    current = int(time.time() if now is None else now) // _TOTP_STEP_SECONDS
+    # RFC 6238 clock-drift tolerance of one 30-second time step on either side.
+    return any(hmac.compare_digest(_totp_code(secret, current + delta) or "", code)
+               for delta in (-1, 0, 1))
+
+
+def _totp_provisioning_uri(secret, email):
+    label = quote(f"{_TOTP_ISSUER}:{email}", safe="")
+    return (
+        f"otpauth://totp/{label}?secret={quote(secret)}"
+        f"&issuer={quote(_TOTP_ISSUER)}&algorithm=SHA1"
+        f"&digits={_TOTP_DIGITS}&period={_TOTP_STEP_SECONDS}"
+    )
+
+
+def _totp_qr_svg(uri):
+    """Return a generated SVG QR code; the URI itself remains text-readable."""
+    import qrcode
+    from qrcode.image.svg import SvgPathImage
+    qr = qrcode.QRCode(
+        version=None, error_correction=qrcode.constants.ERROR_CORRECT_M,
+        box_size=6, border=4)
+    qr.add_data(uri)
+    qr.make(fit=True)
+    out = qr.make_image(image_factory=SvgPathImage).to_string()
+    return out.decode("utf-8") if isinstance(out, bytes) else str(out)
+
+
+def _new_backup_codes():
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    return ["-".join(
+        "".join(secrets.choice(alphabet) for _ in range(4))
+        for _ in range(3)) for _ in range(8)]
+
+
+def _canonical_backup_code(value):
+    return re.sub(r"[^A-Z0-9]", "", str(value or "").upper())
+
+
+def _hash_backup_code(code):
+    return _hash_password(_canonical_backup_code(code))
+
+
+def _verify_backup_code(code, stored_hash):
+    canonical = _canonical_backup_code(code)
+    return bool(len(canonical) >= 8 and _verify_password(canonical, stored_hash))
+
+
+def _two_factor_cookie_kwargs():
+    return dict(httponly=True, samesite="lax", secure=True, path="/",
+                max_age=_TWO_FACTOR_CHALLENGE_TTL)
+
+
+def _create_2fa_challenge(user_id, mode):
+    if mode not in ("enroll", "verify"):
+        raise ValueError("invalid two-factor mode")
+    token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    _users_exec(
+        "INSERT INTO user_2fa_challenges "
+        "(challenge_hash, user_id, mode, expires_at) "
+        "VALUES (%s, %s, %s, now() + make_interval(secs => %s))",
+        (token_hash, user_id, mode, _TWO_FACTOR_CHALLENGE_TTL))
+    return token
+
+
+def _two_factor_user_mode(user_id):
+    rows = _users_exec(
+        "SELECT totp_enabled FROM app_users WHERE user_id=%s", (user_id,), fetch=True)
+    return "verify" if rows and rows[0].get("totp_enabled") else "enroll"
+
+
+def _two_factor_challenge_token(request, body=None):
+    token = (request.cookies.get("staff_2fa_challenge")
+             or request.headers.get("x-vivo-2fa-challenge")
+             or (body or {}).get("challenge_token"))
+    return token.strip() if token else None
+
+
+def _two_factor_failure_response(message="Invalid verification code."):
+    return JSONResponse({"detail": message}, status_code=401)
+
+
 # ── Opaque server-side sessions ───────────────────────────────────────────────
 def _create_session(user_id):
     token = secrets.token_urlsafe(32)
@@ -1308,6 +1498,7 @@ def _user_dict(row):
         "role": row["role"], "status": row["status"],
         "active": row["status"] == "active", "picture": None,
         "extra_pages": list(row["extra_pages"]) if row.get("extra_pages") else [],
+        "two_factor_enabled": bool(row.get("totp_enabled")),
     }
 
 
@@ -9046,6 +9237,7 @@ async def auth_login(request: Request):
     with _users_tx(lock=True) as cur:
         cur.execute(
             "SELECT user_id, email, name, role, status, password_hash, extra_pages, "
+            "totp_enabled, "
             "failed_logins, "
             "(locked_until IS NOT NULL AND locked_until > now()) AS is_locked "
             "FROM app_users WHERE email=%s FOR UPDATE", (email,))
@@ -9079,19 +9271,216 @@ async def auth_login(request: Request):
         return JSONResponse({"detail": "account_rejected"}, status_code=403)
     if rec["status"] == "disabled":
         return JSONResponse({"detail": "account_disabled"}, status_code=403)
-    token = _create_session(rec["user_id"])
-    try:
-        _users_exec("UPDATE app_users SET last_login_at=now() WHERE user_id=%s",
-                    (rec["user_id"],))
-    except Exception:
-        pass
     user = _user_dict(rec)
     user["hidden_pages"] = _hidden_pages()
     user["allowed_pages"] = _effective_pages_for_role(user.get("role"))
     _apply_extra_pages(user)
     _apply_crm_admin_grants(user)
-    resp = JSONResponse({"token": token, "user": user})
-    resp.set_cookie("session_token", token, **_login_cookie_kwargs())
+    mode = "verify" if rec.get("totp_enabled") else "enroll"
+    challenge = _create_2fa_challenge(rec["user_id"], mode)
+    payload = {
+        "two_factor_required": True,
+        "two_factor": {"mode": mode},
+        "user": user,
+    }
+    if request.headers.get("x-vivo-mobile") == "1":
+        payload["challenge_token"] = challenge
+    resp = JSONResponse(payload)
+    resp.set_cookie("staff_2fa_challenge", challenge,
+                    **_two_factor_cookie_kwargs())
+    return resp
+
+
+@app.post("/api/auth/2fa/enroll")
+async def auth_2fa_enroll(request: Request):
+    """Start enrollment for the password/Google login challenge.
+
+    The plaintext seed and the eight backup codes are returned only on this
+    first call. Only the encrypted seed and PBKDF2 backup-code hashes are
+    persisted.
+    """
+    token = _two_factor_challenge_token(request)
+    if not token:
+        return JSONResponse({"detail": "Two-factor challenge expired."}, status_code=401)
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    plain_codes = None
+    try:
+        with _users_tx() as cur:
+            cur.execute("""
+                SELECT c.*, u.email
+                FROM user_2fa_challenges c
+                JOIN app_users u ON u.user_id = c.user_id
+                WHERE c.challenge_hash=%s AND c.expires_at > now()
+                FOR UPDATE
+            """, (token_hash,))
+            challenge = cur.fetchone()
+            if not challenge:
+                return JSONResponse(
+                    {"detail": "Two-factor challenge expired."}, status_code=401)
+            if challenge["mode"] != "enroll":
+                return {"mode": "verify", "two_factor_required": True}
+            secret = _decrypt_totp_secret(challenge.get("secret_enc"))
+            if not secret:
+                secret = _new_totp_secret()
+                plain_codes = _new_backup_codes()
+                hashed_codes = [_hash_backup_code(code) for code in plain_codes]
+                cur.execute(
+                    "UPDATE user_2fa_challenges SET secret_enc=%s, "
+                    "backup_codes=%s::jsonb, backup_codes_shown=TRUE "
+                    "WHERE challenge_hash=%s",
+                    (_encrypt_totp_secret(secret), json.dumps(hashed_codes), token_hash))
+            uri = _totp_provisioning_uri(secret, challenge["email"])
+        payload = {
+            "mode": "enroll",
+            "manual_key": secret,
+            "provisioning_uri": uri,
+            "qr_svg": _totp_qr_svg(uri),
+            "backup_codes": plain_codes or [],
+            "backup_codes_once": bool(plain_codes),
+        }
+        return payload
+    except Exception:
+        logging.exception("2FA enrollment setup failed")
+        return JSONResponse(
+            {"detail": "Could not start two-factor enrollment."}, status_code=500)
+
+
+@app.post("/api/auth/2fa/verify")
+async def auth_2fa_verify(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    supplied = str(body.get("code") or body.get("backup_code") or "").strip()
+    if not supplied:
+        return JSONResponse({"detail": "Enter your verification code."}, status_code=400)
+    token = _two_factor_challenge_token(request, body)
+    if not token:
+        return JSONResponse({"detail": "Two-factor challenge expired."}, status_code=401)
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    user_id = None
+    completed_enrollment = False
+    try:
+        with _users_tx() as cur:
+            cur.execute("""
+                SELECT c.*, u.user_id, u.email, u.name, u.role, u.status,
+                       u.extra_pages, u.totp_enabled, u.totp_secret_enc,
+                       u.totp_backup_codes, u.totp_failed_attempts,
+                       u.totp_last_failed_at, u.totp_locked_until
+                FROM user_2fa_challenges c
+                JOIN app_users u ON u.user_id = c.user_id
+                WHERE c.challenge_hash=%s AND c.expires_at > now()
+                FOR UPDATE
+            """, (token_hash,))
+            challenge = cur.fetchone()
+            if not challenge:
+                return JSONResponse(
+                    {"detail": "Two-factor challenge expired."}, status_code=401)
+            if challenge.get("totp_locked_until") and challenge["totp_locked_until"] > time_now_utc():
+                return JSONResponse(
+                    {"detail": "Too many verification attempts. Try again later."},
+                    status_code=429)
+
+            mode = challenge["mode"]
+            secret = (_decrypt_totp_secret(challenge.get("secret_enc"))
+                      if mode == "enroll"
+                      else _decrypt_totp_secret(challenge.get("totp_secret_enc")))
+            is_backup = bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 -]{7,}", supplied)
+                             and not re.fullmatch(r"\d{6}", re.sub(r"\s+", "", supplied)))
+            backup_hashes = challenge.get("totp_backup_codes") or []
+            backup_index = None
+            valid = False
+            if secret and not is_backup:
+                valid = _verify_totp(secret, supplied)
+            elif mode == "verify" and is_backup and isinstance(backup_hashes, list):
+                for idx, stored_hash in enumerate(backup_hashes):
+                    if _verify_backup_code(supplied, stored_hash):
+                        backup_index = idx
+                        valid = True
+                        break
+
+            if not valid:
+                last_failed = challenge.get("totp_last_failed_at")
+                in_window = bool(last_failed and
+                                 (time_now_utc() - last_failed).total_seconds()
+                                 < _TWO_FACTOR_WINDOW_SECONDS)
+                failures = int(challenge.get("totp_failed_attempts") or 0) + 1 if in_window else 1
+                if failures >= _TWO_FACTOR_MAX_ATTEMPTS:
+                    cur.execute(
+                        "UPDATE app_users SET totp_failed_attempts=0, "
+                        "totp_last_failed_at=now(), "
+                        "totp_locked_until=now() + (%s || ' seconds')::interval "
+                        "WHERE user_id=%s",
+                        (_TWO_FACTOR_WINDOW_SECONDS, challenge["user_id"]))
+                    return JSONResponse(
+                        {"detail": "Too many verification attempts. Try again later."},
+                        status_code=429)
+                cur.execute(
+                    "UPDATE app_users SET totp_failed_attempts=%s, "
+                    "totp_last_failed_at=now() WHERE user_id=%s",
+                    (failures, challenge["user_id"]))
+                return _two_factor_failure_response()
+
+            user_id = challenge["user_id"]
+            if mode == "enroll":
+                hashes = challenge.get("backup_codes") or []
+                if not secret or not isinstance(hashes, list) or len(hashes) != 8:
+                    return JSONResponse(
+                        {"detail": "Enrollment data is incomplete. Start again."},
+                        status_code=409)
+                cur.execute("""
+                    UPDATE app_users
+                    SET totp_secret_enc=%s, totp_enabled=TRUE,
+                        totp_enrolled_at=COALESCE(totp_enrolled_at, now()),
+                        totp_backup_codes=%s::jsonb,
+                        totp_failed_attempts=0, totp_last_failed_at=NULL,
+                        totp_locked_until=NULL
+                    WHERE user_id=%s
+                """, (challenge["secret_enc"], json.dumps(hashes), user_id))
+                completed_enrollment = True
+            elif backup_index is not None:
+                remaining = list(backup_hashes)
+                remaining.pop(backup_index)
+                cur.execute(
+                    "UPDATE app_users SET totp_backup_codes=%s::jsonb, "
+                    "totp_failed_attempts=0, totp_last_failed_at=NULL, "
+                    "totp_locked_until=NULL WHERE user_id=%s",
+                    (json.dumps(remaining), user_id))
+            else:
+                cur.execute(
+                    "UPDATE app_users SET totp_failed_attempts=0, "
+                    "totp_last_failed_at=NULL, totp_locked_until=NULL WHERE user_id=%s",
+                    (user_id,))
+            cur.execute("DELETE FROM user_2fa_challenges WHERE challenge_hash=%s",
+                        (token_hash,))
+    except Exception:
+        logging.exception("2FA verification failed")
+        return JSONResponse(
+            {"detail": "Could not complete two-factor verification."}, status_code=500)
+
+    try:
+        _users_exec("UPDATE app_users SET last_login_at=now() WHERE user_id=%s",
+                    (user_id,))
+    except Exception:
+        pass
+    rows = _users_exec(
+        "SELECT user_id, email, name, role, status, extra_pages, "
+        "totp_enabled FROM app_users WHERE user_id=%s", (user_id,), fetch=True)
+    if not rows:
+        return JSONResponse({"detail": "Account no longer exists."}, status_code=401)
+    user = _user_dict(rows[0])
+    user["hidden_pages"] = _hidden_pages()
+    user["allowed_pages"] = _effective_pages_for_role(user.get("role"))
+    _apply_extra_pages(user)
+    _apply_crm_admin_grants(user)
+    session = _create_session(user_id)
+    resp = JSONResponse({
+        "token": session,
+        "user": user,
+        "two_factor_enrolled": completed_enrollment,
+    })
+    resp.set_cookie("session_token", session, **_login_cookie_kwargs())
+    resp.delete_cookie("staff_2fa_challenge", path="/")
     return resp
 
 
@@ -9255,16 +9644,24 @@ def auth_google_callback(request: Request):
     # error the login screen can render instead.
     try:
         rec = resolve_app_user(sub, email, name, picture)
-        token = _create_session(rec["user_id"])
+        mode = _two_factor_user_mode(rec["user_id"])
+        challenge = _create_2fa_challenge(rec["user_id"], mode)
     except Exception as _e:
         # PII minimisation: no traceback/exception text — DB errors can embed
         # the submitted email/name in their message or SQL parameters.
         logging.error("google oauth provisioning failed for %s (%s)",
                       _redact_email(email), type(_e).__name__)
         return _back("error=provisioning")
-    resp = RedirectResponse(_oauth_success_redirect(base, is_native, token))
+    suffix = f"two_factor=1&mode={quote(mode)}"
+    if is_native:
+        # Native clients cannot read the web-only httpOnly challenge cookie.
+        # This is a short-lived challenge credential, not the normal session
+        # token; it is consumed once by the native 2FA endpoint.
+        suffix += f"&challenge_token={quote(challenge)}"
+    resp = RedirectResponse(f"{base}{sep}{suffix}")
     resp.delete_cookie("g_oauth_return", path="/")
-    resp.set_cookie("session_token", token, **_login_cookie_kwargs())
+    resp.set_cookie("staff_2fa_challenge", challenge,
+                    **_two_factor_cookie_kwargs())
     resp.delete_cookie("g_oauth_state", path="/")
     return resp
 
@@ -16589,11 +16986,11 @@ def admin_store_clusters(forceFresh: bool = Query(default=False)):
 def admin_users_list():
     rows = _users_exec(
         "SELECT user_id, email, name, role, status, auth_method, crm_admin, pos_location_name, "
-        "created_at, approved_at, approved_by, last_login_at, "
+        "totp_enabled, totp_enrolled_at, created_at, approved_at, approved_by, last_login_at, "
         "(status='active') AS active "
         "FROM app_users ORDER BY created_at DESC", fetch=True) or []
     for r in rows:
-        for k in ("created_at", "approved_at", "last_login_at"):
+        for k in ("created_at", "approved_at", "totp_enrolled_at", "last_login_at"):
             if r.get(k) is not None:
                 r[k] = r[k].isoformat()
     return rows
@@ -26963,6 +27360,34 @@ async def admin_users_update(user_id: str, request: Request):
             params.append(user_id)
             cur.execute(
                 f"UPDATE app_users SET {', '.join(sets)} WHERE user_id=%s", tuple(params))
+    finally:
+        _invalidate_user_cache(user_id)
+    return {"ok": True}
+
+
+@app.post("/api/admin/users/{user_id}/2fa-reset")
+async def admin_users_2fa_reset(user_id: str, request: Request):
+    """Clear enrollment so the user is prompted to enrol on their next login.
+
+    Existing sessions deliberately remain valid; this only removes the user's
+    second-factor enrollment and any pending challenge.
+    """
+    try:
+        with _users_tx(lock=True) as cur:
+            cur.execute("SELECT user_id FROM app_users WHERE user_id=%s FOR UPDATE",
+                        (user_id,))
+            if not cur.fetchone():
+                return JSONResponse({"detail": "User not found"}, status_code=404)
+            cur.execute("""
+                UPDATE app_users
+                SET totp_secret_enc=NULL, totp_enabled=FALSE,
+                    totp_enrolled_at=NULL, totp_backup_codes='[]'::jsonb,
+                    totp_failed_attempts=0, totp_last_failed_at=NULL,
+                    totp_locked_until=NULL
+                WHERE user_id=%s
+            """, (user_id,))
+            cur.execute("DELETE FROM user_2fa_challenges WHERE user_id=%s",
+                        (user_id,))
     finally:
         _invalidate_user_cache(user_id)
     return {"ok": True}
