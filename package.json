@@ -10,11 +10,6 @@
     "test:e2e": "playwright test"
   },
   "private": true,
-  "pnpm": {
-    "overrides": {
-      "image-size": "^2.0.2"
-    }
-  },
   "devDependencies": {
     "@playwright/test": "^1.61.1",
     "prettier": "^3.8.3",

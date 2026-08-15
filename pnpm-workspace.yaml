@@ -44,6 +44,8 @@ onlyBuiltDependencies:
 
 overrides:
   # Security: force patched versions of vulnerable transitive dependencies
+  image-size: ^2.0.2
+  'metro>image-size': 1.2.1
   axios: '>=1.19.0'
   brace-expansion@1: '^1.1.18'
   brace-expansion@2: '^2.1.4'
