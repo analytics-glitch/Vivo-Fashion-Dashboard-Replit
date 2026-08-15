@@ -41,6 +41,9 @@ class StaffTwoFactorTests(unittest.TestCase):
         body = setup.json()
         self.assertEqual(len(body["backup_codes"]), 8)
         self.assertTrue(body["qr_svg"].startswith("<svg"))
+        self.assertTrue(body["provisioning_uri"].startswith("otpauth://totp/"))
+        self.assertIn("issuer=Vivo%20Fashion%20Group", body["provisioning_uri"])
+        self.assertIn(f"secret={body['manual_key']}", body["provisioning_uri"])
         return body["manual_key"], body["backup_codes"]
 
     def test_accepts_one_step_forward_clock_drift(self):

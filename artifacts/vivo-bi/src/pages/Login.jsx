@@ -187,6 +187,15 @@ const Login = () => {
                           <Key size={13} className="shrink-0 text-brand" />
                           {enrollment.manual_key}
                         </div>
+                         {enrollment.provisioning_uri && (
+                           <a
+                             href={enrollment.provisioning_uri}
+                             className="sm:hidden mt-2 inline-flex items-center justify-center rounded-md bg-brand px-3 py-2 text-[12px] font-semibold text-white"
+                             data-testid="totp-mobile-link"
+                           >
+                             Tap to add to your authenticator
+                           </a>
+                         )}
                       </div>
                     </div>
                     <div className="rounded-lg border border-amber-300/70 bg-amber-50 p-3">
