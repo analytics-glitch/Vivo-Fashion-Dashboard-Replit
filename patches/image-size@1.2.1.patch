@@ -1,0 +1,24 @@
+diff --git a/dist/types/icns.js b/dist/types/icns.js
+index f2bfafef3723cb423b110304815e56e3f97f81e0..6caa59d182613f1f98ee9b034c1e76f2810b513e 100644
+--- a/dist/types/icns.js
++++ b/dist/types/icns.js
+@@ -82,7 +82,8 @@ exports.ICNS = {
+         let imageOffset = SIZE_HEADER;
+         let imageHeader = readImageHeader(input, imageOffset);
+         let imageSize = getImageSize(imageHeader[0]);
+-        imageOffset += imageHeader[1];
++        // Fix CVE-2025-71329: ensure offset always advances to prevent infinite loop
++        imageOffset += imageHeader[1] > 0 ? imageHeader[1] : 8;
+         if (imageOffset === fileLength)
+             return imageSize;
+         const result = {
+@@ -93,7 +94,8 @@ exports.ICNS = {
+         while (imageOffset < fileLength && imageOffset < inputLength) {
+             imageHeader = readImageHeader(input, imageOffset);
+             imageSize = getImageSize(imageHeader[0]);
+-            imageOffset += imageHeader[1];
++            // Fix CVE-2025-71329: ensure offset always advances to prevent infinite loop
++            imageOffset += imageHeader[1] > 0 ? imageHeader[1] : 8;
+             result.images.push(imageSize);
+         }
+         return result;

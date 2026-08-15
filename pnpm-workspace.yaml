@@ -43,19 +43,6 @@ onlyBuiltDependencies:
   - unrs-resolver
 
 overrides:
-  # Security: force patched versions of vulnerable transitive dependencies
-  image-size: ^2.0.2
-  'metro>image-size': 1.2.1
-  axios: '>=1.19.0'
-  brace-expansion@1: '^1.1.18'
-  brace-expansion@2: '^2.1.4'
-  brace-expansion@5: '^5.0.9'
-  form-data: '>=4.0.6'
-  http-proxy-middleware: '>=4.2.0'
-  js-yaml: '>=4.3.1 <5'
-  postcss: '>=8.5.26'
-  react-router: '>=7.18.2 <8'
-  react-router-dom: '>=7.18.2 <8'
   '@esbuild-kit/esm-loader': npm:tsx@^4.21.0
   '@expo/ngrok-bin>@expo/ngrok-bin-darwin-arm64': '-'
   '@expo/ngrok-bin>@expo/ngrok-bin-darwin-x64': '-'
@@ -77,6 +64,10 @@ overrides:
   '@tailwindcss/oxide>@tailwindcss/oxide-linux-x64-musl': '-'
   '@tailwindcss/oxide>@tailwindcss/oxide-win32-arm64-msvc': '-'
   '@tailwindcss/oxide>@tailwindcss/oxide-win32-x64-msvc': '-'
+  axios: '>=1.19.0'
+  brace-expansion@1: ^1.1.18
+  brace-expansion@2: ^2.1.4
+  brace-expansion@5: ^5.0.9
   esbuild: 0.27.3
   esbuild>@esbuild/aix-ppc64: '-'
   esbuild>@esbuild/android-arm: '-'
@@ -103,6 +94,9 @@ overrides:
   esbuild>@esbuild/win32-arm64: '-'
   esbuild>@esbuild/win32-ia32: '-'
   esbuild>@esbuild/win32-x64: '-'
+  form-data: '>=4.0.6'
+  http-proxy-middleware: '>=4.2.0'
+  js-yaml: '>=4.3.1 <5'
   lightningcss>lightningcss-android-arm64: '-'
   lightningcss>lightningcss-darwin-arm64: '-'
   lightningcss>lightningcss-darwin-x64: '-'
@@ -113,6 +107,10 @@ overrides:
   lightningcss>lightningcss-linux-x64-musl: '-'
   lightningcss>lightningcss-win32-arm64-msvc: '-'
   lightningcss>lightningcss-win32-x64-msvc: '-'
+  metro>image-size: 1.2.1
+  postcss: '>=8.5.26'
+  react-router: '>=7.18.2 <8'
+  react-router-dom: '>=7.18.2 <8'
   rollup>@rollup/rollup-android-arm-eabi: '-'
   rollup>@rollup/rollup-android-arm64: '-'
   rollup>@rollup/rollup-darwin-arm64: '-'
@@ -137,3 +135,6 @@ overrides:
   rollup>@rollup/rollup-win32-ia32-msvc: '-'
   rollup>@rollup/rollup-win32-x64-gnu: '-'
   rollup>@rollup/rollup-win32-x64-msvc: '-'
+
+patchedDependencies:
+  image-size@1.2.1: patches/image-size@1.2.1.patch
