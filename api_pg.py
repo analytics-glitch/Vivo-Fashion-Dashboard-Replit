@@ -23,6 +23,7 @@ import re
 import secrets
 import uuid
 import requests
+from security_config import cors_config, fastapi_docs_config
 from urllib.parse import urlencode, quote
 
 # ── PII reveal (step-up) tokens ───────────────────────────────────────────────
@@ -613,7 +614,7 @@ def _cache_stats_payload():
     }
 
 
-app = FastAPI(title="Vivo Fashion Group BI API")
+app = FastAPI(title="Vivo Fashion Group BI API", **fastapi_docs_config())
 from attendance_ingest_api import app as attendance_app
 app.mount("/api/public/attendance", attendance_app)
 
@@ -627,9 +628,7 @@ from production_wallboard import production_wallboard_router
 app.include_router(production_wallboard_router)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    **cors_config(),
 )
 # Compress JSON responses larger than 1KB. The BI payloads (tables, multi-series
 # charts) are highly compressible text, so this cuts transfer size sharply over

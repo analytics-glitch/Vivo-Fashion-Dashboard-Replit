@@ -77,29 +77,36 @@ function fmt(n) {
 
 function printReport(report, desk) {
   const STATUS_LABEL = { critical: "CRITICAL", high: "HIGH RISK", normal: "NORMAL", positive: "POSITIVE" };
+  const escapeHtml = value => String(value ?? "").replace(/[&<>"']/g, char => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  }[char]));
   const sColor = STATUS_COLOR[report.overall_status] || "#6b7280";
   const findings = (report.key_findings || []).map(f => `
     <div style="margin-bottom:18px;padding:14px 16px;border-left:4px solid ${SEV_COLOR[f.severity]||'#9ca3af'};background:#fafafa;border-radius:4px;">
-      <div style="font-size:13px;font-weight:700;color:#111;margin-bottom:6px;">${f.heading||''}</div>
-      <div style="font-size:12px;color:#374151;margin-bottom:4px;line-height:1.6;">${f.analysis||''}</div>
-      <div style="font-size:11px;color:#6b7280;font-style:italic;margin-bottom:4px;">${f.evidence||''}</div>
-      ${f.kes_impact != null ? `<div style="font-size:11px;font-weight:700;color:${SEV_COLOR[f.severity]||'#6b7280'}">KES impact: ${Number(f.kes_impact).toLocaleString()}</div>` : ''}
+      <div style="font-size:13px;font-weight:700;color:#111;margin-bottom:6px;">${escapeHtml(f.heading)}</div>
+      <div style="font-size:12px;color:#374151;margin-bottom:4px;line-height:1.6;">${escapeHtml(f.analysis)}</div>
+      <div style="font-size:11px;color:#6b7280;font-style:italic;margin-bottom:4px;">${escapeHtml(f.evidence)}</div>
+      ${f.kes_impact != null ? `<div style="font-size:11px;font-weight:700;color:${SEV_COLOR[f.severity]||'#6b7280'}">KES impact: ${escapeHtml(Number(f.kes_impact).toLocaleString())}</div>` : ''}
     </div>`).join('');
   const actions = (report.action_plan || []).map(a => `
     <tr style="border-bottom:1px solid #e5e7eb;">
-      <td style="padding:8px 10px;font-size:11px;font-weight:700;color:${PRIO_COLOR[a.priority]||'#6b7280'};text-transform:uppercase;">${a.priority||''}</td>
-      <td style="padding:8px 10px;font-size:12px;color:#111;">${a.action||''}</td>
-      <td style="padding:8px 10px;font-size:12px;color:#374151;">${a.owner||''}</td>
-      <td style="padding:8px 10px;font-size:12px;color:#374151;">${a.by_when||''}</td>
-      <td style="padding:8px 10px;font-size:12px;color:#374151;text-align:right;">${a.kes_impact != null ? 'KES '+Number(a.kes_impact).toLocaleString() : '—'}</td>
+      <td style="padding:8px 10px;font-size:11px;font-weight:700;color:${PRIO_COLOR[a.priority]||'#6b7280'};text-transform:uppercase;">${escapeHtml(a.priority)}</td>
+      <td style="padding:8px 10px;font-size:12px;color:#111;">${escapeHtml(a.action)}</td>
+      <td style="padding:8px 10px;font-size:12px;color:#374151;">${escapeHtml(a.owner)}</td>
+      <td style="padding:8px 10px;font-size:12px;color:#374151;">${escapeHtml(a.by_when)}</td>
+      <td style="padding:8px 10px;font-size:12px;color:#374151;text-align:right;">${a.kes_impact != null ? 'KES '+escapeHtml(Number(a.kes_impact).toLocaleString()) : '—'}</td>
     </tr>`).join('');
   const risks = (report.risks_to_watch || []).map(r => `
     <div style="margin-bottom:10px;padding:10px 14px;background:#fffbeb;border-left:3px solid #d97706;border-radius:4px;">
-      <div style="font-size:12px;font-weight:600;color:#111;margin-bottom:3px;">${r.risk||''}</div>
-      <div style="font-size:11px;color:#6b7280;">Trigger: ${r.trigger||''}</div>
-      <div style="font-size:11px;color:#1a5c38;">Mitigation: ${r.mitigation||''}</div>
+      <div style="font-size:12px;font-weight:600;color:#111;margin-bottom:3px;">${escapeHtml(r.risk)}</div>
+      <div style="font-size:11px;color:#6b7280;">Trigger: ${escapeHtml(r.trigger)}</div>
+      <div style="font-size:11px;color:#1a5c38;">Mitigation: ${escapeHtml(r.mitigation)}</div>
     </div>`).join('');
-  const html = `<!DOCTYPE html><html><head><title>${report.title||desk+' Report'}</title>
+  const html = `<!DOCTYPE html><html><head><title>${escapeHtml(report.title || `${desk} Report`)}</title>
   <style>body{font-family:Georgia,serif;margin:40px;color:#111;max-width:900px;}
   h1{font-size:22px;font-weight:700;margin-bottom:4px;}
   h2{font-size:14px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;color:#374151;margin:24px 0 10px;border-bottom:1px solid #e5e7eb;padding-bottom:6px;}
@@ -107,25 +114,25 @@ function printReport(report, desk) {
   thead{background:#f3f4f6;}th{padding:8px 10px;text-align:left;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.04em;color:#6b7280;}
   @media print{body{margin:20px;}}
   </style></head><body>
-  <h1>${report.title||desk+' Intelligence Report'}</h1>
+   <h1>${escapeHtml(report.title || `${desk} Intelligence Report`)}</h1>
   <div style="display:flex;gap:16px;align-items:center;margin-bottom:24px;flex-wrap:wrap;">
-    <span style="padding:3px 12px;background:${sColor}22;color:${sColor};border-radius:4px;font-size:12px;font-weight:700;text-transform:uppercase;">${STATUS_LABEL[report.overall_status]||report.overall_status||''}</span>
-    <span style="font-size:12px;color:#6b7280;">Generated ${report.generated_at||new Date().toISOString().slice(0,10)}</span>
+     <span style="padding:3px 12px;background:${sColor}22;color:${sColor};border-radius:4px;font-size:12px;font-weight:700;text-transform:uppercase;">${escapeHtml(STATUS_LABEL[report.overall_status] || report.overall_status)}</span>
+     <span style="font-size:12px;color:#6b7280;">Generated ${escapeHtml(report.generated_at || new Date().toISOString().slice(0,10))}</span>
   </div>
   <h2>Executive Summary</h2>
-  <div style="font-size:14px;line-height:1.8;color:#1c1917;margin-bottom:16px;">${report.executive_summary||''}</div>
+   <div style="font-size:14px;line-height:1.8;color:#1c1917;margin-bottom:16px;">${escapeHtml(report.executive_summary)}</div>
   <h2>Situation Assessment</h2>
-  <div style="font-size:13px;line-height:1.7;color:#374151;margin-bottom:16px;">${report.situation_assessment||''}</div>
+   <div style="font-size:13px;line-height:1.7;color:#374151;margin-bottom:16px;">${escapeHtml(report.situation_assessment)}</div>
   <h2>Key Findings</h2>${findings}
   <h2>Action Plan</h2>
   <table><thead><tr><th>Priority</th><th>Action</th><th>Owner</th><th>By When</th><th style="text-align:right;">KES Impact</th></tr></thead>
   <tbody>${actions}</tbody></table>
   <h2>Trend Assessment</h2>
-  <div style="font-size:13px;line-height:1.7;color:#374151;font-style:italic;margin-bottom:16px;">${report.trend_assessment||''}</div>
+   <div style="font-size:13px;line-height:1.7;color:#374151;font-style:italic;margin-bottom:16px;">${escapeHtml(report.trend_assessment)}</div>
   <h2>Risks to Watch</h2>${risks}
   <div style="margin-top:24px;display:grid;grid-template-columns:1fr 1fr;gap:20px;">
-    <div><h2 style="margin-top:0;">Data Limitations</h2><div style="font-size:12px;color:#6b7280;line-height:1.6;">${report.data_limitations||''}</div></div>
-    <div><h2 style="margin-top:0;">Conclusion</h2><div style="font-size:14px;font-weight:600;color:#1c1917;line-height:1.7;">${report.conclusion||''}</div></div>
+     <div><h2 style="margin-top:0;">Data Limitations</h2><div style="font-size:12px;color:#6b7280;line-height:1.6;">${escapeHtml(report.data_limitations)}</div></div>
+     <div><h2 style="margin-top:0;">Conclusion</h2><div style="font-size:14px;font-weight:600;color:#1c1917;line-height:1.7;">${escapeHtml(report.conclusion)}</div></div>
   </div>
   <div style="margin-top:40px;padding-top:16px;border-top:1px solid #e5e7eb;font-size:11px;color:#9ca3af;">
     Vivo Fashion Group — Confidential Management Report · AI-generated analysis for human review

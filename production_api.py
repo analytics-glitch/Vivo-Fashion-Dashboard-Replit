@@ -2,16 +2,20 @@
 """Standalone FastAPI service for the production tracker (port 8002)."""
 
 import os
+import logging
 from typing import Optional
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
-from fastapi import APIRouter, FastAPI, HTTPException
+from fastapi import APIRouter, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from fastapi.responses import JSONResponse
+from security_config import cors_config, fastapi_docs_config, internal_token_valid
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 PORT = int(os.environ.get("PRODUCTION_API_PORT", "8002"))
+log = logging.getLogger("production_api")
 
 router = APIRouter(prefix="/api/production", tags=["production"])
 
@@ -29,8 +33,9 @@ def health():
             cur.fetchone()
         conn.close()
         return {"status": "ok"}
-    except Exception as e:
-        raise HTTPException(503, f"db unavailable: {e}")
+    except Exception:
+        log.exception("production API health check failed")
+        raise HTTPException(503, "service unavailable")
 
 
 @router.get("/stages")
@@ -187,16 +192,25 @@ def move(m: MoveIn):
     return order_detail(m.order_ref)
 
 
-app = FastAPI(title="Vivo Production Tracker API")
-app.add_middleware(
-    CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
-)
+app = FastAPI(title="Vivo Production Tracker API", **fastapi_docs_config())
+app.add_middleware(CORSMiddleware, **cors_config())
 app.include_router(router)
+
+
+@app.middleware("http")
+async def standalone_auth_gate(request: Request, call_next):
+    if request.method == "OPTIONS":
+        return await call_next(request)
+    path = request.url.path
+    if path.startswith("/api/production/") and path != "/api/production/health":
+        if not internal_token_valid(request):
+            return JSONResponse({"detail": "Not authenticated"}, status_code=401)
+    return await call_next(request)
 
 
 @app.get("/")
 def root():
-    return {"service": "production-tracker", "docs": "/docs"}
+    return {"service": "production-tracker"}
 
 
 if __name__ == "__main__":

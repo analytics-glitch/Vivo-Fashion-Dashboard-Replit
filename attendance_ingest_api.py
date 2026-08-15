@@ -9,22 +9,31 @@ token check happens in here.
 """
 
 import os
+import json
+import logging
 import psycopg2
 from psycopg2.extras import execute_values
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from security_config import cors_config, fastapi_docs_config
 
-app = FastAPI(title="Vivo Attendance Ingest API")
+app = FastAPI(title="Vivo Attendance Ingest API", **fastapi_docs_config())
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    **cors_config(),
 )
 
 DATABASE_URL = os.environ["DATABASE_URL"]
+log = logging.getLogger("attendance_ingest_api")
+MAX_INGEST_ROWS = int(os.environ.get("ATTENDANCE_MAX_ROWS", "5000"))
+MAX_INGEST_BODY_BYTES = int(
+    os.environ.get("ATTENDANCE_MAX_BODY_BYTES", str(5 * 1024 * 1024))
+)
+MAX_INGEST_FIELD_CHARS = int(
+    os.environ.get("ATTENDANCE_MAX_FIELD_CHARS", "512")
+)
 
 
 def get_conn():
@@ -49,20 +58,55 @@ def health():
             "latest_date": str(result[0]),
             "total_records": result[1],
         }
-    except Exception as e:
-        return {"status": "error", "error": str(e)}
+    except Exception:
+        log.exception("attendance health check failed")
+        return JSONResponse({"status": "error"}, status_code=503)
 
 
 @app.post("/ingest")
 async def ingest_attendance(request: Request):
-    data = await request.json()
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > MAX_INGEST_BODY_BYTES:
+                return JSONResponse(
+                    {"detail": "request body too large"}, status_code=413
+                )
+        except ValueError:
+            return JSONResponse({"detail": "invalid content length"}, status_code=400)
+    try:
+        data = await request.json()
+    except Exception:
+        return JSONResponse({"detail": "invalid JSON body"}, status_code=400)
+    if not isinstance(data, dict):
+        return JSONResponse({"detail": "JSON object required"}, status_code=400)
     rows = data.get("rows", [])
+    if not isinstance(rows, list):
+        return JSONResponse({"detail": "rows must be an array"}, status_code=400)
+    if len(rows) > MAX_INGEST_ROWS:
+        return JSONResponse({"detail": "too many rows"}, status_code=413)
     if not rows:
         return {"status": "ok", "inserted": 0}
+    if any(not isinstance(row, dict) for row in rows):
+        return JSONResponse({"detail": "each row must be an object"}, status_code=400)
+    if any(
+        any(
+            not isinstance(key, str)
+            or len(key) > 100
+            or (isinstance(value, str) and len(value) > MAX_INGEST_FIELD_CHARS)
+            for key, value in row.items()
+        )
+        for row in rows
+    ):
+        return JSONResponse({"detail": "row field is too large"}, status_code=413)
+    if any(len(json.dumps(row, ensure_ascii=False)) > 32_768 for row in rows):
+        return JSONResponse({"detail": "row is too large"}, status_code=413)
 
-    conn = get_conn()
-    cur = conn.cursor()
+    conn = None
+    cur = None
     try:
+        conn = get_conn()
+        cur = conn.cursor()
         # Ensure table exists
         cur.execute("""
             CREATE TABLE IF NOT EXISTS vivo_attendance (
@@ -149,9 +193,13 @@ async def ingest_attendance(request: Request):
         conn.commit()
         return {"status": "ok", "inserted": len(rows)}
 
-    except Exception as e:
-        conn.rollback()
-        return {"error": str(e)}
+    except Exception:
+        if conn is not None:
+            conn.rollback()
+        log.exception("attendance ingest failed")
+        return JSONResponse({"detail": "attendance ingest failed"}, status_code=500)
     finally:
-        cur.close()
-        conn.close()
+        if cur is not None:
+            cur.close()
+        if conn is not None:
+            conn.close()

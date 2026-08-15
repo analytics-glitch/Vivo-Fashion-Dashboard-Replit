@@ -5,17 +5,28 @@ Run: uvicorn fabric_api:app --port 8081
 """
 import os
 from contextlib import contextmanager
-from fastapi import FastAPI, Query
+from datetime import date
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
 from psycopg2.pool import ThreadedConnectionPool
 import psycopg2.extras
+from security_config import cors_config, fastapi_docs_config, internal_token_valid
 
 DATABASE_URL = os.environ["DATABASE_URL"]
 pool = ThreadedConnectionPool(1, 10, DATABASE_URL)
 
-app = FastAPI(title="Vivo Fabric BI API")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+app = FastAPI(title="Vivo Fabric BI API", **fastapi_docs_config())
+app.add_middleware(CORSMiddleware, **cors_config())
+
+
+@app.middleware("http")
+async def standalone_auth_gate(request: Request, call_next):
+    if request.method == "OPTIONS":
+        return await call_next(request)
+    if request.url.path.startswith("/api/fabric/") and not internal_token_valid(request):
+        return JSONResponse({"detail": "Not authenticated"}, status_code=401)
+    return await call_next(request)
 
 @contextmanager
 def get_conn():
@@ -92,7 +103,7 @@ def summary():
 
 # ── Stock by category ──────────────────────────────────────
 @app.get("/api/fabric/by-category")
-def by_category(location: str = Query(default="RMAT/Stock")):
+def by_category(location: str = Query(default="RMAT/Stock", max_length=120)):
     with get_conn() as conn:
         return q(conn, """
             SELECT 
@@ -114,15 +125,15 @@ def by_category(location: str = Query(default="RMAT/Stock")):
 # ── Fabric register (full list) ────────────────────────────
 @app.get("/api/fabric/register")
 def register(
-    category: str = Query(default=None),
-    subcategory: str = Query(default=None),
-    plain_print: str = Query(default=None),
-    weight_range: str = Query(default=None),
-    location: str = Query(default="RMAT/Stock"),
-    search: str = Query(default=None),
-    min_qty: float = Query(default=0),
-    limit: int = Query(default=200),
-    offset: int = Query(default=0),
+    category: str = Query(default=None, max_length=100),
+    subcategory: str = Query(default=None, max_length=100),
+    plain_print: str = Query(default=None, max_length=20),
+    weight_range: str = Query(default=None, max_length=40),
+    location: str = Query(default="RMAT/Stock", max_length=120),
+    search: str = Query(default=None, max_length=200),
+    min_qty: float = Query(default=0, ge=0, le=1_000_000_000),
+    limit: int = Query(default=200, ge=1, le=500),
+    offset: int = Query(default=0, ge=0, le=100_000),
 ):
     with get_conn() as conn:
         where = ["i.quantity > %s", "i.location_name = %s"]
@@ -169,7 +180,7 @@ def register(
 
 # ── Ageing ──────────────────────────────────────────────────
 @app.get("/api/fabric/ageing")
-def ageing(location: str = Query(default="RMAT/Stock")):
+def ageing(location: str = Query(default="RMAT/Stock", max_length=120)):
     with get_conn() as conn:
         return q(conn, """
             SELECT 
@@ -212,11 +223,20 @@ def ageing(location: str = Query(default="RMAT/Stock")):
 # ── Consumption over time ───────────────────────────────────
 @app.get("/api/fabric/consumption")
 def consumption(
-    since: str = Query(default="2026-01-01"),
-    until: str = Query(default="2099-12-31"),
-    group_by: str = Query(default="month"),
+    since: str = Query(default="2026-01-01", max_length=10),
+    until: str = Query(default="2099-12-31", max_length=10),
+    group_by: str = Query(default="month", max_length=10),
 ):
-    trunc = {"day":"day","week":"week"}.get(group_by, "month")
+    if group_by not in {"day", "week", "month"}:
+        raise HTTPException(400, "group_by must be day, week, or month")
+    try:
+        since_date = date.fromisoformat(since)
+        until_date = date.fromisoformat(until)
+    except ValueError:
+        raise HTTPException(400, "since and until must be YYYY-MM-DD")
+    if since_date > until_date:
+        raise HTTPException(400, "since must not be after until")
+    trunc = group_by
     with get_conn() as conn:
         return q(conn, f"""
             SELECT 
@@ -257,7 +277,7 @@ def dead_stock():
 
 # ── Purchase orders ─────────────────────────────────────────
 @app.get("/api/fabric/purchase-orders")
-def purchase_orders(supplier: str = Query(default=None)):
+def purchase_orders(supplier: str = Query(default=None, max_length=200)):
     with get_conn() as conn:
         where = "1=1"
         params = []
@@ -278,7 +298,10 @@ def purchase_orders(supplier: str = Query(default=None)):
 
 # ── BOM lookup ──────────────────────────────────────────────
 @app.get("/api/fabric/bom")
-def bom_lookup(sku: str = Query(default=None), style: str = Query(default=None)):
+def bom_lookup(
+    sku: str = Query(default=None, max_length=200),
+    style: str = Query(default=None, max_length=200),
+):
     with get_conn() as conn:
         where = "1=1"
         params = []
