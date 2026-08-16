@@ -1,0 +1,279 @@
+{
+  "meta": {
+    "title": "Vivo Sublimation Printing — Costing & Odoo BOM",
+    "basis": "per single print run; BOM expressed per 1 kg of printed fabric",
+    "currency": "KES",
+    "source": "Sublimation_Printing_Costing_Template_and_BOM.xlsx",
+    "worked_example": "SHOWME 18206 Dark Brown/Rust"
+  },
+  "machine_rate": {
+    "description": "Standing rate engine — labour + overhead pool divided by normal machine-hours. Two presses treated as one costing unit.",
+    "inputs": {
+      "labour_pool_monthly": {
+        "lines": [
+          {
+            "role": "Operator",
+            "name": "Gerrishon Omondi Ouma",
+            "monthly_fully_loaded": 25654.25
+          },
+          {
+            "role": "Supervisor",
+            "name": "Patrick",
+            "monthly_fully_loaded": 57404.25
+          },
+          {
+            "role": "Operator",
+            "name": "Hanun Osiemo",
+            "monthly_fully_loaded": 60654.25
+          },
+          {
+            "role": "Operator",
+            "name": "Lawi Oluoch",
+            "monthly_fully_loaded": 25654.25
+          }
+        ],
+        "note": "fully loaded = salary + lunch + medical"
+      },
+      "overhead_pool_monthly": {
+        "wear_and_tear": {
+          "value": 487448.87,
+          "note": "2 machines @ 20% p.a.; base 29,246,932 (M1 27,268,404 + M2 1,978,528)"
+        },
+        "rent": {
+          "value": 182395.61,
+          "note": "4,289 sqft x 42.53"
+        },
+        "general_insurance": {
+          "value": 48744.89
+        },
+        "utilities": {
+          "value": 150000.0,
+          "note": "incl. heat-bed power (warm-up + running draw)"
+        },
+        "repairs": {
+          "value": 50000.0
+        }
+      },
+      "capacity": {
+        "machines_in_pool": 2,
+        "shift_hours_per_day_net_of_breaks": 8,
+        "planned_downtime_pct": 0.25,
+        "working_days_per_month": 21,
+        "utilisation_pct": 0.85
+      }
+    },
+    "formulas": {
+      "labour_pool": "SUM(labour lines)",
+      "overhead_pool": "SUM(overhead lines)",
+      "total_cost_pool": "labour_pool + overhead_pool",
+      "productive_hrs_per_machine_per_day": "shift_hours * (1 - planned_downtime_pct)",
+      "full_parallel_ceiling_machine_hrs_month": "machines_in_pool * productive_hrs_per_machine_per_day * working_days_per_month",
+      "normal_machine_hours_month": "full_parallel_ceiling * utilisation_pct",
+      "cost_per_machine_hour": "total_cost_pool / normal_machine_hours_month",
+      "cost_per_machine_minute": "cost_per_machine_hour / 60"
+    },
+    "computed": {
+      "labour_pool": 169367,
+      "overhead_pool": 918589.37,
+      "total_cost_pool": 1087956.37,
+      "productive_hrs_per_machine_per_day": 6,
+      "full_parallel_ceiling_machine_hrs_month": 252,
+      "normal_machine_hours_month": 214.2,
+      "cost_per_machine_hour": 5079.161391,
+      "cost_per_machine_minute": 84.65268985
+    },
+    "utilisation_sensitivity": {
+      "100pct": 4317.287183,
+      "85pct": 5079.161391,
+      "75pct": 5756.38291,
+      "70pct": 6167.553118
+    }
+  },
+  "run_costing": {
+    "description": "Cost of one print run; ink coverage derived from a measured test tile.",
+    "inputs": {
+      "fabric_barcode": 105427.0,
+      "fabric_name": "SHOWME 18206 Dark Brown/Rust",
+      "fabric_width_m": 1.49,
+      "print_margin_per_side_cm": 1.0,
+      "fabric_gsm": 140.0,
+      "metres_printed_m": 311.8,
+      "machine_time_hours": 5.0,
+      "machine_time_minutes": 13.0,
+      "ink_cost_per_ml": 2.75,
+      "ink_tile": {
+        "tile_width_cm": 60.0,
+        "tile_height_cm": 60.0,
+        "measured_ml_per_colour": {
+          "cyan": 0.01,
+          "yellow": 0.13,
+          "magenta": 0.09,
+          "black": 0.02
+        },
+        "note": "small test print of known area; ink used per colour read from RIP/printer"
+      },
+      "sublimation_paper_cost_per_m": 69.76,
+      "protective_paper_cost_per_m": 17.81,
+      "reprint_defect_allowance_pct": 0.05,
+      "base_fabric_cost_per_m_greige": 268.8
+    },
+    "formulas": {
+      "print_width_m": "fabric_width_m - 2 * (print_margin_per_side_cm / 100)",
+      "printed_area_m2": "metres_printed_m * print_width_m",
+      "fabric_area_m2": "metres_printed_m * fabric_width_m",
+      "fabric_weight_kg": "fabric_area_m2 * fabric_gsm / 1000",
+      "machine_time_decimal_hrs": "machine_time_hours + machine_time_minutes / 60",
+      "tile_area_m2": "(tile_width_cm * tile_height_cm) / 10000",
+      "coverage_ml_per_m2_per_colour": "measured_ml_per_colour / tile_area_m2",
+      "ink_cost_per_colour": "coverage_ml_per_m2 * printed_area_m2 * ink_cost_per_ml",
+      "ink_subtotal": "SUM(ink_cost_per_colour)",
+      "sublimation_paper_cost": "metres_printed_m * sublimation_paper_cost_per_m",
+      "protective_paper_cost": "metres_printed_m * protective_paper_cost_per_m",
+      "paper_subtotal": "sublimation_paper_cost + protective_paper_cost",
+      "machine_conversion_cost": "machine_time_decimal_hrs * cost_per_machine_hour",
+      "printing_subtotal": "ink_subtotal + paper_subtotal + machine_conversion_cost",
+      "reprint_allowance": "printing_subtotal * reprint_defect_allowance_pct",
+      "total_printing_cost": "printing_subtotal + reprint_allowance",
+      "printing_cost_per_m": "total_printing_cost / metres_printed_m",
+      "printing_cost_per_m2": "total_printing_cost / fabric_area_m2",
+      "printing_cost_per_kg": "total_printing_cost / fabric_weight_kg",
+      "base_fabric_cost": "metres_printed_m * base_fabric_cost_per_m_greige",
+      "finished_total": "base_fabric_cost + total_printing_cost",
+      "finished_cost_per_m": "finished_total / metres_printed_m",
+      "finished_cost_per_kg": "finished_total / fabric_weight_kg",
+      "printing_pct_of_greige": "total_printing_cost / base_fabric_cost"
+    },
+    "computed": {
+      "print_width_m": 1.47,
+      "printed_area_m2": 458.346,
+      "fabric_area_m2": 464.582,
+      "fabric_weight_kg": 65.04148,
+      "machine_time_decimal_hrs": 5.216666667,
+      "tile_area_m2": 0.36,
+      "coverage_ml_per_m2_per_colour": {
+        "cyan": 0.02777777778,
+        "yellow": 0.3611111111,
+        "magenta": 0.25,
+        "black": 0.05555555556
+      },
+      "ink_cost_per_colour": {
+        "cyan": 35.01254167,
+        "yellow": 455.1630417,
+        "magenta": 315.112875,
+        "black": 70.02508333
+      },
+      "ink_subtotal": 875.3135417,
+      "sublimation_paper_cost": 21751.168,
+      "protective_paper_cost": 5553.158,
+      "paper_subtotal": 27304.326,
+      "rate_per_machine_hour": 5079.161391,
+      "machine_conversion_cost": 26496.29192,
+      "printing_subtotal": 54675.93147,
+      "reprint_allowance": 2733.796573,
+      "total_printing_cost": 57409.72804,
+      "printing_cost_per_m": 184.1235665,
+      "printing_cost_per_m2": 123.5728634,
+      "printing_cost_per_kg": 882.6633102,
+      "base_fabric_cost": 83811.84,
+      "finished_total": 141221.568,
+      "finished_cost_per_m": 452.9235665,
+      "finished_cost_per_kg": 2171.253914,
+      "printing_pct_of_greige": 0.6849835064
+    }
+  },
+  "odoo_bom": {
+    "description": "Per 1 kg of printed fabric. Quantities in Odoo stock UoM: fabric kg, ink ml, paper m.",
+    "formulas": {
+      "weight_per_linear_metre_kg": "fabric_width_m * fabric_gsm / 1000",
+      "metres_per_kg": "1 / weight_per_linear_metre_kg",
+      "fabric_m2_per_kg": "1000 / fabric_gsm",
+      "print_ratio": "print_width_m / fabric_width_m",
+      "printed_m2_per_kg": "fabric_m2_per_kg * print_ratio",
+      "component_base_fabric_qty_kg": 1.0,
+      "component_base_fabric_cost_kg": "base_fabric_cost_per_m_greige * metres_per_kg",
+      "component_ink_qty_ml_per_colour": "coverage_ml_per_m2_per_colour * printed_m2_per_kg",
+      "component_ink_cost_per_colour": "ink_qty_ml * ink_cost_per_ml",
+      "component_paper_qty_m": "metres_per_kg (both sublimation and protective)",
+      "component_sub_paper_cost_kg": "metres_per_kg * sublimation_paper_cost_per_m",
+      "component_prot_paper_cost_kg": "metres_per_kg * protective_paper_cost_per_m",
+      "material_subtotal_kg": "base + 4 inks + 2 papers",
+      "standard_throughput_m_per_hr": "SETTABLE STANDARD (default 60). Source sheet derived it from actual run = metres_printed / machine_time_decimal.",
+      "operation_time_per_kg_min": "metres_per_kg * 60 / standard_throughput_m_per_hr",
+      "machine_cost_per_kg": "operation_time_per_kg_min * cost_per_machine_minute",
+      "clean_std_cost_per_kg": "material_subtotal_kg + machine_cost_per_kg",
+      "std_cost_per_kg_incl_reprint": "base_fabric_cost_kg + (clean_std_cost_per_kg - base_fabric_cost_kg) * (1 + reprint_pct); reprint on printing lines only"
+    },
+    "conversion_factors": {
+      "weight_per_linear_metre_kg": 0.2086,
+      "metres_per_kg": 4.793863854,
+      "fabric_m2_per_kg": 7.142857143,
+      "print_ratio": 0.9865771812,
+      "printed_m2_per_kg": 7.046979866
+    },
+    "components_per_kg": [
+      {
+        "component": "Base fabric — SHOWME 18206",
+        "qty": 1.0,
+        "uom": "kg",
+        "cost_per_kg": 1288.590604
+      },
+      {
+        "component": "Ink — Cyan",
+        "qty": 0.1957494407,
+        "uom": "ml",
+        "cost_per_kg": 0.538310962
+      },
+      {
+        "component": "Ink — Yellow",
+        "qty": 2.544742729,
+        "uom": "ml",
+        "cost_per_kg": 6.998042506
+      },
+      {
+        "component": "Ink — Magenta",
+        "qty": 1.761744966,
+        "uom": "ml",
+        "cost_per_kg": 4.844798658
+      },
+      {
+        "component": "Ink — Black",
+        "qty": 0.3914988814,
+        "uom": "ml",
+        "cost_per_kg": 1.076621924
+      },
+      {
+        "component": "Sublimation paper",
+        "qty": 4.793863854,
+        "uom": "m",
+        "cost_per_kg": 334.4199425
+      },
+      {
+        "component": "Protective paper",
+        "qty": 4.793863854,
+        "uom": "m",
+        "cost_per_kg": 85.37871524
+      }
+    ],
+    "material_subtotal_per_kg": 1721.847036,
+    "of_which_ink_per_kg": 13.45777405,
+    "work_centre": {
+      "cost_per_machine_hour": 5079.161391,
+      "cost_per_machine_minute": 84.65268985,
+      "throughput_m_per_hr_actual_from_sheet": 59.76996805,
+      "operation_time_per_kg_min": 4.812313619,
+      "machine_cost_per_kg": 407.3752923
+    },
+    "standard_cost_rollup_per_kg": {
+      "material_plus_machine_clean": 2129.222328,
+      "reprint_allowance_pct": 0.05,
+      "std_cost_per_kg_incl_reprint": 2171.253914
+    },
+    "notes": [
+      "Ink stocked & consumed in ml (cost KES/ml); purchase UoM = Litre (1 L = 1,000 ml).",
+      "Per-colour split is this design's colourway; a different artwork changes all four.",
+      "Per-colour ink belongs to the finished design, not the fabric.",
+      "Set each ink product's own KES/ml if colours are priced differently.",
+      "Paper & fabric quantities are fabric-specific (width x GSM)."
+    ]
+  }
+}

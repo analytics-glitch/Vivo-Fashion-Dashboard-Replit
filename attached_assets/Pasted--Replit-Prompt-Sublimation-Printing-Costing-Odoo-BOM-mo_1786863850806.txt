@@ -1,0 +1,269 @@
+# Replit Prompt — Sublimation Printing Costing & Odoo BOM module for the Vivo BI Dashboard
+
+> Paste this into the Replit Agent on the existing Vivo BI Dashboard project. It recreates a three-module costing tool (Machine Rate → Run Costing → Odoo BOM) as a new page, matching the current dark/orange Vivo brand system. Adjust the three decisions in §9 before pasting if needed.
+
+---
+
+## 1. Goal & context
+
+Add a new page to the existing Vivo BI Dashboard called **“Printing Costing & BOM”** (route `/printing-costing`, add to the main nav). It is an interactive calculator that turns the inputs for one sublimation print run into (a) a full cost breakdown and (b) an Odoo-ready Bill of Materials on a per-kilogram basis.
+
+Match the existing dashboard exactly:
+- Vivo brand system, **dark theme with orange accent `#F15A24`** as the primary colour.
+- Reuse the existing component library, card styles, typography, spacing and topbar already in the project. Do **not** introduce a new design language — this page must look native to the dashboard.
+- KPI values styled like the existing KPI cards.
+
+The tool has **three modules**, presented as three tabs or three stacked sections on the page:
+1. **Machine Rate** — the standing cost-rate engine (set-once settings).
+2. **Run Costing** — per-run calculator.
+3. **Odoo BOM Output** — the per-kg BOM to key into Odoo.
+
+All calculations are **live** — editing any input instantly recalculates every dependent value. Inputs are clearly distinguished from calculated (read-only) fields (see §7).
+
+---
+
+## 2. Data model & persistence
+
+Create the following (BigQuery if the dashboard already uses it; otherwise the project’s existing store):
+
+- **`printing_machine_rate`** (single config row, editable in the Machine Rate tab): all labour lines, overhead lines, and capacity parameters listed in §4. This is global “set-once” data shared by every run.
+- **`printing_runs`** (one row per saved run): the full set of Run Costing inputs (§5) plus the computed outputs, a `run_name`, `created_at`, and `created_by`. A **Save run** button on the Run Costing tab writes here; a history list lets the user reload a past run.
+
+**Fabric lookup (required):** wire the Run Costing “Fabric barcode” field to the existing fabric master in BigQuery. On barcode entry (or select-from-list), auto-populate **fabric width, GSM and base fabric cost/m** from the master record and show the fabric name. These three become read-only when sourced from the master, with a manual-override toggle for one-offs. If the barcode is not found, fall back to manual entry and flag it. Confirm the fabric master table/column names against the project’s BigQuery schema before wiring; if the exact table is unclear, ask rather than guess.
+
+---
+
+## 3. Rounding & units
+
+- Currency in **KES**, 2 decimals in display, full precision internally.
+- Ink quantities in **ml** (BOM), coverage in **ml/m²** (4 decimals).
+- Paper in **metres**, fabric in **kg**.
+- Never round intermediate values — round only for display.
+
+---
+
+## 4. MODULE 1 — Machine Rate (settings)
+
+Heading: “Machine-hour rate engine · two presses treated as one costing unit”.
+
+### 4a. Labour pool (editable rows — name + monthly fully-loaded cost)
+| Row | Default value (KES/month) |
+|---|---|
+| Gerrishon Omondi Ouma – Operator | 25,654.25 |
+| Patrick – Supervisor | 57,404.25 |
+| Hanun Osiemo – Operator | 60,654.25 |
+| Lawi Oluoch – Operator | 25,654.25 |
+
+Allow add/remove rows. **Labour pool = SUM(rows)** → 169,367.00.
+
+### 4b. Overhead pool (editable rows)
+| Row | Default (KES/month) |
+|---|---|
+| Wear & Tear — 2 machines @ 20% p.a. | 487,448.87 |
+| Rent — 4,289 sqft apportioned | 182,395.61 |
+| General Insurance | 48,744.89 |
+| Utilities (incl. heat-bed power) | 150,000.00 |
+| Repairs | 50,000.00 |
+
+**Overhead pool = SUM(rows)** → 918,589.37.
+**Total cost pool = Labour pool + Overhead pool** → 1,087,956.37.
+
+### 4c. Capacity (editable)
+| Field | Default |
+|---|---|
+| Machines in pool | 2 |
+| Shift hours / day (net of breaks) | 8 |
+| Planned downtime % | 25% |
+| Working days / month | 21 |
+| Utilisation % (of full-parallel) | 85% |
+
+### 4d. Calculations (read-only)
+```
+Productive hrs / machine / day = Shift hours × (1 − downtime%)              = 6
+Full-parallel ceiling (mach-hrs/mo) = Machines × Productive × Working days  = 252
+Normal machine-hours / month = Ceiling × Utilisation%                       = 214.2
+COST PER MACHINE-HOUR = Total cost pool ÷ Normal machine-hours              = 5,079.16   ← headline KPI
+Cost per machine-minute = Cost per machine-hour ÷ 60                        = 84.65
+```
+
+### 4e. Utilisation sensitivity (read-only mini-table)
+For u ∈ {100%, 85%, 75%, 70%}: `rate = Total pool ÷ (Ceiling × u)` → 4,317.29 / 5,079.16 / 5,756.38 / 6,167.55.
+
+---
+
+## 5. MODULE 2 — Run Costing (per run)
+
+### 5a. Run details (editable)
+| Field | Default | Unit |
+|---|---|---|
+| Fabric barcode | 105427 | — (looks up the fabric master — see §2) |
+| Fabric name | SHOWME 18206 Dark Brown/Rust | — (from master, read-only) |
+| Fabric width | 1.49 | m — from master, read-only (override toggle) |
+| Fabric GSM | 140 | g/m² — from master, read-only (override toggle) |
+| Print margin per side | 1.0 | cm |
+| Metres printed | 311.8 | m |
+| Machine time — hours | 5 | hrs |
+| Machine time — minutes | 13 | min |
+
+Base fabric cost/m (§5h) is also sourced from the master (read-only, override toggle). Width, GSM and base-cost auto-fill from the barcode; the operator only keys margin, metres and time per run.
+
+### 5b. Derived dimensions (read-only)
+```
+Print width = Fabric width − 2 × (margin_cm / 100)          = 1.47 m
+Printed area (ink basis) = Metres × Print width              = 458.346 m²
+Fabric area (weight/paper basis) = Metres × Fabric width     = 464.582 m²
+Fabric weight = Fabric area × GSM / 1000                     = 65.0415 kg
+Machine time (decimal) = hours + minutes/60                  = 5.2167 hrs
+```
+
+### 5c. Ink — tile-based derivation (THIS is the ink mechanism; reproduce exactly)
+The design’s ink coverage is measured from a **test tile**: a small printed square of known size, with the ink used per colour read from the printer/RIP.
+
+Editable inputs:
+- **Tile width** and **Tile height** in cm (default 60 × 60).
+- **Ink cost per ml** (default 2.75 KES/ml).
+- Per colour, **Actual ink used on the tile (ml)**: Cyan 0.01, Yellow 0.13, Magenta 0.09, Black 0.02.
+
+Calculations:
+```
+Tile area (m²) = (Tile width_cm × Tile height_cm) / 10000        = 0.36 m²
+Per-colour coverage (ml/m²) = colour tile ml ÷ Tile area
+    Cyan 0.0278 · Yellow 0.3611 · Magenta 0.2500 · Black 0.0556  (total 0.6944 ml/m²)
+Per-colour run cost (KES) = coverage × Printed area × Ink cost/ml
+Ink subtotal = SUM of the four colour costs                       = 875.31
+```
+Show a small readout: total tile ink = 0.25 ml over 0.36 m². Display each colour’s coverage and run cost in a 4-row table.
+
+### 5d. Paper (editable cost/m; single-use)
+```
+Sublimation paper cost/m = 69.76   → Sublimation paper cost = Metres × 69.76 = 21,751.17
+Protective paper cost/m  = 17.81   → Protective paper cost  = Metres × 17.81 =  5,553.16
+Paper subtotal = 27,304.33
+```
+
+### 5e. Machine conversion
+```
+Rate per machine-hour = (live from Module 1)                = 5,079.16
+Machine conversion cost = Machine time (decimal) × Rate     = 26,496.29
+```
+
+### 5f. Printing cost
+```
+Printing subtotal = Ink subtotal + Paper subtotal + Machine conversion   = 54,675.93
+Reprint / defect allowance % (editable) = 5%
+Reprint allowance = Printing subtotal × 5%                                =  2,733.80
+TOTAL PRINTING COST = Printing subtotal + Reprint allowance               = 57,409.73
+```
+
+### 5g. Unit printing cost (read-only KPIs)
+```
+Printing cost / linear metre = TOTAL ÷ Metres         = 184.12 KES/m
+Printing cost / m²           = TOTAL ÷ Fabric area     = 123.57 KES/m²
+PRINTING COST / KG           = TOTAL ÷ Fabric weight   = 882.66 KES/kg   ← headline KPI
+```
+
+### 5h. Finished printed fabric (base + printing)
+```
+Base fabric cost / m (greige, editable) = 268.80
+Base fabric cost = Metres × 268.80                    = 83,811.84
+Finished printed fabric — total = Base + TOTAL PRINTING = 141,221.57
+Finished cost / linear metre = ÷ Metres               = 452.92 KES/m
+FINISHED COST / KG = ÷ Fabric weight                  = 2,171.25 KES/kg  ← headline KPI
+Printing as % of greige = TOTAL PRINTING ÷ Base fabric cost = 68.5%
+```
+
+---
+
+## 6. MODULE 3 — Odoo BOM Output (per 1 kg printed fabric)
+
+Read-only result panel; this is what the user keys into Odoo. Add a **Copy / Export** button (CSV + copy-to-clipboard of the component table).
+
+### 6a. Conversion factors
+```
+Weight per linear metre = Fabric width × GSM / 1000       = 0.2086 kg/m
+Metres per kg = 1 / Weight per linear metre               = 4.7939 m/kg
+Fabric m² per kg = 1000 / GSM                             = 7.1429 m²/kg
+Print ratio = Print width / Fabric width                  = 0.9866
+Printed m² per kg = Fabric m²/kg × Print ratio            = 7.0470 m²/kg
+```
+
+### 6b. BOM components (per 1 kg output)
+| Component | Qty / kg formula | Stock UoM | Cost / kg |
+|---|---|---|---|
+| Base fabric — {fabric name} | 1.0 | kg | Base fabric cost/m × Metres per kg = 1,288.59 |
+| Ink — Cyan | Cyan coverage × Printed m²/kg | ml | × Ink cost/ml → 0.54 |
+| Ink — Yellow | Yellow coverage × Printed m²/kg | ml | → 7.00 |
+| Ink — Magenta | Magenta coverage × Printed m²/kg | ml | → 4.84 |
+| Ink — Black | Black coverage × Printed m²/kg | ml | → 1.08 |
+| Sublimation paper | Metres per kg | m | × Sub paper cost/m → 334.42 |
+| Protective paper | Metres per kg | m | × Prot paper cost/m → 85.38 |
+
+```
+Material subtotal = base + 4 inks + 2 papers = 1,721.85   (of which ink = 13.46)
+```
+
+### 6c. Work centre & operation
+```
+Cost per machine-hour (Odoo field) = (from Module 1)          = 5,079.16
+Cost per machine-minute = ÷ 60                                = 84.65
+
+Standard throughput (m/hr) = EDITABLE standard, default 60    ← drives the BOM
+Operation time per kg = Metres per kg × 60 ÷ Standard throughput = 4.7939 min/kg
+Machine cost / kg = Operation time per kg × Cost/minute          = 405.81
+```
+The BOM machine cost uses the **settable standard throughput** (a true standard cost that does NOT drift run to run). Show the **actual** throughput of the current run alongside it as an efficiency variance:
+```
+Actual throughput (m/hr) = Metres printed ÷ Machine time (decimal)   = 59.77
+Throughput variance = Actual − Standard        (−0.23 m/hr here → slightly unfavourable)
+Machine cost/kg at ACTUAL (reference only) = Metres per kg × 60 ÷ Actual throughput × Cost/minute = 407.38
+```
+Display standard vs actual as a small variance readout; only the **standard** feeds §6d and the BOM the user keys into Odoo.
+
+### 6d. Standard cost roll-up
+```
+Material + machine (clean std) = Material subtotal + Machine cost/kg  = 2,127.66
+   (Material subtotal 1,721.85 + Machine cost/kg 405.81, at Standard throughput 60)
+Reprint allowance % (editable) = 5%
+Std cost / kg incl. reprint = BaseFabric + (clean − BaseFabric) × (1 + 5%) = 2,169.61  ← headline
+   (reprint applied to printing lines only, NOT base fabric)
+```
+
+### 6e. Notes block (display verbatim)
+- Ink stocked & consumed in ml (cost KES/ml); purchase UoM = Litre (1 L = 1,000 ml, Volume category).
+- Per-colour split is THIS design’s colourway — a different artwork changes all four.
+- Per-colour ink belongs to the finished design, not the fabric.
+- Set each ink product’s own KES/ml if colours are priced differently.
+- Paper & fabric quantities are fabric-specific (width × GSM).
+
+---
+
+## 7. UI / UX requirements
+
+- **Editable vs calculated:** editable inputs get a distinct treatment (e.g. bordered input with a subtle orange left-accent); calculated fields render as plain read-only text. Add a one-line legend: “Highlighted fields are editable — everything else is calculated.”
+- **Live recalculation** on every keystroke/change; no “calculate” button.
+- **Headline KPIs** (Cost per machine-hour, Printing cost/kg, Finished cost/kg, Std cost/kg incl. reprint) shown as prominent KPI cards using the dashboard’s existing card style.
+- **Per-colour ink table** with a small coverage bar or the four colours dotted in their actual hues.
+- **Save run** and **run history** (reload past runs); **Copy/Export BOM**.
+- Mobile-responsive, consistent with the rest of the dashboard.
+
+---
+
+## 8. Acceptance criteria (self-check with these exact numbers)
+
+Load the defaults above (SHOWME 18206) and verify:
+- Total cost pool = **1,087,956.37**; Cost per machine-hour = **5,079.16**.
+- Ink subtotal = **875.31**; Paper subtotal = **27,304.33**; Machine conversion = **26,496.29**.
+- TOTAL PRINTING COST = **57,409.73**; Printing cost/kg = **882.66**; Finished cost/kg = **2,171.25**.
+- BOM material subtotal = **1,721.85**; Machine cost/kg (at standard 60 m/hr) = **405.81**; clean std/kg = **2,127.66**; Std cost/kg incl. reprint = **2,169.61**.
+- Actual throughput readout = **59.77 m/hr**, shown as a variance vs the 60 standard (Run Costing per-run figures — printing/kg 882.66, finished/kg 2,171.25 — are unaffected; they use actual run time, not the BOM standard).
+
+If any figure is off, the formula wiring is wrong — fix before shipping.
+
+---
+
+## 9. Decisions confirmed (locked for build)
+
+All three confirmed with the user:
+- **A. Machine Rate scope — CONFIRMED:** built as shared, globally-persisted “set-once” settings (§2, §4).
+- **B. Fabric lookup — CONFIRMED ON:** width, GSM and base-cost auto-populate from the fabric master via barcode (§2, §5a).
+- **C. Standard throughput — CONFIRMED as settable standard (default 60 m/hr):** the BOM uses the standard; actual throughput is shown as an efficiency variance (§6c, §6d).
