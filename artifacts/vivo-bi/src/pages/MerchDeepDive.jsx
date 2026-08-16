@@ -14,7 +14,7 @@ import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import ProductThumbnail from "@/components/ProductThumbnail";
 import { useThumbnails } from "@/lib/useThumbnails";
 import { useMerchFilters } from "./MerchandisingHub";
-import MerchStyleSearch, { loadStyles } from "./MerchStyleSearch";
+import MerchStyleSearch from "./MerchStyleSearch";
 import {
   AreaChart, Area, BarChart, Bar, ComposedChart, Line, LineChart,
   XAxis, YAxis, Tooltip, CartesianGrid, ResponsiveContainer,
@@ -356,28 +356,11 @@ const MerchDeepDive = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [styleNumber, filters.from_date, filters.to_date, filters.country, filters.dataVersion]);
 
-  // Auto-select first style if none chosen
-  useEffect(() => {
-    if (!styleNumber) {
-      loadStyles()
-        .then(list => {
-          const first = list[0];
-          if (first?.style_number) {
-            setSearchParams(prev => {
-              const next = new URLSearchParams(prev);
-              next.set("style", first.style_number);
-              return next;
-            }, { replace: true });
-          }
-        }).catch(() => {});
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   const handleStyleChange = (num) => {
     setSearchParams(prev => {
       const next = new URLSearchParams(prev);
-      next.set("style", num);
+      if (num) next.set("style", num);
+      else next.delete("style");
       return next;
     }, { replace: true });
   };
@@ -677,7 +660,7 @@ const MerchDeepDive = () => {
           <p className="text-[12px] text-muted mt-0.5">Select a style to analyse</p>
         </div>
         <div className="card-white p-6 flex flex-col gap-3 items-start">
-          <p className="text-[13px] text-foreground font-medium">Choose a style to begin:</p>
+          <p className="text-[13px] text-foreground font-medium">Search for a style to get started</p>
           <MerchStyleSearch value={styleNumber} onChange={handleStyleChange} />
         </div>
       </div>
@@ -729,37 +712,42 @@ const MerchDeepDive = () => {
   return (
     <div className="space-y-5 pb-8">
       {/* ── Style header row ─────────────────────────────────────────────── */}
-      <div className="flex items-start justify-between gap-4 flex-wrap">
-        <ProductThumbnail
-          style={style.style_name}
-          url={urlFor(style.style_name)}
-          size={84}
-          className="rounded-lg"
-        />
-        <div className="flex-1 min-w-0">
-          <h2 className="text-[22px] font-bold text-foreground leading-tight truncate">
-            {style.style_name}
-          </h2>
-          <p className="text-[12px] text-muted mt-0.5 flex flex-wrap gap-x-2 gap-y-0.5">
-            <span className="font-mono">{style.style_number}</span>
-            <span className="opacity-40">·</span>
-            <span>{style.brand}</span>
-            <span className="opacity-40">·</span>
-            <span>{style.subcategory}</span>
-            <span className="opacity-40">·</span>
-            <span>{style.tier}</span>
-            {style.launch_date && <>
-              <span className="opacity-40">·</span>
-              <span>Launched {fmtDate(style.launch_date)}</span>
-            </>}
-            <span className="opacity-40">·</span>
-            <span>As at {fmtDate(new Date().toISOString().slice(0, 10))}</span>
-          </p>
-          <div className="mt-1.5">
-            <MerchStyleSearch value={styleNumber} onChange={handleStyleChange} />
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="flex items-start gap-3 min-w-0 flex-1">
+          <ProductThumbnail
+            style={style.style_name}
+            url={urlFor(style.style_name)}
+            size={88}
+            className="rounded-lg shrink-0"
+          />
+          <div className="min-w-0 flex-1">
+            <h2
+              className="text-[22px] font-bold text-foreground leading-tight truncate whitespace-nowrap"
+              title={style.style_name}
+            >
+              {style.style_name}
+            </h2>
+            <p className="text-[12px] text-muted mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 leading-tight">
+              <span className="font-mono whitespace-nowrap">{style.style_number}</span>
+              <span className="opacity-40" aria-hidden="true">·</span>
+              <span className="whitespace-nowrap">{style.brand}</span>
+              <span className="opacity-40" aria-hidden="true">·</span>
+              <span className="whitespace-nowrap">{style.subcategory}</span>
+              <span className="opacity-40" aria-hidden="true">·</span>
+              <span className="whitespace-nowrap">{style.tier}</span>
+              {style.launch_date && <>
+                <span className="opacity-40" aria-hidden="true">·</span>
+                <span className="whitespace-nowrap">Launched {fmtDate(style.launch_date)}</span>
+              </>}
+              <span className="opacity-40" aria-hidden="true">·</span>
+              <span className="whitespace-nowrap">As at {fmtDate(new Date().toISOString().slice(0, 10))}</span>
+            </p>
+            <div className="mt-1.5 max-w-sm">
+              <MerchStyleSearch value={styleNumber} onChange={handleStyleChange} />
+            </div>
           </div>
         </div>
-        <div className="flex flex-col items-end gap-1.5 shrink-0">
+        <div className="flex flex-row sm:flex-col items-start sm:items-end gap-1.5 shrink-0">
           <StatusBadge status={style.action_status} />
           {style.recommended_action && (
             <span className="text-[12px] font-extrabold text-rose-600 uppercase tracking-wide">

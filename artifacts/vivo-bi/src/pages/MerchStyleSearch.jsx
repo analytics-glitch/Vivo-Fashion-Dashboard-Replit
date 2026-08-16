@@ -57,16 +57,37 @@ const norm = s => String(s || "").toLowerCase().replace(/\s+/g, " ").trim();
 const MerchStyleSearch = ({ value, onChange }) => {
   const [allStyles, setAllStyles] = useState(_styleListCache || []);
   const [query, setQuery]         = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
   const [open, setOpen]           = useState(false);
   const [focused, setFocused]     = useState(false);
+  const [loadingStyles, setLoadingStyles] = useState(!_styleListCache);
   const inputRef  = useRef(null);
   const dropRef   = useRef(null);
 
   // Load style list on mount.
   useEffect(() => {
-    if (_styleListCache) { setAllStyles(_styleListCache); return; }
-    loadStyles().then(list => setAllStyles(list));
+    if (_styleListCache) {
+      setAllStyles(_styleListCache);
+      setLoadingStyles(false);
+      return;
+    }
+    let mounted = true;
+    loadStyles()
+      .then(list => {
+        if (mounted) setAllStyles(list);
+      })
+      .finally(() => {
+        if (mounted) setLoadingStyles(false);
+      });
+    return () => { mounted = false; };
   }, []);
+
+  // Keep typing responsive: filtering is local, but defer it until the user
+  // pauses for 300ms so a long style list never recalculates on every keypress.
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedQuery(query), 300);
+    return () => window.clearTimeout(timer);
+  }, [query]);
 
   // When value changes externally, update the displayed name.
   const selectedStyle = useMemo(
@@ -83,12 +104,12 @@ const MerchStyleSearch = ({ value, onChange }) => {
 
   // Filtered dropdown list.
   const filtered = useMemo(() => {
-    const q = norm(query);
+    const q = norm(debouncedQuery);
     if (!q) return allStyles.slice(0, 60);
     return allStyles
       .filter(s => norm(s.style_name).includes(q) || norm(s.style_number).includes(q))
       .slice(0, 60);
-  }, [allStyles, query]);
+  }, [allStyles, debouncedQuery]);
 
   // Close dropdown on outside click.
   useEffect(() => {
@@ -125,7 +146,10 @@ const MerchStyleSearch = ({ value, onChange }) => {
 
   const handleClear = () => {
     setQuery("");
+    setFocused(true);
+    if (selectedStyle && !query) onChange?.("", "");
     inputRef.current?.focus();
+    setOpen(true);
   };
 
   return (
@@ -162,10 +186,16 @@ const MerchStyleSearch = ({ value, onChange }) => {
           ref={dropRef}
           className="absolute top-full mt-1 left-0 right-0 z-50 bg-white border border-border rounded-lg shadow-xl max-h-72 overflow-y-auto"
         >
-          {filtered.length === 0 && (
+          {(loadingStyles || query !== debouncedQuery) && (
+            <div className="px-3 py-2.5 text-[12px] text-muted flex items-center gap-2">
+              <span className="w-3 h-3 rounded-full border-2 border-brand/30 border-t-brand animate-spin" aria-hidden="true" />
+              Loading styles…
+            </div>
+          )}
+          {!loadingStyles && query === debouncedQuery && filtered.length === 0 && (
             <div className="px-3 py-2.5 text-[12px] text-muted">No matching styles</div>
           )}
-          {filtered.map(s => (
+          {!loadingStyles && query === debouncedQuery && filtered.map(s => (
             <button
               key={s.style_number}
               type="button"

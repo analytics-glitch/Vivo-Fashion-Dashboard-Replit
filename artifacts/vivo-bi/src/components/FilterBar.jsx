@@ -732,14 +732,15 @@ const FilterBar = () => {
         </div>
       </div>
 
-      {/* Mobile layout — compact 4-row stack, always visible (no sheet
-          toggle). Each row uses a 2-col grid so the controls share the
-          same width and stay aligned. The MobileFiltersSheet is removed
-          entirely; users edit filters directly. */}
-      <div className="flex md:hidden flex-col gap-2">
-        <div className="flex items-center gap-2">
+      {/* Mobile layout — keep the complete filter strip in one horizontal
+          scroller. This preserves access to KES, Country, Cluster, Type and
+          the All/Retail/Online + POS controls without consuming the page with
+          a tall stack of rows. */}
+      <div className="flex md:hidden items-center gap-2 overflow-x-auto overscroll-x-contain pb-1 -mx-1 px-1">
+        <div className="flex items-center gap-2 min-w-max">
           <BackButton />
-          <div className="flex-1 min-w-0" />
+          {ControlsInline}
+          <DataUpdatedPill />
           <button
             type="button"
             onClick={handleShare}
@@ -760,70 +761,6 @@ const FilterBar = () => {
               </>
             )}
           </button>
-        </div>
-        <div className="grid grid-cols-2 gap-2">
-          <DateRangeButton />
-          <CompareButton />
-        </div>
-        <div className="grid grid-cols-2 gap-2">
-          <CurrencyButton />
-          <MultiSelect
-            testId="filter-countries"
-            label="Country"
-            icon={Globe}
-            options={countryOptions}
-            value={f.countries}
-            onChange={(v) => {
-              f.setCountries(v);
-              f.setChannels([]);
-            }}
-            placeholder="All countries"
-            width={210}
-          />
-        </div>
-        <div className="grid grid-cols-1 gap-2">
-          <MultiSelect
-            testId="filter-clusters"
-            label="Cluster"
-            icon={Storefront}
-            options={clusterOptions}
-            value={f.clusters}
-            onChange={(v) => {
-              f.setClusters(v);
-              f.setChannels([]);
-            }}
-            placeholder="All clusters"
-            width={250}
-          />
-          {showStyleTypeFilter && (
-            <MultiSelect
-              testId="filter-style-types-mobile"
-              label="Type"
-              options={styleTypeOptions.map((type) => ({ value: type, label: type }))}
-              value={f.styleTypes || []}
-              onChange={f.setStyleTypes}
-              placeholder="All types"
-              width={250}
-            />
-          )}
-        </div>
-        <div className="flex items-center gap-2" data-testid="pos-filter-group-mobile">
-          <ChannelGroupToggle />
-          <div className="flex-1 min-w-0">
-            <MultiSelect
-              testId="filter-channels"
-              label="POS"
-              icon={Storefront}
-              options={channelOptions}
-              value={f.channels}
-              onChange={f.setChannels}
-              placeholder="All POS"
-              width={220}
-            />
-          </div>
-        </div>
-        <div className="flex justify-center pt-0.5">
-          <DataUpdatedPill />
         </div>
       </div>
     </div>
