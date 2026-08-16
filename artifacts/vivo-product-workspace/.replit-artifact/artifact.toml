@@ -1,0 +1,36 @@
+kind = "web"
+previewPath = "/product-workspace/"
+title = "Vivo Digital Product Workspace"
+description = "An internal fashion product-decision workspace for Vivo Fashion Group, bringing quarterly planning, visual boards, PLM, showcases, and style decisions into one premium collaborative tool."
+version = "1.0.0"
+id = "artifacts/vivo-product-workspace"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/product-workspace/" ]
+localPort = 23660
+
+[services.development]
+run = "pnpm --filter @workspace/vivo-product-workspace run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/vivo-product-workspace", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/vivo-product-workspace/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "23660"
+BASE_PATH = "/product-workspace/"
+
+[[services]]
+name = "api"
+paths = [ "/api/workspace", "/api/workspace/", "/api/workspace/socket.io" ]
+localPort = 23661
+
+[services.development]
+run = "pnpm --filter @workspace/vivo-product-workspace run server:dev"

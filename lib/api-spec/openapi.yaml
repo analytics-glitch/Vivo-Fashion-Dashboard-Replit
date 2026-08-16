@@ -155,6 +155,345 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/InventoryHealth"
+  /workspace/session:
+    get:
+      operationId: getWorkspaceSession
+      tags: [workspace]
+      summary: Current product workspace session
+      responses:
+        "200":
+          description: Current session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceSession"
+  /workspace/login:
+    post:
+      operationId: loginWorkspace
+      tags: [workspace]
+      summary: Start a product workspace session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginInput"
+      responses:
+        "200":
+          description: Authenticated session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceSession"
+        "401":
+          description: Invalid credentials
+  /workspace/logout:
+    post:
+      operationId: logoutWorkspace
+      tags: [workspace]
+      summary: End the current product workspace session
+      responses:
+        "204":
+          description: Session ended
+  /workspace/dashboard:
+    get:
+      operationId: getWorkspaceDashboard
+      tags: [workspace]
+      summary: Product workspace dashboard
+      responses:
+        "200":
+          description: Dashboard summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceDashboard"
+  /workspace/styles:
+    get:
+      operationId: listWorkspaceStyles
+      tags: [workspace]
+      summary: List workspace styles
+      parameters:
+        - name: brand
+          in: query
+          schema:
+            type: string
+        - name: status
+          in: query
+          schema:
+            type: string
+        - name: search
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Styles
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/WorkspaceStyle"
+  /workspace/styles/{id}:
+    get:
+      operationId: getWorkspaceStyle
+      tags: [workspace]
+      summary: Get a workspace style
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Style detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceStyleDetail"
+    patch:
+      operationId: updateWorkspaceStyle
+      tags: [workspace]
+      summary: Update a workspace style
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StyleUpdate"
+      responses:
+        "200":
+          description: Updated style
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceStyleDetail"
+  /workspace/styles/{id}/plm:
+    get:
+      operationId: getWorkspaceStylePlm
+      tags: [workspace]
+      summary: Get PLM workflow data for a style
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: PLM workflow data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceStyleDetail"
+  /workspace/plan:
+    get:
+      operationId: getWorkspacePlan
+      tags: [workspace]
+      summary: Get the active quarterly plan
+      responses:
+        "200":
+          description: Quarterly plan
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspacePlan"
+    patch:
+      operationId: updateWorkspacePlan
+      tags: [workspace]
+      summary: Update quarterly plan metadata
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PlanUpdate"
+      responses:
+        "200":
+          description: Updated quarterly plan
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspacePlan"
+  /workspace/plan/history:
+    get:
+      operationId: listWorkspacePlanHistory
+      tags: [workspace]
+      summary: Plan change history
+      responses:
+        "200":
+          description: Plan history
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/WorkspacePlanHistory"
+  /workspace/boards:
+    get:
+      operationId: listWorkspaceBoards
+      tags: [workspace]
+      summary: List collaboration boards
+      responses:
+        "200":
+          description: Boards
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/WorkspaceBoard"
+    post:
+      operationId: createWorkspaceBoard
+      tags: [workspace]
+      summary: Create a collaboration board
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BoardInput"
+      responses:
+        "201":
+          description: Created board
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceBoard"
+  /workspace/boards/{id}:
+    get:
+      operationId: getWorkspaceBoard
+      tags: [workspace]
+      summary: Get a collaboration board
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Board detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceBoard"
+  /workspace/boards/{id}/cards:
+    post:
+      operationId: createWorkspaceBoardCard
+      tags: [workspace]
+      summary: Add a card to a board
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BoardCardInput"
+      responses:
+        "201":
+          description: Created card
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceBoardCard"
+  /workspace/boards/{id}/comments:
+    post:
+      operationId: createWorkspaceBoardComment
+      tags: [workspace]
+      summary: Add a comment to a board
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CommentInput"
+      responses:
+        "201":
+          description: Created comment
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceComment"
+  /workspace/boards/{id}/cards/{cardId}:
+    patch:
+      operationId: updateWorkspaceBoardCard
+      tags: [workspace]
+      summary: Move or update a board card
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+        - name: cardId
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BoardCardUpdate"
+      responses:
+        "200":
+          description: Updated card
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceBoardCard"
+  /workspace/showcases:
+    get:
+      operationId: listWorkspaceShowcases
+      tags: [workspace]
+      summary: List showcases
+      responses:
+        "200":
+          description: Showcases
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/WorkspaceShowcase"
+  /workspace/showcases/{id}:
+    get:
+      operationId: getWorkspaceShowcase
+      tags: [workspace]
+      summary: Get a showcase
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Showcase detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceShowcase"
 components:
   schemas:
     HealthStatus:
@@ -350,3 +689,185 @@ components:
           type: number
         sellThroughPct:
           type: number
+    LoginInput:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 1
+    WorkspaceUser:
+      type: object
+      required: [id, name, email, role, initials, color]
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        email: { type: string }
+        role: { type: string }
+        initials: { type: string }
+        color: { type: string }
+    WorkspaceSession:
+      type: object
+      required: [authenticated, user]
+      properties:
+        authenticated: { type: boolean }
+        user:
+          $ref: "#/components/schemas/WorkspaceUser"
+    WorkspaceDashboard:
+      type: object
+      required: [kpis, activity, pipeline, upcoming]
+      properties:
+        kpis:
+          type: array
+          items: { type: object, additionalProperties: true }
+        activity:
+          type: array
+          items: { type: object, additionalProperties: true }
+        pipeline:
+          type: array
+          items: { type: object, additionalProperties: true }
+        upcoming:
+          type: array
+          items: { type: object, additionalProperties: true }
+    WorkspaceStyle:
+      type: object
+      required: [id, code, name, brand, category, status, owner, targetDate]
+      properties:
+        id: { type: integer }
+        code: { type: string }
+        name: { type: string }
+        brand: { type: string }
+        category: { type: string }
+        status: { type: string }
+        owner: { type: string }
+        targetDate: { type: string }
+        image: { type: ["string", "null"] }
+        progress: { type: number }
+        price: { type: number }
+        market: { type: string }
+    StyleUpdate:
+      type: object
+      properties:
+        status: { type: string }
+        owner: { type: string }
+        targetDate: { type: string }
+        progress: { type: number }
+        price: { type: number }
+    WorkspaceStyleDetail:
+      allOf:
+        - $ref: "#/components/schemas/WorkspaceStyle"
+        - type: object
+          required: [colorways, fabrics, techPack, fitSessions, gradings, boms, samples, pomQc, costEstimate, productionOrder]
+          properties:
+            colorways: { type: array, items: { type: object, additionalProperties: true } }
+            fabrics: { type: array, items: { type: object, additionalProperties: true } }
+            techPack: { type: object, additionalProperties: true }
+            fitSessions: { type: array, items: { type: object, additionalProperties: true } }
+            gradings: { type: array, items: { type: object, additionalProperties: true } }
+            boms: { type: array, items: { type: object, additionalProperties: true } }
+            samples: { type: array, items: { type: object, additionalProperties: true } }
+            pomQc: { type: array, items: { type: object, additionalProperties: true } }
+            costEstimate: { type: object, additionalProperties: true }
+            productionOrder: { type: object, additionalProperties: true }
+    WorkspacePlan:
+      type: object
+      required: [id, name, quarter, year, styles, summary]
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        quarter: { type: string }
+        year: { type: integer }
+        styles: { type: array, items: { $ref: "#/components/schemas/WorkspaceStyle" } }
+        summary: { type: object, additionalProperties: true }
+    PlanUpdate:
+      type: object
+      properties:
+        name: { type: string }
+        quarter: { type: string }
+        year: { type: integer }
+    WorkspacePlanHistory:
+      type: object
+      required: [id, planId, action, actor, createdAt]
+      properties:
+        id: { type: integer }
+        planId: { type: integer }
+        action: { type: string }
+        actor: { type: string }
+        detail: { type: string }
+        createdAt: { type: string }
+    WorkspaceBoard:
+      type: object
+      required: [id, title, description, columns, cards, comments, collaborators]
+      properties:
+        id: { type: integer }
+        title: { type: string }
+        description: { type: string }
+        columns: { type: array, items: { type: object, additionalProperties: true } }
+        cards: { type: array, items: { $ref: "#/components/schemas/WorkspaceBoardCard" } }
+        comments: { type: array, items: { $ref: "#/components/schemas/WorkspaceComment" } }
+        collaborators: { type: array, items: { $ref: "#/components/schemas/WorkspaceUser" } }
+    BoardInput:
+      type: object
+      required: [title]
+      properties:
+        title: { type: string, minLength: 1 }
+        description: { type: string }
+    WorkspaceBoardCard:
+      type: object
+      required: [id, boardId, title, columnId, position]
+      properties:
+        id: { type: integer }
+        boardId: { type: integer }
+        title: { type: string }
+        description: { type: string }
+        columnId: { type: string }
+        position: { type: integer }
+        styleId: { type: ["integer", "null"] }
+        tags: { type: array, items: { type: string } }
+        assignees: { type: array, items: { type: object, additionalProperties: true } }
+    BoardCardInput:
+      type: object
+      required: [title, columnId]
+      properties:
+        title: { type: string, minLength: 1 }
+        description: { type: string }
+        columnId: { type: string }
+        styleId: { type: integer }
+        tags: { type: array, items: { type: string } }
+    BoardCardUpdate:
+      type: object
+      properties:
+        title: { type: string }
+        description: { type: string }
+        columnId: { type: string }
+        position: { type: integer }
+        tags: { type: array, items: { type: string } }
+    WorkspaceComment:
+      type: object
+      required: [id, boardId, body, author, createdAt]
+      properties:
+        id: { type: integer }
+        boardId: { type: integer }
+        cardId: { type: ["integer", "null"] }
+        body: { type: string }
+        author: { $ref: "#/components/schemas/WorkspaceUser" }
+        createdAt: { type: string }
+    CommentInput:
+      type: object
+      required: [body]
+      properties:
+        body: { type: string, minLength: 1 }
+        cardId: { type: integer }
+    WorkspaceShowcase:
+      type: object
+      required: [id, title, season, status, frames]
+      properties:
+        id: { type: integer }
+        title: { type: string }
+        season: { type: string }
+        status: { type: string }
+        description: { type: string }
+        frames: { type: array, items: { type: object, additionalProperties: true } }

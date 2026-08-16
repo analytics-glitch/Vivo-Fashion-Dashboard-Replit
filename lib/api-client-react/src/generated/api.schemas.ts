@@ -86,3 +86,204 @@ export interface InventoryHealth {
   sellThroughPct: number;
 }
 
+export interface LoginInput {
+  email: string;
+  /** @minLength 1 */
+  password: string;
+}
+
+export interface WorkspaceUser {
+  id: number;
+  name: string;
+  email: string;
+  role: string;
+  initials: string;
+  color: string;
+}
+
+export interface WorkspaceSession {
+  authenticated: boolean;
+  user: WorkspaceUser;
+}
+
+export type WorkspaceDashboardKpisItem = { [key: string]: unknown };
+
+export type WorkspaceDashboardActivityItem = { [key: string]: unknown };
+
+export type WorkspaceDashboardPipelineItem = { [key: string]: unknown };
+
+export type WorkspaceDashboardUpcomingItem = { [key: string]: unknown };
+
+export interface WorkspaceDashboard {
+  kpis: WorkspaceDashboardKpisItem[];
+  activity: WorkspaceDashboardActivityItem[];
+  pipeline: WorkspaceDashboardPipelineItem[];
+  upcoming: WorkspaceDashboardUpcomingItem[];
+}
+
+export interface WorkspaceStyle {
+  id: number;
+  code: string;
+  name: string;
+  brand: string;
+  category: string;
+  status: string;
+  owner: string;
+  targetDate: string;
+  /** @nullable */
+  image?: string | null;
+  progress?: number;
+  price?: number;
+  market?: string;
+}
+
+export interface StyleUpdate {
+  status?: string;
+  owner?: string;
+  targetDate?: string;
+  progress?: number;
+  price?: number;
+}
+
+export type WorkspaceStyleDetailColorwaysItem = { [key: string]: unknown };
+
+export type WorkspaceStyleDetailFabricsItem = { [key: string]: unknown };
+
+export type WorkspaceStyleDetailTechPack = { [key: string]: unknown };
+
+export type WorkspaceStyleDetailFitSessionsItem = { [key: string]: unknown };
+
+export type WorkspaceStyleDetailGradingsItem = { [key: string]: unknown };
+
+export type WorkspaceStyleDetailBomsItem = { [key: string]: unknown };
+
+export type WorkspaceStyleDetailSamplesItem = { [key: string]: unknown };
+
+export type WorkspaceStyleDetailPomQcItem = { [key: string]: unknown };
+
+export type WorkspaceStyleDetailCostEstimate = { [key: string]: unknown };
+
+export type WorkspaceStyleDetailProductionOrder = { [key: string]: unknown };
+
+export type WorkspaceStyleDetail = WorkspaceStyle & {
+  colorways: WorkspaceStyleDetailColorwaysItem[];
+  fabrics: WorkspaceStyleDetailFabricsItem[];
+  techPack: WorkspaceStyleDetailTechPack;
+  fitSessions: WorkspaceStyleDetailFitSessionsItem[];
+  gradings: WorkspaceStyleDetailGradingsItem[];
+  boms: WorkspaceStyleDetailBomsItem[];
+  samples: WorkspaceStyleDetailSamplesItem[];
+  pomQc: WorkspaceStyleDetailPomQcItem[];
+  costEstimate: WorkspaceStyleDetailCostEstimate;
+  productionOrder: WorkspaceStyleDetailProductionOrder;
+};
+
+export type WorkspacePlanSummary = { [key: string]: unknown };
+
+export interface WorkspacePlan {
+  id: number;
+  name: string;
+  quarter: string;
+  year: number;
+  styles: WorkspaceStyle[];
+  summary: WorkspacePlanSummary;
+}
+
+export interface PlanUpdate {
+  name?: string;
+  quarter?: string;
+  year?: number;
+}
+
+export interface WorkspacePlanHistory {
+  id: number;
+  planId: number;
+  action: string;
+  actor: string;
+  detail?: string;
+  createdAt: string;
+}
+
+export type WorkspaceBoardColumnsItem = { [key: string]: unknown };
+
+export type WorkspaceBoardCardAssigneesItem = { [key: string]: unknown };
+
+export interface WorkspaceBoardCard {
+  id: number;
+  boardId: number;
+  title: string;
+  description?: string;
+  columnId: string;
+  position: number;
+  /** @nullable */
+  styleId?: number | null;
+  tags?: string[];
+  assignees?: WorkspaceBoardCardAssigneesItem[];
+}
+
+export interface WorkspaceComment {
+  id: number;
+  boardId: number;
+  /** @nullable */
+  cardId?: number | null;
+  body: string;
+  author: WorkspaceUser;
+  createdAt: string;
+}
+
+export interface WorkspaceBoard {
+  id: number;
+  title: string;
+  description: string;
+  columns: WorkspaceBoardColumnsItem[];
+  cards: WorkspaceBoardCard[];
+  comments: WorkspaceComment[];
+  collaborators: WorkspaceUser[];
+}
+
+export interface BoardInput {
+  /** @minLength 1 */
+  title: string;
+  description?: string;
+}
+
+export interface BoardCardInput {
+  /** @minLength 1 */
+  title: string;
+  description?: string;
+  columnId: string;
+  styleId?: number;
+  tags?: string[];
+}
+
+export interface BoardCardUpdate {
+  title?: string;
+  description?: string;
+  columnId?: string;
+  position?: number;
+  tags?: string[];
+}
+
+export interface CommentInput {
+  /** @minLength 1 */
+  body: string;
+  cardId?: number;
+}
+
+export type WorkspaceShowcaseFramesItem = { [key: string]: unknown };
+
+export interface WorkspaceShowcase {
+  id: number;
+  title: string;
+  season: string;
+  status: string;
+  description?: string;
+  frames: WorkspaceShowcaseFramesItem[];
+}
+
+export type ListWorkspaceStylesParams = {
+brand?: string;
+status?: string;
+search?: string;
+};
+

@@ -143,3 +143,464 @@ export const GetInventoryHealthResponseItem = zod.object({
 export const GetInventoryHealthResponse = zod.array(GetInventoryHealthResponseItem)
 
 
+/**
+ * @summary Current product workspace session
+ */
+export const GetWorkspaceSessionResponse = zod.object({
+  "authenticated": zod.boolean(),
+  "user": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "email": zod.string(),
+  "role": zod.string(),
+  "initials": zod.string(),
+  "color": zod.string()
+})
+})
+
+
+/**
+ * @summary Start a product workspace session
+ */
+
+
+
+export const LoginWorkspaceBody = zod.object({
+  "email": zod.string().email(),
+  "password": zod.string().min(1)
+})
+
+export const LoginWorkspaceResponse = zod.object({
+  "authenticated": zod.boolean(),
+  "user": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "email": zod.string(),
+  "role": zod.string(),
+  "initials": zod.string(),
+  "color": zod.string()
+})
+})
+
+
+/**
+ * @summary Product workspace dashboard
+ */
+export const GetWorkspaceDashboardResponse = zod.object({
+  "kpis": zod.array(zod.record(zod.string(), zod.unknown())),
+  "activity": zod.array(zod.record(zod.string(), zod.unknown())),
+  "pipeline": zod.array(zod.record(zod.string(), zod.unknown())),
+  "upcoming": zod.array(zod.record(zod.string(), zod.unknown()))
+})
+
+
+/**
+ * @summary List workspace styles
+ */
+export const ListWorkspaceStylesQueryParams = zod.object({
+  "brand": zod.coerce.string().optional(),
+  "status": zod.coerce.string().optional(),
+  "search": zod.coerce.string().optional()
+})
+
+export const ListWorkspaceStylesResponseItem = zod.object({
+  "id": zod.number(),
+  "code": zod.string(),
+  "name": zod.string(),
+  "brand": zod.string(),
+  "category": zod.string(),
+  "status": zod.string(),
+  "owner": zod.string(),
+  "targetDate": zod.string(),
+  "image": zod.string().nullish(),
+  "progress": zod.number().optional(),
+  "price": zod.number().optional(),
+  "market": zod.string().optional()
+})
+export const ListWorkspaceStylesResponse = zod.array(ListWorkspaceStylesResponseItem)
+
+
+/**
+ * @summary Get a workspace style
+ */
+export const GetWorkspaceStyleParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const GetWorkspaceStyleResponse = zod.object({
+  "id": zod.number(),
+  "code": zod.string(),
+  "name": zod.string(),
+  "brand": zod.string(),
+  "category": zod.string(),
+  "status": zod.string(),
+  "owner": zod.string(),
+  "targetDate": zod.string(),
+  "image": zod.string().nullish(),
+  "progress": zod.number().optional(),
+  "price": zod.number().optional(),
+  "market": zod.string().optional()
+}).and(zod.object({
+  "colorways": zod.array(zod.record(zod.string(), zod.unknown())),
+  "fabrics": zod.array(zod.record(zod.string(), zod.unknown())),
+  "techPack": zod.record(zod.string(), zod.unknown()),
+  "fitSessions": zod.array(zod.record(zod.string(), zod.unknown())),
+  "gradings": zod.array(zod.record(zod.string(), zod.unknown())),
+  "boms": zod.array(zod.record(zod.string(), zod.unknown())),
+  "samples": zod.array(zod.record(zod.string(), zod.unknown())),
+  "pomQc": zod.array(zod.record(zod.string(), zod.unknown())),
+  "costEstimate": zod.record(zod.string(), zod.unknown()),
+  "productionOrder": zod.record(zod.string(), zod.unknown())
+}))
+
+
+/**
+ * @summary Update a workspace style
+ */
+export const UpdateWorkspaceStyleParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const UpdateWorkspaceStyleBody = zod.object({
+  "status": zod.string().optional(),
+  "owner": zod.string().optional(),
+  "targetDate": zod.string().optional(),
+  "progress": zod.number().optional(),
+  "price": zod.number().optional()
+})
+
+export const UpdateWorkspaceStyleResponse = zod.object({
+  "id": zod.number(),
+  "code": zod.string(),
+  "name": zod.string(),
+  "brand": zod.string(),
+  "category": zod.string(),
+  "status": zod.string(),
+  "owner": zod.string(),
+  "targetDate": zod.string(),
+  "image": zod.string().nullish(),
+  "progress": zod.number().optional(),
+  "price": zod.number().optional(),
+  "market": zod.string().optional()
+}).and(zod.object({
+  "colorways": zod.array(zod.record(zod.string(), zod.unknown())),
+  "fabrics": zod.array(zod.record(zod.string(), zod.unknown())),
+  "techPack": zod.record(zod.string(), zod.unknown()),
+  "fitSessions": zod.array(zod.record(zod.string(), zod.unknown())),
+  "gradings": zod.array(zod.record(zod.string(), zod.unknown())),
+  "boms": zod.array(zod.record(zod.string(), zod.unknown())),
+  "samples": zod.array(zod.record(zod.string(), zod.unknown())),
+  "pomQc": zod.array(zod.record(zod.string(), zod.unknown())),
+  "costEstimate": zod.record(zod.string(), zod.unknown()),
+  "productionOrder": zod.record(zod.string(), zod.unknown())
+}))
+
+
+/**
+ * @summary Get PLM workflow data for a style
+ */
+export const GetWorkspaceStylePlmParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const GetWorkspaceStylePlmResponse = zod.object({
+  "id": zod.number(),
+  "code": zod.string(),
+  "name": zod.string(),
+  "brand": zod.string(),
+  "category": zod.string(),
+  "status": zod.string(),
+  "owner": zod.string(),
+  "targetDate": zod.string(),
+  "image": zod.string().nullish(),
+  "progress": zod.number().optional(),
+  "price": zod.number().optional(),
+  "market": zod.string().optional()
+}).and(zod.object({
+  "colorways": zod.array(zod.record(zod.string(), zod.unknown())),
+  "fabrics": zod.array(zod.record(zod.string(), zod.unknown())),
+  "techPack": zod.record(zod.string(), zod.unknown()),
+  "fitSessions": zod.array(zod.record(zod.string(), zod.unknown())),
+  "gradings": zod.array(zod.record(zod.string(), zod.unknown())),
+  "boms": zod.array(zod.record(zod.string(), zod.unknown())),
+  "samples": zod.array(zod.record(zod.string(), zod.unknown())),
+  "pomQc": zod.array(zod.record(zod.string(), zod.unknown())),
+  "costEstimate": zod.record(zod.string(), zod.unknown()),
+  "productionOrder": zod.record(zod.string(), zod.unknown())
+}))
+
+
+/**
+ * @summary Get the active quarterly plan
+ */
+export const GetWorkspacePlanResponse = zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "quarter": zod.string(),
+  "year": zod.number(),
+  "styles": zod.array(zod.object({
+  "id": zod.number(),
+  "code": zod.string(),
+  "name": zod.string(),
+  "brand": zod.string(),
+  "category": zod.string(),
+  "status": zod.string(),
+  "owner": zod.string(),
+  "targetDate": zod.string(),
+  "image": zod.string().nullish(),
+  "progress": zod.number().optional(),
+  "price": zod.number().optional(),
+  "market": zod.string().optional()
+})),
+  "summary": zod.record(zod.string(), zod.unknown())
+})
+
+
+/**
+ * @summary Update quarterly plan metadata
+ */
+export const UpdateWorkspacePlanBody = zod.object({
+  "name": zod.string().optional(),
+  "quarter": zod.string().optional(),
+  "year": zod.number().optional()
+})
+
+export const UpdateWorkspacePlanResponse = zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "quarter": zod.string(),
+  "year": zod.number(),
+  "styles": zod.array(zod.object({
+  "id": zod.number(),
+  "code": zod.string(),
+  "name": zod.string(),
+  "brand": zod.string(),
+  "category": zod.string(),
+  "status": zod.string(),
+  "owner": zod.string(),
+  "targetDate": zod.string(),
+  "image": zod.string().nullish(),
+  "progress": zod.number().optional(),
+  "price": zod.number().optional(),
+  "market": zod.string().optional()
+})),
+  "summary": zod.record(zod.string(), zod.unknown())
+})
+
+
+/**
+ * @summary Plan change history
+ */
+export const ListWorkspacePlanHistoryResponseItem = zod.object({
+  "id": zod.number(),
+  "planId": zod.number(),
+  "action": zod.string(),
+  "actor": zod.string(),
+  "detail": zod.string().optional(),
+  "createdAt": zod.string()
+})
+export const ListWorkspacePlanHistoryResponse = zod.array(ListWorkspacePlanHistoryResponseItem)
+
+
+/**
+ * @summary List collaboration boards
+ */
+export const ListWorkspaceBoardsResponseItem = zod.object({
+  "id": zod.number(),
+  "title": zod.string(),
+  "description": zod.string(),
+  "columns": zod.array(zod.record(zod.string(), zod.unknown())),
+  "cards": zod.array(zod.object({
+  "id": zod.number(),
+  "boardId": zod.number(),
+  "title": zod.string(),
+  "description": zod.string().optional(),
+  "columnId": zod.string(),
+  "position": zod.number(),
+  "styleId": zod.number().nullish(),
+  "tags": zod.array(zod.string()).optional(),
+  "assignees": zod.array(zod.record(zod.string(), zod.unknown())).optional()
+})),
+  "comments": zod.array(zod.object({
+  "id": zod.number(),
+  "boardId": zod.number(),
+  "cardId": zod.number().nullish(),
+  "body": zod.string(),
+  "author": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "email": zod.string(),
+  "role": zod.string(),
+  "initials": zod.string(),
+  "color": zod.string()
+}),
+  "createdAt": zod.string()
+})),
+  "collaborators": zod.array(zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "email": zod.string(),
+  "role": zod.string(),
+  "initials": zod.string(),
+  "color": zod.string()
+}))
+})
+export const ListWorkspaceBoardsResponse = zod.array(ListWorkspaceBoardsResponseItem)
+
+
+/**
+ * @summary Create a collaboration board
+ */
+
+
+
+export const CreateWorkspaceBoardBody = zod.object({
+  "title": zod.string().min(1),
+  "description": zod.string().optional()
+})
+
+
+/**
+ * @summary Get a collaboration board
+ */
+export const GetWorkspaceBoardParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const GetWorkspaceBoardResponse = zod.object({
+  "id": zod.number(),
+  "title": zod.string(),
+  "description": zod.string(),
+  "columns": zod.array(zod.record(zod.string(), zod.unknown())),
+  "cards": zod.array(zod.object({
+  "id": zod.number(),
+  "boardId": zod.number(),
+  "title": zod.string(),
+  "description": zod.string().optional(),
+  "columnId": zod.string(),
+  "position": zod.number(),
+  "styleId": zod.number().nullish(),
+  "tags": zod.array(zod.string()).optional(),
+  "assignees": zod.array(zod.record(zod.string(), zod.unknown())).optional()
+})),
+  "comments": zod.array(zod.object({
+  "id": zod.number(),
+  "boardId": zod.number(),
+  "cardId": zod.number().nullish(),
+  "body": zod.string(),
+  "author": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "email": zod.string(),
+  "role": zod.string(),
+  "initials": zod.string(),
+  "color": zod.string()
+}),
+  "createdAt": zod.string()
+})),
+  "collaborators": zod.array(zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "email": zod.string(),
+  "role": zod.string(),
+  "initials": zod.string(),
+  "color": zod.string()
+}))
+})
+
+
+/**
+ * @summary Add a card to a board
+ */
+export const CreateWorkspaceBoardCardParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+
+
+
+export const CreateWorkspaceBoardCardBody = zod.object({
+  "title": zod.string().min(1),
+  "description": zod.string().optional(),
+  "columnId": zod.string(),
+  "styleId": zod.number().optional(),
+  "tags": zod.array(zod.string()).optional()
+})
+
+
+/**
+ * @summary Add a comment to a board
+ */
+export const CreateWorkspaceBoardCommentParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+
+
+
+export const CreateWorkspaceBoardCommentBody = zod.object({
+  "body": zod.string().min(1),
+  "cardId": zod.number().optional()
+})
+
+
+/**
+ * @summary Move or update a board card
+ */
+export const UpdateWorkspaceBoardCardParams = zod.object({
+  "id": zod.coerce.number(),
+  "cardId": zod.coerce.number()
+})
+
+export const UpdateWorkspaceBoardCardBody = zod.object({
+  "title": zod.string().optional(),
+  "description": zod.string().optional(),
+  "columnId": zod.string().optional(),
+  "position": zod.number().optional(),
+  "tags": zod.array(zod.string()).optional()
+})
+
+export const UpdateWorkspaceBoardCardResponse = zod.object({
+  "id": zod.number(),
+  "boardId": zod.number(),
+  "title": zod.string(),
+  "description": zod.string().optional(),
+  "columnId": zod.string(),
+  "position": zod.number(),
+  "styleId": zod.number().nullish(),
+  "tags": zod.array(zod.string()).optional(),
+  "assignees": zod.array(zod.record(zod.string(), zod.unknown())).optional()
+})
+
+
+/**
+ * @summary List showcases
+ */
+export const ListWorkspaceShowcasesResponseItem = zod.object({
+  "id": zod.number(),
+  "title": zod.string(),
+  "season": zod.string(),
+  "status": zod.string(),
+  "description": zod.string().optional(),
+  "frames": zod.array(zod.record(zod.string(), zod.unknown()))
+})
+export const ListWorkspaceShowcasesResponse = zod.array(ListWorkspaceShowcasesResponseItem)
+
+
+/**
+ * @summary Get a showcase
+ */
+export const GetWorkspaceShowcaseParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const GetWorkspaceShowcaseResponse = zod.object({
+  "id": zod.number(),
+  "title": zod.string(),
+  "season": zod.string(),
+  "status": zod.string(),
+  "description": zod.string().optional(),
+  "frames": zod.array(zod.record(zod.string(), zod.unknown()))
+})
+
+
