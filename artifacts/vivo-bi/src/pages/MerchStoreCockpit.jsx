@@ -233,7 +233,7 @@ const MerchStoreCockpit = () => {
         </div>
         {summary && (
           <p className="text-[12px] text-muted mt-0.5">
-            {fmtNum(summary.styles)} active styles · {fmtNum(summary.stock_units)} units in stock
+            {fmtNum(summary.styles)} {selectedStore ? "active styles in this location's range" : "active styles with current stock"} · {fmtNum(summary.stock_units)} units in stock
             {summary.actively_selling != null && ` · ${fmtNum(summary.actively_selling)} selling this period`}
           </p>
         )}
@@ -275,8 +275,16 @@ const MerchStoreCockpit = () => {
               testId="msc-stock"
             />
             <KPICard
-              small showDelta={false} label="Active Styles" value={fmtNum(summary.styles)} icon={Tag}
-              sub={`${fmtNum(summary.actively_selling)} selling this period`}
+              small showDelta={false}
+              label={selectedStore ? "Active Styles at Location" : "Active Styles"}
+              value={fmtNum(summary.styles)}
+              icon={Tag}
+              sub={selectedStore
+                ? "With stock or sales at this location"
+                : "With current stock in stores or warehouse"}
+              formula={selectedStore
+                ? "Active styles in the selected location's range: the style currently has stock at that location or recorded sales there during the selected period. This is intentionally narrower than the company-wide active-style universe."
+                : "Active styles with current stock in stores or warehouse. This is a stock-backed merchandising range, not the company-wide lifecycle count."}
               testId="msc-styles"
             />
             <KPICard

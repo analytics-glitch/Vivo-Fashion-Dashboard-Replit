@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useFilters } from "@/lib/filters";
 import { api, datePresets, fmtDate } from "@/lib/api";
 import MultiSelect from "@/components/MultiSelect";
@@ -55,7 +55,7 @@ const PRESET_GROUPS = [
   },
 ];
 
-const DateRangeButton = () => {
+const DateRangeButton = ({ autoPairToday = false }) => {
   const f = useFilters();
   const [open, setOpen] = useState(false);
   const [draftRange, setDraftRange] = useState(null);
@@ -92,6 +92,12 @@ const DateRangeButton = () => {
       return;
     }
     f.setPreset(key);
+    // Store Detail should never compare a partial current day with a full
+    // month. When a user explicitly chooses Today there, pair it with the
+    // immediately preceding day.
+    if (autoPairToday && key === "today") {
+      f.setCompareMode("yesterday");
+    }
     setOpen(false);
   };
 
@@ -475,7 +481,7 @@ const MobileFiltersSheet = ({ children }) => {
       </SheetTrigger>
       <SheetContent
         side="bottom"
-        className="rounded-t-2xl pt-4"
+        className="rounded-t-2xl pt-4 max-h-[85vh] overflow-y-auto"
         data-testid="mobile-filters-sheet"
       >
         <SheetTitle className="text-[15px] font-bold mb-3">Filters</SheetTitle>
@@ -570,10 +576,30 @@ const DataUpdatedPill = ({ className = "" }) => {
 const FilterBar = () => {
   const f = useFilters();
   const location = useLocation();
+  const [searchParams] = useSearchParams();
   const [locations, setLocations] = useState([]);
   const [styleTypeOptions, setStyleTypeOptions] = useState([]);
   const [shareCopied, setShareCopied] = useState(false);
-  const showStyleTypeFilter = ["/production", "/product-analysis", "/merchandising"].includes(location.pathname);
+  const storeDefaultRef = React.useRef(false);
+  const isStoreDetail = location.pathname === "/merchandising" && searchParams.get("tab") === "merch-store";
+  const showStyleTypeFilter = !isStoreDetail &&
+    ["/production", "/product-analysis", "/merchandising"].includes(location.pathname);
+
+  // The provider's global default is Today vs Previous month, which is not a
+  // fair Store Detail comparison because Today is only a partial day. Scope
+  // the correction to this tab: Month to date vs the matching prior-month
+  // window. A manually chosen Today uses the DateRangeButton pairing above.
+  useEffect(() => {
+    if (!isStoreDetail) {
+      storeDefaultRef.current = false;
+      return;
+    }
+    if (storeDefaultRef.current) return;
+    storeDefaultRef.current = true;
+    if (f.preset === "today" && f.compareMode === "last_month") {
+      f.setPreset("mtd");
+    }
+  }, [isStoreDetail, f.preset, f.compareMode, f.setPreset]);
 
   const handleShare = async () => {
     const url = f.buildShareableLink?.() || window.location.href;
@@ -631,9 +657,16 @@ const FilterBar = () => {
     label: c.leader ? `${c.label} — ${c.leader}` : c.label,
   }));
 
-  // Inner controls — used both inline (desktop) and inside the mobile sheet.
-  // Order: All/Retail/Online segment → Date Range → Compare → Currency → Country/POS
-  const ControlsInline = (
+  // Store Detail only consumes the date window and comparison range here.
+  // Brand/category remain available in the Merchandising Hub scope strip and
+  // the store itself is selected inside the page, so the other global controls
+  // would be misleading on this tab.
+  const ControlsInline = isStoreDetail ? (
+    <>
+      <DateRangeButton autoPairToday={isStoreDetail} />
+      <CompareButton />
+    </>
+  ) : (
     <>
       <DateRangeButton />
       <CompareButton />
@@ -697,6 +730,39 @@ const FilterBar = () => {
     </>
   );
 
+  const mobileSummary = useMemo(() => {
+    const labels = [];
+    const presets = datePresets();
+    const dateLabel = f.preset && f.preset !== "custom" && presets[f.preset]
+      ? presets[f.preset].label
+      : f.dateFrom && f.dateTo
+        ? `${fmtDate(f.dateFrom)} – ${fmtDate(f.dateTo)}`
+        : "Date";
+    labels.push(dateLabel);
+    if (f.compareMode && f.compareMode !== "none") {
+      const compareLabel = {
+        prior_period: "Previous period",
+        yesterday: "Yesterday",
+        last_month: "Previous month",
+        last_year: "Previous year",
+        last_year_dow: "Previous year (day matched)",
+        custom: "Custom comparison",
+      }[f.compareMode] || "Comparison";
+      labels.push(`Compare: ${compareLabel}`);
+    }
+    if (!isStoreDetail) {
+      if (f.countries.length) labels.push(f.countries.join(", "));
+      if (f.clusters.length) labels.push(`${f.clusters.length} cluster${f.clusters.length === 1 ? "" : "s"}`);
+      if (f.styleTypes?.length) labels.push(f.styleTypes.join(", "));
+      if (f.channelGroup && f.channelGroup !== "all") labels.push(f.channelGroup === "retail" ? "Retail" : "Online");
+      if (f.channels.length) labels.push(`${f.channels.length} POS`);
+    }
+    return labels;
+  }, [
+    f.preset, f.dateFrom, f.dateTo, f.compareMode, f.countries, f.clusters,
+    f.styleTypes, f.channelGroup, f.channels, isStoreDetail,
+  ]);
+
   return (
     <div
       className="bg-[#fed7aa] border-b border-border px-3 sm:px-5 lg:px-10 py-2 sm:py-3 no-print"
@@ -732,36 +798,48 @@ const FilterBar = () => {
         </div>
       </div>
 
-      {/* Mobile layout — keep the complete filter strip in one horizontal
-          scroller. This preserves access to KES, Country, Cluster, Type and
-          the All/Retail/Online + POS controls without consuming the page with
-          a tall stack of rows. */}
-      <div className="flex md:hidden items-center gap-2 overflow-x-auto overscroll-x-contain pb-1 -mx-1 px-1">
-        <div className="flex items-center gap-2 min-w-max">
-          <BackButton />
-          {ControlsInline}
-          <DataUpdatedPill />
-          <button
-            type="button"
-            onClick={handleShare}
-            data-testid="share-filter-link-mobile"
-            className={`shrink-0 inline-flex items-center gap-1 px-2.5 py-1.5 rounded-full text-[11.5px] font-semibold transition-all ${
-              shareCopied
-                ? "bg-[#059669] text-white border border-[#059669]"
-                : "bg-white text-foreground/80 border border-border"
-            }`}
-          >
-            {shareCopied ? (
-              <>
-                <Check size={12} weight="bold" /> Copied
-              </>
-            ) : (
-              <>
-                <ShareNetwork size={12} weight="bold" /> Share
-              </>
-            )}
-          </button>
+      {/* Mobile layout — one persistent summary row; the full control set lives
+          in a bottom sheet so it never pushes the page content below the fold. */}
+      <div className="flex md:hidden items-center gap-2 min-w-0">
+        <BackButton />
+        <div className="flex-1 min-w-0 overflow-x-auto">
+          <div className="inline-flex items-center gap-1.5 whitespace-nowrap">
+            {mobileSummary.map((label, i) => (
+              <span
+                key={`${label}-${i}`}
+                className="inline-flex items-center rounded-full border border-border bg-white/70 px-2.5 py-1 text-[11px] text-foreground/75"
+              >
+                {label}
+              </span>
+            ))}
+          </div>
         </div>
+        <MobileFiltersSheet>
+          <div className="grid grid-cols-1 gap-3">
+            {ControlsInline}
+          </div>
+        </MobileFiltersSheet>
+        <DataUpdatedPill />
+        <button
+          type="button"
+          onClick={handleShare}
+          data-testid="share-filter-link-mobile"
+          className={`shrink-0 inline-flex items-center gap-1 px-2.5 py-1.5 rounded-full text-[11.5px] font-semibold transition-all ${
+            shareCopied
+              ? "bg-[#059669] text-white border border-[#059669]"
+              : "bg-white text-foreground/80 border border-border"
+          }`}
+        >
+          {shareCopied ? (
+            <>
+              <Check size={12} weight="bold" /> Copied
+            </>
+          ) : (
+            <>
+              <ShareNetwork size={12} weight="bold" /> Share
+            </>
+          )}
+        </button>
       </div>
     </div>
   );
