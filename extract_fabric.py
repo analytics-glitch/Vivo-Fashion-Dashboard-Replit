@@ -1,9 +1,19 @@
-import xmlrpc.client, os, psycopg2, logging
+import xmlrpc.client, os, sys, psycopg2, logging
 from psycopg2.extras import execute_values
 from datetime import datetime, timedelta
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
+
+# ── Exit-code convention (consumed by fabric_worker_loop in sync_incremental.py
+# and the watchdog's run_fabric_recovery) ────────────────────────────────────
+#   0 = success  (extract ran; raw_fabric_* refreshed, _loaded_at advanced)
+#   1 = error    (uncaught exception — Python's default for a crashed run)
+#   3 = skipped  (another fabric run holds the pg advisory lock; NOTHING was
+#       extracted and _loaded_at did NOT advance, so callers must not treat
+#       this as a successful pull — no heartbeat, no freshness credit)
+EXIT_OK = 0
+EXIT_SKIPPED_LOCK = 3
 
 ODOO_URL      = os.environ['ODOO_URL']
 ODOO_DB       = os.environ['ODOO_DB']
@@ -590,7 +600,12 @@ def main(mode="full"):
     if not have_lock:
         log.info("Fabric extract (mode=%s) — another fabric run holds the lock, skipping.", mode)
         conn.close()
-        return
+        # Distinct exit code so the sync worker / watchdog can tell "skipped,
+        # nothing refreshed" apart from a real success (exit-code convention at
+        # the top of this module). Exiting 0 here was the bug that let the
+        # worker keep writing a fresh fabric heartbeat during lock-skip cycles
+        # while the data aged 15+ hours.
+        sys.exit(EXIT_SKIPPED_LOCK)
 
     try:
         if mode in ("fast", "full"):

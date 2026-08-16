@@ -28,6 +28,8 @@ Run with the stdlib test path (no pytest in this env)::
     python -m unittest test_fabric_worker_loop
 """
 import ast
+import os
+import subprocess
 import threading
 import time
 import unittest
@@ -332,6 +334,200 @@ class FabricWorkerWiringTests(unittest.TestCase):
             self._refs_worker(once_if.orelse),
             "fabric_worker_loop must be started in the continuous loop path",
         )
+
+
+class FabricLockSkipTests(_FabricWorkerHarness):
+    """Exit-code-3 (advisory-lock skip) handling. A skipped extract refreshed
+    NOTHING, so it must not look like a success: no fabric heartbeat (a fresh
+    beat would hide real data staleness from the watchdog — the exact bug that
+    left /fabric 15+ hours stale) and no 60s rate-limit stamp (the next ~20s
+    tick must retry immediately, so the fast pull lands the moment the heavy
+    run releases the lock). A REAL failure (rc=1) keeps the old behaviour:
+    no heartbeat, but the stamp advances so a broken Odoo isn't hammered
+    every 20s."""
+
+    def test_lock_skip_writes_no_heartbeat_and_retries_next_tick(self):
+        stale = datetime.now(timezone.utc) - timedelta(seconds=61)
+        si._LAST_FABRIC_EXTRACT = stale
+        self.run_extract.side_effect = subprocess.CalledProcessError(
+            si.FABRIC_EXTRACT_EXIT_LOCK_SKIP, ["extract_fabric.py"])
+        self._run_once(_FakeConn(empty=False))
+
+        self.run_extract.assert_called_once()
+        self.write_hb.assert_not_called()
+        # Rate-limit stamp rolled back -> due again on the very next tick.
+        self.assertEqual(si._LAST_FABRIC_EXTRACT, stale)
+
+    def test_real_failure_keeps_rate_limit_and_no_heartbeat(self):
+        stale = datetime.now(timezone.utc) - timedelta(seconds=61)
+        si._LAST_FABRIC_EXTRACT = stale
+        self.run_extract.side_effect = subprocess.CalledProcessError(
+            1, ["extract_fabric.py"])
+        self._run_once(_FakeConn(empty=False))
+
+        self.run_extract.assert_called_once()
+        self.write_hb.assert_not_called()
+        # A real error keeps the advanced stamp: retry waits the normal ~60s.
+        self.assertGreater(si._LAST_FABRIC_EXTRACT, stale)
+
+    def test_exit_code_contract_pinned_on_both_sides(self):
+        # The convention lives in extract_fabric.py's module header; the worker
+        # (and watchdog) key off 3. Pin both sides so neither can drift alone.
+        self.assertEqual(si.FABRIC_EXTRACT_EXIT_LOCK_SKIP, 3)
+        path = os.path.join(os.path.dirname(os.path.abspath(si.__file__)),
+                            "extract_fabric.py")
+        with open(path, "r") as f:
+            src = f.read()
+        self.assertIn("EXIT_SKIPPED_LOCK = 3", src)
+        self.assertIn("sys.exit(EXIT_SKIPPED_LOCK)", src)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Watchdog side of the same contract: check_fabric() gates on BOTH the
+# heartbeat AND MAX(raw_fabric_products._loaded_at) — a fresh heartbeat with
+# stale data (the lock-skip signature) is UNHEALTHY — and run_fabric_recovery()
+# treats rc=3 as a non-success that feeds the escalation counter.
+# ─────────────────────────────────────────────────────────────────────────────
+class _WdFakeCursor:
+    def __init__(self, conn):
+        self.conn = conn
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, sql, params=None):
+        s = " ".join(sql.split()).lower()
+        c = self.conn
+        if "to_regclass('public.fabric_heartbeat')" in s:
+            c._last = ("fabric_heartbeat",) if c.hb_table else (None,)
+        elif "to_regclass('public.raw_fabric_products')" in s:
+            c._last = ("raw_fabric_products",) if c.data_table else (None,)
+        elif "from fabric_heartbeat" in s:
+            c._last = (c.hb_at,)
+        elif "max(_loaded_at) from raw_fabric_products" in s:
+            c._last = (c.data_at,)
+        else:
+            c._last = None
+
+    def fetchone(self):
+        return self.conn._last
+
+
+class _WdFakeConn:
+    def __init__(self, hb_at=None, data_at=None, hb_table=True, data_table=True):
+        self.hb_at = hb_at
+        self.data_at = data_at
+        self.hb_table = hb_table
+        self.data_table = data_table
+        self._last = None
+
+    def cursor(self):
+        return _WdFakeCursor(self)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class WatchdogFabricDataGateTests(unittest.TestCase):
+    def setUp(self):
+        import watchdog as wd
+        self.wd = wd
+        orig = (wd._last_fabric_recovery, wd._fabric_recovery_failures)
+
+        def _restore():
+            wd._last_fabric_recovery, wd._fabric_recovery_failures = orig
+        self.addCleanup(_restore)
+
+    def _check(self, **kw):
+        conn = _WdFakeConn(**kw)
+        with mock.patch.object(self.wd, "_db", return_value=conn):
+            return self.wd.check_fabric()
+
+    def test_fresh_heartbeat_but_stale_data_is_unhealthy(self):
+        # The lock-skip signature: worker loop alive (fresh beat) while
+        # _loaded_at ages past the threshold. Must be UNHEALTHY, and the data
+        # age must be reported so operators see the number the banner shows.
+        now = datetime.now(timezone.utc)
+        stale_naive = (now - timedelta(minutes=self.wd.FABRIC_FRESH_MIN + 60)
+                       ).replace(tzinfo=None)  # naive UTC, like extract writes
+        healthy, last_beat, hb_min, data_min = self._check(
+            hb_at=now - timedelta(minutes=1), data_at=stale_naive)
+        self.assertFalse(healthy)
+        self.assertIsNotNone(hb_min)
+        self.assertLessEqual(hb_min, self.wd.FABRIC_FRESH_MIN)
+        self.assertIsNotNone(data_min)
+        self.assertGreater(data_min, self.wd.FABRIC_FRESH_MIN)
+
+    def test_both_fresh_is_healthy(self):
+        now = datetime.now(timezone.utc)
+        healthy, _, hb_min, data_min = self._check(
+            hb_at=now - timedelta(minutes=1),
+            data_at=(now - timedelta(minutes=2)).replace(tzinfo=None))
+        self.assertTrue(healthy)
+        self.assertIsNotNone(hb_min)
+        self.assertIsNotNone(data_min)
+
+    def test_missing_data_table_or_row_is_unhealthy(self):
+        now = datetime.now(timezone.utc)
+        healthy, _, _, data_min = self._check(
+            hb_at=now - timedelta(minutes=1), data_table=False)
+        self.assertFalse(healthy)
+        self.assertIsNone(data_min)
+        # Table present but MAX(_loaded_at) NULL (empty table) — same verdict.
+        healthy, _, _, data_min = self._check(
+            hb_at=now - timedelta(minutes=1), data_at=None)
+        self.assertFalse(healthy)
+        self.assertIsNone(data_min)
+
+    def _run_recovery(self, returncode):
+        fake_run = mock.MagicMock(
+            return_value=mock.MagicMock(returncode=returncode))
+        with mock.patch.object(self.wd.subprocess, "run", fake_run):
+            result = self.wd.run_fabric_recovery(reason="test")
+        return result, fake_run
+
+    def test_recovery_lock_skip_counts_as_failure(self):
+        self.wd._fabric_recovery_failures = 0
+        result, fake_run = self._run_recovery(3)
+        self.assertIn("SKIPPED", result)
+        self.assertEqual(self.wd._fabric_recovery_failures, 1)
+        # The one-shot rescue must use the raised (shared) timeout, not 120s.
+        self.assertEqual(fake_run.call_args.kwargs["timeout"],
+                         self.wd.FABRIC_EXTRACT_TIMEOUT_SEC)
+        if "FABRIC_EXTRACT_TIMEOUT_SEC" not in os.environ:
+            self.assertEqual(self.wd.FABRIC_EXTRACT_TIMEOUT_SEC, 300)
+        self.assertIsNotNone(self.wd._last_fabric_recovery)  # cooldown stamped
+
+    def test_recovery_success_resets_failure_counter(self):
+        self.wd._fabric_recovery_failures = 2
+        result, _ = self._run_recovery(0)
+        self.assertIn("rc=0", result)
+        self.assertEqual(self.wd._fabric_recovery_failures, 0)
+
+    def test_recovery_real_failure_increments_counter(self):
+        self.wd._fabric_recovery_failures = 1
+        result, _ = self._run_recovery(1)
+        self.assertIn("FAILED", result)
+        self.assertEqual(self.wd._fabric_recovery_failures, 2)
+
+    def test_escalation_wiring_present_in_health_loop(self):
+        # Cheap source-level pin: the health loop must escalate prolonged data
+        # staleness to a sync-process restart (re-spawning the fabric worker
+        # thread), gated on the failure counter + the >6h data-age threshold.
+        with open(self.wd.__file__, "r") as f:
+            src = f.read()
+        self.assertIn("restart:sync(fabric_escalation)", src)
+        self.assertIn("FABRIC_ESCALATE_STALE_MIN", src)
+        self.assertIn("FABRIC_ESCALATE_FAILURES", src)
+        self.assertEqual(self.wd.FABRIC_ESCALATE_STALE_MIN, 360)
+        self.assertEqual(self.wd.FABRIC_ESCALATE_FAILURES, 3)
+        self.assertEqual(self.wd.FABRIC_DATA_CRITICAL_MIN, 240)
 
 
 if __name__ == "__main__":

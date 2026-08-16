@@ -430,6 +430,13 @@ FABRIC_HEAVY_INTERVAL_SEC = int(os.environ.get("FABRIC_HEAVY_INTERVAL_SEC", "180
 # The fast path is quick; the heavy path gets its own (longer) timeout below.
 FABRIC_EXTRACT_TIMEOUT_SEC = int(os.environ.get("FABRIC_EXTRACT_TIMEOUT_SEC", "600"))
 FABRIC_HEAVY_TIMEOUT_SEC = int(os.environ.get("FABRIC_HEAVY_TIMEOUT_SEC", "900"))
+# extract_fabric.py exit-code contract: 0 = success, 1 = error, 3 = the run
+# SKIPPED because another fabric run holds the pg advisory lock (nothing was
+# extracted, _loaded_at did not advance). The worker treats 3 specially: no
+# fabric heartbeat (a fresh beat would hide real data staleness from the
+# watchdog) and no 60s rate-limit stamp (the next ~20s tick retries
+# immediately, so the fast pull lands the moment the lock is released).
+FABRIC_EXTRACT_EXIT_LOCK_SKIP = 3
 # Tick of the dedicated fabric worker thread (fabric_worker_loop). The worker
 # checks/reaps every tick but the FAST pull itself is still gated to ~60s by the
 # _LAST_FABRIC_EXTRACT rate-limit below; a sub-60s tick means a fast pull that
@@ -1990,8 +1997,11 @@ def fabric_worker_loop(stop_event=None):
 
     Scope: it ONLY touches the raw_fabric_* tables (never all_sales /
     all_inventory), so Main BI is unaffected. It writes the "fabric" sync
-    heartbeat so the watchdog stays healthy, keeps the per-minute rate-limit and
-    the FABRIC_EXTRACT_TIMEOUT_SEC hard timeout, and the heavy pull it launches
+    heartbeat ONLY after a genuinely successful extract — a lock-skipped run
+    (extract_fabric.py exit code 3, see FABRIC_EXTRACT_EXIT_LOCK_SKIP) writes
+    no heartbeat and rolls back the 60s rate-limit stamp so the next ~20s tick
+    retries immediately. It keeps the per-minute rate-limit and the
+    FABRIC_EXTRACT_TIMEOUT_SEC hard timeout, and the heavy pull it launches
     honours extract_fabric.py's pg advisory lock so a fast pull can never overlap
     a heavy pull or a standalone run. The heavy extract (BOMs/moves/POs, ~30-min
     cadence) and the fresh/empty-prod-DB bootstrap-on-empty behaviour move here
@@ -2043,6 +2053,7 @@ def fabric_worker_loop(stop_event=None):
                 or (now_utc - _LAST_FABRIC_EXTRACT).total_seconds() >= 60
             )
             if fabric_empty or fabric_due:
+                _prev_fabric_extract = _LAST_FABRIC_EXTRACT
                 _LAST_FABRIC_EXTRACT = now_utc
                 fast_mode = "full" if fabric_empty else "fast"
                 try:
@@ -2076,6 +2087,24 @@ def fabric_worker_loop(stop_event=None):
                     # slow timer now so we don't immediately re-run them.
                     if fabric_empty:
                         _LAST_FABRIC_HEAVY_EXTRACT = now_utc
+                except _subprocess.CalledProcessError as e:
+                    if e.returncode == FABRIC_EXTRACT_EXIT_LOCK_SKIP:
+                        # Lock-skip: another fabric run (normally the 30-min
+                        # heavy reconcile) holds the advisory lock, so NOTHING
+                        # was extracted. Not a success: skip write_heartbeat()
+                        # (a fresh beat would mask real data staleness from the
+                        # watchdog — the exact bug behind the 15h-stale /fabric
+                        # feed) and roll the rate-limit stamp back so the next
+                        # ~20s tick retries immediately instead of waiting a
+                        # full 60s.
+                        _LAST_FABRIC_EXTRACT = _prev_fabric_extract
+                        log.info(
+                            "Fabric fast extract skipped (rc=%s: advisory lock "
+                            "held) — retrying next tick",
+                            e.returncode,
+                        )
+                    else:
+                        log.error("Fabric extract error: %s", e)
                 except Exception as e:
                     log.error("Fabric extract error: %s", e)
 
@@ -2096,6 +2125,14 @@ def fabric_worker_loop(stop_event=None):
                     rc = _FABRIC_HEAVY_PROC.returncode
                     if rc == 0:
                         log.info("✅ Fabric heavy extract complete")
+                    elif rc == FABRIC_EXTRACT_EXIT_LOCK_SKIP:
+                        # Benign: a fast pull / standalone run held the lock at
+                        # launch time; the heavy reconcile retries on its normal
+                        # 30-min cadence. Not an error — don't alarm the logs.
+                        log.info(
+                            "Fabric heavy extract skipped (advisory lock held) "
+                            "— will retry on its normal cadence"
+                        )
                     else:
                         log.error("Fabric heavy extract exited with code %s", rc)
                     _FABRIC_HEAVY_PROC = None

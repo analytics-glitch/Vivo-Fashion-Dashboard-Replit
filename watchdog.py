@@ -92,10 +92,19 @@ RECOVERY_DAYS = 4
 # Fabric feed freshness — the fabric worker is a daemon thread inside the
 # supervised sync process with its OWN heartbeat table (fabric_heartbeat), so
 # it can silently die or stall while sync_heartbeat stays perfectly fresh. The
-# watchdog watches it separately and rescues a stale feed with a one-shot
-# `extract_fabric.py --mode fast` (its pg advisory lock makes overlap with a
-# live fabric thread impossible — the losing run just skips). Recovery is
-# rate-limited so a persistent Odoo outage doesn't spam extractions.
+# watchdog watches it separately, gating on BOTH the heartbeat AND the data
+# timestamp MAX(raw_fabric_products._loaded_at) — the heartbeat alone lied for
+# 15+ hours when lock-skipped extracts were still counted as successes — and
+# rescues a stale feed with a one-shot `extract_fabric.py --mode fast` (its pg
+# advisory lock makes overlap with a live fabric thread impossible — the
+# losing run just skips with exit code 3). Recovery is rate-limited so a
+# persistent Odoo outage doesn't spam extractions: normally
+# FABRIC_RECOVERY_COOLDOWN_MIN, tightened to
+# FABRIC_RECOVERY_COOLDOWN_CRITICAL_MIN once the data itself is >4h stale (a
+# real outage should retry aggressively). After FABRIC_ESCALATE_FAILURES
+# consecutive failed recoveries with data >6h stale, the health loop escalates
+# to a full sync-process restart so the fabric worker thread re-spawns with a
+# fresh connection.
 try:
     FABRIC_FRESH_MIN = int(os.environ.get("FABRIC_FRESH_MIN", "120"))
 except ValueError:
@@ -107,7 +116,29 @@ try:
 except ValueError:
     log.warning("Invalid FABRIC_RECOVERY_COOLDOWN_MIN — falling back to 60")
     FABRIC_RECOVERY_COOLDOWN_MIN = 60
-FABRIC_EXTRACT_TIMEOUT_SEC = 120  # one-shot fast-extract subprocess budget
+try:
+    FABRIC_RECOVERY_COOLDOWN_CRITICAL_MIN = int(
+        os.environ.get("FABRIC_RECOVERY_COOLDOWN_CRITICAL_MIN", "10"))
+except ValueError:
+    log.warning("Invalid FABRIC_RECOVERY_COOLDOWN_CRITICAL_MIN — falling back to 10")
+    FABRIC_RECOVERY_COOLDOWN_CRITICAL_MIN = 10
+# One-shot fast-extract subprocess budget. Matches the sync worker's own
+# budget (sync_incremental.py reads the SAME env var, default 600s there) so a
+# slow-but-alive Odoo can still complete a recovery pull — the old hardcoded
+# 120s meant any Odoo response >2 min failed every recovery, reset the
+# cooldown, and never recovered. Deliberately read from the env rather than
+# imported from sync_incremental: importing that module would drag the whole
+# sync dependency chain (and its import-time env requirements) into the
+# watchdog. Fallback when the env var is unset: 300s.
+try:
+    FABRIC_EXTRACT_TIMEOUT_SEC = int(
+        os.environ.get("FABRIC_EXTRACT_TIMEOUT_SEC", "300"))
+except ValueError:
+    log.warning("Invalid FABRIC_EXTRACT_TIMEOUT_SEC — falling back to 300")
+    FABRIC_EXTRACT_TIMEOUT_SEC = 300
+FABRIC_DATA_CRITICAL_MIN = 240    # data >4h stale → critical (tight) cooldown
+FABRIC_ESCALATE_STALE_MIN = 360   # data >6h stale AND…
+FABRIC_ESCALATE_FAILURES = 3      # …≥3 consecutive failed recoveries → restart sync
 
 # One-time full rebuild (correct this environment's historical all_sales).
 REBUILD_ON_BOOT = os.environ.get("REBUILD_ON_BOOT", "0").lower() not in ("0", "", "false")
@@ -136,6 +167,9 @@ _sync_fail_streak = 0
 _stale_since = None           # when the sync first went stale (for escalation)
 _escalation_level = 0         # 0 none, 1 sent 15m, 2 sent 30m
 _last_fabric_recovery = None  # when the last one-shot fabric rescue ran (cooldown stamp)
+_fabric_recovery_failures = 0  # consecutive failed fabric recoveries (reset on
+                               # success) — drives the >6h-stale escalation to a
+                               # full sync-process restart
 
 
 def _db():
@@ -281,32 +315,64 @@ def check_sync():
 
 
 def check_fabric():
-    """Health of the fabric feed via ITS heartbeat (fabric_heartbeat).
+    """Health of the fabric feed: its heartbeat AND the data timestamp.
 
     The fabric worker is a daemon thread inside the supervised sync process
-    that beats its own table every ~60s cycle precisely so a stalled main
-    cycle can't hide behind it — and, symmetrically, a dead fabric thread
-    can't hide behind a healthy sync_heartbeat. Same contract as check_sync():
-    returns (healthy, last_cycle_at, minutes); any DB error / missing table /
-    empty row → (False, None, None).
+    that beats its own table (fabric_heartbeat) every ~60s cycle precisely so
+    a stalled main cycle can't hide behind it — and, symmetrically, a dead
+    fabric thread can't hide behind a healthy sync_heartbeat.
+
+    The heartbeat alone is NOT enough: it says "the worker loop is alive",
+    not "data refreshed". The user-visible freshness metric (and the /fabric
+    "last successful pull" banner) is MAX(raw_fabric_products._loaded_at),
+    which only a successful extract advances. Unlike all_sales.loaded_at —
+    where quiet sales periods legitimately stall the data clock, so
+    check_sync() must gate on the heartbeat only — EVERY successful fabric
+    pull rewrites _loaded_at across the whole table even with 0 changed rows,
+    so its age is a true failure signal. The two metrics diverged for 15+
+    hours when lock-skipped extracts kept the heartbeat fresh, so health now
+    requires BOTH to be within FABRIC_FRESH_MIN.
+
+    Returns (healthy, last_beat_at, beat_minutes, data_minutes). Any DB
+    error → (False, None, None, None); a missing table / empty row leaves the
+    corresponding age None, which counts as unhealthy. `_loaded_at` is
+    written by extract_fabric.py as a NAIVE UTC timestamp (datetime.utcnow()),
+    so naive values are interpreted as UTC.
     """
+    hb_last = None
+    data_last = None
     try:
         with _db() as conn, conn.cursor() as cur:
             cur.execute("SELECT to_regclass('public.fabric_heartbeat')")
-            if cur.fetchone()[0] is None:
-                return False, None, None  # not created yet (fabric worker never ran)
-            cur.execute("SELECT last_cycle_at FROM fabric_heartbeat WHERE id = 1")
-            row = cur.fetchone()
-            last = row[0] if row else None
+            if cur.fetchone()[0] is not None:
+                cur.execute("SELECT last_cycle_at FROM fabric_heartbeat WHERE id = 1")
+                row = cur.fetchone()
+                hb_last = row[0] if row else None
+            cur.execute("SELECT to_regclass('public.raw_fabric_products')")
+            if cur.fetchone()[0] is not None:
+                cur.execute("SELECT MAX(_loaded_at) FROM raw_fabric_products")
+                row = cur.fetchone()
+                data_last = row[0] if row else None
     except Exception as e:
-        log.error("Fabric heartbeat query failed: %s", e)
-        return False, None, None
-    if last is None:
-        return False, None, None
-    if last.tzinfo is None:
-        last = last.replace(tzinfo=timezone.utc)
-    minutes = (datetime.now(timezone.utc) - last).total_seconds() / 60.0
-    return minutes <= FABRIC_FRESH_MIN, last, minutes
+        log.error("Fabric freshness query failed: %s", e)
+        return False, None, None, None
+
+    now = datetime.now(timezone.utc)
+
+    def _age_min(ts):
+        if ts is None:
+            return None
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return (now - ts).total_seconds() / 60.0
+
+    hb_min = _age_min(hb_last)
+    data_min = _age_min(data_last)
+    healthy = (
+        hb_min is not None and hb_min <= FABRIC_FRESH_MIN
+        and data_min is not None and data_min <= FABRIC_FRESH_MIN
+    )
+    return healthy, hb_last, hb_min, data_min
 
 
 def run_fabric_recovery(reason=""):
@@ -314,16 +380,21 @@ def run_fabric_recovery(reason=""):
 
     Safe to fire at any moment: extract_fabric.py takes a pg advisory lock
     shared with the supervised fabric thread's own pulls, so an overlapping
-    run skips instead of colliding, and a fast pull only upserts the
-    incremental window (no truncate). Independent of the sync recovery path —
-    the fabric feed can be stale while the main sync is healthy (the daemon
-    thread died) and vice versa. Logs every outcome at WARNING so it lands in
-    the existing log trail, stamps the recovery cooldown, and returns a short
-    result string for sync_health_log notes.
+    run SKIPS (exit code 3) instead of colliding, and a fast pull only upserts
+    the incremental window (no truncate). Independent of the sync recovery
+    path — the fabric feed can be stale while the main sync is healthy (the
+    daemon thread died) and vice versa. Logs every outcome at WARNING so it
+    lands in the existing log trail, stamps the recovery cooldown, maintains
+    the consecutive-failure counter that drives the health loop's
+    process-restart escalation (reset on success, incremented on anything
+    else — a lock-skip refreshed nothing, so it counts as a failure; the
+    >6h data-age gate keeps that from escalating prematurely), and returns a
+    short result string for sync_health_log notes.
     """
-    global _last_fabric_recovery
+    global _last_fabric_recovery, _fabric_recovery_failures
     log.warning("Fabric recovery: running one-shot fast extract%s",
                 f" ({reason})" if reason else "")
+    success = False
     try:
         r = subprocess.run(
             [sys.executable, os.path.join(ROOT, "extract_fabric.py"),
@@ -332,6 +403,11 @@ def run_fabric_recovery(reason=""):
         )
         if r.returncode == 0:
             result = "fabric fast extract completed (rc=0)"
+            success = True
+        elif r.returncode == 3:
+            # extract_fabric.py's lock-skip convention (see its module header):
+            # another fabric run holds the advisory lock; nothing was refreshed.
+            result = "fabric fast extract SKIPPED (rc=3: advisory lock held)"
         else:
             result = f"fabric fast extract FAILED (rc={r.returncode})"
     except subprocess.TimeoutExpired:
@@ -340,7 +416,12 @@ def run_fabric_recovery(reason=""):
         result = f"fabric fast extract error: {e}"
     finally:
         _last_fabric_recovery = datetime.now(timezone.utc)
-    log.warning("Fabric recovery result: %s", result)
+    if success:
+        _fabric_recovery_failures = 0
+    else:
+        _fabric_recovery_failures += 1
+    log.warning("Fabric recovery result: %s (consecutive failures: %s)",
+                result, _fabric_recovery_failures)
     return result
 
 
@@ -498,6 +579,7 @@ def notify(level, last_sync, stale_min, action):
 
 def health_loop():
     global _sync_fail_streak, _stale_since, _escalation_level
+    global _fabric_recovery_failures
     while not _stop.is_set():
         _stop.wait(HEALTH_CHECK_SEC)
         if _stop.is_set():
@@ -558,31 +640,70 @@ def health_loop():
         # so it can be dead while sync_heartbeat is perfectly fresh (and vice
         # versa). Placed AFTER the sync branch on purpose — run_recovery()
         # already ends with a fabric extract that stamps the cooldown, so this
-        # can't double-fire in the same cycle. Recovery here is a one-shot
-        # fast extract only (no process restart), rate-limited by
-        # FABRIC_RECOVERY_COOLDOWN_MIN so a persistent Odoo outage can't spam
-        # extractions.
-        fabric_ok, last_fabric, fabric_min = check_fabric()
-        if fabric_min is not None:
+        # can't double-fire in the same cycle. Health gates on BOTH the
+        # heartbeat AND the data timestamp (MAX(raw_fabric_products._loaded_at));
+        # the DATA age is what operators and the /fabric banner actually see,
+        # so it is the number recorded in the notes. Recovery is a one-shot
+        # fast extract, rate-limited by FABRIC_RECOVERY_COOLDOWN_MIN and
+        # tightened to FABRIC_RECOVERY_COOLDOWN_CRITICAL_MIN once the data is
+        # >4h stale; after FABRIC_ESCALATE_FAILURES consecutive failed
+        # recoveries with data >6h stale it escalates to a sync-process
+        # restart (the same restart_proc("sync") mechanism the main-sync
+        # branch uses) so the fabric worker thread re-spawns with a fresh
+        # process and connection.
+        fabric_ok, last_fabric, fabric_min, fabric_data_min = check_fabric()
+        if fabric_data_min is not None:
+            notes.append(f"fabric data {fabric_data_min:.1f} min old")
+        elif fabric_min is not None:
             notes.append(f"{fabric_min:.1f} min since last fabric beat")
         if not fabric_ok:
             log.warning(
-                "Fabric feed stale: last beat %s (%s; threshold %s min)",
-                last_fabric or "never",
-                f"{fabric_min:.1f} min ago" if fabric_min is not None else "no heartbeat",
+                "Fabric feed stale: data %s, beat %s (threshold %s min)",
+                f"{fabric_data_min:.1f} min old" if fabric_data_min is not None
+                else "never loaded",
+                f"{fabric_min:.1f} min ago" if fabric_min is not None
+                else "no heartbeat",
                 FABRIC_FRESH_MIN,
             )
+            data_critical = (fabric_data_min is not None
+                             and fabric_data_min > FABRIC_DATA_CRITICAL_MIN)
+            cooldown_limit = (FABRIC_RECOVERY_COOLDOWN_CRITICAL_MIN if data_critical
+                              else FABRIC_RECOVERY_COOLDOWN_MIN)
             cooldown_min = (
                 None if _last_fabric_recovery is None else
                 (datetime.now(timezone.utc) - _last_fabric_recovery).total_seconds() / 60.0
             )
-            if cooldown_min is None or cooldown_min >= FABRIC_RECOVERY_COOLDOWN_MIN:
+            if cooldown_min is None or cooldown_min >= cooldown_limit:
                 actions.append("fabric_recovery")
-                notes.append(run_fabric_recovery(reason="fabric heartbeat stale"))
+                reason = ("fabric data stale"
+                          if (fabric_data_min is None
+                              or fabric_data_min > FABRIC_FRESH_MIN)
+                          else "fabric heartbeat stale")
+                notes.append(run_fabric_recovery(reason=reason))
+                # Escalation: one-shot extracts keep failing AND the data is
+                # very stale — the fabric worker thread (or its process) is
+                # presumed wedged; a process restart re-spawns the thread with
+                # a fresh connection. Skipped if this cycle already restarted
+                # the sync (no point killing it twice).
+                if (fabric_data_min is not None
+                        and fabric_data_min > FABRIC_ESCALATE_STALE_MIN
+                        and _fabric_recovery_failures >= FABRIC_ESCALATE_FAILURES
+                        and "restart:sync" not in actions):
+                    log.warning(
+                        "Fabric ESCALATION: data %.0f min stale and %d "
+                        "consecutive failed recoveries — restarting the sync "
+                        "process so the fabric worker thread re-spawns with a "
+                        "fresh connection",
+                        fabric_data_min, _fabric_recovery_failures,
+                    )
+                    restart_proc("sync")
+                    actions.append("restart:sync(fabric_escalation)")
+                    notes.append("fabric escalation: sync process restarted")
+                    _fabric_recovery_failures = 0
             else:
                 notes.append(
                     f"fabric stale; recovery on cooldown "
-                    f"({cooldown_min:.0f}/{FABRIC_RECOVERY_COOLDOWN_MIN} min)"
+                    f"({cooldown_min:.0f}/{cooldown_limit} min)"
                 )
 
         log_health(api_ok, sync_ok, last_sync,
