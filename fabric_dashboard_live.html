@@ -551,6 +551,22 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
 .po-chip-opt .pc-name{font-weight:700;color:var(--text);}
 .po-chip-opt .pc-date{font-size:11px;color:var(--text-sub);margin-top:1px;}
 .po-chip-empty{padding:10px 12px;font-size:12.5px;color:var(--text-sub);}
+/* ── Sublimation Printing ── */
+.sub-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(118px,1fr));gap:10px 12px;}
+.sub-grid label{display:block;font-size:11px;font-weight:600;color:var(--text-sub);margin-bottom:3px;letter-spacing:.02em;}
+.sub-grid input{width:100%;box-sizing:border-box;}
+.sub-subhead{font-size:12px;font-weight:700;color:var(--text);margin:16px 0 8px;padding-top:12px;border-top:1px dashed var(--border);}
+.sub-subhead .muted{font-weight:500;}
+.sub-ink-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;vertical-align:baseline;}
+.sub-row{display:flex;justify-content:space-between;align-items:baseline;gap:12px;padding:5px 0;font-size:13px;border-bottom:1px dashed var(--border);}
+.sub-row:last-child{border-bottom:none;}
+.sub-row .v{font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap;}
+.sub-row.sub-tot{border-top:2px solid var(--border);border-bottom:none;margin-top:2px;padding-top:8px;}
+.sub-row.sub-tot .v{font-weight:800;font-size:15px;}
+.sub-kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:12px;}
+.sub-kpi{background:rgba(26,92,56,.05);border:1px solid var(--border);border-radius:10px;padding:8px 10px;text-align:center;}
+.sub-kpi .k{font-size:11px;color:var(--text-sub);font-weight:600;}
+.sub-kpi .n{font-size:16px;font-weight:800;font-variant-numeric:tabular-nums;margin-top:2px;}
 </style>
 </head>
 <body>
@@ -628,6 +644,7 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
      <ul class="nav-cluster-items">
       <li><button type="button" class="nav-item" data-page="rolls"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg><span>Rolls Tracker</span></button></li>
       <li><button type="button" class="nav-item" data-page="receiving"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"></polyline><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"></path></svg><span>Receiving</span></button></li>
+      <li><button type="button" class="nav-item" data-page="sublimation"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 6 2 18 2 18 9"></polyline><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"></path><rect x="6" y="14" width="12" height="8"></rect></svg><span>Sublimation Printing</span></button></li>
       <li><button type="button" class="nav-item" data-page="createprod" style="display:none;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="16"></line><line x1="8" y1="12" x2="16" y2="12"></line></svg><span>Create Products</span></button></li>
       <li><button type="button" class="nav-item" data-page="costing" style="display:none;" id="nav-costing"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="12" y1="1" x2="12" y2="23"></line><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"></path></svg><span>Product Costing</span></button></li>
       <li><button type="button" class="nav-item" data-page="l10" id="nav-l10" style="display:none;"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg><span>L10 Meeting</span></button></li>
@@ -1294,6 +1311,122 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
       <table class="data">
        <thead><tr><th style="width:1%;"></th><th>PO</th><th>PO date</th><th class="r">Sheet#</th><th class="r">SKUs/Barcodes</th><th class="r">Rolls Received#</th><th class="r">Total kgs</th><th class="r" id="recv-po-th-kes">Value (KES)</th><th class="r" id="recv-po-th-yuan">Value (¥ Yuan)</th><th>Last upload</th><th></th></tr></thead>
        <tbody id="recv-po-body"><tr><td colspan="11" class="loading">Loading…</td></tr></tbody>
+      </table>
+     </div>
+    </div>
+   </section>
+
+   <!-- SUBLIMATION PRINTING -->
+   <section id="page-sublimation" style="display:none;">
+    <div class="grid-2" style="align-items:start;">
+     <div>
+      <div class="card">
+       <div class="section-head"><h3>Print-run calculator</h3><span class="muted">pick a fabric, enter the run — all figures update live</span></div>
+       <div style="position:relative;margin-bottom:12px;">
+        <label class="rsv-lbl">Fabric (from Odoo)</label>
+        <input id="sub-fabric-search" placeholder="Search fabric name or barcode…" autocomplete="off" style="width:100%;max-width:420px;display:block;" oninput="subOnFabricInput()" onfocus="subDebouncedSearch()">
+        <input type="hidden" id="sub-product-id">
+        <div id="sub-fabric-list" class="resv-dropdown" style="display:none;"></div>
+        <div id="sub-fabric-hint" class="muted" style="margin-top:5px;font-size:12px;"></div>
+       </div>
+       <div class="sub-grid">
+        <div><label>Fabric width (m)</label><input id="sub-width" type="number" min="0" step="any" value="1.49" oninput="recalcSublimation()"></div>
+        <div><label>GSM (g/m²)</label><input id="sub-gsm" type="number" min="0" step="any" value="140" oninput="recalcSublimation()"></div>
+        <div><label>Metres to print</label><input id="sub-metres" type="number" min="0" step="any" value="311.8" oninput="recalcSublimation()"></div>
+        <div><label>Print margin / side (cm)</label><input id="sub-margin" type="number" min="0" step="any" value="1" oninput="recalcSublimation()"></div>
+        <div><label>Greige cost (KES/m)</label><input id="sub-basecost" type="number" min="0" step="any" value="268.8" oninput="recalcSublimation()"></div>
+       </div>
+       <div class="sub-subhead">Machine time <span class="muted">— actual press time for this run</span></div>
+       <div class="sub-grid">
+        <div><label>Hours</label><input id="sub-mach-h" type="number" min="0" step="1" value="5" oninput="recalcSublimation()"></div>
+        <div><label>Minutes</label><input id="sub-mach-min" type="number" min="0" step="1" value="13" oninput="recalcSublimation()"></div>
+       </div>
+       <div class="sub-subhead">Ink <span class="muted">— ml used per colour on a measured test tile · tile area <span id="sub-tile-area">0.36 m²</span></span></div>
+       <div class="sub-grid">
+        <div><label>Ink cost (KES/ml)</label><input id="sub-inkcost" type="number" min="0" step="any" value="2.75" oninput="recalcSublimation()"></div>
+        <div><label>Tile width (cm)</label><input id="sub-tile-w" type="number" min="0" step="any" value="60" oninput="recalcSublimation()"></div>
+        <div><label>Tile height (cm)</label><input id="sub-tile-h" type="number" min="0" step="any" value="60" oninput="recalcSublimation()"></div>
+       </div>
+       <div class="sub-grid" style="margin-top:10px;">
+        <div><label><span class="sub-ink-dot" style="background:#0bc5ea;"></span>Cyan (ml/tile)</label><input id="sub-ink-c" type="number" min="0" step="any" value="0.01" oninput="recalcSublimation()"></div>
+        <div><label><span class="sub-ink-dot" style="background:#ecc94b;"></span>Yellow (ml/tile)</label><input id="sub-ink-y" type="number" min="0" step="any" value="0.13" oninput="recalcSublimation()"></div>
+        <div><label><span class="sub-ink-dot" style="background:#d53f8c;"></span>Magenta (ml/tile)</label><input id="sub-ink-m" type="number" min="0" step="any" value="0.09" oninput="recalcSublimation()"></div>
+        <div><label><span class="sub-ink-dot" style="background:#1a202c;"></span>Black (ml/tile)</label><input id="sub-ink-k" type="number" min="0" step="any" value="0.02" oninput="recalcSublimation()"></div>
+       </div>
+       <div class="sub-subhead">Paper &amp; allowance</div>
+       <div class="sub-grid">
+        <div><label>Sublimation paper (KES/m)</label><input id="sub-paper-sub" type="number" min="0" step="any" value="69.76" oninput="recalcSublimation()"></div>
+        <div><label>Protective paper (KES/m)</label><input id="sub-paper-prot" type="number" min="0" step="any" value="17.81" oninput="recalcSublimation()"></div>
+        <div><label>Reprint allowance (%)</label><input id="sub-reprint" type="number" min="0" step="any" value="5" oninput="recalcSublimation()"></div>
+       </div>
+      </div>
+      <div class="card">
+       <div class="section-head"><h3>Machine rate</h3><span class="pill pill-neutral" title="Labour pool, overhead pool and capacity assumptions become editable in a later phase.">locked</span></div>
+       <div id="sub-rate-body" class="muted" style="font-size:12px;">Loading…</div>
+      </div>
+     </div>
+     <div>
+      <div class="card">
+       <div class="section-head"><h3>Run cost breakdown</h3><span class="muted">all amounts KES</span></div>
+       <div class="sub-row"><span class="muted">Print width (after margins)</span><span class="v" id="sub-r-printw">—</span></div>
+       <div class="sub-row"><span class="muted">Printed area</span><span class="v" id="sub-r-parea">—</span></div>
+       <div class="sub-row"><span class="muted">Fabric area</span><span class="v" id="sub-r-farea">—</span></div>
+       <div class="sub-row"><span class="muted">Fabric weight</span><span class="v" id="sub-r-weight">—</span></div>
+       <div class="sub-row"><span class="muted">Machine time</span><span class="v" id="sub-r-mtime">—</span></div>
+       <div class="sub-subhead" style="margin-top:10px;">Ink</div>
+       <div class="sub-row"><span><span class="sub-ink-dot" style="background:#0bc5ea;"></span>Cyan <span class="muted" id="sub-r-cov-c"></span></span><span class="v" id="sub-r-ink-c">—</span></div>
+       <div class="sub-row"><span><span class="sub-ink-dot" style="background:#ecc94b;"></span>Yellow <span class="muted" id="sub-r-cov-y"></span></span><span class="v" id="sub-r-ink-y">—</span></div>
+       <div class="sub-row"><span><span class="sub-ink-dot" style="background:#d53f8c;"></span>Magenta <span class="muted" id="sub-r-cov-m"></span></span><span class="v" id="sub-r-ink-m">—</span></div>
+       <div class="sub-row"><span><span class="sub-ink-dot" style="background:#1a202c;"></span>Black <span class="muted" id="sub-r-cov-k"></span></span><span class="v" id="sub-r-ink-k">—</span></div>
+       <div class="sub-row"><span style="font-weight:600;">Ink subtotal</span><span class="v" id="sub-r-ink">—</span></div>
+       <div class="sub-subhead">Paper &amp; machine</div>
+       <div class="sub-row"><span class="muted">Sublimation paper</span><span class="v" id="sub-r-psub">—</span></div>
+       <div class="sub-row"><span class="muted">Protective paper</span><span class="v" id="sub-r-pprot">—</span></div>
+       <div class="sub-row"><span style="font-weight:600;">Paper subtotal</span><span class="v" id="sub-r-paper">—</span></div>
+       <div class="sub-row"><span style="font-weight:600;">Machine conversion <span class="muted" id="sub-r-machmeta"></span></span><span class="v" id="sub-r-mach">—</span></div>
+       <div class="sub-row" style="margin-top:4px;"><span style="font-weight:600;">Printing subtotal</span><span class="v" id="sub-r-printsub">—</span></div>
+       <div class="sub-row"><span class="muted">Reprint / defect allowance (<span id="sub-r-reprpct">5</span>%)</span><span class="v" id="sub-r-repr">—</span></div>
+       <div class="sub-row sub-tot"><span>Total printing cost</span><span class="v" id="sub-r-total">—</span></div>
+       <div class="sub-kpis">
+        <div class="sub-kpi"><div class="k">Printing / m</div><div class="n" id="sub-r-perm">—</div></div>
+        <div class="sub-kpi"><div class="k">Printing / m²</div><div class="n" id="sub-r-perm2">—</div></div>
+        <div class="sub-kpi"><div class="k">Printing / kg</div><div class="n" id="sub-r-perkg">—</div></div>
+       </div>
+       <div style="margin-top:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+        <button class="btn btn-primary" id="sub-save-btn" onclick="saveSublimation()">Save to library</button>
+        <span id="sub-save-msg" style="font-size:12.5px;"></span>
+       </div>
+      </div>
+      <div class="card">
+       <div class="section-head"><h3>Finished fabric (greige + printing)</h3><span class="muted">all amounts KES</span></div>
+       <div class="sub-row"><span class="muted">Base fabric (greige)</span><span class="v" id="sub-r-base">—</span></div>
+       <div class="sub-row"><span class="muted">Total printing</span><span class="v" id="sub-r-ftotprint">—</span></div>
+       <div class="sub-row sub-tot"><span>Finished total</span><span class="v" id="sub-r-ftot">—</span></div>
+       <div class="sub-kpis">
+        <div class="sub-kpi"><div class="k">Finished / m</div><div class="n" id="sub-r-fperm">—</div></div>
+        <div class="sub-kpi"><div class="k">Finished / kg</div><div class="n" id="sub-r-fperkg">—</div></div>
+        <div class="sub-kpi"><div class="k">Printing vs greige</div><div class="n" id="sub-r-ppct">—</div></div>
+       </div>
+      </div>
+     </div>
+    </div>
+    <div class="card">
+     <div class="section-head" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;"><h3>Odoo BOM — per 1 kg of printed fabric</h3><span class="muted">quantities in Odoo stock UoM (fabric kg · ink ml · paper m), ready for manual entry</span><label class="muted" for="sub-std-thr" style="margin-left:auto;display:flex;align-items:center;gap:6px;font-size:12px;white-space:nowrap;">Std throughput <input id="sub-std-thr" type="number" value="60" min="1" step="0.5" oninput="recalcSublimation()" style="width:74px;height:30px;"> m/hr</label><button class="btn" id="sub-bom-copy" onclick="subCopyBom()" style="padding:0 12px;height:30px;font-size:12px;">Copy table</button></div>
+     <div class="tbl-wrap">
+      <table class="data">
+       <thead><tr><th>Component</th><th class="r">Qty per kg</th><th>UoM</th><th class="r">Cost (KES/kg)</th></tr></thead>
+       <tbody id="sub-bom-body"><tr><td colspan="4" class="muted" style="padding:1rem;">Enter fabric width and GSM to build the per-kg BOM.</td></tr></tbody>
+      </table>
+     </div>
+     <div id="sub-bom-note" class="muted" style="margin-top:8px;font-size:12px;"></div>
+    <div id="sub-bom-var" class="muted" style="margin-top:4px;font-size:12px;"></div>
+    </div>
+    <div class="card" style="padding:0;">
+     <div class="section-head" style="padding:16px 16px 0;"><h3>Costing library</h3><span class="muted">saved print-run costings — Load repopulates the calculator</span></div>
+     <div class="tbl-wrap">
+      <table class="data">
+       <thead><tr><th>Date</th><th>Fabric</th><th class="r">Metres</th><th class="r">Total printing</th><th class="r">Cost/m</th><th class="r">Cost/kg</th><th class="r">Std cost/kg</th><th>By</th><th></th></tr></thead>
+       <tbody id="sub-lib-body"><tr><td colspan="9" class="loading">Loading…</td></tr></tbody>
       </table>
      </div>
     </div>
@@ -2555,8 +2688,8 @@ function qcExportDetail(){
 }
 
 // ── Navigation ──
-const LOADERS={buyingpd:loadBuyingPD,dashboard:loadFabricMixFirst,register:()=>loadRegister(0),deadstock:loadDeadStock,defects:loadFabricQC,dataquality:loadDataQuality,support:loadSupport,movement:initTrendBuilder,pos:loadPOsPage,suppliers:loadSuppliers,reservations:loadReservations,rolls:()=>loadRolls(0),receiving:loadReceivingBatches,createprod:loadCreateProducts,costing:loadCosting,l10:loadL10Page};
-const DESCS={buyingpd:'Buying & Product Development — garment fabric-efficiency KPIs from Done-DPS manufacturing orders',dashboard:'Stock Mix — each category\'s share of consumption vs share of available stock',overview:'Fabric stock, value and health across the warehouse',register:'',ageing:'Stock ageing analysis — coming soon',deadstock:'Fabric that has been sitting without movement',defects:'Roll-level quality results from the Receiving tab — pass rates, shrinkage, bleeding and width checks by supplier, fabric and month',dataquality:'Fabrics missing a kg-per-metre conversion — stock or usage that can only be shown in kg',support:'Lining, interfacing & support overrides — excluded from the main dashboard',movement:'Build your own KPI-over-time panels — fabric metrics in metres, page-local date range',pos:'Inbound purchase orders and delivery performance',suppliers:'Outstanding exposure by supplier',reservations:'Earmark fabric for a style, track how long it has been held, then mark it used',rolls:'Physical roll counts recorded by hand per fabric per location, shown next to the Odoo quantity',receiving:'Record the rolls of an arriving fabric delivery, then print the Fabric Receiving Information Sheet',createprod:'Bulk-create fabric products in Odoo — enter or upload rows, review the validation preview, then confirm. Duplicates are always skipped',costing:'Per-style cost sheets — fabric, trims, CMT/labour and overheads vs the current selling price, with auto-suggestions from fabric data and Done DPS',l10:'Supply Chain L10 Meeting — weekly Level 10 meeting tracker for the Supply Chain team'};
+const LOADERS={buyingpd:loadBuyingPD,dashboard:loadFabricMixFirst,register:()=>loadRegister(0),deadstock:loadDeadStock,defects:loadFabricQC,dataquality:loadDataQuality,support:loadSupport,movement:initTrendBuilder,pos:loadPOsPage,suppliers:loadSuppliers,reservations:loadReservations,rolls:()=>loadRolls(0),receiving:loadReceivingBatches,sublimation:loadSublimation,createprod:loadCreateProducts,costing:loadCosting,l10:loadL10Page};
+const DESCS={buyingpd:'Buying & Product Development — garment fabric-efficiency KPIs from Done-DPS manufacturing orders',dashboard:'Stock Mix — each category\'s share of consumption vs share of available stock',overview:'Fabric stock, value and health across the warehouse',register:'',ageing:'Stock ageing analysis — coming soon',deadstock:'Fabric that has been sitting without movement',defects:'Roll-level quality results from the Receiving tab — pass rates, shrinkage, bleeding and width checks by supplier, fabric and month',dataquality:'Fabrics missing a kg-per-metre conversion — stock or usage that can only be shown in kg',support:'Lining, interfacing & support overrides — excluded from the main dashboard',movement:'Build your own KPI-over-time panels — fabric metrics in metres, page-local date range',pos:'Inbound purchase orders and delivery performance',suppliers:'Outstanding exposure by supplier',reservations:'Earmark fabric for a style, track how long it has been held, then mark it used',rolls:'Physical roll counts recorded by hand per fabric per location, shown next to the Odoo quantity',receiving:'Record the rolls of an arriving fabric delivery, then print the Fabric Receiving Information Sheet',sublimation:'Sublimation print-run costing — ink, paper and machine conversion per run, with the Odoo BOM per kg ready for manual entry',createprod:'Bulk-create fabric products in Odoo — enter or upload rows, review the validation preview, then confirm. Duplicates are always skipped',costing:'Per-style cost sheets — fabric, trims, CMT/labour and overheads vs the current selling price, with auto-suggestions from fabric data and Done DPS',l10:'Supply Chain L10 Meeting — weekly Level 10 meeting tracker for the Supply Chain team'};
 const loadedOnce={};
 
 // Bind ONLY real page tabs ([data-page]) — the "More ▾" trigger is also a
@@ -8768,6 +8901,353 @@ async function deleteReservation(id){
     if(!r.ok)throw new Error('http '+r.status);
     loadedOnce.register=false;loadReservations();
   }catch(e){alert('Could not delete.');}
+}
+
+// ── Sublimation Printing costing ──
+// Formula source: the "Vivo Sublimation Printing Costing → Odoo BOM" template.
+// All arithmetic runs live in the browser on every input event; "Save to
+// library" persists the inputs + key computed outputs. The machine-rate engine
+// is LOCKED in this phase — the constants below are the template's computed
+// values and drive every machine-cost figure on the tab.
+const SUBLIM_MACHINE_RATE={
+  locked:true,
+  labour_pool_monthly:169367,
+  overhead_pool_monthly:918589.37,
+  total_cost_pool_monthly:1087956.37,
+  machines_in_pool:2,
+  shift_hours_per_day:8,
+  planned_downtime_pct:0.25,
+  working_days_per_month:21,
+  utilisation_pct:0.85,
+  productive_hrs_per_machine_per_day:6,
+  full_parallel_ceiling_machine_hrs_month:252,
+  normal_machine_hours_month:214.2,
+  cost_per_machine_hour:5079.161391,
+  cost_per_machine_minute:84.65268985,
+  utilisation_sensitivity:[
+    {utilisation_pct:100,cost_per_hour:4317.287183},
+    {utilisation_pct:85,cost_per_hour:5079.161391},
+    {utilisation_pct:75,cost_per_hour:5756.38291},
+    {utilisation_pct:70,cost_per_hour:6167.553118}
+  ]
+};
+// The BOM operation time always runs at the SETTABLE standard throughput
+// (template default 60 m/hr, editable next to the BOM table) — never at the
+// run's actual rate, so the exported Odoo standard cost is run-independent.
+// The actual rate (metres ÷ machine time) appears as a variance readout only.
+const SUBLIM_STD_THROUGHPUT=60;
+let subPickedFabric=null, subSearchRows=[], subLibRows=[], subCalc=null;
+let subPsTimer, subBound=false;
+const subFmt=(n,d)=>(n==null||!isFinite(n))?'—':Number(n).toLocaleString(undefined,{minimumFractionDigits:d==null?2:d,maximumFractionDigits:d==null?2:d});
+function subNum(id){const v=parseFloat(document.getElementById(id).value);return isFinite(v)?v:0;}
+function subSet(id,txt){const el=document.getElementById(id);if(el)el.textContent=txt;}
+
+function subDebouncedSearch(){clearTimeout(subPsTimer);subPsTimer=setTimeout(runSubFabricSearch,250);}
+function subOnFabricInput(){
+  const v=document.getElementById('sub-fabric-search').value.trim();
+  if(subPickedFabric&&subPickedFabric.name!==v){
+    subPickedFabric=null;
+    document.getElementById('sub-product-id').value='';
+    document.getElementById('sub-fabric-hint').textContent='';
+  }
+  subDebouncedSearch();
+}
+async function runSubFabricSearch(){
+  const term=document.getElementById('sub-fabric-search').value.trim();
+  const box=document.getElementById('sub-fabric-list');
+  try{
+    const rows=await apiFetch('/api/fabric/sublimation/fabric-search?q='+encodeURIComponent(term));
+    subSearchRows=rows;
+    if(!rows.length){box.innerHTML='<div class="resv-opt muted">No matching fabric.</div>';box.style.display='';return;}
+    box.innerHTML=rows.map((r,i)=>{
+      const sub=[r.barcode?('#'+esc(r.barcode)):'',(r.fabric_width_m>0?fmt2(r.fabric_width_m)+' m wide':''),(r.fabric_gsm>0?fmt1(r.fabric_gsm)+' gsm':''),r.category?esc(r.category):''].filter(Boolean).join(' · ');
+      return `<div class="resv-opt" data-subpick="${i}">${esc(r.name||'—')}${sub?`<div class="ro-code">${sub}</div>`:''}</div>`;
+    }).join('');
+    box.style.display='';
+  }catch(e){box.innerHTML='<div class="resv-opt muted">Could not search.</div>';box.style.display='';}
+}
+function subPickFabric(r){
+  subPickedFabric={id:r.product_id,name:r.name||'',barcode:r.barcode||''};
+  document.getElementById('sub-product-id').value=r.product_id;
+  document.getElementById('sub-fabric-search').value=r.name||'';
+  document.getElementById('sub-fabric-list').style.display='none';
+  const missing=[];
+  if(r.fabric_width_m>0)document.getElementById('sub-width').value=r.fabric_width_m;else missing.push('width');
+  if(r.fabric_gsm>0)document.getElementById('sub-gsm').value=r.fabric_gsm;else missing.push('GSM');
+  // Greige cost/m: Odoo standard price is per stock UoM (kg for most fabrics) —
+  // convert via kg/m where a factor exists; per-metre products pass straight through.
+  let base=null;
+  const std=Number(r.standard_price)||0, kgm=Number(r.kg_per_mtr)||0;
+  const uom=String(r.uom||'').trim().toLowerCase();
+  if(std>0){
+    if(/^m(etre|eter|tr)?s?$/.test(uom))base=std;
+    else if(kgm>0)base=std*kgm;
+  }
+  if(base!=null)document.getElementById('sub-basecost').value=+base.toFixed(2);else missing.push('greige cost/m');
+  document.getElementById('sub-fabric-hint').textContent='Loaded from Odoo'
+    +(base!=null?' (greige ≈ '+fmt2(base)+' KES/m from the standard price'+(kgm>0&&!/^m/.test(uom)?' × '+kgm+' kg/m':'')+')':'')
+    +(missing.length?' — fill in '+missing.join(', ')+' manually.':'.');
+  recalcSublimation();
+}
+function recalcSublimation(){
+  const R=SUBLIM_MACHINE_RATE;
+  const width=subNum('sub-width'), gsm=subNum('sub-gsm'), metres=subNum('sub-metres');
+  const margin=subNum('sub-margin'), basem=subNum('sub-basecost');
+  const h=subNum('sub-mach-h'), mins=subNum('sub-mach-min');
+  const inkCost=subNum('sub-inkcost'), tw=subNum('sub-tile-w'), th=subNum('sub-tile-h');
+  const tile=(tw*th)/10000;
+  const ml={c:subNum('sub-ink-c'),y:subNum('sub-ink-y'),m:subNum('sub-ink-m'),k:subNum('sub-ink-k')};
+  const subPm=subNum('sub-paper-sub'), protPm=subNum('sub-paper-prot');
+  const reprintPts=subNum('sub-reprint'), reprint=reprintPts/100;
+  const div=(a,b)=>(isFinite(a)&&isFinite(b)&&b>0)?a/b:null;
+
+  // Run costing (template formulas, verbatim)
+  const printW=width-2*(margin/100);
+  const printWpos=Math.max(printW,0);
+  const pArea=metres*printWpos;
+  const fArea=metres*width;
+  const weight=fArea*gsm/1000;
+  const mtime=h+mins/60;
+  const cov={},inkBy={};let inkSub=0;
+  for(const cix of ['c','y','m','k']){cov[cix]=tile>0?ml[cix]/tile:0;inkBy[cix]=cov[cix]*pArea*inkCost;inkSub+=inkBy[cix];}
+  const paperS=metres*subPm, paperP=metres*protPm, paper=paperS+paperP;
+  const mach=mtime*R.cost_per_machine_hour;
+  const printSub=inkSub+paper+mach;
+  const reprAmt=printSub*reprint;
+  const total=printSub+reprAmt;
+  const perM=div(total,metres),perM2=div(total,fArea),perKg=div(total,weight);
+  const baseCost=metres*basem;
+  const finTot=baseCost+total;
+  const finPerM=div(finTot,metres),finPerKg=div(finTot,weight);
+  const pctGreige=div(total,baseCost);
+
+  // Odoo BOM per 1 kg of printed fabric
+  const wplm=width*gsm/1000;               // weight per linear metre (kg)
+  const mPerKg=wplm>0?1/wplm:null;         // metres per kg
+  const m2PerKg=gsm>0?1000/gsm:null;
+  const ratio=width>0?printWpos/width:null;
+  const pm2PerKg=(m2PerKg!=null&&ratio!=null)?m2PerKg*ratio:null;
+  const bomReady=mPerKg!=null&&pm2PerKg!=null;
+  const stdThrIn=subNum('sub-std-thr');
+  const stdThr=stdThrIn>0?stdThrIn:SUBLIM_STD_THROUGHPUT;   // settable standard, default 60
+  const thrActual=(mtime>0&&metres>0)?metres/mtime:null;    // variance readout only
+  let bomLines=null,matSub=null,opMin=null,machKg=null,cleanStd=null,stdKg=null,bomBase=null;
+  if(bomReady){
+    bomBase=basem*mPerKg;
+    const inkQ={},inkC={};
+    for(const cix of ['c','y','m','k']){inkQ[cix]=cov[cix]*pm2PerKg;inkC[cix]=inkQ[cix]*inkCost;}
+    const paperQ=mPerKg;
+    const subC=paperQ*subPm, protC=paperQ*protPm;
+    matSub=bomBase+inkC.c+inkC.y+inkC.m+inkC.k+subC+protC;
+    opMin=mPerKg*60/stdThr;
+    machKg=opMin*R.cost_per_machine_minute;
+    cleanStd=matSub+machKg;
+    stdKg=bomBase+(cleanStd-bomBase)*(1+reprint); // reprint on printing lines only
+    bomLines=[
+      {name:'Base fabric (greige)',qty:1,uom:'kg',cost:bomBase,dp:3},
+      {name:'Ink — Cyan',qty:inkQ.c,uom:'ml',cost:inkC.c,dp:4},
+      {name:'Ink — Yellow',qty:inkQ.y,uom:'ml',cost:inkC.y,dp:4},
+      {name:'Ink — Magenta',qty:inkQ.m,uom:'ml',cost:inkC.m,dp:4},
+      {name:'Ink — Black',qty:inkQ.k,uom:'ml',cost:inkC.k,dp:4},
+      {name:'Sublimation paper',qty:paperQ,uom:'m',cost:subC,dp:3},
+      {name:'Protective paper',qty:paperQ,uom:'m',cost:protC,dp:3}
+    ];
+  }
+  subCalc={total,perM,perM2,perKg,finPerM,finPerKg,stdKg,bomReady,bomLines,matSub,opMin,machKg,cleanStd,stdThr,thrActual,mPerKg,reprintPts};
+
+  // Paint
+  subSet('sub-tile-area',tile>0?subFmt(tile,2)+' m²':'—');
+  subSet('sub-r-printw',width>0?subFmt(printW,3)+' m':'—');
+  subSet('sub-r-parea',pArea>0?subFmt(pArea,1)+' m²':'—');
+  subSet('sub-r-farea',fArea>0?subFmt(fArea,1)+' m²':'—');
+  subSet('sub-r-weight',weight>0?subFmt(weight,2)+' kg':'—');
+  subSet('sub-r-mtime',mtime>0?subFmt(mtime,3)+' hrs':'—');
+  const covTxt=cix=>tile>0&&ml[cix]>0?subFmt(cov[cix],3)+' ml/m²':'';
+  subSet('sub-r-cov-c',covTxt('c'));subSet('sub-r-cov-y',covTxt('y'));
+  subSet('sub-r-cov-m',covTxt('m'));subSet('sub-r-cov-k',covTxt('k'));
+  subSet('sub-r-ink-c',subFmt(inkBy.c));subSet('sub-r-ink-y',subFmt(inkBy.y));
+  subSet('sub-r-ink-m',subFmt(inkBy.m));subSet('sub-r-ink-k',subFmt(inkBy.k));
+  subSet('sub-r-ink',subFmt(inkSub));
+  subSet('sub-r-psub',subFmt(paperS));subSet('sub-r-pprot',subFmt(paperP));subSet('sub-r-paper',subFmt(paper));
+  subSet('sub-r-machmeta',mtime>0?'('+subFmt(mtime,3)+' hrs × '+subFmt(R.cost_per_machine_hour)+'/hr)':'');
+  subSet('sub-r-mach',subFmt(mach));
+  subSet('sub-r-printsub',subFmt(printSub));
+  subSet('sub-r-reprpct',String(reprintPts));
+  subSet('sub-r-repr',subFmt(reprAmt));
+  subSet('sub-r-total',subFmt(total));
+  subSet('sub-r-perm',perM==null?'—':subFmt(perM));
+  subSet('sub-r-perm2',perM2==null?'—':subFmt(perM2));
+  subSet('sub-r-perkg',perKg==null?'—':subFmt(perKg));
+  subSet('sub-r-base',subFmt(baseCost));
+  subSet('sub-r-ftotprint',subFmt(total));
+  subSet('sub-r-ftot',subFmt(finTot));
+  subSet('sub-r-fperm',finPerM==null?'—':subFmt(finPerM));
+  subSet('sub-r-fperkg',finPerKg==null?'—':subFmt(finPerKg));
+  subSet('sub-r-ppct',pctGreige==null?'—':subFmt(pctGreige*100,1)+'%');
+  renderSubBom();
+}
+function renderSubBom(){
+  const body=document.getElementById('sub-bom-body');
+  const note=document.getElementById('sub-bom-note');
+  if(!body)return;
+  const C=subCalc;
+  const varEl=document.getElementById('sub-bom-var');
+  if(!C||!C.bomReady){
+    body.innerHTML='<tr><td colspan="4" class="muted" style="padding:1rem;">Enter fabric width and GSM to build the per-kg BOM.</td></tr>';
+    if(note)note.textContent='';
+    if(varEl)varEl.textContent='';
+    return;
+  }
+  const R=SUBLIM_MACHINE_RATE;
+  let html=C.bomLines.map(l=>`<tr>
+    <td>${esc(l.name)}</td>
+    <td class="r" style="font-variant-numeric:tabular-nums;">${subFmt(l.qty,l.dp)}</td>
+    <td>${esc(l.uom)}</td>
+    <td class="r" style="font-variant-numeric:tabular-nums;">${subFmt(l.cost)}</td></tr>`).join('');
+  html+=`<tr style="border-top:2px solid var(--border);"><td style="font-weight:700;">Material subtotal</td><td></td><td></td><td class="r" style="font-weight:700;">${subFmt(C.matSub)}</td></tr>`;
+  html+=`<tr><td>Print operation <span class="muted">(work centre @ ${subFmt(R.cost_per_machine_minute)}/min)</span></td><td class="r" style="font-variant-numeric:tabular-nums;">${subFmt(C.opMin,3)}</td><td>min</td><td class="r" style="font-variant-numeric:tabular-nums;">${subFmt(C.machKg)}</td></tr>`;
+  html+=`<tr><td style="font-weight:700;">Standard cost / kg <span class="muted">(clean)</span></td><td></td><td></td><td class="r" style="font-weight:700;">${subFmt(C.cleanStd)}</td></tr>`;
+  html+=`<tr><td style="font-weight:800;">Standard cost / kg <span class="muted">(incl ${esc(String(C.reprintPts))}% reprint on printing lines)</span></td><td></td><td></td><td class="r" style="font-weight:800;">${subFmt(C.stdKg)}</td></tr>`;
+  body.innerHTML=html;
+  if(note)note.textContent='Operation time per kg = metres/kg ('+subFmt(C.mPerKg,3)+') ÷ the standard throughput ('+subFmt(C.stdThr,1)+' m/hr, settable above — the standard cost never follows an individual run). Ink quantities belong to this design’s colourway — a different artwork changes all four.';
+  if(varEl)varEl.textContent=C.thrActual==null
+    ?'Enter machine time to see this run’s actual throughput vs the standard.'
+    :('This run’s actual throughput: '+subFmt(C.thrActual,2)+' m/hr = '+subFmt(C.thrActual/C.stdThr*100,1)+'% of the '+subFmt(C.stdThr,1)+' m/hr standard (efficiency variance — display only).');
+}
+async function subCopyBom(){
+  if(!subCalc||!subCalc.bomReady){subFlashCopy('Nothing to copy yet');return;}
+  const lines=[['Component','Qty per kg','UoM','Cost (KES/kg)']];
+  for(const l of subCalc.bomLines)lines.push([l.name,l.qty==null?'':(+l.qty.toFixed(l.dp)).toString(),l.uom,l.cost==null?'':(+l.cost.toFixed(2)).toString()]);
+  const tsv=lines.map(r=>r.join('\t')).join('\n');
+  try{await navigator.clipboard.writeText(tsv);subFlashCopy('Copied ✓');}
+  catch(e){
+    const ta=document.createElement('textarea');ta.value=tsv;ta.style.position='fixed';ta.style.opacity='0';
+    document.body.appendChild(ta);ta.select();
+    try{document.execCommand('copy');subFlashCopy('Copied ✓');}catch(_){subFlashCopy('Copy failed');}
+    ta.remove();
+  }
+}
+function subFlashCopy(txt){
+  const b=document.getElementById('sub-bom-copy');if(!b)return;
+  const o=b.dataset.lbl||b.textContent;b.dataset.lbl=o;
+  b.textContent=txt;setTimeout(()=>{b.textContent=o;},1600);
+}
+async function saveSublimation(){
+  const msg=document.getElementById('sub-save-msg');
+  msg.style.color='';msg.textContent='';
+  const pid=document.getElementById('sub-product-id').value;
+  const fname=document.getElementById('sub-fabric-search').value.trim();
+  if(!pid||!subPickedFabric||subPickedFabric.name!==fname){msg.style.color='#991b1b';msg.textContent='Pick a fabric from the suggestions list first.';return;}
+  const width=subNum('sub-width'),gsm=subNum('sub-gsm'),metres=subNum('sub-metres');
+  if(!(width>0)||!(gsm>0)){msg.style.color='#991b1b';msg.textContent='Enter the fabric width and GSM.';return;}
+  if(!(metres>0)){msg.style.color='#991b1b';msg.textContent='Enter the metres to print.';return;}
+  // Inputs only — the server recomputes every derived figure on save, so a
+  // library row can never disagree with the inputs it stores.
+  const body={
+    fabric_product_id:Number(pid),fabric_name:fname,fabric_barcode:subPickedFabric.barcode||null,
+    fabric_width_m:width,fabric_gsm:gsm,metres_printed:metres,
+    machine_time_h:Math.round(subNum('sub-mach-h')),machine_time_min:Math.round(subNum('sub-mach-min')),
+    ink_cost_per_ml:subNum('sub-inkcost'),tile_width_cm:subNum('sub-tile-w'),tile_height_cm:subNum('sub-tile-h'),
+    ink_cyan_ml:subNum('sub-ink-c'),ink_yellow_ml:subNum('sub-ink-y'),ink_magenta_ml:subNum('sub-ink-m'),ink_black_ml:subNum('sub-ink-k'),
+    sub_paper_cost_per_m:subNum('sub-paper-sub'),prot_paper_cost_per_m:subNum('sub-paper-prot'),
+    reprint_pct:subNum('sub-reprint'),base_fabric_cost_per_m:subNum('sub-basecost'),print_margin_cm:subNum('sub-margin'),
+    std_throughput_m_hr:subNum('sub-std-thr')>0?subNum('sub-std-thr'):SUBLIM_STD_THROUGHPUT
+  };
+  const btn=document.getElementById('sub-save-btn');
+  btn.disabled=true;const old=btn.textContent;btn.textContent='Saving…';
+  try{
+    const r=await fetch('/api/fabric/sublimation/costings',{method:'POST',credentials:'include',headers:vivoAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(body)});
+    if(!r.ok){let d={};try{d=await r.json();}catch(_){}throw new Error(d.detail||('http '+r.status));}
+    msg.style.color='#166534';msg.textContent='Saved to library ✓';
+    setTimeout(()=>{if(msg.textContent==='Saved to library ✓')msg.textContent='';},4000);
+    loadSublimationLibrary();
+  }catch(e){msg.style.color='#991b1b';msg.textContent=e.message==='auth'?'Your session has expired — sign in again.':('Could not save: '+e.message);}
+  finally{btn.disabled=false;btn.textContent=old;}
+}
+async function loadSublimationLibrary(){
+  try{
+    const d=await apiFetch('/api/fabric/sublimation/costings');
+    subLibRows=d.items||[];
+    renderSubLibrary();
+  }catch(e){rowErr('sub-lib-body',9,e);}
+}
+function renderSubLibrary(){
+  const body=document.getElementById('sub-lib-body');
+  if(!subLibRows.length){body.innerHTML='<tr><td colspan="9" class="muted" style="padding:1rem;">No saved costings yet — fill in the calculator and press “Save to library”.</td></tr>';return;}
+  body.innerHTML=subLibRows.map(r=>`<tr>
+    <td style="white-space:nowrap;font-size:12px;">${esc(fmtNairobi(r.saved_at)||'—')}</td>
+    <td style="max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(r.fabric_name||'')}">${esc(r.fabric_name||'—')}${r.fabric_barcode?` <span class="muted" style="font-size:11px;">#${esc(r.fabric_barcode)}</span>`:''}</td>
+    <td class="r">${fmt1(r.metres_printed)}</td>
+    <td class="r">${fmt(r.total_printing_cost)}</td>
+    <td class="r">${fmt2(r.printing_cost_per_m)}</td>
+    <td class="r">${fmt2(r.printing_cost_per_kg)}</td>
+    <td class="r" style="font-weight:600;">${fmt2(r.std_cost_per_kg)}</td>
+    <td style="font-size:12px;color:var(--text-sub);">${esc(r.saved_by||'—')}</td>
+    <td style="white-space:nowrap;text-align:right;">
+     <button class="btn" data-subload="${r.id}" style="padding:4px 10px;font-size:12px;">Load</button>
+     <button class="btn" data-subdel="${r.id}" style="padding:4px 8px;font-size:12px;color:#991b1b;">Delete</button>
+    </td></tr>`).join('');
+}
+function subLoadRow(id){
+  const r=subLibRows.find(x=>String(x.id)===String(id));if(!r)return;
+  subPickedFabric={id:r.fabric_product_id,name:r.fabric_name||'',barcode:r.fabric_barcode||''};
+  document.getElementById('sub-product-id').value=r.fabric_product_id==null?'':r.fabric_product_id;
+  document.getElementById('sub-fabric-search').value=r.fabric_name||'';
+  const set=(fid,v)=>{const el=document.getElementById(fid);if(el)el.value=(v==null?'':v);};
+  set('sub-width',r.fabric_width_m);set('sub-gsm',r.fabric_gsm);set('sub-metres',r.metres_printed);
+  set('sub-margin',r.print_margin_cm);set('sub-basecost',r.base_fabric_cost_per_m);
+  set('sub-mach-h',r.machine_time_h==null?0:r.machine_time_h);set('sub-mach-min',r.machine_time_min==null?0:r.machine_time_min);
+  set('sub-inkcost',r.ink_cost_per_ml);set('sub-tile-w',r.tile_width_cm);set('sub-tile-h',r.tile_height_cm);
+  set('sub-ink-c',r.ink_cyan_ml);set('sub-ink-y',r.ink_yellow_ml);set('sub-ink-m',r.ink_magenta_ml);set('sub-ink-k',r.ink_black_ml);
+  set('sub-paper-sub',r.sub_paper_cost_per_m);set('sub-paper-prot',r.prot_paper_cost_per_m);set('sub-reprint',r.reprint_pct);
+  set('sub-std-thr',r.std_throughput_m_hr==null?SUBLIM_STD_THROUGHPUT:r.std_throughput_m_hr);
+  document.getElementById('sub-fabric-hint').textContent='Loaded saved costing #'+r.id+(r.saved_at?' ('+(fmtNairobi(r.saved_at)||'')+')':'')+' — edit and save again to store a new copy.';
+  recalcSublimation();
+  document.getElementById('page-sublimation').scrollIntoView({behavior:'smooth',block:'start'});
+}
+async function subDeleteRow(id){
+  if(!confirm('Delete this saved costing?'))return;
+  try{
+    const r=await fetch('/api/fabric/sublimation/costings/'+encodeURIComponent(id),{method:'DELETE',credentials:'include',headers:vivoAuthHeaders()});
+    if(!r.ok)throw new Error('http '+r.status);
+    loadSublimationLibrary();
+  }catch(e){alert('Could not delete.');}
+}
+function renderSubRatePanel(d){
+  const el=document.getElementById('sub-rate-body');if(!el||!d)return;
+  const rows=[
+    ['Labour pool / month','KES '+fmt(d.labour_pool_monthly)],
+    ['Overhead pool / month','KES '+fmt(d.overhead_pool_monthly)],
+    ['Total cost pool / month','KES '+fmt(d.total_cost_pool_monthly)],
+    ['Normal machine-hours / month',subFmt(d.normal_machine_hours_month,1)+' hrs'],
+    ['Cost per machine-hour','KES '+subFmt(d.cost_per_machine_hour)],
+    ['Cost per machine-minute','KES '+subFmt(d.cost_per_machine_minute)]
+  ];
+  const cap=d.machines_in_pool+' machines × '+d.shift_hours_per_day+' h shift × '+Math.round((1-d.planned_downtime_pct)*100)+'% uptime × '+d.working_days_per_month+' days × '+Math.round(d.utilisation_pct*100)+'% utilisation';
+  const sens=(d.utilisation_sensitivity||[]).map(s=>s.utilisation_pct+'% → '+subFmt(s.cost_per_hour)).join(' · ');
+  el.innerHTML=rows.map(r=>`<div class="sub-row"><span class="muted">${esc(r[0])}</span><span class="v">${esc(r[1])}</span></div>`).join('')
+    +`<div class="muted" style="margin-top:8px;font-size:11.5px;">${esc(cap)}.</div>`
+    +(sens?`<div class="muted" style="margin-top:4px;font-size:11.5px;">Hourly rate at other utilisations (display only): ${esc(sens)}.</div>`:'');
+}
+async function loadSublimation(){
+  if(!subBound){
+    subBound=true;
+    document.getElementById('sub-fabric-list').addEventListener('click',e=>{
+      e.stopPropagation();
+      const opt=e.target.closest('.resv-opt');if(!opt||opt.dataset.subpick==null)return;
+      const r=subSearchRows[Number(opt.dataset.subpick)];if(r)subPickFabric(r);
+    });
+    document.addEventListener('click',()=>{const b=document.getElementById('sub-fabric-list');if(b)b.style.display='none';});
+    document.getElementById('sub-lib-body').addEventListener('click',e=>{
+      const l=e.target.closest('button[data-subload]');
+      const d=e.target.closest('button[data-subdel]');
+      if(l)subLoadRow(l.dataset.subload);else if(d)subDeleteRow(d.dataset.subdel);
+    });
+  }
+  renderSubRatePanel(SUBLIM_MACHINE_RATE);
+  recalcSublimation();
+  loadSublimationLibrary();
+  try{renderSubRatePanel(await apiFetch('/api/fabric/sublimation/machine-rate'));}catch(e){}
 }
 
 // ── Rolls (manual physical roll counts) ──

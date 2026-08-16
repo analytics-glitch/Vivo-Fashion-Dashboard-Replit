@@ -15810,6 +15810,321 @@ def costing_export_sheet_pdf(sheet_id: int):
                     headers={"Content-Disposition": 'attachment; filename="%s"' % fname})
 
 
+# ═════════════════════════════════════════════════════════════════════════════
+# SUBLIMATION PRINTING COSTING
+# Print-run calculator + persistent costing library, plus the locked machine-
+# rate engine constants. Formula source: the "Vivo Sublimation Printing Costing
+# → Odoo BOM" template — the browser recalculates live for display, and the
+# server RECOMPUTES every derived figure from the inputs on save
+# (_sublim_compute below is the single source of truth), so a saved library row
+# can never disagree with the inputs it stores. The Odoo BOM's operation time
+# always uses the SETTABLE standard throughput (default 60 m/hr) — the run's
+# actual rate is shown as a variance readout only, which keeps the exported
+# standard cost run-independent.
+# The machine-rate engine (labour pool, overhead pool, capacity %) is LOCKED at
+# the current template values — making it editable from the UI is a later phase.
+# ═════════════════════════════════════════════════════════════════════════════
+
+SUBLIM_MACHINE_RATE = {
+    "locked": True,
+    # Monthly cost pools (KES) — two presses costed as one unit
+    "labour_pool_monthly": 169367.0,
+    "overhead_pool_monthly": 918589.37,
+    "total_cost_pool_monthly": 1087956.37,
+    # Capacity assumptions behind the normal machine-hours figure
+    "machines_in_pool": 2,
+    "shift_hours_per_day": 8,
+    "planned_downtime_pct": 0.25,
+    "working_days_per_month": 21,
+    "utilisation_pct": 0.85,
+    "productive_hrs_per_machine_per_day": 6.0,
+    "full_parallel_ceiling_machine_hrs_month": 252.0,
+    "normal_machine_hours_month": 214.2,
+    # The two numbers every machine-cost calculation keys off
+    "cost_per_machine_hour": 5079.161391,
+    "cost_per_machine_minute": 84.65268985,
+    # Display-only: hourly rate at other utilisations (not interactive)
+    "utilisation_sensitivity": [
+        {"utilisation_pct": 100, "cost_per_hour": 4317.287183},
+        {"utilisation_pct": 85,  "cost_per_hour": 5079.161391},
+        {"utilisation_pct": 75,  "cost_per_hour": 5756.38291},
+        {"utilisation_pct": 70,  "cost_per_hour": 6167.553118},
+    ],
+}
+
+_SUBLIM_READY = False
+
+def _ensure_sublimation_tables(conn):
+    """Idempotent lazy DDL for the sublimation costing library (same pattern as
+    _ensure_fabric_tables). reprint_pct is stored in percent points (5 = 5%),
+    exactly as the calculator field holds it, so Load round-trips byte-for-byte."""
+    global _SUBLIM_READY
+    if _SUBLIM_READY:
+        return
+    with conn.cursor() as cur:
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS sublimation_costings (
+                id                     SERIAL PRIMARY KEY,
+                saved_at               TIMESTAMPTZ NOT NULL DEFAULT now(),
+                saved_by               TEXT,
+                fabric_product_id      INTEGER,
+                fabric_name            TEXT,
+                fabric_barcode         TEXT,
+                fabric_width_m         NUMERIC,
+                fabric_gsm             NUMERIC,
+                metres_printed         NUMERIC,
+                machine_time_h         INTEGER,
+                machine_time_min       INTEGER,
+                ink_cost_per_ml        NUMERIC,
+                tile_width_cm          NUMERIC,
+                tile_height_cm         NUMERIC,
+                ink_cyan_ml            NUMERIC,
+                ink_yellow_ml          NUMERIC,
+                ink_magenta_ml         NUMERIC,
+                ink_black_ml           NUMERIC,
+                sub_paper_cost_per_m   NUMERIC,
+                prot_paper_cost_per_m  NUMERIC,
+                reprint_pct            NUMERIC,
+                base_fabric_cost_per_m NUMERIC,
+                print_margin_cm        NUMERIC,
+                total_printing_cost    NUMERIC,
+                printing_cost_per_m    NUMERIC,
+                printing_cost_per_kg   NUMERIC,
+                finished_cost_per_m    NUMERIC,
+                finished_cost_per_kg   NUMERIC,
+                std_cost_per_kg        NUMERIC,
+                std_throughput_m_hr    NUMERIC
+            )
+        """)
+        # Installs that created the table before the settable BOM standard-
+        # throughput field existed gain the column in place (idempotent).
+        cur.execute("""
+            ALTER TABLE sublimation_costings
+            ADD COLUMN IF NOT EXISTS std_throughput_m_hr NUMERIC
+        """)
+    conn.commit()
+    _SUBLIM_READY = True
+
+# Inputs the client sends; every derived figure is recomputed server-side.
+_SUBLIM_INPUT_FLOAT_FIELDS = (
+    "fabric_width_m", "fabric_gsm", "metres_printed", "ink_cost_per_ml",
+    "tile_width_cm", "tile_height_cm", "ink_cyan_ml", "ink_yellow_ml",
+    "ink_magenta_ml", "ink_black_ml", "sub_paper_cost_per_m",
+    "prot_paper_cost_per_m", "reprint_pct", "base_fabric_cost_per_m",
+    "print_margin_cm", "std_throughput_m_hr",
+)
+# Derived columns — persisted from _sublim_compute ONLY; anything the client
+# sends under these names is ignored so a saved row can't lie about its inputs.
+_SUBLIM_COMPUTED_FIELDS = (
+    "total_printing_cost", "printing_cost_per_m", "printing_cost_per_kg",
+    "finished_cost_per_m", "finished_cost_per_kg", "std_cost_per_kg",
+)
+_SUBLIM_INT_FIELDS = ("fabric_product_id", "machine_time_h", "machine_time_min")
+_SUBLIM_TEXT_FIELDS = ("fabric_name", "fabric_barcode")
+
+SUBLIM_STD_THROUGHPUT_DEFAULT = 60.0
+
+def _sublim_num(body, field, kind):
+    v = body.get(field)
+    if v is None or v == "":
+        return None
+    try:
+        return kind(v)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail=f"{field} must be a number")
+
+def _sublim_compute(v):
+    """The costing template's arithmetic, server-side — the single source of
+    truth for every stored derived figure (mirrors recalcSublimation() in
+    fabric_dashboard_live.html). Keys starting with "_" are internals exposed
+    for the regression tests and a future Odoo push; the rest are the
+    persisted columns.
+
+    BOM operation time ALWAYS uses the settable standard throughput
+    (std_throughput_m_hr, default 60 m/hr) — never the run's actual rate,
+    which is returned separately as a variance readout. Reprint allowance
+    applies to the printing lines only, never the base fabric."""
+    def g(k):
+        try:
+            n = float(v.get(k) or 0)
+        except (TypeError, ValueError):
+            n = 0.0
+        return n if n == n else 0.0  # NaN guard
+    width, gsm, metres = g("fabric_width_m"), g("fabric_gsm"), g("metres_printed")
+    margin, basem = g("print_margin_cm"), g("base_fabric_cost_per_m")
+    mtime = g("machine_time_h") + g("machine_time_min") / 60.0
+    ink_cost = g("ink_cost_per_ml")
+    tile = g("tile_width_cm") * g("tile_height_cm") / 10000.0
+    ml = {c: g(f"ink_{n}_ml") for c, n in
+          (("c", "cyan"), ("y", "yellow"), ("m", "magenta"), ("k", "black"))}
+    sub_pm, prot_pm = g("sub_paper_cost_per_m"), g("prot_paper_cost_per_m")
+    reprint = g("reprint_pct") / 100.0
+    std_thr = g("std_throughput_m_hr")
+    if std_thr <= 0:
+        std_thr = SUBLIM_STD_THROUGHPUT_DEFAULT
+    div = lambda a, b: (a / b) if (a is not None and b and b > 0) else None
+
+    # ── Run costing (template formulas, verbatim) ──
+    print_w = max(width - 2 * margin / 100.0, 0.0)
+    p_area = metres * print_w                    # printed area m²
+    f_area = metres * width                      # fabric area m²
+    weight = f_area * gsm / 1000.0               # run weight kg
+    cov = {c: (ml[c] / tile if tile > 0 else 0.0) for c in ml}
+    ink_sub = sum(cov[c] * p_area * ink_cost for c in ml)
+    paper = metres * sub_pm + metres * prot_pm
+    mach = mtime * SUBLIM_MACHINE_RATE["cost_per_machine_hour"]
+    print_sub = ink_sub + paper + mach
+    total = print_sub * (1.0 + reprint)
+    base_cost = metres * basem
+    fin_tot = base_cost + total
+
+    # ── Odoo BOM per 1 kg (operation at the SETTABLE standard throughput) ──
+    wplm = width * gsm / 1000.0                  # kg per linear metre
+    m_per_kg = (1.0 / wplm) if wplm > 0 else None
+    m2_per_kg = (1000.0 / gsm) if gsm > 0 else None
+    ratio = (print_w / width) if width > 0 else None
+    mat_sub = op_min = mach_kg = clean_std = std_kg = None
+    if m_per_kg is not None and m2_per_kg is not None and ratio is not None:
+        pm2_per_kg = m2_per_kg * ratio
+        bom_base = basem * m_per_kg
+        ink_c_kg = sum(cov[c] * pm2_per_kg * ink_cost for c in ml)
+        mat_sub = bom_base + ink_c_kg + m_per_kg * sub_pm + m_per_kg * prot_pm
+        op_min = m_per_kg * 60.0 / std_thr
+        mach_kg = op_min * SUBLIM_MACHINE_RATE["cost_per_machine_minute"]
+        clean_std = mat_sub + mach_kg
+        # Reprint on printing lines only — the base fabric is never reprinted.
+        std_kg = bom_base + (clean_std - bom_base) * (1.0 + reprint)
+
+    return {
+        "total_printing_cost": total,
+        "printing_cost_per_m": div(total, metres),
+        "printing_cost_per_kg": div(total, weight),
+        "finished_cost_per_m": div(fin_tot, metres),
+        "finished_cost_per_kg": div(fin_tot, weight),
+        "std_cost_per_kg": std_kg,
+        # internals (never persisted)
+        "_ink_subtotal": ink_sub,
+        "_paper_subtotal": paper,
+        "_machine_conversion": mach,
+        "_printing_subtotal": print_sub,
+        "_metres_per_kg": m_per_kg,
+        "_material_subtotal_per_kg": mat_sub,
+        "_operation_min_per_kg": op_min,
+        "_machine_cost_per_kg": mach_kg,
+        "_clean_std_cost_per_kg": clean_std,
+        "_std_throughput_m_hr": std_thr,
+        "_actual_throughput_m_hr": div(metres, mtime),
+    }
+
+def _sublim_prepare(body):
+    """Parse + validate the request body, then recompute every derived column
+    from the inputs. Returns the exact dict the INSERT persists — the POST
+    endpoint and the regression tests share this path."""
+    vals = {}
+    for f in _SUBLIM_INPUT_FLOAT_FIELDS:
+        vals[f] = _sublim_num(body, f, float)
+    for f in _SUBLIM_INT_FIELDS:
+        vals[f] = _sublim_num(body, f, int)
+    for f in _SUBLIM_TEXT_FIELDS:
+        v = (body.get(f) or "").strip()
+        vals[f] = v or None
+    if not vals["fabric_name"]:
+        raise HTTPException(status_code=400,
+            detail="fabric_name is required — pick a fabric from the suggestions list")
+    if not vals["metres_printed"] or vals["metres_printed"] <= 0:
+        raise HTTPException(status_code=400,
+            detail="metres_printed must be greater than zero")
+    comp = _sublim_compute(vals)
+    vals["std_throughput_m_hr"] = comp["_std_throughput_m_hr"]
+    for f in _SUBLIM_COMPUTED_FIELDS:
+        vals[f] = comp[f]
+    return vals
+
+@fabric_router.get("/api/fabric/sublimation/machine-rate")
+def sublimation_machine_rate():
+    """Locked machine-rate engine constants for the read-only info panel."""
+    return SUBLIM_MACHINE_RATE
+
+@fabric_router.get("/api/fabric/sublimation/fabric-search")
+def sublimation_fabric_search(q_: str = Query(default="", alias="q"),
+                              limit: int = Query(default=20)):
+    """Typeahead over the Odoo fabric master for the sublimation calculator.
+    No stock join on purpose — a print run can be costed for any fabric product,
+    stocked or not. standard_price/uom ride along so the frontend can prefill
+    the greige cost per metre where a kg→m conversion exists."""
+    term = (q_ or "").strip()
+    limit = max(1, min(int(limit or 20), 50))
+    with _get_conn() as conn:
+        where, params = "TRUE", []
+        if term:
+            like = f"%{term}%"
+            where = "(p.name ILIKE %s OR p.barcode ILIKE %s OR p.default_code ILIKE %s)"
+            params = [like, like, like]
+        return q(conn, f"""
+            SELECT p.id AS product_id, p.name, p.barcode, p.default_code,
+                   ROUND(p.width_m::numeric, 3)        AS fabric_width_m,
+                   ROUND(p.gsm::numeric, 1)            AS fabric_gsm,
+                   ROUND(p.kg_per_mtr_eff::numeric, 4) AS kg_per_mtr,
+                   p.category, p.uom,
+                   ROUND(p.standard_price::numeric, 2) AS standard_price
+            FROM raw_fabric_products p
+            WHERE {where}
+            ORDER BY p.name
+            LIMIT %s
+        """, params + [limit])
+
+@fabric_router.get("/api/fabric/sublimation/costings")
+def sublimation_costings_list():
+    with _get_conn() as conn:
+        _ensure_sublimation_tables(conn)
+        return {"items": q(conn, """
+            SELECT * FROM sublimation_costings ORDER BY saved_at DESC, id DESC
+        """)}
+
+@fabric_router.post("/api/fabric/sublimation/costings")
+def sublimation_costing_save(request: Request, body: dict = Body(...)):
+    uid, name = _fabric_actor(request)
+    vals = _sublim_prepare(body)   # validates + recomputes all derived columns
+    cols = list(vals.keys()) + ["saved_by"]
+    params = list(vals.values()) + [name or uid or None]
+    with _get_conn() as conn:
+        _ensure_sublimation_tables(conn)
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "INSERT INTO sublimation_costings (%s) VALUES (%s) RETURNING *"
+                % (", ".join(cols), ", ".join(["%s"] * len(cols))),
+                params)
+            row = cur.fetchone()
+        conn.commit()
+        _log_fabric_change("Saved sublimation costing", {
+            "id": row["id"], "fabric": vals["fabric_name"],
+            "barcode": vals["fabric_barcode"],
+            "metres": vals["metres_printed"],
+            "total_printing_cost": vals["total_printing_cost"],
+            "std_cost_per_kg": vals["std_cost_per_kg"],
+        }, request)
+        return row
+
+@fabric_router.delete("/api/fabric/sublimation/costings/{costing_id}")
+def sublimation_costing_delete(costing_id: int, request: Request):
+    with _get_conn() as conn:
+        _ensure_sublimation_tables(conn)
+        # Snapshot BEFORE the row is gone so the audit log stays human-readable.
+        snap = q(conn, """
+            SELECT id, fabric_name, fabric_barcode, metres_printed
+            FROM sublimation_costings WHERE id=%s
+        """, (costing_id,))
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM sublimation_costings WHERE id=%s", (costing_id,))
+            deleted = cur.rowcount
+        conn.commit()
+        if not deleted:
+            raise HTTPException(status_code=404, detail="costing not found")
+        _log_fabric_change("Deleted sublimation costing",
+                           snap[0] if snap else {"id": costing_id}, request)
+        return {"ok": True}
+
+
 if __name__ == "__main__":
     # Standalone one-time backfill of the Months-of-Cover daily snapshot. The
     # writer is idempotent (upserts on today's EAT capture date), so this is safe
