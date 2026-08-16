@@ -34,3 +34,23 @@ sync **before** launching the one-shot backfill, then respawns it in a `finally`
 (rate-limit pressure, duplicate work). Recovery and the supervised loop must be
 mutually exclusive. Also validate the backfill `returncode` — a non-zero exit
 must be reported as FAILED, not silently treated as success.
+
+# Fabric heartbeat is watched separately (one-shot rescue)
+
+The fabric worker (daemon thread inside the sync process) beats
+`fabric_heartbeat`; the watchdog checks it INDEPENDENTLY of `sync_heartbeat`
+and rescues a stale feed with a one-shot `extract_fabric.py --mode fast`
+(cooldown-limited). `run_recovery()` also ends with the same kick, because a
+`--once` backfill deliberately skips the fabric worker and would otherwise
+stack a ~30 min fabric gap per recovery cycle.
+
+**Why:** the fabric thread can silently die while `sync_heartbeat` stays
+perfectly fresh (15h-stale fabric incident with a "healthy" sync).
+
+**Gotchas:**
+- Only the supervised thread beats `fabric_heartbeat` — a successful one-shot
+  rescue refreshes DATA but not the heartbeat, so rate-limited "fabric stale"
+  warnings keep appearing until the thread revives. Expected, not a bug.
+- `--mode fast` covers products+inventory only; BOMs/moves/POs need the
+  thread's heavy cadence — a permanently dead thread still needs a process
+  restart to fully recover.
