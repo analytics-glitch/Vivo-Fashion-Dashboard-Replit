@@ -82,6 +82,7 @@ const WOC_COLOR = (woc) => {
 };
 
 const REPLEN_TIER_COLORS = { "Tier 1": "#1a5c38", "Tier 2": "#4b7bec", "Tier 3": "#0891b2", "Tier 4": "#d97706" };
+const STYLE_TIER_ORDER = ["Tier 1", "Tier 2", "Tier 3", "Tier 4"];
 
 const truncate = (s, n = 22) => s && s.length > n ? s.slice(0, n - 1) + "…" : (s || "—");
 
@@ -203,10 +204,19 @@ export default function MerchInventory() {
     }));
   }, [byBrand]);
 
-  // Active styles only (tier Tier 1–4 — mirrors the summary's Active
-  // definition; Retired/Archived excluded) for the recency chart + its CSV.
+  // Active styles only (Tier 1–4). The API normally maps retired styles to a
+  // Retired tier, but keep the lifecycle-status exclusion explicit so this
+  // client-side universe remains correct for cached/legacy payloads too.
   const activeStyleRows = useMemo(
-    () => styleRows.filter((r) => /^Tier [1-4]$/.test(r.tier || "")),
+    () => styleRows.filter((r) => {
+      const tier = String(r.tier || "").trim();
+      const lifecycleStatus = String(
+        r.status ?? r.lifecycle_status ?? r.lifecycle ?? r.life_cycle ?? ""
+      ).trim().toLowerCase();
+      return /^Tier [1-4]$/.test(tier)
+        && lifecycleStatus !== "retired"
+        && lifecycleStatus !== "archived";
+    }),
     [styleRows]);
 
   const recencyBucketLabel = (d) => {
@@ -239,6 +249,22 @@ export default function MerchInventory() {
       { name: "Sold 61-90d\nago",  value: buckets["61_90d"], pct: pct(buckets["61_90d"]), color: RECENCY_COLORS[3] },
       { name: "No sale\n>90d",     value: buckets["gt_90d"], pct: pct(buckets["gt_90d"]), color: RECENCY_COLORS[4] },
     ];
+  }, [activeStyleRows]);
+
+  // Active style count and share by lifecycle tier. Keep zero-count tiers in
+  // the data so the chart always presents the complete Tier 1–4 portfolio.
+  const stylesByTier = useMemo(() => {
+    const counts = Object.fromEntries(STYLE_TIER_ORDER.map((tier) => [tier, 0]));
+    activeStyleRows.forEach((r) => {
+      if (counts[r.tier] !== undefined) counts[r.tier] += 1;
+    });
+    const total = activeStyleRows.length;
+    return STYLE_TIER_ORDER.map((tier) => ({
+      tier,
+      count: counts[tier],
+      pct: total > 0 ? (counts[tier] / total) * 100 : 0,
+      fill: REPLEN_TIER_COLORS[tier],
+    }));
   }, [activeStyleRows]);
 
   // Per-style CSV behind the recency chart (client-side, Overview pattern).
@@ -364,16 +390,15 @@ export default function MerchInventory() {
 
   // Reorder count & style count by tier (for ComposedChart)
   const byTierChart = useMemo(() => {
-    const TIER_ORDER = ["Tier 1", "Tier 2", "Tier 3", "Tier 4"];
     const map = {};
     styleRows.forEach(r => {
       const t = r.tier;
-      if (!TIER_ORDER.includes(t)) return;
+      if (!STYLE_TIER_ORDER.includes(t)) return;
       if (!map[t]) map[t] = { tier: t, reorder_sum: 0, count: 0 };
       map[t].reorder_sum += (r.reorder_count || 0);
       map[t].count += 1;
     });
-    return TIER_ORDER.filter(t => map[t])
+    return STYLE_TIER_ORDER.filter(t => map[t])
       .map(t => ({
         tier:    t,
         avg_reo: parseFloat((map[t].reorder_sum / map[t].count).toFixed(1)),
@@ -652,8 +677,8 @@ export default function MerchInventory() {
         </ChartCard>
       </div>
 
-      {/* ── Brand stock + Recency + Tier pie ── */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+      {/* ── Brand stock + active-style distribution charts ── */}
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
         <ChartCard title="Current Stock by Brand">
           <ResponsiveContainer width="100%" height={220}>
             <BarChart data={brandStock} margin={{ top: 30, right: 8, left: -5, bottom: 20 }}>
@@ -684,6 +709,76 @@ export default function MerchInventory() {
               </Bar>
             </BarChart>
           </ResponsiveContainer>
+        </ChartCard>
+
+        <ChartCard title="Active Styles by Tier">
+          <div data-testid="styles-by-tier-chart">
+            <ResponsiveContainer width="100%" height={290}>
+              <BarChart
+                data={stylesByTier}
+                margin={{ top: 30, right: 8, left: 22, bottom: 8 }}
+              >
+                <CartesianGrid vertical={false} stroke="#e2e8f0" strokeDasharray="3 3" />
+                <XAxis
+                  dataKey="tier"
+                  tick={{ fontSize: 10, fill: "#64748b" }}
+                  tickLine={false}
+                  axisLine={{ stroke: "#cbd5e1" }}
+                />
+                <YAxis
+                  allowDecimals={false}
+                  tick={{ fontSize: 10, fill: "#64748b" }}
+                  tickLine={false}
+                  axisLine={false}
+                  label={{
+                    value: "Number of styles",
+                    angle: -90,
+                    position: "insideLeft",
+                    offset: 4,
+                    fontSize: 9,
+                    fill: "#64748b",
+                  }}
+                />
+                <Tooltip
+                  content={({ active, payload, label }) => {
+                    if (!active || !payload?.length) return null;
+                    const row = payload[0]?.payload;
+                    return (
+                      <div className="bg-white shadow-lg rounded-lg px-3 py-2 text-[11px] border border-slate-100">
+                        <div className="font-semibold text-slate-700 mb-1">{label}</div>
+                        <div>Styles: <strong>{fmtNum(row?.count)}</strong></div>
+                        <div>Share: <strong>{Number(row?.pct || 0).toFixed(1)}%</strong></div>
+                      </div>
+                    );
+                  }}
+                />
+                <Bar dataKey="count" name="Styles" radius={[4, 4, 0, 0]} isAnimationActive={false}>
+                  {stylesByTier.map((entry) => <Cell key={entry.tier} fill={entry.fill} />)}
+                  <LabelList
+                    dataKey="pct"
+                    position="top"
+                    content={({ x, y, width, index }) => {
+                      const row = stylesByTier[index];
+                      if (!row) return null;
+                      const cx = Number(x) + Number(width) / 2;
+                      return (
+                        <text
+                          x={cx}
+                          y={Number(y) - 7}
+                          textAnchor="middle"
+                          fontSize={11}
+                          fontWeight={700}
+                          fill={row.fill}
+                        >
+                          {`${Math.round(row.pct)}%`}
+                        </text>
+                      );
+                    }}
+                  />
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
         </ChartCard>
 
         <ChartCard
