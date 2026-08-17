@@ -5,6 +5,8 @@ import { ShoppingBag, Heart, ChevronRight, ChevronDown, Sparkles, SlidersHorizon
 import { api } from "@/lib/api";
 import { useWishlist } from "@/context/WishlistContext";
 import { FilterSheet, AppliedChips, emptyFilters, countActive, filtersToParams, MY_SIZE_LABELS } from "./ShopFilters";
+import { CategoryGrid, ProductRail } from "./ShopSections";
+import { useAuth } from "@/context/AuthContext";
 
 const PAGE = 24;
 
@@ -159,6 +161,7 @@ function SkeletonCard() {
 }
 
 export default function TabShop({ onOpenProduct, onOpenTryOn }) {
+  const { member } = useAuth();
   const [filters, setFilters] = useState(emptyFilters());
   const [sort, setSort] = useState("new");
   const [items, setItems] = useState([]);
@@ -228,6 +231,31 @@ export default function TabShop({ onOpenProduct, onOpenTryOn }) {
     return () => clearTimeout(t);
   }, [sheetOpen, JSON.stringify(draft)]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // "Pieces we think you'll love" — her Style DNA re-ranks the live
+  // catalogue server-side; members who skipped the quiz get a curated slice
+  // of the collection instead, so the rail is never empty. (Moved here from
+  // the homepage — this is Shop content.)
+  const [picked, setPicked] = useState([]);
+  useEffect(() => {
+    if (!member?.quiz_completed) { setPicked([]); return; }
+    let on = true;
+    api.products({ limit: 8, personalize: true })
+      .then((d) => { if (on) setPicked(d.personalized ? (d.items || []) : []); })
+      .catch(() => {});
+    return () => { on = false; };
+  }, [member?.quiz_completed, (member?.style_dna || []).join("|")]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // A category tile filters the grid when the live catalogue has a matching
+  // category; otherwise it just shows the full collection.
+  const pickCategory = (label) => {
+    const l = label.toLowerCase();
+    const match = cats.find((c) => {
+      const n = (c.name || "").toLowerCase();
+      return n === l || n.includes(l) || l.includes(n);
+    });
+    setFilters((f) => ({ ...f, cats: match ? [match.name] : [] }));
+  };
+
   const loadMore = async () => {
     const ver = queryVer.current;
     setLoadingMore(true);
@@ -279,6 +307,11 @@ export default function TabShop({ onOpenProduct, onOpenTryOn }) {
           <span className="shrink-0 text-[11px] font-bold uppercase tracking-wider text-primary-ink group-hover:translate-x-0.5 transition-transform">Try it →</span>
         </button>
       )}
+
+      {/* Shop by Category — editorial tiles (moved from the homepage) */}
+      <div className="mb-10">
+        <CategoryGrid onSelect={pickCategory} />
+      </div>
 
       {/* Filter + sort controls */}
       <div className="flex items-center gap-2 mb-4 px-1">
@@ -401,6 +434,24 @@ export default function TabShop({ onOpenProduct, onOpenTryOn }) {
           </button>
         </div>
       )}
+
+      {/* Chosen for You — Style-DNA rail (moved from the homepage) */}
+      {(() => {
+        const chosen = picked.length > 0 ? picked : items.slice(4, 12);
+        return !loading && chosen.length > 0 ? (
+          <div className="mb-16">
+            <ProductRail
+              kicker="Chosen for You"
+              title={picked.length > 0 ? "Your Style DNA at work" : "Pieces we think you'll love"}
+              sub={picked.length > 0 ? "Pieces chosen from what you told us you love." : "Take the Style Quiz and we'll tune these to you."}
+              products={chosen}
+              onOpenProduct={onOpenProduct}
+              testId="picked-for-you"
+              idPrefix="pfy"
+            />
+          </div>
+        ) : null;
+      })()}
 
       {/* Shoppable UGC — looks tagged with live pieces from the collection */}
       {!loading && items.length > 0 && (

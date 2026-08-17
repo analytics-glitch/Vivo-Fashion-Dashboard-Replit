@@ -1,10 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Heart, MessageCircle, Share, ArrowRight, ChevronRight, Cake, Gift, Ruler, Layers, X, Sparkles, ClipboardList, Trophy, HandHeart, ShoppingBag } from "lucide-react";
+import { Heart, MessageCircle, Share, ArrowRight, ChevronRight, Cake, Gift, Ruler, Layers, X, Sparkles, ClipboardList, Trophy, HandHeart } from "lucide-react";
 import { styleBoards, fitFor } from "./mockData";
 import PostDetailModal from "./PostDetailModal";
 import { PostVisual, timeAgo } from "./PostBits";
-import { TierBadge, Avatar, ImagePlaceholder, cardCls, brandAsset, kes, MerchBadge, SectionHeader } from "./ui";
-import { useWishlist } from "@/context/WishlistContext";
+import { TierBadge, Avatar, cardCls, brandAsset, SectionHeader } from "./ui";
+import { ProductRail } from "./ShopSections";
 import { api } from "@/lib/api";
 import { NEWS, newsPageId } from "./newsData";
 import ReelsRow from "./ReelsRow";
@@ -606,132 +606,9 @@ function HeroCampaign({ onNavigate }) {
   );
 }
 
-/* Product rail card — image-led with wishlist heart, colour swatch and a
-   quick-add affordance (opens the piece so she picks her size — bag adds
-   always go through the PDP, unchanged). */
-const SWATCH_HEX = {
-  black: "#1f1f1f", white: "#f5f5f2", cream: "#efe7d8", beige: "#d9c7ab", brown: "#7a5236",
-  tan: "#c8a06a", navy: "#22304d", blue: "#3f6ab5", "light blue": "#a9c6e8", green: "#3f6d4e",
-  olive: "#6b6b3a", yellow: "#e5c33c", mustard: "#d0a12c", orange: "#e0662a", red: "#b03030",
-  maroon: "#6e2432", burgundy: "#6e2432", wine: "#5d1f30", pink: "#e2a3b6", purple: "#7757a8",
-  lilac: "#b9a3d6", grey: "#9a9a9a", gray: "#9a9a9a", multi: "#c9a0e0",
-};
-const swatchFor = (color) => {
-  const c = String(color || "").toLowerCase();
-  for (const [name, hex] of Object.entries(SWATCH_HEX)) if (c.includes(name)) return hex;
-  return "";
-};
-function RailCard({ p, onOpenProduct, idPrefix = "rail" }) {
-  const { has, toggle } = useWishlist();
-  const saved = has(p.sku);
-  const [imgOk, setImgOk] = useState(true);
-  const hex = swatchFor(p.color);
-  return (
-    <div className="w-[170px] sm:w-[200px] shrink-0 snap-start relative group">
-      <button
-        data-testid={`${idPrefix}-card-${p.sku}`}
-        onClick={() => onOpenProduct?.(p.sku)}
-        className="w-full text-left rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-      >
-        <div className="relative aspect-[3/4] rounded overflow-hidden bg-secondary mb-2.5">
-          {imgOk ? (
-            <img
-              src={p.image_url}
-              alt={p.style_name}
-              loading="lazy"
-              onError={() => setImgOk(false)}
-              className="w-full h-full object-contain transition-transform duration-500 group-hover:scale-[1.02]"
-            />
-          ) : (
-            <ImagePlaceholder aspectRatio="h-full" text={p.style_name} className="rounded-none border-none" />
-          )}
-          <MerchBadge badge={p.badge} testId={`${idPrefix}-badge-${p.sku}`} className="absolute bottom-2 left-2" />
-        </div>
-        <div className="font-serif text-[13px] leading-snug text-foreground line-clamp-2 mb-1">{p.style_name}</div>
-        <div className="flex items-center gap-2 mb-0.5">
-          {p.color && (
-            <span className="flex items-center gap-1.5 min-w-0">
-              {hex && <span className="w-3 h-3 rounded-full border border-border shrink-0" style={{ background: hex }} aria-hidden="true" />}
-              <span className="text-[11px] text-muted-foreground truncate">{p.color}</span>
-            </span>
-          )}
-        </div>
-        <div className="text-[13px] font-medium text-foreground">{kes(p.price)}</div>
-      </button>
-      <div className="absolute top-2 right-2 flex flex-col gap-1.5">
-        <button
-          data-testid={`${idPrefix}-wish-${p.sku}`}
-          aria-label={saved ? `Remove ${p.style_name} from wishlist` : `Add ${p.style_name} to wishlist`}
-          aria-pressed={saved}
-          onClick={() => toggle({ sku: p.sku, name: p.style_name, price: p.price, image: p.image_url, color: p.color || "", category: p.category || "" })}
-          className="w-9 h-9 rounded-full bg-background/85 backdrop-blur flex items-center justify-center text-foreground hover:bg-background transition-colors shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-        >
-          <Heart size={15} strokeWidth={1.5} className={saved ? "fill-primary text-primary-ink" : ""} />
-        </button>
-        <button
-          data-testid={`${idPrefix}-quickadd-${p.sku}`}
-          aria-label={`Quick add ${p.style_name}`}
-          onClick={() => onOpenProduct?.(p.sku)}
-          className="w-9 h-9 rounded-full bg-background/85 backdrop-blur flex items-center justify-center text-foreground hover:bg-background transition-colors shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-        >
-          <ShoppingBag size={14} strokeWidth={1.5} />
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function ProductRail({ kicker, title, sub, products, onOpenProduct, onSeeAll, testId, idPrefix }) {
-  const items = (products || []).slice(0, 10);
-  if (!items.length) return null;
-  return (
-    <section data-testid={testId}>
-      <SectionHeader kicker={kicker} title={title} sub={sub} action="Shop all" onAction={onSeeAll} actionTestId={`${idPrefix}-see-all`} />
-      <div className="flex gap-3 overflow-x-auto hide-scrollbar snap-x -mx-4 px-4 sm:mx-0 sm:px-0 pb-1">
-        {items.map((p) => <RailCard key={p.sku} p={p} onOpenProduct={onOpenProduct} idPrefix={idPrefix} />)}
-      </div>
-    </section>
-  );
-}
-
-/* Shop by Category — two-column editorial grid on the uploaded campaign
-   photography. Whole tile is the tap target into Shop. */
-const CATEGORY_TILES = [
-  { label: "Workwear", img: "cat-workwear.jpg" },
-  { label: "Dresses", img: "cat-dresses.jpg" },
-  { label: "Everyday", img: "cat-everyday.jpg" },
-  { label: "Activewear", img: "cat-active.jpg" },
-];
-function CategoryGrid({ onNavigate }) {
-  return (
-    <section data-testid="home-category-grid">
-      <SectionHeader kicker="Explore" title="Shop by Category" />
-      <div className="grid grid-cols-2 gap-3 sm:gap-4">
-        {CATEGORY_TILES.map((t) => (
-          <button
-            key={t.label}
-            data-testid={`home-cat-tile-${t.label.toLowerCase()}`}
-            onClick={() => onNavigate("shop")}
-            className="relative rounded overflow-hidden aspect-[3/4] bg-secondary group text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-          >
-            <img
-              src={brandAsset(t.img)}
-              alt={t.label}
-              loading="lazy"
-              className="w-full h-full object-cover object-top transition-transform duration-700 group-hover:scale-[1.03]"
-              draggable={false}
-            />
-            <div className="absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-black/65 to-transparent pointer-events-none" />
-            <div className="absolute bottom-0 left-0 p-4">
-              <span className="font-serif text-white text-lg sm:text-xl">{t.label}</span>
-              <span className="block text-[11px] text-white/80 mt-0.5 flex items-center gap-1">Shop now <ChevronRight size={11} /></span>
-            </div>
-          </button>
-        ))}
-      </div>
-    </section>
-  );
-}
+/* RailCard/ProductRail and the Shop by Category grid moved to
+   ShopSections.jsx — the grid and the personalised rail now live on the
+   Shop tab; Home keeps only the New This Week rail. */
 
 /* Promotional banner — editable in one place: change HOME_PROMO to swap in
    delivery offers, sales, new collections or store openings. */
@@ -877,7 +754,6 @@ function VivoStories({ onOpenNews }) {
 
 export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage, onOpenEvent, onOpenFabulas }) {
   const [products, setProducts] = useState([]);
-  const [picked, setPicked] = useState([]);
   const [events, setEvents] = useState([]);
   // Live challenges — the mission card and sidebar feature the first open one.
   const [liveChallenges, setLiveChallenges] = useState([]);
@@ -915,17 +791,6 @@ export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage,
     return byName("wrap") || byName("dress") || products[0];
   }, [products]);
 
-  // "Picked for you" — her Style DNA re-ranks the live catalogue server-side.
-  // Members who skipped the quiz simply don't get the rail (curated default).
-  useEffect(() => {
-    if (!member?.quiz_completed) { setPicked([]); return; }
-    let on = true;
-    api.products({ limit: 8, personalize: true })
-      .then((d) => { if (on) setPicked(d.personalized ? (d.items || []) : []); })
-      .catch(() => {});
-    return () => { on = false; };
-  }, [member?.quiz_completed, (member?.style_dna || []).join("|")]);
-
   const openNews = (id) => onOpenPage?.(newsPageId(id));
   const shopTap = () => onNavigate("shop");
   // Interactive feed — same DB-backed list the Community tab shows.
@@ -946,14 +811,10 @@ export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage,
   };
   const P = feed;
 
-  // "Chosen for You" — Style-DNA-personalised when available, otherwise a
-  // curated slice of the live catalogue so the rail is never empty.
-  const chosen = picked.length > 0 ? picked : products.slice(4, 12);
-
-  /* Editorial homepage order (per the redesign brief): category strip →
-     hero campaign → personal moments → New This Week → Shop by Category →
-     Chosen for You → promo banner → Community → Member Rewards → Stories.
-     Every previous section stays — restyled and reordered, not removed. */
+  /* Editorial homepage order: category strip → hero campaign → personal
+     moments → New This Week → promo banner → Community → Member Rewards →
+     Stories. Shop by Category and the Chosen-for-You rail live on the
+     Shop tab now (per Sharon). */
   return (
     <div className="max-w-3xl mx-auto space-y-10 sm:space-y-14">
       <div className="space-y-6 -mt-2">
@@ -981,21 +842,6 @@ export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage,
         testId="home-new-this-week"
         idPrefix="ntw"
       />
-
-      <CategoryGrid onNavigate={onNavigate} />
-
-      {chosen.length > 0 && (
-        <ProductRail
-          kicker="Chosen for You"
-          title={picked.length > 0 ? "Your Style DNA at work" : "Pieces we think you'll love"}
-          sub={picked.length > 0 ? "Pieces chosen from what you told us you love." : "Take the Style Quiz and we'll tune these to you."}
-          products={chosen}
-          onOpenProduct={onOpenProduct}
-          onSeeAll={shopTap}
-          testId="picked-for-you"
-          idPrefix="pfy"
-        />
-      )}
 
       {member && <TryOnPromoCard onOpenPage={onOpenPage} />}
 
