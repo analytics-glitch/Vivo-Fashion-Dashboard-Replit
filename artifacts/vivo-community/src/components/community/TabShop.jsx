@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { posts } from "./mockData";
-import { ImagePlaceholder, MerchBadge, kes } from "./ui";
+import { ImagePlaceholder, MerchBadge, kes, swatchFor } from "./ui";
 import { ShoppingBag, Heart, ChevronRight, ChevronDown, Sparkles, SlidersHorizontal } from "lucide-react";
 import { api } from "@/lib/api";
 import { useWishlist } from "@/context/WishlistContext";
@@ -93,66 +93,79 @@ function ShoppableLook({ post, tagged, onOpen }) {
   );
 }
 
+/* Editorial product card — image-led, no box chrome: photo, then serif
+   two-line name, colour swatch and price on the open cream ground. The image
+   is the whole tap target; wishlist + quick-add float over the photo as
+   SIBLINGS (never nested). Quick-add opens the piece — bag adds always go
+   through the detail page where she picks her size (unchanged rule). */
 function ProductCard({ product, onOpen }) {
   const { has, toggle } = useWishlist();
   const [imgFailed, setImgFailed] = useState(false);
   const saved = has(product.sku);
+  const hex = swatchFor(product.color);
 
   const open = () => onOpen(product.sku);
 
   return (
-    <div className="group relative flex flex-col bg-card rounded overflow-hidden hover:shadow-md transition-all duration-500 ease-out">
-      {/* The whole card body is one real button (keyboard + SR friendly); the
-          wishlist control is a SIBLING, not nested inside it. The card only
-          opens the piece — adding to the bag happens on the detail page. */}
+    <div className="group relative">
       <button
         type="button"
         data-testid={`product-card-${product.sku}`}
         onClick={open}
-        className="flex flex-col flex-grow w-full text-left cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary"
+        className="flex flex-col w-full text-left cursor-pointer rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
       >
-      <div className="relative aspect-[3/4] bg-secondary overflow-hidden">
-        {imgFailed ? (
-          <ImagePlaceholder aspectRatio="aspect-[3/4]" text={product.style_name} className="rounded-none border-none h-full" />
-        ) : (
-          <img
-            src={product.image_url}
-            alt={product.style_name}
-            loading="lazy"
-            onError={() => setImgFailed(true)}
-            className="w-full h-full object-contain"
-          />
-        )}
-        <MerchBadge badge={product.badge} testId={`card-badge-${product.sku}`} className="absolute bottom-3 left-3" />
-      </div>
-      {/* Card reads: name → colour/print → price. No category eyebrow, no
-          "View" affordance — the whole card is the tap target. */}
-      <div className="p-4 flex flex-col flex-grow bg-card border border-t-0 border-border">
-        <h3 className="font-serif text-foreground text-[15px] leading-snug mb-1 flex-grow line-clamp-2">{product.style_name}</h3>
+        <div className="relative aspect-[3/4] rounded overflow-hidden bg-secondary mb-3">
+          {imgFailed ? (
+            <ImagePlaceholder aspectRatio="aspect-[3/4]" text={product.style_name} className="rounded-none border-none h-full" />
+          ) : (
+            <img
+              src={product.image_url}
+              alt={product.style_name}
+              loading="lazy"
+              onError={() => setImgFailed(true)}
+              className="w-full h-full object-contain transition-transform duration-500 group-hover:scale-[1.02]"
+            />
+          )}
+          <MerchBadge badge={product.badge} testId={`card-badge-${product.sku}`} className="absolute bottom-2.5 left-2.5" />
+        </div>
+        {/* Card reads: name → colour swatch → price. The whole card taps. */}
+        <h3 className="font-serif text-foreground text-[14px] sm:text-[15px] leading-snug mb-1 line-clamp-2">{product.style_name}</h3>
         {product.color && (
-          <div className="text-xs text-muted-foreground mb-3 truncate">{product.color}</div>
+          <div className="flex items-center gap-1.5 mb-1 min-w-0">
+            {hex && <span className="w-3 h-3 rounded-full border border-border shrink-0" style={{ background: hex }} aria-hidden="true" />}
+            <span className="text-[11px] text-muted-foreground truncate">{product.color}</span>
+          </div>
         )}
-        <div className="font-medium text-foreground">{kes(product.price)}</div>
+        <div className="text-[14px] font-medium text-foreground">{kes(product.price)}</div>
+      </button>
+      <div className="absolute top-2 right-2 z-10 flex flex-col gap-1.5">
+        <button
+          data-testid="wishlist-btn"
+          onClick={() => toggle(wishPayload(product))}
+          aria-label={saved ? `Remove ${product.style_name} from wishlist` : `Add ${product.style_name} to wishlist`}
+          aria-pressed={saved}
+          className="w-10 h-10 rounded-full bg-background/85 backdrop-blur flex items-center justify-center shadow-sm hover:bg-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+        >
+          <Heart size={16} className={saved ? "fill-primary text-primary-ink" : "text-foreground"} strokeWidth={1.5} />
+        </button>
+        <button
+          data-testid={`card-quickadd-${product.sku}`}
+          aria-label={`Quick add ${product.style_name}`}
+          onClick={open}
+          className="w-10 h-10 rounded-full bg-background/85 backdrop-blur flex items-center justify-center text-foreground shadow-sm hover:bg-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+        >
+          <ShoppingBag size={15} strokeWidth={1.5} />
+        </button>
       </div>
-      </button>
-      <button
-        data-testid="wishlist-btn"
-        onClick={() => toggle(wishPayload(product))}
-        aria-label={saved ? `Remove ${product.style_name} from wishlist` : `Add ${product.style_name} to wishlist`}
-        aria-pressed={saved}
-        className="absolute top-2 right-2 z-10 w-11 h-11 rounded-full bg-background/80 backdrop-blur flex items-center justify-center shadow-sm hover:bg-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-      >
-        <Heart size={16} className={saved ? "fill-primary text-primary-ink" : "text-foreground"} strokeWidth={1.5} />
-      </button>
     </div>
   );
 }
 
 function SkeletonCard() {
   return (
-    <div className="bg-card rounded overflow-hidden border border-border">
-      <div className="aspect-[3/4] bg-secondary animate-pulse" />
-      <div className="p-4 space-y-3">
+    <div>
+      <div className="aspect-[3/4] bg-secondary rounded animate-pulse mb-3" />
+      <div className="space-y-2">
         <div className="h-4 w-4/5 bg-secondary rounded animate-pulse" />
         <div className="h-3 w-1/2 bg-secondary rounded animate-pulse" />
       </div>
@@ -314,7 +327,7 @@ export default function TabShop({ onOpenProduct, onOpenTryOn }) {
       </div>
 
       {/* Filter + sort controls */}
-      <div className="flex items-center gap-2 mb-4 px-1">
+      <div className="flex flex-wrap items-center gap-2 mb-4 px-1">
         <button
           type="button"
           data-testid="shop-filter-open"

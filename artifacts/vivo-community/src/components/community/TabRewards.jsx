@@ -23,6 +23,10 @@ export default function TabRewards({ member, onMemberUpdate, onOpenPage }) {
   const lifetimePoints = m.lifetime_points ?? points;
   const maxTierPoints = 1000;
   const progressPercent = Math.min((lifetimePoints / maxTierPoints) * 100, 100);
+  const firstName = String(m.full_name || m.name || "").trim().split(/\s+/)[0] || "";
+  // Display-only framing: the KES 500-per-300-pts voucher already on the
+  // redemption ladder, expressed as what her balance could reach today.
+  const voucherValue = Math.floor(points / 300) * 500;
 
   const [tank, setTank] = useState(null);
   const [redemptions, setRedemptions] = useState([]);
@@ -146,35 +150,59 @@ export default function TabRewards({ member, onMemberUpdate, onOpenPage }) {
   return (
     <div className="animate-in fade-in duration-500 max-w-4xl mx-auto space-y-12">
 
-      {/* Balance & tier — one compact band; the screen belongs to the rewards below */}
-      <div data-testid="rewards-balance-card" className={`${cardCls} p-5 sm:p-6`}>
-        <div className="flex items-center justify-between gap-4">
-          <div data-testid="johari-wordmark" className="text-[12px] text-muted-foreground"><JohariWordmark withVivo /></div>
+      {/* Aspirational hero — her name, her tier, her points and what they
+          reach. Charcoal editorial band, never a banking dashboard. The
+          "redeemable value" line reads off the same ladder shown below
+          (KES 500 voucher per 300 pts) — display only, no mechanics change. */}
+      <div data-testid="rewards-balance-card" className="relative overflow-hidden rounded bg-foreground text-background p-6 sm:p-9 -mx-4 sm:mx-0">
+        <div className="absolute top-0 right-0 w-52 h-52 bg-white/5 rounded-full blur-3xl pointer-events-none" aria-hidden="true" />
+        <div className="flex items-center justify-between gap-4 mb-5">
+          <div data-testid="johari-wordmark" className="text-[12px] text-background/70"><JohariWordmark withVivo /></div>
           <TierBadge tier={m.tier} />
         </div>
-        <div className="mt-3 flex flex-wrap items-baseline gap-x-3 gap-y-1">
-          <div data-testid="rewards-points" className="font-serif font-light text-3xl sm:text-4xl tracking-tight text-foreground">
-            {points.toLocaleString()} <span className="text-lg italic opacity-60">pts</span>
+        <h2 className="font-serif text-2xl sm:text-3xl leading-tight mb-1 text-background">
+          {firstName ? `You shine, ${firstName}.` : "You shine."}
+        </h2>
+        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 mt-4">
+          <div data-testid="rewards-points" className="font-serif font-light text-4xl sm:text-5xl tracking-tight">
+            {points.toLocaleString()} <span className="text-xl italic opacity-60">pts</span>
           </div>
-          <span className="text-[10px] font-medium uppercase tracking-[0.2em] text-muted-foreground">Available Balance</span>
+          <span className="text-[10px] font-medium uppercase tracking-[0.2em] text-background/60">Available Balance</span>
         </div>
-        <div className="mt-4">
-          <div className="flex justify-between text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-2">
+        <p data-testid="rewards-value" className="text-[13px] text-background/75 mt-2">
+          {voucherValue > 0
+            ? <>Worth up to <span className="font-medium text-background">KES {voucherValue.toLocaleString()}</span> in vouchers — or keep climbing the ladder below.</>
+            : <>{(300 - points).toLocaleString()} pts to your first KES 500 voucher.</>}
+        </p>
+        <div className="mt-6">
+          <div className="flex justify-between text-[10px] font-semibold uppercase tracking-wider text-background/60 mb-2">
             <span>Tier Progress</span>
-            <span className="text-primary-ink">{lifetimePoints >= maxTierPoints ? 'Max Tier Reached' : `${(maxTierPoints - lifetimePoints).toLocaleString()} pts to next tier`}</span>
+            <span className="text-background/90">{lifetimePoints >= maxTierPoints ? 'Max Tier Reached' : `${(maxTierPoints - lifetimePoints).toLocaleString()} pts to next tier`}</span>
           </div>
-          <div className="h-1 bg-secondary rounded-full overflow-hidden relative">
+          <div className="h-1 bg-white/15 rounded-full overflow-hidden relative">
             <div className="absolute top-0 left-0 h-full bg-primary rounded-full transition-all duration-1000 ease-out" style={{ width: `${progressPercent}%` }} />
           </div>
-          <div className="flex justify-between mt-2 text-[10px] uppercase font-bold tracking-wider text-muted-foreground/70">
+          <div className="flex justify-between mt-2 text-[10px] uppercase font-bold tracking-wider text-background/50">
             <span>Tsavorite</span>
-            <span className={lifetimePoints >= 500 ? 'text-primary-ink' : ''}>Ruby (500+)</span>
-            <span className={lifetimePoints >= 1000 ? 'text-primary-ink' : ''}>Tanzanite (1,000+)</span>
+            <span className={lifetimePoints >= 500 ? 'text-background/90' : ''}>Ruby (500+)</span>
+            <span className={lifetimePoints >= 1000 ? 'text-background/90' : ''}>Tanzanite (1,000+)</span>
           </div>
         </div>
-        <div className="mt-3 flex items-center gap-1.5 text-[12px] text-muted-foreground">
-          <ShoppingBag size={13} /> Earn as you shop — 1 point for every 100 KES spent.
-        </div>
+      </div>
+
+      {/* How it works — three quiet steps */}
+      <div data-testid="rewards-how-it-works" className="grid grid-cols-3 gap-3 sm:gap-4">
+        {[
+          { icon: <ShoppingBag size={18} strokeWidth={1.5} />, title: "Shop & share", sub: "1 pt per 100 KES, more when you post" },
+          { icon: <Star size={18} strokeWidth={1.5} />, title: "Earn points", sub: "Points land when purchases post & entries publish" },
+          { icon: <Gift size={18} strokeWidth={1.5} />, title: "Redeem", sub: "Vouchers to studio shoots — your pick" },
+        ].map((s) => (
+          <div key={s.title} className="text-center px-1 sm:px-3 py-4 border-t border-border">
+            <div className="flex justify-center text-primary-ink mb-2">{s.icon}</div>
+            <div className="font-serif text-[14px] sm:text-[15px] text-foreground mb-1">{s.title}</div>
+            <div className="text-[11px] text-muted-foreground leading-snug">{s.sub}</div>
+          </div>
+        ))}
       </div>
 
       {/* Johari perk — Virtual Try-On. The ladder renders from the server

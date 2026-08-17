@@ -243,32 +243,59 @@ export default function TabProfile({ member, onSignOut, onMemberUpdate, onOpenWi
 
   return (
     <div className="animate-in fade-in duration-500 max-w-5xl mx-auto">
-      {/* Profile Header Card */}
-      <div className={`${cardCls} p-8 sm:p-12 mb-10 relative overflow-hidden`}>
-        {/* Background decorative blob */}
-        <div className="absolute -top-32 -right-32 w-96 h-96 bg-primary/5 rounded-full blur-[80px] pointer-events-none" />
+      {/* Profile header — editorial charcoal band matching the Rewards hero,
+          with the Style DNA / quiz block on the cream ground beneath it. */}
+      <div className="mb-10 rounded overflow-hidden -mx-4 sm:mx-0">
+        <div className="relative bg-foreground text-background p-6 sm:p-10 overflow-hidden">
+          <div className="absolute top-0 right-0 w-52 h-52 bg-white/5 rounded-full blur-3xl pointer-events-none" aria-hidden="true" />
 
-        <div className="relative flex flex-col md:flex-row items-center md:items-start gap-8 z-10">
-          <Avatar initials={m.initials || "V"} tier={m.tier} size="lg" />
+          <div className="relative flex flex-col md:flex-row items-center md:items-start gap-6 md:gap-8 z-10">
+            <Avatar initials={m.initials || "V"} tier={m.tier} size="lg" />
 
-          <div className="flex-grow text-center md:text-left flex flex-col items-center md:items-start">
-            <div className="flex flex-col md:flex-row md:items-center gap-3 mb-2">
-              <h1 data-testid="profile-name" className="text-3xl font-serif text-foreground">{m.name || "Vivo Member"}</h1>
-              <TierBadge tier={m.tier} className="self-center" />
-            </div>
-
-            {m.username && (
-              <div data-testid="profile-username" className="text-sm text-muted-foreground mb-3 flex items-center gap-1">
-                <AtSign size={13} />{m.username}
-                <span className="opacity-60 ml-1">· what members see · your name stays private</span>
+            <div className="flex-grow text-center md:text-left flex flex-col items-center md:items-start">
+              <div className="flex flex-col md:flex-row md:items-center gap-3 mb-2">
+                <h1 data-testid="profile-name" className="text-3xl font-serif text-background">{m.name || "Vivo Member"}</h1>
+                <TierBadge tier={m.tier} className="self-center" />
               </div>
-            )}
 
-            <div className="text-muted-foreground text-sm flex flex-wrap items-center justify-center md:justify-start gap-x-3 gap-y-1 mb-4">
-              <span className="flex items-center gap-1.5"><MapPin size={14} /> {stats.city || "Kenya"}</span>
-              <span className="opacity-40">•</span>
-              <span>Member since {m.joined || "today"}</span>
+              {m.username && (
+                <div data-testid="profile-username" className="text-sm text-background/70 mb-3 flex items-center gap-1">
+                  <AtSign size={13} />{m.username}
+                  <span className="opacity-60 ml-1">· what members see · your name stays private</span>
+                </div>
+              )}
+
+              <div className="text-background/70 text-sm flex flex-wrap items-center justify-center md:justify-start gap-x-3 gap-y-1">
+                <span className="flex items-center gap-1.5"><MapPin size={14} /> {stats.city || "Kenya"}</span>
+                <span className="opacity-40">•</span>
+                <span>Member since {m.joined || "today"}</span>
+              </div>
             </div>
+          </div>
+
+          {/* Stats Row */}
+          <div className="grid grid-cols-4 gap-4 mt-8 pt-6 border-t border-white/15 text-center relative z-10">
+            <div>
+              <div data-testid="profile-posts" className="text-2xl font-serif text-background">{myEntries.filter((e) => e.entry_status === "published").length}</div>
+              <div className="text-[10px] font-bold uppercase tracking-widest text-background/60 mt-2">Posts</div>
+            </div>
+            <div>
+              <div data-testid="profile-points" className="text-2xl font-serif text-primary">{(m.lifetime_points ?? 0).toLocaleString()}</div>
+              <div className="text-[10px] font-bold uppercase tracking-widest text-background/60 mt-2">Lifetime Pts</div>
+            </div>
+            <div>
+              <div data-testid="profile-orders" className="text-2xl font-serif text-background">{stats.orders ?? 0}</div>
+              <div className="text-[10px] font-bold uppercase tracking-widest text-background/60 mt-2">Orders</div>
+            </div>
+            <div>
+              <div className="text-2xl font-serif text-background">0</div>
+              <div className="text-[10px] font-bold uppercase tracking-widest text-background/60 mt-2">Following</div>
+            </div>
+          </div>
+        </div>
+
+        {/* Size + Style DNA strip on the cream ground */}
+        <div className="pt-6 px-1 sm:px-0 flex flex-col items-center md:items-start">
 
             {stats.preferred_size && (
               <div className="inline-flex items-center gap-1.5 bg-secondary text-foreground text-xs font-medium px-3 py-1.5 rounded border border-border mb-6">
@@ -304,27 +331,6 @@ export default function TabProfile({ member, onSignOut, onMemberUpdate, onOpenWi
                 </div>
               </div>
             )}
-          </div>
-        </div>
-
-        {/* Stats Row */}
-        <div className="grid grid-cols-4 gap-4 mt-12 pt-8 border-t border-border text-center relative z-10">
-          <div>
-            <div data-testid="profile-posts" className="text-2xl font-serif text-foreground">{myEntries.filter((e) => e.entry_status === "published").length}</div>
-            <div className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground mt-2">Posts</div>
-          </div>
-          <div>
-            <div data-testid="profile-points" className="text-2xl font-serif text-primary-ink">{(m.lifetime_points ?? 0).toLocaleString()}</div>
-            <div className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground mt-2">Lifetime Pts</div>
-          </div>
-          <div>
-            <div data-testid="profile-orders" className="text-2xl font-serif text-foreground">{stats.orders ?? 0}</div>
-            <div className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground mt-2">Orders</div>
-          </div>
-          <div>
-            <div className="text-2xl font-serif text-foreground">0</div>
-            <div className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground mt-2">Following</div>
-          </div>
         </div>
       </div>
 

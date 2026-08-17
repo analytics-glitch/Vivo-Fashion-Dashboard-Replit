@@ -4,7 +4,9 @@ import PostDetailModal from "./PostDetailModal";
 import ChallengeDetail from "./ChallengeDetail";
 import { api } from "@/lib/api";
 import { useAuthImage } from "./authImage";
-import { TierBadge, Avatar, ImagePlaceholder, cardCls } from "./ui";
+import { TierBadge, Avatar, ImagePlaceholder, cardCls, brandAsset } from "./ui";
+import { NEWS } from "./newsData";
+import { NewsCardCompact } from "./NewsSection";
 import {
   Trophy, Users, Heart, MessageCircle, Clock, Sparkles, Plus, X,
   ChevronRight, HandHeart, Camera, HelpCircle, Play,
@@ -83,17 +85,21 @@ function GridVisual({ post }) {
   return <ImagePlaceholder aspectRatio="aspect-[4/5]" className="rounded-none border-none" text={`Look by @${post.author.username}`} />;
 }
 
+/* Image-led feed tile — no card chrome: the photo carries the tile, the
+   byline and restrained engagement counts sit quietly beneath it. */
 function GridPost({ post, onOpen }) {
   return (
     <button type="button" onPointerDown={(e) => e.preventDefault()} onClick={onOpen} data-testid={`grid-post-${post.id}`}
             aria-label={`Open post by @${post.author.username}`}
-            className="bg-card rounded overflow-hidden shadow-sm hover:shadow-md transition-shadow group cursor-pointer relative border border-border block w-full text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
-      <GridVisual post={post} />
-      <div className="px-2.5 py-2 flex items-center justify-between gap-2">
+            className="group cursor-pointer relative block w-full text-left rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
+      <div className="rounded overflow-hidden mb-2">
+        <GridVisual post={post} />
+      </div>
+      <div className="flex items-center justify-between gap-2 px-0.5">
         <span className="text-[11px] font-medium text-muted-foreground truncate">@{post.author.username}</span>
-        <span className="flex items-center gap-2 text-[11px] text-muted-foreground shrink-0">
-          <span className="flex items-center gap-1"><Heart size={12} /> {post.like_count}</span>
-          <span className="flex items-center gap-1"><MessageCircle size={12} /> {post.comment_count}</span>
+        <span className="flex items-center gap-2.5 text-[11px] text-muted-foreground shrink-0">
+          <span className="flex items-center gap-1"><Heart size={12} strokeWidth={1.5} /> {post.like_count}</span>
+          <span className="flex items-center gap-1"><MessageCircle size={12} strokeWidth={1.5} /> {post.comment_count}</span>
         </span>
       </div>
     </button>
@@ -135,11 +141,21 @@ const SUB_TABS = [
 ];
 const SUB_IDS = SUB_TABS.map((t) => t.id);
 
+/* Feed filter chips — the editorial names, mapped onto the existing content
+   types (the API's post_type filter is unchanged): For You = everything,
+   Styling = looks, Conversations = style questions, Hauls = hauls. Events
+   jumps to the Events sub-tab; Stores shows the store-news stories that
+   already live in Vivo News. */
 const FEED_CHIPS = [
-  ["", "All"],
-  ["look", "Looks"],
-  ["question", "Style questions"],
-  ["haul", "Hauls"],
+  // ids stay the historical type-derived selectors (chip-all, chip-look,
+  // chip-question, chip-haul) so existing test consumers keep working; only
+  // the labels adopt the new editorial names.
+  { id: "all", label: "For You", type: "" },
+  { id: "look", label: "Styling", type: "look" },
+  { id: "events", label: "Events", jump: "events" },
+  { id: "stores", label: "Stores", view: "stores" },
+  { id: "question", label: "Conversations", type: "question" },
+  { id: "haul", label: "Hauls", type: "haul" },
 ];
 
 export default function TabCommunity({ member, subNav, onSubChange, onOpenEvent, onOpenProduct, onOpenPage, onOpenFabulas }) {
@@ -182,6 +198,9 @@ export default function TabCommunity({ member, subNav, onSubChange, onOpenEvent,
   // per-member state shared with the detail modal via patchPost.
   const [feed, setFeed] = useState(null); // null = first load
   const [feedType, setFeedType] = useState("");
+  // "" = normal feed; "stores" = the store-news stories panel (client-side
+  // only — nothing about the feed API changes).
+  const [feedView, setFeedView] = useState("");
   const [detailIdx, setDetailIdx] = useState(-1);
   const [restoreY, setRestoreY] = useState(0); // captured at tap time
   useEffect(() => {
@@ -241,6 +260,39 @@ export default function TabCommunity({ member, subNav, onSubChange, onOpenEvent,
       {/* Feed SubTab */}
       {subTab === "feed" && (
         <>
+          {/* Featured campaign — the live challenge as an image-led editorial
+              header. Pure restyling of existing content: entering still goes
+              through the Challenges flow. */}
+          {(() => {
+            const featured = (chList || []).find((c) => !c.closed);
+            if (!featured) return null;
+            return (
+              <section data-testid="feed-featured" className="relative rounded overflow-hidden bg-secondary mb-8 -mx-4 sm:mx-0">
+                <div className="aspect-[4/3] sm:aspect-[21/9] relative">
+                  <img
+                    src={brandAsset("community.jpg")}
+                    alt=""
+                    className="w-full h-full object-cover object-[center_25%]"
+                    draggable={false}
+                  />
+                  <div className="absolute inset-x-0 bottom-0 h-3/4 bg-gradient-to-t from-black/70 via-black/25 to-transparent pointer-events-none" />
+                  <div className="absolute inset-x-0 bottom-0 p-5 sm:p-8 text-white">
+                    <div className="text-[10px] font-bold uppercase tracking-[0.25em] text-white/80 mb-1.5">Featured challenge</div>
+                    <h2 className="font-serif text-2xl sm:text-3xl leading-tight mb-1.5 text-white">{featured.title}</h2>
+                    <p className="text-[13px] text-white/85 max-w-md line-clamp-2 mb-4">{featured.description}</p>
+                    <button
+                      data-testid="feed-featured-cta"
+                      onClick={() => selectSub("challenges")}
+                      className="h-10 px-6 rounded bg-white text-neutral-900 font-medium text-[13px] hover:bg-white/90 active:scale-[0.98] transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
+                    >
+                      {featured.my_entry ? "View challenge" : `Enter — earn ${featured.points} pts`}
+                    </button>
+                  </div>
+                </div>
+              </section>
+            );
+          })()}
+
           {!welcomeDismissed && (
             <div data-testid="feed-welcome" className="relative bg-primary/5 border border-primary/20 rounded p-5 sm:p-6 mb-6">
               <button aria-label="Dismiss welcome" data-testid="welcome-dismiss" onClick={dismissWelcome}
@@ -265,41 +317,57 @@ export default function TabCommunity({ member, subNav, onSubChange, onOpenEvent,
             </div>
           )}
 
-          {/* Composer — always in reach at the top of the feed */}
-          <div data-testid="feed-composer" className={`${cardCls} p-3.5 sm:p-4 mb-5 flex flex-wrap items-center gap-2.5`}>
+          {/* Composer — an elegant, quiet invitation at the top of the feed */}
+          <div data-testid="feed-composer" className="border-b border-border pb-5 mb-6 flex flex-wrap items-center gap-3">
             <Avatar initials={initialsOf(member?.username)} size="sm" />
             <button data-testid="composer-look" onClick={() => setComposeType("look")}
-                    className="flex-1 min-w-[150px] h-11 px-4 rounded bg-secondary/70 border border-border text-left text-[13px] text-muted-foreground hover:bg-secondary transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
+                    className="flex-1 min-w-[150px] h-11 px-4 rounded-full bg-secondary/60 text-left font-serif italic text-[14px] text-muted-foreground hover:bg-secondary transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
               Share a look with the community…
             </button>
             <div className="flex gap-2">
               <button data-testid="composer-look-btn" onClick={() => setComposeType("look")}
-                      className="h-11 px-3.5 rounded bg-primary text-primary-foreground text-[13px] font-medium inline-flex items-center gap-1.5 hover:opacity-90 active:scale-[0.98] transition-all">
-                <Camera size={15} /> Share a look
+                      className="h-11 px-4 rounded-full bg-foreground text-background text-[13px] font-medium inline-flex items-center gap-1.5 hover:opacity-90 active:scale-[0.98] transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2">
+                <Camera size={15} strokeWidth={1.5} /> Share a look
               </button>
               <button data-testid="composer-question-btn" onClick={() => setComposeType("question")}
-                      className="h-11 px-3.5 rounded bg-background border border-border text-foreground text-[13px] font-medium inline-flex items-center gap-1.5 hover:bg-secondary transition-colors">
-                <HelpCircle size={15} /> Ask
+                      className="h-11 px-4 rounded-full bg-background border border-border text-foreground text-[13px] font-medium inline-flex items-center gap-1.5 hover:bg-secondary transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
+                <HelpCircle size={15} strokeWidth={1.5} /> Ask
               </button>
             </div>
           </div>
 
-          {/* Filter chips */}
-          <div data-testid="feed-chips" className="flex gap-2 overflow-x-auto hide-scrollbar mb-6">
-            {FEED_CHIPS.map(([v, label]) => (
-              <button key={v || "all"} data-testid={`chip-${v || "all"}`} aria-pressed={feedType === v}
-                      onClick={() => setFeedType(v)}
-                      className={`h-9 px-3.5 rounded-full text-[12px] font-semibold whitespace-nowrap border transition-colors ${
-                        feedType === v
-                          ? "bg-foreground text-background border-foreground"
-                          : "bg-background text-muted-foreground border-border hover:text-foreground hover:bg-secondary"
-                      }`}>
-                {label}
-              </button>
-            ))}
+          {/* Filter chips — editorial names over the existing content types */}
+          <div data-testid="feed-chips" className="flex gap-2 overflow-x-auto hide-scrollbar mb-6 -mx-4 px-4 sm:mx-0 sm:px-0">
+            {FEED_CHIPS.map((c) => {
+              const active = c.jump ? false : c.view ? feedView === c.view : (feedView === "" && feedType === c.type);
+              return (
+                <button key={c.id} data-testid={`chip-${c.id}`} aria-pressed={active}
+                        onClick={() => {
+                          if (c.jump) { selectSub(c.jump); return; }
+                          if (c.view) { setFeedView(c.view); return; }
+                          setFeedView(""); setFeedType(c.type);
+                        }}
+                        className={`h-9 px-4 rounded-full text-[12px] font-semibold whitespace-nowrap border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
+                          active
+                            ? "bg-foreground text-background border-foreground"
+                            : "bg-background text-muted-foreground border-border hover:text-foreground hover:bg-secondary"
+                        }`}>
+                  {c.label}
+                </button>
+              );
+            })}
           </div>
 
-          {sharedLooks.length > 0 && feedType === "" && (
+          {/* Stores view — the store stories that already live in Vivo News */}
+          {feedView === "stores" && (
+            <div data-testid="feed-stores" className="space-y-4 mb-10">
+              {NEWS.map((n) => (
+                <NewsCardCompact key={n.id} article={n} onOpen={(id) => onOpenPage?.(`news-${id}`)} />
+              ))}
+            </div>
+          )}
+
+          {feedView === "" && sharedLooks.length > 0 && feedType === "" && (
             <section data-testid="shared-looks-strip" className="mb-8">
               <div className="flex items-center gap-2 mb-3">
                 <Sparkles size={14} className="text-primary-ink" />
@@ -311,17 +379,21 @@ export default function TabCommunity({ member, subNav, onSubChange, onOpenEvent,
               </div>
             </section>
           )}
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-6 items-start" data-testid="community-feed-grid">
-            {feed === null
-              ? Array.from({ length: 8 }).map((_, i) => (
-                  <div key={i} className="bg-card rounded border border-border overflow-hidden animate-pulse">
-                    <div className="aspect-[4/5] bg-secondary/60" />
-                  </div>
-                ))
-              : feed.map((p, i) => <GridPost key={p.id} post={p} onOpen={() => { setRestoreY(window.scrollY); setDetailIdx(i); }} />)}
-          </div>
-          {feed !== null && feed.length === 0 && (
-            <p className="text-muted-foreground text-sm italic mt-4">Nothing here yet — be the first to share.</p>
+          {feedView === "" && (
+            <>
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-6 items-start" data-testid="community-feed-grid">
+                {feed === null
+                  ? Array.from({ length: 8 }).map((_, i) => (
+                      <div key={i} className="rounded overflow-hidden animate-pulse">
+                        <div className="aspect-[4/5] bg-secondary/60 rounded" />
+                      </div>
+                    ))
+                  : feed.map((p, i) => <GridPost key={p.id} post={p} onOpen={() => { setRestoreY(window.scrollY); setDetailIdx(i); }} />)}
+              </div>
+              {feed !== null && feed.length === 0 && (
+                <p className="text-muted-foreground text-sm italic mt-4">Nothing here yet — be the first to share.</p>
+              )}
+            </>
           )}
 
           {/* Give Your Vivo a Second Life */}

@@ -69,6 +69,21 @@ export function TierBadge({ tier, className = "" }) {
   );
 }
 
+/* Colour-swatch lookup shared by every editorial product card (Shop grid,
+   Home rails, wishlist). Best-effort: unknown colours simply show no dot. */
+export const SWATCH_HEX = {
+  black: "#1f1f1f", white: "#f5f5f2", cream: "#efe7d8", beige: "#d9c7ab", brown: "#7a5236",
+  tan: "#c8a06a", navy: "#22304d", blue: "#3f6ab5", "light blue": "#a9c6e8", green: "#3f6d4e",
+  olive: "#6b6b3a", yellow: "#e5c33c", mustard: "#d0a12c", orange: "#e0662a", red: "#b03030",
+  maroon: "#6e2432", burgundy: "#6e2432", wine: "#5d1f30", pink: "#e2a3b6", purple: "#7757a8",
+  lilac: "#b9a3d6", grey: "#9a9a9a", gray: "#9a9a9a", multi: "#c9a0e0",
+};
+export const swatchFor = (color) => {
+  const c = String(color || "").toLowerCase();
+  for (const [name, hex] of Object.entries(SWATCH_HEX)) if (c.includes(name)) return hex;
+  return "";
+};
+
 /* One order can carry at most this many units of a single size — bag
    quantity caps must never mirror exact stock (counts are hidden shop-wide,
    including in API payloads). */
