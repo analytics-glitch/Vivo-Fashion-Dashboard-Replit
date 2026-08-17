@@ -27,11 +27,14 @@ import type {
   CategorySales,
   ChannelSales,
   CommentInput,
+  GetWorkspacePlanParams,
   HealthStatus,
   InventoryHealth,
   KpiSummary,
   ListWorkspaceStylesParams,
   LoginInput,
+  PlanCreate,
+  PlanStyleInput,
   PlanUpdate,
   ProductSales,
   RegionSales,
@@ -44,6 +47,7 @@ import type {
   WorkspaceDashboard,
   WorkspacePlan,
   WorkspacePlanHistory,
+  WorkspacePlanIndexItem,
   WorkspaceSession,
   WorkspaceShowcase,
   WorkspaceStyle,
@@ -1443,20 +1447,27 @@ export function useGetWorkspaceStylePlm<TData = Awaited<ReturnType<typeof getWor
 
 
 
-export const getGetWorkspacePlanUrl = () => {
+export const getGetWorkspacePlanUrl = (params?: GetWorkspacePlanParams,) => {
+  const normalizedParams = new URLSearchParams();
 
+  Object.entries(params || {}).forEach(([key, value]) => {
 
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : value.toString())
+    }
+  });
 
+  const stringifiedParams = normalizedParams.toString();
 
-  return `/api/workspace/plan`
+  return stringifiedParams.length > 0 ? `/api/workspace/plan?${stringifiedParams}` : `/api/workspace/plan`
 }
 
 /**
- * @summary Get the active quarterly plan
+ * @summary Get a quarterly plan
  */
-export const getWorkspacePlan = async ( options?: RequestInit): Promise<WorkspacePlan> => {
+export const getWorkspacePlan = async (params?: GetWorkspacePlanParams, options?: RequestInit): Promise<WorkspacePlan> => {
 
-  return customFetch<WorkspacePlan>(getGetWorkspacePlanUrl(),
+  return customFetch<WorkspacePlan>(getGetWorkspacePlanUrl(params),
   {
     ...options,
     method: 'GET'
@@ -1469,23 +1480,23 @@ export const getWorkspacePlan = async ( options?: RequestInit): Promise<Workspac
 
 
 
-export const getGetWorkspacePlanQueryKey = () => {
+export const getGetWorkspacePlanQueryKey = (params?: GetWorkspacePlanParams,) => {
     return [
-    `/api/workspace/plan`
+    `/api/workspace/plan`, ...(params ? [params] : [])
     ] as const;
     }
 
 
-export const getGetWorkspacePlanQueryOptions = <TData = Awaited<ReturnType<typeof getWorkspacePlan>>, TError = ErrorType<unknown>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getWorkspacePlan>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+export const getGetWorkspacePlanQueryOptions = <TData = Awaited<ReturnType<typeof getWorkspacePlan>>, TError = ErrorType<unknown>>(params?: GetWorkspacePlanParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getWorkspacePlan>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
 ) => {
 
 const {query: queryOptions, request: requestOptions} = options ?? {};
 
-  const queryKey =  queryOptions?.queryKey ?? getGetWorkspacePlanQueryKey();
+  const queryKey =  queryOptions?.queryKey ?? getGetWorkspacePlanQueryKey(params);
 
 
 
-    const queryFn: QueryFunction<Awaited<ReturnType<typeof getWorkspacePlan>>> = ({ signal }) => getWorkspacePlan({ signal, ...requestOptions });
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getWorkspacePlan>>> = ({ signal }) => getWorkspacePlan(params, { signal, ...requestOptions });
 
 
 
@@ -1499,15 +1510,15 @@ export type GetWorkspacePlanQueryError = ErrorType<unknown>
 
 
 /**
- * @summary Get the active quarterly plan
+ * @summary Get a quarterly plan
  */
 
 export function useGetWorkspacePlan<TData = Awaited<ReturnType<typeof getWorkspacePlan>>, TError = ErrorType<unknown>>(
-  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getWorkspacePlan>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+ params?: GetWorkspacePlanParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getWorkspacePlan>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
 
  ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
 
-  const queryOptions = getGetWorkspacePlanQueryOptions(options)
+  const queryOptions = getGetWorkspacePlanQueryOptions(params,options)
 
   const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
 
@@ -1519,6 +1530,77 @@ export function useGetWorkspacePlan<TData = Awaited<ReturnType<typeof getWorkspa
 
 
 
+
+export const getCreateWorkspacePlanUrl = () => {
+
+
+
+
+  return `/api/workspace/plan`
+}
+
+/**
+ * @summary Create a quarterly plan
+ */
+export const createWorkspacePlan = async (planCreate: PlanCreate, options?: RequestInit): Promise<WorkspacePlan> => {
+
+  return customFetch<WorkspacePlan>(getCreateWorkspacePlanUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      planCreate,)
+  }
+);}
+
+
+
+
+export const getCreateWorkspacePlanMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createWorkspacePlan>>, TError,{data: BodyType<PlanCreate>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof createWorkspacePlan>>, TError,{data: BodyType<PlanCreate>}, TContext> => {
+
+const mutationKey = ['createWorkspacePlan'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof createWorkspacePlan>>, {data: BodyType<PlanCreate>}> = (props) => {
+          const {data} = props ?? {};
+
+          return  createWorkspacePlan(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type CreateWorkspacePlanMutationResult = NonNullable<Awaited<ReturnType<typeof createWorkspacePlan>>>
+    export type CreateWorkspacePlanMutationBody = BodyType<PlanCreate>
+    export type CreateWorkspacePlanMutationError = ErrorType<unknown>
+
+    /**
+ * @summary Create a quarterly plan
+ */
+export const useCreateWorkspacePlan = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createWorkspacePlan>>, TError,{data: BodyType<PlanCreate>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof createWorkspacePlan>>,
+        TError,
+        {data: BodyType<PlanCreate>},
+        TContext
+      > => {
+      return useMutation(getCreateWorkspacePlanMutationOptions(options));
+    }
 
 export const getUpdateWorkspacePlanUrl = () => {
 
@@ -1589,6 +1671,154 @@ export const useUpdateWorkspacePlan = <TError = ErrorType<unknown>,
         TContext
       > => {
       return useMutation(getUpdateWorkspacePlanMutationOptions(options));
+    }
+
+export const getListWorkspacePlansUrl = () => {
+
+
+
+
+  return `/api/workspace/plans`
+}
+
+/**
+ * @summary List quarterly plans with style counts
+ */
+export const listWorkspacePlans = async ( options?: RequestInit): Promise<WorkspacePlanIndexItem[]> => {
+
+  return customFetch<WorkspacePlanIndexItem[]>(getListWorkspacePlansUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getListWorkspacePlansQueryKey = () => {
+    return [
+    `/api/workspace/plans`
+    ] as const;
+    }
+
+
+export const getListWorkspacePlansQueryOptions = <TData = Awaited<ReturnType<typeof listWorkspacePlans>>, TError = ErrorType<unknown>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listWorkspacePlans>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListWorkspacePlansQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listWorkspacePlans>>> = ({ signal }) => listWorkspacePlans({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listWorkspacePlans>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type ListWorkspacePlansQueryResult = NonNullable<Awaited<ReturnType<typeof listWorkspacePlans>>>
+export type ListWorkspacePlansQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary List quarterly plans with style counts
+ */
+
+export function useListWorkspacePlans<TData = Awaited<ReturnType<typeof listWorkspacePlans>>, TError = ErrorType<unknown>>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listWorkspacePlans>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getListWorkspacePlansQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+
+export const getAddWorkspacePlanStyleUrl = () => {
+
+
+
+
+  return `/api/workspace/plan/styles`
+}
+
+/**
+ * @summary Add an existing or placeholder style to a quarterly plan
+ */
+export const addWorkspacePlanStyle = async (planStyleInput: PlanStyleInput, options?: RequestInit): Promise<WorkspacePlan> => {
+
+  return customFetch<WorkspacePlan>(getAddWorkspacePlanStyleUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      planStyleInput,)
+  }
+);}
+
+
+
+
+export const getAddWorkspacePlanStyleMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof addWorkspacePlanStyle>>, TError,{data: BodyType<PlanStyleInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof addWorkspacePlanStyle>>, TError,{data: BodyType<PlanStyleInput>}, TContext> => {
+
+const mutationKey = ['addWorkspacePlanStyle'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof addWorkspacePlanStyle>>, {data: BodyType<PlanStyleInput>}> = (props) => {
+          const {data} = props ?? {};
+
+          return  addWorkspacePlanStyle(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type AddWorkspacePlanStyleMutationResult = NonNullable<Awaited<ReturnType<typeof addWorkspacePlanStyle>>>
+    export type AddWorkspacePlanStyleMutationBody = BodyType<PlanStyleInput>
+    export type AddWorkspacePlanStyleMutationError = ErrorType<unknown>
+
+    /**
+ * @summary Add an existing or placeholder style to a quarterly plan
+ */
+export const useAddWorkspacePlanStyle = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof addWorkspacePlanStyle>>, TError,{data: BodyType<PlanStyleInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof addWorkspacePlanStyle>>,
+        TError,
+        {data: BodyType<PlanStyleInput>},
+        TContext
+      > => {
+      return useMutation(getAddWorkspacePlanStyleMutationOptions(options));
     }
 
 export const getListWorkspacePlanHistoryUrl = () => {

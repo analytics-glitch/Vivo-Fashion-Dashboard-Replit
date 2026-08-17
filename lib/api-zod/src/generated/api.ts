@@ -266,7 +266,8 @@ export const UpdateWorkspaceStyleBody = zod.object({
   "owner": zod.string().optional(),
   "targetDate": zod.string().optional(),
   "progress": zod.number().optional(),
-  "price": zod.number().optional()
+  "price": zod.number().optional(),
+  "tier": zod.string().optional()
 })
 
 export const UpdateWorkspaceStyleResponse = zod.object({
@@ -331,8 +332,16 @@ export const GetWorkspaceStylePlmResponse = zod.object({
 
 
 /**
- * @summary Get the active quarterly plan
+ * @summary Get a quarterly plan
  */
+export const getWorkspacePlanQueryQuarterRegExp = new RegExp('^Q[1-4]$');
+
+
+export const GetWorkspacePlanQueryParams = zod.object({
+  "quarter": zod.coerce.string().regex(getWorkspacePlanQueryQuarterRegExp).optional(),
+  "year": zod.coerce.number().optional()
+})
+
 export const GetWorkspacePlanResponse = zod.object({
   "id": zod.number(),
   "name": zod.string(),
@@ -357,9 +366,27 @@ export const GetWorkspacePlanResponse = zod.object({
 
 
 /**
+ * @summary Create a quarterly plan
+ */
+
+export const createWorkspacePlanBodyQuarterRegExp = new RegExp('^Q[1-4]$');
+export const createWorkspacePlanBodyYearMin = 2020;
+export const createWorkspacePlanBodyYearMax = 2100;
+
+
+
+export const CreateWorkspacePlanBody = zod.object({
+  "name": zod.string().min(1),
+  "quarter": zod.string().regex(createWorkspacePlanBodyQuarterRegExp),
+  "year": zod.number().min(createWorkspacePlanBodyYearMin).max(createWorkspacePlanBodyYearMax)
+})
+
+
+/**
  * @summary Update quarterly plan metadata
  */
 export const UpdateWorkspacePlanBody = zod.object({
+  "planId": zod.number().optional(),
   "name": zod.string().optional(),
   "quarter": zod.string().optional(),
   "year": zod.number().optional()
@@ -385,6 +412,31 @@ export const UpdateWorkspacePlanResponse = zod.object({
   "market": zod.string().optional()
 })),
   "summary": zod.record(zod.string(), zod.unknown())
+})
+
+
+/**
+ * @summary List quarterly plans with style counts
+ */
+export const ListWorkspacePlansResponseItem = zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "quarter": zod.string(),
+  "year": zod.number(),
+  "styleCount": zod.number(),
+  "status": zod.string()
+})
+export const ListWorkspacePlansResponse = zod.array(ListWorkspacePlansResponseItem)
+
+
+/**
+ * @summary Add an existing or placeholder style to a quarterly plan
+ */
+export const AddWorkspacePlanStyleBody = zod.object({
+  "planId": zod.number(),
+  "styleId": zod.number().optional(),
+  "category": zod.string().optional(),
+  "tier": zod.string().optional()
 })
 
 

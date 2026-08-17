@@ -6,9 +6,10 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export interface PlanUpdate {
-  planId?: number;
-  name?: string;
-  quarter?: string;
-  year?: number;
-}
+export type GetWorkspacePlanParams = {
+/**
+ * @pattern ^Q[1-4]$
+ */
+quarter?: string;
+year?: number;
+};

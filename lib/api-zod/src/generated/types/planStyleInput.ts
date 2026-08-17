@@ -6,9 +6,9 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export interface PlanUpdate {
-  planId?: number;
-  name?: string;
-  quarter?: string;
-  year?: number;
+export interface PlanStyleInput {
+  planId: number;
+  styleId?: number;
+  category?: string;
+  tier?: string;
 }

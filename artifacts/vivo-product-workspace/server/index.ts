@@ -145,6 +145,7 @@ async function ensureSchema() {
       name TEXT NOT NULL,
       brand TEXT NOT NULL,
       category TEXT NOT NULL,
+      tier TEXT NOT NULL DEFAULT 'Core',
       status TEXT NOT NULL,
       owner TEXT NOT NULL,
       target_date DATE NOT NULL,
@@ -306,6 +307,7 @@ async function ensureSchema() {
       style_id INTEGER NOT NULL UNIQUE REFERENCES ${schema}.styles(id) ON DELETE CASCADE,
       payload JSONB NOT NULL DEFAULT '{}'::jsonb
     );
+    ALTER TABLE ${schema}.styles ADD COLUMN IF NOT EXISTS tier TEXT NOT NULL DEFAULT 'Core';
   `);
 
   for (const user of users) {
@@ -426,6 +428,14 @@ async function ensureSchema() {
      WHERE NOT EXISTS (SELECT 1 FROM ${schema}.quarterly_plans WHERE quarter='Q3' AND year=2026)
      RETURNING id`,
   );
+  for (const [name, quarter] of [["Q1 2026 Assortment Plan", "Q1"], ["Q2 2026 Assortment Plan", "Q2"], ["Q4 2026 Assortment Plan", "Q4"]] as const) {
+    await pool.query(
+      `INSERT INTO ${schema}.quarterly_plans (name,quarter,year)
+       SELECT $1,$2,2026
+       WHERE NOT EXISTS (SELECT 1 FROM ${schema}.quarterly_plans WHERE quarter=$2 AND year=2026)`,
+      [name, quarter],
+    );
+  }
   const planId = plan.rows[0]?.id ?? (await pool.query<{ id: number }>(`SELECT id FROM ${schema}.quarterly_plans WHERE quarter='Q3' AND year=2026 LIMIT 1`)).rows[0]?.id;
   if (planId) {
     for (let i = 0; i < Math.min(15, styleResult.rows.length); i += 1) {
@@ -499,7 +509,7 @@ async function requireUser(req: AuthRequest, res: Response, next: NextFunction) 
 
 async function getStyle(id: number) {
   const result = await pool.query(
-    `SELECT id,code,name,brand,category,status,owner,to_char(target_date,'YYYY-MM-DD') AS "targetDate",image,progress::float,price::float,market
+    `SELECT id,code,name,brand,category,tier,status,owner,to_char(target_date,'YYYY-MM-DD') AS "targetDate",image,progress::float,price::float,market
      FROM ${schema}.styles WHERE id=$1`,
     [id],
   );
@@ -534,6 +544,28 @@ async function styleDetail(id: number) {
     costEstimate: costEstimate.rows[0] ?? {},
     productionOrder: productionOrder.rows[0]?.payload ?? {},
   };
+}
+
+async function planPayload(planId: number) {
+  const plan = await pool.query(`SELECT id,name,quarter,year,status FROM ${schema}.quarterly_plans WHERE id=$1`, [planId]);
+  const row = plan.rows[0];
+  if (!row) return null;
+  const styles = await pool.query(
+    `SELECT s.id,s.code,s.name,s.brand,s.category,s.tier,s.status,s.owner,to_char(s.target_date,'YYYY-MM-DD') AS "targetDate",s.image,s.progress::float,s.price::float,s.market,ps.position,ps.decision
+     FROM ${schema}.plan_styles ps JOIN ${schema}.styles s ON s.id=ps.style_id WHERE ps.plan_id=$1 ORDER BY ps.position,s.id`,
+    [planId],
+  );
+  const summary = await pool.query(
+    `SELECT COUNT(*)::int AS total,
+      COUNT(*) FILTER (WHERE s.status='Approved')::int AS approved,
+      COUNT(*) FILTER (WHERE s.status='In review')::int AS review,
+      COUNT(*) FILTER (WHERE s.status='Proto')::int AS proto,
+      'Balanced'::text AS "rangeShape",
+      '58.2%'::text AS "targetMargin"
+     FROM ${schema}.plan_styles ps JOIN ${schema}.styles s ON s.id=ps.style_id WHERE ps.plan_id=$1`,
+    [planId],
+  );
+  return { ...row, styles: styles.rows, summary: summary.rows[0] ?? {} };
 }
 
 router.get("/healthz", (_req, res) => res.json({ status: "ok" }));
@@ -632,7 +664,7 @@ router.get("/styles", async (req, res, next) => {
       clauses.push(`(name ILIKE $${values.length} OR code ILIKE $${values.length} OR owner ILIKE $${values.length})`);
     }
     const result = await pool.query(
-      `SELECT id,code,name,brand,category,status,owner,to_char(target_date,'YYYY-MM-DD') AS "targetDate",image,progress::float,price::float,market
+      `SELECT id,code,name,brand,category,tier,status,owner,to_char(target_date,'YYYY-MM-DD') AS "targetDate",image,progress::float,price::float,market
        FROM ${schema}.styles ${clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""} ORDER BY target_date ASC, id ASC`,
       values,
     );
@@ -691,29 +723,157 @@ router.patch("/styles/:id", async (req: AuthRequest, res, next) => {
   }
 });
 
-router.get("/plan", async (_req, res, next) => {
+router.get("/plan", async (req, res, next) => {
   try {
-    const plan = await pool.query(`SELECT id,name,quarter,year FROM ${schema}.quarterly_plans WHERE quarter='Q3' AND year=2026 LIMIT 1`);
+    const quarter = /^Q[1-4]$/.test(String(req.query.quarter ?? "")) ? String(req.query.quarter) : "Q3";
+    const parsedYear = Number(req.query.year);
+    const year = Number.isInteger(parsedYear) && parsedYear >= 2020 && parsedYear <= 2100 ? parsedYear : 2026;
+    const plan = await pool.query(`SELECT id FROM ${schema}.quarterly_plans WHERE quarter=$1 AND year=$2 LIMIT 1`, [quarter, year]);
     const row = plan.rows[0];
     if (!row) {
       res.status(404).json({ error: "Plan not found" });
       return;
     }
-    const styles = await pool.query(
-      `SELECT s.id,s.code,s.name,s.brand,s.category,s.status,s.owner,to_char(s.target_date,'YYYY-MM-DD') AS "targetDate",s.image,s.progress::float,s.price::float,s.market,ps.position,ps.decision
-       FROM ${schema}.plan_styles ps JOIN ${schema}.styles s ON s.id=ps.style_id WHERE ps.plan_id=$1 ORDER BY ps.position`,
-      [row.id],
-    );
-    const summary = await pool.query(`SELECT COUNT(*)::int AS total,COUNT(*) FILTER (WHERE s.status='Approved')::int AS approved,COUNT(*) FILTER (WHERE s.status='In review')::int AS review,COUNT(*) FILTER (WHERE s.status='Proto')::int AS proto, 'Balanced'::text AS "rangeShape", '58.2%'::text AS "targetMargin" FROM ${schema}.plan_styles ps JOIN ${schema}.styles s ON s.id=ps.style_id WHERE ps.plan_id=$1`, [row.id]);
-    res.json({ ...row, styles: styles.rows, summary: summary.rows[0] ?? {} });
+    const payload = await planPayload(row.id);
+    if (!payload) {
+      res.status(404).json({ error: "Plan not found" });
+      return;
+    }
+    res.json(payload);
   } catch (error) {
     next(error);
   }
 });
 
+router.get("/plans", async (_req, res, next) => {
+  try {
+    const result = await pool.query(
+      `SELECT p.id,p.name,p.quarter,p.year,p.status,COUNT(ps.style_id)::int AS "styleCount"
+       FROM ${schema}.quarterly_plans p
+       LEFT JOIN ${schema}.plan_styles ps ON ps.plan_id=p.id
+       GROUP BY p.id
+       ORDER BY p.year DESC,p.quarter ASC`,
+    );
+    res.json(result.rows);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post("/plan", async (req: AuthRequest, res, next) => {
+  try {
+    const name = String(req.body?.name ?? "").trim();
+    const quarter = String(req.body?.quarter ?? "");
+    const year = Number(req.body?.year);
+    if (!name || !/^Q[1-4]$/.test(quarter) || !Number.isInteger(year) || year < 2020 || year > 2100) {
+      res.status(400).json({ error: "Name, quarter, and year are required" });
+      return;
+    }
+    const existing = await pool.query(`SELECT id FROM ${schema}.quarterly_plans WHERE quarter=$1 AND year=$2 LIMIT 1`, [quarter, year]);
+    if (existing.rows[0]) {
+      res.status(409).json({ error: "A plan already exists for that quarter" });
+      return;
+    }
+    const created = await pool.query<{ id: number }>(
+      `INSERT INTO ${schema}.quarterly_plans (name,quarter,year) VALUES ($1,$2,$3) RETURNING id`,
+      [name, quarter, year],
+    );
+    const planId = created.rows[0]?.id;
+    if (!planId) {
+      res.status(500).json({ error: "Plan could not be created" });
+      return;
+    }
+    await pool.query(
+      `INSERT INTO ${schema}.plan_history (plan_id,action,detail,user_id) VALUES ($1,'Plan created',$2,$3)`,
+      [planId, `${name} created.`, req.workspaceUser?.id ?? null],
+    );
+    res.status(201).json(await planPayload(planId));
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post("/plan/styles", async (req: AuthRequest, res, next) => {
+  const client = await pool.connect();
+  try {
+    const planId = Number(req.body?.planId);
+    const styleId = req.body?.styleId === undefined ? null : Number(req.body.styleId);
+    const category = String(req.body?.category ?? "").trim();
+    const tier = String(req.body?.tier ?? "").trim();
+    if (!Number.isInteger(planId) || planId < 1) {
+      res.status(400).json({ error: "A plan is required" });
+      return;
+    }
+    await client.query("BEGIN");
+    const plan = await client.query<{ id: number; quarter: string; year: number }>(
+      `SELECT id,quarter,year FROM ${schema}.quarterly_plans WHERE id=$1 FOR UPDATE`,
+      [planId],
+    );
+    if (!plan.rows[0]) {
+      await client.query("ROLLBACK");
+      res.status(404).json({ error: "Plan not found" });
+      return;
+    }
+    let resolvedStyleId = styleId;
+    if (styleId !== null) {
+      const existingStyle = await client.query(`SELECT id FROM ${schema}.styles WHERE id=$1`, [styleId]);
+      if (!existingStyle.rows[0]) {
+        await client.query("ROLLBACK");
+        res.status(404).json({ error: "Style not found" });
+        return;
+      }
+    } else {
+      if (!category || !tier) {
+        await client.query("ROLLBACK");
+        res.status(400).json({ error: "Category and tier are required for a placeholder" });
+        return;
+      }
+      const code = `PLACEHOLDER-${plan.rows[0].year}-${plan.rows[0].quarter}-${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
+      const placeholder = await client.query<{ id: number }>(
+        `INSERT INTO ${schema}.styles (code,name,brand,category,tier,status,owner,target_date,progress,price,market)
+         VALUES ($1,$2,'Vivo',$3,$4,'Draft','Unassigned',CURRENT_DATE,0,0,'EA') RETURNING id`,
+        [code, `${category} placeholder`, category, tier],
+      );
+      resolvedStyleId = placeholder.rows[0]?.id ?? null;
+    }
+    if (!resolvedStyleId) {
+      await client.query("ROLLBACK");
+      res.status(500).json({ error: "Style could not be prepared" });
+      return;
+    }
+    const position = await client.query<{ next: number }>(
+      `SELECT COALESCE(MAX(position) + 1, 0)::int AS next FROM ${schema}.plan_styles WHERE plan_id=$1`,
+      [planId],
+    );
+    const inserted = await client.query(
+      `INSERT INTO ${schema}.plan_styles (plan_id,style_id,position,decision) VALUES ($1,$2,$3,'On plan') ON CONFLICT DO NOTHING RETURNING style_id`,
+      [planId, resolvedStyleId, position.rows[0]?.next ?? 0],
+    );
+    if (!inserted.rows[0]) {
+      await client.query("ROLLBACK");
+      res.status(409).json({ error: "That style is already on this plan" });
+      return;
+    }
+    await client.query(
+      `INSERT INTO ${schema}.plan_history (plan_id,action,detail,user_id) VALUES ($1,'Style added',$2,$3)`,
+      [planId, `Style added to ${plan.rows[0].quarter} ${plan.rows[0].year}.`, req.workspaceUser?.id ?? null],
+    );
+    await client.query("COMMIT");
+    res.status(201).json(await planPayload(planId));
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    next(error);
+  } finally {
+    client.release();
+  }
+});
+
 router.patch("/plan", async (req: AuthRequest, res, next) => {
   try {
-    const plan = await pool.query<{ id: number }>(`SELECT id FROM ${schema}.quarterly_plans WHERE quarter='Q3' AND year=2026 LIMIT 1`);
+    const requestedId = Number(req.body?.planId);
+    const plan = Number.isInteger(requestedId) && requestedId > 0
+      ? await pool.query<{ id: number }>(`SELECT id FROM ${schema}.quarterly_plans WHERE id=$1`, [requestedId])
+      : await pool.query<{ id: number }>(`SELECT id FROM ${schema}.quarterly_plans WHERE quarter='Q3' AND year=2026 LIMIT 1`);
     const planId = plan.rows[0]?.id;
     if (!planId) {
       res.status(404).json({ error: "Plan not found" });
@@ -726,7 +886,7 @@ router.patch("/plan", async (req: AuthRequest, res, next) => {
     await pool.query(`INSERT INTO ${schema}.plan_history (plan_id,action,detail,user_id) VALUES ($1,'Plan updated',$2,$3)`, [planId, name ? `Plan renamed to ${name}` : "Plan metadata updated", req.workspaceUser?.id ?? null]);
     const refreshed = await pool.query(`SELECT id,name,quarter,year FROM ${schema}.quarterly_plans WHERE id=$1`, [planId]);
     const styles = await pool.query(`SELECT s.id,s.code,s.name,s.brand,s.category,s.status,s.owner,to_char(s.target_date,'YYYY-MM-DD') AS "targetDate",s.image,s.progress::float,s.price,s.market,ps.position,ps.decision FROM ${schema}.plan_styles ps JOIN ${schema}.styles s ON s.id=ps.style_id WHERE ps.plan_id=$1 ORDER BY ps.position`, [planId]);
-    res.json({ ...refreshed.rows[0], styles: styles.rows, summary: {} });
+    res.json({ ...(await planPayload(planId)), ...refreshed.rows[0], styles: styles.rows });
   } catch (error) {
     next(error);
   }

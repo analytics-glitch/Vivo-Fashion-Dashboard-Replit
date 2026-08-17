@@ -143,6 +143,7 @@ export interface StyleUpdate {
   targetDate?: string;
   progress?: number;
   price?: number;
+  tier?: string;
 }
 
 export type WorkspaceStyleDetailColorwaysItem = { [key: string]: unknown };
@@ -190,9 +191,38 @@ export interface WorkspacePlan {
 }
 
 export interface PlanUpdate {
+  planId?: number;
   name?: string;
   quarter?: string;
   year?: number;
+}
+
+export interface PlanCreate {
+  /** @minLength 1 */
+  name: string;
+  /** @pattern ^Q[1-4]$ */
+  quarter: string;
+  /**
+     * @minimum 2020
+     * @maximum 2100
+     */
+  year: number;
+}
+
+export interface PlanStyleInput {
+  planId: number;
+  styleId?: number;
+  category?: string;
+  tier?: string;
+}
+
+export interface WorkspacePlanIndexItem {
+  id: number;
+  name: string;
+  quarter: string;
+  year: number;
+  styleCount: number;
+  status: string;
 }
 
 export interface WorkspacePlanHistory {
@@ -285,5 +315,13 @@ export type ListWorkspaceStylesParams = {
 brand?: string;
 status?: string;
 search?: string;
+};
+
+export type GetWorkspacePlanParams = {
+/**
+ * @pattern ^Q[1-4]$
+ */
+quarter?: string;
+year?: number;
 };
 

@@ -12,4 +12,5 @@ export interface StyleUpdate {
   targetDate?: string;
   progress?: number;
   price?: number;
+  tier?: string;
 }

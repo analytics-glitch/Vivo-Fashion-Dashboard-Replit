@@ -297,10 +297,37 @@ paths:
     get:
       operationId: getWorkspacePlan
       tags: [workspace]
-      summary: Get the active quarterly plan
+      summary: Get a quarterly plan
+      parameters:
+        - name: quarter
+          in: query
+          schema:
+            type: string
+            pattern: "^Q[1-4]$"
+        - name: year
+          in: query
+          schema:
+            type: integer
       responses:
         "200":
           description: Quarterly plan
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspacePlan"
+    post:
+      operationId: createWorkspacePlan
+      tags: [workspace]
+      summary: Create a quarterly plan
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PlanCreate"
+      responses:
+        "201":
+          description: Created quarterly plan
           content:
             application/json:
               schema:
@@ -317,6 +344,38 @@ paths:
               $ref: "#/components/schemas/PlanUpdate"
       responses:
         "200":
+          description: Updated quarterly plan
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspacePlan"
+  /workspace/plans:
+    get:
+      operationId: listWorkspacePlans
+      tags: [workspace]
+      summary: List quarterly plans with style counts
+      responses:
+        "200":
+          description: Quarterly plan index
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/WorkspacePlanIndexItem"
+  /workspace/plan/styles:
+    post:
+      operationId: addWorkspacePlanStyle
+      tags: [workspace]
+      summary: Add an existing or placeholder style to a quarterly plan
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PlanStyleInput"
+      responses:
+        "201":
           description: Updated quarterly plan
           content:
             application/json:
@@ -756,6 +815,7 @@ components:
         targetDate: { type: string }
         progress: { type: number }
         price: { type: number }
+        tier: { type: string }
     WorkspaceStyleDetail:
       allOf:
         - $ref: "#/components/schemas/WorkspaceStyle"
@@ -785,9 +845,35 @@ components:
     PlanUpdate:
       type: object
       properties:
+        planId: { type: integer }
         name: { type: string }
         quarter: { type: string }
         year: { type: integer }
+    PlanCreate:
+      type: object
+      required: [name, quarter, year]
+      properties:
+        name: { type: string, minLength: 1 }
+        quarter: { type: string, pattern: "^Q[1-4]$" }
+        year: { type: integer, minimum: 2020, maximum: 2100 }
+    PlanStyleInput:
+      type: object
+      required: [planId]
+      properties:
+        planId: { type: integer }
+        styleId: { type: integer }
+        category: { type: string }
+        tier: { type: string }
+    WorkspacePlanIndexItem:
+      type: object
+      required: [id, name, quarter, year, styleCount, status]
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        quarter: { type: string }
+        year: { type: integer }
+        styleCount: { type: integer }
+        status: { type: string }
     WorkspacePlanHistory:
       type: object
       required: [id, planId, action, actor, createdAt]

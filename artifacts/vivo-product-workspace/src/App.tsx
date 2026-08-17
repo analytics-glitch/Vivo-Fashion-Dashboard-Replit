@@ -7,13 +7,13 @@ import { ArrowLeft, ArrowRight, BarChart3, BookOpen, CalendarDays, Check, Chevro
 import {
   getGetWorkspaceBoardQueryKey, getGetWorkspaceDashboardQueryKey, getGetWorkspacePlanQueryKey, getGetWorkspaceSessionQueryKey,
   getGetWorkspaceShowcaseQueryKey, getGetWorkspaceStylePlmQueryKey, getGetWorkspaceStyleQueryKey,
-  getListWorkspaceBoardsQueryKey, getListWorkspacePlanHistoryQueryKey, getListWorkspaceShowcasesQueryKey, getListWorkspaceStylesQueryKey,
+  getListWorkspaceBoardsQueryKey, getListWorkspacePlanHistoryQueryKey, getListWorkspacePlansQueryKey, getListWorkspaceShowcasesQueryKey, getListWorkspaceStylesQueryKey,
   useCreateWorkspaceBoard, useCreateWorkspaceBoardCard, useCreateWorkspaceBoardComment, useGetWorkspaceBoard, useGetWorkspaceDashboard,
-  useGetWorkspacePlan, useGetWorkspaceSession, useGetWorkspaceShowcase, useGetWorkspaceStyle, useGetWorkspaceStylePlm,
-  useListWorkspaceBoards, useListWorkspacePlanHistory, useListWorkspaceShowcases, useListWorkspaceStyles, useLoginWorkspace,
+  useAddWorkspacePlanStyle, useCreateWorkspacePlan, useGetWorkspacePlan, useGetWorkspaceSession, useGetWorkspaceShowcase, useGetWorkspaceStyle, useGetWorkspaceStylePlm,
+  useListWorkspaceBoards, useListWorkspacePlanHistory, useListWorkspacePlans, useListWorkspaceShowcases, useListWorkspaceStyles, useLoginWorkspace,
   useLogoutWorkspace, useUpdateWorkspaceBoardCard, useUpdateWorkspacePlan, useUpdateWorkspaceStyle,
 } from '@workspace/api-client-react';
-import type { WorkspaceBoard, WorkspacePlan, WorkspaceStyle } from '@workspace/api-client-react';
+import type { WorkspaceBoard, WorkspacePlan, WorkspacePlanIndexItem, WorkspaceStyle } from '@workspace/api-client-react';
 import { ErrorBoundary } from '@/components/error-boundary';
 import NotFound from '@/pages/not-found';
 import './index.css';
@@ -27,6 +27,7 @@ const nav = [
   { href: '/product-workspace/showcase', label: 'Showcase', icon: GalleryHorizontalEnd },
   { href: '/product-workspace/styles', label: 'Style catalogue', icon: BookOpen },
 ];
+const workspaceMarkets = ['KE', 'UG', 'RW'].join(' · ');
 
 function fmt(value: unknown, fallback = '—') {
   if (value === null || value === undefined || value === '') return fallback;
@@ -121,20 +122,112 @@ function Login() {
   return <div className="login-page"><div className="login-art"><div className="login-art-copy"><div className="brand-lockup light"><div className="brand-mark">V</div><div><div className="brand-name">Vivo</div><div className="brand-sub">Product workspace</div></div></div><div className="login-manifesto"><span>East Africa / 2026</span><h1>Product is a<br /><em>conversation.</em></h1><p>A considered room for the people deciding what Vivo becomes next.</p></div><div className="login-footer">Nairobi · Kampala · Dar es Salaam · Kigali</div></div></div><div className="login-form-wrap"><div className="login-form"><div className="eyebrow">Private workspace</div><h2>Welcome back.</h2><p className="form-intro">Sign in with your Vivo account to continue.</p><form onSubmit={submit}><label>Email address<input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@vivo.com" required data-testid="input-email" /></label><label>Password<div className="password-wrap"><input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Your password" required data-testid="input-password" /><button type="button" className="password-hint" onClick={() => setPassword('vivo2026')} data-testid="button-fill-password">Use passkey</button></div></label>{login.isError && <div className="form-error">That sign-in didn't work. Check your details and try again.</div>}<button className="button button-dark button-wide" disabled={login.isPending} type="submit" data-testid="button-login">{login.isPending ? 'Opening workspace…' : 'Enter workspace'} <ArrowRight size={16} /></button></form><div className="login-meta"><span>Vivo Digital Product Workspace</span><span>v1.4.0</span></div></div></div></div>;
 }
 
+const quarterChoices = ['Q1', 'Q2', 'Q3', 'Q4'] as const;
+
 function PlanPage() {
-  const plan = useGetWorkspacePlan({ query: { queryKey: getGetWorkspacePlanQueryKey() } });
+  const [selectedQuarter, setSelectedQuarter] = useState('Q3');
+  const [selectedYear, setSelectedYear] = useState(2026);
+  const planParams = { quarter: selectedQuarter, year: selectedYear };
+  const plan = useGetWorkspacePlan(planParams, { query: { queryKey: getGetWorkspacePlanQueryKey(planParams) } });
+  const plans = useListWorkspacePlans({ query: { queryKey: getListWorkspacePlansQueryKey() } });
   const history = useListWorkspacePlanHistory({ query: { queryKey: getListWorkspacePlanHistoryQueryKey() } });
+  const stylesForAdd = useListWorkspaceStyles(undefined, { query: { queryKey: getListWorkspaceStylesQueryKey(), enabled: false } });
   const update = useUpdateWorkspacePlan();
+  const addStyle = useAddWorkspacePlanStyle();
+  const createPlan = useCreateWorkspacePlan();
   const [historyOpen, setHistoryOpen] = useState(false);
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState('');
+  const [addStyleOpen, setAddStyleOpen] = useState(false);
+  const [styleSearch, setStyleSearch] = useState('');
+  const [placeholderCategory, setPlaceholderCategory] = useState('');
+  const [placeholderTier, setPlaceholderTier] = useState('Core');
+  const [newPlanOpen, setNewPlanOpen] = useState(false);
+  const [newPlanName, setNewPlanName] = useState('');
+  const [newPlanQuarter, setNewPlanQuarter] = useState('Q1');
+  const [newPlanYear, setNewPlanYear] = useState('2027');
   const p = plan.data as WorkspacePlan | undefined;
   const styles = p?.styles || [];
+  const planIndex = (plans.data || []) as WorkspacePlanIndexItem[];
+  const selectedIndex = planIndex.find((item) => item.quarter === selectedQuarter && item.year === selectedYear);
   const startEdit = () => { setName(p?.name || ''); setEditing(true); };
-  const save = () => update.mutate({ data: { name } }, { onSuccess: () => { setEditing(false); queryClient.invalidateQueries({ queryKey: getGetWorkspacePlanQueryKey() }); queryClient.invalidateQueries({ queryKey: getListWorkspacePlanHistoryQueryKey() }); } });
-  if (plan.isLoading) return <section className="page"><LoadingState /></section>;
+  const refreshPlan = () => {
+    queryClient.invalidateQueries({ queryKey: getGetWorkspacePlanQueryKey(planParams) });
+    queryClient.invalidateQueries({ queryKey: getListWorkspacePlansQueryKey() });
+    queryClient.invalidateQueries({ queryKey: getListWorkspacePlanHistoryQueryKey() });
+  };
+  const save = () => update.mutate({ data: { planId: p?.id, name } }, { onSuccess: () => { setEditing(false); refreshPlan(); } });
+  const openNewPlan = () => {
+    setNewPlanQuarter('Q1');
+    setNewPlanYear('2027');
+    setNewPlanName('Q1 2027 Assortment Plan');
+    setNewPlanOpen(true);
+  };
+  const createNewPlan = () => {
+    const year = Number(newPlanYear);
+    if (!newPlanName.trim() || !Number.isInteger(year)) return;
+    createPlan.mutate({ data: { name: newPlanName.trim(), quarter: newPlanQuarter, year } }, {
+      onSuccess: (created) => {
+        setNewPlanOpen(false);
+        setSelectedQuarter(created.quarter);
+        setSelectedYear(created.year);
+        queryClient.invalidateQueries({ queryKey: getListWorkspacePlansQueryKey() });
+      },
+    });
+  };
+  const openAddStyle = () => {
+    setStyleSearch('');
+    setPlaceholderCategory('');
+    setPlaceholderTier('Core');
+    setAddStyleOpen(true);
+    stylesForAdd.refetch();
+  };
+  const addExistingStyle = (style: WorkspaceStyle) => {
+    if (!p) return;
+    addStyle.mutate({ data: { planId: p.id, styleId: style.id } }, { onSuccess: () => { setAddStyleOpen(false); refreshPlan(); } });
+  };
+  const addPlaceholder = () => {
+    if (!p || !placeholderCategory.trim()) return;
+    addStyle.mutate({ data: { planId: p.id, category: placeholderCategory.trim(), tier: placeholderTier } }, { onSuccess: () => { setAddStyleOpen(false); refreshPlan(); } });
+  };
+  const availableStyles = (stylesForAdd.data || []).filter((style) => !styles.some((planned) => planned.id === style.id)).filter((style) => {
+    const query = styleSearch.trim().toLowerCase();
+    return !query || style.name.toLowerCase().includes(query) || style.code.toLowerCase().includes(query);
+  });
+  if (plan.isLoading || plans.isLoading) return <section className="page"><LoadingState /></section>;
   if (plan.isError || !p) return <section className="page"><ErrorState onRetry={() => plan.refetch()} /></section>;
-  return <section className="page"><PageHeading eyebrow={`${p.quarter} ${p.year} / Assortment`} title={editing ? 'Name this plan.' : p.name} description="A living view of the range, tuned for East African demand." action={<div className="button-group"><button className="button button-quiet" onClick={() => setHistoryOpen(true)} data-testid="button-plan-history"><History size={15} /> History</button><button className="button button-quiet" disabled title="PDF export is coming soon" data-testid="button-export-pdf"><FileText size={15} /> PDF <span className="mono">Coming soon</span></button><button className="button button-dark" onClick={editing ? save : startEdit} data-testid="button-edit-plan">{editing ? <><Check size={15} /> Save plan</> : <><Settings2 size={15} /> Edit plan</>}</button></div>} />{editing && <div className="edit-inline"><input value={name} onChange={(e) => setName(e.target.value)} aria-label="Plan name" data-testid="input-plan-name" /><button className="icon-button" onClick={() => setEditing(false)} data-testid="button-cancel-plan"><X size={16} /></button></div>}<div className="plan-banner"><div><span className="eyebrow gold-eyebrow">Quarterly assortment</span><h2>{styles.length || 0} <small>styles in the edit</small></h2></div><div className="plan-facts"><div><span>Range shape</span><b>{fmt((p.summary as Record<string, unknown>)?.rangeShape, 'Balanced')}</b></div><div><span>Target margin</span><b>{fmt((p.summary as Record<string, unknown>)?.targetMargin, '58.2%')}</b></div><div><span>Markets</span><b>KE · UG · TZ · RW</b></div></div></div><div className="section-label"><span>Planned styles</span><span className="mono">{styles.length} / 126</span></div><div className="style-table">{styles.length ? styles.map((style, i) => <StyleRow key={style.id} style={style} index={i} />) : <EmptyState title="Your plan is a blank page" text="Styles added to the assortment will appear here." />}</div>{historyOpen && <div className="drawer-backdrop" onClick={() => setHistoryOpen(false)}><aside className="history-drawer" onClick={(e) => e.stopPropagation()}><div className="drawer-header"><div><span className="eyebrow">Audit trail</span><h2>Plan history</h2></div><button className="icon-button" onClick={() => setHistoryOpen(false)} data-testid="button-close-history"><X size={17} /></button></div>{history.isLoading ? <LoadingState /> : history.data?.length ? history.data.map((item) => <div className="history-item" key={item.id} data-testid={`row-history-${item.id}`}><span className="history-dot" /><div><strong>{item.action}</strong><p>{item.detail || 'Plan was updated.'}</p><small>{item.actor} · {date(item.createdAt)}</small></div></div>) : <EmptyState title="No edits yet" text="Changes to the plan will be recorded here." />}</aside></div>}</section>;
+  return <section className="page plan-page">
+    <PageHeading
+      eyebrow={`${p.quarter} ${p.year} / Assortment`}
+      title={editing ? 'Name this plan.' : p.name}
+      description="A living view of the range, tuned for East African demand."
+      action={<div className="button-group plan-heading-actions">
+        <button className="button button-gold" onClick={openNewPlan} data-testid="button-new-plan"><Plus size={15} /> New plan</button>
+        <button className="button button-quiet" onClick={() => setHistoryOpen(true)} data-testid="button-plan-history"><History size={15} /> History</button>
+        <button className="button button-quiet" disabled title="PDF export is coming soon" data-testid="button-export-pdf"><FileText size={15} /> PDF <span className="mono">Coming soon</span></button>
+        <button className="button button-dark" onClick={editing ? save : startEdit} data-testid="button-edit-plan">{editing ? <><Check size={15} /> Save plan</> : <><Settings2 size={15} /> Edit plan</>}</button>
+      </div>}
+    />
+    <div className="plan-quarter-nav" aria-label="Quarterly plans">
+      <div className="plan-quarter-tabs">
+        {quarterChoices.map((quarter) => {
+          const item = planIndex.find((candidate) => candidate.quarter === quarter && candidate.year === 2026);
+          return <button className={`plan-quarter-tab ${selectedQuarter === quarter && selectedYear === 2026 ? 'active' : ''}`} key={quarter} onClick={() => { setSelectedQuarter(quarter); setSelectedYear(2026); setEditing(false); }} data-testid={`button-quarter-${quarter.toLowerCase()}`}>
+            <span>{quarter}</span><b>{item?.styleCount ?? 0}</b><small>styles</small>
+          </button>;
+        })}
+      </div>
+      <button className="plan-new-tab" onClick={openNewPlan} data-testid="button-new-plan-tab"><Plus size={15} /> New plan</button>
+    </div>
+    {editing && <div className="edit-inline"><input value={name} onChange={(e) => setName(e.target.value)} aria-label="Plan name" data-testid="input-plan-name" /><button className="icon-button" onClick={() => setEditing(false)} data-testid="button-cancel-plan"><X size={16} /></button></div>}
+    <div className="plan-banner"><div><span className="eyebrow gold-eyebrow">Quarterly assortment</span><h2>{styles.length || 0} <small>styles in the edit</small></h2></div><div className="plan-facts"><div><span>Range shape</span><b>{fmt((p.summary as Record<string, unknown>)?.rangeShape, 'Balanced')}</b></div><div><span>Target margin</span><b>{fmt((p.summary as Record<string, unknown>)?.targetMargin, '58.2%')}</b></div><div><span>Markets</span><b>{workspaceMarkets}</b></div></div></div>
+    <div className="section-label"><span>Planned styles</span><span className="mono">PLANNED STYLES {styles.length} / 126</span></div>
+    <div className="planned-style-actions"><button className="button button-dark add-style-button" onClick={openAddStyle} data-testid="button-add-style"><Plus size={17} /> Add Style</button><span>Search the catalogue or create a placeholder for this edit.</span></div>
+    <div className="style-table">{styles.length ? styles.map((style, i) => <StyleRow key={style.id} style={style} index={i} />) : <EmptyState title={selectedIndex?.styleCount === 0 ? `Start ${p.quarter} ${p.year}` : 'Your plan is a blank page'} text="Add an existing style or create a category placeholder to begin this quarter's edit." action={<button className="button button-gold" onClick={openAddStyle} data-testid="button-start-quarter-plan"><Plus size={15} /> Start this quarter's plan</button>} />}</div>
+    {historyOpen && <div className="drawer-backdrop" onClick={() => setHistoryOpen(false)}><aside className="history-drawer" onClick={(e) => e.stopPropagation()}><div className="drawer-header"><div><span className="eyebrow">Audit trail</span><h2>Plan history</h2></div><button className="icon-button" onClick={() => setHistoryOpen(false)} data-testid="button-close-history"><X size={17} /></button></div>{history.isLoading ? <LoadingState /> : history.data?.length ? history.data.map((item) => <div className="history-item" key={item.id} data-testid={`row-history-${item.id}`}><span className="history-dot" /><div><strong>{item.action}</strong><p>{item.detail || 'Plan was updated.'}</p><small>{item.actor} · {date(item.createdAt)}</small></div></div>) : <EmptyState title="No edits yet" text="Changes to the plan will be recorded here." />}</aside></div>}
+    {addStyleOpen && <div className="modal-backdrop" onClick={() => setAddStyleOpen(false)}><div className="modal-card add-style-modal" onClick={(event) => event.stopPropagation()}><div className="drawer-header"><div><span className="eyebrow">Planned styles / {p.quarter} {p.year}</span><h2>Add a style</h2></div><button className="icon-button" onClick={() => setAddStyleOpen(false)} aria-label="Close add style dialog" data-testid="button-close-add-style"><X size={17} /></button></div><label className="modal-search"><Search size={16} /><input autoFocus value={styleSearch} onChange={(event) => setStyleSearch(event.target.value)} placeholder="Search by style name or number" aria-label="Search styles to add" data-testid="input-add-style-search" /></label><div className="modal-section-label"><span>Existing styles</span><span className="mono">{availableStyles.length} matches</span></div><div className="style-picker-results">{stylesForAdd.isFetching ? <Skeleton className="picker-loading" /> : availableStyles.length ? availableStyles.map((style) => <button className="style-picker-row" key={style.id} onClick={() => addExistingStyle(style)} disabled={addStyle.isPending} data-testid={`button-add-existing-style-${style.id}`}><div className="style-picker-mark"><Palette size={15} /></div><span><strong>{style.name}</strong><small>{style.code} · {style.category} · {style.brand}</small></span><Plus size={16} /></button>) : <p className="modal-muted">No matching styles found. Create a placeholder below.</p>}</div><div className="modal-divider"><span>or create a placeholder</span></div><div className="placeholder-fields"><label>Category<input value={placeholderCategory} onChange={(event) => setPlaceholderCategory(event.target.value)} placeholder="e.g. Knitwear" data-testid="input-placeholder-category" /></label><label>Tier<select value={placeholderTier} onChange={(event) => setPlaceholderTier(event.target.value)} data-testid="select-placeholder-tier"><option>Core</option><option>Elevated</option><option>Entry</option><option>Statement</option></select></label></div>{addStyle.isError && <div className="form-error">That style could not be added. It may already be on this plan.</div>}<button className="button button-dark button-wide" onClick={addPlaceholder} disabled={addStyle.isPending || !placeholderCategory.trim()} data-testid="button-create-placeholder"><Sparkles size={15} /> Create placeholder</button></div></div>}
+    {newPlanOpen && <div className="modal-backdrop" onClick={() => setNewPlanOpen(false)}><div className="modal-card new-plan-modal" onClick={(event) => event.stopPropagation()}><div className="drawer-header"><div><span className="eyebrow">New decision room</span><h2>Create a plan</h2></div><button className="icon-button" onClick={() => setNewPlanOpen(false)} aria-label="Close new plan dialog" data-testid="button-close-new-plan"><X size={17} /></button></div><label>Plan name<input autoFocus value={newPlanName} onChange={(event) => setNewPlanName(event.target.value)} placeholder="Q1 2027 Assortment Plan" data-testid="input-new-plan-name" /></label><div className="placeholder-fields"><label>Quarter<select value={newPlanQuarter} onChange={(event) => { const quarter = event.target.value; setNewPlanQuarter(quarter); setNewPlanName(`${quarter} ${newPlanYear} Assortment Plan`); }} data-testid="select-new-plan-quarter">{quarterChoices.map((quarter) => <option key={quarter}>{quarter}</option>)}</select></label><label>Year<input type="number" min="2020" max="2100" value={newPlanYear} onChange={(event) => { const year = event.target.value; setNewPlanYear(year); setNewPlanName(`${newPlanQuarter} ${year} Assortment Plan`); }} data-testid="input-new-plan-year" /></label></div>{createPlan.isError && <div className="form-error">A plan may already exist for that quarter and year.</div>}<button className="button button-gold button-wide" onClick={createNewPlan} disabled={createPlan.isPending || !newPlanName.trim()} data-testid="button-create-new-plan">Create plan <ArrowRight size={16} /></button></div></div>}
+  </section>;
 }
 function StyleRow({ style, index }: { style: WorkspaceStyle; index: number }) { return <Link href={`/product-workspace/styles/${style.id}`} className="style-row" data-testid={`row-style-${style.id}`}><span className="row-index">{String(index + 1).padStart(2, '0')}</span><div className="style-thumb" style={style.image ? { backgroundImage: `url(${style.image})` } : undefined}><Palette size={15} /></div><div className="style-main"><strong>{style.name}</strong><span>{style.code} · {style.brand} · {style.category}</span></div><StatusPill value={style.status} /><div className="row-progress"><Progress value={style.progress} /><span>{style.progress || 0}%</span></div><span className="row-date">{date(style.targetDate)} <ChevronRight size={15} /></span></Link>; }
 
