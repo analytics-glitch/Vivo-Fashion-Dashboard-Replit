@@ -257,6 +257,9 @@ from psycopg2 import pool as _pg_pool
 # cache prewarmer (each worker would otherwise warm the same caches N times).
 _TOTAL_DB_BUDGET = int(os.environ.get("TOTAL_DB_CONNECTIONS", "32"))
 _API_WORKERS_N   = int(os.environ.get("API_WORKERS", "1"))
+# True only in a published Replit deployment; False in preview/dev. Used to
+# gate the 2FA challenge so developers can sign in without an authenticator.
+_IS_PRODUCTION = bool((os.environ.get("REPLIT_DEPLOYMENT") or "").strip())
 MAX_DB_CONNECTIONS = max(4, _TOTAL_DB_BUDGET // _API_WORKERS_N)  # e.g. 32//1 = 32
 
 _POOL = None
@@ -803,10 +806,10 @@ _VIEWER_PAGES = ["overview", "exec-summary", "locations", "footfall", "trend-ana
 # arrivals into merch-lifecycle. Retired ids live on only as
 # _LEGACY_PAGE_ALIASES entries so stored group grants keep working.
 _MERCH_PAGES = ["merchandising", "merch-overview", "merch-sales", "merch-inventory", "merch-lifecycle", "merch-deepdive", "merch-store"]
-_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "quarter-scorecard", "product-analysis", "range-mgmt", "size-health", "inventory", "warehouse-returns", "excess-inventory", "rebalancing", "store-flow", "marketing", "social", "crm", "order-explorer", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "style-tracker", "pd-flow", "partner-brands", "finance", "margin", "l10", "rota", "growth", "retail-desk", "day-review", "product-desk", "workforce-desk", "customer-desk", "marketing-desk", "supply-chain-desk", "production-desk", "the-chair", "quality", "store-profiling", "store-feedback", "central-tracker", "community-app"] + _MERCH_PAGES)
+_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "quarter-scorecard", "product-analysis", "range-mgmt", "size-health", "inventory", "warehouse-returns", "excess-inventory", "rebalancing", "store-flow", "marketing", "social", "crm", "order-explorer", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "style-tracker", "pd-flow", "product-workspace", "partner-brands", "finance", "margin", "l10", "rota", "growth", "retail-desk", "day-review", "product-desk", "workforce-desk", "customer-desk", "marketing-desk", "supply-chain-desk", "production-desk", "the-chair", "quality", "store-profiling", "store-feedback", "central-tracker", "community-app"] + _MERCH_PAGES)
 
 DEFAULT_ROLE_PAGES = {
-    "product_development": ["product-analysis", "range-mgmt", "catalogue", "gallery", "inventory", "size-health", "data-quality", "fabric", "exports", "production", "production-report", "style-tracker", "pd-flow", "partner-brands", "sops", "central-tracker"] + _MERCH_PAGES,
+    "product_development": ["product-analysis", "range-mgmt", "catalogue", "gallery", "inventory", "size-health", "data-quality", "fabric", "exports", "production", "production-report", "style-tracker", "pd-flow", "product-workspace", "partner-brands", "sops", "central-tracker"] + _MERCH_PAGES,
     "retail": ["store-flow", "overview", "exec-summary", "locations", "footfall", "store-profiling", "trend-analysis", "customers", "product-analysis", "gallery", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "exports", "partner-brands", "sops", "ask", "store-feedback"],
     "warehouse": ["store-flow", "inventory", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "re-order", "allocations", "data-quality", "exports", "sops"],
     "store_manager": ["overview", "store-flow", "locations", "footfall", "store-profiling", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "sops", "store-feedback"],
@@ -9276,6 +9279,19 @@ async def auth_login(request: Request):
     user["allowed_pages"] = _effective_pages_for_role(user.get("role"))
     _apply_extra_pages(user)
     _apply_crm_admin_grants(user)
+    # In preview/dev environments skip the 2FA challenge entirely so developers
+    # can sign in without an enrolled authenticator app. In production the full
+    # challenge flow runs as normal.
+    if not _IS_PRODUCTION:
+        session = _create_session(rec["user_id"])
+        try:
+            _users_exec("UPDATE app_users SET last_login_at=now() WHERE user_id=%s",
+                        (rec["user_id"],))
+        except Exception:
+            pass
+        resp = JSONResponse({"token": session, "user": user})
+        resp.set_cookie("session_token", session, **_login_cookie_kwargs())
+        return resp
     mode = "verify" if rec.get("totp_enabled") else "enroll"
     challenge = _create_2fa_challenge(rec["user_id"], mode)
     payload = {
@@ -9644,6 +9660,22 @@ def auth_google_callback(request: Request):
     # error the login screen can render instead.
     try:
         rec = resolve_app_user(sub, email, name, picture)
+        # In preview/dev environments skip the 2FA challenge entirely so
+        # developers can sign in without an enrolled authenticator app. Create
+        # the normal session immediately and redirect without two_factor params.
+        if not _IS_PRODUCTION:
+            session = _create_session(rec["user_id"])
+            try:
+                _users_exec(
+                    "UPDATE app_users SET last_login_at=now() WHERE user_id=%s",
+                    (rec["user_id"],))
+            except Exception:
+                pass
+            resp = RedirectResponse(_oauth_success_redirect(base, is_native, session))
+            resp.delete_cookie("g_oauth_return", path="/")
+            resp.delete_cookie("g_oauth_state", path="/")
+            resp.set_cookie("session_token", session, **_login_cookie_kwargs())
+            return resp
         mode = _two_factor_user_mode(rec["user_id"])
         challenge = _create_2fa_challenge(rec["user_id"], mode)
     except Exception as _e:
