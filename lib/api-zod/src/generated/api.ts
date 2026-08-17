@@ -209,15 +209,57 @@ export const ListWorkspaceStylesResponseItem = zod.object({
   "name": zod.string(),
   "brand": zod.string(),
   "category": zod.string(),
+  "subCategory": zod.string().optional(),
+  "theme": zod.string().optional(),
+  "orderType": zod.string().optional(),
+  "tier": zod.string().optional(),
   "status": zod.string(),
+  "stage": zod.string().optional(),
+  "currentStage": zod.string().optional(),
   "owner": zod.string(),
+  "designer": zod.string().optional(),
+  "patternMaker": zod.string().optional(),
   "targetDate": zod.string(),
+  "stageEnteredAt": zod.string().optional(),
+  "daysInStage": zod.number().optional(),
   "image": zod.string().nullish(),
   "progress": zod.number().optional(),
   "price": zod.number().optional(),
   "market": zod.string().optional()
 })
 export const ListWorkspaceStylesResponse = zod.array(ListWorkspaceStylesResponseItem)
+
+
+/**
+ * @summary Create a style in the PLM pipeline
+ */
+
+
+
+
+export const CreateWorkspaceStyleBody = zod.object({
+  "styleNumber": zod.string().optional(),
+  "name": zod.string().min(1),
+  "brand": zod.enum(['Vivo', 'Safari by Vivo']),
+  "category": zod.string().min(1),
+  "subCategory": zod.string().optional(),
+  "theme": zod.string().optional(),
+  "orderType": zod.enum(['New', 'Repeat']).optional(),
+  "tier": zod.enum(['1', '2', '3', '4']).optional(),
+  "designer": zod.string().optional(),
+  "patternMaker": zod.string().optional(),
+  "targetDate": zod.string()
+})
+
+
+/**
+ * @summary PLM user, fabric, and category pickers
+ */
+export const GetWorkspacePlmMetaResponse = zod.object({
+  "users": zod.array(zod.record(zod.string(), zod.unknown())),
+  "fabrics": zod.array(zod.record(zod.string(), zod.unknown())),
+  "categories": zod.array(zod.string())
+})
 
 
 /**
@@ -233,9 +275,328 @@ export const GetWorkspaceStyleResponse = zod.object({
   "name": zod.string(),
   "brand": zod.string(),
   "category": zod.string(),
+  "subCategory": zod.string().optional(),
+  "theme": zod.string().optional(),
+  "orderType": zod.string().optional(),
+  "tier": zod.string().optional(),
   "status": zod.string(),
+  "stage": zod.string().optional(),
+  "currentStage": zod.string().optional(),
   "owner": zod.string(),
+  "designer": zod.string().optional(),
+  "patternMaker": zod.string().optional(),
   "targetDate": zod.string(),
+  "stageEnteredAt": zod.string().optional(),
+  "daysInStage": zod.number().optional(),
+  "image": zod.string().nullish(),
+  "progress": zod.number().optional(),
+  "price": zod.number().optional(),
+  "market": zod.string().optional()
+}).and(zod.object({
+  "colorways": zod.array(zod.record(zod.string(), zod.unknown())),
+  "fabrics": zod.array(zod.record(zod.string(), zod.unknown())),
+  "techPack": zod.record(zod.string(), zod.unknown()),
+  "fitSessions": zod.array(zod.record(zod.string(), zod.unknown())),
+  "gradings": zod.array(zod.record(zod.string(), zod.unknown())),
+  "boms": zod.array(zod.record(zod.string(), zod.unknown())),
+  "samples": zod.array(zod.record(zod.string(), zod.unknown())),
+  "pomQc": zod.array(zod.record(zod.string(), zod.unknown())),
+  "costEstimate": zod.record(zod.string(), zod.unknown()),
+  "productionOrder": zod.record(zod.string(), zod.unknown())
+}))
+
+
+/**
+ * @summary Move a style through the PLM pipeline
+ */
+export const TransitionWorkspaceStyleParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const TransitionWorkspaceStyleBody = zod.object({
+  "toStage": zod.string(),
+  "note": zod.string().optional()
+})
+
+export const TransitionWorkspaceStyleResponse = zod.object({
+  "id": zod.number(),
+  "code": zod.string(),
+  "name": zod.string(),
+  "brand": zod.string(),
+  "category": zod.string(),
+  "subCategory": zod.string().optional(),
+  "theme": zod.string().optional(),
+  "orderType": zod.string().optional(),
+  "tier": zod.string().optional(),
+  "status": zod.string(),
+  "stage": zod.string().optional(),
+  "currentStage": zod.string().optional(),
+  "owner": zod.string(),
+  "designer": zod.string().optional(),
+  "patternMaker": zod.string().optional(),
+  "targetDate": zod.string(),
+  "stageEnteredAt": zod.string().optional(),
+  "daysInStage": zod.number().optional(),
+  "image": zod.string().nullish(),
+  "progress": zod.number().optional(),
+  "price": zod.number().optional(),
+  "market": zod.string().optional()
+}).and(zod.object({
+  "colorways": zod.array(zod.record(zod.string(), zod.unknown())),
+  "fabrics": zod.array(zod.record(zod.string(), zod.unknown())),
+  "techPack": zod.record(zod.string(), zod.unknown()),
+  "fitSessions": zod.array(zod.record(zod.string(), zod.unknown())),
+  "gradings": zod.array(zod.record(zod.string(), zod.unknown())),
+  "boms": zod.array(zod.record(zod.string(), zod.unknown())),
+  "samples": zod.array(zod.record(zod.string(), zod.unknown())),
+  "pomQc": zod.array(zod.record(zod.string(), zod.unknown())),
+  "costEstimate": zod.record(zod.string(), zod.unknown()),
+  "productionOrder": zod.record(zod.string(), zod.unknown())
+}))
+
+
+/**
+ * @summary Save style tech pack and pattern details
+ */
+export const UpdateWorkspaceStyleTechPackParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const UpdateWorkspaceStyleTechPackBody = zod.object({
+  "basePatternReference": zod.string().optional(),
+  "fabricId": zod.number().optional(),
+  "trimsAccessories": zod.string().optional(),
+  "constructionNotes": zod.string().optional(),
+  "audacesFileReference": zod.string().optional(),
+  "modifiedFromStyleNumber": zod.string().optional(),
+  "status": zod.string().optional(),
+  "version": zod.string().optional(),
+  "owner": zod.string().optional()
+})
+
+export const UpdateWorkspaceStyleTechPackResponse = zod.object({
+  "id": zod.number(),
+  "code": zod.string(),
+  "name": zod.string(),
+  "brand": zod.string(),
+  "category": zod.string(),
+  "subCategory": zod.string().optional(),
+  "theme": zod.string().optional(),
+  "orderType": zod.string().optional(),
+  "tier": zod.string().optional(),
+  "status": zod.string(),
+  "stage": zod.string().optional(),
+  "currentStage": zod.string().optional(),
+  "owner": zod.string(),
+  "designer": zod.string().optional(),
+  "patternMaker": zod.string().optional(),
+  "targetDate": zod.string(),
+  "stageEnteredAt": zod.string().optional(),
+  "daysInStage": zod.number().optional(),
+  "image": zod.string().nullish(),
+  "progress": zod.number().optional(),
+  "price": zod.number().optional(),
+  "market": zod.string().optional()
+}).and(zod.object({
+  "colorways": zod.array(zod.record(zod.string(), zod.unknown())),
+  "fabrics": zod.array(zod.record(zod.string(), zod.unknown())),
+  "techPack": zod.record(zod.string(), zod.unknown()),
+  "fitSessions": zod.array(zod.record(zod.string(), zod.unknown())),
+  "gradings": zod.array(zod.record(zod.string(), zod.unknown())),
+  "boms": zod.array(zod.record(zod.string(), zod.unknown())),
+  "samples": zod.array(zod.record(zod.string(), zod.unknown())),
+  "pomQc": zod.array(zod.record(zod.string(), zod.unknown())),
+  "costEstimate": zod.record(zod.string(), zod.unknown()),
+  "productionOrder": zod.record(zod.string(), zod.unknown())
+}))
+
+
+/**
+ * @summary Add a style fit session
+ */
+export const CreateWorkspaceFitSessionParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const CreateWorkspaceFitSessionBody = zod.object({
+  "sessionDate": zod.string(),
+  "sample": zod.string(),
+  "modelName": zod.string(),
+  "attendees": zod.string().optional(),
+  "outcome": zod.enum(['Approved', 'Needs Revision']),
+  "comments": zod.string().optional()
+})
+
+
+/**
+ * @summary Save style grading details
+ */
+export const UpdateWorkspaceStyleGradingParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const UpdateWorkspaceStyleGradingBody = zod.object({
+  "sizeRange": zod.string().optional(),
+  "cadTeamMember": zod.string().optional(),
+  "status": zod.enum(['Pending', 'In Progress', 'Complete']).optional()
+})
+
+export const UpdateWorkspaceStyleGradingResponse = zod.object({
+  "id": zod.number(),
+  "code": zod.string(),
+  "name": zod.string(),
+  "brand": zod.string(),
+  "category": zod.string(),
+  "subCategory": zod.string().optional(),
+  "theme": zod.string().optional(),
+  "orderType": zod.string().optional(),
+  "tier": zod.string().optional(),
+  "status": zod.string(),
+  "stage": zod.string().optional(),
+  "currentStage": zod.string().optional(),
+  "owner": zod.string(),
+  "designer": zod.string().optional(),
+  "patternMaker": zod.string().optional(),
+  "targetDate": zod.string(),
+  "stageEnteredAt": zod.string().optional(),
+  "daysInStage": zod.number().optional(),
+  "image": zod.string().nullish(),
+  "progress": zod.number().optional(),
+  "price": zod.number().optional(),
+  "market": zod.string().optional()
+}).and(zod.object({
+  "colorways": zod.array(zod.record(zod.string(), zod.unknown())),
+  "fabrics": zod.array(zod.record(zod.string(), zod.unknown())),
+  "techPack": zod.record(zod.string(), zod.unknown()),
+  "fitSessions": zod.array(zod.record(zod.string(), zod.unknown())),
+  "gradings": zod.array(zod.record(zod.string(), zod.unknown())),
+  "boms": zod.array(zod.record(zod.string(), zod.unknown())),
+  "samples": zod.array(zod.record(zod.string(), zod.unknown())),
+  "pomQc": zod.array(zod.record(zod.string(), zod.unknown())),
+  "costEstimate": zod.record(zod.string(), zod.unknown()),
+  "productionOrder": zod.record(zod.string(), zod.unknown())
+}))
+
+
+/**
+ * @summary Add a sample development record
+ */
+export const CreateWorkspaceSampleParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const CreateWorkspaceSampleBody = zod.object({
+  "purpose": zod.string(),
+  "patternMaker": zod.string(),
+  "sampleMakers": zod.string().optional(),
+  "unitsOrdered": zod.number(),
+  "dateCut": zod.string().optional(),
+  "dateFinished": zod.string().optional(),
+  "status": zod.string(),
+  "reworkNotes": zod.string().optional()
+})
+
+
+/**
+ * @summary Save style cost estimate
+ */
+export const UpdateWorkspaceCostEstimateParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const UpdateWorkspaceCostEstimateBody = zod.object({
+  "avgMatKg": zod.number().optional(),
+  "avgMetresUsed": zod.number().optional(),
+  "minsPerPc": zod.number().optional(),
+  "efficiencyPct": zod.number().optional(),
+  "materialCost": zod.number().optional(),
+  "labourCost": zod.number().optional(),
+  "totalCost": zod.number().optional(),
+  "retailPrice": zod.number().optional(),
+  "marginPct": zod.number().optional(),
+  "cogsRatio": zod.number().optional(),
+  "setSampleCost": zod.number().optional(),
+  "variance": zod.number().optional(),
+  "currency": zod.string().optional()
+})
+
+export const UpdateWorkspaceCostEstimateResponse = zod.object({
+  "id": zod.number(),
+  "code": zod.string(),
+  "name": zod.string(),
+  "brand": zod.string(),
+  "category": zod.string(),
+  "subCategory": zod.string().optional(),
+  "theme": zod.string().optional(),
+  "orderType": zod.string().optional(),
+  "tier": zod.string().optional(),
+  "status": zod.string(),
+  "stage": zod.string().optional(),
+  "currentStage": zod.string().optional(),
+  "owner": zod.string(),
+  "designer": zod.string().optional(),
+  "patternMaker": zod.string().optional(),
+  "targetDate": zod.string(),
+  "stageEnteredAt": zod.string().optional(),
+  "daysInStage": zod.number().optional(),
+  "image": zod.string().nullish(),
+  "progress": zod.number().optional(),
+  "price": zod.number().optional(),
+  "market": zod.string().optional()
+}).and(zod.object({
+  "colorways": zod.array(zod.record(zod.string(), zod.unknown())),
+  "fabrics": zod.array(zod.record(zod.string(), zod.unknown())),
+  "techPack": zod.record(zod.string(), zod.unknown()),
+  "fitSessions": zod.array(zod.record(zod.string(), zod.unknown())),
+  "gradings": zod.array(zod.record(zod.string(), zod.unknown())),
+  "boms": zod.array(zod.record(zod.string(), zod.unknown())),
+  "samples": zod.array(zod.record(zod.string(), zod.unknown())),
+  "pomQc": zod.array(zod.record(zod.string(), zod.unknown())),
+  "costEstimate": zod.record(zod.string(), zod.unknown()),
+  "productionOrder": zod.record(zod.string(), zod.unknown())
+}))
+
+
+/**
+ * @summary Save style POM quality checks
+ */
+export const UpdateWorkspacePomQcParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const UpdateWorkspacePomQcBody = zod.object({
+  "inspector": zod.string().optional(),
+  "inspectedDate": zod.string().optional(),
+  "stage": zod.string().optional(),
+  "rows": zod.array(zod.object({
+  "point": zod.string().optional(),
+  "targetSpec": zod.number().optional(),
+  "tolerance": zod.number().optional(),
+  "actual": zod.number().optional(),
+  "passFail": zod.string().optional(),
+  "notes": zod.string().optional()
+})).optional()
+})
+
+export const UpdateWorkspacePomQcResponse = zod.object({
+  "id": zod.number(),
+  "code": zod.string(),
+  "name": zod.string(),
+  "brand": zod.string(),
+  "category": zod.string(),
+  "subCategory": zod.string().optional(),
+  "theme": zod.string().optional(),
+  "orderType": zod.string().optional(),
+  "tier": zod.string().optional(),
+  "status": zod.string(),
+  "stage": zod.string().optional(),
+  "currentStage": zod.string().optional(),
+  "owner": zod.string(),
+  "designer": zod.string().optional(),
+  "patternMaker": zod.string().optional(),
+  "targetDate": zod.string(),
+  "stageEnteredAt": zod.string().optional(),
+  "daysInStage": zod.number().optional(),
   "image": zod.string().nullish(),
   "progress": zod.number().optional(),
   "price": zod.number().optional(),
@@ -263,7 +624,13 @@ export const UpdateWorkspaceStyleParams = zod.object({
 
 export const UpdateWorkspaceStyleBody = zod.object({
   "status": zod.string().optional(),
+  "stage": zod.string().optional(),
   "owner": zod.string().optional(),
+  "designer": zod.string().optional(),
+  "patternMaker": zod.string().optional(),
+  "subCategory": zod.string().optional(),
+  "theme": zod.string().optional(),
+  "orderType": zod.string().optional(),
   "targetDate": zod.string().optional(),
   "progress": zod.number().optional(),
   "price": zod.number().optional(),
@@ -276,9 +643,19 @@ export const UpdateWorkspaceStyleResponse = zod.object({
   "name": zod.string(),
   "brand": zod.string(),
   "category": zod.string(),
+  "subCategory": zod.string().optional(),
+  "theme": zod.string().optional(),
+  "orderType": zod.string().optional(),
+  "tier": zod.string().optional(),
   "status": zod.string(),
+  "stage": zod.string().optional(),
+  "currentStage": zod.string().optional(),
   "owner": zod.string(),
+  "designer": zod.string().optional(),
+  "patternMaker": zod.string().optional(),
   "targetDate": zod.string(),
+  "stageEnteredAt": zod.string().optional(),
+  "daysInStage": zod.number().optional(),
   "image": zod.string().nullish(),
   "progress": zod.number().optional(),
   "price": zod.number().optional(),
@@ -310,9 +687,19 @@ export const GetWorkspaceStylePlmResponse = zod.object({
   "name": zod.string(),
   "brand": zod.string(),
   "category": zod.string(),
+  "subCategory": zod.string().optional(),
+  "theme": zod.string().optional(),
+  "orderType": zod.string().optional(),
+  "tier": zod.string().optional(),
   "status": zod.string(),
+  "stage": zod.string().optional(),
+  "currentStage": zod.string().optional(),
   "owner": zod.string(),
+  "designer": zod.string().optional(),
+  "patternMaker": zod.string().optional(),
   "targetDate": zod.string(),
+  "stageEnteredAt": zod.string().optional(),
+  "daysInStage": zod.number().optional(),
   "image": zod.string().nullish(),
   "progress": zod.number().optional(),
   "price": zod.number().optional(),
@@ -353,9 +740,19 @@ export const GetWorkspacePlanResponse = zod.object({
   "name": zod.string(),
   "brand": zod.string(),
   "category": zod.string(),
+  "subCategory": zod.string().optional(),
+  "theme": zod.string().optional(),
+  "orderType": zod.string().optional(),
+  "tier": zod.string().optional(),
   "status": zod.string(),
+  "stage": zod.string().optional(),
+  "currentStage": zod.string().optional(),
   "owner": zod.string(),
+  "designer": zod.string().optional(),
+  "patternMaker": zod.string().optional(),
   "targetDate": zod.string(),
+  "stageEnteredAt": zod.string().optional(),
+  "daysInStage": zod.number().optional(),
   "image": zod.string().nullish(),
   "progress": zod.number().optional(),
   "price": zod.number().optional(),
@@ -403,9 +800,19 @@ export const UpdateWorkspacePlanResponse = zod.object({
   "name": zod.string(),
   "brand": zod.string(),
   "category": zod.string(),
+  "subCategory": zod.string().optional(),
+  "theme": zod.string().optional(),
+  "orderType": zod.string().optional(),
+  "tier": zod.string().optional(),
   "status": zod.string(),
+  "stage": zod.string().optional(),
+  "currentStage": zod.string().optional(),
   "owner": zod.string(),
+  "designer": zod.string().optional(),
+  "patternMaker": zod.string().optional(),
   "targetDate": zod.string(),
+  "stageEnteredAt": zod.string().optional(),
+  "daysInStage": zod.number().optional(),
   "image": zod.string().nullish(),
   "progress": zod.number().optional(),
   "price": zod.number().optional(),

@@ -27,7 +27,10 @@ import type {
   CategorySales,
   ChannelSales,
   CommentInput,
+  CostEstimateUpdate,
+  FitSessionInput,
   GetWorkspacePlanParams,
+  GradingUpdate,
   HealthStatus,
   InventoryHealth,
   KpiSummary,
@@ -36,11 +39,16 @@ import type {
   PlanCreate,
   PlanStyleInput,
   PlanUpdate,
+  PomQcInput,
   ProductSales,
   RegionSales,
   RevenuePoint,
+  SampleDevelopmentInput,
   StorePerformance,
+  StyleCreate,
+  StyleTransition,
   StyleUpdate,
+  TechPackUpdate,
   WorkspaceBoard,
   WorkspaceBoardCard,
   WorkspaceComment,
@@ -48,6 +56,7 @@ import type {
   WorkspacePlan,
   WorkspacePlanHistory,
   WorkspacePlanIndexItem,
+  WorkspacePlmMeta,
   WorkspaceSession,
   WorkspaceShowcase,
   WorkspaceStyle,
@@ -1221,6 +1230,154 @@ export function useListWorkspaceStyles<TData = Awaited<ReturnType<typeof listWor
 
 
 
+export const getCreateWorkspaceStyleUrl = () => {
+
+
+
+
+  return `/api/workspace/styles`
+}
+
+/**
+ * @summary Create a style in the PLM pipeline
+ */
+export const createWorkspaceStyle = async (styleCreate: StyleCreate, options?: RequestInit): Promise<WorkspaceStyleDetail> => {
+
+  return customFetch<WorkspaceStyleDetail>(getCreateWorkspaceStyleUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      styleCreate,)
+  }
+);}
+
+
+
+
+export const getCreateWorkspaceStyleMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createWorkspaceStyle>>, TError,{data: BodyType<StyleCreate>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof createWorkspaceStyle>>, TError,{data: BodyType<StyleCreate>}, TContext> => {
+
+const mutationKey = ['createWorkspaceStyle'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof createWorkspaceStyle>>, {data: BodyType<StyleCreate>}> = (props) => {
+          const {data} = props ?? {};
+
+          return  createWorkspaceStyle(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type CreateWorkspaceStyleMutationResult = NonNullable<Awaited<ReturnType<typeof createWorkspaceStyle>>>
+    export type CreateWorkspaceStyleMutationBody = BodyType<StyleCreate>
+    export type CreateWorkspaceStyleMutationError = ErrorType<unknown>
+
+    /**
+ * @summary Create a style in the PLM pipeline
+ */
+export const useCreateWorkspaceStyle = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createWorkspaceStyle>>, TError,{data: BodyType<StyleCreate>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof createWorkspaceStyle>>,
+        TError,
+        {data: BodyType<StyleCreate>},
+        TContext
+      > => {
+      return useMutation(getCreateWorkspaceStyleMutationOptions(options));
+    }
+
+export const getGetWorkspacePlmMetaUrl = () => {
+
+
+
+
+  return `/api/workspace/plm/meta`
+}
+
+/**
+ * @summary PLM user, fabric, and category pickers
+ */
+export const getWorkspacePlmMeta = async ( options?: RequestInit): Promise<WorkspacePlmMeta> => {
+
+  return customFetch<WorkspacePlmMeta>(getGetWorkspacePlmMetaUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetWorkspacePlmMetaQueryKey = () => {
+    return [
+    `/api/workspace/plm/meta`
+    ] as const;
+    }
+
+
+export const getGetWorkspacePlmMetaQueryOptions = <TData = Awaited<ReturnType<typeof getWorkspacePlmMeta>>, TError = ErrorType<unknown>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getWorkspacePlmMeta>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetWorkspacePlmMetaQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getWorkspacePlmMeta>>> = ({ signal }) => getWorkspacePlmMeta({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getWorkspacePlmMeta>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetWorkspacePlmMetaQueryResult = NonNullable<Awaited<ReturnType<typeof getWorkspacePlmMeta>>>
+export type GetWorkspacePlmMetaQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary PLM user, fabric, and category pickers
+ */
+
+export function useGetWorkspacePlmMeta<TData = Awaited<ReturnType<typeof getWorkspacePlmMeta>>, TError = ErrorType<unknown>>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getWorkspacePlmMeta>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetWorkspacePlmMetaQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+
 export const getGetWorkspaceStyleUrl = (id: number,) => {
 
 
@@ -1298,12 +1455,516 @@ export function useGetWorkspaceStyle<TData = Awaited<ReturnType<typeof getWorksp
 
 
 
+export const getTransitionWorkspaceStyleUrl = (id: number,) => {
+
+
+
+
+  return `/api/workspace/styles/${id}/transition`
+}
+
+/**
+ * @summary Move a style through the PLM pipeline
+ */
+export const transitionWorkspaceStyle = async (id: number,
+    styleTransition: StyleTransition, options?: RequestInit): Promise<WorkspaceStyleDetail> => {
+
+  return customFetch<WorkspaceStyleDetail>(getTransitionWorkspaceStyleUrl(id),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      styleTransition,)
+  }
+);}
+
+
+
+
+export const getTransitionWorkspaceStyleMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof transitionWorkspaceStyle>>, TError,{id: number;data: BodyType<StyleTransition>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof transitionWorkspaceStyle>>, TError,{id: number;data: BodyType<StyleTransition>}, TContext> => {
+
+const mutationKey = ['transitionWorkspaceStyle'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof transitionWorkspaceStyle>>, {id: number;data: BodyType<StyleTransition>}> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  transitionWorkspaceStyle(id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type TransitionWorkspaceStyleMutationResult = NonNullable<Awaited<ReturnType<typeof transitionWorkspaceStyle>>>
+    export type TransitionWorkspaceStyleMutationBody = BodyType<StyleTransition>
+    export type TransitionWorkspaceStyleMutationError = ErrorType<unknown>
+
+    /**
+ * @summary Move a style through the PLM pipeline
+ */
+export const useTransitionWorkspaceStyle = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof transitionWorkspaceStyle>>, TError,{id: number;data: BodyType<StyleTransition>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof transitionWorkspaceStyle>>,
+        TError,
+        {id: number;data: BodyType<StyleTransition>},
+        TContext
+      > => {
+      return useMutation(getTransitionWorkspaceStyleMutationOptions(options));
+    }
+
+export const getUpdateWorkspaceStyleTechPackUrl = (id: number,) => {
+
+
+
+
+  return `/api/workspace/styles/${id}/tech-pack`
+}
+
+/**
+ * @summary Save style tech pack and pattern details
+ */
+export const updateWorkspaceStyleTechPack = async (id: number,
+    techPackUpdate: TechPackUpdate, options?: RequestInit): Promise<WorkspaceStyleDetail> => {
+
+  return customFetch<WorkspaceStyleDetail>(getUpdateWorkspaceStyleTechPackUrl(id),
+  {
+    ...options,
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      techPackUpdate,)
+  }
+);}
+
+
+
+
+export const getUpdateWorkspaceStyleTechPackMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateWorkspaceStyleTechPack>>, TError,{id: number;data: BodyType<TechPackUpdate>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof updateWorkspaceStyleTechPack>>, TError,{id: number;data: BodyType<TechPackUpdate>}, TContext> => {
+
+const mutationKey = ['updateWorkspaceStyleTechPack'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof updateWorkspaceStyleTechPack>>, {id: number;data: BodyType<TechPackUpdate>}> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  updateWorkspaceStyleTechPack(id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type UpdateWorkspaceStyleTechPackMutationResult = NonNullable<Awaited<ReturnType<typeof updateWorkspaceStyleTechPack>>>
+    export type UpdateWorkspaceStyleTechPackMutationBody = BodyType<TechPackUpdate>
+    export type UpdateWorkspaceStyleTechPackMutationError = ErrorType<unknown>
+
+    /**
+ * @summary Save style tech pack and pattern details
+ */
+export const useUpdateWorkspaceStyleTechPack = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateWorkspaceStyleTechPack>>, TError,{id: number;data: BodyType<TechPackUpdate>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof updateWorkspaceStyleTechPack>>,
+        TError,
+        {id: number;data: BodyType<TechPackUpdate>},
+        TContext
+      > => {
+      return useMutation(getUpdateWorkspaceStyleTechPackMutationOptions(options));
+    }
+
+export const getCreateWorkspaceFitSessionUrl = (id: number,) => {
+
+
+
+
+  return `/api/workspace/styles/${id}/fit-sessions`
+}
+
+/**
+ * @summary Add a style fit session
+ */
+export const createWorkspaceFitSession = async (id: number,
+    fitSessionInput: FitSessionInput, options?: RequestInit): Promise<WorkspaceStyleDetail> => {
+
+  return customFetch<WorkspaceStyleDetail>(getCreateWorkspaceFitSessionUrl(id),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      fitSessionInput,)
+  }
+);}
+
+
+
+
+export const getCreateWorkspaceFitSessionMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createWorkspaceFitSession>>, TError,{id: number;data: BodyType<FitSessionInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof createWorkspaceFitSession>>, TError,{id: number;data: BodyType<FitSessionInput>}, TContext> => {
+
+const mutationKey = ['createWorkspaceFitSession'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof createWorkspaceFitSession>>, {id: number;data: BodyType<FitSessionInput>}> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  createWorkspaceFitSession(id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type CreateWorkspaceFitSessionMutationResult = NonNullable<Awaited<ReturnType<typeof createWorkspaceFitSession>>>
+    export type CreateWorkspaceFitSessionMutationBody = BodyType<FitSessionInput>
+    export type CreateWorkspaceFitSessionMutationError = ErrorType<unknown>
+
+    /**
+ * @summary Add a style fit session
+ */
+export const useCreateWorkspaceFitSession = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createWorkspaceFitSession>>, TError,{id: number;data: BodyType<FitSessionInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof createWorkspaceFitSession>>,
+        TError,
+        {id: number;data: BodyType<FitSessionInput>},
+        TContext
+      > => {
+      return useMutation(getCreateWorkspaceFitSessionMutationOptions(options));
+    }
+
+export const getUpdateWorkspaceStyleGradingUrl = (id: number,) => {
+
+
+
+
+  return `/api/workspace/styles/${id}/grading`
+}
+
+/**
+ * @summary Save style grading details
+ */
+export const updateWorkspaceStyleGrading = async (id: number,
+    gradingUpdate: GradingUpdate, options?: RequestInit): Promise<WorkspaceStyleDetail> => {
+
+  return customFetch<WorkspaceStyleDetail>(getUpdateWorkspaceStyleGradingUrl(id),
+  {
+    ...options,
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      gradingUpdate,)
+  }
+);}
+
+
+
+
+export const getUpdateWorkspaceStyleGradingMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateWorkspaceStyleGrading>>, TError,{id: number;data: BodyType<GradingUpdate>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof updateWorkspaceStyleGrading>>, TError,{id: number;data: BodyType<GradingUpdate>}, TContext> => {
+
+const mutationKey = ['updateWorkspaceStyleGrading'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof updateWorkspaceStyleGrading>>, {id: number;data: BodyType<GradingUpdate>}> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  updateWorkspaceStyleGrading(id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type UpdateWorkspaceStyleGradingMutationResult = NonNullable<Awaited<ReturnType<typeof updateWorkspaceStyleGrading>>>
+    export type UpdateWorkspaceStyleGradingMutationBody = BodyType<GradingUpdate>
+    export type UpdateWorkspaceStyleGradingMutationError = ErrorType<unknown>
+
+    /**
+ * @summary Save style grading details
+ */
+export const useUpdateWorkspaceStyleGrading = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateWorkspaceStyleGrading>>, TError,{id: number;data: BodyType<GradingUpdate>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof updateWorkspaceStyleGrading>>,
+        TError,
+        {id: number;data: BodyType<GradingUpdate>},
+        TContext
+      > => {
+      return useMutation(getUpdateWorkspaceStyleGradingMutationOptions(options));
+    }
+
+export const getCreateWorkspaceSampleUrl = (id: number,) => {
+
+
+
+
+  return `/api/workspace/styles/${id}/samples`
+}
+
+/**
+ * @summary Add a sample development record
+ */
+export const createWorkspaceSample = async (id: number,
+    sampleDevelopmentInput: SampleDevelopmentInput, options?: RequestInit): Promise<WorkspaceStyleDetail> => {
+
+  return customFetch<WorkspaceStyleDetail>(getCreateWorkspaceSampleUrl(id),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      sampleDevelopmentInput,)
+  }
+);}
+
+
+
+
+export const getCreateWorkspaceSampleMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createWorkspaceSample>>, TError,{id: number;data: BodyType<SampleDevelopmentInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof createWorkspaceSample>>, TError,{id: number;data: BodyType<SampleDevelopmentInput>}, TContext> => {
+
+const mutationKey = ['createWorkspaceSample'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof createWorkspaceSample>>, {id: number;data: BodyType<SampleDevelopmentInput>}> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  createWorkspaceSample(id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type CreateWorkspaceSampleMutationResult = NonNullable<Awaited<ReturnType<typeof createWorkspaceSample>>>
+    export type CreateWorkspaceSampleMutationBody = BodyType<SampleDevelopmentInput>
+    export type CreateWorkspaceSampleMutationError = ErrorType<unknown>
+
+    /**
+ * @summary Add a sample development record
+ */
+export const useCreateWorkspaceSample = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createWorkspaceSample>>, TError,{id: number;data: BodyType<SampleDevelopmentInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof createWorkspaceSample>>,
+        TError,
+        {id: number;data: BodyType<SampleDevelopmentInput>},
+        TContext
+      > => {
+      return useMutation(getCreateWorkspaceSampleMutationOptions(options));
+    }
+
+export const getUpdateWorkspaceCostEstimateUrl = (id: number,) => {
+
+
+
+
+  return `/api/workspace/styles/${id}/cost-estimate`
+}
+
+/**
+ * @summary Save style cost estimate
+ */
+export const updateWorkspaceCostEstimate = async (id: number,
+    costEstimateUpdate: CostEstimateUpdate, options?: RequestInit): Promise<WorkspaceStyleDetail> => {
+
+  return customFetch<WorkspaceStyleDetail>(getUpdateWorkspaceCostEstimateUrl(id),
+  {
+    ...options,
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      costEstimateUpdate,)
+  }
+);}
+
+
+
+
+export const getUpdateWorkspaceCostEstimateMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateWorkspaceCostEstimate>>, TError,{id: number;data: BodyType<CostEstimateUpdate>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof updateWorkspaceCostEstimate>>, TError,{id: number;data: BodyType<CostEstimateUpdate>}, TContext> => {
+
+const mutationKey = ['updateWorkspaceCostEstimate'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof updateWorkspaceCostEstimate>>, {id: number;data: BodyType<CostEstimateUpdate>}> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  updateWorkspaceCostEstimate(id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type UpdateWorkspaceCostEstimateMutationResult = NonNullable<Awaited<ReturnType<typeof updateWorkspaceCostEstimate>>>
+    export type UpdateWorkspaceCostEstimateMutationBody = BodyType<CostEstimateUpdate>
+    export type UpdateWorkspaceCostEstimateMutationError = ErrorType<unknown>
+
+    /**
+ * @summary Save style cost estimate
+ */
+export const useUpdateWorkspaceCostEstimate = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateWorkspaceCostEstimate>>, TError,{id: number;data: BodyType<CostEstimateUpdate>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof updateWorkspaceCostEstimate>>,
+        TError,
+        {id: number;data: BodyType<CostEstimateUpdate>},
+        TContext
+      > => {
+      return useMutation(getUpdateWorkspaceCostEstimateMutationOptions(options));
+    }
+
+export const getUpdateWorkspacePomQcUrl = (id: number,) => {
+
+
+
+
+  return `/api/workspace/styles/${id}/pom-qc`
+}
+
+/**
+ * @summary Save style POM quality checks
+ */
+export const updateWorkspacePomQc = async (id: number,
+    pomQcInput: PomQcInput, options?: RequestInit): Promise<WorkspaceStyleDetail> => {
+
+  return customFetch<WorkspaceStyleDetail>(getUpdateWorkspacePomQcUrl(id),
+  {
+    ...options,
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      pomQcInput,)
+  }
+);}
+
+
+
+
+export const getUpdateWorkspacePomQcMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateWorkspacePomQc>>, TError,{id: number;data: BodyType<PomQcInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof updateWorkspacePomQc>>, TError,{id: number;data: BodyType<PomQcInput>}, TContext> => {
+
+const mutationKey = ['updateWorkspacePomQc'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof updateWorkspacePomQc>>, {id: number;data: BodyType<PomQcInput>}> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  updateWorkspacePomQc(id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type UpdateWorkspacePomQcMutationResult = NonNullable<Awaited<ReturnType<typeof updateWorkspacePomQc>>>
+    export type UpdateWorkspacePomQcMutationBody = BodyType<PomQcInput>
+    export type UpdateWorkspacePomQcMutationError = ErrorType<unknown>
+
+    /**
+ * @summary Save style POM quality checks
+ */
+export const useUpdateWorkspacePomQc = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateWorkspacePomQc>>, TError,{id: number;data: BodyType<PomQcInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof updateWorkspacePomQc>>,
+        TError,
+        {id: number;data: BodyType<PomQcInput>},
+        TContext
+      > => {
+      return useMutation(getUpdateWorkspacePomQcMutationOptions(options));
+    }
+
 export const getUpdateWorkspaceStyleUrl = (id: number,) => {
 
 
 
 
-  return `/api/workspace/styles/${id}`
+  return `/api/workspace/styles/${id}/pom-qc`
 }
 
 /**

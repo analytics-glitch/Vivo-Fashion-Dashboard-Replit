@@ -28,6 +28,22 @@ const router = express.Router();
 const schema = "product_workspace";
 const sessionCookie = "vivo_workspace_session";
 const sessionDays = 7;
+const PLM_STAGES = [
+  "Concept",
+  "Initial Design Tech Pack",
+  "Pattern",
+  "Initial Sample",
+  "Fit Session",
+  "Approved",
+  "Grading",
+  "Costing Sample",
+  "In Development",
+  "Production",
+  "Launched",
+] as const;
+const PLM_SIDE_STAGES = ["On Hold", "Dropped"] as const;
+const PLM_ALL_STAGES = [...PLM_STAGES, ...PLM_SIDE_STAGES] as const;
+type PlmStage = (typeof PLM_ALL_STAGES)[number];
 
 type UserRow = {
   id: number;
@@ -145,9 +161,16 @@ async function ensureSchema() {
       name TEXT NOT NULL,
       brand TEXT NOT NULL,
       category TEXT NOT NULL,
+      sub_category TEXT NOT NULL DEFAULT '',
+      theme TEXT NOT NULL DEFAULT '',
+      order_type TEXT NOT NULL DEFAULT 'New',
       tier TEXT NOT NULL DEFAULT 'Core',
       status TEXT NOT NULL,
+      stage TEXT NOT NULL DEFAULT 'Concept',
+      stage_entered_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       owner TEXT NOT NULL,
+      designer TEXT NOT NULL DEFAULT '',
+      pattern_maker TEXT NOT NULL DEFAULT '',
       target_date DATE NOT NULL,
       image TEXT,
       progress NUMERIC NOT NULL DEFAULT 0,
@@ -201,7 +224,13 @@ async function ensureSchema() {
       version TEXT NOT NULL,
       owner TEXT NOT NULL,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      notes TEXT NOT NULL DEFAULT ''
+      notes TEXT NOT NULL DEFAULT '',
+      base_pattern_reference TEXT NOT NULL DEFAULT '',
+      fabric_id INTEGER REFERENCES ${schema}.fabrics(id) ON DELETE SET NULL,
+      trims_accessories TEXT NOT NULL DEFAULT '',
+      construction_notes TEXT NOT NULL DEFAULT '',
+      audaces_file_reference TEXT NOT NULL DEFAULT '',
+      modified_from_style_number TEXT NOT NULL DEFAULT ''
     );
     CREATE TABLE IF NOT EXISTS ${schema}.fit_sessions (
       id SERIAL PRIMARY KEY,
@@ -210,6 +239,9 @@ async function ensureSchema() {
       fit_type TEXT NOT NULL,
       status TEXT NOT NULL,
       notes TEXT NOT NULL DEFAULT '',
+      sample TEXT NOT NULL DEFAULT '',
+      model_name TEXT NOT NULL DEFAULT '',
+      attendees TEXT NOT NULL DEFAULT '',
       UNIQUE (style_id, fit_type)
     );
     CREATE TABLE IF NOT EXISTS ${schema}.gradings (
@@ -218,6 +250,7 @@ async function ensureSchema() {
       size_range TEXT NOT NULL,
       status TEXT NOT NULL,
       notes TEXT NOT NULL DEFAULT '',
+      cad_team_member TEXT NOT NULL DEFAULT '',
       UNIQUE (style_id, size_range)
     );
     CREATE TABLE IF NOT EXISTS ${schema}.boms (
@@ -240,15 +273,41 @@ async function ensureSchema() {
       notes TEXT NOT NULL DEFAULT '',
       UNIQUE (style_id, sample_type, round)
     );
+    CREATE TABLE IF NOT EXISTS ${schema}.sample_development (
+      id SERIAL PRIMARY KEY,
+      style_id INTEGER NOT NULL REFERENCES ${schema}.styles(id) ON DELETE CASCADE,
+      purpose TEXT NOT NULL,
+      pattern_maker TEXT NOT NULL DEFAULT '',
+      sample_makers TEXT NOT NULL DEFAULT '',
+      units_ordered INTEGER NOT NULL DEFAULT 0,
+      date_cut DATE,
+      date_finished DATE,
+      status TEXT NOT NULL DEFAULT 'Planned',
+      rework_notes TEXT NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
     CREATE TABLE IF NOT EXISTS ${schema}.pom_qc (
       id SERIAL PRIMARY KEY,
       style_id INTEGER NOT NULL REFERENCES ${schema}.styles(id) ON DELETE CASCADE,
-      point TEXT NOT NULL,
-      spec NUMERIC NOT NULL,
-      actual NUMERIC NOT NULL,
-      tolerance NUMERIC NOT NULL,
-      status TEXT NOT NULL,
+      point TEXT,
+      spec NUMERIC NOT NULL DEFAULT 0,
+      actual NUMERIC NOT NULL DEFAULT 0,
+      tolerance NUMERIC NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'Header',
+      inspector TEXT NOT NULL DEFAULT '',
+      inspected_date DATE,
+      stage TEXT NOT NULL DEFAULT '',
       UNIQUE (style_id, point)
+    );
+    CREATE TABLE IF NOT EXISTS ${schema}.pom_qc_rows (
+      id SERIAL PRIMARY KEY,
+      pom_qc_id INTEGER NOT NULL REFERENCES ${schema}.pom_qc(id) ON DELETE CASCADE,
+      point TEXT NOT NULL,
+      target_spec NUMERIC NOT NULL DEFAULT 0,
+      tolerance NUMERIC NOT NULL DEFAULT 0,
+      actual NUMERIC NOT NULL DEFAULT 0,
+      pass_fail TEXT NOT NULL DEFAULT 'Pending',
+      notes TEXT NOT NULL DEFAULT ''
     );
     CREATE TABLE IF NOT EXISTS ${schema}.cost_estimates (
       id SERIAL PRIMARY KEY,
@@ -259,7 +318,27 @@ async function ensureSchema() {
       overhead NUMERIC NOT NULL DEFAULT 0,
       total NUMERIC NOT NULL DEFAULT 0,
       margin NUMERIC NOT NULL DEFAULT 0,
-      currency TEXT NOT NULL DEFAULT 'KES'
+      currency TEXT NOT NULL DEFAULT 'KES',
+      avg_mat_kg NUMERIC NOT NULL DEFAULT 0,
+      avg_metres_used NUMERIC NOT NULL DEFAULT 0,
+      mins_per_pc NUMERIC NOT NULL DEFAULT 0,
+      efficiency_pct NUMERIC NOT NULL DEFAULT 0,
+      material_cost NUMERIC NOT NULL DEFAULT 0,
+      labour_cost NUMERIC NOT NULL DEFAULT 0,
+      retail_price NUMERIC NOT NULL DEFAULT 0,
+      margin_pct NUMERIC NOT NULL DEFAULT 0,
+      cogs_ratio NUMERIC NOT NULL DEFAULT 0,
+      set_sample_cost NUMERIC NOT NULL DEFAULT 0,
+      variance NUMERIC NOT NULL DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS ${schema}.stage_history (
+      id SERIAL PRIMARY KEY,
+      style_id INTEGER NOT NULL REFERENCES ${schema}.styles(id) ON DELETE CASCADE,
+      from_stage TEXT,
+      to_stage TEXT NOT NULL,
+      user_id INTEGER REFERENCES ${schema}.users(id),
+      note TEXT NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     CREATE TABLE IF NOT EXISTS ${schema}.showcases (
       id SERIAL PRIMARY KEY,
@@ -308,6 +387,40 @@ async function ensureSchema() {
       payload JSONB NOT NULL DEFAULT '{}'::jsonb
     );
     ALTER TABLE ${schema}.styles ADD COLUMN IF NOT EXISTS tier TEXT NOT NULL DEFAULT 'Core';
+    ALTER TABLE ${schema}.styles ADD COLUMN IF NOT EXISTS sub_category TEXT NOT NULL DEFAULT '';
+    ALTER TABLE ${schema}.styles ADD COLUMN IF NOT EXISTS theme TEXT NOT NULL DEFAULT '';
+    ALTER TABLE ${schema}.styles ADD COLUMN IF NOT EXISTS order_type TEXT NOT NULL DEFAULT 'New';
+    ALTER TABLE ${schema}.styles ADD COLUMN IF NOT EXISTS stage TEXT NOT NULL DEFAULT 'Concept';
+    ALTER TABLE ${schema}.styles ADD COLUMN IF NOT EXISTS stage_entered_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+    ALTER TABLE ${schema}.styles ADD COLUMN IF NOT EXISTS designer TEXT NOT NULL DEFAULT '';
+    ALTER TABLE ${schema}.styles ADD COLUMN IF NOT EXISTS pattern_maker TEXT NOT NULL DEFAULT '';
+    ALTER TABLE ${schema}.tech_packs ADD COLUMN IF NOT EXISTS base_pattern_reference TEXT NOT NULL DEFAULT '';
+    ALTER TABLE ${schema}.tech_packs ADD COLUMN IF NOT EXISTS fabric_id INTEGER REFERENCES ${schema}.fabrics(id) ON DELETE SET NULL;
+    ALTER TABLE ${schema}.tech_packs ADD COLUMN IF NOT EXISTS trims_accessories TEXT NOT NULL DEFAULT '';
+    ALTER TABLE ${schema}.tech_packs ADD COLUMN IF NOT EXISTS construction_notes TEXT NOT NULL DEFAULT '';
+    ALTER TABLE ${schema}.tech_packs ADD COLUMN IF NOT EXISTS audaces_file_reference TEXT NOT NULL DEFAULT '';
+    ALTER TABLE ${schema}.tech_packs ADD COLUMN IF NOT EXISTS modified_from_style_number TEXT NOT NULL DEFAULT '';
+    ALTER TABLE ${schema}.fit_sessions ADD COLUMN IF NOT EXISTS sample TEXT NOT NULL DEFAULT '';
+    ALTER TABLE ${schema}.fit_sessions ADD COLUMN IF NOT EXISTS model_name TEXT NOT NULL DEFAULT '';
+    ALTER TABLE ${schema}.fit_sessions ADD COLUMN IF NOT EXISTS attendees TEXT NOT NULL DEFAULT '';
+    ALTER TABLE ${schema}.gradings ADD COLUMN IF NOT EXISTS cad_team_member TEXT NOT NULL DEFAULT '';
+    ALTER TABLE ${schema}.pom_qc ADD COLUMN IF NOT EXISTS inspector TEXT NOT NULL DEFAULT '';
+    ALTER TABLE ${schema}.pom_qc ADD COLUMN IF NOT EXISTS inspected_date DATE;
+    ALTER TABLE ${schema}.pom_qc ADD COLUMN IF NOT EXISTS stage TEXT NOT NULL DEFAULT '';
+    ALTER TABLE ${schema}.cost_estimates ADD COLUMN IF NOT EXISTS avg_mat_kg NUMERIC NOT NULL DEFAULT 0;
+    ALTER TABLE ${schema}.cost_estimates ADD COLUMN IF NOT EXISTS avg_metres_used NUMERIC NOT NULL DEFAULT 0;
+    ALTER TABLE ${schema}.cost_estimates ADD COLUMN IF NOT EXISTS mins_per_pc NUMERIC NOT NULL DEFAULT 0;
+    ALTER TABLE ${schema}.cost_estimates ADD COLUMN IF NOT EXISTS efficiency_pct NUMERIC NOT NULL DEFAULT 0;
+    ALTER TABLE ${schema}.cost_estimates ADD COLUMN IF NOT EXISTS material_cost NUMERIC NOT NULL DEFAULT 0;
+    ALTER TABLE ${schema}.cost_estimates ADD COLUMN IF NOT EXISTS labour_cost NUMERIC NOT NULL DEFAULT 0;
+    ALTER TABLE ${schema}.cost_estimates ADD COLUMN IF NOT EXISTS retail_price NUMERIC NOT NULL DEFAULT 0;
+    ALTER TABLE ${schema}.cost_estimates ADD COLUMN IF NOT EXISTS margin_pct NUMERIC NOT NULL DEFAULT 0;
+    ALTER TABLE ${schema}.cost_estimates ADD COLUMN IF NOT EXISTS cogs_ratio NUMERIC NOT NULL DEFAULT 0;
+    ALTER TABLE ${schema}.cost_estimates ADD COLUMN IF NOT EXISTS set_sample_cost NUMERIC NOT NULL DEFAULT 0;
+    ALTER TABLE ${schema}.cost_estimates ADD COLUMN IF NOT EXISTS variance NUMERIC NOT NULL DEFAULT 0;
+    ALTER TABLE ${schema}.pom_qc ALTER COLUMN point DROP NOT NULL;
+    UPDATE ${schema}.styles SET stage='Approved', stage_entered_at=COALESCE(stage_entered_at,NOW())
+      WHERE status='Approved' AND stage='Concept';
   `);
 
   for (const user of users) {
@@ -516,9 +629,33 @@ async function requireUser(req: AuthRequest, res: Response, next: NextFunction) 
   next();
 }
 
+function isPlmStage(value: unknown): value is PlmStage {
+  return typeof value === "string" && (PLM_ALL_STAGES as readonly string[]).includes(value);
+}
+
+function nextStage(stage: string) {
+  const index = PLM_STAGES.indexOf(stage as (typeof PLM_STAGES)[number]);
+  return index >= 0 && index < PLM_STAGES.length - 1 ? PLM_STAGES[index + 1] : null;
+}
+
+function previousStage(stage: string) {
+  const index = PLM_STAGES.indexOf(stage as (typeof PLM_STAGES)[number]);
+  return index > 0 ? PLM_STAGES[index - 1] : null;
+}
+
+function stageProgress(stage: string) {
+  const index = PLM_STAGES.indexOf(stage as (typeof PLM_STAGES)[number]);
+  return index < 0 ? 0 : Math.round((index / (PLM_STAGES.length - 1)) * 100);
+}
+
 async function getStyle(id: number) {
   const result = await pool.query(
-    `SELECT id,code,name,brand,category,tier,status,owner,to_char(target_date,'YYYY-MM-DD') AS "targetDate",image,progress::float,price::float,market
+    `SELECT id,code,name,brand,category,sub_category AS "subCategory",theme,order_type AS "orderType",
+       tier,status,stage,stage AS "currentStage",owner,designer,pattern_maker AS "patternMaker",
+       to_char(target_date,'YYYY-MM-DD') AS "targetDate",
+       to_char(stage_entered_at,'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "stageEnteredAt",
+       GREATEST(0,FLOOR(EXTRACT(EPOCH FROM (NOW()-stage_entered_at))/86400))::int AS "daysInStage",
+       image,progress::float,price::float,market
      FROM ${schema}.styles WHERE id=$1`,
     [id],
   );
@@ -528,18 +665,46 @@ async function getStyle(id: number) {
 async function styleDetail(id: number) {
   const style = await getStyle(id);
   if (!style) return null;
-  const [colorways, styleFabrics, techPack, fitSessions, gradings, boms, samples, pomQc, costEstimate, productionOrder] = await Promise.all([
+  const [colorways, styleFabrics, techPack, fitSessions, gradings, boms, samples, pomQcHeader, pomQcRows, legacyPomQc, costEstimate, productionOrder, stageHistory] = await Promise.all([
     pool.query(`SELECT id,name,hex,status FROM ${schema}.colorways WHERE style_id=$1 ORDER BY id`, [id]),
     pool.query(`SELECT f.id,f.name,f.composition,f.mill,f.gsm,f.notes FROM ${schema}.boms b JOIN ${schema}.fabrics f ON f.id=b.fabric_id WHERE b.style_id=$1 ORDER BY b.id`, [id]),
-    pool.query(`SELECT id,status,version,owner,to_char(updated_at,'YYYY-MM-DD') AS "updatedAt",notes FROM ${schema}.tech_packs WHERE style_id=$1`, [id]),
-    pool.query(`SELECT id,to_char(session_date,'YYYY-MM-DD') AS "sessionDate",fit_type AS "fitType",status,notes FROM ${schema}.fit_sessions WHERE style_id=$1 ORDER BY session_date DESC`, [id]),
-    pool.query(`SELECT id,size_range AS "sizeRange",status,notes FROM ${schema}.gradings WHERE style_id=$1 ORDER BY id`, [id]),
+    pool.query(`SELECT id,status,version,owner,to_char(updated_at,'YYYY-MM-DD') AS "updatedAt",notes,
+       base_pattern_reference AS "basePatternReference",fabric_id AS "fabricId",trims_accessories AS "trimsAccessories",
+       construction_notes AS "constructionNotes",audaces_file_reference AS "audacesFileReference",
+       modified_from_style_number AS "modifiedFromStyleNumber"
+       FROM ${schema}.tech_packs WHERE style_id=$1`, [id]),
+    pool.query(`SELECT id,to_char(session_date,'YYYY-MM-DD') AS "sessionDate",fit_type AS "fitType",sample,
+       model_name AS "modelName",attendees,status AS outcome,notes AS comments
+       FROM ${schema}.fit_sessions WHERE style_id=$1 ORDER BY session_date DESC`, [id]),
+    pool.query(`SELECT id,size_range AS "sizeRange",status,cad_team_member AS "cadTeamMember",notes FROM ${schema}.gradings WHERE style_id=$1 ORDER BY id`, [id]),
     pool.query(`SELECT b.id,b.component,b.consumption::float,b.unit,b.status,f.name AS fabric FROM ${schema}.boms b LEFT JOIN ${schema}.fabrics f ON f.id=b.fabric_id WHERE b.style_id=$1 ORDER BY b.id`, [id]),
-    pool.query(`SELECT id,sample_type AS "sampleType",round,status,to_char(due_date,'YYYY-MM-DD') AS "dueDate",notes FROM ${schema}.samples_rework WHERE style_id=$1 ORDER BY id`, [id]),
-    pool.query(`SELECT id,point,spec::float,actual::float,tolerance::float,status FROM ${schema}.pom_qc WHERE style_id=$1 ORDER BY id`, [id]),
-    pool.query(`SELECT fabric::float,trims::float,labor::float,overhead::float,total::float,margin::float,currency FROM ${schema}.cost_estimates WHERE style_id=$1`, [id]),
+    pool.query(`SELECT id,purpose,pattern_maker AS "patternMaker",sample_makers AS "sampleMakers",units_ordered AS "unitsOrdered",
+       to_char(date_cut,'YYYY-MM-DD') AS "dateCut",to_char(date_finished,'YYYY-MM-DD') AS "dateFinished",status,rework_notes AS "reworkNotes"
+       FROM ${schema}.sample_development WHERE style_id=$1 ORDER BY id DESC`, [id]),
+    pool.query(`SELECT id,inspector,to_char(inspected_date,'YYYY-MM-DD') AS "inspectedDate",stage
+       FROM ${schema}.pom_qc WHERE style_id=$1 AND point IS NULL ORDER BY id DESC LIMIT 1`, [id]),
+    pool.query(`SELECT r.id,r.point,r.target_spec::float AS "targetSpec",r.tolerance::float,r.actual::float,
+       r.pass_fail AS "passFail",r.notes
+       FROM ${schema}.pom_qc_rows r JOIN ${schema}.pom_qc q ON q.id=r.pom_qc_id
+       WHERE q.style_id=$1 ORDER BY r.id`, [id]),
+    pool.query(`SELECT id,point,spec::float,actual::float,tolerance::float,status FROM ${schema}.pom_qc WHERE style_id=$1 AND point IS NOT NULL ORDER BY id`, [id]),
+    pool.query(`SELECT fabric::float,trims::float,labor::float,overhead::float,total::float,margin::float,currency,
+       avg_mat_kg::float AS "avgMatKg",avg_metres_used::float AS "avgMetresUsed",mins_per_pc::float AS "minsPerPc",
+       efficiency_pct::float AS "efficiencyPct",material_cost::float AS "materialCost",labour_cost::float AS "labourCost",
+       retail_price::float AS "retailPrice",margin_pct::float AS "marginPct",cogs_ratio::float AS "cogsRatio",
+       set_sample_cost::float AS "setSampleCost",variance::float
+       FROM ${schema}.cost_estimates WHERE style_id=$1`, [id]),
     pool.query(`SELECT payload FROM ${schema}.production_orders WHERE style_id=$1`, [id]),
+    pool.query(`SELECT h.id,h.style_id AS "styleId",h.from_stage AS "fromStage",h.to_stage AS "toStage",
+       h.user_id AS "userId",COALESCE(u.name,'System') AS "userName",h.note,
+       to_char(h.created_at,'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS timestamp
+       FROM ${schema}.stage_history h LEFT JOIN ${schema}.users u ON u.id=h.user_id
+       WHERE h.style_id=$1 ORDER BY h.created_at DESC,h.id DESC`, [id]),
   ]);
+  const pomQc = pomQcRows.rows.length ? {
+    ...(pomQcHeader.rows[0] ?? {}),
+    rows: pomQcRows.rows,
+  } : { ...(pomQcHeader.rows[0] ?? {}), rows: legacyPomQc.rows };
   return {
     ...style,
     colorways: colorways.rows,
@@ -549,9 +714,10 @@ async function styleDetail(id: number) {
     gradings: gradings.rows,
     boms: boms.rows,
     samples: samples.rows,
-    pomQc: pomQc.rows,
+    pomQc,
     costEstimate: costEstimate.rows[0] ?? {},
     productionOrder: productionOrder.rows[0]?.payload ?? {},
+    stageHistory: stageHistory.rows,
   };
 }
 
@@ -626,6 +792,62 @@ router.post("/logout", async (req, res, next) => {
 
 router.use(requireUser);
 
+async function transitionStyle(id: number, toStage: string, note: string, userId: number | null) {
+  if (!isPlmStage(toStage)) throw new Error("Unknown PLM stage");
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const current = await client.query<{ stage: string }>(
+      `SELECT stage FROM ${schema}.styles WHERE id=$1 FOR UPDATE`,
+      [id],
+    );
+    const fromStage = current.rows[0]?.stage;
+    if (!fromStage) throw new Error("Style not found");
+    if (fromStage === toStage) throw new Error("Style is already in that stage");
+    const fromIndex = PLM_STAGES.indexOf(fromStage as (typeof PLM_STAGES)[number]);
+    const toIndex = PLM_STAGES.indexOf(toStage as (typeof PLM_STAGES)[number]);
+    const isSideMove = toStage === "On Hold" || toStage === "Dropped" || fromStage === "On Hold" || fromStage === "Dropped";
+    if (!isSideMove && fromIndex >= 0 && toIndex >= 0 && Math.abs(fromIndex - toIndex) !== 1) {
+      throw new Error("Styles must move one stage at a time");
+    }
+    await client.query(
+      `UPDATE ${schema}.styles
+       SET stage=$1,status=$1,stage_entered_at=NOW(),progress=$2,updated_at=NOW()
+       WHERE id=$3`,
+      [toStage, stageProgress(toStage), id],
+    );
+    await client.query(
+      `INSERT INTO ${schema}.stage_history (style_id,from_stage,to_stage,user_id,note)
+       VALUES ($1,$2,$3,$4,$5)`,
+      [id, fromStage, toStage, userId, note],
+    );
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+  return styleDetail(id);
+}
+
+router.get("/plm/meta", async (_req, res, next) => {
+  try {
+    const [userResult, fabricResult, categoryResult] = await Promise.all([
+      pool.query(`SELECT id,name,email,role,initials,color FROM ${schema}.users ORDER BY name`),
+      pool.query(`SELECT id,name,composition,mill,gsm,notes FROM ${schema}.fabrics ORDER BY name`),
+      pool.query<{ category: string }>(`SELECT DISTINCT category FROM ${schema}.styles WHERE category<>'' ORDER BY category`),
+    ]);
+    res.json({
+      users: userResult.rows,
+      fabrics: fabricResult.rows,
+      categories: categoryResult.rows.map((row) => row.category),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.get("/dashboard", async (_req, res, next) => {
   try {
     const [styles, boards, plans, recent] = await Promise.all([
@@ -668,18 +890,100 @@ router.get("/styles", async (req, res, next) => {
       values.push(String(req.query.status));
       clauses.push(`status=$${values.length}`);
     }
+    const filters: Record<string, string> = {
+      category: "category",
+      designer: "designer",
+      tier: "tier",
+      orderType: "order_type",
+      stage: "stage",
+    };
+    for (const [queryKey, column] of Object.entries(filters)) {
+      if (!req.query[queryKey]) continue;
+      values.push(String(req.query[queryKey]));
+      clauses.push(`${column}=$${values.length}`);
+    }
     if (req.query.search) {
       values.push(`%${String(req.query.search)}%`);
       clauses.push(`(name ILIKE $${values.length} OR code ILIKE $${values.length} OR owner ILIKE $${values.length})`);
     }
     const result = await pool.query(
-      `SELECT id,code,name,brand,category,tier,status,owner,to_char(target_date,'YYYY-MM-DD') AS "targetDate",image,progress::float,price::float,market
+      `SELECT id,code,name,brand,category,sub_category AS "subCategory",theme,order_type AS "orderType",
+       tier,status,stage,stage AS "currentStage",owner,designer,pattern_maker AS "patternMaker",
+       to_char(target_date,'YYYY-MM-DD') AS "targetDate",
+       to_char(stage_entered_at,'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "stageEnteredAt",
+       GREATEST(0,FLOOR(EXTRACT(EPOCH FROM (NOW()-stage_entered_at))/86400))::int AS "daysInStage",
+       image,progress::float,price::float,market
        FROM ${schema}.styles ${clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""} ORDER BY target_date ASC, id ASC`,
       values,
     );
     res.json(result.rows);
   } catch (error) {
     next(error);
+  }
+});
+
+router.post("/styles", async (req: AuthRequest, res, next) => {
+  const client = await pool.connect();
+  try {
+    const body = req.body ?? {};
+    const name = String(body.name ?? "").trim();
+    const brand = body.brand === "Safari by Vivo" ? "Safari by Vivo" : "Vivo";
+    const category = String(body.category ?? "").trim();
+    const targetDate = String(body.targetDate ?? "").trim();
+    if (!name || !category || !targetDate) {
+      res.status(400).json({ error: "Style name, category, and target launch date are required" });
+      return;
+    }
+    const prefix = brand === "Safari by Vivo" ? "S-" : "V-";
+    let code = String(body.styleNumber ?? "").trim();
+    if (!code) {
+      const count = await client.query<{ next: number }>(
+        `SELECT (COUNT(*)::int + 1) AS next FROM ${schema}.styles WHERE code LIKE $1`,
+        [`${prefix}%`],
+      );
+      code = `${prefix}${new Date().getFullYear().toString().slice(-2)}${String(count.rows[0]?.next ?? 1).padStart(3, "0")}`;
+    }
+    const designer = String(body.designer ?? "").trim();
+    const patternMaker = String(body.patternMaker ?? "").trim();
+    const tier = ["1", "2", "3", "4"].includes(String(body.tier)) ? String(body.tier) : "1";
+    await client.query("BEGIN");
+    const inserted = await client.query<{ id: number }>(
+      `INSERT INTO ${schema}.styles
+       (code,name,brand,category,sub_category,theme,order_type,tier,status,stage,stage_entered_at,owner,designer,pattern_maker,target_date,progress,price,market)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'Concept','Concept',NOW(),$9,$9,$10,$11,0,0,'EA')
+       RETURNING id`,
+      [
+        code,
+        name,
+        brand,
+        category,
+        String(body.subCategory ?? ""),
+        String(body.theme ?? ""),
+        body.orderType === "Repeat" ? "Repeat" : "New",
+        tier,
+        designer || "Unassigned",
+        patternMaker,
+        targetDate,
+      ],
+    );
+    const id = inserted.rows[0]?.id;
+    if (!id) throw new Error("Style could not be created");
+    await client.query(
+      `INSERT INTO ${schema}.stage_history (style_id,from_stage,to_stage,user_id,note)
+       VALUES ($1,NULL,'Concept',$2,'Style created in PLM')`,
+      [id, req.workspaceUser?.id ?? null],
+    );
+    await client.query("COMMIT");
+    res.status(201).json(await styleDetail(id));
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    if ((error as { code?: string }).code === "23505") {
+      res.status(409).json({ error: "That style number already exists" });
+      return;
+    }
+    next(error);
+  } finally {
+    client.release();
   }
 });
 
@@ -711,13 +1015,14 @@ router.get("/styles/:id/plm", async (req, res, next) => {
 
 router.patch("/styles/:id", async (req: AuthRequest, res, next) => {
   try {
-    const allowed = ["status", "owner", "targetDate", "progress", "price"] as const;
+    const allowed = ["status", "owner", "designer", "patternMaker", "subCategory", "theme", "orderType", "targetDate", "progress", "price", "tier"] as const;
     const assignments: string[] = [];
     const values: unknown[] = [];
     for (const key of allowed) {
       if (req.body?.[key] === undefined) continue;
       values.push(req.body[key]);
-      assignments.push(`${key === "targetDate" ? "target_date" : key}=$${values.length}`);
+      const column = key === "targetDate" ? "target_date" : key === "patternMaker" ? "pattern_maker" : key === "subCategory" ? "sub_category" : key;
+      assignments.push(`${column}=$${values.length}`);
     }
     if (!assignments.length) {
       res.status(400).json({ error: "No editable fields supplied" });
@@ -729,6 +1034,225 @@ router.patch("/styles/:id", async (req: AuthRequest, res, next) => {
     res.json(result);
   } catch (error) {
     next(error);
+  }
+});
+
+router.post("/styles/:id/transition", async (req: AuthRequest, res, next) => {
+  try {
+    const result = await transitionStyle(
+      Number(req.params.id),
+      String(req.body?.toStage ?? ""),
+      String(req.body?.note ?? ""),
+      req.workspaceUser?.id ?? null,
+    );
+    res.json(result);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Style could not be transitioned";
+    if (message === "Style not found") {
+      res.status(404).json({ error: message });
+      return;
+    }
+    res.status(400).json({ error: message });
+  }
+});
+
+router.put("/styles/:id/tech-pack", async (req, res, next) => {
+  try {
+    const body = req.body ?? {};
+    await pool.query(
+      `INSERT INTO ${schema}.tech_packs
+       (style_id,status,version,owner,notes,base_pattern_reference,fabric_id,trims_accessories,construction_notes,audaces_file_reference,modified_from_style_number)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+       ON CONFLICT (style_id) DO UPDATE SET status=EXCLUDED.status,version=EXCLUDED.version,owner=EXCLUDED.owner,
+       notes=EXCLUDED.notes,base_pattern_reference=EXCLUDED.base_pattern_reference,fabric_id=EXCLUDED.fabric_id,
+       trims_accessories=EXCLUDED.trims_accessories,construction_notes=EXCLUDED.construction_notes,
+       audaces_file_reference=EXCLUDED.audaces_file_reference,modified_from_style_number=EXCLUDED.modified_from_style_number,
+       updated_at=NOW()`,
+      [
+        Number(req.params.id),
+        String(body.status ?? "In progress"),
+        String(body.version ?? "v1"),
+        String(body.owner ?? ""),
+        String(body.notes ?? ""),
+        String(body.basePatternReference ?? ""),
+        body.fabricId ? Number(body.fabricId) : null,
+        String(body.trimsAccessories ?? ""),
+        String(body.constructionNotes ?? ""),
+        String(body.audacesFileReference ?? ""),
+        String(body.modifiedFromStyleNumber ?? ""),
+      ],
+    );
+    res.json(await styleDetail(Number(req.params.id)));
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post("/styles/:id/fit-sessions", async (req, res, next) => {
+  try {
+    const body = req.body ?? {};
+    const sessionDate = String(body.sessionDate ?? "");
+    const sample = String(body.sample ?? "Fit sample");
+    await pool.query(
+      `INSERT INTO ${schema}.fit_sessions
+       (style_id,session_date,fit_type,status,notes,sample,model_name,attendees)
+       VALUES ($1,$2,$3,$4,$5,$3,$6,$7)`,
+      [
+        Number(req.params.id),
+        sessionDate,
+        `${sample} · ${sessionDate} · ${Date.now()}`,
+        String(body.outcome ?? "Needs Revision"),
+        String(body.comments ?? ""),
+        String(body.modelName ?? ""),
+        String(body.attendees ?? ""),
+      ],
+    );
+    res.status(201).json(await styleDetail(Number(req.params.id)));
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.put("/styles/:id/grading", async (req, res, next) => {
+  try {
+    const body = req.body ?? {};
+    await pool.query(`DELETE FROM ${schema}.gradings WHERE style_id=$1`, [Number(req.params.id)]);
+    await pool.query(
+      `INSERT INTO ${schema}.gradings (style_id,size_range,status,notes,cad_team_member)
+       VALUES ($1,$2,$3,'',$4)`,
+      [
+        Number(req.params.id),
+        String(body.sizeRange ?? "Combined"),
+        String(body.status ?? "Pending"),
+        String(body.cadTeamMember ?? ""),
+      ],
+    );
+    res.json(await styleDetail(Number(req.params.id)));
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post("/styles/:id/samples", async (req, res, next) => {
+  try {
+    const body = req.body ?? {};
+    await pool.query(
+      `INSERT INTO ${schema}.sample_development
+       (style_id,purpose,pattern_maker,sample_makers,units_ordered,date_cut,date_finished,status,rework_notes)
+       VALUES ($1,$2,$3,$4,$5,NULLIF($6,'')::date,NULLIF($7,'')::date,$8,$9)`,
+      [
+        Number(req.params.id),
+        String(body.purpose ?? "Proto"),
+        String(body.patternMaker ?? ""),
+        String(body.sampleMakers ?? ""),
+        Number(body.unitsOrdered ?? 0),
+        String(body.dateCut ?? ""),
+        String(body.dateFinished ?? ""),
+        String(body.status ?? "Planned"),
+        String(body.reworkNotes ?? ""),
+      ],
+    );
+    res.status(201).json(await styleDetail(Number(req.params.id)));
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.put("/styles/:id/cost-estimate", async (req, res, next) => {
+  try {
+    const body = req.body ?? {};
+    const avgMatKg = Number(body.avgMatKg ?? 0);
+    const avgMetresUsed = Number(body.avgMetresUsed ?? 0);
+    const minsPerPc = Number(body.minsPerPc ?? 0);
+    const efficiencyPct = Number(body.efficiencyPct ?? 0);
+    const retailPrice = Number(body.retailPrice ?? 0);
+    const materialCost = body.materialCost === undefined ? avgMatKg * avgMetresUsed : Number(body.materialCost);
+    const labourCost = body.labourCost === undefined
+      ? minsPerPc * (efficiencyPct > 0 ? 1 / (efficiencyPct / 100) : 1)
+      : Number(body.labourCost);
+    const totalCost = body.totalCost === undefined ? materialCost + labourCost : Number(body.totalCost);
+    const marginPct = body.marginPct === undefined && retailPrice > 0 ? ((retailPrice - totalCost) / retailPrice) * 100 : Number(body.marginPct ?? 0);
+    const cogsRatio = body.cogsRatio === undefined && retailPrice > 0 ? (totalCost / retailPrice) * 100 : Number(body.cogsRatio ?? 0);
+    const setSampleCost = Number(body.setSampleCost ?? 0);
+    const variance = body.variance === undefined ? setSampleCost - totalCost : Number(body.variance);
+    await pool.query(
+      `INSERT INTO ${schema}.cost_estimates
+       (style_id,fabric,trims,labor,overhead,total,margin,currency,avg_mat_kg,avg_metres_used,mins_per_pc,efficiency_pct,material_cost,labour_cost,retail_price,margin_pct,cogs_ratio,set_sample_cost,variance)
+       VALUES ($1,$2,0,$3,0,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+       ON CONFLICT (style_id) DO UPDATE SET fabric=EXCLUDED.fabric,labor=EXCLUDED.labor,total=EXCLUDED.total,margin=EXCLUDED.margin,
+       currency=EXCLUDED.currency,avg_mat_kg=EXCLUDED.avg_mat_kg,avg_metres_used=EXCLUDED.avg_metres_used,
+       mins_per_pc=EXCLUDED.mins_per_pc,efficiency_pct=EXCLUDED.efficiency_pct,material_cost=EXCLUDED.material_cost,
+       labour_cost=EXCLUDED.labour_cost,retail_price=EXCLUDED.retail_price,margin_pct=EXCLUDED.margin_pct,
+       cogs_ratio=EXCLUDED.cogs_ratio,set_sample_cost=EXCLUDED.set_sample_cost,variance=EXCLUDED.variance`,
+      [
+        Number(req.params.id),
+        materialCost,
+        labourCost,
+        totalCost,
+        marginPct,
+        String(body.currency ?? "KES"),
+        avgMatKg,
+        avgMetresUsed,
+        minsPerPc,
+        efficiencyPct,
+        materialCost,
+        labourCost,
+        retailPrice,
+        marginPct,
+        cogsRatio,
+        setSampleCost,
+        variance,
+      ],
+    );
+    res.json(await styleDetail(Number(req.params.id)));
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.put("/styles/:id/pom-qc", async (req, res, next) => {
+  const client = await pool.connect();
+  try {
+    const body = req.body ?? {};
+    await client.query("BEGIN");
+    const header = await client.query<{ id: number }>(
+      `SELECT id FROM ${schema}.pom_qc WHERE style_id=$1 AND point IS NULL ORDER BY id DESC LIMIT 1`,
+      [Number(req.params.id)],
+    );
+    let headerId = header.rows[0]?.id;
+    if (headerId) {
+      await client.query(
+        `UPDATE ${schema}.pom_qc SET inspector=$1,inspected_date=NULLIF($2,'')::date,stage=$3,status='Header' WHERE id=$4`,
+        [String(body.inspector ?? ""), String(body.inspectedDate ?? ""), String(body.stage ?? ""), headerId],
+      );
+    } else {
+      const inserted = await client.query<{ id: number }>(
+        `INSERT INTO ${schema}.pom_qc (style_id,point,spec,actual,tolerance,status,inspector,inspected_date,stage)
+         VALUES ($1,NULL,0,0,0,'Header',$2,NULLIF($3,'')::date,$4) RETURNING id`,
+        [Number(req.params.id), String(body.inspector ?? ""), String(body.inspectedDate ?? ""), String(body.stage ?? "")],
+      );
+      headerId = inserted.rows[0]?.id;
+    }
+    if (!headerId) throw new Error("POM QC header could not be created");
+    await client.query(`DELETE FROM ${schema}.pom_qc_rows WHERE pom_qc_id=$1`, [headerId]);
+    for (const row of Array.isArray(body.rows) ? body.rows : []) {
+      const targetSpec = Number(row.targetSpec ?? 0);
+      const actual = Number(row.actual ?? 0);
+      const tolerance = Number(row.tolerance ?? 0);
+      const passFail = String(row.passFail ?? (Math.abs(actual - targetSpec) <= tolerance ? "Pass" : "Fail"));
+      await client.query(
+        `INSERT INTO ${schema}.pom_qc_rows (pom_qc_id,point,target_spec,tolerance,actual,pass_fail,notes)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+        [headerId, String(row.point ?? ""), targetSpec, tolerance, actual, passFail, String(row.notes ?? "")],
+      );
+    }
+    await client.query("COMMIT");
+    res.json(await styleDetail(Number(req.params.id)));
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    next(error);
+  } finally {
+    client.release();
   }
 });
 

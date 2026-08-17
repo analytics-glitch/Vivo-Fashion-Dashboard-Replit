@@ -8,7 +8,13 @@
 
 export interface StyleUpdate {
   status?: string;
+  stage?: string;
   owner?: string;
+  designer?: string;
+  patternMaker?: string;
+  subCategory?: string;
+  theme?: string;
+  orderType?: string;
   targetDate?: string;
   progress?: number;
   price?: number;

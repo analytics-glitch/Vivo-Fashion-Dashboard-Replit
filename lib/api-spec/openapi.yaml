@@ -234,6 +234,35 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/WorkspaceStyle"
+    post:
+      operationId: createWorkspaceStyle
+      tags: [workspace]
+      summary: Create a style in the PLM pipeline
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StyleCreate"
+      responses:
+        "201":
+          description: Created style
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceStyleDetail"
+  /workspace/plm/meta:
+    get:
+      operationId: getWorkspacePlmMeta
+      tags: [workspace]
+      summary: PLM user, fabric, and category pickers
+      responses:
+        "200":
+          description: PLM metadata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspacePlmMeta"
   /workspace/styles/{id}:
     get:
       operationId: getWorkspaceStyle
@@ -248,6 +277,174 @@ paths:
       responses:
         "200":
           description: Style detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceStyleDetail"
+  /workspace/styles/{id}/transition:
+    post:
+      operationId: transitionWorkspaceStyle
+      tags: [workspace]
+      summary: Move a style through the PLM pipeline
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StyleTransition"
+      responses:
+        "200":
+          description: Transitioned style
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceStyleDetail"
+  /workspace/styles/{id}/tech-pack:
+    put:
+      operationId: updateWorkspaceStyleTechPack
+      tags: [workspace]
+      summary: Save style tech pack and pattern details
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TechPackUpdate"
+      responses:
+        "200":
+          description: Updated PLM style
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceStyleDetail"
+  /workspace/styles/{id}/fit-sessions:
+    post:
+      operationId: createWorkspaceFitSession
+      tags: [workspace]
+      summary: Add a style fit session
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FitSessionInput"
+      responses:
+        "201":
+          description: Updated PLM style
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceStyleDetail"
+  /workspace/styles/{id}/grading:
+    put:
+      operationId: updateWorkspaceStyleGrading
+      tags: [workspace]
+      summary: Save style grading details
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GradingUpdate"
+      responses:
+        "200":
+          description: Updated PLM style
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceStyleDetail"
+  /workspace/styles/{id}/samples:
+    post:
+      operationId: createWorkspaceSample
+      tags: [workspace]
+      summary: Add a sample development record
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SampleDevelopmentInput"
+      responses:
+        "201":
+          description: Updated PLM style
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceStyleDetail"
+  /workspace/styles/{id}/cost-estimate:
+    put:
+      operationId: updateWorkspaceCostEstimate
+      tags: [workspace]
+      summary: Save style cost estimate
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CostEstimateUpdate"
+      responses:
+        "200":
+          description: Updated PLM style
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceStyleDetail"
+  /workspace/styles/{id}/pom-qc:
+    put:
+      operationId: updateWorkspacePomQc
+      tags: [workspace]
+      summary: Save style POM quality checks
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PomQcInput"
+      responses:
+        "200":
+          description: Updated PLM style
           content:
             application/json:
               schema:
@@ -800,22 +997,153 @@ components:
         name: { type: string }
         brand: { type: string }
         category: { type: string }
+        subCategory: { type: string }
+        theme: { type: string }
+        orderType: { type: string }
+        tier: { type: string }
         status: { type: string }
+        stage: { type: string }
+        currentStage: { type: string }
         owner: { type: string }
+        designer: { type: string }
+        patternMaker: { type: string }
         targetDate: { type: string }
+        stageEnteredAt: { type: string }
+        daysInStage: { type: integer }
         image: { type: ["string", "null"] }
         progress: { type: number }
         price: { type: number }
         market: { type: string }
+    StyleCreate:
+      type: object
+      required: [name, brand, category, targetDate]
+      properties:
+        styleNumber: { type: string }
+        name: { type: string, minLength: 1 }
+        brand: { type: string, enum: ["Vivo", "Safari by Vivo"] }
+        category: { type: string, minLength: 1 }
+        subCategory: { type: string }
+        theme: { type: string }
+        orderType: { type: string, enum: ["New", "Repeat"] }
+        tier: { type: string, enum: ["1", "2", "3", "4"] }
+        designer: { type: string }
+        patternMaker: { type: string }
+        targetDate: { type: string }
     StyleUpdate:
       type: object
       properties:
         status: { type: string }
+        stage: { type: string }
         owner: { type: string }
+        designer: { type: string }
+        patternMaker: { type: string }
+        subCategory: { type: string }
+        theme: { type: string }
+        orderType: { type: string }
         targetDate: { type: string }
         progress: { type: number }
         price: { type: number }
         tier: { type: string }
+    StyleTransition:
+      type: object
+      required: [toStage]
+      properties:
+        toStage: { type: string }
+        note: { type: string }
+    WorkspaceStageHistory:
+      type: object
+      required: [id, styleId, toStage, timestamp]
+      properties:
+        id: { type: integer }
+        styleId: { type: integer }
+        fromStage: { type: ["string", "null"] }
+        toStage: { type: string }
+        userId: { type: ["integer", "null"] }
+        userName: { type: string }
+        note: { type: string }
+        timestamp: { type: string }
+    TechPackUpdate:
+      type: object
+      properties:
+        basePatternReference: { type: string }
+        fabricId: { type: integer }
+        trimsAccessories: { type: string }
+        constructionNotes: { type: string }
+        audacesFileReference: { type: string }
+        modifiedFromStyleNumber: { type: string }
+        status: { type: string }
+        version: { type: string }
+        owner: { type: string }
+    FitSessionInput:
+      type: object
+      required: [sessionDate, sample, modelName, outcome]
+      properties:
+        sessionDate: { type: string }
+        sample: { type: string }
+        modelName: { type: string }
+        attendees: { type: string }
+        outcome: { type: string, enum: ["Approved", "Needs Revision"] }
+        comments: { type: string }
+    GradingUpdate:
+      type: object
+      properties:
+        sizeRange: { type: string }
+        cadTeamMember: { type: string }
+        status: { type: string, enum: ["Pending", "In Progress", "Complete"] }
+    SampleDevelopmentInput:
+      type: object
+      required: [purpose, patternMaker, unitsOrdered, status]
+      properties:
+        purpose: { type: string }
+        patternMaker: { type: string }
+        sampleMakers: { type: string }
+        unitsOrdered: { type: integer }
+        dateCut: { type: string }
+        dateFinished: { type: string }
+        status: { type: string }
+        reworkNotes: { type: string }
+    CostEstimateUpdate:
+      type: object
+      properties:
+        avgMatKg: { type: number }
+        avgMetresUsed: { type: number }
+        minsPerPc: { type: number }
+        efficiencyPct: { type: number }
+        materialCost: { type: number }
+        labourCost: { type: number }
+        totalCost: { type: number }
+        retailPrice: { type: number }
+        marginPct: { type: number }
+        cogsRatio: { type: number }
+        setSampleCost: { type: number }
+        variance: { type: number }
+        currency: { type: string }
+    PomQcRowInput:
+      type: object
+      properties:
+        point: { type: string }
+        targetSpec: { type: number }
+        tolerance: { type: number }
+        actual: { type: number }
+        passFail: { type: string }
+        notes: { type: string }
+    PomQcInput:
+      type: object
+      properties:
+        inspector: { type: string }
+        inspectedDate: { type: string }
+        stage: { type: string }
+        rows:
+          type: array
+          items:
+            $ref: "#/components/schemas/PomQcRowInput"
+    WorkspacePlmMeta:
+      type: object
+      required: [users, fabrics, categories]
+      properties:
+        users: { type: array, items: { type: object, additionalProperties: true } }
+        fabrics: { type: array, items: { type: object, additionalProperties: true } }
+        categories: { type: array, items: { type: string } }
     WorkspaceStyleDetail:
       allOf:
         - $ref: "#/components/schemas/WorkspaceStyle"

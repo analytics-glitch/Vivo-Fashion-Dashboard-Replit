@@ -127,9 +127,19 @@ export interface WorkspaceStyle {
   name: string;
   brand: string;
   category: string;
+  subCategory?: string;
+  theme?: string;
+  orderType?: string;
+  tier?: string;
   status: string;
+  stage?: string;
+  currentStage?: string;
   owner: string;
+  designer?: string;
+  patternMaker?: string;
   targetDate: string;
+  stageEnteredAt?: string;
+  daysInStage?: number;
   /** @nullable */
   image?: string | null;
   progress?: number;
@@ -137,13 +147,176 @@ export interface WorkspaceStyle {
   market?: string;
 }
 
+export type StyleCreateBrand = typeof StyleCreateBrand[keyof typeof StyleCreateBrand];
+
+
+export const StyleCreateBrand = {
+  Vivo: 'Vivo',
+  Safari_by_Vivo: 'Safari by Vivo',
+} as const;
+
+export type StyleCreateOrderType = typeof StyleCreateOrderType[keyof typeof StyleCreateOrderType];
+
+
+export const StyleCreateOrderType = {
+  New: 'New',
+  Repeat: 'Repeat',
+} as const;
+
+export type StyleCreateTier = typeof StyleCreateTier[keyof typeof StyleCreateTier];
+
+
+export const StyleCreateTier = {
+  NUMBER_1: '1',
+  NUMBER_2: '2',
+  NUMBER_3: '3',
+  NUMBER_4: '4',
+} as const;
+
+export interface StyleCreate {
+  styleNumber?: string;
+  /** @minLength 1 */
+  name: string;
+  brand: StyleCreateBrand;
+  /** @minLength 1 */
+  category: string;
+  subCategory?: string;
+  theme?: string;
+  orderType?: StyleCreateOrderType;
+  tier?: StyleCreateTier;
+  designer?: string;
+  patternMaker?: string;
+  targetDate: string;
+}
+
 export interface StyleUpdate {
   status?: string;
+  stage?: string;
   owner?: string;
+  designer?: string;
+  patternMaker?: string;
+  subCategory?: string;
+  theme?: string;
+  orderType?: string;
   targetDate?: string;
   progress?: number;
   price?: number;
   tier?: string;
+}
+
+export interface StyleTransition {
+  toStage: string;
+  note?: string;
+}
+
+export interface WorkspaceStageHistory {
+  id: number;
+  styleId: number;
+  /** @nullable */
+  fromStage?: string | null;
+  toStage: string;
+  /** @nullable */
+  userId?: number | null;
+  userName?: string;
+  note?: string;
+  timestamp: string;
+}
+
+export interface TechPackUpdate {
+  basePatternReference?: string;
+  fabricId?: number;
+  trimsAccessories?: string;
+  constructionNotes?: string;
+  audacesFileReference?: string;
+  modifiedFromStyleNumber?: string;
+  status?: string;
+  version?: string;
+  owner?: string;
+}
+
+export type FitSessionInputOutcome = typeof FitSessionInputOutcome[keyof typeof FitSessionInputOutcome];
+
+
+export const FitSessionInputOutcome = {
+  Approved: 'Approved',
+  Needs_Revision: 'Needs Revision',
+} as const;
+
+export interface FitSessionInput {
+  sessionDate: string;
+  sample: string;
+  modelName: string;
+  attendees?: string;
+  outcome: FitSessionInputOutcome;
+  comments?: string;
+}
+
+export type GradingUpdateStatus = typeof GradingUpdateStatus[keyof typeof GradingUpdateStatus];
+
+
+export const GradingUpdateStatus = {
+  Pending: 'Pending',
+  In_Progress: 'In Progress',
+  Complete: 'Complete',
+} as const;
+
+export interface GradingUpdate {
+  sizeRange?: string;
+  cadTeamMember?: string;
+  status?: GradingUpdateStatus;
+}
+
+export interface SampleDevelopmentInput {
+  purpose: string;
+  patternMaker: string;
+  sampleMakers?: string;
+  unitsOrdered: number;
+  dateCut?: string;
+  dateFinished?: string;
+  status: string;
+  reworkNotes?: string;
+}
+
+export interface CostEstimateUpdate {
+  avgMatKg?: number;
+  avgMetresUsed?: number;
+  minsPerPc?: number;
+  efficiencyPct?: number;
+  materialCost?: number;
+  labourCost?: number;
+  totalCost?: number;
+  retailPrice?: number;
+  marginPct?: number;
+  cogsRatio?: number;
+  setSampleCost?: number;
+  variance?: number;
+  currency?: string;
+}
+
+export interface PomQcRowInput {
+  point?: string;
+  targetSpec?: number;
+  tolerance?: number;
+  actual?: number;
+  passFail?: string;
+  notes?: string;
+}
+
+export interface PomQcInput {
+  inspector?: string;
+  inspectedDate?: string;
+  stage?: string;
+  rows?: PomQcRowInput[];
+}
+
+export type WorkspacePlmMetaUsersItem = { [key: string]: unknown };
+
+export type WorkspacePlmMetaFabricsItem = { [key: string]: unknown };
+
+export interface WorkspacePlmMeta {
+  users: WorkspacePlmMetaUsersItem[];
+  fabrics: WorkspacePlmMetaFabricsItem[];
+  categories: string[];
 }
 
 export type WorkspaceStyleDetailColorwaysItem = { [key: string]: unknown };

@@ -12,9 +12,19 @@ export interface WorkspaceStyle {
   name: string;
   brand: string;
   category: string;
+  subCategory?: string;
+  theme?: string;
+  orderType?: string;
+  tier?: string;
   status: string;
+  stage?: string;
+  currentStage?: string;
   owner: string;
+  designer?: string;
+  patternMaker?: string;
   targetDate: string;
+  stageEnteredAt?: string;
+  daysInStage?: number;
   /** @nullable */
   image?: string | null;
   progress?: number;
