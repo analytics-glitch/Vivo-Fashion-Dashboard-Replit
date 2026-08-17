@@ -16071,10 +16071,17 @@ def sublimation_fabric_search(q_: str = Query(default="", alias="q"),
     limit = max(1, min(int(limit or 20), 50))
     with _get_conn() as conn:
         where, params = "TRUE", []
+        exact_order_expr = "FALSE"
+        exact_order_params: list = []
         if term:
             like = f"%{term}%"
             where = "(p.name ILIKE %s OR p.barcode ILIKE %s OR p.default_code ILIKE %s)"
             params = [like, like, like]
+            # Float exact barcode match to top so it is never displaced by
+            # the fuzzy-name ordering + LIMIT when the barcode also appears in
+            # many product names.
+            exact_order_expr = "(LOWER(p.barcode) = LOWER(%s))"
+            exact_order_params = [term]
         return q(conn, f"""
             SELECT p.id AS product_id, p.name, p.barcode, p.default_code,
                    ROUND(p.width_m::numeric, 3)        AS fabric_width_m,
@@ -16084,9 +16091,9 @@ def sublimation_fabric_search(q_: str = Query(default="", alias="q"),
                    ROUND(p.standard_price::numeric, 2) AS standard_price
             FROM raw_fabric_products p
             WHERE {where}
-            ORDER BY p.name
+            ORDER BY {exact_order_expr} DESC, p.name
             LIMIT %s
-        """, params + [limit])
+        """, params + exact_order_params + [limit])
 
 @fabric_router.get("/api/fabric/sublimation/costings")
 def sublimation_costings_list():

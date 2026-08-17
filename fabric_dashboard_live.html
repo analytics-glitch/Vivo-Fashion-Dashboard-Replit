@@ -1333,8 +1333,8 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
         <div><label class="rsv-lbl">Print Name</label><input id="sub-print-name" type="text" placeholder="e.g. Tropical Bloom" style="width:100%;"></div>
         <div><label class="rsv-lbl">Style Name</label><input id="sub-style-name" type="text" placeholder="e.g. Wrap Dress" style="width:100%;"></div>
         <div><label class="rsv-lbl">Print Code</label><input id="sub-print-code" type="text" placeholder="e.g. P-2024-001" style="width:100%;"></div>
+         <div><label class="rsv-lbl">Final Fabric Barcode</label><input id="sub-final-fabric-barcode" type="text" placeholder="Finished fabric barcode" style="width:100%;" oninput="subBarcodeInput(this.value)"><div id="sub-barcode-hint" class="muted" style="font-size:11.5px;margin-top:3px;display:none;">No match in Odoo</div></div>
          <div><label class="rsv-lbl">Final Product Name</label><input id="sub-final-product-name" type="text" placeholder="Finished / printed fabric product" style="width:100%;"></div>
-         <div><label class="rsv-lbl">Final Fabric Barcode</label><input id="sub-final-fabric-barcode" type="text" placeholder="Finished fabric barcode" style="width:100%;"></div>
        </div>
        <div class="sub-grid">
         <div><label>Fabric width (m)</label><input id="sub-width" type="number" min="0" step="any" value="1.49" oninput="recalcSublimation()"></div>
@@ -1432,7 +1432,7 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
      <div class="section-head" style="padding:16px 16px 0;"><h3>Costing library</h3><span class="muted">saved print-run costings — Load repopulates the calculator</span></div>
      <div class="tbl-wrap">
       <table class="data">
-       <thead><tr><th>Date</th><th>Fabric</th><th>Final Product Name</th><th>Final Fabric Barcode</th><th>Print Name</th><th>Style Name</th><th>Print Code</th><th class="r">Metres</th><th class="r">Total printing</th><th class="r">Cost/m</th><th class="r">Cost/kg</th><th class="r">Std cost/kg</th><th>By</th><th></th></tr></thead>
+       <thead><tr><th>Date</th><th>Fabric</th><th>Final Fabric Barcode</th><th>Final Product Name</th><th>Print Name</th><th>Style Name</th><th>Print Code</th><th class="r">Metres</th><th class="r">Total printing</th><th class="r">Cost/m</th><th class="r">Cost/kg</th><th class="r">Std cost/kg</th><th>By</th><th></th></tr></thead>
        <tbody id="sub-lib-body"><tr><td colspan="14" class="loading">Loading…</td></tr></tbody>
       </table>
      </div>
@@ -9189,8 +9189,8 @@ function renderSubLibrary(){
   body.innerHTML=subLibRows.map(r=>`<tr>
     <td style="white-space:nowrap;font-size:12px;">${esc(fmtNairobi(r.saved_at)||'—')}</td>
     <td style="max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(r.fabric_name||'')}">${esc(r.fabric_name||'—')}${r.fabric_barcode?` <span class="muted" style="font-size:11px;">#${esc(r.fabric_barcode)}</span>`:''}</td>
-    <td>${esc(r.final_product_name||'—')}</td>
     <td>${esc(r.final_fabric_barcode||'—')}</td>
+    <td>${esc(r.final_product_name||'—')}</td>
     <td>${esc(r.print_name||'—')}</td>
     <td>${esc(r.style_name||'—')}</td>
     <td>${esc(r.print_code||'—')}</td>
@@ -9219,7 +9219,8 @@ function subLoadRow(id){
   set('sub-paper-sub',r.sub_paper_cost_per_m);set('sub-paper-prot',r.prot_paper_cost_per_m);set('sub-reprint',r.reprint_pct);
   set('sub-std-thr',r.std_throughput_m_hr==null?SUBLIM_STD_THROUGHPUT:r.std_throughput_m_hr);
   set('sub-print-name',r.print_name);set('sub-style-name',r.style_name);set('sub-print-code',r.print_code);
-  set('sub-final-product-name',r.final_product_name);set('sub-final-fabric-barcode',r.final_fabric_barcode);
+  set('sub-final-fabric-barcode',r.final_fabric_barcode);set('sub-final-product-name',r.final_product_name);
+  document.getElementById('sub-barcode-hint').style.display='none';
   document.getElementById('sub-fabric-hint').textContent='Loaded saved costing #'+r.id+(r.saved_at?' ('+(fmtNairobi(r.saved_at)||'')+')':'')+' — edit and save again to store a new copy.';
   recalcSublimation();
   document.getElementById('page-sublimation').scrollIntoView({behavior:'smooth',block:'start'});
@@ -9247,6 +9248,32 @@ function renderSubRatePanel(d){
   el.innerHTML=rows.map(r=>`<div class="sub-row"><span class="muted">${esc(r[0])}</span><span class="v">${esc(r[1])}</span></div>`).join('')
     +`<div class="muted" style="margin-top:8px;font-size:11.5px;">${esc(cap)}.</div>`
     +(sens?`<div class="muted" style="margin-top:4px;font-size:11.5px;">Hourly rate at other utilisations (display only): ${esc(sens)}.</div>`:'');
+}
+let _subBarcodeTimer=null;
+let _subBarcodeAbort=null;
+function subBarcodeInput(val){
+  const hint=document.getElementById('sub-barcode-hint');
+  const nameEl=document.getElementById('sub-final-product-name');
+  hint.style.display='none';
+  clearTimeout(_subBarcodeTimer);
+  if(_subBarcodeAbort){_subBarcodeAbort.abort();_subBarcodeAbort=null;}
+  if(!val.trim()){nameEl.value='';return;}
+  const searched=val.trim();
+  _subBarcodeTimer=setTimeout(async()=>{
+    const ctrl=new AbortController();
+    _subBarcodeAbort=ctrl;
+    try{
+      const d=await apiFetch('/api/fabric/sublimation/fabric-search?q='+encodeURIComponent(searched),{signal:ctrl.signal});
+      // Guard: ignore if the field has changed since the request was launched
+      const current=(document.getElementById('sub-final-fabric-barcode').value||'').trim();
+      if(current.toLowerCase()!==searched.toLowerCase())return;
+      const rows=d.items||d||[];
+      const match=rows.find(r=>r.barcode&&r.barcode.toLowerCase()===searched.toLowerCase());
+      if(match){nameEl.value=match.name||'';hint.style.display='none';}
+      else{nameEl.value='';hint.style.display='block';}
+    }catch(e){if(e&&e.name==='AbortError')return;hint.style.display='none';}
+    finally{if(_subBarcodeAbort===ctrl)_subBarcodeAbort=null;}
+  },400);
 }
 async function loadSublimation(){
   if(!subBound){
