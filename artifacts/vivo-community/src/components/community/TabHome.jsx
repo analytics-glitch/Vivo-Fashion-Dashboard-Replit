@@ -5,6 +5,7 @@ import PostDetailModal from "./PostDetailModal";
 import { PostVisual, timeAgo } from "./PostBits";
 import { TierBadge, Avatar, cardCls, brandAsset, SectionHeader } from "./ui";
 import { api } from "@/lib/api";
+import { StyledForYouHome } from "./StyledForYou";
 import { NEWS, newsPageId } from "./newsData";
 import ReelsRow from "./ReelsRow";
 import NewsSection, { NewsCardCompact } from "./NewsSection";
@@ -820,6 +821,20 @@ export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage,
         <CategoryStrip onNavigate={onNavigate} />
         <HeroCampaign onNavigate={onNavigate} />
       </div>
+
+      {/* Styled for You — opt-in weekly picks (carousel) or the invitation
+          card for members who haven't opted in yet. Members only. */}
+      {member && (
+        <StyledForYouHome
+          member={member}
+          onOpenProduct={onOpenProduct}
+          onViewAll={() => {
+            try { sessionStorage.setItem("vivo_shop_sfy", "1"); } catch { /* private mode */ }
+            onNavigate("shop");
+          }}
+          onPersonalise={() => onOpenPage("styleprefs")}
+        />
+      )}
 
       {/* Personal moments — celebration/tier/survey cards, member-only */}
       {member && (

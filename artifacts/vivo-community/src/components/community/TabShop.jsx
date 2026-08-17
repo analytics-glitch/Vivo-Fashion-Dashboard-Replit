@@ -6,6 +6,7 @@ import { api } from "@/lib/api";
 import { useWishlist } from "@/context/WishlistContext";
 import { FilterSheet, AppliedChips, emptyFilters, countActive, filtersToParams, MY_SIZE_LABELS } from "./ShopFilters";
 import { CategoryGrid, ProductRail } from "./ShopSections";
+import { StyledForYouShop } from "./StyledForYou";
 import { useAuth } from "@/context/AuthContext";
 
 const PAGE = 24;
@@ -173,8 +174,17 @@ function SkeletonCard() {
   );
 }
 
-export default function TabShop({ onOpenProduct, onOpenTryOn }) {
+export default function TabShop({ onOpenProduct, onOpenTryOn, onOpenPage }) {
   const { member } = useAuth();
+  // Styled-for-You view — entered via the pill here or the home rail's
+  // "View All" (a tap-set sessionStorage hand-off, consumed once).
+  const [sfyMode, setSfyMode] = useState(() => {
+    try {
+      const v = sessionStorage.getItem("vivo_shop_sfy") === "1";
+      sessionStorage.removeItem("vivo_shop_sfy");
+      return v;
+    } catch { return false; }
+  });
   const [filters, setFilters] = useState(emptyFilters());
   const [sort, setSort] = useState("new");
   const [items, setItems] = useState([]);
@@ -261,6 +271,7 @@ export default function TabShop({ onOpenProduct, onOpenTryOn }) {
   // A category tile filters the grid when the live catalogue has a matching
   // category; otherwise it just shows the full collection.
   const pickCategory = (label) => {
+    setSfyMode(false);
     const l = label.toLowerCase();
     const match = cats.find((c) => {
       const n = (c.name || "").toLowerCase();
@@ -326,7 +337,8 @@ export default function TabShop({ onOpenProduct, onOpenTryOn }) {
         <CategoryGrid onSelect={pickCategory} />
       </div>
 
-      {/* Filter + sort controls */}
+      {/* Filter + sort controls (hidden in the Styled-for-You view) */}
+      {!sfyMode && (
       <div className="flex flex-wrap items-center gap-2 mb-4 px-1">
         <button
           type="button"
@@ -381,16 +393,31 @@ export default function TabShop({ onOpenProduct, onOpenTryOn }) {
           <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-muted-foreground" />
         </div>
       </div>
+      )}
 
-      {/* Category pills — quick single-category shortcut into the same filter model */}
+      {/* Category pills — quick single-category shortcut into the same filter
+          model. Members also get the Styled-for-You collection here. */}
       <div className="flex gap-2 mb-10 overflow-x-auto hide-scrollbar pb-2 px-1">
+        {member && (
+          <button
+            data-testid="shop-filter-styled-for-you"
+            onClick={() => setSfyMode(true)}
+            className={`px-5 py-2 rounded-sm text-[11px] font-bold uppercase tracking-wider whitespace-nowrap transition-all inline-flex items-center gap-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
+              sfyMode
+                ? "bg-foreground text-background shadow-sm"
+                : "bg-background text-primary-ink hover:bg-secondary border border-border"
+            }`}
+          >
+            <Sparkles size={11} /> Styled for You
+          </button>
+        )}
         {chips.map((b) => (
           <button
             key={b}
             data-testid={`shop-filter-${b}`}
-            onClick={() => setFilters((f) => ({ ...f, cats: b === "All" ? [] : [b] }))}
+            onClick={() => { setSfyMode(false); setFilters((f) => ({ ...f, cats: b === "All" ? [] : [b] })); }}
             className={`px-5 py-2 rounded-sm text-[11px] font-bold uppercase tracking-wider whitespace-nowrap transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
-              activeCat === b
+              !sfyMode && activeCat === b
                 ? "bg-foreground text-background shadow-sm"
                 : "bg-background text-muted-foreground hover:bg-secondary border border-border"
             }`}
@@ -400,6 +427,9 @@ export default function TabShop({ onOpenProduct, onOpenTryOn }) {
         ))}
       </div>
 
+      {sfyMode ? (
+        <StyledForYouShop onOpenProduct={onOpenProduct} onEditPrefs={() => onOpenPage?.("styleprefs")} />
+      ) : (<>
       <AppliedChips filters={filters} facets={facets} onChange={setFilters} className="-mt-4 mb-8" />
 
       {error && (
@@ -502,6 +532,8 @@ export default function TabShop({ onOpenProduct, onOpenTryOn }) {
           </div>
         </div>
       )}
+
+      </>)}
 
       <FilterSheet
         open={sheetOpen}

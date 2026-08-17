@@ -21,6 +21,7 @@ import ContactView from "@/components/community/ContactView";
 import TryOnView from "@/components/community/TryOnView";
 import SurveyView from "@/components/community/SurveyView";
 import MyDataView from "@/components/community/MyDataView";
+import { StylePrefsView } from "@/components/community/StyledForYou";
 import LegalPage from "@/components/community/LegalPage";
 import NewsArticle from "@/components/community/NewsArticle";
 import { isNewsPageId } from "@/components/community/newsData";
@@ -36,7 +37,7 @@ const TABS = [
 
 // Static help & legal pages routed via the ?page= param. News articles ride
 // the same param as "news-{id}", validated against the NEWS list.
-const PAGES = ["faq", "contact", "terms", "privacy", "guidelines", "tryon", "mydata", "survey", "help", "givingback"];
+const PAGES = ["faq", "contact", "terms", "privacy", "guidelines", "tryon", "mydata", "survey", "help", "givingback", "styleprefs"];
 const isValidPage = (v) => PAGES.includes(v) || isNewsPageId(v);
 
 const badgeCls = "absolute top-0.5 right-0 min-w-[18px] h-[18px] px-1 rounded-full bg-primary-ink text-primary-foreground text-[10px] font-bold flex items-center justify-center";
@@ -458,7 +459,7 @@ function ShellInner() {
             via URL state (?page= / ?event=) that carry member-authenticated
             writes: try-on, survey, my-data, contact and event RSVP. Browsing
             surfaces (products, cart, wishlist, news, legal, help) stay open. */}
-        {!member && (eventId || ["tryon", "survey", "mydata", "contact"].includes(page)) ? (
+        {!member && (eventId || ["tryon", "survey", "mydata", "contact", "styleprefs"].includes(page)) ? (
           <GuestGate
             title={eventId ? "Events are for members" : "This is a member space"}
             body="Sign in or create a free account to RSVP to events, use member tools and get in touch — it only takes a minute."
@@ -469,6 +470,8 @@ function ShellInner() {
             <TryOnView onBack={closePage} member={member} />
           ) : page === "survey" ? (
             <SurveyView onBack={closePage} member={member} onMemberUpdate={updateMember} />
+          ) : page === "styleprefs" ? (
+            <StylePrefsView onBack={closePage} />
           ) : page === "mydata" ? (
             <MyDataView onBack={closePage} onOpenPage={openPage} />
           ) : page === "contact" ? (
@@ -503,7 +506,7 @@ function ShellInner() {
               />
             )}
             {tab === "community" && member && <TabCommunity member={member} subNav={subNav} onSubChange={syncSub} onOpenEvent={openEventDetail} onOpenProduct={openProduct} onOpenPage={openPage} onOpenFabulas={setFabulasId} />}
-            {tab === "shop" && <TabShop onOpenProduct={openProduct} onOpenTryOn={() => openTryOn("")} />}
+            {tab === "shop" && <TabShop onOpenProduct={openProduct} onOpenTryOn={() => openTryOn("")} onOpenPage={openPage} />}
             {tab === "rewards" && (member ? (
               <TabRewards member={member} onMemberUpdate={updateMember} onOpenPage={openPage} />
             ) : (

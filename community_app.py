@@ -33,7 +33,7 @@ import smtplib
 import threading
 import time
 from contextlib import contextmanager
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import psycopg2
 import psycopg2.extras
@@ -767,6 +767,28 @@ def _ensure_tables():
             dna JSONB,
             completed_at TIMESTAMPTZ,
             shared_at TIMESTAMPTZ,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+        -- "Styled for You" preferences — weekly personalised recommendations
+        -- are strictly OPT-IN (opted_in flips only on an explicit member
+        -- action; opted_in_at records the consent moment). use_activity is
+        -- her permission to use purchase history for the picks.
+        CREATE TABLE IF NOT EXISTS community_style_prefs (
+            member_id INT PRIMARY KEY REFERENCES community_members(id),
+            opted_in BOOLEAN NOT NULL DEFAULT FALSE,
+            opted_in_at TIMESTAMPTZ,
+            size TEXT NOT NULL DEFAULT '',
+            fit TEXT NOT NULL DEFAULT '',
+            colours JSONB NOT NULL DEFAULT '[]'::jsonb,
+            categories JSONB NOT NULL DEFAULT '[]'::jsonb,
+            interests JSONB NOT NULL DEFAULT '[]'::jsonb,
+            avoid JSONB NOT NULL DEFAULT '[]'::jsonb,
+            frequency TEXT NOT NULL DEFAULT 'weekly',
+            notify_push BOOLEAN NOT NULL DEFAULT TRUE,
+            notify_email BOOLEAN NOT NULL DEFAULT FALSE,
+            -- purchase-history personalisation is a SEPARATE consent:
+            -- off by default, only an explicit member action turns it on
+            use_activity BOOLEAN NOT NULL DEFAULT FALSE,
             updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
         );
         CREATE INDEX IF NOT EXISTS community_redemptions_member_idx
@@ -2860,6 +2882,320 @@ def register_community_routes(app, api_pg_module):
                 if not row:
                     raise HTTPException(status_code=409, detail="Finish your Style Quiz first")
                 return {"shared": True}
+
+    # ------------------------------------------------------------------
+    # "Styled for You" — opt-in weekly personalised recommendations.
+    # Preferences are member-entered (size/fit/colours/categories/interests/
+    # avoid/frequency/notifications); purchase history is used only while
+    # use_activity is true. Nobody is ever enrolled automatically.
+    # ------------------------------------------------------------------
+    _SFY_SIZES = ["XS", "S", "M", "L", "XL", "XXL", "1X", "2X", "3X", "4X"]
+    _SFY_FITS = ["Fitted", "True to size", "Relaxed", "Flowy"]
+    _SFY_INTERESTS = ["Workwear", "Casual", "Occasionwear", "Activewear"]
+    _SFY_FREQS = ["weekly", "fortnightly", "monthly"]
+    _SFY_INTEREST_KWS = {
+        "Workwear": ("blazer", "trouser", "pant", "shirt", "suit", "office", "work"),
+        "Casual": ("tee", "t-shirt", "denim", "jean", "knit", "top", "short", "casual"),
+        "Occasionwear": ("dress", "gown", "skirt", "occasion", "evening"),
+        "Activewear": ("active", "legging", "sport", "jogger", "hood"),
+    }
+    _SFY_DEFAULTS = {
+        "opted_in": False, "size": "", "fit": "", "colours": [], "categories": [],
+        "interests": [], "avoid": [], "frequency": "weekly",
+        "notify_push": True, "notify_email": False, "use_activity": False,
+    }
+
+    def _sfy_prefs(cur, member_id):
+        cur.execute("SELECT * FROM community_style_prefs WHERE member_id = %s", (member_id,))
+        row = cur.fetchone() or {}
+        out = {}
+        for k, d in _SFY_DEFAULTS.items():
+            v = row.get(k, d)
+            if isinstance(d, list):
+                v = [str(x) for x in v] if isinstance(v, list) else []
+            out[k] = v
+        return out
+
+    def _sfy_options():
+        return {"sizes": _SFY_SIZES, "fits": _SFY_FITS,
+                "colours": sorted(COMMUNITY_COLOR_BUCKETS.keys()),
+                "interests": _SFY_INTERESTS, "frequencies": _SFY_FREQS}
+
+    @app.get("/api/community/style-prefs")
+    def community_style_prefs_get(request: Request):
+        _ensure_tables()
+        _throttle(request, "sfyprefs", [("ip", 60, 60)])
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                m = _require_member(cur, request)
+                return {"prefs": _sfy_prefs(cur, m["id"]), "options": _sfy_options()}
+
+    @app.put("/api/community/style-prefs")
+    def community_style_prefs_save(request: Request, payload: dict = Body(...)):
+        """Upsert her Styled-for-You preferences. Every field is whitelisted /
+        length-capped; opted_in flips only when the payload says so explicitly,
+        and the first opt-in stamps opted_in_at (the consent record)."""
+        _ensure_tables()
+        _throttle(request, "sfysave", [("ip", 30, 60)])
+        p = payload or {}
+
+        def _lst(key, allowed=None, cap=12, ln=40):
+            v = p.get(key)
+            if not isinstance(v, list):
+                return None
+            out, seen = [], set()
+            for x in v:
+                t = str(x).strip()[:ln]
+                if not t or t.lower() in seen:
+                    continue
+                if allowed is not None and t not in allowed:
+                    continue
+                seen.add(t.lower())
+                out.append(t)
+                if len(out) >= cap:
+                    break
+            return out
+
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                m = _require_member(cur, request)
+                cur.execute("INSERT INTO community_style_prefs (member_id) VALUES (%s) ON CONFLICT DO NOTHING",
+                            (m["id"],))
+                prev = _sfy_prefs(cur, m["id"])
+                nxt = dict(prev)
+                if isinstance(p.get("opted_in"), bool):
+                    nxt["opted_in"] = p["opted_in"]
+                if isinstance(p.get("size"), str):
+                    nxt["size"] = p["size"] if p["size"] in _SFY_SIZES else ""
+                if isinstance(p.get("fit"), str):
+                    nxt["fit"] = p["fit"] if p["fit"] in _SFY_FITS else ""
+                for key, allowed in (("colours", set(COMMUNITY_COLOR_BUCKETS)),
+                                     ("categories", None),
+                                     ("interests", set(_SFY_INTERESTS)),
+                                     ("avoid", None)):
+                    v = _lst(key, allowed)
+                    if v is not None:
+                        nxt[key] = v
+                if isinstance(p.get("frequency"), str) and p["frequency"] in _SFY_FREQS:
+                    nxt["frequency"] = p["frequency"]
+                for key in ("notify_push", "notify_email", "use_activity"):
+                    if isinstance(p.get(key), bool):
+                        nxt[key] = p[key]
+                cur.execute(
+                    """UPDATE community_style_prefs SET
+                         opted_in = %s,
+                         opted_in_at = CASE WHEN %s AND opted_in_at IS NULL THEN now() ELSE opted_in_at END,
+                         size = %s, fit = %s,
+                         colours = %s::jsonb, categories = %s::jsonb,
+                         interests = %s::jsonb, avoid = %s::jsonb,
+                         frequency = %s, notify_push = %s, notify_email = %s,
+                         use_activity = %s, updated_at = now()
+                       WHERE member_id = %s""",
+                    (nxt["opted_in"], nxt["opted_in"], nxt["size"], nxt["fit"],
+                     json.dumps(nxt["colours"]), json.dumps(nxt["categories"]),
+                     json.dumps(nxt["interests"]), json.dumps(nxt["avoid"]),
+                     nxt["frequency"], nxt["notify_push"], nxt["notify_email"],
+                     nxt["use_activity"], m["id"]),
+                )
+                conn.commit()
+                return {"prefs": nxt, "options": _sfy_options()}
+
+    @app.get("/api/community/styled-for-you")
+    def community_styled_for_you(request: Request):
+        """Her weekly picks. Requires an explicit opt-in; the selection blends
+        her stated preferences, her Style DNA-adjacent colour/category tastes
+        and (only with use_activity permission) her purchase history — with a
+        deterministic weekly rotation so 'Updated weekly' is literally true.
+        Members with thin data still get useful general picks."""
+        _ensure_tables()
+        _throttle(request, "sfy", [("ip", 60, 60)])
+        from urllib.parse import quote
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                m = _require_member(cur, request)
+                prefs = _sfy_prefs(cur, m["id"])
+                if not prefs["opted_in"]:
+                    return {"opted_in": False, "sections": []}
+
+                in_size_sql = "FALSE"
+                params = {}
+                if prefs["size"]:
+                    in_size_sql = """EXISTS (
+                        SELECT 1 FROM all_products_clean sp
+                        JOIN inv iv ON iv.sku = sp.sku
+                        WHERE sp.style_name = c.style_name
+                          AND COALESCE(sp.color_print,'') = c.color
+                          AND sp.active IS TRUE AND sp.price::float > 0
+                          AND UPPER(TRIM(COALESCE(sp.size,''))) = %(psize)s
+                          AND iv.soh > 0)"""
+                    params["psize"] = prefs["size"]
+                cur.execute("""
+                WITH inv AS (
+                    SELECT sku, SUM(COALESCE(available,0)) AS soh
+                    FROM all_inventory GROUP BY sku
+                ),
+                stock AS (
+                    SELECT sk.style_name, sk.color, SUM(COALESCE(i.soh,0)) AS soh
+                    FROM (
+                        SELECT DISTINCT p.style_name, COALESCE(p.color_print,'') AS color, p.sku
+                        FROM all_products_clean p
+                        WHERE p.active IS TRUE AND p.price::float > 0
+                    ) sk
+                    LEFT JOIN inv i ON i.sku = sk.sku
+                    GROUP BY 1, 2
+                ),
+                cards AS (
+                    SELECT DISTINCT ON (p.style_name, COALESCE(p.color_print,''))
+                        p.style_name,
+                        COALESCE(p.color_print,'') AS color,
+                        p.sku,
+                        COALESCE(NULLIF(TRIM(p.category),''),'Uncategorised') AS category,
+                        COALESCE(NULLIF(TRIM(p.product_type),''),'') AS subcategory,
+                        p.price::float AS price,
+                        NULLIF(TRIM(COALESCE(p.style_launch_date,'')),'') AS launch
+                    FROM all_products_clean p
+                    JOIN product_image_map mp ON mp.sku = p.sku
+                    JOIN product_images img ON img.tmpl_id = mp.tmpl_id
+                         AND COALESCE(img.image_512,'') <> ''
+                    WHERE p.style_name IS NOT NULL AND p.style_name <> ''
+                      AND COALESCE(p.brand,'') NOT ILIKE '%%third party%%'
+                      AND p.active IS TRUE
+                      AND p.price::float > 0
+                    ORDER BY p.style_name, COALESCE(p.color_print,''), p.sku
+                )
+                SELECT c.style_name, c.color, c.sku, c.category, c.subcategory,
+                       c.price, c.launch, """ + in_size_sql + """ AS in_size
+                FROM cards c
+                JOIN stock s ON s.style_name = c.style_name AND s.color = c.color
+                WHERE s.soh > 0
+                ORDER BY c.launch DESC NULLS LAST, c.style_name, c.color
+                LIMIT 300
+                """, params)
+                pool = [dict(r) for r in cur.fetchall()]
+
+                fav_cats = []
+                if prefs["use_activity"] and m.get("customer_id"):
+                    try:
+                        cur.execute(
+                            """SELECT COALESCE(NULLIF(TRIM(p.category),''),'') AS category,
+                                      SUM(COALESCE(s.ordered_item_quantity,0)) AS units
+                               FROM all_sales s
+                               JOIN all_products_clean p ON p.sku = s.variant_sku
+                               WHERE s.customer_id = %s AND s.store_id = %s
+                               GROUP BY 1 ORDER BY units DESC LIMIT 3""",
+                            (m["customer_id"], m.get("customer_store_id")))
+                        fav_cats = [r["category"] for r in cur.fetchall() if r["category"]]
+                    except Exception as e:
+                        log.warning("styled-for-you favourites failed: %s", e)
+
+        avoid = {a.lower() for a in prefs["avoid"]}
+        if avoid:
+            pool = [it for it in pool
+                    if it["category"].lower() not in avoid
+                    and (it["subcategory"] or "").lower() not in avoid]
+
+        colour_kws = sorted({kw for b in prefs["colours"]
+                             for kw in COMMUNITY_COLOR_BUCKETS.get(b, ())})
+        pref_cats = {c.lower() for c in prefs["categories"]}
+        fav_set = {c.lower() for c in fav_cats}
+        interest_kws = {i: _SFY_INTEREST_KWS[i] for i in prefs["interests"] if i in _SFY_INTEREST_KWS}
+
+        def _match_interest(it, kws):
+            hay = (it["category"] + " " + (it["subcategory"] or "")).lower()
+            return any(k in hay for k in kws)
+
+        def _score(it):
+            sc = 0
+            if it["category"].lower() in pref_cats:
+                sc += 4
+            if it["category"].lower() in fav_set:
+                sc += 3
+            col = (it["color"] or "").lower()
+            if colour_kws and any(k in col for k in colour_kws):
+                sc += 2
+            if interest_kws and any(_match_interest(it, kws) for kws in interest_kws.values()):
+                sc += 2
+            if it["in_size"]:
+                sc += 1
+            return sc
+
+        # Deterministic rotation matched to her chosen cadence: the same
+        # picks for the whole period, then a fresh set (weekly = Mondays,
+        # fortnightly = every other ISO week, monthly = the 1st).
+        now = datetime.utcnow()
+        iso = now.isocalendar()
+        freq = prefs["frequency"]
+        if freq == "monthly":
+            seed = "{}-m{}".format(now.year, now.month)
+            cadence_word = "monthly"
+        elif freq == "fortnightly":
+            seed = "{}-f{}".format(iso[0], iso[1] // 2)
+            cadence_word = "fortnightly"
+        else:
+            seed = "{}-w{}".format(iso[0], iso[1])
+            cadence_word = "weekly"
+        def _rot(it):
+            return hashlib.md5((seed + "|" + str(it["sku"])).encode()).hexdigest()
+
+        newest = pool[:8]  # pool arrives launch-ordered
+        ranked = sorted(pool, key=lambda it: (-_score(it), _rot(it)))
+
+        def _pack(items, n):
+            out = []
+            for it in items[:n]:
+                out.append({
+                    "style_name": it["style_name"], "color": it["color"],
+                    "sku": it["sku"], "category": it["category"],
+                    "subcategory": it["subcategory"], "price": it["price"],
+                    "image_url": "/api/community/product-image/" + quote(str(it["sku"]), safe=""),
+                })
+            return out
+
+        picks = ranked[:12]
+        pick_skus = {it["sku"] for it in picks}
+        sections = [{"key": "picks", "kicker": "Updated " + cadence_word,
+                     "title": "Styled for You",
+                     "sub": "Your {} picks are here.".format(cadence_word),
+                     "items": _pack(picks, 12)}]
+        top_cat = picks[0]["category"].lower() if picks else ""
+        complete = [it for it in ranked
+                    if it["sku"] not in pick_skus and it["category"].lower() != top_cat]
+        if complete:
+            sections.append({"key": "complete_look", "title": "Complete the Look",
+                             "sub": "Pieces that pair with this week's picks.",
+                             "items": _pack(complete, 8)})
+        if "Workwear" in interest_kws:
+            ww = [it for it in ranked if _match_interest(it, _SFY_INTEREST_KWS["Workwear"])]
+            if ww:
+                sections.append({"key": "workwear", "title": "Workwear Picks",
+                                 "sub": "Polished pieces for the working week.",
+                                 "items": _pack(ww, 8)})
+        if newest:
+            sections.append({"key": "new_week", "title": "New This Week",
+                             "sub": "The freshest arrivals, filtered for you.",
+                             "items": _pack(newest, 8)})
+        if fav_set:
+            fav_items = [it for it in ranked if it["category"].lower() in fav_set]
+            if fav_items:
+                sections.append({"key": "favourites", "title": "Based on Your Favourites",
+                                 "sub": "More from the categories you shop most.",
+                                 "items": _pack(fav_items, 8)})
+        if prefs["size"]:
+            sized = [it for it in ranked if it["in_size"]]
+            if sized:
+                sections.append({"key": "in_size", "title": "Recommended in Your Size",
+                                 "sub": "Everything here is in stock in {}.".format(prefs["size"]),
+                                 "items": _pack(sized, 8)})
+        if freq == "monthly":
+            week_label = now.strftime("%B") + " picks"
+        else:
+            monday = now.date() - timedelta(days=now.weekday())
+            week_label = "Week of " + monday.strftime("%-d %b")
+        return {"opted_in": True,
+                "week_label": week_label,
+                "cadence_label": "Updated " + cadence_word,
+                "cadence": cadence_word,
+                "sections": sections}
 
     @app.get("/api/community/products")
     def community_products(request: Request, category: str = "",

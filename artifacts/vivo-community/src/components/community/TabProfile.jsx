@@ -4,6 +4,7 @@ import { TierBadge, Avatar, cardCls, btnSecondary, inputCls } from "./ui";
 import { MapPin, Package, ArrowRight, LogOut, Camera, Ruler, Check, Loader2, ShieldCheck, AtSign, Clock, Heart, ChevronRight, HelpCircle, Hourglass, MessageCircle, Sparkles, ClipboardList, Trophy } from "lucide-react";
 import { useWishlist } from "@/context/WishlistContext";
 import EntryModal, { ENTRY_STATUS_COPY } from "./EntryModal";
+import { StylePrefsProfileCard } from "./StyledForYou";
 
 const WIN_LABEL = { 1: "1st place", 2: "2nd place", 3: "3rd place" };
 
@@ -332,6 +333,11 @@ export default function TabProfile({ member, onSignOut, onMemberUpdate, onOpenWi
               </div>
             )}
         </div>
+      </div>
+
+      {/* Styled for You — opt-in toggle + preference summary */}
+      <div className="mb-10">
+        <StylePrefsProfileCard onOpenPrefs={() => onOpenPage("styleprefs")} />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-10">

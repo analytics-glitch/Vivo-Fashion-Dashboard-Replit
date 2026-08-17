@@ -1,0 +1,60 @@
+Add a personalised shopping feature called “Styled for You.”
+
+The feature should appear in three connected areas:
+
+1. HOME PAGE
+
+Add a “Styled for You” section after the main hero campaign and before “New This Week.”
+
+For customers who have opted in:
+
+* Display a horizontally scrollable carousel of weekly personalised product and outfit recommendations
+* Include the heading “Styled for You”
+* Include the supporting text “Your weekly picks are here.”
+* Add a “View All” link
+* Show a small “Updated weekly” label
+
+For customers who have not opted in:
+
+* Display an elegant invitation card using a Vivo lifestyle image
+* Heading: “Styled for You”
+* Supporting text: “Get weekly outfit and product recommendations selected around your style, size and preferences.”
+* Primary button: “Personalise My Style”
+* Secondary link: “Maybe Later”
+
+Do not automatically enrol customers. Clearly request their consent before activating weekly recommendations.
+
+2. SHOP PAGE
+
+Add “Styled for You” as a dedicated shopping tab or collection.
+
+This page should show all personalised recommendations in a two-column product grid. Include optional sections such as:
+
+* Complete the Look
+* Workwear Picks
+* New This Week
+* Based on Your Favourites
+* Recommended in Your Size
+
+Allow customers to refresh their preferences from this page.
+
+3. ACCOUNT PAGE
+
+Add a “Style Preferences” section where customers can opt in or out and update:
+
+* Clothing size
+* Preferred fit
+* Favourite colours
+* Preferred categories
+* Workwear, casual, occasionwear or activewear interests
+* Styles they would prefer not to see
+* Recommendation frequency
+* Push-notification and email preferences
+
+Add a visible toggle labelled “Weekly Styled for You recommendations.”
+
+Explain that customers can change their preferences or opt out at any time.
+
+Use the customer’s existing browsing, wishlist and purchase data only where permission has been provided. Provide useful general recommendations when insufficient customer data is available.
+
+Keep the feature visually premium, simple and consistent with the rest of the Vivo app. Preserve all existing functionality and database connections.
