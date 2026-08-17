@@ -367,7 +367,7 @@ describe("TabHome – homepage layout", () => {
 
   // ── 5. no tagged posts — shop-looks absent ─────────────────────────────
 
-  it("feed with no tagged posts hides the Shop Community Looks section", async () => {
+  it("feed with no tagged posts renders no community-look cards", async () => {
     const posts = [
       makePost({ id: "u1", tagged: [] }),
       makePost({ id: "u2", tagged: [] }),
@@ -379,7 +379,11 @@ describe("TabHome – homepage layout", () => {
       expect(screen.getByTestId("home-feed-preview")).toBeInTheDocument()
     );
 
+    // The standalone section is gone; looks now live inside Vivo Edits —
+    // untagged posts must not produce any shop-look card there either.
     expect(screen.queryByTestId("home-shop-looks")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("shop-look-u1")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("shop-look-u2")).not.toBeInTheDocument();
   });
 
   it("feed with tagged posts shows the Shop Community Looks section", async () => {
@@ -401,9 +405,9 @@ describe("TabHome – homepage layout", () => {
 
     render(<TabHome member={MEMBER} {...NO_OP} />);
     await waitFor(() =>
-      expect(screen.getByTestId("home-shop-looks")).toBeInTheDocument()
+      expect(screen.getByTestId("home-vivo-edits")).toBeInTheDocument()
     );
-    // Each look card should be present.
+    // Each look card should be present (they are now rendered inside VivoEditsHome).
     expect(screen.getByTestId("shop-look-t1")).toBeInTheDocument();
     expect(screen.getByTestId("shop-look-t2")).toBeInTheDocument();
     expect(screen.getByTestId("shop-look-t3")).toBeInTheDocument();

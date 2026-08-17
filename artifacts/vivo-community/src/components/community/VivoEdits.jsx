@@ -78,7 +78,7 @@ function EditCard({ edit, onOpen, testId }) {
 
 /* ---------------- Home section ---------------- */
 
-export function VivoEditsHome({ onOpenEdit, onViewAll }) {
+export function VivoEditsHome({ onOpenEdit, onViewAll, feed, onOpenProduct, onNavigate }) {
   const [state, setState] = useState(null); // null = loading | { items, total }
 
   useEffect(() => {
@@ -89,15 +89,26 @@ export function VivoEditsHome({ onOpenEdit, onViewAll }) {
     return () => { alive = false; };
   }, []);
 
-  // Quiet failure / empty — render nothing so the section never dominates.
-  if (!state || !state.items.length) return null;
+  // Worn by the Community integration (Point 4)
+  const looks = (feed || []).filter((p) => p?.tagged?.length && p.post_type !== "question").slice(0, 3);
 
-  const items = state.items.slice(0, 3);
+  // Render the section if we have EITHER items or community looks (to show the related community looks)
+  if ((!state || !state.items.length) && (!looks || !looks.length)) return null;
+
+  const items = state ? state.items.slice(0, 3) : [];
+  
+  // Create an array with length of max(items.length, looks.length) up to 3
+  const length = Math.max(items.length, looks.length);
+  const combined = Array.from({ length }).map((_, i) => ({
+    edit: items[i] || null,
+    look: looks[i] || null
+  }));
+
   return (
     <section data-testid="home-vivo-edits">
-      <div className="flex items-end justify-between gap-4">
-        <SectionHeader kicker="Vivo Edits" title="Curated by women we love" sub="Editorial looks, shoppable to the last piece." />
-        {state.total > 3 && (
+      <div className="flex items-end justify-between gap-4 mb-4">
+        <SectionHeader kicker="Vivo Edits" title="Curated by Creators We Love" sub="Editorial looks, shoppable to the last piece." />
+        {state && state.total > 3 && (
           <button
             data-testid="home-vivo-edits-viewall"
             onClick={onViewAll}
@@ -107,9 +118,35 @@ export function VivoEditsHome({ onOpenEdit, onViewAll }) {
           </button>
         )}
       </div>
-      <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
-        {items.map((e) => (
-          <EditCard key={e.id} edit={e} onOpen={onOpenEdit} testId={`home-vivo-edit-${e.id}`} />
+      <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
+        {combined.map((c, index) => (
+          <div key={`edit-col-${index}`} className="flex flex-col gap-4">
+            {/* The creator edit */}
+            {c.edit && (
+              <EditCard edit={c.edit} onOpen={onOpenEdit} testId={`home-vivo-edit-${c.edit.id}`} />
+            )}
+            
+            {/* The related community look (if available) */}
+            {c.look && (
+              <div className={`${cardCls} p-4 flex flex-col mt-auto bg-secondary/30 min-h-[140px]`} data-testid={`shop-look-${c.look.id}`}>
+                <div className="text-[10px] font-bold uppercase tracking-widest text-muted-foreground mb-3">Worn by the community</div>
+                <div className="flex items-center gap-2.5 mb-3">
+                  <span className="w-6 h-6 rounded-full bg-secondary flex items-center justify-center text-[10px] font-bold text-foreground">
+                    {c.look.author.initials}
+                  </span>
+                  <span className="text-[13px] font-semibold text-foreground truncate">@{c.look.author.username}</span>
+                </div>
+                <p className="text-[13px] text-muted-foreground leading-relaxed line-clamp-2 mb-4 flex-grow">{c.look.caption}</p>
+                <button
+                  data-testid={`shop-look-cta-${c.look.id}`}
+                  onClick={() => (c.look.tagged?.[0]?.sku ? onOpenProduct?.(c.look.tagged[0].sku) : onNavigate("shop"))}
+                  className="h-10 rounded border border-border text-foreground text-[13px] font-medium hover:bg-secondary transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary mt-auto"
+                >
+                  Shop the Look
+                </button>
+              </div>
+            )}
+          </div>
         ))}
       </div>
     </section>
@@ -140,7 +177,7 @@ export function VivoEditsAllView({ onBack, onOpenEdit }) {
       >
         <ArrowLeft size={16} strokeWidth={1.5} /> Back
       </button>
-      <SectionHeader kicker="Vivo Edits" title="Curated by women we love" sub="Editorial looks, shoppable to the last piece." />
+      <SectionHeader kicker="Vivo Edits" title="Curated by Creators We Love" sub="Editorial looks, shoppable to the last piece." />
       {error ? (
         <div className="py-16 text-center text-muted-foreground text-sm">{error}</div>
       ) : !state ? (

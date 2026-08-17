@@ -38,8 +38,16 @@ export function PostVisual({ post, className = "mb-4" }) {
           src={imgSrc}
           alt={post.caption ? `Look by @${post.author?.username || "member"} — ${post.caption.slice(0, 60)}` : `Look by @${post.author?.username || "member"}`}
           loading="lazy"
+          onError={(e) => {
+            e.currentTarget.style.display = 'none';
+            e.currentTarget.nextElementSibling.style.display = 'flex';
+          }}
           className="absolute inset-0 w-full h-full object-cover"
         />
+        <div className="absolute inset-0 hidden items-center justify-center bg-foreground">
+          <div className="absolute -top-10 -right-10 w-40 h-40 bg-white/5 rounded-full blur-2xl pointer-events-none" />
+          <span className="font-serif italic text-lg text-background/60">Look by @{post.author?.username || "member"}</span>
+        </div>
       </div>
     );
   }

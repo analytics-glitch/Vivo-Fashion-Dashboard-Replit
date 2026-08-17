@@ -356,12 +356,13 @@ function CommunitySpotlightCard({ jewel, onNavigate }) {
 }
 
 /* Shop Community Looks — a compact, community-led shoppable strip built from
-   real member posts that tag Vivo pieces. Deliberately secondary. */
+   real member posts that tag Vivo pieces. Deliberately secondary. Now merged
+   into the VivoEditsHome component but kept here for fallback rendering if needed. */
 function ShopCommunityLooks({ posts, onOpenProduct, onNavigate }) {
   const looks = (posts || []).filter((p) => p?.tagged?.length && p.post_type !== "question").slice(0, 3);
   if (!looks.length) return null;
   return (
-    <section data-testid="home-shop-looks">
+    <section data-testid="home-shop-looks" className="mt-12">
       <SectionHeader kicker="Shop Community Looks" title="Worn by the community" sub="Real members, real outfits — every piece is Vivo." />
       <div className="grid sm:grid-cols-3 gap-4">
         {looks.map((p) => (
@@ -584,38 +585,37 @@ function CommunitySpotlight({ onNavigate }) {
   );
 }
 
-/* Member Rewards summary — points, tier, next-tier progress, View Rewards. */
+/* Member Rewards summary — a slim horizontal progress banner. */
 function RewardsSummaryCard({ member, onNavigate }) {
   if (!member) return null;
   const lifetime = member.lifetime_points ?? member.points ?? 0;
   const next = lifetime < 500 ? { tier: "Ruby", at: 500 } : lifetime < 1000 ? { tier: "Tanzanite", at: 1000 } : null;
   const pct = next ? Math.min(100, Math.round((lifetime / next.at) * 100)) : 100;
   return (
-    <section data-testid="home-rewards-card" className={`${cardCls} p-6 sm:p-8`}>
-      <div className="flex items-start justify-between gap-4 mb-5">
-        <div>
-          <div className="text-[10px] font-bold uppercase tracking-widest text-primary-ink mb-1.5">Member Rewards</div>
-          <div className="font-serif text-3xl text-foreground leading-none">
-            {(member.points ?? 0).toLocaleString()} <span className="text-base text-muted-foreground font-sans">pts</span>
+    <section data-testid="home-rewards-card" className={`${cardCls} p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center gap-4`}>
+      <div className="flex-grow min-w-0">
+        <div className="flex items-center gap-3 mb-2">
+          <div className="font-serif text-2xl text-foreground leading-none">
+            {(member.points ?? 0).toLocaleString()} <span className="text-sm text-muted-foreground font-sans">pts</span>
           </div>
+          {member.tier && <TierBadge tier={member.tier} />}
         </div>
-        {member.tier && <TierBadge tier={member.tier} />}
-      </div>
-      <div className="mb-2 flex items-center justify-between text-[12px]">
-        <span className="text-muted-foreground">
-          {next ? `${(next.at - lifetime).toLocaleString()} pts to ${next.tier}` : "Top tier — Tanzanite ✦"}
-        </span>
-        <span className="text-muted-foreground tabular-nums">{pct}%</span>
-      </div>
-      <div className="h-1.5 rounded-full bg-secondary overflow-hidden mb-6">
-        <div className="h-full bg-primary rounded-full transition-all" style={{ width: `${pct}%` }} />
+        <div className="flex items-center justify-between text-[11px] mb-1.5">
+          <span className="text-muted-foreground truncate">
+            {next ? `${(next.at - lifetime).toLocaleString()} pts to ${next.tier}` : "Top tier — Tanzanite ✦"}
+          </span>
+          <span className="text-muted-foreground tabular-nums ml-2">{pct}%</span>
+        </div>
+        <div className="h-1 rounded-full bg-secondary overflow-hidden">
+          <div className="h-full bg-primary rounded-full transition-all" style={{ width: `${pct}%` }} />
+        </div>
       </div>
       <button
         data-testid="home-rewards-cta"
         onClick={() => onNavigate("rewards")}
-        className="h-11 w-full sm:w-auto sm:px-8 rounded bg-foreground text-background font-medium text-[14px] flex items-center justify-center gap-2 hover:opacity-90 active:scale-[0.98] transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+        className="shrink-0 h-10 w-full sm:w-auto px-6 rounded bg-foreground text-background font-medium text-[13px] hover:opacity-90 active:scale-[0.98] transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
       >
-        View Rewards <ArrowRight size={15} />
+        View Rewards
       </button>
     </section>
   );
@@ -742,12 +742,12 @@ export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage,
      Member Rewards → Vivo Stories → Second Life. Shopping promos, try-on,
      fit notes and boards live on Shop / product pages / Community now. */
   return (
-    <div className="max-w-4xl mx-auto space-y-12 sm:space-y-16">
+    <div className="max-w-4xl mx-auto space-y-16 sm:space-y-24">
       <div className="-mt-2">
         <HeroCampaign onNavigate={onNavigate} />
       </div>
 
-      {/* 2 · This Week's Mission — close to the top; entry flow stays in Community */}
+      {/* 2 · This Week's Mission */}
       <MissionCard challenge={featuredChallenge} onNavigate={onNavigate} />
 
       {/* Personal one-shot moments — celebration/winner/tier, member-only */}
@@ -759,7 +759,7 @@ export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage,
         </div>
       )}
 
-      {/* 3 · Community feed preview — max 4 featured posts + View Community.
+      {/* 3 · Community feed preview — max 4 featured posts + Join the Conversation.
           Guests see the community intro instead (posts carry like writes). */}
       {member ? (
         previewPosts.length > 0 && (
@@ -770,13 +770,13 @@ export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage,
                 <PostCard key={p.id} post={p} onShopTap={shopTap} onOpenProduct={onOpenProduct} onOpen={openPost} onCounts={patchPost} />
               ))}
             </div>
-            <div className="mt-6 text-center">
+            <div className="mt-8 text-center">
               <button
                 data-testid="home-view-community"
                 onClick={() => onNavigate("community")}
                 className="h-11 px-8 rounded bg-foreground text-background font-medium text-[14px] inline-flex items-center gap-2 hover:opacity-90 active:scale-[0.98] transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
               >
-                View Community <ArrowRight size={15} />
+                Join the Conversation <ArrowRight size={15} />
               </button>
             </div>
           </section>
@@ -788,22 +788,7 @@ export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage,
       {/* 4 · Fresh from Vivo — capped reel carousel + View All */}
       <ReelsRow member={member} limit={5} onViewAll={() => onNavigate("community")} />
 
-      {/* 5 · Style Question of the Week — one featured conversation */}
-      {member && questionOfWeek && (
-        <section data-testid="home-style-question">
-          <SectionHeader kicker="Style question of the week" title="Weigh in — the community wants to know" />
-          <PostCard post={questionOfWeek} onShopTap={shopTap} onOpenProduct={onOpenProduct} onOpen={openPost} onCounts={patchPost} />
-        </section>
-      )}
-
-      {/* 6 · Upcoming event — the next one only; calendar stays in Community */}
-      <UpcomingEventCard ev={nextEvent} onOpen={onOpenEvent} />
-
-      {/* 7 · Community Spotlight — Jewel + Voices merged into one feature */}
-      <CommunitySpotlightCard jewel={cel?.jewel} onNavigate={onNavigate} />
-
-      {/* 8 · Styled for You — personalisation + the dress-you-better survey
-          combined into one supporting section. Members only. */}
+      {/* 5 · Styled for You — personalisation + the dress-you-better survey */}
       {member && (
         <div className="space-y-4">
           <StyledForYouHome
@@ -819,21 +804,39 @@ export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage,
         </div>
       )}
 
-      {/* 8b · Vivo Edits — editorial, creator-curated shoppable looks. Open
+      {/* 6 · Vivo Edits — editorial, creator-curated shoppable looks. Open
           to members AND guests (it's editorial inspiration). Renders nothing
-          when the fetch fails or returns no items. */}
-      <VivoEditsHome onOpenEdit={onOpenEdit} onViewAll={onOpenEdits} />
+          when the fetch fails or returns no items.
+          Point 4: this section now incorporates "Worn by the Community". */}
+      <VivoEditsHome
+        onOpenEdit={onOpenEdit}
+        onViewAll={onOpenEdits}
+        feed={member ? feed : undefined}
+        onOpenProduct={onOpenProduct}
+        onNavigate={onNavigate}
+      />
 
-      {/* 9 · Shop Community Looks — compact, community-led, secondary */}
-      {member && <ShopCommunityLooks posts={feed} onOpenProduct={onOpenProduct} onNavigate={onNavigate} />}
+      {/* 7 · Community Spotlight — Jewel + Voices merged into one feature */}
+      <CommunitySpotlightCard jewel={cel?.jewel} onNavigate={onNavigate} />
 
-      {/* 10 · Member Rewards — one compact preview */}
-      <RewardsSummaryCard member={member} onNavigate={onNavigate} />
-
-      {/* 11 · Vivo Stories — three editorial covers + view all */}
+      {/* 8 · Vivo Stories — three editorial covers + view all */}
       <VivoStories onOpenNews={openNews} onViewAll={() => onNavigate("community")} />
 
-      {/* 12 · Give your Vivo a second life — small closing feature */}
+      {/* 9 · Member Rewards — one compact preview */}
+      <RewardsSummaryCard member={member} onNavigate={onNavigate} />
+
+      {/* Style Question of the Week — one featured conversation */}
+      {member && questionOfWeek && (
+        <section data-testid="home-style-question">
+          <SectionHeader kicker="Style question of the week" title="Weigh in — the community wants to know" />
+          <PostCard post={questionOfWeek} onShopTap={shopTap} onOpenProduct={onOpenProduct} onOpen={openPost} onCounts={patchPost} />
+        </section>
+      )}
+
+      {/* Upcoming event — the next one only; calendar stays in Community */}
+      <UpcomingEventCard ev={nextEvent} onOpen={onOpenEvent} />
+
+      {/* Give your Vivo a second life — small closing feature */}
       <SecondLifeCard onOpenPage={onOpenPage} />
 
       {detailIdx >= 0 && P[detailIdx] && (

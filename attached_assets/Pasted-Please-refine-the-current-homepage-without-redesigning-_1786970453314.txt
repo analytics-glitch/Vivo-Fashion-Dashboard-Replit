@@ -1,0 +1,53 @@
+Please refine the current homepage without redesigning it or changing the existing visual identity, typography, colours or overall premium editorial style.
+
+Make the following updates:
+
+1. Reorder the homepage sections as follows:
+
+   * Hero banner
+   * This Week’s Mission
+   * Looks & Conversations We Loved
+   * Reels We Can’t Stop Replaying
+   * Styled for You
+   * Vivo Edits
+   * Community Spotlight
+   * Vivo Stories
+   * A slim rewards progress banner
+
+2. Move “Styled for You” higher up the homepage, placing it immediately after the reels section. Retain the existing image and design, but make the section feel like a personalised shopping feature rather than a general promotional banner.
+
+3. Rename “Curated by women we love” to “Curated by Creators We Love.”
+
+4. Combine “Vivo Edits” and “Worn by the Community” into one cohesive section to avoid repetition:
+
+   * Display the three featured creator edits at the top.
+   * Beneath each creator edit, include related community looks or recreations.
+   * Retain clear “Explore Her Style” and “Shop the Look” calls to action.
+   * Keep the section visually clean and editorial.
+
+5. Reduce the size of the Member Rewards section and convert it into a slim progress banner. It should display:
+
+   * Current points
+   * Membership tier
+   * Progress toward the next tier
+   * A single “View Rewards” button
+
+6. Retain only one featured Community Spotlight story on the homepage. Additional stories should be accessible through the Community page.
+
+7. Maintain consistent call-to-action language:
+
+   * Community content: “Join the Conversation”
+   * Creator edits: “Explore Her Style”
+   * Shoppable community content: “Shop the Look”
+   * Personalisation: “Personalise My Style”
+   * Rewards: “View Rewards”
+
+8. Fix all broken or missing community-post images. Every image should load correctly and maintain a consistent aspect ratio. Add a suitable branded fallback image if a user-uploaded image is unavailable.
+
+9. Correct the product-tag mismatch in the Style Question of the Week. The question references the Amara Maxi, so the product tag must also display the correct Amara Maxi product rather than the Vivo Studio Mini Pencil Skirt.
+
+10. Improve the spacing between sections so the homepage feels less crowded. Keep the content within the existing maximum width and ensure the layout remains responsive on desktop, tablet and mobile.
+
+11. Do not remove the Community, Shop or Rewards navigation tabs. The homepage should act as a curated preview of these areas and direct users to the full respective pages.
+
+Please implement these changes using the existing components and styling system. Do not replace working sections or introduce a completely new design.
