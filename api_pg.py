@@ -37984,6 +37984,123 @@ def _style_warehouse_pct(style_name, quantity, order_type=None, order_date=None)
         return 0.0, 0
 
 
+def _st_batch_warehouse_pct(styles):
+    """Batch companion to _style_warehouse_pct for the board endpoint.
+
+    Returns {style_id: (pct_float, wh_units)} for every style row given,
+    computed with at most TWO set-based queries (one per matching strategy)
+    instead of one round-trip per style:
+      • Re-Order/Replenishment styles WITH an order_date — finishing→warehouse
+        transfers since that date (mirrors the per-style replen branch);
+      • everything else — current Warehouse Finished Goods stock.
+
+    Name matching is identical to _style_warehouse_pct (case-insensitive with
+    suffix-word tolerance). Best-effort: any failure leaves the affected group
+    at (0.0, 0); the per-style /warehouse-pct endpoint stays the authoritative
+    single-style path.
+    """
+    out = {}
+    stock_group = []  # [(id, name, qty)]
+    xfer_group = []   # [(id, name, qty, since_iso)]
+    for s in styles:
+        sid = s.get("id")
+        if sid is None:
+            continue
+        out[sid] = (0.0, 0)
+        name = s.get("style_name")
+        try:
+            qty = int(s.get("quantity") or 0)
+        except (TypeError, ValueError):
+            qty = 0
+        if not name or qty <= 0:
+            continue
+        od = s.get("order_date")
+        if s.get("order_type") in ("Re-Order", "Replenishment") and od is not None:
+            since = od.isoformat() if hasattr(od, "isoformat") else str(od)
+            xfer_group.append((sid, name, qty, since))
+        else:
+            stock_group.append((sid, name, qty))
+
+    # Same tolerant match as _style_warehouse_pct, rewritten against the
+    # tracked(sid, sname) VALUES rows ("%%" = literal % under paramstyle).
+    _match = ("(LOWER(p.style_name) = LOWER(t.sname) "
+              " OR LOWER(t.sname) LIKE LOWER(p.style_name) || ' %%' "
+              " OR LOWER(p.style_name) LIKE LOWER(t.sname) || ' %%')")
+
+    if stock_group:
+        try:
+            values_sql = ", ".join(["(%s::bigint, %s::text)"] * len(stock_group))
+            params = []
+            for sid, name, _q in stock_group:
+                params.extend([sid, name])
+            got = _users_exec(
+                "WITH tracked(sid, sname) AS (VALUES " + values_sql + "), "
+                "wh AS ("
+                "  SELECT p.style_name, GREATEST(i.available, 0) AS avail "
+                "  FROM all_inventory i "
+                "  JOIN all_products_clean p ON i.sku = p.sku "
+                "  WHERE i.pos_location_name = 'Warehouse Finished Goods'"
+                ") "
+                "SELECT t.sid, COALESCE(SUM(p.avail), 0)::int AS wh_units "
+                "FROM tracked t "
+                "JOIN wh p ON " + _match + " "
+                "GROUP BY t.sid",
+                tuple(params), fetch=True) or []
+            qty_by_id = {sid: q for sid, _n, q in stock_group}
+            for r in got:
+                sid = r.get("sid")
+                units = int(r.get("wh_units") or 0)
+                q = qty_by_id.get(sid) or 0
+                if q > 0:
+                    out[sid] = (min(units / q * 100.0, 100.0), units)
+        except Exception as exc:
+            log.warning("_st_batch_warehouse_pct: stock batch failed: %s", exc)
+
+    if xfer_group:
+        try:
+            values_sql = ", ".join(
+                ["(%s::bigint, %s::text, %s::date)"] * len(xfer_group))
+            params = []
+            for sid, name, _q, since in xfer_group:
+                params.extend([sid, name, since])
+            got = _users_exec(
+                "WITH tracked(sid, sname, since) AS (VALUES " + values_sql + "), "
+                "x AS ("
+                "  SELECT tt.sku, tt.qty_done, "
+                "         (tt.date_done + interval '3 hours')::date AS day "
+                "  FROM stock_transfers tt "
+                "  WHERE tt.transfer_type = 'finishing_to_warehouse' "
+                "    AND tt.state = 'done' "
+                "    AND (tt.date_done + interval '3 hours')::date >= "
+                "        (SELECT MIN(since) FROM tracked)"
+                "), "
+                "xp AS ("
+                "  SELECT x.qty_done, x.day, p.style_name "
+                "  FROM x "
+                "  LEFT JOIN LATERAL ("
+                "    SELECT style_name FROM all_products_clean "
+                "    WHERE sku = x.sku "
+                "    ORDER BY (active IS TRUE) DESC, barcode LIMIT 1"
+                "  ) p ON TRUE"
+                ") "
+                "SELECT t.sid, COALESCE(SUM(p.qty_done), 0)::int AS wh_units "
+                "FROM tracked t "
+                "JOIN xp p ON " + _match + " AND p.day >= t.since "
+                "GROUP BY t.sid",
+                tuple(params), fetch=True) or []
+            qty_by_id = {sid: q for sid, _n, q, _s in xfer_group}
+            for r in got:
+                sid = r.get("sid")
+                units = int(r.get("wh_units") or 0)
+                q = qty_by_id.get(sid) or 0
+                if q > 0:
+                    out[sid] = (min(units / q * 100.0, 100.0), units)
+        except Exception as exc:
+            log.warning("_st_batch_warehouse_pct: transfer batch failed: %s", exc)
+
+    return out
+
+
 def _st_get_finishing_options():
     """Return current finishing options from DB as a list of label strings.
     Falls back to the hard-coded list on any DB error."""
@@ -38303,6 +38420,11 @@ def _style_tracker_board_inner():
             "ORDER BY s.completed, s.id",
             fetch=True) or []
 
+    # Batch "% received in warehouse" for every style (table view's % Recv
+    # column) — two set-based queries instead of one /warehouse-pct
+    # round-trip per row. Best-effort: (0.0, 0) on any failure/miss.
+    wh_map = _st_batch_warehouse_pct(rows)
+
     # Fetch notes for all non-archived styles in one query
     notes_raw = _users_exec("""
         SELECT n.style_id, n.author_email, n.body, n.created_at
@@ -38356,6 +38478,9 @@ def _style_tracker_board_inner():
         for s in styles:
             sr = _st_row_out(s)
             sr["notes"] = notes_by_style.get(s["id"], [])
+            _pct, _whu = wh_map.get(s["id"], (0.0, 0))
+            sr["warehouse_pct"] = round(float(_pct), 1)
+            sr["wh_units"] = int(_whu)
             style_rows.append(sr)
         weeks.append({
             "iso_year": y,

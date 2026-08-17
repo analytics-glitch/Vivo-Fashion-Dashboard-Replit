@@ -20,6 +20,7 @@ import {
   Circle,
   Clock,
   ClockClockwise,
+  DownloadSimple,
   Funnel,
   PencilSimple,
   Plus,
@@ -28,6 +29,7 @@ import {
   Warning,
   X,
 } from "@phosphor-icons/react";
+import { exportXLSX } from "@/components/SortableTable";
 
 /**
  * Style Launch Planner — manually-maintained kanban of production styles by
@@ -376,6 +378,11 @@ function StyleTableRow({ style, today, statuses, orderTypes, brands, busy, onUpd
         <input type="date" value={draft.deliver_by} onChange={setField("deliver_by")} disabled={busy || saving} aria-invalid={Boolean(errors.deliver_by)} className={fieldCls(errors.deliver_by)} />
         {errorHint(errors.deliver_by)}
       </td>
+      <td className="px-3 py-2 whitespace-nowrap align-top" data-testid={`style-order-date-${style.id}`}>
+        {style.order_date
+          ? <span className="text-[11px] font-medium text-[#0f3d24]">{style.order_date}</span>
+          : <span className="text-muted">—</span>}
+      </td>
       <td className="px-3 py-2 text-right whitespace-nowrap align-top">
         {daysEl !== null ? (
           <span className={`text-[11px] font-semibold ${daysEl > 60 ? "text-rose-700" : daysEl > 30 ? "text-amber-700" : "text-[#0f3d24]"}`} title={`Days since BO creation${style.order_date ? ` (${style.order_date})` : ""}`}>{daysEl}d</span>
@@ -385,6 +392,26 @@ function StyleTableRow({ style, today, statuses, orderTypes, brands, busy, onUpd
         <button type="button" onClick={() => toggleNotes(style.id)} className={`flex items-center gap-1 text-[11px] rounded px-1.5 py-0.5 transition-colors ${notesOpen ? "bg-[#1a5c38]/10 text-[#1a5c38] font-semibold" : "text-muted hover:text-[#0f3d24]"}`} title={notesOpen ? "Collapse notes" : "View / add notes"}>
           <ChatText size={13} /> {noteCount > 0 && <span className="font-semibold">{noteCount}</span>}
         </button>
+      </td>
+      <td className="px-3 py-2 text-center align-top" data-testid={`style-wh-pct-${style.id}`}>
+        {(() => {
+          const raw = style.warehouse_pct;
+          if (raw === null || raw === undefined) return <span className="text-muted">—</span>;
+          const p = Math.max(0, Math.round(Number(raw) || 0));
+          const tone = p >= 90
+            ? "bg-emerald-100 text-emerald-800 border-emerald-200"
+            : p >= 50
+              ? "bg-amber-100 text-amber-800 border-amber-200"
+              : "bg-rose-100 text-rose-800 border-rose-200";
+          return (
+            <span
+              className={`inline-block rounded-full border px-1.5 py-0.5 text-[10px] font-bold ${tone}`}
+              title={`${fmtUnits(style.wh_units || 0)} of ${fmtUnits(style.quantity || 0)} ordered units received in Warehouse Finished Goods`}
+            >
+              {p}%
+            </span>
+          );
+        })()}
       </td>
       <td className="px-3 py-1.5 text-center align-top">
         <button type="button" onClick={() => canDone && onUpdate(style, { completed: !style.completed })} disabled={busy || saving || (!style.completed && !canDone)} title={!canDone && !style.completed ? "Style must be in Warehouse status before marking as done" : style.completed ? "Mark as not completed" : "Mark as completed"} className="disabled:opacity-40">
@@ -398,7 +425,7 @@ function StyleTableRow({ style, today, statuses, orderTypes, brands, busy, onUpd
   );
 }
 
-function WeekTable({ weeks, today, finishingOptions, busyIds, onUpdate, isPrivileged, orderTypes, brands, onNoteAdded, onOpenFulfillment }) {
+function WeekTable({ weeks, today, finishingOptions, busyIds, onUpdate, isPrivileged, orderTypes, brands, onNoteAdded, onOpenFulfillment, filters, onFilterChange, onClearFilters, weekOptions, filtersActive }) {
   const statuses = finishingOptions.map((f) => f.label);
   const [expandedNotes, setExpandedNotes] = useState(() => new Set());
 
@@ -426,7 +453,11 @@ function WeekTable({ weeks, today, finishingOptions, busyIds, onUpdate, isPrivil
   );
   const totPct = totals.units > 0 ? Math.round((100 * totals.cUnits) / totals.units) : null;
   const thCls = "px-3 py-2.5 font-bold";
-  const COLS = 9;
+  // Column count — every colSpan below (week header, status group, notes row,
+  // footer) must sum to this. Order: Style, Brand, Type, Quantity, Status,
+  // Deliver by, Order Date, Days, Notes, % Recv, In WH / Save.
+  const COLS = 11;
+  const filterSelCls = "w-full min-w-[90px] text-[11px] bg-white border border-line rounded-md px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-brand/40";
 
   return (
     <div className="rounded-xl border border-line bg-white overflow-x-auto" data-testid="style-tracker-table-view">
@@ -439,10 +470,58 @@ function WeekTable({ weeks, today, finishingOptions, busyIds, onUpdate, isPrivil
             <th className={`${thCls} text-right`}>Quantity</th>
             <th className={thCls}>Status</th>
             <th className={thCls}>Deliver by</th>
+            <th className={thCls}>Order Date</th>
             <th className={`${thCls} text-right`} title="Days elapsed since BO creation date">Days</th>
             <th className={thCls}>Notes</th>
+            <th className={`${thCls} text-center`} title="Ordered quantity received in Warehouse Finished Goods">% Recv</th>
             <th className={`${thCls} text-center`}>In WH / Save</th>
           </tr>
+          {filters && (
+            <tr className="border-b border-line bg-panel/40" data-testid="style-tracker-filter-row">
+              <td className="px-3 py-1.5">
+                <input
+                  type="text"
+                  value={filters.style}
+                  onChange={(e) => onFilterChange({ ...filters, style: e.target.value })}
+                  placeholder="Filter style…"
+                  className="w-full min-w-[120px] text-[11px] bg-white border border-line rounded-md px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-brand/40"
+                  data-testid="style-tracker-filter-style"
+                />
+              </td>
+              <td className="px-3 py-1.5">
+                <select value={filters.brand} onChange={(e) => onFilterChange({ ...filters, brand: e.target.value })} className={filterSelCls} data-testid="style-tracker-filter-brand">
+                  <option value="">All brands</option>
+                  {(brands || []).map((b) => <option key={b} value={b}>{b}</option>)}
+                </select>
+              </td>
+              <td className="px-3 py-1.5">
+                <select value={filters.type} onChange={(e) => onFilterChange({ ...filters, type: e.target.value })} className={filterSelCls} data-testid="style-tracker-filter-type">
+                  <option value="">All types</option>
+                  {(orderTypes || []).map((t) => <option key={t} value={t}>{t}</option>)}
+                </select>
+              </td>
+              <td />
+              <td className="px-3 py-1.5">
+                <select value={filters.status} onChange={(e) => onFilterChange({ ...filters, status: e.target.value })} className={filterSelCls} data-testid="style-tracker-filter-status">
+                  <option value="">All statuses</option>
+                  {statuses.map((s) => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </td>
+              <td className="px-3 py-1.5" colSpan={2}>
+                <select value={filters.week} onChange={(e) => onFilterChange({ ...filters, week: e.target.value })} className={filterSelCls} data-testid="style-tracker-filter-week">
+                  <option value="">All weeks</option>
+                  {(weekOptions || []).map((w) => <option key={w.key} value={w.key}>{w.label}</option>)}
+                </select>
+              </td>
+              <td className="px-3 py-1.5 text-right" colSpan={COLS - 7}>
+                {filtersActive && (
+                  <button type="button" onClick={onClearFilters} className="text-[10.5px] font-semibold text-[#1a5c38] underline underline-offset-2 hover:no-underline whitespace-nowrap" data-testid="style-tracker-filter-clear">
+                    Clear filters
+                  </button>
+                )}
+              </td>
+            </tr>
+          )}
         </thead>
         <tbody>
           {weeks.filter((w) => w.count > 0).map((week) => {
@@ -459,7 +538,8 @@ function WeekTable({ weeks, today, finishingOptions, busyIds, onUpdate, isPrivil
                     <span className="ml-2 text-[11px] text-muted">{week.count} style{week.count === 1 ? "" : "s"}</span>
                   </td>
                   <td className="px-3 py-2 text-right font-bold text-[#0f3d24]">{fmtUnits(week.total_units)}</td>
-                  <td className="px-3 py-2 text-[11px] text-muted" colSpan={4}>
+                  {/* 3 + 1 + 5 + 2 = COLS */}
+                  <td className="px-3 py-2 text-[11px] text-muted" colSpan={5}>
                     <div className="flex items-center gap-2 min-w-[160px]">
                       <div className="flex-1 h-1.5 rounded-full bg-line/70 overflow-hidden">
                         <div className={`h-full rounded-full ${pct === null ? "bg-line" : barTone(pct)}`} style={{ width: `${Math.min(pct || 0, 100)}%` }} />
@@ -467,7 +547,7 @@ function WeekTable({ weeks, today, finishingOptions, busyIds, onUpdate, isPrivil
                       <span className="whitespace-nowrap">{fmtUnits(week.completed_units || 0)} pcs in WH</span>
                     </div>
                   </td>
-                  <td className={`px-3 py-2 text-center font-bold ${pctTone(pct)}`}>{pct === null ? "—" : `${pct}%`}</td>
+                  <td className={`px-3 py-2 text-center font-bold ${pctTone(pct)}`} colSpan={2}>{pct === null ? "—" : `${pct}%`}</td>
                 </tr>
 
                 {/* Status groups keep the weekly table scannable by production stage. */}
@@ -523,17 +603,22 @@ function WeekTable({ weeks, today, finishingOptions, busyIds, onUpdate, isPrivil
         </tbody>
         <tfoot>
           <tr className="border-t-2 border-line bg-panel/70 font-bold text-[#0f3d24]">
+            {/* 3 + 1 + 5 + 2 = COLS */}
             <td className="px-3 py-2.5" colSpan={3}>All weeks · {totals.count} style{totals.count === 1 ? "" : "s"} ({totals.cCount} in WH)</td>
             <td className="px-3 py-2.5 text-right">{fmtUnits(totals.units)}</td>
-            <td className="px-3 py-2.5 text-[11px] text-muted font-semibold" colSpan={4}>{fmtUnits(totals.cUnits)} pcs in WH</td>
-            <td className={`px-3 py-2.5 text-center ${pctTone(totPct)}`}>{totPct === null ? "—" : `${totPct}%`}</td>
+            <td className="px-3 py-2.5 text-[11px] text-muted font-semibold" colSpan={5}>{fmtUnits(totals.cUnits)} pcs in WH</td>
+            <td className={`px-3 py-2.5 text-center ${pctTone(totPct)}`} colSpan={2}>{totPct === null ? "—" : `${totPct}%`}</td>
           </tr>
         </tfoot>
       </table>
       {weeks.every((w) => w.count === 0) && (
         <div className="flex flex-col items-center gap-2 py-10 text-muted">
           <Table size={26} />
-          <div className="text-[12.5px]">No styles on the board yet — add them from the Board view.</div>
+          <div className="text-[12.5px]">
+            {filtersActive
+              ? "No styles match the current filters."
+              : "No styles on the board yet — add them from the Board view."}
+          </div>
         </div>
       )}
     </div>
@@ -1747,6 +1832,9 @@ function AddStyleForm({ week, finishingOptions, brands, categories, orderTypes, 
   );
 }
 
+// Table-view column filters — one object so a single setState clears them all.
+const EMPTY_TBL_FILTERS = { style: "", brand: "", type: "", status: "", week: "" };
+
 const StyleTracker = () => {
   const { user } = useAuth();
   const { styleTypes, setStyleTypes } = useFilters();
@@ -1755,6 +1843,8 @@ const StyleTracker = () => {
   const [error, setError] = useState(null);
   const [view, setView] = useState("board");
   const [stageFilter, setStageFilter] = useState("");
+  const [tblFilters, setTblFilters] = useState(EMPTY_TBL_FILTERS);
+  const [exporting, setExporting] = useState(false);
   const [archived, setArchived] = useState(null);
   const [archivedLoading, setArchivedLoading] = useState(false);
   const [addingWeek, setAddingWeek] = useState(null);
@@ -2058,6 +2148,87 @@ const StyleTracker = () => {
     });
   }, [board, stageFilter, styleTypes]);
 
+  // Table-view column filters (applied on top of the stage/type filter).
+  // Client-side and immediate; weeks that become empty are hidden by
+  // WeekTable (count === 0). State persists while the user stays on the tab.
+  const tblFiltersActive = Boolean(
+    tblFilters.style.trim() || tblFilters.brand || tblFilters.type ||
+    tblFilters.status || tblFilters.week
+  );
+  const tableWeeks = useMemo(() => {
+    if (!tblFiltersActive) return filteredWeeks;
+    const q = tblFilters.style.trim().toLowerCase();
+    return filteredWeeks
+      .filter((w) => !tblFilters.week || weekKey(w) === tblFilters.week)
+      .map((w) => {
+        const styles = w.styles.filter((s) =>
+          (!q || `${s.style_name || ""} ${s.style_number || ""}`.toLowerCase().includes(q)) &&
+          (!tblFilters.brand || s.brand === tblFilters.brand) &&
+          (!tblFilters.type || s.order_type === tblFilters.type) &&
+          (!tblFilters.status || s.status === tblFilters.status)
+        );
+        return {
+          ...w,
+          styles,
+          count: styles.length,
+          total_units: styles.reduce((a, s) => a + (Number(s.quantity) || 0), 0),
+          completed_count: styles.filter((s) => s.completed).length,
+          completed_units: styles.reduce((a, s) => a + (s.completed ? Number(s.quantity) || 0 : 0), 0),
+        };
+      });
+  }, [filteredWeeks, tblFilters, tblFiltersActive]);
+
+  // Week dropdown options come from the pre-column-filter week list so a
+  // week choice never removes itself from the dropdown.
+  const weekOptions = useMemo(
+    () => filteredWeeks.filter((w) => w.count > 0).map((w) => ({ key: weekKey(w), label: w.label })),
+    [filteredWeeks]
+  );
+
+  // Excel export of the table view — flattens the currently visible
+  // (stage + column filtered) styles into one row per style.
+  const exportTableXLSX = async () => {
+    if (exporting) return;
+    const rows = [];
+    for (const w of tableWeeks) {
+      for (const s of w.styles) rows.push({ ...s, week_label: w.label });
+    }
+    if (rows.length === 0) {
+      toast.info("Nothing to export — no styles match the current filters.");
+      return;
+    }
+    setExporting(true);
+    try {
+      const calcDays = (s) => {
+        if (s.days_elapsed !== null && s.days_elapsed !== undefined) return s.days_elapsed;
+        const ref = s.order_date || (s.created_at ? s.created_at.slice(0, 10) : null);
+        if (!ref || !board?.today) return null;
+        return Math.floor((new Date(board.today) - new Date(ref)) / 86400000);
+      };
+      const columns = [
+        { key: "week_label", label: "Week" },
+        { key: "style_name", label: "Style" },
+        { key: "style_number", label: "Style Number", csv: (r) => r.style_number || "" },
+        { key: "brand", label: "Brand" },
+        { key: "order_type", label: "Type", csv: (r) => r.order_type || "" },
+        { key: "quantity", label: "Qty Ordered", csv: (r) => String(Number(r.quantity) || 0) },
+        { key: "wh_units", label: "WH Units", csv: (r) => String(Number(r.wh_units) || 0) },
+        { key: "warehouse_pct", label: "% Recv", csv: (r) => `${Math.max(0, Math.round(Number(r.warehouse_pct) || 0))}%` },
+        { key: "status", label: "Status", csv: (r) => r.status || "" },
+        { key: "order_date", label: "Order Date", csv: (r) => r.order_date || "" },
+        { key: "days_elapsed", label: "Days Elapsed", csv: (r) => { const d = calcDays(r); return d === null || d === undefined ? "" : String(d); } },
+        { key: "deliver_by", label: "Deliver By", csv: (r) => r.deliver_by || "" },
+        { key: "notes", label: "Notes", csv: (r) => (r.notes || []).map((n) => `${(n.author_email || "").split("@")[0]}${n.author_email ? ": " : ""}${n.body}`).join(" | ") },
+      ];
+      const stamp = board?.today || new Date().toISOString().slice(0, 10);
+      await exportXLSX(rows, columns, `Style_Launch_Planner_${stamp}.xlsx`);
+    } catch (e) {
+      toast.error(e?.message || "Export failed — please try again.");
+    } finally {
+      setExporting(false);
+    }
+  };
+
   if (loading) return <Loading label="Loading Style Launch Planner…" />;
   if (error) return <ErrorBox message={error} />;
   if (!board) return null;
@@ -2096,6 +2267,17 @@ const StyleTracker = () => {
                 </select>
               </div>
             )}
+            {view === "table" && tblFiltersActive && (
+              <button
+                type="button"
+                onClick={() => setTblFilters(EMPTY_TBL_FILTERS)}
+                className="flex items-center gap-1 text-[11px] font-semibold text-[#1a5c38] bg-[#1a5c38]/10 border border-[#1a5c38]/30 rounded-full px-2.5 py-1.5 hover:bg-[#1a5c38]/15"
+                title="Column filters are active — click to clear them"
+                data-testid="style-tracker-filters-active-pill"
+              >
+                <Funnel size={11} weight="fill" /> Filters active — Clear
+              </button>
+            )}
             <div className="flex rounded-lg border border-line overflow-hidden">
               <button type="button" onClick={() => setView("board")} className={`text-[11.5px] font-semibold px-3 py-1.5 ${view === "board" ? "bg-[#1a5c38] text-white" : "bg-white text-[#0f3d24] hover:bg-panel"}`} data-testid="style-tracker-view-board">Board</button>
               <button type="button" onClick={() => setView("table")} className={`text-[11.5px] font-semibold px-3 py-1.5 border-l border-line ${view === "table" ? "bg-[#1a5c38] text-white" : "bg-white text-[#0f3d24] hover:bg-panel"}`} data-testid="style-tracker-view-table">Table</button>
@@ -2103,6 +2285,18 @@ const StyleTracker = () => {
                 Archived{archived ? ` (${archived.count})` : ""}
               </button>
             </div>
+            {view === "table" && (
+              <button
+                type="button"
+                onClick={exportTableXLSX}
+                disabled={exporting}
+                className="flex items-center gap-1.5 text-[11.5px] font-semibold text-[#0f3d24] border border-line hover:bg-panel px-2.5 py-1.5 rounded-lg disabled:opacity-50"
+                title="Download the visible table rows as Excel"
+                data-testid="style-tracker-export"
+              >
+                <DownloadSimple size={13} /> {exporting ? "Exporting…" : "Export"}
+              </button>
+            )}
             <button type="button" onClick={() => (view === "archived" ? loadArchived() : loadBoard(true))} className="flex items-center gap-1.5 text-[11.5px] font-semibold text-[#0f3d24] border border-line hover:bg-panel px-2.5 py-1.5 rounded-lg" data-testid="style-tracker-refresh">
               <ArrowsClockwise size={13} /> Refresh
             </button>
@@ -2288,7 +2482,7 @@ const StyleTracker = () => {
             onSelect={setSelectedWeekKey}
           />
           <WeekTable
-            weeks={filteredWeeks}
+            weeks={tableWeeks}
             today={board.today}
             finishingOptions={finishingOptions}
             busyIds={busyIds}
@@ -2298,6 +2492,11 @@ const StyleTracker = () => {
             brands={brands}
             onNoteAdded={handleNoteAdded}
             onOpenFulfillment={(style) => setFulfillmentStyle({ id: style.id, style_name: style.style_name, style_number: style.style_number })}
+            filters={tblFilters}
+            onFilterChange={setTblFilters}
+            onClearFilters={() => setTblFilters(EMPTY_TBL_FILTERS)}
+            weekOptions={weekOptions}
+            filtersActive={tblFiltersActive}
           />
         </>
       ) : (
