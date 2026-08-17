@@ -247,6 +247,40 @@ const MerchandisingHub = () => {
   return (
     <MerchFiltersContext.Provider value={merchFilters}>
       <div className="space-y-4">
+        {/* ── Cross-app shortcut — full-page navigation to Product Workspace ── */}
+        <a
+          href="/product-workspace/"
+          className="group flex items-center justify-between gap-4 rounded-xl border px-4 py-3 sm:px-5 transition-colors hover:bg-[#1A1A2E]/[0.04] focus:outline-none focus:ring-2 focus:ring-[#C9A96E]/60"
+          style={{ borderColor: "rgba(201, 169, 110, 0.48)", backgroundColor: "rgba(201, 169, 110, 0.07)" }}
+          data-testid="product-workspace-shortcut"
+        >
+          <span className="flex min-w-0 items-center gap-3">
+            <span
+              className="grid h-9 w-9 shrink-0 place-items-center rounded-lg"
+              style={{ backgroundColor: "#1A1A2E", color: "#C9A96E" }}
+              aria-hidden="true"
+            >
+              <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+                <rect x="2.25" y="2.25" width="5.25" height="5.25" rx="1" fill="currentColor" />
+                <rect x="10.5" y="2.25" width="5.25" height="5.25" rx="1" fill="currentColor" opacity="0.82" />
+                <rect x="2.25" y="10.5" width="5.25" height="5.25" rx="1" fill="currentColor" opacity="0.82" />
+                <rect x="10.5" y="10.5" width="5.25" height="5.25" rx="1" fill="currentColor" />
+              </svg>
+            </span>
+            <span className="min-w-0">
+              <span className="block text-[12px] font-bold uppercase tracking-[0.14em]" style={{ color: "#1A1A2E" }}>
+                Product Workspace
+              </span>
+              <span className="mt-0.5 block truncate text-[12px] text-slate-500">
+                Styles, tech packs, samples and production readiness
+              </span>
+            </span>
+          </span>
+          <span className="shrink-0 text-[12px] font-bold transition-transform group-hover:translate-x-0.5" style={{ color: "#1A1A2E" }}>
+            Open Product Workspace <span aria-hidden="true">→</span>
+          </span>
+        </a>
+
         {/* ── Sticky slim header: page picker + hub-scope filters in ONE row ── */}
         <div
           className="sticky z-30 bg-background/95 backdrop-blur-sm"

@@ -102,6 +102,11 @@ export const PRIMARY_NAV = [
       { pageId: "merch-store",       label: "Store Detail" },
     ],
   },
+  {
+    to: "/product-workspace/", label: "Product Workspace", icon: Kanban, id: "product-workspace",
+    external: true, group: "Products & Range",
+    desc: "Standalone product development workspace for styles, tech packs, samples and production readiness",
+  },
   { to: "/fabric", label: "Fabric", icon: ChartBar, id: "fabric", external: true, group: "Products & Range", desc: "Standalone Fabric BI dashboard (opens full-page)" },
 
   // Retail pages
