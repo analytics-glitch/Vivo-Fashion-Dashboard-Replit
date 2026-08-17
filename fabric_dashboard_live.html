@@ -1329,6 +1329,13 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
         <div id="sub-fabric-list" class="resv-dropdown" style="display:none;"></div>
         <div id="sub-fabric-hint" class="muted" style="margin-top:5px;font-size:12px;"></div>
        </div>
+       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px 12px;margin-bottom:12px;">
+        <div><label class="rsv-lbl">Print Name</label><input id="sub-print-name" type="text" placeholder="e.g. Tropical Bloom" style="width:100%;"></div>
+        <div><label class="rsv-lbl">Style Name</label><input id="sub-style-name" type="text" placeholder="e.g. Wrap Dress" style="width:100%;"></div>
+        <div><label class="rsv-lbl">Print Code</label><input id="sub-print-code" type="text" placeholder="e.g. P-2024-001" style="width:100%;"></div>
+         <div><label class="rsv-lbl">Final Product Name</label><input id="sub-final-product-name" type="text" placeholder="Finished / printed fabric product" style="width:100%;"></div>
+         <div><label class="rsv-lbl">Final Fabric Barcode</label><input id="sub-final-fabric-barcode" type="text" placeholder="Finished fabric barcode" style="width:100%;"></div>
+       </div>
        <div class="sub-grid">
         <div><label>Fabric width (m)</label><input id="sub-width" type="number" min="0" step="any" value="1.49" oninput="recalcSublimation()"></div>
         <div><label>GSM (g/m²)</label><input id="sub-gsm" type="number" min="0" step="any" value="140" oninput="recalcSublimation()"></div>
@@ -1425,8 +1432,8 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
      <div class="section-head" style="padding:16px 16px 0;"><h3>Costing library</h3><span class="muted">saved print-run costings — Load repopulates the calculator</span></div>
      <div class="tbl-wrap">
       <table class="data">
-       <thead><tr><th>Date</th><th>Fabric</th><th class="r">Metres</th><th class="r">Total printing</th><th class="r">Cost/m</th><th class="r">Cost/kg</th><th class="r">Std cost/kg</th><th>By</th><th></th></tr></thead>
-       <tbody id="sub-lib-body"><tr><td colspan="9" class="loading">Loading…</td></tr></tbody>
+       <thead><tr><th>Date</th><th>Fabric</th><th>Final Product Name</th><th>Final Fabric Barcode</th><th>Print Name</th><th>Style Name</th><th>Print Code</th><th class="r">Metres</th><th class="r">Total printing</th><th class="r">Cost/m</th><th class="r">Cost/kg</th><th class="r">Std cost/kg</th><th>By</th><th></th></tr></thead>
+       <tbody id="sub-lib-body"><tr><td colspan="14" class="loading">Loading…</td></tr></tbody>
       </table>
      </div>
     </div>
@@ -9151,7 +9158,12 @@ async function saveSublimation(){
     ink_cyan_ml:subNum('sub-ink-c'),ink_yellow_ml:subNum('sub-ink-y'),ink_magenta_ml:subNum('sub-ink-m'),ink_black_ml:subNum('sub-ink-k'),
     sub_paper_cost_per_m:subNum('sub-paper-sub'),prot_paper_cost_per_m:subNum('sub-paper-prot'),
     reprint_pct:subNum('sub-reprint'),base_fabric_cost_per_m:subNum('sub-basecost'),print_margin_cm:subNum('sub-margin'),
-    std_throughput_m_hr:subNum('sub-std-thr')>0?subNum('sub-std-thr'):SUBLIM_STD_THROUGHPUT
+    std_throughput_m_hr:subNum('sub-std-thr')>0?subNum('sub-std-thr'):SUBLIM_STD_THROUGHPUT,
+    print_name:(document.getElementById('sub-print-name').value.trim()||null),
+    style_name:(document.getElementById('sub-style-name').value.trim()||null),
+    print_code:(document.getElementById('sub-print-code').value.trim()||null),
+    final_product_name:(document.getElementById('sub-final-product-name').value.trim()||null),
+    final_fabric_barcode:(document.getElementById('sub-final-fabric-barcode').value.trim()||null)
   };
   const btn=document.getElementById('sub-save-btn');
   btn.disabled=true;const old=btn.textContent;btn.textContent='Saving…';
@@ -9169,14 +9181,19 @@ async function loadSublimationLibrary(){
     const d=await apiFetch('/api/fabric/sublimation/costings');
     subLibRows=d.items||[];
     renderSubLibrary();
-  }catch(e){rowErr('sub-lib-body',9,e);}
+  }catch(e){rowErr('sub-lib-body',14,e);}
 }
 function renderSubLibrary(){
   const body=document.getElementById('sub-lib-body');
-  if(!subLibRows.length){body.innerHTML='<tr><td colspan="9" class="muted" style="padding:1rem;">No saved costings yet — fill in the calculator and press “Save to library”.</td></tr>';return;}
+  if(!subLibRows.length){body.innerHTML='<tr><td colspan="14" class="muted" style="padding:1rem;">No saved costings yet — fill in the calculator and press "Save to library".</td></tr>';return;}
   body.innerHTML=subLibRows.map(r=>`<tr>
     <td style="white-space:nowrap;font-size:12px;">${esc(fmtNairobi(r.saved_at)||'—')}</td>
     <td style="max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(r.fabric_name||'')}">${esc(r.fabric_name||'—')}${r.fabric_barcode?` <span class="muted" style="font-size:11px;">#${esc(r.fabric_barcode)}</span>`:''}</td>
+    <td>${esc(r.final_product_name||'—')}</td>
+    <td>${esc(r.final_fabric_barcode||'—')}</td>
+    <td>${esc(r.print_name||'—')}</td>
+    <td>${esc(r.style_name||'—')}</td>
+    <td>${esc(r.print_code||'—')}</td>
     <td class="r">${fmt1(r.metres_printed)}</td>
     <td class="r">${fmt(r.total_printing_cost)}</td>
     <td class="r">${fmt2(r.printing_cost_per_m)}</td>
@@ -9201,6 +9218,8 @@ function subLoadRow(id){
   set('sub-ink-c',r.ink_cyan_ml);set('sub-ink-y',r.ink_yellow_ml);set('sub-ink-m',r.ink_magenta_ml);set('sub-ink-k',r.ink_black_ml);
   set('sub-paper-sub',r.sub_paper_cost_per_m);set('sub-paper-prot',r.prot_paper_cost_per_m);set('sub-reprint',r.reprint_pct);
   set('sub-std-thr',r.std_throughput_m_hr==null?SUBLIM_STD_THROUGHPUT:r.std_throughput_m_hr);
+  set('sub-print-name',r.print_name);set('sub-style-name',r.style_name);set('sub-print-code',r.print_code);
+  set('sub-final-product-name',r.final_product_name);set('sub-final-fabric-barcode',r.final_fabric_barcode);
   document.getElementById('sub-fabric-hint').textContent='Loaded saved costing #'+r.id+(r.saved_at?' ('+(fmtNairobi(r.saved_at)||'')+')':'')+' — edit and save again to store a new copy.';
   recalcSublimation();
   document.getElementById('page-sublimation').scrollIntoView({behavior:'smooth',block:'start'});

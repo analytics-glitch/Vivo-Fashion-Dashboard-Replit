@@ -15902,6 +15902,18 @@ def _ensure_sublimation_tables(conn):
             ALTER TABLE sublimation_costings
             ADD COLUMN IF NOT EXISTS std_throughput_m_hr NUMERIC
         """)
+        # Descriptive label fields added so saved costings can be identified by
+        # the print design and garment style they relate to (idempotent).
+        cur.execute("ALTER TABLE sublimation_costings "
+                    "ADD COLUMN IF NOT EXISTS print_name TEXT")
+        cur.execute("ALTER TABLE sublimation_costings "
+                    "ADD COLUMN IF NOT EXISTS style_name TEXT")
+        cur.execute("ALTER TABLE sublimation_costings "
+                    "ADD COLUMN IF NOT EXISTS print_code TEXT")
+        cur.execute("ALTER TABLE sublimation_costings "
+                    "ADD COLUMN IF NOT EXISTS final_product_name TEXT")
+        cur.execute("ALTER TABLE sublimation_costings "
+                    "ADD COLUMN IF NOT EXISTS final_fabric_barcode TEXT")
     conn.commit()
     _SUBLIM_READY = True
 
@@ -15920,7 +15932,10 @@ _SUBLIM_COMPUTED_FIELDS = (
     "finished_cost_per_m", "finished_cost_per_kg", "std_cost_per_kg",
 )
 _SUBLIM_INT_FIELDS = ("fabric_product_id", "machine_time_h", "machine_time_min")
-_SUBLIM_TEXT_FIELDS = ("fabric_name", "fabric_barcode")
+_SUBLIM_TEXT_FIELDS = (
+    "fabric_name", "fabric_barcode", "print_name", "style_name", "print_code",
+    "final_product_name", "final_fabric_barcode",
+)
 
 SUBLIM_STD_THROUGHPUT_DEFAULT = 60.0
 

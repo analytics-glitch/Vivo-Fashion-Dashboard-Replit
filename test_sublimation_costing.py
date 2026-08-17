@@ -145,6 +145,15 @@ class SavedCostIntegrity(unittest.TestCase):
             fr._sublim_compute({**WORKED, "std_throughput_m_hr": 55})["std_cost_per_kg"],
             delta=1e-9)
 
+    def test_prepare_preserves_final_product_labels(self):
+        vals = fr._sublim_prepare({
+            **WORKED,
+            "final_product_name": "Printed Satin Dress Fabric",
+            "final_fabric_barcode": "PF-00123",
+        })
+        self.assertEqual(vals["final_product_name"], "Printed Satin Dress Fabric")
+        self.assertEqual(vals["final_fabric_barcode"], "PF-00123")
+
     def test_validation_rejects_bad_input(self):
         with self.assertRaises(HTTPException) as ctx:
             fr._sublim_prepare({**WORKED, "fabric_name": ""})
