@@ -1,4 +1,4 @@
-import React, { Suspense, useEffect, useRef } from "react";
+import React, { Suspense, useEffect, useRef, Component } from "react";
 import "@/App.css";
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import TopNav from "@/components/Sidebar";
@@ -80,6 +80,43 @@ import useHeartbeat from "@/lib/useHeartbeat";
 import { useAuth } from "@/lib/auth";
 import { api } from "@/lib/api";
 import { canAccessPage } from "@/lib/permissions";
+
+// ── Error boundary — catches uncaught React render errors and shows a friendly
+// recovery card instead of a blank white screen or a Vite crash overlay.
+class ErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+  componentDidCatch(error, info) {
+    console.error("App ErrorBoundary caught:", error, info);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen grid place-items-center bg-background text-foreground">
+          <div className="max-w-md w-full mx-4 rounded-xl border border-border bg-card p-8 text-center shadow-md">
+            <div className="text-4xl mb-4">⚠️</div>
+            <h1 className="text-xl font-semibold mb-2">Something went wrong</h1>
+            <p className="text-muted-foreground mb-6 text-sm">
+              An unexpected error occurred. Refreshing the page usually fixes it.
+            </p>
+            <button
+              onClick={() => window.location.reload()}
+              className="px-5 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 transition-opacity"
+            >
+              Refresh page
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 // Landing for "/". Renders the Overview cockpit for users who can access it
 // (exec / analyst / viewer), and falls back to the Home tile launcher for
@@ -182,6 +219,7 @@ function App() {
           <AuthProvider>
             <PageVisitTracker />
             <FiltersProvider>
+              <ErrorBoundary>
               <Routes>
                 {/* Public auth routes — rendered without the app Shell. */}
                 <Route path="/login" element={<Suspense fallback={<div className="min-h-screen grid place-items-center"><Loading label="Loading…" /></div>}><Login /></Suspense>} />
@@ -270,6 +308,7 @@ function App() {
                 <Route path="/admin/store-profiles" element={<ProtectedShell adminOnly pageId="admin-store-profiles"><AdminStoreProfiles /></ProtectedShell>} />
                 <Route path="*" element={<Navigate to="/" replace />} />
               </Routes>
+              </ErrorBoundary>
             </FiltersProvider>
           </AuthProvider>
       </BrowserRouter>

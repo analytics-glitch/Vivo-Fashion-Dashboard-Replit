@@ -1438,8 +1438,25 @@ def _verify_backup_code(code, stored_hash):
     return bool(len(canonical) >= 8 and _verify_password(canonical, stored_hash))
 
 
-def _two_factor_cookie_kwargs():
-    return dict(httponly=True, samesite="lax", secure=True, path="/",
+def _proxy_https(request) -> bool:
+    """True when the request arrived through the Replit HTTPS preview proxy.
+
+    Conditions (all must hold):
+    - NOT a production deployment (published Replit app uses same-origin, Lax is fine)
+    - x-forwarded-proto is "https" (the Replit proxy always sets this header)
+
+    Keeping the production guard means that even if a production reverse proxy
+    sets x-forwarded-proto, we never emit SameSite=None there — the published
+    app is already same-origin so Lax is both correct and safe.
+    """
+    if _IS_PRODUCTION:
+        return False
+    return (request.headers.get("x-forwarded-proto") or "http").lower() == "https"
+
+
+def _two_factor_cookie_kwargs(request=None):
+    samesite = "none" if (request is not None and _proxy_https(request)) else "lax"
+    return dict(httponly=True, samesite=samesite, secure=True, path="/",
                 max_age=_TWO_FACTOR_CHALLENGE_TTL)
 
 
@@ -8983,10 +9000,14 @@ def get_customer_type_spend(
 # Login verifies a PBKDF2 password hash and issues an opaque session (returned as
 # a bearer token AND set as an httpOnly cookie). The gate resolves that session
 # back to `request.state.user` on every subsequent request.
-def _login_cookie_kwargs():
-    # httpOnly so JS can't read it; SameSite=Lax so the Google redirect carries
-    # it; Secure because the Replit proxy always serves the app over HTTPS.
-    return dict(httponly=True, samesite="lax", secure=True, path="/",
+def _login_cookie_kwargs(request=None):
+    # httpOnly so JS can't read it; SameSite=None when served through the
+    # Replit HTTPS preview proxy (detected via x-forwarded-proto: https) so
+    # the cookie survives cross-site sub-requests from the proxied iframe.
+    # SameSite=Lax for direct local HTTP traffic. Secure is always set because
+    # the Replit proxy always serves HTTPS and local dev with Lax is fine without it.
+    samesite = "none" if (request is not None and _proxy_https(request)) else "lax"
+    return dict(httponly=True, samesite=samesite, secure=True, path="/",
                 max_age=_SESSION_TTL)
 
 
@@ -9290,7 +9311,7 @@ async def auth_login(request: Request):
         except Exception:
             pass
         resp = JSONResponse({"token": session, "user": user})
-        resp.set_cookie("session_token", session, **_login_cookie_kwargs())
+        resp.set_cookie("session_token", session, **_login_cookie_kwargs(request))
         return resp
     mode = "verify" if rec.get("totp_enabled") else "enroll"
     challenge = _create_2fa_challenge(rec["user_id"], mode)
@@ -9303,7 +9324,7 @@ async def auth_login(request: Request):
         payload["challenge_token"] = challenge
     resp = JSONResponse(payload)
     resp.set_cookie("staff_2fa_challenge", challenge,
-                    **_two_factor_cookie_kwargs())
+                    **_two_factor_cookie_kwargs(request))
     return resp
 
 
@@ -9495,7 +9516,7 @@ async def auth_2fa_verify(request: Request):
         "user": user,
         "two_factor_enrolled": completed_enrollment,
     })
-    resp.set_cookie("session_token", session, **_login_cookie_kwargs())
+    resp.set_cookie("session_token", session, **_login_cookie_kwargs(request))
     resp.delete_cookie("staff_2fa_challenge", path="/")
     return resp
 
@@ -9572,12 +9593,13 @@ def auth_google_login(request: Request):
     resp = RedirectResponse(
         f"https://accounts.google.com/o/oauth2/v2/auth?{params}")
     # Short-lived state cookie for CSRF protection on the callback.
-    resp.set_cookie("g_oauth_state", state, httponly=True, samesite="lax",
+    _oa_ss = "none" if _proxy_https(request) else "lax"
+    resp.set_cookie("g_oauth_state", state, httponly=True, samesite=_oa_ss,
                     secure=True, max_age=600, path="/")
     # Remember where to hand the session back (mobile deep link). Absent for web.
     if return_to:
         resp.set_cookie("g_oauth_return", return_to, httponly=True,
-                        samesite="lax", secure=True, max_age=600, path="/")
+                        samesite=_oa_ss, secure=True, max_age=600, path="/")
     return resp
 
 
@@ -9674,7 +9696,7 @@ def auth_google_callback(request: Request):
             resp = RedirectResponse(_oauth_success_redirect(base, is_native, session))
             resp.delete_cookie("g_oauth_return", path="/")
             resp.delete_cookie("g_oauth_state", path="/")
-            resp.set_cookie("session_token", session, **_login_cookie_kwargs())
+            resp.set_cookie("session_token", session, **_login_cookie_kwargs(request))
             return resp
         mode = _two_factor_user_mode(rec["user_id"])
         challenge = _create_2fa_challenge(rec["user_id"], mode)
@@ -9693,7 +9715,7 @@ def auth_google_callback(request: Request):
     resp = RedirectResponse(f"{base}{sep}{suffix}")
     resp.delete_cookie("g_oauth_return", path="/")
     resp.set_cookie("staff_2fa_challenge", challenge,
-                    **_two_factor_cookie_kwargs())
+                    **_two_factor_cookie_kwargs(request))
     resp.delete_cookie("g_oauth_state", path="/")
     return resp
 
