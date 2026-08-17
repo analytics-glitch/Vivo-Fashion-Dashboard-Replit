@@ -4,8 +4,8 @@ import { ImagePlaceholder, MerchBadge, kes, brandAsset, SectionHeader } from "./
 import { useWishlist } from "@/context/WishlistContext";
 
 /* Shared image-led shop sections — the product rail and the "Shop by
-   Category" editorial grid. Used by the Shop tab (their home) and by the
-   homepage's "New This Week" rail. */
+   Category" editorial grid. All live on the Shop tab now, including the
+   "New This Week" rail (moved off the homepage per Sharon). */
 
 const SWATCH_HEX = {
   black: "#1f1f1f", white: "#f5f5f2", cream: "#efe7d8", beige: "#d9c7ab", brown: "#7a5236",

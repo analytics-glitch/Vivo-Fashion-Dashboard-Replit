@@ -187,12 +187,12 @@ export default function AuthFlow() {
           paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 2rem)",
         }}
       >
-        <div className="flex justify-center animate-in fade-in duration-700">
+        <div className="flex flex-col items-center gap-2.5 animate-in fade-in duration-700">
           <VivoLogo size="md" className="shadow-lg" />
+          <JohariWordmark className="text-[12px] text-white/85" />
         </div>
 
         <div className="w-full max-w-[420px] mx-auto animate-in fade-in slide-in-from-bottom-4 duration-700 ease-out">
-          <p className="text-[12px] font-semibold uppercase tracking-[0.3em] text-white/75 mb-3"><JohariWordmark /></p>
           <h1 className="font-serif text-4xl sm:text-5xl leading-[1.05] text-white mb-3">Welcome to Vivo</h1>
           <p data-testid="welcome-tagline" className="text-white/85 text-[15px] leading-relaxed mb-8">
             Style, community and rewards—all in one place.

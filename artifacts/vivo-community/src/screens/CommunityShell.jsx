@@ -335,9 +335,11 @@ function ShellInner() {
       {/* Desktop Header + Tab Bar */}
       <header className="sticky top-0 z-40 bg-background/95 backdrop-blur-md border-b border-border hidden sm:block">
         <div className="mx-auto max-w-6xl px-6 h-16 flex items-center justify-between">
-          <button onClick={() => goTab("home")} className="flex items-center gap-2.5 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2">
-            <VivoLogo size="sm" />
-            <JohariWordmark className="text-[13px] text-foreground/85 pt-0.5" />
+          <button onClick={() => goTab("home")} className="flex shrink-0 items-center gap-2.5 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2">
+            <VivoLogo size="sm" className="shrink-0" />
+            {/* JOHARI joins the lockup only when the header has room —
+                squeezed widths were painting it over the HOME tab. */}
+            <JohariWordmark className="hidden lg:inline text-[13px] text-foreground/85 pt-0.5" />
           </button>
 
           <div className="flex items-center gap-8 h-full">

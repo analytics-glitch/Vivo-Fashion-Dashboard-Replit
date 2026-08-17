@@ -448,6 +448,23 @@ export default function TabShop({ onOpenProduct, onOpenTryOn }) {
         </div>
       )}
 
+      {/* Fresh off the floor — New This Week rail (moved from the homepage,
+          per Sharon). Shows on the pristine catalogue only, so filtered
+          views stay focused on the filter results. */}
+      {!loading && nActive === 0 && sort === "new" && items.length > 0 && (
+        <div className="mb-16">
+          <ProductRail
+            kicker="New This Week"
+            title="Fresh off the floor"
+            sub="The newest pieces in the live collection."
+            products={items.slice(0, 8)}
+            onOpenProduct={onOpenProduct}
+            testId="shop-new-this-week"
+            idPrefix="ntw"
+          />
+        </div>
+      )}
+
       {/* Chosen for You — Style-DNA rail (moved from the homepage) */}
       {(() => {
         const chosen = picked.length > 0 ? picked : items.slice(4, 12);

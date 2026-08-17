@@ -4,7 +4,6 @@ import { styleBoards, fitFor } from "./mockData";
 import PostDetailModal from "./PostDetailModal";
 import { PostVisual, timeAgo } from "./PostBits";
 import { TierBadge, Avatar, cardCls, brandAsset, SectionHeader } from "./ui";
-import { ProductRail } from "./ShopSections";
 import { api } from "@/lib/api";
 import { NEWS, newsPageId } from "./newsData";
 import ReelsRow from "./ReelsRow";
@@ -607,8 +606,8 @@ function HeroCampaign({ onNavigate }) {
 }
 
 /* RailCard/ProductRail and the Shop by Category grid moved to
-   ShopSections.jsx — the grid and the personalised rail now live on the
-   Shop tab; Home keeps only the New This Week rail. */
+   ShopSections.jsx — the grid, the personalised rail and the New This Week
+   rail all live on the Shop tab now (per Sharon). */
 
 /* Promotional banner — editable in one place: change HOME_PROMO to swap in
    delivery offers, sales, new collections or store openings. */
@@ -812,7 +811,7 @@ export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage,
   const P = feed;
 
   /* Editorial homepage order: category strip → hero campaign → personal
-     moments → New This Week → promo banner → Community → Member Rewards →
+     moments → promo banner → Community → Member Rewards →
      Stories. Shop by Category and the Chosen-for-You rail live on the
      Shop tab now (per Sharon). */
   return (
@@ -831,17 +830,6 @@ export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage,
           <SurveyPromoCard onOpenPage={onOpenPage} />
         </div>
       )}
-
-      <ProductRail
-        kicker="New This Week"
-        title="Fresh off the floor"
-        sub="The newest pieces in the live collection."
-        products={products}
-        onOpenProduct={onOpenProduct}
-        onSeeAll={shopTap}
-        testId="home-new-this-week"
-        idPrefix="ntw"
-      />
 
       {member && <TryOnPromoCard onOpenPage={onOpenPage} />}
 
