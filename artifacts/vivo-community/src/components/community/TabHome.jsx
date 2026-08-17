@@ -543,32 +543,6 @@ function SurveyPromoCard({ onOpenPage }) {
 
 /* ---------- Editorial homepage sections (image-led redesign) ---------- */
 
-/* Category strip — horizontal pills with a fine brand-colour underline on
-   the active one. Tapping any category leads into the Shop tab. */
-const HOME_CATEGORIES = ["New In", "Workwear", "Dresses", "Tops", "Bottoms", "Denim", "Active", "Sale"];
-function CategoryStrip({ onNavigate }) {
-  const [active, setActive] = useState("New In");
-  return (
-    <nav aria-label="Shop categories" className="-mx-4 px-4 sm:mx-0 sm:px-0 overflow-x-auto hide-scrollbar">
-      <div className="flex gap-6 border-b border-border min-w-max">
-        {HOME_CATEGORIES.map((c) => (
-          <button
-            key={c}
-            data-testid={`home-cat-${c.toLowerCase().replace(/\s+/g, "-")}`}
-            onClick={() => { setActive(c); onNavigate("shop"); }}
-            className={`relative pb-3 pt-1 text-[13px] whitespace-nowrap transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary rounded-sm ${
-              active === c ? "text-foreground font-semibold" : "text-muted-foreground hover:text-foreground font-medium"
-            }`}
-          >
-            {c}
-            {active === c && <span className="absolute bottom-0 left-0 w-full h-[2px] bg-primary" aria-hidden="true" />}
-          </button>
-        ))}
-      </div>
-    </nav>
-  );
-}
-
 /* Hero campaign — one strong vertical campaign photo, overlay only where the
    copy sits so faces and the garment stay untouched. */
 function HeroCampaign({ onNavigate }) {
@@ -811,14 +785,13 @@ export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage,
   };
   const P = feed;
 
-  /* Editorial homepage order: category strip → hero campaign → personal
+  /* Editorial homepage order: hero campaign → personal
      moments → promo banner → Community → Member Rewards →
      Stories. Shop by Category and the Chosen-for-You rail live on the
      Shop tab now (per Sharon). */
   return (
     <div className="max-w-3xl mx-auto space-y-10 sm:space-y-14">
-      <div className="space-y-6 -mt-2">
-        <CategoryStrip onNavigate={onNavigate} />
+      <div className="-mt-2">
         <HeroCampaign onNavigate={onNavigate} />
       </div>
 
