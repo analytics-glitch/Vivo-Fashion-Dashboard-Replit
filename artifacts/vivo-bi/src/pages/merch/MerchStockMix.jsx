@@ -5,14 +5,14 @@
  * Category → Sub Category → Style → Colour, showing how stock is distributed
  * vs how sales are distributed, so colour-level replenish/retire calls can be
  * made in one place:
- *   • Category / Sub Category rows (and the pinned Total row) keep
- *     share-of-total semantics: % of SOH and % of Units Sold are this row's
- *     share of the GRAND total, and Gap (pp) = % of SOH − % of Units Sold —
- *     positive = overstocked (house convention shared with the fabric page).
- *   • Style / Colour rows instead show the period sell-through (SOR) in the
- *     "% of Units Sold" column: units sold ÷ (units sold + current SOH) —
- *     the SOR report's formula — so colourways compare directly. Gap (pp)
- *     stays share-of-total based at EVERY level.
+ *   • Every hierarchy level (and the pinned Total row) uses share-of-total
+ *     semantics for % of SOH and % of Units Sold. Gap (pp) = % of SOH −
+ *     % of Units Sold — positive = overstocked (house convention shared with
+ *     the fabric page).
+ *   • Every level also shows a dedicated selected-period SOR column:
+ *     units sold ÷ (units sold + current SOH). Because each node carries
+ *     aggregated units and SOH, this is calculated from summed numerator and
+ *     denominator rather than averaging child percentages.
  *   • Style / Colour rows carry a "Last Ordered" date (most recent
  *     production/buying order); colour rows a lazy product thumbnail.
  *     Right-clicking a colour row — or clicking/tapping its thumbnail —
@@ -25,7 +25,8 @@
  *   { categories: [{ name, stock_units, stock_value, units_period,
  *       revenue_period, woc,
  *       subcategories: [{ ..., styles: [{ ..., style_number, last_order_date,
- *         colours: [{ ..., skus_in_stock, skus_sold, last_order_date,
+ *         status,
+ *         colours: [{ ..., status, skus_in_stock, skus_sold, last_order_date,
  *           rep_sku }] }] }] }],
  *     totals: { stock_units, stock_value, units_period, revenue_period },
  *     period: { from, to } }
@@ -39,10 +40,11 @@
  * agree. The TOTAL row is pinned in the sticky thead so it stays visible
  * while drilling and scrolling.
  */
-import React, { useMemo, useState } from "react";
-import { ChevronRight, Download, Search, X } from "lucide-react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
+import { AlertTriangle, ChevronRight, Download, Info, Search, X } from "lucide-react";
 import { ErrorBox } from "@/components/common";
-import { fmtNum, fmtKESM, fmtSor, sorColor, wocColor } from "./MerchHelpers";
+import { fmtNum, fmtKESM, wocColor } from "./MerchHelpers";
 import ProductImage from "@/components/ProductImage";
 import MerchColourDetail from "./MerchColourDetail";
 
@@ -57,23 +59,53 @@ const FX = {
   sold:     "Units Sold = gross units sold in the selected period (returns not netted).",
   revenue:  "Total Revenue = net sales in the selected period (after discounts & returns, ex-VAT) — same basis as the hub's revenue figures.",
   pctStock: "% of SOH = this row's SOH ÷ TOTAL SOH across all categories. Every level is measured against the grand total.",
-  pctSales: "Category & Sub Category rows: share of total = this row's period units ÷ TOTAL period units. Style & Colour rows: period sell-through (SOR) = units sold ÷ (units sold + current SOH) — the same formula as the SOR report — so colourways compare directly. Gap (pp) always uses share-of-total at every level.",
+  pctSales: "% of Units Sold = this row's period units ÷ TOTAL period units. Every level is measured against the grand total.",
+  sor:      "Sell-through rate for selected period · Units Sold ÷ (Units Sold + Stock on Hand)",
   gap:      "Gap (pp) = % of SOH − % of Units Sold (percentage points), both as shares of the grand total at EVERY level (unchanged by the SOR display on style/colour rows). Positive = overstocked (holds a larger share of stock than of sales); negative = under-stocked vs demand.",
   woc:      "Weeks of Cover = stock ÷ weekly run-rate (trailing 6 months ÷ 26) — independent of the selected period, matching the tab's WOC.",
   lastOrd:  "Last Ordered = date of the most recent production/buying order for this style (style rows) or this exact colourway (colour rows). Dash = no order on record; category rows don't aggregate order dates.",
   skus:     "SKUs (stock / sold) = distinct SKUs (sizes) of this colour with stock on hand / sold in the period.",
 };
 
-// Period sell-through for style/colour rows: units sold in the period ÷
-// (units sold + current SOH) — the SOR report's formula. Null when there is
-// neither demand nor stock; clamped to 0–100 so odd negative-stock rows
-// can't render impossible percentages.
+// Selected-period sell-through at every hierarchy level: units sold in the
+// period ÷ (units sold + current SOH). Null when either input is missing or
+// the denominator is not meaningful; clamped to 0–100 for safe display.
 const sorOf = (node) => {
-  const u = Number(node?.units_period) || 0;
-  const s = Number(node?.stock_units) || 0;
+  if (
+    node?.units_period === null || node?.units_period === undefined ||
+    node?.stock_units === null || node?.stock_units === undefined ||
+    node?.units_period === "" || node?.stock_units === ""
+  ) return null;
+  const u = Number(node.units_period);
+  const s = Number(node.stock_units);
+  if (!Number.isFinite(u) || !Number.isFinite(s)) return null;
   const d = u + s;
   if (d <= 0) return null;
   return Math.max(0, Math.min(100, (u / d) * 100));
+};
+
+const sorTextClass = (sor, node) => {
+  if (sor == null) return "text-slate-300";
+  const soh = Number(node?.stock_units);
+  if (sor === 0 && Number.isFinite(soh) && soh > 0) return "text-rose-600";
+  if (sor >= 80) return "text-emerald-700";
+  if (sor < 50) return "text-amber-700";
+  return "text-slate-700";
+};
+
+const SorCell = ({ node, className = "" }) => {
+  const sor = sorOf(node);
+  return (
+    <td className={`text-right px-2 py-1.5 tabular-nums ${className}`}>
+      {sor == null ? (
+        <span className="text-slate-300">—</span>
+      ) : (
+        <span className={`font-medium ${sorTextClass(sor, node)}`}>
+          {sor.toFixed(1)}%
+        </span>
+      )}
+    </td>
+  );
 };
 
 const fmtDate = (iso) => {
@@ -101,6 +133,36 @@ const GapPill = ({ v }) => {
   );
 };
 
+const lifecycleStatus = (value) => {
+  const normalized = String(value || "Active").trim().toLowerCase();
+  if (normalized === "retired") return "Retired";
+  if (normalized === "archived") return "Archived";
+  return "Active";
+};
+
+const LifecycleBadge = ({ status, inconsistent = false }) => {
+  const label = lifecycleStatus(status);
+  const classes = {
+    Active: "bg-emerald-50 text-emerald-700 ring-emerald-600/15",
+    Retired: "bg-amber-50 text-amber-700 ring-amber-600/20",
+    Archived: "bg-slate-100 text-slate-500 ring-slate-500/20",
+  };
+  const title = inconsistent
+    ? "Style is retired but this colourway shows as active — check Odoo"
+    : `${label} lifecycle status`;
+  return (
+    <span
+      className={`inline-flex h-5 items-center gap-1 rounded-full px-1.5 text-[9px] font-semibold leading-none ring-1 ring-inset ${classes[label]}`}
+      title={title}
+      aria-label={title}
+      data-testid={`lifecycle-badge-${label.toLowerCase()}`}
+    >
+      {label}
+      {inconsistent ? <AlertTriangle className="h-3 w-3 text-amber-600" aria-hidden="true" /> : null}
+    </span>
+  );
+};
+
 const LEVEL_ROW_CLS = [
   "bg-slate-50/80 font-semibold text-slate-800",
   "font-medium text-slate-700",
@@ -115,16 +177,58 @@ const CSV_HEADERS = [
   "SKUs in Stock", "SKUs Sold",
 ];
 
+// Find the exact style-code path in the loaded hierarchy. The returned paths
+// match the keys used by the existing expansion state, so deep links can open
+// every ancestor without changing the tree's identity or ordering.
+const findStyleTarget = (categories, styleNumber) => {
+  if (!styleNumber) return null;
+  let found = null;
+
+  const walk = (nodes, level, parentPath, openPaths) => {
+    for (const node of nodes || []) {
+      const path = parentPath ? `${parentPath}${SEP}${node.name}` : String(node.name || "");
+      const nextOpenPaths = [...openPaths, path];
+      if (
+        level === 2 &&
+        String(node.style_number || "").trim() === String(styleNumber).trim()
+      ) {
+        found = { path, openPaths: nextOpenPaths };
+        return true;
+      }
+      const childKey = CHILD_KEYS[level];
+      if (childKey && walk(node[childKey] || [], level + 1, path, nextOpenPaths)) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  walk(categories, 0, "", []);
+  return found;
+};
+
 export default function MerchStockMix({ data, loading, error }) {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [open, setOpen] = useState({});
   const [query, setQuery] = useState("");
+  const [showRetiredColourways, setShowRetiredColourways] = useState(true);
   const [detail, setDetail] = useState(null);
+  const [highlightedStyle, setHighlightedStyle] = useState("");
+  const rowRefs = useRef(new Map());
+  const requestedStyle = searchParams.get("style") || "";
+  const shouldFocusStyle = Boolean(
+    requestedStyle && searchParams.get("expanded") === "true"
+  );
   const q = query.trim().toLowerCase();
 
   const cats   = data?.categories || [];
   const totals = data?.totals || {};
   const totSu  = Number(totals.stock_units) || 0;
   const totUp  = Number(totals.units_period) || 0;
+  const styleTarget = useMemo(
+    () => findStyleTarget(cats, requestedStyle),
+    [cats, requestedStyle]
+  );
 
   // Flatten the tree into visible rows. In search mode a node is visible when
   // its own name matches, an ancestor matches, or a descendant matches — and
@@ -136,11 +240,20 @@ export default function MerchStockMix({ data, loading, error }) {
     const walk = (node, level, path, ancestorMatch, styleCtx) => {
       const ck = CHILD_KEYS[level];
       const kids = ck ? node[ck] || [] : [];
-      const nextCtx = level === 2 ? { name: node.name, number: node.style_number } : styleCtx;
-      const selfMatch = q !== "" && String(node.name).toLowerCase().includes(q);
+      const visibleKids = level === 2 && !showRetiredColourways
+        ? kids.filter((child) => lifecycleStatus(child.status) === "Active")
+        : kids;
+      const nextCtx = level === 2
+        ? { name: node.name, number: node.style_number, status: lifecycleStatus(node.status) }
+        : styleCtx;
+        const searchable = [
+          node.name,
+          level === 2 ? node.style_number : "",
+        ].filter(Boolean).join(" ");
+        const selfMatch = q !== "" && searchable.toLowerCase().includes(q);
       const childRows = [];
       let descMatch = false;
-      for (const k of kids) {
+      for (const k of visibleKids) {
         const r = walk(k, level + 1, path + SEP + k.name, ancestorMatch || selfMatch, nextCtx);
         if (r.rowList.length) childRows.push(...r.rowList);
         descMatch = descMatch || r.branchMatch;
@@ -151,23 +264,75 @@ export default function MerchStockMix({ data, loading, error }) {
         : !!open[path];
       const rowList = [];
       if (visible) {
-        rowList.push({ node, level, path, expandable: kids.length > 0, expanded, hit: selfMatch, styleCtx: nextCtx });
+        rowList.push({ node, level, path, expandable: visibleKids.length > 0, expanded, hit: selfMatch, styleCtx: nextCtx });
         if (expanded) rowList.push(...childRows);
       }
       return { rowList, branchMatch: selfMatch || descMatch };
     };
     for (const c of cats) out.push(...walk(c, 0, c.name, false, null).rowList);
     return out;
-  }, [cats, q, open]);
+  }, [cats, q, open, showRetiredColourways]);
+
+  // A deep link is also a real table filter: this keeps the selected style
+  // visible even when it would otherwise fall below the 600-row safety cap.
+  // Expansion remains explicit so the URL contract is useful independently of
+  // the search implementation.
+  useEffect(() => {
+    if (!shouldFocusStyle || !styleTarget) return;
+    setQuery((current) => current === requestedStyle ? current : requestedStyle);
+    setOpen((current) => {
+      const next = { ...current };
+      let changed = false;
+      for (const path of styleTarget.openPaths) {
+        if (!next[path]) {
+          next[path] = true;
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+  }, [shouldFocusStyle, requestedStyle, styleTarget]);
 
   const truncated = rows.length > MAX_ROWS;
   const shown = truncated ? rows.slice(0, MAX_ROWS) : rows;
   // Colour-only column stays hidden until colour rows are actually on screen
   // (a style drilled open, or a search surfacing colours) — fabric behaviour.
   const showSkus = shown.some((r) => r.level === 3);
-  const nCols = 10 + (showSkus ? 1 : 0);
+  const nCols = 11 + (showSkus ? 1 : 0);
 
   const toggle = (path) => setOpen((o) => ({ ...o, [path]: !o[path] }));
+
+  // Scroll after the expanded/search-filtered row has actually been rendered.
+  // The short delay lets the browser commit the new table layout first.
+  useEffect(() => {
+    if (!shouldFocusStyle || !styleTarget) return undefined;
+    const timer = window.setTimeout(() => {
+      const row = rowRefs.current.get(String(requestedStyle));
+      if (!row) return;
+      row.scrollIntoView({ behavior: "smooth", block: "center" });
+      setHighlightedStyle(String(requestedStyle));
+    }, 60);
+    const clearHighlight = window.setTimeout(() => {
+      setHighlightedStyle((current) =>
+        current === String(requestedStyle) ? "" : current
+      );
+    }, 2400);
+    return () => {
+      window.clearTimeout(timer);
+      window.clearTimeout(clearHighlight);
+    };
+  }, [shouldFocusStyle, requestedStyle, styleTarget, rows]);
+
+  const viewDeepDive = (styleNumber) => {
+    if (!styleNumber) return;
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.set("tab", "merch-deepdive");
+      next.set("style", String(styleNumber));
+      next.delete("expanded");
+      return next;
+    });
+  };
 
   const pctOf = (v, tot) => (tot > 0 ? (Number(v) / tot) * 100 : 0);
 
@@ -298,6 +463,19 @@ export default function MerchStockMix({ data, loading, error }) {
               </button>
             )}
           </div>
+          <label
+            className="inline-flex items-center gap-1.5 text-[11px] text-slate-500 whitespace-nowrap cursor-pointer select-none"
+            title="Include colourways whose product-master lifecycle status is Retired or Archived."
+          >
+            <input
+              type="checkbox"
+              checked={showRetiredColourways}
+              onChange={(e) => setShowRetiredColourways(e.target.checked)}
+              data-testid="mix-show-retired-colourways"
+              className="h-3.5 w-3.5 rounded border-slate-300 text-[#1a5c38] focus:ring-[#1a5c38]/30"
+            />
+            Show retired colourways
+          </label>
         </div>
       </div>
 
@@ -323,6 +501,16 @@ export default function MerchStockMix({ data, loading, error }) {
                 <th className="text-right font-semibold px-2 py-2" title={FX.revenue}>Total Revenue</th>
                 <th className="text-right font-semibold px-2 py-2" title={FX.pctStock}>% of SOH</th>
                 <th className="text-right font-semibold px-2 py-2" title={FX.pctSales}>% of Units Sold</th>
+                <th className="text-right font-semibold px-2 py-2" title={FX.sor}>
+                  <span className="inline-flex items-center justify-end gap-1">
+                    SOR
+                    <Info
+                      className="h-3 w-3 text-slate-400"
+                      aria-label={FX.sor}
+                      title={FX.sor}
+                    />
+                  </span>
+                </th>
                 <th className="text-right font-semibold px-2 py-2" title={FX.gap}>Gap (pp)</th>
                 <th className="text-right font-semibold px-2 py-2" title={FX.woc}>WOC</th>
                 <th className="text-right font-semibold px-2 py-2" title={FX.lastOrd}>Last Ordered</th>
@@ -344,6 +532,7 @@ export default function MerchStockMix({ data, loading, error }) {
                   <td className="text-right px-2 py-2 tabular-nums">{fmtKESM(totals.revenue_period)}</td>
                   <td className="text-right px-2 py-2 tabular-nums">100.0%</td>
                   <td className="text-right px-2 py-2 tabular-nums">100.0%</td>
+                  <SorCell node={totals} className="py-2" />
                   <td className="text-right px-2 py-2 text-slate-300 font-normal" title="Gap nets to 0 across all categories.">—</td>
                   <td className="text-right px-2 py-2 text-slate-300 font-normal" title="Cover is a ratio — no meaningful grand total.">—</td>
                   <td className="text-right px-2 py-2 text-slate-300 font-normal" title="Order dates don't aggregate.">—</td>
@@ -361,19 +550,29 @@ export default function MerchStockMix({ data, loading, error }) {
               )}
               {shown.map((r) => {
                 const n = r.node;
+                const rowStatus = lifecycleStatus(n.status);
+                const colourInconsistency = r.level === 3
+                  && r.styleCtx?.status === "Retired"
+                  && rowStatus === "Active";
                 const pctS = pctOf(n.stock_units, totSu);
                 const pctU = pctOf(n.units_period, totUp);
                 const gap = pctS - pctU;
-                const sor = r.level >= 2 ? sorOf(n) : null;
                 return (
                   <tr
                     key={r.path}
                     data-testid={`mix-row-l${r.level}`}
+                    data-style-number={r.level === 2 ? n.style_number || undefined : undefined}
+                    ref={(el) => {
+                      if (r.level !== 2 || !n.style_number) return;
+                      const key = String(n.style_number);
+                      if (el) rowRefs.current.set(key, el);
+                      else rowRefs.current.delete(key);
+                    }}
                     onClick={r.expandable ? () => toggle(r.path) : undefined}
                     onContextMenu={r.level === 3 ? (e) => { e.preventDefault(); openDetail(r); } : undefined}
                     className={`border-t border-slate-100 ${LEVEL_ROW_CLS[r.level]} ${
                       r.expandable ? "cursor-pointer hover:bg-slate-50" : ""
-                    }`}
+                     } ${highlightedStyle === String(n.style_number || "") ? "mix-style-highlight" : ""}`}
                   >
                     <td className="px-2 py-1.5">
                       <div
@@ -407,9 +606,31 @@ export default function MerchStockMix({ data, loading, error }) {
                         <span className={`break-words ${r.hit ? "bg-yellow-100 rounded px-0.5" : ""}`}>
                           {n.name}
                         </span>
-                        {r.level === 2 && n.style_number ? (
-                          <span className="text-[9.5px] text-slate-400 shrink-0">{n.style_number}</span>
+                        {r.level === 2 ? (
+                           <>
+                             {n.style_number ? (
+                               <span className="text-[9.5px] text-slate-400 shrink-0">{n.style_number}</span>
+                             ) : null}
+                             <LifecycleBadge status={rowStatus} />
+                             {n.style_number ? (
+                               <button
+                                 type="button"
+                                 onClick={(e) => {
+                                   e.stopPropagation();
+                                   viewDeepDive(n.style_number);
+                                 }}
+                                 className="ml-1.5 shrink-0 text-[9.5px] font-semibold text-[#1a5c38] hover:underline underline-offset-2 focus:outline-none focus:ring-1 focus:ring-[#1a5c38]/30 rounded"
+                                 aria-label={`View ${n.name} in Style Deep Dive`}
+                                 data-testid={`mix-view-deep-dive-${n.style_number}`}
+                               >
+                                 View Style Deep Dive →
+                               </button>
+                             ) : null}
+                           </>
                         ) : null}
+                         {r.level === 3 ? (
+                           <LifecycleBadge status={rowStatus} inconsistent={colourInconsistency} />
+                         ) : null}
                         {r.level === 0 ? (
                           <span className="text-[9.5px] text-slate-400 font-normal shrink-0">
                             · {LEVEL_LABEL[0]}
@@ -423,18 +644,9 @@ export default function MerchStockMix({ data, loading, error }) {
                     <td className="text-right px-2 py-1.5 tabular-nums">{fmtKESM(n.revenue_period)}</td>
                     <td className="text-right px-2 py-1.5 tabular-nums">{pctS.toFixed(1)}%</td>
                     <td className="text-right px-2 py-1.5 tabular-nums">
-                      {r.level >= 2 ? (
-                        sor == null ? (
-                          <span className="text-slate-300">—</span>
-                        ) : (
-                          <span className="font-medium" style={{ color: sorColor(sor) }}>
-                            {fmtSor(sor)}
-                          </span>
-                        )
-                      ) : (
-                        `${pctU.toFixed(1)}%`
-                      )}
+                      {`${pctU.toFixed(1)}%`}
                     </td>
+                    <SorCell node={n} />
                     <td className="text-right px-2 py-1.5"><GapPill v={gap} /></td>
                     <td className="text-right px-2 py-1.5 tabular-nums">
                       {n.woc == null ? (

@@ -120,6 +120,71 @@ export interface WorkspaceTeamMemberInput {
   department?: string;
 }
 
+export interface WorkspaceTeamDirectoryMember {
+  id: number;
+  name: string;
+  roleTitle: string;
+  teamSection: string;
+  description: string;
+  /** @nullable */
+  birthday?: string | null;
+  /** @nullable */
+  photoUrl?: string | null;
+  isLma: boolean;
+  displayOrder: number;
+  /** @nullable */
+  createdAt?: string | null;
+}
+
+export interface WorkspaceTeamDirectoryMemberInput {
+  name?: string;
+  roleTitle: string;
+  teamSection: string;
+  description?: string;
+  /** @nullable */
+  birthday?: string | null;
+  /** @nullable */
+  photoPath?: string | null;
+  isLma?: boolean;
+}
+
+export interface WorkspaceTeamBirthday {
+  name: string;
+  role: string;
+}
+
+export type WorkspaceTeamDirectoryReorderInputItemsItem = {
+  id: number;
+  displayOrder: number;
+};
+
+export interface WorkspaceTeamDirectoryReorderInput {
+  items: WorkspaceTeamDirectoryReorderInputItemsItem[];
+}
+
+export type WorkspacePhotoUploadInputContentType = typeof WorkspacePhotoUploadInputContentType[keyof typeof WorkspacePhotoUploadInputContentType];
+
+
+export const WorkspacePhotoUploadInputContentType = {
+  'image/jpeg': 'image/jpeg',
+  'image/png': 'image/png',
+} as const;
+
+export interface WorkspacePhotoUploadInput {
+  name: string;
+  /**
+     * @minimum 1
+     * @maximum 8388608
+     */
+  size: number;
+  contentType: WorkspacePhotoUploadInputContentType;
+}
+
+export interface WorkspacePhotoUploadResponse {
+  uploadUrl: string;
+  objectPath: string;
+}
+
 export type WorkspaceDashboardKpisItem = { [key: string]: unknown };
 
 export type WorkspaceDashboardActivityItem = { [key: string]: unknown };
@@ -128,12 +193,279 @@ export type WorkspaceDashboardPipelineItem = { [key: string]: unknown };
 
 export type WorkspaceDashboardUpcomingItem = { [key: string]: unknown };
 
+export type WorkspaceDashboardSnapshotStagesItem = {
+  stage: string;
+  count: number;
+};
+
+export interface WorkspaceDashboardSnapshot {
+  asOfDate: string;
+  planningPeriod: string;
+  inDevelopment: number;
+  dueThisWeek: number;
+  atRisk: number;
+  budgetUsedPercent: number | null;
+  budgetUsedKes: number | null;
+  budgetKesMillions: number | null;
+  stages: WorkspaceDashboardSnapshotStagesItem[];
+}
+
 export interface WorkspaceDashboard {
+  snapshot: WorkspaceDashboardSnapshot;
   kpis: WorkspaceDashboardKpisItem[];
   activity: WorkspaceDashboardActivityItem[];
   pipeline: WorkspaceDashboardPipelineItem[];
   upcoming: WorkspaceDashboardUpcomingItem[];
 }
+
+export interface WorkspaceL10Meeting {
+  id: number;
+  weekLabel: string;
+  meetingDate: string;
+  startTime: string;
+  endTime: string;
+  location: string;
+  durationMinutes: number;
+  concluded: boolean;
+  concludedAt?: string | null;
+  isCurrent: boolean;
+  createdAt?: string;
+}
+
+export interface WorkspaceL10AgendaItem {
+  key: string;
+  number: string;
+  label: string;
+  durationMinutes: number;
+}
+
+export interface WorkspaceL10Checkin {
+  id: number;
+  memberName: string;
+  personalGoodNews: string;
+  professionalGoodNews: string;
+}
+
+export interface WorkspaceL10ScorecardHistory {
+  weekLabel: string;
+  meetingDate: string;
+  value?: number | null;
+  onTrack?: boolean | null;
+}
+
+export interface WorkspaceL10ScorecardMetric {
+  id: number;
+  owner: string;
+  measurable: string;
+  goal: string;
+  uom: string;
+  thisWeek?: number | null;
+  onTrack?: boolean | null;
+  history: WorkspaceL10ScorecardHistory[];
+}
+
+export type WorkspaceL10RockStatus = typeof WorkspaceL10RockStatus[keyof typeof WorkspaceL10RockStatus];
+
+
+export const WorkspaceL10RockStatus = {
+  On_Track: 'On Track',
+  Off_Track: 'Off Track',
+  Done: 'Done',
+} as const;
+
+export interface WorkspaceL10Rock {
+  id: number;
+  description: string;
+  owner: string;
+  status: WorkspaceL10RockStatus;
+  sortOrder: number;
+}
+
+export interface WorkspaceL10AgendaNotes {
+  headlines: string;
+  todos: string;
+  ids: string;
+  conclude: string;
+}
+
+export interface WorkspaceL10Headline {
+  id: number;
+  headline: string;
+  headlineDate?: string | null;
+  addedBy: string;
+  needsDiscussion: boolean;
+  sortOrder: number;
+}
+
+export type WorkspaceL10TodoStatus = typeof WorkspaceL10TodoStatus[keyof typeof WorkspaceL10TodoStatus];
+
+
+export const WorkspaceL10TodoStatus = {
+  Done: 'Done',
+  Not_Done: 'Not Done',
+} as const;
+
+export interface WorkspaceL10Todo {
+  id: number;
+  description: string;
+  openDate?: string | null;
+  owner: string;
+  status: WorkspaceL10TodoStatus;
+  linkedIssueId?: number | null;
+}
+
+export type WorkspaceL10IssueIssueType = typeof WorkspaceL10IssueIssueType[keyof typeof WorkspaceL10IssueIssueType];
+
+
+export const WorkspaceL10IssueIssueType = {
+  active: 'active',
+  parking: 'parking',
+  resolved: 'resolved',
+} as const;
+
+export interface WorkspaceL10Issue {
+  id: number;
+  issue: string;
+  raisedBy: string;
+  priority: number;
+  issueType: WorkspaceL10IssueIssueType;
+  resolutionNotes: string;
+  sortOrder: number;
+  resolvedAt?: string | null;
+  linkedTodoId?: number | null;
+}
+
+export interface WorkspaceL10Rating {
+  id: number;
+  teamMemberName: string;
+  /**
+     * @minimum 1
+     * @maximum 10
+     */
+  rating?: number | null;
+}
+
+export interface WorkspaceL10RatingHistory {
+  weekLabel: string;
+  average: number | null;
+  ratings: WorkspaceL10Rating[];
+}
+
+export interface WorkspaceL10CascadingMessage {
+  message: string;
+}
+
+export interface WorkspaceL10TodoStat {
+  total: number;
+  completedOnTime: number;
+}
+
+export interface WorkspaceL10MeetingDetail {
+  meeting: WorkspaceL10Meeting;
+  agenda: WorkspaceL10AgendaItem[];
+  historyMeetings: WorkspaceL10Meeting[];
+  checkins: WorkspaceL10Checkin[];
+  metrics: WorkspaceL10ScorecardMetric[];
+  rocks: WorkspaceL10Rock[];
+  notes: WorkspaceL10AgendaNotes;
+  headlines: WorkspaceL10Headline[];
+  todos: WorkspaceL10Todo[];
+  todosStat: WorkspaceL10TodoStat;
+  issues: WorkspaceL10Issue[];
+  ratings: WorkspaceL10Rating[];
+  ratingHistory: WorkspaceL10RatingHistory[];
+  cascadingMessage: string;
+  teamMembers: string[];
+}
+
+export interface WorkspaceL10CheckinsInput {
+  rows: WorkspaceL10Checkin[];
+}
+
+export interface WorkspaceL10ScorecardEntryInput {
+  value?: number | null;
+  onTrack?: boolean | null;
+}
+
+export interface WorkspaceL10ScorecardEntry {
+  id: number;
+  value: number | null;
+  onTrack: boolean | null;
+}
+
+export type WorkspaceL10RockStatusInputStatus = typeof WorkspaceL10RockStatusInputStatus[keyof typeof WorkspaceL10RockStatusInputStatus];
+
+
+export const WorkspaceL10RockStatusInputStatus = {
+  On_Track: 'On Track',
+  Off_Track: 'Off Track',
+  Done: 'Done',
+} as const;
+
+export interface WorkspaceL10RockStatusInput {
+  status: WorkspaceL10RockStatusInputStatus;
+}
+
+export interface WorkspaceL10HeadlinesInput {
+  rows: WorkspaceL10Headline[];
+}
+
+export interface WorkspaceL10TodosInput {
+  rows: WorkspaceL10Todo[];
+}
+
+export interface WorkspaceL10IssuesInput {
+  rows: WorkspaceL10Issue[];
+}
+
+export interface WorkspaceL10IssueInput {
+  issue: string;
+  raisedBy?: string;
+  priority?: number;
+}
+
+export type WorkspaceL10IssueActionInputAction = typeof WorkspaceL10IssueActionInputAction[keyof typeof WorkspaceL10IssueActionInputAction];
+
+
+export const WorkspaceL10IssueActionInputAction = {
+  resolve: 'resolve',
+  parking: 'parking',
+} as const;
+
+export interface WorkspaceL10IssueActionInput {
+  action: WorkspaceL10IssueActionInputAction;
+  resolutionNotes?: string;
+}
+
+export interface WorkspaceL10RatingsInput {
+  rows: WorkspaceL10Rating[];
+}
+
+export interface WorkspaceL10CascadingMessageInput {
+  message: string;
+}
+
+export interface WorkspaceMutationResult {
+  ok: boolean;
+}
+
+export interface StyleTeamMember {
+  id: number;
+  name: string;
+  role: string;
+  department?: string;
+}
+
+export type WorkspaceStyleStyleTeam = {
+  /** @nullable */
+  designer?: StyleTeamMember | null;
+  /** @nullable */
+  patternMaker?: StyleTeamMember | null;
+  /** @nullable */
+  sampleMaker?: StyleTeamMember | null;
+  /** @nullable */
+  buyer?: StyleTeamMember | null;
+};
 
 export interface WorkspaceStyle {
   id: number;
@@ -151,7 +483,10 @@ export interface WorkspaceStyle {
   owner: string;
   designer?: string;
   patternMaker?: string;
+  fabricType?: string;
   targetDate: string;
+  targetOrderWeek?: string | null;
+  plannedLaunchWeek?: string | null;
   stageEnteredAt?: string;
   daysInStage?: number;
   /** @nullable */
@@ -159,6 +494,44 @@ export interface WorkspaceStyle {
   progress?: number;
   price?: number;
   market?: string;
+  creativeDescription?: string;
+  sizeRange?: string;
+  trimsSpecialFeatures?: string[];
+  /** @nullable */
+  predictedCost?: number | null;
+  /** @nullable */
+  confirmedCost?: number | null;
+  /** @nullable */
+  designerUserId?: number | null;
+  /** @nullable */
+  patternMakerUserId?: number | null;
+  /** @nullable */
+  sampleMakerUserId?: number | null;
+  /** @nullable */
+  buyerUserId?: number | null;
+  styleTeam?: WorkspaceStyleStyleTeam;
+}
+
+export interface WorkspaceColorway {
+  id: number;
+  name: string;
+  hex: string;
+  code: string;
+  status: string;
+}
+
+export interface ColorwayInput {
+  name: string;
+  hex: string;
+  code?: string;
+  status?: string;
+}
+
+export interface ColorwayUpdate {
+  name?: string;
+  hex?: string;
+  code?: string;
+  status?: string;
 }
 
 export type StyleCreateBrand = typeof StyleCreateBrand[keyof typeof StyleCreateBrand];
@@ -216,6 +589,23 @@ export interface StyleUpdate {
   progress?: number;
   price?: number;
   tier?: string;
+  name?: string;
+  market?: string;
+  creativeDescription?: string;
+  sizeRange?: string;
+  trimsSpecialFeatures?: string[];
+  /** @nullable */
+  predictedCost?: number | null;
+  /** @nullable */
+  confirmedCost?: number | null;
+  /** @nullable */
+  designerUserId?: number | null;
+  /** @nullable */
+  patternMakerUserId?: number | null;
+  /** @nullable */
+  sampleMakerUserId?: number | null;
+  /** @nullable */
+  buyerUserId?: number | null;
 }
 
 export interface StyleTransition {
@@ -333,8 +723,6 @@ export interface WorkspacePlmMeta {
   categories: string[];
 }
 
-export type WorkspaceStyleDetailColorwaysItem = { [key: string]: unknown };
-
 export type WorkspaceStyleDetailFabricsItem = { [key: string]: unknown };
 
 export type WorkspaceStyleDetailTechPack = { [key: string]: unknown };
@@ -354,7 +742,7 @@ export type WorkspaceStyleDetailCostEstimate = { [key: string]: unknown };
 export type WorkspaceStyleDetailProductionOrder = { [key: string]: unknown };
 
 export type WorkspaceStyleDetail = WorkspaceStyle & {
-  colorways: WorkspaceStyleDetailColorwaysItem[];
+  colorways: WorkspaceColorway[];
   fabrics: WorkspaceStyleDetailFabricsItem[];
   techPack: WorkspaceStyleDetailTechPack;
   fitSessions: WorkspaceStyleDetailFitSessionsItem[];

@@ -13,7 +13,10 @@ ALTER TABLE production_orders
     ADD COLUMN IF NOT EXISTS production_type        TEXT,
     ADD COLUMN IF NOT EXISTS lifecycle_type         TEXT,
     ADD COLUMN IF NOT EXISTS bo_state               TEXT,
-    ADD COLUMN IF NOT EXISTS notes_html             TEXT;
+    ADD COLUMN IF NOT EXISTS notes_html             TEXT,
+    ADD COLUMN IF NOT EXISTS cost_price_kes         NUMERIC,
+    ADD COLUMN IF NOT EXISTS cost_date              DATE,
+    ADD COLUMN IF NOT EXISTS cost_source            TEXT;
 
 -- Per-colour breakdown of each buying order (the BO lines).
 CREATE TABLE IF NOT EXISTS production_order_lines (

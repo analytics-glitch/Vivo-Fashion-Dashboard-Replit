@@ -46,6 +46,9 @@ CREATE TABLE IF NOT EXISTS production_orders (
     order_qty     NUMERIC,
     fabric        TEXT,
     date_ordered  DATE,
+    cost_price_kes NUMERIC,
+    cost_date     DATE,
+    cost_source   TEXT,
     source        TEXT DEFAULT 'odoo',
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()

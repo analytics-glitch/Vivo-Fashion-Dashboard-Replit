@@ -5,6 +5,7 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { WorkspaceStyleStyleTeam } from './workspaceStyleStyleTeam';
 
 export interface WorkspaceStyle {
   id: number;
@@ -22,7 +23,10 @@ export interface WorkspaceStyle {
   owner: string;
   designer?: string;
   patternMaker?: string;
+  fabricType?: string;
   targetDate: string;
+  targetOrderWeek?: string | null;
+  plannedLaunchWeek?: string | null;
   stageEnteredAt?: string;
   daysInStage?: number;
   /** @nullable */
@@ -30,4 +34,20 @@ export interface WorkspaceStyle {
   progress?: number;
   price?: number;
   market?: string;
+  creativeDescription?: string;
+  sizeRange?: string;
+  trimsSpecialFeatures?: string[];
+  /** @nullable */
+  predictedCost?: number | null;
+  /** @nullable */
+  confirmedCost?: number | null;
+  /** @nullable */
+  designerUserId?: number | null;
+  /** @nullable */
+  patternMakerUserId?: number | null;
+  /** @nullable */
+  sampleMakerUserId?: number | null;
+  /** @nullable */
+  buyerUserId?: number | null;
+  styleTeam?: WorkspaceStyleStyleTeam;
 }

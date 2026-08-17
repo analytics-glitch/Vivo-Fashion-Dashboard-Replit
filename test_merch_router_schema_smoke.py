@@ -37,7 +37,9 @@ _FAKE_STYLE_ROW = {
     "category":          "Dresses",
     "status":            "Active",
     "launch_date":       "2024-01-15",
-    "standard_cost_kes": 1200.0,   # aliased from MAX(p.cost) in the prod CTE
+    "standard_cost_kes": 1200.0,   # selected cost after source-priority resolution
+    "cost_source":       "last reorder",
+    "cost_date":         "2024-07-01",
     "last_order_date":   None,     # NULL::date placeholder in the prod CTE
     "full_price":        3500.0,
     "is_noos":           False,
@@ -87,8 +89,10 @@ class TestMerchRouterSchemaSmoke(unittest.TestCase):
         """Every output row must carry the keys the /api/merch/styles client reads."""
         required = {
             "style_name", "style_number", "brand", "subcategory", "category",
+            "fabric_category", "fabric_subcategory", "colour", "silhouette",
             "tier",
             "odoo_status", "launch_date", "last_order_date", "standard_cost_kes",
+            "cost_source", "cost_date",
             "full_price", "is_noos", "reorder_count",
             "soh_stores", "soh_online", "soh_warehouse", "current_stock",
             "units_6m", "revenue_6m", "orders_6m",

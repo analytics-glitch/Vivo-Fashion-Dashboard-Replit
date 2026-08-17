@@ -237,13 +237,551 @@ export const DeleteWorkspaceTeamMemberParams = zod.object({
 
 
 /**
+ * @summary List Product Department team directory members
+ */
+export const ListWorkspaceTeamDirectoryResponseItem = zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "roleTitle": zod.string(),
+  "teamSection": zod.string(),
+  "description": zod.string(),
+  "birthday": zod.coerce.date().nullish(),
+  "photoUrl": zod.string().nullish(),
+  "isLma": zod.boolean(),
+  "displayOrder": zod.number(),
+  "createdAt": zod.string().nullish()
+})
+export const ListWorkspaceTeamDirectoryResponse = zod.array(ListWorkspaceTeamDirectoryResponseItem)
+
+
+/**
+ * @summary Add a Product Department directory member
+ */
+export const CreateWorkspaceTeamDirectoryMemberBody = zod.object({
+  "name": zod.string().optional(),
+  "roleTitle": zod.string(),
+  "teamSection": zod.string(),
+  "description": zod.string().optional(),
+  "birthday": zod.coerce.date().nullish(),
+  "photoPath": zod.string().nullish(),
+  "isLma": zod.boolean().optional()
+})
+
+
+/**
+ * @summary List Product Department birthdays for today
+ */
+export const ListTodayTeamBirthdaysResponseItem = zod.object({
+  "name": zod.string(),
+  "role": zod.string()
+})
+export const ListTodayTeamBirthdaysResponse = zod.array(ListTodayTeamBirthdaysResponseItem)
+
+
+/**
+ * @summary Update a Product Department directory member
+ */
+export const UpdateWorkspaceTeamDirectoryMemberParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const UpdateWorkspaceTeamDirectoryMemberBody = zod.object({
+  "name": zod.string().optional(),
+  "roleTitle": zod.string(),
+  "teamSection": zod.string(),
+  "description": zod.string().optional(),
+  "birthday": zod.coerce.date().nullish(),
+  "photoPath": zod.string().nullish(),
+  "isLma": zod.boolean().optional()
+})
+
+export const UpdateWorkspaceTeamDirectoryMemberResponse = zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "roleTitle": zod.string(),
+  "teamSection": zod.string(),
+  "description": zod.string(),
+  "birthday": zod.coerce.date().nullish(),
+  "photoUrl": zod.string().nullish(),
+  "isLma": zod.boolean(),
+  "displayOrder": zod.number(),
+  "createdAt": zod.string().nullish()
+})
+
+
+/**
+ * @summary Reorder directory members within their sections
+ */
+export const ReorderWorkspaceTeamDirectoryBody = zod.object({
+  "items": zod.array(zod.object({
+  "id": zod.number(),
+  "displayOrder": zod.number()
+}))
+})
+
+
+/**
+ * @summary Request a direct upload URL for a directory photo
+ */
+export const requestWorkspaceTeamDirectoryPhotoUploadBodySizeMax = 8388608;
+
+
+
+export const RequestWorkspaceTeamDirectoryPhotoUploadBody = zod.object({
+  "name": zod.string(),
+  "size": zod.number().min(1).max(requestWorkspaceTeamDirectoryPhotoUploadBodySizeMax),
+  "contentType": zod.enum(['image/jpeg', 'image/png'])
+})
+
+export const RequestWorkspaceTeamDirectoryPhotoUploadResponse = zod.object({
+  "uploadUrl": zod.string().url(),
+  "objectPath": zod.string()
+})
+
+
+/**
+ * @summary Serve a directory profile photo
+ */
+export const GetWorkspaceTeamDirectoryPhotoParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+
+/**
  * @summary Product workspace dashboard
  */
 export const GetWorkspaceDashboardResponse = zod.object({
+  "snapshot": zod.object({
+  "asOfDate": zod.coerce.date(),
+  "planningPeriod": zod.string(),
+  "inDevelopment": zod.number(),
+  "dueThisWeek": zod.number(),
+  "atRisk": zod.number(),
+  "budgetUsedPercent": zod.number().nullable(),
+  "budgetUsedKes": zod.number().nullable(),
+  "budgetKesMillions": zod.number().nullable(),
+  "stages": zod.array(zod.object({
+  "stage": zod.string(),
+  "count": zod.number()
+}))
+}),
   "kpis": zod.array(zod.record(zod.string(), zod.unknown())),
   "activity": zod.array(zod.record(zod.string(), zod.unknown())),
   "pipeline": zod.array(zod.record(zod.string(), zod.unknown())),
   "upcoming": zod.array(zod.record(zod.string(), zod.unknown()))
+})
+
+
+/**
+ * @summary List Product Workspace EOS Level 10 meetings
+ */
+export const ListWorkspaceL10MeetingsResponseItem = zod.object({
+  "id": zod.number(),
+  "weekLabel": zod.string(),
+  "meetingDate": zod.coerce.date(),
+  "startTime": zod.string(),
+  "endTime": zod.string(),
+  "location": zod.string(),
+  "durationMinutes": zod.number(),
+  "concluded": zod.boolean(),
+  "concludedAt": zod.string().nullish(),
+  "isCurrent": zod.boolean(),
+  "createdAt": zod.string().optional()
+})
+export const ListWorkspaceL10MeetingsResponse = zod.array(ListWorkspaceL10MeetingsResponseItem)
+
+
+/**
+ * @summary Get a complete L10 meeting
+ */
+export const GetWorkspaceL10MeetingParams = zod.object({
+  "meetingId": zod.coerce.number()
+})
+
+export const getWorkspaceL10MeetingResponseRatingsItemRatingMax = 10;
+
+export const getWorkspaceL10MeetingResponseRatingHistoryItemRatingsItemRatingMax = 10;
+
+
+
+export const GetWorkspaceL10MeetingResponse = zod.object({
+  "meeting": zod.object({
+  "id": zod.number(),
+  "weekLabel": zod.string(),
+  "meetingDate": zod.coerce.date(),
+  "startTime": zod.string(),
+  "endTime": zod.string(),
+  "location": zod.string(),
+  "durationMinutes": zod.number(),
+  "concluded": zod.boolean(),
+  "concludedAt": zod.string().nullish(),
+  "isCurrent": zod.boolean(),
+  "createdAt": zod.string().optional()
+}),
+  "agenda": zod.array(zod.object({
+  "key": zod.string(),
+  "number": zod.string(),
+  "label": zod.string(),
+  "durationMinutes": zod.number()
+})),
+  "historyMeetings": zod.array(zod.object({
+  "id": zod.number(),
+  "weekLabel": zod.string(),
+  "meetingDate": zod.coerce.date(),
+  "startTime": zod.string(),
+  "endTime": zod.string(),
+  "location": zod.string(),
+  "durationMinutes": zod.number(),
+  "concluded": zod.boolean(),
+  "concludedAt": zod.string().nullish(),
+  "isCurrent": zod.boolean(),
+  "createdAt": zod.string().optional()
+})),
+  "checkins": zod.array(zod.object({
+  "id": zod.number(),
+  "memberName": zod.string(),
+  "personalGoodNews": zod.string(),
+  "professionalGoodNews": zod.string()
+})),
+  "metrics": zod.array(zod.object({
+  "id": zod.number(),
+  "owner": zod.string(),
+  "measurable": zod.string(),
+  "goal": zod.string(),
+  "uom": zod.string(),
+  "thisWeek": zod.number().nullish(),
+  "onTrack": zod.boolean().nullish(),
+  "history": zod.array(zod.object({
+  "weekLabel": zod.string(),
+  "meetingDate": zod.coerce.date(),
+  "value": zod.number().nullish(),
+  "onTrack": zod.boolean().nullish()
+}))
+})),
+  "rocks": zod.array(zod.object({
+  "id": zod.number(),
+  "description": zod.string(),
+  "owner": zod.string(),
+  "status": zod.enum(['On Track', 'Off Track', 'Done']),
+  "sortOrder": zod.number()
+})),
+  "notes": zod.object({
+  "headlines": zod.string(),
+  "todos": zod.string(),
+  "ids": zod.string(),
+  "conclude": zod.string()
+}),
+  "headlines": zod.array(zod.object({
+  "id": zod.number(),
+  "headline": zod.string(),
+  "headlineDate": zod.coerce.date().nullish(),
+  "addedBy": zod.string(),
+  "needsDiscussion": zod.boolean(),
+  "sortOrder": zod.number()
+})),
+  "todos": zod.array(zod.object({
+  "id": zod.number(),
+  "description": zod.string(),
+  "openDate": zod.coerce.date().nullish(),
+  "owner": zod.string(),
+  "status": zod.enum(['Done', 'Not Done']),
+  "linkedIssueId": zod.number().nullish()
+})),
+  "todosStat": zod.object({
+  "total": zod.number(),
+  "completedOnTime": zod.number()
+}),
+  "issues": zod.array(zod.object({
+  "id": zod.number(),
+  "issue": zod.string(),
+  "raisedBy": zod.string(),
+  "priority": zod.number(),
+  "issueType": zod.enum(['active', 'parking', 'resolved']),
+  "resolutionNotes": zod.string(),
+  "sortOrder": zod.number(),
+  "resolvedAt": zod.string().nullish(),
+  "linkedTodoId": zod.number().nullish()
+})),
+  "ratings": zod.array(zod.object({
+  "id": zod.number(),
+  "teamMemberName": zod.string(),
+  "rating": zod.number().min(1).max(getWorkspaceL10MeetingResponseRatingsItemRatingMax).nullish()
+})),
+  "ratingHistory": zod.array(zod.object({
+  "weekLabel": zod.string(),
+  "average": zod.number().nullable(),
+  "ratings": zod.array(zod.object({
+  "id": zod.number(),
+  "teamMemberName": zod.string(),
+  "rating": zod.number().min(1).max(getWorkspaceL10MeetingResponseRatingHistoryItemRatingsItemRatingMax).nullish()
+}))
+})),
+  "cascadingMessage": zod.string(),
+  "teamMembers": zod.array(zod.string())
+})
+
+
+/**
+ * @summary Save L10 check-in rows
+ */
+export const UpdateWorkspaceL10CheckinsParams = zod.object({
+  "meetingId": zod.coerce.number()
+})
+
+export const UpdateWorkspaceL10CheckinsBody = zod.object({
+  "rows": zod.array(zod.object({
+  "id": zod.number(),
+  "memberName": zod.string(),
+  "personalGoodNews": zod.string(),
+  "professionalGoodNews": zod.string()
+}))
+})
+
+export const UpdateWorkspaceL10CheckinsResponse = zod.object({
+  "ok": zod.boolean()
+})
+
+
+/**
+ * @summary Save an L10 scorecard value and status
+ */
+export const UpdateWorkspaceL10ScorecardEntryParams = zod.object({
+  "meetingId": zod.coerce.number(),
+  "metricId": zod.coerce.number()
+})
+
+export const UpdateWorkspaceL10ScorecardEntryBody = zod.object({
+  "value": zod.number().nullish(),
+  "onTrack": zod.boolean().nullish()
+})
+
+export const UpdateWorkspaceL10ScorecardEntryResponse = zod.object({
+  "id": zod.number(),
+  "value": zod.number().nullable(),
+  "onTrack": zod.boolean().nullable()
+})
+
+
+/**
+ * @summary Update an L10 rock status
+ */
+export const UpdateWorkspaceL10RockParams = zod.object({
+  "rockId": zod.coerce.number()
+})
+
+export const UpdateWorkspaceL10RockBody = zod.object({
+  "status": zod.enum(['On Track', 'Off Track', 'Done'])
+})
+
+export const UpdateWorkspaceL10RockResponse = zod.object({
+  "id": zod.number(),
+  "description": zod.string(),
+  "owner": zod.string(),
+  "status": zod.enum(['On Track', 'Off Track', 'Done']),
+  "sortOrder": zod.number()
+})
+
+
+/**
+ * @summary Save L10 headlines, to-dos, IDS, and conclusion notes
+ */
+export const UpdateWorkspaceL10AgendaNotesParams = zod.object({
+  "meetingId": zod.coerce.number()
+})
+
+export const UpdateWorkspaceL10AgendaNotesBody = zod.object({
+  "headlines": zod.string(),
+  "todos": zod.string(),
+  "ids": zod.string(),
+  "conclude": zod.string()
+})
+
+export const UpdateWorkspaceL10AgendaNotesResponse = zod.object({
+  "headlines": zod.string(),
+  "todos": zod.string(),
+  "ids": zod.string(),
+  "conclude": zod.string()
+})
+
+
+/**
+ * @summary Save L10 customer and employee headlines
+ */
+export const UpdateWorkspaceL10HeadlinesParams = zod.object({
+  "meetingId": zod.coerce.number()
+})
+
+export const UpdateWorkspaceL10HeadlinesBody = zod.object({
+  "rows": zod.array(zod.object({
+  "id": zod.number(),
+  "headline": zod.string(),
+  "headlineDate": zod.coerce.date().nullish(),
+  "addedBy": zod.string(),
+  "needsDiscussion": zod.boolean(),
+  "sortOrder": zod.number()
+}))
+})
+
+export const UpdateWorkspaceL10HeadlinesResponse = zod.object({
+  "ok": zod.boolean()
+})
+
+
+/**
+ * @summary Save L10 to-dos
+ */
+export const UpdateWorkspaceL10TodosParams = zod.object({
+  "meetingId": zod.coerce.number()
+})
+
+export const UpdateWorkspaceL10TodosBody = zod.object({
+  "rows": zod.array(zod.object({
+  "id": zod.number(),
+  "description": zod.string(),
+  "openDate": zod.coerce.date().nullish(),
+  "owner": zod.string(),
+  "status": zod.enum(['Done', 'Not Done']),
+  "linkedIssueId": zod.number().nullish()
+}))
+})
+
+export const UpdateWorkspaceL10TodosResponse = zod.object({
+  "ok": zod.boolean()
+})
+
+
+/**
+ * @summary Reorder active L10 issues
+ */
+export const ReorderWorkspaceL10IssuesParams = zod.object({
+  "meetingId": zod.coerce.number()
+})
+
+export const ReorderWorkspaceL10IssuesBody = zod.object({
+  "rows": zod.array(zod.object({
+  "id": zod.number(),
+  "issue": zod.string(),
+  "raisedBy": zod.string(),
+  "priority": zod.number(),
+  "issueType": zod.enum(['active', 'parking', 'resolved']),
+  "resolutionNotes": zod.string(),
+  "sortOrder": zod.number(),
+  "resolvedAt": zod.string().nullish(),
+  "linkedTodoId": zod.number().nullish()
+}))
+})
+
+export const ReorderWorkspaceL10IssuesResponse = zod.object({
+  "ok": zod.boolean()
+})
+
+
+/**
+ * @summary Create an L10 issue
+ */
+export const CreateWorkspaceL10IssueParams = zod.object({
+  "meetingId": zod.coerce.number()
+})
+
+export const CreateWorkspaceL10IssueBody = zod.object({
+  "issue": zod.string(),
+  "raisedBy": zod.string().optional(),
+  "priority": zod.number().optional()
+})
+
+
+/**
+ * @summary Move an L10 issue to parking or resolved
+ */
+export const UpdateWorkspaceL10IssueParams = zod.object({
+  "issueId": zod.coerce.number()
+})
+
+export const UpdateWorkspaceL10IssueBody = zod.object({
+  "action": zod.enum(['resolve', 'parking']),
+  "resolutionNotes": zod.string().optional()
+})
+
+export const UpdateWorkspaceL10IssueResponse = zod.object({
+  "id": zod.number(),
+  "issue": zod.string(),
+  "raisedBy": zod.string(),
+  "priority": zod.number(),
+  "issueType": zod.enum(['active', 'parking', 'resolved']),
+  "resolutionNotes": zod.string(),
+  "sortOrder": zod.number(),
+  "resolvedAt": zod.string().nullish(),
+  "linkedTodoId": zod.number().nullish()
+})
+
+
+/**
+ * @summary Create a linked to-do from an L10 issue
+ */
+export const CreateWorkspaceL10TodoFromIssueParams = zod.object({
+  "issueId": zod.coerce.number()
+})
+
+
+/**
+ * @summary Save L10 meeting ratings
+ */
+export const UpdateWorkspaceL10RatingsParams = zod.object({
+  "meetingId": zod.coerce.number()
+})
+
+export const updateWorkspaceL10RatingsBodyRowsItemRatingMax = 10;
+
+
+
+export const UpdateWorkspaceL10RatingsBody = zod.object({
+  "rows": zod.array(zod.object({
+  "id": zod.number(),
+  "teamMemberName": zod.string(),
+  "rating": zod.number().min(1).max(updateWorkspaceL10RatingsBodyRowsItemRatingMax).nullish()
+}))
+})
+
+export const UpdateWorkspaceL10RatingsResponse = zod.object({
+  "ok": zod.boolean()
+})
+
+
+/**
+ * @summary Save the L10 cascading message
+ */
+export const UpdateWorkspaceL10CascadingMessageParams = zod.object({
+  "meetingId": zod.coerce.number()
+})
+
+export const UpdateWorkspaceL10CascadingMessageBody = zod.object({
+  "message": zod.string()
+})
+
+export const UpdateWorkspaceL10CascadingMessageResponse = zod.object({
+  "message": zod.string()
+})
+
+
+/**
+ * @summary Conclude an L10 meeting and make it read-only
+ */
+export const EndWorkspaceL10MeetingParams = zod.object({
+  "meetingId": zod.coerce.number()
+})
+
+export const EndWorkspaceL10MeetingResponse = zod.object({
+  "id": zod.number(),
+  "weekLabel": zod.string(),
+  "meetingDate": zod.coerce.date(),
+  "startTime": zod.string(),
+  "endTime": zod.string(),
+  "location": zod.string(),
+  "durationMinutes": zod.number(),
+  "concluded": zod.boolean(),
+  "concludedAt": zod.string().nullish(),
+  "isCurrent": zod.boolean(),
+  "createdAt": zod.string().optional()
 })
 
 
@@ -272,13 +810,51 @@ export const ListWorkspaceStylesResponseItem = zod.object({
   "owner": zod.string(),
   "designer": zod.string().optional(),
   "patternMaker": zod.string().optional(),
+  "fabricType": zod.string().optional(),
   "targetDate": zod.string(),
+  "targetOrderWeek": zod.string().nullish(),
+  "plannedLaunchWeek": zod.string().nullish(),
   "stageEnteredAt": zod.string().optional(),
   "daysInStage": zod.number().optional(),
   "image": zod.string().nullish(),
   "progress": zod.number().optional(),
   "price": zod.number().optional(),
-  "market": zod.string().optional()
+  "market": zod.string().optional(),
+  "creativeDescription": zod.string().optional(),
+  "sizeRange": zod.string().optional(),
+  "trimsSpecialFeatures": zod.array(zod.string()).optional(),
+  "predictedCost": zod.number().nullish(),
+  "confirmedCost": zod.number().nullish(),
+  "designerUserId": zod.number().nullish(),
+  "patternMakerUserId": zod.number().nullish(),
+  "sampleMakerUserId": zod.number().nullish(),
+  "buyerUserId": zod.number().nullish(),
+  "styleTeam": zod.object({
+  "designer": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "role": zod.string(),
+  "department": zod.string().optional()
+}).nullish(),
+  "patternMaker": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "role": zod.string(),
+  "department": zod.string().optional()
+}).nullish(),
+  "sampleMaker": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "role": zod.string(),
+  "department": zod.string().optional()
+}).nullish(),
+  "buyer": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "role": zod.string(),
+  "department": zod.string().optional()
+}).nullish()
+}).optional()
 })
 export const ListWorkspaceStylesResponse = zod.array(ListWorkspaceStylesResponseItem)
 
@@ -338,15 +914,59 @@ export const GetWorkspaceStyleResponse = zod.object({
   "owner": zod.string(),
   "designer": zod.string().optional(),
   "patternMaker": zod.string().optional(),
+  "fabricType": zod.string().optional(),
   "targetDate": zod.string(),
+  "targetOrderWeek": zod.string().nullish(),
+  "plannedLaunchWeek": zod.string().nullish(),
   "stageEnteredAt": zod.string().optional(),
   "daysInStage": zod.number().optional(),
   "image": zod.string().nullish(),
   "progress": zod.number().optional(),
   "price": zod.number().optional(),
-  "market": zod.string().optional()
+  "market": zod.string().optional(),
+  "creativeDescription": zod.string().optional(),
+  "sizeRange": zod.string().optional(),
+  "trimsSpecialFeatures": zod.array(zod.string()).optional(),
+  "predictedCost": zod.number().nullish(),
+  "confirmedCost": zod.number().nullish(),
+  "designerUserId": zod.number().nullish(),
+  "patternMakerUserId": zod.number().nullish(),
+  "sampleMakerUserId": zod.number().nullish(),
+  "buyerUserId": zod.number().nullish(),
+  "styleTeam": zod.object({
+  "designer": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "role": zod.string(),
+  "department": zod.string().optional()
+}).nullish(),
+  "patternMaker": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "role": zod.string(),
+  "department": zod.string().optional()
+}).nullish(),
+  "sampleMaker": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "role": zod.string(),
+  "department": zod.string().optional()
+}).nullish(),
+  "buyer": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "role": zod.string(),
+  "department": zod.string().optional()
+}).nullish()
+}).optional()
 }).and(zod.object({
-  "colorways": zod.array(zod.record(zod.string(), zod.unknown())),
+  "colorways": zod.array(zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "hex": zod.string(),
+  "code": zod.string(),
+  "status": zod.string()
+})),
   "fabrics": zod.array(zod.record(zod.string(), zod.unknown())),
   "techPack": zod.record(zod.string(), zod.unknown()),
   "fitSessions": zod.array(zod.record(zod.string(), zod.unknown())),
@@ -387,15 +1007,170 @@ export const TransitionWorkspaceStyleResponse = zod.object({
   "owner": zod.string(),
   "designer": zod.string().optional(),
   "patternMaker": zod.string().optional(),
+  "fabricType": zod.string().optional(),
   "targetDate": zod.string(),
+  "targetOrderWeek": zod.string().nullish(),
+  "plannedLaunchWeek": zod.string().nullish(),
   "stageEnteredAt": zod.string().optional(),
   "daysInStage": zod.number().optional(),
   "image": zod.string().nullish(),
   "progress": zod.number().optional(),
   "price": zod.number().optional(),
-  "market": zod.string().optional()
+  "market": zod.string().optional(),
+  "creativeDescription": zod.string().optional(),
+  "sizeRange": zod.string().optional(),
+  "trimsSpecialFeatures": zod.array(zod.string()).optional(),
+  "predictedCost": zod.number().nullish(),
+  "confirmedCost": zod.number().nullish(),
+  "designerUserId": zod.number().nullish(),
+  "patternMakerUserId": zod.number().nullish(),
+  "sampleMakerUserId": zod.number().nullish(),
+  "buyerUserId": zod.number().nullish(),
+  "styleTeam": zod.object({
+  "designer": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "role": zod.string(),
+  "department": zod.string().optional()
+}).nullish(),
+  "patternMaker": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "role": zod.string(),
+  "department": zod.string().optional()
+}).nullish(),
+  "sampleMaker": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "role": zod.string(),
+  "department": zod.string().optional()
+}).nullish(),
+  "buyer": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "role": zod.string(),
+  "department": zod.string().optional()
+}).nullish()
+}).optional()
 }).and(zod.object({
-  "colorways": zod.array(zod.record(zod.string(), zod.unknown())),
+  "colorways": zod.array(zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "hex": zod.string(),
+  "code": zod.string(),
+  "status": zod.string()
+})),
+  "fabrics": zod.array(zod.record(zod.string(), zod.unknown())),
+  "techPack": zod.record(zod.string(), zod.unknown()),
+  "fitSessions": zod.array(zod.record(zod.string(), zod.unknown())),
+  "gradings": zod.array(zod.record(zod.string(), zod.unknown())),
+  "boms": zod.array(zod.record(zod.string(), zod.unknown())),
+  "samples": zod.array(zod.record(zod.string(), zod.unknown())),
+  "pomQc": zod.array(zod.record(zod.string(), zod.unknown())),
+  "costEstimate": zod.record(zod.string(), zod.unknown()),
+  "productionOrder": zod.record(zod.string(), zod.unknown())
+}))
+
+
+/**
+ * @summary Add a colourway to a style
+ */
+export const CreateWorkspaceColorwayParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const CreateWorkspaceColorwayBody = zod.object({
+  "name": zod.string(),
+  "hex": zod.string(),
+  "code": zod.string().optional(),
+  "status": zod.string().optional()
+})
+
+
+/**
+ * @summary Update a style colourway
+ */
+export const UpdateWorkspaceColorwayParams = zod.object({
+  "id": zod.coerce.number(),
+  "colorwayId": zod.coerce.number()
+})
+
+export const UpdateWorkspaceColorwayBody = zod.object({
+  "name": zod.string().optional(),
+  "hex": zod.string().optional(),
+  "code": zod.string().optional(),
+  "status": zod.string().optional()
+})
+
+export const UpdateWorkspaceColorwayResponse = zod.object({
+  "id": zod.number(),
+  "code": zod.string(),
+  "name": zod.string(),
+  "brand": zod.string(),
+  "category": zod.string(),
+  "subCategory": zod.string().optional(),
+  "theme": zod.string().optional(),
+  "orderType": zod.string().optional(),
+  "tier": zod.string().optional(),
+  "status": zod.string(),
+  "stage": zod.string().optional(),
+  "currentStage": zod.string().optional(),
+  "owner": zod.string(),
+  "designer": zod.string().optional(),
+  "patternMaker": zod.string().optional(),
+  "fabricType": zod.string().optional(),
+  "targetDate": zod.string(),
+  "targetOrderWeek": zod.string().nullish(),
+  "plannedLaunchWeek": zod.string().nullish(),
+  "stageEnteredAt": zod.string().optional(),
+  "daysInStage": zod.number().optional(),
+  "image": zod.string().nullish(),
+  "progress": zod.number().optional(),
+  "price": zod.number().optional(),
+  "market": zod.string().optional(),
+  "creativeDescription": zod.string().optional(),
+  "sizeRange": zod.string().optional(),
+  "trimsSpecialFeatures": zod.array(zod.string()).optional(),
+  "predictedCost": zod.number().nullish(),
+  "confirmedCost": zod.number().nullish(),
+  "designerUserId": zod.number().nullish(),
+  "patternMakerUserId": zod.number().nullish(),
+  "sampleMakerUserId": zod.number().nullish(),
+  "buyerUserId": zod.number().nullish(),
+  "styleTeam": zod.object({
+  "designer": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "role": zod.string(),
+  "department": zod.string().optional()
+}).nullish(),
+  "patternMaker": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "role": zod.string(),
+  "department": zod.string().optional()
+}).nullish(),
+  "sampleMaker": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "role": zod.string(),
+  "department": zod.string().optional()
+}).nullish(),
+  "buyer": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "role": zod.string(),
+  "department": zod.string().optional()
+}).nullish()
+}).optional()
+}).and(zod.object({
+  "colorways": zod.array(zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "hex": zod.string(),
+  "code": zod.string(),
+  "status": zod.string()
+})),
   "fabrics": zod.array(zod.record(zod.string(), zod.unknown())),
   "techPack": zod.record(zod.string(), zod.unknown()),
   "fitSessions": zod.array(zod.record(zod.string(), zod.unknown())),
@@ -443,15 +1218,59 @@ export const UpdateWorkspaceStyleTechPackResponse = zod.object({
   "owner": zod.string(),
   "designer": zod.string().optional(),
   "patternMaker": zod.string().optional(),
+  "fabricType": zod.string().optional(),
   "targetDate": zod.string(),
+  "targetOrderWeek": zod.string().nullish(),
+  "plannedLaunchWeek": zod.string().nullish(),
   "stageEnteredAt": zod.string().optional(),
   "daysInStage": zod.number().optional(),
   "image": zod.string().nullish(),
   "progress": zod.number().optional(),
   "price": zod.number().optional(),
-  "market": zod.string().optional()
+  "market": zod.string().optional(),
+  "creativeDescription": zod.string().optional(),
+  "sizeRange": zod.string().optional(),
+  "trimsSpecialFeatures": zod.array(zod.string()).optional(),
+  "predictedCost": zod.number().nullish(),
+  "confirmedCost": zod.number().nullish(),
+  "designerUserId": zod.number().nullish(),
+  "patternMakerUserId": zod.number().nullish(),
+  "sampleMakerUserId": zod.number().nullish(),
+  "buyerUserId": zod.number().nullish(),
+  "styleTeam": zod.object({
+  "designer": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "role": zod.string(),
+  "department": zod.string().optional()
+}).nullish(),
+  "patternMaker": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "role": zod.string(),
+  "department": zod.string().optional()
+}).nullish(),
+  "sampleMaker": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "role": zod.string(),
+  "department": zod.string().optional()
+}).nullish(),
+  "buyer": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "role": zod.string(),
+  "department": zod.string().optional()
+}).nullish()
+}).optional()
 }).and(zod.object({
-  "colorways": zod.array(zod.record(zod.string(), zod.unknown())),
+  "colorways": zod.array(zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "hex": zod.string(),
+  "code": zod.string(),
+  "status": zod.string()
+})),
   "fabrics": zod.array(zod.record(zod.string(), zod.unknown())),
   "techPack": zod.record(zod.string(), zod.unknown()),
   "fitSessions": zod.array(zod.record(zod.string(), zod.unknown())),
@@ -510,15 +1329,59 @@ export const UpdateWorkspaceStyleGradingResponse = zod.object({
   "owner": zod.string(),
   "designer": zod.string().optional(),
   "patternMaker": zod.string().optional(),
+  "fabricType": zod.string().optional(),
   "targetDate": zod.string(),
+  "targetOrderWeek": zod.string().nullish(),
+  "plannedLaunchWeek": zod.string().nullish(),
   "stageEnteredAt": zod.string().optional(),
   "daysInStage": zod.number().optional(),
   "image": zod.string().nullish(),
   "progress": zod.number().optional(),
   "price": zod.number().optional(),
-  "market": zod.string().optional()
+  "market": zod.string().optional(),
+  "creativeDescription": zod.string().optional(),
+  "sizeRange": zod.string().optional(),
+  "trimsSpecialFeatures": zod.array(zod.string()).optional(),
+  "predictedCost": zod.number().nullish(),
+  "confirmedCost": zod.number().nullish(),
+  "designerUserId": zod.number().nullish(),
+  "patternMakerUserId": zod.number().nullish(),
+  "sampleMakerUserId": zod.number().nullish(),
+  "buyerUserId": zod.number().nullish(),
+  "styleTeam": zod.object({
+  "designer": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "role": zod.string(),
+  "department": zod.string().optional()
+}).nullish(),
+  "patternMaker": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "role": zod.string(),
+  "department": zod.string().optional()
+}).nullish(),
+  "sampleMaker": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "role": zod.string(),
+  "department": zod.string().optional()
+}).nullish(),
+  "buyer": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "role": zod.string(),
+  "department": zod.string().optional()
+}).nullish()
+}).optional()
 }).and(zod.object({
-  "colorways": zod.array(zod.record(zod.string(), zod.unknown())),
+  "colorways": zod.array(zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "hex": zod.string(),
+  "code": zod.string(),
+  "status": zod.string()
+})),
   "fabrics": zod.array(zod.record(zod.string(), zod.unknown())),
   "techPack": zod.record(zod.string(), zod.unknown()),
   "fitSessions": zod.array(zod.record(zod.string(), zod.unknown())),
@@ -589,15 +1452,59 @@ export const UpdateWorkspaceCostEstimateResponse = zod.object({
   "owner": zod.string(),
   "designer": zod.string().optional(),
   "patternMaker": zod.string().optional(),
+  "fabricType": zod.string().optional(),
   "targetDate": zod.string(),
+  "targetOrderWeek": zod.string().nullish(),
+  "plannedLaunchWeek": zod.string().nullish(),
   "stageEnteredAt": zod.string().optional(),
   "daysInStage": zod.number().optional(),
   "image": zod.string().nullish(),
   "progress": zod.number().optional(),
   "price": zod.number().optional(),
-  "market": zod.string().optional()
+  "market": zod.string().optional(),
+  "creativeDescription": zod.string().optional(),
+  "sizeRange": zod.string().optional(),
+  "trimsSpecialFeatures": zod.array(zod.string()).optional(),
+  "predictedCost": zod.number().nullish(),
+  "confirmedCost": zod.number().nullish(),
+  "designerUserId": zod.number().nullish(),
+  "patternMakerUserId": zod.number().nullish(),
+  "sampleMakerUserId": zod.number().nullish(),
+  "buyerUserId": zod.number().nullish(),
+  "styleTeam": zod.object({
+  "designer": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "role": zod.string(),
+  "department": zod.string().optional()
+}).nullish(),
+  "patternMaker": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "role": zod.string(),
+  "department": zod.string().optional()
+}).nullish(),
+  "sampleMaker": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "role": zod.string(),
+  "department": zod.string().optional()
+}).nullish(),
+  "buyer": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "role": zod.string(),
+  "department": zod.string().optional()
+}).nullish()
+}).optional()
 }).and(zod.object({
-  "colorways": zod.array(zod.record(zod.string(), zod.unknown())),
+  "colorways": zod.array(zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "hex": zod.string(),
+  "code": zod.string(),
+  "status": zod.string()
+})),
   "fabrics": zod.array(zod.record(zod.string(), zod.unknown())),
   "techPack": zod.record(zod.string(), zod.unknown()),
   "fitSessions": zod.array(zod.record(zod.string(), zod.unknown())),
@@ -647,15 +1554,59 @@ export const UpdateWorkspacePomQcResponse = zod.object({
   "owner": zod.string(),
   "designer": zod.string().optional(),
   "patternMaker": zod.string().optional(),
+  "fabricType": zod.string().optional(),
   "targetDate": zod.string(),
+  "targetOrderWeek": zod.string().nullish(),
+  "plannedLaunchWeek": zod.string().nullish(),
   "stageEnteredAt": zod.string().optional(),
   "daysInStage": zod.number().optional(),
   "image": zod.string().nullish(),
   "progress": zod.number().optional(),
   "price": zod.number().optional(),
-  "market": zod.string().optional()
+  "market": zod.string().optional(),
+  "creativeDescription": zod.string().optional(),
+  "sizeRange": zod.string().optional(),
+  "trimsSpecialFeatures": zod.array(zod.string()).optional(),
+  "predictedCost": zod.number().nullish(),
+  "confirmedCost": zod.number().nullish(),
+  "designerUserId": zod.number().nullish(),
+  "patternMakerUserId": zod.number().nullish(),
+  "sampleMakerUserId": zod.number().nullish(),
+  "buyerUserId": zod.number().nullish(),
+  "styleTeam": zod.object({
+  "designer": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "role": zod.string(),
+  "department": zod.string().optional()
+}).nullish(),
+  "patternMaker": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "role": zod.string(),
+  "department": zod.string().optional()
+}).nullish(),
+  "sampleMaker": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "role": zod.string(),
+  "department": zod.string().optional()
+}).nullish(),
+  "buyer": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "role": zod.string(),
+  "department": zod.string().optional()
+}).nullish()
+}).optional()
 }).and(zod.object({
-  "colorways": zod.array(zod.record(zod.string(), zod.unknown())),
+  "colorways": zod.array(zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "hex": zod.string(),
+  "code": zod.string(),
+  "status": zod.string()
+})),
   "fabrics": zod.array(zod.record(zod.string(), zod.unknown())),
   "techPack": zod.record(zod.string(), zod.unknown()),
   "fitSessions": zod.array(zod.record(zod.string(), zod.unknown())),
@@ -687,7 +1638,18 @@ export const UpdateWorkspaceStyleBody = zod.object({
   "targetDate": zod.string().optional(),
   "progress": zod.number().optional(),
   "price": zod.number().optional(),
-  "tier": zod.string().optional()
+  "tier": zod.string().optional(),
+  "name": zod.string().optional(),
+  "market": zod.string().optional(),
+  "creativeDescription": zod.string().optional(),
+  "sizeRange": zod.string().optional(),
+  "trimsSpecialFeatures": zod.array(zod.string()).optional(),
+  "predictedCost": zod.number().nullish(),
+  "confirmedCost": zod.number().nullish(),
+  "designerUserId": zod.number().nullish(),
+  "patternMakerUserId": zod.number().nullish(),
+  "sampleMakerUserId": zod.number().nullish(),
+  "buyerUserId": zod.number().nullish()
 })
 
 export const UpdateWorkspaceStyleResponse = zod.object({
@@ -706,15 +1668,59 @@ export const UpdateWorkspaceStyleResponse = zod.object({
   "owner": zod.string(),
   "designer": zod.string().optional(),
   "patternMaker": zod.string().optional(),
+  "fabricType": zod.string().optional(),
   "targetDate": zod.string(),
+  "targetOrderWeek": zod.string().nullish(),
+  "plannedLaunchWeek": zod.string().nullish(),
   "stageEnteredAt": zod.string().optional(),
   "daysInStage": zod.number().optional(),
   "image": zod.string().nullish(),
   "progress": zod.number().optional(),
   "price": zod.number().optional(),
-  "market": zod.string().optional()
+  "market": zod.string().optional(),
+  "creativeDescription": zod.string().optional(),
+  "sizeRange": zod.string().optional(),
+  "trimsSpecialFeatures": zod.array(zod.string()).optional(),
+  "predictedCost": zod.number().nullish(),
+  "confirmedCost": zod.number().nullish(),
+  "designerUserId": zod.number().nullish(),
+  "patternMakerUserId": zod.number().nullish(),
+  "sampleMakerUserId": zod.number().nullish(),
+  "buyerUserId": zod.number().nullish(),
+  "styleTeam": zod.object({
+  "designer": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "role": zod.string(),
+  "department": zod.string().optional()
+}).nullish(),
+  "patternMaker": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "role": zod.string(),
+  "department": zod.string().optional()
+}).nullish(),
+  "sampleMaker": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "role": zod.string(),
+  "department": zod.string().optional()
+}).nullish(),
+  "buyer": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "role": zod.string(),
+  "department": zod.string().optional()
+}).nullish()
+}).optional()
 }).and(zod.object({
-  "colorways": zod.array(zod.record(zod.string(), zod.unknown())),
+  "colorways": zod.array(zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "hex": zod.string(),
+  "code": zod.string(),
+  "status": zod.string()
+})),
   "fabrics": zod.array(zod.record(zod.string(), zod.unknown())),
   "techPack": zod.record(zod.string(), zod.unknown()),
   "fitSessions": zod.array(zod.record(zod.string(), zod.unknown())),
@@ -750,15 +1756,59 @@ export const GetWorkspaceStylePlmResponse = zod.object({
   "owner": zod.string(),
   "designer": zod.string().optional(),
   "patternMaker": zod.string().optional(),
+  "fabricType": zod.string().optional(),
   "targetDate": zod.string(),
+  "targetOrderWeek": zod.string().nullish(),
+  "plannedLaunchWeek": zod.string().nullish(),
   "stageEnteredAt": zod.string().optional(),
   "daysInStage": zod.number().optional(),
   "image": zod.string().nullish(),
   "progress": zod.number().optional(),
   "price": zod.number().optional(),
-  "market": zod.string().optional()
+  "market": zod.string().optional(),
+  "creativeDescription": zod.string().optional(),
+  "sizeRange": zod.string().optional(),
+  "trimsSpecialFeatures": zod.array(zod.string()).optional(),
+  "predictedCost": zod.number().nullish(),
+  "confirmedCost": zod.number().nullish(),
+  "designerUserId": zod.number().nullish(),
+  "patternMakerUserId": zod.number().nullish(),
+  "sampleMakerUserId": zod.number().nullish(),
+  "buyerUserId": zod.number().nullish(),
+  "styleTeam": zod.object({
+  "designer": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "role": zod.string(),
+  "department": zod.string().optional()
+}).nullish(),
+  "patternMaker": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "role": zod.string(),
+  "department": zod.string().optional()
+}).nullish(),
+  "sampleMaker": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "role": zod.string(),
+  "department": zod.string().optional()
+}).nullish(),
+  "buyer": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "role": zod.string(),
+  "department": zod.string().optional()
+}).nullish()
+}).optional()
 }).and(zod.object({
-  "colorways": zod.array(zod.record(zod.string(), zod.unknown())),
+  "colorways": zod.array(zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "hex": zod.string(),
+  "code": zod.string(),
+  "status": zod.string()
+})),
   "fabrics": zod.array(zod.record(zod.string(), zod.unknown())),
   "techPack": zod.record(zod.string(), zod.unknown()),
   "fitSessions": zod.array(zod.record(zod.string(), zod.unknown())),
@@ -803,13 +1853,51 @@ export const GetWorkspacePlanResponse = zod.object({
   "owner": zod.string(),
   "designer": zod.string().optional(),
   "patternMaker": zod.string().optional(),
+  "fabricType": zod.string().optional(),
   "targetDate": zod.string(),
+  "targetOrderWeek": zod.string().nullish(),
+  "plannedLaunchWeek": zod.string().nullish(),
   "stageEnteredAt": zod.string().optional(),
   "daysInStage": zod.number().optional(),
   "image": zod.string().nullish(),
   "progress": zod.number().optional(),
   "price": zod.number().optional(),
-  "market": zod.string().optional()
+  "market": zod.string().optional(),
+  "creativeDescription": zod.string().optional(),
+  "sizeRange": zod.string().optional(),
+  "trimsSpecialFeatures": zod.array(zod.string()).optional(),
+  "predictedCost": zod.number().nullish(),
+  "confirmedCost": zod.number().nullish(),
+  "designerUserId": zod.number().nullish(),
+  "patternMakerUserId": zod.number().nullish(),
+  "sampleMakerUserId": zod.number().nullish(),
+  "buyerUserId": zod.number().nullish(),
+  "styleTeam": zod.object({
+  "designer": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "role": zod.string(),
+  "department": zod.string().optional()
+}).nullish(),
+  "patternMaker": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "role": zod.string(),
+  "department": zod.string().optional()
+}).nullish(),
+  "sampleMaker": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "role": zod.string(),
+  "department": zod.string().optional()
+}).nullish(),
+  "buyer": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "role": zod.string(),
+  "department": zod.string().optional()
+}).nullish()
+}).optional()
 })),
   "summary": zod.record(zod.string(), zod.unknown())
 })
@@ -863,13 +1951,51 @@ export const UpdateWorkspacePlanResponse = zod.object({
   "owner": zod.string(),
   "designer": zod.string().optional(),
   "patternMaker": zod.string().optional(),
+  "fabricType": zod.string().optional(),
   "targetDate": zod.string(),
+  "targetOrderWeek": zod.string().nullish(),
+  "plannedLaunchWeek": zod.string().nullish(),
   "stageEnteredAt": zod.string().optional(),
   "daysInStage": zod.number().optional(),
   "image": zod.string().nullish(),
   "progress": zod.number().optional(),
   "price": zod.number().optional(),
-  "market": zod.string().optional()
+  "market": zod.string().optional(),
+  "creativeDescription": zod.string().optional(),
+  "sizeRange": zod.string().optional(),
+  "trimsSpecialFeatures": zod.array(zod.string()).optional(),
+  "predictedCost": zod.number().nullish(),
+  "confirmedCost": zod.number().nullish(),
+  "designerUserId": zod.number().nullish(),
+  "patternMakerUserId": zod.number().nullish(),
+  "sampleMakerUserId": zod.number().nullish(),
+  "buyerUserId": zod.number().nullish(),
+  "styleTeam": zod.object({
+  "designer": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "role": zod.string(),
+  "department": zod.string().optional()
+}).nullish(),
+  "patternMaker": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "role": zod.string(),
+  "department": zod.string().optional()
+}).nullish(),
+  "sampleMaker": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "role": zod.string(),
+  "department": zod.string().optional()
+}).nullish(),
+  "buyer": zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "role": zod.string(),
+  "department": zod.string().optional()
+}).nullish()
+}).optional()
 })),
   "summary": zod.record(zod.string(), zod.unknown())
 })

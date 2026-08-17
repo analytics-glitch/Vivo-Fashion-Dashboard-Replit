@@ -227,6 +227,7 @@ def main():
     cur.execute("""
         ALTER TABLE all_products_clean
         ADD COLUMN IF NOT EXISTS standard_cost_kes NUMERIC DEFAULT NULL,
+        ADD COLUMN IF NOT EXISTS standard_cost_date DATE DEFAULT NULL,
         ADD COLUMN IF NOT EXISTS last_order_date DATE DEFAULT NULL
     """)
     conn.commit()
@@ -740,9 +741,13 @@ def main():
     log.info("Populating standard_cost_kes...")
     cur.execute("""
         UPDATE all_products_clean apc
-        SET standard_cost_kes = rop.standard_price
+        SET standard_cost_kes = rop.standard_price,
+            standard_cost_date = rop.cost_date
         FROM (
-            SELECT DISTINCT ON (default_code) default_code, standard_price
+            SELECT DISTINCT ON (default_code)
+                   default_code,
+                   standard_price,
+                   NULLIF(LEFT(write_date, 10), '')::date AS cost_date
             FROM raw_odoo_products
             WHERE default_code IS NOT NULL
               AND standard_price IS NOT NULL
@@ -751,7 +756,7 @@ def main():
         ) rop
         WHERE apc.sku = rop.default_code
     """)
-    log.info("standard_cost_kes populated: %d rows", cur.rowcount)
+    log.info("standard_cost_kes and standard_cost_date populated: %d rows", cur.rowcount)
     conn.commit()
 
     # ── Populate last_order_date from production_orders ───────────────────────

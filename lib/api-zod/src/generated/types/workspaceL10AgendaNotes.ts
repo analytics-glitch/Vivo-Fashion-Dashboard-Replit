@@ -6,4 +6,9 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export type WorkspaceStyleDetailColorwaysItem = { [key: string]: unknown };
+export interface WorkspaceL10AgendaNotes {
+  headlines: string;
+  todos: string;
+  ids: string;
+  conclude: string;
+}

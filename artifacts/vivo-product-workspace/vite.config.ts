@@ -30,6 +30,21 @@ if (!basePath) {
 export default defineConfig({
   base: basePath,
   plugins: [
+    {
+      name: 'feedback-no-slash-redirect',
+      configureServer(server) {
+        server.middlewares.use((req, res, next) => {
+          const requestUrl = req.url || '';
+          if (basePath === '/feedback/' && (requestUrl === '/feedback' || requestUrl.startsWith('/feedback?'))) {
+            res.statusCode = 302;
+            res.setHeader('Location', `/feedback/${requestUrl.slice('/feedback'.length)}`);
+            res.end();
+            return;
+          }
+          next();
+        });
+      },
+    },
     react(),
     tailwindcss(),
     runtimeErrorOverlay(),

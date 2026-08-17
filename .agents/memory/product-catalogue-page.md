@@ -12,6 +12,7 @@ description: Catalogue (ex-Gallery) page contract — launch-date fallback, cost
 - **Facet buckets:** blank category/product_type group as literal `'Uncategorised'` via `COALESCE(NULLIF(TRIM(col),''),'Uncategorised')` — the search filters understand the same bucket name, so both sides must keep the identical expression.
 - **Popup price = modal (most common) across sizes, tie → lowest** — never MAX (foreign-currency leak duplicates KES prices as UGX/RWF).
 - **Card/popup grain = style + colour**, expanded server-side via the same sibling helper the image endpoints use.
+- **Workspace catalogue split:** the PLM tab reads active in-development records from `pd_styles`/`pd_style_images`; the Full Catalogue tab reads `all_products_clean` and Odoo image-map tables. Keep these endpoints separate because `product_workspace.styles` is the editable workspace model, not the legacy PD catalogue.
 
 **Why:** user asked for a customer-facing-quality product catalogue with full attributes; these choices keep it consistent with the rest of the dashboard's canons (SOH 3-way split, modal price) while staying safe for broad roles.
 

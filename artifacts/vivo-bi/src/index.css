@@ -286,6 +286,26 @@ body {
     }
 }
 
+@keyframes mixStyleTargetFlash {
+    0%, 100% {
+        background-color: transparent;
+    }
+    18%, 58% {
+        background-color: rgba(201, 169, 110, 0.28);
+    }
+}
+
+.mix-style-highlight td {
+    animation: mixStyleTargetFlash 2.2s ease-in-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .mix-style-highlight td {
+        animation: none;
+        background-color: rgba(201, 169, 110, 0.22);
+    }
+}
+
 /* Recharts polish */
 .recharts-cartesian-axis-tick text {
     fill: #6b7280;

@@ -269,6 +269,136 @@ paths:
           description: Team member removed
         "404":
           description: Team member not found
+  /workspace/team-directory:
+    get:
+      operationId: listWorkspaceTeamDirectory
+      tags: [workspace]
+      summary: List Product Department team directory members
+      responses:
+        "200":
+          description: Team directory members
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/WorkspaceTeamDirectoryMember"
+    post:
+      operationId: createWorkspaceTeamDirectoryMember
+      tags: [workspace]
+      summary: Add a Product Department directory member
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkspaceTeamDirectoryMemberInput"
+      responses:
+        "201":
+          description: Created directory member
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceTeamDirectoryMember"
+        "403":
+          description: Admin access required
+  /team/birthdays/today:
+    get:
+      operationId: listTodayTeamBirthdays
+      tags: [workspace]
+      summary: List Product Department birthdays for today
+      responses:
+        "200":
+          description: Team members with birthdays today
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/WorkspaceTeamBirthday"
+        "401":
+          description: Sign in required
+  /workspace/team-directory/{id}:
+    patch:
+      operationId: updateWorkspaceTeamDirectoryMember
+      tags: [workspace]
+      summary: Update a Product Department directory member
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkspaceTeamDirectoryMemberInput"
+      responses:
+        "200":
+          description: Updated directory member
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceTeamDirectoryMember"
+        "403":
+          description: Admin access required
+        "404":
+          description: Directory member not found
+  /workspace/team-directory/reorder:
+    put:
+      operationId: reorderWorkspaceTeamDirectory
+      tags: [workspace]
+      summary: Reorder directory members within their sections
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkspaceTeamDirectoryReorderInput"
+      responses:
+        "204":
+          description: Directory order saved
+        "403":
+          description: Admin access required
+  /workspace/team-directory/upload-url:
+    post:
+      operationId: requestWorkspaceTeamDirectoryPhotoUpload
+      tags: [workspace]
+      summary: Request a direct upload URL for a directory photo
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkspacePhotoUploadInput"
+      responses:
+        "200":
+          description: Direct upload details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspacePhotoUploadResponse"
+        "403":
+          description: Admin access required
+  /workspace/team-directory/{id}/photo:
+    get:
+      operationId: getWorkspaceTeamDirectoryPhoto
+      tags: [workspace]
+      summary: Serve a directory profile photo
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Profile photo
+          content:
+            image/jpeg: {}
+            image/png: {}
+        "404":
+          description: Photo not found
   /workspace/dashboard:
     get:
       operationId: getWorkspaceDashboard
@@ -281,6 +411,330 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/WorkspaceDashboard"
+  /workspace/l10/meetings:
+    get:
+      operationId: listWorkspaceL10Meetings
+      tags: [workspace]
+      summary: List Product Workspace EOS Level 10 meetings
+      responses:
+        "200":
+          description: L10 meetings
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/WorkspaceL10Meeting"
+  /workspace/l10/meetings/{meetingId}:
+    get:
+      operationId: getWorkspaceL10Meeting
+      tags: [workspace]
+      summary: Get a complete L10 meeting
+      parameters:
+        - name: meetingId
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: L10 meeting detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceL10MeetingDetail"
+        "404":
+          description: Meeting not found
+  /workspace/l10/meetings/{meetingId}/checkins:
+    put:
+      operationId: updateWorkspaceL10Checkins
+      tags: [workspace]
+      summary: Save L10 check-in rows
+      parameters:
+        - name: meetingId
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkspaceL10CheckinsInput"
+      responses:
+        "200":
+          description: Check-ins saved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceMutationResult"
+  /workspace/l10/meetings/{meetingId}/scorecard/{metricId}:
+    put:
+      operationId: updateWorkspaceL10ScorecardEntry
+      tags: [workspace]
+      summary: Save an L10 scorecard value and status
+      parameters:
+        - name: meetingId
+          in: path
+          required: true
+          schema: { type: integer }
+        - name: metricId
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkspaceL10ScorecardEntryInput"
+      responses:
+        "200":
+          description: Scorecard entry saved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceL10ScorecardEntry"
+  /workspace/l10/rocks/{rockId}:
+    put:
+      operationId: updateWorkspaceL10Rock
+      tags: [workspace]
+      summary: Update an L10 rock status
+      parameters:
+        - name: rockId
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkspaceL10RockStatusInput"
+      responses:
+        "200":
+          description: Rock updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceL10Rock"
+  /workspace/l10/meetings/{meetingId}/notes:
+    put:
+      operationId: updateWorkspaceL10AgendaNotes
+      tags: [workspace]
+      summary: Save L10 headlines, to-dos, IDS, and conclusion notes
+      parameters:
+        - name: meetingId
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkspaceL10AgendaNotes"
+      responses:
+        "200":
+          description: Agenda notes saved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceL10AgendaNotes"
+  /workspace/l10/meetings/{meetingId}/headlines:
+    put:
+      operationId: updateWorkspaceL10Headlines
+      tags: [workspace]
+      summary: Save L10 customer and employee headlines
+      parameters:
+        - name: meetingId
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkspaceL10HeadlinesInput"
+      responses:
+        "200":
+          description: Headlines saved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceMutationResult"
+  /workspace/l10/meetings/{meetingId}/todos:
+    put:
+      operationId: updateWorkspaceL10Todos
+      tags: [workspace]
+      summary: Save L10 to-dos
+      parameters:
+        - name: meetingId
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkspaceL10TodosInput"
+      responses:
+        "200":
+          description: To-dos saved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceMutationResult"
+  /workspace/l10/meetings/{meetingId}/issues/reorder:
+    put:
+      operationId: reorderWorkspaceL10Issues
+      tags: [workspace]
+      summary: Reorder active L10 issues
+      parameters:
+        - name: meetingId
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkspaceL10IssuesInput"
+      responses:
+        "200":
+          description: Issues reordered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceMutationResult"
+  /workspace/l10/meetings/{meetingId}/issues:
+    post:
+      operationId: createWorkspaceL10Issue
+      tags: [workspace]
+      summary: Create an L10 issue
+      parameters:
+        - name: meetingId
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkspaceL10IssueInput"
+      responses:
+        "201":
+          description: Issue created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceL10Issue"
+  /workspace/l10/issues/{issueId}:
+    put:
+      operationId: updateWorkspaceL10Issue
+      tags: [workspace]
+      summary: Move an L10 issue to parking or resolved
+      parameters:
+        - name: issueId
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkspaceL10IssueActionInput"
+      responses:
+        "200":
+          description: Issue updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceL10Issue"
+  /workspace/l10/issues/{issueId}/todo:
+    post:
+      operationId: createWorkspaceL10TodoFromIssue
+      tags: [workspace]
+      summary: Create a linked to-do from an L10 issue
+      parameters:
+        - name: issueId
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "201":
+          description: Linked to-do created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceL10Todo"
+  /workspace/l10/meetings/{meetingId}/ratings:
+    put:
+      operationId: updateWorkspaceL10Ratings
+      tags: [workspace]
+      summary: Save L10 meeting ratings
+      parameters:
+        - name: meetingId
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkspaceL10RatingsInput"
+      responses:
+        "200":
+          description: Ratings saved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceMutationResult"
+  /workspace/l10/meetings/{meetingId}/cascading-message:
+    put:
+      operationId: updateWorkspaceL10CascadingMessage
+      tags: [workspace]
+      summary: Save the L10 cascading message
+      parameters:
+        - name: meetingId
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkspaceL10CascadingMessageInput"
+      responses:
+        "200":
+          description: Cascading message saved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceL10CascadingMessage"
+  /workspace/l10/meetings/{meetingId}/end:
+    post:
+      operationId: endWorkspaceL10Meeting
+      tags: [workspace]
+      summary: Conclude an L10 meeting and make it read-only
+      parameters:
+        - name: meetingId
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Meeting concluded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceL10Meeting"
   /workspace/styles:
     get:
       operationId: listWorkspaceStyles
@@ -375,6 +829,56 @@ paths:
       responses:
         "200":
           description: Transitioned style
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceStyleDetail"
+  /workspace/styles/{id}/colorways:
+    post:
+      operationId: createWorkspaceColorway
+      tags: [workspace]
+      summary: Add a colourway to a style
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ColorwayInput"
+      responses:
+        "201":
+          description: Updated style with the new colourway
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceStyleDetail"
+  /workspace/styles/{id}/colorways/{colorwayId}:
+    patch:
+      operationId: updateWorkspaceColorway
+      tags: [workspace]
+      summary: Update a style colourway
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+        - name: colorwayId
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ColorwayUpdate"
+      responses:
+        "200":
+          description: Updated style with the changed colourway
           content:
             application/json:
               schema:
@@ -1324,10 +1828,68 @@ components:
         name: { type: string }
         role: { type: string }
         department: { type: string }
+    WorkspaceTeamDirectoryMember:
+      type: object
+      required: [id, name, roleTitle, teamSection, description, isLma, displayOrder]
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        roleTitle: { type: string }
+        teamSection: { type: string }
+        description: { type: string }
+        birthday: { type: ["string", "null"], format: date }
+        photoUrl: { type: ["string", "null"] }
+        isLma: { type: boolean }
+        displayOrder: { type: integer }
+        createdAt: { type: ["string", "null"] }
+    WorkspaceTeamDirectoryMemberInput:
+      type: object
+      required: [roleTitle, teamSection]
+      properties:
+        name: { type: string }
+        roleTitle: { type: string }
+        teamSection: { type: string }
+        description: { type: string }
+        birthday: { type: ["string", "null"], format: date }
+        photoPath: { type: ["string", "null"] }
+        isLma: { type: boolean }
+    WorkspaceTeamBirthday:
+      type: object
+      required: [name, role]
+      properties:
+        name: { type: string }
+        role: { type: string }
+    WorkspaceTeamDirectoryReorderInput:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            required: [id, displayOrder]
+            properties:
+              id: { type: integer }
+              displayOrder: { type: integer }
+    WorkspacePhotoUploadInput:
+      type: object
+      required: [name, size, contentType]
+      properties:
+        name: { type: string }
+        size: { type: integer, minimum: 1, maximum: 8388608 }
+        contentType: { type: string, enum: [image/jpeg, image/png] }
+    WorkspacePhotoUploadResponse:
+      type: object
+      required: [uploadUrl, objectPath]
+      properties:
+        uploadUrl: { type: string, format: uri }
+        objectPath: { type: string }
     WorkspaceDashboard:
       type: object
-      required: [kpis, activity, pipeline, upcoming]
+      required: [snapshot, kpis, activity, pipeline, upcoming]
       properties:
+        snapshot:
+          $ref: "#/components/schemas/WorkspaceDashboardSnapshot"
         kpis:
           type: array
           items: { type: object, additionalProperties: true }
@@ -1340,6 +1902,293 @@ components:
         upcoming:
           type: array
           items: { type: object, additionalProperties: true }
+    WorkspaceDashboardSnapshot:
+      type: object
+      required: [asOfDate, planningPeriod, inDevelopment, dueThisWeek, atRisk, budgetUsedPercent, budgetUsedKes, budgetKesMillions, stages]
+      properties:
+        asOfDate: { type: string, format: date }
+        planningPeriod: { type: string }
+        inDevelopment: { type: integer }
+        dueThisWeek: { type: integer }
+        atRisk: { type: integer }
+        budgetUsedPercent: { type: number, nullable: true }
+        budgetUsedKes: { type: number, nullable: true }
+        budgetKesMillions: { type: number, nullable: true }
+        stages:
+          type: array
+          items:
+            type: object
+            required: [stage, count]
+            properties:
+              stage: { type: string }
+              count: { type: integer }
+    WorkspaceL10Meeting:
+      type: object
+      required: [id, weekLabel, meetingDate, startTime, endTime, location, durationMinutes, concluded, isCurrent]
+      properties:
+        id: { type: integer }
+        weekLabel: { type: string }
+        meetingDate: { type: string, format: date }
+        startTime: { type: string }
+        endTime: { type: string }
+        location: { type: string }
+        durationMinutes: { type: integer }
+        concluded: { type: boolean }
+        concludedAt: { type: string, nullable: true }
+        isCurrent: { type: boolean }
+        createdAt: { type: string }
+    WorkspaceL10AgendaItem:
+      type: object
+      required: [key, number, label, durationMinutes]
+      properties:
+        key: { type: string }
+        number: { type: string }
+        label: { type: string }
+        durationMinutes: { type: integer }
+    WorkspaceL10Checkin:
+      type: object
+      required: [id, memberName, personalGoodNews, professionalGoodNews]
+      properties:
+        id: { type: integer }
+        memberName: { type: string }
+        personalGoodNews: { type: string }
+        professionalGoodNews: { type: string }
+    WorkspaceL10ScorecardHistory:
+      type: object
+      required: [weekLabel, meetingDate]
+      properties:
+        weekLabel: { type: string }
+        meetingDate: { type: string, format: date }
+        value: { type: number, nullable: true }
+        onTrack: { type: boolean, nullable: true }
+    WorkspaceL10ScorecardMetric:
+      type: object
+      required: [id, owner, measurable, goal, uom, history]
+      properties:
+        id: { type: integer }
+        owner: { type: string }
+        measurable: { type: string }
+        goal: { type: string }
+        uom: { type: string }
+        thisWeek: { type: number, nullable: true }
+        onTrack: { type: boolean, nullable: true }
+        history:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkspaceL10ScorecardHistory"
+    WorkspaceL10Rock:
+      type: object
+      required: [id, description, owner, status, sortOrder]
+      properties:
+        id: { type: integer }
+        description: { type: string }
+        owner: { type: string }
+        status: { type: string, enum: [On Track, Off Track, Done] }
+        sortOrder: { type: integer }
+    WorkspaceL10AgendaNotes:
+      type: object
+      required: [headlines, todos, ids, conclude]
+      properties:
+        headlines: { type: string }
+        todos: { type: string }
+        ids: { type: string }
+        conclude: { type: string }
+    WorkspaceL10Headline:
+      type: object
+      required: [id, headline, addedBy, needsDiscussion, sortOrder]
+      properties:
+        id: { type: integer }
+        headline: { type: string }
+        headlineDate: { type: string, format: date, nullable: true }
+        addedBy: { type: string }
+        needsDiscussion: { type: boolean }
+        sortOrder: { type: integer }
+    WorkspaceL10Todo:
+      type: object
+      required: [id, description, owner, status]
+      properties:
+        id: { type: integer }
+        description: { type: string }
+        openDate: { type: string, format: date, nullable: true }
+        owner: { type: string }
+        status: { type: string, enum: [Done, Not Done] }
+        linkedIssueId: { type: integer, nullable: true }
+    WorkspaceL10Issue:
+      type: object
+      required: [id, issue, raisedBy, priority, issueType, resolutionNotes, sortOrder]
+      properties:
+        id: { type: integer }
+        issue: { type: string }
+        raisedBy: { type: string }
+        priority: { type: integer }
+        issueType: { type: string, enum: [active, parking, resolved] }
+        resolutionNotes: { type: string }
+        sortOrder: { type: integer }
+        resolvedAt: { type: string, nullable: true }
+        linkedTodoId: { type: integer, nullable: true }
+    WorkspaceL10Rating:
+      type: object
+      required: [id, teamMemberName]
+      properties:
+        id: { type: integer }
+        teamMemberName: { type: string }
+        rating: { type: integer, nullable: true, minimum: 1, maximum: 10 }
+    WorkspaceL10RatingHistory:
+      type: object
+      required: [weekLabel, average, ratings]
+      properties:
+        weekLabel: { type: string }
+        average: { type: number, nullable: true }
+        ratings:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkspaceL10Rating"
+    WorkspaceL10CascadingMessage:
+      type: object
+      required: [message]
+      properties:
+        message: { type: string }
+    WorkspaceL10TodoStat:
+      type: object
+      required: [total, completedOnTime]
+      properties:
+        total: { type: integer }
+        completedOnTime: { type: integer }
+    WorkspaceL10MeetingDetail:
+      type: object
+      required: [meeting, agenda, historyMeetings, checkins, metrics, rocks, notes, headlines, todos, todosStat, issues, ratings, ratingHistory, cascadingMessage, teamMembers]
+      properties:
+        meeting:
+          $ref: "#/components/schemas/WorkspaceL10Meeting"
+        agenda:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkspaceL10AgendaItem"
+        historyMeetings:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkspaceL10Meeting"
+        checkins:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkspaceL10Checkin"
+        metrics:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkspaceL10ScorecardMetric"
+        rocks:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkspaceL10Rock"
+        notes:
+          $ref: "#/components/schemas/WorkspaceL10AgendaNotes"
+        headlines:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkspaceL10Headline"
+        todos:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkspaceL10Todo"
+        todosStat:
+          $ref: "#/components/schemas/WorkspaceL10TodoStat"
+        issues:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkspaceL10Issue"
+        ratings:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkspaceL10Rating"
+        ratingHistory:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkspaceL10RatingHistory"
+        cascadingMessage:
+          type: string
+        teamMembers:
+          type: array
+          items: { type: string }
+    WorkspaceL10CheckinsInput:
+      type: object
+      required: [rows]
+      properties:
+        rows:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkspaceL10Checkin"
+    WorkspaceL10ScorecardEntryInput:
+      type: object
+      properties:
+        value: { type: number, nullable: true }
+        onTrack: { type: boolean, nullable: true }
+    WorkspaceL10ScorecardEntry:
+      type: object
+      required: [id, value, onTrack]
+      properties:
+        id: { type: integer }
+        value: { type: number, nullable: true }
+        onTrack: { type: boolean, nullable: true }
+    WorkspaceL10RockStatusInput:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string, enum: [On Track, Off Track, Done] }
+    WorkspaceL10HeadlinesInput:
+      type: object
+      required: [rows]
+      properties:
+        rows:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkspaceL10Headline"
+    WorkspaceL10TodosInput:
+      type: object
+      required: [rows]
+      properties:
+        rows:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkspaceL10Todo"
+    WorkspaceL10IssuesInput:
+      type: object
+      required: [rows]
+      properties:
+        rows:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkspaceL10Issue"
+    WorkspaceL10IssueInput:
+      type: object
+      required: [issue]
+      properties:
+        issue: { type: string }
+        raisedBy: { type: string }
+        priority: { type: integer }
+    WorkspaceL10IssueActionInput:
+      type: object
+      required: [action]
+      properties:
+        action: { type: string, enum: [resolve, parking] }
+        resolutionNotes: { type: string }
+    WorkspaceL10RatingsInput:
+      type: object
+      required: [rows]
+      properties:
+        rows:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkspaceL10Rating"
+    WorkspaceL10CascadingMessageInput:
+      type: object
+      required: [message]
+      properties:
+        message: { type: string }
+    WorkspaceMutationResult:
+      type: object
+      required: [ok]
+      properties:
+        ok: { type: boolean }
     WorkspaceStyle:
       type: object
       required: [id, code, name, brand, category, status, owner, targetDate]
@@ -1359,13 +2208,66 @@ components:
         owner: { type: string }
         designer: { type: string }
         patternMaker: { type: string }
+        fabricType: { type: string }
         targetDate: { type: string }
+        targetOrderWeek: { type: string, nullable: true }
+        plannedLaunchWeek: { type: string, nullable: true }
         stageEnteredAt: { type: string }
         daysInStage: { type: integer }
         image: { type: ["string", "null"] }
         progress: { type: number }
         price: { type: number }
         market: { type: string }
+        creativeDescription: { type: string }
+        sizeRange: { type: string }
+        trimsSpecialFeatures:
+          type: array
+          items: { type: string }
+        predictedCost: { type: ["number", "null"] }
+        confirmedCost: { type: ["number", "null"] }
+        designerUserId: { type: ["integer", "null"] }
+        patternMakerUserId: { type: ["integer", "null"] }
+        sampleMakerUserId: { type: ["integer", "null"] }
+        buyerUserId: { type: ["integer", "null"] }
+        styleTeam:
+          type: object
+          properties:
+            designer: { type: ["object", "null"], $ref: "#/components/schemas/StyleTeamMember" }
+            patternMaker: { type: ["object", "null"], $ref: "#/components/schemas/StyleTeamMember" }
+            sampleMaker: { type: ["object", "null"], $ref: "#/components/schemas/StyleTeamMember" }
+            buyer: { type: ["object", "null"], $ref: "#/components/schemas/StyleTeamMember" }
+    StyleTeamMember:
+      type: object
+      required: [id, name, role]
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        role: { type: string }
+        department: { type: string }
+    WorkspaceColorway:
+      type: object
+      required: [id, name, hex, code, status]
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        hex: { type: string }
+        code: { type: string }
+        status: { type: string }
+    ColorwayInput:
+      type: object
+      required: [name, hex]
+      properties:
+        name: { type: string }
+        hex: { type: string }
+        code: { type: string }
+        status: { type: string }
+    ColorwayUpdate:
+      type: object
+      properties:
+        name: { type: string }
+        hex: { type: string }
+        code: { type: string }
+        status: { type: string }
     StyleCreate:
       type: object
       required: [name, brand, category, targetDate]
@@ -1396,6 +2298,19 @@ components:
         progress: { type: number }
         price: { type: number }
         tier: { type: string }
+        name: { type: string }
+        market: { type: string }
+        creativeDescription: { type: string }
+        sizeRange: { type: string }
+        trimsSpecialFeatures:
+          type: array
+          items: { type: string }
+        predictedCost: { type: ["number", "null"] }
+        confirmedCost: { type: ["number", "null"] }
+        designerUserId: { type: ["integer", "null"] }
+        patternMakerUserId: { type: ["integer", "null"] }
+        sampleMakerUserId: { type: ["integer", "null"] }
+        buyerUserId: { type: ["integer", "null"] }
     StyleTransition:
       type: object
       required: [toStage]
@@ -1502,7 +2417,7 @@ components:
         - type: object
           required: [colorways, fabrics, techPack, fitSessions, gradings, boms, samples, pomQc, costEstimate, productionOrder]
           properties:
-            colorways: { type: array, items: { type: object, additionalProperties: true } }
+            colorways: { type: array, items: { $ref: "#/components/schemas/WorkspaceColorway" } }
             fabrics: { type: array, items: { type: object, additionalProperties: true } }
             techPack: { type: object, additionalProperties: true }
             fitSessions: { type: array, items: { type: object, additionalProperties: true } }

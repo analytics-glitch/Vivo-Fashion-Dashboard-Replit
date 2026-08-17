@@ -96,6 +96,7 @@ const MerchandisingInventory   = React.lazy(() => import("./merch/MerchInventory
 const MerchandisingLifecycle   = React.lazy(() => import("./MerchLifecycle"));
 const MerchandisingDeepDive    = React.lazy(() => import("./MerchDeepDive"));
 const MerchandisingStore       = React.lazy(() => import("./MerchStoreCockpit"));
+const MerchandisingAttributes  = React.lazy(() => import("./merch/AttributePerformance"));
 
 // ── Product-development pages embedded as hub tabs ───────────────────────────
 const PdStyleCockpit    = React.lazy(() => import("./ProductAnalysis"));
@@ -126,6 +127,7 @@ const MERCH_TABS = [
   { id: "pd-style-tracker",    label: "Style Launch Planner",   pageId: "style-tracker",     el: PdStyleTracker },
   { id: "pd-catalog-sor",      label: "Catalog & SOR",          pageId: "product-analysis",  el: PdCatalogSOR },
   { id: "pd-sor-report",       label: "SOR Report",             pageId: "exports",           el: PdSORReport },
+  { id: "pd-attribute-performance", label: "Attribute Performance", pageId: "merch-attribute-performance", el: MerchandisingAttributes },
   { id: "pd-retired-stock",    label: "Retired Stock",          pageId: "range-mgmt",        el: PdRetiredStock },
   { id: "pd-allocations",      label: "Allocations",            pageId: "allocations",       el: PdAllocations },
   { id: "pd-reorder",          label: "Re-Order",               pageId: "re-order",          el: PdReOrder },

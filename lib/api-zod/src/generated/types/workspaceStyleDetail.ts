@@ -5,9 +5,9 @@
  * API specification
  * OpenAPI spec version: 0.1.0
  */
+import type { WorkspaceColorway } from './workspaceColorway';
 import type { WorkspaceStyle } from './workspaceStyle';
 import type { WorkspaceStyleDetailBomsItem } from './workspaceStyleDetailBomsItem';
-import type { WorkspaceStyleDetailColorwaysItem } from './workspaceStyleDetailColorwaysItem';
 import type { WorkspaceStyleDetailCostEstimate } from './workspaceStyleDetailCostEstimate';
 import type { WorkspaceStyleDetailFabricsItem } from './workspaceStyleDetailFabricsItem';
 import type { WorkspaceStyleDetailFitSessionsItem } from './workspaceStyleDetailFitSessionsItem';
@@ -18,7 +18,7 @@ import type { WorkspaceStyleDetailSamplesItem } from './workspaceStyleDetailSamp
 import type { WorkspaceStyleDetailTechPack } from './workspaceStyleDetailTechPack';
 
 export type WorkspaceStyleDetail = WorkspaceStyle & {
-  colorways: WorkspaceStyleDetailColorwaysItem[];
+  colorways: WorkspaceColorway[];
   fabrics: WorkspaceStyleDetailFabricsItem[];
   techPack: WorkspaceStyleDetailTechPack;
   fitSessions: WorkspaceStyleDetailFitSessionsItem[];

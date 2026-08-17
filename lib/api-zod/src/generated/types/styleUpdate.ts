@@ -19,4 +19,21 @@ export interface StyleUpdate {
   progress?: number;
   price?: number;
   tier?: string;
+  name?: string;
+  market?: string;
+  creativeDescription?: string;
+  sizeRange?: string;
+  trimsSpecialFeatures?: string[];
+  /** @nullable */
+  predictedCost?: number | null;
+  /** @nullable */
+  confirmedCost?: number | null;
+  /** @nullable */
+  designerUserId?: number | null;
+  /** @nullable */
+  patternMakerUserId?: number | null;
+  /** @nullable */
+  sampleMakerUserId?: number | null;
+  /** @nullable */
+  buyerUserId?: number | null;
 }

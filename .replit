@@ -155,7 +155,7 @@ LOYALTY_APP_GOOGLE_REDIRECT_URI = "https://vivofashionbrands.com/loyalty-app/api
 API_WORKERS = "1"
 
 [objectStorage]
-defaultBucketID = "replit-objstore-6afd6244-d8b1-4255-80b1-e103c2c6a982"
+defaultBucketID = "replit-objstore-374801b6-0780-4836-afe8-6fae8e86803b"
 
 [[ports]]
 localPort = 8002

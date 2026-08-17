@@ -63,6 +63,135 @@ const BandLegend = ({ bands }) => (
   </div>
 );
 
+// ── Store SOH distribution ────────────────────────────────────────────────────
+// The existing style-stores feed powers both the selected-style drill-down and
+// the all-active-styles aggregate, keeping this stock view aligned with SOR.
+const StoreSohDistribution = ({ styleNumber, style, styleRows, onStyleChange }) => {
+  const filters = useMerchFilters();
+  const [showRetired, setShowRetired] = useState(false);
+  const [allRows, setAllRows] = useState([]);
+  const [loadingAll, setLoadingAll] = useState(false);
+  const [errorAll, setErrorAll] = useState(null);
+
+  useEffect(() => {
+    if (styleNumber) return;
+    let cancelled = false;
+    setLoadingAll(true);
+    setErrorAll(null);
+    apiFetch("/merch/style-stores", {
+      params: {
+        from_date: filters.from_date,
+        to_date: filters.to_date,
+        country: filters.country,
+        include_retired: showRetired,
+      },
+    })
+      .then(d => { if (!cancelled) setAllRows(d.stores || []); })
+      .catch(e => {
+        if (!cancelled) setErrorAll(e?.response?.data?.detail || e.message);
+      })
+      .finally(() => { if (!cancelled) setLoadingAll(false); });
+    return () => { cancelled = true; };
+  }, [styleNumber, filters.from_date, filters.to_date, filters.country, filters.dataVersion, showRetired]);
+
+  const rows = styleNumber
+    ? (style?.tier === "Retired" && !showRetired ? [] : (styleRows || []))
+    : allRows;
+
+  const chart = useMemo(() => rows
+    .map(r => ({
+      name: r.store,
+      tier: r.store_tier || "—",
+      soh: Number(r.current_stock || 0),
+    }))
+    .sort((a, b) => (b.soh - a.soh) || a.name.localeCompare(b.name)),
+  [rows]);
+
+  const subtitle = styleNumber && style
+    ? `${style.style_name} · ${style.style_number} — SOH per location`
+    : "Current SOH units per location · sorted highest to lowest";
+  const retiredHidden = Boolean(styleNumber && style?.tier === "Retired" && !showRetired);
+
+  return (
+    <div className="card-white p-5" data-testid="store-soh-distribution">
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <SectionTitle title="Stock on Hand by Store" subtitle={subtitle} />
+        <label className="inline-flex items-center gap-2 text-[11px] text-foreground/70 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={showRetired}
+            onChange={e => setShowRetired(e.target.checked)}
+            className="accent-brand"
+          />
+          Include retired stock
+        </label>
+      </div>
+
+      <div className="mt-3 flex flex-wrap items-end gap-3">
+        <div>
+          <div className="text-[10px] font-bold uppercase tracking-wide text-muted mb-1">Style filter</div>
+          <MerchStyleSearch value={styleNumber} onChange={onStyleChange} />
+        </div>
+        {!styleNumber && (
+          <span className="pb-2 text-[11px] text-muted">
+            {showRetired ? "All styles aggregated" : "All active styles aggregated"}
+          </span>
+        )}
+      </div>
+
+      {loadingAll ? <Loading label="Loading stock by location…" /> :
+       errorAll ? <ErrorBox message={errorAll} /> :
+       retiredHidden ? (
+         <Empty label="This style is retired. Turn on “Include retired stock” to view its locations." />
+       ) :
+       chart.length === 0 ? <Empty label="No location stock is available for this scope." /> : (
+        <>
+          <ResponsiveContainer width="100%" height={240}>
+            <BarChart data={chart} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+              <XAxis
+                dataKey="name"
+                tick={{ fontSize: 8 }}
+                interval={0}
+                angle={-60}
+                textAnchor="end"
+                height={84}
+              />
+              <YAxis tick={{ fontSize: 9 }} tickFormatter={v => fmtNum(v)} />
+              <Tooltip content={({ active, payload, label }) => {
+                if (!active || !payload?.length) return null;
+                const d = payload[0].payload;
+                return (
+                  <div className="bg-white border border-border rounded-lg shadow-md px-3 py-2 text-[11px]">
+                    <div className="font-bold mb-0.5">
+                      {label}{d.tier && d.tier !== "—" ? ` · Tier ${d.tier}` : ""}
+                    </div>
+                    <div>Stock on hand: {fmtNum(d.soh)} units</div>
+                  </div>
+                );
+              }} />
+              <Bar dataKey="soh" name="SOH units" radius={[3, 3, 0, 0]}>
+                {chart.map((d, i) => (
+                  <Cell key={i} fill={STORE_TIER_COLOR[d.tier] || "#d1d5db"} />
+                ))}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+          <div className="mt-1 flex items-center flex-wrap gap-x-4 gap-y-1 text-[10.5px] text-foreground/60">
+            {Object.entries(STORE_TIER_COLOR).map(([t, c]) => (
+              <span key={t} className="inline-flex items-center gap-1.5">
+                <span className="w-2.5 h-2.5 rounded-sm inline-block" style={{ background: c }} />
+                Tier {t} store
+              </span>
+            ))}
+            <span className="text-foreground/40">Store tier = trailing-90-day revenue rank</span>
+          </div>
+        </>
+      )}
+    </div>
+  );
+};
+
 // Display-only tidy-up for colour labels that carry style-number/size noise,
 // e.g. "Mustard / 0819102 / F" → "Mustard",
 //      "Hunters Green - Hunters Green / V0323019 / L" → "Hunters Green".
@@ -374,6 +503,17 @@ const MerchDeepDive = () => {
     });
   };
 
+  const handleViewInventory = () => {
+    if (!styleNumber) return;
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev);
+      next.set("tab", "merch-inventory");
+      next.set("style", styleNumber);
+      next.set("expanded", "true");
+      return next;
+    });
+  };
+
   // ── Derived chart data ───────────────────────────────────────────────────
   const weeklyChart = useMemo(() => {
     if (!weeks.length) return [];
@@ -663,6 +803,12 @@ const MerchDeepDive = () => {
           <p className="text-[13px] text-foreground font-medium">Search for a style to get started</p>
           <MerchStyleSearch value={styleNumber} onChange={handleStyleChange} />
         </div>
+        <StoreSohDistribution
+          styleNumber={styleNumber}
+          style={style}
+          styleRows={storePerf}
+          onStyleChange={handleStyleChange}
+        />
       </div>
     );
   }
@@ -708,6 +854,25 @@ const MerchDeepDive = () => {
   // that colour has stock now, so Retired-tier styles always read 0
   // (style-level retirement cascades to every colourway).
   const activeColours = style.tier === "Retired" ? 0 : (style.colours_in_stock || 0);
+
+  // Gross Margin Waterfall — the API resolves cost across buying orders,
+  // product master, and completed manufacturing/DPS costing in that order.
+  // Keep the warning only for a genuinely missing/non-zero cost.
+  const avgSellingPrice = Number(style.avg_selling_price);
+  const standardCost = Number(style.standard_cost_kes);
+  const hasCost = Number.isFinite(standardCost) && standardCost > 0;
+  const hasSellingPrice = Number.isFinite(avgSellingPrice) && avgSellingPrice > 0;
+  const costSource = style.cost_source || null;
+  const costDate = style.cost_date ? fmtDate(style.cost_date) : null;
+  const costSourceNote = hasCost
+    ? `Cost: ${fmtKES(standardCost)} · from ${costSource || "available costing data"}${costDate ? ` (${costDate})` : ""}`
+    : null;
+  const grossMarginKes = hasCost && hasSellingPrice
+    ? avgSellingPrice - standardCost
+    : null;
+  const grossMarginPct = grossMarginKes !== null
+    ? (grossMarginKes / avgSellingPrice) * 100
+    : null;
 
   return (
     <div className="space-y-5 pb-8">
@@ -1183,12 +1348,30 @@ const MerchDeepDive = () => {
         </div>
       </div>
 
-      {/* ── Row 1c: Colourway Performance (Active styles only) ──────────── */}
+      {/* ── Row 1c: Store SOH distribution ───────────────────────────────── */}
+      <StoreSohDistribution
+        styleNumber={styleNumber}
+        style={style}
+        styleRows={storePerf}
+        onStyleChange={handleStyleChange}
+      />
+
+      {/* ── Row 1d: Colourway Performance (Active styles only) ──────────── */}
       {style.tier !== "Retired" && (
         <div className="card-white p-5">
           <SectionTitle
             title={`Colourway Performance (${periodLabel})`}
             subtitle="Revenue, stock on hand, sell-through and weeks of cover by colourway · colourways with no stock and no period sales are hidden"
+            action={styleNumber ? (
+              <button
+                type="button"
+                onClick={handleViewInventory}
+                className="shrink-0 text-[11px] font-semibold text-[#1a5c38] hover:text-[#124229] hover:underline underline-offset-2 focus:outline-none focus:ring-2 focus:ring-[#1a5c38]/25 rounded px-1 py-0.5"
+                data-testid="colourway-view-inventory"
+              >
+                View stock breakdown <span aria-hidden="true">→</span>
+              </button>
+            ) : null}
           />
           {/* ── Colourway Recommendations — rule-based, above the chart grid ── */}
           {colorChart.rows.length > 0 && (
@@ -1466,29 +1649,59 @@ const MerchDeepDive = () => {
           </div>
         </div>
 
-        {/* Gross Margin Waterfall placeholder — 3 */}
+        {/* Gross Margin Waterfall — 3 */}
         <div className="lg:col-span-3 card-white p-5">
-          <SectionTitle title="Gross Margin Waterfall" subtitle="Indicative — Cost N/A" />
+          <SectionTitle
+            title="Gross Margin Waterfall"
+            subtitle={hasCost ? "Indicative" : "Indicative — Cost N/A"}
+          />
           <div className="mt-4 space-y-2">
             {[
               { label: "Full Price", value: style.full_price || 0, color: "#1a5c38" },
               { label: "Avg Selling", value: style.avg_selling_price || 0, color: "#4b7bec" },
               { label: "Discount", value: -(style.full_price - style.avg_selling_price || 0), color: "#ef4444" },
-              { label: "Cost", value: null, color: "#9ca3af" },
-              { label: "Gross Margin", value: null, color: "#9ca3af" },
+              { label: "Cost", value: hasCost ? standardCost : null, color: "#334155" },
+              {
+                label: "Gross Margin",
+                value: grossMarginKes,
+                pct: grossMarginPct,
+                color: grossMarginKes === null ? "#9ca3af" : grossMarginKes >= 0 ? "#1a5c38" : "#ef4444",
+              },
             ].map(({ label, value, color }) => (
               <div key={label} className="flex items-center gap-2">
                 <div className="w-2.5 h-2.5 rounded-sm flex-shrink-0" style={{ background: color }} />
                 <span className="text-[11.5px] text-foreground flex-1">{label}</span>
-                <span className="text-[12px] font-bold tabular-nums" style={{ color }}>
-                  {value === null ? "N/A" : fmtKES(Math.abs(value))}
-                </span>
+                {label === "Gross Margin" && value !== null ? (
+                  <span className="text-right leading-tight" style={{ color }}>
+                    <span className="block text-[14px] font-extrabold tabular-nums">
+                      {fmtPct(pct)}
+                    </span>
+                    <span className="block text-[10px] font-semibold tabular-nums">
+                      {fmtKES(value)}
+                    </span>
+                  </span>
+                ) : (
+                  <span className="text-[12px] font-bold tabular-nums" style={{ color }}>
+                    {value === null ? "N/A" : fmtKES(Math.abs(value))}
+                  </span>
+                )}
               </div>
             ))}
           </div>
-          <div className="mt-3 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-[10.5px] text-amber-700">
-            Cost price not available in current data — Gross Margin cannot be calculated.
-          </div>
+          {hasCost ? (
+            <div className="mt-3 text-[10.5px] text-muted">
+              {costSourceNote}
+            </div>
+          ) : (
+            <div className="mt-3 text-[10.5px] text-muted">
+              Checked last reorder/buying-order cost, product-master cost, and production/DPS costing records.
+            </div>
+          )}
+          {!hasCost && (
+            <div className="mt-3 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-[10.5px] text-amber-700">
+              No non-zero cost was found in the checked sources — Gross Margin cannot be calculated.
+            </div>
+          )}
         </div>
         {/* Monthly Revenue — 4 */}
         <div className="lg:col-span-4 card-white p-5">

@@ -27,6 +27,8 @@ import type {
   CataloguePage,
   CategorySales,
   ChannelSales,
+  ColorwayInput,
+  ColorwayUpdate,
   CommentInput,
   CostEstimateUpdate,
   FitSessionInput,
@@ -65,6 +67,27 @@ import type {
   WorkspaceBoardCard,
   WorkspaceComment,
   WorkspaceDashboard,
+  WorkspaceL10AgendaNotes,
+  WorkspaceL10CascadingMessage,
+  WorkspaceL10CascadingMessageInput,
+  WorkspaceL10CheckinsInput,
+  WorkspaceL10HeadlinesInput,
+  WorkspaceL10Issue,
+  WorkspaceL10IssueActionInput,
+  WorkspaceL10IssueInput,
+  WorkspaceL10IssuesInput,
+  WorkspaceL10Meeting,
+  WorkspaceL10MeetingDetail,
+  WorkspaceL10RatingsInput,
+  WorkspaceL10Rock,
+  WorkspaceL10RockStatusInput,
+  WorkspaceL10ScorecardEntry,
+  WorkspaceL10ScorecardEntryInput,
+  WorkspaceL10Todo,
+  WorkspaceL10TodosInput,
+  WorkspaceMutationResult,
+  WorkspacePhotoUploadInput,
+  WorkspacePhotoUploadResponse,
   WorkspacePlan,
   WorkspacePlanHistory,
   WorkspacePlanIndexItem,
@@ -73,6 +96,10 @@ import type {
   WorkspaceShowcase,
   WorkspaceStyle,
   WorkspaceStyleDetail,
+  WorkspaceTeamBirthday,
+  WorkspaceTeamDirectoryMember,
+  WorkspaceTeamDirectoryMemberInput,
+  WorkspaceTeamDirectoryReorderInput,
   WorkspaceTeamMember,
   WorkspaceTeamMemberInput
 } from './api.schemas';
@@ -1373,6 +1400,522 @@ export const useDeleteWorkspaceTeamMember = <TError = ErrorType<void>,
       return useMutation(getDeleteWorkspaceTeamMemberMutationOptions(options));
     }
 
+export const getListWorkspaceTeamDirectoryUrl = () => {
+
+
+
+
+  return `/api/workspace/team-directory`
+}
+
+/**
+ * @summary List Product Department team directory members
+ */
+export const listWorkspaceTeamDirectory = async ( options?: RequestInit): Promise<WorkspaceTeamDirectoryMember[]> => {
+
+  return customFetch<WorkspaceTeamDirectoryMember[]>(getListWorkspaceTeamDirectoryUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getListWorkspaceTeamDirectoryQueryKey = () => {
+    return [
+    `/api/workspace/team-directory`
+    ] as const;
+    }
+
+
+export const getListWorkspaceTeamDirectoryQueryOptions = <TData = Awaited<ReturnType<typeof listWorkspaceTeamDirectory>>, TError = ErrorType<unknown>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listWorkspaceTeamDirectory>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListWorkspaceTeamDirectoryQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listWorkspaceTeamDirectory>>> = ({ signal }) => listWorkspaceTeamDirectory({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listWorkspaceTeamDirectory>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type ListWorkspaceTeamDirectoryQueryResult = NonNullable<Awaited<ReturnType<typeof listWorkspaceTeamDirectory>>>
+export type ListWorkspaceTeamDirectoryQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary List Product Department team directory members
+ */
+
+export function useListWorkspaceTeamDirectory<TData = Awaited<ReturnType<typeof listWorkspaceTeamDirectory>>, TError = ErrorType<unknown>>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listWorkspaceTeamDirectory>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getListWorkspaceTeamDirectoryQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+
+export const getCreateWorkspaceTeamDirectoryMemberUrl = () => {
+
+
+
+
+  return `/api/workspace/team-directory`
+}
+
+/**
+ * @summary Add a Product Department directory member
+ */
+export const createWorkspaceTeamDirectoryMember = async (workspaceTeamDirectoryMemberInput: WorkspaceTeamDirectoryMemberInput, options?: RequestInit): Promise<WorkspaceTeamDirectoryMember> => {
+
+  return customFetch<WorkspaceTeamDirectoryMember>(getCreateWorkspaceTeamDirectoryMemberUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      workspaceTeamDirectoryMemberInput,)
+  }
+);}
+
+
+
+
+export const getCreateWorkspaceTeamDirectoryMemberMutationOptions = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createWorkspaceTeamDirectoryMember>>, TError,{data: BodyType<WorkspaceTeamDirectoryMemberInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof createWorkspaceTeamDirectoryMember>>, TError,{data: BodyType<WorkspaceTeamDirectoryMemberInput>}, TContext> => {
+
+const mutationKey = ['createWorkspaceTeamDirectoryMember'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof createWorkspaceTeamDirectoryMember>>, {data: BodyType<WorkspaceTeamDirectoryMemberInput>}> = (props) => {
+          const {data} = props ?? {};
+
+          return  createWorkspaceTeamDirectoryMember(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type CreateWorkspaceTeamDirectoryMemberMutationResult = NonNullable<Awaited<ReturnType<typeof createWorkspaceTeamDirectoryMember>>>
+    export type CreateWorkspaceTeamDirectoryMemberMutationBody = BodyType<WorkspaceTeamDirectoryMemberInput>
+    export type CreateWorkspaceTeamDirectoryMemberMutationError = ErrorType<void>
+
+    /**
+ * @summary Add a Product Department directory member
+ */
+export const useCreateWorkspaceTeamDirectoryMember = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createWorkspaceTeamDirectoryMember>>, TError,{data: BodyType<WorkspaceTeamDirectoryMemberInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof createWorkspaceTeamDirectoryMember>>,
+        TError,
+        {data: BodyType<WorkspaceTeamDirectoryMemberInput>},
+        TContext
+      > => {
+      return useMutation(getCreateWorkspaceTeamDirectoryMemberMutationOptions(options));
+    }
+
+export const getListTodayTeamBirthdaysUrl = () => {
+
+
+
+
+  return `/api/team/birthdays/today`
+}
+
+/**
+ * @summary List Product Department birthdays for today
+ */
+export const listTodayTeamBirthdays = async ( options?: RequestInit): Promise<WorkspaceTeamBirthday[]> => {
+
+  return customFetch<WorkspaceTeamBirthday[]>(getListTodayTeamBirthdaysUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getListTodayTeamBirthdaysQueryKey = () => {
+    return [
+    `/api/team/birthdays/today`
+    ] as const;
+    }
+
+
+export const getListTodayTeamBirthdaysQueryOptions = <TData = Awaited<ReturnType<typeof listTodayTeamBirthdays>>, TError = ErrorType<void>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listTodayTeamBirthdays>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListTodayTeamBirthdaysQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listTodayTeamBirthdays>>> = ({ signal }) => listTodayTeamBirthdays({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listTodayTeamBirthdays>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type ListTodayTeamBirthdaysQueryResult = NonNullable<Awaited<ReturnType<typeof listTodayTeamBirthdays>>>
+export type ListTodayTeamBirthdaysQueryError = ErrorType<void>
+
+
+/**
+ * @summary List Product Department birthdays for today
+ */
+
+export function useListTodayTeamBirthdays<TData = Awaited<ReturnType<typeof listTodayTeamBirthdays>>, TError = ErrorType<void>>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listTodayTeamBirthdays>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getListTodayTeamBirthdaysQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+
+export const getUpdateWorkspaceTeamDirectoryMemberUrl = (id: number,) => {
+
+
+
+
+  return `/api/workspace/team-directory/${id}`
+}
+
+/**
+ * @summary Update a Product Department directory member
+ */
+export const updateWorkspaceTeamDirectoryMember = async (id: number,
+    workspaceTeamDirectoryMemberInput: WorkspaceTeamDirectoryMemberInput, options?: RequestInit): Promise<WorkspaceTeamDirectoryMember> => {
+
+  return customFetch<WorkspaceTeamDirectoryMember>(getUpdateWorkspaceTeamDirectoryMemberUrl(id),
+  {
+    ...options,
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      workspaceTeamDirectoryMemberInput,)
+  }
+);}
+
+
+
+
+export const getUpdateWorkspaceTeamDirectoryMemberMutationOptions = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateWorkspaceTeamDirectoryMember>>, TError,{id: number;data: BodyType<WorkspaceTeamDirectoryMemberInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof updateWorkspaceTeamDirectoryMember>>, TError,{id: number;data: BodyType<WorkspaceTeamDirectoryMemberInput>}, TContext> => {
+
+const mutationKey = ['updateWorkspaceTeamDirectoryMember'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof updateWorkspaceTeamDirectoryMember>>, {id: number;data: BodyType<WorkspaceTeamDirectoryMemberInput>}> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  updateWorkspaceTeamDirectoryMember(id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type UpdateWorkspaceTeamDirectoryMemberMutationResult = NonNullable<Awaited<ReturnType<typeof updateWorkspaceTeamDirectoryMember>>>
+    export type UpdateWorkspaceTeamDirectoryMemberMutationBody = BodyType<WorkspaceTeamDirectoryMemberInput>
+    export type UpdateWorkspaceTeamDirectoryMemberMutationError = ErrorType<void>
+
+    /**
+ * @summary Update a Product Department directory member
+ */
+export const useUpdateWorkspaceTeamDirectoryMember = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateWorkspaceTeamDirectoryMember>>, TError,{id: number;data: BodyType<WorkspaceTeamDirectoryMemberInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof updateWorkspaceTeamDirectoryMember>>,
+        TError,
+        {id: number;data: BodyType<WorkspaceTeamDirectoryMemberInput>},
+        TContext
+      > => {
+      return useMutation(getUpdateWorkspaceTeamDirectoryMemberMutationOptions(options));
+    }
+
+export const getReorderWorkspaceTeamDirectoryUrl = () => {
+
+
+
+
+  return `/api/workspace/team-directory/reorder`
+}
+
+/**
+ * @summary Reorder directory members within their sections
+ */
+export const reorderWorkspaceTeamDirectory = async (workspaceTeamDirectoryReorderInput: WorkspaceTeamDirectoryReorderInput, options?: RequestInit): Promise<void> => {
+
+  return customFetch<void>(getReorderWorkspaceTeamDirectoryUrl(),
+  {
+    ...options,
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      workspaceTeamDirectoryReorderInput,)
+  }
+);}
+
+
+
+
+export const getReorderWorkspaceTeamDirectoryMutationOptions = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof reorderWorkspaceTeamDirectory>>, TError,{data: BodyType<WorkspaceTeamDirectoryReorderInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof reorderWorkspaceTeamDirectory>>, TError,{data: BodyType<WorkspaceTeamDirectoryReorderInput>}, TContext> => {
+
+const mutationKey = ['reorderWorkspaceTeamDirectory'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof reorderWorkspaceTeamDirectory>>, {data: BodyType<WorkspaceTeamDirectoryReorderInput>}> = (props) => {
+          const {data} = props ?? {};
+
+          return  reorderWorkspaceTeamDirectory(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type ReorderWorkspaceTeamDirectoryMutationResult = NonNullable<Awaited<ReturnType<typeof reorderWorkspaceTeamDirectory>>>
+    export type ReorderWorkspaceTeamDirectoryMutationBody = BodyType<WorkspaceTeamDirectoryReorderInput>
+    export type ReorderWorkspaceTeamDirectoryMutationError = ErrorType<void>
+
+    /**
+ * @summary Reorder directory members within their sections
+ */
+export const useReorderWorkspaceTeamDirectory = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof reorderWorkspaceTeamDirectory>>, TError,{data: BodyType<WorkspaceTeamDirectoryReorderInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof reorderWorkspaceTeamDirectory>>,
+        TError,
+        {data: BodyType<WorkspaceTeamDirectoryReorderInput>},
+        TContext
+      > => {
+      return useMutation(getReorderWorkspaceTeamDirectoryMutationOptions(options));
+    }
+
+export const getRequestWorkspaceTeamDirectoryPhotoUploadUrl = () => {
+
+
+
+
+  return `/api/workspace/team-directory/upload-url`
+}
+
+/**
+ * @summary Request a direct upload URL for a directory photo
+ */
+export const requestWorkspaceTeamDirectoryPhotoUpload = async (workspacePhotoUploadInput: WorkspacePhotoUploadInput, options?: RequestInit): Promise<WorkspacePhotoUploadResponse> => {
+
+  return customFetch<WorkspacePhotoUploadResponse>(getRequestWorkspaceTeamDirectoryPhotoUploadUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      workspacePhotoUploadInput,)
+  }
+);}
+
+
+
+
+export const getRequestWorkspaceTeamDirectoryPhotoUploadMutationOptions = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof requestWorkspaceTeamDirectoryPhotoUpload>>, TError,{data: BodyType<WorkspacePhotoUploadInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof requestWorkspaceTeamDirectoryPhotoUpload>>, TError,{data: BodyType<WorkspacePhotoUploadInput>}, TContext> => {
+
+const mutationKey = ['requestWorkspaceTeamDirectoryPhotoUpload'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof requestWorkspaceTeamDirectoryPhotoUpload>>, {data: BodyType<WorkspacePhotoUploadInput>}> = (props) => {
+          const {data} = props ?? {};
+
+          return  requestWorkspaceTeamDirectoryPhotoUpload(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type RequestWorkspaceTeamDirectoryPhotoUploadMutationResult = NonNullable<Awaited<ReturnType<typeof requestWorkspaceTeamDirectoryPhotoUpload>>>
+    export type RequestWorkspaceTeamDirectoryPhotoUploadMutationBody = BodyType<WorkspacePhotoUploadInput>
+    export type RequestWorkspaceTeamDirectoryPhotoUploadMutationError = ErrorType<void>
+
+    /**
+ * @summary Request a direct upload URL for a directory photo
+ */
+export const useRequestWorkspaceTeamDirectoryPhotoUpload = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof requestWorkspaceTeamDirectoryPhotoUpload>>, TError,{data: BodyType<WorkspacePhotoUploadInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof requestWorkspaceTeamDirectoryPhotoUpload>>,
+        TError,
+        {data: BodyType<WorkspacePhotoUploadInput>},
+        TContext
+      > => {
+      return useMutation(getRequestWorkspaceTeamDirectoryPhotoUploadMutationOptions(options));
+    }
+
+export const getGetWorkspaceTeamDirectoryPhotoUrl = (id: number,) => {
+
+
+
+
+  return `/api/workspace/team-directory/${id}/photo`
+}
+
+/**
+ * @summary Serve a directory profile photo
+ */
+export const getWorkspaceTeamDirectoryPhoto = async (id: number, options?: RequestInit): Promise<Blob> => {
+
+  return customFetch<Blob>(getGetWorkspaceTeamDirectoryPhotoUrl(id),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetWorkspaceTeamDirectoryPhotoQueryKey = (id: number,) => {
+    return [
+    `/api/workspace/team-directory/${id}/photo`
+    ] as const;
+    }
+
+
+export const getGetWorkspaceTeamDirectoryPhotoQueryOptions = <TData = Awaited<ReturnType<typeof getWorkspaceTeamDirectoryPhoto>>, TError = ErrorType<void>>(id: number, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getWorkspaceTeamDirectoryPhoto>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetWorkspaceTeamDirectoryPhotoQueryKey(id);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getWorkspaceTeamDirectoryPhoto>>> = ({ signal }) => getWorkspaceTeamDirectoryPhoto(id, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: !!(id), ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getWorkspaceTeamDirectoryPhoto>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetWorkspaceTeamDirectoryPhotoQueryResult = NonNullable<Awaited<ReturnType<typeof getWorkspaceTeamDirectoryPhoto>>>
+export type GetWorkspaceTeamDirectoryPhotoQueryError = ErrorType<void>
+
+
+/**
+ * @summary Serve a directory profile photo
+ */
+
+export function useGetWorkspaceTeamDirectoryPhoto<TData = Awaited<ReturnType<typeof getWorkspaceTeamDirectoryPhoto>>, TError = ErrorType<void>>(
+ id: number, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getWorkspaceTeamDirectoryPhoto>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetWorkspaceTeamDirectoryPhotoQueryOptions(id,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+
 export const getGetWorkspaceDashboardUrl = () => {
 
 
@@ -1449,6 +1992,1094 @@ export function useGetWorkspaceDashboard<TData = Awaited<ReturnType<typeof getWo
 
 
 
+
+export const getListWorkspaceL10MeetingsUrl = () => {
+
+
+
+
+  return `/api/workspace/l10/meetings`
+}
+
+/**
+ * @summary List Product Workspace EOS Level 10 meetings
+ */
+export const listWorkspaceL10Meetings = async ( options?: RequestInit): Promise<WorkspaceL10Meeting[]> => {
+
+  return customFetch<WorkspaceL10Meeting[]>(getListWorkspaceL10MeetingsUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getListWorkspaceL10MeetingsQueryKey = () => {
+    return [
+    `/api/workspace/l10/meetings`
+    ] as const;
+    }
+
+
+export const getListWorkspaceL10MeetingsQueryOptions = <TData = Awaited<ReturnType<typeof listWorkspaceL10Meetings>>, TError = ErrorType<unknown>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listWorkspaceL10Meetings>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListWorkspaceL10MeetingsQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listWorkspaceL10Meetings>>> = ({ signal }) => listWorkspaceL10Meetings({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listWorkspaceL10Meetings>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type ListWorkspaceL10MeetingsQueryResult = NonNullable<Awaited<ReturnType<typeof listWorkspaceL10Meetings>>>
+export type ListWorkspaceL10MeetingsQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary List Product Workspace EOS Level 10 meetings
+ */
+
+export function useListWorkspaceL10Meetings<TData = Awaited<ReturnType<typeof listWorkspaceL10Meetings>>, TError = ErrorType<unknown>>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listWorkspaceL10Meetings>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getListWorkspaceL10MeetingsQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+
+export const getGetWorkspaceL10MeetingUrl = (meetingId: number,) => {
+
+
+
+
+  return `/api/workspace/l10/meetings/${meetingId}`
+}
+
+/**
+ * @summary Get a complete L10 meeting
+ */
+export const getWorkspaceL10Meeting = async (meetingId: number, options?: RequestInit): Promise<WorkspaceL10MeetingDetail> => {
+
+  return customFetch<WorkspaceL10MeetingDetail>(getGetWorkspaceL10MeetingUrl(meetingId),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetWorkspaceL10MeetingQueryKey = (meetingId: number,) => {
+    return [
+    `/api/workspace/l10/meetings/${meetingId}`
+    ] as const;
+    }
+
+
+export const getGetWorkspaceL10MeetingQueryOptions = <TData = Awaited<ReturnType<typeof getWorkspaceL10Meeting>>, TError = ErrorType<void>>(meetingId: number, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getWorkspaceL10Meeting>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetWorkspaceL10MeetingQueryKey(meetingId);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getWorkspaceL10Meeting>>> = ({ signal }) => getWorkspaceL10Meeting(meetingId, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: !!(meetingId), ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getWorkspaceL10Meeting>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetWorkspaceL10MeetingQueryResult = NonNullable<Awaited<ReturnType<typeof getWorkspaceL10Meeting>>>
+export type GetWorkspaceL10MeetingQueryError = ErrorType<void>
+
+
+/**
+ * @summary Get a complete L10 meeting
+ */
+
+export function useGetWorkspaceL10Meeting<TData = Awaited<ReturnType<typeof getWorkspaceL10Meeting>>, TError = ErrorType<void>>(
+ meetingId: number, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getWorkspaceL10Meeting>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetWorkspaceL10MeetingQueryOptions(meetingId,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+
+export const getUpdateWorkspaceL10CheckinsUrl = (meetingId: number,) => {
+
+
+
+
+  return `/api/workspace/l10/meetings/${meetingId}/checkins`
+}
+
+/**
+ * @summary Save L10 check-in rows
+ */
+export const updateWorkspaceL10Checkins = async (meetingId: number,
+    workspaceL10CheckinsInput: WorkspaceL10CheckinsInput, options?: RequestInit): Promise<WorkspaceMutationResult> => {
+
+  return customFetch<WorkspaceMutationResult>(getUpdateWorkspaceL10CheckinsUrl(meetingId),
+  {
+    ...options,
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      workspaceL10CheckinsInput,)
+  }
+);}
+
+
+
+
+export const getUpdateWorkspaceL10CheckinsMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateWorkspaceL10Checkins>>, TError,{meetingId: number;data: BodyType<WorkspaceL10CheckinsInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof updateWorkspaceL10Checkins>>, TError,{meetingId: number;data: BodyType<WorkspaceL10CheckinsInput>}, TContext> => {
+
+const mutationKey = ['updateWorkspaceL10Checkins'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof updateWorkspaceL10Checkins>>, {meetingId: number;data: BodyType<WorkspaceL10CheckinsInput>}> = (props) => {
+          const {meetingId,data} = props ?? {};
+
+          return  updateWorkspaceL10Checkins(meetingId,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type UpdateWorkspaceL10CheckinsMutationResult = NonNullable<Awaited<ReturnType<typeof updateWorkspaceL10Checkins>>>
+    export type UpdateWorkspaceL10CheckinsMutationBody = BodyType<WorkspaceL10CheckinsInput>
+    export type UpdateWorkspaceL10CheckinsMutationError = ErrorType<unknown>
+
+    /**
+ * @summary Save L10 check-in rows
+ */
+export const useUpdateWorkspaceL10Checkins = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateWorkspaceL10Checkins>>, TError,{meetingId: number;data: BodyType<WorkspaceL10CheckinsInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof updateWorkspaceL10Checkins>>,
+        TError,
+        {meetingId: number;data: BodyType<WorkspaceL10CheckinsInput>},
+        TContext
+      > => {
+      return useMutation(getUpdateWorkspaceL10CheckinsMutationOptions(options));
+    }
+
+export const getUpdateWorkspaceL10ScorecardEntryUrl = (meetingId: number,
+    metricId: number,) => {
+
+
+
+
+  return `/api/workspace/l10/meetings/${meetingId}/scorecard/${metricId}`
+}
+
+/**
+ * @summary Save an L10 scorecard value and status
+ */
+export const updateWorkspaceL10ScorecardEntry = async (meetingId: number,
+    metricId: number,
+    workspaceL10ScorecardEntryInput: WorkspaceL10ScorecardEntryInput, options?: RequestInit): Promise<WorkspaceL10ScorecardEntry> => {
+
+  return customFetch<WorkspaceL10ScorecardEntry>(getUpdateWorkspaceL10ScorecardEntryUrl(meetingId,metricId),
+  {
+    ...options,
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      workspaceL10ScorecardEntryInput,)
+  }
+);}
+
+
+
+
+export const getUpdateWorkspaceL10ScorecardEntryMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateWorkspaceL10ScorecardEntry>>, TError,{meetingId: number;metricId: number;data: BodyType<WorkspaceL10ScorecardEntryInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof updateWorkspaceL10ScorecardEntry>>, TError,{meetingId: number;metricId: number;data: BodyType<WorkspaceL10ScorecardEntryInput>}, TContext> => {
+
+const mutationKey = ['updateWorkspaceL10ScorecardEntry'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof updateWorkspaceL10ScorecardEntry>>, {meetingId: number;metricId: number;data: BodyType<WorkspaceL10ScorecardEntryInput>}> = (props) => {
+          const {meetingId,metricId,data} = props ?? {};
+
+          return  updateWorkspaceL10ScorecardEntry(meetingId,metricId,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type UpdateWorkspaceL10ScorecardEntryMutationResult = NonNullable<Awaited<ReturnType<typeof updateWorkspaceL10ScorecardEntry>>>
+    export type UpdateWorkspaceL10ScorecardEntryMutationBody = BodyType<WorkspaceL10ScorecardEntryInput>
+    export type UpdateWorkspaceL10ScorecardEntryMutationError = ErrorType<unknown>
+
+    /**
+ * @summary Save an L10 scorecard value and status
+ */
+export const useUpdateWorkspaceL10ScorecardEntry = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateWorkspaceL10ScorecardEntry>>, TError,{meetingId: number;metricId: number;data: BodyType<WorkspaceL10ScorecardEntryInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof updateWorkspaceL10ScorecardEntry>>,
+        TError,
+        {meetingId: number;metricId: number;data: BodyType<WorkspaceL10ScorecardEntryInput>},
+        TContext
+      > => {
+      return useMutation(getUpdateWorkspaceL10ScorecardEntryMutationOptions(options));
+    }
+
+export const getUpdateWorkspaceL10RockUrl = (rockId: number,) => {
+
+
+
+
+  return `/api/workspace/l10/rocks/${rockId}`
+}
+
+/**
+ * @summary Update an L10 rock status
+ */
+export const updateWorkspaceL10Rock = async (rockId: number,
+    workspaceL10RockStatusInput: WorkspaceL10RockStatusInput, options?: RequestInit): Promise<WorkspaceL10Rock> => {
+
+  return customFetch<WorkspaceL10Rock>(getUpdateWorkspaceL10RockUrl(rockId),
+  {
+    ...options,
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      workspaceL10RockStatusInput,)
+  }
+);}
+
+
+
+
+export const getUpdateWorkspaceL10RockMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateWorkspaceL10Rock>>, TError,{rockId: number;data: BodyType<WorkspaceL10RockStatusInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof updateWorkspaceL10Rock>>, TError,{rockId: number;data: BodyType<WorkspaceL10RockStatusInput>}, TContext> => {
+
+const mutationKey = ['updateWorkspaceL10Rock'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof updateWorkspaceL10Rock>>, {rockId: number;data: BodyType<WorkspaceL10RockStatusInput>}> = (props) => {
+          const {rockId,data} = props ?? {};
+
+          return  updateWorkspaceL10Rock(rockId,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type UpdateWorkspaceL10RockMutationResult = NonNullable<Awaited<ReturnType<typeof updateWorkspaceL10Rock>>>
+    export type UpdateWorkspaceL10RockMutationBody = BodyType<WorkspaceL10RockStatusInput>
+    export type UpdateWorkspaceL10RockMutationError = ErrorType<unknown>
+
+    /**
+ * @summary Update an L10 rock status
+ */
+export const useUpdateWorkspaceL10Rock = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateWorkspaceL10Rock>>, TError,{rockId: number;data: BodyType<WorkspaceL10RockStatusInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof updateWorkspaceL10Rock>>,
+        TError,
+        {rockId: number;data: BodyType<WorkspaceL10RockStatusInput>},
+        TContext
+      > => {
+      return useMutation(getUpdateWorkspaceL10RockMutationOptions(options));
+    }
+
+export const getUpdateWorkspaceL10AgendaNotesUrl = (meetingId: number,) => {
+
+
+
+
+  return `/api/workspace/l10/meetings/${meetingId}/notes`
+}
+
+/**
+ * @summary Save L10 headlines, to-dos, IDS, and conclusion notes
+ */
+export const updateWorkspaceL10AgendaNotes = async (meetingId: number,
+    workspaceL10AgendaNotes: WorkspaceL10AgendaNotes, options?: RequestInit): Promise<WorkspaceL10AgendaNotes> => {
+
+  return customFetch<WorkspaceL10AgendaNotes>(getUpdateWorkspaceL10AgendaNotesUrl(meetingId),
+  {
+    ...options,
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      workspaceL10AgendaNotes,)
+  }
+);}
+
+
+
+
+export const getUpdateWorkspaceL10AgendaNotesMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateWorkspaceL10AgendaNotes>>, TError,{meetingId: number;data: BodyType<WorkspaceL10AgendaNotes>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof updateWorkspaceL10AgendaNotes>>, TError,{meetingId: number;data: BodyType<WorkspaceL10AgendaNotes>}, TContext> => {
+
+const mutationKey = ['updateWorkspaceL10AgendaNotes'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof updateWorkspaceL10AgendaNotes>>, {meetingId: number;data: BodyType<WorkspaceL10AgendaNotes>}> = (props) => {
+          const {meetingId,data} = props ?? {};
+
+          return  updateWorkspaceL10AgendaNotes(meetingId,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type UpdateWorkspaceL10AgendaNotesMutationResult = NonNullable<Awaited<ReturnType<typeof updateWorkspaceL10AgendaNotes>>>
+    export type UpdateWorkspaceL10AgendaNotesMutationBody = BodyType<WorkspaceL10AgendaNotes>
+    export type UpdateWorkspaceL10AgendaNotesMutationError = ErrorType<unknown>
+
+    /**
+ * @summary Save L10 headlines, to-dos, IDS, and conclusion notes
+ */
+export const useUpdateWorkspaceL10AgendaNotes = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateWorkspaceL10AgendaNotes>>, TError,{meetingId: number;data: BodyType<WorkspaceL10AgendaNotes>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof updateWorkspaceL10AgendaNotes>>,
+        TError,
+        {meetingId: number;data: BodyType<WorkspaceL10AgendaNotes>},
+        TContext
+      > => {
+      return useMutation(getUpdateWorkspaceL10AgendaNotesMutationOptions(options));
+    }
+
+export const getUpdateWorkspaceL10HeadlinesUrl = (meetingId: number,) => {
+
+
+
+
+  return `/api/workspace/l10/meetings/${meetingId}/headlines`
+}
+
+/**
+ * @summary Save L10 customer and employee headlines
+ */
+export const updateWorkspaceL10Headlines = async (meetingId: number,
+    workspaceL10HeadlinesInput: WorkspaceL10HeadlinesInput, options?: RequestInit): Promise<WorkspaceMutationResult> => {
+
+  return customFetch<WorkspaceMutationResult>(getUpdateWorkspaceL10HeadlinesUrl(meetingId),
+  {
+    ...options,
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      workspaceL10HeadlinesInput,)
+  }
+);}
+
+
+
+
+export const getUpdateWorkspaceL10HeadlinesMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateWorkspaceL10Headlines>>, TError,{meetingId: number;data: BodyType<WorkspaceL10HeadlinesInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof updateWorkspaceL10Headlines>>, TError,{meetingId: number;data: BodyType<WorkspaceL10HeadlinesInput>}, TContext> => {
+
+const mutationKey = ['updateWorkspaceL10Headlines'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof updateWorkspaceL10Headlines>>, {meetingId: number;data: BodyType<WorkspaceL10HeadlinesInput>}> = (props) => {
+          const {meetingId,data} = props ?? {};
+
+          return  updateWorkspaceL10Headlines(meetingId,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type UpdateWorkspaceL10HeadlinesMutationResult = NonNullable<Awaited<ReturnType<typeof updateWorkspaceL10Headlines>>>
+    export type UpdateWorkspaceL10HeadlinesMutationBody = BodyType<WorkspaceL10HeadlinesInput>
+    export type UpdateWorkspaceL10HeadlinesMutationError = ErrorType<unknown>
+
+    /**
+ * @summary Save L10 customer and employee headlines
+ */
+export const useUpdateWorkspaceL10Headlines = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateWorkspaceL10Headlines>>, TError,{meetingId: number;data: BodyType<WorkspaceL10HeadlinesInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof updateWorkspaceL10Headlines>>,
+        TError,
+        {meetingId: number;data: BodyType<WorkspaceL10HeadlinesInput>},
+        TContext
+      > => {
+      return useMutation(getUpdateWorkspaceL10HeadlinesMutationOptions(options));
+    }
+
+export const getUpdateWorkspaceL10TodosUrl = (meetingId: number,) => {
+
+
+
+
+  return `/api/workspace/l10/meetings/${meetingId}/todos`
+}
+
+/**
+ * @summary Save L10 to-dos
+ */
+export const updateWorkspaceL10Todos = async (meetingId: number,
+    workspaceL10TodosInput: WorkspaceL10TodosInput, options?: RequestInit): Promise<WorkspaceMutationResult> => {
+
+  return customFetch<WorkspaceMutationResult>(getUpdateWorkspaceL10TodosUrl(meetingId),
+  {
+    ...options,
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      workspaceL10TodosInput,)
+  }
+);}
+
+
+
+
+export const getUpdateWorkspaceL10TodosMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateWorkspaceL10Todos>>, TError,{meetingId: number;data: BodyType<WorkspaceL10TodosInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof updateWorkspaceL10Todos>>, TError,{meetingId: number;data: BodyType<WorkspaceL10TodosInput>}, TContext> => {
+
+const mutationKey = ['updateWorkspaceL10Todos'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof updateWorkspaceL10Todos>>, {meetingId: number;data: BodyType<WorkspaceL10TodosInput>}> = (props) => {
+          const {meetingId,data} = props ?? {};
+
+          return  updateWorkspaceL10Todos(meetingId,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type UpdateWorkspaceL10TodosMutationResult = NonNullable<Awaited<ReturnType<typeof updateWorkspaceL10Todos>>>
+    export type UpdateWorkspaceL10TodosMutationBody = BodyType<WorkspaceL10TodosInput>
+    export type UpdateWorkspaceL10TodosMutationError = ErrorType<unknown>
+
+    /**
+ * @summary Save L10 to-dos
+ */
+export const useUpdateWorkspaceL10Todos = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateWorkspaceL10Todos>>, TError,{meetingId: number;data: BodyType<WorkspaceL10TodosInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof updateWorkspaceL10Todos>>,
+        TError,
+        {meetingId: number;data: BodyType<WorkspaceL10TodosInput>},
+        TContext
+      > => {
+      return useMutation(getUpdateWorkspaceL10TodosMutationOptions(options));
+    }
+
+export const getReorderWorkspaceL10IssuesUrl = (meetingId: number,) => {
+
+
+
+
+  return `/api/workspace/l10/meetings/${meetingId}/issues/reorder`
+}
+
+/**
+ * @summary Reorder active L10 issues
+ */
+export const reorderWorkspaceL10Issues = async (meetingId: number,
+    workspaceL10IssuesInput: WorkspaceL10IssuesInput, options?: RequestInit): Promise<WorkspaceMutationResult> => {
+
+  return customFetch<WorkspaceMutationResult>(getReorderWorkspaceL10IssuesUrl(meetingId),
+  {
+    ...options,
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      workspaceL10IssuesInput,)
+  }
+);}
+
+
+
+
+export const getReorderWorkspaceL10IssuesMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof reorderWorkspaceL10Issues>>, TError,{meetingId: number;data: BodyType<WorkspaceL10IssuesInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof reorderWorkspaceL10Issues>>, TError,{meetingId: number;data: BodyType<WorkspaceL10IssuesInput>}, TContext> => {
+
+const mutationKey = ['reorderWorkspaceL10Issues'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof reorderWorkspaceL10Issues>>, {meetingId: number;data: BodyType<WorkspaceL10IssuesInput>}> = (props) => {
+          const {meetingId,data} = props ?? {};
+
+          return  reorderWorkspaceL10Issues(meetingId,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type ReorderWorkspaceL10IssuesMutationResult = NonNullable<Awaited<ReturnType<typeof reorderWorkspaceL10Issues>>>
+    export type ReorderWorkspaceL10IssuesMutationBody = BodyType<WorkspaceL10IssuesInput>
+    export type ReorderWorkspaceL10IssuesMutationError = ErrorType<unknown>
+
+    /**
+ * @summary Reorder active L10 issues
+ */
+export const useReorderWorkspaceL10Issues = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof reorderWorkspaceL10Issues>>, TError,{meetingId: number;data: BodyType<WorkspaceL10IssuesInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof reorderWorkspaceL10Issues>>,
+        TError,
+        {meetingId: number;data: BodyType<WorkspaceL10IssuesInput>},
+        TContext
+      > => {
+      return useMutation(getReorderWorkspaceL10IssuesMutationOptions(options));
+    }
+
+export const getCreateWorkspaceL10IssueUrl = (meetingId: number,) => {
+
+
+
+
+  return `/api/workspace/l10/meetings/${meetingId}/issues`
+}
+
+/**
+ * @summary Create an L10 issue
+ */
+export const createWorkspaceL10Issue = async (meetingId: number,
+    workspaceL10IssueInput: WorkspaceL10IssueInput, options?: RequestInit): Promise<WorkspaceL10Issue> => {
+
+  return customFetch<WorkspaceL10Issue>(getCreateWorkspaceL10IssueUrl(meetingId),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      workspaceL10IssueInput,)
+  }
+);}
+
+
+
+
+export const getCreateWorkspaceL10IssueMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createWorkspaceL10Issue>>, TError,{meetingId: number;data: BodyType<WorkspaceL10IssueInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof createWorkspaceL10Issue>>, TError,{meetingId: number;data: BodyType<WorkspaceL10IssueInput>}, TContext> => {
+
+const mutationKey = ['createWorkspaceL10Issue'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof createWorkspaceL10Issue>>, {meetingId: number;data: BodyType<WorkspaceL10IssueInput>}> = (props) => {
+          const {meetingId,data} = props ?? {};
+
+          return  createWorkspaceL10Issue(meetingId,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type CreateWorkspaceL10IssueMutationResult = NonNullable<Awaited<ReturnType<typeof createWorkspaceL10Issue>>>
+    export type CreateWorkspaceL10IssueMutationBody = BodyType<WorkspaceL10IssueInput>
+    export type CreateWorkspaceL10IssueMutationError = ErrorType<unknown>
+
+    /**
+ * @summary Create an L10 issue
+ */
+export const useCreateWorkspaceL10Issue = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createWorkspaceL10Issue>>, TError,{meetingId: number;data: BodyType<WorkspaceL10IssueInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof createWorkspaceL10Issue>>,
+        TError,
+        {meetingId: number;data: BodyType<WorkspaceL10IssueInput>},
+        TContext
+      > => {
+      return useMutation(getCreateWorkspaceL10IssueMutationOptions(options));
+    }
+
+export const getUpdateWorkspaceL10IssueUrl = (issueId: number,) => {
+
+
+
+
+  return `/api/workspace/l10/issues/${issueId}`
+}
+
+/**
+ * @summary Move an L10 issue to parking or resolved
+ */
+export const updateWorkspaceL10Issue = async (issueId: number,
+    workspaceL10IssueActionInput: WorkspaceL10IssueActionInput, options?: RequestInit): Promise<WorkspaceL10Issue> => {
+
+  return customFetch<WorkspaceL10Issue>(getUpdateWorkspaceL10IssueUrl(issueId),
+  {
+    ...options,
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      workspaceL10IssueActionInput,)
+  }
+);}
+
+
+
+
+export const getUpdateWorkspaceL10IssueMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateWorkspaceL10Issue>>, TError,{issueId: number;data: BodyType<WorkspaceL10IssueActionInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof updateWorkspaceL10Issue>>, TError,{issueId: number;data: BodyType<WorkspaceL10IssueActionInput>}, TContext> => {
+
+const mutationKey = ['updateWorkspaceL10Issue'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof updateWorkspaceL10Issue>>, {issueId: number;data: BodyType<WorkspaceL10IssueActionInput>}> = (props) => {
+          const {issueId,data} = props ?? {};
+
+          return  updateWorkspaceL10Issue(issueId,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type UpdateWorkspaceL10IssueMutationResult = NonNullable<Awaited<ReturnType<typeof updateWorkspaceL10Issue>>>
+    export type UpdateWorkspaceL10IssueMutationBody = BodyType<WorkspaceL10IssueActionInput>
+    export type UpdateWorkspaceL10IssueMutationError = ErrorType<unknown>
+
+    /**
+ * @summary Move an L10 issue to parking or resolved
+ */
+export const useUpdateWorkspaceL10Issue = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateWorkspaceL10Issue>>, TError,{issueId: number;data: BodyType<WorkspaceL10IssueActionInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof updateWorkspaceL10Issue>>,
+        TError,
+        {issueId: number;data: BodyType<WorkspaceL10IssueActionInput>},
+        TContext
+      > => {
+      return useMutation(getUpdateWorkspaceL10IssueMutationOptions(options));
+    }
+
+export const getCreateWorkspaceL10TodoFromIssueUrl = (issueId: number,) => {
+
+
+
+
+  return `/api/workspace/l10/issues/${issueId}/todo`
+}
+
+/**
+ * @summary Create a linked to-do from an L10 issue
+ */
+export const createWorkspaceL10TodoFromIssue = async (issueId: number, options?: RequestInit): Promise<WorkspaceL10Todo> => {
+
+  return customFetch<WorkspaceL10Todo>(getCreateWorkspaceL10TodoFromIssueUrl(issueId),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+);}
+
+
+
+
+export const getCreateWorkspaceL10TodoFromIssueMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createWorkspaceL10TodoFromIssue>>, TError,{issueId: number}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof createWorkspaceL10TodoFromIssue>>, TError,{issueId: number}, TContext> => {
+
+const mutationKey = ['createWorkspaceL10TodoFromIssue'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof createWorkspaceL10TodoFromIssue>>, {issueId: number}> = (props) => {
+          const {issueId} = props ?? {};
+
+          return  createWorkspaceL10TodoFromIssue(issueId,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type CreateWorkspaceL10TodoFromIssueMutationResult = NonNullable<Awaited<ReturnType<typeof createWorkspaceL10TodoFromIssue>>>
+
+    export type CreateWorkspaceL10TodoFromIssueMutationError = ErrorType<unknown>
+
+    /**
+ * @summary Create a linked to-do from an L10 issue
+ */
+export const useCreateWorkspaceL10TodoFromIssue = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createWorkspaceL10TodoFromIssue>>, TError,{issueId: number}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof createWorkspaceL10TodoFromIssue>>,
+        TError,
+        {issueId: number},
+        TContext
+      > => {
+      return useMutation(getCreateWorkspaceL10TodoFromIssueMutationOptions(options));
+    }
+
+export const getUpdateWorkspaceL10RatingsUrl = (meetingId: number,) => {
+
+
+
+
+  return `/api/workspace/l10/meetings/${meetingId}/ratings`
+}
+
+/**
+ * @summary Save L10 meeting ratings
+ */
+export const updateWorkspaceL10Ratings = async (meetingId: number,
+    workspaceL10RatingsInput: WorkspaceL10RatingsInput, options?: RequestInit): Promise<WorkspaceMutationResult> => {
+
+  return customFetch<WorkspaceMutationResult>(getUpdateWorkspaceL10RatingsUrl(meetingId),
+  {
+    ...options,
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      workspaceL10RatingsInput,)
+  }
+);}
+
+
+
+
+export const getUpdateWorkspaceL10RatingsMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateWorkspaceL10Ratings>>, TError,{meetingId: number;data: BodyType<WorkspaceL10RatingsInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof updateWorkspaceL10Ratings>>, TError,{meetingId: number;data: BodyType<WorkspaceL10RatingsInput>}, TContext> => {
+
+const mutationKey = ['updateWorkspaceL10Ratings'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof updateWorkspaceL10Ratings>>, {meetingId: number;data: BodyType<WorkspaceL10RatingsInput>}> = (props) => {
+          const {meetingId,data} = props ?? {};
+
+          return  updateWorkspaceL10Ratings(meetingId,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type UpdateWorkspaceL10RatingsMutationResult = NonNullable<Awaited<ReturnType<typeof updateWorkspaceL10Ratings>>>
+    export type UpdateWorkspaceL10RatingsMutationBody = BodyType<WorkspaceL10RatingsInput>
+    export type UpdateWorkspaceL10RatingsMutationError = ErrorType<unknown>
+
+    /**
+ * @summary Save L10 meeting ratings
+ */
+export const useUpdateWorkspaceL10Ratings = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateWorkspaceL10Ratings>>, TError,{meetingId: number;data: BodyType<WorkspaceL10RatingsInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof updateWorkspaceL10Ratings>>,
+        TError,
+        {meetingId: number;data: BodyType<WorkspaceL10RatingsInput>},
+        TContext
+      > => {
+      return useMutation(getUpdateWorkspaceL10RatingsMutationOptions(options));
+    }
+
+export const getUpdateWorkspaceL10CascadingMessageUrl = (meetingId: number,) => {
+
+
+
+
+  return `/api/workspace/l10/meetings/${meetingId}/cascading-message`
+}
+
+/**
+ * @summary Save the L10 cascading message
+ */
+export const updateWorkspaceL10CascadingMessage = async (meetingId: number,
+    workspaceL10CascadingMessageInput: WorkspaceL10CascadingMessageInput, options?: RequestInit): Promise<WorkspaceL10CascadingMessage> => {
+
+  return customFetch<WorkspaceL10CascadingMessage>(getUpdateWorkspaceL10CascadingMessageUrl(meetingId),
+  {
+    ...options,
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      workspaceL10CascadingMessageInput,)
+  }
+);}
+
+
+
+
+export const getUpdateWorkspaceL10CascadingMessageMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateWorkspaceL10CascadingMessage>>, TError,{meetingId: number;data: BodyType<WorkspaceL10CascadingMessageInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof updateWorkspaceL10CascadingMessage>>, TError,{meetingId: number;data: BodyType<WorkspaceL10CascadingMessageInput>}, TContext> => {
+
+const mutationKey = ['updateWorkspaceL10CascadingMessage'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof updateWorkspaceL10CascadingMessage>>, {meetingId: number;data: BodyType<WorkspaceL10CascadingMessageInput>}> = (props) => {
+          const {meetingId,data} = props ?? {};
+
+          return  updateWorkspaceL10CascadingMessage(meetingId,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type UpdateWorkspaceL10CascadingMessageMutationResult = NonNullable<Awaited<ReturnType<typeof updateWorkspaceL10CascadingMessage>>>
+    export type UpdateWorkspaceL10CascadingMessageMutationBody = BodyType<WorkspaceL10CascadingMessageInput>
+    export type UpdateWorkspaceL10CascadingMessageMutationError = ErrorType<unknown>
+
+    /**
+ * @summary Save the L10 cascading message
+ */
+export const useUpdateWorkspaceL10CascadingMessage = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateWorkspaceL10CascadingMessage>>, TError,{meetingId: number;data: BodyType<WorkspaceL10CascadingMessageInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof updateWorkspaceL10CascadingMessage>>,
+        TError,
+        {meetingId: number;data: BodyType<WorkspaceL10CascadingMessageInput>},
+        TContext
+      > => {
+      return useMutation(getUpdateWorkspaceL10CascadingMessageMutationOptions(options));
+    }
+
+export const getEndWorkspaceL10MeetingUrl = (meetingId: number,) => {
+
+
+
+
+  return `/api/workspace/l10/meetings/${meetingId}/end`
+}
+
+/**
+ * @summary Conclude an L10 meeting and make it read-only
+ */
+export const endWorkspaceL10Meeting = async (meetingId: number, options?: RequestInit): Promise<WorkspaceL10Meeting> => {
+
+  return customFetch<WorkspaceL10Meeting>(getEndWorkspaceL10MeetingUrl(meetingId),
+  {
+    ...options,
+    method: 'POST'
+
+
+  }
+);}
+
+
+
+
+export const getEndWorkspaceL10MeetingMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof endWorkspaceL10Meeting>>, TError,{meetingId: number}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof endWorkspaceL10Meeting>>, TError,{meetingId: number}, TContext> => {
+
+const mutationKey = ['endWorkspaceL10Meeting'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof endWorkspaceL10Meeting>>, {meetingId: number}> = (props) => {
+          const {meetingId} = props ?? {};
+
+          return  endWorkspaceL10Meeting(meetingId,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type EndWorkspaceL10MeetingMutationResult = NonNullable<Awaited<ReturnType<typeof endWorkspaceL10Meeting>>>
+
+    export type EndWorkspaceL10MeetingMutationError = ErrorType<unknown>
+
+    /**
+ * @summary Conclude an L10 meeting and make it read-only
+ */
+export const useEndWorkspaceL10Meeting = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof endWorkspaceL10Meeting>>, TError,{meetingId: number}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof endWorkspaceL10Meeting>>,
+        TError,
+        {meetingId: number},
+        TContext
+      > => {
+      return useMutation(getEndWorkspaceL10MeetingMutationOptions(options));
+    }
 
 export const getListWorkspaceStylesUrl = (params?: ListWorkspaceStylesParams,) => {
   const normalizedParams = new URLSearchParams();
@@ -1829,6 +3460,152 @@ export const useTransitionWorkspaceStyle = <TError = ErrorType<unknown>,
         TContext
       > => {
       return useMutation(getTransitionWorkspaceStyleMutationOptions(options));
+    }
+
+export const getCreateWorkspaceColorwayUrl = (id: number,) => {
+
+
+
+
+  return `/api/workspace/styles/${id}/colorways`
+}
+
+/**
+ * @summary Add a colourway to a style
+ */
+export const createWorkspaceColorway = async (id: number,
+    colorwayInput: ColorwayInput, options?: RequestInit): Promise<WorkspaceStyleDetail> => {
+
+  return customFetch<WorkspaceStyleDetail>(getCreateWorkspaceColorwayUrl(id),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      colorwayInput,)
+  }
+);}
+
+
+
+
+export const getCreateWorkspaceColorwayMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createWorkspaceColorway>>, TError,{id: number;data: BodyType<ColorwayInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof createWorkspaceColorway>>, TError,{id: number;data: BodyType<ColorwayInput>}, TContext> => {
+
+const mutationKey = ['createWorkspaceColorway'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof createWorkspaceColorway>>, {id: number;data: BodyType<ColorwayInput>}> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  createWorkspaceColorway(id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type CreateWorkspaceColorwayMutationResult = NonNullable<Awaited<ReturnType<typeof createWorkspaceColorway>>>
+    export type CreateWorkspaceColorwayMutationBody = BodyType<ColorwayInput>
+    export type CreateWorkspaceColorwayMutationError = ErrorType<unknown>
+
+    /**
+ * @summary Add a colourway to a style
+ */
+export const useCreateWorkspaceColorway = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createWorkspaceColorway>>, TError,{id: number;data: BodyType<ColorwayInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof createWorkspaceColorway>>,
+        TError,
+        {id: number;data: BodyType<ColorwayInput>},
+        TContext
+      > => {
+      return useMutation(getCreateWorkspaceColorwayMutationOptions(options));
+    }
+
+export const getUpdateWorkspaceColorwayUrl = (id: number,
+    colorwayId: number,) => {
+
+
+
+
+  return `/api/workspace/styles/${id}/colorways/${colorwayId}`
+}
+
+/**
+ * @summary Update a style colourway
+ */
+export const updateWorkspaceColorway = async (id: number,
+    colorwayId: number,
+    colorwayUpdate: ColorwayUpdate, options?: RequestInit): Promise<WorkspaceStyleDetail> => {
+
+  return customFetch<WorkspaceStyleDetail>(getUpdateWorkspaceColorwayUrl(id,colorwayId),
+  {
+    ...options,
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      colorwayUpdate,)
+  }
+);}
+
+
+
+
+export const getUpdateWorkspaceColorwayMutationOptions = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateWorkspaceColorway>>, TError,{id: number;colorwayId: number;data: BodyType<ColorwayUpdate>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof updateWorkspaceColorway>>, TError,{id: number;colorwayId: number;data: BodyType<ColorwayUpdate>}, TContext> => {
+
+const mutationKey = ['updateWorkspaceColorway'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof updateWorkspaceColorway>>, {id: number;colorwayId: number;data: BodyType<ColorwayUpdate>}> = (props) => {
+          const {id,colorwayId,data} = props ?? {};
+
+          return  updateWorkspaceColorway(id,colorwayId,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type UpdateWorkspaceColorwayMutationResult = NonNullable<Awaited<ReturnType<typeof updateWorkspaceColorway>>>
+    export type UpdateWorkspaceColorwayMutationBody = BodyType<ColorwayUpdate>
+    export type UpdateWorkspaceColorwayMutationError = ErrorType<unknown>
+
+    /**
+ * @summary Update a style colourway
+ */
+export const useUpdateWorkspaceColorway = <TError = ErrorType<unknown>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateWorkspaceColorway>>, TError,{id: number;colorwayId: number;data: BodyType<ColorwayUpdate>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof updateWorkspaceColorway>>,
+        TError,
+        {id: number;colorwayId: number;data: BodyType<ColorwayUpdate>},
+        TContext
+      > => {
+      return useMutation(getUpdateWorkspaceColorwayMutationOptions(options));
     }
 
 export const getUpdateWorkspaceStyleTechPackUrl = (id: number,) => {

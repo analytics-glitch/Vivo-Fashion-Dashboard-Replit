@@ -28,8 +28,24 @@ PORT = "23660"
 BASE_PATH = "/product-workspace/"
 
 [[services]]
+name = "feedback"
+paths = [ "/feedback" ]
+localPort = 23662
+
+[services.development]
+run = "pnpm --filter @workspace/vivo-product-workspace run dev"
+
+[services.production]
+serve = "static"
+publicDir = "artifacts/vivo-product-workspace/dist/public"
+
+[services.env]
+PORT = "23662"
+BASE_PATH = "/feedback/"
+
+[[services]]
 name = "api"
-paths = [ "/api/workspace", "/api/workspace/", "/api/workspace/socket.io" ]
+paths = [ "/api/workspace", "/api/workspace/", "/api/workspace/socket.io", "/api/l10", "/api/l10/", "/api/team", "/api/team/" ]
 localPort = 23661
 
 [services.development]

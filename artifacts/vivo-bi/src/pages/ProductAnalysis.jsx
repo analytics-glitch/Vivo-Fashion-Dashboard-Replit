@@ -41,6 +41,56 @@ const DIM_KEYS = ["color", "print", "size", "pos_location"];
 
 const fmtWoc = (v) => (v === null || v === undefined ? "—" : `${fmtDec(v, 1)} wk`);
 const fmtSor = (v) => (v === null || v === undefined ? "—" : `${fmtDec(v, 1)}%`);
+const asText = (value, fallback = "") => (
+  value === null || value === undefined ? fallback : String(value)
+);
+
+// API payloads are normally strict JSON objects, but a partially-written cache
+// or a proxy error has occasionally handed this page a truthy non-array/value.
+// Keep bad rows from taking down the whole dashboard error boundary. Numeric
+// fields remain untouched because the formatters already handle null/NaN.
+const normalizePaRow = (row) => {
+  if (!row || typeof row !== "object" || Array.isArray(row)) return null;
+  const textFields = [
+    "style_name", "sku", "style_number", "brand", "category", "subcategory",
+    "color", "primary_color", "print", "size", "collection", "season", "tier",
+    "pos_location", "style_status", "life_cycle", "launch_date", "last_sale",
+    "last_order_date",
+  ];
+  const next = { ...row };
+  for (const field of textFields) {
+    if (next[field] !== null && next[field] !== undefined) {
+      next[field] = asText(next[field]);
+    }
+  }
+  return next;
+};
+
+const normalizePaResponse = (value) => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { rows: [], summary: null, by_brand: [], by_subcategory: [], other_brands_summary: null };
+  }
+  const rows = Array.isArray(value.rows) ? value.rows.map(normalizePaRow).filter(Boolean) : [];
+  const byBrand = Array.isArray(value.by_brand)
+    ? value.by_brand.filter((row) => row && typeof row === "object").map((row) => ({
+      ...row,
+      brand: asText(row.brand, "Unknown"),
+    }))
+    : [];
+  const bySubcategory = Array.isArray(value.by_subcategory)
+    ? value.by_subcategory.filter((row) => row && typeof row === "object").map((row) => ({
+      ...row,
+      subcategory: asText(row.subcategory, "Unknown"),
+    }))
+    : [];
+  return {
+    ...value,
+    rows,
+    summary: value.summary && typeof value.summary === "object" ? value.summary : null,
+    by_brand: byBrand,
+    by_subcategory: bySubcategory,
+  };
+};
 // ASP / price columns show the full grouped shilling figure ("3,500") — no KES
 // prefix and no K/M abbreviation — per the user's request.
 const fmtAsp = (v) => (v === null || v === undefined || v === 0 ? "—" : fmtNum(v));
@@ -143,6 +193,13 @@ const StyleDrill = ({ styleName, params }) => {
   if (error) return <ErrorBox message={error} />;
   if (!data) return <Empty label="No detail for this style." />;
 
+  const locations = Array.isArray(data.by_location)
+    ? data.by_location.filter((row) => row && typeof row === "object").map((row) => ({
+      ...row,
+      location: asText(row.location, "Unknown location"),
+    }))
+    : [];
+
   return (
     <div className="grid grid-cols-1 gap-4" data-testid="style-drill">
       <div>
@@ -155,10 +212,10 @@ const StyleDrill = ({ styleName, params }) => {
             ? ` · Sales for ${fmtDate(params.date_from)} – ${fmtDate(params.date_to)}`
             : ""}
         </div>
-        {data.by_location && data.by_location.length ? (
+        {locations.length ? (
           <SortableTable
             testId="drill-location"
-            rows={data.by_location}
+            rows={locations}
             initialSort={{ key: "units", dir: "desc" }}
             exportName={`${styleName}_by_location.csv`.replace(/\s+/g, "-")}
             maxHeight={260}
@@ -264,12 +321,12 @@ const ProductAnalysis = () => {
       .then((r) => {
         if (cancelled) return;
         const seen = new Map(); // channel -> country
-        for (const s of (r.data || [])) {
+        for (const s of (Array.isArray(r.data) ? r.data : [])) {
           if (s.channel && !seen.has(s.channel)) seen.set(s.channel, s.country || "Other");
         }
         const opts = Array.from(seen.entries())
           .map(([channel, country]) => ({ value: channel, label: channel, group: country }))
-          .sort((a, b) => a.group.localeCompare(b.group) || a.value.localeCompare(b.value));
+          .sort((a, b) => String(a.group).localeCompare(String(b.group)) || String(a.value).localeCompare(String(b.value)));
         setPosOptions(opts);
       })
       .catch(() => { if (!cancelled) setPosOptions([]); });
@@ -338,7 +395,7 @@ const ProductAnalysis = () => {
       })
       .then((r) => {
         if (cancelled) return;
-        const d = r.data || {};
+        const d = normalizePaResponse(r.data);
         setData(d);
         // Grow the option sets from the per-brand / per-subcategory rollups.
         let bChanged = false;
@@ -364,10 +421,10 @@ const ProductAnalysis = () => {
     return () => { cancelled = true; };
   }, [localFrom, localTo, countryParam, storeParam, status, dimsParam, velDays, includeWarehouse, brands, cats, subcats, tierParam, revPctParam, dataVersion]);
 
-  const rows = data?.rows || [];
+  const rows = Array.isArray(data?.rows) ? data.rows : [];
   const summary = data?.summary || null;
-  const byBrand = data?.by_brand || [];
-  const bySubcat = data?.by_subcategory || [];
+  const byBrand = Array.isArray(data?.by_brand) ? data.by_brand : [];
+  const bySubcat = Array.isArray(data?.by_subcategory) ? data.by_subcategory : [];
 
   const drillParams = useMemo(
     () => ({
@@ -392,8 +449,8 @@ const ProductAnalysis = () => {
     const q = search.trim().toLowerCase();
     if (!q) return rows;
     return rows.filter((r) =>
-      (r.style_name || "").toLowerCase().includes(q) ||
-      (r.style_number || "").toLowerCase().includes(q)
+      asText(r.style_name).toLowerCase().includes(q) ||
+      asText(r.style_number).toLowerCase().includes(q)
     );
   }, [rows, search]);
 

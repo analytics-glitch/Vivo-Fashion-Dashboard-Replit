@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import http from "node:http";
+import { Readable } from "node:stream";
 import express, {
   type NextFunction,
   type Request,
@@ -9,6 +10,7 @@ import cors from "cors";
 import cookieParser from "cookie-parser";
 import pg from "pg";
 import { Server as SocketServer } from "socket.io";
+import { RESOURCE_SEEDS } from "./resource-seeds.js";
 
 const { Pool } = pg;
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
@@ -58,7 +60,7 @@ type UserRow = {
 type AuthRequest = Request & { workspaceUser?: UserRow };
 
 const users = [
-  { name: "Amara Wanjiku", email: "amara@vivo.co.ke", role: "Design Director", initials: "AW", color: "#B97D55" },
+  { name: "Amara Wanjiku", email: "amara@vivo.co.ke", role: "Admin", initials: "AW", color: "#B97D55" },
   { name: "Daniel Otieno", email: "daniel@vivo.co.ke", role: "Merchandising Lead", initials: "DO", color: "#456C70" },
   { name: "Lerato Mokoena", email: "lerato@vivo.co.ke", role: "Product Developer", initials: "LM", color: "#8B6B45" },
   { name: "Nia Kamau", email: "nia@vivo.co.ke", role: "Technical Designer", initials: "NK", color: "#7F6D8A" },
@@ -105,6 +107,159 @@ const boardSeeds = [
   ["Leadership review", "A concise view of the work that needs a yes, no, or next step."],
 ];
 
+const TEAM_DIRECTORY_SEEDS = [
+  ["Leadership", "Head of Product", "Sets the product direction and keeps the range connected to the Vivo customer.", true, 0],
+  ["Leadership", "Product Director", "Brings design, development, buying, and planning together around the season.", false, 1],
+  ["Design Team", "Creative Director", "Shapes the creative point of view, collection stories, and visual language.", true, 0],
+  ["Design Team", "Senior Designer", "Develops considered silhouettes and details from first sketch to final range.", false, 1],
+  ["CAD Team", "CAD Manager", "Leads digital pattern development, grading, and technical accuracy across the range.", true, 0],
+  ["CAD Team", "CAD Designer", "Translates design intent into precise, production-ready digital patterns.", false, 1],
+  ["Sample Team", "Sample Room Manager", "Coordinates sample flow and makes sure every fitting moves the product forward.", true, 0],
+  ["Sample Team", "Sample Maker", "Builds the physical expression of each style with care and technical craft.", false, 1],
+  ["Buying & Planning", "Head of Buying", "Builds a commercially balanced assortment with a clear customer point of view.", true, 0],
+  ["Buying & Planning", "Merchandise Planner", "Turns range ambition into a balanced plan across markets, stores, and channels.", false, 1],
+] as const;
+
+type L10MetricSeed = {
+  owner: string;
+  measurable: string;
+  goal: string;
+  uom: string;
+  metricKey?: string;
+  values: Array<number | null>;
+};
+
+const L10_WEEK_SEEDS = [
+  ["Wk 27", "2026-07-06"],
+  ["Wk 28", "2026-07-13"],
+  ["Wk 29", "2026-07-20"],
+  ["Wk 30", "2026-07-27"],
+  ["Wk 31", "2026-08-03"],
+  ["Wk 32", "2026-08-10"],
+  ["Wk 33", "2026-08-17"],
+] as const;
+
+const L10_METRIC_SEEDS: L10MetricSeed[] = [
+  { owner: "Bella", measurable: "Total In-house Units Ordered", goal: ">8000", uom: "No.", values: [5333, 4786, 10491, 8375, 7682, 8200, 6961] },
+  { owner: "Bella", measurable: "Vivo Input COGS", goal: "<32%", uom: "%", values: [31, 34, 30, 28, 31, 31, 33] },
+  { owner: "Bella", measurable: "Avg Vivo Production Order Size", goal: ">400", uom: "No.", values: [353, 338, 318, 427, 334, 388, 409] },
+  { owner: "Mary", measurable: "% of NEW units ordered vs TOTAL", goal: ">35%", uom: "%", values: [22, 8, 32, 42, 33, 36, 29] },
+  { owner: "Mary", measurable: "6-Week Sell Through Rate on New Styles", goal: ">60%", uom: "%", metricKey: "sell_through_rate", values: [52.6, 57, 56.5, 55.5, 50, 48.3, 48.1] },
+  { owner: "Mary", measurable: "New Styles Launched in all Vivo A Stores", goal: ">5", uom: "No.", metricKey: "new_styles_launched", values: [5, 5, 5, 5, 5, 5, 5] },
+  { owner: "Mary", measurable: "Stores that received >2 New Styles", goal: "100%", uom: "%", values: [100, 100, 100, 100, 100, 100, 100] },
+  { owner: "Mary", measurable: "No. of New Styles Ordered", goal: ">6", uom: "No.", metricKey: "new_styles_ordered", values: [3, 2, 9, 9, 8, 8, 5] },
+  { owner: "Jewel", measurable: "Metres of Fabric Ordered for Printing", goal: ">4000", uom: "Mtrs", values: [1100, 2608, 2242, 4000, 4000, 4000, 3954] },
+  { owner: "Jewel", measurable: "% Print units ordered (2400-3200 units)", goal: "30-40%", uom: "%", values: [28, 18, 38, 34, 26, 24, 42] },
+  { owner: "Marion", measurable: "No. of Adopted Styles in the pipeline", goal: ">30", uom: "No.", metricKey: "adopted_styles_pipeline", values: [69, 73, 86, 68, 32, 44, 30] },
+  { owner: "Marion", measurable: "% of Dresses Ordered (2800 units)", goal: ">35%", uom: "%", values: [46, 41, 25, 34, 41, 31, 38] },
+  { owner: "Chantal", measurable: "% of Knit Units Ordered", goal: ">35%", uom: "%", values: [36, 49, 41, 34, 28, 28, 8] },
+  { owner: "Chantal", measurable: "No. of Replenishment Units Ordered", goal: ">3000", uom: "No.", values: [3152, 3510, 5261, 3917, 3923, 3665, 4039] },
+  { owner: "Yvonne", measurable: "No. of Reorder Units Ordered", goal: ">1000", uom: "No.", values: [1004, 894, 2092, 971, 1199, 1595, 899] },
+  { owner: "Florence", measurable: "Total New Styles Approved", goal: ">8", uom: "No.", metricKey: "new_styles_approved", values: [3, 8, 9, 6, 8, 5, 3] },
+  { owner: "Florence", measurable: "New styles reviewed in fit sessions", goal: ">12", uom: "No.", metricKey: "fit_sessions_completed", values: [14, 17, 18, 10, 22, 17, 7] },
+  { owner: "Florence", measurable: "No. of samples per approved style", goal: "<2.0", uom: "No.", values: [2.8, 2.2, 3, 2.4, 3, 1.8, 0.1] },
+  { owner: "Re", measurable: "Marker Efficiency", goal: ">78%", uom: "%", values: [78, 79, 78, 79, 80, 79, 81] },
+  { owner: "Re", measurable: "No. of Production Orders Processed", goal: ">20", uom: "No.", values: [18, 18, 33, 20, 21, 24, 17] },
+  { owner: "Re", measurable: "CAD Styles Approved", goal: ">2", uom: "No.", metricKey: "cad_styles_approved", values: [0, 2, 6, 2, 5, 1, 0] },
+  { owner: "Re", measurable: "Number of Regraded Styles", goal: ">5", uom: "No.", values: [4, 2, 1, 2, 1, 1, 1] },
+  { owner: "Re", measurable: "No. of Set Sample Orders Processed", goal: ">10", uom: "No.", values: [3, 1, 14, 10, 8, 8, 8] },
+  { owner: "Re", measurable: "New Set Samples Not Approved at 1st Try", goal: "<2", uom: "No.", values: [4, 2, 0, 1, 1, 2, 0] },
+  { owner: "Felista", measurable: "Units given to marketing for content", goal: ">25", uom: "No.", values: [28, 28, 50, 27, 31, 46, 40] },
+  { owner: "Felista", measurable: "Styles to Marketing for Content", goal: ">12", uom: "No.", values: [11, 13, 19, 12, 12, 17, 11] },
+  { owner: "Beryle", measurable: "No. of Sample Units Produced", goal: ">42", uom: "No.", values: [30, 35, 30, 25, 26, 27, 33] },
+  { owner: "William", measurable: "% Understocked Subcats Stock to Sales Ratio", goal: "<10%", uom: "%", metricKey: "understocked_subcategories", values: [9.5, 4.8, 9.5, 14, 4.8, 14, null] },
+  { owner: "Emily", measurable: "Stores received >90% of TOTAL allocation", goal: "All 29", uom: "%", values: [93, 100, 100, 100, 100, 100, null] },
+  { owner: "Maryann", measurable: "Stores received >90% of NEW allocation", goal: "All 29", uom: "%", values: [100, 100, 100, 100, 100, 100, 100] },
+];
+
+const RANGE_PLAN_ROW_SEEDS = [
+  ["Basics/Essentials", "NOOS", 40, 30, 50],
+  ["Dresses", "Core", 50, 40, 60],
+  ["Tops", "Core", 40, 30, 50],
+  ["Trousers", "Core", 28, 20, 35],
+  ["Skirts", "Core", 20, 15, 25],
+  ["Jumpsuits", "Core", 14, 10, 18],
+  ["Blazers/Suits", "Core", 12, 8, 15],
+  ["Knitwear", "Core", 10, 8, 12],
+  ["Coords", "Core", 14, 10, 18],
+  ["Denim", "Core", 7, 5, 10],
+  ["Swimwear", "Core", 7, 5, 10],
+  ["Kitenges", "Core", 15, 10, 20],
+  ["Lounge/Casual", "Core", 12, 8, 15],
+  ["Print Dresses", "Recent", 20, 15, 25],
+  ["Shirt Dresses", "Recent", 14, 10, 18],
+  ["Wrap Dresses", "Recent", 14, 10, 18],
+  ["Co-ords Printed", "Recent", 12, 8, 15],
+  ["Wide Leg Trousers", "Recent", 10, 8, 12],
+  ["Experimental Silhouettes", "New/Test", 7, 5, 10],
+  ["New Fabrications", "New/Test", 7, 5, 10],
+  ["Collaborations", "New/Test", 5, 3, 8],
+  ["Limited Editions", "New/Test", 5, 3, 8],
+] as const;
+
+const L10_AGENDA = [
+  { key: "checkin", number: "①", label: "Check-In", durationMinutes: 5 },
+  { key: "scorecard", number: "②", label: "Scorecard", durationMinutes: 5 },
+  { key: "rocks", number: "③", label: "Rocks", durationMinutes: 5 },
+  { key: "headlines", number: "④", label: "Customer / Employee Headlines", durationMinutes: 5 },
+  { key: "todos", number: "⑤", label: "To-Do List Review", durationMinutes: 5 },
+  { key: "ids", number: "⑥", label: "IDS — Identify, Discuss, Solve", durationMinutes: 60 },
+  { key: "conclude", number: "⑦", label: "Conclude", durationMinutes: 5 },
+] as const;
+
+const L10_HEADLINE_SEEDS = [
+  ["Bella is on sick leave today", "2026-08-17", "Bella", false],
+  ["Queen's last week", "2026-08-10", "Queen", true],
+] as const;
+
+const L10_TODO_SEEDS = [
+  ["Florence to follow up with Wandia concerning the metric on Number of Samples per approved Style", "2026-08-03", "Florence", "Not Done"],
+  ["Team leads to update PD flow", "2026-07-27", "Team leads", "Not Done"],
+  ["All team members to push knit styles on their desk", "2026-08-17", "Team leads", "Not Done"],
+  ["Training on how to update the PD flow", "2026-08-10", "Mary", "Done"],
+  ["CAD Team Lead to sit with buying to populate work for the week", "2026-08-10", "Re", "Done"],
+  ["To ensure we have minimum 15 styles to review", "2026-08-10", "Florence", "Done"],
+  ["Wandia to go through the product creation process with the Buying team", "2026-08-10", "Wandia", "Done"],
+  ["To design a process for how prints are looked into and approved", "2026-08-10", "Mary", "Done"],
+  ["Each Team Leader Creates Time for Orientation of New Members", "2026-08-10", "Team Leads", "Done"],
+  ["Bella To Update the Team on the plan for the next week", "2026-08-10", "Bella", "Done"],
+  ["Team Leads To Communicate With Members on Communication Gaps", "2026-08-10", "Team Leads", "Done"],
+] as const;
+
+const L10_ISSUE_SEEDS = [
+  ["% of Knit Units Ordered", "Chantal", 1],
+  ["Total New Styles Approved", "Florence", 2],
+  ["Total new styles reviewed in fit sessions", "Florence", 3],
+  ["CAD Styles Approved", "Re", 4],
+] as const;
+
+const L10_ROCK_FALLBACKS = [
+  ["Abigail", "Abigail's product development rock", "On Track"],
+  ["Bella", "Bella's product development rock", "On Track"],
+  ["Beryle", "Beryle's product development rock", "On Track"],
+  ["Chantal", "Chantal's product development rock", "On Track"],
+  ["Emily", "Emily's product development rock", "On Track"],
+  ["Felista", "Felista's product development rock", "Done"],
+  ["Florence", "Florence's product development rock", "On Track"],
+  ["Jewel", "Jewel's product development rock 1", "On Track"],
+  ["Jewel", "Jewel's product development rock 2", "On Track"],
+  ["Marion", "Marion's product development rock", "On Track"],
+  ["Mary", "Mary's product development rock", "On Track"],
+  ["Maryanne", "Maryanne's product development rock", "On Track"],
+  ["Mercy", "Mercy's product development rock", "On Track"],
+  ["Natasha", "Natasha's product development rock", "On Track"],
+  ["Queen", "Queen's product development rock", "On Track"],
+  ["Re", "Re's product development rock", "On Track"],
+  ["Rose", "Rose's product development rock", "On Track"],
+  ["Tony", "Tony's product development rock", "Done"],
+  ["Victoria", "Victoria's product development rock", "On Track"],
+  ["Wandia", "Wandia's product development rock", "On Track"],
+  ["Wanjohi", "Wanjohi's product development rock", "On Track"],
+  ["Yvonne", "Yvonne's product development rock", "On Track"],
+] as const;
+
+const L10_RATING_AVERAGES = [8.6, 9.2, 8.0, 7.8, 8.4, 8.0, 8.1] as const;
+
 function hashPassword(password: string, salt = crypto.randomBytes(16).toString("hex")) {
   const hash = crypto.scryptSync(password, salt, 64).toString("hex");
   return `${salt}:${hash}`;
@@ -127,6 +282,508 @@ function iso(value: Date | string) {
 
 function publicUser(row: UserRow) {
   return { id: row.id, name: row.name, email: row.email, role: row.role, initials: row.initials, color: row.color };
+}
+
+function l10Monday(date = new Date()) {
+  const monday = new Date(date);
+  monday.setHours(0, 0, 0, 0);
+  monday.setDate(monday.getDate() - (monday.getDay() === 0 ? 6 : monday.getDay() - 1));
+  return monday;
+}
+
+function l10WeekLabel(date: Date) {
+  const anchor = new Date("2026-07-06T00:00:00");
+  const weeks = Math.floor((l10Monday(date).getTime() - anchor.getTime()) / (7 * 86400000));
+  return `Wk ${27 + Math.max(0, weeks)}`;
+}
+
+function l10GoalStatus(value: number | null, goal: string): boolean | null {
+  if (value === null || !Number.isFinite(value)) return null;
+  const normalizedGoal = goal.trim().replace(/%/g, "");
+  const range = normalizedGoal.match(/^(-?\d+(?:\.\d+)?)\s*-\s*(-?\d+(?:\.\d+)?)/);
+  if (range) return value >= Number(range[1]) && value <= Number(range[2]);
+  if (/^all\s+\d+/i.test(goal)) return value >= 100;
+  const operator = normalizedGoal.match(/^(>=|<=|>|<|=)\s*(-?\d+(?:\.\d+)?)/);
+  if (!operator) return null;
+  const target = Number(operator[2]);
+  if (operator[1] === ">=") return value >= target;
+  if (operator[1] === "<=") return value <= target;
+  if (operator[1] === ">") return value > target;
+  if (operator[1] === "<") return value < target;
+  return value === target;
+}
+
+const LIVE_L10_METRIC_KEYS = [
+  "new_styles_approved",
+  "fit_sessions_completed",
+  "adopted_styles_pipeline",
+  "new_styles_launched",
+  "new_styles_ordered",
+  "cad_styles_approved",
+  "sell_through_rate",
+  "understocked_subcategories",
+] as const;
+
+type LiveL10MetricKey = (typeof LIVE_L10_METRIC_KEYS)[number];
+
+async function publicTableColumns(tableName: string) {
+  try {
+    const result = await pool.query<{ columnName: string }>(
+      `SELECT column_name AS "columnName"
+       FROM information_schema.columns
+       WHERE table_schema='public' AND table_name=$1`,
+      [tableName],
+    );
+    return new Set(result.rows.map((row) => row.columnName));
+  } catch {
+    return new Set<string>();
+  }
+}
+
+async function computeLiveL10Values() {
+  const values = new Map<LiveL10MetricKey, number | null>();
+  const [styleColumns, movementColumns, productColumns] = await Promise.all([
+    publicTableColumns("pd_styles"),
+    publicTableColumns("pd_movements"),
+    publicTableColumns("all_products_clean"),
+  ]);
+
+  const styleStageColumn = styleColumns.has("stage") ? "stage" : styleColumns.has("current_stage") ? "current_stage" : null;
+  const styleUpdatedColumn = styleColumns.has("updated_at") ? "updated_at" : styleColumns.has("created_at") ? "created_at" : null;
+  const styleRepeatColumn = styleColumns.has("new_repeat") ? "new_repeat" : styleColumns.has("lifecycle_type") ? "lifecycle_type" : null;
+  const stageExpression = styleStageColumn
+    ? `LOWER(REPLACE(COALESCE(NULLIF(TRIM(s.${styleStageColumn}),''),''),'_',' '))`
+    : null;
+  const updatedExpression = styleUpdatedColumn ? `s.${styleUpdatedColumn}` : null;
+
+  if (styleStageColumn && styleUpdatedColumn) {
+    const styleResult = await pool.query<Record<string, number>>(
+      `SELECT
+        COUNT(*) FILTER (WHERE ${stageExpression}='approved' AND ${updatedExpression} >= date_trunc('week',CURRENT_DATE))::int AS "newStylesApproved",
+        COUNT(*) FILTER (WHERE ${stageExpression}='live' AND ${updatedExpression} >= date_trunc('month',CURRENT_DATE))::int AS "newStylesLaunched",
+        COUNT(*) FILTER (WHERE ${stageExpression} IN ('production','ordered') AND ${updatedExpression} >= date_trunc('week',CURRENT_DATE))::int AS "newStylesOrdered",
+        COUNT(*) FILTER (WHERE ${stageExpression}='cad approved' AND ${updatedExpression} >= date_trunc('week',CURRENT_DATE))::int AS "cadStylesApproved"
+       FROM public.pd_styles s`,
+    );
+    const row = styleResult.rows[0];
+    values.set("new_styles_approved", Number(row?.newStylesApproved ?? 0));
+    values.set("new_styles_launched", Number(row?.newStylesLaunched ?? 0));
+    values.set("new_styles_ordered", Number(row?.newStylesOrdered ?? 0));
+    values.set("cad_styles_approved", Number(row?.cadStylesApproved ?? 0));
+  } else {
+    values.set("new_styles_approved", null);
+    values.set("new_styles_launched", null);
+    values.set("new_styles_ordered", null);
+    values.set("cad_styles_approved", null);
+  }
+
+  if (styleStageColumn && styleRepeatColumn) {
+    const pipelineResult = await pool.query<{ value: number }>(
+      `SELECT COUNT(*)::int AS value
+       FROM public.pd_styles s
+       WHERE ${stageExpression} NOT IN ('dropped','archived')
+         AND LOWER(TRIM(COALESCE(s.${styleRepeatColumn},'')))='new'`,
+    );
+    values.set("adopted_styles_pipeline", Number(pipelineResult.rows[0]?.value ?? 0));
+  } else {
+    values.set("adopted_styles_pipeline", null);
+  }
+
+  const movementToStageColumn = movementColumns.has("to_stage");
+  const movementDateColumn = movementColumns.has("moved_at") ? "moved_at" : movementColumns.has("created_at") ? "created_at" : null;
+  if (movementToStageColumn && movementDateColumn) {
+    const fitResult = await pool.query<{ value: number }>(
+      `SELECT COUNT(*)::int AS value
+       FROM public.pd_movements m
+       WHERE LOWER(REPLACE(COALESCE(m.to_stage,''),'_',' '))='fit sample'
+         AND m.${movementDateColumn} >= date_trunc('week',CURRENT_DATE)`,
+    );
+    values.set("fit_sessions_completed", Number(fitResult.rows[0]?.value ?? 0));
+  } else {
+    values.set("fit_sessions_completed", null);
+  }
+
+  const statusColumn = productColumns.has("status");
+  const subcategoryColumn = productColumns.has("sub_category");
+  if (statusColumn && subcategoryColumn) {
+    const productIdentityColumn = productColumns.has("style_number")
+      ? "style_number"
+      : productColumns.has("style_name")
+        ? "style_name"
+        : productColumns.has("sku")
+          ? "sku"
+          : null;
+    if (productIdentityColumn) {
+      const sellThroughResult = await pool.query<{ value: number | null }>(
+        `WITH styles AS (
+           SELECT DISTINCT COALESCE(NULLIF(TRIM(${productIdentityColumn}),''),'unknown') AS style_key,
+             LOWER(TRIM(COALESCE(status,''))) AS status
+           FROM public.all_products_clean
+           WHERE LOWER(TRIM(COALESCE(status,''))) IN ('active','retired')
+         )
+         SELECT ROUND(100.0 * COUNT(*) FILTER (WHERE status='active') / NULLIF(COUNT(*),0),1)::float AS value
+         FROM styles`,
+      );
+      values.set("sell_through_rate", sellThroughResult.rows[0]?.value == null ? null : Number(sellThroughResult.rows[0].value));
+    } else {
+      values.set("sell_through_rate", null);
+    }
+    const understockedResult = await pool.query<{ value: number }>(
+      `SELECT COUNT(*)::int AS value
+       FROM (
+         SELECT sub_category
+         FROM public.all_products_clean
+         WHERE LOWER(TRIM(COALESCE(status,'')))='active'
+           AND NULLIF(TRIM(sub_category),'') IS NOT NULL
+         GROUP BY sub_category
+         HAVING COUNT(*) < 5
+       ) subcategories`,
+    );
+    values.set("understocked_subcategories", Number(understockedResult.rows[0]?.value ?? 0));
+  } else {
+    values.set("sell_through_rate", null);
+    values.set("understocked_subcategories", null);
+  }
+  return values;
+}
+
+async function rangePlanHealth() {
+  const empty = {
+    newRepeat: { newCount: 0, repeatCount: 0, total: 0 },
+    subCategories: [] as Array<{ name: string; count: number }>,
+    activeStyleCount: 0,
+  };
+  try {
+    const columns = await publicTableColumns("pd_styles");
+    const stageColumn = columns.has("stage") ? "stage" : columns.has("current_stage") ? "current_stage" : columns.has("status") ? "status" : null;
+    const repeatColumn = columns.has("new_repeat") ? "new_repeat" : columns.has("lifecycle_type") ? "lifecycle_type" : columns.has("order_type") ? "order_type" : null;
+    const subCategoryColumn = columns.has("sub_category") ? "sub_category" : columns.has("category") ? "category" : null;
+    if (!stageColumn) return empty;
+    const activeWhere = `LOWER(REPLACE(COALESCE(NULLIF(TRIM(s.${stageColumn}),''),''),'_',' ')) NOT IN ('dropped','archived')`;
+    const styleCountExpression = columns.has("id") ? "COUNT(DISTINCT s.id)" : "COUNT(*)";
+    const repeatExpression = repeatColumn ? `LOWER(TRIM(COALESCE(s.${repeatColumn},'')))` : "''";
+    const newRepeat = repeatColumn
+      ? await pool.query<{ newCount: number; repeatCount: number; total: number }>(
+        `SELECT
+           COUNT(*) FILTER (WHERE ${repeatExpression}='new')::int AS "newCount",
+           COUNT(*) FILTER (WHERE ${repeatExpression}<>'new')::int AS "repeatCount",
+           COUNT(*)::int AS total
+         FROM public.pd_styles s WHERE ${activeWhere}`,
+      )
+      : { rows: [{ newCount: 0, repeatCount: 0, total: 0 }] };
+    const subCategories = subCategoryColumn
+      ? await pool.query<{ name: string; count: number }>(
+        `SELECT COALESCE(NULLIF(TRIM(s.${subCategoryColumn}),''),'Uncategorised') AS name,
+           ${styleCountExpression}::int AS count
+         FROM public.pd_styles s
+         WHERE ${activeWhere}
+         GROUP BY 1 ORDER BY count DESC, name LIMIT 15`,
+      )
+      : { rows: [] };
+    return {
+      newRepeat: newRepeat.rows[0] ?? empty.newRepeat,
+      subCategories: subCategories.rows,
+      activeStyleCount: Number(newRepeat.rows[0]?.total ?? 0),
+    };
+  } catch {
+    return empty;
+  }
+}
+
+const liveScorecardHandler = async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const liveValues = await computeLiveL10Values();
+    const metricRows = await pool.query<{
+      id: number;
+      metricKey: string | null;
+      measurable: string;
+      goal: string;
+      uom: string;
+    }>(
+      `SELECT id,metric_key AS "metricKey",measurable,goal,uom
+       FROM ${schema}.l10_scorecard_metrics
+       WHERE active AND metric_key = ANY($1::text[])
+       ORDER BY sort_order,id`,
+      [LIVE_L10_METRIC_KEYS],
+    );
+    const metrics: Record<string, { value: number; uom: string; source: "live" }> = {};
+    for (const metric of metricRows.rows) {
+      if (!metric.metricKey) continue;
+      const value = liveValues.get(metric.metricKey as LiveL10MetricKey);
+      if (value == null || !Number.isFinite(value)) continue;
+      metrics[metric.metricKey] = { value, uom: metric.uom, source: "live" };
+    }
+
+    const currentMeeting = await pool.query<{ id: number; concluded: boolean }>(
+      `SELECT id,concluded FROM ${schema}.l10_meetings
+       WHERE meeting_date = date_trunc('week',CURRENT_DATE)::date
+       LIMIT 1`,
+    );
+    if (currentMeeting.rows[0] && !currentMeeting.rows[0].concluded) {
+      for (const metric of metricRows.rows) {
+        if (!metric.metricKey || metrics[metric.metricKey] == null) continue;
+        const value = metrics[metric.metricKey].value;
+        await pool.query(
+          `INSERT INTO ${schema}.l10_scorecard_entries (meeting_id,metric_id,value,on_track,updated_at)
+           VALUES ($1,$2,$3,$4,NOW())
+           ON CONFLICT (meeting_id,metric_id) DO UPDATE
+           SET value=EXCLUDED.value,on_track=EXCLUDED.on_track,updated_at=NOW()`,
+          [currentMeeting.rows[0].id, metric.id, value, l10GoalStatus(value, metric.goal)],
+        );
+      }
+    }
+
+    res.json({
+      weekStart: l10Monday().toISOString().slice(0, 10),
+      metrics,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+async function ensureL10Data() {
+  for (const [weekLabel, meetingDate] of L10_WEEK_SEEDS) {
+    await pool.query(
+      `INSERT INTO ${schema}.l10_meetings
+        (week_label,meeting_date,start_time,end_time,location,duration_minutes)
+       VALUES ($1,$2,'11:30','13:00','Design Board Room',90)
+       ON CONFLICT (week_label) DO NOTHING`,
+      [weekLabel, meetingDate],
+    );
+  }
+  const currentMonday = l10Monday();
+  await pool.query(
+    `INSERT INTO ${schema}.l10_meetings
+      (week_label,meeting_date,start_time,end_time,location,duration_minutes)
+     VALUES ($1,$2,'11:30','13:00','Design Board Room',90)
+     ON CONFLICT (week_label) DO NOTHING`,
+    [l10WeekLabel(currentMonday), currentMonday.toISOString().slice(0, 10)],
+  );
+
+  const meetingRows = await pool.query<{ id: number; weekLabel: string }>(
+    `SELECT id,week_label AS "weekLabel" FROM ${schema}.l10_meetings ORDER BY meeting_date ASC`,
+  );
+  const meetingByWeek = new Map(meetingRows.rows.map((row) => [row.weekLabel, row.id]));
+
+  const teamRows = await pool.query<{ name: string }>(
+    `SELECT COALESCE(NULLIF(TRIM(name),''),NULLIF(TRIM(role_title),''),'Team member') AS name
+     FROM ${schema}.workspace_team_members
+     ORDER BY team_section,display_order,id`,
+  );
+  for (const meeting of meetingRows.rows) {
+    for (const member of teamRows.rows) {
+      await pool.query(
+        `INSERT INTO ${schema}.l10_checkins (meeting_id,member_name)
+         VALUES ($1,$2) ON CONFLICT (meeting_id,member_name) DO NOTHING`,
+        [meeting.id, member.name],
+      );
+    }
+    await pool.query(
+      `INSERT INTO ${schema}.l10_agenda_notes (meeting_id)
+       VALUES ($1) ON CONFLICT (meeting_id) DO NOTHING`,
+      [meeting.id],
+    );
+  }
+
+  for (const [sortOrder, metric] of L10_METRIC_SEEDS.entries()) {
+    const metricResult = await pool.query<{ id: number }>(
+      `INSERT INTO ${schema}.l10_scorecard_metrics (owner,measurable,goal,uom,metric_key,sort_order)
+       VALUES ($1,$2,$3,$4,$5,$6)
+       ON CONFLICT (owner,measurable) DO UPDATE
+       SET goal=EXCLUDED.goal,uom=EXCLUDED.uom,metric_key=COALESCE(EXCLUDED.metric_key,${schema}.l10_scorecard_metrics.metric_key),sort_order=EXCLUDED.sort_order
+       RETURNING id`,
+      [metric.owner, metric.measurable, metric.goal, metric.uom, metric.metricKey ?? null, sortOrder],
+    );
+    const metricId = metricResult.rows[0]?.id;
+    if (!metricId) continue;
+    for (const [index, value] of metric.values.entries()) {
+      const meetingId = meetingByWeek.get(L10_WEEK_SEEDS[index]?.[0]);
+      if (!meetingId) continue;
+      await pool.query(
+        `INSERT INTO ${schema}.l10_scorecard_entries (meeting_id,metric_id,value,on_track)
+         VALUES ($1,$2,$3,$4) ON CONFLICT (meeting_id,metric_id) DO NOTHING`,
+        [meetingId, metricId, value, l10GoalStatus(value, metric.goal)],
+      );
+    }
+  }
+
+  const rockCount = await pool.query<{ count: number }>(`SELECT COUNT(*)::int AS count FROM ${schema}.l10_rocks`);
+  if (!rockCount.rows[0]?.count) {
+    try {
+      const legacyRocks = await pool.query<{ description: string; owner: string | null; onTrack: boolean; done: boolean; sortOrder: number }>(
+        `SELECT description,owner,on_track AS "onTrack",done,sort_order AS "sortOrder"
+         FROM public.l10_rocks
+         WHERE COALESCE(active,TRUE) AND (folder_id IS NULL OR folder_id=1)
+         ORDER BY sort_order,id LIMIT 22`,
+      );
+      for (const rock of legacyRocks.rows) {
+        await pool.query(
+          `INSERT INTO ${schema}.l10_rocks (description,owner,status,sort_order,source)
+           VALUES ($1,$2,$3,$4,'legacy-sheet') ON CONFLICT (description) DO NOTHING`,
+          [rock.description, rock.owner ?? "", rock.done ? "Done" : rock.onTrack ? "On Track" : "Off Track", rock.sortOrder],
+        );
+      }
+    } catch {
+      // The legacy table is optional in development; an empty list is safer than
+      // inventing meeting rocks when the source sheet is not available.
+    }
+  }
+
+  const seededRockCount = await pool.query<{ count: number }>(`SELECT COUNT(*)::int AS count FROM ${schema}.l10_rocks`);
+  if ((seededRockCount.rows[0]?.count ?? 0) < L10_ROCK_FALLBACKS.length) {
+    for (const [sortOrder, [owner, description, status]] of L10_ROCK_FALLBACKS.entries()) {
+      await pool.query(
+        `INSERT INTO ${schema}.l10_rocks (description,owner,status,sort_order,source)
+         VALUES ($1,$2,$3,$4,'workspace-seed') ON CONFLICT (description) DO NOTHING`,
+        [description, owner, status, sortOrder],
+      );
+    }
+  }
+
+  const currentMeetingId = meetingByWeek.get(l10WeekLabel(currentMonday));
+  if (!currentMeetingId) return;
+  const currentHeadlineCount = await pool.query<{ count: number }>(
+    `SELECT COUNT(*)::int AS count FROM ${schema}.l10_headlines WHERE meeting_id=$1`,
+    [currentMeetingId],
+  );
+  if (!currentHeadlineCount.rows[0]?.count) {
+    for (const [sortOrder, [headline, headlineDate, addedBy, needsDiscussion]] of L10_HEADLINE_SEEDS.entries()) {
+      await pool.query(
+        `INSERT INTO ${schema}.l10_headlines
+          (meeting_id,headline,headline_date,added_by,needs_discussion,sort_order)
+         VALUES ($1,$2,$3,$4,$5,$6)`,
+        [currentMeetingId, headline, headlineDate, addedBy, needsDiscussion, sortOrder],
+      );
+    }
+  }
+
+  const currentTodoCount = await pool.query<{ count: number }>(
+    `SELECT COUNT(*)::int AS count FROM ${schema}.l10_todos WHERE meeting_id=$1`,
+    [currentMeetingId],
+  );
+  if (!currentTodoCount.rows[0]?.count) {
+    for (const [description, openDate, owner, status] of L10_TODO_SEEDS) {
+      await pool.query(
+        `INSERT INTO ${schema}.l10_todos
+          (meeting_id,description,open_date,owner,status)
+         VALUES ($1,$2,$3,$4,$5)`,
+        [currentMeetingId, description, openDate, owner, status],
+      );
+    }
+  }
+
+  const currentIssueCount = await pool.query<{ count: number }>(
+    `SELECT COUNT(*)::int AS count FROM ${schema}.l10_issues WHERE meeting_id=$1`,
+    [currentMeetingId],
+  );
+  if (!currentIssueCount.rows[0]?.count) {
+    for (const [issue, raisedBy, priority] of L10_ISSUE_SEEDS) {
+      await pool.query(
+        `INSERT INTO ${schema}.l10_issues
+          (meeting_id,issue,raised_by,priority,issue_type,sort_order)
+         VALUES ($1,$2,$3,$4,'active',$4)`,
+        [currentMeetingId, issue, raisedBy, priority],
+      );
+    }
+  }
+
+  for (const meeting of meetingRows.rows) {
+    await pool.query(
+      `INSERT INTO ${schema}.l10_cascading_messages (meeting_id)
+       VALUES ($1) ON CONFLICT (meeting_id) DO NOTHING`,
+      [meeting.id],
+    );
+  }
+
+  const ratingMembers = teamRows.rows.map((row) => row.name).filter(Boolean).slice(0, 10);
+  const legacyRatings: Array<{ weekLabel: string; memberName: string; rating: number }> = [];
+  try {
+    const legacy = await pool.query<{ meetingDate: string; memberName: string; rating: number }>(
+      `SELECT lm.meeting_date::text AS "meetingDate",lr.member_name AS "memberName",lr.rating
+       FROM public.l10_ratings lr
+       JOIN public.l10_meetings lm ON lm.id=lr.meeting_id
+       WHERE lm.meeting_date BETWEEN '2026-07-06'::date AND '2026-08-17'::date`,
+    );
+    for (const row of legacy.rows) {
+      legacyRatings.push({ weekLabel: l10WeekLabel(new Date(`${row.meetingDate.slice(0, 10)}T12:00:00`)), memberName: row.memberName, rating: Number(row.rating) });
+    }
+  } catch {
+    // Legacy ratings are optional; the exact weekly averages below remain the
+    // deterministic fallback for a fresh Product Workspace database.
+  }
+  for (const row of legacyRatings) {
+    const meetingId = meetingByWeek.get(row.weekLabel);
+    if (!meetingId || !Number.isInteger(row.rating)) continue;
+    await pool.query(
+      `INSERT INTO ${schema}.l10_ratings (meeting_id,team_member_name,rating)
+       VALUES ($1,$2,$3) ON CONFLICT (meeting_id,team_member_name) DO NOTHING`,
+      [meetingId, row.memberName, row.rating],
+    );
+  }
+  for (const [index, average] of L10_RATING_AVERAGES.entries()) {
+    const meetingId = meetingByWeek.get(L10_WEEK_SEEDS[index]?.[0]);
+    if (!meetingId || !ratingMembers.length) continue;
+    const total = Math.round(average * ratingMembers.length);
+    const base = Math.floor(total / ratingMembers.length);
+    const remainder = total - base * ratingMembers.length;
+    for (const [memberIndex, memberName] of ratingMembers.entries()) {
+      await pool.query(
+        `INSERT INTO ${schema}.l10_ratings (meeting_id,team_member_name,rating)
+         VALUES ($1,$2,$3) ON CONFLICT (meeting_id,team_member_name) DO NOTHING`,
+        [meetingId, memberName, base + (memberIndex < remainder ? 1 : 0)],
+      );
+    }
+  }
+}
+
+async function ensureWorkspaceResources() {
+  await pool.query(
+    `DELETE FROM ${schema}.workspace_resources
+     WHERE title = ANY($1::text[])`,
+    [[
+      "Buying & Allocations: Weekly New Style Buy Volume (BA-SOP-001)",
+      "Buying & Allocations: Weekly New Style Allocation (BA-SOP-002)",
+      "Warehousing & Logistics: Daily Stock Replenishment (WL-SOP-001)",
+      "Product Team SOP — 2026 Operating Model",
+      "Points of Measure (POM) Specifications",
+    ]],
+  );
+  for (const resource of RESOURCE_SEEDS) {
+    await pool.query(
+      `INSERT INTO ${schema}.workspace_resources
+        (title,category,description,source_url,content_markdown)
+       VALUES ($1,$2,$3,$4,$5)
+       ON CONFLICT (title) DO UPDATE
+         SET category=EXCLUDED.category,
+             description=EXCLUDED.description,
+             source_url=EXCLUDED.source_url,
+             updated_at=NOW()`,
+      [resource.title, resource.category, resource.description, resource.sourceUrl, resource.contentMarkdown],
+    );
+  }
+}
+
+async function ensureRangePlanData() {
+  const seasonResult = await pool.query<{ id: number }>(
+    `INSERT INTO ${schema}.range_plan_seasons
+      (season_name,season_year,revenue_target_kes,cogs_budget_pct,factory_capacity_units,status)
+     VALUES ('Q4 2026',2026,362500000,42,180000,'active')
+     ON CONFLICT (season_name,season_year) DO UPDATE
+       SET season_name=EXCLUDED.season_name
+     RETURNING id`,
+  );
+  const seasonId = seasonResult.rows[0]?.id;
+  if (!seasonId) return;
+  for (const [subCategory, tier, target, minimum, maximum] of RANGE_PLAN_ROW_SEEDS) {
+    await pool.query(
+      `INSERT INTO ${schema}.range_plan_rows
+        (season_id,sub_category,tier,style_count_target,style_count_min,style_count_max,aos_units)
+       VALUES ($1,$2,$3::${schema}.range_plan_tier,$4,$5,$6,350)
+       ON CONFLICT (season_id,sub_category) DO NOTHING`,
+      [seasonId, subCategory, tier, target, minimum, maximum],
+    );
+  }
 }
 
 async function ensureSchema() {
@@ -172,11 +829,17 @@ async function ensureSchema() {
       owner TEXT NOT NULL,
       designer TEXT NOT NULL DEFAULT '',
       pattern_maker TEXT NOT NULL DEFAULT '',
+      fabric_type TEXT NOT NULL DEFAULT '',
       target_date DATE NOT NULL,
       image TEXT,
       progress NUMERIC NOT NULL DEFAULT 0,
       price NUMERIC NOT NULL DEFAULT 0,
       market TEXT NOT NULL DEFAULT 'EA',
+      creative_description TEXT NOT NULL DEFAULT '',
+      size_range TEXT NOT NULL DEFAULT '',
+      trims_special_features JSONB NOT NULL DEFAULT '[]'::jsonb,
+      predicted_cost NUMERIC,
+      confirmed_cost NUMERIC,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
@@ -185,6 +848,7 @@ async function ensureSchema() {
       style_id INTEGER NOT NULL REFERENCES ${schema}.styles(id) ON DELETE CASCADE,
       name TEXT NOT NULL,
       hex TEXT NOT NULL,
+      code TEXT NOT NULL DEFAULT '',
       status TEXT NOT NULL DEFAULT 'Proposed',
       UNIQUE (style_id, name)
     );
@@ -389,6 +1053,212 @@ async function ensureSchema() {
       department TEXT NOT NULL DEFAULT '',
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+    CREATE TABLE IF NOT EXISTS ${schema}.workspace_team_members (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL DEFAULT '',
+      role_title TEXT NOT NULL,
+      team_section TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      birthday DATE,
+      photo_url TEXT,
+      is_lma BOOLEAN NOT NULL DEFAULT FALSE,
+      display_order INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (team_section, role_title)
+    );
+    CREATE TABLE IF NOT EXISTS ${schema}.workspace_resources (
+      id SERIAL PRIMARY KEY,
+      title TEXT NOT NULL UNIQUE,
+      category TEXT NOT NULL CHECK (category IN ('Technical', 'Planning', 'Strategy', 'Buying')),
+      description TEXT NOT NULL DEFAULT '',
+      source_url TEXT NOT NULL DEFAULT '',
+      content_markdown TEXT NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      created_by INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL
+    );
+    CREATE TABLE IF NOT EXISTS ${schema}.style_feedback (
+      id BIGSERIAL PRIMARY KEY,
+      submitter_name TEXT NOT NULL,
+      submitter_team TEXT NOT NULL,
+      style_id INTEGER REFERENCES ${schema}.styles(id) ON DELETE SET NULL,
+      style_name_freetext TEXT NOT NULL DEFAULT '',
+      feedback_types TEXT[] NOT NULL DEFAULT '{}',
+      sentiment TEXT NOT NULL CHECK (sentiment IN ('positive', 'mixed', 'negative')),
+      urgency TEXT NOT NULL CHECK (urgency IN ('note', 'discuss', 'urgent')),
+      comment_text TEXT NOT NULL,
+      reviewed BOOLEAN NOT NULL DEFAULT FALSE,
+      reviewed_by INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL,
+      reviewed_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS style_feedback_created_at_idx ON ${schema}.style_feedback (created_at DESC);
+    CREATE INDEX IF NOT EXISTS style_feedback_style_id_idx ON ${schema}.style_feedback (style_id);
+    DO $$ BEGIN
+      CREATE TYPE ${schema}.range_plan_tier AS ENUM ('NOOS','Core','Recent','New/Test');
+    EXCEPTION
+      WHEN duplicate_object THEN NULL;
+    END $$;
+    CREATE TABLE IF NOT EXISTS ${schema}.range_plan_seasons (
+      id SERIAL PRIMARY KEY,
+      season_name TEXT NOT NULL,
+      season_year INTEGER NOT NULL,
+      revenue_target_kes NUMERIC NOT NULL DEFAULT 0,
+      cogs_budget_pct NUMERIC NOT NULL DEFAULT 0,
+      factory_capacity_units INTEGER NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','archived')),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (season_name, season_year)
+    );
+    CREATE TABLE IF NOT EXISTS ${schema}.range_plan_rows (
+      id SERIAL PRIMARY KEY,
+      season_id INTEGER NOT NULL REFERENCES ${schema}.range_plan_seasons(id) ON DELETE CASCADE,
+      sub_category TEXT NOT NULL,
+      tier ${schema}.range_plan_tier NOT NULL,
+      style_count_target INTEGER NOT NULL DEFAULT 0,
+      style_count_min INTEGER NOT NULL DEFAULT 0,
+      style_count_max INTEGER NOT NULL DEFAULT 0,
+      aos_units INTEGER NOT NULL DEFAULT 350,
+      total_units_implied INTEGER GENERATED ALWAYS AS (style_count_target * aos_units) STORED,
+      notes TEXT NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (season_id, sub_category)
+    );
+    CREATE TABLE IF NOT EXISTS ${schema}.range_plan_otb (
+      id SERIAL PRIMARY KEY,
+      season_id INTEGER NOT NULL REFERENCES ${schema}.range_plan_seasons(id) ON DELETE CASCADE,
+      month_year DATE NOT NULL,
+      revenue_target NUMERIC,
+      planned_units INTEGER,
+      new_styles_count INTEGER,
+      notes TEXT NOT NULL DEFAULT '',
+      UNIQUE (season_id, month_year)
+    );
+    CREATE INDEX IF NOT EXISTS range_plan_rows_season_idx ON ${schema}.range_plan_rows (season_id, tier, id);
+    CREATE INDEX IF NOT EXISTS range_plan_otb_season_month_idx ON ${schema}.range_plan_otb (season_id, month_year);
+    CREATE TABLE IF NOT EXISTS ${schema}.l10_meetings (
+      id SERIAL PRIMARY KEY,
+      week_label TEXT NOT NULL UNIQUE,
+      meeting_date DATE NOT NULL UNIQUE,
+      start_time TEXT NOT NULL DEFAULT '11:30',
+      end_time TEXT NOT NULL DEFAULT '13:00',
+      location TEXT NOT NULL DEFAULT 'Design Board Room',
+      duration_minutes INTEGER NOT NULL DEFAULT 90,
+      concluded BOOLEAN NOT NULL DEFAULT FALSE,
+      concluded_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    ALTER TABLE ${schema}.l10_meetings ADD COLUMN IF NOT EXISTS concluded BOOLEAN NOT NULL DEFAULT FALSE;
+    ALTER TABLE ${schema}.l10_meetings ADD COLUMN IF NOT EXISTS concluded_at TIMESTAMPTZ;
+    ALTER TABLE ${schema}.workspace_team_members ADD COLUMN IF NOT EXISTS birthday DATE;
+    ALTER TABLE ${schema}.workspace_resources ADD COLUMN IF NOT EXISTS source_url TEXT NOT NULL DEFAULT '';
+    ALTER TABLE ${schema}.workspace_resources DROP CONSTRAINT IF EXISTS workspace_resources_category_check;
+    UPDATE ${schema}.workspace_resources
+      SET category = CASE category
+        WHEN 'SOPs' THEN 'Planning'
+        WHEN 'Reference' THEN 'Strategy'
+        ELSE category
+      END
+      WHERE category IN ('SOPs', 'Reference');
+    ALTER TABLE ${schema}.workspace_resources
+      ADD CONSTRAINT workspace_resources_category_check
+      CHECK (category IN ('Technical', 'Planning', 'Strategy', 'Buying'));
+    CREATE TABLE IF NOT EXISTS ${schema}.l10_checkins (
+      id SERIAL PRIMARY KEY,
+      meeting_id INTEGER NOT NULL REFERENCES ${schema}.l10_meetings(id) ON DELETE CASCADE,
+      member_name TEXT NOT NULL,
+      personal_good_news TEXT NOT NULL DEFAULT '',
+      professional_good_news TEXT NOT NULL DEFAULT '',
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (meeting_id, member_name)
+    );
+    CREATE TABLE IF NOT EXISTS ${schema}.l10_scorecard_metrics (
+      id SERIAL PRIMARY KEY,
+      owner TEXT NOT NULL,
+      measurable TEXT NOT NULL,
+      goal TEXT NOT NULL,
+      uom TEXT NOT NULL,
+      metric_key TEXT,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      active BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (owner, measurable)
+    );
+    ALTER TABLE ${schema}.l10_scorecard_metrics ADD COLUMN IF NOT EXISTS metric_key TEXT;
+    CREATE TABLE IF NOT EXISTS ${schema}.l10_scorecard_entries (
+      id SERIAL PRIMARY KEY,
+      meeting_id INTEGER NOT NULL REFERENCES ${schema}.l10_meetings(id) ON DELETE CASCADE,
+      metric_id INTEGER NOT NULL REFERENCES ${schema}.l10_scorecard_metrics(id) ON DELETE CASCADE,
+      value NUMERIC,
+      on_track BOOLEAN,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (meeting_id, metric_id)
+    );
+    CREATE TABLE IF NOT EXISTS ${schema}.l10_rocks (
+      id SERIAL PRIMARY KEY,
+      description TEXT NOT NULL,
+      owner TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'On Track',
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      source TEXT NOT NULL DEFAULT 'workspace',
+      UNIQUE (description)
+    );
+    CREATE TABLE IF NOT EXISTS ${schema}.l10_agenda_notes (
+      meeting_id INTEGER PRIMARY KEY REFERENCES ${schema}.l10_meetings(id) ON DELETE CASCADE,
+      headlines TEXT NOT NULL DEFAULT '',
+      todos TEXT NOT NULL DEFAULT '',
+      ids TEXT NOT NULL DEFAULT '',
+      conclude TEXT NOT NULL DEFAULT '',
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS ${schema}.l10_headlines (
+      id SERIAL PRIMARY KEY,
+      meeting_id INTEGER NOT NULL REFERENCES ${schema}.l10_meetings(id) ON DELETE CASCADE,
+      headline TEXT NOT NULL,
+      headline_date DATE,
+      added_by TEXT NOT NULL DEFAULT '',
+      needs_discussion BOOLEAN NOT NULL DEFAULT FALSE,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS ${schema}.l10_todos (
+      id SERIAL PRIMARY KEY,
+      meeting_id INTEGER NOT NULL REFERENCES ${schema}.l10_meetings(id) ON DELETE CASCADE,
+      description TEXT NOT NULL,
+      open_date DATE,
+      owner TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'Not Done',
+      linked_issue_id INTEGER,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS ${schema}.l10_issues (
+      id SERIAL PRIMARY KEY,
+      meeting_id INTEGER NOT NULL REFERENCES ${schema}.l10_meetings(id) ON DELETE CASCADE,
+      issue TEXT NOT NULL,
+      raised_by TEXT NOT NULL DEFAULT '',
+      priority INTEGER NOT NULL DEFAULT 1,
+      issue_type TEXT NOT NULL DEFAULT 'active',
+      resolution_notes TEXT NOT NULL DEFAULT '',
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      resolved_at TIMESTAMPTZ,
+      linked_todo_id INTEGER,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    ALTER TABLE ${schema}.l10_issues ADD COLUMN IF NOT EXISTS linked_todo_id INTEGER;
+    CREATE TABLE IF NOT EXISTS ${schema}.l10_ratings (
+      id SERIAL PRIMARY KEY,
+      meeting_id INTEGER NOT NULL REFERENCES ${schema}.l10_meetings(id) ON DELETE CASCADE,
+      team_member_name TEXT NOT NULL,
+      rating INTEGER CHECK (rating BETWEEN 1 AND 10),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (meeting_id, team_member_name)
+    );
+    CREATE TABLE IF NOT EXISTS ${schema}.l10_cascading_messages (
+      meeting_id INTEGER PRIMARY KEY REFERENCES ${schema}.l10_meetings(id) ON DELETE CASCADE,
+      message TEXT NOT NULL DEFAULT '',
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
     CREATE TABLE IF NOT EXISTS ${schema}.production_orders (
       id SERIAL PRIMARY KEY,
       style_id INTEGER NOT NULL UNIQUE REFERENCES ${schema}.styles(id) ON DELETE CASCADE,
@@ -439,6 +1309,23 @@ async function ensureSchema() {
     ALTER TABLE ${schema}.styles ADD COLUMN IF NOT EXISTS stage_entered_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
     ALTER TABLE ${schema}.styles ADD COLUMN IF NOT EXISTS designer TEXT NOT NULL DEFAULT '';
     ALTER TABLE ${schema}.styles ADD COLUMN IF NOT EXISTS pattern_maker TEXT NOT NULL DEFAULT '';
+    ALTER TABLE ${schema}.styles ADD COLUMN IF NOT EXISTS fabric_type TEXT NOT NULL DEFAULT '';
+    ALTER TABLE ${schema}.styles ADD COLUMN IF NOT EXISTS designer_user_id INTEGER REFERENCES ${schema}.workspace_users(id) ON DELETE SET NULL;
+    ALTER TABLE ${schema}.styles ADD COLUMN IF NOT EXISTS pattern_maker_user_id INTEGER REFERENCES ${schema}.workspace_users(id) ON DELETE SET NULL;
+    ALTER TABLE ${schema}.styles ADD COLUMN IF NOT EXISTS sample_maker_user_id INTEGER REFERENCES ${schema}.workspace_users(id) ON DELETE SET NULL;
+    ALTER TABLE ${schema}.styles ADD COLUMN IF NOT EXISTS buyer_user_id INTEGER REFERENCES ${schema}.workspace_users(id) ON DELETE SET NULL;
+    ALTER TABLE ${schema}.styles ADD COLUMN IF NOT EXISTS creative_description TEXT NOT NULL DEFAULT '';
+    ALTER TABLE ${schema}.styles ADD COLUMN IF NOT EXISTS size_range TEXT NOT NULL DEFAULT '';
+    ALTER TABLE ${schema}.styles ADD COLUMN IF NOT EXISTS trims_special_features JSONB NOT NULL DEFAULT '[]'::jsonb;
+    ALTER TABLE ${schema}.styles ADD COLUMN IF NOT EXISTS predicted_cost NUMERIC;
+    ALTER TABLE ${schema}.styles ADD COLUMN IF NOT EXISTS confirmed_cost NUMERIC;
+    ALTER TABLE ${schema}.colorways ADD COLUMN IF NOT EXISTS code TEXT NOT NULL DEFAULT '';
+    UPDATE ${schema}.styles s
+    SET designer_user_id = wu.id
+    FROM ${schema}.workspace_users wu
+    WHERE s.designer_user_id IS NULL
+      AND NULLIF(TRIM(s.owner), '') IS NOT NULL
+      AND LOWER(TRIM(s.owner)) = LOWER(TRIM(wu.name));
     ALTER TABLE ${schema}.tech_packs ADD COLUMN IF NOT EXISTS base_pattern_reference TEXT NOT NULL DEFAULT '';
     ALTER TABLE ${schema}.tech_packs ADD COLUMN IF NOT EXISTS fabric_id INTEGER REFERENCES ${schema}.fabrics(id) ON DELETE SET NULL;
     ALTER TABLE ${schema}.tech_packs ADD COLUMN IF NOT EXISTS trims_accessories TEXT NOT NULL DEFAULT '';
@@ -474,6 +1361,16 @@ async function ensureSchema() {
      WHERE NOT EXISTS (SELECT 1 FROM ${schema}.workspace_users WHERE name='Wandia Gichuru')`,
   );
 
+  for (const [teamSection, roleTitle, description, isLma, displayOrder] of TEAM_DIRECTORY_SEEDS) {
+    await pool.query(
+      `INSERT INTO ${schema}.workspace_team_members
+        (name,role_title,team_section,description,is_lma,display_order)
+       VALUES ('',$1,$2,$3,$4,$5)
+       ON CONFLICT (team_section,role_title) DO NOTHING`,
+      [roleTitle, teamSection, description, isLma, displayOrder],
+    );
+  }
+
   for (const user of users) {
     await pool.query(
       `INSERT INTO ${schema}.users (name,email,role,initials,color,password_hash)
@@ -482,6 +1379,10 @@ async function ensureSchema() {
       [user.name, user.email, user.role, user.initials, user.color, hashPassword("vivo2026", "workspace-seed")],
     );
   }
+
+  await ensureL10Data();
+  await ensureWorkspaceResources();
+  await ensureRangePlanData();
 
   for (const fabric of fabrics) {
     await pool.query(
@@ -680,6 +1581,70 @@ async function requireUser(req: AuthRequest, res: Response, next: NextFunction) 
   next();
 }
 
+function requireAdmin(req: AuthRequest, res: Response, next: NextFunction) {
+  if (req.workspaceUser?.role !== "Admin") {
+    res.status(403).json({ error: "Admin access required" });
+    return;
+  }
+  next();
+}
+
+function teamMemberPayload(row: Record<string, unknown>) {
+  return {
+    id: Number(row.id),
+    name: String(row.name ?? ""),
+    roleTitle: String(row.roleTitle ?? ""),
+    teamSection: String(row.teamSection ?? ""),
+    description: String(row.description ?? ""),
+    birthday: row.birthday ? String(row.birthday).slice(0, 10) : null,
+    photoUrl: row.photoPath ? `/api/workspace/team-directory/${Number(row.id)}/photo` : null,
+    isLma: Boolean(row.isLma),
+    displayOrder: Number(row.displayOrder ?? 0),
+    createdAt: row.createdAt ?? null,
+  };
+}
+
+function normalizeTeamBirthday(value: unknown) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return null;
+  const match = raw.match(/^(?:\d{4}-)?(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  const month = Number(match[1]);
+  const day = Number(match[2]);
+  const candidate = new Date(Date.UTC(2000, month - 1, day));
+  if (candidate.getUTCMonth() !== month - 1 || candidate.getUTCDate() !== day) return null;
+  return `2000-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function storageObjectParts(objectPath: string) {
+  const privateDir = String(process.env.PRIVATE_OBJECT_DIR ?? "").replace(/^\/+|\/+$/g, "");
+  const relative = objectPath.replace(/^\/objects\//, "").replace(/^\/+/, "");
+  const fullPath = `${privateDir}/${relative}`;
+  const parts = fullPath.split("/").filter(Boolean);
+  const bucketName = parts.shift();
+  if (!bucketName || !parts.length) throw new Error("Invalid object storage path");
+  return { bucketName, objectName: parts.join("/") };
+}
+
+async function signedStorageUrl(objectPath: string, method: "GET" | "PUT", ttlSec: number) {
+  const { bucketName, objectName } = storageObjectParts(objectPath);
+  const response = await fetch("http://127.0.0.1:1106/object-storage/signed-object-url", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      bucket_name: bucketName,
+      object_name: objectName,
+      method,
+      expires_at: new Date(Date.now() + ttlSec * 1000).toISOString(),
+    }),
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!response.ok) throw new Error(`Unable to sign object storage URL (${response.status})`);
+  const body = await response.json() as { signed_url?: string };
+  if (!body.signed_url) throw new Error("Object storage did not return a signed URL");
+  return body.signed_url;
+}
+
 function isPlmStage(value: unknown): value is PlmStage {
   return typeof value === "string" && (PLM_ALL_STAGES as readonly string[]).includes(value);
 }
@@ -701,13 +1666,38 @@ function stageProgress(stage: string) {
 
 async function getStyle(id: number) {
   const result = await pool.query(
-    `SELECT id,code,name,brand,category,sub_category AS "subCategory",theme,order_type AS "orderType",
-       tier,status,stage,stage AS "currentStage",owner,designer,pattern_maker AS "patternMaker",
-       to_char(target_date,'YYYY-MM-DD') AS "targetDate",
-       to_char(stage_entered_at,'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "stageEnteredAt",
-       GREATEST(0,FLOOR(EXTRACT(EPOCH FROM (NOW()-stage_entered_at))/86400))::int AS "daysInStage",
-       image,progress::float,price::float,market
-     FROM ${schema}.styles WHERE id=$1`,
+    `SELECT s.id,s.code,s.name,s.brand,s.category,s.sub_category AS "subCategory",s.theme,s.order_type AS "orderType",
+       s.tier,s.status,s.stage,s.stage AS "currentStage",s.owner,s.designer,s.pattern_maker AS "patternMaker",
+       s.fabric_type AS "fabricType",s.designer_user_id AS "designerUserId",
+       s.pattern_maker_user_id AS "patternMakerUserId",s.sample_maker_user_id AS "sampleMakerUserId",
+       s.buyer_user_id AS "buyerUserId",
+       s.creative_description AS "creativeDescription",s.size_range AS "sizeRange",
+       s.trims_special_features AS "trimsSpecialFeatures",s.predicted_cost::float AS "predictedCost",
+       s.confirmed_cost::float AS "confirmedCost",
+       jsonb_build_object(
+         'designer', CASE WHEN du.id IS NULL THEN NULL ELSE jsonb_build_object('id',du.id,'name',du.name,'role',du.role,'department',du.department) END,
+         'patternMaker', CASE WHEN pm.id IS NULL THEN NULL ELSE jsonb_build_object('id',pm.id,'name',pm.name,'role',pm.role,'department',pm.department) END,
+         'sampleMaker', CASE WHEN sm.id IS NULL THEN NULL ELSE jsonb_build_object('id',sm.id,'name',sm.name,'role',sm.role,'department',sm.department) END,
+         'buyer', CASE WHEN bu.id IS NULL THEN NULL ELSE jsonb_build_object('id',bu.id,'name',bu.name,'role',bu.role,'department',bu.department) END
+       ) AS "styleTeam",
+        to_char(s.target_date,'YYYY-MM-DD') AS "targetDate",
+        pd.target_order_week AS "targetOrderWeek",
+        NULL::text AS "plannedLaunchWeek",
+       to_char(s.stage_entered_at,'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "stageEnteredAt",
+       GREATEST(0,FLOOR(EXTRACT(EPOCH FROM (NOW()-s.stage_entered_at))/86400))::int AS "daysInStage",
+       s.image,s.progress::float,s.price::float,s.market
+     FROM ${schema}.styles s
+      LEFT JOIN (
+        SELECT style_number, MAX(NULLIF(TRIM(target_order_week), '')) AS target_order_week
+        FROM public.pd_styles
+        WHERE style_number IS NOT NULL
+        GROUP BY style_number
+      ) pd ON pd.style_number = s.code
+     LEFT JOIN ${schema}.workspace_users du ON du.id=s.designer_user_id
+     LEFT JOIN ${schema}.workspace_users pm ON pm.id=s.pattern_maker_user_id
+     LEFT JOIN ${schema}.workspace_users sm ON sm.id=s.sample_maker_user_id
+     LEFT JOIN ${schema}.workspace_users bu ON bu.id=s.buyer_user_id
+     WHERE s.id=$1`,
     [id],
   );
   return result.rows[0] ?? null;
@@ -717,7 +1707,7 @@ async function styleDetail(id: number) {
   const style = await getStyle(id);
   if (!style) return null;
   const [colorways, styleFabrics, techPack, fitSessions, gradings, boms, samples, pomQcHeader, pomQcRows, legacyPomQc, costEstimate, productionOrder, stageHistory] = await Promise.all([
-    pool.query(`SELECT id,name,hex,status FROM ${schema}.colorways WHERE style_id=$1 ORDER BY id`, [id]),
+     pool.query(`SELECT id,name,hex,code,status FROM ${schema}.colorways WHERE style_id=$1 ORDER BY id`, [id]),
     pool.query(`SELECT f.id,f.name,f.composition,f.mill,f.gsm,f.notes FROM ${schema}.boms b JOIN ${schema}.fabrics f ON f.id=b.fabric_id WHERE b.style_id=$1 ORDER BY b.id`, [id]),
     pool.query(`SELECT id,status,version,owner,to_char(updated_at,'YYYY-MM-DD') AS "updatedAt",notes,
        base_pattern_reference AS "basePatternReference",fabric_id AS "fabricId",trims_accessories AS "trimsAccessories",
@@ -739,7 +1729,7 @@ async function styleDetail(id: number) {
        FROM ${schema}.pom_qc_rows r JOIN ${schema}.pom_qc q ON q.id=r.pom_qc_id
        WHERE q.style_id=$1 ORDER BY r.id`, [id]),
     pool.query(`SELECT id,point,spec::float,actual::float,tolerance::float,status FROM ${schema}.pom_qc WHERE style_id=$1 AND point IS NOT NULL ORDER BY id`, [id]),
-    pool.query(`SELECT fabric::float,trims::float,labor::float,overhead::float,total::float,margin::float,currency,
+     pool.query(`SELECT fabric::float,trims::float,labor::float,overhead::float,total::float AS "totalCost",total::float,margin::float,currency,
        avg_mat_kg::float AS "avgMatKg",avg_metres_used::float AS "avgMetresUsed",mins_per_pc::float AS "minsPerPc",
        efficiency_pct::float AS "efficiencyPct",material_cost::float AS "materialCost",labour_cost::float AS "labourCost",
        retail_price::float AS "retailPrice",margin_pct::float AS "marginPct",cogs_ratio::float AS "cogsRatio",
@@ -870,9 +1860,1268 @@ router.get("/team", async (_req, res, next) => {
   }
 });
 
+const FEEDBACK_TEAM_OPTIONS = [
+  "Vivo Sarit",
+  "Vivo Junction",
+  "Vivo Moi Avenue",
+  "Vivo Mama Ngina St",
+  "Vivo Yaya",
+  "Vivo Village Market",
+  "Vivo Garden City",
+  "Vivo Kigali Heights",
+  "Vivo Acacia",
+  "Vivo Galleria",
+  "Vivo Capital Centre",
+  "Vivo Two Rivers",
+  "Vivo Imaara",
+  "Vivo Hub",
+  "Vivo Runda",
+  "Vivo TRM",
+  "Vivo Nakuru",
+  "Vivo City Mall",
+  "Vivo Eldoret",
+  "The Oasis Mall",
+  "Vivo Kisumu",
+  "Vivo Signature Mall",
+  "Safari Sarit & Zoya",
+  "Vivo MSA Digo Road",
+  "Vivo Kileleshwa",
+  "Vivo T-Mall",
+  "Vivo Greenspan",
+  "Vivo Meru",
+  "Online Team",
+  "Marketing Team",
+  "Customer Service",
+  "Other",
+] as const;
+const FEEDBACK_TYPE_OPTIONS = ["Fit & Sizing", "Fabric & Quality", "Colour & Print", "Price & Value", "Styling & VM", "Customer Reaction", "Stock & Availability", "Other"] as const;
+const FEEDBACK_SENTIMENTS = ["positive", "mixed", "negative"] as const;
+const FEEDBACK_URGENCIES = ["note", "discuss", "urgent"] as const;
+type FeedbackSentiment = (typeof FEEDBACK_SENTIMENTS)[number];
+type FeedbackUrgency = (typeof FEEDBACK_URGENCIES)[number];
+
+function feedbackPayload(row: Record<string, unknown>) {
+  return {
+    id: Number(row.id),
+    submitterName: String(row.submitterName ?? ""),
+    submitterTeam: String(row.submitterTeam ?? ""),
+    styleId: row.styleId == null ? null : Number(row.styleId),
+    styleName: String(row.styleName ?? row.styleNameFreetext ?? ""),
+    styleNumber: row.styleNumber == null ? null : String(row.styleNumber),
+    styleImage: row.styleImage == null ? null : String(row.styleImage),
+    styleNameFreetext: String(row.styleNameFreetext ?? ""),
+    feedbackTypes: Array.isArray(row.feedbackTypes) ? row.feedbackTypes.map(String) : [],
+    sentiment: String(row.sentiment ?? "mixed") as FeedbackSentiment,
+    urgency: String(row.urgency ?? "note") as FeedbackUrgency,
+    commentText: String(row.commentText ?? ""),
+    reviewed: Boolean(row.reviewed),
+    reviewedBy: row.reviewedBy == null ? null : Number(row.reviewedBy),
+    reviewedAt: row.reviewedAt ?? null,
+    createdAt: row.createdAt ?? null,
+  };
+}
+
+async function feedbackStyleSearch(q: string) {
+  const search = `%${q.trim()}%`;
+  const result = await pool.query(
+    `SELECT ws.id,
+       COALESCE(NULLIF(TRIM(ws.name),''), MAX(apc.style_name), 'Unassigned style') AS name,
+       COALESCE(NULLIF(TRIM(ws.code),''), MAX(apc.style_number)) AS code,
+       ws.image,
+       COALESCE(ws.status, MAX(apc.status)) AS status
+     FROM public.all_products_clean apc
+     LEFT JOIN LATERAL (
+       SELECT s.id,s.name,s.code,s.status,s.image
+       FROM ${schema}.styles s
+       WHERE LOWER(s.code)=LOWER(NULLIF(TRIM(apc.style_number),''))
+          OR LOWER(s.name)=LOWER(NULLIF(TRIM(apc.style_name),''))
+       ORDER BY CASE WHEN LOWER(s.code)=LOWER(NULLIF(TRIM(apc.style_number),'')) THEN 0 ELSE 1 END, s.id
+       LIMIT 1
+     ) ws ON TRUE
+     WHERE LOWER(COALESCE(apc.status,'')) IN ('active','retired')
+       AND (apc.style_name ILIKE $1 OR apc.style_number ILIKE $1)
+     GROUP BY ws.id,ws.name,ws.code,ws.status,ws.image
+     ORDER BY LOWER(COALESCE(ws.name,MAX(apc.style_name))), COALESCE(ws.code,MAX(apc.style_number))
+     LIMIT 30`,
+    [search],
+  );
+  return result.rows.map((row) => ({
+    id: row.id == null ? null : Number(row.id),
+    name: String(row.name ?? ""),
+    code: String(row.code ?? ""),
+    image: row.image ?? null,
+    status: row.status == null ? null : String(row.status),
+  }));
+}
+
+router.get("/feedback/styles/search", async (req, res, next) => {
+  try {
+    const q = String(req.query.q ?? "").trim();
+    if (q.length < 2) {
+      res.json([]);
+      return;
+    }
+    res.json(await feedbackStyleSearch(q));
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post("/feedback/public", async (req, res, next) => {
+  try {
+    const submitterName = String(req.body?.submitterName ?? "").trim();
+    const submitterTeam = String(req.body?.submitterTeam ?? "").trim();
+    const styleNameFreetext = String(req.body?.styleNameFreetext ?? "").trim();
+    const feedbackTypes = Array.isArray(req.body?.feedbackTypes)
+      ? req.body.feedbackTypes.map((value: unknown) => String(value)).filter((value: string) => FEEDBACK_TYPE_OPTIONS.includes(value as (typeof FEEDBACK_TYPE_OPTIONS)[number]))
+      : [];
+    const sentiment = String(req.body?.sentiment ?? "mixed") as FeedbackSentiment;
+    const urgency = String(req.body?.urgency ?? "note") as FeedbackUrgency;
+    const commentText = String(req.body?.commentText ?? "").trim();
+    const rawStyleId = Number(req.body?.styleId);
+    if (!submitterName || !FEEDBACK_TEAM_OPTIONS.includes(submitterTeam as (typeof FEEDBACK_TEAM_OPTIONS)[number]) || !feedbackTypes.length || !FEEDBACK_SENTIMENTS.includes(sentiment) || !FEEDBACK_URGENCIES.includes(urgency) || commentText.length < 8) {
+      res.status(400).json({ error: "Name, team, at least one feedback type, sentiment, urgency and a useful comment are required" });
+      return;
+    }
+    let styleId: number | null = null;
+    if (Number.isInteger(rawStyleId) && rawStyleId > 0) {
+      const style = await pool.query<{ id: number }>(`SELECT id FROM ${schema}.styles WHERE id=$1`, [rawStyleId]);
+      styleId = style.rows[0]?.id ?? null;
+    }
+    const result = await pool.query(
+      `INSERT INTO ${schema}.style_feedback
+        (submitter_name,submitter_team,style_id,style_name_freetext,feedback_types,sentiment,urgency,comment_text)
+       VALUES ($1,$2,$3,$4,$5::text[],$6,$7,$8)
+       RETURNING id,submitter_name AS "submitterName",submitter_team AS "submitterTeam",
+        style_id AS "styleId",style_name_freetext AS "styleNameFreetext",feedback_types AS "feedbackTypes",
+        sentiment,urgency,comment_text AS "commentText",reviewed,reviewed_by AS "reviewedBy",
+        reviewed_at AS "reviewedAt",created_at AS "createdAt"`,
+      [submitterName, submitterTeam, styleId, styleNameFreetext, feedbackTypes, sentiment, urgency, commentText],
+    );
+    res.status(201).json(feedbackPayload(result.rows[0]));
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.use(requireUser);
 
+function rangePlanSeasonPayload(row: Record<string, unknown>) {
+  return {
+    id: Number(row.id),
+    seasonName: String(row.seasonName ?? ""),
+    seasonYear: Number(row.seasonYear ?? 0),
+    revenueTargetKes: Number(row.revenueTargetKes ?? 0),
+    cogsBudgetPct: Number(row.cogsBudgetPct ?? 0),
+    factoryCapacityUnits: Number(row.factoryCapacityUnits ?? 0),
+    status: String(row.status ?? "active"),
+  };
+}
+
+function rangePlanRowPayload(row: Record<string, unknown>) {
+  return {
+    id: Number(row.id),
+    seasonId: Number(row.seasonId),
+    subCategory: String(row.subCategory ?? ""),
+    tier: String(row.tier ?? "Core"),
+    styleCountTarget: Number(row.styleCountTarget ?? 0),
+    styleCountMin: Number(row.styleCountMin ?? 0),
+    styleCountMax: Number(row.styleCountMax ?? 0),
+    aosUnits: Number(row.aosUnits ?? 350),
+    totalUnitsImplied: Number(row.totalUnitsImplied ?? 0),
+    notes: String(row.notes ?? ""),
+  };
+}
+
+function rangePlanOtbPayload(row: Record<string, unknown>) {
+  return {
+    id: row.id == null ? null : Number(row.id),
+    monthYear: String(row.monthYear ?? ""),
+    revenueTarget: row.revenueTarget == null ? null : Number(row.revenueTarget),
+    plannedUnits: row.plannedUnits == null ? null : Number(row.plannedUnits),
+    newStylesCount: row.newStylesCount == null ? null : Number(row.newStylesCount),
+    notes: String(row.notes ?? ""),
+  };
+}
+
+router.get("/range-plan", async (req, res, next) => {
+  try {
+    const seasonsResult = await pool.query(
+      `SELECT id,season_name AS "seasonName",season_year AS "seasonYear",
+         revenue_target_kes AS "revenueTargetKes",cogs_budget_pct AS "cogsBudgetPct",
+         factory_capacity_units AS "factoryCapacityUnits",status
+       FROM ${schema}.range_plan_seasons
+       ORDER BY CASE WHEN status='active' THEN 0 ELSE 1 END, season_year DESC, id DESC`,
+    );
+    const seasons = seasonsResult.rows.map(rangePlanSeasonPayload);
+    const requestedSeasonId = Number(req.query.seasonId);
+    const season = (Number.isInteger(requestedSeasonId) && requestedSeasonId > 0
+      ? seasons.find((candidate) => candidate.id === requestedSeasonId)
+      : seasons.find((candidate) => candidate.status === "active")) ?? seasons[0];
+    if (!season) {
+      res.json({ seasons: [], season: null, rows: [], otb: [], averageCostKes: 850, health: await rangePlanHealth() });
+      return;
+    }
+    const rowsResult = await pool.query(
+      `SELECT id,season_id AS "seasonId",sub_category AS "subCategory",tier::text,
+         style_count_target AS "styleCountTarget",style_count_min AS "styleCountMin",
+         style_count_max AS "styleCountMax",aos_units AS "aosUnits",
+         total_units_implied AS "totalUnitsImplied",notes
+       FROM ${schema}.range_plan_rows
+       WHERE season_id=$1
+       ORDER BY CASE tier::text WHEN 'NOOS' THEN 1 WHEN 'Core' THEN 2 WHEN 'Recent' THEN 3 ELSE 4 END, id`,
+      [season.id],
+    );
+    const otbResult = await pool.query(
+      `WITH months AS (
+         SELECT generate_series(
+           date_trunc('month', CURRENT_DATE)::date,
+           (date_trunc('month', CURRENT_DATE) + INTERVAL '5 months')::date,
+           INTERVAL '1 month'
+         )::date AS month_year
+       )
+       SELECT o.id,m.month_year::text AS "monthYear",o.revenue_target AS "revenueTarget",
+         o.planned_units AS "plannedUnits",o.new_styles_count AS "newStylesCount",o.notes
+       FROM months m
+       LEFT JOIN ${schema}.range_plan_otb o
+         ON o.season_id=$1 AND o.month_year=m.month_year
+       ORDER BY m.month_year`,
+      [season.id],
+    );
+    res.json({
+      seasons,
+      season,
+      rows: rowsResult.rows.map(rangePlanRowPayload),
+      otb: otbResult.rows.map(rangePlanOtbPayload),
+      averageCostKes: 850,
+      health: await rangePlanHealth(),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.put("/range-plan/rows/:id", async (req, res, next) => {
+  try {
+    const rowId = Number(req.params.id);
+    const existing = await pool.query(
+      `SELECT style_count_target AS "styleCountTarget",aos_units AS "aosUnits",notes
+       FROM ${schema}.range_plan_rows WHERE id=$1`,
+      [rowId],
+    );
+    if (!existing.rows[0]) {
+      res.status(404).json({ error: "Range plan row not found" });
+      return;
+    }
+    const styleCountTarget = req.body?.styleCountTarget === undefined
+      ? Number(existing.rows[0].styleCountTarget)
+      : Number(req.body.styleCountTarget);
+    const aosUnits = req.body?.aosUnits === undefined
+      ? Number(existing.rows[0].aosUnits)
+      : Number(req.body.aosUnits);
+    const notes = req.body?.notes === undefined ? String(existing.rows[0].notes ?? "") : String(req.body.notes);
+    if (!Number.isInteger(styleCountTarget) || styleCountTarget < 0 || !Number.isInteger(aosUnits) || aosUnits < 0 || notes.length > 2000) {
+      res.status(400).json({ error: "Style target and AOS must be non-negative whole numbers; notes must be 2,000 characters or fewer" });
+      return;
+    }
+    const result = await pool.query(
+      `UPDATE ${schema}.range_plan_rows
+       SET style_count_target=$1,aos_units=$2,notes=$3
+       WHERE id=$4
+       RETURNING id,season_id AS "seasonId",sub_category AS "subCategory",tier::text,
+         style_count_target AS "styleCountTarget",style_count_min AS "styleCountMin",
+         style_count_max AS "styleCountMax",aos_units AS "aosUnits",
+         total_units_implied AS "totalUnitsImplied",notes`,
+      [styleCountTarget, aosUnits, notes, rowId],
+    );
+    res.json(rangePlanRowPayload(result.rows[0]));
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post("/range-plan/seasons/:seasonId/rows", async (req, res, next) => {
+  try {
+    const seasonId = Number(req.params.seasonId);
+    const subCategory = String(req.body?.subCategory ?? "").trim();
+    const tier = String(req.body?.tier ?? "Core");
+    const styleCountTarget = Number(req.body?.styleCountTarget ?? 0);
+    const styleCountMin = Number(req.body?.styleCountMin ?? 0);
+    const styleCountMax = Number(req.body?.styleCountMax ?? 0);
+    const aosUnits = Number(req.body?.aosUnits ?? 350);
+    if (!subCategory || subCategory.length > 120 || !["NOOS", "Core", "Recent", "New/Test"].includes(tier) ||
+      ![styleCountTarget, styleCountMin, styleCountMax, aosUnits].every((value) => Number.isInteger(value) && value >= 0)) {
+      res.status(400).json({ error: "A sub-category, valid tier and non-negative whole-number targets are required" });
+      return;
+    }
+    const result = await pool.query(
+      `INSERT INTO ${schema}.range_plan_rows
+        (season_id,sub_category,tier,style_count_target,style_count_min,style_count_max,aos_units,notes)
+       VALUES ($1,$2,$3::${schema}.range_plan_tier,$4,$5,$6,$7,$8)
+       RETURNING id,season_id AS "seasonId",sub_category AS "subCategory",tier::text,
+         style_count_target AS "styleCountTarget",style_count_min AS "styleCountMin",
+         style_count_max AS "styleCountMax",aos_units AS "aosUnits",
+         total_units_implied AS "totalUnitsImplied",notes`,
+      [seasonId, subCategory, tier, styleCountTarget, styleCountMin, styleCountMax, aosUnits, String(req.body?.notes ?? "")],
+    );
+    res.status(201).json(rangePlanRowPayload(result.rows[0]));
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.put("/range-plan/seasons/:seasonId/otb", async (req, res, next) => {
+  try {
+    const seasonId = Number(req.params.seasonId);
+    const monthYear = String(req.body?.monthYear ?? "");
+    const revenueTarget = req.body?.revenueTarget == null || req.body?.revenueTarget === "" ? null : Number(req.body.revenueTarget);
+    const plannedUnits = req.body?.plannedUnits == null || req.body?.plannedUnits === "" ? null : Number(req.body.plannedUnits);
+    const newStylesCount = req.body?.newStylesCount == null || req.body?.newStylesCount === "" ? null : Number(req.body.newStylesCount);
+    if (!/^\d{4}-\d{2}-01$/.test(monthYear) ||
+      (revenueTarget !== null && (!Number.isFinite(revenueTarget) || revenueTarget < 0)) ||
+      (plannedUnits !== null && (!Number.isInteger(plannedUnits) || plannedUnits < 0)) ||
+      (newStylesCount !== null && (!Number.isInteger(newStylesCount) || newStylesCount < 0))) {
+      res.status(400).json({ error: "Month and OTB values are invalid" });
+      return;
+    }
+    const result = await pool.query(
+      `INSERT INTO ${schema}.range_plan_otb
+        (season_id,month_year,revenue_target,planned_units,new_styles_count,notes)
+       VALUES ($1,$2,$3,$4,$5,$6)
+       ON CONFLICT (season_id,month_year) DO UPDATE SET
+         revenue_target=EXCLUDED.revenue_target,
+         planned_units=EXCLUDED.planned_units,
+         new_styles_count=EXCLUDED.new_styles_count,
+         notes=EXCLUDED.notes
+       RETURNING id,month_year::text AS "monthYear",revenue_target AS "revenueTarget",
+         planned_units AS "plannedUnits",new_styles_count AS "newStylesCount",notes`,
+      [seasonId, monthYear, revenueTarget, plannedUnits, newStylesCount, String(req.body?.notes ?? "")],
+    );
+    res.json(rangePlanOtbPayload(result.rows[0]));
+  } catch (error) {
+    next(error);
+  }
+});
+
+const RESOURCE_CATEGORIES = ["Technical", "Planning", "Strategy", "Buying"] as const;
+type ResourceCategory = (typeof RESOURCE_CATEGORIES)[number];
+
+function resourcePayload(row: Record<string, unknown>, includeContent = false) {
+  return {
+    id: Number(row.id),
+    title: String(row.title ?? ""),
+    category: String(row.category ?? "Planning") as ResourceCategory,
+    description: String(row.description ?? ""),
+    sourceUrl: String(row.sourceUrl ?? ""),
+    ...(includeContent ? { contentMarkdown: String(row.contentMarkdown ?? "") } : {}),
+    createdAt: row.createdAt ?? null,
+    updatedAt: row.updatedAt ?? null,
+    createdBy: row.createdBy == null ? null : Number(row.createdBy),
+  };
+}
+
+router.get("/resources", async (_req, res, next) => {
+  try {
+    const result = await pool.query(
+      `SELECT id,title,category,description,
+        source_url AS "sourceUrl",
+        created_at AS "createdAt",updated_at AS "updatedAt",created_by AS "createdBy"
+       FROM ${schema}.workspace_resources
+       ORDER BY CASE category
+         WHEN 'Technical' THEN 0
+         WHEN 'Planning' THEN 1
+         WHEN 'Strategy' THEN 2
+         WHEN 'Buying' THEN 3
+         ELSE 4
+       END, title`,
+    );
+    res.json(result.rows.map((row) => resourcePayload(row)));
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get("/resources/:id", async (req, res, next) => {
+  try {
+    const result = await pool.query(
+      `SELECT id,title,category,description,source_url AS "sourceUrl",content_markdown AS "contentMarkdown",
+        created_at AS "createdAt",updated_at AS "updatedAt",created_by AS "createdBy"
+       FROM ${schema}.workspace_resources WHERE id=$1`,
+      [Number(req.params.id)],
+    );
+    if (!result.rows[0]) {
+      res.status(404).json({ error: "Resource not found" });
+      return;
+    }
+    res.json(resourcePayload(result.rows[0], true));
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post("/resources", requireAdmin, async (req: AuthRequest, res, next) => {
+  try {
+    const title = String(req.body?.title ?? "").trim();
+    const category = String(req.body?.category ?? "Planning").trim();
+    const description = String(req.body?.description ?? "").trim();
+    const sourceUrl = String(req.body?.sourceUrl ?? "").trim();
+    const contentMarkdown = String(req.body?.contentMarkdown ?? "");
+    if (!title || !description || !sourceUrl || !contentMarkdown.trim() || !RESOURCE_CATEGORIES.includes(category as ResourceCategory)) {
+      res.status(400).json({ error: "Title, category, description, source URL and markdown content are required" });
+      return;
+    }
+    const result = await pool.query(
+      `INSERT INTO ${schema}.workspace_resources
+        (title,category,description,source_url,content_markdown,created_by)
+       VALUES ($1,$2,$3,$4,$5,$6)
+       RETURNING id,title,category,description,source_url AS "sourceUrl",content_markdown AS "contentMarkdown",
+        created_at AS "createdAt",updated_at AS "updatedAt",created_by AS "createdBy"`,
+      [title, category, description, sourceUrl, contentMarkdown, req.workspaceUser?.id ?? null],
+    );
+    res.status(201).json(resourcePayload(result.rows[0], true));
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.put("/resources/:id", requireAdmin, async (req: AuthRequest, res, next) => {
+  try {
+    const title = String(req.body?.title ?? "").trim();
+    const category = String(req.body?.category ?? "Planning").trim();
+    const description = String(req.body?.description ?? "").trim();
+    const sourceUrl = String(req.body?.sourceUrl ?? "").trim();
+    const contentMarkdown = String(req.body?.contentMarkdown ?? "");
+    if (!title || !description || !sourceUrl || !contentMarkdown.trim() || !RESOURCE_CATEGORIES.includes(category as ResourceCategory)) {
+      res.status(400).json({ error: "Title, category, description, source URL and markdown content are required" });
+      return;
+    }
+    const result = await pool.query(
+      `UPDATE ${schema}.workspace_resources
+       SET title=$1,category=$2,description=$3,source_url=$4,content_markdown=$5,updated_at=NOW()
+       WHERE id=$6
+       RETURNING id,title,category,description,source_url AS "sourceUrl",content_markdown AS "contentMarkdown",
+        created_at AS "createdAt",updated_at AS "updatedAt",created_by AS "createdBy"`,
+      [title, category, description, sourceUrl, contentMarkdown, Number(req.params.id)],
+    );
+    if (!result.rows[0]) {
+      res.status(404).json({ error: "Resource not found" });
+      return;
+    }
+    res.json(resourcePayload(result.rows[0], true));
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.delete("/resources/:id", requireAdmin, async (req, res, next) => {
+  try {
+    const result = await pool.query(
+      `DELETE FROM ${schema}.workspace_resources WHERE id=$1 RETURNING id`,
+      [Number(req.params.id)],
+    );
+    if (!result.rows[0]) {
+      res.status(404).json({ error: "Resource not found" });
+      return;
+    }
+    res.status(204).end();
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get("/feedback", async (req: AuthRequest, res, next) => {
+  try {
+    const values: unknown[] = [];
+    const clauses = ["1=1"];
+    const add = (value: unknown) => {
+      values.push(value);
+      return `$${values.length}`;
+    };
+    const styleId = Number(req.query.styleId);
+    if (Number.isInteger(styleId) && styleId > 0) clauses.push(`f.style_id=${add(styleId)}`);
+    const from = String(req.query.from ?? "").trim();
+    const to = String(req.query.to ?? "").trim();
+    const team = String(req.query.team ?? "").trim();
+    const feedbackType = String(req.query.feedbackType ?? "").trim();
+    const sentiment = String(req.query.sentiment ?? "").trim();
+    const styleSearch = String(req.query.styleSearch ?? "").trim();
+    if (from) clauses.push(`f.created_at >= ${add(from)}::date`);
+    if (to) clauses.push(`f.created_at < (${add(to)}::date + INTERVAL '1 day')`);
+    if (team) clauses.push(`f.submitter_team=${add(team)}`);
+    if (feedbackType) clauses.push(`${add(feedbackType)} = ANY(f.feedback_types)`);
+    if (FEEDBACK_SENTIMENTS.includes(sentiment as FeedbackSentiment)) clauses.push(`f.sentiment=${add(sentiment)}`);
+    if (styleSearch) {
+      const needle = add(`%${styleSearch}%`);
+      clauses.push(`(COALESCE(s.name,'') ILIKE ${needle} OR COALESCE(s.code,'') ILIKE ${needle} OR f.style_name_freetext ILIKE ${needle})`);
+    }
+    const result = await pool.query(
+      `SELECT f.id,f.submitter_name AS "submitterName",f.submitter_team AS "submitterTeam",
+        f.style_id AS "styleId",COALESCE(NULLIF(TRIM(s.name),''),NULLIF(TRIM(f.style_name_freetext),''),'Unassigned style') AS "styleName",
+        s.code AS "styleNumber",s.image AS "styleImage",f.style_name_freetext AS "styleNameFreetext",
+        f.feedback_types AS "feedbackTypes",f.sentiment,f.urgency,f.comment_text AS "commentText",
+        f.reviewed,f.reviewed_by AS "reviewedBy",f.reviewed_at AS "reviewedAt",f.created_at AS "createdAt"
+       FROM ${schema}.style_feedback f
+       LEFT JOIN ${schema}.styles s ON s.id=f.style_id
+       WHERE ${clauses.join(" AND ")}
+       ORDER BY f.created_at DESC,f.id DESC
+       LIMIT 1000`,
+      values,
+    );
+    const weekly = await pool.query(
+      `WITH base AS (
+        SELECT f.*,COALESCE(NULLIF(TRIM(s.name),''),NULLIF(TRIM(f.style_name_freetext),''),'Unassigned style') AS style_name
+        FROM ${schema}.style_feedback f LEFT JOIN ${schema}.styles s ON s.id=f.style_id
+        WHERE f.created_at >= date_trunc('week', CURRENT_DATE)
+      )
+      SELECT COUNT(*)::int AS "totalSubmissionsThisWeek",
+        (SELECT style_name FROM base WHERE style_name <> 'Unassigned style'
+         GROUP BY style_name ORDER BY COUNT(*) DESC,style_name LIMIT 1) AS "mostFlaggedStyle",
+        (SELECT type FROM base,UNNEST(feedback_types) AS type
+         GROUP BY type ORDER BY COUNT(*) DESC,type LIMIT 1) AS "mostCommonFeedbackType",
+        COALESCE(ROUND(100.0 * COUNT(*) FILTER (WHERE sentiment='negative') / NULLIF(COUNT(*),0),1),0)::float AS "negativePercentThisWeek"
+       FROM base`,
+    );
+    res.json({
+      viewer: { role: req.workspaceUser?.role ?? null },
+      stats: weekly.rows[0] ?? {
+        totalSubmissionsThisWeek: 0,
+        mostFlaggedStyle: null,
+        mostCommonFeedbackType: null,
+        negativePercentThisWeek: 0,
+      },
+      submissions: result.rows.map((row) => feedbackPayload(row)),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.patch("/feedback/:id/review", requireAdmin, async (req: AuthRequest, res, next) => {
+  try {
+    const reviewed = req.body?.reviewed !== false;
+    const result = await pool.query(
+      `UPDATE ${schema}.style_feedback
+       SET reviewed=$1,reviewed_by=$2,reviewed_at=CASE WHEN $1 THEN NOW() ELSE NULL END
+       WHERE id=$3
+       RETURNING id,submitter_name AS "submitterName",submitter_team AS "submitterTeam",
+        style_id AS "styleId",style_name_freetext AS "styleNameFreetext",feedback_types AS "feedbackTypes",
+        sentiment,urgency,comment_text AS "commentText",reviewed,reviewed_by AS "reviewedBy",
+        reviewed_at AS "reviewedAt",created_at AS "createdAt"`,
+      [reviewed, reviewed ? req.workspaceUser?.id ?? null : null, Number(req.params.id)],
+    );
+    if (!result.rows[0]) {
+      res.status(404).json({ error: "Feedback submission not found" });
+      return;
+    }
+    res.json(feedbackPayload(result.rows[0]));
+  } catch (error) {
+    next(error);
+  }
+});
+
 const TEAM_ROLES = ["Admin", "Design", "Buying", "Retail", "Finance"] as const;
+
+router.get("/l10/meetings", async (_req, res, next) => {
+  try {
+    const monday = l10Monday().toISOString().slice(0, 10);
+    const result = await pool.query(
+      `SELECT id,week_label AS "weekLabel",meeting_date::text AS "meetingDate",
+        start_time AS "startTime",end_time AS "endTime",location,
+         duration_minutes AS "durationMinutes",concluded,concluded_at AS "concludedAt",created_at AS "createdAt",
+        meeting_date >= $1::date AS "isCurrent"
+       FROM ${schema}.l10_meetings ORDER BY meeting_date DESC`,
+      [monday],
+    );
+    res.json(result.rows);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get("/l10/meetings/:meetingId", async (req, res, next) => {
+  try {
+    const meetingId = Number(req.params.meetingId);
+    const monday = l10Monday().toISOString().slice(0, 10);
+    const meetingResult = await pool.query(
+      `SELECT id,week_label AS "weekLabel",meeting_date::text AS "meetingDate",
+        start_time AS "startTime",end_time AS "endTime",location,
+         duration_minutes AS "durationMinutes",concluded,concluded_at AS "concludedAt",created_at AS "createdAt",
+        meeting_date >= $2::date AS "isCurrent"
+       FROM ${schema}.l10_meetings WHERE id=$1`,
+      [meetingId, monday],
+    );
+    const meeting = meetingResult.rows[0];
+    if (!meeting) {
+      res.status(404).json({ error: "Meeting not found" });
+      return;
+    }
+    const meetings = await pool.query(
+      `SELECT id,week_label AS "weekLabel",meeting_date::text AS "meetingDate",
+        start_time AS "startTime",end_time AS "endTime",location,
+         duration_minutes AS "durationMinutes",concluded,concluded_at AS "concludedAt",created_at AS "createdAt",
+        meeting_date >= $1::date AS "isCurrent"
+       FROM ${schema}.l10_meetings ORDER BY meeting_date DESC LIMIT 7`,
+      [monday],
+    );
+    const historyMeetings = [...meetings.rows].reverse();
+    const historyIds = historyMeetings.map((row) => row.id);
+    const checkins = await pool.query(
+      `SELECT id,member_name AS "memberName",personal_good_news AS "personalGoodNews",
+        professional_good_news AS "professionalGoodNews"
+       FROM ${schema}.l10_checkins WHERE meeting_id=$1 ORDER BY id`,
+      [meetingId],
+    );
+    const metrics = await pool.query(
+      `SELECT m.id,m.owner,m.measurable,m.goal,m.uom,
+        m.metric_key AS "metricKey",
+        e.value::float AS "thisWeek",e.on_track AS "onTrack",
+        COALESCE((
+          SELECT jsonb_agg(jsonb_build_object(
+            'weekLabel',hm.week_label,'meetingDate',hm.meeting_date::text,
+            'value',he.value::float,'onTrack',he.on_track
+          ) ORDER BY hm.meeting_date)
+          FROM ${schema}.l10_scorecard_entries he
+          JOIN ${schema}.l10_meetings hm ON hm.id=he.meeting_id
+          WHERE he.metric_id=m.id AND he.meeting_id = ANY($1::int[])
+        ), '[]'::jsonb) AS history
+       FROM ${schema}.l10_scorecard_metrics m
+       LEFT JOIN ${schema}.l10_scorecard_entries e
+         ON e.metric_id=m.id AND e.meeting_id=$2
+       WHERE m.active ORDER BY m.sort_order,m.id`,
+      [historyIds, meetingId],
+    );
+    const rocks = await pool.query(
+      `SELECT id,description,owner,status,sort_order AS "sortOrder"
+       FROM ${schema}.l10_rocks ORDER BY sort_order,id`,
+    );
+    const notes = await pool.query(
+      `SELECT headlines,todos,ids,conclude FROM ${schema}.l10_agenda_notes WHERE meeting_id=$1`,
+      [meetingId],
+    );
+    const headlines = await pool.query(
+      `SELECT id,headline,headline_date::text AS "headlineDate",added_by AS "addedBy",
+         needs_discussion AS "needsDiscussion",sort_order AS "sortOrder"
+       FROM ${schema}.l10_headlines WHERE meeting_id=$1 ORDER BY sort_order,id`,
+      [meetingId],
+    );
+    const todos = await pool.query(
+      `SELECT id,description,open_date::text AS "openDate",owner,status,
+         linked_issue_id AS "linkedIssueId"
+       FROM ${schema}.l10_todos WHERE meeting_id=$1
+       ORDER BY CASE WHEN status='Done' THEN 1 ELSE 0 END,open_date NULLS LAST,id`,
+      [meetingId],
+    );
+    const todoStats = await pool.query(
+      `SELECT COUNT(*)::int AS total,
+         COUNT(*) FILTER (WHERE status='Done')::int AS "completedOnTime"
+       FROM ${schema}.l10_todos
+       WHERE open_date >= ($2::date - INTERVAL '7 days') AND open_date < $2::date`,
+      [meetingId, meeting.meetingDate],
+    );
+    const issues = await pool.query(
+      `SELECT id,issue,raised_by AS "raisedBy",priority,issue_type AS "issueType",
+         resolution_notes AS "resolutionNotes",sort_order AS "sortOrder",
+         resolved_at AS "resolvedAt",linked_todo_id AS "linkedTodoId"
+       FROM ${schema}.l10_issues WHERE meeting_id=$1
+       ORDER BY CASE issue_type WHEN 'active' THEN 0 WHEN 'parking' THEN 1 ELSE 2 END,sort_order,id`,
+      [meetingId],
+    );
+    const ratings = await pool.query(
+      `SELECT id,team_member_name AS "teamMemberName",rating
+       FROM ${schema}.l10_ratings WHERE meeting_id=$1 ORDER BY team_member_name`,
+      [meetingId],
+    );
+    const ratingHistory = await pool.query(
+      `SELECT hm.week_label AS "weekLabel",ROUND(AVG(lr.rating)::numeric,1)::float AS average,
+         COALESCE(jsonb_agg(jsonb_build_object(
+           'id',lr.id,'teamMemberName',lr.team_member_name,'rating',lr.rating
+         ) ORDER BY lr.team_member_name),'[]'::jsonb) AS ratings
+       FROM ${schema}.l10_meetings hm
+       LEFT JOIN ${schema}.l10_ratings lr ON lr.meeting_id=hm.id
+       WHERE hm.id=ANY($1::int[])
+       GROUP BY hm.id,hm.week_label,hm.meeting_date
+       ORDER BY hm.meeting_date`,
+      [historyIds],
+    );
+    const cascadingMessage = await pool.query(
+      `SELECT message FROM ${schema}.l10_cascading_messages WHERE meeting_id=$1`,
+      [meetingId],
+    );
+    const teamMembers = await pool.query(
+      `SELECT DISTINCT COALESCE(NULLIF(TRIM(name),''),NULLIF(TRIM(role_title),'')) AS name
+       FROM ${schema}.workspace_team_members
+       WHERE COALESCE(NULLIF(TRIM(name),''),NULLIF(TRIM(role_title),'')) IS NOT NULL
+       ORDER BY name`,
+    );
+    res.json({
+      meeting,
+      agenda: L10_AGENDA,
+      historyMeetings,
+      checkins: checkins.rows,
+      metrics: metrics.rows,
+      rocks: rocks.rows,
+      notes: notes.rows[0] ?? { headlines: "", todos: "", ids: "", conclude: "" },
+      headlines: headlines.rows,
+      todos: todos.rows,
+      todosStat: todoStats.rows[0] ?? { total: 0, completedOnTime: 0 },
+      issues: issues.rows,
+      ratings: ratings.rows,
+      ratingHistory: ratingHistory.rows,
+      cascadingMessage: cascadingMessage.rows[0]?.message ?? notes.rows[0]?.conclude ?? "",
+      teamMembers: teamMembers.rows.map((row) => row.name),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get("/l10/scorecard/live", liveScorecardHandler);
+
+router.put("/l10/meetings/:meetingId/checkins", async (req, res, next) => {
+  try {
+    const meetingId = Number(req.params.meetingId);
+    const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
+    for (const row of rows) {
+      const memberName = String(row.memberName ?? "").trim();
+      if (!memberName) continue;
+      await pool.query(
+        `INSERT INTO ${schema}.l10_checkins
+          (meeting_id,member_name,personal_good_news,professional_good_news,updated_at)
+         VALUES ($1,$2,$3,$4,NOW())
+         ON CONFLICT (meeting_id,member_name) DO UPDATE
+         SET personal_good_news=EXCLUDED.personal_good_news,
+             professional_good_news=EXCLUDED.professional_good_news,updated_at=NOW()`,
+        [meetingId, memberName, String(row.personalGoodNews ?? ""), String(row.professionalGoodNews ?? "")],
+      );
+    }
+    res.json({ ok: true });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.put("/l10/meetings/:meetingId/scorecard/:metricId", async (req, res, next) => {
+  try {
+    const meetingId = Number(req.params.meetingId);
+    const metricId = Number(req.params.metricId);
+    const metricResult = await pool.query<{ goal: string }>(
+      `SELECT goal FROM ${schema}.l10_scorecard_metrics WHERE id=$1`,
+      [metricId],
+    );
+    if (!metricResult.rows[0]) {
+      res.status(404).json({ error: "Metric not found" });
+      return;
+    }
+    const rawValue = req.body?.value;
+    const value = rawValue === null || rawValue === "" || rawValue === undefined ? null : Number(rawValue);
+    if (value !== null && !Number.isFinite(value)) {
+      res.status(400).json({ error: "Scorecard value must be numeric" });
+      return;
+    }
+    const onTrack = typeof req.body?.onTrack === "boolean"
+      ? req.body.onTrack
+      : l10GoalStatus(value, metricResult.rows[0].goal);
+    const result = await pool.query(
+      `INSERT INTO ${schema}.l10_scorecard_entries (meeting_id,metric_id,value,on_track,updated_at)
+       VALUES ($1,$2,$3,$4,NOW())
+       ON CONFLICT (meeting_id,metric_id) DO UPDATE
+       SET value=EXCLUDED.value,on_track=EXCLUDED.on_track,updated_at=NOW()
+       RETURNING id,value::float AS value,on_track AS "onTrack"`,
+      [meetingId, metricId, value, onTrack],
+    );
+    res.json(result.rows[0]);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.put("/l10/rocks/:rockId", async (req, res, next) => {
+  try {
+    const status = String(req.body?.status ?? "").trim();
+    if (!["On Track", "Off Track", "Done"].includes(status)) {
+      res.status(400).json({ error: "Rock status must be On Track, Off Track, or Done" });
+      return;
+    }
+    const result = await pool.query(
+      `UPDATE ${schema}.l10_rocks SET status=$1 WHERE id=$2
+       RETURNING id,description,owner,status,sort_order AS "sortOrder"`,
+      [status, Number(req.params.rockId)],
+    );
+    if (!result.rows[0]) {
+      res.status(404).json({ error: "Rock not found" });
+      return;
+    }
+    res.json(result.rows[0]);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.put("/l10/meetings/:meetingId/notes", async (req, res, next) => {
+  try {
+    const meetingId = Number(req.params.meetingId);
+    const fields = ["headlines", "todos", "ids", "conclude"] as const;
+    const values = fields.map((field) => String(req.body?.[field] ?? ""));
+    const result = await pool.query(
+      `INSERT INTO ${schema}.l10_agenda_notes (meeting_id,headlines,todos,ids,conclude,updated_at)
+       VALUES ($1,$2,$3,$4,$5,NOW())
+       ON CONFLICT (meeting_id) DO UPDATE
+       SET headlines=EXCLUDED.headlines,todos=EXCLUDED.todos,ids=EXCLUDED.ids,
+           conclude=EXCLUDED.conclude,updated_at=NOW()
+       RETURNING headlines,todos,ids,conclude`,
+      [meetingId, ...values],
+    );
+    res.json(result.rows[0]);
+  } catch (error) {
+    next(error);
+  }
+});
+
+async function assertL10MeetingOpen(meetingId: number, res: Response) {
+  const result = await pool.query<{ concluded: boolean }>(
+    `SELECT concluded FROM ${schema}.l10_meetings WHERE id=$1`,
+    [meetingId],
+  );
+  if (!result.rows[0]) {
+    res.status(404).json({ error: "Meeting not found" });
+    return false;
+  }
+  if (result.rows[0].concluded) {
+    res.status(409).json({ error: "This meeting has concluded and is read-only" });
+    return false;
+  }
+  return true;
+}
+
+router.put("/l10/meetings/:meetingId/headlines", async (req, res, next) => {
+  try {
+    const meetingId = Number(req.params.meetingId);
+    if (!(await assertL10MeetingOpen(meetingId, res))) return;
+    const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
+    const ids = rows.map((row: any) => Number(row.id)).filter((id: number) => Number.isInteger(id) && id > 0);
+    if (ids.length) {
+      await pool.query(`DELETE FROM ${schema}.l10_headlines WHERE meeting_id=$1 AND NOT (id=ANY($2::int[]))`, [meetingId, ids]);
+    } else {
+      await pool.query(`DELETE FROM ${schema}.l10_headlines WHERE meeting_id=$1`, [meetingId]);
+    }
+    for (const [sortOrder, row] of rows.entries()) {
+      const headline = String(row.headline ?? "").trim();
+      if (!headline) continue;
+      const values = [
+        headline,
+        row.headlineDate || null,
+        String(row.addedBy ?? "").trim(),
+        Boolean(row.needsDiscussion),
+        sortOrder,
+      ];
+      if (Number.isInteger(Number(row.id)) && Number(row.id) > 0) {
+        await pool.query(
+          `UPDATE ${schema}.l10_headlines
+           SET headline=$1,headline_date=$2,added_by=$3,needs_discussion=$4,sort_order=$5
+           WHERE id=$6 AND meeting_id=$7`,
+          [...values, Number(row.id), meetingId],
+        );
+      } else {
+        await pool.query(
+          `INSERT INTO ${schema}.l10_headlines
+            (meeting_id,headline,headline_date,added_by,needs_discussion,sort_order)
+           VALUES ($1,$2,$3,$4,$5,$6)`,
+          [meetingId, ...values],
+        );
+      }
+    }
+    res.json({ ok: true });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.put("/l10/meetings/:meetingId/todos", async (req, res, next) => {
+  try {
+    const meetingId = Number(req.params.meetingId);
+    if (!(await assertL10MeetingOpen(meetingId, res))) return;
+    const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
+    const ids = rows.map((row: any) => Number(row.id)).filter((id: number) => Number.isInteger(id) && id > 0);
+    if (ids.length) {
+      await pool.query(`DELETE FROM ${schema}.l10_todos WHERE meeting_id=$1 AND NOT (id=ANY($2::int[]))`, [meetingId, ids]);
+    } else {
+      await pool.query(`DELETE FROM ${schema}.l10_todos WHERE meeting_id=$1`, [meetingId]);
+    }
+    for (const row of rows) {
+      const description = String(row.description ?? "").trim();
+      if (!description) continue;
+      const status = row.status === "Done" ? "Done" : "Not Done";
+      const values = [description, row.openDate || null, String(row.owner ?? "").trim(), status, row.linkedIssueId || null];
+      if (Number.isInteger(Number(row.id)) && Number(row.id) > 0) {
+        await pool.query(
+          `UPDATE ${schema}.l10_todos
+           SET description=$1,open_date=$2,owner=$3,status=$4,linked_issue_id=$5,updated_at=NOW()
+           WHERE id=$6 AND meeting_id=$7`,
+          [...values, Number(row.id), meetingId],
+        );
+      } else {
+        await pool.query(
+          `INSERT INTO ${schema}.l10_todos
+            (meeting_id,description,open_date,owner,status,linked_issue_id)
+           VALUES ($1,$2,$3,$4,$5,$6)`,
+          [meetingId, ...values],
+        );
+      }
+    }
+    res.json({ ok: true });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.put("/l10/meetings/:meetingId/issues/reorder", async (req, res, next) => {
+  try {
+    const meetingId = Number(req.params.meetingId);
+    if (!(await assertL10MeetingOpen(meetingId, res))) return;
+    const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
+    for (const [sortOrder, row] of rows.entries()) {
+      if (!Number.isInteger(Number(row.id))) continue;
+      await pool.query(
+        `UPDATE ${schema}.l10_issues SET sort_order=$1 WHERE id=$2 AND meeting_id=$3 AND issue_type='active'`,
+        [sortOrder, Number(row.id), meetingId],
+      );
+    }
+    res.json({ ok: true });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post("/l10/meetings/:meetingId/issues", async (req, res, next) => {
+  try {
+    const meetingId = Number(req.params.meetingId);
+    if (!(await assertL10MeetingOpen(meetingId, res))) return;
+    const issue = String(req.body?.issue ?? "").trim();
+    if (!issue) {
+      res.status(400).json({ error: "Issue is required" });
+      return;
+    }
+    const result = await pool.query(
+      `INSERT INTO ${schema}.l10_issues
+        (meeting_id,issue,raised_by,priority,issue_type,sort_order)
+       SELECT $1,$2,$3,COALESCE(MAX(priority),0)+1,'active',COALESCE(MAX(sort_order),-1)+1
+       FROM ${schema}.l10_issues WHERE meeting_id=$1 AND issue_type='active'
+       RETURNING id,issue,raised_by AS "raisedBy",priority,issue_type AS "issueType",
+         resolution_notes AS "resolutionNotes",sort_order AS "sortOrder"`,
+      [meetingId, issue, String(req.body?.raisedBy ?? "Team").trim()],
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.put("/l10/issues/:issueId", async (req, res, next) => {
+  try {
+    const issueId = Number(req.params.issueId);
+    const issueResult = await pool.query<{ meetingId: number; issueType: string }>(
+      `SELECT meeting_id AS "meetingId",issue_type AS "issueType" FROM ${schema}.l10_issues WHERE id=$1`,
+      [issueId],
+    );
+    const issue = issueResult.rows[0];
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    if (!(await assertL10MeetingOpen(issue.meetingId, res))) return;
+    const action = String(req.body?.action ?? "");
+    if (action === "resolve") {
+      const result = await pool.query(
+        `UPDATE ${schema}.l10_issues
+         SET issue_type='resolved',resolution_notes=$1,resolved_at=NOW()
+         WHERE id=$2 RETURNING id,issue,raised_by AS "raisedBy",priority,issue_type AS "issueType",
+         resolution_notes AS "resolutionNotes",sort_order AS "sortOrder"`,
+        [String(req.body?.resolutionNotes ?? "").trim(), issueId],
+      );
+      res.json(result.rows[0]);
+      return;
+    }
+    if (action === "parking") {
+      const result = await pool.query(
+        `UPDATE ${schema}.l10_issues SET issue_type='parking' WHERE id=$1
+         RETURNING id,issue,raised_by AS "raisedBy",priority,issue_type AS "issueType",
+         resolution_notes AS "resolutionNotes",sort_order AS "sortOrder"`,
+        [issueId],
+      );
+      res.json(result.rows[0]);
+      return;
+    }
+    res.status(400).json({ error: "Unsupported issue action" });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post("/l10/issues/:issueId/todo", async (req, res, next) => {
+  try {
+    const issueId = Number(req.params.issueId);
+    const issueResult = await pool.query<{ meetingId: number; issue: string; raisedBy: string }>(
+      `SELECT meeting_id AS "meetingId",issue,raised_by AS "raisedBy"
+       FROM ${schema}.l10_issues WHERE id=$1`,
+      [issueId],
+    );
+    const issue = issueResult.rows[0];
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return;
+    }
+    if (!(await assertL10MeetingOpen(issue.meetingId, res))) return;
+    const result = await pool.query(
+      `INSERT INTO ${schema}.l10_todos
+        (meeting_id,description,open_date,owner,status,linked_issue_id)
+       VALUES ($1,$2,CURRENT_DATE,$3,'Not Done',$4)
+       RETURNING id,description,open_date::text AS "openDate",owner,status,linked_issue_id AS "linkedIssueId"`,
+      [issue.meetingId, `Follow up: ${issue.issue}`, issue.raisedBy, issueId],
+    );
+    await pool.query(`UPDATE ${schema}.l10_issues SET linked_todo_id=$1 WHERE id=$2`, [result.rows[0].id, issueId]);
+    res.status(201).json(result.rows[0]);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.put("/l10/meetings/:meetingId/ratings", async (req, res, next) => {
+  try {
+    const meetingId = Number(req.params.meetingId);
+    if (!(await assertL10MeetingOpen(meetingId, res))) return;
+    const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
+    for (const row of rows) {
+      const name = String(row.teamMemberName ?? "").trim();
+      if (!name) continue;
+      const rating = row.rating === null || row.rating === "" ? null : Number(row.rating);
+      if (rating !== null && (!Number.isInteger(rating) || rating < 1 || rating > 10)) {
+        res.status(400).json({ error: "Ratings must be whole numbers from 1 to 10" });
+        return;
+      }
+      await pool.query(
+        `INSERT INTO ${schema}.l10_ratings (meeting_id,team_member_name,rating)
+         VALUES ($1,$2,$3)
+         ON CONFLICT (meeting_id,team_member_name) DO UPDATE
+         SET rating=EXCLUDED.rating,updated_at=NOW()`,
+        [meetingId, name, rating],
+      );
+    }
+    res.json({ ok: true });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.put("/l10/meetings/:meetingId/cascading-message", async (req, res, next) => {
+  try {
+    const meetingId = Number(req.params.meetingId);
+    if (!(await assertL10MeetingOpen(meetingId, res))) return;
+    const message = String(req.body?.message ?? "");
+    const result = await pool.query(
+      `INSERT INTO ${schema}.l10_cascading_messages (meeting_id,message,updated_at)
+       VALUES ($1,$2,NOW())
+       ON CONFLICT (meeting_id) DO UPDATE SET message=EXCLUDED.message,updated_at=NOW()
+       RETURNING message`,
+      [meetingId, message],
+    );
+    res.json(result.rows[0]);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post("/l10/meetings/:meetingId/end", async (req, res, next) => {
+  try {
+    const meetingId = Number(req.params.meetingId);
+    const result = await pool.query(
+      `UPDATE ${schema}.l10_meetings
+       SET concluded=TRUE,concluded_at=COALESCE(concluded_at,NOW())
+       WHERE id=$1
+       RETURNING id,week_label AS "weekLabel",meeting_date::text AS "meetingDate",
+         start_time AS "startTime",end_time AS "endTime",location,duration_minutes AS "durationMinutes",
+         concluded,concluded_at AS "concludedAt",created_at AS "createdAt"`,
+      [meetingId],
+    );
+    if (!result.rows[0]) {
+      res.status(404).json({ error: "Meeting not found" });
+      return;
+    }
+    res.json(result.rows[0]);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get("/team-directory", async (_req, res, next) => {
+  try {
+    const result = await pool.query(
+      `SELECT id,name,role_title AS "roleTitle",team_section AS "teamSection",
+        description,birthday::text AS birthday,photo_url AS "photoPath",is_lma AS "isLma",
+        display_order AS "displayOrder",created_at AS "createdAt"
+       FROM ${schema}.workspace_team_members
+       ORDER BY team_section,display_order,id`,
+    );
+    res.json(result.rows.map((row) => teamMemberPayload(row)));
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post("/team-directory/upload-url", requireAdmin, async (req, res, next) => {
+  try {
+    const name = String(req.body?.name ?? "").trim();
+    const size = Number(req.body?.size ?? 0);
+    const contentType = String(req.body?.contentType ?? "").trim().toLowerCase();
+    if (!name || !Number.isFinite(size) || size <= 0 || size > 8 * 1024 * 1024) {
+      res.status(400).json({ error: "Photo must be between 1 byte and 8 MB" });
+      return;
+    }
+    if (!["image/jpeg", "image/png"].includes(contentType)) {
+      res.status(400).json({ error: "Only JPG and PNG photos are supported" });
+      return;
+    }
+    const objectPath = `/objects/team-directory/uploads/${sessionToken()}`;
+    const uploadUrl = await signedStorageUrl(objectPath, "PUT", 900);
+    res.json({ uploadUrl, objectPath });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get("/team-directory/:id/photo", async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const result = await pool.query<{ photoPath: string | null }>(
+      `SELECT photo_url AS "photoPath" FROM ${schema}.workspace_team_members WHERE id=$1`,
+      [id],
+    );
+    const objectPath = result.rows[0]?.photoPath;
+    if (!objectPath) {
+      res.status(404).json({ error: "Photo not found" });
+      return;
+    }
+    const photo = await fetch(await signedStorageUrl(objectPath, "GET", 300));
+    if (!photo.ok || !photo.body) {
+      res.status(404).json({ error: "Photo not found" });
+      return;
+    }
+    res.status(photo.status);
+    const contentType = photo.headers.get("content-type");
+    const contentLength = photo.headers.get("content-length");
+    if (contentType) res.setHeader("Content-Type", contentType);
+    if (contentLength) res.setHeader("Content-Length", contentLength);
+    res.setHeader("Cache-Control", "private, max-age=300");
+    Readable.fromWeb(photo.body as ReadableStream<Uint8Array>).pipe(res);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post("/team-directory", requireAdmin, async (req, res, next) => {
+  try {
+    const name = String(req.body?.name ?? "").trim();
+    const roleTitle = String(req.body?.roleTitle ?? "").trim();
+    const teamSection = String(req.body?.teamSection ?? "").trim();
+    const description = String(req.body?.description ?? "").trim();
+    const birthday = normalizeTeamBirthday(req.body?.birthday);
+    const isLma = Boolean(req.body?.isLma);
+    if (!roleTitle || !teamSection) {
+      res.status(400).json({ error: "Role title and team section are required" });
+      return;
+    }
+    if (req.body?.birthday && !birthday) {
+      res.status(400).json({ error: "Birthday must be a valid month and day" });
+      return;
+    }
+    const orderResult = await pool.query<{ nextOrder: number }>(
+      `SELECT COALESCE(MAX(display_order),-1)+1 AS "nextOrder"
+       FROM ${schema}.workspace_team_members WHERE team_section=$1`,
+      [teamSection],
+    );
+    const result = await pool.query(
+      `INSERT INTO ${schema}.workspace_team_members
+        (name,role_title,team_section,description,birthday,is_lma,display_order)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)
+       RETURNING id,name,role_title AS "roleTitle",team_section AS "teamSection",
+         description,birthday::text AS birthday,photo_url AS "photoPath",is_lma AS "isLma",
+         display_order AS "displayOrder",created_at AS "createdAt"`,
+      [name, roleTitle, teamSection, description, birthday, isLma, orderResult.rows[0]?.nextOrder ?? 0],
+    );
+    res.status(201).json(teamMemberPayload(result.rows[0]));
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.patch("/team-directory/:id", requireAdmin, async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const current = await pool.query(
+      `SELECT id,name,role_title AS "roleTitle",team_section AS "teamSection",
+        description,birthday::text AS birthday,photo_url AS "photoPath",is_lma AS "isLma",
+        display_order AS "displayOrder",created_at AS "createdAt"
+       FROM ${schema}.workspace_team_members WHERE id=$1`,
+      [id],
+    );
+    if (!current.rows[0]) {
+      res.status(404).json({ error: "Team member not found" });
+      return;
+    }
+    const row = current.rows[0] as Record<string, unknown>;
+    const name = req.body?.name === undefined ? String(row.name ?? "") : String(req.body.name).trim();
+    const roleTitle = req.body?.roleTitle === undefined ? String(row.roleTitle ?? "") : String(req.body.roleTitle).trim();
+    const teamSection = req.body?.teamSection === undefined ? String(row.teamSection ?? "") : String(req.body.teamSection).trim();
+    const description = req.body?.description === undefined ? String(row.description ?? "") : String(req.body.description).trim();
+    const birthday = req.body?.birthday === undefined ? (row.birthday ?? null) : normalizeTeamBirthday(req.body.birthday);
+    const isLma = req.body?.isLma === undefined ? Boolean(row.isLma) : Boolean(req.body.isLma);
+    const photoPath = req.body?.photoPath === undefined ? (row.photoPath ?? null) : (req.body.photoPath || null);
+    if (!roleTitle || !teamSection) {
+      res.status(400).json({ error: "Role title and team section are required" });
+      return;
+    }
+    if (req.body?.birthday && !birthday) {
+      res.status(400).json({ error: "Birthday must be a valid month and day" });
+      return;
+    }
+    const result = await pool.query(
+      `UPDATE ${schema}.workspace_team_members
+       SET name=$1,role_title=$2,team_section=$3,description=$4,birthday=$5,is_lma=$6,photo_url=$7
+       WHERE id=$8
+       RETURNING id,name,role_title AS "roleTitle",team_section AS "teamSection",
+         description,birthday::text AS birthday,photo_url AS "photoPath",is_lma AS "isLma",
+         display_order AS "displayOrder",created_at AS "createdAt"`,
+      [name, roleTitle, teamSection, description, birthday, isLma, photoPath, id],
+    );
+    res.json(teamMemberPayload(result.rows[0]));
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.put("/team-directory/reorder", requireAdmin, async (req, res, next) => {
+  const client = await pool.connect();
+  try {
+    const items = Array.isArray(req.body?.items) ? req.body.items : [];
+    if (!items.length || items.some((item: unknown) => !item || !Number.isInteger(Number((item as { id?: unknown }).id)))) {
+      res.status(400).json({ error: "A list of member ids is required" });
+      return;
+    }
+    await client.query("BEGIN");
+    for (const item of items as Array<{ id: number; displayOrder: number }>) {
+      await client.query(
+        `UPDATE ${schema}.workspace_team_members SET display_order=$1 WHERE id=$2`,
+        [Number(item.displayOrder), Number(item.id)],
+      );
+    }
+    await client.query("COMMIT");
+    res.status(204).end();
+  } catch (error) {
+    await client.query("ROLLBACK");
+    next(error);
+  } finally {
+    client.release();
+  }
+});
 
 router.post("/team", async (req, res, next) => {
   try {
@@ -1000,14 +3249,66 @@ router.get("/plm/meta", async (_req, res, next) => {
 
 router.get("/dashboard", async (_req, res, next) => {
   try {
-    const [styles, boards, plans, recent] = await Promise.all([
+    const [styles, boards, plans, recent, snapshotStats, stageBreakdown] = await Promise.all([
       pool.query<{ status: string; count: string }>(`SELECT status,COUNT(*)::int AS count FROM ${schema}.styles GROUP BY status ORDER BY count DESC`),
       pool.query<{ id: number; title: string; description: string }>(`SELECT id,title,description FROM ${schema}.boards ORDER BY id`),
       pool.query<{ count: string; avg_progress: string; avg_margin: string }>(`SELECT COUNT(*)::int AS count,COALESCE(AVG(s.progress),0)::float AS avg_progress,COALESCE(AVG(c.margin),0)::float AS avg_margin FROM ${schema}.plan_styles ps JOIN ${schema}.styles s ON s.id=ps.style_id LEFT JOIN ${schema}.cost_estimates c ON c.style_id=s.id`),
       pool.query(`SELECT 'Plan' AS type,'Q3 2026 assortment plan is live' AS title,'15 styles are in the decision room' AS detail,'2026-08-15T09:24:00.000Z' AS time UNION ALL SELECT 'PLM','Mara Column Dress moved to fit review','Proto round 2 is due 18 Aug','2026-08-14T15:10:00.000Z' UNION ALL SELECT 'Board','Aisha left a note on Leadership review','The retail edit is ready for a read','2026-08-13T11:42:00.000Z'`),
+      pool.query<{
+        asOfDate: string;
+        planningPeriod: string;
+        inDevelopment: number;
+        dueThisWeek: number;
+        atRisk: number;
+      }>(`
+        WITH source AS (
+          SELECT
+            s.*,
+            NULLIF(SUBSTRING(UPPER(COALESCE(s.target_order_week, '')) FROM '([0-9]{1,2})$'), '')::int AS target_week_num
+          FROM public.pd_styles s
+        )
+        SELECT
+          TO_CHAR(CURRENT_DATE, 'YYYY-MM-DD') AS "asOfDate",
+          'Q' || EXTRACT(QUARTER FROM CURRENT_DATE)::int || ' ' || EXTRACT(YEAR FROM CURRENT_DATE)::int || ' Planning' AS "planningPeriod",
+          COUNT(*) FILTER (
+            WHERE LOWER(COALESCE(s.status, 'active')) <> 'completed'
+              AND LOWER(COALESCE(s.current_stage, '')) NOT IN ('launched', 'dropped', 'on hold', 'on_hold')
+          )::int AS "inDevelopment",
+          COUNT(*) FILTER (
+            WHERE s.target_week_num = EXTRACT(ISOWEEK FROM CURRENT_DATE)::int
+          )::int AS "dueThisWeek",
+          COUNT(*) FILTER (
+            WHERE s.target_week_num < EXTRACT(ISOWEEK FROM CURRENT_DATE)::int
+              AND LOWER(COALESCE(s.status, 'active')) <> 'completed'
+          )::int AS "atRisk"
+        FROM source s
+      `),
+      pool.query<{ stage: string; count: number }>(`
+        SELECT COALESCE(p.stage_name, INITCAP(REPLACE(s.current_stage, '_', ' ')), 'Unstaged') AS stage, COUNT(*)::int AS count
+        FROM public.pd_styles s
+        LEFT JOIN public.pd_stages p ON p.stage_key = s.current_stage
+        WHERE LOWER(COALESCE(s.status, 'active')) <> 'completed'
+          AND LOWER(COALESCE(s.current_stage, '')) NOT IN ('launched', 'dropped', 'on hold', 'on_hold')
+        GROUP BY COALESCE(p.stage_name, INITCAP(REPLACE(s.current_stage, '_', ' ')), 'Unstaged')
+        ORDER BY count DESC, stage ASC
+      `),
     ]);
     const countByStatus = Object.fromEntries(styles.rows.map((row) => [row.status.toLowerCase().replaceAll(" ", "_"), row.count]));
+    const snapshot = snapshotStats.rows[0] ?? {
+      asOfDate: new Date().toISOString().slice(0, 10),
+      planningPeriod: "Current planning period",
+      inDevelopment: 0,
+      dueThisWeek: 0,
+      atRisk: 0,
+    };
     res.json({
+      snapshot: {
+        ...snapshot,
+        budgetUsedPercent: null,
+        budgetUsedKes: null,
+        budgetKesMillions: null,
+        stages: stageBreakdown.rows,
+      },
       kpis: [
         { label: "On the Q3 plan", value: Number(plans.rows[0]?.count ?? 0), suffix: "styles", tone: "gold" },
         { label: "Average development", value: Number(plans.rows[0]?.avg_progress ?? 0), suffix: "%", tone: "teal" },
@@ -1034,18 +3335,18 @@ router.get("/styles", async (req, res, next) => {
     const clauses: string[] = [];
     if (req.query.brand) {
       values.push(String(req.query.brand));
-      clauses.push(`brand=$${values.length}`);
+      clauses.push(`s.brand=$${values.length}`);
     }
     if (req.query.status) {
       values.push(String(req.query.status));
-      clauses.push(`status=$${values.length}`);
+      clauses.push(`s.status=$${values.length}`);
     }
     const filters: Record<string, string> = {
-      category: "category",
-      designer: "designer",
-      tier: "tier",
-      orderType: "order_type",
-      stage: "stage",
+      category: "s.category",
+      designer: "s.designer",
+      tier: "s.tier",
+      orderType: "s.order_type",
+      stage: "s.stage",
     };
     for (const [queryKey, column] of Object.entries(filters)) {
       if (!req.query[queryKey]) continue;
@@ -1054,22 +3355,103 @@ router.get("/styles", async (req, res, next) => {
     }
     if (req.query.search) {
       values.push(`%${String(req.query.search)}%`);
-      clauses.push(`(name ILIKE $${values.length} OR code ILIKE $${values.length} OR owner ILIKE $${values.length} OR designer ILIKE $${values.length})`);
+      clauses.push(`(s.name ILIKE $${values.length} OR s.code ILIKE $${values.length} OR s.owner ILIKE $${values.length} OR s.designer ILIKE $${values.length})`);
     }
     const result = await pool.query(
-      `SELECT id,code,name,brand,category,sub_category AS "subCategory",theme,order_type AS "orderType",
-       tier,status,stage,stage AS "currentStage",
-       COALESCE(NULLIF(TRIM(owner),''),'Unassigned') AS owner,
-       COALESCE(NULLIF(TRIM(designer),''),NULLIF(TRIM(owner),''),'Unassigned') AS designer,
-       pattern_maker AS "patternMaker",
-       to_char(target_date,'YYYY-MM-DD') AS "targetDate",
-       to_char(stage_entered_at,'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "stageEnteredAt",
-       GREATEST(0,FLOOR(EXTRACT(EPOCH FROM (NOW()-stage_entered_at))/86400))::int AS "daysInStage",
-       image,progress::float,price::float,market
-       FROM ${schema}.styles ${clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""} ORDER BY target_date ASC, id ASC`,
+      `SELECT s.id,s.code,s.name,s.brand,s.category,s.sub_category AS "subCategory",s.theme,s.order_type AS "orderType",
+       s.tier,s.status,s.stage,s.stage AS "currentStage",
+       COALESCE(NULLIF(TRIM(s.owner),''),'Unassigned') AS owner,
+       COALESCE(NULLIF(TRIM(s.designer),''),NULLIF(TRIM(s.owner),''),'Unassigned') AS designer,
+       s.pattern_maker AS "patternMaker",s.fabric_type AS "fabricType",
+       s.designer_user_id AS "designerUserId",s.pattern_maker_user_id AS "patternMakerUserId",
+       s.sample_maker_user_id AS "sampleMakerUserId",s.buyer_user_id AS "buyerUserId",
+       jsonb_build_object(
+         'designer', CASE WHEN du.id IS NULL THEN NULL ELSE jsonb_build_object('id',du.id,'name',du.name,'role',du.role,'department',du.department) END,
+         'patternMaker', CASE WHEN pm.id IS NULL THEN NULL ELSE jsonb_build_object('id',pm.id,'name',pm.name,'role',pm.role,'department',pm.department) END,
+         'sampleMaker', CASE WHEN sm.id IS NULL THEN NULL ELSE jsonb_build_object('id',sm.id,'name',sm.name,'role',sm.role,'department',sm.department) END,
+         'buyer', CASE WHEN bu.id IS NULL THEN NULL ELSE jsonb_build_object('id',bu.id,'name',bu.name,'role',bu.role,'department',bu.department) END
+       ) AS "styleTeam",
+        to_char(s.target_date,'YYYY-MM-DD') AS "targetDate",
+        pd.target_order_week AS "targetOrderWeek",
+        NULL::text AS "plannedLaunchWeek",
+       to_char(s.stage_entered_at,'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "stageEnteredAt",
+       GREATEST(0,FLOOR(EXTRACT(EPOCH FROM (NOW()-s.stage_entered_at))/86400))::int AS "daysInStage",
+       s.image,s.progress::float,s.price::float,s.market
+       FROM ${schema}.styles s
+        LEFT JOIN (
+          SELECT style_number, MAX(NULLIF(TRIM(target_order_week), '')) AS target_order_week
+          FROM public.pd_styles
+          WHERE style_number IS NOT NULL
+          GROUP BY style_number
+        ) pd ON pd.style_number = s.code
+       LEFT JOIN ${schema}.workspace_users du ON du.id=s.designer_user_id
+       LEFT JOIN ${schema}.workspace_users pm ON pm.id=s.pattern_maker_user_id
+       LEFT JOIN ${schema}.workspace_users sm ON sm.id=s.sample_maker_user_id
+       LEFT JOIN ${schema}.workspace_users bu ON bu.id=s.buyer_user_id
+       ${clauses.length ? `WHERE ${clauses.join(" AND ")}` : ""} ORDER BY s.target_date ASC, s.id ASC`,
       values,
     );
     res.json(result.rows);
+  } catch (error) {
+    next(error);
+  }
+});
+
+// The catalogue's PLM tab is backed by the established Product Development
+// tables, not the newer workspace.styles table.  Keep this route separate from
+// /styles because the latter also powers the workspace's editable style detail
+// flow and has a different data model.
+router.get("/plm-catalogue", async (req, res, next) => {
+  try {
+    const values: string[] = [];
+    const clauses = [`LOWER(s.status) = 'active'`];
+    const search = String(req.query.search ?? "").trim();
+    const brand = String(req.query.brand ?? "").trim();
+    if (search) {
+      values.push(`%${search}%`);
+      clauses.push(`(
+        s.style_name ILIKE $${values.length}
+        OR s.style_number ILIKE $${values.length}
+        OR s.assignee_name ILIKE $${values.length}
+      )`);
+    }
+    if (brand) {
+      values.push(brand);
+      clauses.push(`s.brand = $${values.length}`);
+    }
+    const result = await pool.query(
+      `SELECT s.id,
+          COALESCE(NULLIF(TRIM(s.style_number),''), 'PD-' || s.id::text) AS code,
+          s.style_name AS name,
+          s.brand,
+          s.category,
+          s.sub_category AS "subCategory",
+          s.status,
+          s.current_stage AS stage,
+          s.current_stage AS "currentStage",
+          COALESCE(NULLIF(TRIM(s.assignee_name),''),'Unassigned') AS owner,
+          COALESCE(NULLIF(TRIM(s.assignee_name),''),'Unassigned') AS designer,
+          to_char(s.stage_entered_at,'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "stageEnteredAt",
+          CASE
+            WHEN i.image_data IS NULL OR i.image_data = '' THEN NULL
+            WHEN i.image_data LIKE 'data:%' THEN i.image_data
+            ELSE 'data:' || COALESCE(NULLIF(i.content_type,''),'image/jpeg') || ';base64,' || i.image_data
+          END AS image
+       FROM public.pd_styles s
+       LEFT JOIN public.pd_style_images i ON i.style_id = s.id
+       WHERE ${clauses.join(" AND ")}
+       ORDER BY s.current_stage, LOWER(s.style_name), s.id`,
+      values,
+    );
+    const brands = await pool.query(
+      `SELECT ARRAY(
+         SELECT DISTINCT brand
+         FROM public.pd_styles
+         WHERE LOWER(status) = 'active' AND brand IS NOT NULL AND TRIM(brand) <> ''
+         ORDER BY brand
+       ) AS brands`,
+    );
+    res.json({ items: result.rows, brands: brands.rows[0]?.brands ?? [] });
   } catch (error) {
     next(error);
   }
@@ -1168,14 +3550,21 @@ router.get("/styles/:id/plm", async (req, res, next) => {
 
 router.patch("/styles/:id", async (req: AuthRequest, res, next) => {
   try {
-    const allowed = ["status", "owner", "designer", "patternMaker", "subCategory", "theme", "orderType", "targetDate", "progress", "price", "tier"] as const;
+    const allowed = ["status", "stage", "name", "owner", "designer", "patternMaker", "subCategory", "theme", "orderType", "targetDate", "progress", "price", "market", "tier", "creativeDescription", "sizeRange", "trimsSpecialFeatures", "predictedCost", "confirmedCost", "designerUserId", "patternMakerUserId", "sampleMakerUserId", "buyerUserId"] as const;
+    const numericFields = new Set(["progress", "price", "predictedCost", "confirmedCost", "designerUserId", "patternMakerUserId", "sampleMakerUserId", "buyerUserId"]);
     const assignments: string[] = [];
     const values: unknown[] = [];
     for (const key of allowed) {
       if (req.body?.[key] === undefined) continue;
-      values.push(req.body[key]);
-      const column = key === "targetDate" ? "target_date" : key === "patternMaker" ? "pattern_maker" : key === "subCategory" ? "sub_category" : key;
+      const rawValue = req.body[key];
+      values.push(key === "trimsSpecialFeatures"
+        ? JSON.stringify(Array.isArray(rawValue) ? rawValue.map((item) => String(item).trim()).filter(Boolean) : [])
+        : numericFields.has(key)
+          ? (rawValue === null || rawValue === "" ? null : Number(rawValue))
+          : rawValue);
+      const column = key === "targetDate" ? "target_date" : key === "patternMaker" ? "pattern_maker" : key === "subCategory" ? "sub_category" : key === "creativeDescription" ? "creative_description" : key === "sizeRange" ? "size_range" : key === "trimsSpecialFeatures" ? "trims_special_features" : key === "predictedCost" ? "predicted_cost" : key === "confirmedCost" ? "confirmed_cost" : key.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`);
       assignments.push(`${column}=$${values.length}`);
+      if (key === "stage") assignments.push(`status=$${values.length}`);
     }
     if (!assignments.length) {
       res.status(400).json({ error: "No editable fields supplied" });
@@ -1185,6 +3574,54 @@ router.patch("/styles/:id", async (req: AuthRequest, res, next) => {
     await pool.query(`UPDATE ${schema}.styles SET ${assignments.join(",")},updated_at=NOW() WHERE id=$${values.length}`, values);
     const result = await styleDetail(Number(req.params.id));
     res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post("/styles/:id/colorways", async (req: AuthRequest, res, next) => {
+  try {
+    const name = String(req.body?.name ?? "").trim();
+    const hex = String(req.body?.hex ?? "#C9A96E").trim();
+    const code = String(req.body?.code ?? "").trim();
+    const status = String(req.body?.status ?? "Proposed").trim();
+    if (!name) {
+      res.status(400).json({ error: "Colourway name is required" });
+      return;
+    }
+    await pool.query(
+      `INSERT INTO ${schema}.colorways (style_id,name,hex,code,status) VALUES ($1,$2,$3,$4,$5)`,
+      [Number(req.params.id), name, hex, code, status],
+    );
+    res.status(201).json(await styleDetail(Number(req.params.id)));
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.patch("/styles/:id/colorways/:colorwayId", async (req: AuthRequest, res, next) => {
+  try {
+    const fields: Array<[string, unknown]> = [];
+    if (req.body?.name !== undefined) fields.push(["name", String(req.body.name).trim()]);
+    if (req.body?.hex !== undefined) fields.push(["hex", String(req.body.hex).trim()]);
+    if (req.body?.code !== undefined) fields.push(["code", String(req.body.code).trim()]);
+    if (req.body?.status !== undefined) fields.push(["status", String(req.body.status).trim()]);
+    if (!fields.length) {
+      res.status(400).json({ error: "No editable colourway fields supplied" });
+      return;
+    }
+    const values = fields.map(([, value]) => value);
+    values.push(Number(req.params.id), Number(req.params.colorwayId));
+    const assignments = fields.map(([column], index) => `${column}=$${index + 1}`);
+    const result = await pool.query(
+      `UPDATE ${schema}.colorways SET ${assignments.join(",")} WHERE style_id=$${fields.length + 1} AND id=$${fields.length + 2}`,
+      values,
+    );
+    if (!result.rowCount) {
+      res.status(404).json({ error: "Colourway not found" });
+      return;
+    }
+    res.json(await styleDetail(Number(req.params.id)));
   } catch (error) {
     next(error);
   }
@@ -2113,6 +4550,24 @@ router.get("/catalogue-products", async (req, res, next) => {
   }
 });
 
+app.get("/api/l10/scorecard/live", requireUser, liveScorecardHandler);
+app.get("/api/team/birthdays/today", requireUser, async (_req, res, next) => {
+  try {
+    const result = await pool.query<{ name: string; role: string }>(
+      `SELECT COALESCE(NULLIF(TRIM(name),''),NULLIF(TRIM(role_title),'')) AS name,
+              role_title AS role
+       FROM ${schema}.workspace_team_members
+       WHERE birthday IS NOT NULL
+         AND EXTRACT(MONTH FROM birthday) = EXTRACT(MONTH FROM CURRENT_DATE)
+         AND EXTRACT(DAY FROM birthday) = EXTRACT(DAY FROM CURRENT_DATE)
+         AND COALESCE(NULLIF(TRIM(name),''),NULLIF(TRIM(role_title),'')) IS NOT NULL
+       ORDER BY name`,
+    );
+    res.json(result.rows);
+  } catch (error) {
+    next(error);
+  }
+});
 app.use("/api/workspace", router);
 app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
   console.error(error);

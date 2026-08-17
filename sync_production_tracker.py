@@ -44,6 +44,10 @@ DATABASE_URL = os.environ["DATABASE_URL"]
 
 SKU_RE = re.compile(r"^\[([^\]]+)\]\s*(.*)$")
 SIZE_RE = re.compile(r"\(([^)]*)\)\s*$")
+COST_FIELD_CANDIDATES = (
+    "cost_price_kes", "cost_price", "unit_cost", "price_unit",
+    "unit_price", "purchase_price", "standard_cost",
+)
 
 
 # ----------------------------------------------------------------------
@@ -58,6 +62,36 @@ def odoo_connect():
 
 
 def fetch_buying_orders(uid, models):
+    base_fields = [
+        "name",
+        "buyer_id",
+        "order_date",
+        "x_studio_style_name",
+        "x_studio_expected_delivery_date",
+        "x_studio_production_type",
+        "x_studio_product_lifecycle_type",
+        "state",
+        "notes",
+        "line_ids",
+    ]
+    # Buying-order customisations differ between Odoo databases. Discover
+    # whichever cost field exists instead of asking search_read for a field
+    # that may not exist on this deployment.
+    cost_fields = []
+    try:
+        field_info = models.execute_kw(
+            ODOO_DB,
+            uid,
+            ODOO_PASSWORD,
+            "vivo.buying.order",
+            "fields_get",
+            [],
+            {"attributes": ["type"]},
+        )
+        cost_fields = [name for name in COST_FIELD_CANDIDATES if name in field_info]
+    except Exception as exc:  # noqa: BLE001 — costing is optional enrichment
+        log.warning("Could not discover buying-order cost fields: %s", exc)
+
     bos = models.execute_kw(
         ODOO_DB,
         uid,
@@ -65,28 +99,30 @@ def fetch_buying_orders(uid, models):
         "vivo.buying.order",
         "search_read",
         [[]],
-        {
-            "fields": [
-                "name",
-                "buyer_id",
-                "order_date",
-                "x_studio_style_name",
-                "x_studio_expected_delivery_date",
-                "x_studio_production_type",
-                "x_studio_product_lifecycle_type",
-                "state",
-                "notes",
-                "line_ids",
-            ]
-        },
+        {"fields": base_fields + cost_fields},
     )
-    log.info("Fetched %s buying orders", len(bos))
+    log.info("Fetched %s buying orders (cost fields: %s)",
+             len(bos), ", ".join(cost_fields) or "none")
     return bos
 
 
 def fetch_lines(uid, models, line_ids):
     if not line_ids:
         return []
+    cost_fields = []
+    try:
+        field_info = models.execute_kw(
+            ODOO_DB,
+            uid,
+            ODOO_PASSWORD,
+            "vivo.buying.order.line",
+            "fields_get",
+            [],
+            {"attributes": ["type"]},
+        )
+        cost_fields = [name for name in COST_FIELD_CANDIDATES if name in field_info]
+    except Exception as exc:  # noqa: BLE001 — costing is optional enrichment
+        log.warning("Could not discover buying-order-line cost fields: %s", exc)
     lines = models.execute_kw(
         ODOO_DB,
         uid,
@@ -103,7 +139,7 @@ def fetch_lines(uid, models, line_ids):
                 "remaining_qty",
                 "state",
                 "variant_line_ids",
-            ]
+            ] + cost_fields
         },
     )
     log.info("Fetched %s buying order lines", len(lines))
@@ -157,6 +193,26 @@ def as_date(v):
     return v[:10] if v else None
 
 
+def positive_cost(value):
+    """Return a positive numeric Odoo cost, or None for empty/zero values."""
+    if isinstance(value, (list, tuple)):
+        value = value[0] if value else None
+    try:
+        amount = float(value)
+    except (TypeError, ValueError):
+        return None
+    return amount if amount > 0 else None
+
+
+def record_cost(record):
+    """Return the first positive cost field and its source label."""
+    for field in COST_FIELD_CANDIDATES:
+        amount = positive_cost(record.get(field))
+        if amount is not None:
+            return amount, field
+    return None, None
+
+
 def _valid_expected(expected, ordered):
     """WS4 T404 — drop impossible ETAs. Odoo's studio field was bulk-defaulted
     to a fixed date, so many orders carry an 'expected delivery' that predates
@@ -207,6 +263,14 @@ def build(bos, lines, variants):
     orders, order_lines, order_variants = [], [], []
     for b in bos:
         blines = lines_by_bo.get(b["id"], [])
+        bo_cost, bo_cost_field = record_cost(b)
+        if bo_cost is None:
+            # Some Odoo installations keep unit cost on the colour line rather
+            # than the buying-order header. Preserve that cost on the BO row.
+            for ln in blines:
+                bo_cost, bo_cost_field = record_cost(ln)
+                if bo_cost is not None:
+                    break
         skus, total = [], 0.0
         for ln in blines:
             sku, name, colour = parse_label(ln.get("product_tmpl_id"))
@@ -258,6 +322,8 @@ def build(bos, lines, variants):
                 "product_sku": skus[0] if skus else None,
                 "order_qty": round(total, 2),
                 "date_ordered": as_date(b.get("order_date")),
+                "cost_price_kes": bo_cost,
+                "cost_source": f"last reorder ({bo_cost_field})" if bo_cost_field else None,
                 # WS4 T404: x_studio_expected_delivery_date is bulk-defaulted
                 # in Odoo (2026-05-07 on ~200 orders regardless of when they
                 # were placed). An "expected delivery" BEFORE the order date is
@@ -309,6 +375,9 @@ def upsert_orders(cur, orders):
             o["product_sku"],
             o["order_qty"],
             o["date_ordered"],
+            o["cost_price_kes"],
+            o["date_ordered"] if o["cost_price_kes"] is not None else None,
+            o["cost_source"],
             o["expected_delivery_date"],
             o["buyer"],
             o["production_type"],
@@ -324,8 +393,9 @@ def upsert_orders(cur, orders):
         """
         INSERT INTO production_orders
             (order_ref, odoo_id, style_number, style_name, product_name, product_sku,
-             order_qty, date_ordered, expected_delivery_date, buyer, production_type,
-             lifecycle_type, bo_state, notes_html, source, updated_at)
+             order_qty, date_ordered, cost_price_kes, cost_date, cost_source,
+             expected_delivery_date, buyer, production_type, lifecycle_type, bo_state,
+             notes_html, source, updated_at)
         VALUES %s
         ON CONFLICT (order_ref) DO UPDATE SET
             odoo_id                = EXCLUDED.odoo_id,
@@ -335,6 +405,9 @@ def upsert_orders(cur, orders):
             product_sku            = COALESCE(EXCLUDED.product_sku, production_orders.product_sku),
             order_qty              = EXCLUDED.order_qty,
             date_ordered           = EXCLUDED.date_ordered,
+            cost_price_kes         = COALESCE(EXCLUDED.cost_price_kes, production_orders.cost_price_kes),
+            cost_date              = COALESCE(EXCLUDED.cost_date, production_orders.cost_date),
+            cost_source            = COALESCE(EXCLUDED.cost_source, production_orders.cost_source),
             expected_delivery_date = EXCLUDED.expected_delivery_date,
             buyer                  = EXCLUDED.buyer,
             production_type        = EXCLUDED.production_type,

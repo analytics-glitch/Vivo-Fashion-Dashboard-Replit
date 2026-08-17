@@ -2562,6 +2562,8 @@ def _ensure_fabric_structure_columns():
                     "ADD COLUMN IF NOT EXISTS fabric_structure TEXT")
         _users_exec("ALTER TABLE all_products_clean "
                     "ADD COLUMN IF NOT EXISTS fabric_structure TEXT")
+        _users_exec("ALTER TABLE all_products_clean "
+                    "ADD COLUMN IF NOT EXISTS standard_cost_date DATE")
     except Exception as e:
         log.warning("fabric_structure column migration skipped: %s", e)
 
@@ -36332,6 +36334,9 @@ def _ensure_production_tables():
             order_qty     NUMERIC,
             fabric        TEXT,
             date_ordered  DATE,
+            cost_price_kes NUMERIC,
+            cost_date     DATE,
+            cost_source   TEXT,
             source        TEXT DEFAULT 'odoo',
             created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
             updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -36348,7 +36353,10 @@ def _ensure_production_tables():
             ADD COLUMN IF NOT EXISTS production_type        TEXT,
             ADD COLUMN IF NOT EXISTS lifecycle_type         TEXT,
             ADD COLUMN IF NOT EXISTS bo_state               TEXT,
-            ADD COLUMN IF NOT EXISTS notes_html             TEXT""")
+            ADD COLUMN IF NOT EXISTS notes_html             TEXT,
+            ADD COLUMN IF NOT EXISTS cost_price_kes         NUMERIC,
+            ADD COLUMN IF NOT EXISTS cost_date              DATE,
+            ADD COLUMN IF NOT EXISTS cost_source            TEXT""")
     # Per-colour breakdown of each buying order (one row per BO line).
     _users_exec("""
         CREATE TABLE IF NOT EXISTS production_order_lines (

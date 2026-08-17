@@ -20,3 +20,18 @@ Other fixed choices:
 - "% of Units Sold" is DUAL-semantic: share-of-total on category/sub/Total rows, period SOR (units ÷ (units + SOH), clamped 0–100, null→dash) on style/colour rows; Gap stays share-based at every level.
 - Last-order dates: style = textual PO match (style_number/style_name, reorder-counts pattern); colour = variant-SKU→product-master match + normalised colour-name fallback. The SKU match out-covers the textual one, so colour dates roll UP into the style date at assembly (ISO strings max) — a style must never show "—" while its own colour shows a date.
 - Every colour node carries `rep_sku` (highest-stock SKU) for thumbnails + the right-click detail popup; all three new fields are nullable and the frontend dash-guards them (cached old-shape payloads).
+- Style deep links use `?tab=merch-inventory&style=<exact style_number>&expanded=true`; the inventory client searches by style code, opens the ancestor path, scrolls to the style row, and reveals colourways.
+- Lifecycle badges use `all_products_clean.status`: style status is Active if any SKU is Active, while each colourway computes its own status; retired/archived colourways are hidden only when the opt-in filter is turned off.
+- The Stock Mix table's dedicated SOR is selected-period `units_period ÷ (units_period + stock_units)` at every node; calculate from aggregated numerator/denominator, never average child percentages.
+
+**Why:** SOR must reconcile from Total through Category, Subcategory, Style, and Colourway while remaining comparable to the selected-period Units Sold column.
+
+**How to apply:** Treat missing units or SOH as unavailable (`—`); use green for ≥80%, neutral for 50–79%, amber below 50%, and red for 0% with positive SOH.
+
+**Why:** Colourways may be retired independently of an active parent, but a retired parent with an active colourway is a source-data inconsistency that must remain visible rather than be silently corrected.
+
+**How to apply:** Keep status at both style and colour grain in the stock-mix payload, and preserve the UI warning for retired-style/active-colour combinations.
+
+**Why:** Style Deep Dive and Inventory & Stock Health need a deterministic two-way handoff without duplicating the stock-mix data model.
+
+**How to apply:** Use the same query contract for future style-level navigation, and keep the reciprocal link on the expanded style row rather than on colour rows.

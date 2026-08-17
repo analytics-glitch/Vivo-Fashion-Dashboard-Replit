@@ -104,6 +104,77 @@ _BASE_FILTERS = """
     AND LOWER(COALESCE(s.variant_sku,'')) NOT LIKE '%%vb00%%'
 """
 
+# Cost lookup precedence:
+#   1) the latest buying/production order carrying any recognised cost field;
+#   2) the product master cost;
+#   3) the latest completed manufacturing/DPS unit cost.
+#
+# to_jsonb(po) keeps this compatible with older production_orders rows and
+# future Odoo custom fields without hard-referencing an optional column.
+_STYLE_COST_CTES = """
+po_cost_rows AS (
+    SELECT
+        sn.style_name,
+        COALESCE(
+            NULLIF(po.cost_price_kes, 0),
+            CASE WHEN btrim(j->>'cost_price') ~ '^[0-9]+(\\.[0-9]+)?$'
+                 THEN (j->>'cost_price')::numeric END,
+            CASE WHEN btrim(j->>'unit_cost') ~ '^[0-9]+(\\.[0-9]+)?$'
+                 THEN (j->>'unit_cost')::numeric END,
+            CASE WHEN btrim(j->>'price_unit') ~ '^[0-9]+(\\.[0-9]+)?$'
+                 THEN (j->>'price_unit')::numeric END,
+            CASE WHEN btrim(j->>'unit_price') ~ '^[0-9]+(\\.[0-9]+)?$'
+                 THEN (j->>'unit_price')::numeric END,
+            CASE WHEN btrim(j->>'purchase_price') ~ '^[0-9]+(\\.[0-9]+)?$'
+                 THEN (j->>'purchase_price')::numeric END,
+            CASE WHEN btrim(j->>'standard_cost') ~ '^[0-9]+(\\.[0-9]+)?$'
+                 THEN (j->>'standard_cost')::numeric END
+        ) AS cost_kes,
+        COALESCE(po.cost_date, po.date_ordered) AS cost_date,
+        ROW_NUMBER() OVER (
+            PARTITION BY sn.style_name
+            ORDER BY COALESCE(po.cost_date, po.date_ordered) DESC NULLS LAST,
+                     po.updated_at DESC NULLS LAST,
+                     po.odoo_id DESC NULLS LAST
+        ) AS rn
+    FROM style_nums sn
+    JOIN production_orders po
+      ON po.style_number = sn.style_number
+      OR po.style_name = sn.style_name
+    CROSS JOIN LATERAL to_jsonb(po) AS j
+),
+latest_po_cost AS (
+    SELECT DISTINCT ON (style_name) style_name, cost_kes, cost_date
+    FROM po_cost_rows
+    WHERE cost_kes > 0
+    ORDER BY style_name, cost_date DESC NULLS LAST
+),
+mo_cost_rows AS (
+    SELECT
+        style_name,
+        COALESCE(
+            NULLIF(dps_cost_per_unit, 0),
+            dps_total_cost / NULLIF(produced_qty, 0)
+        ) AS cost_kes,
+        done_date AS cost_date,
+        ROW_NUMBER() OVER (
+            PARTITION BY style_name
+            ORDER BY done_date DESC NULLS LAST, odoo_mo_id DESC
+        ) AS rn
+    FROM mo_fabric_consumption
+    WHERE NULLIF(BTRIM(style_name), '') IS NOT NULL
+      AND (
+          dps_cost_per_unit > 0
+          OR (dps_total_cost > 0 AND produced_qty > 0)
+      )
+),
+latest_mo_cost AS (
+    SELECT style_name, cost_kes, cost_date
+    FROM mo_cost_rows
+    WHERE rn = 1 AND cost_kes > 0
+),
+"""
+
 _WAREHOUSE_LOCATIONS = (
     "'Warehouse Finished Goods','Warehouse Receiving','In Transit',"
     "'Holding Warehouse Finished Goods','Finished Goods Production','Production',"
@@ -313,6 +384,7 @@ reorder_counts AS (
            OR po.style_name   = sn.style_name
     GROUP BY sn.style_name
 ),
+{_STYLE_COST_CTES}
 /*
  * Step 3 — one row per style with all product-master dimensions.
  * Joins style_nums and reorder_counts (both 1-to-1 with style_name)
@@ -326,6 +398,16 @@ prod AS (
         mode() WITHIN GROUP (ORDER BY p.product_type)    AS subcategory,
         mode() WITHIN GROUP (ORDER BY p.category)
             FILTER (WHERE COALESCE(p.category,'') <> '') AS category,
+        mode() WITHIN GROUP (ORDER BY NULLIF(BTRIM(p.fabric_category), ''))
+            FILTER (WHERE NULLIF(BTRIM(p.fabric_category), '') IS NOT NULL) AS fabric_category,
+        mode() WITHIN GROUP (ORDER BY NULLIF(BTRIM(p.fabric_subcategory), ''))
+            FILTER (WHERE NULLIF(BTRIM(p.fabric_subcategory), '') IS NOT NULL) AS fabric_subcategory,
+        mode() WITHIN GROUP (ORDER BY NULLIF(BTRIM(p.color_print), ''))
+            FILTER (WHERE NULLIF(BTRIM(p.color_print), '') IS NOT NULL) AS colour,
+        /* Silhouette is not yet stored in all_products_clean. Keep the
+           contract explicit so the UI can exclude unpopulated values rather
+           than manufacturing an Unknown bucket. */
+        CAST(NULL AS TEXT)                                   AS silhouette,
         /* Retirement rule: Active wins — style is Retired only when every
            SKU is Retired (mirrors api_pg._lifecycle_tier / _odoo_retired_styles). */
         CASE WHEN BOOL_OR(LOWER(COALESCE(p.status,'active')) = 'retired')
@@ -334,7 +416,31 @@ prod AS (
         MIN(substring(p.style_launch_date,1,10))
             FILTER (WHERE substring(p.style_launch_date,1,10)
                     ~ '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}$')  AS launch_date,
-        MAX(p.cost)                                        AS standard_cost_kes,
+        /* Cost precedence: latest buying order, product master, then latest
+           completed manufacturing/DPS cost. */
+        COALESCE(
+            lpc.cost_kes,
+            MAX(p.standard_cost_kes) FILTER (WHERE p.standard_cost_kes > 0),
+            MAX(p.cost) FILTER (WHERE p.cost IS NOT NULL AND p.cost > 0),
+            lmc.cost_kes
+        )                                                   AS standard_cost_kes,
+        CASE
+            WHEN lpc.cost_kes IS NOT NULL THEN 'last reorder'
+            WHEN MAX(p.standard_cost_kes) FILTER (WHERE p.standard_cost_kes > 0) IS NOT NULL
+              OR MAX(p.cost) FILTER (WHERE p.cost IS NOT NULL AND p.cost > 0) IS NOT NULL
+              THEN 'product master'
+            WHEN lmc.cost_kes IS NOT NULL THEN 'production costing'
+            ELSE NULL
+        END                                                 AS cost_source,
+        COALESCE(
+            lpc.cost_date,
+            CASE
+                WHEN MAX(p.standard_cost_kes) FILTER (WHERE p.standard_cost_kes > 0) IS NOT NULL
+                  OR MAX(p.cost) FILTER (WHERE p.cost IS NOT NULL AND p.cost > 0) IS NOT NULL
+                THEN MAX(p.standard_cost_date)
+            END,
+            lmc.cost_date
+        )                                                   AS cost_date,
         rc.last_order_date,
         mode() WITHIN GROUP (ORDER BY p.price)
             FILTER (WHERE p.price > 0)                    AS full_price,
@@ -345,8 +451,11 @@ prod AS (
     FROM all_products_clean p
     JOIN style_nums sn     ON sn.style_name = p.style_name
     JOIN reorder_counts rc ON rc.style_name = p.style_name
+    LEFT JOIN latest_po_cost lpc ON lpc.style_name = p.style_name
+    LEFT JOIN latest_mo_cost lmc ON lmc.style_name = p.style_name
     WHERE {_PROD_BASE}{extra_prod_where}
-    GROUP BY p.style_name, sn.style_number, rc.reorder_count, rc.last_order_date
+    GROUP BY p.style_name, sn.style_number, rc.reorder_count, rc.last_order_date,
+             lpc.cost_kes, lpc.cost_date, lmc.cost_kes, lmc.cost_date
 ),
 stock AS (
     SELECT
@@ -504,9 +613,15 @@ SELECT
     p.brand,
     p.subcategory,
     p.category,
+    p.fabric_category,
+    p.fabric_subcategory,
+    p.colour,
+    p.silhouette,
     p.status,
     COALESCE(p.launch_date, fs.first_sale_date::text) AS launch_date,
     p.standard_cost_kes,
+    p.cost_source,
+    p.cost_date,
     p.last_order_date,
     p.full_price,
     p.is_noos,
@@ -624,11 +739,17 @@ ORDER BY revenue_6m DESC NULLS LAST
             "brand":               r.get("brand") or "",
             "subcategory":         r.get("subcategory") or "",
             "category":            r.get("category") or "",
+             "fabric_category":     r.get("fabric_category") or "",
+             "fabric_subcategory":  r.get("fabric_subcategory") or "",
+             "colour":              r.get("colour") or "",
+             "silhouette":          r.get("silhouette") or "",
             "tier":                computed_tier,
             "odoo_status":         odoo_status,
             "launch_date":         str(r["launch_date"]) if r.get("launch_date") else None,
             "last_order_date":     str(r["last_order_date"]) if r.get("last_order_date") else None,
             "standard_cost_kes":   cost,
+             "cost_source":         r.get("cost_source"),
+             "cost_date":           str(r["cost_date"]) if r.get("cost_date") else None,
             "full_price":          float(r["full_price"]) if r.get("full_price") else None,
             "is_noos":             is_noos,
             "reorder_count":       reorder_count,
@@ -840,6 +961,7 @@ reorder_counts AS (
            OR po.style_name   = sn.style_name
     GROUP BY sn.style_name
 ),
+{_STYLE_COST_CTES}
 prod AS (
     SELECT
         p.style_name,
@@ -848,6 +970,13 @@ prod AS (
         mode() WITHIN GROUP (ORDER BY p.product_type)     AS subcategory,
         mode() WITHIN GROUP (ORDER BY p.category)
             FILTER (WHERE COALESCE(p.category,'') <> '')  AS category,
+        mode() WITHIN GROUP (ORDER BY NULLIF(BTRIM(p.fabric_category), ''))
+            FILTER (WHERE NULLIF(BTRIM(p.fabric_category), '') IS NOT NULL) AS fabric_category,
+        mode() WITHIN GROUP (ORDER BY NULLIF(BTRIM(p.fabric_subcategory), ''))
+            FILTER (WHERE NULLIF(BTRIM(p.fabric_subcategory), '') IS NOT NULL) AS fabric_subcategory,
+        mode() WITHIN GROUP (ORDER BY NULLIF(BTRIM(p.color_print), ''))
+            FILTER (WHERE NULLIF(BTRIM(p.color_print), '') IS NOT NULL) AS colour,
+        CAST(NULL AS TEXT)                                  AS silhouette,
         CASE WHEN BOOL_OR(LOWER(COALESCE(p.status,'active')) = 'retired')
                   AND NOT BOOL_OR(LOWER(COALESCE(p.status,'active')) = 'active')
              THEN 'Retired' ELSE 'Active' END              AS status,
@@ -855,7 +984,29 @@ prod AS (
         MIN(substring(p.style_launch_date,1,10))
             FILTER (WHERE substring(p.style_launch_date,1,10)
                     ~ '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}$') AS launch_date,
-        MAX(p.cost)                                         AS standard_cost_kes,
+        COALESCE(
+            lpc.cost_kes,
+            MAX(p.standard_cost_kes) FILTER (WHERE p.standard_cost_kes > 0),
+            MAX(p.cost) FILTER (WHERE p.cost IS NOT NULL AND p.cost > 0),
+            lmc.cost_kes
+        )                                                    AS standard_cost_kes,
+        CASE
+            WHEN lpc.cost_kes IS NOT NULL THEN 'last reorder'
+            WHEN MAX(p.standard_cost_kes) FILTER (WHERE p.standard_cost_kes > 0) IS NOT NULL
+              OR MAX(p.cost) FILTER (WHERE p.cost IS NOT NULL AND p.cost > 0) IS NOT NULL
+              THEN 'product master'
+            WHEN lmc.cost_kes IS NOT NULL THEN 'production costing'
+            ELSE NULL
+        END                                                  AS cost_source,
+        COALESCE(
+            lpc.cost_date,
+            CASE
+                WHEN MAX(p.standard_cost_kes) FILTER (WHERE p.standard_cost_kes > 0) IS NOT NULL
+                  OR MAX(p.cost) FILTER (WHERE p.cost IS NOT NULL AND p.cost > 0) IS NOT NULL
+                THEN MAX(p.standard_cost_date)
+            END,
+            lmc.cost_date
+        )                                                    AS cost_date,
         rc.last_order_date,
         mode() WITHIN GROUP (ORDER BY p.price)
             FILTER (WHERE p.price > 0)                     AS full_price,
@@ -866,8 +1017,11 @@ prod AS (
     FROM all_products_clean p
     JOIN style_nums sn     ON sn.style_name = p.style_name
     JOIN reorder_counts rc ON rc.style_name = p.style_name
+    LEFT JOIN latest_po_cost lpc ON lpc.style_name = p.style_name
+    LEFT JOIN latest_mo_cost lmc ON lmc.style_name = p.style_name
     WHERE {_PROD_BASE}
-    GROUP BY p.style_name, sn.style_number, rc.reorder_count, rc.last_order_date
+    GROUP BY p.style_name, sn.style_number, rc.reorder_count, rc.last_order_date,
+             lpc.cost_kes, lpc.cost_date, lmc.cost_kes, lmc.cost_date
 ),
 stock AS (
     SELECT
@@ -1025,10 +1179,16 @@ SELECT
     p.brand,
     p.subcategory,
     p.category,
+    p.fabric_category,
+    p.fabric_subcategory,
+    p.colour,
+    p.silhouette,
     p.status,
     p.has_any_retired_sku,
     COALESCE(p.launch_date, fs.first_sale_date::text) AS launch_date,
     p.standard_cost_kes,
+    p.cost_source,
+    p.cost_date,
     p.last_order_date,
     p.full_price,
     p.is_noos,
@@ -1084,6 +1244,7 @@ reorder_counts AS (
            OR po.style_name   = sn.style_name
     GROUP BY sn.style_name
 ),
+{_STYLE_COST_CTES}
 prod AS (
     SELECT
         p.style_name,
@@ -1099,7 +1260,29 @@ prod AS (
         MIN(substring(p.style_launch_date,1,10))
             FILTER (WHERE substring(p.style_launch_date,1,10)
                     ~ '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}$') AS launch_date,
-        MAX(p.cost)                                         AS standard_cost_kes,
+        COALESCE(
+            lpc.cost_kes,
+            MAX(p.standard_cost_kes) FILTER (WHERE p.standard_cost_kes > 0),
+            MAX(p.cost) FILTER (WHERE p.cost IS NOT NULL AND p.cost > 0),
+            lmc.cost_kes
+        )                                                    AS standard_cost_kes,
+        CASE
+            WHEN lpc.cost_kes IS NOT NULL THEN 'last reorder'
+            WHEN MAX(p.standard_cost_kes) FILTER (WHERE p.standard_cost_kes > 0) IS NOT NULL
+              OR MAX(p.cost) FILTER (WHERE p.cost IS NOT NULL AND p.cost > 0) IS NOT NULL
+              THEN 'product master'
+            WHEN lmc.cost_kes IS NOT NULL THEN 'production costing'
+            ELSE NULL
+        END                                                  AS cost_source,
+        COALESCE(
+            lpc.cost_date,
+            CASE
+                WHEN MAX(p.standard_cost_kes) FILTER (WHERE p.standard_cost_kes > 0) IS NOT NULL
+                  OR MAX(p.cost) FILTER (WHERE p.cost IS NOT NULL AND p.cost > 0) IS NOT NULL
+                THEN MAX(p.standard_cost_date)
+            END,
+            lmc.cost_date
+        )                                                    AS cost_date,
         rc.last_order_date,
         mode() WITHIN GROUP (ORDER BY p.price)
             FILTER (WHERE p.price > 0)                     AS full_price,
@@ -1110,8 +1293,11 @@ prod AS (
     FROM all_products_clean p
     JOIN style_nums sn     ON sn.style_name = p.style_name
     JOIN reorder_counts rc ON rc.style_name = p.style_name
+    LEFT JOIN latest_po_cost lpc ON lpc.style_name = p.style_name
+    LEFT JOIN latest_mo_cost lmc ON lmc.style_name = p.style_name
     WHERE {_PROD_BASE}
-    GROUP BY p.style_name, sn.style_number, rc.reorder_count, rc.last_order_date
+    GROUP BY p.style_name, sn.style_number, rc.reorder_count, rc.last_order_date,
+             lpc.cost_kes, lpc.cost_date, lmc.cost_kes, lmc.cost_date
 ),
 stock AS (
     SELECT
@@ -1236,6 +1422,8 @@ SELECT
     p.has_any_retired_sku,
     COALESCE(p.launch_date, fs.first_sale_date::text) AS launch_date,
     p.standard_cost_kes,
+    p.cost_source,
+    p.cost_date,
     p.last_order_date,
     p.full_price,
     p.is_noos,
@@ -1552,11 +1740,17 @@ def _fetch_styles_fast_path(brand=None, subcategory=None, tier=None, status=None
             "brand":               r.get("brand") or "",
             "subcategory":         r.get("subcategory") or "",
             "category":            r.get("category") or "",
+             "fabric_category":     r.get("fabric_category") or "",
+             "fabric_subcategory":  r.get("fabric_subcategory") or "",
+             "colour":              r.get("colour") or "",
+             "silhouette":          r.get("silhouette") or "",
             "tier":                computed_tier,
             "odoo_status":         odoo_status,
             "launch_date":         str(r["launch_date"]) if r.get("launch_date") else None,
             "last_order_date":     str(r["last_order_date"]) if r.get("last_order_date") else None,
             "standard_cost_kes":   cost,
+            "cost_source":         r.get("cost_source"),
+            "cost_date":           str(r["cost_date"]) if r.get("cost_date") else None,
             "full_price":          float(r["full_price"]) if r.get("full_price") else None,
             "is_noos":             is_noos,
             "reorder_count":       reorder_count,
@@ -2439,8 +2633,9 @@ def _invalidate_style_stores_cache():
         _cache_store.pop(k, None)
 
 
-def _fetch_style_stores(style_number, from_date=None, to_date=None, country=None):
-    """Per-store breakdown for one style, with store tier (A/B/C) and transfer plan.
+def _fetch_style_stores(style_number=None, from_date=None, to_date=None, country=None,
+                        include_retired=True):
+    """Per-store breakdown for one style or all styles, with store tier (A/B/C).
 
     Store tier = NTILE-3 by trailing-90d net revenue (A = top third), mirroring
     api_pg._store_cluster_map.  Computed in SQL so the result is consistent with
@@ -2461,6 +2656,9 @@ def _fetch_style_stores(style_number, from_date=None, to_date=None, country=None
             country_params["countries"] = cl
             country_clause = " AND s.country = ANY(%(countries)s)"
 
+    style_filter = " AND p.style_number = %(style_number)s" if style_number else ""
+    active_style_filter = "" if include_retired else " AND ps.style_status = 'Active'"
+
     sql = f"""
 WITH
 /* Store tier — NTILE-3 by trailing-90d net revenue; A = top third.
@@ -2480,12 +2678,23 @@ store_tiers AS (
     GROUP BY s.pos_location_name
     HAVING SUM(s.net_sales_kes::numeric) > 0
 ),
+style_status AS (
+    SELECT
+        style_number,
+        CASE
+            WHEN BOOL_OR(LOWER(COALESCE(status, 'active')) = 'active') THEN 'Active'
+            ELSE 'Retired'
+        END AS style_status
+    FROM all_products_clean
+    WHERE style_number IS NOT NULL
+    GROUP BY style_number
+),
 style_meta AS (
     SELECT
         mode() WITHIN GROUP (ORDER BY cost)
             FILTER (WHERE cost IS NOT NULL) AS cost_kes
     FROM all_products_clean
-    WHERE style_number = %(style_number)s
+    WHERE (%(style_number)s IS NULL OR style_number = %(style_number)s)
 ),
 stock AS (
     SELECT
@@ -2493,8 +2702,10 @@ stock AS (
         SUM(i.available)        AS current_stock
     FROM all_inventory i
     JOIN all_products_clean p ON p.sku = i.sku
-        AND p.style_number = %(style_number)s
+        {style_filter}
+    JOIN style_status ps ON ps.style_number = p.style_number
     WHERE i.pos_location_name NOT IN ({_WAREHOUSE_LOCATIONS})
+        {active_style_filter}
     GROUP BY i.pos_location_name
 ),
 sales AS (
@@ -2506,10 +2717,12 @@ sales AS (
         SUM({_NET_SALES_EXPR})        AS revenue_6m
     FROM all_sales s
     JOIN all_products_clean p ON p.sku = s.variant_sku
-        AND p.style_number = %(style_number)s
+        {style_filter}
+    JOIN style_status ps ON ps.style_number = p.style_number
     WHERE s.sale_date BETWEEN %(period_from)s AND %(period_to)s
         AND {_BASE_FILTERS}
         {country_clause}
+        {active_style_filter}
     GROUP BY s.pos_location_name
 ),
 store_meta AS (
@@ -3444,11 +3657,14 @@ def _fetch_stock_mix(brand=None, subcategory=None, from_date=None, to_date=None,
     applies the same universe semantics as _fetch_styles (stock outside the
     style universe drops out there via the LEFT JOIN from prod).
 
-    Dims come from the product master only: category = p.category,
-    subcategory = p.product_type, colour = per-SKU mode of p.color_print
-    (NEVER all_inventory's colour column). A style resolves to exactly ONE
+    Dims and lifecycle status come from the product master only: category =
+    p.category, subcategory = p.product_type, colour = per-SKU mode of
+    p.color_print, and status = per-SKU mode of p.status (NEVER
+    all_inventory's colour column). A style resolves to exactly ONE
     category/subcategory via mode() of its SKU dims, so it never splits
-    across branches.
+    across branches. Style status is Active when any SKU is Active, otherwise
+    Retired/Archived follows the remaining SKU statuses. Colourway status is
+    computed independently over that colourway's SKUs.
 
     Ordering context for replenish/retire calls (Inventory & Stock Health):
     style nodes carry `last_order_date` = MAX(production_orders.date_ordered)
@@ -3534,6 +3750,16 @@ prod AS (
         mode() WITHIN GROUP (ORDER BY p.style_number)  AS style_number,
         mode() WITHIN GROUP (ORDER BY p.category)      AS category,
         mode() WITHIN GROUP (ORDER BY p.product_type)  AS subcategory
+        ,
+        CASE
+            WHEN BOOL_OR(LOWER(COALESCE(p.status, 'active')) = 'active')
+                THEN 'Active'
+            WHEN BOOL_OR(LOWER(COALESCE(p.status, 'active')) = 'retired')
+                THEN 'Retired'
+            WHEN BOOL_OR(LOWER(COALESCE(p.status, 'active')) = 'archived')
+                THEN 'Archived'
+            ELSE 'Active'
+        END AS style_status
     FROM all_products_clean p
     WHERE {_PROD_BASE}{extra_prod_where}
     GROUP BY p.style_name
@@ -3548,10 +3774,34 @@ msku AS (
         mode() WITHIN GROUP (ORDER BY style_name)   AS style_name,
         mode() WITHIN GROUP (ORDER BY color_print)  AS colour,
         mode() WITHIN GROUP (ORDER BY cost)         AS cost,
+        mode() WITHIN GROUP (
+            ORDER BY COALESCE(NULLIF(BTRIM(status), ''), 'Active')
+        ) AS sku_status,
         BOOL_OR(COALESCE(brand,'') ILIKE '%%third party%%') AS is_third_party
     FROM all_products_clean
     WHERE style_name IS NOT NULL
     GROUP BY sku
+),
+/* Lifecycle status at colourway grain. This intentionally does not inherit
+   the parent style status: an active style may contain retired colourways.
+   The frontend flags the exceptional retired-style/active-colour combination
+   rather than silently rewriting the source data. */
+colour_lifecycle AS (
+    SELECT
+        style_name,
+        colour,
+        CASE
+            WHEN BOOL_OR(LOWER(COALESCE(sku_status, 'active')) = 'active')
+                THEN 'Active'
+            WHEN BOOL_OR(LOWER(COALESCE(sku_status, 'active')) = 'retired')
+                THEN 'Retired'
+            WHEN BOOL_OR(LOWER(COALESCE(sku_status, 'active')) = 'archived')
+                THEN 'Archived'
+            ELSE 'Active'
+        END AS colour_status
+    FROM msku
+    WHERE COALESCE(colour, '') <> ''
+    GROUP BY style_name, colour
 ),
 /* Stock at (style, colour) grain — pre-aggregated on its own (never join
    inventory to sales then SUM). Same row scope + filters as the KPI's stock
@@ -3684,7 +3934,9 @@ SELECT
     p.subcategory,
     p.style_name,
     p.style_number,
+    p.style_status,
     g.colour,
+    cl.colour_status,
     COALESCE(st.soh_stores, 0) + COALESCE(st.soh_warehouse, 0) AS stock_units,
     COALESCE(st.stock_value, 0)    AS stock_value,
     COALESCE(st.skus_in_stock, 0)  AS skus_in_stock,
@@ -3738,6 +3990,7 @@ LEFT JOIN rep_sku rs      ON rs.style_name = g.style_name AND rs.colour = g.colo
         st = _bucket(sb["styles"], sty_name, "colours")
         if "style_number" not in st:
             st["style_number"] = r.get("style_number")
+            st["status"] = r.get("style_status") or "Active"
             # Most recent production/buying order for the style (nullable).
             st["last_order_date"] = r.get("style_last_order")
         # The SKU-derived colour dates out-cover the textual style match
@@ -3752,6 +4005,7 @@ LEFT JOIN rep_sku rs      ON rs.style_name = g.style_name AND rs.colour = g.colo
             col = {"name": col_name, "stock_units": 0, "stock_value": 0.0,
                    "units_period": 0, "revenue_period": 0.0, "_u6": 0,
                    "skus_in_stock": 0, "skus_sold": 0,
+                    "status": r.get("colour_status") or "Active",
                    # Colour-grain ordering context + image key (nullable).
                    "last_order_date": r.get("colour_last_order"),
                    "rep_sku": r.get("rep_sku")}
@@ -4210,13 +4464,13 @@ def register_merch_routes(app, api_pg_module):
         from_date:    Optional[str] = Query(None),
         to_date:      Optional[str] = Query(None),
         country:      Optional[str] = Query(None),
+        include_retired: bool = Query(True),
     ):
-        """Per-store breakdown for one style including store tier (A/B/C) and transfer plan."""
-        if not style_number:
-            return JSONResponse({"detail": "style_number is required"}, status_code=400)
-        key = f"merch_style_stores|{style_number}|{from_date}|{to_date}|{country}"
+        """Per-store SOH/sales for one style or the active style universe."""
+        key = f"merch_style_stores|{style_number}|{from_date}|{to_date}|{country}|{include_retired}"
         result = _cached(key, 300, lambda: _fetch_style_stores(
-            style_number, from_date=from_date, to_date=to_date, country=country))
+            style_number, from_date=from_date, to_date=to_date, country=country,
+            include_retired=include_retired))
         return JSONResponse(result)
 
     @app.get("/api/merch/style-colors")

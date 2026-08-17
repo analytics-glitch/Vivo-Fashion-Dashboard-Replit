@@ -8,9 +8,11 @@
 import type { WorkspaceDashboardActivityItem } from './workspaceDashboardActivityItem';
 import type { WorkspaceDashboardKpisItem } from './workspaceDashboardKpisItem';
 import type { WorkspaceDashboardPipelineItem } from './workspaceDashboardPipelineItem';
+import type { WorkspaceDashboardSnapshot } from './workspaceDashboardSnapshot';
 import type { WorkspaceDashboardUpcomingItem } from './workspaceDashboardUpcomingItem';
 
 export interface WorkspaceDashboard {
+  snapshot: WorkspaceDashboardSnapshot;
   kpis: WorkspaceDashboardKpisItem[];
   activity: WorkspaceDashboardActivityItem[];
   pipeline: WorkspaceDashboardPipelineItem[];
