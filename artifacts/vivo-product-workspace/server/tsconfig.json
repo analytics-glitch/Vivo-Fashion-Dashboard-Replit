@@ -7,7 +7,7 @@
     "moduleResolution": "NodeNext",
     "target": "ES2022",
     "types": ["node"],
-    "noEmit": true
+    "noEmit": false
   },
   "include": ["index.ts"]
 }

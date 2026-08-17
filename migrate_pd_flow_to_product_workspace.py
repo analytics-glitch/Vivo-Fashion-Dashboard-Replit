@@ -192,6 +192,11 @@ def main() -> None:
                 progress = round((MAIN_STAGES.index(stage) / (len(MAIN_STAGES) - 1)) * 100) if stage in MAIN_STAGES else 0
                 image = data_url(source.get("image_data"), source.get("content_type"))
                 notes = (source.get("fabric_name") or "").strip()
+                assignee = (
+                    source.get("assignee_name")
+                    or source.get("created_by_name")
+                    or ""
+                ).strip() or "Unassigned"
 
                 cur.execute(f"""
                     INSERT INTO {TARGET_SCHEMA}.styles
@@ -216,8 +221,8 @@ def main() -> None:
                     stage,
                     stage,
                     stage_entered_at,
-                    (source.get("assignee_name") or source.get("created_by_name") or "").strip(),
-                    (source.get("assignee_name") or "").strip(),
+                    assignee,
+                    assignee,
                     (source.get("pattern_maker") or "").strip(),
                     as_date(source.get("adoption_date") or source.get("created_at")),
                     image,

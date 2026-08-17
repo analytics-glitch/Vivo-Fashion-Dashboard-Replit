@@ -28,6 +28,7 @@ const router = express.Router();
 const schema = "product_workspace";
 const sessionCookie = "vivo_workspace_session";
 const sessionDays = 7;
+let schemaReady = false;
 const PLM_STAGES = [
   "Concept",
   "Initial Design Tech Pack",
@@ -744,6 +745,21 @@ async function planPayload(planId: number) {
 }
 
 router.get("/healthz", (_req, res) => res.json({ status: "ok" }));
+router.get("/readyz", (_req, res) => {
+  if (!schemaReady) {
+    res.status(503).json({ status: "starting" });
+    return;
+  }
+  res.json({ status: "ready" });
+});
+
+router.use((req, res, next) => {
+  if (!schemaReady) {
+    res.status(503).json({ error: "Workspace service is starting" });
+    return;
+  }
+  next();
+});
 
 router.post("/login", async (req, res, next) => {
   try {
@@ -904,11 +920,14 @@ router.get("/styles", async (req, res, next) => {
     }
     if (req.query.search) {
       values.push(`%${String(req.query.search)}%`);
-      clauses.push(`(name ILIKE $${values.length} OR code ILIKE $${values.length} OR owner ILIKE $${values.length})`);
+      clauses.push(`(name ILIKE $${values.length} OR code ILIKE $${values.length} OR owner ILIKE $${values.length} OR designer ILIKE $${values.length})`);
     }
     const result = await pool.query(
       `SELECT id,code,name,brand,category,sub_category AS "subCategory",theme,order_type AS "orderType",
-       tier,status,stage,stage AS "currentStage",owner,designer,pattern_maker AS "patternMaker",
+       tier,status,stage,stage AS "currentStage",
+       COALESCE(NULLIF(TRIM(owner),''),'Unassigned') AS owner,
+       COALESCE(NULLIF(TRIM(designer),''),NULLIF(TRIM(owner),''),'Unassigned') AS designer,
+       pattern_maker AS "patternMaker",
        to_char(target_date,'YYYY-MM-DD') AS "targetDate",
        to_char(stage_entered_at,'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "stageEnteredAt",
        GREATEST(0,FLOOR(EXTRACT(EPOCH FROM (NOW()-stage_entered_at))/86400))::int AS "daysInStage",
@@ -1590,14 +1609,18 @@ io.on("connection", (socket) => {
 
 const port = Number(process.env.PORT ?? 23661);
 
-ensureSchema()
-  .then(() => {
-    httpServer.listen(port, "0.0.0.0", () => console.log(`Vivo workspace API listening on ${port}`));
-  })
-  .catch((error) => {
-    console.error("Unable to initialise workspace database", error);
-    process.exit(1);
-  });
+httpServer.listen(port, "0.0.0.0", () => {
+  console.log(`Vivo workspace API listening on ${port}`);
+  void ensureSchema()
+    .then(() => {
+      schemaReady = true;
+      console.log("Vivo workspace database ready");
+    })
+    .catch((error) => {
+      console.error("Unable to initialise workspace database", error);
+      process.exit(1);
+    });
+});
 
 process.on("SIGTERM", () => {
   void pool.end().finally(() => process.exit(0));

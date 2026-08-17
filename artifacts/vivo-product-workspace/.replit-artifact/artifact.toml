@@ -34,3 +34,16 @@ localPort = 23661
 
 [services.development]
 run = "pnpm --filter @workspace/vivo-product-workspace run server:dev"
+
+[services.production]
+[services.production.build]
+args = [ "pnpm", "--filter", "@workspace/vivo-product-workspace", "run", "build:server" ]
+
+[services.production.run]
+args = [ "pnpm", "--filter", "@workspace/vivo-product-workspace", "run", "server" ]
+
+[services.production.run.env]
+PORT = "23661"
+
+[services.production.health.startup]
+path = "/api/workspace/readyz"
