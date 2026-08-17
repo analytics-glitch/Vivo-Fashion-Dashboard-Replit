@@ -809,6 +809,29 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/WorkspaceStyleDetail"
+    patch:
+      operationId: updateWorkspaceStyle
+      tags: [workspace]
+      summary: Update a workspace style
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StyleUpdate"
+      responses:
+        "200":
+          description: Updated style
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceStyleDetail"
   /workspace/styles/{id}/transition:
     post:
       operationId: transitionWorkspaceStyle
@@ -1023,29 +1046,6 @@ paths:
       responses:
         "200":
           description: Updated PLM style
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/WorkspaceStyleDetail"
-    patch:
-      operationId: updateWorkspaceStyle
-      tags: [workspace]
-      summary: Update a workspace style
-      parameters:
-        - name: id
-          in: path
-          required: true
-          schema:
-            type: integer
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/StyleUpdate"
-      responses:
-        "200":
-          description: Updated style
           content:
             application/json:
               schema:
@@ -2202,6 +2202,9 @@ components:
         theme: { type: string }
         orderType: { type: string }
         tier: { type: string }
+         launchRoute: { type: string, nullable: true, enum: [DTC, Wholesale, Marketplace, Omnichannel] }
+         styleClassification: { type: string, nullable: true, enum: [Core, Fashion, Seasonal, Test] }
+         rangeTier: { type: string, nullable: true, enum: ["Tier 1", "Tier 2", "Tier 3", "Tier 4"] }
         status: { type: string }
         stage: { type: string }
         currentStage: { type: string }
@@ -2280,6 +2283,9 @@ components:
         theme: { type: string }
         orderType: { type: string, enum: ["New", "Repeat"] }
         tier: { type: string, enum: ["1", "2", "3", "4"] }
+         launchRoute: { type: string, nullable: true, enum: [DTC, Wholesale, Marketplace, Omnichannel] }
+         styleClassification: { type: string, nullable: true, enum: [Core, Fashion, Seasonal, Test] }
+         rangeTier: { type: string, nullable: true, enum: ["Tier 1", "Tier 2", "Tier 3", "Tier 4"] }
         designer: { type: string }
         patternMaker: { type: string }
         targetDate: { type: string }
@@ -2298,6 +2304,9 @@ components:
         progress: { type: number }
         price: { type: number }
         tier: { type: string }
+         launchRoute: { type: string, nullable: true, enum: [DTC, Wholesale, Marketplace, Omnichannel] }
+         styleClassification: { type: string, nullable: true, enum: [Core, Fashion, Seasonal, Test] }
+         rangeTier: { type: string, nullable: true, enum: ["Tier 1", "Tier 2", "Tier 3", "Tier 4"] }
         name: { type: string }
         market: { type: string }
         creativeDescription: { type: string }

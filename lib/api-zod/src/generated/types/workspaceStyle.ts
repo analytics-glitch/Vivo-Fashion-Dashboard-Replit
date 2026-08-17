@@ -17,6 +17,9 @@ export interface WorkspaceStyle {
   theme?: string;
   orderType?: string;
   tier?: string;
+  launchRoute?: 'DTC' | 'Wholesale' | 'Marketplace' | 'Omnichannel' | null;
+  styleClassification?: 'Core' | 'Fashion' | 'Seasonal' | 'Test' | null;
+  rangeTier?: 'Tier 1' | 'Tier 2' | 'Tier 3' | 'Tier 4' | null;
   status: string;
   stage?: string;
   currentStage?: string;

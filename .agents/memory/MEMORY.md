@@ -130,6 +130,7 @@
 - [Product Workspace L10](product-workspace-l10.md) — keep EOS meeting data in the workspace schema; migrate existing public rocks once, then let workspace status edits own the records.
 - [Product Workspace Resources](product-workspace-resources.md) — markdown reference library is idempotently seeded, server-admin-gated for mutations, and rendered with safe structured tables.
 - [Artifact service environments](artifact-service-environments.md) — when adding an API service, preserve the web artifact's global BASE_PATH env block or its managed Vite workflow will fail before startup.
+- [OpenAPI codegen compatibility](openapi-codegen-compatibility.md) — checked-in Orval 8.9.1 currently fails resolving this repo's OpenAPI input; restore generated outputs and patch the contract/types manually if needed.
 - [Product Workspace preview auth](product-workspace-preview-auth.md) — embedded HTTPS previews need Secure/SameSite=None session cookies or API pages can 401 after session bootstrap.
 - [Community guest mode](community-guest-mode.md) — guest fence must cover deep-linkable URL-state overlays (?event=, member ?page= ids) and every member-write control, not just tabs.
 - Paint-order trap: a static <img> paints BELOW an absolutely-positioned sibling — a persistent absolute pulse/placeholder overlay washes the photo out; make the overlay strictly conditional or position the img.

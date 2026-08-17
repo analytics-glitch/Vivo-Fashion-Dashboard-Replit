@@ -3973,7 +3973,7 @@ export const getUpdateWorkspacePomQcUrl = (id: number,) => {
 
 
 
-  return `/api/workspace/styles/${id}/pom-qc`
+  return `/api/workspace/styles/${id}`
 }
 
 /**

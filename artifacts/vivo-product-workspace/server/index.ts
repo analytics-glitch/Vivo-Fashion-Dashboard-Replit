@@ -46,6 +46,9 @@ const PLM_STAGES = [
 ] as const;
 const PLM_SIDE_STAGES = ["On Hold", "Dropped"] as const;
 const PLM_ALL_STAGES = [...PLM_STAGES, ...PLM_SIDE_STAGES] as const;
+const PLM_LAUNCH_ROUTES = ["DTC", "Wholesale", "Marketplace", "Omnichannel"] as const;
+const PLM_STYLE_CLASSIFICATIONS = ["Core", "Fashion", "Seasonal", "Test"] as const;
+const PLM_RANGE_TIERS = ["Tier 1", "Tier 2", "Tier 3", "Tier 4"] as const;
 type PlmStage = (typeof PLM_ALL_STAGES)[number];
 
 type UserRow = {
@@ -843,6 +846,30 @@ async function ensureSchema() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+     ALTER TABLE ${schema}.styles ADD COLUMN IF NOT EXISTS launch_route TEXT;
+     ALTER TABLE ${schema}.styles ADD COLUMN IF NOT EXISTS style_classification TEXT;
+     ALTER TABLE ${schema}.styles ADD COLUMN IF NOT EXISTS range_tier TEXT;
+     ALTER TABLE ${schema}.styles DROP CONSTRAINT IF EXISTS styles_launch_route_check;
+     ALTER TABLE ${schema}.styles ADD CONSTRAINT styles_launch_route_check
+       CHECK (launch_route IS NULL OR launch_route IN ('DTC','Wholesale','Marketplace','Omnichannel'));
+     ALTER TABLE ${schema}.styles DROP CONSTRAINT IF EXISTS styles_style_classification_check;
+     ALTER TABLE ${schema}.styles ADD CONSTRAINT styles_style_classification_check
+       CHECK (style_classification IS NULL OR style_classification IN ('Core','Fashion','Seasonal','Test'));
+     ALTER TABLE ${schema}.styles DROP CONSTRAINT IF EXISTS styles_range_tier_check;
+     ALTER TABLE ${schema}.styles ADD CONSTRAINT styles_range_tier_check
+       CHECK (range_tier IS NULL OR range_tier IN ('Tier 1','Tier 2','Tier 3','Tier 4'));
+     ALTER TABLE IF EXISTS public.pd_styles ADD COLUMN IF NOT EXISTS launch_route TEXT;
+     ALTER TABLE IF EXISTS public.pd_styles ADD COLUMN IF NOT EXISTS style_classification TEXT;
+     ALTER TABLE IF EXISTS public.pd_styles ADD COLUMN IF NOT EXISTS range_tier TEXT;
+     ALTER TABLE IF EXISTS public.pd_styles DROP CONSTRAINT IF EXISTS pd_styles_launch_route_check;
+     ALTER TABLE IF EXISTS public.pd_styles ADD CONSTRAINT pd_styles_launch_route_check
+       CHECK (launch_route IS NULL OR launch_route IN ('DTC','Wholesale','Marketplace','Omnichannel'));
+     ALTER TABLE IF EXISTS public.pd_styles DROP CONSTRAINT IF EXISTS pd_styles_style_classification_check;
+     ALTER TABLE IF EXISTS public.pd_styles ADD CONSTRAINT pd_styles_style_classification_check
+       CHECK (style_classification IS NULL OR style_classification IN ('Core','Fashion','Seasonal','Test'));
+     ALTER TABLE IF EXISTS public.pd_styles DROP CONSTRAINT IF EXISTS pd_styles_range_tier_check;
+     ALTER TABLE IF EXISTS public.pd_styles ADD CONSTRAINT pd_styles_range_tier_check
+       CHECK (range_tier IS NULL OR range_tier IN ('Tier 1','Tier 2','Tier 3','Tier 4'));
     CREATE TABLE IF NOT EXISTS ${schema}.colorways (
       id SERIAL PRIMARY KEY,
       style_id INTEGER NOT NULL REFERENCES ${schema}.styles(id) ON DELETE CASCADE,
@@ -1667,7 +1694,8 @@ function stageProgress(stage: string) {
 async function getStyle(id: number) {
   const result = await pool.query(
     `SELECT s.id,s.code,s.name,s.brand,s.category,s.sub_category AS "subCategory",s.theme,s.order_type AS "orderType",
-       s.tier,s.status,s.stage,s.stage AS "currentStage",s.owner,s.designer,s.pattern_maker AS "patternMaker",
+       s.tier,s.launch_route AS "launchRoute",s.style_classification AS "styleClassification",
+       s.range_tier AS "rangeTier",s.status,s.stage,s.stage AS "currentStage",s.owner,s.designer,s.pattern_maker AS "patternMaker",
        s.fabric_type AS "fabricType",s.designer_user_id AS "designerUserId",
        s.pattern_maker_user_id AS "patternMakerUserId",s.sample_maker_user_id AS "sampleMakerUserId",
        s.buyer_user_id AS "buyerUserId",
@@ -1688,7 +1716,10 @@ async function getStyle(id: number) {
        s.image,s.progress::float,s.price::float,s.market
      FROM ${schema}.styles s
       LEFT JOIN (
-        SELECT style_number, MAX(NULLIF(TRIM(target_order_week), '')) AS target_order_week
+         SELECT style_number, MAX(NULLIF(TRIM(target_order_week), '')) AS target_order_week,
+           MAX(NULLIF(TRIM(launch_route), '')) AS launch_route,
+           MAX(NULLIF(TRIM(style_classification), '')) AS style_classification,
+           MAX(NULLIF(TRIM(range_tier), '')) AS range_tier
         FROM public.pd_styles
         WHERE style_number IS NOT NULL
         GROUP BY style_number
@@ -3359,7 +3390,11 @@ router.get("/styles", async (req, res, next) => {
     }
     const result = await pool.query(
       `SELECT s.id,s.code,s.name,s.brand,s.category,s.sub_category AS "subCategory",s.theme,s.order_type AS "orderType",
-       s.tier,s.status,s.stage,s.stage AS "currentStage",
+       s.tier,
+       COALESCE(NULLIF(TRIM(s.launch_route),''),NULLIF(TRIM(pd.launch_route),'')) AS "launchRoute",
+       COALESCE(NULLIF(TRIM(s.style_classification),''),NULLIF(TRIM(pd.style_classification),'')) AS "styleClassification",
+       COALESCE(NULLIF(TRIM(s.range_tier),''),NULLIF(TRIM(pd.range_tier),'')) AS "rangeTier",
+       s.status,s.stage,s.stage AS "currentStage",
        COALESCE(NULLIF(TRIM(s.owner),''),'Unassigned') AS owner,
        COALESCE(NULLIF(TRIM(s.designer),''),NULLIF(TRIM(s.owner),''),'Unassigned') AS designer,
        s.pattern_maker AS "patternMaker",s.fabric_type AS "fabricType",
@@ -3379,7 +3414,10 @@ router.get("/styles", async (req, res, next) => {
        s.image,s.progress::float,s.price::float,s.market
        FROM ${schema}.styles s
         LEFT JOIN (
-          SELECT style_number, MAX(NULLIF(TRIM(target_order_week), '')) AS target_order_week
+           SELECT style_number, MAX(NULLIF(TRIM(target_order_week), '')) AS target_order_week,
+             MAX(NULLIF(TRIM(launch_route), '')) AS launch_route,
+             MAX(NULLIF(TRIM(style_classification), '')) AS style_classification,
+             MAX(NULLIF(TRIM(range_tier), '')) AS range_tier
           FROM public.pd_styles
           WHERE style_number IS NOT NULL
           GROUP BY style_number
@@ -3481,11 +3519,20 @@ router.post("/styles", async (req: AuthRequest, res, next) => {
     const designer = String(body.designer ?? "").trim();
     const patternMaker = String(body.patternMaker ?? "").trim();
     const tier = ["1", "2", "3", "4"].includes(String(body.tier)) ? String(body.tier) : "1";
+    const launchRoute = body.launchRoute === "" || body.launchRoute == null ? null : String(body.launchRoute);
+    const styleClassification = body.styleClassification === "" || body.styleClassification == null ? null : String(body.styleClassification);
+    const rangeTier = body.rangeTier === "" || body.rangeTier == null ? null : String(body.rangeTier);
+    if ((launchRoute && !PLM_LAUNCH_ROUTES.includes(launchRoute as (typeof PLM_LAUNCH_ROUTES)[number]))
+      || (styleClassification && !PLM_STYLE_CLASSIFICATIONS.includes(styleClassification as (typeof PLM_STYLE_CLASSIFICATIONS)[number]))
+      || (rangeTier && !PLM_RANGE_TIERS.includes(rangeTier as (typeof PLM_RANGE_TIERS)[number]))) {
+      res.status(400).json({ error: "One or more classification values are unsupported" });
+      return;
+    }
     await client.query("BEGIN");
     const inserted = await client.query<{ id: number }>(
       `INSERT INTO ${schema}.styles
-       (code,name,brand,category,sub_category,theme,order_type,tier,status,stage,stage_entered_at,owner,designer,pattern_maker,target_date,progress,price,market)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'Concept','Concept',NOW(),$9,$9,$10,$11,0,0,'EA')
+       (code,name,brand,category,sub_category,theme,order_type,tier,launch_route,style_classification,range_tier,status,stage,stage_entered_at,owner,designer,pattern_maker,target_date,progress,price,market)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'Concept','Concept',NOW(),$12,$12,$13,$14,0,0,'EA')
        RETURNING id`,
       [
         code,
@@ -3496,6 +3543,9 @@ router.post("/styles", async (req: AuthRequest, res, next) => {
         String(body.theme ?? ""),
         body.orderType === "Repeat" ? "Repeat" : "New",
         tier,
+         launchRoute,
+         styleClassification,
+         rangeTier,
         designer || "Unassigned",
         patternMaker,
         targetDate,
@@ -3550,19 +3600,29 @@ router.get("/styles/:id/plm", async (req, res, next) => {
 
 router.patch("/styles/:id", async (req: AuthRequest, res, next) => {
   try {
-    const allowed = ["status", "stage", "name", "owner", "designer", "patternMaker", "subCategory", "theme", "orderType", "targetDate", "progress", "price", "market", "tier", "creativeDescription", "sizeRange", "trimsSpecialFeatures", "predictedCost", "confirmedCost", "designerUserId", "patternMakerUserId", "sampleMakerUserId", "buyerUserId"] as const;
+    const allowed = ["status", "stage", "name", "owner", "designer", "patternMaker", "subCategory", "theme", "orderType", "targetDate", "progress", "price", "market", "tier", "launchRoute", "styleClassification", "rangeTier", "creativeDescription", "sizeRange", "trimsSpecialFeatures", "predictedCost", "confirmedCost", "designerUserId", "patternMakerUserId", "sampleMakerUserId", "buyerUserId"] as const;
     const numericFields = new Set(["progress", "price", "predictedCost", "confirmedCost", "designerUserId", "patternMakerUserId", "sampleMakerUserId", "buyerUserId"]);
+    const classificationFields: Record<string, readonly string[]> = {
+      launchRoute: PLM_LAUNCH_ROUTES,
+      styleClassification: PLM_STYLE_CLASSIFICATIONS,
+      rangeTier: PLM_RANGE_TIERS,
+    };
     const assignments: string[] = [];
     const values: unknown[] = [];
     for (const key of allowed) {
       if (req.body?.[key] === undefined) continue;
       const rawValue = req.body[key];
+      if (classificationFields[key] && rawValue !== null && rawValue !== "" && !classificationFields[key].includes(String(rawValue))) {
+        res.status(400).json({ error: `${key} has an unsupported value` });
+        return;
+      }
       values.push(key === "trimsSpecialFeatures"
         ? JSON.stringify(Array.isArray(rawValue) ? rawValue.map((item) => String(item).trim()).filter(Boolean) : [])
         : numericFields.has(key)
           ? (rawValue === null || rawValue === "" ? null : Number(rawValue))
+          : classificationFields[key] && (rawValue === null || rawValue === "") ? null
           : rawValue);
-      const column = key === "targetDate" ? "target_date" : key === "patternMaker" ? "pattern_maker" : key === "subCategory" ? "sub_category" : key === "creativeDescription" ? "creative_description" : key === "sizeRange" ? "size_range" : key === "trimsSpecialFeatures" ? "trims_special_features" : key === "predictedCost" ? "predicted_cost" : key === "confirmedCost" ? "confirmed_cost" : key.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`);
+      const column = key === "targetDate" ? "target_date" : key === "patternMaker" ? "pattern_maker" : key === "subCategory" ? "sub_category" : key === "launchRoute" ? "launch_route" : key === "styleClassification" ? "style_classification" : key === "rangeTier" ? "range_tier" : key === "creativeDescription" ? "creative_description" : key === "sizeRange" ? "size_range" : key === "trimsSpecialFeatures" ? "trims_special_features" : key === "predictedCost" ? "predicted_cost" : key === "confirmedCost" ? "confirmed_cost" : key.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`);
       assignments.push(`${column}=$${values.length}`);
       if (key === "stage") assignments.push(`status=$${values.length}`);
     }
@@ -3572,6 +3632,21 @@ router.patch("/styles/:id", async (req: AuthRequest, res, next) => {
     }
     values.push(req.params.id);
     await pool.query(`UPDATE ${schema}.styles SET ${assignments.join(",")},updated_at=NOW() WHERE id=$${values.length}`, values);
+    const classificationUpdates = (["launchRoute", "styleClassification", "rangeTier"] as const)
+      .filter((key) => req.body?.[key] !== undefined);
+    if (classificationUpdates.length) {
+      const workspaceStyle = await pool.query<{ code: string }>(`SELECT code FROM ${schema}.styles WHERE id=$1`, [req.params.id]);
+      const code = workspaceStyle.rows[0]?.code;
+      if (code) {
+        const publicAssignments = classificationUpdates.map((key, index) => {
+          const column = key === "launchRoute" ? "launch_route" : key === "styleClassification" ? "style_classification" : "range_tier";
+          return `${column}=$${index + 1}`;
+        });
+        const publicValues = classificationUpdates.map((key) => req.body[key] === "" ? null : req.body[key]);
+        publicValues.push(code);
+        await pool.query(`UPDATE public.pd_styles SET ${publicAssignments.join(",")} WHERE style_number=$${publicValues.length}`, publicValues);
+      }
+    }
     const result = await styleDetail(Number(req.params.id));
     res.json(result);
   } catch (error) {
@@ -4564,6 +4639,48 @@ app.get("/api/team/birthdays/today", requireUser, async (_req, res, next) => {
        ORDER BY name`,
     );
     res.json(result.rows);
+  } catch (error) {
+    next(error);
+  }
+});
+app.patch("/api/styles/:id", requireUser, async (req, res, next) => {
+  try {
+    if (!schemaReady) {
+      res.status(503).json({ error: "Workspace service is starting" });
+      return;
+    }
+    const fields = [
+      ["launch_route", "launchRoute", PLM_LAUNCH_ROUTES],
+      ["style_classification", "styleClassification", PLM_STYLE_CLASSIFICATIONS],
+      ["range_tier", "rangeTier", PLM_RANGE_TIERS],
+    ] as const;
+    const assignments: string[] = [];
+    const values: unknown[] = [];
+    for (const [column, key, allowedValues] of fields) {
+      if (req.body?.[key] === undefined) continue;
+      const rawValue = req.body[key];
+      if (rawValue !== null && rawValue !== "" && !allowedValues.includes(String(rawValue) as never)) {
+        res.status(400).json({ error: `${key} has an unsupported value` });
+        return;
+      }
+      values.push(rawValue === "" ? null : rawValue);
+      assignments.push(`${column}=$${values.length}`);
+    }
+    if (!assignments.length) {
+      res.status(400).json({ error: "At least one classification field is required" });
+      return;
+    }
+    values.push(Number(req.params.id));
+    const result = await pool.query(
+      `UPDATE public.pd_styles SET ${assignments.join(",")} WHERE id=$${values.length}
+       RETURNING id,launch_route AS "launchRoute",style_classification AS "styleClassification",range_tier AS "rangeTier"`,
+      values,
+    );
+    if (!result.rowCount) {
+      res.status(404).json({ error: "Style not found" });
+      return;
+    }
+    res.json(result.rows[0]);
   } catch (error) {
     next(error);
   }

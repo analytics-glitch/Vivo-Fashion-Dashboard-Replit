@@ -846,6 +846,11 @@ a { color: inherit; text-decoration: none; }
 .plm-card-meta span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .plm-subcategory-badge { width: max-content; max-width: 100%; border-radius: 999px; background: #f1e7d3; color: #7b6338; padding: 3px 6px; font: 8px 'DM Mono', monospace; text-transform: uppercase; }
 .plm-card-foot { border-top: 1px solid #f0ede8; margin-top: 6px; padding-top: 5px; display: flex; justify-content: space-between; align-items: center; gap: 4px; }
+.plm-card-classification, .plm-classification-chips { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
+.plm-classification-chip { display: inline-flex; align-items: center; width: max-content; border-radius: 999px; padding: 3px 6px; color: #6d6254; background: #f1eadc; font: 8px 'DM Mono', monospace; line-height: 1; white-space: nowrap; }
+.plm-classification-chip.route { color: #506979; background: #e6edf0; }
+.plm-classification-chip.classification { color: #765f77; background: #eee5ef; }
+.plm-classification-chip.tier { color: #7b6338; background: #f1e7d3; }
 .plm-card-team { display: flex; align-items: center; min-height: 22px; margin-top: 5px; padding-top: 5px; border-top: 1px solid #f0ede8; }
 .plm-card-avatar { width: 19px; height: 19px; margin-right: -3px; border: 2px solid #fff; border-radius: 50%; background: var(--plm-ink); color: #f4e4c7; display: grid; place-items: center; font: 700 7px 'DM Mono', monospace; }
 .plm-card-avatar:nth-child(2) { background: #7c9a91; color: #fff; }
@@ -920,6 +925,14 @@ a { color: inherit; text-decoration: none; }
 .plm-detail-facts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; margin-top: 20px; }
 .plm-detail-facts span { display: grid; gap: 4px; color: var(--plm-ink); font-size: 10px; }
 .plm-detail-facts b { color: #a09b9b; font: 9px 'DM Mono', monospace; text-transform: uppercase; }
+.plm-detail-summary .plm-classification-chips { margin-top: 12px; }
+.plm-classification-editor { margin-top: 13px; padding-top: 11px; border-top: 1px solid #f0ede8; }
+.plm-editor-label { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 8px; color: var(--plm-ink); font: 600 9px 'DM Mono', monospace; text-transform: uppercase; letter-spacing: .04em; }
+.plm-editor-label small { color: #a09b9b; font: 9px 'Inter', sans-serif; text-transform: none; letter-spacing: 0; }
+.plm-classification-fields { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.plm-classification-fields label { display: grid; gap: 4px; min-width: 0; }
+.plm-classification-fields label > span { color: #8d8886; font: 8px 'DM Mono', monospace; text-transform: uppercase; }
+.plm-classification-fields select { width: 100%; min-height: 31px; border: 1px solid var(--plm-line); border-radius: 3px; padding: 5px 6px; color: var(--plm-ink); background: #fff; font-size: 9px; }
 .plm-detail-section, .plm-record-list { margin-top: 25px; border-top: 1px solid var(--plm-line); padding-top: 14px; }
 .plm-section-title { display: flex; justify-content: space-between; align-items: center; gap: 9px; margin-bottom: 10px; }
 .plm-section-title h4 { margin: 0; font-size: 11px; font-weight: 700; }
