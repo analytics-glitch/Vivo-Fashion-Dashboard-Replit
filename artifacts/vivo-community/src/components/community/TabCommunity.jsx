@@ -517,7 +517,7 @@ export default function TabCommunity({ member, subNav, onSubChange, onOpenEvent,
         <div className="max-w-3xl mx-auto space-y-8" data-testid="celebration-wall">
           <div>
             <div className="text-[11px] font-bold uppercase tracking-wider text-primary-ink mb-1.5">Shining this week</div>
-            <h2 className="text-2xl font-serif text-foreground mb-1.5">A little love for the women of Johari</h2>
+            <h2 className="text-2xl font-serif text-foreground mb-1.5">A little love for our Johari Gems</h2>
             <p className="text-muted-foreground text-sm leading-relaxed">
               No ranks, no numbers — just the community celebrating each other. Celebrations rotate every week.
             </p>
