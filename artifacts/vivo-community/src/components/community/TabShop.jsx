@@ -479,9 +479,10 @@ export default function TabShop({ onOpenProduct, onOpenTryOn, onOpenPage }) {
       )}
 
       {/* Fresh off the floor — New This Week rail (moved from the homepage,
-          per Sharon). Shows on the pristine catalogue only, so filtered
-          views stay focused on the filter results. */}
-      {!loading && nActive === 0 && sort === "new" && items.length > 0 && (
+          per Sharon). Shows on the pristine catalogue only (no filters AND
+          the default "new" sort), so filtered or re-sorted views stay
+          focused on those results. */}
+      {!loading && sort === "new" && nActive === 0 && items.length > 0 && (
         <div className="mb-16">
           <ProductRail
             kicker="New This Week"
