@@ -147,7 +147,7 @@ export const PRIMARY_NAV = [
   },
   { to: "/order-explorer", label: "Order Explorer", icon: AddressBook, id: "order-explorer", group: "Customers & Marketing", desc: "Drill between customers and products — start from a customer to see every order and product they bought, or start from a product to see every identified customer who bought it" },
   { to: "/marketing", label: "Marketing", icon: Megaphone, id: "marketing", group: "Customers & Marketing", desc: "Campaign and channel marketing performance" },
-  { to: "/community-app", label: "Community App", icon: UsersThree, id: "community-app", group: "Customers & Marketing", desc: "Interactive preview of the Vivo member community app — feed, challenges, leaderboard, shop, rewards and member profile (prototype, mock data)" },
+  { to: "/community-app", label: "Community App (live)", icon: UsersThree, id: "community-app", group: "Customers & Marketing", desc: "Opens the live customer-facing Vivo Community app at /app/ — feed, shop, rewards, account and help (the old mockup page now redirects there)" },
 
   // OPERATIONAL pages — actions that move, return or make stock.
   {
