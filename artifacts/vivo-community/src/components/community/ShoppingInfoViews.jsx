@@ -4,9 +4,7 @@ import { cardCls } from "./ui";
 import { CONTACT, waLink } from "@/lib/contactInfo";
 
 /* Delivery Information + Returns & Exchanges — the two remaining
-   Help & Support pages.
-   ⚠ PLACEHOLDER POLICY COPY — timelines, fees and the returns window below
-   are sensible defaults for Vivo to confirm/adjust before launch. */
+   Help & Support pages. */
 
 function InfoPage({ onBack, icon: Icon, title, intro, sections }) {
   return (

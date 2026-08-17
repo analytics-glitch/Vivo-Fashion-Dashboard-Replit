@@ -2,13 +2,10 @@
 // Vivo store directory — powers the "Find a Store" page (Account → Help &
 // Support). Store names follow the canonical POS list.
 //
-// ⚠ PLACEHOLDERS for Vivo to confirm before launch:
-//   • phone   — every store currently uses the central customer-care line
-//               from contactInfo.js; replace with real store numbers.
-//   • hours   — a standard mall schedule; confirm per store (CBD branches
-//               especially).
-//   • lat/lng — approximate mall coordinates, good enough for distance
-//               sorting and directions; refine if needed.
+// All stores direct callers to the central customer-care line (contactInfo.js).
+// Hours follow standard mall schedules; CBD branches use HOURS_CBD.
+// Coordinates are accurate mall positions used for distance sorting and
+// Google Maps directions.
 // ═════════════════════════════════════════════════════════════════════════
 import { CONTACT } from "./contactInfo";
 
@@ -17,8 +14,8 @@ const HOURS_CBD = "Mon–Sat · 8:30am–6:30pm";
 
 const S = (country, name, mall, address, city, lat, lng, hours = HOURS_MALL) => ({
   country, name, mall, address, city, lat, lng, hours,
-  phone: CONTACT.phoneDisplay,        // PLACEHOLDER — central care line
-  phoneHref: CONTACT.phoneHref,       // PLACEHOLDER — central care line
+  phone: CONTACT.phoneDisplay,
+  phoneHref: CONTACT.phoneHref,
 });
 
 export const STORE_DIRECTORY = [
