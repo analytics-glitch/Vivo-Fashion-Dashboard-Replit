@@ -152,6 +152,14 @@ export const api = {
   deleteRedemptionDesign: (id) => req("/rewards/redemptions/" + id + "/design", { method: "DELETE", auth: true }),
   deleteContactPhoto: (id) => req("/contact/" + id + "/photo", { method: "DELETE", auth: true }),
   deleteStyleQuiz: () => req("/style-quiz", { method: "DELETE", auth: true }),
+  // Restock alerts — members can subscribe to be notified when a sold-out
+  // size comes back in stock. Auth required for all three operations.
+  restockAlerts: (sku) =>
+    req("/restock-alert?sku=" + encodeURIComponent(sku), { auth: true }),
+  restockAlertSet: (size_sku) =>
+    req("/restock-alert", { method: "POST", body: { size_sku }, auth: true }),
+  restockAlertCancel: (size_sku) =>
+    req("/restock-alert", { method: "DELETE", body: { size_sku }, auth: true }),
   // Challenges — real entries (photo riding the same b64-JSON lane as
   // try-on uploads), review-then-publish, one vote per member per voting
   // challenge. Reads work signed-out; my_entry/my_vote appear signed-in.

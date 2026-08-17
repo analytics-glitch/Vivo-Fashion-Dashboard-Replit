@@ -1091,6 +1091,25 @@ def _ensure_tables():
         );
         CREATE INDEX IF NOT EXISTS community_edit_images_edit_idx
             ON community_edit_images (edit_id, position, id);
+        -- Restock alerts: members subscribe to be notified when a sold-out
+        -- size comes back in stock. UNIQUE(member_id, sku) deduplicates taps.
+        -- notified_at is NULL while pending; set to now() once the email fires
+        -- (the row is retained for audit — a second restock won't re-notify
+        -- unless the member signs up again after cancelling).
+        CREATE TABLE IF NOT EXISTS community_restock_alerts (
+            id SERIAL PRIMARY KEY,
+            member_id INT NOT NULL REFERENCES community_members(id) ON DELETE CASCADE,
+            sku TEXT NOT NULL,
+            style_name TEXT NOT NULL,
+            color TEXT NOT NULL DEFAULT '',
+            size TEXT NOT NULL DEFAULT '',
+            notified_at TIMESTAMPTZ,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            UNIQUE (member_id, sku)
+        );
+        CREATE INDEX IF NOT EXISTS community_restock_alerts_pending_idx
+            ON community_restock_alerts (sku, style_name, color)
+            WHERE notified_at IS NULL;
         """
         with _db() as conn:
             with conn.cursor() as cur:
@@ -2467,7 +2486,65 @@ def _send_member_email(to_addr, subject, body):
         log.warning("member email failed (%s) subject=%s",
                     type(e).__name__, subject)
 
+def _fire_restock_alerts(style_name, color, in_stock_map):
+    """Fire pending restock alert emails for any sizes that just came back in
+    stock. in_stock_map: {sku -> size_label} for currently in-stock sizes.
+    Called from a daemon thread so it never blocks a PDP response.
 
+    Concurrency safety: alerts are claimed with a single atomic
+    UPDATE … RETURNING that joins community_members in one shot.  Only the
+    transaction that commits first can claim any given row — concurrent sweeps
+    (e.g. two simultaneous PDP cache-misses for the same style) will find
+    notified_at already set and claim nothing, so each alert is emailed at
+    most once even under parallel workers."""
+    if not in_stock_map:
+        return
+    skus = list(in_stock_map.keys())
+    try:
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                # Atomically stamp notified_at and retrieve member contact
+                # details in one statement.  Any concurrent transaction racing
+                # on the same rows will find notified_at IS NOT NULL and skip
+                # them — guaranteeing at-most-once delivery per alert.
+                cur.execute(
+                    """UPDATE community_restock_alerts a
+                          SET notified_at = now()
+                         FROM community_members m
+                        WHERE a.member_id = m.id
+                          AND a.sku = ANY(%s)
+                          AND a.notified_at IS NULL
+                    RETURNING a.id, a.sku, a.size,
+                              m.email, m.full_name""",
+                    (skus,))
+                rows = [dict(r) for r in cur.fetchall()]
+            conn.commit()
+        # Emails fire after commit — claimed rows can't be un-claimed, so a
+        # mid-loop crash means the alert is silently swallowed (acceptable;
+        # the alternative is duplicate email, which is worse for members).
+        for r in rows:
+            email = (r.get("email") or "").strip()
+            if not email:
+                continue
+            first = ((r.get("full_name") or "").strip().split() or ["there"])[0]
+            size_label = (r["size"] or "").strip()
+            size_label = "One Size" if size_label in ("F", "") else size_label
+            body = (
+                f"Hi {first},\n\n"
+                f"Good news — {style_name}"
+                + (f" in {color}" if color else "")
+                + f" is back in stock in {size_label}.\n\n"
+                "Shop it before it sells out again — popular sizes can go fast "
+                "once they're back.\n\n"
+                "See you in the app,\nThe Vivo team"
+            )
+            _send_member_email(
+                email,
+                f"Back in stock: {style_name} — {size_label}",
+                body,
+            )
+    except Exception:
+        log.exception("restock alert sweep failed style=%r color=%r", style_name, color)
 def _notify_promoted(member_row, ev):
     """Waitlist → confirmed: tell the member their spot opened up. The queue
     promise in the app is 'we'll email you the moment a spot opens' — this
@@ -3948,7 +4025,124 @@ def register_community_routes(app, api_pg_module):
                        if head.get(k)},
         }
         _cache_put(_pdp_cache, sku, resp)
+
+        # Lazy restock check: if any sizes are back in stock, fire pending
+        # alerts off-thread so this never blocks the PDP response.
+        if resp["in_stock"]:
+            in_stock_map = {
+                s["sku"]: (s["size"] or "One Size")
+                for s in resp["sizes"] if s["in_stock"]
+            }
+            if in_stock_map:
+                threading.Thread(
+                    target=_fire_restock_alerts,
+                    args=(style, color, in_stock_map),
+                    daemon=True,
+                    name="restock-alert",
+                ).start()
+
         return _stamp_pdp_badge(resp)
+
+    # ------------------------------------------------------------------ #
+    # Restock alerts                                                       #
+    # ------------------------------------------------------------------ #
+
+    @app.get("/api/community/restock-alert")
+    def community_restock_alert_get(request: Request, sku: str = ""):
+        """Return which sizes this member already has pending restock alerts
+        for on the same style+colour as the given sku.  Requires auth."""
+        _ensure_tables()
+        sku = (sku or "").strip()[:80]
+        if not sku:
+            raise HTTPException(status_code=400, detail="sku required")
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                m = _require_member(cur, request)
+                cur.execute(
+                    """SELECT style_name, COALESCE(color_print,'') AS color
+                         FROM all_products_clean
+                        WHERE sku = %s AND style_name IS NOT NULL LIMIT 1""",
+                    (sku,))
+                head = cur.fetchone()
+                if not head:
+                    return {"skus": [], "sizes": []}
+                cur.execute(
+                    """SELECT a.sku, a.size
+                         FROM community_restock_alerts a
+                        WHERE a.member_id = %s
+                          AND a.style_name = %s AND a.color = %s
+                          AND a.notified_at IS NULL""",
+                    (m["id"], head["style_name"], head["color"]))
+                rows = [dict(r) for r in cur.fetchall()]
+        return {
+            "skus": [r["sku"] for r in rows],
+            "sizes": [r["size"] for r in rows],
+        }
+
+    @app.post("/api/community/restock-alert")
+    def community_restock_alert_post(request: Request,
+                                     payload: dict = Body(default={})):
+        """Register a restock alert for a specific size-variant SKU.
+        Idempotent — ON CONFLICT (member_id, sku) DO NOTHING."""
+        _ensure_tables()
+        _throttle(request, "ntfy", [("ip", 30, 60), ("global", 2000, 60)])
+        size_sku = str(payload.get("size_sku") or "").strip()[:80]
+        if not size_sku:
+            raise HTTPException(status_code=400, detail="size_sku required")
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                m = _require_member(cur, request)
+                cur.execute(
+                    """SELECT style_name, COALESCE(color_print,'') AS color,
+                              COALESCE(NULLIF(TRIM(size),''),'') AS size
+                         FROM all_products_clean
+                        WHERE sku = %s AND style_name IS NOT NULL LIMIT 1""",
+                    (size_sku,))
+                info = cur.fetchone()
+                if not info:
+                    raise HTTPException(status_code=404, detail="Product not found")
+                # Confirm the SKU is actually out of stock before storing
+                # (no point alerting for something already available).
+                cur.execute(
+                    """SELECT COALESCE(SUM(COALESCE(available,0)),0)::int AS soh
+                         FROM all_inventory WHERE sku = %s""",
+                    (size_sku,))
+                soh_row = cur.fetchone()
+                if soh_row and int(soh_row["soh"] or 0) > 0:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="This size is already in stock — add it to your bag!")
+                cur.execute(
+                    """INSERT INTO community_restock_alerts
+                               (member_id, sku, style_name, color, size)
+                           VALUES (%s, %s, %s, %s, %s)
+                           ON CONFLICT (member_id, sku) DO NOTHING""",
+                    (m["id"], size_sku, info["style_name"],
+                     info["color"], info["size"]))
+            conn.commit()
+        return {"ok": True, "sku": size_sku, "size": info["size"]}
+
+    @app.delete("/api/community/restock-alert")
+    def community_restock_alert_delete(request: Request,
+                                       payload: dict = Body(default={})):
+        """Cancel a pending restock alert for a size-variant SKU."""
+        _ensure_tables()
+        size_sku = str(payload.get("size_sku") or "").strip()[:80]
+        if not size_sku:
+            raise HTTPException(status_code=400, detail="size_sku required")
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                m = _require_member(cur, request)
+                cur.execute(
+                    """DELETE FROM community_restock_alerts
+                        WHERE member_id = %s AND sku = %s
+                          AND notified_at IS NULL""",
+                    (m["id"], size_sku))
+                gone = cur.rowcount
+            conn.commit()
+        if not gone:
+            raise HTTPException(status_code=404, detail="No active alert for this size")
+        return {"ok": True}
 
     @app.get("/api/community/rewards/tank")
     def community_rewards_tank(request: Request):
