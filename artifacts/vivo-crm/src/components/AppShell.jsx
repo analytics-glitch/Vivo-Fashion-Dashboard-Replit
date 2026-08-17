@@ -32,6 +32,7 @@ import {
   SmilePlus,
   ListChecks,
   FileBarChart,
+  Sparkles,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { PoweredFooter, ChangelogButton } from "@/components/Polish";
@@ -43,6 +44,7 @@ const NAV = [
   { to: "/customers/database", label: "Database", icon: BarChart3, testid: "nav-database", manager: true, group: "floor" },
   { to: "/inbox", label: "Inbox", icon: Inbox, testid: "nav-inbox", group: "floor" },
   { to: "/community-inbox", label: "Community", icon: MessagesSquare, testid: "nav-community-inbox", group: "floor" },
+  { to: "/vivo-edits", label: "Vivo Edits", icon: Sparkles, testid: "nav-vivo-edits", group: "floor" },
   { to: "/service", label: "Service", icon: LifeBuoy, testid: "nav-service", group: "floor" },
   { to: "/team-queue", label: "Team queue", icon: ListChecks, testid: "nav-team-queue", manager: true, group: "floor" },
   { to: "/lookbooks", label: "Lookbooks", icon: BookImage, testid: "nav-lookbooks", group: "floor" },

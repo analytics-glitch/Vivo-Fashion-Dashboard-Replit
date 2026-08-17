@@ -1048,6 +1048,49 @@ def _ensure_tables():
             created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             PRIMARY KEY (challenge_id, member_id)
         );
+        -- Vivo Edits: creator-curated editorial shopping stories. Staff manage
+        -- them in the CRM app (/api/crm/community-edits*); the member app shows
+        -- active edits on Home (max 3 featured) plus a detail page. Each active
+        -- edit mirrors into ONE community_feed_posts row (mock_key
+        -- 'vivoedit_<id>') so likes/comments/shares reuse the feed machinery;
+        -- archiving an edit hides (never deletes) its feed post. Images inline
+        -- as BYTEA (3MB cap, magic-byte checked) like other in-house imagery;
+        -- tagged product JSONB uses the feed's [{sku,name,price}] shape.
+        CREATE TABLE IF NOT EXISTS community_edits (
+            id SERIAL PRIMARY KEY,
+            edit_key TEXT UNIQUE,
+            creator_name TEXT NOT NULL,
+            creator_username TEXT NOT NULL DEFAULT '',
+            title TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            intro TEXT NOT NULL DEFAULT '',
+            disclosure TEXT,
+            featured BOOLEAN NOT NULL DEFAULT FALSE,
+            sort_order INT NOT NULL DEFAULT 100,
+            starts_at TIMESTAMPTZ,
+            ends_at TIMESTAMPTZ,
+            archived_at TIMESTAMPTZ,
+            feed_post_id INT REFERENCES community_feed_posts(id)
+                ON DELETE SET NULL,
+            tagged JSONB NOT NULL DEFAULT '[]'::jsonb,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+        CREATE INDEX IF NOT EXISTS community_edits_active_idx
+            ON community_edits (featured DESC, sort_order, created_at DESC)
+            WHERE archived_at IS NULL;
+        CREATE TABLE IF NOT EXISTS community_edit_images (
+            id SERIAL PRIMARY KEY,
+            edit_id INT NOT NULL REFERENCES community_edits(id)
+                ON DELETE CASCADE,
+            image BYTEA NOT NULL,
+            mime TEXT NOT NULL,
+            position INT NOT NULL DEFAULT 0,
+            alt_text TEXT NOT NULL DEFAULT '',
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+        CREATE INDEX IF NOT EXISTS community_edit_images_edit_idx
+            ON community_edit_images (edit_id, position, id);
         """
         with _db() as conn:
             with conn.cursor() as cur:
@@ -1067,6 +1110,7 @@ def _ensure_tables():
                      json.dumps(SURVEY_WAVE1_QUESTIONS)))
                 _seed_feed_posts(cur)
                 _seed_challenges(cur)
+                _seed_vivo_edits(cur)
             conn.commit()
             _tables_ready = True
 
@@ -1502,6 +1546,167 @@ def _seed_challenges(cur):
                ON CONFLICT (mock_key) DO NOTHING""",
             (key, uname, ini, tier, show, caption, variant, visual,
              like_seed, cid, winner, days_ago, days_ago))
+
+
+# ---------------------------------------------------------------------------
+# Vivo Edits seed — the launch set of three creator edits, built from the
+# uploaded creator photography in attached_assets/. Idempotent: an edit_key
+# that already exists is never touched (staff edits win), and image files
+# missing from disk (e.g. a fresh prod container without the assets) simply
+# skip that edit rather than failing boot. Product tags come from the live
+# catalogue exactly like _seed_feed_posts.
+
+_VIVO_EDIT_SEEDS = [
+    {
+        "key": "edit_sharon_v1", "creator": "Sharon", "username": "sharon.vivo",
+        "title": "After-Hours, Softened",
+        "desc": "Confident knits chosen for long days that turn into evening plans.",
+        "intro": "Sharon builds her week around pieces that hold their shape "
+                 "from the first meeting to the last plan — soft knits, deep "
+                 "colour and easy polish.",
+        "disclosure": "In partnership with Vivo",
+        "images": [
+            ("Sharon_1_1786968380981.png",
+             "Sharon in a white dress, styling a relaxed Vivo look"),
+            ("Sharon_2_1786968380937.png",
+             "Sharon in a berry-red soft-knit dress with balloon sleeves"),
+        ],
+        "likes": 44, "hrs": 26, "tags": 4,
+    },
+    {
+        "key": "edit_phinie_v1", "creator": "Phinie", "username": "phinie.vivo",
+        "title": "City Ease to Evening Silk",
+        "desc": "Effortless silhouettes for daytime wandering and evening shine.",
+        "intro": "Phinie keeps daytime light — one long line, sunglasses, a "
+                 "small bag — then lets satin and gold jewellery do the "
+                 "talking after dark.",
+        "disclosure": "In partnership with Vivo",
+        "images": [
+            ("Phinie_1__1786968380971.png",
+             "Phinie in a beige knit maxi slip dress on a garden path"),
+            ("Phinie_2_1786968380979.png",
+             "Phinie in a purple satin halter dress with gold jewellery"),
+        ],
+        "likes": 37, "hrs": 50, "tags": 4,
+    },
+    {
+        "key": "edit_grace_v1", "creator": "Grace", "username": "grace.vivo",
+        "title": "Soft Neutrals, Easy Layers",
+        "desc": "Warm neutrals and one great layer that finishes every outfit.",
+        "intro": "Grace starts with an easy base — a white tank, a printed "
+                 "trouser — and finishes with a layer that turns heads "
+                 "without trying.",
+        "disclosure": "In partnership with Vivo",
+        "images": [
+            ("Grace_1_1786968380980.png",
+             "Grace in a white tank and pastel printed trousers with a "
+             "crossbody bag"),
+            ("Grace_2_1786968380981.png",
+             "Grace layering a cream fringed cape over a black dress in store"),
+        ],
+        "likes": 29, "hrs": 74, "tags": 4,
+    },
+]
+
+
+def _edit_catalogue_tags(cur, limit=30):
+    """Random in-stock, imaged catalogue products as feed-shaped tag dicts —
+    same probe/shape as _seed_feed_posts. [] when the catalogue is absent."""
+    cur.execute("SELECT to_regclass('public.all_products_clean') IS NOT NULL"
+                " AND to_regclass('public.all_inventory') IS NOT NULL"
+                " AND to_regclass('public.product_image_map') IS NOT NULL"
+                " AND to_regclass('public.product_images') IS NOT NULL")
+    if not cur.fetchone()[0]:
+        return []
+    cur.execute("""SELECT sku, style_name, price FROM (
+                       SELECT DISTINCT ON (p.style_name) p.sku,
+                              p.style_name, p.price::float AS price
+                       FROM all_products_clean p
+                       JOIN (SELECT sku, SUM(COALESCE(available,0)) AS soh
+                               FROM all_inventory GROUP BY sku) i
+                         ON i.sku = p.sku AND i.soh > 0
+                       JOIN product_image_map pim ON pim.sku = p.sku
+                       JOIN product_images pi
+                         ON pi.tmpl_id = pim.tmpl_id
+                            AND COALESCE(pi.image_512, '') <> ''
+                       WHERE p.active IS TRUE
+                         AND COALESCE(p.price::float, 0) > 0
+                         AND COALESCE(p.style_name, '') <> ''
+                       ORDER BY p.style_name, p.sku
+                   ) t ORDER BY random() LIMIT %s""", (limit,))
+    return [{"sku": r[0], "name": r[1], "price": float(r[2] or 0)}
+            for r in cur.fetchall()]
+
+
+def _seed_vivo_edits(cur):
+    keys = [e["key"] for e in _VIVO_EDIT_SEEDS]
+    cur.execute("SELECT COUNT(*) FROM community_edits WHERE edit_key = ANY(%s)",
+                (keys,))
+    if int(cur.fetchone()[0] or 0) >= len(keys):
+        return
+    assets = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "attached_assets")
+    tags = _edit_catalogue_tags(cur)
+    ti = 0
+    for order, seed in enumerate(_VIVO_EDIT_SEEDS):
+        files = []
+        for fname, alt in seed["images"]:
+            path = os.path.join(assets, fname)
+            if os.path.isfile(path):
+                with open(path, "rb") as fh:
+                    files.append((fh.read(), alt))
+        if not files:
+            continue  # assets absent (fresh container) — staff can upload
+        picked = []
+        if tags:
+            picked = [tags[(ti + k) % len(tags)] for k in range(seed["tags"])]
+            ti += seed["tags"]
+        cur.execute(
+            """INSERT INTO community_edits
+                   (edit_key, creator_name, creator_username, title,
+                    description, intro, disclosure, featured, sort_order,
+                    tagged, created_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, TRUE, %s, %s::jsonb,
+                       now() - (%s || ' hours')::interval)
+               ON CONFLICT (edit_key) DO NOTHING
+               RETURNING id""",
+            (seed["key"], seed["creator"], seed["username"], seed["title"],
+             seed["desc"], seed["intro"], seed["disclosure"], (order + 1) * 10,
+             json.dumps(picked), seed["hrs"]))
+        row = cur.fetchone()
+        if not row:
+            continue
+        eid = row[0]
+        cover_img_id = None
+        for pos, (raw, alt) in enumerate(files):
+            cur.execute(
+                """INSERT INTO community_edit_images
+                       (edit_id, image, mime, position, alt_text)
+                   VALUES (%s, %s, 'image/png', %s, %s) RETURNING id""",
+                (eid, psycopg2.Binary(raw), pos, alt))
+            iid = cur.fetchone()[0]
+            if pos == 0:
+                cover_img_id = iid
+        # Mirror into the feed so likes/comments/shares reuse feed machinery.
+        cur.execute(
+            """INSERT INTO community_feed_posts
+                   (mock_key, author_username, author_initials, caption,
+                    variant, visual, tagged, like_seed, status, post_type,
+                    image_url, created_at)
+               VALUES (%s, %s, %s, %s, 'standard', 'light', %s::jsonb, %s,
+                       'approved', 'look', %s,
+                       now() - (%s || ' hours')::interval)
+               ON CONFLICT (mock_key) DO NOTHING RETURNING id""",
+            ("vivoedit_" + seed["key"], seed["username"],
+             seed["creator"][:1].upper() + "V",
+             "VIVO EDIT — “" + seed["title"] + "” curated by "
+             + seed["creator"] + ". " + seed["desc"],
+             json.dumps(picked), seed["likes"],
+             f"/api/community/edit-image/{cover_img_id}", seed["hrs"]))
+        prow = cur.fetchone()
+        if prow:
+            cur.execute("UPDATE community_edits SET feed_post_id = %s"
+                        " WHERE id = %s", (prow[0], eid))
 
 
 def _norm_phone(raw):
@@ -4622,6 +4827,7 @@ def register_community_routes(app, api_pg_module):
                             offset: int = 0, type: str = ""):
         _ensure_tables()
         _throttle(request, "fee", [("ip", 120, 60), ("global", 6000, 60)])
+        _edits_reconcile_feed()
         lim = max(1, min(int(limit or 24), 50))
         off = max(0, int(offset or 0))
         tf = type if type in ("look", "question", "haul") else ""
@@ -5358,6 +5564,432 @@ def register_community_routes(app, api_pg_module):
                 "published_at": r["published_at"].isoformat() if r["published_at"] else None,
             })
         return {"items": items}
+
+    # ---------------- Vivo Edits (member-facing) ----------------
+
+    _EDIT_ACTIVE_SQL = """e.archived_at IS NULL
+          AND (e.starts_at IS NULL OR e.starts_at <= now())
+          AND (e.ends_at IS NULL OR e.ends_at > now())"""
+
+    def _edit_cover_sql():
+        return """(SELECT i.id FROM community_edit_images i
+                    WHERE i.edit_id = e.id
+                    ORDER BY i.position, i.id LIMIT 1) AS cover_image_id"""
+
+    def _edit_card(r):
+        cov = r.get("cover_image_id")
+        return {
+            "id": r["id"],
+            "creator_name": r["creator_name"],
+            "title": r["title"],
+            "description": r["description"],
+            "disclosure": r["disclosure"],
+            "featured": bool(r["featured"]),
+            "cover_image": (f"/api/community/edit-image/{cov}" if cov else None),
+            "cover_alt": r.get("cover_alt") or (r["creator_name"] + " — "
+                                                + r["title"]),
+            "feed_post_id": r.get("feed_post_id"),
+        }
+
+    # Schedules flip edits active/inactive with no mutation to trigger the
+    # feed-post sync, so reads reconcile lazily: any edit whose active state
+    # disagrees with its mirrored feed post (or that is active with no post
+    # yet) gets synced. Rate-limited to once a minute per process.
+    _edits_reconcile_last = {"t": 0.0}
+
+    def _edits_reconcile_feed():
+        now = time.time()
+        if now - _edits_reconcile_last["t"] < 60:
+            return
+        _edits_reconcile_last["t"] = now
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(f"""
+                    SELECT e.id FROM community_edits e
+                    LEFT JOIN community_feed_posts p ON p.id = e.feed_post_id
+                    WHERE (({_EDIT_ACTIVE_SQL})
+                           AND (p.id IS NULL OR p.status <> 'approved'))
+                       OR (NOT ({_EDIT_ACTIVE_SQL})
+                           AND p.status = 'approved')
+                    LIMIT 50""")
+                ids = [r["id"] for r in cur.fetchall()]
+                for eid in ids:
+                    _edit_sync_feed_post(cur, eid)
+            if ids:
+                conn.commit()
+
+    @app.get("/api/community/edits")
+    def community_edits_list(request: Request, limit: int = 12,
+                             offset: int = 0):
+        _ensure_tables()
+        _throttle(request, "edt", [("ip", 120, 60), ("global", 6000, 60)])
+        _edits_reconcile_feed()
+        lim = max(1, min(int(limit or 12), 50))
+        off = max(0, int(offset or 0))
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(f"""
+                    SELECT e.id, e.creator_name, e.title, e.description,
+                           e.disclosure, e.featured, e.feed_post_id,
+                           {_edit_cover_sql()},
+                           (SELECT i.alt_text FROM community_edit_images i
+                             WHERE i.edit_id = e.id
+                             ORDER BY i.position, i.id LIMIT 1) AS cover_alt,
+                           COUNT(*) OVER ()::int AS total
+                    FROM community_edits e
+                    WHERE {_EDIT_ACTIVE_SQL}
+                    ORDER BY e.featured DESC, e.sort_order, e.created_at DESC
+                    LIMIT %s OFFSET %s""", (lim, off))
+                rows = cur.fetchall()
+        return {"items": [_edit_card(r) for r in rows],
+                "total": int(rows[0]["total"]) if rows else 0}
+
+    @app.get("/api/community/edits/{eid}")
+    def community_edit_detail(eid: int, request: Request):
+        _ensure_tables()
+        _throttle(request, "edt", [("ip", 120, 60), ("global", 6000, 60)])
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(f"""
+                    SELECT e.*, {_edit_cover_sql()}
+                    FROM community_edits e
+                    WHERE e.id = %s AND {_EDIT_ACTIVE_SQL}""", (eid,))
+                e = cur.fetchone()
+                if not e:
+                    raise HTTPException(status_code=404, detail="Edit not found")
+                cur.execute("""SELECT id, position, alt_text
+                                 FROM community_edit_images
+                                WHERE edit_id = %s
+                                ORDER BY position, id""", (eid,))
+                imgs = cur.fetchall()
+        from urllib.parse import quote as _q
+        tagged = []
+        for t in (e["tagged"] or []):
+            d = dict(t)
+            d["img"] = ("/api/community/product-image/"
+                        + _q(str(d.get("sku") or ""), safe=""))
+            tagged.append(d)
+        out = _edit_card(e)
+        out.update({
+            "intro": e["intro"],
+            "creator_username": e["creator_username"],
+            "images": [{"id": i["id"],
+                        "path": f"/api/community/edit-image/{i['id']}",
+                        "alt": i["alt_text"] or (e["creator_name"] + " — "
+                                                 + e["title"])}
+                       for i in imgs],
+            "tagged": tagged,
+        })
+        return out
+
+    @app.get("/api/community/edit-image/{img_id}")
+    def community_edit_image(img_id: int, request: Request):
+        """Public like entry-photo: native <img> loads carry no Bearer header.
+        Only images of edits that have gone public are served: currently
+        active, or ever mirrored into the feed (feed history may reference
+        them). Scheduled/unpublished edits stay private."""
+        _ensure_tables()
+        _throttle(request, "edt", [("ip", 240, 60), ("global", 9000, 60)])
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(f"""SELECT i.image, i.mime
+                                 FROM community_edit_images i
+                                 JOIN community_edits e ON e.id = i.edit_id
+                                WHERE i.id = %s
+                                  AND (({_EDIT_ACTIVE_SQL})
+                                       OR e.feed_post_id IS NOT NULL)""",
+                            (img_id,))
+                row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="No image")
+        return Response(content=bytes(row["image"]),
+                        media_type=row.get("mime") or "image/png",
+                        headers={"Cache-Control": "public, max-age=3600"})
+
+    # ---------------- Vivo Edits (CRM staff management) ----------------
+    # Staff management lives under /api/crm/ on purpose (staff-session gate +
+    # CRM role gate both run first), exactly like the moderation endpoints.
+
+    _EDIT_FIELDS = ("creator_name", "creator_username", "title", "description",
+                    "intro", "disclosure")
+
+    def _edit_resolve_skus(cur, skus):
+        """SKU list -> feed-shaped tag dicts from the live catalogue; unknown
+        SKUs are a 400 so staff never publish dead shopping links."""
+        skus = [str(s).strip() for s in (skus or []) if str(s).strip()]
+        if not skus:
+            return []
+        if len(skus) > 24:
+            raise HTTPException(status_code=400,
+                                detail="Tag at most 24 products per edit")
+        cur.execute("SELECT to_regclass('public.all_products_clean') IS NOT NULL")
+        if not list(cur.fetchone().values())[0]:
+            raise HTTPException(status_code=503,
+                                detail="Catalogue unavailable — try again shortly")
+        cur.execute("""SELECT DISTINCT ON (sku) sku, style_name,
+                              price::float AS price
+                         FROM all_products_clean
+                        WHERE sku = ANY(%s)
+                        ORDER BY sku""", (skus,))
+        found = {r["sku"]: r for r in cur.fetchall()}
+        missing = [s for s in skus if s not in found]
+        if missing:
+            raise HTTPException(status_code=400,
+                                detail="Unknown SKUs: " + ", ".join(missing[:8]))
+        return [{"sku": s, "name": found[s]["style_name"],
+                 "price": float(found[s]["price"] or 0)} for s in skus]
+
+    def _edit_parse_when(payload, key):
+        v = (payload or {}).get(key)
+        if v in (None, ""):
+            return None
+        try:
+            return datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+        except ValueError:
+            raise HTTPException(status_code=400,
+                                detail=f"{key} must be an ISO date/time")
+
+    def _edit_sync_feed_post(cur, eid):
+        """Keep the edit's mirrored feed post in lockstep: caption/tags/cover
+        follow the edit; active edits post 'approved', inactive ones 'hidden'
+        (likes and comments are preserved, never deleted)."""
+        cur.execute(f"""
+            SELECT e.*, {_edit_cover_sql()},
+                   ({_EDIT_ACTIVE_SQL}) AS is_active
+              FROM community_edits e WHERE e.id = %s""", (eid,))
+        e = cur.fetchone()
+        if not e:
+            return
+        caption = ("VIVO EDIT — “" + e["title"] + "” curated by "
+                   + e["creator_name"] + ". " + (e["description"] or ""))
+        img = (f"/api/community/edit-image/{e['cover_image_id']}"
+               if e["cover_image_id"] else None)
+        status = "approved" if e["is_active"] else "hidden"
+        uname = e["creator_username"] or e["creator_name"].lower()
+        ini = (e["creator_name"][:1].upper() or "V") + "V"
+        if e["feed_post_id"]:
+            cur.execute("""UPDATE community_feed_posts
+                              SET caption = %s, tagged = %s::jsonb,
+                                  image_url = %s, status = %s,
+                                  author_username = %s
+                            WHERE id = %s""",
+                        (caption, json.dumps(e["tagged"] or []), img, status,
+                         uname, e["feed_post_id"]))
+        elif e["is_active"]:
+            cur.execute("""INSERT INTO community_feed_posts
+                               (mock_key, author_username, author_initials,
+                                caption, variant, visual, tagged, like_seed,
+                                status, post_type, image_url)
+                           VALUES (%s, %s, %s, %s, 'standard', 'light',
+                                   %s::jsonb, 0, 'approved', 'look', %s)
+                           ON CONFLICT (mock_key) DO UPDATE
+                               SET caption = EXCLUDED.caption,
+                                   tagged = EXCLUDED.tagged,
+                                   image_url = EXCLUDED.image_url,
+                                   status = 'approved'
+                           RETURNING id""",
+                        (f"vivoedit_id_{eid}", uname, ini, caption,
+                         json.dumps(e["tagged"] or []), img))
+            cur.execute("UPDATE community_edits SET feed_post_id = %s"
+                        " WHERE id = %s", (cur.fetchone()["id"], eid))
+
+    @app.get("/api/crm/community-edits")
+    def crm_edits_list(request: Request):
+        _ensure_tables()
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(f"""
+                    SELECT e.id, e.edit_key, e.creator_name,
+                           e.creator_username, e.title, e.description,
+                           e.intro, e.disclosure, e.featured, e.sort_order,
+                           e.starts_at, e.ends_at, e.archived_at,
+                           e.feed_post_id, e.tagged, e.created_at,
+                           e.updated_at, {_edit_cover_sql()},
+                           ({_EDIT_ACTIVE_SQL}) AS is_active,
+                           (SELECT COALESCE(json_agg(json_build_object(
+                                       'id', i.id, 'position', i.position,
+                                       'alt_text', i.alt_text)
+                                   ORDER BY i.position, i.id), '[]'::json)
+                              FROM community_edit_images i
+                             WHERE i.edit_id = e.id) AS images,
+                           (SELECT COUNT(*) FROM community_post_likes pl
+                             WHERE pl.post_id = e.feed_post_id)::int
+                               AS like_count,
+                           (SELECT COUNT(*) FROM community_post_comments c
+                             WHERE c.post_id = e.feed_post_id
+                               AND c.status = 'visible')::int AS comment_count
+                    FROM community_edits e
+                    ORDER BY (e.archived_at IS NOT NULL),
+                             e.featured DESC, e.sort_order, e.created_at DESC""")
+                rows = [dict(r) for r in cur.fetchall()]
+        for r in rows:
+            for k in ("starts_at", "ends_at", "archived_at", "created_at",
+                      "updated_at"):
+                if r.get(k):
+                    r[k] = r[k].isoformat()
+            cov = r.pop("cover_image_id", None)
+            r["cover_image"] = (f"/api/community/edit-image/{cov}"
+                                if cov else None)
+        return {"items": rows}
+
+    @app.post("/api/crm/community-edits")
+    def crm_edits_create(request: Request, payload: dict = Body(...)):
+        _ensure_tables()
+        p = payload or {}
+        name = str(p.get("creator_name") or "").strip()
+        title = str(p.get("title") or "").strip()
+        if not name or not title:
+            raise HTTPException(status_code=400,
+                                detail="creator_name and title are required")
+        images = p.get("images") or []
+        if not isinstance(images, list) or len(images) > 8:
+            raise HTTPException(status_code=400,
+                                detail="images must be a list of at most 8")
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                tagged = _edit_resolve_skus(cur, p.get("skus"))
+                cur.execute(
+                    """INSERT INTO community_edits
+                           (creator_name, creator_username, title, description,
+                            intro, disclosure, featured, sort_order, starts_at,
+                            ends_at, tagged)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                               %s::jsonb)
+                       RETURNING id""",
+                    (name, str(p.get("creator_username") or "").strip(),
+                     title, str(p.get("description") or "").strip(),
+                     str(p.get("intro") or "").strip(),
+                     (str(p.get("disclosure")).strip()
+                      if p.get("disclosure") else None),
+                     bool(p.get("featured")), int(p.get("sort_order") or 100),
+                     _edit_parse_when(p, "starts_at"),
+                     _edit_parse_when(p, "ends_at"), json.dumps(tagged)))
+                eid = cur.fetchone()["id"]
+                for pos, img in enumerate(images):
+                    raw, mime = _decode_design(
+                        (img or {}).get("image_b64"), noun="edit image")
+                    cur.execute(
+                        """INSERT INTO community_edit_images
+                               (edit_id, image, mime, position, alt_text)
+                           VALUES (%s, %s, %s, %s, %s)""",
+                        (eid, psycopg2.Binary(raw), mime, pos,
+                         str((img or {}).get("alt_text") or "").strip()))
+                _edit_sync_feed_post(cur, eid)
+            conn.commit()
+        return {"ok": True, "id": eid}
+
+    @app.put("/api/crm/community-edits/reorder")
+    def crm_edits_reorder(request: Request, payload: dict = Body(...)):
+        ids = [int(i) for i in (payload or {}).get("ids") or []]
+        if not ids:
+            raise HTTPException(status_code=400, detail="ids required")
+        _ensure_tables()
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                for pos, eid in enumerate(ids):
+                    cur.execute("""UPDATE community_edits
+                                      SET sort_order = %s, updated_at = now()
+                                    WHERE id = %s""", ((pos + 1) * 10, eid))
+            conn.commit()
+        return {"ok": True}
+
+    @app.put("/api/crm/community-edits/{eid}")
+    def crm_edits_update(eid: int, request: Request, payload: dict = Body(...)):
+        _ensure_tables()
+        p = payload or {}
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("SELECT id FROM community_edits WHERE id = %s",
+                            (eid,))
+                if not cur.fetchone():
+                    raise HTTPException(status_code=404, detail="Edit not found")
+                sets, vals = [], []
+                for f in _EDIT_FIELDS:
+                    if f in p:
+                        v = p[f]
+                        v = (str(v).strip() if v is not None else None)
+                        if f in ("creator_name", "title") and not v:
+                            raise HTTPException(status_code=400,
+                                                detail=f"{f} can't be empty")
+                        sets.append(f"{f} = %s")
+                        vals.append(v if (v or f == "disclosure") else "")
+                if "featured" in p:
+                    sets.append("featured = %s")
+                    vals.append(bool(p["featured"]))
+                if "sort_order" in p:
+                    sets.append("sort_order = %s")
+                    vals.append(int(p["sort_order"] or 100))
+                for k in ("starts_at", "ends_at"):
+                    if k in p:
+                        sets.append(f"{k} = %s")
+                        vals.append(_edit_parse_when(p, k))
+                if "skus" in p:
+                    sets.append("tagged = %s::jsonb")
+                    vals.append(json.dumps(_edit_resolve_skus(cur, p["skus"])))
+                if "archived" in p:
+                    sets.append("archived_at = " +
+                                ("COALESCE(archived_at, now())"
+                                 if p["archived"] else "NULL"))
+                if sets:
+                    cur.execute("UPDATE community_edits SET "
+                                + ", ".join(sets)
+                                + ", updated_at = now() WHERE id = %s",
+                                vals + [eid])
+                _edit_sync_feed_post(cur, eid)
+            conn.commit()
+        return {"ok": True}
+
+    @app.post("/api/crm/community-edits/{eid}/images")
+    def crm_edits_add_image(eid: int, request: Request,
+                            payload: dict = Body(...)):
+        _ensure_tables()
+        p = payload or {}
+        raw, mime = _decode_design(p.get("image_b64"), noun="edit image")
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("SELECT id FROM community_edits WHERE id = %s",
+                            (eid,))
+                if not cur.fetchone():
+                    raise HTTPException(status_code=404, detail="Edit not found")
+                if p.get("cover"):
+                    cur.execute("""UPDATE community_edit_images
+                                      SET position = position + 1
+                                    WHERE edit_id = %s""", (eid,))
+                    pos = 0
+                else:
+                    cur.execute("""SELECT COALESCE(MAX(position), -1) + 1 AS p
+                                     FROM community_edit_images
+                                    WHERE edit_id = %s""", (eid,))
+                    pos = int(cur.fetchone()["p"])
+                cur.execute(
+                    """INSERT INTO community_edit_images
+                           (edit_id, image, mime, position, alt_text)
+                       VALUES (%s, %s, %s, %s, %s) RETURNING id""",
+                    (eid, psycopg2.Binary(raw), mime, pos,
+                     str(p.get("alt_text") or "").strip()))
+                iid = cur.fetchone()["id"]
+                cur.execute("UPDATE community_edits SET updated_at = now()"
+                            " WHERE id = %s", (eid,))
+                _edit_sync_feed_post(cur, eid)
+            conn.commit()
+        return {"ok": True, "id": iid,
+                "path": f"/api/community/edit-image/{iid}"}
+
+    @app.delete("/api/crm/community-edits/{eid}/images/{img_id}")
+    def crm_edits_delete_image(eid: int, img_id: int, request: Request):
+        _ensure_tables()
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("""DELETE FROM community_edit_images
+                                WHERE id = %s AND edit_id = %s""",
+                            (img_id, eid))
+                if not cur.rowcount:
+                    raise HTTPException(status_code=404, detail="Image not found")
+                cur.execute("UPDATE community_edits SET updated_at = now()"
+                            " WHERE id = %s", (eid,))
+                _edit_sync_feed_post(cur, eid)
+            conn.commit()
+        return {"ok": True}
 
     @app.get("/api/crm/community-flagged-comments")
     def crm_flagged_comments(request: Request, status: str = "open",

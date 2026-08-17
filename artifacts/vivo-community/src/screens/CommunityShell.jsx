@@ -22,6 +22,7 @@ import TryOnView from "@/components/community/TryOnView";
 import SurveyView from "@/components/community/SurveyView";
 import MyDataView from "@/components/community/MyDataView";
 import { StylePrefsView } from "@/components/community/StyledForYou";
+import { VivoEditsAllView, VivoEditDetail } from "@/components/community/VivoEdits";
 import StoreLocatorView from "@/components/community/StoreLocatorView";
 import { DeliveryInfoView, ReturnsInfoView } from "@/components/community/ShoppingInfoViews";
 import LegalPage from "@/components/community/LegalPage";
@@ -39,7 +40,7 @@ const TABS = [
 
 // Static help & legal pages routed via the ?page= param. News articles ride
 // the same param as "news-{id}", validated against the NEWS list.
-const PAGES = ["faq", "contact", "terms", "privacy", "guidelines", "tryon", "mydata", "survey", "help", "givingback", "styleprefs", "stores", "delivery", "returns"];
+const PAGES = ["faq", "contact", "terms", "privacy", "guidelines", "tryon", "mydata", "survey", "help", "givingback", "styleprefs", "stores", "delivery", "returns", "edits"];
 const isValidPage = (v) => PAGES.includes(v) || isNewsPageId(v);
 
 const badgeCls = "absolute top-0.5 right-0 min-w-[18px] h-[18px] px-1 rounded-full bg-primary-ink text-primary-foreground text-[10px] font-bold flex items-center justify-center";
@@ -114,6 +115,9 @@ function ShellInner() {
   // Event detail rides ?event= exactly like ?product= — thumbnail to browse,
   // detail page to act (the Shop pattern, applied to events).
   const [eventId, setEventId] = useState(params.get("event") || "");
+  // Vivo Edit detail rides ?edit= exactly like ?event= — card to browse,
+  // detail page to explore and shop.
+  const [editId, setEditId] = useState(params.get("edit") || "");
   const [cartOpen, setCartOpen] = useState(params.get("cart") === "1");
   const [wlOpen, setWlOpen] = useState(params.get("wishlist") === "1");
   const initialPage = isValidPage(params.get("page")) ? params.get("page") : "";
@@ -131,6 +135,7 @@ function ShellInner() {
     tab: safeTab,
     sku: params.get("product") || "",
     ev: params.get("event") || "",
+    edit: params.get("edit") || "",
     cart: params.get("cart") === "1",
     wl: params.get("wishlist") === "1",
     page: initialPage,
@@ -145,6 +150,7 @@ function ShellInner() {
     setTab(next.tab);
     setProductSku(next.sku);
     setEventId(next.ev || "");
+    setEditId(next.edit || "");
     setCartOpen(next.cart);
     setWlOpen(next.wl);
     setPage(next.page);
@@ -156,6 +162,8 @@ function ShellInner() {
       else url.searchParams.delete("product");
       if (next.ev) url.searchParams.set("event", next.ev);
       else url.searchParams.delete("event");
+      if (next.edit) url.searchParams.set("edit", next.edit);
+      else url.searchParams.delete("edit");
       if (next.cart) url.searchParams.set("cart", "1");
       else url.searchParams.delete("cart");
       if (next.wl) url.searchParams.set("wishlist", "1");
@@ -239,6 +247,18 @@ function ShellInner() {
     applyView({ tab: "community", sku: "", ev: "", cart: false, wl: false, page: "", sub: "events" }, "replace");
   }, [applyView]);
 
+  // Vivo Edit detail — card → detail, the Shop pattern. Push so Back returns
+  // to wherever she tapped (home section or the all-edits grid).
+  const openEdit = useCallback((id) => {
+    const cur = viewRef.current;
+    if (cur.edit === id && !cur.cart && !cur.wl && !cur.page) return;
+    applyView({ tab: cur.tab, sku: "", ev: "", edit: id, cart: false, wl: false, page: "", sub: cur.sub || "" }, "push");
+  }, [applyView]);
+
+  const closeEdit = useCallback(() => {
+    applyView({ ...viewRef.current, edit: "" }, "replace");
+  }, [applyView]);
+
   const openPage = useCallback((id) => {
     const cur = viewRef.current;
     if (cur.page === id) return;
@@ -310,6 +330,7 @@ function ShellInner() {
           tab: TABS.some((x) => x.id === t) ? t : "home",
           sku: p.get("product") || "",
           ev: p.get("event") || "",
+          edit: p.get("edit") || "",
           cart: p.get("cart") === "1",
           wl: p.get("wishlist") === "1",
           page: isValidPage(p.get("page")) ? p.get("page") : "",
@@ -330,7 +351,7 @@ function ShellInner() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const onPlainTab = !cartOpen && !wlOpen && !productSku && !eventId && !page;
+  const onPlainTab = !cartOpen && !wlOpen && !productSku && !eventId && !editId && !page;
 
   return (
     <div className="min-h-[100dvh] bg-background text-foreground font-sans pb-20 sm:pb-0">
@@ -488,6 +509,8 @@ function ShellInner() {
             <HelpLandingView onBack={closePage} onOpenPage={openPage} />
           ) : page === "givingback" ? (
             <GivingBackView onBack={closePage} />
+          ) : page === "edits" ? (
+            <VivoEditsAllView onBack={closePage} onOpenEdit={openEdit} />
           ) : page === "faq" ? (
             <HelpFaqView onBack={closePage} onOpenPage={openPage} />
           ) : isNewsPageId(page) ? (
@@ -503,9 +526,11 @@ function ShellInner() {
           <ProductDetail sku={productSku} onBack={closeProduct} onOpenProduct={openProduct} onTryOn={openTryOn} onOpenPage={openPage} />
         ) : eventId ? (
           <EventDetail eventId={eventId} onBack={closeEventDetail} onOpenPage={openPage} />
+        ) : editId ? (
+          <VivoEditDetail editId={editId} onBack={closeEdit} onOpenProduct={openProduct} member={member} onGuest={exitGuest} />
         ) : (
           <>
-            {tab === "home" && <TabHome onNavigate={goTab} member={member} onOpenProduct={openProduct} onOpenPage={openPage} onOpenEvent={openEventDetail} onOpenFabulas={setFabulasId} />}
+            {tab === "home" && <TabHome onNavigate={goTab} member={member} onOpenProduct={openProduct} onOpenPage={openPage} onOpenEvent={openEventDetail} onOpenFabulas={setFabulasId} onOpenEdit={openEdit} onOpenEdits={() => openPage("edits")} />}
             {tab === "community" && !member && (
               <GuestGate
                 title="Join the conversation"

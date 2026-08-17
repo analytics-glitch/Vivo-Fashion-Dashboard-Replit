@@ -5,6 +5,7 @@ import { PostVisual, timeAgo } from "./PostBits";
 import { TierBadge, Avatar, cardCls, brandAsset, SectionHeader } from "./ui";
 import { api } from "@/lib/api";
 import { StyledForYouHome } from "./StyledForYou";
+import { VivoEditsHome } from "./VivoEdits";
 import { NEWS, newsPageId } from "./newsData";
 import ReelsRow from "./ReelsRow";
 
@@ -667,7 +668,7 @@ function VivoStories({ onOpenNews, onViewAll }) {
   );
 }
 
-export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage, onOpenEvent }) {
+export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage, onOpenEvent, onOpenEdit, onOpenEdits }) {
   const [events, setEvents] = useState([]);
   // Live challenges — the mission card and sidebar feature the first open one.
   const [liveChallenges, setLiveChallenges] = useState([]);
@@ -817,6 +818,11 @@ export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage,
           <SurveyPromoCard onOpenPage={onOpenPage} />
         </div>
       )}
+
+      {/* 8b · Vivo Edits — editorial, creator-curated shoppable looks. Open
+          to members AND guests (it's editorial inspiration). Renders nothing
+          when the fetch fails or returns no items. */}
+      <VivoEditsHome onOpenEdit={onOpenEdit} onViewAll={onOpenEdits} />
 
       {/* 9 · Shop Community Looks — compact, community-led, secondary */}
       {member && <ShopCommunityLooks posts={feed} onOpenProduct={onOpenProduct} onNavigate={onNavigate} />}

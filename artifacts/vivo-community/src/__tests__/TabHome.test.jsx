@@ -40,6 +40,7 @@ vi.mock("@/lib/api", () => {
     celebrations: vi.fn(),
     surveyState: vi.fn(),
     myEntries: vi.fn(),
+    edits: vi.fn(),
     postComments: vi.fn(),
     likePost: vi.fn(),
     likeComment: vi.fn(),
@@ -92,6 +93,8 @@ const NO_OP = {
   onOpenProduct: vi.fn(),
   onOpenPage: vi.fn(),
   onOpenEvent: vi.fn(),
+  onOpenEdit: vi.fn(),
+  onOpenEdits: vi.fn(),
 };
 
 /** Default quiet stubs for every api call TabHome issues. */
@@ -102,6 +105,7 @@ function stubApiDefaults() {
   api.celebrations.mockResolvedValue({});
   api.surveyState.mockResolvedValue({ wave: null });
   api.myEntries.mockResolvedValue({ items: [] });
+  api.edits.mockResolvedValue({ items: [], total: 0 });
   api.postComments.mockResolvedValue({ items: [] });
   api.likePost.mockResolvedValue({ liked: true, like_count: 1 });
 }
@@ -426,5 +430,102 @@ describe("TabHome – homepage layout", () => {
     await waitFor(() =>
       expect(screen.queryByTestId("post-detail")).not.toBeInTheDocument()
     );
+  });
+
+  // ── 7. Vivo Edits section ─────────────────────────────────────────────
+
+  function makeEdit(overrides = {}) {
+    const id = overrides.id ?? Math.random().toString(36).slice(2);
+    return {
+      id,
+      creator_name: "Amina H",
+      title: `Edit ${id}`,
+      description: "A quiet, confident everyday look.",
+      disclosure: "",
+      featured: false,
+      cover_image: `/api/community/edit-image/${id}`,
+      cover_alt: `Look ${id}`,
+      feed_post_id: null,
+      ...overrides,
+    };
+  }
+
+  it("renders the Vivo Edits section when api.edits returns items (member and guest)", async () => {
+    api.edits.mockResolvedValue({
+      items: [makeEdit({ id: "e1" }), makeEdit({ id: "e2" })],
+      total: 2,
+    });
+
+    render(<TabHome member={MEMBER} {...NO_OP} />);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("home-vivo-edits")).toBeInTheDocument()
+    );
+    expect(screen.getByTestId("home-vivo-edit-e1")).toBeInTheDocument();
+    expect(screen.getByTestId("home-vivo-edit-e2")).toBeInTheDocument();
+    // 2 edits ≤ 3, so no View All link.
+    expect(screen.queryByTestId("home-vivo-edits-viewall")).not.toBeInTheDocument();
+  });
+
+  it("shows the Vivo Edits section to guests too (editorial inspiration)", async () => {
+    api.edits.mockResolvedValue({ items: [makeEdit({ id: "g1" })], total: 1 });
+
+    render(<TabHome member={null} {...NO_OP} />);
+    await waitFor(() =>
+      expect(screen.getByTestId("home-vivo-edits")).toBeInTheDocument()
+    );
+    expect(screen.getByTestId("home-vivo-edit-g1")).toBeInTheDocument();
+  });
+
+  it("caps the Vivo Edits section at 3 cards and shows View All when total > 3", async () => {
+    const user = userEvent.setup();
+    api.edits.mockResolvedValue({
+      items: [
+        makeEdit({ id: "a" }), makeEdit({ id: "b" }),
+        makeEdit({ id: "c" }), makeEdit({ id: "d" }),
+      ],
+      total: 12,
+    });
+
+    const onOpenEdits = vi.fn();
+    render(<TabHome member={MEMBER} {...NO_OP} onOpenEdits={onOpenEdits} />);
+
+    await waitFor(() =>
+      expect(screen.getByTestId("home-vivo-edits")).toBeInTheDocument()
+    );
+    // Max 3 cards even though 4 items returned.
+    expect(screen.getByTestId("home-vivo-edit-a")).toBeInTheDocument();
+    expect(screen.getByTestId("home-vivo-edit-c")).toBeInTheDocument();
+    expect(screen.queryByTestId("home-vivo-edit-d")).not.toBeInTheDocument();
+
+    const viewAll = screen.getByTestId("home-vivo-edits-viewall");
+    await user.click(viewAll);
+    expect(onOpenEdits).toHaveBeenCalled();
+  });
+
+  it("clicking an edit card opens that edit via onOpenEdit", async () => {
+    const user = userEvent.setup();
+    api.edits.mockResolvedValue({ items: [makeEdit({ id: "open-me" })], total: 1 });
+    const onOpenEdit = vi.fn();
+
+    render(<TabHome member={MEMBER} {...NO_OP} onOpenEdit={onOpenEdit} />);
+    await waitFor(() =>
+      expect(screen.getByTestId("home-vivo-edit-open-me")).toBeInTheDocument()
+    );
+    await user.click(screen.getByTestId("home-vivo-edit-open-me"));
+    expect(onOpenEdit).toHaveBeenCalledWith("open-me");
+  });
+
+  it("renders nothing for Vivo Edits when api.edits returns no items or fails", async () => {
+    api.edits.mockResolvedValue({ items: [], total: 0 });
+    const { unmount } = render(<TabHome member={MEMBER} {...NO_OP} />);
+    await act(async () => {});
+    expect(screen.queryByTestId("home-vivo-edits")).not.toBeInTheDocument();
+    unmount();
+
+    api.edits.mockRejectedValue(new Error("boom"));
+    render(<TabHome member={MEMBER} {...NO_OP} />);
+    await act(async () => {});
+    expect(screen.queryByTestId("home-vivo-edits")).not.toBeInTheDocument();
   });
 });

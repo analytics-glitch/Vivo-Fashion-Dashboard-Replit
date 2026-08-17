@@ -1,0 +1,92 @@
+Update the existing “Vivo Edits” section to feature the uploaded images of Vivo influencers, creators and community tastemakers.
+
+Use the uploaded image associated with each creator. Do not generate replacement images, use generic stock photography or display placeholder avatars.
+
+SECTION POSITIONING
+
+Vivo Edits should feel like community-led style inspiration with an optional shopping layer. It should not feel like a conventional influencer advertisement or dominate the homepage.
+
+Place it after “Styled for You” or within the Community preview.
+
+Show a maximum of three featured edits on the homepage at a time, with a “View All Edits” link.
+
+VIVO EDIT CARDS
+
+Each edit card should include:
+
+* The uploaded creator image as the main visual
+* Creator’s name
+* Edit title
+* One short description
+* “Shop the Edit” or “Explore Her Style” button
+* A small “Vivo Edit” label
+* A partnership disclosure where applicable
+
+Example structure:
+
+VIVO EDIT
+“Workwear, Her Way”
+Curated by [Creator Name]
+“Confident pieces selected for workdays, meetings and everything after.”
+Explore Her Style
+
+IMAGE TREATMENT
+
+* Use large, editorial, image-led cards
+* Maintain the original image quality
+* Do not stretch or distort images
+* Use a consistent portrait aspect ratio, preferably 4:5
+* Crop images carefully without cutting off faces or key outfit details
+* Ensure images remain responsive across mobile, tablet and desktop
+* Add appropriate alt text using the creator’s name and outfit description
+* Use a subtle text gradient only when text is placed over an image
+* Do not place too much copy over the creator’s face or clothing
+
+EDIT DETAIL PAGE
+
+When a customer selects an edit, open a dedicated editorial page containing:
+
+* Large cover image of the creator
+* Creator’s name
+* Edit title
+* Short introduction or styling perspective
+* Additional uploaded images, where available
+* Selected Vivo products
+* Complete outfit combinations
+* Individual “Add to Bag” buttons
+* “Shop the Look” action
+* Related community post or video
+* Like, save and share actions
+
+Keep all product purchases within the Vivo app.
+
+COMMUNITY INTEGRATION
+
+Allow the creator’s Vivo Edit to appear as a featured Community post where members can:
+
+* Like the edit
+* Save it
+* Comment
+* Share it
+* Shop tagged Vivo pieces
+* Follow the related styling conversation
+
+Keep Vivo Edits under the broader Vivo community experience. Do not create an additional bottom-navigation tab.
+
+CONTENT MANAGEMENT
+
+Make the section easy for the Vivo team to update by allowing them to:
+
+* Upload or replace creator images
+* Add the creator’s name and profile
+* Add an edit title and description
+* Tag featured Vivo products
+* Add disclosure labels
+* Set the start and end date
+* Choose whether an edit is featured
+* Reorder active edits
+* Archive expired edits without deleting them
+
+Show only active edits on the homepage.
+
+Preserve all existing functionality, routes, authentication, database connections and the established Vivo design system.

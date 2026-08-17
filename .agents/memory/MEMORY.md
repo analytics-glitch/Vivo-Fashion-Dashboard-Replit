@@ -116,6 +116,7 @@
 - [Community feed posts](community-feed-posts.md) — per-key seed upsert, NO points for likes/comments, thread-length count self-heal, pan-y swipe + scroll restore on mobile overlays.
 - [Community winner model](community-winner-model.md) — votes→staff-only shortlist→team pick; +200 follows the pick (idempotent, displacing); members see ribbons, never tallies.
 - [Community home structure](community-home-structure.md) — fixed community-first section order; shopping promos/try-on live on Shop, don't re-add to home; feed preview max-4, question featured separately.
+- [Vivo Edits](community-vivo-edits.md) — creator edits mirror ONE feed post (hidden, not deleted); schedules need the lazy reconcile on reads; edit images public only once published.
 - [Community Find a Store](community-find-a-store.md) — secondary-only placement (Help & Support), static directory with PLACEHOLDER phones/hours/policy copy, tap-only geolocation.
 - [Community Styled for You](community-styled-for-you.md) — opted_in and use_activity are separate FALSE-default consents; cadence-seeded rotation, server-owned labels; page id in PAGES + guest fence.
 - [Community entry/redemption pipeline](community-entry-pipeline.md) — points ONLY on CRM publish (questions never), redemption PUT ladder ⊋ member labels, vivo-crm build needs BASE_PATH=/crm/.

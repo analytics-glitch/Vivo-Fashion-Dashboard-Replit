@@ -131,6 +131,9 @@ export const api = {
   // member-token gated. Likes and comments never earn points (anti-spam).
   feed: (limit = 24, offset = 0, type = "") =>
     req(`/feed?limit=${limit}&offset=${offset}${type ? `&type=${encodeURIComponent(type)}` : ""}`, { auth: true }),
+  // Single feed post — my_liked rides along when signed in. Powers the
+  // like/comment machinery reused by the Vivo Edits detail page.
+  post: (id) => req(`/posts/${id}`, { auth: true }),
   postComments: (id) => req(`/posts/${id}/comments`, { auth: true }),
   likePost: (id) => req(`/posts/${id}/like`, { method: "POST", auth: true }),
   addComment: (id, body) => req(`/posts/${id}/comments`, { method: "POST", body: { body }, auth: true }),
@@ -165,6 +168,10 @@ export const api = {
   createPost: (body) => req("/posts", { method: "POST", body, auth: true }),
   // "Shining This Week" celebration wall — appreciation, never rankings.
   celebrations: () => req("/celebrations", { auth: true }),
+  // Vivo Edits — editorial, creator-curated shoppable looks. Reads are open
+  // to guests (public image URLs), so no auth on the GETs.
+  edits: (limit = 3, offset = 0) => req(`/edits?limit=${limit}&offset=${offset}`),
+  editDetail: (id) => req("/edits/" + encodeURIComponent(id)),
   // Zetu Studios photoshoot — 3000 pts, lands as a personal booking.
   zetuRedeem: () => req("/rewards/zetu/redeem", { method: "POST", body: {}, auth: true }),
 };
