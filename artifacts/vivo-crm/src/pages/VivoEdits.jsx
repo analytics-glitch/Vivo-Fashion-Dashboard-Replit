@@ -11,12 +11,15 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { toast } from "sonner";
 import {
   Sparkles, RefreshCw, Plus, Star, Heart, MessageCircle, Archive, ArchiveRestore,
-  ArrowUp, ArrowDown, Trash2, ImagePlus, Pencil, X, Calendar,
+  ArrowUp, ArrowDown, Trash2, ImagePlus, Pencil, X, Calendar, Eye, ShoppingBag,
+  ChevronLeft, AlertCircle,
 } from "lucide-react";
 
 // Staff management for "Vivo Edits" — curated shoppable member edits shown in the
-// community app. Backend: /api/crm/community-edits* (staff-gated). Public image
-// route /api/community/edit-image/{img_id} is used directly in <img src>.
+// community app. Backend: /api/crm/community-edits* (staff-gated).
+// Images use /api/crm/community-edit-image/{id} (staff-gated) throughout the CRM
+// so that scheduled/unpublished edit images load correctly for staff. The public
+// route /api/community/edit-image/{id} remains restricted to active/published edits.
 
 const MAX_IMG_BYTES = 3 * 1024 * 1024;
 
@@ -79,6 +82,9 @@ export default function VivoEdits() {
   const [error, setError] = useState(null);
   const [showArchived, setShowArchived] = useState(false);
   const [busy, setBusy] = useState(null);
+
+  // Staff preview modal
+  const [previewItem, setPreviewItem] = useState(null); // edit item to preview
 
   // Create / edit dialog
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -420,6 +426,9 @@ export default function VivoEdits() {
                         {it.featured ? "Unfeature" : "Feature"}
                       </Button>
                     )}
+                    <Button size="sm" variant="outline" onClick={() => setPreviewItem(it)} data-testid={`ve-preview-${it.id}`}>
+                      <Eye className="h-3.5 w-3.5 mr-1" /> Preview
+                    </Button>
                     <Button size="sm" variant="outline" onClick={() => openEdit(it)} data-testid={`ve-edit-${it.id}`}>
                       <Pencil className="h-3.5 w-3.5 mr-1" /> Edit
                     </Button>
@@ -457,6 +466,10 @@ export default function VivoEdits() {
         onSave={save}
         onChanged={load}
       />
+
+      {previewItem && (
+        <EditPreviewModal item={previewItem} onClose={() => setPreviewItem(null)} />
+      )}
     </div>
   );
 }
@@ -562,7 +575,7 @@ function EditDialog({
                 {(editing.images || []).map((img, i) => (
                   <div key={img.id} className="relative w-24" data-testid={`ve-existing-img-${img.id}`}>
                     <img
-                      src={`/api/community/edit-image/${img.id}`}
+                      src={`/api/crm/community-edit-image/${img.id}`}
                       alt={img.alt_text || `Image ${i + 1}`}
                       className="w-24 h-24 object-cover rounded border border-[var(--vivo-border)]"
                     />
@@ -638,6 +651,202 @@ function EditDialog({
             {saving ? "Saving…" : editing ? "Save changes" : "Create edit"}
           </Button>
         </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Staff preview modal — shows a faithful editorial layout for any     */
+/* edit (including scheduled / unpublished) using the staff-gated      */
+/* /api/crm/community-edits/{id}/preview endpoint so images load even  */
+/* before the edit goes live. Members cannot see this route.           */
+/* ------------------------------------------------------------------ */
+
+function EditPreviewModal({ item, onClose }) {
+  const [detail, setDetail] = useState(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!item) return;
+    setDetail(null);
+    setError("");
+    api.get(`/crm/community-edits/${item.id}/preview`)
+      .then(({ data }) => setDetail(data))
+      .catch((e) => setError(e?.response?.data?.detail || "Couldn't load preview"));
+  }, [item?.id]);
+
+  // Status banner text + colour for unpublished / scheduled edits.
+  function StatusBanner({ detail: d }) {
+    if (!d) return null;
+    if (d.archived_at) {
+      return (
+        <div className="mb-4 flex items-center gap-2 rounded-sm border border-[var(--vivo-border)] bg-slate-50 px-4 py-2.5 text-sm text-slate-600">
+          <AlertCircle className="h-4 w-4 shrink-0" />
+          <span><strong>Archived</strong> — not visible in the community app.</span>
+        </div>
+      );
+    }
+    if (!d.is_active) {
+      const fmt = (iso) => iso ? new Date(iso).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" }) : null;
+      const from = fmt(d.starts_at);
+      const until = fmt(d.ends_at);
+      return (
+        <div className="mb-4 flex items-center gap-2 rounded-sm border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-800">
+          <AlertCircle className="h-4 w-4 shrink-0" />
+          <span>
+            <strong>Scheduled / not yet live</strong>
+            {from && <span> — goes live {from}</span>}
+            {until && <span>, ends {until}</span>}.
+            Members cannot see this edit yet.
+          </span>
+        </div>
+      );
+    }
+    return (
+      <div className="mb-4 flex items-center gap-2 rounded-sm border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-sm text-emerald-800">
+        <Eye className="h-4 w-4 shrink-0" />
+        <span><strong>Live</strong> — visible to members in the community app.</span>
+      </div>
+    );
+  }
+
+  return (
+    <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
+      <DialogContent
+        className="max-w-2xl max-h-[90vh] overflow-y-auto p-0"
+        data-testid="ve-preview-modal"
+      >
+        {/* Header */}
+        <div className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-[var(--vivo-border)] bg-white px-6 py-3">
+          <button
+            onClick={onClose}
+            className="inline-flex items-center gap-1.5 text-sm text-[var(--vivo-muted)] hover:text-[var(--vivo-ink)] transition-colors"
+            data-testid="ve-preview-back"
+          >
+            <ChevronLeft className="h-4 w-4" /> Back to Edits
+          </button>
+          <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-[var(--vivo-muted)]">
+            <Eye className="h-3.5 w-3.5" /> Staff Preview
+          </div>
+        </div>
+
+        <div className="px-6 py-5">
+          {error ? (
+            <div className="py-10 text-center text-sm text-red-600" data-testid="ve-preview-error">{error}</div>
+          ) : !detail ? (
+            /* Skeleton */
+            <div className="space-y-4 animate-pulse" data-testid="ve-preview-loading">
+              <div className="h-5 w-32 rounded bg-slate-100" />
+              <div className="aspect-[4/5] max-w-xs rounded bg-slate-100" />
+              <div className="h-7 w-2/3 rounded bg-slate-100" />
+              <div className="h-4 w-1/3 rounded bg-slate-100" />
+            </div>
+          ) : (
+            <>
+              <StatusBanner detail={detail} />
+
+              {/* Vivo Edit kicker */}
+              <div className="mb-3 inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-[var(--vivo-primary)]">
+                <Sparkles className="h-3 w-3" /> Vivo Edit
+              </div>
+
+              {/* Cover image */}
+              {detail.cover_image && (
+                <div className="relative mb-5 max-w-xs overflow-hidden rounded bg-[var(--vivo-bg)]">
+                  <img
+                    src={detail.cover_image}
+                    alt={detail.cover_alt || detail.title}
+                    className="w-full h-auto object-cover"
+                    draggable={false}
+                    data-testid="ve-preview-cover"
+                  />
+                </div>
+              )}
+
+              {/* Title + creator */}
+              <h2 data-testid="ve-preview-title" className="font-display text-2xl sm:text-3xl text-[var(--vivo-ink)] leading-tight mb-1">
+                &ldquo;{detail.title}&rdquo;
+              </h2>
+              <p className="text-sm text-[var(--vivo-ink)] mb-1">
+                Curated by <span className="font-medium">{detail.creator_name}</span>
+                {detail.creator_username && (
+                  <span className="text-[var(--vivo-muted)]"> · @{detail.creator_username}</span>
+                )}
+              </p>
+
+              {/* Engagement counts (read-only, from feed post if published) */}
+              {detail.feed_post_id && (
+                <div className="flex items-center gap-4 my-3 text-sm text-[var(--vivo-muted)]">
+                  <span className="inline-flex items-center gap-1">
+                    <Heart className="h-4 w-4" /> {item.like_count ?? 0} likes
+                  </span>
+                  <span className="inline-flex items-center gap-1">
+                    <MessageCircle className="h-4 w-4" /> {item.comment_count ?? 0} comments
+                  </span>
+                </div>
+              )}
+
+              {/* Intro */}
+              {detail.intro && (
+                <p className="mt-4 text-[14px] text-[var(--vivo-ink)] leading-relaxed max-w-lg" data-testid="ve-preview-intro">
+                  {detail.intro}
+                </p>
+              )}
+
+              {/* Disclosure */}
+              {detail.disclosure && (
+                <p className="mt-2 text-[11px] text-[var(--vivo-muted)] leading-relaxed max-w-lg">
+                  {detail.disclosure}
+                </p>
+              )}
+
+              {/* Gallery — remaining images */}
+              {detail.images?.length > 1 && (
+                <div className="mt-6 grid grid-cols-2 gap-3">
+                  {detail.images.slice(1).map((im, i) => (
+                    <div key={im.id || i} className="rounded overflow-hidden bg-[var(--vivo-bg)]">
+                      <img src={im.path} alt={im.alt} loading="lazy" className="w-full h-auto object-cover" draggable={false} />
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Tagged products */}
+              {detail.tagged?.length > 0 && (
+                <section className="mt-8" data-testid="ve-preview-products">
+                  <div className="mb-3">
+                    <div className="text-[10px] font-bold uppercase tracking-widest text-[var(--vivo-primary)] mb-1">Shop the Edit</div>
+                    <h3 className="font-display text-xl text-[var(--vivo-ink)]">Every piece in the look</h3>
+                  </div>
+                  {/* "Shop the Look" button — visual only in preview; no cart in the CRM */}
+                  <div className="mb-4 inline-flex items-center gap-2 rounded-sm border border-[var(--vivo-border)] px-4 py-2 text-sm text-[var(--vivo-muted)]">
+                    <ShoppingBag className="h-4 w-4" />
+                    Shop the Look — {detail.tagged.length} piece{detail.tagged.length === 1 ? "" : "s"}{" "}
+                    <span className="text-xs italic">(preview only — add-to-bag not available here)</span>
+                  </div>
+                  <div className="space-y-3">
+                    {detail.tagged.map((t) => (
+                      <div key={t.sku} className="flex items-center gap-3 rounded border border-[var(--vivo-border)] p-3" data-testid={`ve-preview-product-${t.sku}`}>
+                        <div className="h-16 w-14 shrink-0 overflow-hidden rounded bg-[var(--vivo-bg)]">
+                          {t.img && (
+                            <img src={t.img} alt={t.name} loading="lazy" className="h-full w-full object-cover" />
+                          )}
+                        </div>
+                        <div className="min-w-0">
+                          <div className="text-sm font-medium text-[var(--vivo-ink)] line-clamp-2">{t.name}</div>
+                          <div className="text-xs text-[var(--vivo-muted)] mt-0.5">
+                            {t.price ? `KES ${Number(t.price).toLocaleString()}` : ""}{t.sku ? ` · ${t.sku}` : ""}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              )}
+            </>
+          )}
+        </div>
       </DialogContent>
     </Dialog>
   );

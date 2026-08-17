@@ -6026,7 +6026,8 @@ def register_community_routes(app, api_pg_module):
                 if r.get(k):
                     r[k] = r[k].isoformat()
             cov = r.pop("cover_image_id", None)
-            r["cover_image"] = (f"/api/community/edit-image/{cov}"
+            # Staff-gated image URL: works for scheduled/unpublished edits too.
+            r["cover_image"] = (f"/api/crm/community-edit-image/{cov}"
                                 if cov else None)
         return {"items": rows}
 
@@ -6188,6 +6189,99 @@ def register_community_routes(app, api_pg_module):
                 _edit_sync_feed_post(cur, eid)
             conn.commit()
         return {"ok": True}
+
+    @app.get("/api/crm/community-edit-image/{img_id}")
+    def crm_edit_image(img_id: int, request: Request):
+        """Staff-only image route: serves any edit image regardless of
+        active/scheduled state. Used by the CRM preview and edit dialog so
+        staff can review images on scheduled/unpublished edits without
+        exposing them to the public /api/community/edit-image route."""
+        _ensure_tables()
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("""SELECT i.image, i.mime
+                                 FROM community_edit_images i
+                                WHERE i.id = %s""", (img_id,))
+                row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="No image")
+        return Response(content=bytes(row["image"]),
+                        media_type=row.get("mime") or "image/png",
+                        headers={"Cache-Control": "private, max-age=300"})
+
+    @app.get("/api/crm/community-edits/{eid}/preview")
+    def crm_edit_preview(eid: int, request: Request):
+        """Staff preview of any edit — including scheduled/unpublished ones.
+
+        Returns the same shape as GET /api/community/edits/{eid} (member
+        detail) but with two differences:
+          • no active-state filter — any non-deleted edit is shown
+          • image paths use /api/crm/community-edit-image/* so the staff
+            session cookie authorises the <img> loads without exposing
+            unpublished assets to the public route
+        Members cannot reach this endpoint: /api/crm/* is staff-session-gated
+        by the api_pg middleware."""
+        _ensure_tables()
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(f"""
+                    SELECT e.*, {_edit_cover_sql()}
+                      FROM community_edits e
+                     WHERE e.id = %s""", (eid,))
+                e = cur.fetchone()
+                if not e:
+                    raise HTTPException(status_code=404, detail="Edit not found")
+                cur.execute("""SELECT id, position, alt_text
+                                 FROM community_edit_images
+                                WHERE edit_id = %s
+                                ORDER BY position, id""", (eid,))
+                imgs = cur.fetchall()
+        from urllib.parse import quote as _q
+        tagged = []
+        for t in (e["tagged"] or []):
+            d = dict(t)
+            d["img"] = ("/api/community/product-image/"
+                        + _q(str(d.get("sku") or ""), safe=""))
+            tagged.append(d)
+        cov = e.get("cover_image_id")
+        # Compute is_active so the preview banner can show the real status.
+        now_utc = datetime.now(timezone.utc)
+        sa = e.get("starts_at")
+        ea = e.get("ends_at")
+        is_active = (
+            not e.get("archived_at")
+            and (sa is None or (hasattr(sa, "tzinfo") and sa <= now_utc))
+            and (ea is None or (hasattr(ea, "tzinfo") and ea > now_utc))
+        )
+        def _iso(v):
+            return v.isoformat() if v else None
+        return {
+            "id": e["id"],
+            "creator_name": e["creator_name"],
+            "creator_username": e["creator_username"],
+            "title": e["title"],
+            "description": e["description"],
+            "intro": e["intro"],
+            "disclosure": e["disclosure"],
+            "featured": bool(e["featured"]),
+            "feed_post_id": e.get("feed_post_id"),
+            "cover_image": (f"/api/crm/community-edit-image/{cov}"
+                            if cov else None),
+            "cover_alt": ((e["creator_name"] or "") + " — "
+                          + (e["title"] or "")),
+            "images": [
+                {"id": i["id"],
+                 "path": f"/api/crm/community-edit-image/{i['id']}",
+                 "alt": i["alt_text"] or ((e["creator_name"] or "")
+                                          + " — " + (e["title"] or ""))}
+                for i in imgs
+            ],
+            "tagged": tagged,
+            "starts_at": _iso(e.get("starts_at")),
+            "ends_at": _iso(e.get("ends_at")),
+            "archived_at": _iso(e.get("archived_at")),
+            "is_active": is_active,
+        }
 
     @app.get("/api/crm/community-flagged-comments")
     def crm_flagged_comments(request: Request, status: str = "open",
