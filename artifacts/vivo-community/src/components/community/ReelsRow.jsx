@@ -234,7 +234,7 @@ function ReelPlayer({ reels, index, onClose, onStep, liked, onToggleLike }) {
   );
 }
 
-export default function ReelsRow({ member }) {
+export default function ReelsRow({ member, limit, onViewAll }) {
   const [openIdx, setOpenIdx] = useState(-1);
   const [likes, setLikes] = useState(() => loadLikes(member?.id));
   useEffect(() => { setLikes(loadLikes(member?.id)); }, [member?.id]);
@@ -249,28 +249,42 @@ export default function ReelsRow({ member }) {
     });
   }, [member?.id]);
 
+  /* Home shows a capped strip (limit + View All); Community shows all. */
+  const shown = limit ? REELS.slice(0, limit) : REELS;
+
   const step = useCallback((d) => {
-    setOpenIdx((i) => Math.min(REELS.length - 1, Math.max(0, i + d)));
-  }, []);
+    setOpenIdx((i) => Math.min(shown.length - 1, Math.max(0, i + d)));
+  }, [shown.length]);
 
-  const open = openIdx >= 0 ? REELS[openIdx] : null;
+  const open = openIdx >= 0 ? shown[openIdx] : null;
 
-  if (!REELS.length) return null;
+  if (!shown.length) return null;
   return (
     <section data-testid="reels-row">
-      <SectionHeader
-        kicker="Fresh from Vivo"
-        title="Reels we can't stop replaying"
-        sub="Straight from our TikTok and Instagram — tap to watch with sound."
-      />
+      <div className="flex items-end justify-between gap-4">
+        <SectionHeader
+          kicker="Fresh from Vivo"
+          title="Reels we can't stop replaying"
+          sub="Straight from our TikTok and Instagram — tap to watch with sound."
+        />
+        {onViewAll && (
+          <button
+            data-testid="reels-view-all"
+            onClick={onViewAll}
+            className="shrink-0 mb-6 text-[13px] font-medium text-primary-ink hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary rounded"
+          >
+            View All
+          </button>
+        )}
+      </div>
       <div className="flex gap-3 overflow-x-auto hide-scrollbar snap-x snap-mandatory -mx-4 px-4 sm:mx-0 sm:px-0 pb-1">
-        {REELS.map((r, i) => (
+        {shown.map((r, i) => (
           <ReelTile key={r.id} reel={r} onOpen={() => setOpenIdx(i)} />
         ))}
       </div>
       {open && (
         <ReelPlayer
-          reels={REELS}
+          reels={shown}
           index={openIdx}
           onClose={() => setOpenIdx(-1)}
           onStep={step}

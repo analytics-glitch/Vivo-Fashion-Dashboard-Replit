@@ -593,8 +593,8 @@ a { color: inherit; text-decoration: none; }
 .plm-card { background: #fff; border: 1px solid var(--plm-line); border-radius: 4px; overflow: visible; box-shadow: 0 1px 2px rgba(26,26,46,.03); position: relative; }
 .plm-card:hover { border-color: #cfc2aa; box-shadow: 0 5px 14px rgba(26,26,46,.08); }
 .plm-card-open { display: block; border: 0; padding: 0; width: 100%; text-align: left; background: transparent; cursor: pointer; color: var(--plm-ink); }
-.plm-card-visual { height: 96px; background-color: #e6e1d9; background-size: cover; background-position: center; position: relative; }
-.plm-card-visual:after { content: ''; position: absolute; inset: 0; background: linear-gradient(180deg, rgba(26,26,46,.16), transparent 50%, rgba(26,26,46,.22)); }
+.plm-card-visual { height: 190px; background-color: #F5F5F0; background-size: contain; background-repeat: no-repeat; background-position: center; position: relative; }
+.plm-card-visual:after { content: ''; position: absolute; inset: 0; background: linear-gradient(180deg, rgba(26,26,46,.08), transparent 22%, transparent 82%, rgba(26,26,46,.10)); pointer-events: none; }
 .plm-style-number, .plm-days { position: absolute; z-index: 1; color: #fff; background: rgba(26,26,46,.78); padding: 4px 5px; font: 9px 'DM Mono', monospace; }
 .plm-style-number { top: 7px; left: 7px; }
 .plm-days { top: 7px; right: 7px; color: #f4e4c7; }

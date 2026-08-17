@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Heart, MessageCircle, Share, ArrowRight, ChevronRight, Cake, Gift, Ruler, Layers, X, Sparkles, ClipboardList, Trophy, HandHeart } from "lucide-react";
-import { styleBoards, fitFor } from "./mockData";
+import { Heart, MessageCircle, Share, ArrowRight, ChevronRight, Cake, Gift, X, ClipboardList, Trophy, HandHeart } from "lucide-react";
 import PostDetailModal from "./PostDetailModal";
 import { PostVisual, timeAgo } from "./PostBits";
 import { TierBadge, Avatar, cardCls, brandAsset, SectionHeader } from "./ui";
@@ -8,9 +7,6 @@ import { api } from "@/lib/api";
 import { StyledForYouHome } from "./StyledForYou";
 import { NEWS, newsPageId } from "./newsData";
 import ReelsRow from "./ReelsRow";
-import NewsSection, { NewsCardCompact } from "./NewsSection";
-import { FabulasHomeCard } from "./FabulasStory";
-import { fabulasOfTheDay } from "./fabulasStories";
 
 const initialsOf = (u) =>
   (u || "?").split(/[._\s-]+/).filter(Boolean).slice(0, 2)
@@ -325,84 +321,66 @@ function MissionCard({ challenge, onNavigate }) {
   );
 }
 
-/* Community fit-note highlight for a live piece — taps through to its PDP. */
-function FitNoteHighlight({ product, onOpenProduct }) {
-  if (!product) return null;
-  const fit = fitFor(product.sku);
-  const phrase =
-    fit.verdict === "True to size" ? "runs true to size" :
-    fit.verdict === "Runs small — size up" ? "runs small — most size up" :
-    "runs generous";
-  const c = fit.comments[0];
+/* Community Spotlight — "This Week's Jewel" and "Community Voices" merged
+   into ONE featured-member section (per Sharon's community-first brief).
+   The jewel comes from the celebrations API; when no jewel is live we fall
+   back to an evergreen member voice so the section never goes blank. */
+function CommunitySpotlightCard({ jewel, onNavigate }) {
+  const username = jewel?.username || "amina_h";
+  const quote = jewel?.quote || "I came for the dresses. I stayed for the women.";
+  const tier = jewel?.show_tier ? jewel?.tier : undefined;
   return (
-    <button
-      data-testid="fit-highlight"
-      onClick={() => onOpenProduct?.(product.sku)}
-      className={`${cardCls} w-full text-left p-4 sm:p-5 flex items-center gap-4 hover:-translate-y-0.5 transition-transform group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary`}
-    >
-      <div className="w-20 sm:w-24 shrink-0 aspect-[3/4] rounded bg-secondary overflow-hidden">
-        <img src={product.image_url} alt="" loading="lazy" className="w-full h-full object-contain" />
-      </div>
-      <div className="flex-grow min-w-0">
-        <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-primary-ink mb-1.5">
-          <Ruler size={11} /> Community fit notes
+    <section data-testid="home-spotlight-card" className="bg-foreground text-background rounded p-6 sm:p-10 relative overflow-hidden">
+      <div className="absolute top-0 right-0 w-48 h-48 bg-white/5 rounded-full blur-3xl pointer-events-none" />
+      <div className="text-[10px] font-bold uppercase tracking-widest text-background/60 mb-5">Community Spotlight</div>
+      <div className="flex items-center gap-4 mb-5">
+        <Avatar initials={initialsOf(username)} tier={tier} size="md" />
+        <div>
+          <div className="font-semibold text-background text-base">@{username}</div>
+          {tier && <div className="mt-1"><TierBadge tier={tier} /></div>}
         </div>
-        <div className="font-serif text-[17px] leading-snug text-foreground mb-1.5">
-          Members say the {product.style_name} {phrase}
-        </div>
-        {c && (
-          <p className="text-[13px] text-muted-foreground leading-relaxed line-clamp-2">
-            "{c.text}" — @{c.username}, size {c.size}
-          </p>
-        )}
       </div>
-      <ChevronRight size={16} className="text-muted-foreground group-hover:text-foreground transition-colors shrink-0" />
-    </button>
-  );
-}
-
-function BoardHighlight({ board, onNavigate }) {
-  if (!board) return null;
-  return (
-    <button
-      data-testid="board-highlight"
-      onClick={() => onNavigate("community")}
-      className={`${cardCls} w-full text-left p-5 flex items-center gap-5 hover:-translate-y-0.5 transition-transform group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary`}
-    >
-      <div className="grid grid-cols-2 gap-1 w-20 shrink-0" aria-hidden="true">
-        <div className="aspect-square rounded-sm bg-foreground" />
-        <div className="aspect-square rounded-sm bg-secondary border border-border" />
-        <div className="aspect-square rounded-sm bg-secondary border border-border" />
-        <div className="aspect-square rounded-sm bg-primary" />
-      </div>
-      <div className="flex-grow min-w-0">
-        <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-primary-ink mb-1.5">
-          <Layers size={11} /> Board we love
-        </div>
-        <div className="font-serif text-[17px] text-foreground">{board.title}</div>
-        <div className="text-[12px] text-muted-foreground mt-0.5">{board.items} looks · {board.followers} following</div>
-      </div>
-      <span className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground group-hover:text-foreground transition-colors flex items-center gap-0.5 shrink-0">
-        Explore <ChevronRight size={12} />
-      </span>
-    </button>
-  );
-}
-
-/* A second member voice, distinct from the sidebar spotlight. */
-function CommunityVoice() {
-  return (
-    <div data-testid="voice-card" className="bg-foreground text-background rounded p-6 sm:p-8 relative overflow-hidden">
-      <div className="absolute top-0 right-0 w-40 h-40 bg-white/5 rounded-full blur-3xl pointer-events-none" />
-      <div className="text-[10px] font-bold uppercase tracking-widest text-background/60 mb-4">Community voices</div>
-      <blockquote className="font-serif text-xl sm:text-2xl leading-snug italic mb-5">
-        "I came for the dresses. I stayed for the women."
+      <blockquote className="font-serif text-xl sm:text-2xl leading-snug italic mb-6 max-w-xl">
+        "{quote}"
       </blockquote>
-      <div className="flex items-center gap-3">
-        <Avatar initials="AH" size="sm" />
-        <span className="text-[13px] font-medium text-background/80">@amina_h</span>
+      <button
+        data-testid="spotlight-story-cta"
+        onClick={() => onNavigate("community")}
+        className="h-11 px-6 rounded border border-background/40 text-background text-[13px] font-medium hover:bg-white/10 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-background"
+      >
+        Read Her Story
+      </button>
+    </section>
+  );
+}
+
+/* Shop Community Looks — a compact, community-led shoppable strip built from
+   real member posts that tag Vivo pieces. Deliberately secondary. */
+function ShopCommunityLooks({ posts, onOpenProduct, onNavigate }) {
+  const looks = (posts || []).filter((p) => p?.tagged?.length && p.post_type !== "question").slice(0, 3);
+  if (!looks.length) return null;
+  return (
+    <section data-testid="home-shop-looks">
+      <SectionHeader kicker="Shop Community Looks" title="Worn by the community" sub="Real members, real outfits — every piece is Vivo." />
+      <div className="grid sm:grid-cols-3 gap-4">
+        {looks.map((p) => (
+          <div key={p.id} className={`${cardCls} p-4 flex flex-col`} data-testid={`shop-look-${p.id}`}>
+            <div className="flex items-center gap-2.5 mb-3">
+              <Avatar initials={p.author.initials} size="sm" />
+              <span className="text-[13px] font-semibold text-foreground truncate">@{p.author.username}</span>
+            </div>
+            <p className="text-[13px] text-muted-foreground leading-relaxed line-clamp-2 mb-4 flex-grow">{p.caption}</p>
+            <button
+              data-testid={`shop-look-cta-${p.id}`}
+              onClick={() => (p.tagged?.[0]?.sku ? onOpenProduct?.(p.tagged[0].sku) : onNavigate("shop"))}
+              className="h-10 rounded border border-border text-foreground text-[13px] font-medium hover:bg-secondary transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+            >
+              Shop the Look
+            </button>
+          </div>
+        ))}
       </div>
-    </div>
+    </section>
   );
 }
 
@@ -465,32 +443,8 @@ function UpcomingEventCard({ ev, onOpen }) {
   );
 }
 
-/* Virtual Try-On promo — prototype-evaluation prominence: a discoverable
-   entry card high in the feed so reviewers find the feature immediately.
-   Easy to demote/remove once the business decides its place (the allowance
-   ladder itself is server config, not baked in here). */
-function TryOnPromoCard({ onOpenPage }) {
-  return (
-    <div data-testid="home-tryon-card" className={`${cardCls} relative overflow-hidden p-6 sm:p-7 border-l-2 border-l-primary`}>
-      <div className="absolute top-0 right-0 w-40 h-40 bg-primary/5 rounded-full blur-2xl translate-x-1/3 -translate-y-1/3 pointer-events-none" />
-      <div className="inline-flex items-center gap-1.5 px-2 py-1 bg-primary-ink text-primary-foreground text-[10px] font-bold uppercase tracking-wider rounded-sm mb-4">
-        <Sparkles size={11} /> New
-      </div>
-      <h3 className="font-serif text-2xl text-foreground leading-tight mb-2">See it on you</h3>
-      <p className="text-[13px] text-muted-foreground leading-relaxed max-w-md mb-5">
-        Try Vivo pieces on virtually — pick a piece, add your photo, and see the look.
-        A bit of fun, not a fitting room.
-      </p>
-      <button
-        data-testid="home-tryon-cta"
-        onClick={() => onOpenPage?.("tryon")}
-        className="w-full sm:w-auto sm:px-8 bg-primary text-primary-foreground h-11 rounded font-medium text-[15px] flex items-center justify-center gap-2 hover:opacity-90 transition-all active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
-      >
-        <Sparkles size={15} /> Try it on
-      </button>
-    </div>
-  );
-}
+/* "See it on you" (Virtual Try-On promo) moved to the Shop tab banner and
+   individual product pages per the community-first homepage brief. */
 
 /* Survey promo — wave-scoped "Help us dress you better" card. Self-fetching:
    renders only while the member hasn't completed the active wave AND the
@@ -564,16 +518,25 @@ function HeroCampaign({ onNavigate }) {
         {!loaded && <div className="absolute inset-0 bg-secondary animate-pulse" aria-hidden="true" />}
         <div className="absolute inset-x-0 bottom-0 h-2/3 bg-gradient-to-t from-black/70 via-black/20 to-transparent pointer-events-none" />
         <div className="absolute inset-x-0 bottom-0 p-6 sm:p-10 text-white">
-          <div className="text-[11px] font-bold uppercase tracking-[0.25em] text-white/80 mb-2">The new season edit</div>
+          <div className="text-[11px] font-bold uppercase tracking-[0.25em] text-white/80 mb-2">This season's conversation</div>
           <h2 className="font-serif text-3xl sm:text-4xl leading-tight mb-2 text-white">Colour, out loud</h2>
-          <p className="text-[14px] text-white/85 mb-5 max-w-sm">Bold prints and easy silhouettes — designed in Nairobi, worn everywhere.</p>
-          <button
-            data-testid="hero-shop-now"
-            onClick={() => onNavigate("shop")}
-            className="h-11 px-8 rounded bg-white text-neutral-900 font-medium text-[14px] hover:bg-white/90 active:scale-[0.98] transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
-          >
-            Shop Now
-          </button>
+          <p className="text-[14px] text-white/85 mb-5 max-w-sm">Bold prints, easy silhouettes and the women wearing them — designed in Nairobi, worn everywhere.</p>
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              data-testid="hero-join-cta"
+              onClick={() => onNavigate("community")}
+              className="h-11 px-8 rounded bg-white text-neutral-900 font-medium text-[14px] hover:bg-white/90 active:scale-[0.98] transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
+            >
+              Join the Conversation
+            </button>
+            <button
+              data-testid="hero-shop-now"
+              onClick={() => onNavigate("shop")}
+              className="h-11 px-5 rounded border border-white/60 text-white font-medium text-[13px] hover:bg-white/10 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
+            >
+              Shop the edit
+            </button>
+          </div>
         </div>
       </div>
     </section>
@@ -584,41 +547,8 @@ function HeroCampaign({ onNavigate }) {
    ShopSections.jsx — the grid, the personalised rail and the New This Week
    rail all live on the Shop tab now (per Sharon). */
 
-/* Promotional banner — editable in one place: change HOME_PROMO to swap in
-   delivery offers, sales, new collections or store openings. */
-const HOME_PROMO = {
-  kicker: "For a limited time",
-  title: "Free delivery over KES 5,000",
-  sub: "Nairobi, Kigali and Kampala — straight to your door.",
-  cta: "Shop the collection",
-  image: "promo.jpg",
-};
-function PromoBanner({ onNavigate }) {
-  return (
-    <section data-testid="home-promo-banner" className="-mx-4 sm:mx-0 relative overflow-hidden sm:rounded bg-foreground">
-      <img
-        src={brandAsset(HOME_PROMO.image)}
-        alt=""
-        loading="lazy"
-        className="absolute inset-0 w-full h-full object-cover object-[center_30%] opacity-80"
-        draggable={false}
-      />
-      <div className="absolute inset-0 bg-gradient-to-r from-black/75 via-black/45 to-black/20 pointer-events-none" />
-      <div className="relative p-6 sm:p-10 max-w-md text-white">
-        <div className="text-[10px] font-bold uppercase tracking-[0.25em] text-white/75 mb-2">{HOME_PROMO.kicker}</div>
-        <h3 className="font-serif text-2xl sm:text-3xl leading-tight mb-1.5 text-white">{HOME_PROMO.title}</h3>
-        <p className="text-[13px] text-white/85 mb-5">{HOME_PROMO.sub}</p>
-        <button
-          data-testid="home-promo-cta"
-          onClick={() => onNavigate("shop")}
-          className="h-10 px-6 rounded border border-white/80 text-white text-[13px] font-medium hover:bg-white/10 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
-        >
-          {HOME_PROMO.cta}
-        </button>
-      </div>
-    </section>
-  );
-}
+/* The delivery/sale promo banner moved to the Shop tab (PromoBanner in
+   TabShop.jsx) per the community-first homepage brief. */
 
 /* The Vivo Community — lifestyle imagery + Join the Conversation CTA. */
 function CommunitySpotlight({ onNavigate }) {
@@ -693,12 +623,23 @@ function RewardsSummaryCard({ member, onNavigate }) {
 /* Vivo Stories — editorial covers over the news stories the app already
    carries; tapping opens the full article page. */
 const STORY_COVERS = ["story-1.jpg", "story-2.jpg", "story-3.jpg"];
-function VivoStories({ onOpenNews }) {
+function VivoStories({ onOpenNews, onViewAll }) {
   const items = NEWS.slice(0, 3);
   if (!items.length) return null;
   return (
     <section data-testid="home-stories">
-      <SectionHeader kicker="Vivo Stories" title="Styling, campaigns & what's on" />
+      <div className="flex items-end justify-between gap-4">
+        <SectionHeader kicker="Vivo Stories" title="Styling, campaigns & what's on" />
+        {onViewAll && (
+          <button
+            data-testid="home-stories-viewall"
+            onClick={onViewAll}
+            className="shrink-0 mb-6 text-[13px] font-medium text-primary-ink hover:underline inline-flex items-center gap-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary rounded"
+          >
+            View All Stories <ChevronRight size={14} />
+          </button>
+        )}
+      </div>
       <div className="flex gap-3 overflow-x-auto hide-scrollbar snap-x -mx-4 px-4 sm:mx-0 sm:px-0 pb-1 sm:grid sm:grid-cols-3 sm:overflow-visible">
         {items.map((n, i) => (
           <button
@@ -726,8 +667,7 @@ function VivoStories({ onOpenNews }) {
   );
 }
 
-export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage, onOpenEvent, onOpenFabulas }) {
-  const [products, setProducts] = useState([]);
+export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage, onOpenEvent }) {
   const [events, setEvents] = useState([]);
   // Live challenges — the mission card and sidebar feature the first open one.
   const [liveChallenges, setLiveChallenges] = useState([]);
@@ -735,15 +675,9 @@ export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage,
   const [cel, setCel] = useState(null);
   const featuredChallenge = liveChallenges.find((c) => !c.closed) || null;
 
-  // Live catalogue enriches the feed (Just Landed + fit-note highlight).
-  // If the fetch fails these rows simply don't render — the Shop tab is
-  // where catalogue errors surface loudly, the feed degrades gracefully.
   useEffect(() => {
     let alive = true;
-    api.products({ limit: 12, offset: 0 })
-      .then((d) => { if (alive) setProducts(d.items || []); })
-      .catch(() => {});
-    // Soonest upcoming event feeds the "What's on" card; same quiet-failure
+    // Soonest upcoming event feeds the "What's on" card; quiet-failure
     // rule — the Events sub-tab owns loading/error states.
     api.events()
       .then((d) => { if (alive) setEvents(d.items || []); })
@@ -758,12 +692,6 @@ export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage,
   }, []);
 
   const nextEvent = events[0] || null;
-
-  const fitPick = useMemo(() => {
-    if (!products.length) return null;
-    const byName = (s) => products.find((p) => (p.style_name || "").toLowerCase().includes(s));
-    return byName("wrap") || byName("dress") || products[0];
-  }, [products]);
 
   const openNews = (id) => onOpenPage?.(newsPageId(id));
   const shopTap = () => onNavigate("shop");
@@ -785,93 +713,122 @@ export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage,
   };
   const P = feed;
 
-  /* Editorial homepage order: hero campaign → personal
-     moments → promo banner → Community → Member Rewards →
-     Stories. Shop by Category and the Chosen-for-You rail live on the
-     Shop tab now (per Sharon). */
+  /* Style Question of the Week — the single most-engaged open question. */
+  const questionOfWeek = useMemo(
+    () =>
+      feed
+        .filter((p) => p.post_type === "question")
+        .slice()
+        .sort((a, b) => (b.like_count + b.comment_count) - (a.like_count + a.comment_count))[0] || null,
+    [feed],
+  );
+
+  /* Feed preview — max 4 featured posts: visual posts and meaningful
+     engagement first; the question of the week is featured separately. */
+  const previewPosts = useMemo(() => {
+    const score = (p) => (p.variant !== "quote" && p.post_type !== "question" ? 100 : 0) + p.like_count * 2 + p.comment_count * 3;
+    return feed
+      .filter((p) => p.id !== questionOfWeek?.id)
+      .slice()
+      .sort((a, b) => score(b) - score(a))
+      .slice(0, 4);
+  }, [feed, questionOfWeek]);
+
+  /* Community-first homepage (per Sharon's brief): hero → this week's
+     mission → personal moments → community feed preview → Fresh from Vivo
+     reels → style question of the week → upcoming event → Community
+     Spotlight → Styled for You (+ survey) → Shop Community Looks →
+     Member Rewards → Vivo Stories → Second Life. Shopping promos, try-on,
+     fit notes and boards live on Shop / product pages / Community now. */
   return (
-    <div className="max-w-3xl mx-auto space-y-10 sm:space-y-14">
+    <div className="max-w-4xl mx-auto space-y-12 sm:space-y-16">
       <div className="-mt-2">
         <HeroCampaign onNavigate={onNavigate} />
       </div>
 
-      {/* Styled for You — opt-in weekly picks (carousel) or the invitation
-          card for members who haven't opted in yet. Members only. */}
-      {member && (
-        <StyledForYouHome
-          member={member}
-          onOpenProduct={onOpenProduct}
-          onViewAll={() => {
-            try { sessionStorage.setItem("vivo_shop_sfy", "1"); } catch { /* private mode */ }
-            onNavigate("shop");
-          }}
-          onPersonalise={() => onOpenPage("styleprefs")}
-        />
-      )}
+      {/* 2 · This Week's Mission — close to the top; entry flow stays in Community */}
+      <MissionCard challenge={featuredChallenge} onNavigate={onNavigate} />
 
-      {/* Personal moments — celebration/tier/survey cards, member-only */}
+      {/* Personal one-shot moments — celebration/winner/tier, member-only */}
       {member && (
         <div className="space-y-4 empty:hidden">
           <CelebrationCard member={member} />
           <WinnerCongratsCard />
           <PersonalCard member={member} onNavigate={onNavigate} />
+        </div>
+      )}
+
+      {/* 3 · Community feed preview — max 4 featured posts + View Community.
+          Guests see the community intro instead (posts carry like writes). */}
+      {member ? (
+        previewPosts.length > 0 && (
+          <section data-testid="home-feed-preview">
+            <SectionHeader kicker="This week in the community" title="Looks & conversations we loved" />
+            <div className="grid sm:grid-cols-2 gap-4 sm:gap-6">
+              {previewPosts.map((p) => (
+                <PostCard key={p.id} post={p} onShopTap={shopTap} onOpenProduct={onOpenProduct} onOpen={openPost} onCounts={patchPost} />
+              ))}
+            </div>
+            <div className="mt-6 text-center">
+              <button
+                data-testid="home-view-community"
+                onClick={() => onNavigate("community")}
+                className="h-11 px-8 rounded bg-foreground text-background font-medium text-[14px] inline-flex items-center gap-2 hover:opacity-90 active:scale-[0.98] transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+              >
+                View Community <ArrowRight size={15} />
+              </button>
+            </div>
+          </section>
+        )
+      ) : (
+        <CommunitySpotlight onNavigate={onNavigate} />
+      )}
+
+      {/* 4 · Fresh from Vivo — capped reel carousel + View All */}
+      <ReelsRow member={member} limit={5} onViewAll={() => onNavigate("community")} />
+
+      {/* 5 · Style Question of the Week — one featured conversation */}
+      {member && questionOfWeek && (
+        <section data-testid="home-style-question">
+          <SectionHeader kicker="Style question of the week" title="Weigh in — the community wants to know" />
+          <PostCard post={questionOfWeek} onShopTap={shopTap} onOpenProduct={onOpenProduct} onOpen={openPost} onCounts={patchPost} />
+        </section>
+      )}
+
+      {/* 6 · Upcoming event — the next one only; calendar stays in Community */}
+      <UpcomingEventCard ev={nextEvent} onOpen={onOpenEvent} />
+
+      {/* 7 · Community Spotlight — Jewel + Voices merged into one feature */}
+      <CommunitySpotlightCard jewel={cel?.jewel} onNavigate={onNavigate} />
+
+      {/* 8 · Styled for You — personalisation + the dress-you-better survey
+          combined into one supporting section. Members only. */}
+      {member && (
+        <div className="space-y-4">
+          <StyledForYouHome
+            member={member}
+            onOpenProduct={onOpenProduct}
+            onViewAll={() => {
+              try { sessionStorage.setItem("vivo_shop_sfy", "1"); } catch { /* private mode */ }
+              onNavigate("shop");
+            }}
+            onPersonalise={() => onOpenPage("styleprefs")}
+          />
           <SurveyPromoCard onOpenPage={onOpenPage} />
         </div>
       )}
 
-      {member && <TryOnPromoCard onOpenPage={onOpenPage} />}
+      {/* 9 · Shop Community Looks — compact, community-led, secondary */}
+      {member && <ShopCommunityLooks posts={feed} onOpenProduct={onOpenProduct} onNavigate={onNavigate} />}
 
-      <PromoBanner onNavigate={onNavigate} />
-
-      {/* The Vivo Community — spotlight, live conversation, mission & events */}
-      <div className="space-y-6">
-        <CommunitySpotlight onNavigate={onNavigate} />
-        <MissionCard challenge={featuredChallenge} onNavigate={onNavigate} />
-        {/* Post cards + reels carry like/comment writes — members only.
-            Guests still get the spotlight + CTA, which routes them to the
-            sign-in fence on the Community tab. */}
-        {member && (<>
-          <PostCard post={P[0]} onShopTap={shopTap} onOpenProduct={onOpenProduct} onOpen={openPost} onCounts={patchPost} />
-          <PostCard post={P[1]} onShopTap={shopTap} onOpenProduct={onOpenProduct} onOpen={openPost} onCounts={patchPost} />
-          <ReelsRow member={member} />
-          <PostCard post={P[2]} onShopTap={shopTap} onOpenProduct={onOpenProduct} onOpen={openPost} onCounts={patchPost} />
-        </>)}
-        <UpcomingEventCard ev={nextEvent} onOpen={onOpenEvent} />
-        {cel?.jewel && (
-          <div className={`${cardCls} p-6`}>
-            <h3 className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-5">This Week's Jewel</h3>
-            <div className="flex items-center gap-4 mb-4">
-              {/* Tier shows only when the jewel opted in */}
-              <Avatar initials={initialsOf(cel.jewel.username)} tier={cel.jewel.show_tier ? cel.jewel.tier : undefined} size="md" />
-              <div>
-                <div className="font-semibold text-foreground text-base mb-1">@{cel.jewel.username}</div>
-                {cel.jewel.show_tier && cel.jewel.tier && <TierBadge tier={cel.jewel.tier} />}
-              </div>
-            </div>
-            <blockquote className="italic text-foreground/80 text-sm border-l border-primary pl-4 py-1 leading-relaxed">
-              "{cel.jewel.quote}"
-            </blockquote>
-          </div>
-        )}
-        <CommunityVoice />
-      </div>
-
+      {/* 10 · Member Rewards — one compact preview */}
       <RewardsSummaryCard member={member} onNavigate={onNavigate} />
 
-      {/* Vivo Stories — editorial covers, plus the deeper news & fit reads */}
-      <div className="space-y-6">
-        <VivoStories onOpenNews={openNews} />
-        <FabulasHomeCard story={fabulasOfTheDay()} onOpenStory={onOpenFabulas} />
-        <NewsSection onOpenNews={openNews} />
-        <FitNoteHighlight product={fitPick} onOpenProduct={onOpenProduct} />
-        <BoardHighlight board={styleBoards[3]} onNavigate={onNavigate} />
-        <NewsCardCompact article={NEWS[3]} onOpen={openNews} />
-        {member && (<>
-          <PostCard post={P[3]} onShopTap={shopTap} onOpenProduct={onOpenProduct} onOpen={openPost} onCounts={patchPost} />
-          <PostCard post={P[4]} onShopTap={shopTap} onOpenProduct={onOpenProduct} onOpen={openPost} onCounts={patchPost} />
-        </>)}
-        <SecondLifeCard onOpenPage={onOpenPage} />
-      </div>
+      {/* 11 · Vivo Stories — three editorial covers + view all */}
+      <VivoStories onOpenNews={openNews} onViewAll={() => onNavigate("community")} />
+
+      {/* 12 · Give your Vivo a second life — small closing feature */}
+      <SecondLifeCard onOpenPage={onOpenPage} />
 
       {detailIdx >= 0 && P[detailIdx] && (
         <PostDetailModal restoreY={restoreY} posts={P} index={detailIdx} onIndex={setDetailIdx}

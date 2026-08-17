@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { posts } from "./mockData";
-import { ImagePlaceholder, MerchBadge, kes, swatchFor } from "./ui";
+import { ImagePlaceholder, MerchBadge, kes, swatchFor, brandAsset } from "./ui";
 import { ShoppingBag, Heart, ChevronRight, ChevronDown, Sparkles, SlidersHorizontal } from "lucide-react";
 import { api } from "@/lib/api";
 import { useWishlist } from "@/context/WishlistContext";
@@ -10,6 +10,35 @@ import { StyledForYouShop } from "./StyledForYou";
 import { useAuth } from "@/context/AuthContext";
 
 const PAGE = 24;
+
+/* Promotional banner — moved here from the homepage. Editable in one place:
+   change SHOP_PROMO to swap in delivery offers, sales, new collections or
+   store openings. */
+const SHOP_PROMO = {
+  kicker: "For a limited time",
+  title: "Free delivery over KES 5,000",
+  sub: "Nairobi, Kigali and Kampala — straight to your door.",
+  image: "promo.jpg",
+};
+function PromoBanner() {
+  return (
+    <section data-testid="shop-promo-banner" className="-mx-4 sm:mx-0 relative overflow-hidden sm:rounded bg-foreground mb-10">
+      <img
+        src={brandAsset(SHOP_PROMO.image)}
+        alt=""
+        loading="lazy"
+        className="absolute inset-0 w-full h-full object-cover object-[center_30%] opacity-80"
+        draggable={false}
+      />
+      <div className="absolute inset-0 bg-gradient-to-r from-black/75 via-black/45 to-black/20 pointer-events-none" />
+      <div className="relative p-6 sm:p-8 max-w-md text-white">
+        <div className="text-[10px] font-bold uppercase tracking-[0.25em] text-white/75 mb-2">{SHOP_PROMO.kicker}</div>
+        <h3 className="font-serif text-2xl sm:text-3xl leading-tight mb-1.5 text-white">{SHOP_PROMO.title}</h3>
+        <p className="text-[13px] text-white/85">{SHOP_PROMO.sub}</p>
+      </div>
+    </section>
+  );
+}
 
 // What the wishlist stores about a piece (a display snapshot — live stock
 // and sizes are fetched fresh on the Wishlist page).
@@ -336,6 +365,11 @@ export default function TabShop({ onOpenProduct, onOpenTryOn, onOpenPage }) {
       <div className="mb-10">
         <CategoryGrid onSelect={pickCategory} />
       </div>
+
+      {/* Promotional banner — moved from the homepage (community-first brief).
+          Edit SHOP_PROMO to swap in sales, new collections or store openings. */}
+      <PromoBanner />
+
 
       {/* Filter + sort controls (hidden in the Styled-for-You view) */}
       {!sfyMode && (

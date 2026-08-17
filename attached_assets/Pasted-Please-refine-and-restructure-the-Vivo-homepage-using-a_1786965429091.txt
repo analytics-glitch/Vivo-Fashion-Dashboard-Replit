@@ -1,0 +1,218 @@
+Please refine and restructure the Vivo homepage using a community-first approach.
+
+IMPORTANT:
+
+* The primary purpose of the app is to build and engage the Vivo community.
+* Online shopping and loyalty are secondary supporting features.
+* Do not redesign the homepage as a conventional online store.
+* Preserve all existing functionality, routes, authentication, database connections, content and business logic.
+* Do not delete existing features; move them to more appropriate pages where necessary.
+
+The homepage should feel like a curated weekly overview of the Vivo community rather than displaying the entire community feed.
+
+REVISED HOMEPAGE ORDER
+
+1. HERO
+
+Keep a strong Vivo campaign or community hero image.
+
+The hero can introduce:
+
+* A current campaign
+* A community theme
+* A seasonal conversation
+* A featured Vivo story
+
+Include one relevant call to action such as:
+
+* Join the Conversation
+* Explore the Story
+* Participate Now
+* Discover More
+
+Shopping does not need to be the primary hero action every week.
+
+2. THIS WEEK’S MISSION
+
+Move the current weekly mission close to the top of the homepage.
+
+Show:
+
+* Mission title
+* Short description
+* Participation reward, where applicable
+* Number of members who have participated
+* “Enter Now” button
+
+Keep the full submission flow inside the Community page.
+
+3. COMMUNITY FEED PREVIEW
+
+Show a maximum of three or four featured community posts.
+
+Prioritise:
+
+* Member outfit posts
+* Personal stories
+* Style conversations
+* Strong visual posts
+* Posts receiving meaningful community engagement
+
+Add one clear “View Community” button leading to the complete Community feed.
+
+Do not show the entire continuously scrolling community feed on the homepage.
+
+4. FRESH FROM VIVO
+
+Keep the short-form video and reels carousel.
+
+Show a maximum of five videos at a time and include a “View All” link.
+
+Videos may include:
+
+* Styling content
+* Behind the scenes
+* Member stories
+* Vivo campaigns
+* Creator features
+* Event highlights
+
+5. STYLE QUESTION OF THE WEEK
+
+Show one featured style question or poll.
+
+Allow members to answer directly or open the complete conversation in Community.
+
+Do not display several separate text-question cards on the homepage.
+
+6. UPCOMING EVENT
+
+Show only the next relevant Vivo event.
+
+Include:
+
+* Event name
+* Date
+* Time
+* Location or online status
+* RSVP button
+
+Keep the complete events calendar on the Community page.
+
+7. COMMUNITY SPOTLIGHT
+
+Combine “This Week’s Jewel” and “Community Voices” into one section called “Community Spotlight.”
+
+Feature one member each week with:
+
+* Member name
+* Image
+* Short quote or story excerpt
+* Community tier or badge, where relevant
+* “Read Her Story” button
+
+Avoid showing several separate quote sections.
+
+8. STYLED FOR YOU
+
+Keep Styled for You as a supporting personalised experience.
+
+Combine it with the existing “Help us dress you better” survey.
+
+For members who have not completed their preferences, show:
+
+* “Styled for You”
+* A short explanation
+* “Personalise My Style” button
+* Optional points incentive
+* “Maybe Later” link
+
+For members who have opted in, show weekly personalised outfits or content recommendations.
+
+Styled for You may recommend:
+
+* Community posts
+* Styling conversations
+* Events
+* Vivo products
+* Complete outfits
+
+It should not recommend products only.
+
+9. SHOP COMMUNITY LOOKS
+
+Add a compact shoppable section featuring outfits worn by community members, creators or Vivo stylists.
+
+Each look may include:
+
+* Member or curator name
+* Outfit image
+* Short styling note
+* Tagged Vivo products
+* “Shop the Look” button
+
+Keep this section community-led and secondary to engagement content.
+
+10. MEMBER REWARDS
+
+Keep one compact loyalty preview showing:
+
+* Available points
+* Current tier
+* Progress towards the next tier
+* “View Rewards” button
+
+The detailed loyalty experience should remain on the Rewards page.
+
+11. VIVO STORIES
+
+Show no more than three editorial stories.
+
+Stories may include:
+
+* Community profiles
+* Styling stories
+* Vivo milestones
+* Campaign features
+* Store or event news
+
+Add a “View All Stories” link.
+
+12. GIVE YOUR VIVO A SECOND LIFE
+
+Keep the sustainability initiative as a small closing homepage feature or move it into Account under Sustainability if the homepage remains too long.
+
+CONTENT TO MOVE
+
+Move the following to the full Community page:
+
+* Complete member feed
+* Additional member posts
+* Additional style questions
+* Full events calendar
+* Boards We Love
+* All reels and videos
+* Mission submissions
+* Longer community conversations
+
+Move Community Fit Notes to the relevant product pages.
+
+Move See It on You to Shop and individual product pages.
+
+Move detailed company and store news to Vivo Stories.
+
+DESIGN REFINEMENTS
+
+* Retain the premium editorial Vivo identity
+* Reduce repeated white bordered cards
+* Use larger community photography
+* Fix all missing or broken images
+* Increase text readability and navigation size
+* Use consistent image ratios
+* Reduce repetitive orange labels
+* Create stronger spacing between major sections
+* Make the homepage wider and better balanced on desktop
+* Maintain a polished mobile-first design
+* Clearly separate community content from supporting shopping and rewards content
+
+The final homepage should feel like the curated front door to the Vivo community: lively, welcoming, inspirational and easy to participate in, with shopping and loyalty integrated naturally rather than dominating the experience.
