@@ -25717,6 +25717,34 @@ def _seed_fabric_field_grants():
         log.error("seed_fabric_field_grants failed: %s", e)
 
 
+@_deferred_startup
+def _seed_hidden_pages_default():
+    """Insert hidden_pages = [] into app_config if the key is absent.
+
+    Ensures a freshly-provisioned dev database starts with all pages visible
+    rather than having hidden_pages undefined (which _hidden_pages() treats as
+    [], but leaving the row absent means the panel shows no saved state).
+    Never overwrites an existing row.
+
+    Creates app_config if it doesn't yet exist so this seed is order-independent
+    relative to _init_style_tracker (which also creates the table).
+    """
+    try:
+        _users_exec("""
+            CREATE TABLE IF NOT EXISTS app_config (
+                key        TEXT PRIMARY KEY,
+                value      JSONB,
+                updated_at TIMESTAMPTZ DEFAULT now()
+            )""")
+        _users_exec(
+            "INSERT INTO app_config (key, value, updated_at) "
+            "VALUES ('hidden_pages', '[]'::jsonb, now()) "
+            "ON CONFLICT (key) DO NOTHING",
+        )
+    except Exception as e:
+        log.error("seed_hidden_pages_default failed: %s", e)
+
+
 def _sop_user_grants(user_id):
     try:
         rows = _users_exec(

@@ -59,6 +59,21 @@ const PageVisibility = () => {
     }
   };
 
+  const showAll = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      const r = await api.put("/admin/page-visibility", { hidden_pages: [] });
+      setHidden(Array.isArray(r.data?.hidden_pages) ? r.data.hidden_pages : []);
+      setSavedAt(new Date());
+      await checkAuth();
+    } catch (e) {
+      setError(e?.response?.data?.detail || e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
   if (loading) return <Loading label="Loading page visibility…" />;
 
   return (
@@ -69,15 +84,27 @@ const PageVisibility = () => {
           Hidden pages are also blocked at the route level. Role permissions still
           apply on top of this. Administration pages can't be hidden.
         </p>
-        <button
-          data-testid="save-visibility-btn"
-          className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-brand text-white font-semibold text-[13px] hover:bg-brand-deep disabled:opacity-60"
-          onClick={save}
-          disabled={saving}
-        >
-          <FloppyDisk size={14} weight="bold" />
-          {saving ? "Saving…" : "Save changes"}
-        </button>
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            data-testid="show-all-btn"
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-border text-ink font-semibold text-[13px] hover:bg-muted/40 disabled:opacity-60"
+            onClick={showAll}
+            disabled={saving || hidden.length === 0}
+            title="Clear all hidden pages and make everything visible"
+          >
+            <Eye size={14} weight="bold" />
+            Show all
+          </button>
+          <button
+            data-testid="save-visibility-btn"
+            className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-brand text-white font-semibold text-[13px] hover:bg-brand-deep disabled:opacity-60"
+            onClick={save}
+            disabled={saving}
+          >
+            <FloppyDisk size={14} weight="bold" />
+            {saving ? "Saving…" : "Save changes"}
+          </button>
+        </div>
       </div>
 
       {error && <ErrorBox message={error} />}
