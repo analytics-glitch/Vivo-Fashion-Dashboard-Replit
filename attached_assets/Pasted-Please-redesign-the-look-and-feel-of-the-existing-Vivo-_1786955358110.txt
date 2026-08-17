@@ -1,0 +1,223 @@
+Please redesign the look and feel of the existing Vivo Fashion Group community app using the uploaded Vivo images, official logo and reference screenshots.
+
+IMPORTANT:
+
+* Preserve all existing functionality, routes, authentication, database connections and business logic.
+* This is a visual redesign, not a rebuild.
+* Do not copy Oh Polly’s branding, wording, logo or exact design.
+* Use the reference screenshots only for inspiration regarding visual hierarchy, navigation, imagery and the premium fashion-app experience.
+* Use only the official uploaded Vivo logo—do not recreate it as typed text.
+* Before implementing, review the existing codebase and reuse the current components wherever possible.
+
+DESIGN DIRECTION
+
+Make the Vivo app feel:
+
+* Premium and modern
+* Feminine, warm and inclusive
+* Editorial and image-led
+* Clean and easy to navigate
+* Representative of stylish African women
+* Like a seamless combination of fashion shopping, community and loyalty rewards
+
+Use Vivo’s official brand colours and typography where provided. Use generous white space, clean line icons, consistent spacing and subtle transitions. Avoid excessive rounded cards, heavy shadows, gradients, borders or a generic dashboard appearance.
+
+1. LOGIN AND WELCOME SCREEN
+
+Use the strongest uploaded vertical Vivo campaign image as a full-screen, edge-to-edge background.
+
+Add a subtle dark gradient over the lower portion of the image to maintain text readability.
+
+Place the official Vivo logo clearly on the screen, followed by:
+
+“Welcome to Vivo”
+
+“Style, community and rewards—all in one place.”
+
+Add:
+
+* A prominent full-width “Sign In” button
+* A secondary outlined “Create Account” button
+* A small “Continue as Guest” text link
+
+Keep this screen visually striking, elegant and uncluttered. Ensure all elements remain within the mobile safe area.
+
+Do not place login fields directly over the campaign image. When the user taps “Sign In” or “Create Account”, open a separate clean authentication screen or bottom sheet.
+
+2. HOME PAGE
+
+Create a premium editorial shopping homepage.
+
+Header:
+
+* Sticky white header
+* Search icon on the left
+* Official Vivo logo centred
+* Shopping-bag icon on the right with an item-count badge
+
+Category navigation:
+Add a horizontally scrollable menu with:
+
+* New In
+* Workwear
+* Dresses
+* Tops
+* Bottoms
+* Denim
+* Active
+* Sale
+
+Show the selected category using a fine underline in Vivo’s primary brand colour.
+
+Homepage content order:
+
+A. Hero campaign
+
+* Use one strong uploaded Vivo campaign image
+* Add a short collection title
+* Add one supporting line
+* Add a “Shop Now” button
+* Use a subtle overlay only where needed for readability
+
+B. New This Week
+
+* Horizontal product carousel
+* Large product images
+* Product name
+* Price in KES
+* Colour swatches
+* Wishlist icon
+* Quick-add option
+
+C. Shop by Category
+Create a two-column editorial image grid using uploaded Vivo images for:
+
+* Workwear
+* Dresses
+* Everyday
+* Activewear
+
+D. Chosen for You
+Add a horizontally scrollable personalised product section.
+
+E. Promotional banner
+Include an editable banner for delivery offers, sales, new collections or store openings.
+
+F. The Vivo Community
+Use uploaded lifestyle, customer, creator or event images.
+Include a “Join the Conversation” call to action.
+
+G. Member Rewards
+Show:
+
+* Current points
+* Membership tier
+* Progress towards the next tier
+* “View Rewards” button
+
+H. Vivo Stories
+Show editorial content such as styling tips, campaign stories, customer features and event updates.
+
+3. BOTTOM NAVIGATION
+
+Create a fixed bottom navigation with simple line icons and labels:
+
+* Home
+* Shop
+* Community
+* Rewards
+* Account
+
+Highlight the active tab using Vivo’s primary brand colour.
+
+Ensure content does not disappear behind the navigation bar and account for iOS and Android safe areas.
+
+4. COMMUNITY PAGE
+
+Make the Community page feel like an inspiring Vivo members’ space, not a copy of Instagram.
+
+Include:
+
+* Featured community story or monthly campaign
+* “How She Wore It” customer and creator posts
+* Styling conversations and polls
+* Upcoming Vivo events
+* Store updates
+* Member challenges
+* Product tags that allow users to shop featured outfits
+* Like, comment, save and share actions
+* A clear but elegant “Create Post” button
+
+Add filters:
+
+* For You
+* Styling
+* Events
+* Stores
+* Conversations
+
+Use clean, image-led cards with restrained engagement icons.
+
+5. SHOPPING AND PRODUCT CARDS
+
+Use a two-column product grid on shopping and category pages.
+
+Each product card should include:
+
+* Large, consistent product image
+* Product name, limited to two lines
+* Price in KES
+* Colour swatches
+* Wishlist icon
+* New, Bestseller or Sale label where applicable
+* Quick-add button
+
+Keep the product photography dominant. Avoid thick borders, heavy shadows and oversized rounded corners.
+
+6. REWARDS PAGE
+
+Create an elegant and easy-to-understand loyalty page showing:
+
+* Customer’s first name
+* Current membership tier
+* Available points
+* Redeemable points value
+* Progress towards the next tier
+* Available rewards
+* Exclusive member offers
+* Early access to collections
+* Event invitations
+* Points and purchase history
+* A simple explanation of how to earn and redeem points
+
+The page should feel aspirational and fashionable, not like a banking dashboard.
+
+7. RESPONSIVENESS AND QUALITY
+
+Optimise the entire experience for mobile first, while ensuring it also works on tablet and desktop.
+
+Use the uploaded images according to their composition and orientation. Do not stretch, distort or crop out faces or products. Use consistent aspect ratios within each section.
+
+Include polished:
+
+* Loading states
+* Empty states
+* Error states
+* Button states
+* Form validation
+* Page transitions
+* Image-loading placeholders
+
+After completing the redesign, audit the entire interface for:
+
+* Inconsistent typography
+* Uneven spacing
+* Misaligned elements
+* Poor image cropping
+* Low text contrast
+* Horizontal overflow
+* Content hidden behind navigation
+* Inconsistent buttons and icons
+* Accessibility issues
+
+Please begin with the login screen and homepage. Show me the completed result for these two screens before redesigning the remaining pages.
