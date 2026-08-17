@@ -3,25 +3,23 @@ import { Minus, Plus, ChevronRight } from 'lucide-react';
 
 export const kes = (n) => "KES " + Math.round(Number(n) || 0).toLocaleString("en-KE");
 
-/* Official Vivo wordmark — Century Gothic regular (never bold), "Vivo" with
-   lowercase ivo, no ® (dropped from the brand). Standard treatment: white
-   wordmark on a Pantone 021C field. The field hex is hardcoded on purpose:
-   the logo stays exact brand orange even if the theme accent ever moves. */
+/* Brand image assets (campaign photography + the official logo PNG) live in
+   public/assets/brand — always resolve through BASE_URL so the /app/ mount
+   keeps working. */
+export const brandAsset = (name) => `${import.meta.env.BASE_URL}assets/brand/${name}`;
+
+/* Official Vivo logo — the uploaded brand PNG (white wordmark on the
+   Pantone 021C field), never re-typed text. Same component API as before
+   so every call site keeps working. */
 export function VivoLogo({ size = "md", className = "" }) {
-  const field = {
-    sm: "h-9 px-3",
-    md: "h-11 px-3.5",
-    lg: "h-16 px-5",
-  };
-  const word = {
-    sm: "text-[19px]",
-    md: "text-[23px]",
-    lg: "text-[34px]",
-  };
+  const h = { sm: "h-8", md: "h-10", lg: "h-14" }[size] || "h-10";
   return (
-    <span role="img" aria-label="Vivo" className={`inline-flex items-center justify-center rounded bg-[#FE5000] select-none ${field[size]} ${className}`}>
-      <span aria-hidden="true" className={`font-logo font-normal text-white leading-none tracking-[0.02em] ${word[size]}`}>Vivo</span>
-    </span>
+    <img
+      src={brandAsset("vivo-logo.png")}
+      alt="Vivo"
+      draggable={false}
+      className={`${h} w-auto rounded select-none ${className}`}
+    />
   );
 }
 

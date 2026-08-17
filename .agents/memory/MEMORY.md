@@ -121,3 +121,5 @@
 - [Sublimation costing canon](sublimation-costing-canon.md) — BOM op time = settable STANDARD throughput (default 60, actual = variance only); server recomputes saves; reprint on printing lines only; rate constants FE+BE lockstep.
 - [Artifact service environments](artifact-service-environments.md) — when adding an API service, preserve the web artifact's global BASE_PATH env block or its managed Vite workflow will fail before startup.
 - [Product Workspace preview auth](product-workspace-preview-auth.md) — embedded HTTPS previews need Secure/SameSite=None session cookies or API pages can 401 after session bootstrap.
+- [Community guest mode](community-guest-mode.md) — guest fence must cover deep-linkable URL-state overlays (?event=, member ?page= ids) and every member-write control, not just tabs.
+- Paint-order trap: a static <img> paints BELOW an absolutely-positioned sibling — a persistent absolute pulse/placeholder overlay washes the photo out; make the overlay strictly conditional or position the img.

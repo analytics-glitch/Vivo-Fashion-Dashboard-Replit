@@ -40,9 +40,10 @@ function Splash() {
 }
 
 function Root() {
-  const { member, loading } = useAuth();
+  const { member, loading, guest } = useAuth();
   if (loading) return <Splash />;
-  return member ? <CommunityShell /> : <AuthFlow />;
+  // Guests browse the same shell — member-only surfaces prompt for sign-in.
+  return member || guest ? <CommunityShell /> : <AuthFlow />;
 }
 
 export default function App() {

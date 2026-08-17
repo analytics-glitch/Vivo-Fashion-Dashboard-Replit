@@ -1,23 +1,17 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Heart, MessageCircle, Share, ArrowRight, ChevronRight, Cake, Gift, Ruler, Layers, X, Sparkles, ClipboardList, Trophy, HandHeart } from "lucide-react";
+import { Heart, MessageCircle, Share, ArrowRight, ChevronRight, Cake, Gift, Ruler, Layers, X, Sparkles, ClipboardList, Trophy, HandHeart, ShoppingBag } from "lucide-react";
 import { styleBoards, fitFor } from "./mockData";
 import PostDetailModal from "./PostDetailModal";
 import { PostVisual, timeAgo } from "./PostBits";
-import { TierBadge, Avatar, ImagePlaceholder, cardCls } from "./ui";
+import { TierBadge, Avatar, ImagePlaceholder, cardCls, brandAsset, kes, MerchBadge, SectionHeader } from "./ui";
+import { useWishlist } from "@/context/WishlistContext";
 import { api } from "@/lib/api";
 import { NEWS, newsPageId } from "./newsData";
 import ReelsRow from "./ReelsRow";
 import NewsSection, { NewsCardCompact } from "./NewsSection";
-import JustLandedRow from "./JustLandedRow";
 import { FabulasHomeCard } from "./FabulasStory";
 import { fabulasOfTheDay } from "./fabulasStories";
 
-const fmtShort = (iso) => {
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime())
-    ? ""
-    : d.toLocaleDateString("en-KE", { day: "numeric", month: "long" });
-};
 const initialsOf = (u) =>
   (u || "?").split(/[._\s-]+/).filter(Boolean).slice(0, 2)
     .map((x) => x[0].toUpperCase()).join("") || "?";
@@ -239,6 +233,8 @@ function SecondLifeCard({ onOpenPage }) {
    nothing (the feed simply flows on). */
 function PersonalCard({ member, onNavigate }) {
   const now = new Date();
+  // Guests have no tier journey — the card is a member moment only.
+  if (!member) return null;
   const dobMonth = member?.dob ? parseInt(String(member.dob).slice(5, 7), 10) : NaN;
   const birthday = !Number.isNaN(dobMonth) && dobMonth === now.getMonth() + 1;
   // Tier progress runs on lifetime earn — redeeming a reward never walks it backwards.
@@ -545,6 +541,340 @@ function SurveyPromoCard({ onOpenPage }) {
   );
 }
 
+/* ---------- Editorial homepage sections (image-led redesign) ---------- */
+
+/* Category strip — horizontal pills with a fine brand-colour underline on
+   the active one. Tapping any category leads into the Shop tab. */
+const HOME_CATEGORIES = ["New In", "Workwear", "Dresses", "Tops", "Bottoms", "Denim", "Active", "Sale"];
+function CategoryStrip({ onNavigate }) {
+  const [active, setActive] = useState("New In");
+  return (
+    <nav aria-label="Shop categories" className="-mx-4 px-4 sm:mx-0 sm:px-0 overflow-x-auto hide-scrollbar">
+      <div className="flex gap-6 border-b border-border min-w-max">
+        {HOME_CATEGORIES.map((c) => (
+          <button
+            key={c}
+            data-testid={`home-cat-${c.toLowerCase().replace(/\s+/g, "-")}`}
+            onClick={() => { setActive(c); onNavigate("shop"); }}
+            className={`relative pb-3 pt-1 text-[13px] whitespace-nowrap transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary rounded-sm ${
+              active === c ? "text-foreground font-semibold" : "text-muted-foreground hover:text-foreground font-medium"
+            }`}
+          >
+            {c}
+            {active === c && <span className="absolute bottom-0 left-0 w-full h-[2px] bg-primary" aria-hidden="true" />}
+          </button>
+        ))}
+      </div>
+    </nav>
+  );
+}
+
+/* Hero campaign — one strong vertical campaign photo, overlay only where the
+   copy sits so faces and the garment stay untouched. */
+function HeroCampaign({ onNavigate }) {
+  const [loaded, setLoaded] = useState(false);
+  return (
+    <section data-testid="home-hero" className="-mx-4 sm:mx-0 relative overflow-hidden sm:rounded bg-secondary">
+      <div className="aspect-[4/5] sm:aspect-auto sm:h-[560px] relative">
+        <img
+          src={brandAsset("hero.jpg")}
+          alt="Vivo new season campaign"
+          ref={(el) => { if (el && el.complete) setLoaded(true); }}
+          onLoad={() => setLoaded(true)}
+          className="relative w-full h-full object-cover object-[center_20%]"
+          draggable={false}
+        />
+        {/* Loading shimmer — sits on top only until the photo arrives (a
+            static img paints below positioned siblings, so this must be
+            strictly conditional or it washes the photo out). */}
+        {!loaded && <div className="absolute inset-0 bg-secondary animate-pulse" aria-hidden="true" />}
+        <div className="absolute inset-x-0 bottom-0 h-2/3 bg-gradient-to-t from-black/70 via-black/20 to-transparent pointer-events-none" />
+        <div className="absolute inset-x-0 bottom-0 p-6 sm:p-10 text-white">
+          <div className="text-[11px] font-bold uppercase tracking-[0.25em] text-white/80 mb-2">The new season edit</div>
+          <h2 className="font-serif text-3xl sm:text-4xl leading-tight mb-2 text-white">Colour, out loud</h2>
+          <p className="text-[14px] text-white/85 mb-5 max-w-sm">Bold prints and easy silhouettes — designed in Nairobi, worn everywhere.</p>
+          <button
+            data-testid="hero-shop-now"
+            onClick={() => onNavigate("shop")}
+            className="h-11 px-8 rounded bg-white text-neutral-900 font-medium text-[14px] hover:bg-white/90 active:scale-[0.98] transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
+          >
+            Shop Now
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/* Product rail card — image-led with wishlist heart, colour swatch and a
+   quick-add affordance (opens the piece so she picks her size — bag adds
+   always go through the PDP, unchanged). */
+const SWATCH_HEX = {
+  black: "#1f1f1f", white: "#f5f5f2", cream: "#efe7d8", beige: "#d9c7ab", brown: "#7a5236",
+  tan: "#c8a06a", navy: "#22304d", blue: "#3f6ab5", "light blue": "#a9c6e8", green: "#3f6d4e",
+  olive: "#6b6b3a", yellow: "#e5c33c", mustard: "#d0a12c", orange: "#e0662a", red: "#b03030",
+  maroon: "#6e2432", burgundy: "#6e2432", wine: "#5d1f30", pink: "#e2a3b6", purple: "#7757a8",
+  lilac: "#b9a3d6", grey: "#9a9a9a", gray: "#9a9a9a", multi: "#c9a0e0",
+};
+const swatchFor = (color) => {
+  const c = String(color || "").toLowerCase();
+  for (const [name, hex] of Object.entries(SWATCH_HEX)) if (c.includes(name)) return hex;
+  return "";
+};
+function RailCard({ p, onOpenProduct, idPrefix = "rail" }) {
+  const { has, toggle } = useWishlist();
+  const saved = has(p.sku);
+  const [imgOk, setImgOk] = useState(true);
+  const hex = swatchFor(p.color);
+  return (
+    <div className="w-[170px] sm:w-[200px] shrink-0 snap-start relative group">
+      <button
+        data-testid={`${idPrefix}-card-${p.sku}`}
+        onClick={() => onOpenProduct?.(p.sku)}
+        className="w-full text-left rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+      >
+        <div className="relative aspect-[3/4] rounded overflow-hidden bg-secondary mb-2.5">
+          {imgOk ? (
+            <img
+              src={p.image_url}
+              alt={p.style_name}
+              loading="lazy"
+              onError={() => setImgOk(false)}
+              className="w-full h-full object-contain transition-transform duration-500 group-hover:scale-[1.02]"
+            />
+          ) : (
+            <ImagePlaceholder aspectRatio="h-full" text={p.style_name} className="rounded-none border-none" />
+          )}
+          <MerchBadge badge={p.badge} testId={`${idPrefix}-badge-${p.sku}`} className="absolute bottom-2 left-2" />
+        </div>
+        <div className="font-serif text-[13px] leading-snug text-foreground line-clamp-2 mb-1">{p.style_name}</div>
+        <div className="flex items-center gap-2 mb-0.5">
+          {p.color && (
+            <span className="flex items-center gap-1.5 min-w-0">
+              {hex && <span className="w-3 h-3 rounded-full border border-border shrink-0" style={{ background: hex }} aria-hidden="true" />}
+              <span className="text-[11px] text-muted-foreground truncate">{p.color}</span>
+            </span>
+          )}
+        </div>
+        <div className="text-[13px] font-medium text-foreground">{kes(p.price)}</div>
+      </button>
+      <div className="absolute top-2 right-2 flex flex-col gap-1.5">
+        <button
+          data-testid={`${idPrefix}-wish-${p.sku}`}
+          aria-label={saved ? `Remove ${p.style_name} from wishlist` : `Add ${p.style_name} to wishlist`}
+          aria-pressed={saved}
+          onClick={() => toggle({ sku: p.sku, name: p.style_name, price: p.price, image: p.image_url, color: p.color || "", category: p.category || "" })}
+          className="w-9 h-9 rounded-full bg-background/85 backdrop-blur flex items-center justify-center text-foreground hover:bg-background transition-colors shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+        >
+          <Heart size={15} strokeWidth={1.5} className={saved ? "fill-primary text-primary-ink" : ""} />
+        </button>
+        <button
+          data-testid={`${idPrefix}-quickadd-${p.sku}`}
+          aria-label={`Quick add ${p.style_name}`}
+          onClick={() => onOpenProduct?.(p.sku)}
+          className="w-9 h-9 rounded-full bg-background/85 backdrop-blur flex items-center justify-center text-foreground hover:bg-background transition-colors shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+        >
+          <ShoppingBag size={14} strokeWidth={1.5} />
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ProductRail({ kicker, title, sub, products, onOpenProduct, onSeeAll, testId, idPrefix }) {
+  const items = (products || []).slice(0, 10);
+  if (!items.length) return null;
+  return (
+    <section data-testid={testId}>
+      <SectionHeader kicker={kicker} title={title} sub={sub} action="Shop all" onAction={onSeeAll} actionTestId={`${idPrefix}-see-all`} />
+      <div className="flex gap-3 overflow-x-auto hide-scrollbar snap-x -mx-4 px-4 sm:mx-0 sm:px-0 pb-1">
+        {items.map((p) => <RailCard key={p.sku} p={p} onOpenProduct={onOpenProduct} idPrefix={idPrefix} />)}
+      </div>
+    </section>
+  );
+}
+
+/* Shop by Category — two-column editorial grid on the uploaded campaign
+   photography. Whole tile is the tap target into Shop. */
+const CATEGORY_TILES = [
+  { label: "Workwear", img: "cat-workwear.jpg" },
+  { label: "Dresses", img: "cat-dresses.jpg" },
+  { label: "Everyday", img: "cat-everyday.jpg" },
+  { label: "Activewear", img: "cat-active.jpg" },
+];
+function CategoryGrid({ onNavigate }) {
+  return (
+    <section data-testid="home-category-grid">
+      <SectionHeader kicker="Explore" title="Shop by Category" />
+      <div className="grid grid-cols-2 gap-3 sm:gap-4">
+        {CATEGORY_TILES.map((t) => (
+          <button
+            key={t.label}
+            data-testid={`home-cat-tile-${t.label.toLowerCase()}`}
+            onClick={() => onNavigate("shop")}
+            className="relative rounded overflow-hidden aspect-[3/4] bg-secondary group text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          >
+            <img
+              src={brandAsset(t.img)}
+              alt={t.label}
+              loading="lazy"
+              className="w-full h-full object-cover object-top transition-transform duration-700 group-hover:scale-[1.03]"
+              draggable={false}
+            />
+            <div className="absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-black/65 to-transparent pointer-events-none" />
+            <div className="absolute bottom-0 left-0 p-4">
+              <span className="font-serif text-white text-lg sm:text-xl">{t.label}</span>
+              <span className="block text-[11px] text-white/80 mt-0.5 flex items-center gap-1">Shop now <ChevronRight size={11} /></span>
+            </div>
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+/* Promotional banner — editable in one place: change HOME_PROMO to swap in
+   delivery offers, sales, new collections or store openings. */
+const HOME_PROMO = {
+  kicker: "For a limited time",
+  title: "Free delivery over KES 5,000",
+  sub: "Nairobi, Kigali and Kampala — straight to your door.",
+  cta: "Shop the collection",
+  image: "promo.jpg",
+};
+function PromoBanner({ onNavigate }) {
+  return (
+    <section data-testid="home-promo-banner" className="-mx-4 sm:mx-0 relative overflow-hidden sm:rounded bg-foreground">
+      <img
+        src={brandAsset(HOME_PROMO.image)}
+        alt=""
+        loading="lazy"
+        className="absolute inset-0 w-full h-full object-cover object-[center_30%] opacity-80"
+        draggable={false}
+      />
+      <div className="absolute inset-0 bg-gradient-to-r from-black/75 via-black/45 to-black/20 pointer-events-none" />
+      <div className="relative p-6 sm:p-10 max-w-md text-white">
+        <div className="text-[10px] font-bold uppercase tracking-[0.25em] text-white/75 mb-2">{HOME_PROMO.kicker}</div>
+        <h3 className="font-serif text-2xl sm:text-3xl leading-tight mb-1.5 text-white">{HOME_PROMO.title}</h3>
+        <p className="text-[13px] text-white/85 mb-5">{HOME_PROMO.sub}</p>
+        <button
+          data-testid="home-promo-cta"
+          onClick={() => onNavigate("shop")}
+          className="h-10 px-6 rounded border border-white/80 text-white text-[13px] font-medium hover:bg-white/10 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
+        >
+          {HOME_PROMO.cta}
+        </button>
+      </div>
+    </section>
+  );
+}
+
+/* The Vivo Community — lifestyle imagery + Join the Conversation CTA. */
+function CommunitySpotlight({ onNavigate }) {
+  return (
+    <section data-testid="home-community-spotlight" className="relative overflow-hidden rounded bg-secondary">
+      <div className="grid sm:grid-cols-2">
+        <div className="relative aspect-[4/5] sm:aspect-auto">
+          <img
+            src={brandAsset("community.jpg")}
+            alt="Vivo members together"
+            loading="lazy"
+            className="absolute inset-0 w-full h-full object-cover object-top"
+            draggable={false}
+          />
+        </div>
+        <div className="p-6 sm:p-10 flex flex-col justify-center bg-card">
+          <div className="text-[10px] font-bold uppercase tracking-widest text-primary-ink mb-2">The Vivo Community</div>
+          <h3 className="font-serif text-2xl sm:text-3xl leading-tight text-foreground mb-2">Real women. Real style. Yours to join.</h3>
+          <p className="text-[14px] text-muted-foreground leading-relaxed mb-6">
+            Style challenges, member events and conversations with women who dress like you do — we shine together.
+          </p>
+          <button
+            data-testid="home-community-cta"
+            onClick={() => onNavigate("community")}
+            className="h-11 px-6 rounded bg-primary text-primary-foreground font-medium text-[14px] w-full sm:w-auto sm:self-start flex items-center justify-center gap-2 hover:opacity-90 active:scale-[0.98] transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+          >
+            Join the Conversation <ArrowRight size={15} />
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/* Member Rewards summary — points, tier, next-tier progress, View Rewards. */
+function RewardsSummaryCard({ member, onNavigate }) {
+  if (!member) return null;
+  const lifetime = member.lifetime_points ?? member.points ?? 0;
+  const next = lifetime < 500 ? { tier: "Ruby", at: 500 } : lifetime < 1000 ? { tier: "Tanzanite", at: 1000 } : null;
+  const pct = next ? Math.min(100, Math.round((lifetime / next.at) * 100)) : 100;
+  return (
+    <section data-testid="home-rewards-card" className={`${cardCls} p-6 sm:p-8`}>
+      <div className="flex items-start justify-between gap-4 mb-5">
+        <div>
+          <div className="text-[10px] font-bold uppercase tracking-widest text-primary-ink mb-1.5">Member Rewards</div>
+          <div className="font-serif text-3xl text-foreground leading-none">
+            {(member.points ?? 0).toLocaleString()} <span className="text-base text-muted-foreground font-sans">pts</span>
+          </div>
+        </div>
+        {member.tier && <TierBadge tier={member.tier} />}
+      </div>
+      <div className="mb-2 flex items-center justify-between text-[12px]">
+        <span className="text-muted-foreground">
+          {next ? `${(next.at - lifetime).toLocaleString()} pts to ${next.tier}` : "Top tier — Tanzanite ✦"}
+        </span>
+        <span className="text-muted-foreground tabular-nums">{pct}%</span>
+      </div>
+      <div className="h-1.5 rounded-full bg-secondary overflow-hidden mb-6">
+        <div className="h-full bg-primary rounded-full transition-all" style={{ width: `${pct}%` }} />
+      </div>
+      <button
+        data-testid="home-rewards-cta"
+        onClick={() => onNavigate("rewards")}
+        className="h-11 w-full sm:w-auto sm:px-8 rounded bg-foreground text-background font-medium text-[14px] flex items-center justify-center gap-2 hover:opacity-90 active:scale-[0.98] transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+      >
+        View Rewards <ArrowRight size={15} />
+      </button>
+    </section>
+  );
+}
+
+/* Vivo Stories — editorial covers over the news stories the app already
+   carries; tapping opens the full article page. */
+const STORY_COVERS = ["story-1.jpg", "story-2.jpg", "story-3.jpg"];
+function VivoStories({ onOpenNews }) {
+  const items = NEWS.slice(0, 3);
+  if (!items.length) return null;
+  return (
+    <section data-testid="home-stories">
+      <SectionHeader kicker="Vivo Stories" title="Styling, campaigns & what's on" />
+      <div className="flex gap-3 overflow-x-auto hide-scrollbar snap-x -mx-4 px-4 sm:mx-0 sm:px-0 pb-1 sm:grid sm:grid-cols-3 sm:overflow-visible">
+        {items.map((n, i) => (
+          <button
+            key={n.id}
+            data-testid={`home-story-${n.id}`}
+            onClick={() => onOpenNews(n.id)}
+            className="w-[240px] sm:w-auto shrink-0 snap-start text-left group rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          >
+            <div className="relative aspect-[4/5] rounded overflow-hidden bg-secondary mb-3">
+              <img
+                src={brandAsset(STORY_COVERS[i % STORY_COVERS.length])}
+                alt=""
+                loading="lazy"
+                className="w-full h-full object-cover object-top transition-transform duration-700 group-hover:scale-[1.03]"
+                draggable={false}
+              />
+            </div>
+            <div className="text-[10px] font-bold uppercase tracking-wider text-primary-ink mb-1">{n.kicker}</div>
+            <div className="font-serif text-[16px] leading-snug text-foreground group-hover:underline underline-offset-2 decoration-border line-clamp-2">{n.headline}</div>
+            <div className="text-[11px] text-muted-foreground mt-1">{n.date}</div>
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage, onOpenEvent, onOpenFabulas }) {
   const [products, setProducts] = useState([]);
   const [picked, setPicked] = useState([]);
@@ -616,109 +946,75 @@ export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage,
   };
   const P = feed;
 
-  /* Feed composition (spec): member content leads; the reels row and news
-     section sit as labeled sections near the top but below the first member
-     posts; roughly one brand card (reels / news / products) per 3–4 member
-     posts; community cards (mission, fit notes, board, voices) add variety
-     in between. */
+  // "Chosen for You" — Style-DNA-personalised when available, otherwise a
+  // curated slice of the live catalogue so the rail is never empty.
+  const chosen = picked.length > 0 ? picked : products.slice(4, 12);
+
+  /* Editorial homepage order (per the redesign brief): category strip →
+     hero campaign → personal moments → New This Week → Shop by Category →
+     Chosen for You → promo banner → Community → Member Rewards → Stories.
+     Every previous section stays — restyled and reordered, not removed. */
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-12">
-      {/* Main Feed */}
-      <div className="lg:col-span-8">
-        <h2 className="text-2xl font-serif mb-6 text-foreground tracking-tight">The Latest</h2>
-        <div className="space-y-8">
+    <div className="max-w-3xl mx-auto space-y-10 sm:space-y-14">
+      <div className="space-y-6 -mt-2">
+        <CategoryStrip onNavigate={onNavigate} />
+        <HeroCampaign onNavigate={onNavigate} />
+      </div>
+
+      {/* Personal moments — celebration/tier/survey cards, member-only */}
+      {member && (
+        <div className="space-y-4 empty:hidden">
           <CelebrationCard member={member} />
           <WinnerCongratsCard />
           <PersonalCard member={member} onNavigate={onNavigate} />
           <SurveyPromoCard onOpenPage={onOpenPage} />
-          <TryOnPromoCard onOpenPage={onOpenPage} />
+        </div>
+      )}
+
+      <ProductRail
+        kicker="New This Week"
+        title="Fresh off the floor"
+        sub="The newest pieces in the live collection."
+        products={products}
+        onOpenProduct={onOpenProduct}
+        onSeeAll={shopTap}
+        testId="home-new-this-week"
+        idPrefix="ntw"
+      />
+
+      <CategoryGrid onNavigate={onNavigate} />
+
+      {chosen.length > 0 && (
+        <ProductRail
+          kicker="Chosen for You"
+          title={picked.length > 0 ? "Your Style DNA at work" : "Pieces we think you'll love"}
+          sub={picked.length > 0 ? "Pieces chosen from what you told us you love." : "Take the Style Quiz and we'll tune these to you."}
+          products={chosen}
+          onOpenProduct={onOpenProduct}
+          onSeeAll={shopTap}
+          testId="picked-for-you"
+          idPrefix="pfy"
+        />
+      )}
+
+      {member && <TryOnPromoCard onOpenPage={onOpenPage} />}
+
+      <PromoBanner onNavigate={onNavigate} />
+
+      {/* The Vivo Community — spotlight, live conversation, mission & events */}
+      <div className="space-y-6">
+        <CommunitySpotlight onNavigate={onNavigate} />
+        <MissionCard challenge={featuredChallenge} onNavigate={onNavigate} />
+        {/* Post cards + reels carry like/comment writes — members only.
+            Guests still get the spotlight + CTA, which routes them to the
+            sign-in fence on the Community tab. */}
+        {member && (<>
           <PostCard post={P[0]} onShopTap={shopTap} onOpenProduct={onOpenProduct} onOpen={openPost} onCounts={patchPost} />
           <PostCard post={P[1]} onShopTap={shopTap} onOpenProduct={onOpenProduct} onOpen={openPost} onCounts={patchPost} />
           <ReelsRow member={member} />
           <PostCard post={P[2]} onShopTap={shopTap} onOpenProduct={onOpenProduct} onOpen={openPost} onCounts={patchPost} />
-          <MissionCard challenge={featuredChallenge} onNavigate={onNavigate} />
-          <PostCard post={P[3]} onShopTap={shopTap} onOpenProduct={onOpenProduct} onOpen={openPost} onCounts={patchPost} />
-          <PostCard post={P[4]} onShopTap={shopTap} onOpenProduct={onOpenProduct} onOpen={openPost} onCounts={patchPost} />
-          <NewsSection onOpenNews={openNews} />
-          <FabulasHomeCard story={fabulasOfTheDay()} onOpenStory={onOpenFabulas} />
-          <PostCard post={P[5]} onShopTap={shopTap} onOpenProduct={onOpenProduct} onOpen={openPost} onCounts={patchPost} />
-          <PostCard post={P[6]} onShopTap={shopTap} onOpenProduct={onOpenProduct} onOpen={openPost} onCounts={patchPost} />
-          <UpcomingEventCard ev={nextEvent} onOpen={onOpenEvent} />
-          <SecondLifeCard onOpenPage={onOpenPage} />
-          <PostCard post={P[7]} onShopTap={shopTap} onOpenProduct={onOpenProduct} onOpen={openPost} onCounts={patchPost} />
-          <FitNoteHighlight product={fitPick} onOpenProduct={onOpenProduct} />
-          <PostCard post={P[8]} onShopTap={shopTap} onOpenProduct={onOpenProduct} onOpen={openPost} onCounts={patchPost} />
-          {detailIdx >= 0 && P[detailIdx] && (
-            <PostDetailModal restoreY={restoreY} posts={P} index={detailIdx} onIndex={setDetailIdx}
-                             onClose={() => setDetailIdx(-1)} onOpenProduct={onOpenProduct}
-                             onCounts={patchPost} />
-          )}
-          <JustLandedRow products={products} onOpenProduct={onOpenProduct} onSeeAll={shopTap} />
-          {picked.length > 0 && (
-            <JustLandedRow
-              products={picked}
-              onOpenProduct={onOpenProduct}
-              onSeeAll={shopTap}
-              kicker="Picked for you"
-              title="Your Style DNA at work"
-              sub="Pieces chosen from what you told us you love."
-              testId="picked-for-you"
-              idPrefix="pfy"
-              actionTestId="pfy-see-all"
-            />
-          )}
-          <PostCard post={P[9]} onShopTap={shopTap} />
-          <CommunityVoice />
-          <PostCard post={P[10]} onShopTap={shopTap} />
-          <BoardHighlight board={styleBoards[3]} onNavigate={onNavigate} />
-          <NewsCardCompact article={NEWS[3]} onOpen={openNews} />
-          <PostCard post={P[11]} onShopTap={shopTap} />
-          <EndCap onNavigate={onNavigate} />
-        </div>
-      </div>
-
-      {/* Sidebar (desktop) — mobile gets the same beats in-feed via the
-          mission card and community-voice card, so it's hidden there. */}
-      <aside className="hidden lg:block lg:col-span-4 space-y-8">
-        {/* Featured Challenge */}
-        {featuredChallenge && (
-          <div className="bg-secondary rounded p-6 border border-border relative overflow-hidden group">
-            <div className="absolute top-0 right-0 w-32 h-32 bg-primary/5 rounded-full blur-2xl -translate-y-1/2 translate-x-1/4 pointer-events-none" />
-
-            <div className="inline-block px-2 py-1 bg-primary-ink text-primary-foreground text-[10px] font-bold uppercase tracking-wider rounded-sm mb-4">
-              Featured Challenge
-            </div>
-            <h3 className="text-xl font-serif text-foreground mb-2">{featuredChallenge.title}</h3>
-            <p className="text-muted-foreground text-sm mb-5 leading-relaxed">{featuredChallenge.description}</p>
-            <div className="flex items-center justify-between gap-3 mb-6 text-sm">
-              <span className="font-semibold text-primary-ink">{featuredChallenge.closed ? "Closed" : `Ends ${fmtShort(featuredChallenge.deadline)}`}</span>
-              <span className="text-[11px] font-medium text-muted-foreground text-right">Earn {featuredChallenge.points} pts when published</span>
-            </div>
-            <button
-              data-testid="enter-challenge-btn"
-              onClick={() => onNavigate("community")}
-              className="w-full bg-foreground text-background h-11 rounded font-medium text-[15px] flex items-center justify-center gap-2 hover:opacity-90 transition-colors active:scale-[0.98]"
-            >
-              Join the Challenge <ArrowRight size={16} />
-            </button>
-          </div>
-        )}
-
-        {/* This season at Vivo — quick links into the news stories */}
-        <div className={`${cardCls} p-6`}>
-          <h3 className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-5">This Season at Vivo</h3>
-          <div className="space-y-5">
-            {NEWS.slice(0, 3).map((n) => (
-              <button key={n.id} data-testid={`side-news-${n.id}`} onClick={() => openNews(n.id)} className="w-full text-left group rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
-                <div className="text-[10px] font-bold uppercase tracking-wider text-primary-ink mb-1">{n.kicker}</div>
-                <div className="font-serif text-[15px] leading-snug text-foreground group-hover:underline underline-offset-2 decoration-border">{n.headline}</div>
-                <div className="text-[11px] text-muted-foreground mt-1">{n.date}</div>
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Spotlight — the same rotating jewel the celebration wall crowns */}
+        </>)}
+        <UpcomingEventCard ev={nextEvent} onOpen={onOpenEvent} />
         {cel?.jewel && (
           <div className={`${cardCls} p-6`}>
             <h3 className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-5">This Week's Jewel</h3>
@@ -735,7 +1031,33 @@ export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage,
             </blockquote>
           </div>
         )}
-      </aside>
+        <CommunityVoice />
+      </div>
+
+      <RewardsSummaryCard member={member} onNavigate={onNavigate} />
+
+      {/* Vivo Stories — editorial covers, plus the deeper news & fit reads */}
+      <div className="space-y-6">
+        <VivoStories onOpenNews={openNews} />
+        <FabulasHomeCard story={fabulasOfTheDay()} onOpenStory={onOpenFabulas} />
+        <NewsSection onOpenNews={openNews} />
+        <FitNoteHighlight product={fitPick} onOpenProduct={onOpenProduct} />
+        <BoardHighlight board={styleBoards[3]} onNavigate={onNavigate} />
+        <NewsCardCompact article={NEWS[3]} onOpen={openNews} />
+        {member && (<>
+          <PostCard post={P[3]} onShopTap={shopTap} onOpenProduct={onOpenProduct} onOpen={openPost} onCounts={patchPost} />
+          <PostCard post={P[4]} onShopTap={shopTap} onOpenProduct={onOpenProduct} onOpen={openPost} onCounts={patchPost} />
+        </>)}
+        <SecondLifeCard onOpenPage={onOpenPage} />
+      </div>
+
+      {detailIdx >= 0 && P[detailIdx] && (
+        <PostDetailModal restoreY={restoreY} posts={P} index={detailIdx} onIndex={setDetailIdx}
+                         onClose={() => setDetailIdx(-1)} onOpenProduct={onOpenProduct}
+                         onCounts={patchPost} />
+      )}
+
+      <EndCap onNavigate={onNavigate} />
     </div>
   );
 }

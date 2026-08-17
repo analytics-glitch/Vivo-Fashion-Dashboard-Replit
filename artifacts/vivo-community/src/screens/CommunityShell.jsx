@@ -24,14 +24,14 @@ import MyDataView from "@/components/community/MyDataView";
 import LegalPage from "@/components/community/LegalPage";
 import NewsArticle from "@/components/community/NewsArticle";
 import { isNewsPageId } from "@/components/community/newsData";
-import { Home, Users, ShoppingBag, Gift, User, Heart, HelpCircle } from "lucide-react";
+import { Home, Users, ShoppingBag, Gift, User, Heart, HelpCircle, Search } from "lucide-react";
 
 const TABS = [
   { id: "home", label: "Home", icon: Home },
-  { id: "community", label: "Community", icon: Users },
   { id: "shop", label: "Shop", icon: ShoppingBag },
+  { id: "community", label: "Community", icon: Users },
   { id: "rewards", label: "Rewards", icon: Gift },
-  { id: "profile", label: "Profile", icon: User },
+  { id: "profile", label: "Account", icon: User },
 ];
 
 // Static help & legal pages routed via the ?page= param. News articles ride
@@ -80,8 +80,27 @@ function WishlistButton({ mobile = false }) {
   );
 }
 
+/* Guest fence for member-only tabs — browsing stays open, membership
+   surfaces invite her in. exitGuest returns to the welcome screen. */
+function GuestGate({ title, body, onJoin }) {
+  return (
+    <div className="max-w-md mx-auto text-center py-16">
+      <div className="flex justify-center mb-6"><VivoLogo size="md" /></div>
+      <h2 className="font-serif text-2xl text-foreground mb-2">{title}</h2>
+      <p className="text-[14px] text-muted-foreground leading-relaxed mb-8">{body}</p>
+      <button
+        data-testid="guest-join-cta"
+        onClick={onJoin}
+        className="h-12 px-8 rounded bg-primary text-primary-foreground font-medium text-[15px] hover:opacity-90 active:scale-[0.98] transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+      >
+        Sign in or create account
+      </button>
+    </div>
+  );
+}
+
 function ShellInner() {
-  const { member, signOut, updateMember } = useAuth();
+  const { member, signOut, updateMember, exitGuest } = useAuth();
   const { setViewBagHandler } = useCart();
   const { setViewWishlistHandler } = useWishlist();
   const params = new URLSearchParams(window.location.search);
@@ -395,36 +414,55 @@ function ShellInner() {
         </div>
       </header>
 
-      {/* Mobile Header (Brand + points + wishlist + bag) */}
-      <header className="sticky top-0 z-40 bg-background/95 backdrop-blur-md border-b border-border sm:hidden flex items-center justify-between px-4 h-14">
-        <button onClick={() => goTab("home")} className="flex items-center gap-2 min-h-[44px] rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2">
-          <VivoLogo size="sm" />
-          <JohariWordmark className="text-[11px] text-foreground/85 pt-0.5" />
-        </button>
-        <div className="flex items-center gap-0.5">
+      {/* Mobile Header — sticky white bar: search left, logo centred, bag
+          (with badge) right. Help + wishlist keep their places beside them. */}
+      <header className="sticky top-0 z-40 bg-background/95 backdrop-blur-md border-b border-border sm:hidden">
+        <div className="relative flex items-center justify-between px-2 h-14">
+          <div className="flex items-center">
+            <button
+              data-testid="header-search"
+              aria-label="Search the collection"
+              onClick={() => goTab("shop")}
+              className={iconBtnCls}
+            >
+              <Search size={20} strokeWidth={1.5} />
+            </button>
+            <button
+              data-testid="nav-help-mobile"
+              aria-label="Help"
+              onClick={() => openPage("help")}
+              className={iconBtnCls}
+            >
+              <HelpCircle size={19} strokeWidth={1.5} />
+            </button>
+          </div>
           <button
-            data-testid="nav-help-mobile"
-            aria-label="Help"
-            onClick={() => openPage("help")}
-            className={iconBtnCls}
+            aria-label="Vivo home"
+            onClick={() => goTab("home")}
+            className="absolute left-1/2 -translate-x-1/2 flex items-center min-h-[44px] rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
           >
-            <HelpCircle size={19} strokeWidth={1.5} />
+            <VivoLogo size="sm" />
           </button>
-          <button
-            data-testid="header-points"
-            onClick={() => goTab("rewards")}
-            className="px-3 min-h-[36px] my-2 mr-1 rounded bg-secondary text-foreground text-xs font-semibold flex items-center gap-1 hover:bg-border transition-colors border border-border/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
-          >
-            {(member?.points ?? 0).toLocaleString()} <span className="font-normal opacity-70">pts</span>
-          </button>
-          <WishlistButton mobile />
-          <CartButton mobile />
+          <div className="flex items-center">
+            <WishlistButton mobile />
+            <CartButton mobile />
+          </div>
         </div>
       </header>
 
       {/* Main Content Area */}
       <main className="mx-auto max-w-6xl p-4 sm:p-8 animate-in fade-in duration-500">
-        {page ? (
+        {/* Guest fence for deep-linkable member surfaces — overlays reachable
+            via URL state (?page= / ?event=) that carry member-authenticated
+            writes: try-on, survey, my-data, contact and event RSVP. Browsing
+            surfaces (products, cart, wishlist, news, legal, help) stay open. */}
+        {!member && (eventId || ["tryon", "survey", "mydata", "contact"].includes(page)) ? (
+          <GuestGate
+            title={eventId ? "Events are for members" : "This is a member space"}
+            body="Sign in or create a free account to RSVP to events, use member tools and get in touch — it only takes a minute."
+            onJoin={exitGuest}
+          />
+        ) : page ? (
           page === "tryon" ? (
             <TryOnView onBack={closePage} member={member} />
           ) : page === "survey" ? (
@@ -455,10 +493,32 @@ function ShellInner() {
         ) : (
           <>
             {tab === "home" && <TabHome onNavigate={goTab} member={member} onOpenProduct={openProduct} onOpenPage={openPage} onOpenEvent={openEventDetail} onOpenFabulas={setFabulasId} />}
-            {tab === "community" && <TabCommunity member={member} subNav={subNav} onSubChange={syncSub} onOpenEvent={openEventDetail} onOpenProduct={openProduct} onOpenPage={openPage} onOpenFabulas={setFabulasId} />}
+            {tab === "community" && !member && (
+              <GuestGate
+                title="Join the conversation"
+                body="Posting, style challenges, likes and comments are for members — sign in or create a free account to take part."
+                onJoin={exitGuest}
+              />
+            )}
+            {tab === "community" && member && <TabCommunity member={member} subNav={subNav} onSubChange={syncSub} onOpenEvent={openEventDetail} onOpenProduct={openProduct} onOpenPage={openPage} onOpenFabulas={setFabulasId} />}
             {tab === "shop" && <TabShop onOpenProduct={openProduct} onOpenTryOn={() => openTryOn("")} />}
-            {tab === "rewards" && <TabRewards member={member} onMemberUpdate={updateMember} onOpenPage={openPage} />}
-            {tab === "profile" && (
+            {tab === "rewards" && (member ? (
+              <TabRewards member={member} onMemberUpdate={updateMember} onOpenPage={openPage} />
+            ) : (
+              <GuestGate
+                title="Rewards are for members"
+                body="Join Vivo Johari to earn points on everything you share and shop — and unlock member-only rewards."
+                onJoin={exitGuest}
+              />
+            ))}
+            {tab === "profile" && !member && (
+              <GuestGate
+                title="You're browsing as a guest"
+                body="Sign in or create a free account to build your profile, save your style and join the community."
+                onJoin={exitGuest}
+              />
+            )}
+            {tab === "profile" && member && (
               <TabProfile
                 member={member}
                 onSignOut={signOut}

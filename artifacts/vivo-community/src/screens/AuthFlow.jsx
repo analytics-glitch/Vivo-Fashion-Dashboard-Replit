@@ -1,11 +1,11 @@
 import React, { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
-import { inputCls, btnPrimary, btnSecondary, cardCls, VivoLogo, JohariWordmark } from "@/components/community/ui";
+import { inputCls, btnPrimary, btnSecondary, cardCls, VivoLogo, JohariWordmark, brandAsset } from "@/components/community/ui";
 import HelpFaqView from "@/components/community/HelpFaqView";
 import LegalPage from "@/components/community/LegalPage";
 import { LEGAL_META } from "@/components/community/legalData";
-import { Loader2, ArrowRight, Check, AlertCircle } from "lucide-react";
+import { Loader2, ArrowRight, Check, AlertCircle, X } from "lucide-react";
 
 const COUNTRIES = [
   { code: "254", label: "KE +254" },
@@ -24,7 +24,11 @@ function ErrorNote({ children }) {
 }
 
 export default function AuthFlow() {
-  const { signIn } = useAuth();
+  const { signIn, enterGuest } = useAuth();
+  // The welcome screen is a full-bleed campaign photo; the actual auth forms
+  // open in a separate clean sheet ("signin" | "create" intent — both feed
+  // the same phone-first flow, the server decides sign-in vs sign-up).
+  const [sheet, setSheet] = useState(""); // "" | signin | create
   const [step, setStep] = useState("phone"); // phone | code | signup
   const [cc, setCc] = useState("254");
   const [local, setLocal] = useState("");
@@ -158,26 +162,113 @@ export default function AuthFlow() {
     );
   }
 
+  const openSheet = (intent) => {
+    setError("");
+    setSheet(intent);
+  };
+  const closeSheet = () => setSheet("");
+
   return (
-    <div className="min-h-[100dvh] bg-background text-foreground flex flex-col relative overflow-hidden">
-      {/* Decorative large blurry element in background */}
-      <div className="absolute top-0 right-0 w-full md:w-[600px] h-[600px] bg-secondary/50 rounded-full blur-[100px] -translate-y-1/2 translate-x-1/3 pointer-events-none" />
-      
-      <div className="flex-1 flex flex-col items-center justify-center px-6 py-12 relative z-10">
-        <div className="w-full max-w-[420px] animate-in fade-in slide-in-from-bottom-4 duration-500 ease-out">
-          
-          <div className="mb-12">
-            <h1 className="mb-0"><VivoLogo size="lg" /></h1>
-            <p className="mt-5 text-foreground text-[19px]"><JohariWordmark /></p>
-            <p data-testid="johari-tagline" className="font-serif italic text-muted-foreground text-[14px] mt-3">We shine together</p>
+    <div className="min-h-[100dvh] bg-neutral-950 text-white relative overflow-hidden">
+      {/* Full-bleed vertical campaign photo + a subtle dark gradient so the
+          copy stays readable without hiding the image. */}
+      <img
+        src={brandAsset("welcome.jpg")}
+        alt=""
+        className="absolute inset-0 w-full h-full object-cover object-[center_22%]"
+        draggable={false}
+      />
+      <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/25 to-black/20 pointer-events-none" />
+
+      <div
+        className="relative z-10 min-h-[100dvh] flex flex-col justify-between px-6"
+        style={{
+          paddingTop: "calc(env(safe-area-inset-top, 0px) + 2.25rem)",
+          paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 2rem)",
+        }}
+      >
+        <div className="flex justify-center animate-in fade-in duration-700">
+          <VivoLogo size="md" className="shadow-lg" />
+        </div>
+
+        <div className="w-full max-w-[420px] mx-auto animate-in fade-in slide-in-from-bottom-4 duration-700 ease-out">
+          <p className="text-[12px] font-semibold uppercase tracking-[0.3em] text-white/75 mb-3"><JohariWordmark /></p>
+          <h1 className="font-serif text-4xl sm:text-5xl leading-[1.05] text-white mb-3">Welcome to Vivo</h1>
+          <p data-testid="welcome-tagline" className="text-white/85 text-[15px] leading-relaxed mb-8">
+            Style, community and rewards—all in one place.
+          </p>
+
+          <div className="space-y-3">
+            <button
+              data-testid="welcome-signin"
+              onClick={() => openSheet("signin")}
+              className="h-12 w-full rounded bg-primary text-primary-foreground font-medium text-[15px] flex items-center justify-center gap-2 transition-all hover:opacity-90 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80"
+            >
+              Sign In
+            </button>
+            <button
+              data-testid="welcome-create"
+              onClick={() => openSheet("create")}
+              className="h-12 w-full rounded border border-white/80 bg-transparent text-white font-medium text-[15px] flex items-center justify-center gap-2 transition-all hover:bg-white/10 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80"
+            >
+              Create Account
+            </button>
+            <div className="pt-2 text-center">
+              <button
+                data-testid="welcome-guest"
+                onClick={enterGuest}
+                className="text-[13px] text-white/80 underline underline-offset-4 decoration-white/40 hover:text-white transition-colors rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/80 min-h-[44px] px-2"
+              >
+                Continue as Guest
+              </button>
+            </div>
           </div>
+
+          <div className="mt-6 flex flex-wrap justify-center gap-x-5 gap-y-2">
+            <button data-testid="auth-link-faq" onClick={() => setPage("faq")} className="text-[11px] font-medium text-white/60 hover:text-white transition-colors rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70">Help & FAQs</button>
+            <button data-testid="auth-link-terms" onClick={() => setPage("terms")} className="text-[11px] font-medium text-white/60 hover:text-white transition-colors rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70">Terms & Conditions</button>
+            <button data-testid="auth-link-privacy" onClick={() => setPage("privacy")} className="text-[11px] font-medium text-white/60 hover:text-white transition-colors rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70">Privacy Policy</button>
+            <button data-testid="auth-link-guidelines" onClick={() => setPage("guidelines")} className="text-[11px] font-medium text-white/60 hover:text-white transition-colors rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70">Community Guidelines</button>
+          </div>
+        </div>
+      </div>
+
+      {/* Auth sheet — a separate clean surface (bottom sheet on mobile,
+          centred card on desktop). All of the original phone → code → signup
+          logic lives here unchanged. */}
+      {sheet && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center sm:justify-center">
+          <div className="absolute inset-0 bg-black/60 animate-in fade-in duration-200" onClick={closeSheet} aria-hidden="true" />
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label={sheet === "create" ? "Create your Vivo account" : "Sign in to Vivo"}
+            className="relative w-full sm:max-w-[460px] bg-background text-foreground rounded-t-2xl sm:rounded-lg shadow-2xl max-h-[92dvh] overflow-y-auto animate-in slide-in-from-bottom-8 sm:zoom-in-95 duration-300 ease-out"
+          >
+            <div className="sm:hidden pt-3 flex justify-center" aria-hidden="true">
+              <span className="w-10 h-1 rounded-full bg-border" />
+            </div>
+            <div className="px-6 sm:px-8 pt-4 pb-10" style={{ paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 2.5rem)" }}>
+              <div className="flex items-center justify-between mb-8">
+                <VivoLogo size="sm" />
+                <button
+                  data-testid="auth-sheet-close"
+                  onClick={closeSheet}
+                  aria-label="Close"
+                  className="w-10 h-10 rounded-full flex items-center justify-center text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                >
+                  <X size={18} />
+                </button>
+              </div>
 
           {step === "phone" && (
             <div className="space-y-8">
               <div>
-                <h2 className="text-2xl font-serif mb-3">Welcome.</h2>
+                <h2 className="text-2xl font-serif mb-3">{sheet === "create" ? "Create your account" : "Sign in"}</h2>
                 <p className="text-muted-foreground text-[15px] leading-relaxed">
-                  Sign in with your phone number for Vivo Johari — the live collection, style challenges and member rewards.
+                  {sheet === "create"
+                    ? "Enter your phone number to get started — we'll text you a code, then set up your profile."
+                    : "Sign in with your phone number for Vivo Johari — the live collection, style challenges and member rewards."}
                 </p>
               </div>
 
@@ -403,17 +494,10 @@ export default function AuthFlow() {
               </button>
             </div>
           )}
+            </div>
+          </div>
         </div>
-      </div>
-
-      <div className="relative z-10 px-6 pb-10">
-        <div className="mx-auto max-w-[420px] flex flex-wrap gap-x-5 gap-y-2 border-t border-border pt-6">
-          <button data-testid="auth-link-faq" onClick={() => setPage("faq")} className="text-[12px] font-medium text-muted-foreground hover:text-foreground transition-colors rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">Help & FAQs</button>
-          <button data-testid="auth-link-terms" onClick={() => setPage("terms")} className="text-[12px] font-medium text-muted-foreground hover:text-foreground transition-colors rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">Terms & Conditions</button>
-          <button data-testid="auth-link-privacy" onClick={() => setPage("privacy")} className="text-[12px] font-medium text-muted-foreground hover:text-foreground transition-colors rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">Privacy Policy</button>
-          <button data-testid="auth-link-guidelines" onClick={() => setPage("guidelines")} className="text-[12px] font-medium text-muted-foreground hover:text-foreground transition-colors rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">Community Guidelines</button>
-        </div>
-      </div>
+      )}
     </div>
   );
 }
