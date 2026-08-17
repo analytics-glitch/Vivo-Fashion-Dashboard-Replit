@@ -24,6 +24,7 @@ import type {
   BoardCardUpdate,
   BoardInput,
   BrandSales,
+  CataloguePage,
   CategorySales,
   ChannelSales,
   CommentInput,
@@ -34,6 +35,7 @@ import type {
   HealthStatus,
   InventoryHealth,
   KpiSummary,
+  ListCatalogueProductsParams,
   ListWorkspaceStylesParams,
   LoginInput,
   PlanCreate,
@@ -44,6 +46,16 @@ import type {
   RegionSales,
   RevenuePoint,
   SampleDevelopmentInput,
+  ShowcaseBoard,
+  ShowcaseBoardCreate,
+  ShowcaseBoardSummary,
+  ShowcaseBoardUpdate,
+  ShowcaseComment,
+  ShowcaseCommentInput,
+  ShowcaseImage,
+  ShowcaseImagesInput,
+  ShowcaseSection,
+  ShowcaseSectionInput,
   StorePerformance,
   StyleCreate,
   StyleTransition,
@@ -60,7 +72,9 @@ import type {
   WorkspaceSession,
   WorkspaceShowcase,
   WorkspaceStyle,
-  WorkspaceStyleDetail
+  WorkspaceStyleDetail,
+  WorkspaceTeamMember,
+  WorkspaceTeamMemberInput
 } from './api.schemas';
 
 import { customFetch } from '../custom-fetch';
@@ -1067,6 +1081,296 @@ export const useLogoutWorkspace = <TError = ErrorType<unknown>,
         TContext
       > => {
       return useMutation(getLogoutWorkspaceMutationOptions(options));
+    }
+
+export const getListWorkspaceTeamUrl = () => {
+
+
+
+
+  return `/api/workspace/team`
+}
+
+/**
+ * @summary List workspace team members
+ */
+export const listWorkspaceTeam = async ( options?: RequestInit): Promise<WorkspaceTeamMember[]> => {
+
+  return customFetch<WorkspaceTeamMember[]>(getListWorkspaceTeamUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getListWorkspaceTeamQueryKey = () => {
+    return [
+    `/api/workspace/team`
+    ] as const;
+    }
+
+
+export const getListWorkspaceTeamQueryOptions = <TData = Awaited<ReturnType<typeof listWorkspaceTeam>>, TError = ErrorType<unknown>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listWorkspaceTeam>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListWorkspaceTeamQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listWorkspaceTeam>>> = ({ signal }) => listWorkspaceTeam({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listWorkspaceTeam>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type ListWorkspaceTeamQueryResult = NonNullable<Awaited<ReturnType<typeof listWorkspaceTeam>>>
+export type ListWorkspaceTeamQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary List workspace team members
+ */
+
+export function useListWorkspaceTeam<TData = Awaited<ReturnType<typeof listWorkspaceTeam>>, TError = ErrorType<unknown>>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listWorkspaceTeam>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getListWorkspaceTeamQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+
+export const getCreateWorkspaceTeamMemberUrl = () => {
+
+
+
+
+  return `/api/workspace/team`
+}
+
+/**
+ * @summary Add a workspace team member
+ */
+export const createWorkspaceTeamMember = async (workspaceTeamMemberInput: WorkspaceTeamMemberInput, options?: RequestInit): Promise<WorkspaceTeamMember> => {
+
+  return customFetch<WorkspaceTeamMember>(getCreateWorkspaceTeamMemberUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      workspaceTeamMemberInput,)
+  }
+);}
+
+
+
+
+export const getCreateWorkspaceTeamMemberMutationOptions = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createWorkspaceTeamMember>>, TError,{data: BodyType<WorkspaceTeamMemberInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof createWorkspaceTeamMember>>, TError,{data: BodyType<WorkspaceTeamMemberInput>}, TContext> => {
+
+const mutationKey = ['createWorkspaceTeamMember'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof createWorkspaceTeamMember>>, {data: BodyType<WorkspaceTeamMemberInput>}> = (props) => {
+          const {data} = props ?? {};
+
+          return  createWorkspaceTeamMember(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type CreateWorkspaceTeamMemberMutationResult = NonNullable<Awaited<ReturnType<typeof createWorkspaceTeamMember>>>
+    export type CreateWorkspaceTeamMemberMutationBody = BodyType<WorkspaceTeamMemberInput>
+    export type CreateWorkspaceTeamMemberMutationError = ErrorType<void>
+
+    /**
+ * @summary Add a workspace team member
+ */
+export const useCreateWorkspaceTeamMember = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createWorkspaceTeamMember>>, TError,{data: BodyType<WorkspaceTeamMemberInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof createWorkspaceTeamMember>>,
+        TError,
+        {data: BodyType<WorkspaceTeamMemberInput>},
+        TContext
+      > => {
+      return useMutation(getCreateWorkspaceTeamMemberMutationOptions(options));
+    }
+
+export const getUpdateWorkspaceTeamMemberUrl = (id: number,) => {
+
+
+
+
+  return `/api/workspace/team/${id}`
+}
+
+/**
+ * @summary Update a workspace team member
+ */
+export const updateWorkspaceTeamMember = async (id: number,
+    workspaceTeamMemberInput: WorkspaceTeamMemberInput, options?: RequestInit): Promise<WorkspaceTeamMember> => {
+
+  return customFetch<WorkspaceTeamMember>(getUpdateWorkspaceTeamMemberUrl(id),
+  {
+    ...options,
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      workspaceTeamMemberInput,)
+  }
+);}
+
+
+
+
+export const getUpdateWorkspaceTeamMemberMutationOptions = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateWorkspaceTeamMember>>, TError,{id: number;data: BodyType<WorkspaceTeamMemberInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof updateWorkspaceTeamMember>>, TError,{id: number;data: BodyType<WorkspaceTeamMemberInput>}, TContext> => {
+
+const mutationKey = ['updateWorkspaceTeamMember'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof updateWorkspaceTeamMember>>, {id: number;data: BodyType<WorkspaceTeamMemberInput>}> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  updateWorkspaceTeamMember(id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type UpdateWorkspaceTeamMemberMutationResult = NonNullable<Awaited<ReturnType<typeof updateWorkspaceTeamMember>>>
+    export type UpdateWorkspaceTeamMemberMutationBody = BodyType<WorkspaceTeamMemberInput>
+    export type UpdateWorkspaceTeamMemberMutationError = ErrorType<void>
+
+    /**
+ * @summary Update a workspace team member
+ */
+export const useUpdateWorkspaceTeamMember = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateWorkspaceTeamMember>>, TError,{id: number;data: BodyType<WorkspaceTeamMemberInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof updateWorkspaceTeamMember>>,
+        TError,
+        {id: number;data: BodyType<WorkspaceTeamMemberInput>},
+        TContext
+      > => {
+      return useMutation(getUpdateWorkspaceTeamMemberMutationOptions(options));
+    }
+
+export const getDeleteWorkspaceTeamMemberUrl = (id: number,) => {
+
+
+
+
+  return `/api/workspace/team/${id}`
+}
+
+/**
+ * @summary Remove a workspace team member
+ */
+export const deleteWorkspaceTeamMember = async (id: number, options?: RequestInit): Promise<void> => {
+
+  return customFetch<void>(getDeleteWorkspaceTeamMemberUrl(id),
+  {
+    ...options,
+    method: 'DELETE'
+
+
+  }
+);}
+
+
+
+
+export const getDeleteWorkspaceTeamMemberMutationOptions = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteWorkspaceTeamMember>>, TError,{id: number}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof deleteWorkspaceTeamMember>>, TError,{id: number}, TContext> => {
+
+const mutationKey = ['deleteWorkspaceTeamMember'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof deleteWorkspaceTeamMember>>, {id: number}> = (props) => {
+          const {id} = props ?? {};
+
+          return  deleteWorkspaceTeamMember(id,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type DeleteWorkspaceTeamMemberMutationResult = NonNullable<Awaited<ReturnType<typeof deleteWorkspaceTeamMember>>>
+
+    export type DeleteWorkspaceTeamMemberMutationError = ErrorType<void>
+
+    /**
+ * @summary Remove a workspace team member
+ */
+export const useDeleteWorkspaceTeamMember = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteWorkspaceTeamMember>>, TError,{id: number}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof deleteWorkspaceTeamMember>>,
+        TError,
+        {id: number},
+        TContext
+      > => {
+      return useMutation(getDeleteWorkspaceTeamMemberMutationOptions(options));
     }
 
 export const getGetWorkspaceDashboardUrl = () => {
@@ -3155,4 +3459,883 @@ export function useGetWorkspaceShowcase<TData = Awaited<ReturnType<typeof getWor
 
 
 
+
+export const getListCatalogueProductsUrl = (params?: ListCatalogueProductsParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : value.toString())
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/workspace/catalogue-products?${stringifiedParams}` : `/api/workspace/catalogue-products`
+}
+
+/**
+ * @summary Paginated full catalogue (Odoo mirror, active + retired styles)
+ */
+export const listCatalogueProducts = async (params?: ListCatalogueProductsParams, options?: RequestInit): Promise<CataloguePage> => {
+
+  return customFetch<CataloguePage>(getListCatalogueProductsUrl(params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getListCatalogueProductsQueryKey = (params?: ListCatalogueProductsParams,) => {
+    return [
+    `/api/workspace/catalogue-products`, ...(params ? [params] : [])
+    ] as const;
+    }
+
+
+export const getListCatalogueProductsQueryOptions = <TData = Awaited<ReturnType<typeof listCatalogueProducts>>, TError = ErrorType<unknown>>(params?: ListCatalogueProductsParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listCatalogueProducts>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListCatalogueProductsQueryKey(params);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listCatalogueProducts>>> = ({ signal }) => listCatalogueProducts(params, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listCatalogueProducts>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type ListCatalogueProductsQueryResult = NonNullable<Awaited<ReturnType<typeof listCatalogueProducts>>>
+export type ListCatalogueProductsQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary Paginated full catalogue (Odoo mirror, active + retired styles)
+ */
+
+export function useListCatalogueProducts<TData = Awaited<ReturnType<typeof listCatalogueProducts>>, TError = ErrorType<unknown>>(
+ params?: ListCatalogueProductsParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listCatalogueProducts>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getListCatalogueProductsQueryOptions(params,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+
+export const getListShowcaseBoardsUrl = () => {
+
+
+
+
+  return `/api/workspace/showcase-boards`
+}
+
+/**
+ * @summary List showcase boards
+ */
+export const listShowcaseBoards = async ( options?: RequestInit): Promise<ShowcaseBoardSummary[]> => {
+
+  return customFetch<ShowcaseBoardSummary[]>(getListShowcaseBoardsUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getListShowcaseBoardsQueryKey = () => {
+    return [
+    `/api/workspace/showcase-boards`
+    ] as const;
+    }
+
+
+export const getListShowcaseBoardsQueryOptions = <TData = Awaited<ReturnType<typeof listShowcaseBoards>>, TError = ErrorType<unknown>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listShowcaseBoards>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListShowcaseBoardsQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listShowcaseBoards>>> = ({ signal }) => listShowcaseBoards({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listShowcaseBoards>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type ListShowcaseBoardsQueryResult = NonNullable<Awaited<ReturnType<typeof listShowcaseBoards>>>
+export type ListShowcaseBoardsQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary List showcase boards
+ */
+
+export function useListShowcaseBoards<TData = Awaited<ReturnType<typeof listShowcaseBoards>>, TError = ErrorType<unknown>>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listShowcaseBoards>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getListShowcaseBoardsQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+
+export const getCreateShowcaseBoardUrl = () => {
+
+
+
+
+  return `/api/workspace/showcase-boards`
+}
+
+/**
+ * @summary Create a showcase board
+ */
+export const createShowcaseBoard = async (showcaseBoardCreate: ShowcaseBoardCreate, options?: RequestInit): Promise<ShowcaseBoardSummary> => {
+
+  return customFetch<ShowcaseBoardSummary>(getCreateShowcaseBoardUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      showcaseBoardCreate,)
+  }
+);}
+
+
+
+
+export const getCreateShowcaseBoardMutationOptions = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createShowcaseBoard>>, TError,{data: BodyType<ShowcaseBoardCreate>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof createShowcaseBoard>>, TError,{data: BodyType<ShowcaseBoardCreate>}, TContext> => {
+
+const mutationKey = ['createShowcaseBoard'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof createShowcaseBoard>>, {data: BodyType<ShowcaseBoardCreate>}> = (props) => {
+          const {data} = props ?? {};
+
+          return  createShowcaseBoard(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type CreateShowcaseBoardMutationResult = NonNullable<Awaited<ReturnType<typeof createShowcaseBoard>>>
+    export type CreateShowcaseBoardMutationBody = BodyType<ShowcaseBoardCreate>
+    export type CreateShowcaseBoardMutationError = ErrorType<void>
+
+    /**
+ * @summary Create a showcase board
+ */
+export const useCreateShowcaseBoard = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createShowcaseBoard>>, TError,{data: BodyType<ShowcaseBoardCreate>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof createShowcaseBoard>>,
+        TError,
+        {data: BodyType<ShowcaseBoardCreate>},
+        TContext
+      > => {
+      return useMutation(getCreateShowcaseBoardMutationOptions(options));
+    }
+
+export const getGetShowcaseBoardUrl = (id: number,) => {
+
+
+
+
+  return `/api/workspace/showcase-boards/${id}`
+}
+
+/**
+ * @summary Get a showcase board
+ */
+export const getShowcaseBoard = async (id: number, options?: RequestInit): Promise<ShowcaseBoard> => {
+
+  return customFetch<ShowcaseBoard>(getGetShowcaseBoardUrl(id),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetShowcaseBoardQueryKey = (id: number,) => {
+    return [
+    `/api/workspace/showcase-boards/${id}`
+    ] as const;
+    }
+
+
+export const getGetShowcaseBoardQueryOptions = <TData = Awaited<ReturnType<typeof getShowcaseBoard>>, TError = ErrorType<void>>(id: number, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getShowcaseBoard>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetShowcaseBoardQueryKey(id);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getShowcaseBoard>>> = ({ signal }) => getShowcaseBoard(id, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, enabled: !!(id), ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getShowcaseBoard>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetShowcaseBoardQueryResult = NonNullable<Awaited<ReturnType<typeof getShowcaseBoard>>>
+export type GetShowcaseBoardQueryError = ErrorType<void>
+
+
+/**
+ * @summary Get a showcase board
+ */
+
+export function useGetShowcaseBoard<TData = Awaited<ReturnType<typeof getShowcaseBoard>>, TError = ErrorType<void>>(
+ id: number, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getShowcaseBoard>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetShowcaseBoardQueryOptions(id,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+
+export const getUpdateShowcaseBoardUrl = (id: number,) => {
+
+
+
+
+  return `/api/workspace/showcase-boards/${id}`
+}
+
+/**
+ * @summary Update a showcase board
+ */
+export const updateShowcaseBoard = async (id: number,
+    showcaseBoardUpdate: ShowcaseBoardUpdate, options?: RequestInit): Promise<ShowcaseBoard> => {
+
+  return customFetch<ShowcaseBoard>(getUpdateShowcaseBoardUrl(id),
+  {
+    ...options,
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      showcaseBoardUpdate,)
+  }
+);}
+
+
+
+
+export const getUpdateShowcaseBoardMutationOptions = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateShowcaseBoard>>, TError,{id: number;data: BodyType<ShowcaseBoardUpdate>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof updateShowcaseBoard>>, TError,{id: number;data: BodyType<ShowcaseBoardUpdate>}, TContext> => {
+
+const mutationKey = ['updateShowcaseBoard'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof updateShowcaseBoard>>, {id: number;data: BodyType<ShowcaseBoardUpdate>}> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  updateShowcaseBoard(id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type UpdateShowcaseBoardMutationResult = NonNullable<Awaited<ReturnType<typeof updateShowcaseBoard>>>
+    export type UpdateShowcaseBoardMutationBody = BodyType<ShowcaseBoardUpdate>
+    export type UpdateShowcaseBoardMutationError = ErrorType<void>
+
+    /**
+ * @summary Update a showcase board
+ */
+export const useUpdateShowcaseBoard = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateShowcaseBoard>>, TError,{id: number;data: BodyType<ShowcaseBoardUpdate>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof updateShowcaseBoard>>,
+        TError,
+        {id: number;data: BodyType<ShowcaseBoardUpdate>},
+        TContext
+      > => {
+      return useMutation(getUpdateShowcaseBoardMutationOptions(options));
+    }
+
+export const getDeleteShowcaseBoardUrl = (id: number,) => {
+
+
+
+
+  return `/api/workspace/showcase-boards/${id}`
+}
+
+/**
+ * @summary Delete a showcase board
+ */
+export const deleteShowcaseBoard = async (id: number, options?: RequestInit): Promise<void> => {
+
+  return customFetch<void>(getDeleteShowcaseBoardUrl(id),
+  {
+    ...options,
+    method: 'DELETE'
+
+
+  }
+);}
+
+
+
+
+export const getDeleteShowcaseBoardMutationOptions = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteShowcaseBoard>>, TError,{id: number}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof deleteShowcaseBoard>>, TError,{id: number}, TContext> => {
+
+const mutationKey = ['deleteShowcaseBoard'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof deleteShowcaseBoard>>, {id: number}> = (props) => {
+          const {id} = props ?? {};
+
+          return  deleteShowcaseBoard(id,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type DeleteShowcaseBoardMutationResult = NonNullable<Awaited<ReturnType<typeof deleteShowcaseBoard>>>
+
+    export type DeleteShowcaseBoardMutationError = ErrorType<void>
+
+    /**
+ * @summary Delete a showcase board
+ */
+export const useDeleteShowcaseBoard = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteShowcaseBoard>>, TError,{id: number}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof deleteShowcaseBoard>>,
+        TError,
+        {id: number},
+        TContext
+      > => {
+      return useMutation(getDeleteShowcaseBoardMutationOptions(options));
+    }
+
+export const getCreateShowcaseSectionUrl = (id: number,) => {
+
+
+
+
+  return `/api/workspace/showcase-boards/${id}/sections`
+}
+
+/**
+ * @summary Add a section to a showcase board
+ */
+export const createShowcaseSection = async (id: number,
+    showcaseSectionInput: ShowcaseSectionInput, options?: RequestInit): Promise<ShowcaseSection> => {
+
+  return customFetch<ShowcaseSection>(getCreateShowcaseSectionUrl(id),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      showcaseSectionInput,)
+  }
+);}
+
+
+
+
+export const getCreateShowcaseSectionMutationOptions = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createShowcaseSection>>, TError,{id: number;data: BodyType<ShowcaseSectionInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof createShowcaseSection>>, TError,{id: number;data: BodyType<ShowcaseSectionInput>}, TContext> => {
+
+const mutationKey = ['createShowcaseSection'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof createShowcaseSection>>, {id: number;data: BodyType<ShowcaseSectionInput>}> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  createShowcaseSection(id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type CreateShowcaseSectionMutationResult = NonNullable<Awaited<ReturnType<typeof createShowcaseSection>>>
+    export type CreateShowcaseSectionMutationBody = BodyType<ShowcaseSectionInput>
+    export type CreateShowcaseSectionMutationError = ErrorType<void>
+
+    /**
+ * @summary Add a section to a showcase board
+ */
+export const useCreateShowcaseSection = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createShowcaseSection>>, TError,{id: number;data: BodyType<ShowcaseSectionInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof createShowcaseSection>>,
+        TError,
+        {id: number;data: BodyType<ShowcaseSectionInput>},
+        TContext
+      > => {
+      return useMutation(getCreateShowcaseSectionMutationOptions(options));
+    }
+
+export const getUpdateShowcaseSectionUrl = (id: number,) => {
+
+
+
+
+  return `/api/workspace/showcase-sections/${id}`
+}
+
+/**
+ * @summary Update a showcase section
+ */
+export const updateShowcaseSection = async (id: number,
+    showcaseSectionInput: ShowcaseSectionInput, options?: RequestInit): Promise<ShowcaseSection> => {
+
+  return customFetch<ShowcaseSection>(getUpdateShowcaseSectionUrl(id),
+  {
+    ...options,
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      showcaseSectionInput,)
+  }
+);}
+
+
+
+
+export const getUpdateShowcaseSectionMutationOptions = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateShowcaseSection>>, TError,{id: number;data: BodyType<ShowcaseSectionInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof updateShowcaseSection>>, TError,{id: number;data: BodyType<ShowcaseSectionInput>}, TContext> => {
+
+const mutationKey = ['updateShowcaseSection'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof updateShowcaseSection>>, {id: number;data: BodyType<ShowcaseSectionInput>}> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  updateShowcaseSection(id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type UpdateShowcaseSectionMutationResult = NonNullable<Awaited<ReturnType<typeof updateShowcaseSection>>>
+    export type UpdateShowcaseSectionMutationBody = BodyType<ShowcaseSectionInput>
+    export type UpdateShowcaseSectionMutationError = ErrorType<void>
+
+    /**
+ * @summary Update a showcase section
+ */
+export const useUpdateShowcaseSection = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateShowcaseSection>>, TError,{id: number;data: BodyType<ShowcaseSectionInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof updateShowcaseSection>>,
+        TError,
+        {id: number;data: BodyType<ShowcaseSectionInput>},
+        TContext
+      > => {
+      return useMutation(getUpdateShowcaseSectionMutationOptions(options));
+    }
+
+export const getDeleteShowcaseSectionUrl = (id: number,) => {
+
+
+
+
+  return `/api/workspace/showcase-sections/${id}`
+}
+
+/**
+ * @summary Delete a showcase section
+ */
+export const deleteShowcaseSection = async (id: number, options?: RequestInit): Promise<void> => {
+
+  return customFetch<void>(getDeleteShowcaseSectionUrl(id),
+  {
+    ...options,
+    method: 'DELETE'
+
+
+  }
+);}
+
+
+
+
+export const getDeleteShowcaseSectionMutationOptions = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteShowcaseSection>>, TError,{id: number}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof deleteShowcaseSection>>, TError,{id: number}, TContext> => {
+
+const mutationKey = ['deleteShowcaseSection'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof deleteShowcaseSection>>, {id: number}> = (props) => {
+          const {id} = props ?? {};
+
+          return  deleteShowcaseSection(id,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type DeleteShowcaseSectionMutationResult = NonNullable<Awaited<ReturnType<typeof deleteShowcaseSection>>>
+
+    export type DeleteShowcaseSectionMutationError = ErrorType<void>
+
+    /**
+ * @summary Delete a showcase section
+ */
+export const useDeleteShowcaseSection = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteShowcaseSection>>, TError,{id: number}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof deleteShowcaseSection>>,
+        TError,
+        {id: number},
+        TContext
+      > => {
+      return useMutation(getDeleteShowcaseSectionMutationOptions(options));
+    }
+
+export const getAddShowcaseImagesUrl = (id: number,) => {
+
+
+
+
+  return `/api/workspace/showcase-sections/${id}/images`
+}
+
+/**
+ * @summary Add images to a showcase section
+ */
+export const addShowcaseImages = async (id: number,
+    showcaseImagesInput: ShowcaseImagesInput, options?: RequestInit): Promise<ShowcaseImage[]> => {
+
+  return customFetch<ShowcaseImage[]>(getAddShowcaseImagesUrl(id),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      showcaseImagesInput,)
+  }
+);}
+
+
+
+
+export const getAddShowcaseImagesMutationOptions = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof addShowcaseImages>>, TError,{id: number;data: BodyType<ShowcaseImagesInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof addShowcaseImages>>, TError,{id: number;data: BodyType<ShowcaseImagesInput>}, TContext> => {
+
+const mutationKey = ['addShowcaseImages'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof addShowcaseImages>>, {id: number;data: BodyType<ShowcaseImagesInput>}> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  addShowcaseImages(id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type AddShowcaseImagesMutationResult = NonNullable<Awaited<ReturnType<typeof addShowcaseImages>>>
+    export type AddShowcaseImagesMutationBody = BodyType<ShowcaseImagesInput>
+    export type AddShowcaseImagesMutationError = ErrorType<void>
+
+    /**
+ * @summary Add images to a showcase section
+ */
+export const useAddShowcaseImages = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof addShowcaseImages>>, TError,{id: number;data: BodyType<ShowcaseImagesInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof addShowcaseImages>>,
+        TError,
+        {id: number;data: BodyType<ShowcaseImagesInput>},
+        TContext
+      > => {
+      return useMutation(getAddShowcaseImagesMutationOptions(options));
+    }
+
+export const getDeleteShowcaseImageUrl = (id: number,) => {
+
+
+
+
+  return `/api/workspace/showcase-images/${id}`
+}
+
+/**
+ * @summary Delete a showcase image
+ */
+export const deleteShowcaseImage = async (id: number, options?: RequestInit): Promise<void> => {
+
+  return customFetch<void>(getDeleteShowcaseImageUrl(id),
+  {
+    ...options,
+    method: 'DELETE'
+
+
+  }
+);}
+
+
+
+
+export const getDeleteShowcaseImageMutationOptions = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteShowcaseImage>>, TError,{id: number}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof deleteShowcaseImage>>, TError,{id: number}, TContext> => {
+
+const mutationKey = ['deleteShowcaseImage'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof deleteShowcaseImage>>, {id: number}> = (props) => {
+          const {id} = props ?? {};
+
+          return  deleteShowcaseImage(id,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type DeleteShowcaseImageMutationResult = NonNullable<Awaited<ReturnType<typeof deleteShowcaseImage>>>
+
+    export type DeleteShowcaseImageMutationError = ErrorType<void>
+
+    /**
+ * @summary Delete a showcase image
+ */
+export const useDeleteShowcaseImage = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteShowcaseImage>>, TError,{id: number}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof deleteShowcaseImage>>,
+        TError,
+        {id: number},
+        TContext
+      > => {
+      return useMutation(getDeleteShowcaseImageMutationOptions(options));
+    }
+
+export const getCreateShowcaseCommentUrl = (id: number,) => {
+
+
+
+
+  return `/api/workspace/showcase-boards/${id}/comments`
+}
+
+/**
+ * @summary Comment on a showcase board
+ */
+export const createShowcaseComment = async (id: number,
+    showcaseCommentInput: ShowcaseCommentInput, options?: RequestInit): Promise<ShowcaseComment> => {
+
+  return customFetch<ShowcaseComment>(getCreateShowcaseCommentUrl(id),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(
+      showcaseCommentInput,)
+  }
+);}
+
+
+
+
+export const getCreateShowcaseCommentMutationOptions = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createShowcaseComment>>, TError,{id: number;data: BodyType<ShowcaseCommentInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof createShowcaseComment>>, TError,{id: number;data: BodyType<ShowcaseCommentInput>}, TContext> => {
+
+const mutationKey = ['createShowcaseComment'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof createShowcaseComment>>, {id: number;data: BodyType<ShowcaseCommentInput>}> = (props) => {
+          const {id,data} = props ?? {};
+
+          return  createShowcaseComment(id,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type CreateShowcaseCommentMutationResult = NonNullable<Awaited<ReturnType<typeof createShowcaseComment>>>
+    export type CreateShowcaseCommentMutationBody = BodyType<ShowcaseCommentInput>
+    export type CreateShowcaseCommentMutationError = ErrorType<void>
+
+    /**
+ * @summary Comment on a showcase board
+ */
+export const useCreateShowcaseComment = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createShowcaseComment>>, TError,{id: number;data: BodyType<ShowcaseCommentInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof createShowcaseComment>>,
+        TError,
+        {id: number;data: BodyType<ShowcaseCommentInput>},
+        TContext
+      > => {
+      return useMutation(getCreateShowcaseCommentMutationOptions(options));
+    }
 

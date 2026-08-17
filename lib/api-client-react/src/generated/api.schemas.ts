@@ -106,6 +106,20 @@ export interface WorkspaceSession {
   user: WorkspaceUser;
 }
 
+export interface WorkspaceTeamMember {
+  id: number;
+  name: string;
+  role: string;
+  department: string;
+  createdAt: string;
+}
+
+export interface WorkspaceTeamMemberInput {
+  name: string;
+  role: string;
+  department?: string;
+}
+
 export type WorkspaceDashboardKpisItem = { [key: string]: unknown };
 
 export type WorkspaceDashboardActivityItem = { [key: string]: unknown };
@@ -484,6 +498,125 @@ export interface WorkspaceShowcase {
   frames: WorkspaceShowcaseFramesItem[];
 }
 
+export interface CatalogueStyle {
+  styleNumber: string;
+  styleName?: string | null;
+  brand?: string | null;
+  subcategory?: string | null;
+  status: string;
+  image?: string | null;
+}
+
+export interface CataloguePage {
+  items: CatalogueStyle[];
+  total: number;
+  page: number;
+  pageSize: number;
+  brands: string[];
+  subcategories: string[];
+}
+
+export interface ShowcaseBoardSummary {
+  id: number;
+  title: string;
+  purpose: string;
+  description?: string;
+  creatorUserId?: number | null;
+  creatorName: string;
+  creatorRole: string;
+  coverImage?: string | null;
+  createdAt: string;
+  commentCount?: number;
+}
+
+export interface ShowcaseBoardCreate {
+  title: string;
+  purpose: string;
+  description?: string;
+  creatorUserId?: number | null;
+  creatorName?: string;
+  creatorRole?: string;
+}
+
+export interface ShowcaseBoardUpdate {
+  title?: string;
+  purpose?: string;
+  description?: string;
+  coverImageUrl?: string;
+}
+
+export interface ShowcaseImage {
+  id: number;
+  sectionId: number;
+  imageData: string;
+  sourceType: string;
+  plmStyleId?: number | null;
+  caption?: string;
+  position: number;
+}
+
+export interface ShowcaseSection {
+  id: number;
+  title: string;
+  body: string;
+  position: number;
+  images?: ShowcaseImage[];
+}
+
+export interface ShowcaseComment {
+  id: number;
+  userName: string;
+  userRole: string;
+  commentText: string;
+  createdAt: string;
+}
+
+export interface ShowcaseBoard {
+  id: number;
+  title: string;
+  purpose: string;
+  description?: string;
+  creatorUserId?: number | null;
+  creatorName: string;
+  creatorRole: string;
+  coverImageUrl?: string | null;
+  createdAt: string;
+  updatedAt?: string;
+  sections: ShowcaseSection[];
+  comments: ShowcaseComment[];
+}
+
+export interface ShowcaseSectionInput {
+  title?: string;
+  body?: string;
+  position?: number;
+}
+
+export type ShowcaseImagesInputImagesItemSourceType = typeof ShowcaseImagesInputImagesItemSourceType[keyof typeof ShowcaseImagesInputImagesItemSourceType];
+
+
+export const ShowcaseImagesInputImagesItemSourceType = {
+  upload: 'upload',
+  plm: 'plm',
+} as const;
+
+export type ShowcaseImagesInputImagesItem = {
+  imageData?: string;
+  sourceType?: ShowcaseImagesInputImagesItemSourceType;
+  plmStyleId?: number;
+  caption?: string;
+};
+
+export interface ShowcaseImagesInput {
+  images: ShowcaseImagesInputImagesItem[];
+}
+
+export interface ShowcaseCommentInput {
+  userName: string;
+  userRole?: string;
+  commentText: string;
+}
+
 export type ListWorkspaceStylesParams = {
 brand?: string;
 status?: string;
@@ -497,4 +630,20 @@ export type GetWorkspacePlanParams = {
 quarter?: string;
 year?: number;
 };
+
+export type ListCatalogueProductsParams = {
+search?: string;
+brand?: string;
+subcategory?: string;
+status?: ListCatalogueProductsStatus;
+page?: number;
+};
+
+export type ListCatalogueProductsStatus = typeof ListCatalogueProductsStatus[keyof typeof ListCatalogueProductsStatus];
+
+
+export const ListCatalogueProductsStatus = {
+  active: 'active',
+  retired: 'retired',
+} as const;
 

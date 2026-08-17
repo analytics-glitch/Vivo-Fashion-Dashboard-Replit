@@ -184,6 +184,59 @@ export const LoginWorkspaceResponse = zod.object({
 
 
 /**
+ * @summary List workspace team members
+ */
+export const ListWorkspaceTeamResponseItem = zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "role": zod.string(),
+  "department": zod.string(),
+  "createdAt": zod.string()
+})
+export const ListWorkspaceTeamResponse = zod.array(ListWorkspaceTeamResponseItem)
+
+
+/**
+ * @summary Add a workspace team member
+ */
+export const CreateWorkspaceTeamMemberBody = zod.object({
+  "name": zod.string(),
+  "role": zod.string(),
+  "department": zod.string().optional()
+})
+
+
+/**
+ * @summary Update a workspace team member
+ */
+export const UpdateWorkspaceTeamMemberParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const UpdateWorkspaceTeamMemberBody = zod.object({
+  "name": zod.string(),
+  "role": zod.string(),
+  "department": zod.string().optional()
+})
+
+export const UpdateWorkspaceTeamMemberResponse = zod.object({
+  "id": zod.number(),
+  "name": zod.string(),
+  "role": zod.string(),
+  "department": zod.string(),
+  "createdAt": zod.string()
+})
+
+
+/**
+ * @summary Remove a workspace team member
+ */
+export const DeleteWorkspaceTeamMemberParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+
+/**
  * @summary Product workspace dashboard
  */
 export const GetWorkspaceDashboardResponse = zod.object({
@@ -1060,6 +1113,257 @@ export const GetWorkspaceShowcaseResponse = zod.object({
   "status": zod.string(),
   "description": zod.string().optional(),
   "frames": zod.array(zod.record(zod.string(), zod.unknown()))
+})
+
+
+/**
+ * @summary Paginated full catalogue (Odoo mirror, active + retired styles)
+ */
+export const ListCatalogueProductsQueryParams = zod.object({
+  "search": zod.coerce.string().optional(),
+  "brand": zod.coerce.string().optional(),
+  "subcategory": zod.coerce.string().optional(),
+  "status": zod.enum(['active', 'retired']).optional(),
+  "page": zod.coerce.number().optional()
+})
+
+export const ListCatalogueProductsResponse = zod.object({
+  "items": zod.array(zod.object({
+  "styleNumber": zod.string(),
+  "styleName": zod.string().nullish(),
+  "brand": zod.string().nullish(),
+  "subcategory": zod.string().nullish(),
+  "status": zod.string(),
+  "image": zod.string().nullish()
+})),
+  "total": zod.number(),
+  "page": zod.number(),
+  "pageSize": zod.number(),
+  "brands": zod.array(zod.string()),
+  "subcategories": zod.array(zod.string())
+})
+
+
+/**
+ * @summary List showcase boards
+ */
+export const ListShowcaseBoardsResponseItem = zod.object({
+  "id": zod.number(),
+  "title": zod.string(),
+  "purpose": zod.string(),
+  "description": zod.string().optional(),
+  "creatorUserId": zod.number().nullish(),
+  "creatorName": zod.string(),
+  "creatorRole": zod.string(),
+  "coverImage": zod.string().nullish(),
+  "createdAt": zod.string(),
+  "commentCount": zod.number().optional()
+})
+export const ListShowcaseBoardsResponse = zod.array(ListShowcaseBoardsResponseItem)
+
+
+/**
+ * @summary Create a showcase board
+ */
+export const CreateShowcaseBoardBody = zod.object({
+  "title": zod.string(),
+  "purpose": zod.string(),
+  "description": zod.string().optional(),
+  "creatorUserId": zod.number().nullish(),
+  "creatorName": zod.string().optional(),
+  "creatorRole": zod.string().optional()
+})
+
+
+/**
+ * @summary Get a showcase board
+ */
+export const GetShowcaseBoardParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const GetShowcaseBoardResponse = zod.object({
+  "id": zod.number(),
+  "title": zod.string(),
+  "purpose": zod.string(),
+  "description": zod.string().optional(),
+  "creatorUserId": zod.number().nullish(),
+  "creatorName": zod.string(),
+  "creatorRole": zod.string(),
+  "coverImageUrl": zod.string().nullish(),
+  "createdAt": zod.string(),
+  "updatedAt": zod.string().optional(),
+  "sections": zod.array(zod.object({
+  "id": zod.number(),
+  "title": zod.string(),
+  "body": zod.string(),
+  "position": zod.number(),
+  "images": zod.array(zod.object({
+  "id": zod.number(),
+  "sectionId": zod.number(),
+  "imageData": zod.string(),
+  "sourceType": zod.string(),
+  "plmStyleId": zod.number().nullish(),
+  "caption": zod.string().optional(),
+  "position": zod.number()
+})).optional()
+})),
+  "comments": zod.array(zod.object({
+  "id": zod.number(),
+  "userName": zod.string(),
+  "userRole": zod.string(),
+  "commentText": zod.string(),
+  "createdAt": zod.string()
+}))
+})
+
+
+/**
+ * @summary Update a showcase board
+ */
+export const UpdateShowcaseBoardParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const UpdateShowcaseBoardBody = zod.object({
+  "title": zod.string().optional(),
+  "purpose": zod.string().optional(),
+  "description": zod.string().optional(),
+  "coverImageUrl": zod.string().optional()
+})
+
+export const UpdateShowcaseBoardResponse = zod.object({
+  "id": zod.number(),
+  "title": zod.string(),
+  "purpose": zod.string(),
+  "description": zod.string().optional(),
+  "creatorUserId": zod.number().nullish(),
+  "creatorName": zod.string(),
+  "creatorRole": zod.string(),
+  "coverImageUrl": zod.string().nullish(),
+  "createdAt": zod.string(),
+  "updatedAt": zod.string().optional(),
+  "sections": zod.array(zod.object({
+  "id": zod.number(),
+  "title": zod.string(),
+  "body": zod.string(),
+  "position": zod.number(),
+  "images": zod.array(zod.object({
+  "id": zod.number(),
+  "sectionId": zod.number(),
+  "imageData": zod.string(),
+  "sourceType": zod.string(),
+  "plmStyleId": zod.number().nullish(),
+  "caption": zod.string().optional(),
+  "position": zod.number()
+})).optional()
+})),
+  "comments": zod.array(zod.object({
+  "id": zod.number(),
+  "userName": zod.string(),
+  "userRole": zod.string(),
+  "commentText": zod.string(),
+  "createdAt": zod.string()
+}))
+})
+
+
+/**
+ * @summary Delete a showcase board
+ */
+export const DeleteShowcaseBoardParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+
+/**
+ * @summary Add a section to a showcase board
+ */
+export const CreateShowcaseSectionParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const CreateShowcaseSectionBody = zod.object({
+  "title": zod.string().optional(),
+  "body": zod.string().optional(),
+  "position": zod.number().optional()
+})
+
+
+/**
+ * @summary Update a showcase section
+ */
+export const UpdateShowcaseSectionParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const UpdateShowcaseSectionBody = zod.object({
+  "title": zod.string().optional(),
+  "body": zod.string().optional(),
+  "position": zod.number().optional()
+})
+
+export const UpdateShowcaseSectionResponse = zod.object({
+  "id": zod.number(),
+  "title": zod.string(),
+  "body": zod.string(),
+  "position": zod.number(),
+  "images": zod.array(zod.object({
+  "id": zod.number(),
+  "sectionId": zod.number(),
+  "imageData": zod.string(),
+  "sourceType": zod.string(),
+  "plmStyleId": zod.number().nullish(),
+  "caption": zod.string().optional(),
+  "position": zod.number()
+})).optional()
+})
+
+
+/**
+ * @summary Delete a showcase section
+ */
+export const DeleteShowcaseSectionParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+
+/**
+ * @summary Add images to a showcase section
+ */
+export const AddShowcaseImagesParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const AddShowcaseImagesBody = zod.object({
+  "images": zod.array(zod.object({
+  "imageData": zod.string().optional(),
+  "sourceType": zod.enum(['upload', 'plm']).optional(),
+  "plmStyleId": zod.number().optional(),
+  "caption": zod.string().optional()
+}))
+})
+
+
+/**
+ * @summary Delete a showcase image
+ */
+export const DeleteShowcaseImageParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+
+/**
+ * @summary Comment on a showcase board
+ */
+export const CreateShowcaseCommentParams = zod.object({
+  "id": zod.coerce.number()
+})
+
+export const CreateShowcaseCommentBody = zod.object({
+  "userName": zod.string(),
+  "userRole": zod.string().optional(),
+  "commentText": zod.string()
 })
 
 

@@ -21,7 +21,7 @@ const io = new SocketServer(httpServer, {
 });
 
 app.use(cors({ origin: true, credentials: true }));
-app.use(express.json({ limit: "1mb" }));
+app.use(express.json({ limit: "20mb" }));
 app.use(cookieParser());
 
 const router = express.Router();
@@ -382,10 +382,54 @@ async function ensureSchema() {
       user_id INTEGER REFERENCES ${schema}.users(id),
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+    CREATE TABLE IF NOT EXISTS ${schema}.workspace_users (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL,
+      role TEXT NOT NULL,
+      department TEXT NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
     CREATE TABLE IF NOT EXISTS ${schema}.production_orders (
       id SERIAL PRIMARY KEY,
       style_id INTEGER NOT NULL UNIQUE REFERENCES ${schema}.styles(id) ON DELETE CASCADE,
       payload JSONB NOT NULL DEFAULT '{}'::jsonb
+    );
+    CREATE TABLE IF NOT EXISTS ${schema}.showcase_boards (
+      id SERIAL PRIMARY KEY,
+      title TEXT NOT NULL,
+      purpose TEXT NOT NULL DEFAULT 'Other',
+      description TEXT NOT NULL DEFAULT '',
+      creator_user_id INTEGER REFERENCES ${schema}.workspace_users(id) ON DELETE SET NULL,
+      creator_name TEXT NOT NULL DEFAULT '',
+      creator_role TEXT NOT NULL DEFAULT '',
+      cover_image_url TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS ${schema}.showcase_sections (
+      id SERIAL PRIMARY KEY,
+      board_id INTEGER NOT NULL REFERENCES ${schema}.showcase_boards(id) ON DELETE CASCADE,
+      title TEXT NOT NULL DEFAULT '',
+      body TEXT NOT NULL DEFAULT '',
+      position INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS ${schema}.showcase_images (
+      id SERIAL PRIMARY KEY,
+      section_id INTEGER NOT NULL REFERENCES ${schema}.showcase_sections(id) ON DELETE CASCADE,
+      image_data TEXT NOT NULL,
+      source_type TEXT NOT NULL DEFAULT 'upload',
+      plm_style_id INTEGER REFERENCES ${schema}.styles(id) ON DELETE SET NULL,
+      caption TEXT NOT NULL DEFAULT '',
+      position INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE IF NOT EXISTS ${schema}.showcase_comments (
+      id SERIAL PRIMARY KEY,
+      board_id INTEGER NOT NULL REFERENCES ${schema}.showcase_boards(id) ON DELETE CASCADE,
+      user_name TEXT NOT NULL,
+      user_role TEXT NOT NULL DEFAULT '',
+      comment_text TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     ALTER TABLE ${schema}.styles ADD COLUMN IF NOT EXISTS tier TEXT NOT NULL DEFAULT 'Core';
     ALTER TABLE ${schema}.styles ADD COLUMN IF NOT EXISTS sub_category TEXT NOT NULL DEFAULT '';
@@ -423,6 +467,12 @@ async function ensureSchema() {
     UPDATE ${schema}.styles SET stage='Approved', stage_entered_at=COALESCE(stage_entered_at,NOW())
       WHERE status='Approved' AND stage='Concept';
   `);
+
+  await pool.query(
+    `INSERT INTO ${schema}.workspace_users (name,role,department)
+     SELECT 'Wandia Gichuru','Admin','Leadership'
+     WHERE NOT EXISTS (SELECT 1 FROM ${schema}.workspace_users WHERE name='Wandia Gichuru')`,
+  );
 
   for (const user of users) {
     await pool.query(
@@ -806,7 +856,91 @@ router.post("/logout", async (req, res, next) => {
   }
 });
 
+// Team directory — read is intentionally public within the workspace app: the
+// first-visit "Who are you?" selector needs the list before any identity or
+// session exists. Mutations sit behind the session gate below.
+router.get("/team", async (_req, res, next) => {
+  try {
+    const result = await pool.query(
+      `SELECT id,name,role,department,created_at AS "createdAt" FROM ${schema}.workspace_users ORDER BY name`,
+    );
+    res.json(result.rows);
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.use(requireUser);
+
+const TEAM_ROLES = ["Admin", "Design", "Buying", "Retail", "Finance"] as const;
+
+router.post("/team", async (req, res, next) => {
+  try {
+    const name = String(req.body?.name ?? "").trim();
+    const role = String(req.body?.role ?? "").trim();
+    const department = String(req.body?.department ?? "").trim();
+    if (!name) {
+      res.status(400).json({ error: "Name is required" });
+      return;
+    }
+    if (!TEAM_ROLES.includes(role as (typeof TEAM_ROLES)[number])) {
+      res.status(400).json({ error: "Unknown role" });
+      return;
+    }
+    const result = await pool.query(
+      `INSERT INTO ${schema}.workspace_users (name,role,department)
+       VALUES ($1,$2,$3)
+       RETURNING id,name,role,department,created_at AS "createdAt"`,
+      [name, role, department],
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.put("/team/:id", async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const name = String(req.body?.name ?? "").trim();
+    const role = String(req.body?.role ?? "").trim();
+    const department = String(req.body?.department ?? "").trim();
+    if (!name) {
+      res.status(400).json({ error: "Name is required" });
+      return;
+    }
+    if (!TEAM_ROLES.includes(role as (typeof TEAM_ROLES)[number])) {
+      res.status(400).json({ error: "Unknown role" });
+      return;
+    }
+    const result = await pool.query(
+      `UPDATE ${schema}.workspace_users SET name=$1,role=$2,department=$3
+       WHERE id=$4
+       RETURNING id,name,role,department,created_at AS "createdAt"`,
+      [name, role, department, id],
+    );
+    if (!result.rows[0]) {
+      res.status(404).json({ error: "Team member not found" });
+      return;
+    }
+    res.json(result.rows[0]);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.delete("/team/:id", async (req, res, next) => {
+  try {
+    const result = await pool.query(`DELETE FROM ${schema}.workspace_users WHERE id=$1`, [Number(req.params.id)]);
+    if (!result.rowCount) {
+      res.status(404).json({ error: "Team member not found" });
+      return;
+    }
+    res.status(204).end();
+  } catch (error) {
+    next(error);
+  }
+});
 
 async function transitionStyle(id: number, toStage: string, note: string, userId: number | null) {
   if (!isPlmStage(toStage)) throw new Error("Unknown PLM stage");
@@ -1577,6 +1711,403 @@ router.get("/showcases/:id", async (req, res, next) => {
     }
     const frames = await pool.query(`SELECT id,showcase_id AS "showcaseId",style_id AS "styleId",title,caption,image,position,kind FROM ${schema}.showcase_frames WHERE showcase_id=$1 ORDER BY position`, [Number(req.params.id)]);
     res.json({ ...result.rows[0], frames: frames.rows });
+  } catch (error) {
+    next(error);
+  }
+});
+
+const SHOWCASE_PURPOSES = ["Trend Brief", "Drop Preview", "Range Review", "Line Sheet", "Moodboard", "Other"] as const;
+
+router.get("/showcase-boards", async (_req, res, next) => {
+  try {
+    const result = await pool.query(
+      `SELECT b.id,b.title,b.purpose,b.description,
+        b.creator_user_id AS "creatorUserId",b.creator_name AS "creatorName",b.creator_role AS "creatorRole",
+        COALESCE(b.cover_image_url,(
+          SELECT i.image_data FROM ${schema}.showcase_images i
+          JOIN ${schema}.showcase_sections s ON s.id=i.section_id
+          WHERE s.board_id=b.id ORDER BY s.position,i.position,i.id LIMIT 1
+        )) AS "coverImage",
+        to_char(b.created_at,'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "createdAt",
+        (SELECT COUNT(*)::int FROM ${schema}.showcase_comments c WHERE c.board_id=b.id) AS "commentCount"
+       FROM ${schema}.showcase_boards b ORDER BY b.created_at DESC,b.id DESC`,
+    );
+    res.json(result.rows);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post("/showcase-boards", async (req, res, next) => {
+  try {
+    const title = String(req.body?.title ?? "").trim();
+    const purpose = String(req.body?.purpose ?? "Other");
+    const description = String(req.body?.description ?? "").trim();
+    const creatorUserId = Number(req.body?.creatorUserId) || null;
+    const creatorName = String(req.body?.creatorName ?? "").trim();
+    const creatorRole = String(req.body?.creatorRole ?? "").trim();
+    if (!title) {
+      res.status(400).json({ error: "Title is required" });
+      return;
+    }
+    if (!(SHOWCASE_PURPOSES as readonly string[]).includes(purpose)) {
+      res.status(400).json({ error: "Unknown purpose" });
+      return;
+    }
+    const result = await pool.query(
+      `INSERT INTO ${schema}.showcase_boards (title,purpose,description,creator_user_id,creator_name,creator_role)
+       VALUES ($1,$2,$3,$4,$5,$6)
+       RETURNING id,title,purpose,description,creator_user_id AS "creatorUserId",creator_name AS "creatorName",creator_role AS "creatorRole",
+         to_char(created_at,'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "createdAt"`,
+      [title, purpose, description, creatorUserId, creatorName, creatorRole],
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (error) {
+    next(error);
+  }
+});
+
+async function showcaseBoardPayload(id: number) {
+  const board = await pool.query(
+    `SELECT id,title,purpose,description,creator_user_id AS "creatorUserId",creator_name AS "creatorName",creator_role AS "creatorRole",
+       cover_image_url AS "coverImageUrl",
+       to_char(created_at,'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "createdAt",
+       to_char(updated_at,'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "updatedAt"
+     FROM ${schema}.showcase_boards WHERE id=$1`,
+    [id],
+  );
+  if (!board.rows[0]) return null;
+  const [sections, images, comments] = await Promise.all([
+    pool.query(`SELECT id,title,body,position FROM ${schema}.showcase_sections WHERE board_id=$1 ORDER BY position,id`, [id]),
+    pool.query(
+      `SELECT i.id,i.section_id AS "sectionId",i.image_data AS "imageData",i.source_type AS "sourceType",
+         i.plm_style_id AS "plmStyleId",i.caption,i.position
+       FROM ${schema}.showcase_images i JOIN ${schema}.showcase_sections s ON s.id=i.section_id
+       WHERE s.board_id=$1 ORDER BY i.position,i.id`,
+      [id],
+    ),
+    pool.query(
+      `SELECT id,user_name AS "userName",user_role AS "userRole",comment_text AS "commentText",
+         to_char(created_at,'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "createdAt"
+       FROM ${schema}.showcase_comments WHERE board_id=$1 ORDER BY created_at,id`,
+      [id],
+    ),
+  ]);
+  return {
+    ...board.rows[0],
+    sections: sections.rows.map((section) => ({ ...section, images: images.rows.filter((image) => image.sectionId === section.id) })),
+    comments: comments.rows,
+  };
+}
+
+router.get("/showcase-boards/:id", async (req, res, next) => {
+  try {
+    const payload = await showcaseBoardPayload(Number(req.params.id));
+    if (!payload) {
+      res.status(404).json({ error: "Board not found" });
+      return;
+    }
+    res.json(payload);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.put("/showcase-boards/:id", async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const purpose = req.body?.purpose === undefined ? undefined : String(req.body.purpose);
+    if (purpose !== undefined && !(SHOWCASE_PURPOSES as readonly string[]).includes(purpose)) {
+      res.status(400).json({ error: "Unknown purpose" });
+      return;
+    }
+    const result = await pool.query(
+      `UPDATE ${schema}.showcase_boards SET
+         title=COALESCE($2,title),
+         purpose=COALESCE($3,purpose),
+         description=COALESCE($4,description),
+         cover_image_url=COALESCE($5,cover_image_url),
+         updated_at=NOW()
+       WHERE id=$1 RETURNING id`,
+      [
+        id,
+        req.body?.title === undefined ? null : String(req.body.title).trim(),
+        purpose ?? null,
+        req.body?.description === undefined ? null : String(req.body.description),
+        req.body?.coverImageUrl === undefined ? null : String(req.body.coverImageUrl),
+      ],
+    );
+    if (!result.rows[0]) {
+      res.status(404).json({ error: "Board not found" });
+      return;
+    }
+    res.json(await showcaseBoardPayload(id));
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.delete("/showcase-boards/:id", async (req, res, next) => {
+  try {
+    const result = await pool.query(`DELETE FROM ${schema}.showcase_boards WHERE id=$1 RETURNING id`, [Number(req.params.id)]);
+    if (!result.rows[0]) {
+      res.status(404).json({ error: "Board not found" });
+      return;
+    }
+    res.status(204).end();
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post("/showcase-boards/:id/sections", async (req, res, next) => {
+  try {
+    const boardId = Number(req.params.id);
+    const board = await pool.query(`SELECT id FROM ${schema}.showcase_boards WHERE id=$1`, [boardId]);
+    if (!board.rows[0]) {
+      res.status(404).json({ error: "Board not found" });
+      return;
+    }
+    const result = await pool.query(
+      `INSERT INTO ${schema}.showcase_sections (board_id,title,body,position)
+       VALUES ($1,$2,$3,COALESCE((SELECT MAX(position)+1 FROM ${schema}.showcase_sections WHERE board_id=$1),0))
+       RETURNING id,title,body,position`,
+      [boardId, String(req.body?.title ?? "").trim() || "New section", String(req.body?.body ?? "")],
+    );
+    await pool.query(`UPDATE ${schema}.showcase_boards SET updated_at=NOW() WHERE id=$1`, [boardId]);
+    res.status(201).json({ ...result.rows[0], images: [] });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.put("/showcase-sections/:id", async (req, res, next) => {
+  try {
+    const result = await pool.query(
+      `UPDATE ${schema}.showcase_sections SET
+         title=COALESCE($2,title), body=COALESCE($3,body), position=COALESCE($4,position)
+       WHERE id=$1 RETURNING id,board_id AS "boardId",title,body,position`,
+      [
+        Number(req.params.id),
+        req.body?.title === undefined ? null : String(req.body.title),
+        req.body?.body === undefined ? null : String(req.body.body),
+        req.body?.position === undefined ? null : Number(req.body.position),
+      ],
+    );
+    if (!result.rows[0]) {
+      res.status(404).json({ error: "Section not found" });
+      return;
+    }
+    await pool.query(`UPDATE ${schema}.showcase_boards SET updated_at=NOW() WHERE id=$1`, [result.rows[0].boardId]);
+    res.json(result.rows[0]);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.delete("/showcase-sections/:id", async (req, res, next) => {
+  try {
+    const result = await pool.query(`DELETE FROM ${schema}.showcase_sections WHERE id=$1 RETURNING id`, [Number(req.params.id)]);
+    if (!result.rows[0]) {
+      res.status(404).json({ error: "Section not found" });
+      return;
+    }
+    res.status(204).end();
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post("/showcase-sections/:id/images", async (req, res, next) => {
+  try {
+    const sectionId = Number(req.params.id);
+    const section = await pool.query(`SELECT id,board_id AS "boardId" FROM ${schema}.showcase_sections WHERE id=$1`, [sectionId]);
+    if (!section.rows[0]) {
+      res.status(404).json({ error: "Section not found" });
+      return;
+    }
+    const rawImages = Array.isArray(req.body?.images) ? req.body.images : [];
+    if (!rawImages.length) {
+      res.status(400).json({ error: "No images provided" });
+      return;
+    }
+    if (rawImages.length > 12) {
+      res.status(400).json({ error: "At most 12 images per request" });
+      return;
+    }
+    const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
+    const validUploadImage = (dataUri: string): boolean => {
+      const match = /^data:image\/(png|jpe?g|webp);base64,([A-Za-z0-9+/=]+)$/.exec(dataUri);
+      if (!match) return false;
+      let bytes: Buffer;
+      try {
+        bytes = Buffer.from(match[2], "base64");
+      } catch {
+        return false;
+      }
+      if (!bytes.length || bytes.length > MAX_IMAGE_BYTES) return false;
+      const isPng = bytes.length > 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47;
+      const isJpeg = bytes.length > 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+      const isWebp = bytes.length > 12 && bytes.toString("ascii", 0, 4) === "RIFF" && bytes.toString("ascii", 8, 12) === "WEBP";
+      return isPng || isJpeg || isWebp;
+    };
+    const plmPlaceholder = (styleId: number) =>
+      `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 560"><rect width="480" height="560" fill="${styleId % 2 ? "#d8d0c4" : "#d6dde0"}"/><path d="M134 118 195 80h90l61 38 54 91-55 36-33-57v254H168V188l-33 57-55-36z" fill="${styleId % 2 ? "#ede8df" : "#f4f0e8"}" stroke="#1A1A2E" stroke-width="4"/><path d="M195 81c4 45 86 45 90 0M167 264h146" fill="none" stroke="#C9A96E" stroke-width="4"/><text x="24" y="522" fill="#1A1A2E" font-family="sans-serif" font-size="18" letter-spacing="4">VIVO PLM</text></svg>`)}`;
+    const inserted = [];
+    for (const raw of rawImages) {
+      const sourceType = raw?.sourceType === "plm" ? "plm" : "upload";
+      let imageData = "";
+      let plmStyleId: number | null = null;
+      if (sourceType === "plm") {
+        plmStyleId = Number(raw?.plmStyleId) || null;
+        if (!plmStyleId) continue;
+        const style = await pool.query(`SELECT image FROM ${schema}.styles WHERE id=$1`, [plmStyleId]);
+        if (!style.rows[0]) continue;
+        imageData = String(style.rows[0].image ?? "") || plmPlaceholder(plmStyleId);
+      } else {
+        imageData = String(raw?.imageData ?? "");
+        if (!validUploadImage(imageData)) {
+          res.status(400).json({ error: "Uploads must be jpg, png or webp images under 4MB" });
+          return;
+        }
+      }
+      if (!imageData) continue;
+      const row = await pool.query(
+        `INSERT INTO ${schema}.showcase_images (section_id,image_data,source_type,plm_style_id,caption,position)
+         VALUES ($1,$2,$3,$4,$5,COALESCE((SELECT MAX(position)+1 FROM ${schema}.showcase_images WHERE section_id=$1),0))
+         RETURNING id,section_id AS "sectionId",image_data AS "imageData",source_type AS "sourceType",plm_style_id AS "plmStyleId",caption,position`,
+        [sectionId, imageData, sourceType, plmStyleId, String(raw?.caption ?? "")],
+      );
+      inserted.push(row.rows[0]);
+    }
+    if (!inserted.length) {
+      res.status(400).json({ error: "No valid images provided" });
+      return;
+    }
+    await pool.query(`UPDATE ${schema}.showcase_boards SET updated_at=NOW() WHERE id=$1`, [section.rows[0].boardId]);
+    res.status(201).json(inserted);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.delete("/showcase-images/:id", async (req, res, next) => {
+  try {
+    const result = await pool.query(`DELETE FROM ${schema}.showcase_images WHERE id=$1 RETURNING id`, [Number(req.params.id)]);
+    if (!result.rows[0]) {
+      res.status(404).json({ error: "Image not found" });
+      return;
+    }
+    res.status(204).end();
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post("/showcase-boards/:id/comments", async (req, res, next) => {
+  try {
+    const boardId = Number(req.params.id);
+    const board = await pool.query(`SELECT id FROM ${schema}.showcase_boards WHERE id=$1`, [boardId]);
+    if (!board.rows[0]) {
+      res.status(404).json({ error: "Board not found" });
+      return;
+    }
+    const userName = String(req.body?.userName ?? "").trim();
+    const commentText = String(req.body?.commentText ?? "").trim();
+    if (!userName || !commentText) {
+      res.status(400).json({ error: "Name and comment are required" });
+      return;
+    }
+    const result = await pool.query(
+      `INSERT INTO ${schema}.showcase_comments (board_id,user_name,user_role,comment_text)
+       VALUES ($1,$2,$3,$4)
+       RETURNING id,user_name AS "userName",user_role AS "userRole",comment_text AS "commentText",
+         to_char(created_at,'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "createdAt"`,
+      [boardId, userName, String(req.body?.userRole ?? "").trim(), commentText],
+    );
+    res.status(201).json(result.rows[0]);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get("/catalogue-products", async (req, res, next) => {
+  try {
+    const search = String(req.query.search ?? "").trim();
+    const brand = String(req.query.brand ?? "").trim();
+    const subcategory = String(req.query.subcategory ?? "").trim();
+    const statusFilter = String(req.query.status ?? "").trim().toLowerCase();
+    const rawPage = Number(req.query.page);
+    const page = Number.isInteger(rawPage) && rawPage >= 1 ? Math.min(rawPage, 10000) : 1;
+    const pageSize = 50;
+    const where: string[] = ["LOWER(a.status) IN ('active','retired')", "a.style_number IS NOT NULL", "a.style_number <> ''"];
+    const values: unknown[] = [];
+    if (search) {
+      values.push(`%${search}%`);
+      where.push(`(a.style_name ILIKE $${values.length} OR a.style_number ILIKE $${values.length})`);
+    }
+    if (brand) {
+      values.push(brand);
+      where.push(`a.brand = $${values.length}`);
+    }
+    if (subcategory) {
+      values.push(subcategory);
+      where.push(`a.product_type = $${values.length}`);
+    }
+    if (statusFilter === "active" || statusFilter === "retired") {
+      values.push(statusFilter === "active");
+      where.push(`BOOL_OR(LOWER(a.status)='active') = $${values.length}`);
+    }
+    // status filter applies to the aggregated style, so split into HAVING
+    const having = where.filter((clause) => clause.startsWith("BOOL_OR"));
+    const plainWhere = where.filter((clause) => !clause.startsWith("BOOL_OR"));
+    const baseQuery = `
+      FROM public.all_products_clean a
+      WHERE ${plainWhere.join(" AND ")}
+      GROUP BY a.style_number
+      ${having.length ? `HAVING ${having.join(" AND ")}` : ""}
+    `;
+    const offset = (page - 1) * pageSize;
+    const [rows, count, facets] = await Promise.all([
+      pool.query(
+        `SELECT s.*, img.image FROM (
+           SELECT a.style_number AS "styleNumber",
+             MAX(a.style_name) AS "styleName",
+             MAX(a.brand) AS brand,
+             MAX(a.product_type) AS subcategory,
+             CASE WHEN BOOL_OR(LOWER(a.status)='active') THEN 'Active' ELSE 'Retired' END AS status,
+             (ARRAY_AGG(a.sku))[1] AS any_sku
+           ${baseQuery}
+           ORDER BY MAX(a.style_name) NULLS LAST, a.style_number
+           LIMIT ${pageSize} OFFSET ${offset}
+         ) s
+         LEFT JOIN LATERAL (
+           SELECT i.image_512 AS image
+           FROM public.all_products_clean b
+           JOIN public.product_image_map m ON m.sku = b.sku
+           JOIN public.product_images i ON i.tmpl_id = m.tmpl_id
+           WHERE b.style_number = s."styleNumber" AND i.image_512 IS NOT NULL AND i.image_512 <> ''
+           LIMIT 1
+         ) img ON TRUE`,
+        values,
+      ),
+      pool.query(`SELECT COUNT(*)::int AS total FROM (SELECT a.style_number ${baseQuery}) t`, values),
+      pool.query(
+        `SELECT ARRAY(SELECT DISTINCT brand FROM public.all_products_clean WHERE LOWER(status) IN ('active','retired') AND brand IS NOT NULL AND brand <> '' ORDER BY brand) AS brands,
+                ARRAY(SELECT DISTINCT product_type FROM public.all_products_clean WHERE LOWER(status) IN ('active','retired') AND product_type IS NOT NULL AND product_type <> '' ORDER BY product_type) AS subcategories`,
+      ),
+    ]);
+    res.json({
+      items: rows.rows.map(({ any_sku: _drop, image, ...row }) => ({
+        ...row,
+        image: image ? (String(image).startsWith("data:") ? String(image) : `data:image/jpeg;base64,${image}`) : null,
+      })),
+      total: count.rows[0].total,
+      page,
+      pageSize,
+      brands: facets.rows[0].brands,
+      subcategories: facets.rows[0].subcategories,
+    });
   } catch (error) {
     next(error);
   }

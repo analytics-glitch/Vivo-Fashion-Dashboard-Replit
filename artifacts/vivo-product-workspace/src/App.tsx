@@ -6,17 +6,21 @@ import { io } from 'socket.io-client';
 import { ArrowLeft, ArrowRight, BarChart3, BookOpen, CalendarDays, Check, ChevronDown, ChevronRight, CircleAlert, Clock3, Columns3, FileText, GalleryHorizontalEnd, History, LayoutDashboard, LogOut, Menu, MessageCircle, Package, Palette, Plus, Search, Settings2, Sparkles, X } from 'lucide-react';
 import {
   getGetWorkspaceBoardQueryKey, getGetWorkspaceDashboardQueryKey, getGetWorkspacePlanQueryKey, getGetWorkspaceSessionQueryKey,
-  getGetWorkspaceShowcaseQueryKey, getGetWorkspaceStyleQueryKey,
-  getListWorkspaceBoardsQueryKey, getListWorkspacePlanHistoryQueryKey, getListWorkspacePlansQueryKey, getListWorkspaceShowcasesQueryKey, getListWorkspaceStylesQueryKey,
+  getGetWorkspaceStyleQueryKey,
+  getListWorkspaceBoardsQueryKey, getListWorkspacePlanHistoryQueryKey, getListWorkspacePlansQueryKey, getListWorkspaceStylesQueryKey,
   useCreateWorkspaceBoard, useCreateWorkspaceBoardCard, useCreateWorkspaceBoardComment, useGetWorkspaceBoard, useGetWorkspaceDashboard,
-  useAddWorkspacePlanStyle, useCreateWorkspacePlan, useGetWorkspacePlan, useGetWorkspaceSession, useGetWorkspaceShowcase, useGetWorkspaceStyle,
-  useListWorkspaceBoards, useListWorkspacePlanHistory, useListWorkspacePlans, useListWorkspaceShowcases, useListWorkspaceStyles, useLoginWorkspace,
+  useAddWorkspacePlanStyle, useCreateWorkspacePlan, useGetWorkspacePlan, useGetWorkspaceSession, useGetWorkspaceStyle,
+  useListWorkspaceBoards, useListWorkspacePlanHistory, useListWorkspacePlans, useListWorkspaceStyles, useLoginWorkspace,
   useLogoutWorkspace, useUpdateWorkspaceBoardCard, useUpdateWorkspacePlan, useUpdateWorkspaceStyle,
+  getListWorkspaceTeamQueryKey, useListWorkspaceTeam,
 } from '@workspace/api-client-react';
 import type { WorkspaceBoard, WorkspacePlan, WorkspacePlanIndexItem, WorkspaceStyle } from '@workspace/api-client-react';
 import { ErrorBoundary } from '@/components/error-boundary';
 import NotFound from '@/pages/not-found';
 import PlmPage from '@/pages/PlmPage';
+import SettingsPage from '@/pages/SettingsPage';
+import ShowcasePage from '@/pages/ShowcasePage';
+import FullCataloguePage from '@/pages/FullCataloguePage';
 import './index.css';
 
 const queryClient = new QueryClient();
@@ -46,11 +50,77 @@ function initials(name = 'Vivo team') { return name.split(' ').map((part) => par
 function date(value: unknown) { if (!value) return 'No date'; const d = new Date(String(value)); return Number.isNaN(d.getTime()) ? String(value) : d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }); }
 function getPathValue(item: unknown, keys: string[]) { const record = item as Record<string, unknown>; return keys.map((key) => record?.[key]).find((value) => value !== undefined); }
 
+type WorkspaceIdentity = { id: string; name: string; role: string };
+function readIdentity(): WorkspaceIdentity | null {
+  const id = localStorage.getItem('workspace_user_id');
+  if (!id) return null;
+  return { id, name: localStorage.getItem('workspace_user_name') || '', role: localStorage.getItem('workspace_user_role') || '' };
+}
+
+function IdentityModal({ onPick, onClose, canClose }: { onPick: (identity: WorkspaceIdentity) => void; onClose: () => void; canClose: boolean }) {
+  const team = useListWorkspaceTeam({ query: { queryKey: getListWorkspaceTeamQueryKey() }, request: { credentials: 'include' } });
+  return (
+    <div className="settings-modal-backdrop" onClick={canClose ? onClose : undefined}>
+      <div className="settings-modal identity-modal" role="dialog" aria-modal="true" aria-label="Who are you?" onClick={(e) => e.stopPropagation()}>
+        <div className="settings-modal-head">
+          <h3>Who are you?</h3>
+          {canClose && <button className="icon-button" onClick={onClose} aria-label="Close" data-testid="button-close-identity"><X size={16} /></button>}
+        </div>
+        <p className="settings-note">Pick your name so your work is attributed correctly.</p>
+        {team.isLoading ? (
+          <p className="settings-empty">Loading the team…</p>
+        ) : team.data?.length ? (
+          <div className="identity-list">
+            {team.data.map((member) => (
+              <button
+                key={member.id}
+                className="identity-card"
+                onClick={() => onPick({ id: String(member.id), name: member.name, role: member.role })}
+                data-testid={`button-identity-${member.id}`}
+              >
+                <span className="avatar" style={{ background: '#C9A96E' }}>{initials(member.name)}</span>
+                <span className="identity-card-copy"><strong>{member.name}</strong><span>{member.role}{member.department ? ` · ${member.department}` : ''}</span></span>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <p className="settings-empty">No team members have been added yet. Ask an admin to add you in Settings.</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function Shell({ children }: { children: ReactNode }) {
   const [location, setLocation] = useLocation();
   const [mobileOpen, setMobileOpen] = useState(false);
   const session = useGetWorkspaceSession({ query: { queryKey: getGetWorkspaceSessionQueryKey(), retry: false } });
   const logout = useLogoutWorkspace();
+  const [identity, setIdentity] = useState<WorkspaceIdentity | null>(() => readIdentity());
+  const [identityOpen, setIdentityOpen] = useState(() => readIdentity() === null);
+  const team = useListWorkspaceTeam({ query: { queryKey: getListWorkspaceTeamQueryKey() }, request: { credentials: 'include' } });
+  useEffect(() => {
+    if (!team.data || !identity) return;
+    const member = team.data.find((m) => String(m.id) === identity.id);
+    if (!member) {
+      localStorage.removeItem('workspace_user_id');
+      localStorage.removeItem('workspace_user_name');
+      localStorage.removeItem('workspace_user_role');
+      setIdentity(null);
+      setIdentityOpen(true);
+    } else if (member.name !== identity.name || member.role !== identity.role) {
+      localStorage.setItem('workspace_user_name', member.name);
+      localStorage.setItem('workspace_user_role', member.role);
+      setIdentity({ id: identity.id, name: member.name, role: member.role });
+    }
+  }, [team.data, identity]);
+  const pickIdentity = (picked: WorkspaceIdentity) => {
+    localStorage.setItem('workspace_user_id', picked.id);
+    localStorage.setItem('workspace_user_name', picked.name);
+    localStorage.setItem('workspace_user_role', picked.role);
+    setIdentity(picked);
+    setIdentityOpen(false);
+  };
   const user = session.data?.user;
   const login = location.includes('/login');
   if (login) return <>{children}</>;
@@ -72,6 +142,11 @@ function Shell({ children }: { children: ReactNode }) {
               <Icon size={17} strokeWidth={1.7} /><span>{label}</span>{href === '/product-workspace/board' && <span className="nav-count">3</span>}
             </Link>
           ))}
+          {identity?.role === 'Admin' && (
+            <Link href="/product-workspace/settings" className={`workspace-nav-link ${location.startsWith('/product-workspace/settings') ? 'active' : ''}`} onClick={() => setMobileOpen(false)} data-testid="link-nav-settings">
+              <Settings2 size={17} strokeWidth={1.7} /><span>Settings</span>
+            </Link>
+          )}
         </nav>
         <div className="sidebar-bottom">
           <div className="sidebar-note"><Sparkles size={15} /><span>Decision room<br /><b>Q3 2026</b></span></div>
@@ -96,10 +171,11 @@ function Shell({ children }: { children: ReactNode }) {
           </a>
           <button className="icon-button mobile-menu" onClick={() => setMobileOpen(true)} aria-label="Open menu" data-testid="button-open-menu"><Menu size={20} /></button>
           <div className="topbar-context"><span className="topbar-dot" /> Live workspace <span className="slash">/</span> Q3 2026</div>
-          <div className="topbar-actions"><button className="topbar-action" onClick={() => setLocation('/product-workspace/styles')} data-testid="button-search"><Search size={16} /> <span>Search workspace</span><kbd>⌘ K</kbd></button><button className="icon-button" onClick={() => setLocation('/product-workspace/')} data-testid="button-notifications"><CircleAlert size={18} /></button></div>
+          <div className="topbar-actions"><button className="topbar-action" onClick={() => setLocation('/product-workspace/styles')} data-testid="button-search"><Search size={16} /> <span>Search workspace</span><kbd>⌘ K</kbd></button><button className="icon-button" onClick={() => setLocation('/product-workspace/')} data-testid="button-notifications"><CircleAlert size={18} /></button><button className="identity-pill" onClick={() => setIdentityOpen(true)} data-testid="button-identity-pill">{identity ? <>Signed in as <b>{identity.name}</b> · {identity.role}</> : 'Who are you?'}</button></div>
         </header>
         {children}
       </main>
+      {identityOpen && <IdentityModal onPick={pickIdentity} onClose={() => setIdentityOpen(false)} canClose={identity !== null} />}
     </div>
   );
 }
@@ -295,17 +371,17 @@ function PlmPage() {
 function PlmDetail({ id, onBack }: { id: number; onBack: () => void }) { const style = useGetWorkspaceStyle(id, { query: { queryKey: getGetWorkspaceStyleQueryKey(id) } }); const plm = useGetWorkspaceStylePlm(id, { query: { queryKey: getGetWorkspaceStylePlmQueryKey(id) } }); return <section className="page"><button className="back-link" onClick={onBack} data-testid="button-back-plm"><ArrowLeft size={15} /> Development board</button>{style.isLoading ? <LoadingState /> : style.data ? <><PageHeading eyebrow={`PLM / ${style.data.code}`} title={style.data.name} description={`${style.data.brand} · ${style.data.category} · Owner ${style.data.owner}`} action={<StatusPill value={style.data.status} />} /><div className="detail-grid"><div className="detail-hero"><div className="detail-image" style={style.data.image ? { backgroundImage: `url(${style.data.image})` } : undefined}><Palette size={36} /></div><div><span className="eyebrow">Completion</span><h2>{style.data.progress || 0}%</h2><Progress value={style.data.progress} /><p>Target date {date(style.data.targetDate)}</p></div></div><div className="panel checklist-panel"><div className="panel-heading"><div><span className="eyebrow">Workflow</span><h3>Development checks</h3></div><Clock3 size={18} /></div>{['Tech pack', 'Fabric confirmed', 'Fit session', 'POM / QC', 'Cost estimate', 'Production order'].map((label, i) => <div className="check-row" key={label}><span className={i < (style.data.progress || 0) / 18 ? 'check done' : 'check'}>{i < (style.data.progress || 0) / 18 && <Check size={12} />}</span><span>{label}</span><small>{i < (style.data.progress || 0) / 18 ? 'Complete' : 'Upcoming'}</small></div>)}</div><div className="panel detail-data">{plm.isLoading ? <Skeleton className="skeleton-panel" /> : <><span className="eyebrow">PLM signal</span><h3>What needs attention</h3><p>{plm.data ? 'PLM data is synced. Review the open checks before the next handoff.' : 'No additional PLM notes yet.'}</p><button className="button button-quiet" data-testid="button-open-plm-data">Open full PLM record <ArrowRight size={15} /></button></>}</div></div></> : <ErrorState onRetry={() => style.refetch()} />}</section>; }
 
 */
-function ShowcasePage() {
-  const showcases = useListWorkspaceShowcases({ query: { queryKey: getListWorkspaceShowcasesQueryKey() } });
-  const [selected, setSelected] = useState<number | null>(null);
-  if (selected) return <ShowcaseDetail id={selected} onBack={() => setSelected(null)} />;
-  return <section className="page"><PageHeading eyebrow="Editorial gallery" title="Showcase" description="The considered edit — ready to share with the room." action={<button className="button button-quiet" data-testid="button-showcase-filter">All seasons <ChevronDown size={15} /></button>} />{showcases.isLoading ? <LoadingState /> : <div className="showcase-grid">{showcases.data?.length ? showcases.data.map((showcase, i) => <button className={`showcase-card showcase-${i % 3}`} key={showcase.id} onClick={() => setSelected(showcase.id)} data-testid={`card-showcase-${showcase.id}`}><div className="showcase-visual"><span>{String(showcase.season).slice(0, 2)}</span><GalleryHorizontalEnd size={22} /></div><div className="showcase-copy"><div><StatusPill value={showcase.status} /><span className="mono">{showcase.frames?.length || 0} frames</span></div><h3>{showcase.title}</h3><p>{showcase.description || 'A seasonal point of view.'}</p><span className="showcase-open">Open story <ArrowRight size={14} /></span></div></button>) : <EmptyState title="The gallery is waiting" text="Published showcases will take their place here." />}</div>}</section>;
-}
-function ShowcaseDetail({ id, onBack }: { id: number; onBack: () => void }) { const showcase = useGetWorkspaceShowcase(id, { query: { queryKey: getGetWorkspaceShowcaseQueryKey(id) } }); const [frame, setFrame] = useState(0); const frames = showcase.data?.frames || []; return <section className="page showcase-detail">{<button className="back-link" onClick={onBack} data-testid="button-back-showcase"><ArrowLeft size={15} /> All showcases</button>}{showcase.isLoading ? <LoadingState /> : showcase.data ? <><PageHeading eyebrow={`${showcase.data.season} / Showcase`} title={showcase.data.title} description={showcase.data.description} action={<StatusPill value={showcase.data.status} />} /><div className="story-frame"><div className="story-visual"><span className="frame-number">{String(frame + 1).padStart(2, '0')} / {String(frames.length || 1).padStart(2, '0')}</span><div className="frame-art"><Sparkles size={46} /></div><button className="frame-prev" onClick={() => setFrame((frame - 1 + frames.length) % Math.max(frames.length, 1))} data-testid="button-frame-previous"><ArrowLeft size={18} /></button><button className="frame-next" onClick={() => setFrame((frame + 1) % Math.max(frames.length, 1))} data-testid="button-frame-next"><ArrowRight size={18} /></button></div><div className="story-caption"><span className="eyebrow">Frame {frame + 1}</span><h2>{fmt(getPathValue(frames[frame], ['title', 'name']), 'A study in proportion')}</h2><p>{fmt(getPathValue(frames[frame], ['description', 'caption']), showcase.data.description || 'A point of view for the season.')}</p><div className="frame-dots">{frames.map((_, i) => <button className={frame === i ? 'active' : ''} key={i} onClick={() => setFrame(i)} data-testid={`button-frame-${i}`} />)}</div></div></div></> : <ErrorState onRetry={() => showcase.refetch()} />}</section>; }
 
 function StylesPage() {
   const params = useParams<{ id?: string }>();
   const [, setLocation] = useLocation();
+  const [tab, setTabState] = useState<'plm' | 'full'>(() => new URLSearchParams(window.location.search).get('tab') === 'full' ? 'full' : 'plm');
+  const setTab = (next: 'plm' | 'full') => {
+    setTabState(next);
+    const url = new URL(window.location.href);
+    if (next === 'full') url.searchParams.set('tab', 'full'); else url.searchParams.delete('tab');
+    window.history.replaceState(null, '', url.toString());
+  };
   const [search, setSearch] = useState('');
   const [brand, setBrand] = useState('');
   const styleParams = { search: search || undefined, brand: brand || undefined };
@@ -313,11 +389,18 @@ function StylesPage() {
   const [selected, setSelected] = useState<number | null>(() => params.id ? Number(params.id) : null);
   const brands = useMemo(() => Array.from(new Set((styles.data || []).map((s) => s.brand).filter(Boolean))), [styles.data]);
   if (selected) return <StyleDetail id={selected} onBack={() => setLocation('/product-workspace/styles')} />;
-  if (styles.isError) return <section className="page"><ErrorState onRetry={() => styles.refetch()} /></section>;
-  return <section className="page"><PageHeading eyebrow="Product library" title="Style catalogue" description="Search the working language of the Vivo collection." /><div className="catalogue-tools"><label className="search-field"><Search size={17} /><input type="search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by style, number or designer…" data-testid="input-style-search" /></label><select value={brand} onChange={(e) => setBrand(e.target.value)} aria-label="Filter by brand" data-testid="select-style-brand"><option value="">All brands</option>{brands.map((item) => <option key={item} value={item}>{item}</option>)}</select><button className="button button-quiet" onClick={() => { setSearch(''); setBrand(''); }} data-testid="button-clear-style-filters">Clear filters</button></div>{styles.isLoading ? <LoadingState /> : <div className="catalogue-list"><div className="catalogue-head"><span>{styles.data?.length || 0} styles</span><span>Updated moments ago</span></div>{styles.data?.length ? styles.data.map((style, i) => <button className="catalogue-row" key={style.id} onClick={() => setLocation(`/product-workspace/styles/${style.id}`)} data-testid={`row-catalogue-style-${style.id}`}><span className="row-index">{String(i + 1).padStart(2, '0')}</span><div className="catalogue-thumb" style={style.image ? { backgroundImage: `url(${style.image})` } : undefined}><Palette size={15} /></div><div className="catalogue-name"><strong>{style.name}</strong><span>{style.code} · {style.category}</span></div><div className="catalogue-stage"><span>Stage</span><strong>{style.currentStage || style.stage || style.status || 'Concept'}</strong></div><div className="catalogue-assignee"><span>Designer / assignee</span><strong>{style.designer || style.owner || 'Unassigned'}</strong></div><span className="catalogue-brand">{style.brand}</span><StatusPill value={style.status} /><div className="catalogue-progress"><Progress value={style.progress} /><span>{style.progress || 0}%</span></div><ChevronRight size={16} /></button>) : <EmptyState title="No styles in the catalogue" text="Try a different search or clear your filters." action={<button className="button button-quiet" onClick={() => { setSearch(''); setBrand(''); }} data-testid="button-empty-clear-filters">Clear filters</button>} />}</div>}</section>;
+  if (tab === 'plm' && styles.isError) return <section className="page"><ErrorState onRetry={() => styles.refetch()} /></section>;
+  const tabBar = (
+    <div className="cat-tabs" role="tablist" aria-label="Catalogue tabs">
+      <button role="tab" aria-selected={tab === 'plm'} className={`cat-tab ${tab === 'plm' ? 'active' : ''}`} onClick={() => setTab('plm')} data-testid="tab-plm-catalogue">PLM Catalogue <span className="cat-tab-label">In Development</span></button>
+      <button role="tab" aria-selected={tab === 'full'} className={`cat-tab ${tab === 'full' ? 'active' : ''}`} onClick={() => setTab('full')} data-testid="tab-full-catalogue">Full Catalogue <span className="cat-tab-label">Odoo mirror</span></button>
+    </div>
+  );
+  if (tab === 'full') return <section className="page"><PageHeading eyebrow="Product library" title="Style catalogue" description="The full Vivo range — every active and retired style, straight from Odoo." />{tabBar}<FullCataloguePage /></section>;
+  return <section className="page"><PageHeading eyebrow="Product library" title="Style catalogue" description="Search the working language of the Vivo collection." />{tabBar}<div className="catalogue-tools"><label className="search-field"><Search size={17} /><input type="search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by style, number or designer…" data-testid="input-style-search" /></label><select value={brand} onChange={(e) => setBrand(e.target.value)} aria-label="Filter by brand" data-testid="select-style-brand"><option value="">All brands</option>{brands.map((item) => <option key={item} value={item}>{item}</option>)}</select><button className="button button-quiet" onClick={() => { setSearch(''); setBrand(''); }} data-testid="button-clear-style-filters">Clear filters</button></div>{styles.isLoading ? <LoadingState /> : <div className="catalogue-list"><div className="catalogue-head"><span>{styles.data?.length || 0} styles</span><span>Updated moments ago</span></div>{styles.data?.length ? styles.data.map((style, i) => <button className="catalogue-row" key={style.id} onClick={() => setLocation(`/product-workspace/styles/${style.id}`)} data-testid={`row-catalogue-style-${style.id}`}><span className="row-index">{String(i + 1).padStart(2, '0')}</span><div className="catalogue-thumb" style={style.image ? { backgroundImage: `url(${style.image})` } : undefined}><Palette size={15} /></div><div className="catalogue-name"><strong>{style.name}</strong><span>{style.code} · {style.category}</span></div><div className="catalogue-stage"><span>Stage</span><strong>{style.currentStage || style.stage || style.status || 'Concept'}</strong></div><div className="catalogue-assignee"><span>Designer / assignee</span><strong>{style.designer || style.owner || 'Unassigned'}</strong></div><span className="catalogue-brand">{style.brand}</span><StatusPill value={style.status} /><div className="catalogue-progress"><Progress value={style.progress} /><span>{style.progress || 0}%</span></div><ChevronRight size={16} /></button>) : <EmptyState title="No styles in the catalogue" text="Try a different search or clear your filters." action={<button className="button button-quiet" onClick={() => { setSearch(''); setBrand(''); }} data-testid="button-empty-clear-filters">Clear filters</button>} />}</div>}</section>;
 }
 function StyleDetail({ id, onBack }: { id: number; onBack: () => void }) { const style = useGetWorkspaceStyle(id, { query: { queryKey: getGetWorkspaceStyleQueryKey(id) }, request: { credentials: 'include' } }); const update = useUpdateWorkspaceStyle(); const [editing, setEditing] = useState(false); const [owner, setOwner] = useState(''); const save = () => update.mutate({ id, data: { owner } }, { onSuccess: () => { setEditing(false); queryClient.invalidateQueries({ queryKey: getGetWorkspaceStyleQueryKey(id) }); queryClient.invalidateQueries({ queryKey: getListWorkspaceStylesQueryKey() }); } }); return <section className="page">{<button className="back-link" onClick={onBack} data-testid="button-back-catalogue"><ArrowLeft size={15} /> Style catalogue</button>}{style.isLoading ? <LoadingState /> : style.isError ? <ErrorState onRetry={() => style.refetch()} /> : style.data ? <><PageHeading eyebrow={`Style / ${style.data.code}`} title={style.data.name} description={`${style.data.brand} · ${style.data.category} · ${style.data.market || 'East Africa'}`} action={<button className="button button-dark" onClick={() => { setOwner(style.data?.owner || ''); setEditing(!editing); }} data-testid="button-edit-style"><Settings2 size={15} /> Edit style</button>} />{editing && <div className="edit-inline"><label>Owner<input value={owner} onChange={(e) => setOwner(e.target.value)} data-testid="input-style-owner" /></label><button className="button button-gold" onClick={save} disabled={update.isPending} data-testid="button-save-style">Save changes <Check size={15} /></button></div>}<div className="style-detail-layout"><div className="style-detail-art" style={style.data.image ? { backgroundImage: `url(${style.data.image})` } : undefined}><div className="style-art-label"><span className="mono">{style.data.code}</span><b>{style.data.name}</b></div></div><div className="style-detail-info"><div className="detail-status"><StatusPill value={style.data.status} /><span className="mono">Target {date(style.data.targetDate)}</span></div><h2>A shape worth<br /><em>keeping close.</em></h2><div className="detail-progress"><div><span>Development progress</span><b>{style.data.progress || 0}%</b></div><Progress value={style.data.progress} /></div><div className="fact-list"><div><span>Owner</span><b>{style.data.owner}</b></div><div><span>Designer / assignee</span><b>{style.data.designer || style.data.owner || 'Unassigned'}</b></div><div><span>Design stage</span><b>{style.data.currentStage || style.data.stage || style.data.status || 'Concept'}</b></div><div><span>Price</span><b>{style.data.price ? `KES ${style.data.price.toLocaleString()}` : 'To be set'}</b></div><div><span>Market</span><b>{style.data.market || 'East Africa'}</b></div></div></div></div><div className="style-tabs"><button className="active" data-testid="button-style-overview">Overview</button><button data-testid="button-style-colourways">Colourways <span>{style.data.colorways?.length || 0}</span></button><button data-testid="button-style-fabrics">Fabrics <span>{style.data.fabrics?.length || 0}</span></button><button data-testid="button-style-samples">Samples <span>{style.data.samples?.length || 0}</span></button><button data-testid="button-style-production">Production</button></div></> : <ErrorState onRetry={() => style.refetch()} />}</section>; }
 
-function Router() { const [location] = useLocation(); return <ErrorBoundary resetKey={location}><Switch><Route path="/product-workspace/login" component={Login} /><Route path="/product-workspace/" component={Dashboard} /><Route path="/product-workspace/plan" component={PlanPage} /><Route path="/product-workspace/board" component={BoardPage} /><Route path="/product-workspace/plm" component={PlmPage} /><Route path="/product-workspace/showcase" component={ShowcasePage} /><Route path="/product-workspace/styles" component={StylesPage} /><Route path="/product-workspace/styles/:id" component={StylesPage} /><Route component={NotFound} /></Switch></ErrorBoundary>; }
+function Router() { const [location] = useLocation(); return <ErrorBoundary resetKey={location}><Switch><Route path="/product-workspace/login" component={Login} /><Route path="/product-workspace/" component={Dashboard} /><Route path="/product-workspace/plan" component={PlanPage} /><Route path="/product-workspace/board" component={BoardPage} /><Route path="/product-workspace/plm" component={PlmPage} /><Route path="/product-workspace/settings" component={SettingsPage} /><Route path="/product-workspace/showcase" component={ShowcasePage} /><Route path="/product-workspace/showcase/:id" component={ShowcasePage} /><Route path="/product-workspace/styles" component={StylesPage} /><Route path="/product-workspace/styles/:id" component={StylesPage} /><Route component={NotFound} /></Switch></ErrorBoundary>; }
 function App() { return <QueryClientProvider client={queryClient}><WouterRouter><Shell><Router /></Shell></WouterRouter></QueryClientProvider>; }
 export default App;
