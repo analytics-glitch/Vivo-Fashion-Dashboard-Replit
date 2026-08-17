@@ -373,7 +373,7 @@ function FitNotesBody({ fit, onSizeGuide }) {
 /* PDP                                                                 */
 /* ------------------------------------------------------------------ */
 
-export default function ProductDetail({ sku, onBack, onOpenProduct, onTryOn }) {
+export default function ProductDetail({ sku, onBack, onOpenProduct, onTryOn, onOpenPage }) {
   const { add } = useCart();
   const { has, toggle } = useWishlist();
   const [detail, setDetail] = useState(null);
@@ -644,6 +644,17 @@ export default function ProductDetail({ sku, onBack, onOpenProduct, onTryOn }) {
           <button data-testid="add-to-cart-btn" onClick={onAdd} disabled={out} className={btnPrimary}>
             {out ? "Out of Stock" : <><ShoppingBag size={16} /> Add to Bag</>}
           </button>
+          {/* Secondary store nudge — ONLY when the piece (or picked size)
+              can't be bought online right now; online stays the hero. */}
+          {(out || (selSize && !selSize.in_stock)) && typeof onOpenPage === "function" && (
+            <button
+              data-testid="pdp-check-stores"
+              onClick={() => onOpenPage("stores")}
+              className="w-full mt-2 text-[12px] text-muted-foreground hover:text-foreground underline underline-offset-4 decoration-border transition-colors rounded py-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+            >
+              Not available online? Check nearby stores.
+            </button>
+          )}
           {/* Try It On sits right under Add to Bag with its own accent
               treatment — prototype-evaluation prominence, unmissable. */}
           {typeof onTryOn === "function" && (

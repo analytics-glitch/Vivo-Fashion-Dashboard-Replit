@@ -22,6 +22,8 @@ import TryOnView from "@/components/community/TryOnView";
 import SurveyView from "@/components/community/SurveyView";
 import MyDataView from "@/components/community/MyDataView";
 import { StylePrefsView } from "@/components/community/StyledForYou";
+import StoreLocatorView from "@/components/community/StoreLocatorView";
+import { DeliveryInfoView, ReturnsInfoView } from "@/components/community/ShoppingInfoViews";
 import LegalPage from "@/components/community/LegalPage";
 import NewsArticle from "@/components/community/NewsArticle";
 import { isNewsPageId } from "@/components/community/newsData";
@@ -37,7 +39,7 @@ const TABS = [
 
 // Static help & legal pages routed via the ?page= param. News articles ride
 // the same param as "news-{id}", validated against the NEWS list.
-const PAGES = ["faq", "contact", "terms", "privacy", "guidelines", "tryon", "mydata", "survey", "help", "givingback", "styleprefs"];
+const PAGES = ["faq", "contact", "terms", "privacy", "guidelines", "tryon", "mydata", "survey", "help", "givingback", "styleprefs", "stores", "delivery", "returns"];
 const isValidPage = (v) => PAGES.includes(v) || isNewsPageId(v);
 
 const badgeCls = "absolute top-0.5 right-0 min-w-[18px] h-[18px] px-1 rounded-full bg-primary-ink text-primary-foreground text-[10px] font-bold flex items-center justify-center";
@@ -472,6 +474,12 @@ function ShellInner() {
             <SurveyView onBack={closePage} member={member} onMemberUpdate={updateMember} />
           ) : page === "styleprefs" ? (
             <StylePrefsView onBack={closePage} />
+          ) : page === "stores" ? (
+            <StoreLocatorView onBack={closePage} />
+          ) : page === "delivery" ? (
+            <DeliveryInfoView onBack={closePage} />
+          ) : page === "returns" ? (
+            <ReturnsInfoView onBack={closePage} />
           ) : page === "mydata" ? (
             <MyDataView onBack={closePage} onOpenPage={openPage} />
           ) : page === "contact" ? (
@@ -492,7 +500,7 @@ function ShellInner() {
         ) : wlOpen ? (
           <WishlistView onBack={closeWishlist} onShop={() => goTab("shop")} onOpenProduct={openProduct} />
         ) : productSku ? (
-          <ProductDetail sku={productSku} onBack={closeProduct} onOpenProduct={openProduct} onTryOn={openTryOn} />
+          <ProductDetail sku={productSku} onBack={closeProduct} onOpenProduct={openProduct} onTryOn={openTryOn} onOpenPage={openPage} />
         ) : eventId ? (
           <EventDetail eventId={eventId} onBack={closeEventDetail} onOpenPage={openPage} />
         ) : (

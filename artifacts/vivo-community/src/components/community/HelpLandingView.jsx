@@ -1,5 +1,5 @@
 import React from "react";
-import { ArrowLeft, ChevronRight, HelpCircle, MessageCircle, FileText, ShieldCheck, HeartHandshake } from "lucide-react";
+import { ArrowLeft, ChevronRight, HelpCircle, MessageCircle, FileText, ShieldCheck, HeartHandshake, MapPin, Truck, RefreshCcw } from "lucide-react";
 import { cardCls } from "./ui";
 
 /* Help landing (/help) — for when someone taps the HELP nav item itself.
@@ -17,6 +17,24 @@ const LINKS = [
     title: "Contact Us",
     desc: "WhatsApp, call, email or message us — we answer quickly.",
     icon: MessageCircle,
+  },
+  {
+    id: "stores",
+    title: "Find a Store",
+    desc: "Every Vivo store in Kenya, Uganda and Rwanda.",
+    icon: MapPin,
+  },
+  {
+    id: "delivery",
+    title: "Delivery Information",
+    desc: "Where we deliver, timelines and fees.",
+    icon: Truck,
+  },
+  {
+    id: "returns",
+    title: "Returns & Exchanges",
+    desc: "Our returns window and how exchanges work.",
+    icon: RefreshCcw,
   },
   {
     id: "terms",
