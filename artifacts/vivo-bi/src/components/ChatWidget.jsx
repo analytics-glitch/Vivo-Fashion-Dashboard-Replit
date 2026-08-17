@@ -125,14 +125,20 @@ const ChatWidget = () => {
       return [];
     }
   });
-  const [sessionId, setSessionId] = useState(() => localStorage.getItem(STORAGE_KEY) || null);
+  const [sessionId, setSessionId] = useState(() => {
+    try {
+      return localStorage.getItem(STORAGE_KEY) || null;
+    } catch {
+      return null;
+    }
+  });
   const [staged, setStaged] = useState([]);
   const [attachErr, setAttachErr] = useState("");
   const listRef = useRef(null);
   const fileInputRef = useRef(null);
 
   useEffect(() => {
-    if (sessionId) localStorage.setItem(STORAGE_KEY, sessionId);
+    if (sessionId) { try { localStorage.setItem(STORAGE_KEY, sessionId); } catch { /* noop */ } }
   }, [sessionId]);
 
   useEffect(() => {
@@ -355,8 +361,8 @@ const ChatWidget = () => {
     setToolStatus(null);
     setStaged([]);
     setAttachErr("");
-    localStorage.removeItem(STORAGE_KEY);
-    localStorage.removeItem(STORAGE_LOG);
+    try { localStorage.removeItem(STORAGE_KEY); } catch { /* noop */ }
+    try { localStorage.removeItem(STORAGE_LOG); } catch { /* noop */ }
   };
 
   return (
