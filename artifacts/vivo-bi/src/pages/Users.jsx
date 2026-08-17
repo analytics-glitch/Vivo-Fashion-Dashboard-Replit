@@ -118,6 +118,42 @@ const Users = () => {
     } catch (e) { alert(e?.response?.data?.detail || e.message); }
   };
 
+  const [setPasswordTarget, setSetPasswordTarget] = useState(null);
+  const [setPasswordForm, setSetPasswordForm] = useState({ newPassword: "", confirm: "" });
+  const [setPasswordErr, setSetPasswordErr] = useState(null);
+  const [setPasswordLoading, setSetPasswordLoading] = useState(false);
+
+  const openSetPassword = (u) => {
+    setSetPasswordTarget(u);
+    setSetPasswordForm({ newPassword: "", confirm: "" });
+    setSetPasswordErr(null);
+  };
+
+  const submitSetPassword = async (e) => {
+    e.preventDefault();
+    setSetPasswordErr(null);
+    if (setPasswordForm.newPassword.length < 8) {
+      setSetPasswordErr("Password must be at least 8 characters.");
+      return;
+    }
+    if (setPasswordForm.newPassword !== setPasswordForm.confirm) {
+      setSetPasswordErr("Passwords do not match.");
+      return;
+    }
+    setSetPasswordLoading(true);
+    try {
+      await api.post(`/admin/users/${setPasswordTarget.user_id}/set-password`, {
+        new_password: setPasswordForm.newPassword,
+      });
+      setSetPasswordTarget(null);
+      alert(`Password updated for ${setPasswordTarget.email}.`);
+    } catch (err) {
+      setSetPasswordErr(err?.response?.data?.detail || err.message);
+    } finally {
+      setSetPasswordLoading(false);
+    }
+  };
+
   // Pending users — newest first. Surfaces as a banner above the
   // standard users table so the admin can approve/reject in one click.
   const pendingUsers = users.filter((u) => (u.status || "active") === "pending");
@@ -342,6 +378,16 @@ const Users = () => {
                         Reset 2FA
                       </button>
                     )}
+                    {r.auth_method === "password" && r.user_id !== user.user_id && (
+                      <button
+                        className="text-[11px] px-1.5 py-1 rounded border border-border text-muted hover:bg-muted/30"
+                        onClick={() => openSetPassword(r)}
+                        title="Set a new password for this account"
+                        data-testid={`set-password-${r.user_id}`}
+                      >
+                        Set Password
+                      </button>
+                    )}
                     <button
                       className="text-[11px] px-1.5 py-1 rounded border border-danger text-danger disabled:opacity-40"
                       onClick={() => deleteUser(r)}
@@ -360,6 +406,72 @@ const Users = () => {
       )}
 
       {user?.role === "admin" && <L10FoldersAdmin />}
+
+      {setPasswordTarget && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40"
+          onClick={(e) => { if (e.target === e.currentTarget) setSetPasswordTarget(null); }}
+          data-testid="set-password-modal"
+        >
+          <form
+            onSubmit={submitSetPassword}
+            className="bg-white rounded-xl shadow-xl p-6 w-full max-w-sm space-y-4"
+          >
+            <div className="flex items-center justify-between">
+              <h2 className="font-bold text-[15px]">Set Password</h2>
+              <button type="button" onClick={() => setSetPasswordTarget(null)} className="text-muted hover:text-foreground">
+                <X size={16} />
+              </button>
+            </div>
+            <p className="text-[12px] text-muted">
+              Setting a new password for <span className="font-semibold">{setPasswordTarget.email}</span>.
+            </p>
+            <div className="space-y-2">
+              <input
+                type="password"
+                className="w-full px-3 py-2 rounded-lg border border-border text-[13px]"
+                placeholder="New password (min 8 characters)"
+                minLength={8}
+                required
+                value={setPasswordForm.newPassword}
+                onChange={(e) => setSetPasswordForm((f) => ({ ...f, newPassword: e.target.value }))}
+                data-testid="set-password-new"
+                autoFocus
+              />
+              <input
+                type="password"
+                className="w-full px-3 py-2 rounded-lg border border-border text-[13px]"
+                placeholder="Confirm new password"
+                minLength={8}
+                required
+                value={setPasswordForm.confirm}
+                onChange={(e) => setSetPasswordForm((f) => ({ ...f, confirm: e.target.value }))}
+                data-testid="set-password-confirm"
+              />
+            </div>
+            {setPasswordErr && (
+              <div className="text-danger text-[12px]" data-testid="set-password-error">{setPasswordErr}</div>
+            )}
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setSetPasswordTarget(null)}
+                className="px-3 py-2 rounded-lg border border-border text-[13px] text-muted hover:bg-muted/20"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={setPasswordLoading}
+                className="px-3 py-2 rounded-lg bg-brand text-white font-semibold text-[13px] hover:bg-brand-deep disabled:opacity-50"
+                data-testid="set-password-submit"
+              >
+                {setPasswordLoading ? "Saving…" : "Set Password"}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
     </div>
   );
 };

@@ -27447,6 +27447,38 @@ async def admin_users_update(user_id: str, request: Request):
     return {"ok": True}
 
 
+@app.post("/api/admin/users/{user_id}/set-password")
+async def admin_users_set_password(user_id: str, request: Request):
+    """Set a new password for an email/password account.
+
+    Only works for users with auth_method='password'. The target user's
+    existing sessions remain valid — consistent with how 2FA-reset works.
+    """
+    body = await request.json()
+    new_password = (body.get("new_password") or "").strip()
+    if len(new_password) < 8:
+        return JSONResponse({"detail": "Password must be at least 8 characters."}, status_code=400)
+    ph = _hash_password(new_password)
+    try:
+        with _users_tx(lock=True) as cur:
+            cur.execute(
+                "SELECT user_id, auth_method FROM app_users WHERE user_id=%s FOR UPDATE",
+                (user_id,))
+            target = cur.fetchone()
+            if not target:
+                return JSONResponse({"detail": "User not found"}, status_code=404)
+            if target["auth_method"] != "password":
+                return JSONResponse(
+                    {"detail": "Password can only be set for email/password accounts."},
+                    status_code=400)
+            cur.execute(
+                "UPDATE app_users SET password_hash=%s WHERE user_id=%s",
+                (ph, user_id))
+    finally:
+        _invalidate_user_cache(user_id)
+    return {"ok": True}
+
+
 @app.post("/api/admin/users/{user_id}/2fa-reset")
 async def admin_users_2fa_reset(user_id: str, request: Request):
     """Clear enrollment so the user is prompted to enrol on their next login.
