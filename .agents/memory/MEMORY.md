@@ -120,3 +120,4 @@
 - [Staff 2FA flow](staff-2fa-flow.md) — password/Google/native auth share a short-lived challenge before normal session creation; existing sessions survive reset.
 - [Sublimation costing canon](sublimation-costing-canon.md) — BOM op time = settable STANDARD throughput (default 60, actual = variance only); server recomputes saves; reprint on printing lines only; rate constants FE+BE lockstep.
 - [Artifact service environments](artifact-service-environments.md) — when adding an API service, preserve the web artifact's global BASE_PATH env block or its managed Vite workflow will fail before startup.
+- [Product Workspace preview auth](product-workspace-preview-auth.md) — embedded HTTPS previews need Secure/SameSite=None session cookies or API pages can 401 after session bootstrap.

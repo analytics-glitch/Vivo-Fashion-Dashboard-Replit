@@ -482,16 +482,25 @@ async function findUserBySession(token?: string) {
   return result.rows[0] ?? null;
 }
 
-async function createSession(userId: number, res: Response) {
+function requestIsHttps(req: Request) {
+  const forwardedProto = String(req.headers["x-forwarded-proto"] || "")
+    .split(",")[0]
+    .trim()
+    .toLowerCase();
+  return req.secure || forwardedProto === "https" || process.env.NODE_ENV === "production";
+}
+
+async function createSession(userId: number, req: Request, res: Response) {
   const token = sessionToken();
   await pool.query(
     `INSERT INTO ${schema}.sessions (token,user_id,expires_at) VALUES ($1,$2,NOW()+$3::interval)`,
     [token, userId, `${sessionDays} days`],
   );
+  const secure = requestIsHttps(req);
   res.cookie(sessionCookie, token, {
     httpOnly: true,
-    sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
+    sameSite: secure ? "none" : "lax",
+    secure,
     maxAge: sessionDays * 24 * 60 * 60 * 1000,
     path: "/",
   });
@@ -583,7 +592,7 @@ router.post("/login", async (req, res, next) => {
       res.status(401).json({ error: "Email or password not recognised" });
       return;
     }
-    await createSession(user.id, res);
+    await createSession(user.id, req, res);
     res.json({ authenticated: true, user: publicUser(user) });
   } catch (error) {
     next(error);
@@ -596,7 +605,7 @@ router.get("/session", async (req, res, next) => {
     if (!user) {
       const seeded = await pool.query<UserRow>(`SELECT id,name,email,role,initials,color FROM ${schema}.users ORDER BY id LIMIT 1`);
       user = seeded.rows[0] ?? null;
-      if (user) await createSession(user.id, res);
+      if (user) await createSession(user.id, req, res);
     }
     res.json({ authenticated: Boolean(user), user: user ? publicUser(user) : null });
   } catch (error) {
