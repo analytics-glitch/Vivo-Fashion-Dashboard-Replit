@@ -31,13 +31,13 @@ const CardImage = ({ style, url }) => {
   const [failed, setFailed] = useState(false);
   const show = url && !failed;
   return (
-    <div className="w-full aspect-square overflow-hidden rounded-md bg-panel grid place-items-center">
+    <div className="w-full h-[192px] overflow-hidden rounded-md bg-[#F5F5F0] grid place-items-center">
       {show ? (
         <img
           src={url}
           alt={style}
           loading="lazy"
-          className="w-full h-full object-cover"
+          className="w-full h-full object-contain"
           onError={() => setFailed(true)}
           data-testid="catalogue-card-image"
         />
@@ -220,12 +220,12 @@ const ProductDetailModal = ({ product, onClose }) => {
         <div className="grid gap-6 md:grid-cols-[340px,1fr]">
           {/* images */}
           <div className="space-y-2">
-            <div className="w-full aspect-square overflow-hidden rounded-lg bg-panel grid place-items-center">
+            <div className="w-full aspect-square overflow-hidden rounded-lg bg-[#F5F5F0] grid place-items-center">
               {images.length ? (
                 <img
                   src={images[imgIdx]}
                   alt={product.style_name}
-                  className="w-full h-full object-cover cursor-zoom-in"
+                  className="w-full h-full object-contain cursor-zoom-in"
                   onClick={() => setZoom(true)}
                   data-testid="img-detail-main"
                 />
@@ -241,7 +241,7 @@ const ProductDetailModal = ({ product, onClose }) => {
                     src={u}
                     alt=""
                     onClick={() => setImgIdx(i)}
-                    className={`h-14 w-14 rounded-md object-cover cursor-pointer border ${i === imgIdx ? "border-brand" : "border-border opacity-70 hover:opacity-100"}`}
+                    className={`h-14 w-14 rounded-md object-contain bg-[#F5F5F0] cursor-pointer border ${i === imgIdx ? "border-brand" : "border-border opacity-70 hover:opacity-100"}`}
                     data-testid={`img-detail-thumb-${i}`}
                   />
                 ))}
