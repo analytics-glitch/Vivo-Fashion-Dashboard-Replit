@@ -18,6 +18,9 @@ loyalty-app/the-loyalty-app/node_modules
 
 # Dev assets — screenshots, reference images, uploaded files used only during
 # development. Not needed at runtime.
+# NOTE: community_seeds/ is intentionally NOT listed here — it holds the
+# creator PNG boot seeds that _seed_vivo_edits() reads on first production
+# start. Keep those two directories in sync when photos change.
 attached_assets
 
 # Python bytecode caches — regenerated automatically on first import.

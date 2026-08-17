@@ -1663,8 +1663,12 @@ def _seed_vivo_edits(cur):
                 (keys,))
     if int(cur.fetchone()[0] or 0) >= len(keys):
         return
-    assets = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                          "attached_assets")
+    _base = os.path.dirname(os.path.abspath(__file__))
+    # community_seeds/ ships with the deployment image (not in .replitignore);
+    # attached_assets/ is the dev source but is excluded from prod deploys.
+    assets = os.path.join(_base, "community_seeds")
+    if not os.path.isdir(assets):
+        assets = os.path.join(_base, "attached_assets")
     tags = _edit_catalogue_tags(cur)
     ti = 0
     for order, seed in enumerate(_VIVO_EDIT_SEEDS):
