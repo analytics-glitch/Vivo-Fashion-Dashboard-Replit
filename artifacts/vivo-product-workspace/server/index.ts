@@ -1296,7 +1296,7 @@ async function ensureSchema() {
       title TEXT NOT NULL,
       purpose TEXT NOT NULL DEFAULT 'Other',
       description TEXT NOT NULL DEFAULT '',
-      creator_user_id INTEGER REFERENCES ${schema}.workspace_users(id) ON DELETE SET NULL,
+      creator_user_id INTEGER,
       creator_name TEXT NOT NULL DEFAULT '',
       creator_role TEXT NOT NULL DEFAULT '',
       cover_image_url TEXT,
@@ -1313,7 +1313,7 @@ async function ensureSchema() {
     );
     CREATE TABLE IF NOT EXISTS ${schema}.showcase_images (
       id SERIAL PRIMARY KEY,
-      section_id INTEGER NOT NULL REFERENCES ${schema}.showcase_sections(id) ON DELETE CASCADE,
+      section_id INTEGER,
       image_data TEXT NOT NULL,
       source_type TEXT NOT NULL DEFAULT 'upload',
       plm_style_id INTEGER REFERENCES ${schema}.styles(id) ON DELETE SET NULL,
@@ -1378,8 +1378,28 @@ async function ensureSchema() {
     ALTER TABLE ${schema}.cost_estimates ADD COLUMN IF NOT EXISTS set_sample_cost NUMERIC NOT NULL DEFAULT 0;
     ALTER TABLE ${schema}.cost_estimates ADD COLUMN IF NOT EXISTS variance NUMERIC NOT NULL DEFAULT 0;
     ALTER TABLE ${schema}.pom_qc ALTER COLUMN point DROP NOT NULL;
+    ALTER TABLE ${schema}.styles ADD COLUMN IF NOT EXISTS style_number TEXT;
+    ALTER TABLE ${schema}.styles ADD COLUMN IF NOT EXISTS notes TEXT NOT NULL DEFAULT '';
+    ALTER TABLE ${schema}.styles ADD COLUMN IF NOT EXISTS launch_week TEXT NOT NULL DEFAULT '';
+    ALTER TABLE ${schema}.styles ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT '';
+    ALTER TABLE ${schema}.stage_history ADD COLUMN IF NOT EXISTS source_system TEXT;
+    ALTER TABLE ${schema}.stage_history ADD COLUMN IF NOT EXISTS source_movement_id BIGINT;
+    ALTER TABLE ${schema}.showcase_images ADD COLUMN IF NOT EXISTS section_id INTEGER;
+    ALTER TABLE ${schema}.showcase_images
+      DROP CONSTRAINT IF EXISTS showcase_images_section_id_fkey;
+    ALTER TABLE ${schema}.showcase_images
+      ADD CONSTRAINT showcase_images_section_id_fkey
+        FOREIGN KEY (section_id) REFERENCES ${schema}.showcase_sections(id)
+        ON DELETE CASCADE;
     UPDATE ${schema}.styles SET stage='Approved', stage_entered_at=COALESCE(stage_entered_at,NOW())
       WHERE status='Approved' AND stage='Concept';
+  `);
+  await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS styles_style_number_uq
+      ON ${schema}.styles (style_number);
+    CREATE UNIQUE INDEX IF NOT EXISTS stage_history_source_movement_uq
+      ON ${schema}.stage_history (source_system, source_movement_id)
+      WHERE (source_system IS NOT NULL AND source_movement_id IS NOT NULL);
   `);
 
   await pool.query(
