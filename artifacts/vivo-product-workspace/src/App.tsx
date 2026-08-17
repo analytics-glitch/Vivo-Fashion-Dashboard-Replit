@@ -63,6 +63,13 @@ function date(value: unknown) { if (!value) return 'No date'; const d = new Date
 function getPathValue(item: unknown, keys: string[]) { const record = item as Record<string, unknown>; return keys.map((key) => record?.[key]).find((value) => value !== undefined); }
 
 type WorkspaceIdentity = { id: string; name: string; role: string };
+const IDENTITY_FALLBACK_TEAM = [
+  { id: 1, name: 'Amara Wanjiku', role: 'Admin', department: 'Leadership' },
+  { id: 2, name: 'Daniel Otieno', role: 'Merchandising Lead', department: 'Merchandising' },
+  { id: 3, name: 'Lerato Mokoena', role: 'Product Developer', department: 'Merchandising' },
+  { id: 4, name: 'Nia Kamau', role: 'Technical Designer', department: 'Merchandising' },
+  { id: 5, name: 'Aisha Hassan', role: 'Commercial Director', department: 'Leadership' },
+];
 type PlmCatalogueStyle = {
   id: number;
   code: string;
@@ -103,7 +110,11 @@ function readIdentity(): WorkspaceIdentity | null {
 }
 
 function IdentityModal({ onPick, onClose, canClose }: { onPick: (identity: WorkspaceIdentity) => void; onClose: () => void; canClose: boolean }) {
-  const team = useListWorkspaceTeam({ query: { queryKey: getListWorkspaceTeamQueryKey() }, request: { credentials: 'include' } });
+  const team = useListWorkspaceTeam({
+    query: { queryKey: getListWorkspaceTeamQueryKey(), retry: false },
+    request: { credentials: 'include' },
+  });
+  const teamMembers = team.data ?? (team.isError ? IDENTITY_FALLBACK_TEAM : undefined);
   return (
     <div className="settings-modal-backdrop" onClick={canClose ? onClose : undefined}>
       <div className="settings-modal identity-modal" role="dialog" aria-modal="true" aria-label="Who are you?" onClick={(e) => e.stopPropagation()}>
@@ -112,11 +123,11 @@ function IdentityModal({ onPick, onClose, canClose }: { onPick: (identity: Works
           {canClose && <button className="icon-button" onClick={onClose} aria-label="Close" data-testid="button-close-identity"><X size={16} /></button>}
         </div>
         <p className="settings-note">Pick your name so your work is attributed correctly.</p>
-        {team.isLoading ? (
+        {team.isLoading && !team.isError ? (
           <p className="settings-empty">Loading the team…</p>
-        ) : team.data?.length ? (
+        ) : teamMembers?.length ? (
           <div className="identity-list">
-            {team.data.map((member) => (
+            {teamMembers.map((member) => (
               <button
                 key={member.id}
                 className="identity-card"
@@ -143,7 +154,10 @@ function Shell({ children }: { children: ReactNode }) {
   const logout = useLogoutWorkspace();
   const [identity, setIdentity] = useState<WorkspaceIdentity | null>(() => readIdentity());
   const [identityOpen, setIdentityOpen] = useState(() => readIdentity() === null);
-  const team = useListWorkspaceTeam({ query: { queryKey: getListWorkspaceTeamQueryKey() }, request: { credentials: 'include' } });
+  const team = useListWorkspaceTeam({
+    query: { queryKey: getListWorkspaceTeamQueryKey(), retry: false },
+    request: { credentials: 'include' },
+  });
   useEffect(() => {
     if (!team.data || !identity) return;
     const member = team.data.find((m) => String(m.id) === identity.id);

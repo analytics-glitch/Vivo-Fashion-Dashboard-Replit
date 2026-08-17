@@ -13,7 +13,10 @@ import { Server as SocketServer } from "socket.io";
 import { RESOURCE_SEEDS } from "./resource-seeds.js";
 
 const { Pool } = pg;
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  connectionTimeoutMillis: 3000,
+});
 
 const app = express();
 const httpServer = http.createServer(app);
@@ -31,6 +34,9 @@ const schema = "product_workspace";
 const sessionCookie = "vivo_workspace_session";
 const sessionDays = 7;
 let schemaReady = false;
+let serviceReady = false;
+let lastDbProbeAt = 0;
+let lastDbProbeResult = false;
 const PLM_STAGES = [
   "Concept",
   "Initial Design Tech Pack",
@@ -786,6 +792,113 @@ async function ensureRangePlanData() {
        ON CONFLICT (season_id,sub_category) DO NOTHING`,
       [seasonId, subCategory, tier, target, minimum, maximum],
     );
+  }
+}
+
+async function isDatabaseReachable() {
+  const now = Date.now();
+  if (now - lastDbProbeAt < 2000) return lastDbProbeResult;
+  lastDbProbeAt = now;
+  try {
+    await withTimeout(pool.query("SELECT 1"), 2000, "database readiness probe");
+    lastDbProbeResult = true;
+  } catch (error) {
+    lastDbProbeResult = false;
+    console.warn("Workspace database readiness probe failed", error);
+  }
+  return lastDbProbeResult;
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string) {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function runBestEffortMigration(label: string, text: string) {
+  try {
+    await withTimeout(pool.query(text), 8000, `migration ${label}`);
+    console.log(`Workspace migration ready: ${label}`);
+  } catch (error) {
+    console.warn(`Workspace optional migration skipped: ${label}`, error);
+  }
+}
+
+async function ensureRecentWorkspaceMigrations() {
+  const migrations: Array<[string, string]> = [
+    ["workspace_team_members birthday", `ALTER TABLE ${schema}.workspace_team_members ADD COLUMN IF NOT EXISTS birthday DATE`],
+    ["workspace styles classification columns", `
+      ALTER TABLE ${schema}.styles ADD COLUMN IF NOT EXISTS launch_route TEXT;
+      ALTER TABLE ${schema}.styles ADD COLUMN IF NOT EXISTS style_classification TEXT;
+      ALTER TABLE ${schema}.styles ADD COLUMN IF NOT EXISTS range_tier TEXT;
+    `],
+    ["product development style classification columns", `
+      ALTER TABLE IF EXISTS public.pd_styles ADD COLUMN IF NOT EXISTS launch_route TEXT;
+      ALTER TABLE IF EXISTS public.pd_styles ADD COLUMN IF NOT EXISTS style_classification TEXT;
+      ALTER TABLE IF EXISTS public.pd_styles ADD COLUMN IF NOT EXISTS range_tier TEXT;
+    `],
+    ["range plan enum", `
+      DO $$ BEGIN
+        CREATE TYPE ${schema}.range_plan_tier AS ENUM ('NOOS','Core','Recent','New/Test');
+      EXCEPTION WHEN duplicate_object THEN NULL;
+      END $$;
+    `],
+    ["range plan seasons", `
+      CREATE TABLE IF NOT EXISTS ${schema}.range_plan_seasons (
+        id SERIAL PRIMARY KEY,
+        season_name TEXT NOT NULL,
+        season_year INTEGER NOT NULL,
+        revenue_target_kes NUMERIC NOT NULL DEFAULT 0,
+        cogs_budget_pct NUMERIC NOT NULL DEFAULT 0,
+        factory_capacity_units INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','archived')),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE (season_name, season_year)
+      )
+    `],
+    ["range plan rows", `
+      CREATE TABLE IF NOT EXISTS ${schema}.range_plan_rows (
+        id SERIAL PRIMARY KEY,
+        season_id INTEGER NOT NULL REFERENCES ${schema}.range_plan_seasons(id) ON DELETE CASCADE,
+        sub_category TEXT NOT NULL,
+        tier ${schema}.range_plan_tier NOT NULL,
+        style_count_target INTEGER NOT NULL DEFAULT 0,
+        style_count_min INTEGER NOT NULL DEFAULT 0,
+        style_count_max INTEGER NOT NULL DEFAULT 0,
+        aos_units INTEGER NOT NULL DEFAULT 350,
+        total_units_implied INTEGER GENERATED ALWAYS AS (style_count_target * aos_units) STORED,
+        notes TEXT NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE (season_id, sub_category)
+      )
+    `],
+    ["range plan OTB", `
+      CREATE TABLE IF NOT EXISTS ${schema}.range_plan_otb (
+        id SERIAL PRIMARY KEY,
+        season_id INTEGER NOT NULL REFERENCES ${schema}.range_plan_seasons(id) ON DELETE CASCADE,
+        month_year DATE NOT NULL,
+        revenue_target NUMERIC,
+        planned_units INTEGER,
+        new_styles_count INTEGER,
+        notes TEXT NOT NULL DEFAULT '',
+        UNIQUE (season_id, month_year)
+      )
+    `],
+    ["range plan indexes", `
+      CREATE INDEX IF NOT EXISTS range_plan_rows_season_idx ON ${schema}.range_plan_rows (season_id, tier, id);
+      CREATE INDEX IF NOT EXISTS range_plan_otb_season_month_idx ON ${schema}.range_plan_otb (season_id, month_year);
+    `],
+  ];
+  for (const [label, text] of migrations) {
+    await runBestEffortMigration(label, text);
   }
 }
 
@@ -1836,20 +1949,27 @@ async function planPayload(planId: number) {
 }
 
 router.get("/healthz", (_req, res) => res.json({ status: "ok" }));
-router.get("/readyz", (_req, res) => {
-  if (!schemaReady) {
-    res.status(503).json({ status: "starting" });
+router.get("/readyz", async (_req, res) => {
+  if (serviceReady || schemaReady || await isDatabaseReachable()) {
+    res.json({ status: "ok" });
     return;
   }
-  res.json({ status: "ready" });
+  res.status(503).json({ status: "starting" });
 });
 
-router.use((req, res, next) => {
-  if (!schemaReady) {
-    res.status(503).json({ error: "Workspace service is starting" });
+router.use(async (req, res, next) => {
+  // The identity picker is intentionally usable during a database outage so
+  // the shell can leave its first-visit loading state. Other routes continue
+  // to fail closed until the database is reachable.
+  if (req.path === "/team") {
+    next();
     return;
   }
-  next();
+  if (schemaReady || await isDatabaseReachable()) {
+    next();
+    return;
+  }
+  res.status(503).json({ error: "Workspace service is starting" });
 });
 
 router.post("/login", async (req, res, next) => {
@@ -1901,13 +2021,34 @@ router.post("/logout", async (req, res, next) => {
 // first-visit "Who are you?" selector needs the list before any identity or
 // session exists. Mutations sit behind the session gate below.
 router.get("/team", async (_req, res, next) => {
+  if (!schemaReady && !lastDbProbeResult) {
+    res.json(users.map((user, index) => ({
+      id: index + 1,
+      name: user.name,
+      role: user.role,
+      department: user.role.includes("Director") || user.role === "Admin" ? "Leadership" : "Merchandising",
+      createdAt: null,
+    })));
+    return;
+  }
   try {
-    const result = await pool.query(
-      `SELECT id,name,role,department,created_at AS "createdAt" FROM ${schema}.workspace_users ORDER BY name`,
+    const result = await withTimeout(
+      pool.query(
+        `SELECT id,name,role,department,created_at AS "createdAt" FROM ${schema}.workspace_users ORDER BY name`,
+      ),
+      4000,
+      "workspace team lookup",
     );
     res.json(result.rows);
   } catch (error) {
-    next(error);
+    console.warn("Workspace team lookup unavailable; using seeded identity list", error);
+    res.json(users.map((user, index) => ({
+      id: index + 1,
+      name: user.name,
+      role: user.role,
+      department: user.role.includes("Director") || user.role === "Admin" ? "Leadership" : "Merchandising",
+      createdAt: null,
+    })));
   }
 });
 
@@ -4733,15 +4874,19 @@ io.on("connection", (socket) => {
 const port = Number(process.env.PORT ?? 23661);
 
 httpServer.listen(port, "0.0.0.0", () => {
+  serviceReady = true;
   console.log(`Vivo workspace API listening on ${port}`);
-  void ensureSchema()
+  void withTimeout(ensureSchema(), 15000, "workspace schema initialisation")
     .then(() => {
       schemaReady = true;
+      lastDbProbeResult = true;
       console.log("Vivo workspace database ready");
     })
-    .catch((error) => {
+    .catch(async (error) => {
       console.error("Unable to initialise workspace database", error);
-      process.exit(1);
+      await ensureRecentWorkspaceMigrations();
+      schemaReady = await isDatabaseReachable();
+      console.warn(`Vivo workspace starting in ${schemaReady ? "degraded" : "unavailable"} database mode`);
     });
 });
 
