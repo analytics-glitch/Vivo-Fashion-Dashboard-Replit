@@ -566,7 +566,7 @@ function ShellInner() {
               </>
             )}
             {tab === "community" && member && <TabCommunity member={member} subNav={subNav} onSubChange={syncSub} onOpenEvent={openEventDetail} onOpenProduct={openProduct} onOpenPage={openPage} onOpenFabulas={setFabulasId} onOpenEdit={openEdit} onOpenEdits={() => openPage("edits")} />}
-            {tab === "shop" && <TabShop onOpenProduct={openProduct} onOpenTryOn={() => openTryOn("")} onOpenPage={openPage} />}
+            {tab === "shop" && <TabShop onOpenProduct={openProduct} onOpenTryOn={() => openTryOn("")} onOpenPage={openPage} onOpenQuiz={openQuiz} />}
             {tab === "rewards" && (member ? (
               <TabRewards member={member} onMemberUpdate={updateMember} onOpenPage={openPage} />
             ) : (

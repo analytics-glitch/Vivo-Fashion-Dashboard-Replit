@@ -192,7 +192,7 @@ test("home page (member): home-new-this-week rail is absent", async ({ page }) =
   ).toHaveCount(0);
 });
 
-test("shop tab pristine (sort=new, no filters): shop-new-this-week rail is visible", async ({ page }) => {
+test("shop tab: shop-new-this-week rail is gone (Shop Fixes spec — it duplicated the grid)", async ({ page }) => {
   await gotoTab(page, memberToken, "shop");
 
   // Wait for the product grid or empty state.
@@ -207,83 +207,13 @@ test("shop tab pristine (sort=new, no filters): shop-new-this-week rail is visib
     )
     .catch(() => {});
 
-  // Confirm sort is "new" (the default).
+  // Confirm sort is "new" (the default) — the state that used to show the rail.
   const sortValue = await page.locator('[data-testid="shop-sort"]').inputValue().catch(() => "");
   expect(sortValue, 'Sort must default to "new" for the pristine state').toBe("new");
 
-  // If no products exist in this environment, skip the rail check.
-  const productCount = await page.locator('[data-testid^="product-card-"]').count();
-  if (productCount === 0) {
-    test.info().annotations.push({
-      type: "note",
-      description: "No products available in this environment — rail visibility check skipped.",
-    });
-    return;
-  }
-
+  // The rail was removed entirely: "Newest first" sort covers new arrivals.
   await expect(
     page.locator('[data-testid="shop-new-this-week"]'),
-    "shop-new-this-week rail must appear on Shop tab when sort=new and no filters are active"
-  ).toBeVisible({ timeout: 10_000 });
-});
-
-test("shop tab with active filter: shop-new-this-week rail is hidden", async ({ page }) => {
-  await gotoTab(page, memberToken, "shop");
-
-  // Wait for category pills to be rendered.
-  await page
-    .waitForSelector('[data-testid^="shop-filter-"]', { timeout: 20_000 })
-    .catch(() => {});
-
-  // Click any category pill that is NOT "All" and is not the filter-open button.
-  const pills = page.locator(
-    '[data-testid^="shop-filter-"]:not([data-testid="shop-filter-All"]):not([data-testid="shop-filter-open"])'
-  );
-  const pillCount = await pills.count();
-  if (pillCount === 0) {
-    test.info().annotations.push({ type: "note", description: "No category pills — filtered-state check skipped." });
-    return;
-  }
-  await pills.first().click();
-  // Wait for the grid to update (loading spinner or new results).
-  await page
-    .waitForFunction(
-      () => document.querySelector('[data-testid^="product-card-"]') !== null
-        || document.querySelector('[data-testid="empty-clear-filters"]') !== null
-        || document.querySelector(".animate-pulse") === null,
-      { timeout: 20_000 }
-    )
-    .catch(() => {});
-
-  // With a filter active the rail must NOT be present.
-  await expect(
-    page.locator('[data-testid="shop-new-this-week"]'),
-    "shop-new-this-week rail must NOT appear when a category filter is active"
-  ).toHaveCount(0);
-});
-
-test("shop tab with non-default sort: shop-new-this-week rail is hidden", async ({ page }) => {
-  await gotoTab(page, memberToken, "shop");
-
-  // Wait for the sort selector to be ready.
-  await page.waitForSelector('[data-testid="shop-sort"]', { timeout: 20_000 }).catch(() => {});
-
-  // Change sort away from "new".
-  await page.locator('[data-testid="shop-sort"]').selectOption("best");
-
-  // Wait for the grid to reload.
-  await page
-    .waitForFunction(
-      () => document.querySelector('[data-testid^="product-card-"]') !== null
-        || document.querySelector('[data-testid="empty-clear-filters"]') !== null
-        || document.querySelector(".animate-pulse") === null,
-      { timeout: 20_000 }
-    )
-    .catch(() => {});
-
-  // With a non-default sort the rail must NOT appear.
-  await expect(
-    page.locator('[data-testid="shop-new-this-week"]'),
-    "shop-new-this-week rail must NOT appear when sort is not 'new'"
+    "shop-new-this-week rail must no longer exist on the Shop tab"
   ).toHaveCount(0);
 });

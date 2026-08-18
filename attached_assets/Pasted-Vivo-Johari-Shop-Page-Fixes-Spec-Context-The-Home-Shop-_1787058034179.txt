@@ -1,0 +1,32 @@
+Vivo Johari — Shop Page Fixes Spec
+
+Context: The Home / Shop / Community rewire (moving shopping CTAs off Home, moving Vivo Edits to Community, simplifying "Styled for You" on Home) has already been implemented. This spec covers a fresh round of fixes on the Shop page only, based on reviewing its current state.
+
+Current Shop page structure (top to bottom): Hero ("Pieces made for the sun" / "Shop the edit") → "The Live Collection / Shop the latest pieces" → Virtual Try-On banner → Shop by Category grid (Workwear, Dresses, Everyday, Activewear) → Free Delivery banner → Filter/Sort bar (Styled For You / All / Tops / Dresses / etc.) → main product grid → "Load More Styles" → "Fresh off the Floor" carousel → "Pieces we think you'll love" carousel → "Community Looks" tiles.
+
+Fixes needed
+Hero image swap. Replace the current hero photo ("Pieces made for the sun") with the new teal palm-print maxi dress photo (provided separately). The current hero is a wide landscape crop with the model off-center and negative space reserved for the text block; the new photo is a tall, centered full-body shot. Don't just drop it in at the same crop — art-direct a new crop/focal point (e.g. centered on her upper body, or reposition the text block over the grass to the left) so she isn't cropped awkwardly at the head or feet in the banner's aspect ratio. Produce separate crops for mobile vs. desktop:
+Desktop: ~1920×800px (roughly 2.4:1 wide), exported at 2x (~3840×1600) for retina, served via srcset.
+Mobile: ~750×1000px (roughly 3:4, taller) — the tall source photo suits mobile better than desktop, so more of the dress/pose should stay visible rather than being squeezed into a thin wide strip.
+Format/weight: JPG or WebP, compressed to under ~300–500KB so it doesn't slow the page load. These should be two separately-exported crops from the source photo, not one image scaled two ways.
+Redundant CTA block below the hero. "The Live Collection / Shop the latest pieces" directly under the hero is a second, imageless CTA doing the same job as the hero's "Shop the edit" button. Either remove it, or turn it into a real anchor link that scrolls straight to the product grid so it earns its place.
+Bug — "Community Looks" tiles are empty. Both tiles under "Community Looks / Shop how others wear it" render as blank gray boxes with only the "Shop This Look" tag showing — no photo is loading. Wire in real community photos here.
+Duplicate content — "Fresh off the Floor." This carousel shows the same items already sitting in the first row of the main "ALL" product grid (e.g. Safari 3/4 Sleeve Maxi Kimono, Safari Anga Puffy Tie Top). As-is it reads as a duplicate-render bug. Either populate it with genuinely different new-arrival items, or drop the carousel and rely on the existing "Newest First" sort option.
+Dead-end CTA — "Pieces we think you'll love." The caption "Take the Style Quiz and we'll tune these to you" has no actual button/link. Add a clear CTA into the quiz here — this is where the full personalization quiz should live.
+Three overlapping personalization touchpoints. The "STYLED FOR YOU" filter tab, the Virtual Try-On banner, and "Pieces we think you'll love" are all pitching a version of "this is personalized for you," stacked close together. Give each a distinct, clearly labeled job:
+Virtual Try-On = visualize a specific piece on you
+Styled For You tab = curated feed once the quiz is complete
+"Pieces we think you'll love" card = onboarding entry point for users who haven't taken the quiz yet
+No changes needed: Shop by Category grid, Free Delivery banner, Filter/Sort bar, main product grid card design, and "Load More Styles" pagination all look consistent and functional as-is.
+Future enhancements (nice-to-have, not required for launch)
+Quick-add-to-bag on product cards. Cards currently only have a wishlist heart and an AR/try-on icon — no way to add to bag without opening the full product page. A quick-add (defaulting to a standard size, or opening a lightweight size picker) removes friction for shoppers who already know what they want.
+Expand the filter drawer. "Filter" currently seems tied mainly to category. Add size, price range, and color as filterable facets so the grid stays usable as the catalog grows.
+Gender/category split. Men's pieces (e.g. Safari Bush Men's Long Sleeve T-shirt, Safari By Vivo Mens Cotton Pants) are mixed into the same grid as womenswear, with no Men's filter or toggle among the category tabs (Tops, Dresses, Bottoms, Outerwear, Skirts, Accessories, Two-Piece Sets). If the catalog serves both, add a clear men's/women's split so men's items aren't just incidentally scattered through a womenswear-first grid.
+Color swatches on product cards. Color/print currently shows only as text under the item name (e.g. "Mustard/Cream Print"). Clickable swatches that swap the card's thumbnail let shoppers browse colorways without opening each product.
+Star ratings / review counts on cards, if reviews are being collected anywhere — even a simple rating + count under the price builds trust before someone clicks into a product.
+Implementation notes for the Replit agent
+The hero image change is asset + crop only — no component restructuring needed, just update the image source and add responsive crop variants (see mobile note below).
+"Community Looks" is a data/asset bug, not a layout bug — check why the image field is coming back empty for those two tiles (likely a broken image URL or missing upload) rather than rebuilding the component.
+For "Fresh off the Floor," check whether it's pulling from the same query/endpoint as the main grid's default sort — if so, either give it a distinct query (e.g. filter to items added in the last N days, excluded from the first page of the main grid) or remove the section.
+Add the missing CTA button/link on "Pieces we think you'll love" pointing to the style quiz flow.
+Mobile: apply the same responsive image guidance as the rest of the app (srcset/sizes, mobile-specific hero crop) to the new hero photo.

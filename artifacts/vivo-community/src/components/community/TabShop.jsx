@@ -1,11 +1,10 @@
 import React, { useEffect, useRef, useState } from "react";
-import { posts } from "./mockData";
 import { ImagePlaceholder, MerchBadge, kes, swatchFor, brandAsset } from "./ui";
 import { ShoppingBag, Heart, ChevronRight, ChevronDown, Sparkles, SlidersHorizontal } from "lucide-react";
 import { api } from "@/lib/api";
 import { useWishlist } from "@/context/WishlistContext";
 import { FilterSheet, AppliedChips, emptyFilters, countActive, filtersToParams, MY_SIZE_LABELS } from "./ShopFilters";
-import { CategoryGrid, ProductRail } from "./ShopSections";
+import { CategoryGrid, ProductRail, RailCard } from "./ShopSections";
 import { StyledForYouShop } from "./StyledForYou";
 import { useAuth } from "@/context/AuthContext";
 
@@ -69,13 +68,26 @@ function LookWishButton({ prod }) {
 
 function ShoppableLook({ post, tagged, onOpen }) {
   const [revealed, setRevealed] = useState(false);
+  const [imgFailed, setImgFailed] = useState(false);
   return (
     <div
       data-testid={`shop-look-${post.id}`}
       onClick={() => setRevealed((r) => !r)}
       className="relative group rounded overflow-hidden aspect-[3/4] bg-foreground cursor-pointer"
     >
-      <ImagePlaceholder aspectRatio="h-full w-full opacity-60 group-hover:opacity-40 transition-opacity border-none rounded-none" text="Look" className="rounded-none border-none" />
+      {post.image_url && !imgFailed ? (
+        <img
+          src={post.image_url}
+          alt={post.caption || "Community look"}
+          loading="lazy"
+          onError={() => setImgFailed(true)}
+          className="absolute inset-0 w-full h-full object-cover opacity-90 group-hover:opacity-60 transition-opacity"
+          draggable={false}
+        />
+      ) : (
+        <ImagePlaceholder aspectRatio="h-full w-full opacity-60 group-hover:opacity-40 transition-opacity border-none rounded-none" text="Look" className="rounded-none border-none" />
+      )}
+      <div className="absolute inset-x-0 bottom-0 h-2/3 bg-gradient-to-t from-black/75 via-black/30 to-transparent pointer-events-none" />
       <div
         className={`absolute top-4 right-4 bg-background/90 backdrop-blur text-foreground text-[10px] font-bold uppercase tracking-wider px-3 py-1.5 rounded-sm shadow-sm transition-opacity duration-300 ${
           revealed ? "opacity-0" : "opacity-100 group-hover:opacity-0"
@@ -203,7 +215,7 @@ function SkeletonCard() {
   );
 }
 
-export default function TabShop({ onOpenProduct, onOpenTryOn, onOpenPage }) {
+export default function TabShop({ onOpenProduct, onOpenTryOn, onOpenPage, onOpenQuiz }) {
   const { member } = useAuth();
   // Styled-for-You view — entered via the pill here or the home rail's
   // "View All" (a tap-set sessionStorage hand-off, consumed once).
@@ -214,6 +226,13 @@ export default function TabShop({ onOpenProduct, onOpenTryOn, onOpenPage }) {
       return v;
     } catch { return false; }
   });
+  // Styled for You is quiz-gated (Shop Fixes spec: it's the curated feed
+  // once the quiz is complete). The sessionStorage hand-off above can arrive
+  // from Home for a member who hasn't finished the quiz — bounce those back
+  // to the normal Shop view, where the quiz CTA is their entry point.
+  useEffect(() => {
+    if (sfyMode && !member?.quiz_completed) setSfyMode(false);
+  }, [sfyMode, member?.quiz_completed]);
   const [filters, setFilters] = useState(emptyFilters());
   const [sort, setSort] = useState("new");
   const [items, setItems] = useState([]);
@@ -297,6 +316,28 @@ export default function TabShop({ onOpenProduct, onOpenTryOn, onOpenPage }) {
     return () => { on = false; };
   }, [member?.quiz_completed, (member?.style_dna || []).join("|")]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // "Community Looks" — real community posts (photo + tagged pieces) from
+  // the public feed, replacing the old placeholder tiles. A look qualifies
+  // only if it has BOTH a photo and at least one tagged live product.
+  const [looks, setLooks] = useState([]);
+  useEffect(() => {
+    let on = true;
+    api.feed(30)
+      .then((d) => {
+        if (!on) return;
+        const qualified = (d.items || []).filter(
+          (p) => p.image_url && (p.tagged || []).length > 0 && p.post_type !== "question"
+        );
+        setLooks(qualified.slice(0, 2));
+      })
+      .catch(() => {});
+    return () => { on = false; };
+  }, []);
+
+  // Anchor target for "Shop the latest pieces" — scrolls to the grid controls.
+  const gridTopRef = useRef(null);
+  const scrollToGrid = () => gridTopRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+
   // A category tile filters the grid when the live catalogue has a matching
   // category; otherwise it just shows the full collection.
   const pickCategory = (label) => {
@@ -357,14 +398,23 @@ export default function TabShop({ onOpenProduct, onOpenTryOn, onOpenPage }) {
         </div>
       </section>
 
+      {/* Live Collection block — now a real anchor into the product grid
+          (Shop Fixes spec: it must earn its place, not duplicate the hero CTA). */}
       <div className="mb-10 text-center space-y-2">
         <h2 className="text-3xl font-serif text-foreground">The Live Collection</h2>
-            {personalized && (
-              <div data-testid="shop-personalized-hint" className="flex items-center gap-1.5 text-[12px] font-medium text-primary-ink mt-2">
-                <Sparkles size={13} /> Sorted for your Style DNA
-              </div>
-            )}
-        <p className="text-muted-foreground text-sm uppercase tracking-widest">Shop the latest pieces</p>
+        {personalized && (
+          <div data-testid="shop-personalized-hint" className="inline-flex items-center gap-1.5 text-[12px] font-medium text-primary-ink mt-2">
+            <Sparkles size={13} /> Sorted for your Style DNA
+          </div>
+        )}
+        <button
+          type="button"
+          data-testid="live-collection-anchor"
+          onClick={scrollToGrid}
+          className="block mx-auto text-muted-foreground text-sm uppercase tracking-widest hover:text-foreground transition-colors rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+        >
+          Shop the latest pieces ↓
+        </button>
       </div>
 
       {/* Virtual Try-On entry */}
@@ -397,6 +447,7 @@ export default function TabShop({ onOpenProduct, onOpenTryOn, onOpenPage }) {
 
 
       {/* Filter + sort controls (hidden in the Styled-for-You view) */}
+      <div ref={gridTopRef} className="scroll-mt-24" aria-hidden="true" />
       {!sfyMode && (
       <div className="flex flex-wrap items-center gap-2 mb-4 px-1">
         <button
@@ -457,7 +508,7 @@ export default function TabShop({ onOpenProduct, onOpenTryOn, onOpenPage }) {
       {/* Category pills — quick single-category shortcut into the same filter
           model. Members also get the Styled-for-You collection here. */}
       <div className="flex gap-2 mb-10 overflow-x-auto hide-scrollbar pb-2 px-1">
-        {member && (
+        {member?.quiz_completed && (
           <button
             data-testid="shop-filter-styled-for-you"
             onClick={() => setSfyMode(true)}
@@ -537,55 +588,80 @@ export default function TabShop({ onOpenProduct, onOpenTryOn, onOpenPage }) {
         </div>
       )}
 
-      {/* Fresh off the floor — New This Week rail (moved from the homepage,
-          per Sharon). Shows on the pristine catalogue only (no filters AND
-          the default "new" sort), so filtered or re-sorted views stay
-          focused on those results. */}
-      {!loading && sort === "new" && nActive === 0 && items.length > 0 && (
-        <div className="mb-16">
-          <ProductRail
-            kicker="New This Week"
-            title="Fresh off the floor"
-            sub="The newest pieces in the live collection."
-            products={items.slice(0, 8)}
-            onOpenProduct={onOpenProduct}
-            testId="shop-new-this-week"
-            idPrefix="ntw"
-          />
-        </div>
-      )}
+      {/* "Fresh off the floor" removed (Shop Fixes spec): it duplicated the
+          first rows of the default newest-first grid. The "Newest first" sort
+          covers new arrivals. */}
 
-      {/* Chosen for You — Style-DNA rail (moved from the homepage) */}
+      {/* Chosen for You — one clearly-labelled job per personalization
+          touchpoint (Shop Fixes spec): quiz done → Style-DNA rail; quiz not
+          done → this is the onboarding entry point into the full Style Quiz. */}
       {(() => {
-        const chosen = picked.length > 0 ? picked : items.slice(4, 12);
-        return !loading && chosen.length > 0 ? (
-          <div className="mb-16">
-            <ProductRail
-              kicker="Chosen for You"
-              title={picked.length > 0 ? "Your Style DNA at work" : "Pieces we think you'll love"}
-              sub={picked.length > 0 ? "Pieces chosen from what you told us you love." : "Take the Style Quiz and we'll tune these to you."}
-              products={chosen}
-              onOpenProduct={onOpenProduct}
-              testId="picked-for-you"
-              idPrefix="pfy"
-            />
+        if (loading) return null;
+        if (picked.length > 0) {
+          return (
+            <div className="mb-16">
+              <ProductRail
+                kicker="Chosen for You"
+                title="Your Style DNA at work"
+                sub="Pieces chosen from what you told us you love."
+                products={picked}
+                onOpenProduct={onOpenProduct}
+                testId="picked-for-you"
+                idPrefix="pfy"
+              />
+            </div>
+          );
+        }
+        const chosen = items.slice(4, 12);
+        if (chosen.length === 0) return null;
+        return (
+          <div className="mb-16" data-testid="picked-for-you">
+            <div className="flex flex-wrap items-end justify-between gap-4 mb-5">
+              <div>
+                <div className="text-[10px] font-bold uppercase tracking-[0.25em] text-primary-ink mb-1.5">Chosen for You</div>
+                <h2 className="text-2xl font-serif text-foreground">Pieces we think you'll love</h2>
+                <p className="text-[13px] text-muted-foreground mt-1">Take the Style Quiz and we'll tune these to you.</p>
+              </div>
+              {member && typeof onOpenQuiz === "function" && (
+                <button
+                  type="button"
+                  data-testid="shop-quiz-cta"
+                  onClick={onOpenQuiz}
+                  className="h-11 px-6 rounded bg-foreground text-background font-medium text-[13px] hover:opacity-90 active:scale-[0.98] transition-all inline-flex items-center gap-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                >
+                  <Sparkles size={14} /> Take the Style Quiz
+                </button>
+              )}
+            </div>
+            <div data-testid="picked-for-you-rail" className="flex gap-3 overflow-x-auto hide-scrollbar snap-x -mx-4 px-4 sm:mx-0 sm:px-0 pb-1">
+              {chosen.map((p) => <RailCard key={p.sku} p={p} onOpenProduct={onOpenProduct} idPrefix="pfy" />)}
+            </div>
           </div>
-        ) : null;
+        );
       })()}
 
-      {/* Shoppable UGC — looks tagged with live pieces from the collection */}
-      {!loading && items.length > 0 && (
+      {/* Shoppable UGC — REAL community posts with a photo and tagged live
+          pieces (Shop Fixes spec: the old tiles rendered empty placeholders).
+          Hidden entirely when no qualifying looks exist. */}
+      {!loading && looks.length > 0 && (
         <div className="border-t border-border pt-16">
           <div className="mb-10 text-center space-y-2">
             <h2 className="text-2xl font-serif text-foreground">Community Looks</h2>
             <p className="text-muted-foreground text-[11px] uppercase tracking-widest">Shop how others wear it</p>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 max-w-4xl mx-auto">
-            {posts.slice(0, 2).map((post, i) => (
+            {looks.map((post) => (
               <ShoppableLook
                 key={post.id}
                 post={post}
-                tagged={items.slice(i * 2, i * 2 + 2)}
+                tagged={(post.tagged || []).slice(0, 2).map((t) => ({
+                  sku: t.sku,
+                  style_name: t.name,
+                  price: t.price,
+                  image_url: `/api/community/product-image/${encodeURIComponent(t.sku)}`,
+                  color: "",
+                  category: "",
+                }))}
                 onOpen={onOpenProduct}
               />
             ))}
