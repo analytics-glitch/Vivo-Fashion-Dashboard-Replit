@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback, useMemo } from "react";
 import ReactDOM from "react-dom";
 import { PieChart, Pie, Cell, Tooltip } from "recharts";
 import { api } from "@/lib/api";
+import { useFilters } from "@/lib/filters";
 import { SectionTitle, Loading, ErrorBox } from "@/components/common";
 import {
   ClipboardText, Package, Sparkle, ArrowsClockwise, Repeat,
@@ -467,7 +468,7 @@ function DrillModal({ title, subtitle, rows, columns, onClose }) {
 }
 
 // ─── Main page ────────────────────────────────────────────────────────────────
-export default function ProductionOverview({ onOpenReport }) {
+export default function ProductionOverview({ onOpenReport, useGlobalPeriod = false }) {
   const [data, setData] = useState(null);
   const [flow, setFlow] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -475,10 +476,14 @@ export default function ProductionOverview({ onOpenReport }) {
   const [refreshing, setRefreshing] = useState(false);
   const [drill, setDrill] = useState(null);
 
-  // Date filter — default to This Week (Mon–today), matching the activePreset below.
-  const [dateFrom, setDateFrom] = useState(() => toISO(weekStartOf(new Date())));
-  const [dateTo, setDateTo] = useState(() => toISO(new Date()));
+  // The Product Development Key Metrics tab uses the shared dashboard period.
+  // The standalone production pipeline keeps its legacy local period controls.
+  const { applied } = useFilters();
+  const [localDateFrom, setLocalDateFrom] = useState(() => toISO(weekStartOf(new Date())));
+  const [localDateTo, setLocalDateTo] = useState(() => toISO(new Date()));
   const [activePreset, setActivePreset] = useState("thisWeek");
+  const dateFrom = useGlobalPeriod ? applied.dateFrom : localDateFrom;
+  const dateTo = useGlobalPeriod ? applied.dateTo : localDateTo;
 
   const applyPreset = useCallback((preset) => {
     const today = new Date();
@@ -487,19 +492,19 @@ export default function ProductionOverview({ onOpenReport }) {
     if (preset === "lastWeek") {
       const start = new Date(ws); start.setDate(ws.getDate() - 7);
       const end = new Date(ws); end.setDate(ws.getDate() - 1);
-      setDateFrom(toISO(start)); setDateTo(toISO(end));
+      setLocalDateFrom(toISO(start)); setLocalDateTo(toISO(end));
     } else if (preset === "thisWeek") {
-      setDateFrom(toISO(ws)); setDateTo(toISO(today));
+      setLocalDateFrom(toISO(ws)); setLocalDateTo(toISO(today));
     } else if (preset === "thisMonth") {
-      setDateFrom(toISO(new Date(today.getFullYear(), today.getMonth(), 1)));
-      setDateTo(toISO(today));
+      setLocalDateFrom(toISO(new Date(today.getFullYear(), today.getMonth(), 1)));
+      setLocalDateTo(toISO(today));
     }
   }, []);
 
   const onDateChange = (from, to) => {
     setActivePreset("custom");
-    if (from !== undefined) setDateFrom(from);
-    if (to !== undefined) setDateTo(to);
+    if (from !== undefined) setLocalDateFrom(from);
+    if (to !== undefined) setLocalDateTo(to);
   };
 
   const load = useCallback(async (force = false) => {
@@ -841,39 +846,41 @@ export default function ProductionOverview({ onOpenReport }) {
         </button>
       </div>
 
-      {/* ── Date filter ── */}
-      <div className="card-white px-3 py-2.5 flex flex-wrap items-center gap-2" data-testid="prod-ov-date-range">
-        <span className="text-[13px] font-semibold text-[#0f3d24]">Date ordered</span>
-        <div className="flex items-center gap-1">
-          {PRESETS.map(({ key, label }) => (
-            <button key={key} type="button"
-              onClick={() => applyPreset(key)}
-              className={`rounded-md border px-2.5 py-1 text-[12.5px] font-medium transition-colors ${
-                activePreset === key
-                  ? "border-[#1a5c38] bg-[#1a5c38] text-white"
-                  : "border-slate-300 bg-white text-slate-600 hover:bg-slate-50"
-              }`}
-              data-testid={`prod-ov-preset-${key}`}
-            >{label}</button>
-          ))}
+      {!useGlobalPeriod && (
+        /* ── Legacy standalone production period control ── */
+        <div className="card-white px-3 py-2.5 flex flex-wrap items-center gap-2" data-testid="prod-ov-date-range">
+          <span className="text-[13px] font-semibold text-[#0f3d24]">Date ordered</span>
+          <div className="flex items-center gap-1">
+            {PRESETS.map(({ key, label }) => (
+              <button key={key} type="button"
+                onClick={() => applyPreset(key)}
+                className={`rounded-md border px-2.5 py-1 text-[12.5px] font-medium transition-colors ${
+                  activePreset === key
+                    ? "border-[#1a5c38] bg-[#1a5c38] text-white"
+                    : "border-slate-300 bg-white text-slate-600 hover:bg-slate-50"
+                }`}
+                data-testid={`prod-ov-preset-${key}`}
+              >{label}</button>
+            ))}
+          </div>
+          <div className="flex items-center gap-2 ml-1">
+            <span className="text-[12px] text-slate-500">From</span>
+            <input type="date"
+              className="rounded-md border border-slate-300 bg-white px-2 py-1 text-[12px]"
+              value={dateFrom} max={dateTo}
+              onChange={(e) => onDateChange(e.target.value, undefined)}
+              data-testid="prod-ov-date-from"
+            />
+            <span className="text-[12px] text-slate-500">To</span>
+            <input type="date"
+              className="rounded-md border border-slate-300 bg-white px-2 py-1 text-[12px]"
+              value={dateTo} min={dateFrom}
+              onChange={(e) => onDateChange(undefined, e.target.value)}
+              data-testid="prod-ov-date-to"
+            />
+          </div>
         </div>
-        <div className="flex items-center gap-2 ml-1">
-          <span className="text-[12px] text-slate-500">From</span>
-          <input type="date"
-            className="rounded-md border border-slate-300 bg-white px-2 py-1 text-[12px]"
-            value={dateFrom} max={dateTo}
-            onChange={(e) => onDateChange(e.target.value, undefined)}
-            data-testid="prod-ov-date-from"
-          />
-          <span className="text-[12px] text-slate-500">To</span>
-          <input type="date"
-            className="rounded-md border border-slate-300 bg-white px-2 py-1 text-[12px]"
-            value={dateTo} min={dateFrom}
-            onChange={(e) => onDateChange(undefined, e.target.value)}
-            data-testid="prod-ov-date-to"
-          />
-        </div>
-      </div>
+      )}
 
       {/* ── Styles KPI row ── */}
       <div>

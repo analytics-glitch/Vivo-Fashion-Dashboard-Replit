@@ -17,7 +17,7 @@ import { KPICard } from "@/components/KPICard";
 import SortableTable from "@/components/SortableTable";
 import { Loading, ErrorBox, Empty } from "@/components/common";
 import { useMerchFilters } from "./MerchandisingHub";
-import { sorGapColor } from "./merch/MerchHelpers";
+import { sorGapColor, useMerchPeriodLabel } from "./merch/MerchHelpers";
 import {
   Storefront, Package, ChartBar, Percent, Tag, TrendUp, CurrencyCircleDollar,
 } from "@phosphor-icons/react";
@@ -196,6 +196,7 @@ const MerchStoreCockpit = () => {
   const compareFrom = filters.storeCompareFrom || null;
   const compareTo   = filters.storeCompareTo   || null;
   const compareMode = filters.storeCompareMode || "none";
+  const periodLabel = useMerchPeriodLabel();
 
   // ── Store list (for picker + optimal context) ─────────────────────────────
   const [stores, setStores] = useState([]);
@@ -340,15 +341,6 @@ const MerchStoreCockpit = () => {
     const fmt = s => new Date(s + "T00:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
     return `vs ${fmt(compareFrom)} – ${fmt(compareTo)}`;
   }, [compareMode, compareFrom, compareTo]);
-
-  // Compact "14 Jul – 12 Aug 2026" label for the selected page period
-  const periodLabel = useMemo(() => {
-    if (!pageFrom || !pageTo) return null;
-    const d  = s => new Date(s + "T00:00:00");
-    const fmt  = s => d(s).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
-    const fmtY = s => d(s).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
-    return `${fmt(pageFrom)} – ${fmtY(pageTo)}`;
-  }, [pageFrom, pageTo]);
 
   const handleStoreChange = (name) => {
     setSearchParams(prev => {
@@ -528,7 +520,7 @@ const MerchStoreCockpit = () => {
                 </div>
                 {storeRow.sqft > 0 && storeRow.revenue_3m > 0 && (
                   <div>
-                    <div className="text-[11px] text-muted uppercase tracking-wide mb-0.5">Rev / sq ft (period)</div>
+                    <div className="text-[11px] text-muted uppercase tracking-wide mb-0.5">Rev / sq ft ({periodLabel})</div>
                     <div className="text-[26px] font-bold">
                       {fmtKES(Math.round(storeRow.revenue_3m / storeRow.sqft))}
                     </div>

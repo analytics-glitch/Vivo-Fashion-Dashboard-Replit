@@ -1,5 +1,5 @@
 /**
- * Overview tab — Merchandising Hub
+ * Key Metrics tab — Merchandising Hub
  * Portfolio KPI cards + mix charts, PLUS the full "At-Risk & Actions" section
  * merged in from the retired At-Risk & Actions tab (Task 1286):
  *   • health KPI row (At Risk / Overdue / On Review / Stock at Risk / Healthy)
@@ -40,10 +40,10 @@ import { Loading, ErrorBox, SectionTitle } from "@/components/common";
 import {
   useMerchData, useMerchParams, MerchKPICard, ChartCard, SubcatFilter,
   C, fmtKESM, fmtKESFull, fmtPct1, fmtNum, fmtAxisM, sorGapColor, discountDepthColor,
+  useMerchPeriodLabel,
 } from "./MerchHelpers";
 // fmtDate aliased: the component body declares its own local fmtDate helper
-import { api, datePresets, fmtDate as fmtDateApi } from "@/lib/api";
-import { useFilters } from "@/lib/filters";
+import { api } from "@/lib/api";
 import { useMerchFilters } from "@/pages/MerchandisingHub";
 
 // ── Tooltips ──────────────────────────────────────────────────────────────────
@@ -268,19 +268,8 @@ export default function MerchOverview() {
   }, [activeStyleRows]);
 
   // ── Chart period label ────────────────────────────────────────────────────
-  // Same wording as the global filter bar's date pill: preset label when one
-  // is active ("Today", "Last 30 days"…), explicit range for custom dates,
-  // and the backend's trailing-6-months default when no dates are applied.
-  const { preset: gPreset } = useFilters(); // same field the FilterBar pill reads
-  const periodLabel = useMemo(() => {
-    const presets = datePresets();
-    if (gPreset && gPreset !== "custom" && presets[gPreset]) {
-      return presets[gPreset].label;
-    }
-    const f = filters.from_date, t = filters.to_date;
-    if (f && t) return f === t ? fmtDateApi(f) : `${fmtDateApi(f)} – ${fmtDateApi(t)}`;
-    return "Last 6 months";
-  }, [gPreset, filters.from_date, filters.to_date]);
+  // Shared compact label for chart titles and KPI headings.
+  const periodLabel = useMerchPeriodLabel();
 
   // ── Brand data ────────────────────────────────────────────────────────────
   // Charts follow the global date filter: revenue_period is scoped to the
@@ -542,7 +531,7 @@ export default function MerchOverview() {
           note={`Avg SOH/Style: ${fmtNum(avgSohPerActiveStyle)} units`}
         />
         <MerchKPICard
-          label="SOR (Period)"
+          label={`SOR (${periodLabel})`}
           value={fmtPct1(s.avg_sor_period_active)}
           sub={
             <>
@@ -566,25 +555,25 @@ export default function MerchOverview() {
           note={`Avg Colours/Style: ${avgColoursPerActiveStyle.toFixed(1)}`}
         />
         <MerchKPICard
-          label="Active Style Revenue (Period)"
+          label={`Active Style Revenue (${periodLabel})`}
           value={fmtKESM(s.active_revenue_period)}
           sub={`Avg/Active Style: ${fmtKESM(avgRevPerActiveStyle)}`}
           sub2={`${activeRevSharePct}% of total revenue`}
           testId="merch-kpi-revenue"
-          note={`ASP (period): ${fmtKESFull(activeAsp)}`}
+          note={`ASP (${periodLabel}): ${fmtKESFull(activeAsp)}`}
         />
         <MerchKPICard
-          label="Active Units Sold (Period)"
+          label={`Active Units Sold (${periodLabel})`}
           value={fmtNum(s.active_units_period)}
           sub="Trailing 6m Vel. (Active)"
           sub2={`${fmtNum(s.active_weekly_velocity)} /wk`}
           testId="merch-kpi-units"
-          note={`ASP (period): ${fmtKESFull(activeAsp)}`}
+          note={`ASP (${periodLabel}): ${fmtKESFull(activeAsp)}`}
         />
         <MerchKPICard
           label="Avg Full Price %"
           value={fmtPct1(s.avg_full_price_pct)}
-          sub="Avg SOR (period)"
+          sub={`Avg SOR (${periodLabel})`}
           sub2={fmtPct1(s.avg_sor_6m)}
           testId="merch-kpi-fp"
           onDownload={downloadKpiCsv("full_price", "Full_Price_Pct_Styles")}
@@ -623,7 +612,7 @@ export default function MerchOverview() {
                 Avg discount depth: {fmtPct1(s.retired_discount_depth_pct)} off full price
               </div>
               {avgUnitsPerRetiredStyle != null && (
-                <div>Avg Units Sold/Style (period): {
+                <div>Avg Units Sold/Style ({periodLabel}): {
                   avgUnitsPerRetiredStyle > 0 && avgUnitsPerRetiredStyle < 0.05
                     ? "<0.1" // tiny-but-real average (e.g. "Today" filter) — don't show a misleading 0.0
                     : avgUnitsPerRetiredStyle < 10 ? avgUnitsPerRetiredStyle.toFixed(1) : fmtNum(avgUnitsPerRetiredStyle)

@@ -189,6 +189,36 @@ class TestMerchRouterSchemaSmoke(unittest.TestCase):
         self.assertIn("LEFT JOIN colour_lifecycle cl", sql)
         self.assertIn("cl.colour_status", sql)
 
+    def test_stock_mix_tier_filter_matches_style_lifecycle_rules(self):
+        row = {
+            "category": "Dresses",
+            "subcategory": "Accessories",
+            "style_name": "Tiered Style",
+            "style_number": "TS001",
+            "style_status": "Active",
+            "is_noos": False,
+            "reorder_count": 2,
+            "ov_tier": None,
+            "ov_status": None,
+            "colour": "Black",
+            "colour_status": "Active",
+            "stock_units": 4,
+            "stock_value": 1000,
+            "skus_in_stock": 1,
+            "units_period": 3,
+            "revenue_period": 5000,
+            "skus_sold": 1,
+            "units_6m": 12,
+            "style_last_order": None,
+            "colour_last_order": None,
+            "rep_sku": "TS001-BLK",
+        }
+        with _patch_db([row]):
+            included = merch_router._fetch_stock_mix(tier="Tier 3")
+            excluded = merch_router._fetch_stock_mix(tier="Tier 1")
+        self.assertEqual(included["counts"]["styles"], 1)
+        self.assertEqual(excluded["categories"], [])
+
     # ── /api/merch/summary ────────────────────────────────────────────────────
 
     def test_compute_summary_has_required_keys(self):

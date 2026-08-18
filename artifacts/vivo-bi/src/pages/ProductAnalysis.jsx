@@ -1521,7 +1521,7 @@ export const PA_TAB_PAGE_IDS = [
 const ProductionOverviewTab = React.lazy(() => import("./ProductionOverview"));
 
 const PA_TABS = [
-  { id: "production-overview", label: "Overview", pageId: "production", el: ProductionOverviewTab },
+  { id: "production-overview", label: "Key Metrics", pageId: "production", el: ProductionOverviewTab },
   { id: "cockpit", label: "Style Cockpit", pageId: "product-analysis", el: null },
   { id: "range", label: "Range Management", pageId: "range-mgmt", el: RangeManagementTab },
   { id: "tracker", label: "Style Launch Planner", pageId: "style-tracker", el: StyleTrackerTab },
@@ -1574,7 +1574,7 @@ const ProductAnalysisPage = () => {
         <ProductAnalysis />
       ) : ActiveEl ? (
         <React.Suspense fallback={<Loading label="Loading…" />}>
-          <ActiveEl />
+          <ActiveEl useGlobalPeriod={active?.id === "production-overview"} />
         </React.Suspense>
       ) : null}
     </div>

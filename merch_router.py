@@ -4200,7 +4200,7 @@ GROUP BY COALESCE(sk.store, sa.store)
 
 # ── Stock Mix drill-down tree ─────────────────────────────────────────────────
 
-def _fetch_stock_mix(brand=None, subcategory=None, from_date=None, to_date=None,
+def _fetch_stock_mix(brand=None, subcategory=None, tier=None, from_date=None, to_date=None,
                      country=None, pos_location=None):
     """Nested Category → Sub Category → Style → Colour stock-mix tree.
 
@@ -4307,10 +4307,33 @@ WITH
 /* Style universe + one canonical category/subcategory per style (mode of its
    SKU dims over the SAME filtered rowset _fetch_styles' prod CTE uses, so a
    spot-check against /api/merch/by-subcategory buckets identically). */
+style_nums AS (
+    SELECT
+        p.style_name,
+        mode() WITHIN GROUP (ORDER BY p.style_number) AS style_number
+    FROM all_products_clean p
+    WHERE {_PROD_BASE}
+    GROUP BY p.style_name
+),
+reorder_counts AS (
+    SELECT
+        sn.style_name,
+        COUNT(DISTINCT po.order_ref) AS reorder_count
+    FROM style_nums sn
+    LEFT JOIN production_orders po
+      ON (COALESCE(po.style_number, '') <> '' AND po.style_number = sn.style_number)
+      OR (COALESCE(po.style_name, '') <> '' AND po.style_name = sn.style_name)
+    GROUP BY sn.style_name
+),
+tier_overrides AS (
+    SELECT style_number, tier AS ov_tier, status AS ov_status
+    FROM style_tier_overrides
+    WHERE style_number IS NOT NULL AND style_number <> ''
+),
 prod AS (
     SELECT
         p.style_name,
-        mode() WITHIN GROUP (ORDER BY p.style_number)  AS style_number,
+        sn.style_number,
         mode() WITHIN GROUP (ORDER BY p.category)      AS category,
         mode() WITHIN GROUP (ORDER BY p.product_type)  AS subcategory
         ,
@@ -4323,9 +4346,18 @@ prod AS (
                 THEN 'Archived'
             ELSE 'Active'
         END AS style_status
+        ,
+        BOOL_OR(COALESCE(p.is_noos, FALSE)) AS is_noos,
+        rc.reorder_count,
+        tov.ov_tier,
+        tov.ov_status
     FROM all_products_clean p
+    JOIN style_nums sn ON sn.style_name = p.style_name
+    JOIN reorder_counts rc ON rc.style_name = p.style_name
+    LEFT JOIN tier_overrides tov ON tov.style_number = sn.style_number
     WHERE {_PROD_BASE}{extra_prod_where}
-    GROUP BY p.style_name
+    GROUP BY p.style_name, sn.style_number, rc.reorder_count,
+             tov.ov_tier, tov.ov_status
 ),
 /* Per-SKU master map: style + colour + cost. Mirrors the stock CTE's `m`
    subquery in _fetch_styles (all styled rows, NO third-party filter — the
@@ -4498,6 +4530,10 @@ SELECT
     p.style_name,
     p.style_number,
     p.style_status,
+    p.is_noos,
+    p.reorder_count,
+    p.ov_tier,
+    p.ov_status,
     g.colour,
     cl.colour_status,
     COALESCE(st.soh_stores, 0) + COALESCE(st.soh_warehouse, 0) AS stock_units,
@@ -4537,7 +4573,27 @@ LEFT JOIN rep_sku rs      ON rs.style_name = g.style_name AND rs.colour = g.colo
             store[name] = node
         return node
 
+    tier_filter = set(t.strip() for t in tier.split(",") if t.strip()) if tier else None
+
     for r in raw:
+        # Keep the tree's tier scope identical to /api/merch/styles.  Tier is
+        # intentionally resolved in Python because manual overrides and the
+        # lifecycle helper are shared business rules, not stored SQL fields.
+        if tier_filter:
+            ov_tier = r.get("ov_tier")
+            effective_status = (
+                r.get("ov_status")
+                if ov_tier and r.get("ov_status")
+                else r.get("style_status")
+            )
+            row_tier = ov_tier or _compute_tier(
+                bool(r.get("is_noos")),
+                int(r.get("reorder_count") or 0),
+                odoo_status=effective_status,
+            )
+            if row_tier not in tier_filter:
+                continue
+
         su = int(r.get("stock_units") or 0)
         sv = float(r.get("stock_value") or 0)
         up = int(r.get("units_period") or 0)
@@ -5212,6 +5268,7 @@ def register_merch_routes(app, api_pg_module):
         request:      Request,
         brand:        Optional[str] = Query(None),
         subcategory:  Optional[str] = Query(None),
+        tier:         Optional[str] = Query(None),
         from_date:    Optional[str] = Query(None),
         to_date:      Optional[str] = Query(None),
         country:      Optional[str] = Query(None),
@@ -5221,9 +5278,10 @@ def register_merch_routes(app, api_pg_module):
         (the fabric Stock Mix pattern for finished goods). Plain `def` on
         purpose: the cache-miss query is heavy, and a sync route runs in
         Starlette's threadpool instead of blocking the event loop."""
-        key = f"merch_stock_mix|{brand}|{subcategory}|{from_date}|{to_date}|{country}|{pos_location}"
+        key = f"merch_stock_mix|{brand}|{subcategory}|{tier}|{from_date}|{to_date}|{country}|{pos_location}"
         result = _cached(key, _TTL, lambda: _fetch_stock_mix(
             brand=brand, subcategory=subcategory,
+            tier=tier,
             from_date=from_date, to_date=to_date,
             country=country, pos_location=pos_location,
         ))

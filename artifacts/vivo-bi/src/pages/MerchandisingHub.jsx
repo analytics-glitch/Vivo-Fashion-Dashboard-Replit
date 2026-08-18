@@ -205,8 +205,8 @@ const PdFlow            = React.lazy(() => import("./PDFlow"));
 const PdBuyingOrders    = React.lazy(() => import("./ProductionOverview"));
 
 const MERCH_TABS = [
-  // ── 1. Overview ───────────────────────────────────────────────────────────
-  { id: "merch-overview",      label: "Overview",               pageId: "merch-overview",    el: MerchandisingOverview },
+  // ── 1. Key Metrics ────────────────────────────────────────────────────────
+  { id: "merch-overview",      label: "Key Metrics",             pageId: "merch-overview",    el: MerchandisingOverview },
 
   // ── 2–13. Product Development sections ───────────────────────────────────
   { id: "pd-buying-orders",    label: "Buying Order Status",    pageId: "production",        el: PdBuyingOrders },
@@ -234,7 +234,7 @@ const MERCH_TABS = [
 // Old deep links / bookmarks like ?tab=merch-financial resolve to the merged
 // tab instead of falling back to the first visible tab.
 export const RETIRED_TAB_ALIASES = {
-  "merch-atrisk":      "merch-overview",   // At-Risk & Actions      → Overview
+  "merch-atrisk":      "merch-overview",   // At-Risk & Actions      → Key Metrics
   "merch-sellthrough": "merch-sales",      // Sell-Through & Markdown → Sales & Pricing
   "merch-category":    "merch-sales",      // Category Performance   → Sales & Pricing
   "merch-financial":   "merch-sales",      // Financial Performance  → Sales & Pricing

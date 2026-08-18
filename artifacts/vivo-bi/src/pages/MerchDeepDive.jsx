@@ -15,7 +15,7 @@ import ProductThumbnail from "@/components/ProductThumbnail";
 import { useThumbnails } from "@/lib/useThumbnails";
 import { useMerchFilters } from "./MerchandisingHub";
 import MerchStyleSearch from "./MerchStyleSearch";
-import { sorGapColor } from "./merch/MerchHelpers";
+import { sorGapColor, useMerchPeriodLabel } from "./merch/MerchHelpers";
 import {
   AreaChart, Area, BarChart, Bar, ComposedChart, Line, LineChart,
   XAxis, YAxis, Tooltip, CartesianGrid, ResponsiveContainer,
@@ -457,6 +457,10 @@ const MerchDeepDive = () => {
   const [sizeView, setSizeView] = useState("colour");       // colourway charts or size charts
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState(null);
+  // Hooks must run on every render, including the empty state before a style
+  // has been selected. Keeping this here avoids changing hook order when the
+  // user selects or clears a style.
+  const periodLabel = useMerchPeriodLabel();
 
   // Load style data when styleNumber changes
   useEffect(() => {
@@ -599,19 +603,6 @@ const MerchDeepDive = () => {
       },
     };
   }, [style, styles]);
-
-  // Monthly revenue (last 12m from weekly data)
-  // Compact label for the currently selected filter period, e.g. "30d" / "3m".
-  // Falls back to "6m" when no dates are set (matches the backend default).
-  const periodLabel = useMemo(() => {
-    if (!filters.from_date || !filters.to_date) return "6m";
-    const from = new Date(filters.from_date);
-    const to   = new Date(filters.to_date);
-    const days = Math.round((to - from) / 86400000) + 1;
-    if (!Number.isFinite(days) || days <= 0) return "6m";
-    if (days <= 62) return `${days}d`;
-    return `${Math.round(days / 30.44)}m`;
-  }, [filters.from_date, filters.to_date]);
 
   // Per-store bars, sorted best→worst on the selected metric. The API field
   // names are units_6m/revenue_6m for legacy reasons, but the values are
@@ -1110,7 +1101,7 @@ const MerchDeepDive = () => {
       <div className="merch-deepdive-kpi-grid grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
         {/* Card order is canonical (period trio → lifetime trio → margin →
             stock → colourways, then the trailing ops cards):
-            Revenue (period) → Units (period) → SOR (period) →
+            Revenue (selected period) → Units (selected period) → SOR (selected period) →
             Revenue (Lifetime) → Units (Lifetime) → SOR (Lifetime) →
             Gross Margin → Total SOH → Active Colour Ways →
             Weeks of Cover → Product Age → Reorder Count → Last Ordered. */}

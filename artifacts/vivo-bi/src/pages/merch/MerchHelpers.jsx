@@ -2,10 +2,11 @@
  * Shared helpers for all Merchandising Hub tab components.
  * Formatting helpers, the MerchKPICard wrapper, and the useMerchData hook.
  */
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback, useMemo } from "react";
 import { DownloadSimple, CircleNotch } from "@phosphor-icons/react";
 import { useMerchFilters } from "@/pages/MerchandisingHub";
 import { api } from "@/lib/api";
+import { useFilters } from "@/lib/filters";
 
 // ── Colour palette ───────────────────────────────────────────────────────────
 export const C = {
@@ -75,6 +76,69 @@ export const fmtAxisM = (n) => {
   if (Math.abs(v) >= 1_000_000) return (v / 1_000_000).toFixed(0) + "M";
   if (Math.abs(v) >= 1_000)     return (v / 1_000).toFixed(0) + "K";
   return String(Math.round(v));
+};
+
+// Compact period tags keep KPI headings readable while still reflecting the
+// exact global dashboard period. Custom ranges retain their dates.
+const shortDate = (iso) => {
+  if (!iso) return "";
+  const d = new Date(`${iso}T00:00:00`);
+  return Number.isNaN(d.getTime())
+    ? ""
+    : d.toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+};
+
+const shortMonth = (iso) => {
+  if (!iso) return "";
+  const d = new Date(`${iso}T00:00:00`);
+  return Number.isNaN(d.getTime())
+    ? ""
+    : d.toLocaleDateString("en-GB", { month: "short" });
+};
+
+export const merchPeriodLabel = ({ preset, dateFrom, dateTo }) => {
+  const presetLabels = {
+    today: "Today",
+    yesterday: "Yesterday",
+    last_7d: "7d",
+    last_30d: "30d",
+    last_90d: "90d",
+    last_365d: "365d",
+    last_12_months: "12m",
+    last_week: "Last Week",
+    last_quarter: "Last Qtr",
+    last_year: "LY",
+    mtd: "MTD",
+    qtd: "QTD",
+    ytd: "YTD",
+    this_week: "This Week",
+    this_month: "MTD",
+    this_year: "YTD",
+  };
+
+  if (preset === "last_month") return shortMonth(dateTo) || "Prev Month";
+  if (preset && preset !== "custom" && presetLabels[preset]) {
+    return presetLabels[preset];
+  }
+
+  if (dateFrom && dateTo) {
+    const from = shortDate(dateFrom);
+    const to = shortDate(dateTo);
+    if (from && to) return dateFrom === dateTo ? from : `${from} – ${to}`;
+  }
+  return "6m";
+};
+
+export const useMerchPeriodLabel = () => {
+  const { preset, applied } = useFilters();
+  return useMemo(
+    () => merchPeriodLabel({
+      preset,
+      dateFrom: applied.dateFrom,
+      dateTo: applied.dateTo,
+    }),
+    [preset, applied.dateFrom, applied.dateTo],
+  );
 };
 
 // ── MerchKPICard ─────────────────────────────────────────────────────────────

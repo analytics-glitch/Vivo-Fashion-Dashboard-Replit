@@ -39,6 +39,7 @@ import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import {
   useMerchData, MerchKPICard, ChartCard, SubcatFilter,
   C, fmtKESM, fmtKESFull, fmtPct1, fmtNum, fmtAxisM,
+  useMerchPeriodLabel,
 } from "./MerchHelpers";
 import { useMerchFilters } from "@/pages/MerchandisingHub";
 import { useFilters } from "@/lib/filters";
@@ -212,8 +213,8 @@ export default function MerchSales() {
   // selected range (default = trailing 6 months when no dates are set).
   const selRev   = (r) => (r.revenue_period ?? r.revenue_6m) || 0;
   const selUnits = (r) => (r.units_period   ?? r.units_6m)   || 0;
-  // Suffix for chart/KPI labels — "6m" only when no date filter is active.
-  const periodTag = filters.from_date ? "Selected Period" : "6m";
+  // Shared compact suffix for chart/KPI labels.
+  const periodTag = useMerchPeriodLabel();
 
   // Top 10 styles by period revenue
   const top10Styles = useMemo(() =>
