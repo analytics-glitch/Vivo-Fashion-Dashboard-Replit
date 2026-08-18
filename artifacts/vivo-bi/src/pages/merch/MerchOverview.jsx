@@ -39,7 +39,7 @@ import { DownloadSimple } from "@phosphor-icons/react";
 import { Loading, ErrorBox, SectionTitle } from "@/components/common";
 import {
   useMerchData, useMerchParams, MerchKPICard, ChartCard, SubcatFilter,
-  C, fmtKESM, fmtKESFull, fmtPct1, fmtNum, fmtAxisM,
+  C, fmtKESM, fmtKESFull, fmtPct1, fmtNum, fmtAxisM, sorGapColor,
 } from "./MerchHelpers";
 // fmtDate aliased: the component body declares its own local fmtDate helper
 import { api, datePresets, fmtDate as fmtDateApi } from "@/lib/api";
@@ -450,7 +450,6 @@ export default function MerchOverview() {
   const activeAsp                = s.active_units_period ? (s.active_revenue_period || 0) / s.active_units_period : 0;
   const avgUnitsPerRetiredStyle  = s.retired_units_period != null && s.retired_styles_count
     ? s.retired_units_period / s.retired_styles_count : null;
-
   // Build subtitle from active filters
   const fmtDate = (d) => d ? new Date(d).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" }) : null;
   const dateLabel = filters.from_date
@@ -545,7 +544,17 @@ export default function MerchOverview() {
         <MerchKPICard
           label="SOR (Period)"
           value={fmtPct1(s.avg_sor_period_active)}
-          sub="Active Styles Only"
+          sub={
+            <>
+              <div>Active Styles Only</div>
+              <div>Full price SOR: {fmtPct1(s.full_price_sor_period)}</div>
+            </>
+          }
+          sub2={
+            <span style={{ color: sorGapColor(s.discounted_sor_gap_pp) }}>
+              Discounted: {s.discounted_sor_gap_pp == null ? "—" : `${Number(s.discounted_sor_gap_pp).toFixed(1)}pp`}
+            </span>
+          }
           testId="merch-kpi-sor"
         />
         <MerchKPICard

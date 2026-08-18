@@ -524,7 +524,11 @@ sales_period AS (
         SUM(s.ordered_item_quantity) FILTER (
             WHERE s.sale_kind IN ('sale','order')
         )                                              AS units_period,
-        SUM({_NET_SALES_EXPR})                         AS revenue_period
+        SUM({_NET_SALES_EXPR})                         AS revenue_period,
+        SUM(s.ordered_item_quantity) FILTER (
+            WHERE s.sale_kind IN ('sale','order')
+              AND COALESCE(s.discounts_kes, 0)::numeric = 0
+        )                                              AS units_full_price_period
     FROM all_sales s
     JOIN all_products_clean p2 ON p2.sku = s.variant_sku
         AND p2.style_name IS NOT NULL AND p2.style_name <> ''
@@ -607,6 +611,7 @@ SELECT
     s6.last_sale_date,
     COALESCE(sp.units_period,   0)   AS units_period,
     COALESCE(sp.revenue_period, 0.0) AS revenue_period,
+    COALESCE(sp.units_full_price_period, 0) AS units_full_price_period,
     COALESCE(sl.units_life,     0)   AS units_life,
     COALESCE(sl.revenue_life,   0.0) AS revenue_life,
     tov.ov_tier,
@@ -653,6 +658,7 @@ ORDER BY revenue_6m DESC NULLS LAST
         revenue_life     = float(r["revenue_life"] or 0)
         units_period     = int(r["units_period"] or 0)
         revenue_period   = float(r["revenue_period"] or 0)
+        units_full_price_period = int(r.get("units_full_price_period") or 0)
         soh_stores       = int(r["soh_stores"] or 0)
         soh_online       = int(r["soh_online"] or 0)   # subset of soh_stores
         soh_warehouse    = int(r["soh_warehouse"] or 0)
@@ -667,6 +673,11 @@ ORDER BY revenue_6m DESC NULLS LAST
         # Period-scoped sell-through (same formula, selected date range)
         sor_p_denom = units_period + current_stock
         sor_period  = round(units_period * 100.0 / sor_p_denom, 1) if sor_p_denom > 0 else None
+        full_price_sor_denom = units_full_price_period + current_stock
+        full_price_sor_period = (
+            round(units_full_price_period * 100.0 / full_price_sor_denom, 1)
+            if full_price_sor_denom > 0 else None
+        )
         # Lifetime (since-launch) sell-through — same formula & gross-units
         # basis as the CSV export's "SOR Since Launch %" column: lifetime
         # units ÷ (lifetime units + current stock).
@@ -733,12 +744,14 @@ ORDER BY revenue_6m DESC NULLS LAST
             "orders_6m":           int(r["orders_6m"] or 0),
             "units_period":        units_period,
             "revenue_period":      round(revenue_period, 0),
+             "units_full_price_period": units_full_price_period,
             "units_life":          units_life,
             "revenue_life":        round(revenue_life, 0),
             "weekly_avg":          weekly_avg,
             "woc":                 woc,
             "sor_6m":              sor_6m,
             "sor_period":          sor_period,
+             "full_price_sor_period": full_price_sor_period,
             "sor_life":            sor_life,
             "last_sale_date":      str(last_sale)[:10] if last_sale else None,
             "last_sale_days":      last_sale_days,
@@ -1436,6 +1449,76 @@ def _fetch_period_overlay(period_from, period_to, country, pos_location):
                        period_from, period_to, country, pos_location))
 
 
+def _fetch_full_price_period_by_style(
+    period_from, period_to, country=None, pos_location=None,
+    brand=None, subcategory=None,
+):
+    """Return strict zero-discount gross units by style for a selected window.
+
+    This is intentionally separate from the date-independent core rollup.  The
+    rollup's historical ``units_fp`` field predates the strict discount rule,
+    while this KPI must classify a unit as full price only when discounts_kes is
+    NULL/zero.  The result is cached alongside the period overlay.
+    """
+    key = (
+        f"merch_full_price_period|{period_from}|{period_to}|{country}|"
+        f"{pos_location}|{brand}|{subcategory}"
+    )
+
+    def _query():
+        params = {"period_from": period_from, "period_to": period_to}
+        country_clause = ""
+        pos_clause = ""
+        product_clause = """
+            AND p.style_name IS NOT NULL
+            AND p.style_name <> ''
+            AND COALESCE(p.brand,'') NOT ILIKE '%%third party%%'
+        """
+        if country:
+            countries = [c.strip() for c in country.split(",") if c.strip()]
+            if countries:
+                params["countries"] = countries
+                country_clause = " AND s.country = ANY(%(countries)s)"
+        if pos_location:
+            locations = [p.strip() for p in pos_location.split(",") if p.strip()]
+            if locations:
+                params["pos_locations"] = locations
+                pos_clause = " AND s.pos_location_name = ANY(%(pos_locations)s)"
+        if brand:
+            brands = [b.strip() for b in brand.split(",") if b.strip()]
+            if brands:
+                params["brands"] = brands
+                product_clause += " AND p.brand = ANY(%(brands)s)"
+        if subcategory:
+            subcategories = [s.strip() for s in subcategory.split(",") if s.strip()]
+            if subcategories:
+                params["subcategories"] = subcategories
+                product_clause += " AND p.product_type = ANY(%(subcategories)s)"
+
+        rows = _db_exec(f"""
+            SELECT
+                p.style_name,
+                COALESCE(SUM(s.ordered_item_quantity) FILTER (
+                    WHERE s.sale_kind IN ('sale','order')
+                      AND COALESCE(s.discounts_kes, 0)::numeric = 0
+                ), 0) AS units_full_price_period
+            FROM all_sales s
+            JOIN all_products_clean p ON p.sku = s.variant_sku
+            WHERE s.sale_date BETWEEN %(period_from)s AND %(period_to)s
+              AND {_BASE_FILTERS}
+              {product_clause}
+              {country_clause}
+              {pos_clause}
+            GROUP BY p.style_name
+        """, params, fetch=True) or []
+        return {
+            r["style_name"]: int(r.get("units_full_price_period") or 0)
+            for r in rows
+        }
+
+    return _cached(key, 600, _query)
+
+
 def _fetch_period_overlay_sql(period_from, period_to, country, pos_location):
     """Inner SQL for the period overlay (called only for non-default windows)."""
     params = {"period_from": period_from, "period_to": period_to}
@@ -1575,6 +1658,11 @@ def _fetch_styles_fast_path(brand=None, subcategory=None, tier=None, status=None
         if is_default_window
         else _fetch_period_overlay(period_from, period_to, country, pos_location)
     )
+    # Always fetch the strict period full-price units.  The core rollup's
+    # historical units_fp column uses an older ticket-price heuristic and must
+    # not drive the user-facing full-price SOR card.
+    full_price_period = _fetch_full_price_period_by_style(
+        period_from, period_to, country, pos_location, brand, subcategory)
 
     # ── Python narrowing sets ───────────────────────────────────────────────
     brand_set    = (set(b.strip() for b in brand.split(",")       if b.strip())
@@ -1644,6 +1732,9 @@ def _fetch_styles_fast_path(brand=None, subcategory=None, tier=None, status=None
         soh_warehouse    = int(r.get("soh_warehouse") or 0)
         current_stock    = soh_stores + soh_warehouse
         units_full_price = int(r.get("units_full_price") or 0)
+        units_full_price_period = int(
+            full_price_period.get(r["style_name"], 0)
+        )
 
         # Derived metrics (byte-identical to _fetch_styles_sql)
         weekly_avg = round(units_6m / 26.0, 2)
@@ -1654,6 +1745,11 @@ def _fetch_styles_fast_path(brand=None, subcategory=None, tier=None, status=None
         sor_p_denom = units_period + current_stock
         sor_period  = (round(units_period * 100.0 / sor_p_denom, 1)
                        if sor_p_denom > 0 else None)
+        full_price_sor_denom = units_full_price_period + current_stock
+        full_price_sor_period = (
+            round(units_full_price_period * 100.0 / full_price_sor_denom, 1)
+            if full_price_sor_denom > 0 else None
+        )
         sor_l_denom = units_life + current_stock
         sor_life    = (round(units_life * 100.0 / sor_l_denom, 1)
                        if sor_l_denom > 0 else None)
@@ -1720,12 +1816,14 @@ def _fetch_styles_fast_path(brand=None, subcategory=None, tier=None, status=None
             "orders_6m":           int(r.get("orders_6m") or 0),
             "units_period":        units_period,
             "revenue_period":      round(revenue_period, 0),
+             "units_full_price_period": units_full_price_period,
             "units_life":          units_life,
             "revenue_life":        round(revenue_life, 0),
             "weekly_avg":          weekly_avg,
             "woc":                 woc,
             "sor_6m":              sor_6m,
             "sor_period":          sor_period,
+             "full_price_sor_period": full_price_sor_period,
             "sor_life":            sor_life,
             "last_sale_date":      str(last_sale)[:10] if last_sale else None,
             "last_sale_days":      last_sale_days,
@@ -2173,7 +2271,7 @@ WHERE st.soh_stores + st.soh_warehouse > 0
 """
     rows = _db_exec(sql, params, fetch=True)
     return [dict(r) for r in (rows or [])]
-def _compute_summary(styles):
+def _compute_summary(styles, full_price_metrics=None):
     if not styles:
         return _empty_summary()
     today = date.today()
@@ -2210,6 +2308,8 @@ def _compute_summary(styles):
     active_units_6m = 0
     active_total_styles = 0
     sor_period_active_vals = []
+    full_price_sor_period_active_vals = []
+    active_full_price_units_period = 0
     _seen_active_all_keys: set = set()
     # Dedup counts by style_number — mirrors Range Management's
     # _dedup_raw_by_style_number(). Falls back to style_name when blank.
@@ -2245,10 +2345,13 @@ def _compute_summary(styles):
             elif st == "overdue":   overdue  += 1
             active_revenue_period += s.get("revenue_period") or 0
             active_units_period   += s.get("units_period") or 0
+            active_full_price_units_period += s.get("units_full_price_period") or 0
             active_units_6m       += s.get("units_6m") or 0
             _seen_active_all_keys.add(dedup_key)
             if s.get("sor_period") is not None:
                 sor_period_active_vals.append(s["sor_period"])
+            if s.get("full_price_sor_period") is not None:
+                full_price_sor_period_active_vals.append(s["full_price_sor_period"])
             # Active styles: only count those with physical stock (mirrors RM universe)
             if has_stock and dedup_key not in _seen_active_keys:
                 _seen_active_keys.add(dedup_key)
@@ -2315,7 +2418,7 @@ def _compute_summary(styles):
                 pass
 
     def _avg(lst): return round(sum(lst) / len(lst), 1) if lst else None
-    return {
+    summary = {
         "total_styles":                 len(styles),
         "active_styles_count":          active_styles,
         "active_colour_styles_count":   active_colour_styles,
@@ -2335,6 +2438,7 @@ def _compute_summary(styles):
         "active_weekly_velocity":       round(active_units_6m / 26.0, 1) if active_units_6m else 0,
         "active_styles_all_count":      len(_seen_active_all_keys),
         "avg_sor_period_active":        _avg(sor_period_active_vals),
+        "avg_full_price_sor_period_active": _avg(full_price_sor_period_active_vals),
         "on_track_count":               on_track,
         "at_risk_count":                at_risk,
         "overdue_count":                overdue,
@@ -2362,6 +2466,126 @@ def _compute_summary(styles):
         "total_cogs_6m_kes":            round(total_cogs, 0) if total_cogs else None,
         "total_gross_margin_kes":       round(total_gm, 0)   if total_gm   else None,
     }
+    # Keep the old unit-split fields for compatibility, but calculate the new
+    # full-price SOR at the exact active-style scope used by the Overview SOR
+    # card. Full-price SOR is full-price units ÷ (full-price units + SOH).
+    if full_price_metrics is None:
+        full_price_metrics = {
+            "full_price_units_period": None,
+            "discounted_units_period": None,
+            "full_price_sell_through": None,
+            "total_units_period": None,
+        }
+    full_price_units = active_full_price_units_period
+    total_active_units = active_units_period
+    discounted_units = max(total_active_units - full_price_units, 0)
+    total_sor = summary["avg_sor_period_active"]
+    full_price_sor = summary["avg_full_price_sor_period_active"]
+    summary.update({
+        "full_price_units_period": full_price_units,
+        "discounted_units_period": discounted_units,
+        # Legacy percentage retained, now aligned to active styles.
+        "full_price_sell_through": (
+            round(full_price_units * 100.0 / total_active_units, 1)
+            if total_active_units > 0 else None
+        ),
+        "total_units_period": total_active_units,
+        "full_price_sor_period": full_price_sor,
+        "discounted_sor_gap_pp": (
+            round(total_sor - full_price_sor, 1)
+            if total_sor is not None and full_price_sor is not None else None
+        ),
+    })
+    return summary
+
+
+def _compute_full_price_sell_through(total_units, full_price_units):
+    """Return the selected-period full-price unit split and percentage.
+
+    The SQL endpoint supplies gross sale/order units and the subset whose
+    discount amount is exactly zero.  Keep the final arithmetic here so the
+    response contract and zero-denominator behaviour are easy to test.
+    """
+    total = max(int(total_units or 0), 0)
+    full_price = min(max(int(full_price_units or 0), 0), total)
+    discounted = total - full_price
+    pct = round(full_price * 100.0 / total, 1) if total else None
+    return {
+        "full_price_units_period": full_price,
+        "discounted_units_period": discounted,
+        "full_price_sell_through": pct,
+        "total_units_period": total,
+    }
+
+
+def _fetch_full_price_sell_through(
+    from_date=None, to_date=None, country=None, pos_location=None,
+    brand=None, subcategory=None,
+):
+    """Compute strict full-price sell-through for the selected merch scope.
+
+    Full-price units are sale/order gross units with no discount applied
+    (discounts_kes is NULL or exactly numeric zero). Return rows are excluded
+    because only sale/order rows contribute to the sold-unit denominator.
+    """
+    today = date.today()
+    period_from = from_date or str(today - timedelta(days=_SIX_MONTHS_DAYS))
+    period_to = to_date or str(today)
+    params = {"period_from": period_from, "period_to": period_to}
+
+    country_clause = ""
+    if country:
+        countries = [c.strip() for c in country.split(",") if c.strip()]
+        if countries:
+            params["countries"] = countries
+            country_clause = " AND s.country = ANY(%(countries)s)"
+
+    pos_clause = ""
+    if pos_location:
+        locations = [p.strip() for p in pos_location.split(",") if p.strip()]
+        if locations:
+            params["pos_locations"] = locations
+            pos_clause = " AND s.pos_location_name = ANY(%(pos_locations)s)"
+
+    product_clause = """
+        AND p.style_name IS NOT NULL
+        AND p.style_name <> ''
+        AND COALESCE(p.brand,'') NOT ILIKE '%%third party%%'
+    """
+    if brand:
+        brands = [b.strip() for b in brand.split(",") if b.strip()]
+        if brands:
+            params["brands"] = brands
+            product_clause += " AND p.brand = ANY(%(brands)s)"
+    if subcategory:
+        subcategories = [s.strip() for s in subcategory.split(",") if s.strip()]
+        if subcategories:
+            params["subcategories"] = subcategories
+            product_clause += " AND p.subcategory = ANY(%(subcategories)s)"
+
+    sql = f"""
+        SELECT
+            COALESCE(SUM(s.ordered_item_quantity) FILTER (
+                WHERE s.sale_kind IN ('sale','order')
+            ), 0) AS total_units_period,
+            COALESCE(SUM(s.ordered_item_quantity) FILTER (
+                WHERE s.sale_kind IN ('sale','order')
+                  AND COALESCE(s.discounts_kes, 0)::numeric = 0
+            ), 0) AS full_price_units_period
+        FROM all_sales s
+        JOIN all_products_clean p ON p.sku = s.variant_sku
+        WHERE s.sale_date BETWEEN %(period_from)s AND %(period_to)s
+          AND {_BASE_FILTERS}
+          {product_clause}
+          {country_clause}
+          {pos_clause}
+    """
+    rows = _db_exec(sql, params, fetch=True) or []
+    row = rows[0] if rows else {}
+    return _compute_full_price_sell_through(
+        row.get("total_units_period"),
+        row.get("full_price_units_period"),
+    )
 
 
 def _empty_summary():
@@ -2374,6 +2598,7 @@ def _empty_summary():
         "active_revenue_period", "retired_revenue_period", "retired_units_period",
         "active_units_period", "active_units_6m", "active_weekly_velocity",
         "active_styles_all_count", "avg_sor_period_active",
+        "avg_full_price_sor_period_active",
         "on_track_count", "at_risk_count", "overdue_count",
         "active_total_styles",
         "total_stock_units", "revenue_6m", "units_6m", "revenue_period", "units_period", "weekly_velocity",
@@ -2382,6 +2607,9 @@ def _empty_summary():
         "no_sale_30d_count", "woc_lt4_count", "woc_gt20_count",
         "styles_launched_current_year", "styles_launched_prior_year",
         "avg_gross_margin_pct", "total_cogs_6m_kes", "total_gross_margin_kes",
+        "full_price_units_period", "discounted_units_period",
+        "full_price_sell_through", "total_units_period",
+        "full_price_sor_period", "discounted_sor_gap_pp",
     ]}
 
 

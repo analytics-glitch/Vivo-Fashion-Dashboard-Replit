@@ -57,10 +57,64 @@ _FAKE_STYLE_ROW = {
     # period sales (from_date / to_date window)
     "units_period":      50,
     "revenue_period":    175000.0,
+    "units_full_price_period": 30,
     # lifetime sales
     "units_life":        200,
     "revenue_life":      700000.0,
 }
+
+
+class FullPriceSellThroughTests(unittest.TestCase):
+    def test_zero_discount_units_are_full_price_and_returns_are_excluded(self):
+        # This mirrors the SQL contract: only sale/order units are eligible,
+        # and a non-zero discount cannot be counted as full price.
+        transactions = [
+            {"sale_kind": "sale", "units": 7, "discounts_kes": 0},
+            {"sale_kind": "order", "units": 3, "discounts_kes": None},
+            {"sale_kind": "sale", "units": 2, "discounts_kes": 0.01},
+            {"sale_kind": "return", "units": 5, "discounts_kes": 0},
+        ]
+        total = sum(
+            row["units"] for row in transactions
+            if row["sale_kind"] in ("sale", "order")
+        )
+        full_price = sum(
+            row["units"] for row in transactions
+            if row["sale_kind"] in ("sale", "order")
+            and (row["discounts_kes"] is None or row["discounts_kes"] == 0)
+        )
+        result = merch_router._compute_full_price_sell_through(total, full_price)
+        self.assertEqual(result["total_units_period"], 12)
+        self.assertEqual(result["full_price_units_period"], 10)
+        self.assertEqual(result["discounted_units_period"], 2)
+        self.assertEqual(result["full_price_sell_through"], 83.3)
+
+    def test_full_price_and_discounted_units_reconcile(self):
+        result = merch_router._compute_full_price_sell_through(25, 9)
+        self.assertEqual(
+            result["full_price_units_period"] + result["discounted_units_period"],
+            result["total_units_period"],
+        )
+        self.assertEqual(result["full_price_sell_through"], 36.0)
+
+    def test_zero_denominator_returns_null_percentage(self):
+        result = merch_router._compute_full_price_sell_through(0, 0)
+        self.assertIsNone(result["full_price_sell_through"])
+        self.assertEqual(result["discounted_units_period"], 0)
+
+    def test_full_price_query_uses_zero_discount_and_sale_order_only(self):
+        with _patch_db([{
+            "total_units_period": 12,
+            "full_price_units_period": 10,
+        }]) as db:
+            result = merch_router._fetch_full_price_sell_through(
+                from_date="2026-08-01",
+                to_date="2026-08-18",
+            )
+        self.assertEqual(result["full_price_units_period"], 10)
+        sql = db.call_args.args[0]
+        self.assertIn("s.sale_kind IN ('sale','order')", sql)
+        self.assertIn("COALESCE(s.discounts_kes, 0)::numeric = 0", sql)
 
 
 def _patch_db(rows):
@@ -97,6 +151,7 @@ class TestMerchRouterSchemaSmoke(unittest.TestCase):
             "soh_stores", "soh_online", "soh_warehouse", "current_stock",
             "units_6m", "revenue_6m", "orders_6m",
             "units_period", "revenue_period",
+            "units_full_price_period", "full_price_sor_period",
             "units_life", "revenue_life",
             "weekly_avg", "woc", "sor_6m", "sor_period", "sor_life",
             "colour_count", "colours_in_stock",
@@ -131,6 +186,10 @@ class TestMerchRouterSchemaSmoke(unittest.TestCase):
             "active_total_styles",
             "total_stock_units", "revenue_6m", "units_6m", "weekly_velocity",
             "avg_woc", "avg_full_price_pct", "avg_sor_6m",
+            "full_price_units_period", "discounted_units_period",
+            "full_price_sell_through", "total_units_period",
+            "avg_full_price_sor_period_active", "full_price_sor_period",
+            "discounted_sor_gap_pp",
             "zero_stock_count", "no_sale_30d_count",
             "woc_lt4_count", "woc_gt20_count",
             "woc_lt3_active_count", "no_sale_7d_active_count",
@@ -142,6 +201,28 @@ class TestMerchRouterSchemaSmoke(unittest.TestCase):
         summary = merch_router._compute_summary(styles)
         missing = required - summary.keys()
         self.assertFalse(missing, f"_compute_summary missing keys: {missing}")
+
+    def test_full_price_sor_uses_remaining_stock_and_gap(self):
+        with _patch_db([dict(_FAKE_STYLE_ROW)]):
+            styles = merch_router._fetch_styles()
+        style = styles[0]
+        self.assertEqual(style["full_price_sor_period"], 66.7)
+        summary = merch_router._compute_summary(styles)
+        self.assertEqual(summary["full_price_sor_period"], 66.7)
+        self.assertEqual(summary["discounted_sor_gap_pp"], 10.2)
+
+    def test_full_price_sor_zero_denominator_is_null(self):
+        row = dict(_FAKE_STYLE_ROW)
+        row.update({
+            "units_period": 0,
+            "units_full_price_period": 0,
+            "soh_stores": 0,
+            "soh_online": 0,
+            "soh_warehouse": 0,
+        })
+        with _patch_db([row]):
+            style = merch_router._fetch_styles()[0]
+        self.assertIsNone(style["full_price_sor_period"])
 
     def test_compute_summary_empty_does_not_crash(self):
         """_compute_summary([]) must return a dict with None values, not raise."""

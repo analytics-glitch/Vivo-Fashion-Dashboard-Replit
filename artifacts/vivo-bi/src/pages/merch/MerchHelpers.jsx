@@ -44,6 +44,13 @@ export const fmtPct1 = (n) => {
   return `${Number(n).toFixed(1)}%`;
 };
 
+// Full-price SOR gap colour: small gaps are healthy, larger gaps flag
+// discount dependence without changing the primary total-SOR value.
+export const sorGapColor = (gap) => {
+  if (gap === null || gap === undefined || isNaN(Number(gap))) return undefined;
+  return Number(gap) <= 5 ? C.green : Number(gap) <= 15 ? C.amber : C.red;
+};
+
 export const fmtNum = (n) => {
   if (n === null || n === undefined || isNaN(Number(n))) return "0";
   return Math.round(Number(n)).toLocaleString("en-US");

@@ -15,6 +15,7 @@ import ProductThumbnail from "@/components/ProductThumbnail";
 import { useThumbnails } from "@/lib/useThumbnails";
 import { useMerchFilters } from "./MerchandisingHub";
 import MerchStyleSearch from "./MerchStyleSearch";
+import { sorGapColor } from "./merch/MerchHelpers";
 import {
   AreaChart, Area, BarChart, Bar, ComposedChart, Line, LineChart,
   XAxis, YAxis, Tooltip, CartesianGrid, ResponsiveContainer,
@@ -967,6 +968,12 @@ const MerchDeepDive = () => {
 
   const avgUnits = weeks.length ? (weeks.reduce((a, w) => a + w.units, 0) / weeks.length).toFixed(1) : "—";
   const productAge = formatProductAge(style.launch_date);
+  const fullPriceSor = style.full_price_sor_period;
+  const discountedSorGap = (
+    style.sor_period != null && fullPriceSor != null
+      ? Number(style.sor_period) - Number(fullPriceSor)
+      : null
+  );
 
   // ── Total SOH split ────────────────────────────────────────────────────────
   // soh_online is a SUBSET of soh_stores (the online channel is scoped as a
@@ -1136,7 +1143,17 @@ const MerchDeepDive = () => {
           small
           label={`SOR (${periodLabel})`}
           value={fmtPct(style.sor_period)}
-          sub={`vs subcat avg ${fmtPct(subcat.find(s => s.subcategory === style.subcategory)?.avg_sor_period || 0)}`}
+          sub={
+            <>
+              <div>vs subcat avg {fmtPct(subcat.find(s => s.subcategory === style.subcategory)?.avg_sor_period || 0)}</div>
+              <div>Full price SOR: {fmtPct(fullPriceSor)}</div>
+            </>
+          }
+          footer={
+            <span style={{ color: sorGapColor(discountedSorGap) }}>
+              Discounted: {discountedSorGap == null ? "—" : `${discountedSorGap.toFixed(1)}pp`}
+            </span>
+          }
           icon={Percent}
           showDelta={false}
           testId="dd-sor"

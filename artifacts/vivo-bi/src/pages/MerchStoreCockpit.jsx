@@ -17,6 +17,7 @@ import { KPICard } from "@/components/KPICard";
 import SortableTable from "@/components/SortableTable";
 import { Loading, ErrorBox, Empty } from "@/components/common";
 import { useMerchFilters } from "./MerchandisingHub";
+import { sorGapColor } from "./merch/MerchHelpers";
 import {
   Storefront, Package, ChartBar, Percent, Tag, TrendUp, CurrencyCircleDollar,
 } from "@phosphor-icons/react";
@@ -315,6 +316,7 @@ const MerchStoreCockpit = () => {
   const revDelta   = hasCompare ? pctDelta(summary?.revenue,     cmpSummary.revenue)     : null;
   const unitsDelta = hasCompare ? pctDelta(summary?.units,       cmpSummary.units)       : null;
   const stockDelta = hasCompare ? pctDelta(summary?.stock_units, cmpSummary.stock_units) : null;
+  const discountedSorGap = summary?.discounted_sor_gap_pp;
 
   // ASP — computed from the same PA data as all other metrics (consistent formula)
   const asp    = summary    && summary.units    > 0 ? Math.round(summary.revenue    / summary.units)    : null;
@@ -431,7 +433,17 @@ const MerchStoreCockpit = () => {
             />
             <KPICard
               small showDelta={false} label="Rate of Sale" value={fmtSor(summary.avg_sor)} icon={Percent}
-              sub={periodLabel}
+              sub={
+                <>
+                  <div>{periodLabel}</div>
+                  <div>Full price SOR: {fmtSor(summary.full_price_sor)}</div>
+                </>
+              }
+              footer={
+                <span style={{ color: sorGapColor(discountedSorGap) }}>
+                  Discounted: {discountedSorGap == null ? "—" : `${Number(discountedSorGap).toFixed(1)}pp`}
+                </span>
+              }
               formula="Rate of sale = units sold in the selected period ÷ (units sold + current stock)"
               testId="msc-sor"
             />

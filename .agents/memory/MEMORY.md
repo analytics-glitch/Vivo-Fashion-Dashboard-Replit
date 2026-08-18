@@ -140,3 +140,4 @@
 - [Community guest mode](community-guest-mode.md) — guest fence must cover deep-linkable URL-state overlays (?event=, member ?page= ids) and every member-write control, not just tabs.
 - Paint-order trap: a static <img> paints BELOW an absolutely-positioned sibling — a persistent absolute pulse/placeholder overlay washes the photo out; make the overlay strictly conditional or position the img.
 - [Merch store size analysis](merch-store-size-analysis.md) — compare a selected store's size SOR/SOH against weighted network size benchmarks, not average store percentages.
+- [Merch full-price sell-through](merch-full-price-sell-through.md) — strict selected-period zero-discount unit ratio, excluding returns and distinct from avg full-price %.

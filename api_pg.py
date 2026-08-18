@@ -11505,8 +11505,10 @@ def analytics_product_analysis(
             " COALESCE(SUM(s.net_quantity),0) AS units_period,"
             " COALESCE(ROUND(SUM(" + _PA_KES_CASE + ")),0) AS revenue_period,"
             " COALESCE(ROUND(" + NET_SALES_CANON + "),0) AS net_revenue_period,"
-            " COALESCE(SUM(" + _PA_GROSS_CASE + "),0) AS gross_units_period,"
-            " COUNT(DISTINCT s.order_id) FILTER (WHERE s.sale_kind IN ('sale','order')) AS orders_period"
+             " COALESCE(SUM(" + _PA_GROSS_CASE + "),0) AS gross_units_period,"
+             " COALESCE(SUM(s.ordered_item_quantity) FILTER (WHERE s.sale_kind IN ('sale','order')"
+             " AND COALESCE(s.discounts_kes,0)::numeric = 0),0) AS full_price_units_period,"
+             " COUNT(DISTINCT s.order_id) FILTER (WHERE s.sale_kind IN ('sale','order')) AS orders_period"
             " FROM all_products_clean p JOIN all_sales s ON s.variant_sku = p.sku"
             " WHERE p.style_name IS NOT NULL AND p.style_name <> ''"
             " AND COALESCE(p.brand,'') NOT ILIKE '%third party%'"
@@ -11536,6 +11538,7 @@ def analytics_product_analysis(
             " COALESCE(ps.units_period,0) AS units_period, COALESCE(ps.revenue_period,0) AS revenue_period,"
             " COALESCE(ps.net_revenue_period,0) AS net_revenue_period,"
             " COALESCE(ps.gross_units_period,0) AS gross_units_period,"
+             " COALESCE(ps.full_price_units_period,0) AS full_price_units_period,"
             " COALESCE(ps.orders_period,0) AS orders_period,"
             " COALESCE(life.units_vel,0) AS units_vel, life.units_life, COALESCE(life.sales_life,0) AS sales_life,"
             " COALESCE(life.units_6m,0) AS units_6m, COALESCE(life.revenue_6m,0) AS revenue_6m,"
@@ -11557,8 +11560,12 @@ def analytics_product_analysis(
             " COALESCE(ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN (s.total_sales_kes::numeric - s.discounts_kes::numeric) / " + _VAT_DIV +
             " WHEN s.sale_kind='return' THEN -s.returns_kes::numeric / " + _VAT_DIV + " ELSE 0 END)"
             " FILTER (WHERE s.sale_date BETWEEN '" + df + "' AND '" + dt + "')),0) AS net_revenue_period,"
-            " COALESCE(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END)"
-            " FILTER (WHERE s.sale_date BETWEEN '" + df + "' AND '" + dt + "'),0) AS gross_units_period,"
+             " COALESCE(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END)"
+             " FILTER (WHERE s.sale_date BETWEEN '" + df + "' AND '" + dt + "'),0) AS gross_units_period,"
+             " COALESCE(SUM(CASE WHEN s.sale_kind IN ('sale','order')"
+             " AND COALESCE(s.discounts_kes,0)::numeric = 0"
+             " THEN s.ordered_item_quantity ELSE 0 END)"
+             " FILTER (WHERE s.sale_date BETWEEN '" + df + "' AND '" + dt + "'),0) AS full_price_units_period,"
             " COUNT(DISTINCT s.order_id) FILTER (WHERE s.sale_kind IN ('sale','order')"
             " AND s.sale_date BETWEEN '" + df + "' AND '" + dt + "') AS orders_period,"
             " COALESCE(SUM(s.net_quantity) FILTER (WHERE s.sale_date::date >= CURRENT_DATE - INTERVAL '" + str(vel) + " days'),0) AS units_vel,"
@@ -11643,7 +11650,8 @@ def analytics_product_analysis(
         " p.color, p.print_plain, p.size,"
         " p.full_price, p.price_min, p.price_max, p.launch_date, p.sizes_count, p.colors_count,"
         " COALESCE(sa.units_period,0) AS units_period, COALESCE(sa.revenue_period,0) AS revenue_period,"
-        " COALESCE(sa.net_revenue_period,0) AS net_revenue_period, COALESCE(sa.gross_units_period,0) AS gross_units_period,"
+         " COALESCE(sa.net_revenue_period,0) AS net_revenue_period, COALESCE(sa.gross_units_period,0) AS gross_units_period,"
+         " COALESCE(sa.full_price_units_period,0) AS full_price_units_period,"
         " COALESCE(sa.orders_period,0) AS orders_period, COALESCE(sa.units_vel,0) AS units_vel,"
         " COALESCE(sa.units_life,0) AS units_life, COALESCE(sa.sales_life,0) AS sales_life,"
         " COALESCE(sa.units_6m,0) AS units_6m, COALESCE(sa.revenue_6m,0) AS revenue_6m, COALESCE(sa.gross_units_6m,0) AS gross_units_6m,"
@@ -11698,6 +11706,7 @@ def analytics_product_analysis(
         revenue = float(r["revenue_period"] or 0)
         net_rev = float(r["net_revenue_period"] or 0)
         gross_units = int(r["gross_units_period"] or 0)
+        full_price_units_period = int(r.get("full_price_units_period") or 0)
         units_vel = int(r["units_vel"] or 0)
         units_life = int(r["units_life"] or 0)
         months_active_12 = int(r["months_active_12"] or 0)
@@ -11746,6 +11755,7 @@ def analytics_product_analysis(
         if full_price and price_max and price_max > full_price * 3:
             price_max = full_price
         sor_6m = _sor(units_6m, stock)
+        full_price_sor_period = _sor(full_price_units_period, stock)
         is_noos = bool(r.get("is_noos"))
         life_cycle = _life_cycle(_lifecycle_tier(
             r["style_name"], r["brand"], age_weeks, reorder_count, months_active_12,
@@ -11769,6 +11779,8 @@ def analytics_product_analysis(
             "season": r["season"],
             "units_sold": units,
             "gross_units_period": gross_units,
+            "full_price_units_period": full_price_units_period,
+            "full_price_sor_period": full_price_sor_period,
             "revenue": round(revenue),
             "net_revenue": round(net_rev),
             "orders": int(r["orders_period"] or 0),
@@ -11825,7 +11837,8 @@ def analytics_product_analysis(
         k = row["style_name"]
         g = styles.get(k)
         if not g:
-            g = {"units": 0, "gross_units_period": 0, "revenue": 0, "net_revenue": 0, "stock": 0, "units_vel": 0,
+            g = {"units": 0, "gross_units_period": 0, "full_price_units_period": 0,
+                 "revenue": 0, "net_revenue": 0, "stock": 0, "units_vel": 0,
                  "units_life": 0, "units_6m": 0, "sales_life": 0, "months_active_12": 0,
                  "age_weeks": None, "full_price": None, "last_sale": None, "is_noos": False,
                  "brand": row["brand"], "category": row["category"], "subcategory": row["subcategory"],
@@ -11837,6 +11850,7 @@ def analytics_product_analysis(
             g["override_tier"] = row.get("override_tier")
         g["units"] += row["units_sold"]
         g["gross_units_period"] += row["gross_units_period"]
+        g["full_price_units_period"] += row.get("full_price_units_period") or 0
         g["revenue"] += row["revenue"]
         g["net_revenue"] += row["net_revenue"]
         g["stock"] += row["current_stock"]
@@ -11949,6 +11963,8 @@ def analytics_product_analysis(
     tot_net = sum(g["net_revenue"] for g in kept.values())
     tot_stock = sum(g["stock"] for g in kept.values())
     tot_vel = sum((g["units"] if period_basis else g["units_vel"]) for g in kept.values())
+    tot_full_price_units = sum(
+        g["full_price_units_period"] for g in kept.values())
 
     # Canonical Net Sales for the SAME date/country/store window over ALL sales
     # (no product-master join, no style scoping) — identical to /api/kpis
@@ -11996,6 +12012,13 @@ def analytics_product_analysis(
         "net_revenue_canonical": net_revenue_canonical,
         "stock_units": tot_stock,
         "avg_sor": _sor(tot_units, tot_stock),
+        "full_price_sor": _sor(tot_full_price_units, tot_stock),
+        "discounted_sor_gap_pp": (
+            round(_sor(tot_units, tot_stock) - _sor(tot_full_price_units, tot_stock), 1)
+            if _sor(tot_units, tot_stock) is not None
+            and _sor(tot_full_price_units, tot_stock) is not None
+            else None
+        ),
         "avg_woc": _woc(tot_stock, tot_vel),
     }
 
