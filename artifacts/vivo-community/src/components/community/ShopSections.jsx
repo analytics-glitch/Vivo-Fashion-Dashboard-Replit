@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import { Heart, ShoppingBag, ChevronRight } from "lucide-react";
 import { ImagePlaceholder, MerchBadge, kes, brandAsset, SectionHeader } from "./ui";
 import { useWishlist } from "@/context/WishlistContext";
+import { QuickAddModal } from "./QuickAddModal";
 
 /* Shared image-led shop sections — the product rail and the "Shop by
    Category" editorial grid. All live on the Shop tab now, including the
@@ -21,12 +22,13 @@ const swatchFor = (color) => {
 };
 
 /* Product rail card — image-led with wishlist heart, colour swatch and a
-   quick-add affordance (opens the piece so she picks her size — bag adds
-   always go through the PDP, unchanged). */
+   quick-add affordance. Tapping the bag icon opens the lightweight size
+   picker overlay so she can add to bag without leaving the rail. */
 export function RailCard({ p, onOpenProduct, idPrefix = "rail" }) {
   const { has, toggle } = useWishlist();
   const saved = has(p.sku);
   const [imgOk, setImgOk] = useState(true);
+  const [quickAdd, setQuickAdd] = useState(false);
   const hex = swatchFor(p.color);
   return (
     <div className="w-[170px] sm:w-[200px] shrink-0 snap-start relative group">
@@ -73,12 +75,22 @@ export function RailCard({ p, onOpenProduct, idPrefix = "rail" }) {
         <button
           data-testid={`${idPrefix}-quickadd-${p.sku}`}
           aria-label={`Quick add ${p.style_name}`}
-          onClick={() => onOpenProduct?.(p.sku)}
+          onClick={(e) => { e.stopPropagation(); setQuickAdd(true); }}
           className="w-9 h-9 rounded-full bg-background/85 backdrop-blur flex items-center justify-center text-foreground hover:bg-background transition-colors shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
         >
           <ShoppingBag size={14} strokeWidth={1.5} />
         </button>
       </div>
+      {quickAdd && (
+        <QuickAddModal
+          sku={p.sku}
+          productName={p.style_name}
+          productImage={p.image_url}
+          productPrice={p.price}
+          onClose={() => setQuickAdd(false)}
+          onOpenProduct={onOpenProduct}
+        />
+      )}
     </div>
   );
 }

@@ -7,6 +7,7 @@ import { FilterSheet, AppliedChips, emptyFilters, countActive, filtersToParams, 
 import { CategoryGrid, ProductRail, RailCard } from "./ShopSections";
 import { StyledForYouShop } from "./StyledForYou";
 import { useAuth } from "@/context/AuthContext";
+import { QuickAddModal } from "./QuickAddModal";
 
 const PAGE = 24;
 
@@ -138,11 +139,12 @@ function ShoppableLook({ post, tagged, onOpen }) {
 /* Editorial product card — image-led, no box chrome: photo, then serif
    two-line name, colour swatch and price on the open cream ground. The image
    is the whole tap target; wishlist + quick-add float over the photo as
-   SIBLINGS (never nested). Quick-add opens the piece — bag adds always go
-   through the detail page where she picks her size (unchanged rule). */
+   SIBLINGS (never nested). The shopping-bag icon opens a lightweight size
+   picker overlay so the shopper can add to bag without leaving the grid. */
 function ProductCard({ product, onOpen }) {
   const { has, toggle } = useWishlist();
   const [imgFailed, setImgFailed] = useState(false);
+  const [quickAdd, setQuickAdd] = useState(false);
   const saved = has(product.sku);
   const hex = swatchFor(product.color);
 
@@ -193,12 +195,22 @@ function ProductCard({ product, onOpen }) {
         <button
           data-testid={`card-quickadd-${product.sku}`}
           aria-label={`Quick add ${product.style_name}`}
-          onClick={open}
+          onClick={(e) => { e.stopPropagation(); setQuickAdd(true); }}
           className="w-10 h-10 rounded-full bg-background/85 backdrop-blur flex items-center justify-center text-foreground shadow-sm hover:bg-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
         >
           <ShoppingBag size={15} strokeWidth={1.5} />
         </button>
       </div>
+      {quickAdd && (
+        <QuickAddModal
+          sku={product.sku}
+          productName={product.style_name}
+          productImage={product.image_url}
+          productPrice={product.price}
+          onClose={() => setQuickAdd(false)}
+          onOpenProduct={onOpen}
+        />
+      )}
     </div>
   );
 }
