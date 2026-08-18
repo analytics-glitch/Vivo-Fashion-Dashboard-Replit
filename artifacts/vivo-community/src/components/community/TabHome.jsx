@@ -461,8 +461,8 @@ function HeroCampaign({ onNavigate }) {
         <div className="absolute inset-x-0 bottom-0 h-2/3 bg-gradient-to-t from-black/70 via-black/20 to-transparent pointer-events-none" />
         <div className="absolute inset-x-0 bottom-0 p-6 sm:p-10 text-white">
           <div className="text-[11px] font-bold uppercase tracking-[0.25em] text-white/80 mb-2">This season's conversation</div>
-          <h2 className="font-serif text-3xl sm:text-4xl leading-tight mb-2 text-white">Colour, out loud</h2>
-          <p className="text-[14px] text-white/85 mb-5 max-w-sm">Bold prints, easy silhouettes and the women wearing them — designed in Nairobi, worn everywhere.</p>
+          <h2 className="font-serif text-3xl sm:text-4xl leading-tight mb-2 text-white">The New Old Money</h2>
+          <p className="text-[14px] text-white/85 mb-5 max-w-sm">Timeless silhouettes, refined details and effortless elegance, reimagined for the modern Vivo woman.</p>
           <div className="flex flex-wrap items-center gap-3">
             <button
               data-testid="hero-join-cta"
