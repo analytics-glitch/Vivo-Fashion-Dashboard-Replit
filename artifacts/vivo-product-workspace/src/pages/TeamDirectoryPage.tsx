@@ -391,7 +391,7 @@ export default function TeamDirectoryPage() {
       {error && <div className="team-error" role="alert" data-testid="status-team-directory-error"><CircleAlert size={15} /> {error}</div>}
 
       <div className="team-intro">
-        <div className="team-intro-card"><span className="eyebrow gold-eyebrow">The product room</span><h2>Good product starts with <em>good conversation.</em></h2></div>
+        <div className="team-intro-card"><span className="eyebrow gold-eyebrow">The product room</span><h2>The most successful teams are the ones that learn how to <em>solve hard problems together.</em></h2></div>
         <div className="team-intro-copy"><p>Every handoff carries a point of view. This is the Product Department behind Vivo’s range — the makers, thinkers, and careful finishers who keep the edit moving.</p><div className="team-intro-stat"><strong>{members.length}</strong><span>people and role slots</span></div></div>
       </div>
 

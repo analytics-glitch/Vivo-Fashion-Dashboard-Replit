@@ -1341,6 +1341,12 @@ a { color: inherit; text-decoration: none; }
 .l10-section-title { display: flex; align-items: end; justify-content: space-between; gap: 18px; margin-bottom: 17px; padding-bottom: 13px; border-bottom: 1px solid #d8d3cc; }
 .l10-section-title h2 { margin: 7px 0 0; color: #1A1A2E; font: 500 29px var(--app-font-serif); letter-spacing: -.035em; }
 .l10-archive-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.l10-flow-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
+.l10-flow-card { display: grid; gap: 12px; align-content: start; padding: 20px 18px; border: 1px solid #e1ddd7; background: #FAFAF8; color: #1A1A2E; }
+.l10-flow-card h3 { margin: 0 0 6px; font: 600 13px 'Inter', sans-serif; letter-spacing: -.01em; }
+.l10-flow-card p { margin: 0; color: #6b7280; font-size: 11.5px; line-height: 1.55; }
+@media (max-width: 1100px) { .l10-flow-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 560px) { .l10-flow-grid { grid-template-columns: 1fr; } }
 .l10-archive-card { display: flex; align-items: center; gap: 17px; min-height: 117px; padding: 20px 22px; border: 1px solid #e1ddd7; background: #FAFAF8; color: #1A1A2E; transition: border-color .2s, transform .2s, background .2s; }
 .l10-archive-card:hover { border-color: #C9A96E; background: #fffdf8; transform: translateY(-2px); }
 .l10-archive-card > svg { margin-left: auto; color: #9d968e; }
