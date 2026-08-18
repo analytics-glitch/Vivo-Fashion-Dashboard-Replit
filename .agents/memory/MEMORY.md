@@ -139,3 +139,4 @@
 - [Product Workspace public feedback](product-workspace-public-feedback.md) — public feedback selects catalogue styles/colourways from all_products_clean and stores canonical style number plus colourway.
 - [Community guest mode](community-guest-mode.md) — guest fence must cover deep-linkable URL-state overlays (?event=, member ?page= ids) and every member-write control, not just tabs.
 - Paint-order trap: a static <img> paints BELOW an absolutely-positioned sibling — a persistent absolute pulse/placeholder overlay washes the photo out; make the overlay strictly conditional or position the img.
+- [Merch store size analysis](merch-store-size-analysis.md) — compare a selected store's size SOR/SOH against weighted network size benchmarks, not average store percentages.

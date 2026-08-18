@@ -1016,6 +1016,131 @@ class StyleColorsSchemaTests(unittest.TestCase):
         self.assertEqual(sql.count("s.country = ANY(%(countries)s)"), 3,
                          "country clause must hit sales, sales_6m AND sales_wk")
 
+
+class StyleSizesSchemaTests(unittest.TestCase):
+    """Size rows use independent sales/stock aggregation and share flags."""
+
+    def test_all_stores_sor_is_aggregate_not_average_of_store_rates(self):
+        store_a = merch_router._sor_percent(9, 1)   # 90.0%
+        store_b = merch_router._sor_percent(1, 99)  # 1.0%
+        average_of_rates = (store_a + store_b) / 2
+        aggregate = merch_router._sor_percent(10, 100)
+        self.assertEqual(average_of_rates, 45.5)
+        self.assertEqual(aggregate, 9.1)
+        self.assertNotEqual(aggregate, average_of_rates)
+
+    def test_size_flags_use_share_not_average_of_sor(self):
+        flags = merch_router._size_row_flags(
+            units=10, soh=50, total_units=100, total_soh=100)
+        self.assertEqual(flags["sales_share"], 10.0)
+        self.assertEqual(flags["soh_share"], 50.0)
+        self.assertTrue(flags["imbalanced"])
+        self.assertFalse(flags["sold_out"])
+
+    def test_size_flags_cover_zero_and_sold_out_states(self):
+        no_sales = merch_router._size_row_flags(
+            units=0, soh=20, total_units=30, total_soh=40)
+        sold_out = merch_router._size_row_flags(
+            units=10, soh=0, total_units=30, total_soh=40)
+        self.assertTrue(no_sales["no_sales"])
+        self.assertTrue(no_sales["imbalanced"])
+        self.assertTrue(sold_out["sold_out"])
+        self.assertEqual(sold_out["soh_share"], 0.0)
+
+    def test_fetch_style_sizes_calculates_sor_and_soh_share(self):
+        rows = [
+            {
+                "size": "S", "units_period": 10, "revenue_period": 1000,
+                "units_6m": 26, "soh_stores": 30, "soh_warehouse": 10,
+            },
+            {
+                "size": "M", "units_period": 30, "revenue_period": 3000,
+                "units_6m": 52, "soh_stores": 10, "soh_warehouse": 0,
+            },
+        ]
+        with _patch_db(rows):
+            out = merch_router._fetch_style_sizes("TS001")
+        self.assertEqual(out["totals"], {"units_sold": 40, "soh": 50})
+        by_size = {r["size"]: r for r in out["sizes"]}
+        self.assertEqual(by_size["S"]["sor"], round(10 * 100 / 50, 1))
+        self.assertEqual(by_size["S"]["soh_share"], 80.0)
+        self.assertEqual(by_size["M"]["soh_share"], 20.0)
+        self.assertTrue(by_size["S"]["imbalanced"])
+        self.assertIn(by_size["S"]["action"], {"REBALANCE", "REVIEW", "OVERSTOCK", "HEALTHY"})
+
+    def test_size_sql_scopes_inventory_country(self):
+        captured = {}
+
+        def fake_exec(sql, params=None, **_kw):
+            captured["sql"] = sql
+            captured["params"] = params or {}
+            return []
+
+        with mock.patch.object(merch_router, "_db_exec", side_effect=fake_exec):
+            merch_router._fetch_style_sizes("TS001", country="Kenya")
+        self.assertIn("LOWER(COALESCE(i.country, '')) = ANY(%(countries_lower)s)", captured["sql"])
+        self.assertEqual(captured["params"]["countries"], ["Kenya"])
+        self.assertEqual(captured["params"]["countries_lower"], ["kenya"])
+
+
+class StoreSizeAnalysisSchemaTests(unittest.TestCase):
+    """Store size charts use store rows plus weighted network benchmarks."""
+
+    def test_store_sor_and_network_sor_are_aggregate_rates(self):
+        rows = [
+            {
+                "size": "S/M", "store_units": 10, "store_soh": 10,
+                "network_units": 20, "network_soh": 20,
+            },
+            {
+                "size": "M/L", "store_units": 10, "store_soh": 30,
+                "network_units": 30, "network_soh": 70,
+            },
+        ]
+        with _patch_db(rows):
+            out = merch_router._fetch_store_size_analysis(
+                store="Vivo T- Mall",
+                from_date="2026-08-01",
+                to_date="2026-08-10",
+            )
+        by_size = {r["size"]: r for r in out["sizes"]}
+        self.assertEqual(by_size["S/M"]["sor"], 50.0)
+        self.assertEqual(by_size["M/L"]["sor"], 25.0)
+        self.assertEqual(by_size["S/M"]["network_sor"], 50.0)
+        self.assertEqual(by_size["M/L"]["network_sor"], 30.0)
+        self.assertEqual(by_size["S/M"]["soh_share"], 25.0)
+        self.assertEqual(by_size["M/L"]["soh_share"], 75.0)
+
+    def test_store_size_sql_threads_scope_filters(self):
+        captured = {}
+
+        def fake_exec(sql, params=None, **_kw):
+            captured["sql"] = sql
+            captured["params"] = params or {}
+            return []
+
+        with mock.patch.object(merch_router, "_db_exec", side_effect=fake_exec):
+            merch_router._fetch_store_size_analysis(
+                store="Vivo T- Mall",
+                from_date="2026-08-01",
+                to_date="2026-08-10",
+                country="Kenya",
+                brand="Vivo",
+                subcategory="Dresses",
+            )
+        sql = captured["sql"]
+        params = captured["params"]
+        self.assertIn("p.brand = ANY(%(brands)s)", sql)
+        self.assertIn("p.product_type = ANY(%(subcats)s)", sql)
+        self.assertIn("s.country = ANY(%(countries)s)", sql)
+        self.assertIn("LOWER(COALESCE(i.country, '')) = ANY(%(countries_lower)s)", sql)
+        self.assertEqual(params["store"], "Vivo T- Mall")
+        self.assertEqual(params["countries"], ["Kenya"])
+        self.assertEqual(params["countries_lower"], ["kenya"])
+        self.assertEqual(params["brands"], ["Vivo"])
+        self.assertEqual(params["subcats"], ["Dresses"])
+
+
 class ActiveColourGrainCsvTests(unittest.TestCase):
     """_active_colour_rows — the assembly behind the Active Colour Styles
     card's colour-grain CSV (arithmetic, ordering, raw-key preservation)."""

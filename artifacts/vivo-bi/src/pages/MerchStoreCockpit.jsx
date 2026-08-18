@@ -20,6 +20,10 @@ import { useMerchFilters } from "./MerchandisingHub";
 import {
   Storefront, Package, ChartBar, Percent, Tag, TrendUp, CurrencyCircleDollar,
 } from "@phosphor-icons/react";
+import {
+  BarChart, Bar, ComposedChart, Line, XAxis, YAxis, Tooltip,
+  CartesianGrid, ResponsiveContainer, LabelList,
+} from "recharts";
 
 // ── Formatting helpers ────────────────────────────────────────────────────────
 const fmtSor = (v) => v == null ? "—" : `${v}%`;
@@ -58,6 +62,113 @@ const ActionPill = ({ action }) => {
     <span className={`inline-flex items-center px-1.5 py-0.5 rounded border text-[10px] font-bold ${cls}`}>
       {action}
     </span>
+  );
+};
+
+const StoreSizeAnalysis = ({ rows, selectedStore, periodLabel }) => {
+  const sorRows = useMemo(() => [...rows]
+    .map(r => ({
+      ...r,
+      name: r.size || "—",
+      sorValue: r.sor == null ? -1 : Number(r.sor),
+      networkSorValue: r.network_sor == null ? null : Number(r.network_sor),
+      sorLabel: r.sor == null ? "—" : `${Number(r.sor).toFixed(1)}%`,
+    }))
+    .sort((a, b) => (b.sorValue - a.sorValue) || (b.units_sold - a.units_sold)), [rows]);
+  const sohRows = useMemo(() => [...rows]
+    .map(r => ({
+      ...r,
+      name: r.size || "—",
+      sohValue: Number(r.soh || 0),
+      sohLabel: `${fmtNum(r.soh)} · ${r.soh_share == null ? "—" : `${Number(r.soh_share).toFixed(1)}%`}`,
+    }))
+    .sort((a, b) => (b.sohValue - a.sohValue) || a.name.localeCompare(b.name)), [rows]);
+
+  if (!rows.length) return <Empty label="No size-level stock or sales are available for this scope." />;
+  return (
+    <div className="card-white p-5" data-testid="msc-size-analysis">
+      <div className="mb-3">
+        <div className="eyebrow">Size Analysis</div>
+        <div className="text-[11.5px] text-muted mt-1">
+          {selectedStore || "All Stores"} · {periodLabel || "selected period"} · active styles only
+        </div>
+      </div>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-4 gap-y-5">
+        <div>
+          <div className="text-[11.5px] font-semibold text-foreground/70 mb-1">
+            Sell-Through by Size (SOR)
+          </div>
+          <div className="text-[10px] text-foreground/50 mb-1">
+            Store SOR with weighted All Stores benchmark by size
+          </div>
+          <ResponsiveContainer width="100%" height={240}>
+            <ComposedChart data={sorRows} margin={{ top: 20, right: 8, left: 0, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+              <XAxis dataKey="name" tick={{ fontSize: 8 }} interval={0}
+                angle={-45} textAnchor="end" height={64} />
+              <YAxis tick={{ fontSize: 9 }} domain={[0, 100]}
+                ticks={[0, 25, 50, 75, 100]} tickFormatter={v => `${v}%`} />
+              <Tooltip content={({ active, payload }) => {
+                if (!active || !payload?.length) return null;
+                const d = payload[0].payload;
+                return (
+                  <div className="bg-white border border-border rounded-lg shadow-md px-3 py-2 text-[11px]">
+                    <div className="font-bold mb-0.5">{d.name}</div>
+                    <div>Store SOR: <span className="font-semibold">{d.sor == null ? "—" : `${Number(d.sor).toFixed(1)}%`}</span></div>
+                    <div>All Stores: {d.network_sor == null ? "—" : `${Number(d.network_sor).toFixed(1)}%`}</div>
+                    <div>Units sold: {fmtNum(d.units_sold)}</div>
+                    <div>SOH: {fmtNum(d.soh)}</div>
+                  </div>
+                );
+              }} />
+              <Bar dataKey="sor" fill="#4b7bec" radius={[3, 3, 0, 0]} minPointSize={2}>
+                <LabelList dataKey="sorLabel" position="top"
+                  style={{ fontSize: 8, fill: "#64748b", fontWeight: 700 }} />
+              </Bar>
+              <Line type="monotone" dataKey="network_sor" name="All Stores benchmark"
+                stroke="#1f2937" strokeWidth={2} dot={{ r: 3, fill: "#1f2937" }}
+                activeDot={{ r: 4 }} connectNulls />
+            </ComposedChart>
+          </ResponsiveContainer>
+          <div className="mt-1 text-[10px] text-foreground/60">
+            <span className="inline-block w-7 border-t-2 border-[#1f2937] align-middle mr-1.5" />
+            All Stores benchmark per size
+          </div>
+        </div>
+        <div>
+          <div className="text-[11.5px] font-semibold text-foreground/70 mb-1">
+            Stock on Hand by Size
+          </div>
+          <div className="text-[10px] text-foreground/50 mb-1">
+            Current store stock · labels show units and share of store SOH
+          </div>
+          <ResponsiveContainer width="100%" height={240}>
+            <BarChart data={sohRows} margin={{ top: 20, right: 8, left: 0, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+              <XAxis dataKey="name" tick={{ fontSize: 8 }} interval={0}
+                angle={-45} textAnchor="end" height={64} />
+              <YAxis tick={{ fontSize: 9 }} />
+              <Tooltip content={({ active, payload }) => {
+                if (!active || !payload?.length) return null;
+                const d = payload[0].payload;
+                return (
+                  <div className="bg-white border border-border rounded-lg shadow-md px-3 py-2 text-[11px]">
+                    <div className="font-bold mb-0.5">{d.name}</div>
+                    <div>SOH: <span className="font-semibold">{fmtNum(d.soh)}</span></div>
+                    <div>Store SOH share: {d.soh_share == null ? "—" : `${Number(d.soh_share).toFixed(1)}%`}</div>
+                    <div>SOR: {d.sor == null ? "—" : `${Number(d.sor).toFixed(1)}%`}</div>
+                  </div>
+                );
+              }} />
+              <Bar dataKey="soh" fill="#4b7bec" radius={[3, 3, 0, 0]} minPointSize={2}>
+                <LabelList dataKey="sohLabel" position="top"
+                  style={{ fontSize: 8, fill: "#64748b", fontWeight: 700 }} />
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+    </div>
   );
 };
 
@@ -122,6 +233,9 @@ const MerchStoreCockpit = () => {
   const [data, setData]       = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError]     = useState(null);
+  const [sizeAnalysis, setSizeAnalysis] = useState([]);
+  const [sizeLoading, setSizeLoading] = useState(false);
+  const [sizeError, setSizeError] = useState(null);
 
   useEffect(() => {
     if (!pageFrom || !pageTo) return;
@@ -139,6 +253,34 @@ const MerchStoreCockpit = () => {
       .finally(()=> { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [paBase, pageFrom, pageTo, periodVelocity, filters.dataVersion]);
+
+  // Size analysis is independently aggregated for the selected store and the
+  // network benchmark, so it stays useful even when the style table is capped.
+  useEffect(() => {
+    if (!pageFrom || !pageTo) return;
+    let cancelled = false;
+    setSizeLoading(true);
+    setSizeError(null);
+    apiFetch("/merch/store-sizes", {
+      params: {
+        store: selectedStore || undefined,
+        from_date: pageFrom,
+        to_date: pageTo,
+        country: filters.country || undefined,
+        brand: filters.brand || undefined,
+        subcategory: filters.subcategory || undefined,
+      },
+    })
+      .then(d => { if (!cancelled) setSizeAnalysis(d.sizes || []); })
+      .catch(e => {
+        if (!cancelled) setSizeError(e?.response?.data?.detail || e.message);
+      })
+      .finally(() => { if (!cancelled) setSizeLoading(false); });
+    return () => { cancelled = true; };
+  }, [
+    selectedStore, pageFrom, pageTo, filters.country, filters.brand,
+    filters.subcategory, filters.dataVersion,
+  ]);
 
   // ── Compare period ────────────────────────────────────────────────────────
   const [cmpData, setCmpData] = useState(null);
@@ -302,6 +444,19 @@ const MerchStoreCockpit = () => {
               testId="msc-woc"
             />
           </div>
+
+          {/* Size performance — store bars against a per-size network benchmark */}
+          {sizeLoading ? (
+            <Loading label="Loading size analysis…" />
+          ) : sizeError ? (
+            <ErrorBox message={sizeError} />
+          ) : (
+            <StoreSizeAnalysis
+              rows={sizeAnalysis}
+              selectedStore={selectedStore}
+              periodLabel={periodLabel}
+            />
+          )}
 
           {/* Row 3 — Unit economics: ASP card */}
           {asp != null && (

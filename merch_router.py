@@ -2602,14 +2602,19 @@ def _fetch_style_stores(style_number=None, from_date=None, to_date=None, country
     period_from = from_date or six_mo_ago
     period_to   = to_date   or today_str
 
-    # Country filter for sales CTEs
+    # Country filter for sales and inventory CTEs. Inventory is country-scoped
+    # too: otherwise a country-filtered SOR denominator silently includes stock
+    # from the other markets.
     country_clause = ""
+    country_inv_clause = ""
     country_params = {}
     if country:
         cl = [c.strip() for c in country.split(",") if c.strip()]
         if cl:
             country_params["countries"] = cl
+            country_params["countries_lower"] = [c.lower() for c in cl]
             country_clause = " AND s.country = ANY(%(countries)s)"
+            country_inv_clause = " AND LOWER(COALESCE(i.country, '')) = ANY(%(countries_lower)s)"
 
     style_filter = " AND p.style_number = %(style_number)s" if style_number else ""
     active_style_filter = "" if include_retired else " AND ps.style_status = 'Active'"
@@ -2660,6 +2665,7 @@ stock AS (
         {style_filter}
     JOIN style_status ps ON ps.style_number = p.style_number
     WHERE i.pos_location_name NOT IN ({_WAREHOUSE_LOCATIONS})
+        {country_inv_clause}
         {active_style_filter}
     GROUP BY i.pos_location_name
 ),
@@ -2761,7 +2767,336 @@ ORDER BY revenue_6m DESC NULLS LAST
     donors     = [r["store"] for r in result if (r["woc"] or 0) > 3 and r["current_stock"] > 1]
     recipients = [r["store"] for r in result if (r["woc"] or 0) < 1.5 and r["rate_of_sale"] >= 1.5]
 
-    return {"stores": result, "donors": donors, "recipients": recipients}
+    total_units = sum(r["units_6m"] for r in result)
+    total_stock = sum(r["current_stock"] for r in result)
+    total_revenue = sum(r["revenue_6m"] for r in result)
+    return {
+        "stores": result,
+        "donors": donors,
+        "recipients": recipients,
+        # Aggregate SOR is a weighted benchmark, not an average of store SORs.
+        "all_stores": {
+            "units_6m": total_units,
+            "current_stock": total_stock,
+            "revenue_6m": round(total_revenue, 0),
+            "sor": _sor_percent(total_units, total_stock),
+        },
+    }
+
+def _sor_percent(units, soh):
+    units = max(int(units or 0), 0)
+    soh = max(int(soh or 0), 0)
+    denom = units + soh
+    return round(units * 100.0 / denom, 1) if denom > 0 else None
+
+
+def _size_row_flags(units, soh, total_units, total_soh):
+    """Return the display flags used by the Deep Dive size tables.
+
+    ``imbalance`` is deliberately a share comparison rather than a raw-unit
+    threshold: a size is stock-heavy when its SOH share exceeds its sales
+    share by at least 20 percentage points. This remains meaningful for both
+    small and large styles and fails closed when there is no sales signal.
+    """
+    units = max(int(units or 0), 0)
+    soh = max(int(soh or 0), 0)
+    total_units = max(int(total_units or 0), 0)
+    total_soh = max(int(total_soh or 0), 0)
+    sold_out = units > 0 and soh == 0
+    soh_share = (soh * 100.0 / total_soh) if total_soh > 0 else 0.0
+    sales_share = (units * 100.0 / total_units) if total_units > 0 else 0.0
+    imbalance = total_soh > 0 and soh > 0 and (
+        total_units == 0 or soh_share - sales_share >= 20.0
+    )
+    return {
+        "soh_share": round(soh_share, 1) if total_soh > 0 else None,
+        "sales_share": round(sales_share, 1) if total_units > 0 else None,
+        "sold_out": sold_out,
+        "imbalanced": imbalance,
+        "no_sales": units == 0,
+    }
+
+
+def _fetch_style_sizes(style_number, from_date=None, to_date=None, country=None):
+    """Per-size breakdown for one style.
+
+    Size is the canonical product-master ``size`` field. Sales and inventory
+    are first aggregated independently at SKU/size grain so inventory cannot
+    fan out through sales. SOR uses the selected period; WOC uses the same
+    fixed trailing six-month velocity as the style and colourway panels.
+    """
+    if not style_number:
+        return {"sizes": []}
+
+    today = date.today()
+    six_mo_ago = str(today - timedelta(days=_SIX_MONTHS_DAYS))
+    today_str = str(today)
+    period_from = from_date or six_mo_ago
+    period_to = to_date or today_str
+
+    country_clause = ""
+    country_inv_clause = ""
+    params = {
+        "style_number": style_number,
+        "period_from": period_from,
+        "period_to": period_to,
+        "six_mo_ago": six_mo_ago,
+        "today": today_str,
+    }
+    if country:
+        cl = [c.strip() for c in country.split(",") if c.strip()]
+        if cl:
+            params["countries"] = cl
+            params["countries_lower"] = [c.lower() for c in cl]
+            country_clause = " AND s.country = ANY(%(countries)s)"
+            country_inv_clause = " AND LOWER(COALESCE(i.country, '')) = ANY(%(countries_lower)s)"
+
+    sql = f"""
+WITH skus AS (
+    SELECT sku, COALESCE(NULLIF(TRIM(size), ''), '—') AS size
+    FROM all_products_clean
+    WHERE style_number = %(style_number)s
+      AND sku IS NOT NULL AND sku <> ''
+),
+sales_period AS (
+    SELECT k.size,
+           COALESCE(SUM(s.ordered_item_quantity) FILTER (
+               WHERE s.sale_kind IN ('sale','order')), 0) AS units_period,
+           COALESCE(SUM({_NET_SALES_EXPR}), 0) AS revenue_period
+    FROM skus k
+    JOIN all_sales s ON s.variant_sku = k.sku
+    WHERE s.sale_date BETWEEN %(period_from)s AND %(period_to)s
+      AND {_BASE_FILTERS}
+      {country_clause}
+    GROUP BY k.size
+),
+sales_6m AS (
+    SELECT k.size,
+           COALESCE(SUM(s.ordered_item_quantity) FILTER (
+               WHERE s.sale_kind IN ('sale','order')), 0) AS units_6m
+    FROM skus k
+    JOIN all_sales s ON s.variant_sku = k.sku
+    WHERE s.sale_date BETWEEN %(six_mo_ago)s AND %(today)s
+      AND {_BASE_FILTERS}
+      {country_clause}
+    GROUP BY k.size
+),
+stock AS (
+    SELECT k.size,
+           COALESCE(SUM(i.available) FILTER (
+               WHERE i.pos_location_name NOT IN ({_WAREHOUSE_LOCATIONS})
+                 AND LOWER(i.pos_location_name) NOT IN ({_HOLDING_STORES_LOWER})
+           ), 0) AS soh_stores,
+           COALESCE(SUM(i.available) FILTER (
+               WHERE i.pos_location_name = 'Warehouse Finished Goods'
+           ), 0) AS soh_warehouse
+    FROM skus k
+    JOIN all_inventory i ON i.sku = k.sku
+    WHERE TRUE {country_inv_clause}
+    GROUP BY k.size
+),
+grain AS (
+    SELECT size FROM sales_period
+    UNION
+    SELECT size FROM sales_6m
+    UNION
+    SELECT size FROM stock
+)
+SELECT g.size,
+       COALESCE(sp.units_period, 0) AS units_period,
+       COALESCE(sp.revenue_period, 0) AS revenue_period,
+       COALESCE(s6.units_6m, 0) AS units_6m,
+       COALESCE(st.soh_stores, 0) AS soh_stores,
+       COALESCE(st.soh_warehouse, 0) AS soh_warehouse
+FROM grain g
+LEFT JOIN sales_period sp USING (size)
+LEFT JOIN sales_6m s6 USING (size)
+LEFT JOIN stock st USING (size)
+WHERE COALESCE(sp.units_period, 0) > 0
+   OR COALESCE(st.soh_stores, 0) > 0
+   OR COALESCE(st.soh_warehouse, 0) > 0
+ORDER BY g.size
+"""
+    rows = _db_exec(sql, params, fetch=True) or []
+    total_units = sum(int(r["units_period"] or 0) for r in rows)
+    total_soh = sum(
+        int(r["soh_stores"] or 0) + int(r["soh_warehouse"] or 0) for r in rows
+    )
+    result = []
+    for r in rows:
+        units = int(r["units_period"] or 0)
+        revenue = float(r["revenue_period"] or 0)
+        units_6m = int(r["units_6m"] or 0)
+        soh_stores = int(r["soh_stores"] or 0)
+        soh_warehouse = int(r["soh_warehouse"] or 0)
+        soh = soh_stores + soh_warehouse
+        denom = units + soh
+        weekly_avg = round(units_6m / 26.0, 2)
+        flags = _size_row_flags(units, soh, total_units, total_soh)
+        if flags["sold_out"]:
+            action = "RESTOCK"
+        elif flags["imbalanced"]:
+            action = "REBALANCE"
+        elif flags["no_sales"] and soh > 0:
+            action = "REVIEW"
+        elif weekly_avg and soh / weekly_avg > 26:
+            action = "OVERSTOCK"
+        else:
+            action = "HEALTHY"
+        result.append({
+            "size": r.get("size") or "—",
+            "units_sold": units,
+            "revenue": round(revenue, 0),
+            "soh": soh,
+            "soh_stores": soh_stores,
+            "soh_warehouse": soh_warehouse,
+            "sor": _sor_percent(units, soh),
+            "units_6m": units_6m,
+            "weekly_avg": weekly_avg,
+            "woc": round(soh / weekly_avg, 1) if weekly_avg > 0 else None,
+            "action": action,
+            **flags,
+        })
+    return {"sizes": result, "totals": {
+        "units_sold": total_units,
+        "soh": total_soh,
+    }}
+
+def _fetch_store_size_analysis(store=None, from_date=None, to_date=None,
+                               country=None, brand=None, subcategory=None):
+    """Store/network size performance for the Store Detail charts.
+
+    Sales and inventory are aggregated independently at SKU/size grain.  The
+    selected-store SOR and the network benchmark both use aggregate units ÷
+    aggregate (units + SOH), never an average of store-level percentages.
+    """
+    today = date.today()
+    period_from = from_date or str(today - timedelta(days=_SIX_MONTHS_DAYS))
+    period_to = to_date or str(today)
+    params = {
+        "period_from": period_from,
+        "period_to": period_to,
+        "store": store or None,
+    }
+
+    extra_prod_parts = [
+        "LOWER(COALESCE(p.status, 'active')) = 'active'",
+    ]
+    if brand:
+        brands = [b.strip() for b in brand.split(",") if b.strip()]
+        if brands:
+            extra_prod_parts.append("p.brand = ANY(%(brands)s)")
+            params["brands"] = brands
+    if subcategory:
+        subcats = [s.strip() for s in subcategory.split(",") if s.strip()]
+        if subcats:
+            extra_prod_parts.append("p.product_type = ANY(%(subcats)s)")
+            params["subcats"] = subcats
+    extra_prod_where = " AND " + " AND ".join(extra_prod_parts)
+
+    country_sales_clause = ""
+    country_inventory_clause = ""
+    if country:
+        countries = [c.strip() for c in country.split(",") if c.strip()]
+        if countries:
+            params["countries"] = countries
+            params["countries_lower"] = [c.lower() for c in countries]
+            country_sales_clause = " AND s.country = ANY(%(countries)s)"
+            country_inventory_clause = (
+                " AND LOWER(COALESCE(i.country, '')) = ANY(%(countries_lower)s)"
+            )
+
+    sql = f"""
+WITH master AS (
+    SELECT
+        p.sku,
+        mode() WITHIN GROUP (ORDER BY COALESCE(NULLIF(BTRIM(p.size), ''), '—')) AS size
+    FROM all_products_clean p
+    WHERE {_PROD_BASE}
+      {extra_prod_where}
+      AND p.sku IS NOT NULL AND p.sku <> ''
+    GROUP BY p.sku
+),
+sales AS (
+    SELECT
+        m.size,
+        COALESCE(SUM(s.ordered_item_quantity) FILTER (
+            WHERE s.sale_kind IN ('sale', 'order')
+              AND (%(store)s IS NULL OR s.pos_location_name = %(store)s)
+        ), 0) AS store_units,
+        COALESCE(SUM(s.ordered_item_quantity) FILTER (
+            WHERE s.sale_kind IN ('sale', 'order')
+        ), 0) AS network_units
+    FROM master m
+    JOIN all_sales s ON s.variant_sku = m.sku
+    WHERE s.sale_date BETWEEN %(period_from)s AND %(period_to)s
+      AND {_BASE_FILTERS}
+      AND s.pos_location_name NOT IN ({_WAREHOUSE_LOCATIONS})
+      AND LOWER(s.pos_location_name) NOT IN ({_HOLDING_STORES_LOWER})
+      AND s.pos_location_name NOT ILIKE '%%online%%'
+      {country_sales_clause}
+    GROUP BY m.size
+),
+stock AS (
+    SELECT
+        m.size,
+        COALESCE(SUM(i.available) FILTER (
+            WHERE (%(store)s IS NULL OR i.pos_location_name = %(store)s)
+        ), 0) AS store_soh,
+        COALESCE(SUM(i.available), 0) AS network_soh
+    FROM master m
+    JOIN all_inventory i ON i.sku = m.sku
+    WHERE i.pos_location_name NOT IN ({_WAREHOUSE_LOCATIONS})
+      AND LOWER(i.pos_location_name) NOT IN ({_HOLDING_STORES_LOWER})
+      AND i.pos_location_name NOT ILIKE '%%online%%'
+      {country_inventory_clause}
+    GROUP BY m.size
+),
+sizes AS (
+    SELECT size FROM sales
+    UNION
+    SELECT size FROM stock
+)
+SELECT
+    z.size,
+    COALESCE(sa.store_units, 0) AS store_units,
+    COALESCE(st.store_soh, 0) AS store_soh,
+    COALESCE(sa.network_units, 0) AS network_units,
+    COALESCE(st.network_soh, 0) AS network_soh
+FROM sizes z
+LEFT JOIN sales sa USING (size)
+LEFT JOIN stock st USING (size)
+WHERE COALESCE(sa.store_units, 0) > 0
+   OR COALESCE(st.store_soh, 0) > 0
+   OR COALESCE(sa.network_units, 0) > 0
+   OR COALESCE(st.network_soh, 0) > 0
+ORDER BY z.size
+"""
+    rows = _db_exec(sql, params, fetch=True) or []
+    result = []
+    store_total_soh = sum(int(r["store_soh"] or 0) for r in rows)
+    for r in rows:
+        store_units = max(int(r["store_units"] or 0), 0)
+        store_soh = max(int(r["store_soh"] or 0), 0)
+        network_units = max(int(r["network_units"] or 0), 0)
+        network_soh = max(int(r["network_soh"] or 0), 0)
+        result.append({
+            "size": r.get("size") or "—",
+            "units_sold": store_units,
+            "soh": store_soh,
+            "sor": _sor_percent(store_units, store_soh),
+            "network_units_sold": network_units,
+            "network_soh": network_soh,
+            "network_sor": _sor_percent(network_units, network_soh),
+            "soh_share": round(store_soh * 100.0 / store_total_soh, 1)
+                if store_total_soh > 0 else None,
+        })
+    return {
+        "sizes": result,
+        "store": store or "All Stores",
+        "period": {"from_date": period_from, "to_date": period_to},
+    }
+
 
 def _fetch_style_colors(style_number, from_date=None, to_date=None, country=None):
     """Per-colourway breakdown for one style: period units/revenue, current SOH
@@ -4447,6 +4782,39 @@ def register_merch_routes(app, api_pg_module):
         key = f"merch_style_colors|{style_number}|{from_date}|{to_date}|{country}"
         result = _cached(key, 300, lambda: _fetch_style_colors(
             style_number, from_date=from_date, to_date=to_date, country=country))
+        return JSONResponse(result)
+
+    @app.get("/api/merch/style-sizes")
+    def merch_style_sizes(
+        request: Request,
+        style_number: Optional[str] = Query(None),
+        from_date: Optional[str] = Query(None),
+        to_date: Optional[str] = Query(None),
+        country: Optional[str] = Query(None),
+    ):
+        """Per-size SOH/SOR breakdown for one style."""
+        if not style_number:
+            return JSONResponse({"detail": "style_number is required"}, status_code=400)
+        key = f"merch_style_sizes|{style_number}|{from_date}|{to_date}|{country}"
+        result = _cached(key, 300, lambda: _fetch_style_sizes(
+            style_number, from_date=from_date, to_date=to_date, country=country))
+        return JSONResponse(result)
+
+    @app.get("/api/merch/store-sizes")
+    def merch_store_sizes(
+        request:     Request,
+        store:       Optional[str] = Query(None),
+        from_date:   Optional[str] = Query(None),
+        to_date:     Optional[str] = Query(None),
+        country:     Optional[str] = Query(None),
+        brand:       Optional[str] = Query(None),
+        subcategory: Optional[str] = Query(None),
+    ):
+        """Size-level SOR/SOH for one store plus weighted network benchmarks."""
+        key = f"merch_store_sizes|{store}|{from_date}|{to_date}|{country}|{brand}|{subcategory}"
+        result = _cached(key, 300, lambda: _fetch_store_size_analysis(
+            store=store, from_date=from_date, to_date=to_date,
+            country=country, brand=brand, subcategory=subcategory))
         return JSONResponse(result)
 
     @app.get("/api/admin/store-profiles")

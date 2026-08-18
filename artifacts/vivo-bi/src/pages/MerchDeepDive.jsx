@@ -449,8 +449,11 @@ const MerchDeepDive = () => {
   const [subcat,  setSubcat]  = useState([]);
   const [styles,  setStyles]  = useState([]);  // same-subcategory styles for ranking
   const [storePerf, setStorePerf] = useState([]);           // per-store rows for this style
+  const [storeBenchmark, setStoreBenchmark] = useState(null); // weighted All Stores SOR
   const [colorPerf, setColorPerf] = useState([]);           // per-colourway rows for this style
+  const [sizePerf, setSizePerf] = useState([]);             // per-size rows for this style
   const [storeMetric, setStoreMetric] = useState("revenue"); // store chart: "revenue" | "units"
+  const [sizeView, setSizeView] = useState("colour");       // colourway charts or size charts
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState(null);
 
@@ -489,8 +492,14 @@ const MerchDeepDive = () => {
         to_date:   filters.to_date,
         country:   filters.country,
       } }),
+      apiFetch("/merch/style-sizes", { params: {
+        style_number: styleNumber,
+        from_date: filters.from_date,
+        to_date: filters.to_date,
+        country: filters.country,
+      } }),
     ])
-      .then(([allStylesList, wk, sc, sp, cp]) => {
+      .then(([allStylesList, wk, sc, sp, cp, sz]) => {
         if (cancelled) return;
         const found = allStylesList.find(s => s.style_number === styleNumber) || null;
         setStyle(found);
@@ -498,7 +507,9 @@ const MerchDeepDive = () => {
         setSubcat(sc.rows || []);
         setStyles(allStylesList);
         setStorePerf(sp.stores || []);
+        setStoreBenchmark(sp.all_stores || null);
         setColorPerf(cp.colors || []);
+        setSizePerf(sz.sizes || []);
       })
       .catch(e => !cancelled && setError(e?.response?.data?.detail || e.message))
       .finally(() => !cancelled && setLoading(false));
@@ -625,7 +636,7 @@ const MerchDeepDive = () => {
   // canon; a store with zero units AND zero stock has no signal and is
   // excluded (mirrors sor_period's None convention on the backend).
   const storeSorChart = useMemo(() => {
-    return storePerf
+    const storeRows = storePerf
       .map(r => {
         const units = r.units_6m || 0;
         const stock = r.current_stock || 0;
@@ -642,7 +653,116 @@ const MerchDeepDive = () => {
       })
       .filter(Boolean)
       .sort((a, b) => b.value - a.value);
-  }, [storePerf]);
+    const totalUnits = storeBenchmark?.units_6m ?? storeRows.reduce((sum, r) => sum + r.units, 0);
+    const totalStock = storeBenchmark?.current_stock ?? storeRows.reduce((sum, r) => sum + r.stock, 0);
+    const totalDenom = totalUnits + totalStock;
+    if (totalDenom <= 0) return storeRows;
+    // Aggregate benchmark: aggregate units ÷ aggregate (units + SOH).
+    // Never use an average of the store-level percentages.
+    return [{
+      name: "All Stores",
+      tier: "—",
+      isAggregate: true,
+      value: storeBenchmark?.sor ?? +(totalUnits * 100 / totalDenom).toFixed(1),
+      units: totalUnits,
+      stock: totalStock,
+      revenueK: storeBenchmark?.revenue_6m != null
+        ? Math.round(storeBenchmark.revenue_6m / 1000)
+        : Math.round(storeRows.reduce((sum, r) => sum + (r.revenueK || 0) * 1000, 0) / 1000),
+    }, ...storeRows];
+  }, [storePerf, storeBenchmark]);
+
+  // Size bars use the same two metrics as the colourway charts, with one
+  // consistent blue fill and descending metric order for easy comparison.
+  const sizeChart = useMemo(() => {
+    const rows = sizePerf.map(r => ({
+      name: r.size || "—",
+      sor: r.sor == null ? null : Number(r.sor),
+      soh: Number(r.soh || 0),
+      units: Number(r.units_sold || 0),
+      woc: r.woc == null ? null : Number(r.woc),
+      soldOut: Boolean(r.sold_out),
+      noSales: Boolean(r.no_sales),
+    }));
+    return {
+      sor: [...rows].sort((a, b) =>
+        ((b.sor == null ? -1 : b.sor) - (a.sor == null ? -1 : a.sor)) ||
+        (b.units - a.units)),
+      soh: [...rows].sort((a, b) => (b.soh - a.soh) || a.name.localeCompare(b.name)),
+    };
+  }, [sizePerf]);
+
+  const sizeChartContent = sizePerf.length === 0 ? (
+    <Empty label="No size-level stock or sales are available for this scope." />
+  ) : (
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-4 gap-y-5 mt-2" data-testid="merch-size-charts">
+      <div>
+        <div className="text-[11.5px] font-semibold text-foreground/70 mb-1">
+          Sell-Through by Size (SOR)
+        </div>
+        <div className="text-[10px] text-foreground/50 mb-1">
+          {periodLabel} selected period · SOR = units sold ÷ (units sold + SOH)
+        </div>
+        <ResponsiveContainer width="100%" height={220}>
+          <BarChart data={sizeChart.sor} margin={{ top: 18, right: 8, left: 0, bottom: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+            <XAxis dataKey="name" tick={{ fontSize: 8 }} interval={0}
+              angle={-45} textAnchor="end" height={64} />
+            <YAxis tick={{ fontSize: 9 }} domain={[0, 100]}
+              ticks={[0, 25, 50, 75, 100]} tickFormatter={v => v + "%"} />
+            <Tooltip content={({ active, payload }) => {
+              if (!active || !payload?.length) return null;
+              const d = payload[0].payload;
+              return (
+                <div className="bg-white border border-border rounded-lg shadow-md px-3 py-2 text-[11px]">
+                  <div className="font-bold mb-0.5">{d.name}</div>
+                  <div>SOR: <span className="font-semibold">{d.sor == null ? "—" : `${d.sor.toFixed(1)}%`}</span></div>
+                  <div>Units sold: {fmtNum(d.units)}</div>
+                  <div>Stock on hand: {fmtNum(d.soh)}</div>
+                </div>
+              );
+            }} />
+            <Bar dataKey="sor" fill="#4b7bec" radius={[3, 3, 0, 0]} minPointSize={2}>
+              <LabelList dataKey="sor" position="top" formatter={v => v == null ? "—" : `${Number(v).toFixed(1)}%`}
+                style={{ fontSize: 8, fill: "#64748b", fontWeight: 700 }} />
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+      <div>
+        <div className="text-[11.5px] font-semibold text-foreground/70 mb-1">
+          Stock on Hand by Size
+        </div>
+        <div className="text-[10px] text-foreground/50 mb-1">
+          Current sellable stock · sorted highest to lowest
+        </div>
+        <ResponsiveContainer width="100%" height={220}>
+          <BarChart data={sizeChart.soh} margin={{ top: 18, right: 8, left: 0, bottom: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+            <XAxis dataKey="name" tick={{ fontSize: 8 }} interval={0}
+              angle={-45} textAnchor="end" height={64} />
+            <YAxis tick={{ fontSize: 9 }} />
+            <Tooltip content={({ active, payload }) => {
+              if (!active || !payload?.length) return null;
+              const d = payload[0].payload;
+              return (
+                <div className="bg-white border border-border rounded-lg shadow-md px-3 py-2 text-[11px]">
+                  <div className="font-bold mb-0.5">{d.name}</div>
+                  <div>Stock on hand: <span className="font-semibold">{fmtNum(d.soh)}</span></div>
+                  <div>Units sold: {fmtNum(d.units)}</div>
+                  <div>SOR: {d.sor == null ? "—" : `${d.sor.toFixed(1)}%`}</div>
+                </div>
+              );
+            }} />
+            <Bar dataKey="soh" fill="#4b7bec" radius={[3, 3, 0, 0]} minPointSize={2}>
+              <LabelList dataKey="soh" position="top" formatter={v => fmtNum(v)}
+                style={{ fontSize: 8, fill: "#64748b", fontWeight: 700 }} />
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
 
   // Per-colourway bars — one consistent ordering (revenue desc, from backend)
   // shared by all FOUR charts so bars line up across Revenue / SOH /
@@ -1288,7 +1408,7 @@ const MerchDeepDive = () => {
                       return (
                         <div className="bg-white border border-border rounded-lg shadow-md px-3 py-2 text-[11px]">
                           <div className="font-bold mb-0.5">
-                            {label}{d.tier && d.tier !== "—" ? ` · Tier ${d.tier}` : ""}
+                            {label}{d.isAggregate ? " · aggregate benchmark" : d.tier && d.tier !== "—" ? ` · Tier ${d.tier}` : ""}
                           </div>
                           <div>Revenue: KES {fmtNum(d.revenueK)}K</div>
                           <div>Units sold: {fmtNum(d.units)}</div>
@@ -1361,7 +1481,7 @@ const MerchDeepDive = () => {
                     }} />
                     <Bar dataKey="value" radius={[3, 3, 0, 0]}>
                       {storeSorChart.map((d, i) => (
-                        <Cell key={i} fill={STORE_TIER_COLOR[d.tier] || "#d1d5db"} />
+                        <Cell key={i} fill={d.isAggregate ? "#1f2937" : (STORE_TIER_COLOR[d.tier] || "#d1d5db")} />
                       ))}
                     </Bar>
                   </BarChart>
@@ -1373,6 +1493,10 @@ const MerchDeepDive = () => {
                       Tier {t} store
                     </span>
                   ))}
+                  <span className="inline-flex items-center gap-1.5 font-semibold text-foreground/70">
+                    <span className="w-2.5 h-2.5 rounded-sm inline-block" style={{ background: "#1f2937" }} />
+                    All Stores benchmark
+                  </span>
                   <span className="text-foreground/40">Store tier = trailing-90-day revenue rank</span>
                 </div>
               </>
@@ -1394,16 +1518,41 @@ const MerchDeepDive = () => {
           <SectionTitle
             title={`Colourway Performance (${periodLabel})`}
             subtitle="Revenue, stock on hand, sell-through and weeks of cover by colourway · colourways with no stock and no period sales are hidden"
-            action={styleNumber ? (
-              <button
-                type="button"
-                onClick={handleViewInventory}
-                className="shrink-0 text-[11px] font-semibold text-[#1a5c38] hover:text-[#124229] hover:underline underline-offset-2 focus:outline-none focus:ring-2 focus:ring-[#1a5c38]/25 rounded px-1 py-0.5"
-                data-testid="colourway-view-inventory"
-              >
-                View stock breakdown <span aria-hidden="true">→</span>
-              </button>
-            ) : null}
+            action={(
+              <div className="flex items-center gap-3 shrink-0">
+                <div className="inline-flex rounded-md border border-border/70 p-0.5 bg-muted/20" role="tablist" aria-label="Performance breakdown">
+                  {[
+                    { value: "colour", label: "By Colour" },
+                    { value: "size", label: "By Size" },
+                  ].map(({ value, label }) => (
+                    <button
+                      key={value}
+                      type="button"
+                      role="tab"
+                      aria-selected={sizeView === value}
+                      onClick={() => setSizeView(value)}
+                      className={`px-2.5 py-1 text-[10px] font-semibold rounded ${
+                        sizeView === value
+                          ? "bg-white text-[#1a5c38] shadow-sm"
+                          : "text-foreground/55 hover:text-foreground/80"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+                {styleNumber && (
+                  <button
+                    type="button"
+                    onClick={handleViewInventory}
+                    className="text-[11px] font-semibold text-[#1a5c38] hover:text-[#124229] hover:underline underline-offset-2 focus:outline-none focus:ring-2 focus:ring-[#1a5c38]/25 rounded px-1 py-0.5"
+                    data-testid="colourway-view-inventory"
+                  >
+                    View stock breakdown <span aria-hidden="true">→</span>
+                  </button>
+                )}
+              </div>
+            )}
           />
           {/* ── Colourway Recommendations — rule-based, above the chart grid ── */}
           {colorChart.rows.length > 0 && (
@@ -1472,9 +1621,11 @@ const MerchDeepDive = () => {
               </div>
             </>
           )}
-          {colorChart.rows.length === 0
-            ? <Empty label="No colourways with stock or sales in the selected period." />
-            : (
+          {sizeView === "size"
+            ? sizeChartContent
+            : colorChart.rows.length === 0
+              ? <Empty label="No colourways with stock or sales in the selected period." />
+              : (
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-4 gap-y-5 mt-2">
                 {/* Revenue */}
                 <div>
