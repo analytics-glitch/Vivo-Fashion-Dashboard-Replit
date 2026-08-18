@@ -377,12 +377,17 @@ export default function TabShop({ onOpenProduct, onOpenTryOn, onOpenPage, onOpen
           The "Shop the edit" CTA now lives here, atop the collection. */}
       <section data-testid="shop-hero" className="relative rounded overflow-hidden bg-secondary mb-10 -mx-4 sm:mx-0">
         <div className="aspect-[4/5] sm:aspect-[21/9] relative">
-          <img
-            src={brandAsset("hero.jpg")}
-            alt=""
-            className="w-full h-full object-cover object-[center_20%]"
-            draggable={false}
-          />
+          {/* Art-directed hero crops (Shop Fixes spec): tall 3:4 crop for mobile,
+              wide 21:9 upper-body crop for desktop — two separate exports, not one image scaled. */}
+          <picture>
+            <source media="(min-width: 640px)" srcSet={brandAsset("hero-desktop.jpg")} />
+            <img
+              src={brandAsset("hero-mobile.jpg")}
+              alt=""
+              className="w-full h-full object-cover object-top"
+              draggable={false}
+            />
+          </picture>
           <div className="absolute inset-x-0 bottom-0 h-3/4 bg-gradient-to-t from-black/70 via-black/25 to-transparent pointer-events-none" />
           <div className="absolute inset-x-0 bottom-0 p-5 sm:p-8 text-white">
             <div className="text-[10px] font-bold uppercase tracking-[0.25em] text-white/80 mb-1.5">This season's edit</div>
