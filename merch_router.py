@@ -4936,9 +4936,54 @@ def _online_perf_payload(from_date, to_date, country=None, brand=None,
         e["gap_pp"] = (round(e["online_sor"] - e["retail_sor"], 1)
                        if e.get("online_sor") is not None and e.get("retail_sor") is not None
                        else None)
+    # share denominator = ALL sizes' online SOH (incl. stock-only sizes and
+    # sizes beyond the top-14 cut), so "share of online SOH" is truthful
+    _tot_online_soh = sum((e.get("online_soh") or 0) for e in sizes)
     sizes = [e for e in sizes if (e["online_units"] + e["retail_units"]) > 0]
     sizes.sort(key=lambda e: -(e["online_units"] + e["retail_units"]))
     sizes = sizes[:14]
+
+    # Size Analysis extras: share of online SOH per size, plus a weighted
+    # online benchmark SOR per size across the WHOLE online business (same
+    # country/period scope, but ignoring the brand/subcategory narrowing —
+    # the online analogue of the store cockpit's "All Stores benchmark").
+    for e in sizes:
+        e["online_soh_share"] = (round((e.get("online_soh") or 0) / _tot_online_soh * 100, 1)
+                                 if _tot_online_soh > 0 else None)
+    if brand or subcategory:
+        bwhere, bparams = _op_filters(country, None, None)
+        bex = ("AND " + " AND ".join(bwhere)) if bwhere else ""
+        bench_sales = _db_exec(f"""
+            SELECT p.size AS size,
+                   SUM(CASE WHEN s.sale_kind IN ('sale','order')
+                            THEN COALESCE(s.ordered_item_quantity,0) ELSE 0 END) AS units
+            FROM all_sales s
+            LEFT JOIN all_products_clean p ON p.sku = s.variant_sku
+            WHERE {_BASE_FILTERS} AND {_ONLINE_SALE_PRED}
+              AND s.sale_date::date BETWEEN %s AND %s {bex}
+              AND COALESCE(p.size,'') <> ''
+            GROUP BY 1
+        """, [from_date, to_date] + bparams)
+        bench_soh = _db_exec(f"""
+            WITH soh AS ({soh_sql})
+            SELECT p.size AS size, SUM(soh.soh_online) AS soh_online
+            FROM soh JOIN all_products_clean p ON p.sku = soh.sku
+            WHERE COALESCE(p.size,'') <> ''
+            GROUP BY 1
+        """, soh_params)
+        _bm = {}
+        for r in bench_sales:
+            _bm.setdefault(r["size"], {})["u"] = float(r["units"] or 0)
+        for r in bench_soh:
+            _bm.setdefault(r["size"], {})["soh"] = float(r["soh_online"] or 0)
+        for e in sizes:
+            v = _bm.get(e["size"]) or {}
+            u, bs = v.get("u", 0), v.get("soh", 0)
+            e["benchmark_sor"] = round(u / (u + bs) * 100, 1) if (u + bs) > 0 else None
+    else:
+        # unfiltered scope: the benchmark IS the online SOR in view
+        for e in sizes:
+            e["benchmark_sor"] = e.get("online_sor")
 
     # colours — ONLINE only (units, soh, sor)
     colour_rows = _fold("colour",

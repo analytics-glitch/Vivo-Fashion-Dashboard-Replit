@@ -17,6 +17,7 @@ import React, { useMemo, useState, useEffect } from "react";
 import {
   BarChart, Bar, XAxis, YAxis, ResponsiveContainer, CartesianGrid,
   Tooltip, Legend, LineChart, Line, Cell, ReferenceArea,
+  ComposedChart, LabelList,
 } from "recharts";
 import { DownloadSimple } from "@phosphor-icons/react";
 import { Loading, ErrorBox, Empty, SectionTitle } from "@/components/common";
@@ -72,6 +73,113 @@ const DlChartCard = ({ title, rows, filename, children, className = "", testId }
     {children}
   </div>
 );
+
+// ── SIZE ANALYSIS (online-scoped twin of the store cockpit section) ──────────
+const OnlineSizeAnalysis = ({ rows, periodLabel }) => {
+  const sorRows = useMemo(() => [...(rows || [])]
+    .map((r) => ({
+      ...r,
+      name: r.size || "—",
+      sorValue: r.online_sor == null ? -1 : Number(r.online_sor),
+      sorLabel: r.online_sor == null ? "—" : `${Number(r.online_sor).toFixed(1)}%`,
+    }))
+    .sort((a, b) => (b.sorValue - a.sorValue) || (b.online_units - a.online_units)), [rows]);
+  const sohRows = useMemo(() => [...(rows || [])]
+    .map((r) => ({
+      ...r,
+      name: r.size || "—",
+      sohValue: Number(r.online_soh || 0),
+      sohLabel: `${fmtNum(r.online_soh)} · ${r.online_soh_share == null ? "—" : `${Number(r.online_soh_share).toFixed(1)}%`}`,
+    }))
+    .sort((a, b) => (b.sohValue - a.sohValue) || a.name.localeCompare(b.name)), [rows]);
+
+  if (!rows?.length) return null;
+  return (
+    <div className="card-white p-5" data-testid="op-size-analysis">
+      <div className="mb-3">
+        <div className="eyebrow">Size Analysis</div>
+        <div className="text-[11.5px] text-muted mt-1">
+          Online · {periodLabel || "selected period"} · active styles only
+        </div>
+      </div>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-4 gap-y-5">
+        <div>
+          <div className="text-[11.5px] font-semibold text-foreground/70 mb-1">
+            Sell-Through by Size (Online SOR)
+          </div>
+          <div className="text-[10px] text-foreground/50 mb-1">
+            Online SOR with weighted benchmark by size
+          </div>
+          <ResponsiveContainer width="100%" height={240}>
+            <ComposedChart data={sorRows} margin={{ top: 20, right: 8, left: 0, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+              <XAxis dataKey="name" tick={{ fontSize: 8 }} interval={0}
+                angle={-45} textAnchor="end" height={64} />
+              <YAxis tick={{ fontSize: 9 }} domain={[0, 100]}
+                ticks={[0, 25, 50, 75, 100]} tickFormatter={(v) => `${v}%`} />
+              <Tooltip content={({ active, payload }) => {
+                if (!active || !payload?.length) return null;
+                const d = payload[0].payload;
+                return (
+                  <div className="bg-white border border-border rounded-lg shadow-md px-3 py-2 text-[11px]">
+                    <div className="font-bold mb-0.5">{d.name}</div>
+                    <div>Online SOR: <span className="font-semibold">{d.online_sor == null ? "—" : `${Number(d.online_sor).toFixed(1)}%`}</span></div>
+                    <div>Online benchmark: {d.benchmark_sor == null ? "—" : `${Number(d.benchmark_sor).toFixed(1)}%`}</div>
+                    <div>Units sold: {fmtNum(d.online_units)}</div>
+                    <div>SOH: {fmtNum(d.online_soh)}</div>
+                  </div>
+                );
+              }} />
+              <Bar dataKey="online_sor" fill="#4b7bec" radius={[3, 3, 0, 0]} minPointSize={2}>
+                <LabelList dataKey="sorLabel" position="top"
+                  style={{ fontSize: 8, fill: "#64748b", fontWeight: 700 }} />
+              </Bar>
+              <Line type="monotone" dataKey="benchmark_sor" name="Online benchmark"
+                stroke="#1f2937" strokeWidth={2} dot={{ r: 3, fill: "#1f2937" }}
+                activeDot={{ r: 4 }} connectNulls />
+            </ComposedChart>
+          </ResponsiveContainer>
+          <div className="mt-1 text-[10px] text-foreground/60">
+            <span className="inline-block w-7 border-t-2 border-[#1f2937] align-middle mr-1.5" />
+            Online benchmark per size
+          </div>
+        </div>
+        <div>
+          <div className="text-[11.5px] font-semibold text-foreground/70 mb-1">
+            Online Stock on Hand by Size
+          </div>
+          <div className="text-[10px] text-foreground/50 mb-1">
+            Current online stock · labels show units and share of online SOH
+          </div>
+          <ResponsiveContainer width="100%" height={240}>
+            <BarChart data={sohRows} margin={{ top: 20, right: 8, left: 0, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+              <XAxis dataKey="name" tick={{ fontSize: 8 }} interval={0}
+                angle={-45} textAnchor="end" height={64} />
+              <YAxis tick={{ fontSize: 9 }} />
+              <Tooltip content={({ active, payload }) => {
+                if (!active || !payload?.length) return null;
+                const d = payload[0].payload;
+                return (
+                  <div className="bg-white border border-border rounded-lg shadow-md px-3 py-2 text-[11px]">
+                    <div className="font-bold mb-0.5">{d.name}</div>
+                    <div>Online SOH: <span className="font-semibold">{fmtNum(d.online_soh)}</span></div>
+                    <div>Share of online SOH: {d.online_soh_share == null ? "—" : `${Number(d.online_soh_share).toFixed(1)}%`}</div>
+                    <div>Online SOR: {d.online_sor == null ? "—" : `${Number(d.online_sor).toFixed(1)}%`}</div>
+                  </div>
+                );
+              }} />
+              <Bar dataKey="online_soh" fill="#4b7bec" radius={[3, 3, 0, 0]} minPointSize={2}>
+                <LabelList dataKey="sohLabel" position="top"
+                  style={{ fontSize: 8, fill: "#64748b", fontWeight: 700 }} />
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+    </div>
+  );
+};
 
 const PctTooltip = ({ active, payload, label }) => {
   if (!active || !payload?.length) return null;
@@ -503,6 +611,9 @@ export default function OnlinePerformance() {
           )}
         </DlChartCard>
       </div>
+
+      {/* ── SIZE ANALYSIS (online-scoped) ───────────────────────────────────── */}
+      <OnlineSizeAnalysis rows={d.sizes} periodLabel={periodLabel} />
 
       {/* ── h) SOH by category with WOC risk ────────────────────────────────── */}
       <DlChartCard title="Online SOH by Category (colour = weeks-of-cover risk)" rows={d.soh_by_category} filename="online_soh_by_category.csv" testId="op-soh-cat">
