@@ -706,43 +706,50 @@ async function ensureL10Data() {
   }
 
   const ratingMembers = teamRows.rows.map((row) => row.name).filter(Boolean).slice(0, 10);
-  const legacyRatings: Array<{ weekLabel: string; memberName: string; rating: number }> = [];
   try {
-    const legacy = await pool.query<{ meetingDate: string; memberName: string; rating: number }>(
-      `SELECT lm.meeting_date::text AS "meetingDate",lr.member_name AS "memberName",lr.rating
-       FROM public.l10_ratings lr
-       JOIN public.l10_meetings lm ON lm.id=lr.meeting_id
-       WHERE lm.meeting_date BETWEEN '2026-07-06'::date AND '2026-08-17'::date`,
-    );
-    for (const row of legacy.rows) {
-      legacyRatings.push({ weekLabel: l10WeekLabel(new Date(`${row.meetingDate.slice(0, 10)}T12:00:00`)), memberName: row.memberName, rating: Number(row.rating) });
+    const legacyRatings: Array<{ weekLabel: string; memberName: string; rating: number }> = [];
+    try {
+      const legacy = await pool.query<{ meetingDate: string; memberName: string; rating: number }>(
+        `SELECT lm.meeting_date::text AS "meetingDate",lr.member_name AS "memberName",lr.rating
+         FROM public.l10_ratings lr
+         JOIN public.l10_meetings lm ON lm.id=lr.meeting_id
+         WHERE lm.meeting_date BETWEEN '2026-07-06'::date AND '2026-08-17'::date`,
+      );
+      for (const row of legacy.rows) {
+        legacyRatings.push({ weekLabel: l10WeekLabel(new Date(`${row.meetingDate.slice(0, 10)}T12:00:00`)), memberName: row.memberName, rating: Number(row.rating) });
+      }
+    } catch {
+      // Legacy ratings are optional; the exact weekly averages below remain the
+      // deterministic fallback for a fresh Product Workspace database.
     }
-  } catch {
-    // Legacy ratings are optional; the exact weekly averages below remain the
-    // deterministic fallback for a fresh Product Workspace database.
-  }
-  for (const row of legacyRatings) {
-    const meetingId = meetingByWeek.get(row.weekLabel);
-    if (!meetingId || !Number.isInteger(row.rating)) continue;
-    await pool.query(
-      `INSERT INTO ${schema}.l10_ratings (meeting_id,team_member_name,rating)
-       VALUES ($1,$2,$3) ON CONFLICT (meeting_id,team_member_name) DO NOTHING`,
-      [meetingId, row.memberName, row.rating],
-    );
-  }
-  for (const [index, average] of L10_RATING_AVERAGES.entries()) {
-    const meetingId = meetingByWeek.get(L10_WEEK_SEEDS[index]?.[0]);
-    if (!meetingId || !ratingMembers.length) continue;
-    const total = Math.round(average * ratingMembers.length);
-    const base = Math.floor(total / ratingMembers.length);
-    const remainder = total - base * ratingMembers.length;
-    for (const [memberIndex, memberName] of ratingMembers.entries()) {
+    for (const row of legacyRatings) {
+      const meetingId = meetingByWeek.get(row.weekLabel);
+      if (!meetingId || !Number.isInteger(row.rating)) continue;
       await pool.query(
         `INSERT INTO ${schema}.l10_ratings (meeting_id,team_member_name,rating)
          VALUES ($1,$2,$3) ON CONFLICT (meeting_id,team_member_name) DO NOTHING`,
-        [meetingId, memberName, base + (memberIndex < remainder ? 1 : 0)],
+        [meetingId, row.memberName, row.rating],
       );
     }
+    for (const [index, average] of L10_RATING_AVERAGES.entries()) {
+      const meetingId = meetingByWeek.get(L10_WEEK_SEEDS[index]?.[0]);
+      if (!meetingId || !ratingMembers.length) continue;
+      const total = Math.round(average * ratingMembers.length);
+      const base = Math.floor(total / ratingMembers.length);
+      const remainder = total - base * ratingMembers.length;
+      for (const [memberIndex, memberName] of ratingMembers.entries()) {
+        await pool.query(
+          `INSERT INTO ${schema}.l10_ratings (meeting_id,team_member_name,rating)
+           VALUES ($1,$2,$3) ON CONFLICT (meeting_id,team_member_name) DO NOTHING`,
+          [meetingId, memberName, base + (memberIndex < remainder ? 1 : 0)],
+        );
+      }
+    }
+  } catch (error) {
+    console.warn(
+      "Workspace L10 ratings seed skipped:",
+      error instanceof Error ? error.message : error,
+    );
   }
 }
 
@@ -3467,10 +3474,10 @@ router.get("/dashboard", async (_req, res, next) => {
               AND LOWER(COALESCE(s.current_stage, '')) NOT IN ('launched', 'dropped', 'on hold', 'on_hold')
           )::int AS "inDevelopment",
           COUNT(*) FILTER (
-            WHERE s.target_week_num = EXTRACT(ISOWEEK FROM CURRENT_DATE)::int
+            WHERE s.target_week_num = EXTRACT(WEEK FROM CURRENT_DATE)::int
           )::int AS "dueThisWeek",
           COUNT(*) FILTER (
-            WHERE s.target_week_num < EXTRACT(ISOWEEK FROM CURRENT_DATE)::int
+            WHERE s.target_week_num < EXTRACT(WEEK FROM CURRENT_DATE)::int
               AND LOWER(COALESCE(s.status, 'active')) <> 'completed'
           )::int AS "atRisk"
         FROM source s
