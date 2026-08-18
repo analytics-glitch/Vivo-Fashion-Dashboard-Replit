@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Heart, MessageCircle, Share, ArrowRight, ChevronRight, Cake, Gift, X, Trophy, HandHeart } from "lucide-react";
+import { Heart, MessageCircle, Share, ArrowRight, ChevronRight, Cake, Gift, X, Trophy, HandHeart, HelpCircle } from "lucide-react";
 import PostDetailModal from "./PostDetailModal";
 import { PostVisual, timeAgo } from "./PostBits";
 import { TierBadge, Avatar, cardCls, brandAsset, SectionHeader } from "./ui";
@@ -39,7 +39,7 @@ function PostCard({ post, onOpen, onCounts }) {
   };
 
   return (
-    <div className={`${cardCls} p-5 transition-transform hover:-translate-y-0.5 duration-300`} data-testid={`post-card-${post.id}`}>
+    <div className={`${cardCls} p-5 transition-transform hover:-translate-y-0.5 duration-300 ${post.post_type === "question" ? "bg-primary/5 border-primary/20" : ""}`} data-testid={`post-card-${post.id}`}>
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-3">
           {/* Privacy: public surfaces show username only; tier appears only if opted in */}
@@ -54,7 +54,17 @@ function PostCard({ post, onOpen, onCounts }) {
         </div>
       </div>
 
-      {post.variant === "quote" ? (
+      {post.post_type === "question" ? (
+        /* Style questions are text-only — no media placeholder; the card
+           sizes to the question itself with a quiet Johari tint. */
+        <div role="button" tabIndex={0} onClick={open} onKeyDown={onOpenKey}
+             onPointerDown={(e) => e.preventDefault()}
+             aria-label="Open style question"
+             className="flex items-start gap-3 mb-5 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary rounded">
+          <HelpCircle size={18} className="text-primary-ink mt-1 shrink-0" strokeWidth={1.5} />
+          <p className="font-serif text-lg sm:text-xl leading-snug text-foreground/90">{post.caption}</p>
+        </div>
+      ) : post.variant === "quote" ? (
         <blockquote role="button" tabIndex={0} onClick={open} onKeyDown={onOpenKey}
                     onPointerDown={(e) => e.preventDefault()}
                     aria-label="Open post"

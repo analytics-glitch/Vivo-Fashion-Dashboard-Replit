@@ -139,21 +139,46 @@ export default function TabRewards({ member, onMemberUpdate, onOpenPage }) {
   return (
     <div className="animate-in fade-in duration-500 max-w-4xl mx-auto space-y-12">
 
-      {/* The Johari balance/tier hero moved to the top of the Account tab
-          (RewardsSummaryCard) — this tab now opens on how to earn. */}
-      {/* How it works — three quiet steps */}
-      <div data-testid="rewards-how-it-works" className="grid grid-cols-3 gap-3 sm:gap-4">
-        {[
-          { icon: <ShoppingBag size={18} strokeWidth={1.5} />, title: "Shop & share", sub: "1 pt per 100 KES, more when you post" },
-          { icon: <Star size={18} strokeWidth={1.5} />, title: "Earn points", sub: "Points land when purchases post & entries publish" },
-          { icon: <Gift size={18} strokeWidth={1.5} />, title: "Redeem", sub: "Vouchers to studio shoots — your pick" },
-        ].map((s) => (
-          <div key={s.title} className="text-center px-1 sm:px-3 py-4 border-t border-border">
-            <div className="flex justify-center text-primary-ink mb-2">{s.icon}</div>
-            <div className="font-serif text-[14px] sm:text-[15px] text-foreground mb-1">{s.title}</div>
-            <div className="text-[11px] text-muted-foreground leading-snug">{s.sub}</div>
+      {/* The Johari balance/tier hero and weekly missions moved to the top of
+          the Account tab — this tab now opens on the programme story. */}
+      <div>
+        <h2 className="text-xl font-serif text-foreground mb-6">How Vivo Johari Works</h2>
+        {/* How it works — three steps, in the full breadth of the platform */}
+        <div data-testid="rewards-how-it-works" className="grid grid-cols-3 gap-3 sm:gap-4 mb-8">
+          {[
+            { icon: <ShoppingBag size={18} strokeWidth={1.5} />, title: "Shop & share", sub: "Every purchase, style post, review, and challenge entry earns you points — 1 pt per 100 KES, plus more every time you show up for the community." },
+            { icon: <Star size={18} strokeWidth={1.5} />, title: "Earn points", sub: "Points land the moment your purchase ships or your story goes live — building you toward Ruby, then Tanzanite." },
+            { icon: <Gift size={18} strokeWidth={1.5} />, title: "Redeem", sub: "From a KES 500 voucher to alterations, a Personal Styling Session, an embroidered tank, member events — even a professional photoshoot at Zetu Studios." },
+          ].map((s) => (
+            <div key={s.title} className="text-center px-1 sm:px-3 py-4 border-t border-border">
+              <div className="flex justify-center text-primary-ink mb-2">{s.icon}</div>
+              <div className="font-serif text-[14px] sm:text-[15px] text-foreground mb-1">{s.title}</div>
+              <div className="text-[11px] text-muted-foreground leading-snug">{s.sub}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* Our gems — programme-level provenance of the tier names */}
+        <div data-testid="our-gems" className={`${cardCls} p-6 sm:p-8`}>
+          <h3 className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-2">Our Gems</h3>
+          <p className="text-[13px] text-muted-foreground leading-relaxed mb-6">
+            Every tier is a gemstone from East African soil — your journey moves through the treasures of our own region.
+          </p>
+          <div className="space-y-5">
+            <div className="flex items-start gap-4">
+              <TierBadge tier="Tsavorite" className="mt-0.5 shrink-0" />
+              <p className="text-[13px] text-foreground/80 leading-relaxed">The vivid green garnet discovered in Kenya's Tsavo — where everyone begins.</p>
+            </div>
+            <div className="flex items-start gap-4">
+              <TierBadge tier="Ruby" className="mt-0.5 shrink-0" />
+              <p className="text-[13px] text-foreground/80 leading-relaxed">Warm, deep red from East Africa's ruby heartlands.</p>
+            </div>
+            <div className="flex items-start gap-4">
+              <TierBadge tier="Tanzanite" className="mt-0.5 shrink-0" />
+              <p className="text-[13px] text-foreground/80 leading-relaxed">Found only at the foot of Kilimanjaro — rarer than diamond.</p>
+            </div>
           </div>
-        ))}
+        </div>
       </div>
 
       {/* Johari perk — Virtual Try-On. The ladder renders from the server
@@ -230,45 +255,7 @@ export default function TabRewards({ member, onMemberUpdate, onOpenPage }) {
         </div>
       )}
 
-      {/* Active Missions */}
-      <div>
-        <h2 className="text-xl font-serif text-foreground mb-6">Active Weekly Missions</h2>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <div className={`${cardCls} p-6 border-border`}>
-            <div className="flex justify-between items-start mb-5">
-              <div>
-                <h3 className="font-semibold text-foreground text-[15px]">Leave a review</h3>
-                <p className="text-[13px] text-muted-foreground mt-1">Share your thoughts on recent purchases.</p>
-              </div>
-              <span className="bg-primary/10 text-primary-ink border border-primary/20 text-[10px] font-semibold leading-snug px-2.5 py-1.5 rounded-sm shrink-0 max-w-[110px] text-center">20 pts when published</span>
-            </div>
-            <div className="flex justify-between text-[11px] font-bold uppercase tracking-wider mb-2 text-muted-foreground">
-              <span>Progress</span>
-              <span>0/1 done</span>
-            </div>
-            <div className="h-1.5 bg-secondary rounded-full overflow-hidden">
-              <div className="h-full bg-primary w-0" />
-            </div>
-          </div>
-
-          <div className={`${cardCls} p-6 border-border`}>
-            <div className="flex justify-between items-start mb-5">
-              <div>
-                <h3 className="font-semibold text-foreground text-[15px]">Post a look</h3>
-                <p className="text-[13px] text-muted-foreground mt-1">Show us how you style it.</p>
-              </div>
-              <span className="bg-primary/10 text-primary-ink border border-primary/20 text-[10px] font-semibold leading-snug px-2.5 py-1.5 rounded-sm shrink-0 max-w-[110px] text-center">50 pts when published</span>
-            </div>
-            <div className="flex justify-between text-[11px] font-bold uppercase tracking-wider mb-2 text-muted-foreground">
-              <span>Progress</span>
-              <span>0/3 done</span>
-            </div>
-            <div className="h-1.5 bg-secondary rounded-full overflow-hidden">
-              <div className="h-full bg-primary w-0" />
-            </div>
-          </div>
-        </div>
-      </div>
+      {/* Weekly missions moved to the Account tab (WeeklyMissionsCard). */}
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-12">
         {/* History */}
@@ -310,28 +297,6 @@ export default function TabRewards({ member, onMemberUpdate, onOpenPage }) {
           <p className="text-[12px] text-muted-foreground leading-relaxed mt-4">
             Reviews, photos, videos, fit notes, style posts and challenge entries are reviewed with love before they go live — each earns its points when it's published.
           </p>
-        </div>
-      </div>
-
-      {/* Our gems — the story behind the tier names */}
-      <div data-testid="our-gems" className={`${cardCls} p-6 sm:p-8`}>
-        <h3 className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-2">Our Gems</h3>
-        <p className="text-[13px] text-muted-foreground leading-relaxed mb-6">
-          Every tier is a gemstone from East African soil — your journey moves through the treasures of our own region.
-        </p>
-        <div className="space-y-5">
-          <div className="flex items-start gap-4">
-            <TierBadge tier="Tsavorite" className="mt-0.5 shrink-0" />
-            <p className="text-[13px] text-foreground/80 leading-relaxed">The vivid green garnet discovered in Kenya's Tsavo — where everyone begins.</p>
-          </div>
-          <div className="flex items-start gap-4">
-            <TierBadge tier="Ruby" className="mt-0.5 shrink-0" />
-            <p className="text-[13px] text-foreground/80 leading-relaxed">Warm, deep red from East Africa's ruby heartlands.</p>
-          </div>
-          <div className="flex items-start gap-4">
-            <TierBadge tier="Tanzanite" className="mt-0.5 shrink-0" />
-            <p className="text-[13px] text-foreground/80 leading-relaxed">Found only at the foot of Kilimanjaro — rarer than diamond.</p>
-          </div>
         </div>
       </div>
 

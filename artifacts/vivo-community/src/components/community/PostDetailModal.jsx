@@ -267,7 +267,8 @@ export default function PostDetailModal({
     }
   };
 
-  const isQuote = post.variant === "quote";
+  // Quotes AND style questions are text-only — no visual pane, narrow layout.
+  const isQuote = post.variant === "quote" || post.post_type === "question";
   const shopTag = (t) => { onClose(); onOpenProduct?.(t.sku); };
 
   return createPortal(

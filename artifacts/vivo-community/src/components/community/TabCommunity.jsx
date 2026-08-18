@@ -51,7 +51,7 @@ const dayOfYear = () => {
 function GridVisual({ post }) {
   if (post.post_type === "question") {
     return (
-      <div className="aspect-[4/5] bg-secondary/70 flex flex-col justify-center p-4 sm:p-5">
+      <div className="bg-primary/10 flex flex-col justify-center p-4 sm:p-5 min-h-[120px]">
         <HelpCircle size={18} className="text-primary-ink mb-3" strokeWidth={1.5} />
         <p className="font-serif text-[15px] sm:text-base text-foreground leading-snug line-clamp-6">
           {post.caption}

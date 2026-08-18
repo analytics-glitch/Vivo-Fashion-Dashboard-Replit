@@ -1,9 +1,54 @@
 import React from 'react';
-import { TierBadge, JohariWordmark } from "./ui";
+import { TierBadge, JohariWordmark, cardCls } from "./ui";
 
 // Johari rewards summary — the dark editorial band with tier badge, greeting,
 // available balance, voucher nudge and the tier-progress bar. Lives at the
 // very top of the Account/Profile tab (moved from the Rewards tab hero).
+// Weekly missions — lives right under the balance card on the Account tab
+// (moved from the Rewards tab; heading renamed per the programme voice).
+export function WeeklyMissionsCard() {
+  return (
+    <div data-testid="weekly-missions">
+      <h2 className="text-xl font-serif text-foreground mb-6">This Week's Ways to Earn</h2>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div className={`${cardCls} p-6 border-border`}>
+          <div className="flex justify-between items-start mb-5">
+            <div>
+              <h3 className="font-semibold text-foreground text-[15px]">Leave a review</h3>
+              <p className="text-[13px] text-muted-foreground mt-1">Share your thoughts on recent purchases.</p>
+            </div>
+            <span className="bg-primary/10 text-primary-ink border border-primary/20 text-[10px] font-semibold leading-snug px-2.5 py-1.5 rounded-sm shrink-0 max-w-[110px] text-center">20 pts when published</span>
+          </div>
+          <div className="flex justify-between text-[11px] font-bold uppercase tracking-wider mb-2 text-muted-foreground">
+            <span>Progress</span>
+            <span>0/1 done</span>
+          </div>
+          <div className="h-1.5 bg-secondary rounded-full overflow-hidden">
+            <div className="h-full bg-primary w-0" />
+          </div>
+        </div>
+
+        <div className={`${cardCls} p-6 border-border`}>
+          <div className="flex justify-between items-start mb-5">
+            <div>
+              <h3 className="font-semibold text-foreground text-[15px]">Post a look</h3>
+              <p className="text-[13px] text-muted-foreground mt-1">Show us how you style it.</p>
+            </div>
+            <span className="bg-primary/10 text-primary-ink border border-primary/20 text-[10px] font-semibold leading-snug px-2.5 py-1.5 rounded-sm shrink-0 max-w-[110px] text-center">50 pts when published</span>
+          </div>
+          <div className="flex justify-between text-[11px] font-bold uppercase tracking-wider mb-2 text-muted-foreground">
+            <span>Progress</span>
+            <span>0/3 done</span>
+          </div>
+          <div className="h-1.5 bg-secondary rounded-full overflow-hidden">
+            <div className="h-full bg-primary w-0" />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function RewardsSummaryCard({ member }) {
   const m = member || {};
   const points = m.points ?? 0;

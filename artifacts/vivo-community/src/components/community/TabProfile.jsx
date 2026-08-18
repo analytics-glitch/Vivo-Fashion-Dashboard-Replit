@@ -5,7 +5,7 @@ import { MapPin, Package, ArrowRight, LogOut, Camera, Ruler, Check, Loader2, Shi
 import { useWishlist } from "@/context/WishlistContext";
 import EntryModal, { ENTRY_STATUS_COPY } from "./EntryModal";
 import { StylePrefsProfileCard } from "./StyledForYou";
-import RewardsSummaryCard from "./RewardsSummaryCard";
+import RewardsSummaryCard, { WeeklyMissionsCard } from "./RewardsSummaryCard";
 
 const WIN_LABEL = { 1: "1st place", 2: "2nd place", 3: "3rd place" };
 
@@ -247,8 +247,9 @@ export default function TabProfile({ member, onSignOut, onMemberUpdate, onOpenWi
     <div className="animate-in fade-in duration-500 max-w-5xl mx-auto">
       {/* Johari rewards summary — moved here from the Rewards tab so her
           balance and tier greet her first on the Account page. */}
-      <div className="mb-10">
+      <div className="mb-10 space-y-10">
         <RewardsSummaryCard member={member} />
+        <WeeklyMissionsCard />
       </div>
       {/* Profile header — editorial charcoal band matching the Rewards hero,
           with the Style DNA / quiz block on the cream ground beneath it. */}
