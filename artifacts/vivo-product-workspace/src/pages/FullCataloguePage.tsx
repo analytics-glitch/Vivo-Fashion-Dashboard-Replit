@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Check, ChevronLeft, ChevronRight, CircleAlert, Search, X } from 'lucide-react';
 import { getListCatalogueProductsQueryKey, useListCatalogueProducts } from '@workspace/api-client-react';
 import type { CatalogueStyle } from '@workspace/api-client-react';
+import MultiSelectFilter from '../components/MultiSelectFilter';
 
 const fmtKES = (value?: number | null) =>
   value == null || Number.isNaN(Number(value)) ? null : `KES ${Math.round(Number(value)).toLocaleString('en-KE')}`;
@@ -96,29 +97,30 @@ function CatalogueTierDetail({ styleNumber, onClose }: { styleNumber: string; on
 export default function FullCataloguePage() {
   const [search, setSearch] = useState('');
   const [applied, setApplied] = useState('');
-  const [brand, setBrand] = useState('');
-  const [subcategory, setSubcategory] = useState('');
+  const [brands, setBrands] = useState<string[]>([]);
+  const [subcategories, setSubcategories] = useState<string[]>([]);
   const [status, setStatus] = useState('');
   const [page, setPage] = useState(1);
   const [selectedStyleNumber, setSelectedStyleNumber] = useState<string | null>(null);
   const params = useMemo(() => ({
     search: applied || undefined,
-    brand: brand || undefined,
-    subcategory: subcategory || undefined,
+    // multi-select values travel comma-separated; the API applies IN (...)
+    brand: brands.length ? brands.join(',') : undefined,
+    subcategory: subcategories.length ? subcategories.join(',') : undefined,
     status: (status || undefined) as 'active' | 'retired' | undefined,
     page,
-  }), [applied, brand, subcategory, status, page]);
+  }), [applied, brands, subcategories, status, page]);
   const catalogue = useListCatalogueProducts(params, { query: { queryKey: getListCatalogueProductsQueryKey(params), placeholderData: (previous) => previous }, request: { credentials: 'include' } });
   const data = catalogue.data;
   const totalPages = data ? Math.max(1, Math.ceil(data.total / data.pageSize)) : 1;
   const resetPage = () => setPage(1);
-  const clear = () => { setSearch(''); setApplied(''); setBrand(''); setSubcategory(''); setStatus(''); setPage(1); };
+  const clear = () => { setSearch(''); setApplied(''); setBrands([]); setSubcategories([]); setStatus(''); setPage(1); };
   return (
     <>
       <div className="catalogue-tools full-cat-tools">
         <label className="search-field"><Search size={17} /><input type="search" value={search} onChange={(event) => { setSearch(event.target.value); setApplied(event.target.value); resetPage(); }} placeholder="Search by style name or number…" data-testid="input-full-cat-search" /></label>
-        <select value={brand} onChange={(event) => { setBrand(event.target.value); resetPage(); }} aria-label="Filter by brand" data-testid="select-full-cat-brand"><option value="">All brands</option>{(data?.brands || []).map((item) => <option key={item} value={item}>{item}</option>)}</select>
-        <select value={subcategory} onChange={(event) => { setSubcategory(event.target.value); resetPage(); }} aria-label="Filter by subcategory" data-testid="select-full-cat-subcategory"><option value="">All subcategories</option>{(data?.subcategories || []).map((item) => <option key={item} value={item}>{item}</option>)}</select>
+        <MultiSelectFilter label="Brand" options={data?.brands || []} values={brands} onChange={(next) => { setBrands(next); resetPage(); }} testId="select-full-cat-brand" />
+        <MultiSelectFilter label="Subcategory" options={data?.subcategories || []} values={subcategories} onChange={(next) => { setSubcategories(next); resetPage(); }} testId="select-full-cat-subcategory" />
         <select value={status} onChange={(event) => { setStatus(event.target.value); resetPage(); }} aria-label="Filter by status" data-testid="select-full-cat-status"><option value="">All statuses</option><option value="active">Active</option><option value="retired">Retired</option></select>
         <button className="button button-quiet" onClick={clear} data-testid="button-full-cat-clear">Clear filters</button>
       </div>

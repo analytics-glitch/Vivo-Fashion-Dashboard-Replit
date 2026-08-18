@@ -893,6 +893,34 @@ a { color: inherit; text-decoration: none; }
 .plm-filter select { appearance: none; border: 0; outline: 0; width: 100%; padding: 0; background: transparent; color: var(--plm-ink); font-size: 11px; cursor: pointer; }
 .plm-filter svg { position: absolute; right: 6px; bottom: 6px; pointer-events: none; color: var(--plm-muted); }
 .plm-clear-filter { border: 0; background: transparent; display: inline-flex; align-items: center; gap: 4px; color: var(--plm-red); white-space: nowrap; cursor: pointer; font-size: 10px; margin-left: auto; }
+/* ── Multi-select filter dropdown (PLM toolbar + Full Catalogue tools) ── */
+.msf { position: relative; }
+.msf-button { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; max-width: 220px; }
+.msf-label { color: #96939a; font: 9px var(--app-font-mono, 'DM Mono', monospace); text-transform: uppercase; white-space: nowrap; }
+.msf-summary { color: var(--ink, #1a1a2e); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 110px; }
+.msf-badge { flex: 0 0 auto; min-width: 17px; padding: 1px 4px; border-radius: 8px; background: var(--gold, #b08d3f); color: #fff; font: 700 9px 'Inter', sans-serif; text-align: center; }
+.msf-caret { flex: 0 0 auto; color: #8993a0; }
+.msf-menu { position: absolute; z-index: 30; top: calc(100% + 6px); left: 0; min-width: 200px; max-width: 270px; padding: 5px; border: 1px solid var(--line, #d9d2c5); border-radius: 4px; background: #fff; box-shadow: 0 12px 28px rgba(26,26,46,.14); }
+.msf-clear { width: 100%; display: flex; align-items: center; gap: 5px; border: 0; border-bottom: 1px solid var(--line, #e7dfd4); background: transparent; padding: 6px 8px 8px; color: var(--plm-red, #b3403a); cursor: pointer; font-size: 10.5px; }
+.msf-clear:disabled { color: #b6b0a6; cursor: default; }
+.msf-options { max-height: 260px; overflow: auto; padding-top: 4px; }
+.msf-option { width: 100%; display: flex; align-items: center; gap: 8px; border: 0; border-radius: 2px; background: transparent; padding: 6px 8px; cursor: pointer; text-align: left; font-size: 11px; color: var(--ink, #1a1a2e); }
+.msf-option:hover { background: #f5f2ec; }
+.msf-option.checked { font-weight: 600; }
+.msf-box { flex: 0 0 auto; width: 14px; height: 14px; border: 1px solid #b6b0a6; border-radius: 2px; display: inline-flex; align-items: center; justify-content: center; background: #fff; color: #fff; }
+.msf-box.on { background: var(--gold, #b08d3f); border-color: var(--gold, #b08d3f); }
+.msf-option-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.msf-empty { padding: 8px; color: #8993a0; font-size: 11px; font-style: italic; }
+/* PLM toolbar variant — matches the .plm-filter column look */
+.msf-plm { border-left: 1px solid var(--plm-line, #e3ded4); padding: 3px 9px; min-width: 105px; }
+.msf-plm .msf-button { display: grid; grid-template-columns: auto auto; grid-template-areas: 'label label' 'summary caret'; gap: 1px 4px; border: 0; background: transparent; padding: 0; text-align: left; }
+.msf-plm .msf-label { grid-area: label; }
+.msf-plm .msf-summary { grid-area: summary; }
+.msf-plm .msf-caret { grid-area: caret; align-self: center; }
+.msf-plm .msf-badge { position: absolute; top: 0; right: 2px; }
+/* Full Catalogue variant — matches the .catalogue-tools select boxes */
+.msf-catalogue .msf-button { border: 1px solid var(--line); background: var(--paper); padding: 8px 12px; min-width: 145px; min-height: 38px; }
+.msf-catalogue .msf-button.has-selection { border-color: var(--gold, #b08d3f); }
 .plm-board-wrap { border: 1px solid var(--plm-line); border-radius: 4px; background: #f0ede8; overflow-x: auto; overflow-y: hidden; }
 .plm-board { width: max-content; min-width: 100%; height: min(720px, calc(100dvh - 365px)); min-height: 460px; padding: 16px; display: grid; gap: 12px; align-items: stretch; justify-content: start; }
 .plm-column { width: 250px; min-width: 250px; min-height: 0; display: flex; flex-direction: column; }

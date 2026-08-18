@@ -5623,8 +5623,11 @@ router.patch("/catalogue-products/range-tier", async (req, res, next) => {
 router.get("/catalogue-products", async (req, res, next) => {
   try {
     const search = String(req.query.search ?? "").trim();
-    const brand = String(req.query.brand ?? "").trim();
-    const subcategory = String(req.query.subcategory ?? "").trim();
+    // brand / subcategory accept comma-separated multi-select values
+    const csv = (raw: unknown) =>
+      String(raw ?? "").split(",").map((v) => v.trim()).filter(Boolean);
+    const brands = csv(req.query.brand);
+    const subcategories = csv(req.query.subcategory);
     const statusFilter = String(req.query.status ?? "").trim().toLowerCase();
     const rawPage = Number(req.query.page);
     const page = Number.isInteger(rawPage) && rawPage >= 1 ? Math.min(rawPage, 10000) : 1;
@@ -5635,13 +5638,13 @@ router.get("/catalogue-products", async (req, res, next) => {
       values.push(`%${search}%`);
       where.push(`(a.style_name ILIKE $${values.length} OR a.style_number ILIKE $${values.length})`);
     }
-    if (brand) {
-      values.push(brand);
-      where.push(`a.brand = $${values.length}`);
+    if (brands.length) {
+      values.push(brands);
+      where.push(`a.brand = ANY($${values.length})`);
     }
-    if (subcategory) {
-      values.push(subcategory);
-      where.push(`a.product_type = $${values.length}`);
+    if (subcategories.length) {
+      values.push(subcategories);
+      where.push(`a.product_type = ANY($${values.length})`);
     }
     if (statusFilter === "active" || statusFilter === "retired") {
       values.push(statusFilter === "active");

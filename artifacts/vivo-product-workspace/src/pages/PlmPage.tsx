@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useLocation } from 'wouter';
+import MultiSelectFilter from '../components/MultiSelectFilter';
 import {
   Archive,
   ArrowRight,
@@ -410,7 +411,8 @@ export default function PlmPage() {
     return GROUP_BY_OPTIONS.some((option) => option.value === saved) ? saved as GroupBy : 'stage';
   });
   const [groupMenuOpen, setGroupMenuOpen] = useState(false);
-  const [filters, setFilters] = useState({ brand: 'All', category: 'All', designer: 'All', tier: 'All', orderType: 'All', stage: 'All', launchRoute: 'All', rangeTier: 'All', season: 'All' });
+  // brand / category / stage are multi-select (empty array = All); the rest stay single-value
+  const [filters, setFilters] = useState<{ brand: string[]; category: string[]; stage: string[]; designer: string; tier: string; orderType: string; launchRoute: string; rangeTier: string; season: string }>({ brand: [], category: [], stage: [], designer: 'All', tier: 'All', orderType: 'All', launchRoute: 'All', rangeTier: 'All', season: 'All' });
   const [snapshotFilter, setSnapshotFilter] = useState<'due' | 'at-risk' | null>(null);
   const styles = stylesQuery.data || [];
   useEffect(() => {
@@ -433,12 +435,12 @@ export default function PlmPage() {
     const target = style.targetDate ? new Date(style.targetDate) : null;
     const atRisk = !!target && target < new Date(new Date().setHours(0, 0, 0, 0)) && stageFor(style) !== 'Launched';
     return (!query || `${style.code} ${style.name} ${style.category}`.toLowerCase().includes(query))
-      && (filters.brand === 'All' || style.brand === filters.brand)
-      && (filters.category === 'All' || style.category === filters.category)
+      && (filters.brand.length === 0 || filters.brand.includes(style.brand))
+      && (filters.category.length === 0 || filters.category.includes(style.category))
       && (filters.designer === 'All' || text(style.designer || style.owner, 'Unassigned') === filters.designer)
       && (filters.tier === 'All' || text(style.tier, '—') === filters.tier)
       && (filters.orderType === 'All' || text(style.orderType, '—') === filters.orderType)
-      && (filters.stage === 'All' || stageFor(style) === filters.stage)
+      && (filters.stage.length === 0 || filters.stage.includes(stageFor(style)))
        && (filters.launchRoute === 'All' || text(style.launchRoute, '—') === filters.launchRoute)
        && (filters.rangeTier === 'All' || text(style.rangeTier, '—') === filters.rangeTier)
        && (filters.season === 'All' || (filters.season === 'Q3+Q4' ? String((style as WorkspaceStyle & { season?: string }).season || '').includes(',') : String((style as WorkspaceStyle & { season?: string }).season || '').includes(filters.season)))
@@ -450,7 +452,8 @@ export default function PlmPage() {
     return keys.map((key) => ({ key, styles: filtered.filter((style) => groupValueFor(style, groupBy) === key) }));
   }, [styles, filtered, groupBy]);
   const transitionStyle = (id: number, toStage: string) => { setMenuOpen(null); transition.mutate({ id, data: { toStage } }, { onSuccess: () => { queryClient.invalidateQueries({ queryKey: getListWorkspaceStylesQueryKey() }); if (selected === id) { queryClient.invalidateQueries({ queryKey: getGetWorkspaceStylePlmQueryKey(id) }); queryClient.invalidateQueries({ queryKey: getGetWorkspaceStyleQueryKey(id) }); } } }); };
-  const clearFilters = () => { setSearch(''); setFilters({ brand: 'All', category: 'All', designer: 'All', tier: 'All', orderType: 'All', stage: 'All', launchRoute: 'All', rangeTier: 'All', season: 'All' }); setSnapshotFilter(null); if (location.includes('?')) setLocation('/product-workspace/plm'); };
+  const clearFilters = () => { setSearch(''); setFilters({ brand: [], category: [], stage: [], designer: 'All', tier: 'All', orderType: 'All', launchRoute: 'All', rangeTier: 'All', season: 'All' }); setSnapshotFilter(null); if (location.includes('?')) setLocation('/product-workspace/plm'); };
+  const filtersActive = filters.brand.length > 0 || filters.category.length > 0 || filters.stage.length > 0 || ([filters.designer, filters.tier, filters.orderType, filters.launchRoute, filters.rangeTier, filters.season] as string[]).some((value) => value !== 'All');
   const selectGroupBy = (value: GroupBy) => { setGroupBy(value); window.localStorage.setItem(GROUP_BY_STORAGE_KEY, value); setGroupMenuOpen(false); };
   if (stylesQuery.isLoading) return <section className="page plm-page"><div className="plm-loading-heading"><div /><div /><div /></div><div className="plm-loading-board">{MAIN_STAGES.slice(0, 5).map((stage) => <div key={stage} />)}</div></section>;
   if (stylesQuery.isError) return <section className="page plm-page"><div className="plm-error-state"><CircleAlert size={22} /><h2>Style development is unavailable</h2><p>The workspace service did not return the pipeline. Your work is safe.</p><button className="plm-button primary" onClick={() => stylesQuery.refetch()} data-testid="button-retry-plm-board">Try again</button></div></section>;
@@ -465,12 +468,13 @@ export default function PlmPage() {
         {groupMenuOpen && <div className="plm-group-menu" role="menu" onClick={(event) => event.stopPropagation()}>{GROUP_BY_OPTIONS.map((option) => <button className={groupBy === option.value ? 'active' : ''} key={option.value} role="menuitemradio" aria-checked={groupBy === option.value} onClick={() => selectGroupBy(option.value)} data-testid={`option-plm-group-by-${option.value}`}>{option.label}{groupBy === option.value && <Check size={14} />}</button>)}</div>}
       </div>
       <div className="plm-filter-label"><Filter size={14} /> Filter by</div>
-        {(['brand', 'category', 'designer', 'tier', 'orderType', 'stage', 'launchRoute', 'rangeTier', 'season'] as const).map((key) => <label className="plm-filter" key={key}><span>{key === 'orderType' ? 'Order type' : key === 'launchRoute' ? 'Route' : key === 'rangeTier' ? 'Range tier' : key === 'season' ? 'Season' : key[0].toUpperCase() + key.slice(1)}</span><select value={filters[key]} onChange={(event) => setFilters((current) => ({ ...current, [key]: event.target.value }))} data-testid={`select-plm-filter-${key}`}><option>All</option>{choices[key].filter((choice) => choice !== 'All').map((choice) => <option key={choice}>{choice}</option>)}</select><ChevronDown size={13} /></label>)}
-      {(search || Object.values(filters).some((value) => value !== 'All')) && <button className="plm-clear-filter" onClick={clearFilters} data-testid="button-clear-plm-filters">Clear <X size={13} /></button>}
+        {(['brand', 'category', 'stage'] as const).map((key) => <MultiSelectFilter key={key} variant="plm" label={key === 'category' ? 'Category' : key === 'stage' ? 'Stage' : 'Brand'} options={choices[key].filter((choice) => choice !== 'All')} values={filters[key]} onChange={(next) => setFilters((current) => ({ ...current, [key]: next }))} testId={`select-plm-filter-${key}`} />)}
+        {(['designer', 'tier', 'orderType', 'launchRoute', 'rangeTier', 'season'] as const).map((key) => <label className="plm-filter" key={key}><span>{key === 'orderType' ? 'Order type' : key === 'launchRoute' ? 'Route' : key === 'rangeTier' ? 'Range tier' : key === 'season' ? 'Season' : key[0].toUpperCase() + key.slice(1)}</span><select value={filters[key]} onChange={(event) => setFilters((current) => ({ ...current, [key]: event.target.value }))} data-testid={`select-plm-filter-${key}`}><option>All</option>{choices[key].filter((choice) => choice !== 'All').map((choice) => <option key={choice}>{choice}</option>)}</select><ChevronDown size={13} /></label>)}
+      {(search || filtersActive) && <button className="plm-clear-filter" onClick={clearFilters} data-testid="button-clear-plm-filters">Clear <X size={13} /></button>}
     </div>
     {transition.isError && <div className="plm-form-error plm-board-error"><CircleAlert size={15} /> That stage transition could not be saved. Try again.</div>}
      {view === 'kanban' ? <div className="plm-board-wrap"><div className="plm-board" style={{ gridTemplateColumns: `repeat(${Math.max(boardColumns.length, 1)}, 250px)` }}>{boardColumns.map(({ key, styles: columnStyles }, index) => <StageColumn key={key} stage={key} index={index} styles={columnStyles} selected={selected} onOpen={setSelected} onTransition={transitionStyle} onMenu={(id) => setMenuOpen(menuOpen === id ? null : id)} />)}</div></div> : <div className="plm-list-view">{filtered.length ? <table><thead><tr><th>Style</th><th>Brand</th><th>Stage</th><th>Designer</th><th>Route</th><th>Classification</th><th>Range tier</th><th>Days</th><th>Target</th><th /></tr></thead><tbody>{filtered.map((style) => <tr key={style.id} data-testid={`row-plm-style-${style.id}`}><td><button onClick={() => setSelected(style.id)} className="plm-list-style" data-testid={`button-open-plm-list-${style.id}`}><span className="plm-list-thumb" style={{ backgroundImage: `url(${imageFor(style)})` }} /><span><b>{style.name}</b><small>{text(style.code, `ST-${style.id}`)} · {style.category}</small></span></button></td><td><span className={`plm-brand ${style.brand.toLowerCase().includes('safari') ? 'safari' : ''}`}>{style.brand}</span></td><td><span className="plm-stage-chip">{stageFor(style)}</span></td><td>{text(style.designer || style.owner, 'Unassigned')}</td><td><span className="plm-classification-chip route">{text(style.launchRoute, '—')}</span></td><td><span className="plm-classification-chip classification">{text(style.styleClassification, '—')}</span></td><td><span className="plm-classification-chip tier">{text(style.rangeTier || style.tier, '—')}</span></td><td>{daysInStage(style)}d</td><td>{dateLabel(style.targetDate)}</td><td><button className="plm-table-action" onClick={() => transitionStyle(style.id, MAIN_STAGES[Math.min(MAIN_STAGES.length - 1, stageIndex(stageFor(style)) + 1)] || 'Launched')} disabled={stageFor(style) === 'Launched'} data-testid={`button-advance-list-style-${style.id}`}>Advance <ArrowRight size={13} /></button></td></tr>)}</tbody></table> : <EmptyPlm title="No styles match" detail="Adjust the search or filters to see more of the pipeline." action={<button className="plm-button quiet" onClick={clearFilters} data-testid="button-empty-clear-plm-filters">Clear filters</button>} />}</div>}
-    {(stageGrouped['On Hold']?.length || stageGrouped.Dropped?.length) ? <footer className="plm-side-states"><span><Archive size={14} /> Side states</span>{SIDE_STAGES.map((stage) => <button key={stage} onClick={() => setFilters((current) => ({ ...current, stage }))} data-testid={`button-filter-plm-${stage.toLowerCase().replace(' ', '-')}`}>{stage} <b>{stageGrouped[stage]?.length || 0}</b></button>)}</footer> : null}
+    {(stageGrouped['On Hold']?.length || stageGrouped.Dropped?.length) ? <footer className="plm-side-states"><span><Archive size={14} /> Side states</span>{SIDE_STAGES.map((stage) => <button key={stage} onClick={() => setFilters((current) => ({ ...current, stage: [stage] }))} data-testid={`button-filter-plm-${stage.toLowerCase().replace(' ', '-')}`}>{stage} <b>{stageGrouped[stage]?.length || 0}</b></button>)}</footer> : null}
     {newStyle && <NewStyleModal onClose={() => setNewStyle(false)} onCreated={(id) => { setNewStyle(false); setSelected(id); queryClient.invalidateQueries({ queryKey: getListWorkspaceStylesQueryKey() }); queryClient.invalidateQueries({ queryKey: getGetWorkspaceStylePlmQueryKey(id) }); }} />}{selected && <DetailDrawer id={selected} onClose={() => setSelected(null)} />}
   </section>;
 }
