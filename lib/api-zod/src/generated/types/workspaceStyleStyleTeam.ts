@@ -9,11 +9,13 @@ import type { StyleTeamMember } from './styleTeamMember';
 
 export type WorkspaceStyleStyleTeam = {
   /** @nullable */
-  designer?: StyleTeamMember | null;
+  design?: StyleTeamMember | null;
   /** @nullable */
-  patternMaker?: StyleTeamMember | null;
+  pattern?: StyleTeamMember | null;
   /** @nullable */
-  sampleMaker?: StyleTeamMember | null;
+  cad?: StyleTeamMember | null;
   /** @nullable */
-  buyer?: StyleTeamMember | null;
+  sample?: StyleTeamMember | null;
+  /** @nullable */
+  buying?: StyleTeamMember | null;
 };

@@ -753,6 +753,17 @@ paths:
           in: query
           schema:
             type: string
+        - name: source
+          in: query
+          description: Use the Product Development pd_styles source for the PLM board.
+          schema:
+            type: string
+            enum: [pd]
+        - name: season
+          in: query
+          description: Filter Product Development styles by quarter.
+          schema:
+            type: string
       responses:
         "200":
           description: Styles
@@ -790,7 +801,86 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/WorkspacePlmMeta"
+                 $ref: "#/components/schemas/WorkspacePlmMeta"
+  /workspace/range-plan:
+    get:
+      operationId: getWorkspaceRangePlan
+      tags: [workspace]
+      summary: Get the season-driven assortment and editable range plan
+      parameters:
+        - name: seasonId
+          in: query
+          schema: { type: integer }
+        - name: quarter
+          in: query
+          schema:
+            type: string
+            enum: ["Q3 2026", "Q4 2026"]
+      responses:
+        "200":
+          description: Range plan
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceRangePlan"
+  /workspace/range-plan/styles/{id}/season:
+    patch:
+      operationId: moveWorkspaceStyleSeason
+      tags: [workspace]
+      summary: Move a Product Development style to a quarter
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkspaceSeasonMove"
+      responses:
+        "200":
+          description: Updated season
+  /workspace/range-plan/styles/bulk-season:
+    post:
+      operationId: bulkMoveWorkspaceStyleSeason
+      tags: [workspace]
+      summary: Move multiple Product Development styles to a quarter
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkspaceBulkSeasonMove"
+      responses:
+        "200":
+          description: Number of styles updated
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [updated]
+                properties:
+                  updated: { type: integer }
+  /workspace/range-plan/exclusions:
+    put:
+      operationId: updateWorkspaceAssortmentExclusion
+      tags: [workspace]
+      summary: Include or exclude a carry-over catalogue style for a quarter
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkspaceAssortmentExclusionInput"
+      responses:
+        "200":
+          description: Updated assortment exclusion
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceAssortmentExclusion"
   /workspace/styles/{id}:
     get:
       operationId: getWorkspaceStyle
@@ -1356,6 +1446,37 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/CataloguePage"
+  /workspace/catalogue-products/detail:
+    get:
+      operationId: getCatalogueProductDetail
+      tags: [workspace]
+      summary: Get a full catalogue style and its range tier
+      parameters:
+        - name: styleNumber
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Catalogue style detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CatalogueStyleDetail"
+  /workspace/catalogue-products/range-tier:
+    patch:
+      operationId: updateCatalogueProductRangeTier
+      tags: [workspace]
+      summary: Update the merchandising range tier for a catalogue style
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CatalogueRangeTierUpdate"
+      responses:
+        "200":
+          description: Updated catalogue range tier
   /workspace/showcase-boards:
     get:
       operationId: listShowcaseBoards
@@ -2209,6 +2330,7 @@ components:
          launchRoute: { type: string, nullable: true, enum: [DTC, Wholesale, Marketplace, Omnichannel] }
          styleClassification: { type: string, nullable: true, enum: [Core, Fashion, Seasonal, Test] }
          rangeTier: { type: string, nullable: true, enum: ["Tier 1", "Tier 2", "Tier 3", "Tier 4"] }
+         season: { type: string, nullable: true, enum: ["Q3 2026", "Q4 2026"] }
         status: { type: string }
         stage: { type: string }
         currentStage: { type: string }
@@ -2232,17 +2354,19 @@ components:
           items: { type: string }
         predictedCost: { type: ["number", "null"] }
         confirmedCost: { type: ["number", "null"] }
-        designerUserId: { type: ["integer", "null"] }
-        patternMakerUserId: { type: ["integer", "null"] }
-        sampleMakerUserId: { type: ["integer", "null"] }
-        buyerUserId: { type: ["integer", "null"] }
+        designUserId: { type: ["integer", "null"] }
+        patternUserId: { type: ["integer", "null"] }
+        cadUserId: { type: ["integer", "null"] }
+        sampleUserId: { type: ["integer", "null"] }
+        buyingUserId: { type: ["integer", "null"] }
         styleTeam:
           type: object
           properties:
-            designer: { type: ["object", "null"], $ref: "#/components/schemas/StyleTeamMember" }
-            patternMaker: { type: ["object", "null"], $ref: "#/components/schemas/StyleTeamMember" }
-            sampleMaker: { type: ["object", "null"], $ref: "#/components/schemas/StyleTeamMember" }
-            buyer: { type: ["object", "null"], $ref: "#/components/schemas/StyleTeamMember" }
+            design: { type: ["object", "null"], $ref: "#/components/schemas/StyleTeamMember" }
+            pattern: { type: ["object", "null"], $ref: "#/components/schemas/StyleTeamMember" }
+            cad: { type: ["object", "null"], $ref: "#/components/schemas/StyleTeamMember" }
+            sample: { type: ["object", "null"], $ref: "#/components/schemas/StyleTeamMember" }
+            buying: { type: ["object", "null"], $ref: "#/components/schemas/StyleTeamMember" }
     StyleTeamMember:
       type: object
       required: [id, name, role]
@@ -2290,6 +2414,7 @@ components:
          launchRoute: { type: string, nullable: true, enum: [DTC, Wholesale, Marketplace, Omnichannel] }
          styleClassification: { type: string, nullable: true, enum: [Core, Fashion, Seasonal, Test] }
          rangeTier: { type: string, nullable: true, enum: ["Tier 1", "Tier 2", "Tier 3", "Tier 4"] }
+         season: { type: string, nullable: true, enum: ["Q3 2026", "Q4 2026"] }
         designer: { type: string }
         patternMaker: { type: string }
         targetDate: { type: string }
@@ -2311,6 +2436,7 @@ components:
          launchRoute: { type: string, nullable: true, enum: [DTC, Wholesale, Marketplace, Omnichannel] }
          styleClassification: { type: string, nullable: true, enum: [Core, Fashion, Seasonal, Test] }
          rangeTier: { type: string, nullable: true, enum: ["Tier 1", "Tier 2", "Tier 3", "Tier 4"] }
+         season: { type: string, nullable: true, enum: ["Q3 2026", "Q4 2026"] }
         name: { type: string }
         market: { type: string }
         creativeDescription: { type: string }
@@ -2320,10 +2446,110 @@ components:
           items: { type: string }
         predictedCost: { type: ["number", "null"] }
         confirmedCost: { type: ["number", "null"] }
-        designerUserId: { type: ["integer", "null"] }
-        patternMakerUserId: { type: ["integer", "null"] }
-        sampleMakerUserId: { type: ["integer", "null"] }
-        buyerUserId: { type: ["integer", "null"] }
+        designUserId: { type: ["integer", "null"] }
+        patternUserId: { type: ["integer", "null"] }
+        cadUserId: { type: ["integer", "null"] }
+        sampleUserId: { type: ["integer", "null"] }
+        buyingUserId: { type: ["integer", "null"] }
+    WorkspaceSeasonMove:
+      type: object
+      required: [season]
+      properties:
+        season:
+          type: string
+          enum: ["Q3 2026", "Q4 2026"]
+    WorkspaceBulkSeasonMove:
+      type: object
+      required: [styleIds, season]
+      properties:
+        styleIds:
+          type: array
+          maxItems: 500
+          items: { type: integer }
+        season:
+          type: string
+          enum: ["Q3 2026", "Q4 2026"]
+    WorkspaceAssortmentExclusionInput:
+      type: object
+      required: [season, styleId, source]
+      properties:
+        season:
+          type: string
+          enum: ["Q3 2026", "Q4 2026"]
+        styleId: { type: string }
+        source:
+          type: string
+          enum: [all_products_clean]
+        excluded: { type: boolean, default: true }
+    WorkspaceAssortmentExclusion:
+      type: object
+      required: [season, styleId, source, excluded]
+      properties:
+        season: { type: string }
+        styleId: { type: string }
+        source: { type: string }
+        excluded: { type: boolean }
+    WorkspaceRangePlan:
+      type: object
+      required: [seasons, season, rows, otb, health, assortmentQuarter, assortmentStyles, carryOverStyles, newStyles, assortmentSummary, quarterSummaries]
+      properties:
+        seasons:
+          type: array
+          items: { $ref: "#/components/schemas/WorkspaceRangePlanSeason" }
+        season:
+          $ref: "#/components/schemas/WorkspaceRangePlanSeason"
+        rows:
+          type: array
+          items: { type: object }
+        otb:
+          type: array
+          items: { type: object }
+        health:
+          type: object
+        averageCostKes: { type: number }
+        assortmentQuarter: { type: string, enum: ["Q3 2026", "Q4 2026"] }
+        assortmentStyles:
+          type: array
+          items: { type: object }
+        carryOverStyles:
+          type: array
+          items: { type: object }
+        newStyles:
+          type: array
+          items: { type: object }
+        assortmentSummary:
+          type: object
+          required: [total, counts, categoryBreakdown, stageBreakdown]
+          properties:
+            total: { type: integer }
+            counts:
+              type: object
+              required: [total, noos, core, recent, newTest]
+              properties:
+                total: { type: integer }
+                noos: { type: integer }
+                core: { type: integer }
+                recent: { type: integer }
+                newTest: { type: integer }
+            categoryBreakdown: { type: array, items: { type: object } }
+            stageBreakdown: { type: array, items: { type: object } }
+        quarterSummaries:
+          type: object
+          additionalProperties:
+            type: object
+            properties:
+              total: { type: integer }
+    WorkspaceRangePlanSeason:
+      type: object
+      required: [id, seasonName, seasonYear, status]
+      properties:
+        id: { type: integer }
+        seasonName: { type: string }
+        seasonYear: { type: integer }
+        revenueTargetKes: { type: number }
+        cogsBudgetPct: { type: number }
+        factoryCapacityUnits: { type: integer }
+        status: { type: string }
     StyleTransition:
       type: object
       required: [toStage]
@@ -2575,6 +2801,24 @@ components:
         subcategory: { type: string, nullable: true }
         status: { type: string }
         image: { type: string, nullable: true }
+    CatalogueStyleDetail:
+      type: object
+      required: [styleNumber, styleName, status, rangeTier, stockUnits]
+      properties:
+        styleNumber: { type: string }
+        styleName: { type: string, nullable: true }
+        brand: { type: string, nullable: true }
+        category: { type: string, nullable: true }
+        subcategory: { type: string, nullable: true }
+        status: { type: string }
+        rangeTier: { type: string, enum: [NOOS, Core, Recent] }
+        stockUnits: { type: number }
+    CatalogueRangeTierUpdate:
+      type: object
+      required: [styleNumber, rangeTier]
+      properties:
+        styleNumber: { type: string }
+        rangeTier: { type: string, enum: [NOOS, Core, Recent] }
     CataloguePage:
       type: object
       required: [items, total, page, pageSize, brands, subcategories]

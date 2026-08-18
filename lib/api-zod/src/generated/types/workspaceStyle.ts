@@ -45,12 +45,14 @@ export interface WorkspaceStyle {
   /** @nullable */
   confirmedCost?: number | null;
   /** @nullable */
-  designerUserId?: number | null;
+  designUserId?: number | null;
   /** @nullable */
-  patternMakerUserId?: number | null;
+  patternUserId?: number | null;
   /** @nullable */
-  sampleMakerUserId?: number | null;
+  cadUserId?: number | null;
   /** @nullable */
-  buyerUserId?: number | null;
+  sampleUserId?: number | null;
+  /** @nullable */
+  buyingUserId?: number | null;
   styleTeam?: WorkspaceStyleStyleTeam;
 }

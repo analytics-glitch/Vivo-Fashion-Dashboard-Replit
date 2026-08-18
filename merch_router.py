@@ -105,9 +105,9 @@ _BASE_FILTERS = """
 """
 
 # Cost lookup precedence:
-#   1) the latest buying/production order carrying any recognised cost field;
-#   2) the product master cost;
-#   3) the latest completed manufacturing/DPS unit cost.
+#   1) the most recent buying/production order carrying any recognised unit-cost
+#      field;
+#   2) the product-master standard cost.
 #
 # to_jsonb(po) keeps this compatible with older production_orders rows and
 # future Odoo custom fields without hard-referencing an optional column.
@@ -148,30 +148,6 @@ latest_po_cost AS (
     FROM po_cost_rows
     WHERE cost_kes > 0
     ORDER BY style_name, cost_date DESC NULLS LAST
-),
-mo_cost_rows AS (
-    SELECT
-        style_name,
-        COALESCE(
-            NULLIF(dps_cost_per_unit, 0),
-            dps_total_cost / NULLIF(produced_qty, 0)
-        ) AS cost_kes,
-        done_date AS cost_date,
-        ROW_NUMBER() OVER (
-            PARTITION BY style_name
-            ORDER BY done_date DESC NULLS LAST, odoo_mo_id DESC
-        ) AS rn
-    FROM mo_fabric_consumption
-    WHERE NULLIF(BTRIM(style_name), '') IS NOT NULL
-      AND (
-          dps_cost_per_unit > 0
-          OR (dps_total_cost > 0 AND produced_qty > 0)
-      )
-),
-latest_mo_cost AS (
-    SELECT style_name, cost_kes, cost_date
-    FROM mo_cost_rows
-    WHERE rn = 1 AND cost_kes > 0
 ),
 """
 
@@ -416,30 +392,24 @@ prod AS (
         MIN(substring(p.style_launch_date,1,10))
             FILTER (WHERE substring(p.style_launch_date,1,10)
                     ~ '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}$')  AS launch_date,
-        /* Cost precedence: latest buying order, product master, then latest
-           completed manufacturing/DPS cost. */
+        /* Cost precedence: latest buying/production order, then the
+           product-master standard cost. */
         COALESCE(
             lpc.cost_kes,
-            MAX(p.standard_cost_kes) FILTER (WHERE p.standard_cost_kes > 0),
-            MAX(p.cost) FILTER (WHERE p.cost IS NOT NULL AND p.cost > 0),
-            lmc.cost_kes
+            MAX(p.standard_cost_kes) FILTER (WHERE p.standard_cost_kes > 0)
         )                                                   AS standard_cost_kes,
         CASE
             WHEN lpc.cost_kes IS NOT NULL THEN 'last reorder'
             WHEN MAX(p.standard_cost_kes) FILTER (WHERE p.standard_cost_kes > 0) IS NOT NULL
-              OR MAX(p.cost) FILTER (WHERE p.cost IS NOT NULL AND p.cost > 0) IS NOT NULL
               THEN 'product master'
-            WHEN lmc.cost_kes IS NOT NULL THEN 'production costing'
             ELSE NULL
         END                                                 AS cost_source,
         COALESCE(
             lpc.cost_date,
             CASE
                 WHEN MAX(p.standard_cost_kes) FILTER (WHERE p.standard_cost_kes > 0) IS NOT NULL
-                  OR MAX(p.cost) FILTER (WHERE p.cost IS NOT NULL AND p.cost > 0) IS NOT NULL
                 THEN MAX(p.standard_cost_date)
-            END,
-            lmc.cost_date
+            END
         )                                                   AS cost_date,
         rc.last_order_date,
         mode() WITHIN GROUP (ORDER BY p.price)
@@ -452,10 +422,9 @@ prod AS (
     JOIN style_nums sn     ON sn.style_name = p.style_name
     JOIN reorder_counts rc ON rc.style_name = p.style_name
     LEFT JOIN latest_po_cost lpc ON lpc.style_name = p.style_name
-    LEFT JOIN latest_mo_cost lmc ON lmc.style_name = p.style_name
     WHERE {_PROD_BASE}{extra_prod_where}
     GROUP BY p.style_name, sn.style_number, rc.reorder_count, rc.last_order_date,
-             lpc.cost_kes, lpc.cost_date, lmc.cost_kes, lmc.cost_date
+             lpc.cost_kes, lpc.cost_date
 ),
 stock AS (
     SELECT
@@ -986,26 +955,20 @@ prod AS (
                     ~ '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}$') AS launch_date,
         COALESCE(
             lpc.cost_kes,
-            MAX(p.standard_cost_kes) FILTER (WHERE p.standard_cost_kes > 0),
-            MAX(p.cost) FILTER (WHERE p.cost IS NOT NULL AND p.cost > 0),
-            lmc.cost_kes
+            MAX(p.standard_cost_kes) FILTER (WHERE p.standard_cost_kes > 0)
         )                                                    AS standard_cost_kes,
         CASE
             WHEN lpc.cost_kes IS NOT NULL THEN 'last reorder'
             WHEN MAX(p.standard_cost_kes) FILTER (WHERE p.standard_cost_kes > 0) IS NOT NULL
-              OR MAX(p.cost) FILTER (WHERE p.cost IS NOT NULL AND p.cost > 0) IS NOT NULL
               THEN 'product master'
-            WHEN lmc.cost_kes IS NOT NULL THEN 'production costing'
             ELSE NULL
         END                                                  AS cost_source,
         COALESCE(
             lpc.cost_date,
             CASE
                 WHEN MAX(p.standard_cost_kes) FILTER (WHERE p.standard_cost_kes > 0) IS NOT NULL
-                  OR MAX(p.cost) FILTER (WHERE p.cost IS NOT NULL AND p.cost > 0) IS NOT NULL
                 THEN MAX(p.standard_cost_date)
-            END,
-            lmc.cost_date
+            END
         )                                                    AS cost_date,
         rc.last_order_date,
         mode() WITHIN GROUP (ORDER BY p.price)
@@ -1018,10 +981,9 @@ prod AS (
     JOIN style_nums sn     ON sn.style_name = p.style_name
     JOIN reorder_counts rc ON rc.style_name = p.style_name
     LEFT JOIN latest_po_cost lpc ON lpc.style_name = p.style_name
-    LEFT JOIN latest_mo_cost lmc ON lmc.style_name = p.style_name
     WHERE {_PROD_BASE}
     GROUP BY p.style_name, sn.style_number, rc.reorder_count, rc.last_order_date,
-             lpc.cost_kes, lpc.cost_date, lmc.cost_kes, lmc.cost_date
+             lpc.cost_kes, lpc.cost_date
 ),
 stock AS (
     SELECT
@@ -1261,27 +1223,21 @@ prod AS (
             FILTER (WHERE substring(p.style_launch_date,1,10)
                     ~ '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}$') AS launch_date,
         COALESCE(
-            lpc.cost_kes,
-            MAX(p.standard_cost_kes) FILTER (WHERE p.standard_cost_kes > 0),
-            MAX(p.cost) FILTER (WHERE p.cost IS NOT NULL AND p.cost > 0),
-            lmc.cost_kes
+             lpc.cost_kes,
+             MAX(p.standard_cost_kes) FILTER (WHERE p.standard_cost_kes > 0)
         )                                                    AS standard_cost_kes,
         CASE
             WHEN lpc.cost_kes IS NOT NULL THEN 'last reorder'
             WHEN MAX(p.standard_cost_kes) FILTER (WHERE p.standard_cost_kes > 0) IS NOT NULL
-              OR MAX(p.cost) FILTER (WHERE p.cost IS NOT NULL AND p.cost > 0) IS NOT NULL
               THEN 'product master'
-            WHEN lmc.cost_kes IS NOT NULL THEN 'production costing'
             ELSE NULL
         END                                                  AS cost_source,
         COALESCE(
             lpc.cost_date,
             CASE
                 WHEN MAX(p.standard_cost_kes) FILTER (WHERE p.standard_cost_kes > 0) IS NOT NULL
-                  OR MAX(p.cost) FILTER (WHERE p.cost IS NOT NULL AND p.cost > 0) IS NOT NULL
                 THEN MAX(p.standard_cost_date)
-            END,
-            lmc.cost_date
+            END
         )                                                    AS cost_date,
         rc.last_order_date,
         mode() WITHIN GROUP (ORDER BY p.price)
@@ -1294,10 +1250,9 @@ prod AS (
     JOIN style_nums sn     ON sn.style_name = p.style_name
     JOIN reorder_counts rc ON rc.style_name = p.style_name
     LEFT JOIN latest_po_cost lpc ON lpc.style_name = p.style_name
-    LEFT JOIN latest_mo_cost lmc ON lmc.style_name = p.style_name
     WHERE {_PROD_BASE}
     GROUP BY p.style_name, sn.style_number, rc.reorder_count, rc.last_order_date,
-             lpc.cost_kes, lpc.cost_date, lmc.cost_kes, lmc.cost_date
+             lpc.cost_kes, lpc.cost_date
 ),
 stock AS (
     SELECT

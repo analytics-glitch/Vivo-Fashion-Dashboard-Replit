@@ -131,8 +131,11 @@
 - [Product Workspace Resources](product-workspace-resources.md) — markdown reference library is idempotently seeded, server-admin-gated for mutations, and rendered with safe structured tables.
 - [Artifact service environments](artifact-service-environments.md) — when adding an API service, preserve the web artifact's global BASE_PATH env block or its managed Vite workflow will fail before startup.
 - [Product Workspace startup readiness](product-workspace-startup-readiness.md) — HTTP readiness and identity bootstrap must survive PostgreSQL timeouts; optional DDL cannot gate the shell.
+- [Product Workspace brand scope](product-workspace-brand-scope.md) — every style surface is server-filtered to Vivo, Safari by Vivo, Safari, and Zoya.
+- [Product Workspace PLM source](product-workspace-plm-source.md) — Style Development counts come from active public.pd_styles; workspace styles provide drawer/transition IDs and stage adapters.
 - [Product Workspace user privacy](product-workspace-user-privacy.md) — workspace user DOB is admin-Settings-only; public team and birthday payloads never include the date.
 - [OpenAPI codegen compatibility](openapi-codegen-compatibility.md) — checked-in Orval 8.9.1 currently fails resolving this repo's OpenAPI input; restore generated outputs and patch the contract/types manually if needed.
 - [Product Workspace preview auth](product-workspace-preview-auth.md) — embedded HTTPS previews need Secure/SameSite=None session cookies or API pages can 401 after session bootstrap.
+- [Product Workspace public feedback](product-workspace-public-feedback.md) — public feedback selects catalogue styles/colourways from all_products_clean and stores canonical style number plus colourway.
 - [Community guest mode](community-guest-mode.md) — guest fence must cover deep-linkable URL-state overlays (?event=, member ?page= ids) and every member-write control, not just tabs.
 - Paint-order trap: a static <img> paints BELOW an absolutely-positioned sibling — a persistent absolute pulse/placeholder overlay washes the photo out; make the overlay strictly conditional or position the img.

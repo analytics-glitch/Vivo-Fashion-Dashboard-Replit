@@ -10,4 +10,6 @@ export type ListWorkspaceStylesParams = {
 brand?: string;
 status?: string;
 search?: string;
+source?: 'pd';
+season?: string;
 };

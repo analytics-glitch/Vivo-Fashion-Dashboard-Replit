@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -8,10 +8,13 @@ import {
   CircleAlert,
   CircleCheck,
   Clock3,
+  Copy,
   Filter,
+  Image as ImageIcon,
   MessageCircle,
   Search,
   ShieldCheck,
+  Share2,
   ThumbsDown,
   ThumbsUp,
   UsersRound,
@@ -25,8 +28,11 @@ export type FeedbackSubmission = {
   styleId: number | null;
   styleName: string;
   styleNumber: string | null;
+  colourway: string;
   styleImage?: string | null;
   styleNameFreetext: string;
+  pulseId: number | null;
+  pulseMode: "investigate" | "champion" | null;
   feedbackTypes: string[];
   sentiment: "positive" | "mixed" | "negative";
   urgency: "note" | "discuss" | "urgent";
@@ -55,9 +61,25 @@ type FeedbackAnalytics = {
   };
   submissions?: FeedbackSubmission[];
   styleSummaries?: Array<Record<string, unknown>>;
+  stylePulses?: StylePulse[];
 };
 
 const feedbackTypes = ["Fit & Sizing", "Fabric & Quality", "Colour & Print", "Price & Value", "Styling & VM", "Customer Reaction", "Stock & Availability", "Other"];
+const pulseInvestigateTypes = ["Fit doesn't work for our customer", "Fabric feels low quality", "Price feels too high", "Colour/print not right for this market", "Poor VM / hard to style on the floor", "Customers haven't noticed it", "Size availability issues", "Strong competition from another style", "Other"];
+const pulseChampionTypes = ["The fit is excellent", "Fabric quality stands out", "Great value for money", "Colour/print is a hit", "Versatile — works for multiple occasions", "Customers are recommending it to others", "Strong repeat purchases", "VM / styling is working well", "Other"];
+type PulseMode = "investigate" | "champion";
+type StylePulse = {
+  id: number;
+  styleId: number | null;
+  styleNumber: string;
+  styleName: string;
+  styleImage?: string | null;
+  mode: PulseMode;
+  colourway?: string | null;
+  sharePath: string;
+  createdAt: string;
+  responseCount: number;
+};
 const teamOptions = [
   "Vivo Sarit", "Vivo Junction", "Vivo Moi Avenue", "Vivo Mama Ngina St", "Vivo Yaya", "Vivo Village Market",
   "Vivo Garden City", "Vivo Kigali Heights", "Vivo Acacia", "Vivo Galleria", "Vivo Capital Centre", "Vivo Two Rivers",
@@ -188,36 +210,86 @@ function FeedbackStyleSearch({
         <span><b>{style.name}</b><small>{style.code}{style.status ? ` · ${style.status}` : ""}</small></span>
         <ArrowRight size={14} />
       </button>) : null}
-      {!results.isLoading && !results.data?.length && <div className="feedback-search-loading">No matching style found. Add a description below instead.</div>}
+       {!results.isLoading && !results.data?.length && <div className="feedback-search-loading">No matching style found. Try a style number or name.</div>}
     </div>}
   </div>;
 }
 
 export function PublicFeedbackPage() {
+  const generalColourway = "All colourways / General";
+  const pulseParams = useMemo(() => new URLSearchParams(window.location.search), []);
+  const targetStyleNumber = pulseParams.get("style")?.trim() || "";
+  const pulseModeParam = pulseParams.get("mode")?.trim();
+  const pulseMode = pulseModeParam === "investigate" || pulseModeParam === "champion" ? pulseModeParam as PulseMode : null;
+  const isPulse = Boolean(targetStyleNumber && pulseMode);
+  const targetColourway = pulseParams.get("colourway")?.trim() || generalColourway;
+  const pulseTypes = pulseMode === "investigate" ? pulseInvestigateTypes : pulseMode === "champion" ? pulseChampionTypes : feedbackTypes;
   const [form, setForm] = useState({
     submitterName: "",
-     submitterTeam: "Vivo Sarit",
-    styleNameFreetext: "",
+    submitterTeam: "",
+    colourway: targetColourway,
     feedbackTypes: [] as string[],
-    sentiment: "mixed" as FeedbackSubmission["sentiment"],
-    urgency: "note" as FeedbackSubmission["urgency"],
     commentText: "",
   });
+  const [styleSearch, setStyleSearch] = useState("");
   const [style, setStyle] = useState<FeedbackStyleResult | null>(null);
+  const [typesOpen, setTypesOpen] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  const targetStyleQuery = useQuery<FeedbackStyleResult[]>({
+    queryKey: ["feedback", "pulse-style", targetStyleNumber],
+    enabled: isPulse,
+    queryFn: async () => styleResultsFrom(await request<unknown>(`/api/workspace/feedback/styles/search?q=${encodeURIComponent(targetStyleNumber)}`)),
+    staleTime: 5 * 60 * 1000,
+  });
+  const pulseResolution = useQuery<{ id: number | null }>({
+    queryKey: ["feedback", "pulse-resolve", targetStyleNumber, pulseMode],
+    enabled: isPulse,
+    queryFn: () => request<{ id: number | null }>(`/api/workspace/feedback/pulses/resolve?style=${encodeURIComponent(targetStyleNumber)}&mode=${pulseMode}`),
+    staleTime: 60 * 1000,
+  });
+  useEffect(() => {
+    if (!isPulse || style || !targetStyleQuery.data?.length) return;
+    const exact = targetStyleQuery.data.find((entry) => entry.code.toLowerCase() === targetStyleNumber.toLowerCase()) || targetStyleQuery.data[0];
+    if (exact) setStyle(exact);
+  }, [isPulse, style, targetStyleNumber, targetStyleQuery.data]);
+  const styleNumber = style?.code || "";
+  const colourways = useQuery<string[]>({
+    queryKey: ["feedback", "colourways", styleNumber],
+    enabled: Boolean(styleNumber),
+    staleTime: 5 * 60 * 1000,
+    queryFn: async () => {
+      const response = await request<unknown>(`/api/workspace/feedback/styles/${encodeURIComponent(styleNumber)}/colourways`);
+      return Array.isArray(response) ? response.map(String) : [];
+    },
+  });
+  const colourwayOptions = Array.from(new Set([generalColourway, targetColourway, ...(colourways.data || [])]));
+  useEffect(() => {
+    if (!isPulse || targetColourway === generalColourway || !colourways.data?.length) return;
+    const matched = colourways.data.find((value) => value.toLowerCase() === targetColourway.toLowerCase());
+    setForm((current) => ({ ...current, colourway: matched || generalColourway }));
+  }, [colourways.data, generalColourway, isPulse, targetColourway]);
+  const canSubmit = Boolean(
+    form.submitterName.trim()
+      && form.submitterTeam.trim()
+      && style?.code
+      && form.feedbackTypes.length
+      && form.commentText.trim().length >= 8,
+  );
   const submit = useMutation({
     mutationFn: () => request<FeedbackSubmission>("/api/workspace/feedback/public", {
       method: "POST",
       body: JSON.stringify({
         submitterName: form.submitterName.trim(),
-        submitterTeam: form.submitterTeam,
+        submitterTeam: form.submitterTeam.trim(),
         styleId: style?.id ?? null,
-        styleName: style?.name || form.styleNameFreetext.trim(),
-        styleNumber: style?.code || null,
-        styleNameFreetext: form.styleNameFreetext.trim(),
+        styleName: style?.name || "",
+        styleNumber: style?.code || "",
+        colourway: form.colourway,
         feedbackTypes: form.feedbackTypes,
-        sentiment: form.sentiment,
-        urgency: form.urgency,
+        pulseMode: isPulse ? pulseMode : null,
+        pulseCampaignId: isPulse ? pulseResolution.data?.id ?? null : null,
+        sentiment: "mixed",
+        urgency: "note",
         commentText: form.commentText.trim(),
       }),
     }),
@@ -231,8 +303,12 @@ export function PublicFeedbackPage() {
   }));
   const reset = () => {
     setSubmitted(false);
-    setStyle(null);
-    setForm({ submitterName: "", submitterTeam: "Vivo Sarit", styleNameFreetext: "", feedbackTypes: [], sentiment: "mixed", urgency: "note", commentText: "" });
+    if (!isPulse) {
+      setStyle(null);
+      setStyleSearch("");
+    }
+    setTypesOpen(false);
+    setForm({ submitterName: "", submitterTeam: "", colourway: isPulse ? targetColourway : generalColourway, feedbackTypes: [], commentText: "" });
   };
   return <main className="public-feedback-page">
     <header className="public-feedback-header">
@@ -241,9 +317,13 @@ export function PublicFeedbackPage() {
     </header>
     <div className="public-feedback-layout">
       <section className="public-feedback-intro">
-        <span className="feedback-kicker">A note from the floor</span>
-        <h1>Share Style Feedback</h1>
-        <p>Help us improve our product by sharing what you’re hearing from customers.</p>
+        <span className="feedback-kicker">{isPulse ? `Style Pulse · ${pulseMode}` : "A note from the floor"}</span>
+        <h1>{isPulse ? pulseMode === "investigate" ? "Help us understand this style" : "Tell us what's working" : "Help shape the next collection."}</h1>
+        <p>{isPulse ? pulseMode === "investigate" ? "This style isn't moving as expected. We'd love your on-the-ground perspective." : "This style is flying. Help us understand why so we can do it again." : "A clear style, colourway, and observation gives the product team something useful to act on."}</p>
+        {isPulse && <div className="feedback-pulse-hero" data-testid="feedback-pulse-hero">
+          {targetStyleQuery.isLoading ? <div className="feedback-pulse-hero-loading" /> : style?.image ? <img src={style.image} alt="" /> : <div className="feedback-pulse-hero-placeholder"><ImageIcon size={28} /></div>}
+          <div><span>Focused input on</span><strong>{style?.name || targetStyleNumber}</strong><small>{style?.code || targetStyleNumber}</small></div>
+        </div>}
         <div className="public-feedback-proof"><span><UsersRound size={16} /> Retail, marketing, online and service teams</span><span><Clock3 size={16} /> About two minutes</span></div>
       </section>
       <section className="public-feedback-card" aria-labelledby="feedback-form-title">
@@ -253,23 +333,56 @@ export function PublicFeedbackPage() {
           <h2>Thank you!</h2>
           <p>Your feedback has been submitted and the product team will review it.</p>
           <button className="feedback-button dark" type="button" onClick={reset} data-testid="button-submit-another-feedback">Submit another <ArrowRight size={16} /></button>
-        </div> : <form onSubmit={(event: FormEvent) => { event.preventDefault(); if (form.feedbackTypes.length) submit.mutate(); }} className="public-feedback-form">
-          <div className="feedback-form-heading"><div><span className="feedback-kicker">Customer observation</span><h2 id="feedback-form-title">Leave a useful note.</h2></div><span className="feedback-required">Required fields marked</span></div>
-          <div className="feedback-form-grid">
-            <Field label="Your name"><input required value={form.submitterName} onChange={(event) => setForm((current) => ({ ...current, submitterName: event.target.value }))} placeholder="Name" data-testid="input-feedback-name" /></Field>
-            <Field label="Your team / store"><select value={form.submitterTeam} onChange={(event) => setForm((current) => ({ ...current, submitterTeam: event.target.value }))} data-testid="select-feedback-team">{teamOptions.map((team) => <option key={team}>{team}</option>)}</select></Field>
-          </div>
-          <div className="feedback-form-section">
-            <Field label="Which style is this about?" hint="Optional — search the live style catalogue or describe it below."><FeedbackStyleSearch value={form.styleNameFreetext} selected={style} onChange={(value) => setForm((current) => ({ ...current, styleNameFreetext: value }))} onSelect={setStyle} /></Field>
-            <input className="feedback-style-description" value={form.styleNameFreetext} onChange={(event) => setForm((current) => ({ ...current, styleNameFreetext: event.target.value }))} placeholder="Or describe the style: black wrap dress, V26-041…" aria-label="Style name or description" data-testid="input-feedback-style-description" />
-          </div>
-          <fieldset className="feedback-form-section"><legend>Feedback type <span>Choose all that apply</span></legend><div className="feedback-chip-grid">{feedbackTypes.map((type) => <label key={type} className={`feedback-chip ${form.feedbackTypes.includes(type) ? "selected" : ""}`}><input type="checkbox" checked={form.feedbackTypes.includes(type)} onChange={() => toggleType(type)} data-testid={`checkbox-feedback-type-${type.toLowerCase().replaceAll(" ", "-")}`} /><span>{type}</span>{form.feedbackTypes.includes(type) && <Check size={14} />}</label>)}</div></fieldset>
-          <fieldset className="feedback-form-section"><legend>Overall sentiment <span>How did the customer leave it?</span></legend><div className="feedback-choice-row">{(["positive", "mixed", "negative"] as const).map((value) => <label key={value} className={`feedback-choice ${form.sentiment === value ? `selected ${value}` : ""}`}><input type="radio" name="sentiment" checked={form.sentiment === value} onChange={() => setForm((current) => ({ ...current, sentiment: value }))} data-testid={`radio-feedback-sentiment-${value}`} /><span>{sentimentIcon(value, 17)}<b>{sentimentLabel(value)}</b></span></label>)}</div></fieldset>
-          <fieldset className="feedback-form-section"><legend>Urgency <span>Use your best judgement</span></legend><div className="feedback-urgency-row">{(["note", "discuss", "urgent"] as const).map((value) => <label key={value} className={`feedback-urgency ${form.urgency === value ? "selected" : ""}`}><input type="radio" name="urgency" checked={form.urgency === value} onChange={() => setForm((current) => ({ ...current, urgency: value }))} data-testid={`radio-feedback-urgency-${value}`} /><span><b>{value === "note" ? "Just to note" : value === "discuss" ? "Worth discussing soon" : "Needs attention now"}</b><small>{value === "note" ? "Useful context" : value === "discuss" ? "Worth a product conversation" : "Could affect the next decision"}</small></span></label>)}</div></fieldset>
-          <Field label="Tell us more" hint="A specific quote, fit detail or buying hesitation helps the team act."><textarea required minLength={8} rows={5} value={form.commentText} onChange={(event) => setForm((current) => ({ ...current, commentText: event.target.value }))} placeholder="What are customers saying? What have you observed? Be as specific as you can — style numbers, specific issues, exact quotes if possible." data-testid="textarea-feedback-comment" /></Field>
+        </div> : <form onSubmit={(event: FormEvent) => { event.preventDefault(); if (canSubmit) submit.mutate(); }} className="public-feedback-form">
+          <div className="feedback-form-heading"><div><span className="feedback-kicker">Customer observation</span><h2 id="feedback-form-title">Leave a useful note.</h2></div><span className="feedback-required">* Required</span></div>
+
+          <section className="feedback-step feedback-step-who" aria-labelledby="feedback-step-who">
+            <div className="feedback-step-heading"><span className="feedback-step-number">01</span><div><span className="feedback-step-kicker">Step 1</span><h3 id="feedback-step-who">Who are you?</h3></div></div>
+            <div className="feedback-form-grid">
+              <Field label="Your name"><input required value={form.submitterName} onChange={(event) => setForm((current) => ({ ...current, submitterName: event.target.value }))} placeholder="Your name" autoComplete="name" data-testid="input-feedback-name" /></Field>
+              <Field label="Your store / team"><input required list="feedback-team-options" value={form.submitterTeam} onChange={(event) => setForm((current) => ({ ...current, submitterTeam: event.target.value }))} placeholder="Store or team" autoComplete="organization" data-testid="input-feedback-team" /><datalist id="feedback-team-options">{teamOptions.map((team) => <option key={team} value={team} />)}</datalist></Field>
+            </div>
+          </section>
+
+          <section className="feedback-step feedback-step-style" aria-labelledby="feedback-step-style">
+            <div className="feedback-step-heading"><span className="feedback-step-number">02</span><div><span className="feedback-step-kicker">Step 2 · Most important</span><h3 id="feedback-step-style">Which style?</h3></div></div>
+            {isPulse ? <div className="feedback-pulse-locked-style"><span>Style Pulse is focused on</span><strong>{style?.name || (targetStyleQuery.isLoading ? "Loading style…" : targetStyleNumber)}</strong><small>{style?.code || targetStyleNumber}{style?.status ? ` · ${style.status}` : ""}</small></div> : <Field label="Search the style catalogue" hint="Search by style number or name. Active and retired styles are included."><FeedbackStyleSearch value={styleSearch} selected={style} onChange={setStyleSearch} onSelect={(selected) => { setStyle(selected); setForm((current) => ({ ...current, colourway: generalColourway })); }} /></Field>}
+            {isPulse && targetStyleQuery.isError && <div className="feedback-form-error"><CircleAlert size={16} /> We couldn't find that style in the catalogue.</div>}
+            {style && <div className={`feedback-style-confirmation ${style.image ? "" : "no-image"}`} data-testid="feedback-style-confirmation">
+              <div className="feedback-style-confirmation-media">{style.image ? <img src={style.image} alt="" /> : <ImageIcon size={20} />}</div>
+               <div className="feedback-style-confirmation-copy"><span>{isPulse ? "Style Pulse focus" : "Style selected"}</span><strong>{style.name}</strong><small>{style.code}</small></div>
+               {!isPulse && <button type="button" className="feedback-style-change" onClick={() => { setStyle(null); setStyleSearch(""); setForm((current) => ({ ...current, colourway: generalColourway })); }} data-testid="button-change-feedback-style">Change</button>}
+            </div>}
+          </section>
+
+          {style && <section className="feedback-step feedback-step-colourway" aria-labelledby="feedback-step-colourway">
+            <div className="feedback-step-heading"><span className="feedback-step-number">03</span><div><span className="feedback-step-kicker">Step 3</span><h3 id="feedback-step-colourway">Which colourway?</h3></div></div>
+            <Field label="Colourway"><select value={form.colourway} onChange={(event) => setForm((current) => ({ ...current, colourway: event.target.value }))} data-testid="select-feedback-colourway" disabled={colourways.isLoading}><option value={generalColourway}>{generalColourway}</option>{colourwayOptions.filter((value) => value !== generalColourway).map((value) => <option key={value} value={value}>{value}</option>)}</select></Field>
+            {colourways.isLoading && <p className="feedback-loading-note">Loading available colourways…</p>}
+          </section>}
+
+          <section className="feedback-step feedback-step-issue" aria-labelledby="feedback-step-issue">
+            <div className="feedback-step-heading"><span className="feedback-step-number">04</span><div><span className="feedback-step-kicker">Step 4</span><h3 id="feedback-step-issue">{isPulse ? pulseMode === "investigate" ? "What’s getting in the way?" : "What’s working well?" : "What’s the issue?"}</h3></div></div>
+            <fieldset className="feedback-issue-fieldset">
+              <legend>Choose all that apply</legend>
+              <div className={`feedback-type-picker ${typesOpen ? "open" : ""}`}>
+                <button type="button" className="feedback-type-trigger" onClick={() => setTypesOpen((open) => !open)} aria-expanded={typesOpen} aria-controls="feedback-type-options"><span>{form.feedbackTypes.length ? `${form.feedbackTypes.length} selected · ${form.feedbackTypes.slice(0, 2).join(", ")}${form.feedbackTypes.length > 2 ? "…" : ""}` : isPulse ? pulseMode === "investigate" ? "Select the barriers you’re hearing" : "Select the reasons customers love it" : "Select one or more issue types"}</span><ChevronDown size={16} /></button>
+                {typesOpen && <div className="feedback-type-options" id="feedback-type-options" role="group" aria-label="Feedback issue types">{pulseTypes.map((type) => <label key={type} className={`feedback-type-option ${form.feedbackTypes.includes(type) ? "selected" : ""}`}><input type="checkbox" checked={form.feedbackTypes.includes(type)} onChange={() => toggleType(type)} data-testid={`checkbox-feedback-type-${type.toLowerCase().replaceAll(" ", "-")}`} /><span>{type}</span>{form.feedbackTypes.includes(type) && <Check size={15} />}</label>)}</div>}
+              </div>
+            </fieldset>
+          </section>
+
+          <section className="feedback-step feedback-step-more" aria-labelledby="feedback-step-more">
+            <div className="feedback-step-heading"><span className="feedback-step-number">05</span><div><span className="feedback-step-kicker">Step 5</span><h3 id="feedback-step-more">Tell us more</h3></div></div>
+            <Field label={isPulse ? "What are customers saying?" : "Your observation"}><textarea required minLength={8} rows={6} value={form.commentText} onChange={(event) => setForm((current) => ({ ...current, commentText: event.target.value }))} placeholder={isPulse ? pulseMode === "investigate" ? "What are customers saying when they put it back?" : "What are customers saying when they buy it?" : "Customer quotes, specific fit issues, sizing observations..."} data-testid="textarea-feedback-comment" /></Field>
+          </section>
+
           {submit.isError && <div className="feedback-form-error"><CircleAlert size={16} /> We couldn't send that note. Please try again.</div>}
-          {form.feedbackTypes.length === 0 && <p className="feedback-inline-hint">Select at least one observation type to send your note.</p>}
-          <button className="feedback-button dark feedback-submit" type="submit" disabled={submit.isPending || !form.feedbackTypes.length} data-testid="button-submit-feedback">{submit.isPending ? "Sending to the room…" : "Send feedback"} <ArrowRight size={16} /></button>
+          {!canSubmit && <p className="feedback-inline-hint">Complete your name, store / team, style, issue type, and observation to submit.</p>}
+          <div className="feedback-submit-step">
+            <div className="feedback-step-heading"><span className="feedback-step-number">06</span><div><span className="feedback-step-kicker">Step 6</span><h3>Submit</h3></div></div>
+            <button className="feedback-button dark feedback-submit" type="submit" disabled={submit.isPending || !canSubmit} data-testid="button-submit-feedback">{submit.isPending ? "Sending to the room…" : "Submit feedback"} <ArrowRight size={16} /></button>
+          </div>
           <p className="feedback-privacy"><ShieldCheck size={14} /> Shared with the Vivo product team for product decisions.</p>
         </form>}
       </section>
@@ -319,10 +432,37 @@ function PaletteFallback() {
   return <span className="feedback-summary-thumb-placeholder">Style</span>;
 }
 
+function StylePulsesView({ pulses }: { pulses: StylePulse[] }) {
+  const [copiedId, setCopiedId] = useState<number | null>(null);
+  const copyPulseLink = async (pulse: StylePulse) => {
+    try {
+      await navigator.clipboard.writeText(`${window.location.origin}${pulse.sharePath}`);
+      setCopiedId(pulse.id);
+      window.setTimeout(() => setCopiedId((current) => current === pulse.id ? null : current), 1800);
+    } catch {
+      setCopiedId(null);
+    }
+  };
+  if (!pulses.length) return <div className="feedback-empty feedback-pulses-empty"><div><Share2 size={20} /></div><h3>No Style Pulses yet</h3><p>Open a PLM style and request focused input when a style needs investigation or championing.</p></div>;
+  return <div className="feedback-pulses-list">
+    {pulses.map((pulse) => {
+      const link = `${window.location.origin}${pulse.sharePath}`;
+      const modeLabel = pulse.mode === "investigate" ? "Investigate" : "Champion";
+      return <article className="feedback-pulse-row" key={pulse.id} data-testid={`row-style-pulse-${pulse.id}`}>
+        <div className={`feedback-pulse-row-mark ${pulse.mode}`}>{pulse.mode === "investigate" ? "!" : "★"}</div>
+        <div className="feedback-pulse-row-image">{pulse.styleImage ? <img src={pulse.styleImage} alt="" /> : <ImageIcon size={18} />}</div>
+        <div className="feedback-pulse-row-main"><div><span className={`feedback-pulse-mode ${pulse.mode}`}>{modeLabel}</span><strong>{pulse.styleName}</strong><small>{pulse.styleNumber}{pulse.colourway ? ` · ${pulse.colourway}` : ""}</small></div><span className="feedback-pulse-date">{displayDate(pulse.createdAt)}</span></div>
+        <div className="feedback-pulse-response"><b>{pulse.responseCount}</b><span>{pulse.responseCount === 1 ? "response" : "responses"}</span></div>
+        <div className="feedback-pulse-actions"><button type="button" className="button button-quiet" onClick={() => copyPulseLink(pulse)} data-testid={`button-copy-style-pulse-${pulse.id}`}><Copy size={13} />{copiedId === pulse.id ? "Copied" : "Copy link"}</button><a className="button button-quiet" href={`https://wa.me/?text=${encodeURIComponent(`Style Pulse · ${pulse.styleName}\n${link}`)}`} target="_blank" rel="noreferrer" data-testid={`button-whatsapp-style-pulse-${pulse.id}`}><Share2 size={13} /> WhatsApp</a></div>
+      </article>;
+    })}
+  </div>;
+}
+
 export function WorkspaceFeedbackPage() {
   const queryClient = useQueryClient();
   const analytics = useFeedbackAnalytics();
-  const [view, setView] = useState<"inbox" | "styles">("inbox");
+  const [view, setView] = useState<"inbox" | "styles" | "pulses">("inbox");
   const [search, setSearch] = useState("");
   const [dateRange, setDateRange] = useState<"all" | "week" | "month">("all");
   const [teamFilter, setTeamFilter] = useState("all");
@@ -380,12 +520,12 @@ export function WorkspaceFeedbackPage() {
   return <section className="page feedback-workspace-page">
      <div className="feedback-workspace-heading"><div><span className="eyebrow gold-eyebrow">Customer voice / product decisions</span><h1>Feedback, close to the work.</h1><p>A calm inbox for the observations that should shape the next Vivo collection.</p></div><div className="feedback-heading-actions"><button className="button button-quiet" type="button" onClick={copyLink} data-testid="button-copy-feedback-link"><span>{copied ? "Copied" : "Copy feedback link"}</span><ArrowRight size={15} /></button><div className="feedback-heading-mark"><MessageCircle size={21} /><span>Live inbox</span></div></div></div>
      <div className="feedback-metrics"><Metric label="Submissions this week" value={String(stats?.totalSubmissionsThisWeek ?? 0)} note="All teams" /><Metric label="Most flagged style" value={stats?.mostFlaggedStyle || "—"} note="This week" accent="gold" /><Metric label="Common feedback type" value={stats?.mostCommonFeedbackType || "—"} note="This week" accent="green" /><Metric label="Negative sentiment" value={`${stats?.negativePercentThisWeek ?? 0}%`} note="This week" accent={(stats?.negativePercentThisWeek ?? 0) >= 20 ? "coral" : "gold"} /></div>
-    <div className="feedback-view-tabs" role="tablist"><button className={view === "inbox" ? "active" : ""} onClick={() => setView("inbox")} role="tab" aria-selected={view === "inbox"} data-testid="tab-feedback-inbox"><MessageCircle size={15} /> Inbox <span>{openCount}</span></button><button className={view === "styles" ? "active" : ""} onClick={() => setView("styles")} role="tab" aria-selected={view === "styles"} data-testid="tab-feedback-by-style"><Filter size={15} /> By style <span>{summaries.length}</span></button></div>
-    {view === "inbox" ? <div className="feedback-inbox-panel">
+     <div className="feedback-view-tabs" role="tablist"><button className={view === "inbox" ? "active" : ""} onClick={() => setView("inbox")} role="tab" aria-selected={view === "inbox"} data-testid="tab-feedback-inbox"><MessageCircle size={15} /> Inbox <span>{openCount}</span></button><button className={view === "styles" ? "active" : ""} onClick={() => setView("styles")} role="tab" aria-selected={view === "styles"} data-testid="tab-feedback-by-style"><Filter size={15} /> By style <span>{summaries.length}</span></button><button className={view === "pulses" ? "active" : ""} onClick={() => setView("pulses")} role="tab" aria-selected={view === "pulses"} data-testid="tab-feedback-style-pulses"><Share2 size={15} /> Style Pulses <span>{analytics.data?.stylePulses?.length ?? 0}</span></button></div>
+     {view === "inbox" ? <div className="feedback-inbox-panel">
        <div className="feedback-toolbar"><label className="feedback-toolbar-search"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search notes or people" aria-label="Search feedback" data-testid="input-search-feedback" />{search && <button onClick={() => setSearch("")} aria-label="Clear feedback search" data-testid="button-clear-feedback-search"><X size={14} /></button>}</label><div className="feedback-filter-group"><label><span>Date</span><select value={dateRange} onChange={(event) => setDateRange(event.target.value as typeof dateRange)} data-testid="select-feedback-date"><option value="all">All dates</option><option value="week">This week</option><option value="month">Last 30 days</option></select><ChevronDown size={13} /></label><label><span>Store / team</span><select value={teamFilter} onChange={(event) => setTeamFilter(event.target.value)} data-testid="select-feedback-team-filter"><option value="all">All stores and teams</option>{teamOptions.map((team) => <option key={team}>{team}</option>)}</select><ChevronDown size={13} /></label><label><span>Type</span><select value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)} data-testid="select-feedback-type-filter"><option value="all">All types</option>{feedbackTypes.map((type) => <option key={type}>{type}</option>)}</select><ChevronDown size={13} /></label><label><span>Sentiment</span><select value={sentimentFilter} onChange={(event) => setSentimentFilter(event.target.value as typeof sentimentFilter)} data-testid="select-feedback-sentiment-filter"><option value="all">All sentiment</option><option value="positive">Positive</option><option value="mixed">Mixed</option><option value="negative">Negative</option></select><ChevronDown size={13} /></label><label><span>Style</span><input value={styleSearch} onChange={(event) => setStyleSearch(event.target.value)} placeholder="Style or number" aria-label="Filter by style" data-testid="input-filter-feedback-style" /></label><label><span>Status</span><select value={status} onChange={(event) => setStatus(event.target.value as typeof status)} data-testid="select-feedback-status"><option value="all">All notes</option><option value="open">Open</option><option value="reviewed">Reviewed</option></select><ChevronDown size={13} /></label><label><span>Priority</span><select value={urgency} onChange={(event) => setUrgency(event.target.value as typeof urgency)} data-testid="select-feedback-urgency"><option value="all">All priorities</option><option value="urgent">Needs attention</option><option value="discuss">Discuss soon</option></select><ChevronDown size={13} /></label><button className="button button-quiet" type="button" onClick={clearFilters} data-testid="button-clear-feedback-filters">Clear</button></div></div>
       <div className="feedback-inbox-head"><div><span className="eyebrow">The room</span><h2>{filtered.length} {filtered.length === 1 ? "observation" : "observations"}</h2></div><span className="mono">{status === "all" ? "ALL NOTES" : status.toUpperCase()}</span></div>
        {filtered.length ? <div className="feedback-row-list">{filtered.map((item) => <FeedbackRow key={item.id} item={item} onReview={(entry) => review.mutate(entry.id)} reviewing={reviewingId === item.id} canReview={isAdmin} />)}</div> : <div className="feedback-empty"><div><MessageCircle size={20} /></div><h3>{submissions.length ? "Nothing matches this view" : "The inbox is ready"}</h3><p>{submissions.length ? "Try clearing a filter or searching for another style." : "Customer observations will arrive here as the field shares what it is seeing."}</p>{(search || styleSearch || dateRange !== "all" || teamFilter !== "all" || typeFilter !== "all" || sentimentFilter !== "all" || status !== "all" || urgency !== "all") && <button className="button button-quiet" onClick={clearFilters} data-testid="button-clear-feedback-filters-empty">Clear filters</button>}</div>}
-     </div> : <div className="feedback-style-view"><div className="feedback-by-style-intro"><div><span className="eyebrow">Pattern, not anecdote</span><h2>Where the conversation is clustering.</h2></div><p>Styles with the most field observations rise to the top so the next product conversation has context.</p></div>{summaries.length ? <div className="feedback-style-summary-list">{summaries.map((summary, index) => <article className="feedback-style-summary" key={`${summary.styleId}-${summary.code}-${summary.name}`} role="button" tabIndex={0} onClick={() => { setView("inbox"); setStyleSearch(summary.code || summary.name); }} onKeyDown={(event) => { if (event.key === "Enter") { setView("inbox"); setStyleSearch(summary.code || summary.name); } }} data-testid={`card-feedback-style-${summary.styleId || summary.code || summary.name}`}><div className="feedback-summary-index">{String(index + 1).padStart(2, "0")}</div><div className="feedback-summary-thumb">{summary.styleImage ? <img src={summary.styleImage} alt="" /> : <PaletteFallback />}</div><div className="feedback-summary-copy"><strong>{summary.name}</strong><span>{summary.code || "Style not linked"}</span><div className="feedback-sentiment-bar" aria-label={`${summary.positive} positive, ${summary.mixed} mixed, ${summary.negative} negative`}><i className="positive" style={{ width: `${summary.count ? (summary.positive / summary.count) * 100 : 0}%` }} /><i className="mixed" style={{ width: `${summary.count ? (summary.mixed / summary.count) * 100 : 0}%` }} /><i className="negative" style={{ width: `${summary.count ? (summary.negative / summary.count) * 100 : 0}%` }} /></div><div className="feedback-summary-type-pills">{Object.entries(summary.feedbackTypes || {}).sort(([, a], [, b]) => b - a).slice(0, 3).map(([type]) => <span key={type}>{type}</span>)}</div><p>{summary.latestComment}</p></div><div className="feedback-summary-count"><b>{summary.count}</b><span>{summary.count === 1 ? "observation" : "observations"}</span><small>{summary.urgent ? `${summary.urgent} urgent` : "No urgent notes"}</small></div><ArrowRight size={16} /></article>)}</div> : <div className="feedback-empty"><div><Filter size={20} /></div><h3>No style patterns yet</h3><p>Once feedback is linked to a style, the range view will take shape here.</p></div>}</div>}
+      </div> : view === "styles" ? <div className="feedback-style-view"><div className="feedback-by-style-intro"><div><span className="eyebrow">Pattern, not anecdote</span><h2>Where the conversation is clustering.</h2></div><p>Styles with the most field observations rise to the top so the next product conversation has context.</p></div>{summaries.length ? <div className="feedback-style-summary-list">{summaries.map((summary, index) => <article className="feedback-style-summary" key={`${summary.styleId}-${summary.code}-${summary.name}`} role="button" tabIndex={0} onClick={() => { setView("inbox"); setStyleSearch(summary.code || summary.name); }} onKeyDown={(event) => { if (event.key === "Enter") { setView("inbox"); setStyleSearch(summary.code || summary.name); } }} data-testid={`card-feedback-style-${summary.styleId || summary.code || summary.name}`}><div className="feedback-summary-index">{String(index + 1).padStart(2, "0")}</div><div className="feedback-summary-thumb">{summary.styleImage ? <img src={summary.styleImage} alt="" /> : <PaletteFallback />}</div><div className="feedback-summary-copy"><strong>{summary.name}</strong><span>{summary.code || "Style not linked"}</span><div className="feedback-sentiment-bar" aria-label={`${summary.positive} positive, ${summary.mixed} mixed, ${summary.negative} negative`}><i className="positive" style={{ width: `${summary.count ? (summary.positive / summary.count) * 100 : 0}%` }} /><i className="mixed" style={{ width: `${summary.count ? (summary.mixed / summary.count) * 100 : 0}%` }} /><i className="negative" style={{ width: `${summary.count ? (summary.negative / summary.count) * 100 : 0}%` }} /></div><div className="feedback-summary-type-pills">{Object.entries(summary.feedbackTypes || {}).sort(([, a], [, b]) => b - a).slice(0, 3).map(([type]) => <span key={type}>{type}</span>)}</div><p>{summary.latestComment}</p></div><div className="feedback-summary-count"><b>{summary.count}</b><span>{summary.count === 1 ? "observation" : "observations"}</span><small>{summary.urgent ? `${summary.urgent} urgent` : "No urgent notes"}</small></div><ArrowRight size={16} /></article>)}</div> : <div className="feedback-empty"><div><Filter size={20} /></div><h3>No style patterns yet</h3><p>Once feedback is linked to a style, the range view will take shape here.</p></div>}</div> : <StylePulsesView pulses={analytics.data?.stylePulses || []} />}
   </section>;
 }
 

@@ -385,3 +385,36 @@ a[aria-label*="Made with Emergent" i] {
     display: none !important;
 }
 
+/* Style Deep Dive KPI grid — compact only on phone-sized screens. */
+@media (max-width: 639px) {
+    .merch-deepdive-kpi-grid {
+        gap: 0.5rem;
+    }
+    .merch-deepdive-kpi-grid > [data-testid^="dd-"] {
+        min-width: 0;
+        padding: 0.625rem;
+    }
+    .merch-deepdive-kpi-grid > [data-testid^="dd-"] > div:first-child {
+        min-height: 1.75rem;
+    }
+    .merch-deepdive-kpi-grid > [data-testid^="dd-"] .eyebrow {
+        font-size: 0.64rem;
+        letter-spacing: 0.05em;
+        line-height: 1.15;
+    }
+    .merch-deepdive-kpi-grid > [data-testid^="dd-"] .kpi-value {
+        margin-top: 0.5rem;
+        font-size: 1.125rem;
+        line-height: 1.05;
+    }
+    .merch-deepdive-kpi-grid > [data-testid^="dd-"] > div:nth-child(3) {
+        min-height: 2.1em;
+        margin-top: 0.25rem;
+        font-size: 0.625rem;
+        line-height: 1.25;
+    }
+    .merch-deepdive-kpi-grid > [data-testid^="dd-"] > div:last-child {
+        line-height: 1.2;
+    }
+}
+

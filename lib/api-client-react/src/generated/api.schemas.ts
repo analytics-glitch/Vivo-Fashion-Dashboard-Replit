@@ -462,13 +462,15 @@ export interface StyleTeamMember {
 
 export type WorkspaceStyleStyleTeam = {
   /** @nullable */
-  designer?: StyleTeamMember | null;
+  design?: StyleTeamMember | null;
   /** @nullable */
-  patternMaker?: StyleTeamMember | null;
+  pattern?: StyleTeamMember | null;
   /** @nullable */
-  sampleMaker?: StyleTeamMember | null;
+  cad?: StyleTeamMember | null;
   /** @nullable */
-  buyer?: StyleTeamMember | null;
+  sample?: StyleTeamMember | null;
+  /** @nullable */
+  buying?: StyleTeamMember | null;
 };
 
 export interface WorkspaceStyle {
@@ -509,13 +511,15 @@ export interface WorkspaceStyle {
   /** @nullable */
   confirmedCost?: number | null;
   /** @nullable */
-  designerUserId?: number | null;
+  designUserId?: number | null;
   /** @nullable */
-  patternMakerUserId?: number | null;
+  patternUserId?: number | null;
   /** @nullable */
-  sampleMakerUserId?: number | null;
+  cadUserId?: number | null;
   /** @nullable */
-  buyerUserId?: number | null;
+  sampleUserId?: number | null;
+  /** @nullable */
+  buyingUserId?: number | null;
   styleTeam?: WorkspaceStyleStyleTeam;
 }
 
@@ -612,13 +616,15 @@ export interface StyleUpdate {
   /** @nullable */
   confirmedCost?: number | null;
   /** @nullable */
-  designerUserId?: number | null;
+  designUserId?: number | null;
   /** @nullable */
-  patternMakerUserId?: number | null;
+  patternUserId?: number | null;
   /** @nullable */
-  sampleMakerUserId?: number | null;
+  cadUserId?: number | null;
   /** @nullable */
-  buyerUserId?: number | null;
+  sampleUserId?: number | null;
+  /** @nullable */
+  buyingUserId?: number | null;
 }
 
 export interface StyleTransition {
@@ -1022,6 +1028,8 @@ export type ListWorkspaceStylesParams = {
 brand?: string;
 status?: string;
 search?: string;
+source?: 'pd';
+season?: string;
 };
 
 export type GetWorkspacePlanParams = {

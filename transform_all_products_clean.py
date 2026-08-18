@@ -228,12 +228,23 @@ def main():
         ALTER TABLE all_products_clean
         ADD COLUMN IF NOT EXISTS standard_cost_kes NUMERIC DEFAULT NULL,
         ADD COLUMN IF NOT EXISTS standard_cost_date DATE DEFAULT NULL,
-        ADD COLUMN IF NOT EXISTS last_order_date DATE DEFAULT NULL
+        ADD COLUMN IF NOT EXISTS last_order_date DATE DEFAULT NULL,
+        ADD COLUMN IF NOT EXISTS range_tier TEXT DEFAULT NULL
     """)
     conn.commit()
-    log.info("Schema: standard_cost_kes and last_order_date columns ensured")
+    log.info("Schema: standard costs, last order date and range tier columns ensured")
 
     log.info("Building all_products_clean...")
+    # Preserve catalogue-owned tier choices across the full refresh. The clean
+    # table is rebuilt from source data, but range_tier is a merchandising
+    # decision rather than an Odoo attribute.
+    cur.execute("""
+        CREATE TEMP TABLE _catalogue_range_tier_overrides AS
+        SELECT style_number, MAX(NULLIF(TRIM(range_tier),'')) AS range_tier
+        FROM all_products_clean
+        WHERE style_number IS NOT NULL AND NULLIF(TRIM(range_tier),'') IS NOT NULL
+        GROUP BY style_number
+    """)
     cur.execute("TRUNCATE all_products_clean")
     conn.commit()  # release the exclusive lock immediately; subsequent inserts use row locks only
 
@@ -782,6 +793,37 @@ def main():
     from product_master_overrides import apply_overrides
     fixed = apply_overrides(conn, log)
     log.info("Product-master overrides applied: %d rows", fixed)
+    conn.commit()
+
+    # Restore manual tiers where a style survived the refresh, then safely
+    # default the remaining rows from the complete style-level stock rollup.
+    cur.execute("""
+        UPDATE all_products_clean a
+        SET range_tier = o.range_tier
+        FROM _catalogue_range_tier_overrides o
+        WHERE a.style_number=o.style_number
+    """)
+    cur.execute("""
+        WITH style_rollup AS (
+            SELECT p.style_number,
+                   BOOL_OR(COALESCE(p.is_noos,FALSE) OR UPPER(COALESCE(p.tier,''))='NOOS') AS is_noos,
+                   COALESCE(SUM(i.available),0) AS stock_units
+            FROM all_products_clean p
+            LEFT JOIN all_inventory i ON i.sku=p.sku
+            WHERE p.style_number IS NOT NULL
+            GROUP BY p.style_number
+        )
+        UPDATE all_products_clean a
+        SET range_tier = CASE
+            WHEN r.is_noos THEN 'NOOS'
+            WHEN r.stock_units > 100 THEN 'Core'
+            ELSE 'Recent'
+        END
+        FROM style_rollup r
+        WHERE a.style_number=r.style_number
+          AND (a.range_tier IS NULL OR NULLIF(TRIM(a.range_tier),'') IS NULL)
+    """)
+    log.info("Catalogue range tiers restored/defaulted: %d rows", cur.rowcount)
     conn.commit()
 
     # ── Verify no style number has multiple subcats ──────────────────────────

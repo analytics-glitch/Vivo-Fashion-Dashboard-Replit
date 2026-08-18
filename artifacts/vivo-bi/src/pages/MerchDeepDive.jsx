@@ -415,6 +415,27 @@ const weekLabel = (isoWeek, i) => {
   const d = isoWeekToDate(isoWeek);
   return d ? `${MON[d.getMonth()]} '${String(d.getFullYear()).slice(2)}` : isoWeek;
 };
+const formatProductAge = (launchDate) => {
+  if (!launchDate) return { value: "—", sub: "Launch date unavailable" };
+  const launch = new Date(`${String(launchDate).slice(0, 10)}T00:00:00Z`);
+  const days = Number.isFinite(launch.getTime())
+    ? Math.floor((Date.now() - launch.getTime()) / 86_400_000)
+    : null;
+  if (days === null || days < 0) {
+    return { value: "—", sub: `Launched ${fmtDate(launchDate)}` };
+  }
+  const weeks = Math.floor(days / 7);
+  return {
+    value: weeks > 104 ? `${(weeks / 52).toFixed(1)} yrs` : `${weeks} wks`,
+    sub: `Launched ${fmtDate(launchDate)}`,
+  };
+};
+const formatCostMonth = (costDate) => {
+  const formatted = fmtDate(costDate);
+  if (!formatted) return "";
+  const parts = formatted.split("-");
+  return parts.length === 3 ? `${parts[1]}-${parts[2]}` : formatted;
+};
 
 // ── Main component ────────────────────────────────────────────────────────────
 const MerchDeepDive = () => {
@@ -825,6 +846,7 @@ const MerchDeepDive = () => {
   );
 
   const avgUnits = weeks.length ? (weeks.reduce((a, w) => a + w.units, 0) / weeks.length).toFixed(1) : "—";
+  const productAge = formatProductAge(style.launch_date);
 
   // ── Total SOH split ────────────────────────────────────────────────────────
   // soh_online is a SUBSET of soh_stores (the online channel is scoped as a
@@ -855,20 +877,20 @@ const MerchDeepDive = () => {
   // (style-level retirement cascades to every colourway).
   const activeColours = style.tier === "Retired" ? 0 : (style.colours_in_stock || 0);
 
-  // Gross Margin Waterfall — the API resolves cost across buying orders,
-  // product master, and completed manufacturing/DPS costing in that order.
-  // Keep the warning only for a genuinely missing/non-zero cost.
+  // Gross Margin — ASP is the realised average selling price, never full price.
+  // The API resolves the latest non-zero production/reorder cost first, then
+  // the product-master standard cost.
   const avgSellingPrice = Number(style.avg_selling_price);
-  const standardCost = Number(style.standard_cost_kes);
-  const hasCost = Number.isFinite(standardCost) && standardCost > 0;
+  const latestCost = Number(style.standard_cost_kes);
+  const hasCost = Number.isFinite(latestCost) && latestCost > 0;
   const hasSellingPrice = Number.isFinite(avgSellingPrice) && avgSellingPrice > 0;
   const costSource = style.cost_source || null;
-  const costDate = style.cost_date ? fmtDate(style.cost_date) : null;
-  const costSourceNote = hasCost
-    ? `Cost: ${fmtKES(standardCost)} · from ${costSource || "available costing data"}${costDate ? ` (${costDate})` : ""}`
+  const costMonth = style.cost_date ? formatCostMonth(style.cost_date) : null;
+  const costSourceLabel = hasCost
+    ? `${costSource || "latest cost"}${costMonth ? ` ${costMonth}` : ""}`
     : null;
   const grossMarginKes = hasCost && hasSellingPrice
-    ? avgSellingPrice - standardCost
+    ? avgSellingPrice - latestCost
     : null;
   const grossMarginPct = grossMarginKes !== null
     ? (grossMarginKes / avgSellingPrice) * 100
@@ -958,13 +980,13 @@ const MerchDeepDive = () => {
       {/* `small` — deep-dive cards run 6-across, so the default md:28px bold
           value overflows/oversizes; use the shared small size variant (16/20px).
           Scoped to this page only — other pages' KPI cards are unchanged. */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+      <div className="merch-deepdive-kpi-grid grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
         {/* Card order is canonical (period trio → lifetime trio → margin →
             stock → colourways, then the trailing ops cards):
             Revenue (period) → Units (period) → SOR (period) →
             Revenue (Lifetime) → Units (Lifetime) → SOR (Lifetime) →
             Gross Margin → Total SOH → Active Colour Ways →
-            Weeks of Cover → Reorder Count → Last Ordered. */}
+            Weeks of Cover → Product Age → Reorder Count → Last Ordered. */}
         <KPICard
           small
           label={`Revenue (${periodLabel})`}
@@ -1042,8 +1064,9 @@ const MerchDeepDive = () => {
         <KPICard
           small
           label="Gross Margin"
-          value="—"
-          sub="Cost N/A · GM not available"
+          value={grossMarginPct === null ? "—" : fmtPct(grossMarginPct)}
+          sub={grossMarginKes === null ? "Cost N/A · GM not available" : fmtKES(grossMarginKes)}
+          icon={Percent}
           showDelta={false}
           testId="dd-gm"
         />
@@ -1067,7 +1090,7 @@ const MerchDeepDive = () => {
                 >
                   <span className="text-muted">{loc}</span>
                   <span className="font-semibold tabular-nums">
-                    {fmtNum(units)} · {pct === null ? "—" : `${pct.toFixed(1)}%`}
+                    {fmtNum(units)} ({pct === null ? "—" : `${pct.toFixed(1)}%`})
                   </span>
                 </div>
               ))}
@@ -1097,6 +1120,15 @@ const MerchDeepDive = () => {
           icon={Clock}
           showDelta={false}
           testId="dd-woc"
+        />
+        <KPICard
+          small
+          label="Product Age"
+          value={productAge.value}
+          sub={productAge.sub}
+          icon={CalendarBlank}
+          showDelta={false}
+          testId="dd-product-age"
         />
         <KPICard
           small
@@ -1653,31 +1685,37 @@ const MerchDeepDive = () => {
         <div className="lg:col-span-3 card-white p-5">
           <SectionTitle
             title="Gross Margin Waterfall"
-            subtitle={hasCost ? "Indicative" : "Indicative — Cost N/A"}
+            subtitle={hasCost ? "Indicative · ASP-based" : "Indicative — Cost N/A"}
           />
           <div className="mt-4 space-y-2">
             {[
               { label: "Full Price", value: style.full_price || 0, color: "#1a5c38" },
               { label: "Avg Selling", value: style.avg_selling_price || 0, color: "#4b7bec" },
               { label: "Discount", value: -(style.full_price - style.avg_selling_price || 0), color: "#ef4444" },
-              { label: "Cost", value: hasCost ? standardCost : null, color: "#334155" },
+                { label: "Cost", value: hasCost ? latestCost : null, source: costSourceLabel, color: "#334155" },
               {
                 label: "Gross Margin",
                 value: grossMarginKes,
                 pct: grossMarginPct,
                 color: grossMarginKes === null ? "#9ca3af" : grossMarginKes >= 0 ? "#1a5c38" : "#ef4444",
               },
-            ].map(({ label, value, color }) => (
+            ].map(({ label, value, color, source }) => (
               <div key={label} className="flex items-center gap-2">
                 <div className="w-2.5 h-2.5 rounded-sm flex-shrink-0" style={{ background: color }} />
                 <span className="text-[11.5px] text-foreground flex-1">{label}</span>
                 {label === "Gross Margin" && value !== null ? (
                   <span className="text-right leading-tight" style={{ color }}>
-                    <span className="block text-[14px] font-extrabold tabular-nums">
-                      {fmtPct(pct)}
+                    <span className="block text-[12px] font-extrabold tabular-nums">
+                      {fmtKES(value)} · {fmtPct(pct)}
                     </span>
-                    <span className="block text-[10px] font-semibold tabular-nums">
+                  </span>
+                ) : label === "Cost" && value !== null ? (
+                  <span className="text-right leading-tight" style={{ color }}>
+                    <span className="block text-[12px] font-bold tabular-nums">
                       {fmtKES(value)}
+                    </span>
+                    <span className="block text-[9.5px] font-semibold text-muted">
+                      {source}
                     </span>
                   </span>
                 ) : (
@@ -1688,13 +1726,9 @@ const MerchDeepDive = () => {
               </div>
             ))}
           </div>
-          {hasCost ? (
+          {!hasCost && (
             <div className="mt-3 text-[10.5px] text-muted">
-              {costSourceNote}
-            </div>
-          ) : (
-            <div className="mt-3 text-[10.5px] text-muted">
-              Checked last reorder/buying-order cost, product-master cost, and production/DPS costing records.
+              Checked the latest production/reorder cost and product-master standard cost.
             </div>
           )}
           {!hasCost && (
