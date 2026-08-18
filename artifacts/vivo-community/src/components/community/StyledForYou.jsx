@@ -41,7 +41,7 @@ export function StyledForYouHome({ member, onViewAll, onPersonalise }) {
       <div data-testid="sfy-invite" className={`${cardCls} overflow-hidden`}>
         <div className="grid grid-cols-1 sm:grid-cols-2">
           <div className="relative min-h-[180px] sm:min-h-0">
-            <img src={brandAsset("cat-everyday.jpg")} alt="" draggable={false}
+            <img src={brandAsset("sfy-home.jpg")} alt="" draggable={false}
               className="absolute inset-0 w-full h-full object-cover" />
           </div>
           <div className="p-6 sm:p-8">
