@@ -3942,6 +3942,67 @@ def register_community_routes(app, api_pg_module):
             # Exact stock counts never reach the customer payload
             # ("Only N left" is banned shop-wide).
             r.pop("soh", None)
+
+        # -- Colourway siblings -------------------------------------------------
+        # For each style on this page, collect all in-stock imaged colourways so
+        # product cards can show tappable swatches without a second fetch per card.
+        # One representative SKU per colourway (lowest sku for determinism),
+        # ordered by colour name. Only injected when count_only is False.
+        if items and not count_only:
+            style_names = list({r["style_name"] for r in items})
+            cw_sql = """
+            WITH inv AS (
+                SELECT sku, SUM(COALESCE(available,0)) AS soh
+                FROM all_inventory GROUP BY sku
+            ),
+            stock AS (
+                SELECT sk.style_name, sk.color, SUM(COALESCE(i.soh,0)) AS soh
+                FROM (
+                    SELECT DISTINCT p.style_name, COALESCE(p.color_print,'') AS color, p.sku
+                    FROM all_products_clean p
+                    WHERE p.active IS TRUE AND p.price::float > 0
+                ) sk
+                LEFT JOIN inv i ON i.sku = sk.sku
+                GROUP BY 1, 2
+            ),
+            cw AS (
+                SELECT DISTINCT ON (p.style_name, COALESCE(p.color_print,''))
+                    p.style_name,
+                    COALESCE(p.color_print,'') AS color,
+                    p.sku
+                FROM all_products_clean p
+                JOIN product_image_map m ON m.sku = p.sku
+                JOIN product_images img ON img.tmpl_id = m.tmpl_id
+                     AND COALESCE(img.image_512,'') <> ''
+                WHERE p.style_name = ANY(%(names)s)
+                  AND p.active IS TRUE AND p.price::float > 0
+                  AND COALESCE(p.brand,'') NOT ILIKE '%%third party%%'
+                ORDER BY p.style_name, COALESCE(p.color_print,''), p.sku
+            )
+            SELECT cw.style_name, cw.color, cw.sku
+            FROM cw
+            JOIN stock s ON s.style_name = cw.style_name AND s.color = cw.color
+            WHERE s.soh > 0
+            ORDER BY cw.style_name, cw.color
+            """
+            with _db() as cconn:
+                with cconn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as ccur:
+                    ccur.execute(cw_sql, {"names": style_names})
+                    cw_rows = [dict(r) for r in ccur.fetchall()]
+            # Group by style_name
+            cw_by_style = collections.defaultdict(list)
+            for cw in cw_rows:
+                cw_by_style[cw["style_name"]].append({
+                    "sku": cw["sku"],
+                    "color": cw["color"],
+                    "image_url": "/api/community/product-image/" + quote(str(cw["sku"]), safe=""),
+                })
+            # Attach to items; only include colourways array when >1 exists
+            for r in items:
+                siblings = cw_by_style.get(r["style_name"], [])
+                if len(siblings) > 1:
+                    r["colourways"] = siblings
+
         resp = {"items": items, "categories": cats, "has_more": has_more,
                 "limit": limit, "offset": offset, "personalized": quiz is not None}
         if cacheable:

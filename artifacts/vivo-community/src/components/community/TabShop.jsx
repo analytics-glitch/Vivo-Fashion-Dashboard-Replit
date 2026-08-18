@@ -140,15 +140,37 @@ function ShoppableLook({ post, tagged, onOpen }) {
    two-line name, colour swatch and price on the open cream ground. The image
    is the whole tap target; wishlist + quick-add float over the photo as
    SIBLINGS (never nested). The shopping-bag icon opens a lightweight size
-   picker overlay so the shopper can add to bag without leaving the grid. */
+   picker overlay so the shopper can add to bag without leaving the grid.
+
+   Colourway swatches: when the server returns a `colourways` array (multiple
+   in-stock colourways for the style), tappable dot-swatches appear below the
+   name. Tapping one swaps the card thumbnail and colour label; opening the
+   card or the size picker navigates to that colourway's SKU. */
 function ProductCard({ product, onOpen }) {
   const { has, toggle } = useWishlist();
+  // Active colourway: starts at the product itself, updated when a swatch is tapped.
+  const [active, setActive] = useState(null); // null = use product defaults
   const [imgFailed, setImgFailed] = useState(false);
   const [quickAdd, setQuickAdd] = useState(false);
-  const saved = has(product.sku);
-  const hex = swatchFor(product.color);
 
-  const open = () => onOpen(product.sku);
+  // Resolved display values — fall back to the card's product when no swatch chosen.
+  const activeSku = active?.sku ?? product.sku;
+  const activeColor = active?.color ?? product.color;
+  const activeImage = active?.image_url ?? product.image_url;
+  const activeHex = swatchFor(activeColor);
+
+  const saved = has(product.sku);  // wishlist tracks the style's primary SKU
+  const colourways = product.colourways; // [{sku, color, image_url}] or undefined
+
+  // When a swatch is tapped we swap the displayed colourway without navigating.
+  const pickColourway = (e, cw) => {
+    e.stopPropagation();
+    // Tapping the already-active swatch deselects back to the product default.
+    setActive((prev) => (prev?.sku === cw.sku && cw.sku !== product.sku ? null : cw));
+    setImgFailed(false);
+  };
+
+  const open = () => onOpen(activeSku);
 
   return (
     <div className="group relative">
@@ -163,7 +185,7 @@ function ProductCard({ product, onOpen }) {
             <ImagePlaceholder aspectRatio="aspect-[3/4]" text={product.style_name} className="rounded-none border-none h-full" />
           ) : (
             <img
-              src={product.image_url}
+              src={activeImage}
               alt={product.style_name}
               loading="lazy"
               onError={() => setImgFailed(true)}
@@ -172,16 +194,61 @@ function ProductCard({ product, onOpen }) {
           )}
           <MerchBadge badge={product.badge} testId={`card-badge-${product.sku}`} className="absolute bottom-2.5 left-2.5" />
         </div>
-        {/* Card reads: name → colour swatch → price. The whole card taps. */}
+        {/* Card reads: name → colour label → price. The whole card taps. */}
         <h3 className="font-serif text-foreground text-[14px] sm:text-[15px] leading-snug mb-1 line-clamp-2">{product.style_name}</h3>
-        {product.color && (
+        {activeColor && (
           <div className="flex items-center gap-1.5 mb-1 min-w-0">
-            {hex && <span className="w-3 h-3 rounded-full border border-border shrink-0" style={{ background: hex }} aria-hidden="true" />}
-            <span className="text-[11px] text-muted-foreground truncate">{product.color}</span>
+            {activeHex && <span className="w-3 h-3 rounded-full border border-border shrink-0" style={{ background: activeHex }} aria-hidden="true" />}
+            <span className="text-[11px] text-muted-foreground truncate">{activeColor}</span>
           </div>
         )}
         <div className="text-[14px] font-medium text-foreground">{kes(product.price)}</div>
       </button>
+
+      {/* Colourway swatches — shown only when the style has multiple colourways.
+          Rendered OUTSIDE the main card button so taps don't trigger navigation. */}
+      {colourways && colourways.length > 1 && (
+        <div
+          className="flex flex-wrap gap-1.5 mt-2"
+          role="group"
+          aria-label={`Colour options for ${product.style_name}`}
+        >
+          {colourways.slice(0, 6).map((cw) => {
+            const hex = swatchFor(cw.color);
+            const isActive = activeSku === cw.sku;
+            return (
+              <button
+                key={cw.sku}
+                type="button"
+                data-testid={`swatch-${product.sku}-${cw.sku}`}
+                aria-label={cw.color || "Colour option"}
+                aria-pressed={isActive}
+                onClick={(e) => pickColourway(e, cw)}
+                className={`w-5 h-5 rounded-full border-2 transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
+                  isActive
+                    ? "border-foreground scale-110"
+                    : "border-border hover:border-foreground/50 hover:scale-105"
+                }`}
+                style={hex ? { background: hex } : { background: "transparent" }}
+                title={cw.color}
+              >
+                {/* Fallback for unnamed/no-hex colours: a tiny colour initial */}
+                {!hex && (
+                  <span className="flex items-center justify-center w-full h-full text-[8px] font-bold text-muted-foreground uppercase leading-none">
+                    {(cw.color || "?")[0]}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+          {colourways.length > 6 && (
+            <span className="text-[10px] text-muted-foreground self-center">
+              +{colourways.length - 6}
+            </span>
+          )}
+        </div>
+      )}
+
       <div className="absolute top-2 right-2 z-10 flex flex-col gap-1.5">
         <button
           data-testid="wishlist-btn"
@@ -203,9 +270,9 @@ function ProductCard({ product, onOpen }) {
       </div>
       {quickAdd && (
         <QuickAddModal
-          sku={product.sku}
+          sku={activeSku}
           productName={product.style_name}
-          productImage={product.image_url}
+          productImage={activeImage}
           productPrice={product.price}
           onClose={() => setQuickAdd(false)}
           onOpenProduct={onOpen}
