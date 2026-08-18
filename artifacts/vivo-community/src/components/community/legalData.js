@@ -44,8 +44,8 @@ export const FAQ_SECTIONS = [
       },
       {
         id: "earn-survey",
-        q: "What's the member survey, and what do I get for it?",
-        a: "Every so often we run a short survey — \"Help us dress you better\" — about ten taps and under three minutes. Completing it earns you 30 points instantly, once per survey round. Your answers are private: we only ever read them anonymously and in aggregate, to decide what to make, stock and improve next. You'll find it on your Home feed, in Rewards, or under Profile.",
+        q: "What's \"About your Vivo journey\", and what do I get for it?",
+        a: "At the bottom of Style Preferences you'll find four quick questions about you and Vivo — how long you've shopped with us, how you found us, how often you shop, and anything you wish we did differently. Answering the first three earns you 30 points instantly, once. It's completely optional, and your answers are private: we only ever read them anonymously and in aggregate, to decide what to make, stock and improve next. Find it via Rewards or Profile → Style Preferences.",
       },
       {
         id: "earn-published",

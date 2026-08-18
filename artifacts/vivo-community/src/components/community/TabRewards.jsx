@@ -34,9 +34,9 @@ export default function TabRewards({ member, onMemberUpdate, onOpenPage }) {
   // Try-on perk ladder — read live from the server (TRYON_WEEK_LIMITS) so
   // the business can change the split without an app rebuild.
   const [tryonPerk, setTryonPerk] = useState(null);
-  // Survey wave state — drives the "Complete our survey" mission card
-  // (server decides the wave, the points and whether it's already done).
-  const [survey, setSurvey] = useState(null);
+  // "About your Vivo journey" status — drives the journey mission card
+  // (the old survey merged into the Style Preferences page).
+  const [journey, setJourney] = useState(null);
   // Live journal of shared content — pending rows show their would-be points.
   const [myEntries, setMyEntries] = useState([]);
   // Zetu Studios photoshoot — one-tap redemption with its own confirm sheet.
@@ -51,7 +51,7 @@ export default function TabRewards({ member, onMemberUpdate, onOpenPage }) {
   useEffect(() => {
     api.rewardsTank().then(setTank).catch(() => {});
     api.tryonAllowance().then(setTryonPerk).catch(() => {});
-    api.surveyState().then(setSurvey).catch(() => {});
+    api.stylePrefs().then((d) => setJourney(d.journey || null)).catch(() => {});
     api.myEntries().then((d) => setMyEntries(d.items || [])).catch(() => {});
     loadRedemptions();
   }, []);
@@ -242,9 +242,9 @@ export default function TabRewards({ member, onMemberUpdate, onOpenPage }) {
         </div>
       )}
 
-      {/* Survey mission — wave-scoped, points land instantly (the server
-          enforces once-per-wave; the card flips to its done state after). */}
-      {survey?.wave && (
+      {/* "About your Vivo journey" mission — the old survey, now four quick
+          questions at the bottom of Style Preferences (once-only award). */}
+      {journey && (
         <div data-testid="rewards-survey-card" className={`${cardCls} p-6 border-l-2 border-l-primary`}>
           <div className="flex flex-col sm:flex-row sm:items-center gap-4">
             <span className="w-11 h-11 rounded-full bg-primary/10 border border-primary/20 flex items-center justify-center text-primary-ink shrink-0">
@@ -252,24 +252,24 @@ export default function TabRewards({ member, onMemberUpdate, onOpenPage }) {
             </span>
             <div className="flex-grow min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
-                <h3 className="font-semibold text-foreground text-[15px]">Complete our survey — {survey.points ?? 30} pts</h3>
-                {survey.completed && (
+                <h3 className="font-semibold text-foreground text-[15px]">About your Vivo journey — {journey.points ?? 30} pts</h3>
+                {journey.completed && (
                   <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-primary-ink bg-primary/10 border border-primary/20 px-2 py-0.5 rounded-sm">
-                    <Check size={11} strokeWidth={3} /> Done this round
+                    <Check size={11} strokeWidth={3} /> Done
                   </span>
                 )}
               </div>
               <p className="text-[13px] text-muted-foreground mt-1">
-                {survey.completed
+                {journey.completed
                   ? "Asante — your answers are already shaping what we make next."
-                  : `${survey.wave.title}: ten taps, under three minutes, points land instantly.`}
+                  : "Four quick questions at the bottom of Style Preferences — points land instantly."}
               </p>
             </div>
-            {!survey.completed && (
+            {!journey.completed && (
               <button
                 type="button"
                 data-testid="rewards-survey-cta"
-                onClick={() => onOpenPage?.("survey")}
+                onClick={() => onOpenPage?.("styleprefs")}
                 className={`${btnPrimary} sm:w-auto sm:px-8 shrink-0`}
               >
                 Start

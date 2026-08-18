@@ -141,9 +141,6 @@ export const api = {
   addComment: (id, body) => req(`/posts/${id}/comments`, { method: "POST", body: { body }, auth: true }),
   likeComment: (id) => req(`/comments/${id}/like`, { method: "POST", auth: true }),
   reportComment: (id, reason) => req(`/comments/${id}/report`, { method: "POST", body: reason ? { reason } : {}, auth: true }),
-  surveyState: () => req("/survey/state", { auth: true }),
-  surveyComplete: (payload) => req("/survey/complete", { method: "POST", body: payload, auth: true }),
-  surveyDismiss: (waveId) => req("/survey/dismiss", { method: "POST", body: { wave_id: waveId }, auth: true }),
   surveyDataDelete: () => req("/survey/response", { method: "DELETE", auth: true }),
   // My data (DPA): grouped uploads, per-item marketing consent, data requests.
   myData: () => req("/mydata", { auth: true }),

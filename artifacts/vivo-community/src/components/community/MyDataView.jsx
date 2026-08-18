@@ -158,9 +158,10 @@ export default function MyDataView({ onBack, onOpenPage }) {
   const messages = data?.messages || [];
   const quiz = data?.style_quiz;
   const surveys = data?.surveys || [];
+  const journey = data?.journey;
   const downloadReq = openRequest("download");
   const deleteReq = openRequest("delete_account");
-  const hasAnything = photos.length || looks.length || designs.length || messages.length || quiz || surveys.length;
+  const hasAnything = photos.length || looks.length || designs.length || messages.length || quiz || surveys.length || journey;
 
   return (
     <div className="max-w-xl mx-auto space-y-4" data-testid="mydata-view">
@@ -419,8 +420,9 @@ export default function MyDataView({ onBack, onOpenPage }) {
         </SectionCard>
       )}
 
-      {/* Survey answers */}
-      {surveys.length > 0 && (
+      {/* Survey answers — legacy wave responses + the "About your Vivo
+          journey" profile now collected on Style Preferences. */}
+      {(surveys.length > 0 || journey) && (
         <SectionCard
           icon={ClipboardList}
           title="Survey answers"
@@ -432,6 +434,11 @@ export default function MyDataView({ onBack, onOpenPage }) {
               {surveys.map((s) => (
                 <div key={s.wave_key}>{s.title} — completed {fmt(s.completed_at)}</div>
               ))}
+              {journey && (
+                <div data-testid="mydata-journey-row">
+                  About your Vivo journey{journey.completed_at ? ` — completed ${fmt(journey.completed_at)}` : " — in progress"}
+                </div>
+              )}
             </div>
             <ArmDelete
               id="survey"

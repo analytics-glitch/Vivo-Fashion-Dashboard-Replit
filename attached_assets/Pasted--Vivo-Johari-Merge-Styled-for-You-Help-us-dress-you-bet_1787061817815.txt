@@ -1,0 +1,50 @@
+# Vivo Johari — Merge "Styled for You" + "Help us dress you better"
+
+**Problem:** Two separate Home modules currently collect overlapping style/fit/size data through two different UI patterns — "Styled for You" → Style Preferences (single scrollable settings page, tap-to-select) and "Help us dress you better" → a 10-question, one-screen-per-question survey. This duplicates data collection, adds engineering overhead to keep both in sync, and clutters Home with two near-identical "tell us about yourself" CTAs.
+
+**Decision:** Merge into a single flow, built on the existing Style Preferences page pattern (scrollable, tap-to-select — not the one-question-per-screen swipe format).
+
+---
+
+## Resulting Home module
+
+Keep **one** module on Home: "Styled for You" (existing copy/design is fine — "Get weekly outfit and product recommendations selected around your style, size and preferences" / "Personalise My Style" / "Maybe Later"). Remove "Help us dress you better" as a separate Home module entirely.
+
+## Resulting Style Preferences page (single flow)
+
+Keep the page exactly as it is today, top to bottom:
+
+1. Weekly "Styled for You" recommendations toggle (off by default)
+2. Clothing size
+3. Preferred fit
+4. Favourite colours
+5. Preferred categories
+6. What do you dress for? (Workwear / Casual / Occasionwear / Activewear)
+7. Rather not see
+8. How often? (Weekly / Every two weeks / Monthly)
+9. Notifications & data toggles
+
+**Add a new section at the bottom**, before "Save preferences":
+
+10. **"About your Vivo journey"** (new section, clearly separated with a divider/header so it reads as distinct from the style-preference fields above)
+    - How long have you been shopping with Vivo? (Under a year / 1–3 years / 3–5 years / 5+ years / First time browsing) — carried over from the old survey's opening question
+    - How did you discover Vivo? (single-select: Instagram/TikTok, Friend/family, In-store, Search, Other)
+    - Roughly how often do you shop for clothing in general? (not Vivo-specific — distinct from the "How often?" field above, which is about recommendation frequency)
+    - One optional open-text field: "Anything you wish Vivo did differently?" (optional, skippable)
+    - **This section is optional and skippable independently of the style-preference fields above it.** A shopper can save just their size/fit/colour preferences without touching this section.
+    - **+30 points award specifically for completing this "About your Vivo journey" section** (not for the page as a whole) — this preserves the incentive that used to be attached to the whole 10-question survey, but scopes it to the genuinely new, non-redundant questions.
+
+That's 4 quick fields total for the journey section — down from 10 full screens — and none of them duplicate the size/fit/colour/category data already captured above.
+
+## What gets removed
+
+- The separate "Help us dress you better" Home banner/CTA.
+- The "Let's begin" intermediate screen and the one-question-per-screen swipe flow ("1 OF 10" progress bar, etc.).
+- Any survey questions that duplicated Style Preferences fields (size, fit, colour, category, occasion-type questions if the old survey asked similar ones).
+
+## Implementation notes for the Replit agent
+
+- This is a genuine merge, not a cosmetic one — the "About your Vivo journey" data and the style-preference data should still likely live in separate backend fields/tables (one is a customer-insight record, the other drives the recommendation engine), but they now share one page and one save action.
+- The points logic needs to move from "complete the 10-question survey" to "complete the About your Vivo journey section" — check whether points are currently awarded via a single survey-completion event and adjust the trigger accordingly.
+- Remove the now-orphaned survey route/component entirely rather than leaving it unlinked in the codebase.
+- Update the "Save preferences" button behavior: saving should work whether or not the About your Vivo journey section is filled in (partial save allowed).

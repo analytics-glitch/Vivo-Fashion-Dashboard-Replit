@@ -26,3 +26,5 @@ description: Per-item marketing-consent ledger, data-request flow, and the _ensu
 ## _ensure_tables DDL splice trap
 - The community DDL is ONE giant multi-statement triple-quoted string. New tables must be SPLICED INTO that string (e.g. after an existing index statement). A naive "find the closing paren/quote" append once dumped CREATE TABLEs into an unrelated CRM route ~2k lines away (IndentationError far from the cause).
 - **How to apply:** anchor patches on verbatim DDL text inside the string; add `ALTER TABLE … ADD COLUMN IF NOT EXISTS` lines in the same string for columns added after first ship (tables already exist in dev/prod).
+
+**New member-data tables must join the My Data surface.** Any new table storing member answers/content (e.g. the journey profile that replaced the survey) must be added to GET /api/community/mydata AND covered by a delete path, or it's a DPA regression — a member could no longer see/erase it. Points already earned stay (ledger UNIQUE(member_id,kind) prevents re-award after delete+retake). Also sweep Help/FAQ copy (legalData.js) when a flow moves — it names entry points.

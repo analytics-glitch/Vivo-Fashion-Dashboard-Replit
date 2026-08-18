@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Heart, MessageCircle, Share, ArrowRight, ChevronRight, Cake, Gift, X, ClipboardList, Trophy, HandHeart } from "lucide-react";
+import { Heart, MessageCircle, Share, ArrowRight, ChevronRight, Cake, Gift, X, Trophy, HandHeart } from "lucide-react";
 import PostDetailModal from "./PostDetailModal";
 import { PostVisual, timeAgo } from "./PostBits";
 import { TierBadge, Avatar, cardCls, brandAsset, SectionHeader } from "./ui";
@@ -436,55 +436,6 @@ function UpcomingEventCard({ ev, onOpen }) {
 /* "See it on you" (Virtual Try-On promo) moved to the Shop tab banner and
    individual product pages per the community-first homepage brief. */
 
-/* Survey promo — wave-scoped "Help us dress you better" card. Self-fetching:
-   renders only while the member hasn't completed the active wave AND the
-   server says the Home card should show ("Maybe later" hides it, it
-   re-surfaces once after a quiet few days, a second dismissal retires it —
-   the Rewards mission and Profile entry points always remain). */
-function SurveyPromoCard({ onOpenPage }) {
-  const [s, setS] = useState(null);
-  const [hidden, setHidden] = useState(false);
-  useEffect(() => {
-    let alive = true;
-    api.surveyState().then((d) => { if (alive) setS(d); }).catch(() => {});
-    return () => { alive = false; };
-  }, []);
-  if (hidden || !s?.wave || s.completed || !s.show_home_card) return null;
-  const later = () => {
-    setHidden(true); // gentle: card slips away now, the server remembers
-    api.surveyDismiss(s.wave.id).catch(() => {});
-  };
-  return (
-    <div data-testid="home-survey-card" className={`${cardCls} relative overflow-hidden p-6 sm:p-7 border-l-2 border-l-primary`}>
-      <div className="absolute top-0 right-0 w-40 h-40 bg-primary/5 rounded-full blur-2xl translate-x-1/3 -translate-y-1/3 pointer-events-none" />
-      <div className="inline-flex items-center gap-1.5 px-2 py-1 bg-primary-ink text-primary-foreground text-[10px] font-bold uppercase tracking-wider rounded-sm mb-4">
-        <ClipboardList size={11} /> +{s.points ?? 30} points
-      </div>
-      <h3 className="font-serif text-2xl text-foreground leading-tight mb-2">{s.wave.title}</h3>
-      <p className="text-[13px] text-muted-foreground leading-relaxed max-w-md mb-5">
-        Ten quick taps, under three minutes — tell us how Vivo fits your life
-        and earn {s.points ?? 30} points, instantly. Private to Vivo, always.
-      </p>
-      <div className="flex flex-col sm:flex-row sm:items-center gap-3">
-        <button
-          data-testid="home-survey-cta"
-          onClick={() => onOpenPage?.("survey")}
-          className="w-full sm:w-auto sm:px-8 bg-primary text-primary-foreground h-11 rounded font-medium text-[15px] flex items-center justify-center gap-2 hover:opacity-90 transition-all active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
-        >
-          Take the survey <ArrowRight size={15} />
-        </button>
-        <button
-          data-testid="home-survey-later"
-          onClick={later}
-          className="w-full sm:w-auto sm:px-5 h-11 rounded text-[13px] text-muted-foreground hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-        >
-          Maybe later
-        </button>
-      </div>
-    </div>
-  );
-}
-
 /* ---------- Editorial homepage sections (image-led redesign) ---------- */
 
 /* Hero campaign — one strong vertical campaign photo, overlay only where the
@@ -780,7 +731,6 @@ export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage,
             }}
             onPersonalise={() => onOpenPage("styleprefs")}
           />
-          <SurveyPromoCard onOpenPage={onOpenPage} />
         </div>
       )}
 

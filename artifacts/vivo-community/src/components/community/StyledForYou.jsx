@@ -221,12 +221,13 @@ function Toggle({ on, onChange, testId, label }) {
 
 export function useStylePrefs() {
   const [prefs, setPrefs] = useState(null);
+  const [journey, setJourney] = useState(null);
   const [options, setOptions] = useState(FALLBACK_OPTIONS);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
     let on = true;
     api.stylePrefs()
-      .then((d) => { if (on) { setPrefs(d.prefs); setOptions({ ...FALLBACK_OPTIONS, ...(d.options || {}) }); } })
+      .then((d) => { if (on) { setPrefs(d.prefs); setJourney(d.journey || null); setOptions({ ...FALLBACK_OPTIONS, ...(d.options || {}) }); } })
       .catch(() => {})
       .finally(() => on && setLoading(false));
     return () => { on = false; };
@@ -234,19 +235,30 @@ export function useStylePrefs() {
   const save = async (patch) => {
     const d = await api.stylePrefsSave(patch);
     setPrefs(d.prefs);
-    return d.prefs;
+    if (d.journey) setJourney(d.journey);
+    return d;
   };
-  return { prefs, options, loading, save, setPrefs };
+  return { prefs, journey, options, loading, save, setPrefs };
 }
 
 export function StylePrefsView({ onBack }) {
-  const { prefs, options, loading, save } = useStylePrefs();
+  const { prefs, journey, options, loading, save } = useStylePrefs();
   const [draft, setDraft] = useState(null);
+  const [jDraft, setJDraft] = useState(null);
+  const [jCompleted, setJCompleted] = useState(false);
+  const [jAwarded, setJAwarded] = useState(false);
   const [cats, setCats] = useState([]);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
   useEffect(() => { if (prefs && !draft) setDraft(prefs); }, [prefs]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (journey && !jDraft) {
+      setJDraft({ tenure: journey.tenure || "", discovery: journey.discovery || "",
+                  shop_frequency: journey.shop_frequency || "", feedback: journey.feedback || "" });
+      setJCompleted(!!journey.completed);
+    }
+  }, [journey]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     api.products({ limit: 1 }).then((d) => setCats((d.categories || []).map((c) => c.name))).catch(() => {});
   }, []);
@@ -260,7 +272,11 @@ export function StylePrefsView({ onBack }) {
   const submit = async () => {
     setSaving(true); setError(""); setSaved(false);
     try {
-      await save(draft);
+      // Journey section is optional: it rides along with the same save, but
+      // the style fields above save fine even if it's untouched.
+      const d = await save(jDraft ? { ...draft, journey: jDraft } : draft);
+      if (d?.journey) setJCompleted(!!d.journey.completed);
+      if (d?.journey_awarded) setJAwarded(true);
       setSaved(true);
       try { sessionStorage.removeItem(LATER_KEY); } catch { /* private mode */ }
       setTimeout(() => setSaved(false), 2500);
@@ -388,8 +404,74 @@ export function StylePrefsView({ onBack }) {
             </div>
           </div>
         </Section>
+
+        {/* ---- About your Vivo journey (merged from the old "Help us dress
+             you better" survey). Optional & skippable independently of the
+             style fields above; +30 pts once all three selects are answered. */}
+        {jDraft && (
+          <div data-testid="sfy-journey" className="pt-6 mt-2 border-t border-border">
+            <div className="mb-4 flex items-start justify-between gap-3">
+              <div>
+                <div className="font-serif text-xl text-foreground">About your Vivo journey</div>
+                <div className="text-[12px] text-muted-foreground mt-1 max-w-md">
+                  Four quick questions about you and Vivo — totally optional, and
+                  separate from your style preferences above.
+                </div>
+              </div>
+              {jCompleted ? (
+                <span data-testid="sfy-journey-done" className="inline-flex items-center gap-1 text-[11px] font-bold uppercase tracking-wider text-primary-ink shrink-0 mt-1">
+                  <Check size={12} /> Completed
+                </span>
+              ) : (
+                <span data-testid="sfy-journey-pts" className="inline-flex items-center px-2 py-1 bg-primary-ink text-primary-foreground text-[10px] font-bold uppercase tracking-wider rounded-sm shrink-0">
+                  +30 points
+                </span>
+              )}
+            </div>
+            <div className="space-y-4">
+              <Section title="How long have you been shopping with Vivo?">
+                <div className="flex flex-wrap gap-2">
+                  {(options.journey?.tenures || []).map((t) => (
+                    <Chip key={t} on={jDraft.tenure === t}
+                      onClick={() => setJDraft((j) => ({ ...j, tenure: j.tenure === t ? "" : t }))}
+                      testId={`sfy-journey-tenure-${t.replace(/[^a-zA-Z0-9]+/g, "-")}`}>{t}</Chip>
+                  ))}
+                </div>
+              </Section>
+              <Section title="How did you discover Vivo?">
+                <div className="flex flex-wrap gap-2">
+                  {(options.journey?.discoveries || []).map((t) => (
+                    <Chip key={t} on={jDraft.discovery === t}
+                      onClick={() => setJDraft((j) => ({ ...j, discovery: j.discovery === t ? "" : t }))}
+                      testId={`sfy-journey-disc-${t.replace(/[^a-zA-Z0-9]+/g, "-")}`}>{t}</Chip>
+                  ))}
+                </div>
+              </Section>
+              <Section title="Roughly how often do you shop for clothing?" hint="Anywhere — not just Vivo.">
+                <div className="flex flex-wrap gap-2">
+                  {(options.journey?.shop_frequencies || []).map((t) => (
+                    <Chip key={t} on={jDraft.shop_frequency === t}
+                      onClick={() => setJDraft((j) => ({ ...j, shop_frequency: j.shop_frequency === t ? "" : t }))}
+                      testId={`sfy-journey-shopfreq-${t.replace(/[^a-zA-Z0-9]+/g, "-")}`}>{t}</Chip>
+                  ))}
+                </div>
+              </Section>
+              <Section title="Anything you wish Vivo did differently?" hint="Optional — skip it if nothing comes to mind.">
+                <textarea data-testid="sfy-journey-feedback" value={jDraft.feedback} maxLength={1000}
+                  onChange={(e) => setJDraft((j) => ({ ...j, feedback: e.target.value }))}
+                  rows={3} placeholder="Tell us anything…"
+                  className="w-full rounded border border-border bg-background px-3 py-2 text-[13px] text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary resize-none" />
+              </Section>
+            </div>
+          </div>
+        )}
       </div>
 
+      {jAwarded && (
+        <div data-testid="sfy-journey-awarded" className="mt-4 text-[13px] text-primary-ink inline-flex items-center gap-1.5">
+          <Sparkles size={14} /> +30 points added — thanks for telling us about your Vivo journey.
+        </div>
+      )}
       {error && <div className="mt-4 text-[13px] text-destructive">{error}</div>}
       <div className="mt-6 flex items-center gap-3">
         <button data-testid="sfy-save" onClick={submit} disabled={saving}

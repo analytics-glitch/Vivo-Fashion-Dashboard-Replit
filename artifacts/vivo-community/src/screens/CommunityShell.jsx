@@ -19,7 +19,6 @@ import GivingBackView from "@/components/community/GivingBackView";
 import { FabulasStoryView } from "@/components/community/FabulasStory";
 import ContactView from "@/components/community/ContactView";
 import TryOnView from "@/components/community/TryOnView";
-import SurveyView from "@/components/community/SurveyView";
 import MyDataView from "@/components/community/MyDataView";
 import { StylePrefsView } from "@/components/community/StyledForYou";
 import { VivoEditsAllView, VivoEditDetail, VivoEditsHome } from "@/components/community/VivoEdits";
@@ -40,7 +39,7 @@ const TABS = [
 
 // Static help & legal pages routed via the ?page= param. News articles ride
 // the same param as "news-{id}", validated against the NEWS list.
-const PAGES = ["faq", "contact", "terms", "privacy", "guidelines", "tryon", "mydata", "survey", "help", "givingback", "styleprefs", "stores", "delivery", "returns", "edits"];
+const PAGES = ["faq", "contact", "terms", "privacy", "guidelines", "tryon", "mydata", "help", "givingback", "styleprefs", "stores", "delivery", "returns", "edits"];
 const isValidPage = (v) => PAGES.includes(v) || isNewsPageId(v);
 
 const badgeCls = "absolute top-0.5 right-0 min-w-[18px] h-[18px] px-1 rounded-full bg-primary-ink text-primary-foreground text-[10px] font-bold flex items-center justify-center";
@@ -502,7 +501,7 @@ function ShellInner() {
             via URL state (?page= / ?event=) that carry member-authenticated
             writes: try-on, survey, my-data, contact and event RSVP. Browsing
             surfaces (products, cart, wishlist, news, legal, help) stay open. */}
-        {!member && (eventId || ["tryon", "survey", "mydata", "contact", "styleprefs"].includes(page)) ? (
+        {!member && (eventId || ["tryon", "mydata", "contact", "styleprefs"].includes(page)) ? (
           <GuestGate
             title={eventId ? "Events are for members" : "This is a member space"}
             body="Sign in or create a free account to RSVP to events, use member tools and get in touch — it only takes a minute."
@@ -511,8 +510,6 @@ function ShellInner() {
         ) : page ? (
           page === "tryon" ? (
             <TryOnView onBack={closePage} member={member} />
-          ) : page === "survey" ? (
-            <SurveyView onBack={closePage} member={member} onMemberUpdate={updateMember} />
           ) : page === "styleprefs" ? (
             <StylePrefsView onBack={closePage} />
           ) : page === "stores" ? (

@@ -791,6 +791,19 @@ def _ensure_tables():
             use_activity BOOLEAN NOT NULL DEFAULT FALSE,
             updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
         );
+        -- "About your Vivo journey" — customer-insight record collected on the
+        -- Style Preferences page (merged from the old "Help us dress you
+        -- better" survey). Kept SEPARATE from community_style_prefs: prefs
+        -- drive the recommendation engine, this is a one-off insight profile.
+        CREATE TABLE IF NOT EXISTS community_journey_profile (
+            member_id INT PRIMARY KEY REFERENCES community_members(id),
+            tenure TEXT NOT NULL DEFAULT '',
+            discovery TEXT NOT NULL DEFAULT '',
+            shop_frequency TEXT NOT NULL DEFAULT '',
+            feedback TEXT NOT NULL DEFAULT '',
+            completed_at TIMESTAMPTZ,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
         CREATE INDEX IF NOT EXISTS community_redemptions_member_idx
             ON community_redemptions (member_id, created_at DESC);
         -- Event RSVPs: one row per (event, member); cancelling flips status
@@ -3205,7 +3218,33 @@ def register_community_routes(app, api_pg_module):
     def _sfy_options():
         return {"sizes": _SFY_SIZES, "fits": _SFY_FITS,
                 "colours": sorted(COMMUNITY_COLOR_BUCKETS.keys()),
-                "interests": _SFY_INTERESTS, "frequencies": _SFY_FREQS}
+                "interests": _SFY_INTERESTS, "frequencies": _SFY_FREQS,
+                "journey": {"tenures": _JOURNEY_TENURES,
+                            "discoveries": _JOURNEY_DISCOVERIES,
+                            "shop_frequencies": _JOURNEY_SHOP_FREQS}}
+
+    # "About your Vivo journey" — merged from the old "Help us dress you
+    # better" survey. Optional/skippable independently of the style fields;
+    # +30 pts awarded ONCE when all three selects are answered (open text
+    # stays optional). Ledger kind 'vivo_journey' makes the award idempotent.
+    JOURNEY_BONUS_PTS = 30
+    _JOURNEY_TENURES = ["Under a year", "1–3 years", "3–5 years", "5+ years",
+                        "First time browsing"]
+    _JOURNEY_DISCOVERIES = ["Instagram/TikTok", "Friend/family", "In-store",
+                            "Search", "Other"]
+    _JOURNEY_SHOP_FREQS = ["Every week", "Once or twice a month",
+                           "Every few months", "A few times a year"]
+
+    def _journey_payload(cur, member_id):
+        cur.execute("SELECT tenure, discovery, shop_frequency, feedback, completed_at "
+                    "FROM community_journey_profile WHERE member_id = %s", (member_id,))
+        row = cur.fetchone() or {}
+        return {"tenure": row.get("tenure") or "",
+                "discovery": row.get("discovery") or "",
+                "shop_frequency": row.get("shop_frequency") or "",
+                "feedback": row.get("feedback") or "",
+                "completed": row.get("completed_at") is not None,
+                "points": JOURNEY_BONUS_PTS}
 
     @app.get("/api/community/style-prefs")
     def community_style_prefs_get(request: Request):
@@ -3214,7 +3253,9 @@ def register_community_routes(app, api_pg_module):
         with _db() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 m = _require_member(cur, request)
-                return {"prefs": _sfy_prefs(cur, m["id"]), "options": _sfy_options()}
+                return {"prefs": _sfy_prefs(cur, m["id"]),
+                        "journey": _journey_payload(cur, m["id"]),
+                        "options": _sfy_options()}
 
     @app.put("/api/community/style-prefs")
     def community_style_prefs_save(request: Request, payload: dict = Body(...)):
@@ -3283,8 +3324,57 @@ def register_community_routes(app, api_pg_module):
                      nxt["frequency"], nxt["notify_push"], nxt["notify_email"],
                      nxt["use_activity"], m["id"]),
                 )
+
+                # "About your Vivo journey" — optional; partial saves of the
+                # style fields above never depend on it. Award fires once,
+                # only when all three selects are answered.
+                journey_awarded = False
+                jp = p.get("journey")
+                if isinstance(jp, dict):
+                    j = _journey_payload(cur, m["id"])
+                    if isinstance(jp.get("tenure"), str):
+                        j["tenure"] = jp["tenure"] if jp["tenure"] in _JOURNEY_TENURES else j["tenure"]
+                    if isinstance(jp.get("discovery"), str):
+                        j["discovery"] = jp["discovery"] if jp["discovery"] in _JOURNEY_DISCOVERIES else j["discovery"]
+                    if isinstance(jp.get("shop_frequency"), str):
+                        j["shop_frequency"] = jp["shop_frequency"] if jp["shop_frequency"] in _JOURNEY_SHOP_FREQS else j["shop_frequency"]
+                    if isinstance(jp.get("feedback"), str):
+                        j["feedback"] = jp["feedback"].strip()[:1000]
+                    if any([j["tenure"], j["discovery"], j["shop_frequency"], j["feedback"]]):
+                        complete = bool(j["tenure"] and j["discovery"] and j["shop_frequency"])
+                        cur.execute(
+                            """INSERT INTO community_journey_profile
+                                 (member_id, tenure, discovery, shop_frequency, feedback,
+                                  completed_at, updated_at)
+                               VALUES (%s, %s, %s, %s, %s,
+                                       CASE WHEN %s THEN now() END, now())
+                               ON CONFLICT (member_id) DO UPDATE SET
+                                 tenure = EXCLUDED.tenure,
+                                 discovery = EXCLUDED.discovery,
+                                 shop_frequency = EXCLUDED.shop_frequency,
+                                 feedback = EXCLUDED.feedback,
+                                 completed_at = COALESCE(community_journey_profile.completed_at,
+                                                         EXCLUDED.completed_at),
+                                 updated_at = now()""",
+                            (m["id"], j["tenure"], j["discovery"], j["shop_frequency"],
+                             j["feedback"], complete),
+                        )
+                        if complete:
+                            cur.execute(
+                                """INSERT INTO community_points_events (member_id, kind, points)
+                                   VALUES (%s, 'vivo_journey', %s)
+                                   ON CONFLICT (member_id, kind) DO NOTHING
+                                   RETURNING id""",
+                                (m["id"], JOURNEY_BONUS_PTS))
+                            journey_awarded = cur.fetchone() is not None
+                            if journey_awarded:
+                                _me_cache.pop(m["id"], None)
+
                 conn.commit()
-                return {"prefs": nxt, "options": _sfy_options()}
+                return {"prefs": nxt,
+                        "journey": _journey_payload(cur, m["id"]),
+                        "journey_awarded": journey_awarded,
+                        "options": _sfy_options()}
 
     @app.get("/api/community/styled-for-you")
     def community_styled_for_you(request: Request):
@@ -7240,6 +7330,10 @@ def register_community_routes(app, api_pg_module):
                         ORDER BY r.completed_at DESC""", (mid,))
                 surveys = [dict(r) for r in cur.fetchall()]
                 cur.execute(
+                    """SELECT tenure, discovery, shop_frequency, feedback, completed_at
+                         FROM community_journey_profile WHERE member_id = %s""", (mid,))
+                journey = cur.fetchone()
+                cur.execute(
                     """SELECT id, kind, status, created_at
                          FROM community_data_requests
                         WHERE member_id = %s
@@ -7252,6 +7346,7 @@ def register_community_routes(app, api_pg_module):
             "messages": messages,
             "style_quiz": dict(quiz) if quiz else None,
             "surveys": surveys,
+            "journey": dict(journey) if journey else None,
             "requests": reqs,
         }
 
@@ -7404,9 +7499,10 @@ def register_community_routes(app, api_pg_module):
 
     @app.delete("/api/community/survey/response")
     def community_survey_response_delete(request: Request):
-        """DPA: delete her survey answers (every wave). Points already
-        earned stay put — UNIQUE(member_id, kind) on the points ledger
-        means a later retake never re-awards."""
+        """DPA: delete her survey answers (every wave) AND her "About your
+        Vivo journey" profile (the survey's successor on Style Preferences).
+        Points already earned stay put — UNIQUE(member_id, kind) on the
+        points ledger means a later retake never re-awards."""
         _ensure_tables()
         with _db() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -7414,6 +7510,9 @@ def register_community_routes(app, api_pg_module):
                 cur.execute("DELETE FROM community_survey_responses WHERE member_id = %s",
                             (m["id"],))
                 gone = cur.rowcount
+                cur.execute("DELETE FROM community_journey_profile WHERE member_id = %s",
+                            (m["id"],))
+                gone += cur.rowcount
             conn.commit()
         if not gone:
             raise HTTPException(status_code=404, detail="Nothing to delete")

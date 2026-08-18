@@ -608,15 +608,15 @@ export default function TabProfile({ member, onSignOut, onMemberUpdate, onOpenWi
             </button>
             <button
               data-testid="profile-survey-link"
-              onClick={() => onOpenPage?.("survey")}
+              onClick={() => onOpenPage?.("styleprefs")}
               className="w-full p-5 flex items-center gap-4 text-left border-t border-border hover:bg-secondary/50 transition-colors group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset"
             >
               <span className="w-11 h-11 rounded-full bg-secondary border border-border flex items-center justify-center text-primary-ink shrink-0">
                 <ClipboardList size={18} strokeWidth={1.5} />
               </span>
               <span className="flex-grow min-w-0">
-                <span className="block font-medium text-foreground text-[15px]">Help us dress you better</span>
-                <span className="block text-[13px] text-muted-foreground mt-0.5">A three-minute survey — 30 points, instantly.</span>
+                <span className="block font-medium text-foreground text-[15px]">About your Vivo journey</span>
+                <span className="block text-[13px] text-muted-foreground mt-0.5">Four quick questions on Style Preferences — 30 points.</span>
               </span>
               <ChevronRight size={16} className="text-muted-foreground group-hover:text-foreground transition-colors shrink-0" />
             </button>
