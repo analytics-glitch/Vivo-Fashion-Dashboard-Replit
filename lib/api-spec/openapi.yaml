@@ -2799,6 +2799,10 @@ components:
         styleName: { type: string, nullable: true }
         brand: { type: string, nullable: true }
         subcategory: { type: string, nullable: true }
+        category: { type: string, nullable: true }
+        colourway: { type: string, nullable: true }
+        price: { type: number, nullable: true }
+        launchDate: { type: string, nullable: true }
         status: { type: string }
         image: { type: string, nullable: true }
     CatalogueStyleDetail:

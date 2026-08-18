@@ -1268,23 +1268,26 @@ a { color: inherit; text-decoration: none; }
 @media (max-width: 760px) { .catalogue-row { grid-template-columns: 25px 72px minmax(130px,1fr) 24px; } .catalogue-thumb { width: 72px; height: 90px; } }
 /* Full catalogue grid */
 .full-cat-tools { flex-wrap: wrap; }
-.full-cat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 16px; transition: opacity .15s ease; }
+.full-cat-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; transition: opacity .15s ease; }
+@media (max-width: 1024px) { .full-cat-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 640px)  { .full-cat-grid { grid-template-columns: 1fr; } }
 .full-cat-grid.is-refreshing { opacity: .55; }
-.full-cat-skeleton { height: 240px; border-radius: 4px; }
+.full-cat-skeleton { height: 420px; border-radius: 4px; }
 .full-cat-card { background: #fff; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; display: flex; flex-direction: column; text-align: left; padding: 0; cursor: pointer; color: inherit; font: inherit; transition: border-color .15s ease, transform .15s ease, box-shadow .15s ease; }
-.full-cat-card:hover { border-color: #C9A96E; transform: translateY(-2px); box-shadow: 0 8px 20px rgba(26,26,46,.08); }
-.full-cat-thumb { height: 120px; background: #F5F5F0; display: grid; place-items: center; }
-.full-cat-thumb img { max-height: 120px; width: 100%; height: 120px; object-fit: contain; }
-.full-cat-initials { font: 500 26px var(--app-font-serif, Georgia, serif); color: #B9B2A6; letter-spacing: .06em; }
-.full-cat-body { padding: 12px 14px 14px; display: grid; gap: 4px; }
-.full-cat-number { font-size: 10px; color: #9099a6; }
-.full-cat-name { font-size: 12.5px; font-weight: 600; color: var(--ink); line-height: 1.35; }
-.full-cat-sub { font-size: 11px; color: #7e8997; }
-.full-cat-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 6px; }
-.full-cat-brand { font: 10px var(--app-font-mono); text-transform: uppercase; color: #7e8997; }
-.full-cat-status { font: 600 10px var(--app-font-sans, 'Inter', sans-serif); letter-spacing: .05em; text-transform: uppercase; padding: 3px 8px; border-radius: 4px; }
-.full-cat-status.is-active { color: #2E6B4F; background: #EAF3EE; border: 1px solid #CBE2D4; }
-.full-cat-status.is-retired { color: #8A6A1F; background: #F8F1DE; border: 1px solid #EADFC0; }
+.full-cat-card:hover { border-color: #C9A96E; transform: translateY(-3px); box-shadow: 0 10px 26px rgba(26,26,46,.1); }
+.full-cat-thumb { position: relative; aspect-ratio: 4 / 5; background: #F5F5F0; display: grid; place-items: center; overflow: hidden; }
+.full-cat-thumb img { width: 100%; height: 100%; object-fit: cover; object-position: top; }
+.full-cat-status-badge { position: absolute; top: 10px; left: 10px; z-index: 1; font: 600 10px var(--app-font-sans, 'Inter', sans-serif); letter-spacing: .06em; text-transform: uppercase; padding: 3px 9px; border-radius: 999px; background: rgba(26,26,46,.72); color: #fff; }
+.full-cat-status-badge.is-retired { background: rgba(110,84,20,.78); }
+.full-cat-initials { font: 500 34px var(--app-font-serif, Georgia, serif); color: #B9B2A6; letter-spacing: .06em; }
+.full-cat-body { padding: 12px 14px 14px; display: grid; gap: 3px; }
+.full-cat-name { font-size: 13px; font-weight: 700; color: var(--ink); line-height: 1.35; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.full-cat-colour { font-size: 11.5px; color: #7e8997; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.full-cat-meta-row { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-top: 2px; }
+.full-cat-price { font-size: 12px; font-weight: 600; color: var(--ink); }
+.full-cat-launch { font-size: 10.5px; color: #9099a6; white-space: nowrap; }
+.full-cat-sub { font-size: 10.5px; color: #8b95a3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.full-cat-brand { font: 10px var(--app-font-mono); text-transform: uppercase; letter-spacing: .08em; color: #7e8997; margin-top: 2px; }
 .full-cat-pager { display: flex; align-items: center; justify-content: center; gap: 16px; margin-top: 24px; font-size: 12px; color: #7e8997; }
 
 /* ---- L10 Meeting — the product development operating room ---- */

@@ -3,6 +3,16 @@ import { Check, ChevronLeft, ChevronRight, CircleAlert, Search, X } from 'lucide
 import { getListCatalogueProductsQueryKey, useListCatalogueProducts } from '@workspace/api-client-react';
 import type { CatalogueStyle } from '@workspace/api-client-react';
 
+const fmtKES = (value?: number | null) =>
+  value == null || Number.isNaN(Number(value)) ? null : `KES ${Math.round(Number(value)).toLocaleString('en-KE')}`;
+
+const fmtMonthYear = (iso?: string | null) => {
+  if (!iso) return null;
+  const date = new Date(`${iso.slice(0, 10)}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return iso;
+  return date.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' });
+};
+
 const styleInitials = (style: CatalogueStyle) =>
   (style.styleName || style.styleNumber || '?')
     .replace(/^(Vivo|Safari by Vivo|Safari|Zoya)\s+/i, '')
@@ -124,16 +134,18 @@ export default function FullCataloguePage() {
               {data.items.map((style) => (
                  <button className="full-cat-card" type="button" onClick={() => setSelectedStyleNumber(style.styleNumber)} key={style.styleNumber} data-testid={`card-full-cat-${style.styleNumber}`}>
                   <div className="full-cat-thumb">
+                    <span className={`full-cat-status-badge ${style.status === 'Active' ? 'is-active' : 'is-retired'}`}>{style.status}</span>
                     {style.image ? <img src={style.image} alt={style.styleName || style.styleNumber} loading="lazy" /> : <span className="full-cat-initials">{styleInitials(style)}</span>}
                   </div>
                   <div className="full-cat-body">
-                    <span className="mono full-cat-number">{style.styleNumber}</span>
-                    <strong className="full-cat-name">{style.styleName || 'Unnamed style'}</strong>
-                    <span className="full-cat-sub">{style.subcategory || '—'}</span>
-                    <div className="full-cat-foot">
-                      <span className="full-cat-brand">{style.brand || '—'}</span>
-                      <span className={`full-cat-status ${style.status === 'Active' ? 'is-active' : 'is-retired'}`}>{style.status}</span>
+                    <strong className="full-cat-name" title={style.styleName || undefined}>{style.styleName || 'Unnamed style'}</strong>
+                    <span className="full-cat-colour" title={style.colourway || undefined}>{style.colourway || '\u00A0'}</span>
+                    <div className="full-cat-meta-row">
+                      <span className="full-cat-price">{fmtKES(style.price) || '—'}</span>
+                      {style.launchDate ? <span className="full-cat-launch">{fmtMonthYear(style.launchDate)}</span> : null}
                     </div>
+                    <span className="full-cat-sub">{[style.category, style.subcategory].filter(Boolean).join(' · ') || '—'}</span>
+                    <span className="full-cat-brand">{style.brand || '—'}</span>
                   </div>
                  </button>
               ))}

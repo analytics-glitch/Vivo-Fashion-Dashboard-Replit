@@ -5606,6 +5606,7 @@ router.patch("/catalogue-products/range-tier", async (req, res, next) => {
       `UPDATE public.all_products_clean
        SET range_tier=$1
        WHERE style_number=$2 AND LOWER(COALESCE(status,'')) IN ('active','retired')
+         AND brand IN (${ALLOWED_BRANDS_SQL})
        RETURNING style_number AS "styleNumber"`,
       [rangeTier, styleNumber],
     );
@@ -5667,6 +5668,11 @@ router.get("/catalogue-products", async (req, res, next) => {
              MAX(a.style_name) AS "styleName",
              MAX(a.brand) AS brand,
              MAX(a.product_type) AS subcategory,
+             MAX(NULLIF(TRIM(COALESCE(a.category,'')),'')) AS category,
+             MAX(a.price)::float AS price,
+             MAX(NULLIF(TRIM(COALESCE(a.style_launch_date,'')),'')) AS "launchDate",
+             COUNT(DISTINCT NULLIF(TRIM(COALESCE(a.color_print,'')),'')) AS colour_count,
+             MIN(NULLIF(TRIM(COALESCE(a.color_print,'')),'')) AS any_colour,
              CASE WHEN BOOL_OR(LOWER(a.status)='active') THEN 'Active' ELSE 'Retired' END AS status,
               CASE
                 WHEN BOOL_OR(COALESCE(a.is_noos,FALSE) OR UPPER(COALESCE(a.tier,''))='NOOS' OR UPPER(COALESCE(a.range_tier,''))='NOOS') THEN 'NOOS'
@@ -5711,8 +5717,12 @@ router.get("/catalogue-products", async (req, res, next) => {
       ),
     ]);
     res.json({
-      items: rows.rows.map(({ any_sku: _drop, image, ...row }) => ({
+      items: rows.rows.map(({ any_sku: _drop, colour_count, any_colour, image, ...row }) => ({
         ...row,
+        colourway:
+          Number(colour_count) > 1
+            ? `${Number(colour_count)} colourways`
+            : (any_colour ?? null),
         image: image ? (String(image).startsWith("data:") ? String(image) : `data:image/jpeg;base64,${image}`) : null,
       })),
       total: count.rows[0].total,

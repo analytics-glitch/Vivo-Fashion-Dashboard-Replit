@@ -910,6 +910,10 @@ export interface CatalogueStyle {
   styleName?: string | null;
   brand?: string | null;
   subcategory?: string | null;
+  category?: string | null;
+  colourway?: string | null;
+  price?: number | null;
+  launchDate?: string | null;
   status: string;
   image?: string | null;
 }
