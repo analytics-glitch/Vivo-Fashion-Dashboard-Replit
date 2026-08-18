@@ -465,6 +465,7 @@ export default function VivoEdits() {
         saving={saving}
         onSave={save}
         onChanged={load}
+        onPreview={() => setPreviewItem(editing)}
       />
 
       {previewItem && (
@@ -481,7 +482,7 @@ export default function VivoEdits() {
 
 function EditDialog({
   open, onOpenChange, editing, form, setForm, newImages, setNewImages,
-  removeNewImage, onPickFiles, fileRef, saving, onSave, onChanged,
+  removeNewImage, onPickFiles, fileRef, saving, onSave, onChanged, onPreview,
 }) {
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
   const [imgBusy, setImgBusy] = useState(null);
@@ -647,6 +648,11 @@ function EditDialog({
 
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>Cancel</Button>
+          {editing && (
+            <Button variant="outline" onClick={onPreview} disabled={saving} data-testid="ve-f-preview">
+              <Eye className="h-3.5 w-3.5 mr-1" /> Preview
+            </Button>
+          )}
           <Button onClick={onSave} disabled={saving} className="bg-[var(--vivo-navy)] hover:bg-[var(--vivo-navy-700)] text-white" data-testid="ve-f-save">
             {saving ? "Saving…" : editing ? "Save changes" : "Create edit"}
           </Button>
