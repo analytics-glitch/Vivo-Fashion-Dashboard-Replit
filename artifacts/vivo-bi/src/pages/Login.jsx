@@ -130,7 +130,21 @@ const Login = () => {
     // Our backend starts the Google OAuth flow, then redirects back to
     // /auth/callback#token=<session> (or #error=…). API is "/api" (same
     // origin) in production, or the full backend URL in the preview env.
-    window.location.href = `${API}/auth/google/login`;
+    const url = `${API}/auth/google/login`;
+    // Google refuses to render its sign-in page inside an iframe (generic
+    // 403 "you do not have access to this page"). When the app is embedded
+    // (e.g. the Replit workspace preview pane), break out to the top window;
+    // if that's blocked by the sandbox, fall back to a new tab.
+    if (window.self !== window.top) {
+      try {
+        window.top.location.href = url;
+        return;
+      } catch {
+        window.open(url, "_blank", "noopener");
+        return;
+      }
+    }
+    window.location.href = url;
   };
 
   return (
