@@ -5123,6 +5123,462 @@ def _online_subcats_payload(category, from_date, to_date, country=None,
     return {"category": category, "rows": rows}
 
 
+def _fetch_online_colourways(from_date, to_date, country=None, brand=None,
+                             subcategory=None):
+    """Page-level Colourway Performance for the Online Performance tab —
+    the online analogue of the Style Deep Dive's per-style colourway section
+    (_fetch_style_colors), at (style_number, colour) grain across the whole
+    online assortment.
+
+    Scope canon (matches the rest of the online-performance surface):
+      • sales   = _ONLINE_SALE_PRED + _BASE_FILTERS, country folded via the
+        Kenya→'Online' pseudo-country rule (same as _op_filters);
+      • stock   = all_inventory locations ILIKE '%%online%%' only, with the
+        same country fold on i.country (same as _op_soh_sql);
+      • products = third-party brands excluded (merch hub scope), optional
+        brand / subcategory (product_type) narrowing.
+
+    Metric canon mirrors _fetch_style_colors exactly, with online-only
+    inputs: period units/revenue from the hub date filter; WOC from FIXED
+    trailing 6-month online units ÷ 26; rule inputs from FIXED trailing
+    4/8/12-week windows with SOR = units ÷ (units + current online SOH);
+    ASP is VAT-inclusive & discount-aware vs the modal ticket price.
+
+    The Restock / Marketing / Retire classification (same thresholds and
+    precedence as the deep dive's client-side COLOR_REC) is done HERE
+    because Marketing/Retire need style-level facts (last production order,
+    lifecycle tier, launch date incl. first-sale fallback) across many
+    styles. Restock is purely colour-level so it scans every row; style
+    attributes are fetched only for styles with a colour passing the cheap
+    Marketing/Retire colour-level pre-filters (plus the charted styles).
+
+    Rows with no online stock and no period online sales are hidden (same
+    rule as the deep-dive section).
+    """
+    today      = date.today()
+    six_mo_ago = str(today - timedelta(days=_SIX_MONTHS_DAYS))
+    today_str  = str(today)
+    wk4_ago    = str(today - timedelta(weeks=4))
+    wk8_ago    = str(today - timedelta(weeks=8))
+    wk12_ago   = str(today - timedelta(weeks=12))
+    period_from = from_date or six_mo_ago
+    period_to   = to_date or today_str
+
+    # Country fold — Kenya keeps the 'Online' pseudo-country on BOTH the
+    # sales side (s.country) and the inventory side (i.country).
+    params = {
+        "period_from": period_from, "period_to": period_to,
+        "six_mo_ago": six_mo_ago, "today": today_str,
+        "wk4_ago": wk4_ago, "wk8_ago": wk8_ago, "wk12_ago": wk12_ago,
+    }
+    sales_ctry = inv_ctry = ""
+    cvals = [c.strip() for c in str(country).split(",") if c.strip()] if country else []
+    if cvals:
+        if "Kenya" in cvals and "Online" not in cvals:
+            cvals = cvals + ["Online"]
+        params["countries"] = cvals
+        sales_ctry = " AND s.country = ANY(%(countries)s)"
+        inv_ctry   = " AND i.country = ANY(%(countries)s)"
+
+    prod_extra = ""
+    if brand:
+        bvals = [v.strip() for v in str(brand).split(",") if v.strip()]
+        if bvals:
+            params["brands"] = bvals
+            prod_extra += " AND brand = ANY(%(brands)s)"
+    if subcategory:
+        scvals = [v.strip() for v in str(subcategory).split(",") if v.strip()]
+        if scvals:
+            params["subcats"] = scvals
+            prod_extra += " AND product_type = ANY(%(subcats)s)"
+
+    sql = f"""
+WITH sk AS (
+    SELECT sku, style_number,
+           COALESCE(NULLIF(TRIM(color_print), ''), '—') AS color,
+           price
+    FROM all_products_clean
+    WHERE sku IS NOT NULL AND sku <> ''
+      AND style_number IS NOT NULL AND style_number <> ''
+      AND COALESCE(brand,'') NOT ILIKE '%%third party%%'
+      {prod_extra}
+),
+sales AS (
+    SELECT k.style_number, k.color,
+        SUM(s.ordered_item_quantity) FILTER (
+            WHERE s.sale_kind IN ('sale','order')
+        )                             AS units_sold,
+        SUM({_NET_SALES_EXPR})        AS revenue
+    FROM sk k
+    JOIN all_sales s ON s.variant_sku = k.sku
+    WHERE s.sale_date BETWEEN %(period_from)s AND %(period_to)s
+        AND {_BASE_FILTERS}
+        AND {_ONLINE_SALE_PRED}
+        {sales_ctry}
+    GROUP BY k.style_number, k.color
+),
+stock AS (
+    SELECT k.style_number, k.color,
+        COALESCE(SUM(i.available), 0) AS soh
+    FROM sk k
+    JOIN all_inventory i ON i.sku = k.sku
+    WHERE i.available > 0
+      AND i.pos_location_name ILIKE '%%online%%'
+      {inv_ctry}
+    GROUP BY k.style_number, k.color
+),
+sales_6m AS (
+    SELECT k.style_number, k.color,
+        SUM(s.ordered_item_quantity) FILTER (
+            WHERE s.sale_kind IN ('sale','order')
+        )                             AS units_6m
+    FROM sk k
+    JOIN all_sales s ON s.variant_sku = k.sku
+    WHERE s.sale_date BETWEEN %(six_mo_ago)s AND %(today)s
+        AND {_BASE_FILTERS}
+        AND {_ONLINE_SALE_PRED}
+        {sales_ctry}
+    GROUP BY k.style_number, k.color
+),
+sales_wk AS (
+    SELECT k.style_number, k.color,
+        SUM(s.ordered_item_quantity) FILTER (
+            WHERE s.sale_kind IN ('sale','order') AND s.sale_date >= %(wk4_ago)s
+        )                             AS units_4wk,
+        SUM(s.ordered_item_quantity) FILTER (
+            WHERE s.sale_kind IN ('sale','order') AND s.sale_date >= %(wk8_ago)s
+        )                             AS units_8wk,
+        SUM(s.ordered_item_quantity) FILTER (
+            WHERE s.sale_kind IN ('sale','order')
+        )                             AS units_12wk,
+        SUM(s.total_sales_kes::numeric - COALESCE(s.discounts_kes,0)::numeric) FILTER (
+            WHERE s.sale_kind IN ('sale','order') AND s.sale_date >= %(wk4_ago)s
+        )                             AS realized_4wk,
+        MAX(s.sale_date::date) FILTER (
+            WHERE s.sale_kind IN ('sale','order')
+        )                             AS last_sale_date
+    FROM sk k
+    JOIN all_sales s ON s.variant_sku = k.sku
+    WHERE s.sale_date BETWEEN %(wk12_ago)s AND %(today)s
+        AND {_BASE_FILTERS}
+        AND {_ONLINE_SALE_PRED}
+        {sales_ctry}
+    GROUP BY k.style_number, k.color
+),
+fullprice AS (
+    SELECT style_number, color,
+        mode() WITHIN GROUP (ORDER BY price)
+            FILTER (WHERE price > 0) AS full_price
+    FROM sk
+    GROUP BY style_number, color
+)
+SELECT
+    COALESCE(sa.style_number, st.style_number) AS style_number,
+    COALESCE(sa.color, st.color)   AS color,
+    COALESCE(sa.units_sold, 0)     AS units_sold,
+    COALESCE(sa.revenue, 0.0)      AS revenue,
+    COALESCE(st.soh, 0)            AS soh,
+    COALESCE(s6.units_6m, 0)       AS units_6m,
+    COALESCE(sw.units_4wk, 0)      AS units_4wk,
+    COALESCE(sw.units_8wk, 0)      AS units_8wk,
+    COALESCE(sw.units_12wk, 0)     AS units_12wk,
+    COALESCE(sw.realized_4wk, 0.0) AS realized_4wk,
+    sw.last_sale_date,
+    fp.full_price
+FROM sales sa
+FULL OUTER JOIN stock st
+       ON st.style_number = sa.style_number AND st.color = sa.color
+LEFT JOIN sales_6m s6
+       ON s6.style_number = COALESCE(sa.style_number, st.style_number)
+      AND s6.color        = COALESCE(sa.color, st.color)
+LEFT JOIN sales_wk sw
+       ON sw.style_number = COALESCE(sa.style_number, st.style_number)
+      AND sw.color        = COALESCE(sa.color, st.color)
+LEFT JOIN fullprice fp
+       ON fp.style_number = COALESCE(sa.style_number, st.style_number)
+      AND fp.color        = COALESCE(sa.color, st.color)
+"""
+    raw = _db_exec(sql, params, fetch=True) or []
+
+    rows = []
+    for r in raw:
+        units   = int(r["units_sold"] or 0)
+        revenue = float(r["revenue"] or 0)
+        soh     = int(r["soh"] or 0)
+        # Hidden: no online stock AND no period online sales
+        if soh <= 0 and units <= 0 and revenue == 0:
+            continue
+        units_6m   = int(r["units_6m"] or 0)
+        weekly_avg = round(units_6m / 26.0, 2)
+        woc = round(soh / weekly_avg, 1) if weekly_avg > 0 else None
+        u4, u8, u12 = (int(r["units_4wk"] or 0), int(r["units_8wk"] or 0),
+                       int(r["units_12wk"] or 0))
+
+        def _sor(u, _soh=soh):
+            denom = u + _soh
+            return round(u * 100.0 / denom, 1) if denom > 0 else None
+
+        realized_4wk = float(r["realized_4wk"] or 0)
+        asp_raw = (realized_4wk / u4) if u4 > 0 else None
+        full_price = float(r["full_price"]) if r.get("full_price") else None
+        asp_pct_full = (round(asp_raw * 100.0 / full_price, 1)
+                        if asp_raw is not None and full_price and full_price > 0
+                        else None)
+        last_sale = r.get("last_sale_date")
+        last_sale_days = None
+        if last_sale:
+            try:
+                ls = (last_sale if isinstance(last_sale, date)
+                      else date.fromisoformat(str(last_sale)[:10]))
+                last_sale_days = (today - ls).days
+            except Exception:
+                last_sale = None
+        rows.append({
+            "style_number":   r.get("style_number"),
+            "color":          r.get("color") or "—",
+            "units_sold":     units,
+            "revenue":        round(revenue, 0),
+            "soh":            soh,
+            "woc":            woc,
+            "weekly_avg":     weekly_avg,
+            "sor_4wk":        _sor(u4),
+            "sor_8wk":        _sor(u8),
+            "sor_12wk":       _sor(u12),
+            "asp_pct_full":   asp_pct_full,
+            "full_price":     full_price,
+            "last_sale_date": str(last_sale)[:10] if last_sale else None,
+            "last_sale_days": last_sale_days,
+        })
+
+    rows.sort(key=lambda x: x["revenue"], reverse=True)
+
+    # ── Chart rows: union of top-12 by revenue and top-12 by online SOH ──────
+    by_rev = rows[:12]
+    by_soh = sorted(rows, key=lambda x: x["soh"], reverse=True)[:12]
+    chart_keys = {(c["style_number"], c["color"]) for c in by_rev}
+    chart_keys |= {(c["style_number"], c["color"]) for c in by_soh}
+
+    # ── Style attributes — only for styles that might need them ─────────────
+    # Marketing pre-filter: WOC > 8 and 8-wk SOR < 70 (still needs a recent
+    # production order). Retire pre-filter: 12-wk SOR < 70 (still needs the
+    # new-style + on-sale-12-weeks facts). Plus every charted style (labels).
+    need_styles = {c["style_number"] for c in rows
+                   if (c["woc"] is not None and c["woc"] > 8
+                       and c["sor_8wk"] is not None and c["sor_8wk"] < 70)
+                   or (c["sor_12wk"] is not None and c["sor_12wk"] < 70)}
+    need_styles |= {k[0] for k in chart_keys}
+    need_styles = sorted(s for s in need_styles if s)
+
+    attrs = {}
+    if need_styles:
+        attr_rows = _db_exec(f"""
+WITH m AS (
+    SELECT style_number,
+        mode() WITHIN GROUP (ORDER BY style_name)
+            FILTER (WHERE COALESCE(style_name,'') <> '') AS style_name,
+        BOOL_OR(COALESCE(is_noos, FALSE))                AS is_noos,
+        CASE WHEN BOOL_OR(LOWER(COALESCE(status,'active')) = 'retired')
+                  AND NOT BOOL_OR(LOWER(COALESCE(status,'active')) = 'active')
+             THEN 'Retired' ELSE 'Active' END            AS status,
+        MIN(substring(style_launch_date,1,10))
+            FILTER (WHERE substring(style_launch_date,1,10)
+                    ~ '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}$') AS launch_date
+    FROM all_products_clean
+    WHERE style_number = ANY(%(styles)s)
+    GROUP BY style_number
+),
+rc AS (
+    SELECT m.style_number,
+        COUNT(DISTINCT po.order_ref) AS reorder_count,
+        MAX(po.date_ordered)         AS last_order_date
+    FROM m
+    LEFT JOIN production_orders po
+           ON po.style_number = m.style_number
+           OR po.style_name   = m.style_name
+    GROUP BY m.style_number
+),
+/* First-sale launch fallback — same fallback rule as _fetch_styles; rows for
+   styles that already carry a master launch date lose to the COALESCE. */
+fs AS (
+    SELECT p2.style_number, MIN(s.sale_date::date) AS first_sale_date
+    FROM all_products_clean p2
+    JOIN all_sales s ON s.variant_sku = p2.sku
+    WHERE p2.style_number = ANY(%(styles)s)
+      AND s.sale_kind IN ('sale','order')
+    GROUP BY p2.style_number
+),
+ov AS (
+    SELECT style_number, tier AS ov_tier
+    FROM style_tier_overrides
+    WHERE style_number IS NOT NULL AND style_number <> ''
+)
+SELECT m.style_number, m.style_name, m.is_noos, m.status,
+       COALESCE(m.launch_date, fs.first_sale_date::text) AS launch_date,
+       rc.reorder_count, rc.last_order_date, ov.ov_tier
+FROM m
+LEFT JOIN rc ON rc.style_number = m.style_number
+LEFT JOIN fs ON fs.style_number = m.style_number
+LEFT JOIN ov ON ov.style_number = m.style_number
+""", {"styles": need_styles}, fetch=True) or []
+        for a in attr_rows:
+            tier = a.get("ov_tier") or _compute_tier(
+                a.get("is_noos"), a.get("reorder_count"), a.get("status"))
+            lod = a.get("last_order_date")
+            last_order_days = None
+            if lod:
+                try:
+                    lo = (lod if isinstance(lod, date)
+                          else date.fromisoformat(str(lod)[:10]))
+                    last_order_days = (today - lo).days
+                except Exception:
+                    pass
+            ld = a.get("launch_date")
+            launch_days = None
+            if ld:
+                try:
+                    launch_days = (today - date.fromisoformat(str(ld)[:10])).days
+                except Exception:
+                    pass
+            attrs[a["style_number"]] = {
+                "style_name":      a.get("style_name") or a["style_number"],
+                "tier":            tier,
+                "launch_days":     launch_days,
+                "last_order_days": last_order_days,
+            }
+
+    def _label(c):
+        at = attrs.get(c["style_number"]) or {}
+        return {**c, "style_name": at.get("style_name") or c["style_number"] or "—"}
+
+    # ── Signal classification — COLOR_REC thresholds, Restock › Marketing ›
+    #    Retire precedence (each colourway lands in at most one group) ────────
+    restock, marketing, retire = [], [], []
+    for c in rows:
+        if (c["sor_4wk"] is not None and c["sor_4wk"] > 40
+                and c["woc"] is not None and c["woc"] < 4
+                and c["asp_pct_full"] is not None and c["asp_pct_full"] > 90
+                and c["last_sale_days"] is not None and c["last_sale_days"] < 2):
+            restock.append(_label(c))
+            continue
+        at = attrs.get(c["style_number"])
+        if (at and at["last_order_days"] is not None
+                and at["last_order_days"] <= 91
+                and c["woc"] is not None and c["woc"] > 8
+                and c["sor_8wk"] is not None and c["sor_8wk"] < 70):
+            marketing.append({**_label(c), "last_order_days": at["last_order_days"]})
+            continue
+        if at:
+            is_new = (at["tier"] == "Tier 4"
+                      or (at["launch_days"] is not None and at["launch_days"] <= 365))
+            on_sale_12wk = at["launch_days"] is not None and at["launch_days"] >= 84
+            if (is_new and on_sale_12wk
+                    and c["sor_12wk"] is not None and c["sor_12wk"] < 70):
+                retire.append(_label(c))
+
+    def _sig(items, sort_key, reverse):
+        items = sorted(items, key=sort_key, reverse=reverse)
+        return {"count": len(items), "items": items[:12]}
+
+    signals = {
+        # Best restocks first (fastest sellers), worst laggards first.
+        "restock":   _sig(restock,   lambda c: c["sor_4wk"] or 0,  True),
+        "marketing": _sig(marketing, lambda c: c["soh"],           True),
+        "retire":    _sig(retire,    lambda c: c["sor_12wk"] or 0, False),
+    }
+
+    colors = [_label(c) for c in rows
+              if (c["style_number"], c["color"]) in chart_keys]
+    colors.sort(key=lambda x: x["revenue"], reverse=True)
+
+    # ── By Size breakdown — the charted colourways split by size ────────────
+    sizes = []
+    chart_styles = sorted({k[0] for k in chart_keys if k[0]})
+    if chart_styles:
+        sparams = {"period_from": period_from, "period_to": period_to,
+                   "chart_styles": chart_styles}
+        if "countries" in params:
+            sparams["countries"] = params["countries"]
+        size_rows = _db_exec(f"""
+WITH sk AS (
+    SELECT sku, style_number,
+           COALESCE(NULLIF(TRIM(color_print), ''), '—') AS color,
+           COALESCE(NULLIF(TRIM(size), ''), '—')        AS size
+    FROM all_products_clean
+    WHERE style_number = ANY(%(chart_styles)s)
+      AND sku IS NOT NULL AND sku <> ''
+),
+sales AS (
+    SELECT k.style_number, k.color, k.size,
+        SUM(s.ordered_item_quantity) FILTER (
+            WHERE s.sale_kind IN ('sale','order')
+        )                      AS units_sold,
+        SUM({_NET_SALES_EXPR}) AS revenue
+    FROM sk k
+    JOIN all_sales s ON s.variant_sku = k.sku
+    WHERE s.sale_date BETWEEN %(period_from)s AND %(period_to)s
+        AND {_BASE_FILTERS}
+        AND {_ONLINE_SALE_PRED}
+        {sales_ctry}
+    GROUP BY k.style_number, k.color, k.size
+),
+stock AS (
+    SELECT k.style_number, k.color, k.size,
+        COALESCE(SUM(i.available), 0) AS soh
+    FROM sk k
+    JOIN all_inventory i ON i.sku = k.sku
+    WHERE i.available > 0
+      AND i.pos_location_name ILIKE '%%online%%'
+      {inv_ctry}
+    GROUP BY k.style_number, k.color, k.size
+)
+SELECT
+    COALESCE(sa.style_number, st.style_number) AS style_number,
+    COALESCE(sa.color, st.color) AS color,
+    COALESCE(sa.size,  st.size)  AS size,
+    COALESCE(sa.units_sold, 0)   AS units_sold,
+    COALESCE(sa.revenue, 0.0)    AS revenue,
+    COALESCE(st.soh, 0)          AS soh
+FROM sales sa
+FULL OUTER JOIN stock st
+       ON st.style_number = sa.style_number
+      AND st.color = sa.color AND st.size = sa.size
+""", sparams, fetch=True) or []
+        for r in size_rows:
+            key = (r.get("style_number"), r.get("color") or "—")
+            if key not in chart_keys:
+                continue
+            units = int(r["units_sold"] or 0)
+            soh   = int(r["soh"] or 0)
+            rev   = float(r["revenue"] or 0)
+            if soh <= 0 and units <= 0 and rev == 0:
+                continue
+            at = attrs.get(r.get("style_number")) or {}
+            sizes.append({
+                "style_number": r.get("style_number"),
+                "style_name":   at.get("style_name") or r.get("style_number") or "—",
+                "color":        r.get("color") or "—",
+                "size":         r.get("size") or "—",
+                "units_sold":   units,
+                "revenue":      round(rev, 0),
+                "soh":          soh,
+            })
+        sizes.sort(key=lambda x: x["revenue"], reverse=True)
+        # Keep the size view readable: union of top-20 by revenue / by SOH.
+        s_rev = sizes[:20]
+        s_soh = sorted(sizes, key=lambda x: x["soh"], reverse=True)[:20]
+        skeys = {(x["style_number"], x["color"], x["size"]) for x in s_rev}
+        skeys |= {(x["style_number"], x["color"], x["size"]) for x in s_soh}
+        sizes = [x for x in sizes
+                 if (x["style_number"], x["color"], x["size"]) in skeys]
+
+    return {
+        "colors":           colors,
+        "sizes":            sizes,
+        "signals":          signals,
+        "total_colourways": len(rows),
+    }
+
+
 def register_merch_routes(app, api_pg_module):
     global A
     A = api_pg_module
@@ -5195,6 +5651,23 @@ def register_merch_routes(app, api_pg_module):
                f"{country}|{brand}|{subcategory}")
         return JSONResponse(_cached(key, _TTL, lambda: _online_subcats_payload(
             category, from_date, to_date, country, brand, subcategory)))
+
+    @app.get("/api/merch/online-colourways")
+    def merch_online_colourways(
+        request:     Request,
+        from_date:   str = Query(...),
+        to_date:     str = Query(...),
+        country:     Optional[str] = Query(None),
+        brand:       Optional[str] = Query(None),
+        subcategory: Optional[str] = Query(None),
+    ):
+        """Page-level Colourway Performance (online-only) for the Online
+        Performance tab — charts, By Size breakdown, and Restock /
+        Marketing / Retire signals. Plain def → threadpool; cached."""
+        key = (f"merch_online_colourways|{from_date}|{to_date}|"
+               f"{country}|{brand}|{subcategory}")
+        return JSONResponse(_cached(key, _TTL, lambda: _fetch_online_colourways(
+            from_date, to_date, country, brand, subcategory)))
 
     @app.get("/api/merch/styles")
     async def merch_styles(

@@ -19,7 +19,7 @@ import {
   Tooltip, Legend, LineChart, Line, Cell, ReferenceArea,
   ComposedChart, LabelList,
 } from "recharts";
-import { DownloadSimple } from "@phosphor-icons/react";
+import { DownloadSimple, ArrowCounterClockwise, Megaphone, XCircle } from "@phosphor-icons/react";
 import { Loading, ErrorBox, Empty, SectionTitle } from "@/components/common";
 import {
   useMerchData, MerchKPICard, ChartCard, C, fmtKESM, fmtAxisM,
@@ -255,6 +255,259 @@ const buildInsights = (d, compare) => {
   }
   return out.slice(0, 8);
 };
+
+// ── Online Colourway Performance ──────────────────────────────────────────────
+// Full mirror of the Style Deep Dive's Colourway Performance section, scoped
+// entirely to online channel data and lifted to page level: colourways are
+// (style · colour) rows across the whole online assortment. Signal
+// classification (same COLOR_REC thresholds, Restock › Marketing › Retire
+// precedence) is server-side because it needs style facts across many styles.
+
+// Display-only tidy-up for colour labels carrying style-number/size noise —
+// same rules as the deep dive's tidyColorLabel (raw value stays the data key).
+const CW_CODE_TOKEN = /^\S*\d\S*$/;
+const CW_SIZE_TOKEN = /^[smlx]{1,4}$/i;
+const tidyColour = (raw) => {
+  const s = String(raw || "").trim();
+  if (!s) return "—";
+  const parts = s.split("/").map((p) => p.trim()).filter(Boolean);
+  while (parts.length > 1) {
+    const last = parts[parts.length - 1];
+    if (CW_CODE_TOKEN.test(last) || CW_SIZE_TOKEN.test(last) || /^[A-Za-z]$/.test(last)) parts.pop();
+    else break;
+  }
+  const out = parts.join(" / ").replace(/^(.+?) - \1$/, "$1");
+  return out || s;
+};
+
+const CW_GROUP_STYLES = {
+  restock:   { bg: "bg-emerald-50", border: "border-emerald-300", title: "text-emerald-800", tag: "bg-emerald-700", chip: "border-emerald-200" },
+  marketing: { bg: "bg-amber-50",   border: "border-amber-300",   title: "text-amber-800",   tag: "bg-amber-600",   chip: "border-amber-200" },
+  retire:    { bg: "bg-rose-50",    border: "border-rose-300",    title: "text-rose-700",    tag: "bg-rose-600",    chip: "border-rose-200" },
+};
+
+const cwDaysAgo = (d) =>
+  d === null || d === undefined ? "—" : d <= 0 ? "today" : d === 1 ? "1d ago" : `${d}d ago`;
+
+// One signal group card — header + rule line + colourway chips (or the
+// "None qualify." state; a group never disappears). Mirrors the deep dive's
+// RecGroup, with the style name added to each chip (page-level context).
+const CwRecGroup = ({ variant, icon: Icon, title, rule, group, renderFigures }) => {
+  const st = CW_GROUP_STYLES[variant];
+  const items = group?.items || [];
+  const count = group?.count ?? items.length;
+  return (
+    <div className={`rounded-lg border px-3 py-2.5 ${st.bg} ${st.border}`}>
+      <div className={`flex items-center gap-1.5 text-[11px] font-extrabold uppercase tracking-wide ${st.title}`}>
+        <Icon size={13} weight="bold" className="flex-shrink-0" />
+        <span className="truncate">{title}</span>
+        <span className={`ml-auto flex-shrink-0 min-w-[18px] text-center text-[10px] px-1.5 py-0.5 rounded-full text-white ${st.tag}`}>
+          {count}
+        </span>
+      </div>
+      <div className="mt-0.5 text-[9.5px] leading-snug text-foreground/50">{rule}</div>
+      {items.length === 0 ? (
+        <div className="mt-2 text-[10.5px] italic text-foreground/50">None qualify.</div>
+      ) : (
+        <div className="mt-2 space-y-1.5">
+          {items.map((c) => (
+            <div key={`${c.style_number}|${c.color}`} className={`bg-white/80 rounded-md border px-2 py-1.5 ${st.chip}`}>
+              <div className="text-[11px] font-bold text-foreground truncate" title={`${c.style_name} · ${c.color}`}>
+                {tidyColour(c.color)} · {c.style_name}
+              </div>
+              <div className="mt-0.5 text-[10px] text-foreground/70 flex flex-wrap gap-x-2 gap-y-0.5 tabular-nums">
+                {renderFigures(c)}
+              </div>
+            </div>
+          ))}
+          {count > items.length && (
+            <div className="text-[9.5px] italic text-foreground/50">
+              +{count - items.length} more qualify (top {items.length} shown)
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+function OnlineColourwayPerformance({ filters, periodLabel }) {
+  const [state, setState] = useState({ loading: true, data: null, error: null });
+  const [view, setView] = useState("colour"); // "colour" | "size"
+
+  useEffect(() => {
+    let cancelled = false;
+    setState((s) => ({ ...s, loading: true, error: null }));
+    api.get("/merch/online-colourways", {
+      params: {
+        from_date: filters.from_date,
+        to_date: filters.to_date,
+        country: filters.country || undefined,
+        brand: filters.brand || undefined,
+        subcategory: filters.subcategory || undefined,
+      },
+    })
+      .then((r) => { if (!cancelled) setState({ loading: false, data: r.data, error: null }); })
+      .catch((e) => { if (!cancelled) setState({ loading: false, data: null, error: e?.message || "Failed to load colourway performance" }); });
+    return () => { cancelled = true; };
+  }, [filters.from_date, filters.to_date, filters.country, filters.brand, filters.subcategory]);
+
+  const { data } = state;
+
+  // Chart rows — one label per (style · colour); left chart top 12 by revenue,
+  // right chart top 12 by online SOH (backend returns the union of both sets).
+  const chart = useMemo(() => {
+    const src = view === "size" ? (data?.sizes || []) : (data?.colors || []);
+    const rows = src.map((r) => ({
+      ...r,
+      name: view === "size"
+        ? `${tidyColour(r.color)} · ${r.size}`
+        : `${tidyColour(r.color)} · ${r.style_name}`,
+      revenueK: Math.round((r.revenue || 0) / 1000),
+    }));
+    const cap = view === "size" ? 20 : 12;
+    return {
+      byRev: [...rows].sort((a, b) => b.revenueK - a.revenueK).slice(0, cap),
+      bySoh: [...rows].sort((a, b) => (b.soh || 0) - (a.soh || 0)).slice(0, cap),
+    };
+  }, [data, view]);
+
+  const cwTooltip = ({ active, payload }) => {
+    if (!active || !payload?.length) return null;
+    const d = payload[0].payload;
+    return (
+      <div className="bg-white border border-border rounded-lg shadow-md px-3 py-2 text-[11px]">
+        <div className="font-bold mb-0.5">{tidyColour(d.color)} · {d.style_name}{d.size ? ` · ${d.size}` : ""}</div>
+        <div>Revenue: KES {fmtNum(d.revenueK)}K</div>
+        <div>Units sold: {fmtNum(d.units_sold)}</div>
+        <div>Online SOH: {fmtNum(d.soh)}</div>
+      </div>
+    );
+  };
+
+  return (
+    <div className="card-white p-5" data-testid="op-colourway-perf">
+      <SectionTitle
+        title={`Colourway Performance (Online · ${periodLabel || "selected period"})`}
+        subtitle="Revenue, online stock on hand, and online sell-through by colourway · colourways with no online stock and no period sales are hidden"
+        action={(
+          <div className="inline-flex rounded-md border border-border/70 p-0.5 bg-muted/20 shrink-0" role="tablist" aria-label="Colourway breakdown">
+            {[
+              { value: "colour", label: "By Colour" },
+              { value: "size", label: "By Size" },
+            ].map(({ value, label }) => (
+              <button
+                key={value}
+                type="button"
+                role="tab"
+                aria-selected={view === value}
+                onClick={() => setView(value)}
+                className={`px-2.5 py-1 text-[10px] font-semibold rounded ${
+                  view === value
+                    ? "bg-white text-[#1a5c38] shadow-sm"
+                    : "text-foreground/55 hover:text-foreground/80"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
+      />
+      {state.loading ? <Loading /> : state.error ? <ErrorBox message={state.error} /> : !data ? null : (
+        <>
+          {/* ── Signal cards — same rules as the deep dive, online figures ── */}
+          <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-2">
+            <CwRecGroup
+              variant="restock"
+              icon={ArrowCounterClockwise}
+              title="Restock"
+              rule="4-wk online sell-through > 40% · online WOC < 4 · ASP > 90% of full price · sold online in last 2 days"
+              group={data.signals?.restock}
+              renderFigures={(c) => (<>
+                <span>ST 4wk <b>{c.sor_4wk == null ? "—" : c.sor_4wk + "%"}</b></span>
+                <span>WOC <b>{c.woc == null ? "—" : Number(c.woc).toFixed(1)}</b></span>
+                <span>ASP <b>{c.asp_pct_full == null ? "—" : c.asp_pct_full + "%"}</b> of full</span>
+                <span>sold <b>{cwDaysAgo(c.last_sale_days)}</b></span>
+              </>)}
+            />
+            <CwRecGroup
+              variant="marketing"
+              icon={Megaphone}
+              title="Marketing push"
+              rule="Production order < 3 months ago · online WOC > 8 · 8-wk online sell-through < 70%"
+              group={data.signals?.marketing}
+              renderFigures={(c) => (<>
+                <span>ST 8wk <b>{c.sor_8wk == null ? "—" : c.sor_8wk + "%"}</b></span>
+                <span>WOC <b>{c.woc == null ? "—" : Number(c.woc).toFixed(1)}</b></span>
+                <span>SOH <b>{fmtNum(c.soh)}</b></span>
+                <span>ordered <b>{cwDaysAgo(c.last_order_days)}</b></span>
+              </>)}
+            />
+            <CwRecGroup
+              variant="retire"
+              icon={XCircle}
+              title="Retire candidates"
+              rule="New styles only (Tier 4 / launched < 12 mo, on sale ≥ 12 wks) · 12-wk online sell-through < 70%"
+              group={data.signals?.retire}
+              renderFigures={(c) => (<>
+                <span>ST 12wk <b>{c.sor_12wk == null ? "—" : c.sor_12wk + "%"}</b></span>
+                <span>WOC <b>{c.woc == null ? "—" : Number(c.woc).toFixed(1)}</b></span>
+                <span>SOH <b>{fmtNum(c.soh)}</b></span>
+                <span>last sale <b>{c.last_sale_days == null ? "none in 12 wks" : cwDaysAgo(c.last_sale_days)}</b></span>
+              </>)}
+            />
+          </div>
+          <div className="mt-1.5 text-[9.5px] text-foreground/45">
+            Advisory only · online figures · fixed trailing windows (4/8/12-wk sell-through, 6-mo WOC) — independent
+            of the date filter, country/brand filters apply · each colourway appears in at most one group (Restock › Marketing › Retire)
+          </div>
+
+          {/* ── Two side-by-side charts ── */}
+          {chart.byRev.length === 0 ? (
+            <Empty label="No colourways with online stock or online sales in the selected period." />
+          ) : (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-4 gap-y-5 mt-2">
+              <div>
+                <div className="text-[11.5px] font-semibold text-foreground/70 mb-1">
+                  Revenue (KES Thousands){view === "size" ? " — by size within colourway" : ""}
+                </div>
+                <ResponsiveContainer width="100%" height={220}>
+                  <BarChart data={chart.byRev} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                    <XAxis dataKey="name" tick={{ fontSize: 8 }} interval={0} angle={-45} textAnchor="end" height={64} />
+                    <YAxis tick={{ fontSize: 9 }} tickFormatter={(v) => v + "K"} />
+                    <Tooltip content={cwTooltip} />
+                    <Bar dataKey="revenueK" fill="#1a5c38" radius={[3, 3, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+              <div>
+                <div className="text-[11.5px] font-semibold text-foreground/70 mb-1">
+                  Online Stock on Hand (units){view === "size" ? " — by size within colourway" : ""}
+                </div>
+                <ResponsiveContainer width="100%" height={220}>
+                  <BarChart data={chart.bySoh} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                    <XAxis dataKey="name" tick={{ fontSize: 8 }} interval={0} angle={-45} textAnchor="end" height={64} />
+                    <YAxis tick={{ fontSize: 9 }} />
+                    <Tooltip content={cwTooltip} />
+                    <Bar dataKey="soh" fill="#4b7bec" radius={[3, 3, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          )}
+          {(data.total_colourways || 0) > (data.colors || []).length && view === "colour" && (
+            <div className="mt-1 text-[9.5px] text-foreground/45">
+              Top colourways shown ({fmtNum(data.total_colourways)} colourways have online stock or sales in the period — signal cards scan all of them).
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
 
 export default function OnlinePerformance() {
   const filters = useMerchFilters();
@@ -614,6 +867,9 @@ export default function OnlinePerformance() {
 
       {/* ── SIZE ANALYSIS (online-scoped) ───────────────────────────────────── */}
       <OnlineSizeAnalysis rows={d.sizes} periodLabel={periodLabel} />
+
+      {/* ── COLOURWAY PERFORMANCE (online-scoped) ───────────────────────────── */}
+      <OnlineColourwayPerformance filters={filters} periodLabel={periodLabel} />
 
       {/* ── h) SOH by category with WOC risk ────────────────────────────────── */}
       <DlChartCard title="Online SOH by Category (colour = weeks-of-cover risk)" rows={d.soh_by_category} filename="online_soh_by_category.csv" testId="op-soh-cat">
