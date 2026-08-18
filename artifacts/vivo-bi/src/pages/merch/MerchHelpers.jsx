@@ -51,6 +51,13 @@ export const sorGapColor = (gap) => {
   return Number(gap) <= 5 ? C.green : Number(gap) <= 15 ? C.amber : C.red;
 };
 
+// Retired-style markdown severity: close-to-full-price clearance is healthy,
+// while deeper markdowns indicate a more expensive retirement decision.
+export const discountDepthColor = (depth) => {
+  if (depth === null || depth === undefined || isNaN(Number(depth))) return undefined;
+  return Number(depth) <= 10 ? C.green : Number(depth) <= 25 ? C.amber : C.red;
+};
+
 export const fmtNum = (n) => {
   if (n === null || n === undefined || isNaN(Number(n))) return "0";
   return Math.round(Number(n)).toLocaleString("en-US");

@@ -525,6 +525,11 @@ sales_period AS (
             WHERE s.sale_kind IN ('sale','order')
         )                                              AS units_period,
         SUM({_NET_SALES_EXPR})                         AS revenue_period,
+        SUM(
+            s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric
+        ) FILTER (
+            WHERE s.sale_kind IN ('sale','order')
+        )                                              AS sales_value_period,
         SUM(s.ordered_item_quantity) FILTER (
             WHERE s.sale_kind IN ('sale','order')
               AND COALESCE(s.discounts_kes, 0)::numeric = 0
@@ -611,6 +616,7 @@ SELECT
     s6.last_sale_date,
     COALESCE(sp.units_period,   0)   AS units_period,
     COALESCE(sp.revenue_period, 0.0) AS revenue_period,
+    COALESCE(sp.sales_value_period, 0.0) AS sales_value_period,
     COALESCE(sp.units_full_price_period, 0) AS units_full_price_period,
     COALESCE(sl.units_life,     0)   AS units_life,
     COALESCE(sl.revenue_life,   0.0) AS revenue_life,
@@ -658,6 +664,7 @@ ORDER BY revenue_6m DESC NULLS LAST
         revenue_life     = float(r["revenue_life"] or 0)
         units_period     = int(r["units_period"] or 0)
         revenue_period   = float(r["revenue_period"] or 0)
+        sales_value_period = float(r.get("sales_value_period") or 0)
         units_full_price_period = int(r.get("units_full_price_period") or 0)
         soh_stores       = int(r["soh_stores"] or 0)
         soh_online       = int(r["soh_online"] or 0)   # subset of soh_stores
@@ -744,6 +751,7 @@ ORDER BY revenue_6m DESC NULLS LAST
             "orders_6m":           int(r["orders_6m"] or 0),
             "units_period":        units_period,
             "revenue_period":      round(revenue_period, 0),
+            "sales_value_period":  round(sales_value_period, 0),
              "units_full_price_period": units_full_price_period,
             "units_life":          units_life,
             "revenue_life":        round(revenue_life, 0),
@@ -1501,7 +1509,12 @@ def _fetch_full_price_period_by_style(
                 COALESCE(SUM(s.ordered_item_quantity) FILTER (
                     WHERE s.sale_kind IN ('sale','order')
                       AND COALESCE(s.discounts_kes, 0)::numeric = 0
-                ), 0) AS units_full_price_period
+                ), 0) AS units_full_price_period,
+                COALESCE(SUM(
+                    s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric
+                ) FILTER (
+                    WHERE s.sale_kind IN ('sale','order')
+                ), 0.0) AS sales_value_period
             FROM all_sales s
             JOIN all_products_clean p ON p.sku = s.variant_sku
             WHERE s.sale_date BETWEEN %(period_from)s AND %(period_to)s
@@ -1512,7 +1525,10 @@ def _fetch_full_price_period_by_style(
             GROUP BY p.style_name
         """, params, fetch=True) or []
         return {
-            r["style_name"]: int(r.get("units_full_price_period") or 0)
+            r["style_name"]: {
+                "units_full_price_period": int(r.get("units_full_price_period") or 0),
+                "sales_value_period": float(r.get("sales_value_period") or 0),
+            }
             for r in rows
         }
 
@@ -1732,9 +1748,11 @@ def _fetch_styles_fast_path(brand=None, subcategory=None, tier=None, status=None
         soh_warehouse    = int(r.get("soh_warehouse") or 0)
         current_stock    = soh_stores + soh_warehouse
         units_full_price = int(r.get("units_full_price") or 0)
+        period_price = full_price_period.get(r["style_name"]) or {}
         units_full_price_period = int(
-            full_price_period.get(r["style_name"], 0)
+            period_price.get("units_full_price_period") or 0
         )
+        sales_value_period = float(period_price.get("sales_value_period") or 0)
 
         # Derived metrics (byte-identical to _fetch_styles_sql)
         weekly_avg = round(units_6m / 26.0, 2)
@@ -1816,6 +1834,7 @@ def _fetch_styles_fast_path(brand=None, subcategory=None, tier=None, status=None
             "orders_6m":           int(r.get("orders_6m") or 0),
             "units_period":        units_period,
             "revenue_period":      round(revenue_period, 0),
+            "sales_value_period":  round(sales_value_period, 0),
              "units_full_price_period": units_full_price_period,
             "units_life":          units_life,
             "revenue_life":        round(revenue_life, 0),
@@ -2305,7 +2324,8 @@ def _compute_summary(styles, full_price_metrics=None):
     active_warehouse_stock = 0; retired_warehouse_stock = 0
     active_revenue_period = 0.0; retired_revenue_period = 0.0
     active_units_period = 0; retired_units_period = 0
-    retired_full_price_units_period = 0
+    retired_full_price_value_period = 0.0
+    retired_sales_value_period = 0.0
     active_units_6m = 0
     active_total_styles = 0
     sor_period_active_vals = []
@@ -2368,7 +2388,21 @@ def _compute_summary(styles, full_price_metrics=None):
         elif tier == "Retired":
             retired_revenue_period += s.get("revenue_period") or 0
             retired_units_period   += s.get("units_period") or 0
-            retired_full_price_units_period += s.get("units_full_price_period") or 0
+            # Discount depth is weighted across every retired unit sold in the
+            # selected period. Use the style's modal full price as the expected
+            # value of those units and the realised period revenue as achieved
+            # selling value; styles without a usable full price are excluded
+            # from this price-based metric.
+            sold_units = s.get("units_period") or 0
+            full_price = s.get("full_price")
+            if sold_units > 0 and full_price is not None and full_price > 0:
+                retired_full_price_value_period += float(full_price) * sold_units
+                sales_value = s.get("sales_value_period")
+                if sales_value is None:
+                    # Compatibility for callers/tests that provide the older
+                    # style-row shape; live SQL now supplies sale/order value.
+                    sales_value = s.get("revenue_period") or 0
+                retired_sales_value_period += float(sales_value)
             if dedup_key not in _seen_retired_keys:
                 _seen_retired_keys.add(dedup_key)
                 retired_styles          += 1
@@ -2435,10 +2469,13 @@ def _compute_summary(styles, full_price_metrics=None):
         "active_revenue_period":        round(active_revenue_period, 0),
         "retired_revenue_period":       round(retired_revenue_period, 0),
         "retired_units_period":         retired_units_period,
-        "retired_full_price_units_period": retired_full_price_units_period,
-        "retired_full_price_pct": (
-            round(retired_full_price_units_period * 100.0 / retired_units_period, 1)
-            if retired_units_period > 0 else None
+        "retired_discount_depth_pct": (
+            round(
+                (retired_full_price_value_period - retired_sales_value_period)
+                * 100.0 / retired_full_price_value_period,
+                1,
+            )
+            if retired_full_price_value_period > 0 else None
         ),
         "active_units_period":          active_units_period,
         "active_units_6m":              active_units_6m,
@@ -2603,7 +2640,7 @@ def _empty_summary():
         "warehouse_stock_units",
         "active_warehouse_stock_units", "retired_warehouse_stock_units",
         "active_revenue_period", "retired_revenue_period", "retired_units_period",
-        "retired_full_price_units_period", "retired_full_price_pct",
+        "retired_discount_depth_pct",
         "active_units_period", "active_units_6m", "active_weekly_velocity",
         "active_styles_all_count", "avg_sor_period_active",
         "avg_full_price_sor_period_active",
@@ -4481,6 +4518,8 @@ LEFT JOIN sales_6m s6     ON s6.style_name = g.style_name AND s6.colour = g.colo
 LEFT JOIN style_orders so ON so.style_name = g.style_name
 LEFT JOIN colour_orders co ON co.style_name = g.style_name
                           AND co.ncol = LOWER(BTRIM(g.colour))
+LEFT JOIN colour_lifecycle cl ON cl.style_name = g.style_name
+                              AND cl.colour = g.colour
 LEFT JOIN rep_sku rs      ON rs.style_name = g.style_name AND rs.colour = g.colour
 """
     raw = _db_exec(sql, params, fetch=True)

@@ -72,6 +72,46 @@ const WocTooltip = ({ active, payload, label }) => {
 
 const TIER_COLORS = [C.blue, C.teal, C.purple, C.amber];
 const RECENCY_COLORS = [C.green, "#60a5fa", C.amber, C.red, "#94a3b8"];
+const STOCK_TIER_RADIAN = Math.PI / 180;
+
+// External callout for the Stock by Tier donut. The connector is drawn here
+// rather than by Recharts' default label line so the text can include the
+// segment's name, units, and percentage in the segment colour.
+const renderStockTierLabel = ({
+  cx, cy, midAngle, outerRadius, name, fill, payload,
+}) => {
+  const angle = -midAngle * STOCK_TIER_RADIAN;
+  const startX = cx + outerRadius * Math.cos(angle);
+  const startY = cy + outerRadius * Math.sin(angle);
+  const elbowRadius = outerRadius + 14;
+  const elbowX = cx + elbowRadius * Math.cos(angle);
+  const elbowY = cy + elbowRadius * Math.sin(angle);
+  const rightSide = elbowX >= cx;
+  const labelX = elbowX + (rightSide ? 8 : -8);
+  const color = payload?.color || fill || C.muted;
+  const pct = Number(payload?.pct || 0).toFixed(1);
+  return (
+    <g>
+      <path
+        d={`M${startX},${startY} L${elbowX},${elbowY} L${labelX},${elbowY}`}
+        stroke={color}
+        strokeWidth={1}
+        fill="none"
+      />
+      <circle cx={startX} cy={startY} r={2} fill={color} />
+      <text
+        x={labelX + (rightSide ? 2 : -2)}
+        y={elbowY}
+        textAnchor={rightSide ? "start" : "end"}
+        dominantBaseline="central"
+        fill={color}
+        style={{ fontSize: 8.5, fontWeight: 700 }}
+      >
+        {`${name} · ${fmtNum(payload?.value)} units · ${pct}%`}
+      </text>
+    </g>
+  );
+};
 
 // ── Replenishment section helpers (from the retired Replenishment tab) ──────
 const WOC_COLOR = (woc) => {
@@ -87,11 +127,11 @@ const STYLE_TIER_ORDER = ["Tier 1", "Tier 2", "Tier 3", "Tier 4"];
 const truncate = (s, n = 22) => s && s.length > n ? s.slice(0, n - 1) + "…" : (s || "—");
 
 const WOC_BUCKETS = [
-  { label: "0–4 wks",   min: 0,  max: 4,  fill: "#ef4444" },
-  { label: "4–8 wks",   min: 4,  max: 8,  fill: "#d97706" },
-  { label: "8–12 wks",  min: 8,  max: 12, fill: "#00c853" },
-  { label: "12–20 wks", min: 12, max: 20, fill: "#4b7bec" },
-  { label: "20+ wks",   min: 20, max: Infinity, fill: "#7c3aed" },
+  { key: "woc_0_4",   label: "0–4 wks",   min: 0,  max: 4,  fill: "#EF4444" },
+  { key: "woc_4_8",   label: "4–8 wks",   min: 4,  max: 8,  fill: "#F59E0B" },
+  { key: "woc_8_12",  label: "8–12 wks",  min: 8,  max: 12, fill: "#EAB308" },
+  { key: "woc_12_20", label: "12–20 wks", min: 12, max: 20, fill: "#22C55E" },
+  { key: "woc_20_plus", label: "20+ wks", min: 20, max: Infinity, fill: "#475569" },
 ];
 
 const VEL_BUCKETS = [
@@ -164,12 +204,12 @@ export default function MerchInventory() {
       .map((r) => ({
         ...r,
         _wocColor:  wocColor(r.woc),
-        stockLabel: `${fmtNum(r.current_stock)} (${r.woc != null ? Number(r.woc).toFixed(0) + "w" : "—"})`,
+        stockLabel: fmtNum(r.current_stock),
       })),
     [styleRows]);
 
   // Avg WOC by Subcategory — ALL subcats except Men's + Accessories,
-  // sorted desc (highest risk on top), coloured by WOC risk band.
+  // sorted asc (highest risk / shortest cover first), coloured by WOC risk band.
   // \bmen'?s\b matches "Men's Tops" but NOT "Women's Tops" (no word
   // boundary inside "Women's").
   const subcatWoc = useMemo(() => {
@@ -180,7 +220,7 @@ export default function MerchInventory() {
     return [...bySubcategory.rows]
       .filter((r) => r.avg_woc != null)
       .filter((r) => (r.category || "") !== "Accessories" && !mens.test(r.subcategory || ""))
-      .sort((a, b) => (b.avg_woc || 0) - (a.avg_woc || 0))
+      .sort((a, b) => (a.avg_woc || 0) - (b.avg_woc || 0))
       .map((r) => ({ ...r, color: riskColor(r.avg_woc) }));
   }, [bySubcategory]);
 
@@ -407,16 +447,28 @@ export default function MerchInventory() {
       }));
   }, [styleRows]);
 
-  // WOC bucket mix donut
+  // WOC bucket mix — stock-unit distribution, ordered from highest risk to
+  // lowest risk/overstocked. Percentages therefore describe the stock split,
+  // not the number of styles in each bucket.
   const wocDonut = useMemo(() => {
-    const counts = WOC_BUCKETS.map(b => ({ name: b.label, value: 0, fill: b.fill }));
+    const counts = WOC_BUCKETS.map(b => ({
+      key: b.key, name: b.label, value: 0, fill: b.fill,
+    }));
     styleRows.forEach(r => {
       if (r.woc === null) return;
       const i = WOC_BUCKETS.findIndex(b => r.woc >= b.min && r.woc < b.max);
-      if (i >= 0) counts[i].value += 1;
+      if (i >= 0) counts[i].value += Number(r.current_stock) || 0;
     });
-    return counts.filter(c => c.value > 0);
+    const total = counts.reduce((sum, row) => sum + row.value, 0);
+    return counts
+      .filter(c => c.value > 0)
+      .map(c => ({ ...c, pct: total > 0 ? (c.value / total) * 100 : 0 }));
   }, [styleRows]);
+
+  const wocStackData = useMemo(() => [{
+    name: "Stock",
+    ...Object.fromEntries(wocDonut.map(d => [d.key, d.value])),
+  }], [wocDonut]);
 
   if (loading) return <Loading label="Loading Inventory & Stock Health…" />;
   if (error)   return <ErrorBox message={error} />;
@@ -550,134 +602,7 @@ export default function MerchInventory() {
         />
       </div>
 
-      {/* ── Stock Mix drill-down (Category → Sub Category → Style → Colour) ── */}
-      <MerchStockMix
-        data={mixState.stockMix}
-        loading={mixState.loading}
-        error={mixState.error}
-      />
-
-      {/* ── Top 20 stock + Avg WOC by Subcat ── */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <ChartCard title="Top 20 Styles by Current Stock (colour = WOC risk)">
-          <div className="flex gap-3 mb-2">
-            {wocLegend.map((l, i) => (
-              <div key={i} className="flex items-center gap-1">
-                <span className="w-3 h-2 rounded-sm inline-block" style={{ backgroundColor: l.color }} />
-                <span className="text-[9px] text-slate-500">{l.label}</span>
-              </div>
-            ))}
-          </div>
-          <ResponsiveContainer width="100%" height={520}>
-            <BarChart
-              data={topStock}
-              layout="vertical"
-              margin={{ top: 0, right: 85, left: 190, bottom: 0 }}
-            >
-              <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f1f5f9" />
-              <XAxis type="number" tickFormatter={fmtNum} tick={{ fontSize: 10 }} />
-              <YAxis
-                type="category"
-                dataKey="style_name"
-                width={190}
-                interval={0}
-                /* Single-line tick: plain SVG <text> never word-wraps (recharts'
-                   default tick wraps long names onto two rows). Truncate at 42
-                   chars; the tooltip shows the full name. */
-                tick={({ x, y, payload }) => {
-                  const v = String(payload.value ?? "");
-                  const label = v.length > 42 ? v.slice(0, 42) + "…" : v;
-                  return (
-                    <text x={x} y={y} dy={3} textAnchor="end" fontSize={9} fill="#64748b">
-                      {label}
-                    </text>
-                  );
-                }}
-              />
-              <Tooltip
-                content={({ active, payload, label }) => {
-                  if (!active || !payload?.length) return null;
-                  const r = payload[0]?.payload;
-                  return (
-                    <div className="bg-white shadow-lg rounded-lg px-3 py-2 text-[11px] border border-slate-100">
-                      <div className="font-semibold text-slate-700 mb-1">{label}</div>
-                      <div>Stock: <strong>{fmtNum(r?.current_stock)}</strong></div>
-                      <div>WOC: <strong>{fmtWoc(r?.woc)}</strong></div>
-                    </div>
-                  );
-                }}
-              />
-              <Bar dataKey="current_stock" name="Current Stock" radius={[0, 3, 3, 0]}>
-                {topStock.map((entry, i) => <Cell key={i} fill={entry._wocColor} />)}
-                <LabelList
-                  dataKey="stockLabel"
-                  position="right"
-                  style={{ fontSize: 9, fill: "#64748b" }}
-                />
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        </ChartCard>
-
-        <ChartCard title="Avg WOC by Subcategory (colour = risk · excl. Men's & Accessories)">
-          <div className="flex gap-3 mb-2">
-            {[
-              { label: "Healthy (< 8 wks)",    color: C.green },
-              { label: "Elevated (8–16 wks)",  color: C.amber },
-              { label: "At risk (≥ 16 wks)",   color: C.red },
-            ].map((l, i) => (
-              <div key={i} className="flex items-center gap-1">
-                <span className="w-3 h-2 rounded-sm inline-block" style={{ backgroundColor: l.color }} />
-                <span className="text-[9px] text-slate-500">{l.label}</span>
-              </div>
-            ))}
-          </div>
-          <ResponsiveContainer width="100%" height={Math.max(300, subcatWoc.length * 24 + 40)}>
-            <BarChart
-              data={subcatWoc}
-              layout="vertical"
-              margin={{ top: 0, right: 50, left: 140, bottom: 0 }}
-            >
-              <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f1f5f9" />
-              <XAxis type="number" tick={{ fontSize: 10 }} />
-              <YAxis
-                type="category"
-                dataKey="subcategory"
-                width={140}
-                interval={0}
-                /* Single-line tick (plain SVG <text> never word-wraps). */
-                tick={({ x, y, payload }) => {
-                  const v = String(payload.value ?? "");
-                  const label = v.length > 30 ? v.slice(0, 30) + "…" : v;
-                  return (
-                    <text x={x} y={y} dy={3} textAnchor="end" fontSize={9} fill="#64748b">
-                      {label}
-                    </text>
-                  );
-                }}
-              />
-              <ReferenceLine
-                x={12}
-                stroke="#94a3b8"
-                strokeDasharray="4 3"
-                label={{ value: "Target 12 wks", position: "insideTopRight", fontSize: 9, fill: "#94a3b8" }}
-              />
-              <Tooltip content={<WocTooltip />} />
-              <Bar dataKey="avg_woc" name="Avg WOC" radius={[0, 3, 3, 0]}>
-                {subcatWoc.map((entry, i) => <Cell key={i} fill={entry.color} />)}
-                <LabelList
-                  dataKey="avg_woc"
-                  position="right"
-                  formatter={(v) => `${Number(v).toFixed(0)}w`}
-                  style={{ fontSize: 9, fill: "#64748b" }}
-                />
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        </ChartCard>
-      </div>
-
-      {/* ── Brand stock + active-style distribution charts ── */}
+      {/* ── Portfolio distribution charts — immediately below KPI cards ── */}
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
         <ChartCard title="Current Stock by Brand">
           <ResponsiveContainer width="100%" height={220}>
@@ -687,7 +612,6 @@ export default function MerchInventory() {
               <YAxis tickFormatter={(v) => v >= 1000 ? (v / 1000).toFixed(0) + "K" : v} tick={{ fontSize: 10 }} />
               <Tooltip content={<NumTooltip />} />
               <Bar dataKey="current_stock" name="Stock Units" fill={C.blue} radius={[4, 4, 0, 0]}>
-                {/* % share on top, units beneath it */}
                 <LabelList
                   dataKey="current_stock"
                   position="top"
@@ -804,7 +728,6 @@ export default function MerchInventory() {
               <Tooltip content={<NumTooltip />} />
               <Bar dataKey="value" name="Styles" radius={[4, 4, 0, 0]}>
                 {recencyData.map((entry, i) => <Cell key={i} fill={entry.color} />)}
-                {/* % share on top, style count beneath it */}
                 <LabelList
                   dataKey="value"
                   position="top"
@@ -829,7 +752,7 @@ export default function MerchInventory() {
         </ChartCard>
 
         <ChartCard title="Stock by Tier">
-          <ResponsiveContainer width="100%" height={220}>
+          <ResponsiveContainer width="100%" height={280}>
             <PieChart>
               <Pie
                 data={tierStockPie}
@@ -837,9 +760,12 @@ export default function MerchInventory() {
                 nameKey="name"
                 cx="50%"
                 cy="50%"
-                outerRadius={75}
-                innerRadius={35}
+                outerRadius={58}
+                innerRadius={31}
                 paddingAngle={2}
+                label={renderStockTierLabel}
+                labelLine={false}
+                isAnimationActive={false}
               >
                 {tierStockPie.map((entry, i) => <Cell key={i} fill={entry.color} />)}
               </Pie>
@@ -847,23 +773,136 @@ export default function MerchInventory() {
                 formatter={(val, name) => [`${fmtNum(val)} units`, name]}
                 contentStyle={{ fontSize: 11, borderRadius: 8, border: "1px solid #e2e8f0" }}
               />
-              <Legend
-                layout="vertical"
-                align="right"
-                verticalAlign="middle"
-                iconSize={10}
-                formatter={(v, entry) => {
-                  const p = entry?.payload;
+            </PieChart>
+          </ResponsiveContainer>
+        </ChartCard>
+      </div>
+
+      {/* ── Stock Mix drill-down (Category → Sub Category → Style → Colour) ── */}
+      <MerchStockMix
+        data={mixState.stockMix}
+        loading={mixState.loading}
+        error={mixState.error}
+      />
+
+      {/* ── Top stock + Avg WOC by Subcat ──
+          The subcategory WOC chart is intentionally full-width so every
+          category label can sit along the horizontal axis. */}
+      <div className="space-y-4">
+        <ChartCard title="Top 20 Styles by Current Stock (colour = WOC risk)">
+          <div className="flex gap-3 mb-2">
+            {wocLegend.map((l, i) => (
+              <div key={i} className="flex items-center gap-1">
+                <span className="w-3 h-2 rounded-sm inline-block" style={{ backgroundColor: l.color }} />
+                <span className="text-[9px] text-slate-500">{l.label}</span>
+              </div>
+            ))}
+          </div>
+          <ResponsiveContainer width="100%" height={390}>
+            <BarChart
+              data={topStock}
+              margin={{ top: 22, right: 24, left: 8, bottom: 84 }}
+            >
+              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+              <XAxis
+                dataKey="style_name"
+                interval={0}
+                angle={-45}
+                textAnchor="end"
+                height={84}
+                tick={{ fontSize: 8.5, fill: "#64748b" }}
+                tickLine={false}
+                tickFormatter={(v) => truncate(v, 24)}
+              />
+              <YAxis
+                tickFormatter={fmtNum}
+                tick={{ fontSize: 10, fill: "#64748b" }}
+                tickLine={false}
+              />
+              <Tooltip
+                content={({ active, payload, label }) => {
+                  if (!active || !payload?.length) return null;
+                  const r = payload[0]?.payload;
                   return (
-                    <span style={{ fontSize: 12, color: "#334155" }}>
-                      <span style={{ fontWeight: 600 }}>{v}</span>
-                      {" · "}{fmtNum(p?.value)} units
-                      {" · "}{p?.pct != null ? `${p.pct.toFixed(1)}%` : "—"}
-                    </span>
+                    <div className="bg-white shadow-lg rounded-lg px-3 py-2 text-[11px] border border-slate-100">
+                      <div className="font-semibold text-slate-700 mb-1">{label}</div>
+                      <div>Stock: <strong>{fmtNum(r?.current_stock)}</strong></div>
+                      <div>WOC: <strong>{fmtWoc(r?.woc)}</strong></div>
+                    </div>
                   );
                 }}
               />
-            </PieChart>
+              <Bar dataKey="current_stock" name="Current Stock" radius={[3, 3, 0, 0]}>
+                {topStock.map((entry, i) => <Cell key={i} fill={entry._wocColor} />)}
+                <LabelList
+                  dataKey="stockLabel"
+                  position="top"
+                  style={{ fontSize: 9, fill: "#64748b" }}
+                />
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </ChartCard>
+
+        <ChartCard title="Avg WOC by Subcategory (colour = risk · excl. Men's & Accessories)">
+          <div className="flex gap-3 mb-2">
+            {[
+              { label: "Healthy (< 8 wks)",    color: C.green },
+              { label: "Elevated (8–16 wks)",  color: C.amber },
+              { label: "At risk (≥ 16 wks)",   color: C.red },
+            ].map((l, i) => (
+              <div key={i} className="flex items-center gap-1">
+                <span className="w-3 h-2 rounded-sm inline-block" style={{ backgroundColor: l.color }} />
+                <span className="text-[9px] text-slate-500">{l.label}</span>
+              </div>
+            ))}
+          </div>
+          <ResponsiveContainer width="100%" height={390}>
+            <BarChart
+              data={subcatWoc}
+              margin={{ top: 22, right: 24, left: 8, bottom: 82 }}
+            >
+              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+              <XAxis
+                dataKey="subcategory"
+                interval={0}
+                angle={-45}
+                textAnchor="end"
+                height={82}
+                tick={{ fontSize: 9, fill: "#64748b" }}
+                tickLine={false}
+              />
+              <YAxis
+                domain={[0, "auto"]}
+                tickFormatter={(v) => `${v}w`}
+                tick={{ fontSize: 10, fill: "#64748b" }}
+                tickLine={false}
+                label={{
+                  value: "Average WOC (weeks)",
+                  angle: -90,
+                  position: "insideLeft",
+                  offset: 8,
+                  fontSize: 9,
+                  fill: "#64748b",
+                }}
+              />
+              <ReferenceLine
+                y={12}
+                stroke="#94a3b8"
+                strokeDasharray="4 3"
+                label={{ value: "Target 12 wks", position: "insideTopRight", fontSize: 9, fill: "#94a3b8" }}
+              />
+              <Tooltip content={<WocTooltip />} />
+              <Bar dataKey="avg_woc" name="Avg WOC" radius={[3, 3, 0, 0]}>
+                {subcatWoc.map((entry, i) => <Cell key={i} fill={entry.color} />)}
+                <LabelList
+                  dataKey="avg_woc"
+                  position="top"
+                  formatter={(v) => `${Number(v).toFixed(0)}w`}
+                  style={{ fontSize: 9, fill: "#64748b" }}
+                />
+              </Bar>
+            </BarChart>
           </ResponsiveContainer>
         </ChartCard>
       </div>
@@ -919,26 +958,65 @@ export default function MerchInventory() {
         </ChartCard>
 
         <ChartCard title="WOC Bucket Mix">
-          <div className="flex-1 mt-1 flex items-center justify-center" style={{ minHeight: 380 }}>
-            <ResponsiveContainer width="100%" height={380}>
-              <PieChart>
-                <Pie
-                  data={wocDonut}
-                  cx="50%" cy="50%"
-                  innerRadius={70} outerRadius={110}
-                  paddingAngle={3} dataKey="value"
-                  label={({ value }) => {
-                    const total = wocDonut.reduce((a, d) => a + d.value, 0);
-                    return total > 0 ? `${Math.round(value * 100 / total)}%` : "";
+          <div className="mt-2">
+            <ResponsiveContainer width="100%" height={118}>
+              <BarChart
+                data={wocStackData}
+                layout="vertical"
+                margin={{ top: 18, right: 8, bottom: 18, left: 8 }}
+              >
+                <XAxis type="number" domain={[0, "dataMax"]} hide />
+                <YAxis type="category" dataKey="name" hide />
+                <Tooltip
+                  formatter={(value, key) => {
+                    const bucket = wocDonut.find(d => d.key === key);
+                    return [`${fmtNum(value)} units`, bucket?.name || key];
                   }}
-                  labelLine={false}
-                >
-                  {wocDonut.map((d, i) => <Cell key={i} fill={d.fill} />)}
-                </Pie>
-                <Tooltip formatter={(v, n, p) => [fmtNum(v) + " styles", p.payload.name]} />
-                <Legend iconSize={10} formatter={(v) => <span style={{ fontSize: 10 }}>{v}</span>} />
-              </PieChart>
+                  contentStyle={{ fontSize: 11, borderRadius: 8, border: "1px solid #e2e8f0" }}
+                />
+                {wocDonut.map((bucket, index) => (
+                  <Bar
+                    key={bucket.key}
+                    dataKey={bucket.key}
+                    stackId="woc-stock"
+                    fill={bucket.fill}
+                    barSize={68}
+                    isAnimationActive={false}
+                    radius={
+                      index === 0
+                        ? [5, 0, 0, 5]
+                        : index === wocDonut.length - 1
+                          ? [0, 5, 5, 0]
+                          : 0
+                    }
+                  >
+                    <LabelList
+                      position="center"
+                      content={({ x, y, width, height }) => (
+                        <text
+                          x={Number(x) + Number(width) / 2}
+                          y={Number(y) + Number(height) / 2}
+                          textAnchor="middle"
+                          dominantBaseline="central"
+                          fontSize={8.5}
+                          fontWeight={700}
+                          fill={index < 2 ? "#fff" : "#1e293b"}
+                        >
+                          {`${bucket.name} · ${bucket.pct.toFixed(0)}%`}
+                        </text>
+                      )}
+                    />
+                  </Bar>
+                ))}
+              </BarChart>
             </ResponsiveContainer>
+          </div>
+          <div className="grid grid-cols-5 gap-1 mt-1 text-center text-[9px] text-slate-500">
+            {wocDonut.map((bucket) => (
+              <div key={bucket.key} className="min-w-0">
+                <div className="font-semibold text-slate-600">{fmtNum(bucket.value)} units</div>
+              </div>
+            ))}
           </div>
         </ChartCard>
       </div>

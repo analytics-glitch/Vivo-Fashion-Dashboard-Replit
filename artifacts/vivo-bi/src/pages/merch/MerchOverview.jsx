@@ -39,7 +39,7 @@ import { DownloadSimple } from "@phosphor-icons/react";
 import { Loading, ErrorBox, SectionTitle } from "@/components/common";
 import {
   useMerchData, useMerchParams, MerchKPICard, ChartCard, SubcatFilter,
-  C, fmtKESM, fmtKESFull, fmtPct1, fmtNum, fmtAxisM, sorGapColor,
+  C, fmtKESM, fmtKESFull, fmtPct1, fmtNum, fmtAxisM, sorGapColor, discountDepthColor,
 } from "./MerchHelpers";
 // fmtDate aliased: the component body declares its own local fmtDate helper
 import { api, datePresets, fmtDate as fmtDateApi } from "@/lib/api";
@@ -619,7 +619,9 @@ export default function MerchOverview() {
           testId="merch-kpi-retired-revenue"
           note={
             <>
-              <div>Full price: {fmtPct1(s.retired_full_price_pct)}</div>
+              <div style={{ color: discountDepthColor(s.retired_discount_depth_pct) }}>
+                Avg discount depth: {fmtPct1(s.retired_discount_depth_pct)} off full price
+              </div>
               {avgUnitsPerRetiredStyle != null && (
                 <div>Avg Units Sold/Style (period): {
                   avgUnitsPerRetiredStyle > 0 && avgUnitsPerRetiredStyle < 0.05

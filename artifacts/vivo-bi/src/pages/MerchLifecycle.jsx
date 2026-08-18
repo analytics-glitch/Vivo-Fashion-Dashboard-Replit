@@ -76,6 +76,127 @@ const monthLabel = (iso) => {
   return MONTHS[parseInt(m, 10) - 1] || iso;
 };
 
+const LIFECYCLE_TIERS = ["Tier 1", "Tier 2", "Tier 3", "Tier 4"];
+
+const lifetimeSor = (style) => {
+  const unitsLife = Number(style.units_life) || 0;
+  const currentStock = Number(style.current_stock) || 0;
+  const denominator = unitsLife + currentStock;
+  return unitsLife > 0 && denominator > 0 ? Math.round(unitsLife * 100 / denominator) : null;
+};
+
+const csvCell = (value) => `"${String(value ?? "").replace(/"/g, '""')}"`;
+
+const downloadCsv = (filename, headers, rows) => {
+  const csv = [
+    headers,
+    ...rows,
+  ].map(row => row.map(csvCell).join(",")).join("\r\n");
+  const blob = new Blob([`\uFEFF${csv}\r\n`], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+};
+
+const CsvDownloadLink = ({ filename, headers, rows = [] }) => (
+  <button
+    type="button"
+    onClick={() => downloadCsv(filename, headers, rows)}
+    className="text-[11px] font-medium text-[#1a5c38] underline underline-offset-2 whitespace-nowrap hover:text-[#124329]"
+    aria-label={`Download ${filename}`}
+  >
+    Download CSV · {fmtNum(rows.length)} rows
+  </button>
+);
+
+const TIER_CSV_HEADERS = ["Style Name", "Style Code", "Age (weeks)", "Reorders", "Lifetime SOR%"];
+
+const TierTopPerformersCard = ({ tier, rows }) => {
+  const [sortKey, setSortKey] = useState("reorder_count");
+
+  const sortedRows = useMemo(() => [...rows].sort((a, b) => {
+    if (sortKey === "reorder_count") return (b.reorder_count || 0) - (a.reorder_count || 0);
+    if (sortKey === "age_wks") return (b.age_wks || 0) - (a.age_wks || 0);
+    if (sortKey === "sor") return (lifetimeSor(b) || 0) - (lifetimeSor(a) || 0);
+    return 0;
+  }), [rows, sortKey]);
+
+  const visibleRows = sortedRows.slice(0, 8);
+  const csvRows = useMemo(() => sortedRows.map(style => [
+    style.style_name,
+    style.style_number || "",
+    style.age_wks ?? "",
+    style.reorder_count || 0,
+    lifetimeSor(style) ?? "",
+  ]), [sortedRows]);
+
+  return (
+    <div className="card-white p-5">
+      <div className="flex items-start justify-between gap-3 mb-3">
+        <SectionTitle title={`${tier} — Top Performers`} />
+        <div className="flex items-center gap-2 flex-wrap justify-end">
+          <select
+            className="text-[11px] border border-border rounded px-2 py-1 bg-white"
+            value={sortKey}
+            onChange={e => setSortKey(e.target.value)}
+            aria-label={`${tier} top performers sort`}
+          >
+            <option value="reorder_count">By Reorders</option>
+            <option value="age_wks">By Age</option>
+            <option value="sor">By Life SOR%</option>
+          </select>
+          <CsvDownloadLink
+            filename={`${tier.toLowerCase().replace(/\s+/g, "-")}-top-performers.csv`}
+            headers={TIER_CSV_HEADERS}
+            rows={csvRows}
+          />
+        </div>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-[11.5px]">
+          <thead>
+            <tr className="border-b-2 border-line">
+              <th className="text-left font-semibold text-muted pb-2 pr-2">Style</th>
+              <th className="text-right font-semibold text-muted pb-2 px-2">Age</th>
+              <th className="text-right font-semibold text-muted pb-2 px-2">Reorders</th>
+              <th className="text-right font-semibold text-muted pb-2 pl-2">Life SOR%</th>
+            </tr>
+          </thead>
+          <tbody>
+            {visibleRows.map((style) => {
+              const sor = lifetimeSor(style);
+              return (
+                <tr key={`${tier}-${style.style_name}`} className="border-b border-line/50 hover:bg-slate-50">
+                  <td className="py-1.5 pr-2 font-medium text-foreground truncate max-w-[140px]" title={style.style_name}>
+                    {style.style_name}
+                  </td>
+                  <td className="text-right py-1.5 px-2 text-muted tabular-nums">
+                    {style.age_wks !== null ? `${fmtNum(style.age_wks)}w` : "—"}
+                  </td>
+                  <td className="text-right py-1.5 px-2 font-semibold tabular-nums">
+                    {style.reorder_count || 0}×
+                  </td>
+                  <td className="text-right py-1.5 pl-2 tabular-nums">
+                    {sor !== null ? `${sor}%` : "—"}
+                  </td>
+                </tr>
+              );
+            })}
+            {visibleRows.length === 0 && (
+              <tr><td colSpan={4} className="py-6 text-center text-muted text-[12px]">No {tier} styles found</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+};
+
 const MerchLifecycle = () => {
   const filters = useMerchFilters();
   const [styles, setStyles] = useState([]);
@@ -84,7 +205,6 @@ const MerchLifecycle = () => {
   const [ramp, setRamp] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [sortKey, setSortKey]     = useState("reorder_count");
   const [localSubcat, setLocalSubcat] = useState(null);
 
   const currentYear = new Date().getFullYear();
@@ -168,10 +288,9 @@ const MerchLifecycle = () => {
   }, [enriched]);
 
   const avgReorderByTier = useMemo(() => {
-    const TIER_ORDER = ["Tier 1", "Tier 2", "Tier 3", "Tier 4"];
     const map = {};
     enriched.forEach(s => { if (!map[s.tier]) map[s.tier] = []; map[s.tier].push(s.reorder_count || 0); });
-    return TIER_ORDER.filter(t => map[t]?.length)
+    return LIFECYCLE_TIERS.filter(t => map[t]?.length)
       .map(t => ({
         tier: t,
         avg:  parseFloat((map[t].reduce((a, b) => a + b, 0) / map[t].length).toFixed(1)),
@@ -191,20 +310,6 @@ const MerchLifecycle = () => {
       .filter(s => s.y !== null)
       .slice(0, 300),
     [enriched]);
-
-  const tier1Table = useMemo(() => {
-    const t1 = enriched.filter(s => s.tier === "Tier 1");
-    return [...t1].sort((a, b) => {
-      if (sortKey === "reorder_count") return (b.reorder_count || 0) - (a.reorder_count || 0);
-      if (sortKey === "age_wks") return (b.age_wks || 0) - (a.age_wks || 0);
-      if (sortKey === "sor") {
-        const sorA = a.units_life > 0 ? a.units_life * 100 / (a.units_life + (a.current_stock || 0)) : 0;
-        const sorB = b.units_life > 0 ? b.units_life * 100 / (b.units_life + (b.current_stock || 0)) : 0;
-        return sorB - sorA;
-      }
-      return 0;
-    }).slice(0, 8);
-  }, [enriched, sortKey]);
 
   // ── Arrivals derivations (from the retired New Arrivals & Pipeline tab) ──
 
@@ -226,6 +331,8 @@ const MerchLifecycle = () => {
     return Math.round(total / cyLaunches.length);
   }, [cyLaunches]);
 
+  // revenue_6m is actual net revenue from the rolling six-month sales window;
+  // cyLaunches is already limited to styles first launched in the current year.
   const revCY = useMemo(() => cyLaunches.reduce((a, s) => a + (s.revenue_6m || 0), 0), [cyLaunches]);
 
   const onTrackCY = useMemo(() =>
@@ -237,12 +344,23 @@ const MerchLifecycle = () => {
   const bySubcatChart = useMemo(() => {
     const map = {};
     for (const s of cyLaunches) {
-      map[s.subcategory || "Other"] = (map[s.subcategory || "Other"] || 0) + 1;
+      const name = s.subcategory || "Other";
+      if (!map[name]) map[name] = { name, count: 0, units: 0, stock: 0, revenue: 0 };
+      map[name].count += 1;
+      map[name].units += Number(s.units_6m) || 0;
+      map[name].stock += Number(s.current_stock) || 0;
+      map[name].revenue += Number(s.revenue_6m) || 0;
     }
     return Object.entries(map)
-      .sort((a, b) => b[1] - a[1])
+      .sort(([, a], [, b]) => b.count - a.count)
       .slice(0, 10)
-      .map(([name, count]) => ({ name, count }));
+      .map(([, value]) => ({
+        ...value,
+        sor: value.units + value.stock > 0
+          ? +(value.units * 100 / (value.units + value.stock)).toFixed(1)
+          : null,
+        revenue: Math.round(value.revenue),
+      }));
   }, [cyLaunches]);
 
   // SOR ramp chart
@@ -266,16 +384,41 @@ const MerchLifecycle = () => {
     });
   }, [ramp]);
 
+  const rampCsvRows = useMemo(() =>
+    Object.entries(ramp || {})
+      .flatMap(([tier, points]) => points
+        .filter(point => point.week_n <= 32)
+        .map(point => [
+          point.week_n,
+          tier,
+          point.avg_cumulative_sor_pct !== null && point.avg_cumulative_sor_pct !== undefined
+            ? +Number(point.avg_cumulative_sor_pct).toFixed(1)
+            : "",
+        ]))
+      .sort((a, b) => Number(a[0]) - Number(b[0]) || String(a[1]).localeCompare(String(b[1]))),
+    [ramp]);
+
   // Launch status donut
+  const launchStatus = (style) =>
+    style.action_status === "on_track" ? "On Track" :
+    style.action_status === "overdue" ? "Overdue" : "At Risk";
+
   const statusDonut = useMemo(() => {
     const map = {};
     for (const s of cyLaunches) {
-      const key = s.action_status === "on_track" ? "On Track" :
-                  s.action_status === "overdue"  ? "Overdue"  : "At Risk";
+      const key = launchStatus(s);
       map[key] = (map[key] || 0) + 1;
     }
     return Object.entries(map).map(([name, value]) => ({ name, value }));
   }, [cyLaunches]);
+
+  const statusCsvRows = useMemo(() => cyLaunches.map(style => [
+    style.style_name,
+    launchStatus(style),
+    style.sor_6m ?? "",
+    ageWeeks(style.launch_date) ?? "",
+    Math.round(Number(style.revenue_6m) || 0),
+  ]), [cyLaunches]);
 
   // Top recent launches by SOR
   const topSOR = useMemo(() =>
@@ -287,7 +430,12 @@ const MerchLifecycle = () => {
         const ageWks = s.launch_date
           ? Math.round((Date.now() - new Date(s.launch_date).getTime()) / (7 * 24 * 3600 * 1000))
           : 0;
-        return { name: s.style_name, sor: +s.sor_6m.toFixed(1), age: ageWks };
+        return {
+          name: s.style_name,
+          sor: +s.sor_6m.toFixed(1),
+          age: ageWks,
+          revenue: Math.round(Number(s.revenue_6m) || 0),
+        };
       }),
     [cyLaunches]);
 
@@ -315,6 +463,14 @@ const MerchLifecycle = () => {
     return Object.entries(map).map(([name, value]) => ({ name, value }));
   }, [cyLaunches]);
 
+  const tierTableRows = useMemo(() => {
+    const byTier = Object.fromEntries(LIFECYCLE_TIERS.map(tier => [tier, []]));
+    enriched.forEach(style => {
+      if (byTier[style.tier]) byTier[style.tier].push(style);
+    });
+    return byTier;
+  }, [enriched]);
+
   if (loading) return <Loading label="Loading lifecycle data…" />;
   if (error)   return <ErrorBox message={error} />;
 
@@ -324,8 +480,9 @@ const MerchLifecycle = () => {
   const today = new Date().toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
 
   return (
-    <div className="space-y-6 pb-10">
+    <div className="flex flex-col gap-6 pb-10">
       {subcatSelector}
+      <div className="order-2 space-y-6">
       <div>
         <h2 className="text-[22px] font-bold text-foreground">Style Lifecycle &amp; Age Analysis</h2>
         <p className="text-[13px] text-muted mt-0.5">Launch Cohorts, Age Distribution &amp; Reorder Performance · As at {today}</p>
@@ -344,7 +501,14 @@ const MerchLifecycle = () => {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* Launched by Year */}
         <div className="card-white p-5">
-          <SectionTitle title="Styles Launched by Year" />
+          <div className="flex items-start justify-between gap-3">
+            <SectionTitle title="Styles Launched by Year" />
+            <CsvDownloadLink
+              filename="styles-launched-by-year.csv"
+              headers={["Launch Year", "Styles Launched"]}
+              rows={byYearData.map(row => [row.year, row.count])}
+            />
+          </div>
           <div className="mt-3" style={{ height: 260 }}>
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={byYearData} margin={{ bottom: 10, top: 10, left: -10, right: 10 }}>
@@ -363,7 +527,14 @@ const MerchLifecycle = () => {
 
         {/* Age Distribution */}
         <div className="card-white p-5">
-          <SectionTitle title="Portfolio Age Distribution" subtitle="Style Age (weeks)" />
+          <div className="flex items-start justify-between gap-3">
+            <SectionTitle title="Portfolio Age Distribution" subtitle="Style Age (weeks)" />
+            <CsvDownloadLink
+              filename="portfolio-age-distribution.csv"
+              headers={["Age Bucket", "Styles"]}
+              rows={ageDistData.map(row => [row.name, row.count])}
+            />
+          </div>
           <div className="mt-3" style={{ height: 260 }}>
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={ageDistData} margin={{ bottom: 20, top: 10, left: -10, right: 10 }}>
@@ -382,7 +553,14 @@ const MerchLifecycle = () => {
 
         {/* Reorder Count Distribution */}
         <div className="card-white p-5 flex flex-col">
-          <SectionTitle title="Reorder Count Distribution" />
+          <div className="flex items-start justify-between gap-3">
+            <SectionTitle title="Reorder Count Distribution" />
+            <CsvDownloadLink
+              filename="reorder-count-distribution.csv"
+              headers={["Reorder Bucket", "Styles"]}
+              rows={reorderDistData.map(row => [row.name, row.value])}
+            />
+          </div>
           <div className="flex-1 mt-3" style={{ minHeight: 240 }}>
             <ResponsiveContainer width="100%" height={260}>
               <PieChart>
@@ -401,11 +579,18 @@ const MerchLifecycle = () => {
         </div>
       </div>
 
-      {/* Chart row 2: Avg Reorder by Tier, Scatter, Tier 1 Table */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      {/* Chart row 2: Avg Reorder by Tier + Scatter */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {/* Avg Reorder by Tier */}
         <div className="card-white p-5">
-          <SectionTitle title="Avg Reorder Count by Tier" />
+          <div className="flex items-start justify-between gap-3">
+            <SectionTitle title="Avg Reorder Count by Tier" />
+            <CsvDownloadLink
+              filename="average-reorders-by-tier.csv"
+              headers={["Tier", "Average Reorders"]}
+              rows={avgReorderByTier.map(row => [row.tier, row.avg])}
+            />
+          </div>
           <div className="mt-3" style={{ height: 260 }}>
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={avgReorderByTier} margin={{ top: 20, right: 20, bottom: 10, left: -10 }}>
@@ -424,7 +609,14 @@ const MerchLifecycle = () => {
 
         {/* Age vs Lifetime SOR Scatter */}
         <div className="card-white p-5">
-          <SectionTitle title="Style Age vs Lifetime SOR % (sample)" />
+          <div className="flex items-start justify-between gap-3">
+            <SectionTitle title="Style Age vs Lifetime SOR % (sample)" />
+            <CsvDownloadLink
+              filename="style-age-vs-lifetime-sor.csv"
+              headers={["Style", "Tier", "Age (weeks)", "Lifetime SOR%"]}
+              rows={scatterData.map(row => [row.name, row.tier, row.x, row.y])}
+            />
+          </div>
           <div className="mt-3" style={{ height: 260 }}>
             <ResponsiveContainer width="100%" height="100%">
               <ScatterChart margin={{ top: 10, right: 20, bottom: 30, left: 10 }}>
@@ -449,54 +641,26 @@ const MerchLifecycle = () => {
           </div>
         </div>
 
-        {/* Tier 1 Top Performers table */}
-        <div className="card-white p-5">
-          <div className="flex items-center justify-between mb-3">
-            <SectionTitle title="Tier 1 — Top Performers" />
-            <select
-              className="text-[11px] border border-border rounded px-2 py-1 bg-white"
-              value={sortKey}
-              onChange={e => setSortKey(e.target.value)}
-            >
-              <option value="reorder_count">By Reorders</option>
-              <option value="age_wks">By Age</option>
-              <option value="sor">By Lifetime SOR</option>
-            </select>
-          </div>
-          <div className="overflow-x-auto">
-            <table className="w-full text-[11.5px]">
-              <thead>
-                <tr className="border-b-2 border-line">
-                  <th className="text-left font-semibold text-muted pb-2 pr-2">Style</th>
-                  <th className="text-right font-semibold text-muted pb-2 px-2">Age</th>
-                  <th className="text-right font-semibold text-muted pb-2 px-2">Reorders</th>
-                  <th className="text-right font-semibold text-muted pb-2 pl-2">Life SOR%</th>
-                </tr>
-              </thead>
-              <tbody>
-                {tier1Table.map((s, i) => {
-                  const sor = s.units_life > 0
-                    ? Math.round(s.units_life * 100 / (s.units_life + (s.current_stock || 0)))
-                    : null;
-                  return (
-                    <tr key={s.style_name} className="border-b border-line/50 hover:bg-slate-50">
-                      <td className="py-1.5 pr-2 font-medium text-foreground truncate max-w-[140px]" title={s.style_name}>{s.style_name}</td>
-                      <td className="text-right py-1.5 px-2 text-muted tabular-nums">{s.age_wks !== null ? `${fmtNum(s.age_wks)}w` : "—"}</td>
-                      <td className="text-right py-1.5 px-2 font-semibold tabular-nums">{s.reorder_count || 0}×</td>
-                      <td className="text-right py-1.5 pl-2 tabular-nums">{sor !== null ? `${sor}%` : "—"}</td>
-                    </tr>
-                  );
-                })}
-                {tier1Table.length === 0 && (
-                  <tr><td colSpan={4} className="py-6 text-center text-muted text-[12px]">No Tier 1 styles found</td></tr>
-                )}
-              </tbody>
-            </table>
-          </div>
+      </div>
+
+      {/* Top Performers by lifecycle tier — each card displays the top eight
+          rows while its CSV link exports the complete tier list. */}
+      <div>
+        <h3 className="text-[18px] font-bold text-foreground mb-3">Top Performers by Tier</h3>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {LIFECYCLE_TIERS.map(tier => (
+            <TierTopPerformersCard
+              key={tier}
+              tier={tier}
+              rows={tierTableRows[tier]}
+            />
+          ))}
         </div>
       </div>
 
       {/* ════ New Arrivals & Pipeline (from the retired Arrivals tab) ════ */}
+      </div>
+      <div className="order-1 space-y-6">
       <div className="border-t border-slate-200 pt-5">
         <h2 className="text-[18px] font-bold text-foreground">New Arrivals &amp; Pipeline Performance</h2>
         <p className="text-[12px] text-muted mt-0.5">
@@ -530,9 +694,9 @@ const MerchLifecycle = () => {
           testId="arr-avg-age"
         />
         <KPICard
-          label={`${currentYear} Revenue`}
-          value={fmtKES(revCY) + "+"}
-          sub="Estimated 6m"
+          label={`${currentYear} Launches Revenue`}
+          value={fmtKES(revCY)}
+          sub={`Last 6 months · ${currentYear} launches only`}
           icon={CurrencyCircleDollar}
           accent showDelta={false}
           testId="arr-cy-rev"
@@ -551,7 +715,14 @@ const MerchLifecycle = () => {
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
         {/* Launches by subcategory — 4 */}
         <div className="lg:col-span-4 card-white p-5">
-          <SectionTitle title={`${currentYear} Launches by Subcategory`} subtitle={`Styles Launched in ${currentYear}`} />
+          <div className="flex items-start justify-between gap-3">
+            <SectionTitle title={`${currentYear} Launches by Subcategory`} subtitle={`Styles Launched in ${currentYear}`} />
+            <CsvDownloadLink
+              filename={`${currentYear}-launches-by-subcategory.csv`}
+              headers={["Subcategory", "Styles Launched", "SOR%", "Revenue"]}
+              rows={bySubcatChart.map(row => [row.name, row.count, row.sor ?? "", row.revenue])}
+            />
+          </div>
           {bySubcatChart.length === 0
             ? <Empty />
             : (
@@ -575,7 +746,14 @@ const MerchLifecycle = () => {
 
         {/* SOR Ramp — 5 */}
         <div className="lg:col-span-5 card-white p-5">
-          <SectionTitle title={`SOR Ramp by Tier — ${currentYear} Launches`} subtitle="Cumulative SOR %" />
+          <div className="flex items-start justify-between gap-3">
+            <SectionTitle title={`SOR Ramp by Tier — ${currentYear} Launches`} subtitle="Cumulative SOR %" />
+            <CsvDownloadLink
+              filename={`${currentYear}-sor-ramp-by-tier.csv`}
+              headers={["Week since launch", "Tier", "Cumulative SOR%"]}
+              rows={rampCsvRows}
+            />
+          </div>
           {rampChart.length === 0
             ? <Empty />
             : (
@@ -607,7 +785,14 @@ const MerchLifecycle = () => {
 
         {/* Launch Status donut — 3 */}
         <div className="lg:col-span-3 card-white p-5">
-          <SectionTitle title={`${currentYear} Launch Status`} />
+          <div className="flex items-start justify-between gap-3">
+            <SectionTitle title={`${currentYear} Launch Status`} />
+            <CsvDownloadLink
+              filename={`${currentYear}-launch-status.csv`}
+              headers={["Style", "Status", "SOR%", "Age in weeks", "Revenue"]}
+              rows={statusCsvRows}
+            />
+          </div>
           {statusDonut.length === 0
             ? <Empty />
             : (
@@ -639,7 +824,14 @@ const MerchLifecycle = () => {
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
         {/* Top Recent Launches by SOR — 4 */}
         <div className="lg:col-span-4 card-white p-5">
-          <SectionTitle title="Top Recent Launches by SOR" subtitle="Lifetime SOR %" />
+          <div className="flex items-start justify-between gap-3">
+            <SectionTitle title="Top Recent Launches by SOR" subtitle="Lifetime SOR %" />
+            <CsvDownloadLink
+              filename={`${currentYear}-top-recent-launches-by-sor.csv`}
+              headers={["Style", "Age in weeks", "Lifetime SOR%", "Revenue"]}
+              rows={topSOR.map(row => [row.name, row.age, row.sor, row.revenue])}
+            />
+          </div>
           {topSOR.length === 0
             ? <Empty />
             : (
@@ -669,7 +861,14 @@ const MerchLifecycle = () => {
 
         {/* Monthly Cadence stacked — 5 */}
         <div className="lg:col-span-5 card-white p-5">
-          <SectionTitle title={`${currentYear} Monthly Launch Cadence`} subtitle="Styles Launched" />
+          <div className="flex items-start justify-between gap-3">
+            <SectionTitle title={`${currentYear} Monthly Launch Cadence`} subtitle="Styles Launched" />
+            <CsvDownloadLink
+              filename={`${currentYear}-monthly-launch-cadence.csv`}
+              headers={["Month", "On Track", "At Risk", "Total Styles"]}
+              rows={cadenceChart.map(row => [row.name, row.onTrack, row.atRisk, row.onTrack + row.atRisk])}
+            />
+          </div>
           {cadenceChart.length === 0
             ? <Empty />
             : (
@@ -693,7 +892,14 @@ const MerchLifecycle = () => {
 
         {/* Brand Donut — 3 */}
         <div className="lg:col-span-3 card-white p-5">
-          <SectionTitle title={`${currentYear} Launches by Brand`} />
+          <div className="flex items-start justify-between gap-3">
+            <SectionTitle title={`${currentYear} Launches by Brand`} />
+            <CsvDownloadLink
+              filename={`${currentYear}-launches-by-brand.csv`}
+              headers={["Brand", "Styles Launched"]}
+              rows={brandDonut.map(row => [row.name, row.value])}
+            />
+          </div>
           {brandDonut.length === 0
             ? <Empty />
             : (
@@ -719,6 +925,7 @@ const MerchLifecycle = () => {
               </ResponsiveContainer>
             )}
         </div>
+      </div>
       </div>
     </div>
   );

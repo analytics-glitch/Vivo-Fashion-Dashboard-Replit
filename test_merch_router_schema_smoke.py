@@ -151,6 +151,7 @@ class TestMerchRouterSchemaSmoke(unittest.TestCase):
             "soh_stores", "soh_online", "soh_warehouse", "current_stock",
             "units_6m", "revenue_6m", "orders_6m",
             "units_period", "revenue_period",
+            "sales_value_period",
             "units_full_price_period", "full_price_sor_period",
             "units_life", "revenue_life",
             "weekly_avg", "woc", "sor_6m", "sor_period", "sor_life",
@@ -177,6 +178,17 @@ class TestMerchRouterSchemaSmoke(unittest.TestCase):
             except (KeyError, TypeError) as exc:
                 self.fail(f"Column mismatch in _fetch_styles post-processing: {exc}")
 
+    def test_stock_mix_joins_colour_lifecycle_before_selecting_status(self):
+        """The Stock Mix query selects cl.colour_status, so its CTE join is
+        required even when the database returns an empty tree."""
+        with _patch_db([]) as db:
+            result = merch_router._fetch_stock_mix()
+        self.assertEqual(result["categories"], [])
+        sql = db.call_args.args[0]
+        self.assertIn("colour_lifecycle AS", sql)
+        self.assertIn("LEFT JOIN colour_lifecycle cl", sql)
+        self.assertIn("cl.colour_status", sql)
+
     # ── /api/merch/summary ────────────────────────────────────────────────────
 
     def test_compute_summary_has_required_keys(self):
@@ -189,7 +201,7 @@ class TestMerchRouterSchemaSmoke(unittest.TestCase):
             "full_price_units_period", "discounted_units_period",
             "full_price_sell_through", "total_units_period",
             "avg_full_price_sor_period_active", "full_price_sor_period",
-            "discounted_sor_gap_pp",
+            "discounted_sor_gap_pp", "retired_discount_depth_pct",
             "zero_stock_count", "no_sale_30d_count",
             "woc_lt4_count", "woc_gt20_count",
             "woc_lt3_active_count", "no_sale_7d_active_count",
@@ -416,26 +428,26 @@ class LifecycleSplitKpiTests(unittest.TestCase):
             s["active_revenue_period"] + s["retired_revenue_period"], s["revenue_period"]
         )
 
-    def test_retired_full_price_pct_uses_selected_period_retired_units(self):
+    def test_retired_discount_depth_is_unit_weighted(self):
         rows = [
             _style(style_number="SN-1", tier="Retired", units_period=10,
-                   units_full_price_period=4),
+                   full_price=1000, revenue_period=7000, sales_value_period=7000),
             _style(style_number="SN-2", tier="Retired", units_period=5,
-                   units_full_price_period=5),
+                   full_price=2000, revenue_period=12000, sales_value_period=12000),
             _style(style_number="SN-3", tier="Tier 2", units_period=100,
-                   units_full_price_period=0),
+                   full_price=500, revenue_period=50000),
         ]
         s = merch_router._compute_summary(rows)
         self.assertEqual(s["retired_units_period"], 15)
-        self.assertEqual(s["retired_full_price_units_period"], 9)
-        self.assertEqual(s["retired_full_price_pct"], 60.0)
+        # (20,000 expected - 19,000 achieved) / 20,000 = 5.0%.
+        self.assertEqual(s["retired_discount_depth_pct"], 5.0)
 
-    def test_retired_full_price_pct_is_null_without_retired_sales(self):
+    def test_retired_discount_depth_is_null_without_priced_retired_sales(self):
         s = merch_router._compute_summary([
             _style(style_number="SN-1", tier="Retired", units_period=0,
-                   units_full_price_period=0),
+                   full_price=1000, revenue_period=0),
         ])
-        self.assertIsNone(s["retired_full_price_pct"])
+        self.assertIsNone(s["retired_discount_depth_pct"])
 
     def test_zero_stock_active_seller_in_revenue_and_avg_denominator(self):
         rows = [
