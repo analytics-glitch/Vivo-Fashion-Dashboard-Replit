@@ -5,7 +5,6 @@ import { PostVisual, timeAgo } from "./PostBits";
 import { TierBadge, Avatar, cardCls, brandAsset, SectionHeader } from "./ui";
 import { api } from "@/lib/api";
 import { StyledForYouHome } from "./StyledForYou";
-import { VivoEditsHome } from "./VivoEdits";
 import { NEWS, newsPageId } from "./newsData";
 import ReelsRow from "./ReelsRow";
 
@@ -15,7 +14,9 @@ const initialsOf = (u) =>
 
 /* Post visual — placeholder art in two tones so a photo-less demo feed still
    has rhythm. Aspect ratio comes from the post's layout variant. */
-function PostCard({ post, onShopTap, onOpenProduct, onOpen, onCounts }) {
+/* Home renders post cards WITHOUT product tag pills — shopping entry points
+   live in Shop / the post detail modal, never on the Home feed (rewire spec). */
+function PostCard({ post, onOpen, onCounts }) {
   const [likeBump, setLikeBump] = useState(0);
   if (!post) return null;
 
@@ -68,20 +69,6 @@ function PostCard({ post, onShopTap, onOpenProduct, onOpen, onCounts }) {
           <p className="text-foreground/90 text-[15px] leading-relaxed mb-4">
             {post.caption}
           </p>
-        </div>
-      )}
-
-      {post.tagged?.length > 0 && (
-        <div className="flex flex-wrap gap-2 mb-5">
-          {post.tagged.map(t => (
-            <button
-              key={t.sku}
-              onClick={() => (onOpenProduct ? onOpenProduct(t.sku) : onShopTap?.())}
-              className="bg-secondary border border-border text-foreground text-xs font-medium px-3 min-h-[36px] rounded-full hover:bg-border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-            >
-              {t.name}
-            </button>
-          ))}
         </div>
       )}
 
@@ -248,12 +235,12 @@ function PersonalCard({ member, onNavigate }) {
         </span>
         <div className="flex-grow min-w-0">
           <div className="font-serif text-lg text-foreground leading-snug">A very happy birthday month{firstName ? `, ${firstName}` : ""}.</div>
-          <p className="text-[13px] text-muted-foreground mt-0.5">{month} deserves a standout look — come treat yourself.</p>
+          <p className="text-[13px] text-muted-foreground mt-0.5">The whole of {month} is yours — celebrate loudly, we're cheering with you.</p>
         </div>
         <button
           data-testid="personal-cta"
-          onClick={() => onNavigate("shop")}
-          aria-label="Browse the collection"
+          onClick={() => onNavigate("rewards")}
+          aria-label="See your rewards"
           className="w-11 h-11 shrink-0 rounded-full border border-border flex items-center justify-center text-foreground hover:bg-secondary transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
         >
           <ChevronRight size={16} />
@@ -393,20 +380,21 @@ function EndCap({ onNavigate }) {
       <p className="text-[13px] text-muted-foreground mb-6">New stories, reels and drops land every week.</p>
       <div className="flex flex-wrap items-center justify-center gap-3">
         <button
-          data-testid="endcap-shop"
-          onClick={() => onNavigate("shop")}
-          className="h-11 px-6 rounded bg-foreground text-background text-[14px] font-medium hover:opacity-90 transition-all active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
-        >
-          Browse the collection
-        </button>
-        <button
           data-testid="endcap-community"
           onClick={() => onNavigate("community")}
-          className="h-11 px-6 rounded border border-border bg-background text-foreground text-[14px] font-medium hover:bg-secondary transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          className="h-11 px-6 rounded bg-foreground text-background text-[14px] font-medium hover:opacity-90 transition-all active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
         >
           This week's challenge
         </button>
       </div>
+      {/* Plain nav bridge to Shop — deliberately quiet, no collection imagery */}
+      <button
+        data-testid="endcap-shop"
+        onClick={() => onNavigate("shop")}
+        className="mt-4 text-[13px] font-medium text-muted-foreground hover:text-foreground underline-offset-2 hover:underline transition-colors rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+      >
+        Go to Shop →
+      </button>
     </div>
   );
 }
@@ -530,13 +518,6 @@ function HeroCampaign({ onNavigate }) {
               className="h-11 px-8 rounded bg-white text-neutral-900 font-medium text-[14px] hover:bg-white/90 active:scale-[0.98] transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
             >
               Join the Conversation
-            </button>
-            <button
-              data-testid="hero-shop-now"
-              onClick={() => onNavigate("shop")}
-              className="h-11 px-5 rounded border border-white/60 text-white font-medium text-[13px] hover:bg-white/10 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
-            >
-              Shop the edit
             </button>
           </div>
         </div>
@@ -668,7 +649,7 @@ function VivoStories({ onOpenNews, onViewAll }) {
   );
 }
 
-export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage, onOpenEvent, onOpenEdit, onOpenEdits }) {
+export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage, onOpenEvent }) {
   const [events, setEvents] = useState([]);
   // Live challenges — the mission card and sidebar feature the first open one.
   const [liveChallenges, setLiveChallenges] = useState([]);
@@ -695,7 +676,6 @@ export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage,
   const nextEvent = events[0] || null;
 
   const openNews = (id) => onOpenPage?.(newsPageId(id));
-  const shopTap = () => onNavigate("shop");
   // Interactive feed — same DB-backed list the Community tab shows.
   const [feed, setFeed] = useState([]);
   const [detailIdx, setDetailIdx] = useState(-1);
@@ -767,7 +747,7 @@ export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage,
             <SectionHeader kicker="This week in the community" title="Looks & conversations we loved" />
             <div className="grid sm:grid-cols-2 gap-4 sm:gap-6">
               {previewPosts.map((p) => (
-                <PostCard key={p.id} post={p} onShopTap={shopTap} onOpenProduct={onOpenProduct} onOpen={openPost} onCounts={patchPost} />
+                <PostCard key={p.id} post={p} onOpen={openPost} onCounts={patchPost} />
               ))}
             </div>
             <div className="mt-8 text-center">
@@ -804,17 +784,7 @@ export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage,
         </div>
       )}
 
-      {/* 6 · Vivo Edits — editorial, creator-curated shoppable looks. Open
-          to members AND guests (it's editorial inspiration). Renders nothing
-          when the fetch fails or returns no items.
-          Point 4: this section now incorporates "Worn by the Community". */}
-      <VivoEditsHome
-        onOpenEdit={onOpenEdit}
-        onViewAll={onOpenEdits}
-        feed={member ? feed : undefined}
-        onOpenProduct={onOpenProduct}
-        onNavigate={onNavigate}
-      />
+      {/* Vivo Edits moved to the Community tab (Home-vs-Shop rewire spec) */}
 
       {/* 7 · Community Spotlight — Jewel + Voices merged into one feature */}
       <CommunitySpotlightCard jewel={cel?.jewel} onNavigate={onNavigate} />
@@ -829,7 +799,7 @@ export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage,
       {member && questionOfWeek && (
         <section data-testid="home-style-question">
           <SectionHeader kicker="Style question of the week" title="Weigh in — the community wants to know" />
-          <PostCard post={questionOfWeek} onShopTap={shopTap} onOpenProduct={onOpenProduct} onOpen={openPost} onCounts={patchPost} />
+          <PostCard post={questionOfWeek} onOpen={openPost} onCounts={patchPost} />
         </section>
       )}
 

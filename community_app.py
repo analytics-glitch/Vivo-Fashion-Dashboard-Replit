@@ -3303,6 +3303,12 @@ def register_community_routes(app, api_pg_module):
                 if not prefs["opted_in"]:
                     return {"opted_in": False, "sections": []}
 
+                # Lightweight status probe — Home only needs the opt-in flag
+                # (Home-vs-Shop rewire: no recommendation/product payloads are
+                # fetched on Home; the full picks fetch belongs to Shop).
+                if (request.query_params.get("meta_only") or "") in ("1", "true"):
+                    return {"opted_in": True, "sections": [], "cadence_label": "Updated weekly"}
+
                 in_size_sql = "FALSE"
                 params = {}
                 if prefs["size"]:

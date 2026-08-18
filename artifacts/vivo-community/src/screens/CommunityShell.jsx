@@ -22,7 +22,7 @@ import TryOnView from "@/components/community/TryOnView";
 import SurveyView from "@/components/community/SurveyView";
 import MyDataView from "@/components/community/MyDataView";
 import { StylePrefsView } from "@/components/community/StyledForYou";
-import { VivoEditsAllView, VivoEditDetail } from "@/components/community/VivoEdits";
+import { VivoEditsAllView, VivoEditDetail, VivoEditsHome } from "@/components/community/VivoEdits";
 import StoreLocatorView from "@/components/community/StoreLocatorView";
 import { DeliveryInfoView, ReturnsInfoView } from "@/components/community/ShoppingInfoViews";
 import LegalPage from "@/components/community/LegalPage";
@@ -354,7 +354,7 @@ function ShellInner() {
   const onPlainTab = !cartOpen && !wlOpen && !productSku && !eventId && !editId && !page;
 
   return (
-    <div className="min-h-[100dvh] bg-background text-foreground font-sans pb-20 sm:pb-0">
+    <div className="min-h-[100dvh] bg-background text-foreground font-sans">
 
       {/* Desktop Header + Tab Bar */}
       <header className="sticky top-0 z-40 bg-background/95 backdrop-blur-md border-b border-border hidden sm:block">
@@ -474,6 +474,26 @@ function ShellInner() {
             <CartButton mobile />
           </div>
         </div>
+        {/* Mobile top nav row — replaces the old bottom tab bar (rewire spec
+            §"mobile nav"). Horizontally scrollable; same testids preserved. */}
+        <nav aria-label="Primary" className="flex gap-6 px-4 overflow-x-auto hide-scrollbar border-t border-border/60">
+          {TABS.map((t) => {
+            const isActive = tab === t.id && onPlainTab;
+            return (
+              <button
+                key={t.id}
+                data-testid={`tab-${t.id}-mobile`}
+                onClick={() => goTab(t.id)}
+                className={`relative py-2.5 text-[12px] font-semibold uppercase tracking-wider whitespace-nowrap transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset ${
+                  isActive ? "text-primary-ink" : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {t.label}
+                {isActive && <span className="absolute bottom-0 left-0 w-full h-[2px] bg-primary" />}
+              </button>
+            );
+          })}
+        </nav>
       </header>
 
       {/* Main Content Area */}
@@ -530,15 +550,22 @@ function ShellInner() {
           <VivoEditDetail editId={editId} onBack={closeEdit} onOpenProduct={openProduct} member={member} onGuest={exitGuest} />
         ) : (
           <>
-            {tab === "home" && <TabHome onNavigate={goTab} member={member} onOpenProduct={openProduct} onOpenPage={openPage} onOpenEvent={openEventDetail} onOpenFabulas={setFabulasId} onOpenEdit={openEdit} onOpenEdits={() => openPage("edits")} />}
+            {tab === "home" && <TabHome onNavigate={goTab} member={member} onOpenProduct={openProduct} onOpenPage={openPage} onOpenEvent={openEventDetail} onOpenFabulas={setFabulasId} />}
             {tab === "community" && !member && (
-              <GuestGate
-                title="Join the conversation"
-                body="Posting, style challenges, likes and comments are for members — sign in or create a free account to take part."
-                onJoin={exitGuest}
-              />
+              <>
+                <GuestGate
+                  title="Join the conversation"
+                  body="Posting, style challenges, likes and comments are for members — sign in or create a free account to take part."
+                  onJoin={exitGuest}
+                />
+                {/* Editorial reads stay guest-open: Vivo Edits browsing was
+                    guest-visible on Home pre-rewire and keeps that access here. */}
+                <div className="mt-10">
+                  <VivoEditsHome onOpenEdit={openEdit} onViewAll={() => openPage("edits")} />
+                </div>
+              </>
             )}
-            {tab === "community" && member && <TabCommunity member={member} subNav={subNav} onSubChange={syncSub} onOpenEvent={openEventDetail} onOpenProduct={openProduct} onOpenPage={openPage} onOpenFabulas={setFabulasId} />}
+            {tab === "community" && member && <TabCommunity member={member} subNav={subNav} onSubChange={syncSub} onOpenEvent={openEventDetail} onOpenProduct={openProduct} onOpenPage={openPage} onOpenFabulas={setFabulasId} onOpenEdit={openEdit} onOpenEdits={() => openPage("edits")} />}
             {tab === "shop" && <TabShop onOpenProduct={openProduct} onOpenTryOn={() => openTryOn("")} onOpenPage={openPage} />}
             {tab === "rewards" && (member ? (
               <TabRewards member={member} onMemberUpdate={updateMember} onOpenPage={openPage} />
@@ -595,29 +622,6 @@ function ShellInner() {
           <p className="text-[12px] text-muted-foreground">© 2026 Vivo Fashion Group · Designed in Nairobi</p>
         </div>
       </footer>
-
-      {/* Mobile Bottom Tab Bar */}
-      <div className="fixed bottom-0 left-0 w-full z-40 bg-background border-t border-border sm:hidden pb-[env(safe-area-inset-bottom)]">
-        <div className="flex items-center justify-around h-16">
-          {TABS.map((t) => {
-            const Icon = t.icon;
-            const isActive = tab === t.id && onPlainTab;
-            return (
-              <button
-                key={t.id}
-                data-testid={`tab-${t.id}-mobile`}
-                onClick={() => goTab(t.id)}
-                className={`flex flex-col items-center justify-center w-full h-full space-y-1 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset ${
-                  isActive ? "text-primary-ink" : "text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                <Icon size={22} strokeWidth={isActive ? 2 : 1.5} />
-                <span className="text-[10px] font-medium">{t.label}</span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
 
     </div>
   );

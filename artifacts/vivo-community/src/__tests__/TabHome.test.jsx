@@ -386,31 +386,22 @@ describe("TabHome – homepage layout", () => {
     expect(screen.queryByTestId("shop-look-u2")).not.toBeInTheDocument();
   });
 
-  it("feed with tagged posts shows the Shop Community Looks section", async () => {
+  it("feed with tagged posts shows NO shop-look cards on Home (rewire: Vivo Edits moved to Community)", async () => {
     const posts = [
-      makePost({
-        id: "t1",
-        tagged: [{ sku: "SKU-001", name: "Green Dress" }],
-      }),
-      makePost({
-        id: "t2",
-        tagged: [{ sku: "SKU-002", name: "Red Blouse" }],
-      }),
-      makePost({
-        id: "t3",
-        tagged: [{ sku: "SKU-003", name: "Blue Skirt" }],
-      }),
+      makePost({ id: "t1", tagged: [{ sku: "SKU-001", name: "Green Dress" }] }),
+      makePost({ id: "t2", tagged: [{ sku: "SKU-002", name: "Red Blouse" }] }),
     ];
     api.feed.mockResolvedValue({ items: posts });
 
     render(<TabHome member={MEMBER} {...NO_OP} />);
     await waitFor(() =>
-      expect(screen.getByTestId("home-vivo-edits")).toBeInTheDocument()
+      expect(screen.getByTestId("home-feed-preview")).toBeInTheDocument()
     );
-    // Each look card should be present (they are now rendered inside VivoEditsHome).
-    expect(screen.getByTestId("shop-look-t1")).toBeInTheDocument();
-    expect(screen.getByTestId("shop-look-t2")).toBeInTheDocument();
-    expect(screen.getByTestId("shop-look-t3")).toBeInTheDocument();
+    expect(screen.queryByTestId("home-vivo-edits")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("shop-look-t1")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("shop-look-t2")).not.toBeInTheDocument();
+    // Home post cards carry no product tag pill buttons.
+    expect(screen.queryByRole("button", { name: "Green Dress" })).not.toBeInTheDocument();
   });
 
   // ── 6. close button restores state ────────────────────────────────────
@@ -436,100 +427,26 @@ describe("TabHome – homepage layout", () => {
     );
   });
 
-  // ── 7. Vivo Edits section ─────────────────────────────────────────────
+  // ── 7. Vivo Edits moved to Community (rewire) ─────────────────────────
+  // Detailed VivoEditsHome coverage lives in VivoEditsHome.test.jsx; Home
+  // must simply never render the section, even when edits exist.
 
-  function makeEdit(overrides = {}) {
-    const id = overrides.id ?? Math.random().toString(36).slice(2);
-    return {
-      id,
-      creator_name: "Amina H",
-      title: `Edit ${id}`,
-      description: "A quiet, confident everyday look.",
-      disclosure: "",
-      featured: false,
-      cover_image: `/api/community/edit-image/${id}`,
-      cover_alt: `Look ${id}`,
-      feed_post_id: null,
-      ...overrides,
-    };
-  }
-
-  it("renders the Vivo Edits section when api.edits returns items (member and guest)", async () => {
+  it("never renders Vivo Edits on Home, even when api.edits has items", async () => {
     api.edits.mockResolvedValue({
-      items: [makeEdit({ id: "e1" }), makeEdit({ id: "e2" })],
-      total: 2,
+      items: [{ id: "e1", creator_name: "Amina H", title: "Edit e1", cover_image: "/x.jpg" }],
+      total: 1,
     });
-
-    render(<TabHome member={MEMBER} {...NO_OP} />);
-
-    await waitFor(() =>
-      expect(screen.getByTestId("home-vivo-edits")).toBeInTheDocument()
-    );
-    expect(screen.getByTestId("home-vivo-edit-e1")).toBeInTheDocument();
-    expect(screen.getByTestId("home-vivo-edit-e2")).toBeInTheDocument();
-    // 2 edits ≤ 3, so no View All link.
-    expect(screen.queryByTestId("home-vivo-edits-viewall")).not.toBeInTheDocument();
-  });
-
-  it("shows the Vivo Edits section to guests too (editorial inspiration)", async () => {
-    api.edits.mockResolvedValue({ items: [makeEdit({ id: "g1" })], total: 1 });
-
-    render(<TabHome member={null} {...NO_OP} />);
-    await waitFor(() =>
-      expect(screen.getByTestId("home-vivo-edits")).toBeInTheDocument()
-    );
-    expect(screen.getByTestId("home-vivo-edit-g1")).toBeInTheDocument();
-  });
-
-  it("caps the Vivo Edits section at 3 cards and shows View All when total > 3", async () => {
-    const user = userEvent.setup();
-    api.edits.mockResolvedValue({
-      items: [
-        makeEdit({ id: "a" }), makeEdit({ id: "b" }),
-        makeEdit({ id: "c" }), makeEdit({ id: "d" }),
-      ],
-      total: 12,
-    });
-
-    const onOpenEdits = vi.fn();
-    render(<TabHome member={MEMBER} {...NO_OP} onOpenEdits={onOpenEdits} />);
-
-    await waitFor(() =>
-      expect(screen.getByTestId("home-vivo-edits")).toBeInTheDocument()
-    );
-    // Max 3 cards even though 4 items returned.
-    expect(screen.getByTestId("home-vivo-edit-a")).toBeInTheDocument();
-    expect(screen.getByTestId("home-vivo-edit-c")).toBeInTheDocument();
-    expect(screen.queryByTestId("home-vivo-edit-d")).not.toBeInTheDocument();
-
-    const viewAll = screen.getByTestId("home-vivo-edits-viewall");
-    await user.click(viewAll);
-    expect(onOpenEdits).toHaveBeenCalled();
-  });
-
-  it("clicking an edit card opens that edit via onOpenEdit", async () => {
-    const user = userEvent.setup();
-    api.edits.mockResolvedValue({ items: [makeEdit({ id: "open-me" })], total: 1 });
-    const onOpenEdit = vi.fn();
-
-    render(<TabHome member={MEMBER} {...NO_OP} onOpenEdit={onOpenEdit} />);
-    await waitFor(() =>
-      expect(screen.getByTestId("home-vivo-edit-open-me")).toBeInTheDocument()
-    );
-    await user.click(screen.getByTestId("home-vivo-edit-open-me"));
-    expect(onOpenEdit).toHaveBeenCalledWith("open-me");
-  });
-
-  it("renders nothing for Vivo Edits when api.edits returns no items or fails", async () => {
-    api.edits.mockResolvedValue({ items: [], total: 0 });
-    const { unmount } = render(<TabHome member={MEMBER} {...NO_OP} />);
-    await act(async () => {});
-    expect(screen.queryByTestId("home-vivo-edits")).not.toBeInTheDocument();
-    unmount();
-
-    api.edits.mockRejectedValue(new Error("boom"));
     render(<TabHome member={MEMBER} {...NO_OP} />);
     await act(async () => {});
     expect(screen.queryByTestId("home-vivo-edits")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("home-vivo-edit-e1")).not.toBeInTheDocument();
+  });
+
+  it("Home hero and endcap carry no shop CTAs (challenge is primary; shop is a quiet link)", async () => {
+    render(<TabHome member={MEMBER} {...NO_OP} />);
+    await act(async () => {});
+    expect(screen.queryByTestId("hero-shop-now")).not.toBeInTheDocument();
+    expect(screen.getByTestId("endcap-community")).toHaveTextContent(/challenge/i);
+    expect(screen.getByTestId("endcap-shop")).toHaveTextContent(/Go to Shop/);
   });
 });

@@ -12,6 +12,7 @@ import {
   ChevronRight, HandHeart, Camera, HelpCircle, Play,
 } from "lucide-react";
 import EntryModal, { ENTRY_STATUS_COPY } from "./EntryModal";
+import { VivoEditsHome } from "./VivoEdits";
 import EventsList from "./EventsList";
 import { FabulasCarousel } from "./FabulasStory";
 
@@ -158,7 +159,7 @@ const FEED_CHIPS = [
   { id: "haul", label: "Hauls", type: "haul" },
 ];
 
-export default function TabCommunity({ member, subNav, onSubChange, onOpenEvent, onOpenProduct, onOpenPage, onOpenFabulas }) {
+export default function TabCommunity({ member, subNav, onSubChange, onOpenEvent, onOpenProduct, onOpenPage, onOpenFabulas, onOpenEdit, onOpenEdits }) {
   const [subTab, setSubTab] = useState(() => (SUB_IDS.includes(subNav?.id) ? subNav.id : "feed"));
   const [followed, setFollowed] = useState({});
   const [entryFor, setEntryFor] = useState(null);    // challenge entry composer
@@ -381,7 +382,7 @@ export default function TabCommunity({ member, subNav, onSubChange, onOpenEvent,
           )}
           {feedView === "" && (
             <>
-              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-6 items-start" data-testid="community-feed-grid">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6 items-start" data-testid="community-feed-grid">
                 {feed === null
                   ? Array.from({ length: 8 }).map((_, i) => (
                       <div key={i} className="rounded overflow-hidden animate-pulse">
@@ -394,6 +395,15 @@ export default function TabCommunity({ member, subNav, onSubChange, onOpenEvent,
                 <p className="text-muted-foreground text-sm italic mt-4">Nothing here yet — be the first to share.</p>
               )}
             </>
+          )}
+
+          {/* Vivo Edits — creator/editorial module, moved here from Home
+              (rewire spec §8). Cards carry Explore Her Style only — no
+              Shop-the-Look CTAs on this surface. */}
+          {feedView === "" && feedType === "" && (
+            <div className="mt-12">
+              <VivoEditsHome onOpenEdit={onOpenEdit} onViewAll={onOpenEdits} feed={feed || undefined} />
+            </div>
           )}
 
           {/* Give Your Vivo a Second Life */}

@@ -1,0 +1,114 @@
+Vivo Johari — Home vs Shop Rewire Spec
+Purpose: Split the current Home page so it becomes purely community/editorial/brand content, with every shopping entry point (buy CTAs, "Shop the Look" links, product tag pills, product recommendation modules) relocated to the Shop section. Paste this into Replit's agent as the implementation brief.
+
+Rule of thumb: If a component's job is to get someone to look at or buy a product, it belongs in Shop. If its job is to get someone to read, react, post, or feel part of the community, it stays on Home.
+
+
+Section-by-section decisions
+#
+Section (as currently on Home)
+Verdict
+What to do
+1
+Top nav (Home / Shop / Community / Rewards / Account / Help + points badge, wishlist heart, bag, avatar)
+Keep as global nav
+No change — this is persistent chrome, not home-page content.
+2
+Hero — "Colour, out loud" with "Join the Conversation" + "Shop the edit" buttons
+Split
+Keep hero image + copy + "Join the Conversation" on Home. Remove "Shop the edit" from Home entirely; add an equivalent seasonal hero (or just this CTA) to the top of the Shop landing page.
+3
+"This week's mission" — #MyVivoStory challenge, "Enter now"
+Stays on Home
+Pure UGC engagement, no shopping. No change.
+4
+"Looks & conversations we loved" — community post grid with photo/caption/likes/comments and product tag pills (e.g. "Vivo Sakari Circular Loose Top")
+Split
+Keep the post cards (photo, @handle, caption, likes, comments, share) on Home. Remove the product tag pills from the card footer on Home — they're shopping links. If you want the "what she's wearing" info preserved, surface it inside Shop's product pages instead (e.g. "As seen in the community" module keyed to that product), not on the Home feed card.
+5
+"Fresh from Vivo — Reels we can't stop replaying"
+Stays on Home
+Video/brand storytelling, no shop CTA shown. Keep on Home as-is. If any reel has an in-reel "shop this" tap-through, strip that link on the Home version (or route it to open the Shop product page, but don't render shopping UI on Home).
+6
+"Styled for You" — weekly outfit/product recommendations, "Personalise My Style"
+Stays on Home — simplified
+Keep on Home, but strip it down to a single opt-in: e.g. "Get weekly picks personalised to you" with one toggle/button ("Yes, send me recommendations" / "Maybe later"). Remove the multi-question style quiz — that belongs to Shop, not Home. Once a user opts in, the actual product recommendations themselves (the shoppable output) should render inside Shop, not on Home.
+7
+"Help us dress you better" — style survey, "Take the survey" (+30 pts)
+Stays on Home
+No change — keep as-is on Home.
+8
+"Vivo Edits — Curated by Creators We Love" — editorial looks with "Explore Her Style" + "Worn by the Community" cards with "Shop the Look"
+Move to Community
+Move the whole module to the Community section rather than Shop, since it's creator/editorial content. Strip the "Shop the Look" buttons on the "Worn by the Community" cards before it lands in Community (that CTA still belongs only in Shop); "Explore Her Style" can stay if it opens a lookbook/story view rather than a checkout flow.
+9
+"Community Spotlight" — testimonial quote, "Read Her Story"
+Stays on Home
+Pure testimonial, no product link. No change.
+10
+"Vivo Stories — Styling, campaigns & what's on" (15-years milestone, new store opening, new tailoring service)
+Stays on Home
+Brand/news editorial, no "shop now" CTA. Keep on Home.
+11
+Rewards strip — points total, tier, "View Rewards"
+Stays on Home
+Routes to the existing Rewards tab, not a shopping action. No change.
+12
+"Style Question of the Week" — community Q&A with a product tag pill ("Vivo Studio Panelled Mini Dress in Ponte")
+Split
+Keep the Q&A card (question, likes, comments) on Home. Remove the product tag pill — same treatment as #4.
+13
+"An Evening of Styling at Galleria" — event listing
+Stays on Home
+Event/community info, no purchase CTA. No change.
+14
+"Give your Vivo a second life" — donation/take-back program, "How it works"
+Stays on Home
+Sustainability/community initiative, not a purchase flow. No change.
+15
+Footer — "Browse the collection" + "This week's challenge"
+Split
+Remove "Browse the collection" from Home (it's a shopping entry point); keep "This week's challenge." If you still want a bridge to Shop at the bottom of Home, use a plain "Go to Shop" nav link rather than collection-browsing language/imagery.
+
+
+
+Resulting Home page (top to bottom)
+Hero: "Colour, out loud" + "Join the Conversation" only
+This week's mission (#MyVivoStory)
+Looks & conversations we loved (post cards, no product tags)
+Reels we can't stop replaying
+Styled for You — single opt-in only, no quiz questions
+Help us dress you better (survey)
+Community Spotlight testimonial
+Vivo Stories (milestones/news/what's on)
+Rewards strip
+Style Question of the Week (no product tag)
+What's On event card
+Give Back
+Footer: "This week's challenge" (+ optional plain "Go to Shop" link)
+Resulting Shop page (new additions, in addition to whatever product catalog already lives there)
+Seasonal hero / "Shop the edit" CTA
+Full personalisation/style quiz (the detailed questions removed from Home's "Styled for You"), plus the resulting recommended-products rail
+Optional: "As worn by the community" module on individual product pages, pulling from the tags stripped out of Home
+Resulting Community page (new additions)
+Vivo Edits — Curated by Creators We Love (with "Explore Her Style"; "Shop the Look" buttons removed)
+
+
+Implementation notes for the Replit agent
+Treat this as moving components, not just hiding them — VivoEdits should become a child of the Community route/page, not conditionally rendered on Home.
+StyledForYou splits into two components: a lightweight StyledForYouOptIn (single toggle/CTA, no questions) that stays on Home, and the full quiz/recommendation-rail logic that moves to Shop. Don't just hide the quiz with CSS — it should live in the Shop bundle so Home isn't loading unused quiz logic or state.
+The product-tag pills on community post cards ("Looks & conversations we loved," "Style Question of the Week") are likely a shared <ProductTag> component — on Home, render the post card without it (or pass a showProductTags={false} prop); keep the component available for use inside Shop/product pages.
+On the "Vivo Edits" cards once they live in Community, remove the <ShopTheLookButton> (or equivalent) from the "Worn by the Community" sub-cards; leave "Explore Her Style" only if it routes to a lookbook/story view, not checkout.
+Any API/data-fetching tied to the moved quiz/recommendation logic should move with it to the Shop route so Home's initial load isn't fetching shopping data it no longer displays.
+Keep the global nav (points, wishlist, cart icon) untouched — those are app-wide, not Home-specific.
+After the move, do a pass on Home for any remaining "Shop," "Buy," "Browse," or price-mention copy that slipped through.
+
+
+Mobile-specific fixes
+Top nav placement. On mobile the primary nav (Home / Shop / Community / Rewards / Account / Help, points badge, wishlist, bag, avatar) currently renders as a bottom bar — move it to a fixed/sticky header at the top of the viewport, matching desktop. If a bottom bar pattern is being used for thumb-reachability, that's a separate design decision to confirm with the user before reintroducing it — for now, top nav on mobile, same as desktop.
+Use position: sticky; top: 0; (or fixed, with matching content padding-top to avoid overlap) rather than a bottom tab bar component.
+Make sure the nav collapses sensibly (e.g. hamburger/overflow menu for the six items + icons) rather than compressing into unreadable tap targets.
+Image resizing. Several images (hero banner, community post photos, reel thumbnails, Vivo Edits cards, story cards) are laid out at desktop aspect ratios/widths and need mobile-specific sizing:
+Serve responsive images (srcset/sizes or the framework's image component) so mobile doesn't download desktop-resolution assets.
+Recheck aspect ratios at mobile breakpoints — the two-column grids (community posts, Vivo Edits, story cards) should likely collapse to a single column on small screens rather than shrinking two columns down to illegibly small cards.
+Verify the hero image crops sensibly on mobile (the current portrait photo may need a mobile-specific crop/focal point rather than just scaling down the desktop crop).

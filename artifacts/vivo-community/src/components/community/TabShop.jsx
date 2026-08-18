@@ -332,6 +332,31 @@ export default function TabShop({ onOpenProduct, onOpenTryOn, onOpenPage }) {
 
   return (
     <div className="animate-in fade-in duration-500">
+      {/* Seasonal hero — moved from Home (Home-vs-Shop rewire spec §4).
+          The "Shop the edit" CTA now lives here, atop the collection. */}
+      <section data-testid="shop-hero" className="relative rounded overflow-hidden bg-secondary mb-10 -mx-4 sm:mx-0">
+        <div className="aspect-[4/5] sm:aspect-[21/9] relative">
+          <img
+            src={brandAsset("hero.jpg")}
+            alt=""
+            className="w-full h-full object-cover object-[center_20%]"
+            draggable={false}
+          />
+          <div className="absolute inset-x-0 bottom-0 h-3/4 bg-gradient-to-t from-black/70 via-black/25 to-transparent pointer-events-none" />
+          <div className="absolute inset-x-0 bottom-0 p-5 sm:p-8 text-white">
+            <div className="text-[10px] font-bold uppercase tracking-[0.25em] text-white/80 mb-1.5">This season's edit</div>
+            <h2 className="font-serif text-2xl sm:text-3xl leading-tight mb-4 text-white">Pieces made for the sun</h2>
+            <button
+              data-testid="hero-shop-now"
+              onClick={() => { setSfyMode(false); setFilters(emptyFilters()); }}
+              className="h-11 px-6 rounded bg-white text-neutral-900 font-medium text-[13px] hover:bg-white/90 active:scale-[0.98] transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
+            >
+              Shop the edit
+            </button>
+          </div>
+        </div>
+      </section>
+
       <div className="mb-10 text-center space-y-2">
         <h2 className="text-3xl font-serif text-foreground">The Live Collection</h2>
             {personalized && (

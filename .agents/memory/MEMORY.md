@@ -139,5 +139,7 @@
 - [Product Workspace public feedback](product-workspace-public-feedback.md) — public feedback selects catalogue styles/colourways from all_products_clean and stores canonical style number plus colourway.
 - [Community guest mode](community-guest-mode.md) — guest fence must cover deep-linkable URL-state overlays (?event=, member ?page= ids) and every member-write control, not just tabs.
 - Paint-order trap: a static <img> paints BELOW an absolutely-positioned sibling — a persistent absolute pulse/placeholder overlay washes the photo out; make the overlay strictly conditional or position the img.
+- [Merch empty-universe poison + deep-dive crash](merch-core-empty-poison.md) — never cache an empty style universe (raise in compute fn); "search crash" reports may be selected-style render bugs, assert error boundary absent.
 - [Merch store size analysis](merch-store-size-analysis.md) — compare a selected store's size SOR/SOH against weighted network size benchmarks, not average store percentages.
+- ['Online' pseudo-country](online-pseudo-country.md) — Shop Zetu online rows sit under country='Online' in sales AND inventory; Kenya filters must fold it in on both sides of any ratio.
 - [Merch full-price sell-through](merch-full-price-sell-through.md) — strict selected-period zero-discount unit ratio, excluding returns and distinct from avg full-price %.

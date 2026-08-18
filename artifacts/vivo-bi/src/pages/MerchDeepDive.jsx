@@ -67,6 +67,43 @@ const BandLegend = ({ bands }) => (
 // ── Store SOH distribution ────────────────────────────────────────────────────
 // The existing style-stores feed powers both the selected-style drill-down and
 // the all-active-styles aggregate, keeping this stock view aligned with SOR.
+// Local error boundary — if the SOH chart (or any wrapped section) throws,
+// show an inline error card instead of taking down the whole Deep Dive page.
+class SectionBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false };
+  }
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+  componentDidCatch(error, info) {
+    console.error(`Deep Dive section "${this.props.label}" crashed:`, error, info);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="card-white p-5">
+          <div className="text-[12.5px] font-semibold text-rose-700">
+            {this.props.label} failed to render
+          </div>
+          <div className="mt-1 text-[11.5px] text-muted">
+            The rest of the page is unaffected.{" "}
+            <button
+              type="button"
+              className="underline text-brand"
+              onClick={() => this.setState({ hasError: false })}
+            >
+              Try again
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 const StoreSohDistribution = ({ styleNumber, style, styleRows, onStyleChange }) => {
   const filters = useMerchFilters();
   const [showRetired, setShowRetired] = useState(false);
@@ -99,9 +136,10 @@ const StoreSohDistribution = ({ styleNumber, style, styleRows, onStyleChange }) 
     ? (style?.tier === "Retired" && !showRetired ? [] : (styleRows || []))
     : allRows;
 
-  const chart = useMemo(() => rows
+  const chart = useMemo(() => (Array.isArray(rows) ? rows : [])
+    .filter(r => r && typeof r === "object")
     .map(r => ({
-      name: r.store,
+      name: String(r.store || "Unknown"),
       tier: r.store_tier || "—",
       soh: Number(r.current_stock || 0),
     }))
@@ -936,12 +974,14 @@ const MerchDeepDive = () => {
           <p className="text-[13px] text-foreground font-medium">Search for a style to get started</p>
           <MerchStyleSearch value={styleNumber} onChange={handleStyleChange} />
         </div>
+        <SectionBoundary label="Stock on Hand by Store">
         <StoreSohDistribution
           styleNumber={styleNumber}
           style={style}
           styleRows={storePerf}
           onStyleChange={handleStyleChange}
         />
+        </SectionBoundary>
       </div>
     );
   }
@@ -1513,12 +1553,14 @@ const MerchDeepDive = () => {
       </div>
 
       {/* ── Row 1c: Store SOH distribution ───────────────────────────────── */}
-      <StoreSohDistribution
-        styleNumber={styleNumber}
-        style={style}
-        styleRows={storePerf}
-        onStyleChange={handleStyleChange}
-      />
+      <SectionBoundary label="Stock on Hand by Store">
+        <StoreSohDistribution
+          styleNumber={styleNumber}
+          style={style}
+          styleRows={storePerf}
+          onStyleChange={handleStyleChange}
+        />
+      </SectionBoundary>
 
       {/* ── Row 1d: Colourway Performance (Active styles only) ──────────── */}
       {style.tier !== "Retired" && (
@@ -1858,7 +1900,7 @@ const MerchDeepDive = () => {
                 pct: grossMarginPct,
                 color: grossMarginKes === null ? "#9ca3af" : grossMarginKes >= 0 ? "#1a5c38" : "#ef4444",
               },
-            ].map(({ label, value, color, source }) => (
+            ].map(({ label, value, color, source, pct }) => (
               <div key={label} className="flex items-center gap-2">
                 <div className="w-2.5 h-2.5 rounded-sm flex-shrink-0" style={{ background: color }} />
                 <span className="text-[11.5px] text-foreground flex-1">{label}</span>

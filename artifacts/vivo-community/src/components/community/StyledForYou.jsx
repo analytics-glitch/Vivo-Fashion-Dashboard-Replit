@@ -16,7 +16,7 @@ const LATER_KEY = "vivo_sfy_later";
 
 /* ---------------- Home surface ---------------- */
 
-export function StyledForYouHome({ member, onOpenProduct, onViewAll, onPersonalise }) {
+export function StyledForYouHome({ member, onViewAll, onPersonalise }) {
   const [state, setState] = useState(null); // null=loading | {opted_in, sections, week_label}
   const [later, setLater] = useState(() => {
     try { return sessionStorage.getItem(LATER_KEY) === "1"; } catch { return false; }
@@ -24,7 +24,9 @@ export function StyledForYouHome({ member, onOpenProduct, onViewAll, onPersonali
   useEffect(() => {
     if (!member) return;
     let on = true;
-    api.styledForYou().then((d) => { if (on) setState(d); }).catch(() => { if (on) setState({ opted_in: false, sections: [] }); });
+    // meta_only: Home never downloads recommendation/product payloads —
+    // the full picks fetch happens only on the Shop surface.
+    api.styledForYouStatus().then((d) => { if (on) setState(d); }).catch(() => { if (on) setState({ opted_in: false, sections: [] }); });
     return () => { on = false; };
   }, [member?.id]);
   if (!member || !state) return null;
@@ -67,24 +69,32 @@ export function StyledForYouHome({ member, onOpenProduct, onViewAll, onPersonali
     );
   }
 
+  /* Opted-in: Home shows only a quiet confirmation — the shoppable picks
+     themselves render inside Shop (Home-vs-Shop rewire spec, §6). */
   const picks = (state.sections || []).find((s) => s.key === "picks");
-  if (!picks || !picks.items?.length) return null;
   return (
-    <div data-testid="sfy-home-rail">
-      <div className="flex items-center gap-2 mb-1">
-        <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-widest text-muted-foreground">
+    <div data-testid="sfy-home-rail" className={`${cardCls} p-5 sm:p-6 flex flex-wrap items-center gap-4`}>
+      <span className="w-11 h-11 rounded-full bg-secondary border border-border flex items-center justify-center text-primary-ink shrink-0">
+        <Sparkles size={18} strokeWidth={1.5} />
+      </span>
+      <div className="flex-grow min-w-[200px]">
+        <div className="inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-muted-foreground mb-1">
           <RefreshCw size={10} /> {state.cadence_label || "Updated weekly"}
-        </span>
+        </div>
+        <div className="font-serif text-lg text-foreground leading-snug">Styled for You</div>
+        <p className="text-[13px] text-muted-foreground mt-0.5">
+          {picks?.items?.length
+            ? picks.sub || "Your picks are ready in the Shop."
+            : "We're gathering pieces for you — your picks land in the Shop."}
+        </p>
       </div>
-      <ProductRail
-        title="Styled for You"
-        sub={picks.sub || "Your weekly picks are here."}
-        products={picks.items}
-        onOpenProduct={onOpenProduct}
-        onSeeAll={onViewAll}
-        testId="sfy-home-picks"
-        idPrefix="sfy"
-      />
+      <button
+        data-testid="sfy-home-picks-cta"
+        onClick={onViewAll}
+        className="h-11 px-6 rounded bg-foreground text-background text-[13px] font-medium inline-flex items-center gap-2 hover:opacity-90 active:scale-[0.98] transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+      >
+        See my picks in Shop <ArrowRight size={14} />
+      </button>
     </div>
   );
 }

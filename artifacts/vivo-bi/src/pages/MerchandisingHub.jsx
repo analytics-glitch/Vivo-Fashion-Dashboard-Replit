@@ -185,6 +185,7 @@ const MerchandisingLifecycle   = React.lazy(() => import("./MerchLifecycle"));
 const MerchandisingDeepDive    = React.lazy(() => import("./MerchDeepDive"));
 const MerchandisingStore       = React.lazy(() => import("./MerchStoreCockpit"));
 const MerchandisingAttributes  = React.lazy(() => import("./merch/AttributePerformance"));
+const MerchandisingOnline      = React.lazy(() => import("./merch/OnlinePerformance"));
 
 // ── Product-development pages embedded as hub tabs ───────────────────────────
 const PdStyleCockpit    = React.lazy(() => import("./ProductAnalysis"));
@@ -228,6 +229,7 @@ const MERCH_TABS = [
   { id: "merch-lifecycle",     label: "Lifecycle & Launches",   pageId: "merch-lifecycle",   el: MerchandisingLifecycle },
   { id: "merch-deepdive",      label: "Style Deep Dive",        pageId: "merch-deepdive",    el: MerchandisingDeepDive },
   { id: "merch-store",         label: "Store Detail",           pageId: "merch-store",       el: MerchandisingStore },
+  { id: "merch-online",        label: "Online Performance",     pageId: "merch-online",      el: MerchandisingOnline },
 ];
 
 // ── Retired tab ids → merged successor (Task 1286) ───────────────────────────

@@ -76,9 +76,12 @@ function EditCard({ edit, onOpen, testId }) {
   );
 }
 
-/* ---------------- Home section ---------------- */
+/* ---------------- Community section ----------------
+   Moved from Home to the Community tab (Home-vs-Shop rewire spec §8).
+   "Worn by the community" sub-cards render WITHOUT Shop-the-Look CTAs —
+   shopping entry points live only in Shop / the edit detail view. */
 
-export function VivoEditsHome({ onOpenEdit, onViewAll, feed, onOpenProduct, onNavigate }) {
+export function VivoEditsHome({ onOpenEdit, onViewAll, feed }) {
   const [state, setState] = useState(null); // null = loading | { items, total }
 
   useEffect(() => {
@@ -136,14 +139,7 @@ export function VivoEditsHome({ onOpenEdit, onViewAll, feed, onOpenProduct, onNa
                   </span>
                   <span className="text-[13px] font-semibold text-foreground truncate">@{c.look.author.username}</span>
                 </div>
-                <p className="text-[13px] text-muted-foreground leading-relaxed line-clamp-2 mb-4 flex-grow">{c.look.caption}</p>
-                <button
-                  data-testid={`shop-look-cta-${c.look.id}`}
-                  onClick={() => (c.look.tagged?.[0]?.sku ? onOpenProduct?.(c.look.tagged[0].sku) : onNavigate("shop"))}
-                  className="h-10 rounded border border-border text-foreground text-[13px] font-medium hover:bg-secondary transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary mt-auto"
-                >
-                  Shop the Look
-                </button>
+                <p className="text-[13px] text-muted-foreground leading-relaxed line-clamp-2 flex-grow">{c.look.caption}</p>
               </div>
             )}
           </div>

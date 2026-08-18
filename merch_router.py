@@ -1440,8 +1440,28 @@ def _fetch_styles_core_cached(country, pos_location):
     combination for the same country+POS scope.  Python narrows the ~3.5k
     rows in _fetch_styles_fast_path — typically <1 ms."""
     key = f"merch_core|{country}|{pos_location}"
-    return _core_swr_get_or_compute(
-        key, lambda: _fetch_styles_core_sql(country, pos_location))
+
+    def _compute():
+        rows = _fetch_styles_core_sql(country, pos_location)
+        # Poison guard: an EMPTY unfiltered style universe is impossible
+        # (~3.5k styles). A transient DB failure during compute once cached
+        # [] and the SWR grace kept re-serving it, blanking the Deep Dive
+        # style search until a process restart (2026-08-18 incident).
+        # Raising here means NO cache-write site (synchronous or the SWR
+        # background refresh) ever stores an empty universe.
+        if not rows and not country and not pos_location:
+            raise RuntimeError(
+                "merch core returned EMPTY unfiltered style universe — "
+                "refusing to cache (transient DB failure suspected)")
+        return rows
+
+    try:
+        return _core_swr_get_or_compute(key, _compute)
+    except RuntimeError as e:
+        if "EMPTY unfiltered style universe" not in str(e):
+            raise
+        log.warning("%s", e)
+        return []
 
 
 def _fetch_period_overlay(period_from, period_to, country, pos_location):
@@ -4702,6 +4722,362 @@ LEFT JOIN rep_sku rs      ON rs.style_name = g.style_name AND rs.colour = g.colo
     }
 
 
+# ── Online Performance (channel split: online vs retail) ─────────────────────
+# Online = all_sales.channel = 'Online' OR pos_location_name ILIKE '%online%'
+# (the junk online locations are already excluded by _BASE_FILTERS, so the
+# surviving online rows are the real Shop Zetu / online feed).
+# Online SOH = all_inventory locations whose name contains 'online'.
+_ONLINE_SALE_PRED = "(s.channel = 'Online' OR s.pos_location_name ILIKE '%%online%%')"
+
+
+def _op_filters(country=None, brand=None, subcategory=None):
+    """Shared WHERE fragments + params for online-performance queries.
+    brand/subcategory filter through the product master p (joined on SKU)."""
+    where, params = [], []
+    if country:
+        vals = [v.strip() for v in str(country).split(",") if v.strip()]
+        if vals:
+            # all_sales stores the Shop Zetu online feed under the pseudo-
+            # country 'Online' (it is the Kenyan online store); fold it into
+            # a Kenya selection so a Kenya filter keeps online sales.
+            if "Kenya" in vals and "Online" not in vals:
+                vals = vals + ["Online"]
+            where.append("s.country = ANY(%s)")
+            params.append(vals)
+    for col, val in (("p.brand", brand), ("p.product_type", subcategory)):
+        if val:
+            vals = [v.strip() for v in str(val).split(",") if v.strip()]
+            if vals:
+                where.append(f"{col} = ANY(%s)")
+                params.append(vals)
+    return where, params
+
+
+def _op_soh_sql(country=None):
+    """Per-SKU pre-aggregated SOH split online vs retail-store (never joined
+    raw to sales — see inventory pre-aggregation invariant).
+
+    Returns (sql, params). When a country filter is set, retail SOH is
+    scoped strictly to the selected countries, while online SOH also keeps
+    all_inventory's 'Online' pseudo-country rows (online stock is held under
+    country='Online', not under a selling country)."""
+    params = []
+    online_ctry = retail_ctry = ""
+    vals = [v.strip() for v in str(country).split(",") if v.strip()] if country else []
+    if vals:
+        # all_inventory holds online stock under the pseudo-country 'Online'
+        # (the Shop Zetu / Kenyan online store) — include it when Kenya is in
+        # the selection, mirroring the sales-side country fold.
+        if "Kenya" in vals and "Online" not in vals:
+            vals = vals + ["Online"]
+        online_ctry = "AND i.country = ANY(%s)"
+        retail_ctry = "AND i.country = ANY(%s)"
+        params = [vals, vals]
+    sql = f"""
+        SELECT i.sku,
+               SUM(CASE WHEN i.pos_location_name ILIKE '%%online%%'
+                        {online_ctry}
+                        THEN i.available ELSE 0 END)::numeric AS soh_online,
+               SUM(CASE WHEN i.pos_location_name NOT ILIKE '%%online%%'
+                         AND i.pos_location_name NOT IN ({_WAREHOUSE_LOCATIONS})
+                         AND LOWER(i.pos_location_name) NOT IN ({_HOLDING_STORES_LOWER})
+                         {retail_ctry}
+                        THEN i.available ELSE 0 END)::numeric AS soh_retail
+        FROM all_inventory i
+        WHERE i.available > 0
+        GROUP BY i.sku
+    """
+    return sql, params
+
+
+def _online_perf_payload(from_date, to_date, country=None, brand=None,
+                         subcategory=None):
+    from datetime import date as _date, timedelta as _td
+
+    d_from = _date.fromisoformat(from_date)
+    d_to   = _date.fromisoformat(to_date)
+    span_days = max(1, (d_to - d_from).days + 1)
+    weeks = span_days / 7.0
+    gran = "week" if span_days <= 140 else "month"
+    bucket = f"date_trunc('{gran}', s.sale_date::date)::date"
+
+    fwhere, fparams = _op_filters(country, brand, subcategory)
+    extra = ("AND " + " AND ".join(fwhere)) if fwhere else ""
+
+    base = f"""
+        FROM all_sales s
+        LEFT JOIN all_products_clean p ON p.sku = s.variant_sku
+        WHERE {_BASE_FILTERS}
+          AND s.sale_date::date BETWEEN %s AND %s
+          {extra}
+    """
+
+    def _chan_aggs():
+        return f"""
+            CASE WHEN {_ONLINE_SALE_PRED} THEN 'online' ELSE 'retail' END AS channel_group,
+            SUM({_NET_SALES_EXPR})::numeric                                AS net_revenue,
+            SUM(CASE WHEN s.sale_kind IN ('sale','order')
+                     THEN s.total_sales_kes::numeric ELSE 0 END)           AS gross_revenue,
+            SUM(CASE WHEN s.sale_kind IN ('sale','order')
+                     THEN COALESCE(s.ordered_item_quantity,0) ELSE 0 END)  AS units,
+            SUM(CASE WHEN s.sale_kind IN ('sale','order')
+                      AND COALESCE(s.discounts_kes,0)::numeric = 0
+                     THEN COALESCE(s.ordered_item_quantity,0) ELSE 0 END)  AS fp_units,
+            SUM(CASE WHEN s.sale_kind IN ('sale','order')
+                     THEN COALESCE(s.discounts_kes,0)::numeric ELSE 0 END) AS discounts,
+            SUM(CASE WHEN s.sale_kind IN ('sale','order')
+                      AND COALESCE(s.discounts_kes,0)::numeric > 0
+                      AND s.total_sales_kes::numeric > 0
+                     THEN ({_NET_SALES_EXPR}) ELSE 0 END)                  AS promo_revenue,
+            SUM(CASE WHEN s.sale_kind = 'return'
+                     THEN ABS(COALESCE(s.returns_kes,0)::numeric) ELSE 0 END) AS returns_kes
+        """
+
+    # 1) headline per-channel aggregates (this period)
+    kpi_rows = _db_exec(
+        f"SELECT {_chan_aggs()} {base} GROUP BY 1", [from_date, to_date] + fparams)
+    k = {r["channel_group"]: r for r in kpi_rows}
+
+    def g(ch, f, dflt=0):
+        v = (k.get(ch) or {}).get(f)
+        return float(v) if v is not None else dflt
+
+    # 2) online revenue same period last year (YoY)
+    ly_from, ly_to = str(d_from - _td(days=365)), str(d_to - _td(days=365))
+    ly = _db_exec(f"""
+        SELECT SUM({_NET_SALES_EXPR})::numeric AS net_revenue
+        FROM all_sales s
+        LEFT JOIN all_products_clean p ON p.sku = s.variant_sku
+        WHERE {_BASE_FILTERS} AND {_ONLINE_SALE_PRED}
+          AND s.sale_date::date BETWEEN %s AND %s {extra}
+    """, [ly_from, ly_to] + fparams)
+    online_rev_ly = float(ly[0]["net_revenue"] or 0) if ly else 0.0
+
+    # 3) trend buckets (revenue + discount depth + promo share per channel)
+    trend_rows = _db_exec(
+        f"SELECT {bucket} AS bucket, {_chan_aggs()} {base} GROUP BY 1, 2 ORDER BY 1",
+        [from_date, to_date] + fparams)
+    tmap = {}
+    for r in trend_rows:
+        b = str(r["bucket"])
+        t = tmap.setdefault(b, {"bucket": b})
+        ch = r["channel_group"]
+        gross = float(r["gross_revenue"] or 0)
+        disc  = float(r["discounts"] or 0)
+        net   = float(r["net_revenue"] or 0)
+        promo = float(r["promo_revenue"] or 0)
+        t[ch] = round(net, 2)
+        t[f"depth_{ch}"] = round(disc / gross * 100, 2) if gross > 0 else None
+        t[f"promo_share_{ch}"] = round(promo / net * 100, 2) if net > 0 else None
+    trend = sorted(tmap.values(), key=lambda x: x["bucket"])
+
+    # 4) per-SKU channel SOH, folded to category / colour / size via the master
+    soh_sql, soh_params = _op_soh_sql(country)
+
+    def _soh_by(dim_expr, dim_name):
+        w, prm = _op_filters(None, brand, subcategory)
+        ex = ("AND " + " AND ".join(w)) if w else ""
+        return _db_exec(f"""
+            WITH soh AS ({soh_sql})
+            SELECT {dim_expr} AS {dim_name},
+                   SUM(soh.soh_online) AS soh_online,
+                   SUM(soh.soh_retail) AS soh_retail
+            FROM soh JOIN all_products_clean p ON p.sku = soh.sku
+            WHERE COALESCE({dim_expr},'') <> '' {ex}
+            GROUP BY 1
+        """, soh_params + prm)
+
+    def _sales_by(dim_expr, dim_name):
+        return _db_exec(f"""
+            SELECT {dim_expr} AS {dim_name}, {_chan_aggs()}
+            {base} AND COALESCE({dim_expr},'') <> ''
+            GROUP BY 1, 2
+        """, [from_date, to_date] + fparams)
+
+    def _fold(dim_name, sales_rows, soh_rows):
+        m = {}
+        for r in sales_rows:
+            key = r[dim_name]
+            e = m.setdefault(key, {dim_name: key})
+            ch = r["channel_group"]
+            e[f"{ch}_rev"]      = round(float(r["net_revenue"] or 0), 2)
+            e[f"{ch}_units"]    = float(r["units"] or 0)
+            e[f"{ch}_fp_units"] = float(r["fp_units"] or 0)
+        for r in soh_rows:
+            e = m.setdefault(r[dim_name], {dim_name: r[dim_name]})
+            e["online_soh"] = float(r["soh_online"] or 0)
+            e["retail_soh"] = float(r["soh_retail"] or 0)
+        for e in m.values():
+            for ch in ("online", "retail"):
+                u   = e.get(f"{ch}_units", 0) or 0
+                fp  = e.get(f"{ch}_fp_units", 0) or 0
+                soh = e.get(f"{ch}_soh", 0) or 0
+                e[f"{ch}_sor"]    = round(u / (u + soh) * 100, 1)  if (u + soh) > 0 else None
+                e[f"{ch}_fp_sor"] = round(fp / (fp + soh) * 100, 1) if (fp + soh) > 0 else None
+                e.setdefault(f"{ch}_rev", 0.0)
+                e.setdefault(f"{ch}_units", 0)
+        return list(m.values())
+
+    categories = _fold("category",
+                       _sales_by("p.category", "category"),
+                       _soh_by("p.category", "category"))
+    tot_on  = sum(e["online_rev"] for e in categories) or None
+    tot_re  = sum(e["retail_rev"] for e in categories) or None
+    for e in categories:
+        e["online_rev_share"] = round(e["online_rev"] / tot_on * 100, 1) if tot_on else None
+        e["retail_rev_share"] = round(e["retail_rev"] / tot_re * 100, 1) if tot_re else None
+        e["gap_pp"] = (round(e["online_fp_sor"] - e["retail_fp_sor"], 1)
+                       if e.get("online_fp_sor") is not None and e.get("retail_fp_sor") is not None
+                       else None)
+    categories.sort(key=lambda e: -(e["online_rev"] + e["retail_rev"]))
+
+    sizes = _fold("size", _sales_by("p.size", "size"), _soh_by("p.size", "size"))
+    for e in sizes:
+        e["gap_pp"] = (round(e["online_sor"] - e["retail_sor"], 1)
+                       if e.get("online_sor") is not None and e.get("retail_sor") is not None
+                       else None)
+    sizes = [e for e in sizes if (e["online_units"] + e["retail_units"]) > 0]
+    sizes.sort(key=lambda e: -(e["online_units"] + e["retail_units"]))
+    sizes = sizes[:14]
+
+    # colours — ONLINE only (units, soh, sor)
+    colour_rows = _fold("colour",
+                        _sales_by("p.color_print", "colour"),
+                        _soh_by("p.color_print", "colour"))
+    colours = [{
+        "colour": e["colour"],
+        "units":  e.get("online_units", 0),
+        "soh":    e.get("online_soh", 0),
+        "sor":    e.get("online_sor"),
+    } for e in colour_rows
+        if (e.get("online_units", 0) or 0) + (e.get("online_soh", 0) or 0) > 0]
+    colours.sort(key=lambda e: (-(e["sor"] if e["sor"] is not None else -1), -e["units"]))
+    colours = colours[:20]
+
+    # SOH by category (online stock) + WOC vs online period velocity
+    cat_units_online = {e["category"]: e.get("online_units", 0) for e in categories}
+    soh_by_category = []
+    for e in categories:
+        soh = e.get("online_soh", 0) or 0
+        if soh <= 0:
+            continue
+        weekly = (cat_units_online.get(e["category"], 0) or 0) / weeks
+        soh_by_category.append({
+            "category": e["category"],
+            "soh": soh,
+            "woc": round(soh / weekly, 1) if weekly > 0 else None,
+        })
+    soh_by_category.sort(key=lambda x: -x["soh"])
+
+    # headline KPI derivations
+    on_g, re_g = g("online", "gross_revenue"), g("retail", "gross_revenue")
+    on_net, re_net = g("online", "net_revenue"), g("retail", "net_revenue")
+    on_units = g("online", "units")
+    on_soh_total = sum(e.get("online_soh", 0) or 0 for e in categories)
+    on_fp = g("online", "fp_units")
+    re_fp = g("retail", "fp_units")
+    re_soh_total = sum(e.get("retail_soh", 0) or 0 for e in categories)
+    on_weekly = on_units / weeks if weeks > 0 else 0
+
+    kpis = {
+        "online_rev": round(on_net, 2),
+        "online_rev_ly": round(online_rev_ly, 2),
+        "online_rev_yoy_pct": (round((on_net - online_rev_ly) / online_rev_ly * 100, 1)
+                               if online_rev_ly > 0 else None),
+        "online_share_pct": (round(on_net / (on_net + re_net) * 100, 1)
+                             if (on_net + re_net) > 0 else None),
+        "fp_sor_online": (round(on_fp / (on_fp + on_soh_total) * 100, 1)
+                          if (on_fp + on_soh_total) > 0 else None),
+        "fp_sor_retail": (round(re_fp / (re_fp + re_soh_total) * 100, 1)
+                          if (re_fp + re_soh_total) > 0 else None),
+        "online_soh": on_soh_total,
+        "online_woc": (round(on_soh_total / on_weekly, 1) if on_weekly > 0 else None),
+        "online_sor": (round(on_units / (on_units + on_soh_total) * 100, 1)
+                       if (on_units + on_soh_total) > 0 else None),
+        "discount_depth_online": (round(g("online", "discounts") / on_g * 100, 1)
+                                  if on_g > 0 else None),
+        "discount_depth_retail": (round(g("retail", "discounts") / re_g * 100, 1)
+                                  if re_g > 0 else None),
+        "promo_share_online": (round(g("online", "promo_revenue") / on_net * 100, 1)
+                               if on_net > 0 else None),
+        "promo_share_retail": (round(g("retail", "promo_revenue") / re_net * 100, 1)
+                               if re_net > 0 else None),
+        "return_rate_online": (round(g("online", "returns_kes") / on_g * 100, 1)
+                               if on_g > 0 else None),
+    }
+
+    # full-price vs discounted revenue mix per channel
+    mix = {}
+    for ch in ("online", "retail"):
+        net = g(ch, "net_revenue")
+        promo = g(ch, "promo_revenue")
+        mix[ch] = {
+            "fp_pct":   round((net - promo) / net * 100, 1) if net > 0 else None,
+            "disc_pct": round(promo / net * 100, 1)          if net > 0 else None,
+        }
+
+    return {
+        "has_channel": True,
+        "granularity": gran,
+        "kpis": kpis,
+        "trend": trend,
+        "categories": categories,
+        "sizes": sizes,
+        "colours": colours,
+        "mix": mix,
+        "soh_by_category": soh_by_category,
+    }
+
+
+def _online_subcats_payload(category, from_date, to_date, country=None,
+                            brand=None, subcategory=None):
+    fwhere, fparams = _op_filters(country, brand, subcategory)
+    extra = ("AND " + " AND ".join(fwhere)) if fwhere else ""
+    sales = _db_exec(f"""
+        SELECT p.product_type AS subcategory,
+               CASE WHEN {_ONLINE_SALE_PRED} THEN 'online' ELSE 'retail' END AS channel_group,
+               SUM(CASE WHEN s.sale_kind IN ('sale','order')
+                        THEN COALESCE(s.ordered_item_quantity,0) ELSE 0 END) AS units
+        FROM all_sales s
+        JOIN all_products_clean p ON p.sku = s.variant_sku
+        WHERE {_BASE_FILTERS}
+          AND s.sale_date::date BETWEEN %s AND %s
+          AND p.category = %s
+          AND COALESCE(p.product_type,'') <> '' {extra}
+        GROUP BY 1, 2
+    """, [from_date, to_date, category] + fparams)
+    w2, p2 = _op_filters(None, brand, subcategory)
+    ex2 = ("AND " + " AND ".join(w2)) if w2 else ""
+    soh_sql2, soh_params2 = _op_soh_sql(country)
+    soh = _db_exec(f"""
+        WITH soh AS ({soh_sql2})
+        SELECT p.product_type AS subcategory,
+               SUM(soh.soh_online) AS soh_online,
+               SUM(soh.soh_retail) AS soh_retail
+        FROM soh JOIN all_products_clean p ON p.sku = soh.sku
+        WHERE p.category = %s AND COALESCE(p.product_type,'') <> '' {ex2}
+        GROUP BY 1
+    """, soh_params2 + [category] + p2)
+    m = {}
+    for r in sales:
+        e = m.setdefault(r["subcategory"], {"subcategory": r["subcategory"]})
+        e[f"{r['channel_group']}_units"] = float(r["units"] or 0)
+    for r in soh:
+        e = m.setdefault(r["subcategory"], {"subcategory": r["subcategory"]})
+        e["online_soh"] = float(r["soh_online"] or 0)
+        e["retail_soh"] = float(r["soh_retail"] or 0)
+    rows = []
+    for e in m.values():
+        for ch in ("online", "retail"):
+            u, s_ = e.get(f"{ch}_units", 0) or 0, e.get(f"{ch}_soh", 0) or 0
+            e[f"{ch}_sor"] = round(u / (u + s_) * 100, 1) if (u + s_) > 0 else None
+            e.setdefault(f"{ch}_units", 0)
+        if (e["online_units"] + e["retail_units"]) > 0 or e.get("online_soh", 0) > 0:
+            rows.append(e)
+    rows.sort(key=lambda e: -(e["online_units"] + e["retail_units"]))
+    return {"category": category, "rows": rows}
+
+
 def register_merch_routes(app, api_pg_module):
     global A
     A = api_pg_module
@@ -4741,6 +5117,39 @@ def register_merch_routes(app, api_pg_module):
             """)]
             return {"brands": brands, "categories": categories}
         return JSONResponse(_cached("merch_filter_options", 3600, _fetch))
+
+    @app.get("/api/merch/online-performance")
+    def merch_online_performance(
+        request:      Request,
+        from_date:    str = Query(...),
+        to_date:      str = Query(...),
+        country:      Optional[str] = Query(None),
+        brand:        Optional[str] = Query(None),
+        subcategory:  Optional[str] = Query(None),
+    ):
+        """Online vs retail channel-split payload for the Online Performance
+        tab (KPIs, trend, category/size/colour breakdowns, mix, online SOH).
+        Plain def → threadpool; cached per filter combination."""
+        key = f"merch_online_perf|{from_date}|{to_date}|{country}|{brand}|{subcategory}"
+        return JSONResponse(_cached(key, _TTL, lambda: _online_perf_payload(
+            from_date, to_date, country, brand, subcategory)))
+
+    @app.get("/api/merch/online-subcats")
+    def merch_online_subcats(
+        request:   Request,
+        category:  str = Query(...),
+        from_date: str = Query(...),
+        to_date:   str = Query(...),
+        country:     Optional[str] = Query(None),
+        brand:       Optional[str] = Query(None),
+        subcategory: Optional[str] = Query(None),
+    ):
+        """Subcategory drill-down (online vs retail SOR%) for one parent
+        category on the Online Performance tab."""
+        key = (f"merch_online_subcats|{category}|{from_date}|{to_date}|"
+               f"{country}|{brand}|{subcategory}")
+        return JSONResponse(_cached(key, _TTL, lambda: _online_subcats_payload(
+            category, from_date, to_date, country, brand, subcategory)))
 
     @app.get("/api/merch/styles")
     async def merch_styles(
