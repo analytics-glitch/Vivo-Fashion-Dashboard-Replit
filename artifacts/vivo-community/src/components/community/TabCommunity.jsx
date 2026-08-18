@@ -171,6 +171,7 @@ export default function TabCommunity({ member, subNav, onSubChange, onOpenEvent,
     if (subNav?.id && SUB_IDS.includes(subNav.id)) {
       setSubTab(subNav.id);
       setOpenChallenge(null); // fresh outside request always lands on the list
+      setOpenEntry(null);
     }
   }, [subNav]);
 
@@ -218,6 +219,7 @@ export default function TabCommunity({ member, subNav, onSubChange, onOpenEvent,
   // Live challenges — my_entry rides along per member.
   const [chList, setChList] = useState(null);
   const [openChallenge, setOpenChallenge] = useState(null);
+  const [openEntry, setOpenEntry] = useState(null); // winning post to land on inside ChallengeDetail
   const loadChallenges = useCallback(() => {
     api.challenges().then((d) => setChList(d.items || [])).catch(() => setChList([]));
   }, []);
@@ -401,7 +403,7 @@ export default function TabCommunity({ member, subNav, onSubChange, onOpenEvent,
               (rewire spec §8). Cards carry Explore Her Style only — no
               Shop-the-Look CTAs on this surface. */}
           {feedView === "" && feedType === "" && (
-            <div className="mt-12">
+            <div className="mt-12 border-t border-border pt-12" data-testid="community-vivo-edits">
               <VivoEditsHome onOpenEdit={onOpenEdit} onViewAll={onOpenEdits} feed={feed || undefined} />
             </div>
           )}
@@ -437,12 +439,30 @@ export default function TabCommunity({ member, subNav, onSubChange, onOpenEvent,
 
       {/* Events SubTab */}
       {subTab === "events" && (
-        <EventsList onEnterChallenge={() => selectSub("challenges")} onOpenEvent={onOpenEvent} />
+        <>
+          <EventsList onEnterChallenge={() => selectSub("challenges")} onOpenEvent={onOpenEvent} />
+
+          {/* Give Your Vivo a Second Life — second entry point beside Events */}
+          <section data-testid="events-givingback" className={`${cardCls} mt-10 max-w-3xl p-5 sm:p-6 flex items-start gap-4`}>
+            <HandHeart className="text-primary-ink shrink-0 mt-0.5" size={22} strokeWidth={1.5} />
+            <div className="flex-1">
+              <h3 className="font-serif text-lg text-foreground mb-1">Give your Vivo a second life</h3>
+              <p className="text-sm text-muted-foreground leading-relaxed max-w-xl">
+                Loved pieces you've outgrown can lift another woman up. Bring them to any Vivo store and we'll take it from there.
+              </p>
+              <button data-testid="events-givingback-open" onClick={() => onOpenPage?.("givingback")}
+                      className="mt-3 inline-flex items-center gap-1 text-[13px] font-medium text-primary-ink hover:underline">
+                How it works <ChevronRight size={14} />
+              </button>
+            </div>
+          </section>
+        </>
       )}
 
       {/* Challenges SubTab */}
       {subTab === "challenges" && openChallenge && (
-        <ChallengeDetail challengeId={openChallenge} onBack={() => { setOpenChallenge(null); loadChallenges(); }} onOpenProduct={onOpenProduct} />
+        <ChallengeDetail challengeId={openChallenge} initialEntryId={openEntry}
+                         onBack={() => { setOpenChallenge(null); setOpenEntry(null); loadChallenges(); }} onOpenProduct={onOpenProduct} />
       )}
       {subTab === "challenges" && !openChallenge && (
         <div className="space-y-10">
@@ -483,7 +503,7 @@ export default function TabCommunity({ member, subNav, onSubChange, onOpenEvent,
                               <Clock size={13} strokeWidth={1.5} /> {ENTRY_STATUS_COPY[c.my_entry.status] || "Entered"}
                             </span>
                           )}
-                          <button data-testid={`challenge-open-${c.id}`} onClick={() => setOpenChallenge(c.id)}
+                          <button data-testid={`challenge-open-${c.id}`} onClick={() => { setOpenEntry(null); setOpenChallenge(c.id); }}
                                   className="bg-foreground text-background hover:bg-foreground/90 transition-colors text-[13px] font-medium px-4 h-9 rounded active:scale-[0.98]">
                             {c.closed ? "See winners" : c.my_entry ? "View challenge" : "Enter challenge"}
                           </button>
@@ -505,7 +525,11 @@ export default function TabCommunity({ member, subNav, onSubChange, onOpenEvent,
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4" data-testid="past-winners">
                 {(cel.winners || []).slice(0, 6).map((w) => (
-                  <div key={`${w.challenge_id}-${w.post_id}`} className="bg-secondary rounded p-4 flex items-center gap-4 border border-border">
+                  <button key={`${w.challenge_id}-${w.post_id}`} type="button"
+                          data-testid={`past-winner-${w.post_id}`}
+                          aria-label={`See @${w.username}'s winning post`}
+                          onClick={() => { setOpenEntry(w.post_id); setOpenChallenge(w.challenge_id); }}
+                          className="bg-secondary rounded p-4 flex items-center gap-4 border border-border text-left w-full cursor-pointer hover:bg-secondary/70 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
                     <Avatar initials={initialsOf(w.username)} />
                     <div className="min-w-0">
                       <div className="font-semibold text-[13px] text-foreground truncate">@{w.username}</div>
@@ -514,7 +538,7 @@ export default function TabCommunity({ member, subNav, onSubChange, onOpenEvent,
                         {POSITION_LABEL[w.winner_position] || "Winner"} · “{w.title}”
                       </div>
                     </div>
-                  </div>
+                  </button>
                 ))}
               </div>
             )}
@@ -598,30 +622,10 @@ export default function TabCommunity({ member, subNav, onSubChange, onOpenEvent,
                 </div>
               )}
 
-              {(cel.new_jewels || []).length > 0 && (
-                <div data-testid="new-jewels">
-                  <h3 className="font-serif text-lg text-foreground mb-3">New jewels this week</h3>
-                  <div className="flex flex-wrap gap-2">
-                    {cel.new_jewels.map((n) => (
-                      <span key={n.username} className="inline-flex items-center gap-2 bg-secondary border border-border rounded-full pl-1.5 pr-3.5 py-1.5">
-                        <Avatar initials={initialsOf(n.username)} size="sm" />
-                        <span className="text-[12px] font-medium text-foreground">@{n.username}</span>
-                        <span className="text-[11px] text-muted-foreground">joined {n.joined}</span>
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
+              {/* "New jewels this week" join list + the celebrations-you
+                  explainer box removed per the community rewire request. */}
             </>
           )}
-
-          <div data-testid="celebrations-you" className={`${cardCls} p-4 sm:p-5 text-[13px] text-muted-foreground leading-relaxed`}>
-            {member?.show_leaderboard === false ? (
-              <>You've chosen not to appear in community celebrations. You can change this any time in <span className="font-medium text-foreground">Profile → Privacy</span>.</>
-            ) : (
-              <>You may be celebrated here as <span className="font-medium text-foreground">@{member?.username}</span>{member?.show_tier ? ", with your tier gem" : " — tier kept private"}. Manage this in <span className="font-medium text-foreground">Profile → Privacy</span>.</>
-            )}
-          </div>
         </div>
       )}
 

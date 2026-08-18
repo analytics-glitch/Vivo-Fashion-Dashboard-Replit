@@ -6,6 +6,7 @@ import { useWishlist } from "@/context/WishlistContext";
 import { FilterSheet, AppliedChips, emptyFilters, countActive, filtersToParams, MY_SIZE_LABELS } from "./ShopFilters";
 import { CategoryGrid, ProductRail, RailCard } from "./ShopSections";
 import { StyledForYouShop } from "./StyledForYou";
+import { VivoEditsHome } from "./VivoEdits";
 import { useAuth } from "@/context/AuthContext";
 import { QuickAddModal } from "./QuickAddModal";
 
@@ -294,7 +295,7 @@ function SkeletonCard() {
   );
 }
 
-export default function TabShop({ onOpenProduct, onOpenTryOn, onOpenPage, onOpenQuiz }) {
+export default function TabShop({ onOpenProduct, onOpenTryOn, onOpenPage, onOpenQuiz, onOpenEdit, onOpenEdits }) {
   const { member } = useAuth();
   // Styled-for-You view — entered via the pill here or the home rail's
   // "View All" (a tap-set sessionStorage hand-off, consumed once).
@@ -792,6 +793,12 @@ export default function TabShop({ onOpenProduct, onOpenTryOn, onOpenPage, onOpen
           </div>
         </div>
       )}
+
+      {/* Vivo Edits — creator/editorial section, with its own clear header
+          divider so it reads as a distinct block on Shop too. */}
+      <div className="border-t border-border pt-16 mt-16" data-testid="shop-vivo-edits">
+        <VivoEditsHome onOpenEdit={onOpenEdit} onViewAll={onOpenEdits} />
+      </div>
 
       </>)}
 

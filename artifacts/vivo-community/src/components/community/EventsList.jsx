@@ -177,7 +177,7 @@ export default function EventsList({ onEnterChallenge, onOpenEvent }) {
 
   return (
     <div data-testid="events-list" className="max-w-3xl space-y-10">
-      <p className="text-muted-foreground text-sm leading-relaxed max-w-2xl -mb-2">
+      <p className="text-muted-foreground text-sm leading-relaxed max-w-2xl">
         Styling evenings, workshops and celebrations — in our stores, for our members.
         Every event has a fixed number of spots; tap one for the full story and to save yours.
       </p>
@@ -202,10 +202,10 @@ export default function EventsList({ onEnterChallenge, onOpenEvent }) {
       )}
 
       {months.map((mo) => (
-        <section key={mo.key}>
+        <section key={mo.key} className="relative">
           <h3
             data-testid={`month-${mo.key}`}
-            className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground mb-4"
+            className="block text-[11px] font-bold uppercase tracking-widest text-muted-foreground mb-4 pt-1 bg-background"
           >
             {mo.label}
           </h3>

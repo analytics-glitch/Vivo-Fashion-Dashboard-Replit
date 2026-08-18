@@ -719,6 +719,9 @@ export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage,
       {/* 2 · This Week's Mission */}
       <MissionCard challenge={featuredChallenge} onNavigate={onNavigate} />
 
+      {/* Give your Vivo a second life — moved up beside the featured challenge */}
+      <SecondLifeCard onOpenPage={onOpenPage} />
+
       {/* Personal one-shot moments — celebration/winner/tier, member-only */}
       {member && (
         <div className="space-y-4 empty:hidden">
@@ -797,9 +800,6 @@ export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage,
 
       {/* Upcoming event — the next one only; calendar stays in Community */}
       <UpcomingEventCard ev={nextEvent} onOpen={onOpenEvent} />
-
-      {/* Give your Vivo a second life — small closing feature */}
-      <SecondLifeCard onOpenPage={onOpenPage} />
 
       {detailIdx >= 0 && P[detailIdx] && (
         <PostDetailModal restoreY={restoreY} posts={P} index={detailIdx} onIndex={setDetailIdx}
