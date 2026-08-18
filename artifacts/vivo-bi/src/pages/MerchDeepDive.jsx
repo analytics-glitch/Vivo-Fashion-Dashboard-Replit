@@ -64,173 +64,6 @@ const BandLegend = ({ bands }) => (
   </div>
 );
 
-// ── Store SOH distribution ────────────────────────────────────────────────────
-// The existing style-stores feed powers both the selected-style drill-down and
-// the all-active-styles aggregate, keeping this stock view aligned with SOR.
-// Local error boundary — if the SOH chart (or any wrapped section) throws,
-// show an inline error card instead of taking down the whole Deep Dive page.
-class SectionBoundary extends React.Component {
-  constructor(props) {
-    super(props);
-    this.state = { hasError: false };
-  }
-  static getDerivedStateFromError() {
-    return { hasError: true };
-  }
-  componentDidCatch(error, info) {
-    console.error(`Deep Dive section "${this.props.label}" crashed:`, error, info);
-  }
-  render() {
-    if (this.state.hasError) {
-      return (
-        <div className="card-white p-5">
-          <div className="text-[12.5px] font-semibold text-rose-700">
-            {this.props.label} failed to render
-          </div>
-          <div className="mt-1 text-[11.5px] text-muted">
-            The rest of the page is unaffected.{" "}
-            <button
-              type="button"
-              className="underline text-brand"
-              onClick={() => this.setState({ hasError: false })}
-            >
-              Try again
-            </button>
-          </div>
-        </div>
-      );
-    }
-    return this.props.children;
-  }
-}
-
-const StoreSohDistribution = ({ styleNumber, style, styleRows, onStyleChange }) => {
-  const filters = useMerchFilters();
-  const [showRetired, setShowRetired] = useState(false);
-  const [allRows, setAllRows] = useState([]);
-  const [loadingAll, setLoadingAll] = useState(false);
-  const [errorAll, setErrorAll] = useState(null);
-
-  useEffect(() => {
-    if (styleNumber) return;
-    let cancelled = false;
-    setLoadingAll(true);
-    setErrorAll(null);
-    apiFetch("/merch/style-stores", {
-      params: {
-        from_date: filters.from_date,
-        to_date: filters.to_date,
-        country: filters.country,
-        include_retired: showRetired,
-      },
-    })
-      .then(d => { if (!cancelled) setAllRows(d.stores || []); })
-      .catch(e => {
-        if (!cancelled) setErrorAll(e?.response?.data?.detail || e.message);
-      })
-      .finally(() => { if (!cancelled) setLoadingAll(false); });
-    return () => { cancelled = true; };
-  }, [styleNumber, filters.from_date, filters.to_date, filters.country, filters.dataVersion, showRetired]);
-
-  const rows = styleNumber
-    ? (style?.tier === "Retired" && !showRetired ? [] : (styleRows || []))
-    : allRows;
-
-  const chart = useMemo(() => (Array.isArray(rows) ? rows : [])
-    .filter(r => r && typeof r === "object")
-    .map(r => ({
-      name: String(r.store || "Unknown"),
-      tier: r.store_tier || "—",
-      soh: Number(r.current_stock || 0),
-    }))
-    .sort((a, b) => (b.soh - a.soh) || a.name.localeCompare(b.name)),
-  [rows]);
-
-  const subtitle = styleNumber && style
-    ? `${style.style_name} · ${style.style_number} — SOH per location`
-    : "Current SOH units per location · sorted highest to lowest";
-  const retiredHidden = Boolean(styleNumber && style?.tier === "Retired" && !showRetired);
-
-  return (
-    <div className="card-white p-5" data-testid="store-soh-distribution">
-      <div className="flex items-start justify-between gap-3 flex-wrap">
-        <SectionTitle title="Stock on Hand by Store" subtitle={subtitle} />
-        <label className="inline-flex items-center gap-2 text-[11px] text-foreground/70 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={showRetired}
-            onChange={e => setShowRetired(e.target.checked)}
-            className="accent-brand"
-          />
-          Include retired stock
-        </label>
-      </div>
-
-      <div className="mt-3 flex flex-wrap items-end gap-3">
-        <div>
-          <div className="text-[10px] font-bold uppercase tracking-wide text-muted mb-1">Style filter</div>
-          <MerchStyleSearch value={styleNumber} onChange={onStyleChange} />
-        </div>
-        {!styleNumber && (
-          <span className="pb-2 text-[11px] text-muted">
-            {showRetired ? "All styles aggregated" : "All active styles aggregated"}
-          </span>
-        )}
-      </div>
-
-      {loadingAll ? <Loading label="Loading stock by location…" /> :
-       errorAll ? <ErrorBox message={errorAll} /> :
-       retiredHidden ? (
-         <Empty label="This style is retired. Turn on “Include retired stock” to view its locations." />
-       ) :
-       chart.length === 0 ? <Empty label="No location stock is available for this scope." /> : (
-        <>
-          <ResponsiveContainer width="100%" height={240}>
-            <BarChart data={chart} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-              <XAxis
-                dataKey="name"
-                tick={{ fontSize: 8 }}
-                interval={0}
-                angle={-60}
-                textAnchor="end"
-                height={84}
-              />
-              <YAxis tick={{ fontSize: 9 }} tickFormatter={v => fmtNum(v)} />
-              <Tooltip content={({ active, payload, label }) => {
-                if (!active || !payload?.length) return null;
-                const d = payload[0].payload;
-                return (
-                  <div className="bg-white border border-border rounded-lg shadow-md px-3 py-2 text-[11px]">
-                    <div className="font-bold mb-0.5">
-                      {label}{d.tier && d.tier !== "—" ? ` · Tier ${d.tier}` : ""}
-                    </div>
-                    <div>Stock on hand: {fmtNum(d.soh)} units</div>
-                  </div>
-                );
-              }} />
-              <Bar dataKey="soh" name="SOH units" radius={[3, 3, 0, 0]}>
-                {chart.map((d, i) => (
-                  <Cell key={i} fill={STORE_TIER_COLOR[d.tier] || "#d1d5db"} />
-                ))}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-          <div className="mt-1 flex items-center flex-wrap gap-x-4 gap-y-1 text-[10.5px] text-foreground/60">
-            {Object.entries(STORE_TIER_COLOR).map(([t, c]) => (
-              <span key={t} className="inline-flex items-center gap-1.5">
-                <span className="w-2.5 h-2.5 rounded-sm inline-block" style={{ background: c }} />
-                Tier {t} store
-              </span>
-            ))}
-            <span className="text-foreground/40">Store tier = trailing-90-day revenue rank</span>
-          </div>
-        </>
-      )}
-    </div>
-  );
-};
-
 // Display-only tidy-up for colour labels that carry style-number/size noise,
 // e.g. "Mustard / 0819102 / F" → "Mustard",
 //      "Hunters Green - Hunters Green / V0323019 / L" → "Hunters Green".
@@ -974,14 +807,6 @@ const MerchDeepDive = () => {
           <p className="text-[13px] text-foreground font-medium">Search for a style to get started</p>
           <MerchStyleSearch value={styleNumber} onChange={handleStyleChange} />
         </div>
-        <SectionBoundary label="Stock on Hand by Store">
-        <StoreSohDistribution
-          styleNumber={styleNumber}
-          style={style}
-          styleRows={storePerf}
-          onStyleChange={handleStyleChange}
-        />
-        </SectionBoundary>
       </div>
     );
   }
@@ -1551,16 +1376,6 @@ const MerchDeepDive = () => {
             )}
         </div>
       </div>
-
-      {/* ── Row 1c: Store SOH distribution ───────────────────────────────── */}
-      <SectionBoundary label="Stock on Hand by Store">
-        <StoreSohDistribution
-          styleNumber={styleNumber}
-          style={style}
-          styleRows={storePerf}
-          onStyleChange={handleStyleChange}
-        />
-      </SectionBoundary>
 
       {/* ── Row 1d: Colourway Performance (Active styles only) ──────────── */}
       {style.tier !== "Retired" && (

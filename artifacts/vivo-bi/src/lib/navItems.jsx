@@ -91,7 +91,7 @@ export const PRIMARY_NAV = [
   },
   {
     to: "/merchandising", label: "Merchandising", icon: Tag, id: "merchandising",
-    anyOfPageIds: ["merch-overview", "merch-sales", "merch-inventory", "merch-lifecycle", "merch-deepdive", "merch-store"],
+    anyOfPageIds: ["merch-overview", "merch-sales", "merch-inventory", "merch-lifecycle", "merch-deepdive", "merch-store", "merch-attribute-performance", "merch-online"],
     group: "Products & Range", desc: "Merchandising hub — portfolio health & at-risk actions, sales & pricing, inventory & stock health, lifecycle & launches, plus style deep dive and store detail",
     subReports: [
       { pageId: "merch-overview",    label: "Overview" },
@@ -100,6 +100,8 @@ export const PRIMARY_NAV = [
       { pageId: "merch-lifecycle",   label: "Lifecycle & Launches" },
       { pageId: "merch-deepdive",    label: "Style Deep Dive" },
       { pageId: "merch-store",       label: "Store Detail" },
+      { pageId: "merch-attribute-performance", label: "Attribute Performance" },
+      { pageId: "merch-online",      label: "Online Performance" },
     ],
   },
   {
