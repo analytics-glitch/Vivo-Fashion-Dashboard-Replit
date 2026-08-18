@@ -11,5 +11,7 @@ export interface WorkspaceTeamMember {
   name: string;
   role: string;
   department: string;
+  team: string;
+  dateOfBirth?: string | null;
   createdAt: string;
 }

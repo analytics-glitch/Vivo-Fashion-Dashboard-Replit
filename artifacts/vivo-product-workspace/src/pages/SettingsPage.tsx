@@ -34,8 +34,8 @@ function AccessPill({ level }: { level: Access }) {
   return <span className={`access-pill ${tone}`}>{level}</span>;
 }
 
-type Draft = { id: number | null; name: string; role: string; department: string };
-const emptyDraft: Draft = { id: null, name: '', role: 'Design', department: '' };
+type Draft = { id: number | null; name: string; role: string; department: string; team: string; dateOfBirth: string };
+const emptyDraft: Draft = { id: null, name: '', role: '', department: '', team: '', dateOfBirth: '' };
 
 export default function SettingsPage() {
   const queryClient = useQueryClient();
@@ -54,7 +54,13 @@ export default function SettingsPage() {
     event.preventDefault();
     if (!draft) return;
     setError('');
-    const data = { name: draft.name.trim(), role: draft.role, department: draft.department.trim() };
+    const data = {
+      name: draft.name.trim(),
+      role: draft.role.trim(),
+      department: draft.department.trim(),
+      team: draft.team.trim(),
+      dateOfBirth: draft.id == null ? null : (draft.dateOfBirth || null),
+    };
     if (!data.name) { setError('Name is required.'); return; }
     const opts = {
       onSuccess: () => { setDraft(null); refresh(); },
@@ -100,7 +106,7 @@ export default function SettingsPage() {
           ) : team.data?.length ? (
             <table className="settings-table" data-testid="table-team-members">
               <thead>
-                <tr><th>Name</th><th>Role</th><th>Department</th><th>Date Added</th><th aria-label="Actions" /></tr>
+                <tr><th>Name</th><th>Role</th><th>Department</th><th>Team</th><th>Date Added</th><th aria-label="Actions" /></tr>
               </thead>
               <tbody>
                 {team.data.map((member) => (
@@ -108,9 +114,10 @@ export default function SettingsPage() {
                     <td className="settings-name">{member.name}</td>
                     <td><span className="role-chip">{member.role}</span></td>
                     <td>{member.department || '—'}</td>
+                    <td>{member.team || '—'}</td>
                     <td className="mono">{fmtDate(member.createdAt)}</td>
                     <td className="settings-actions">
-                      <button className="icon-button" aria-label={`Edit ${member.name}`} onClick={() => { setError(''); setDraft({ id: member.id, name: member.name, role: member.role, department: member.department || '' }); }} data-testid={`button-edit-member-${member.id}`}><Pencil size={14} /></button>
+                      <button className="icon-button" aria-label={`Edit ${member.name}`} onClick={() => { setError(''); setDraft({ id: member.id, name: member.name, role: member.role, department: member.department || '', team: member.team || '', dateOfBirth: member.dateOfBirth || '' }); }} data-testid={`button-edit-member-${member.id}`}><Pencil size={14} /></button>
                       <button className="icon-button danger" aria-label={`Remove ${member.name}`} onClick={() => remove(member)} data-testid={`button-remove-member-${member.id}`}><Trash2 size={14} /></button>
                     </td>
                   </tr>
@@ -148,17 +155,23 @@ export default function SettingsPage() {
               <button className="icon-button" onClick={() => setDraft(null)} aria-label="Close" data-testid="button-close-member-modal"><X size={16} /></button>
             </div>
             <form onSubmit={save}>
-              <label>Name
+              <label>NAME
                 <input value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} placeholder="Full name" autoFocus data-testid="input-member-name" />
               </label>
-              <label>Role
-                <select value={draft.role} onChange={(e) => setDraft({ ...draft, role: e.target.value })} data-testid="select-member-role">
-                  {TEAM_ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
-                </select>
+              <label>ROLE
+                <input value={draft.role} onChange={(e) => setDraft({ ...draft, role: e.target.value })} placeholder="e.g. Product Developer" data-testid="input-member-role" />
               </label>
-              <label>Department
+              <label>DEPARTMENT
                 <input value={draft.department} onChange={(e) => setDraft({ ...draft, department: e.target.value })} placeholder='e.g. "Creative", "Merchandising"' data-testid="input-member-department" />
               </label>
+              <label>TEAM
+                <input value={draft.team} onChange={(e) => setDraft({ ...draft, team: e.target.value })} placeholder='e.g. "Design", "Buying", "CAD", "Sample"' data-testid="input-member-team" />
+              </label>
+              {draft.id != null && (
+                <label>DATE OF BIRTH
+                  <input type="date" value={draft.dateOfBirth} onChange={(e) => setDraft({ ...draft, dateOfBirth: e.target.value })} data-testid="input-member-date-of-birth" />
+                </label>
+              )}
               {error && <div className="form-error">{error}</div>}
               <div className="settings-modal-actions">
                 <button type="button" className="button button-quiet" onClick={() => setDraft(null)} data-testid="button-cancel-member">Cancel</button>

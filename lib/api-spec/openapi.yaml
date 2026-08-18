@@ -1814,12 +1814,14 @@ components:
           $ref: "#/components/schemas/WorkspaceUser"
     WorkspaceTeamMember:
       type: object
-      required: [id, name, role, department, createdAt]
+      required: [id, name, role, department, team, createdAt]
       properties:
         id: { type: integer }
         name: { type: string }
         role: { type: string }
         department: { type: string }
+        team: { type: string }
+        dateOfBirth: { type: ["string", "null"], format: date }
         createdAt: { type: string }
     WorkspaceTeamMemberInput:
       type: object
@@ -1828,6 +1830,8 @@ components:
         name: { type: string }
         role: { type: string }
         department: { type: string }
+        team: { type: string }
+        dateOfBirth: { type: ["string", "null"], format: date }
     WorkspaceTeamDirectoryMember:
       type: object
       required: [id, name, roleTitle, teamSection, description, isLma, displayOrder]

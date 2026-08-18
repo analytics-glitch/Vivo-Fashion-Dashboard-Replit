@@ -842,6 +842,10 @@ async function runBestEffortMigration(label: string, text: string) {
 async function ensureRecentWorkspaceMigrations() {
   const migrations: Array<[string, string]> = [
     ["workspace_team_members birthday", `ALTER TABLE ${schema}.workspace_team_members ADD COLUMN IF NOT EXISTS birthday DATE`],
+    ["workspace users team and date of birth", `
+      ALTER TABLE ${schema}.workspace_users ADD COLUMN IF NOT EXISTS team TEXT NOT NULL DEFAULT '';
+      ALTER TABLE ${schema}.workspace_users ADD COLUMN IF NOT EXISTS date_of_birth DATE;
+    `],
     ["workspace styles classification columns", `
       ALTER TABLE ${schema}.styles ADD COLUMN IF NOT EXISTS launch_route TEXT;
       ALTER TABLE ${schema}.styles ADD COLUMN IF NOT EXISTS style_classification TEXT;
@@ -1198,6 +1202,8 @@ async function ensureSchema() {
       name TEXT NOT NULL,
       role TEXT NOT NULL,
       department TEXT NOT NULL DEFAULT '',
+      team TEXT NOT NULL DEFAULT '',
+      date_of_birth DATE,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     CREATE TABLE IF NOT EXISTS ${schema}.workspace_team_members (
@@ -1461,6 +1467,8 @@ async function ensureSchema() {
     ALTER TABLE ${schema}.styles ADD COLUMN IF NOT EXISTS pattern_maker_user_id INTEGER REFERENCES ${schema}.workspace_users(id) ON DELETE SET NULL;
     ALTER TABLE ${schema}.styles ADD COLUMN IF NOT EXISTS sample_maker_user_id INTEGER REFERENCES ${schema}.workspace_users(id) ON DELETE SET NULL;
     ALTER TABLE ${schema}.styles ADD COLUMN IF NOT EXISTS buyer_user_id INTEGER REFERENCES ${schema}.workspace_users(id) ON DELETE SET NULL;
+    ALTER TABLE ${schema}.workspace_users ADD COLUMN IF NOT EXISTS team TEXT NOT NULL DEFAULT '';
+    ALTER TABLE ${schema}.workspace_users ADD COLUMN IF NOT EXISTS date_of_birth DATE;
     ALTER TABLE ${schema}.styles ADD COLUMN IF NOT EXISTS creative_description TEXT NOT NULL DEFAULT '';
     ALTER TABLE ${schema}.styles ADD COLUMN IF NOT EXISTS size_range TEXT NOT NULL DEFAULT '';
     ALTER TABLE ${schema}.styles ADD COLUMN IF NOT EXISTS trims_special_features JSONB NOT NULL DEFAULT '[]'::jsonb;
@@ -1783,6 +1791,15 @@ function normalizeTeamBirthday(value: unknown) {
   return `2000-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
 
+function normalizeWorkspaceDateOfBirth(value: unknown) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return null;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) return null;
+  const candidate = new Date(`${raw}T00:00:00.000Z`);
+  if (Number.isNaN(candidate.getTime()) || candidate.toISOString().slice(0, 10) !== raw) return null;
+  return raw;
+}
+
 function storageObjectParts(objectPath: string) {
   const privateDir = String(process.env.PRIVATE_OBJECT_DIR ?? "").replace(/^\/+|\/+$/g, "");
   const relative = objectPath.replace(/^\/objects\//, "").replace(/^\/+/, "");
@@ -2034,14 +2051,18 @@ router.get("/team", async (_req, res, next) => {
       name: user.name,
       role: user.role,
       department: user.role.includes("Director") || user.role === "Admin" ? "Leadership" : "Merchandising",
+      team: "",
       createdAt: null,
     })));
     return;
   }
   try {
+    const sessionUser = await findUserBySession(_req.cookies?.[sessionCookie]);
+    const privateColumns = sessionUser?.role === "Admin" ? `,date_of_birth::text AS "dateOfBirth"` : "";
     const result = await withTimeout(
       pool.query(
-        `SELECT id,name,role,department,created_at AS "createdAt" FROM ${schema}.workspace_users ORDER BY name`,
+        `SELECT id,name,role,department,team${privateColumns},created_at AS "createdAt"
+         FROM ${schema}.workspace_users ORDER BY name`,
       ),
       4000,
       "workspace team lookup",
@@ -2054,6 +2075,7 @@ router.get("/team", async (_req, res, next) => {
       name: user.name,
       role: user.role,
       department: user.role.includes("Director") || user.role === "Admin" ? "Leadership" : "Merchandising",
+      team: "",
       createdAt: null,
     })));
   }
@@ -3322,24 +3344,26 @@ router.put("/team-directory/reorder", requireAdmin, async (req, res, next) => {
   }
 });
 
-router.post("/team", async (req, res, next) => {
+router.post("/team", requireAdmin, async (req, res, next) => {
   try {
     const name = String(req.body?.name ?? "").trim();
     const role = String(req.body?.role ?? "").trim();
     const department = String(req.body?.department ?? "").trim();
+    const team = String(req.body?.team ?? "").trim();
+    const dateOfBirth = normalizeWorkspaceDateOfBirth(req.body?.dateOfBirth);
     if (!name) {
       res.status(400).json({ error: "Name is required" });
       return;
     }
-    if (!TEAM_ROLES.includes(role as (typeof TEAM_ROLES)[number])) {
-      res.status(400).json({ error: "Unknown role" });
+    if (req.body?.dateOfBirth && !dateOfBirth) {
+      res.status(400).json({ error: "Date of birth must be a valid date" });
       return;
     }
     const result = await pool.query(
-      `INSERT INTO ${schema}.workspace_users (name,role,department)
-       VALUES ($1,$2,$3)
-       RETURNING id,name,role,department,created_at AS "createdAt"`,
-      [name, role, department],
+      `INSERT INTO ${schema}.workspace_users (name,role,department,team,date_of_birth)
+       VALUES ($1,$2,$3,$4,$5)
+       RETURNING id,name,role,department,team,date_of_birth::text AS "dateOfBirth",created_at AS "createdAt"`,
+      [name, role, department, team, dateOfBirth],
     );
     res.status(201).json(result.rows[0]);
   } catch (error) {
@@ -3347,25 +3371,27 @@ router.post("/team", async (req, res, next) => {
   }
 });
 
-router.put("/team/:id", async (req, res, next) => {
+router.put("/team/:id", requireAdmin, async (req, res, next) => {
   try {
     const id = Number(req.params.id);
     const name = String(req.body?.name ?? "").trim();
     const role = String(req.body?.role ?? "").trim();
     const department = String(req.body?.department ?? "").trim();
+    const team = String(req.body?.team ?? "").trim();
+    const dateOfBirth = normalizeWorkspaceDateOfBirth(req.body?.dateOfBirth);
     if (!name) {
       res.status(400).json({ error: "Name is required" });
       return;
     }
-    if (!TEAM_ROLES.includes(role as (typeof TEAM_ROLES)[number])) {
-      res.status(400).json({ error: "Unknown role" });
+    if (req.body?.dateOfBirth && !dateOfBirth) {
+      res.status(400).json({ error: "Date of birth must be a valid date" });
       return;
     }
     const result = await pool.query(
-      `UPDATE ${schema}.workspace_users SET name=$1,role=$2,department=$3
-       WHERE id=$4
-       RETURNING id,name,role,department,created_at AS "createdAt"`,
-      [name, role, department, id],
+      `UPDATE ${schema}.workspace_users SET name=$1,role=$2,department=$3,team=$4,date_of_birth=$5
+       WHERE id=$6
+       RETURNING id,name,role,department,team,date_of_birth::text AS "dateOfBirth",created_at AS "createdAt"`,
+      [name, role, department, team, dateOfBirth, id],
     );
     if (!result.rows[0]) {
       res.status(404).json({ error: "Team member not found" });
@@ -3377,7 +3403,7 @@ router.put("/team/:id", async (req, res, next) => {
   }
 });
 
-router.delete("/team/:id", async (req, res, next) => {
+router.delete("/team/:id", requireAdmin, async (req, res, next) => {
   try {
     const result = await pool.query(`DELETE FROM ${schema}.workspace_users WHERE id=$1`, [Number(req.params.id)]);
     if (!result.rowCount) {
@@ -4797,13 +4823,22 @@ app.get("/api/l10/scorecard/live", requireUser, liveScorecardHandler);
 app.get("/api/team/birthdays/today", requireUser, async (_req, res, next) => {
   try {
     const result = await pool.query<{ name: string; role: string }>(
-      `SELECT COALESCE(NULLIF(TRIM(name),''),NULLIF(TRIM(role_title),'')) AS name,
-              role_title AS role
-       FROM ${schema}.workspace_team_members
-       WHERE birthday IS NOT NULL
-         AND EXTRACT(MONTH FROM birthday) = EXTRACT(MONTH FROM CURRENT_DATE)
-         AND EXTRACT(DAY FROM birthday) = EXTRACT(DAY FROM CURRENT_DATE)
-         AND COALESCE(NULLIF(TRIM(name),''),NULLIF(TRIM(role_title),'')) IS NOT NULL
+      `SELECT name,role
+       FROM (
+         SELECT NULLIF(TRIM(name),'') AS name,role
+         FROM ${schema}.workspace_users
+         WHERE date_of_birth IS NOT NULL
+           AND EXTRACT(MONTH FROM date_of_birth) = EXTRACT(MONTH FROM CURRENT_DATE)
+           AND EXTRACT(DAY FROM date_of_birth) = EXTRACT(DAY FROM CURRENT_DATE)
+         UNION
+         SELECT COALESCE(NULLIF(TRIM(name),''),NULLIF(TRIM(role_title),'')) AS name,
+                role_title AS role
+         FROM ${schema}.workspace_team_members
+         WHERE birthday IS NOT NULL
+           AND EXTRACT(MONTH FROM birthday) = EXTRACT(MONTH FROM CURRENT_DATE)
+           AND EXTRACT(DAY FROM birthday) = EXTRACT(DAY FROM CURRENT_DATE)
+       ) birthdays
+       WHERE name IS NOT NULL
        ORDER BY name`,
     );
     res.json(result.rows);

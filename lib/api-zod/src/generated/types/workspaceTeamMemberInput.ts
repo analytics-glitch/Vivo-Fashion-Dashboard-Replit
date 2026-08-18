@@ -10,4 +10,6 @@ export interface WorkspaceTeamMemberInput {
   name: string;
   role: string;
   department?: string;
+  team?: string;
+  dateOfBirth?: string | null;
 }

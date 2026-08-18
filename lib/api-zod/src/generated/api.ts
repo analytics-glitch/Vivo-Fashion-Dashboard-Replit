@@ -191,6 +191,8 @@ export const ListWorkspaceTeamResponseItem = zod.object({
   "name": zod.string(),
   "role": zod.string(),
   "department": zod.string(),
+  "team": zod.string(),
+  "dateOfBirth": zod.string().nullable().optional(),
   "createdAt": zod.string()
 })
 export const ListWorkspaceTeamResponse = zod.array(ListWorkspaceTeamResponseItem)
@@ -202,7 +204,9 @@ export const ListWorkspaceTeamResponse = zod.array(ListWorkspaceTeamResponseItem
 export const CreateWorkspaceTeamMemberBody = zod.object({
   "name": zod.string(),
   "role": zod.string(),
-  "department": zod.string().optional()
+  "department": zod.string().optional(),
+  "team": zod.string().optional(),
+  "dateOfBirth": zod.string().nullable().optional()
 })
 
 
@@ -216,7 +220,9 @@ export const UpdateWorkspaceTeamMemberParams = zod.object({
 export const UpdateWorkspaceTeamMemberBody = zod.object({
   "name": zod.string(),
   "role": zod.string(),
-  "department": zod.string().optional()
+  "department": zod.string().optional(),
+  "team": zod.string().optional(),
+  "dateOfBirth": zod.string().nullable().optional()
 })
 
 export const UpdateWorkspaceTeamMemberResponse = zod.object({
@@ -224,6 +230,8 @@ export const UpdateWorkspaceTeamMemberResponse = zod.object({
   "name": zod.string(),
   "role": zod.string(),
   "department": zod.string(),
+  "team": zod.string(),
+  "dateOfBirth": zod.string().nullable().optional(),
   "createdAt": zod.string()
 })
 
