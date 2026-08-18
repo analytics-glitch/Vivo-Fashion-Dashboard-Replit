@@ -416,6 +416,27 @@ class LifecycleSplitKpiTests(unittest.TestCase):
             s["active_revenue_period"] + s["retired_revenue_period"], s["revenue_period"]
         )
 
+    def test_retired_full_price_pct_uses_selected_period_retired_units(self):
+        rows = [
+            _style(style_number="SN-1", tier="Retired", units_period=10,
+                   units_full_price_period=4),
+            _style(style_number="SN-2", tier="Retired", units_period=5,
+                   units_full_price_period=5),
+            _style(style_number="SN-3", tier="Tier 2", units_period=100,
+                   units_full_price_period=0),
+        ]
+        s = merch_router._compute_summary(rows)
+        self.assertEqual(s["retired_units_period"], 15)
+        self.assertEqual(s["retired_full_price_units_period"], 9)
+        self.assertEqual(s["retired_full_price_pct"], 60.0)
+
+    def test_retired_full_price_pct_is_null_without_retired_sales(self):
+        s = merch_router._compute_summary([
+            _style(style_number="SN-1", tier="Retired", units_period=0,
+                   units_full_price_period=0),
+        ])
+        self.assertIsNone(s["retired_full_price_pct"])
+
     def test_zero_stock_active_seller_in_revenue_and_avg_denominator(self):
         rows = [
             _style(style_number="SN-1", revenue_period=100),

@@ -256,6 +256,7 @@ export const useMerchParams = (localSubcat = null) => {
   if (filters.country)      params.country      = filters.country;
   if (filters.pos_location) params.pos_location = filters.pos_location;
   if (filters.brand)        params.brand        = filters.brand;
+  if (filters.tier)         params.tier         = filters.tier;
   // Local override wins; null = fall back to hub-level
   const effectiveSubcat = localSubcat !== null ? localSubcat : (filters.subcategory || "");
   if (effectiveSubcat)      params.subcategory  = effectiveSubcat;

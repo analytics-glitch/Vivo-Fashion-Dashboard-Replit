@@ -2305,6 +2305,7 @@ def _compute_summary(styles, full_price_metrics=None):
     active_warehouse_stock = 0; retired_warehouse_stock = 0
     active_revenue_period = 0.0; retired_revenue_period = 0.0
     active_units_period = 0; retired_units_period = 0
+    retired_full_price_units_period = 0
     active_units_6m = 0
     active_total_styles = 0
     sor_period_active_vals = []
@@ -2367,6 +2368,7 @@ def _compute_summary(styles, full_price_metrics=None):
         elif tier == "Retired":
             retired_revenue_period += s.get("revenue_period") or 0
             retired_units_period   += s.get("units_period") or 0
+            retired_full_price_units_period += s.get("units_full_price_period") or 0
             if dedup_key not in _seen_retired_keys:
                 _seen_retired_keys.add(dedup_key)
                 retired_styles          += 1
@@ -2433,6 +2435,11 @@ def _compute_summary(styles, full_price_metrics=None):
         "active_revenue_period":        round(active_revenue_period, 0),
         "retired_revenue_period":       round(retired_revenue_period, 0),
         "retired_units_period":         retired_units_period,
+        "retired_full_price_units_period": retired_full_price_units_period,
+        "retired_full_price_pct": (
+            round(retired_full_price_units_period * 100.0 / retired_units_period, 1)
+            if retired_units_period > 0 else None
+        ),
         "active_units_period":          active_units_period,
         "active_units_6m":              active_units_6m,
         "active_weekly_velocity":       round(active_units_6m / 26.0, 1) if active_units_6m else 0,
@@ -2596,6 +2603,7 @@ def _empty_summary():
         "warehouse_stock_units",
         "active_warehouse_stock_units", "retired_warehouse_stock_units",
         "active_revenue_period", "retired_revenue_period", "retired_units_period",
+        "retired_full_price_units_period", "retired_full_price_pct",
         "active_units_period", "active_units_6m", "active_weekly_velocity",
         "active_styles_all_count", "avg_sor_period_active",
         "avg_full_price_sor_period_active",

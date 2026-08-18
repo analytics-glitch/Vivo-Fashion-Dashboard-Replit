@@ -617,13 +617,18 @@ export default function MerchOverview() {
           sub={`Avg/Retired Style: ${fmtKESM(avgRevPerRetiredStyle)}`}
           sub2={`${retiredRevSharePct}% of total revenue`}
           testId="merch-kpi-retired-revenue"
-          note={avgUnitsPerRetiredStyle != null
-            ? `Avg Units Sold/Style (period): ${
-                avgUnitsPerRetiredStyle > 0 && avgUnitsPerRetiredStyle < 0.05
-                  ? "<0.1" // tiny-but-real average (e.g. "Today" filter) — don't show a misleading 0.0
-                  : avgUnitsPerRetiredStyle < 10 ? avgUnitsPerRetiredStyle.toFixed(1) : fmtNum(avgUnitsPerRetiredStyle)
-              }`
-            : undefined}
+          note={
+            <>
+              <div>Full price: {fmtPct1(s.retired_full_price_pct)}</div>
+              {avgUnitsPerRetiredStyle != null && (
+                <div>Avg Units Sold/Style (period): {
+                  avgUnitsPerRetiredStyle > 0 && avgUnitsPerRetiredStyle < 0.05
+                    ? "<0.1" // tiny-but-real average (e.g. "Today" filter) — don't show a misleading 0.0
+                    : avgUnitsPerRetiredStyle < 10 ? avgUnitsPerRetiredStyle.toFixed(1) : fmtNum(avgUnitsPerRetiredStyle)
+                }</div>
+              )}
+            </>
+          }
         />
         <MerchKPICard
           label="Archived Styles"

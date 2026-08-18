@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useMemo } from "react";
+import React, { createContext, useContext, useState, useEffect, useMemo, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useAuth } from "@/lib/auth";
 import { canAccessPage } from "@/lib/permissions";
@@ -54,7 +54,7 @@ export const navigateToDeepDive = (styleNumber, setSearchParams) => {
 
 // ── Filter context — published by the hub, consumed by tabs ──────────────────
 /**
- * Shape: { brand, subcategory, countries, dateFrom, dateTo, dataVersion }
+ * Shape: { brand, subcategory, tier, countries, dateFrom, dateTo, dataVersion }
  * All fields are normalized to the string/array formats the /api/merch/* endpoints
  * accept directly so tab components can just spread them into their fetch params.
  */
@@ -65,6 +65,94 @@ export const useMerchFilters = () => {
   const ctx = useContext(MerchFiltersContext);
   if (!ctx) throw new Error("useMerchFilters must be used inside MerchandisingHub");
   return ctx;
+};
+
+const HUB_TIERS = ["Tier 1", "Tier 2", "Tier 3", "Tier 4"];
+
+// Compact scope-strip multi-select. An empty array is the "All Tiers" state;
+// selected tiers are serialised by the context before being sent to the API.
+const ScopeTierMultiSelect = ({ value, onChange }) => {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const close = (event) => {
+      if (ref.current && !ref.current.contains(event.target)) setOpen(false);
+    };
+    document.addEventListener("mousedown", close);
+    document.addEventListener("touchstart", close, { passive: true });
+    return () => {
+      document.removeEventListener("mousedown", close);
+      document.removeEventListener("touchstart", close);
+    };
+  }, [open]);
+
+  const toggle = (tier) => {
+    onChange(value.includes(tier)
+      ? value.filter((item) => item !== tier)
+      : [...value, tier]);
+  };
+  const summary = value.length === 0
+    ? "All Tiers"
+    : value.length === 1
+      ? value[0]
+      : `${value.length} Tiers`;
+
+  return (
+    <div className="relative" ref={ref} data-testid="merch-scope-tier">
+      <button
+        type="button"
+        onClick={() => setOpen((current) => !current)}
+        aria-label="Tier"
+        aria-expanded={open}
+        aria-haspopup="listbox"
+        className={
+          "appearance-none flex items-center gap-1.5 text-[12px] pl-2.5 pr-6 py-1 rounded-full border transition-colors cursor-pointer " +
+          "bg-white focus:outline-none focus:ring-1 focus:ring-[#1a5c38]/40 " +
+          (value.length
+            ? "border-[#1a5c38] text-[#1a5c38] font-semibold"
+            : "border-border text-slate-500")
+        }
+      >
+        <span>{summary}</span>
+        <svg className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-400" viewBox="0 0 16 16" fill="currentColor">
+          <path d="M4 6l4 4 4-4" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round"/>
+        </svg>
+      </button>
+      {open && (
+        <div
+          role="listbox"
+          aria-label="Tier"
+          aria-multiselectable="true"
+          className="absolute left-0 z-50 mt-1 min-w-[150px] overflow-hidden rounded-lg border border-border bg-white shadow-lg"
+          data-testid="merch-scope-tier-dropdown"
+        >
+          {HUB_TIERS.map((tier) => {
+            const selected = value.includes(tier);
+            return (
+              <button
+                key={tier}
+                type="button"
+                role="option"
+                aria-selected={selected}
+                onClick={() => toggle(tier)}
+                className="flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] text-slate-700 hover:bg-slate-50"
+                data-testid={`merch-scope-tier-opt-${tier.replace(" ", "-").toLowerCase()}`}
+              >
+                <span className={`grid h-3.5 w-3.5 place-items-center rounded border ${
+                  selected ? "border-[#1a5c38] bg-[#1a5c38]" : "border-slate-300 bg-white"
+                }`}>
+                  {selected && <span className="text-[10px] leading-none text-white">✓</span>}
+                </span>
+                <span>{tier}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
 };
 
 // ── Placeholder component — shown for tabs not yet built ─────────────────────
@@ -165,11 +253,12 @@ const MerchandisingHub = () => {
   const { dateFrom, dateTo, countries, channels, dataVersion,
           compareMode, compareDateFrom, compareDateTo } = applied;
 
-  // ── Hub-level scope filters (Brand + Category) ───────────────────────────
+  // ── Hub-level scope filters (Brand + Category + Tier) ─────────────────────
   // These sit in a secondary strip below the tab bar, persist across tab
   // switches, and narrow the data scope for all tabs that accept them.
   const [hubBrand, setHubBrand]           = useState("");
   const [hubSubcategory, setHubSubcategory] = useState("");
+  const [hubTier, setHubTier]             = useState([]);
   const [filterOptions, setFilterOptions]   = useState({ brands: [], categories: [] });
 
   // Derive the comparison date range from the GLOBAL filter bar's compare
@@ -197,6 +286,7 @@ const MerchandisingHub = () => {
     pos_location: channels && channels.length  ? channels.join(",")  : undefined,
     brand:        hubBrand       || undefined,
     subcategory:  hubSubcategory || undefined,
+    tier:         hubTier.length ? hubTier.join(",") : undefined,
     // Store Detail uses the SAME date range as the global filter so that
     // the headline Total Sales always matches the Overview page exactly.
     storeFrom:        dateFrom || undefined,
@@ -207,7 +297,7 @@ const MerchandisingHub = () => {
     dataVersion,   // bump triggers re-fetch in tab components
     filterOptions, // expose to tab pages so they can build local subcategory selectors
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [dateFrom, dateTo, countries, channels, hubBrand, hubSubcategory,
+  }), [dateFrom, dateTo, countries, channels, hubBrand, hubSubcategory, hubTier,
        storeCompare.from, storeCompare.to, compareMode, dataVersion, filterOptions]);
 
   // ── Tab selection ─────────────────────────────────────────────────────────
@@ -244,7 +334,7 @@ const MerchandisingHub = () => {
   const active   = visibleTabs.find((t) => t.id === activeId) || visibleTabs[0];
   const ActiveEl = active?.el;
 
-  const anyHubFilter = hubBrand || hubSubcategory;
+  const anyHubFilter = hubBrand || hubSubcategory || hubTier.length;
 
   return (
     <MerchFiltersContext.Provider value={merchFilters}>
@@ -288,7 +378,7 @@ const MerchandisingHub = () => {
           className="sticky z-30 bg-background/95 backdrop-blur-sm"
           style={{ top: "var(--app-navbar-h, 0px)" }}
         >
-          {/* Single filter-style strip — Page picker + Brand + Category + Clear.
+           {/* Single filter-style strip — Page picker + Brand + Category + Tier + Clear.
               The old wrapped tab-pill rows are gone (Task 1293); the page
               picker below is the ONE navigation mechanism at all breakpoints. */}
           <div
@@ -373,11 +463,14 @@ const MerchandisingHub = () => {
               </svg>
             </div>
 
-            {/* Clear button — only shown when a brand/category filter is active */}
+            {/* Tier */}
+            <ScopeTierMultiSelect value={hubTier} onChange={setHubTier} />
+
+            {/* Clear button — shown when any scope filter is active */}
             {anyHubFilter && (
               <button
                 type="button"
-                onClick={() => { setHubBrand(""); setHubSubcategory(""); }}
+                onClick={() => { setHubBrand(""); setHubSubcategory(""); setHubTier([]); }}
                 className="text-[11px] text-slate-400 hover:text-slate-700 px-1.5 py-0.5 rounded transition-colors"
               >
                 Clear
