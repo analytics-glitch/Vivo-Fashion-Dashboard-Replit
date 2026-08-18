@@ -441,7 +441,7 @@ function UpcomingEventCard({ ev, onOpen }) {
 
 /* Hero campaign — one strong vertical campaign photo, overlay only where the
    copy sits so faces and the garment stay untouched. */
-function HeroCampaign({ onNavigate }) {
+function HeroCampaign({ onNavigate, onOpenPage }) {
   const [loaded, setLoaded] = useState(false);
   return (
     <section data-testid="home-hero" className="-mx-4 sm:mx-0 relative overflow-hidden sm:rounded bg-secondary">
@@ -466,7 +466,7 @@ function HeroCampaign({ onNavigate }) {
           <div className="flex flex-wrap items-center gap-3">
             <button
               data-testid="hero-join-cta"
-              onClick={() => onNavigate("community")}
+              onClick={() => (onOpenPage ? onOpenPage("article-the-new-old-money") : onNavigate("community"))}
               className="h-11 px-8 rounded bg-white text-neutral-900 font-medium text-[14px] hover:bg-white/90 active:scale-[0.98] transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
             >
               Join the Conversation
@@ -703,7 +703,7 @@ export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage,
   return (
     <div className="max-w-4xl mx-auto space-y-16 sm:space-y-24">
       <div className="-mt-2">
-        <HeroCampaign onNavigate={onNavigate} />
+        <HeroCampaign onNavigate={onNavigate} onOpenPage={onOpenPage} />
       </div>
 
       {/* 2 · This Week's Mission */}

@@ -141,6 +141,17 @@ export const api = {
   addComment: (id, body) => req(`/posts/${id}/comments`, { method: "POST", body: { body }, auth: true }),
   likeComment: (id) => req(`/comments/${id}/like`, { method: "POST", auth: true }),
   reportComment: (id, reason) => req(`/comments/${id}/report`, { method: "POST", body: reason ? { reason } : {}, auth: true }),
+  // Campaign articles ("Join the Conversation") — reads are guest-open;
+  // comment/like/report writes are member-gated. First comment on an
+  // article earns a small one-time bonus (server-enforced, per-article).
+  article: (slug) => req(`/articles/${encodeURIComponent(slug)}`, { auth: true }),
+  articleComments: (slug) => req(`/articles/${encodeURIComponent(slug)}/comments`, { auth: true }),
+  articleAddComment: (slug, body) =>
+    req(`/articles/${encodeURIComponent(slug)}/comments`, { method: "POST", body: { body }, auth: true }),
+  articleLikeComment: (id) => req(`/article-comments/${id}/like`, { method: "POST", auth: true }),
+  articleReportComment: (id, reason) =>
+    req(`/article-comments/${id}/report`, { method: "POST", body: reason ? { reason } : {}, auth: true }),
+  articleDeleteComment: (id) => req(`/article-comments/${id}`, { method: "DELETE", auth: true }),
   surveyDataDelete: () => req("/survey/response", { method: "DELETE", auth: true }),
   // My data (DPA): grouped uploads, per-item marketing consent, data requests.
   myData: () => req("/mydata", { auth: true }),

@@ -1,0 +1,43 @@
+# Vivo Johari — "Join the Conversation" Blog + Comments
+
+**Goal:** The hero's "Join the Conversation" CTA (currently sitting under "The New Old Money" campaign headline) should link to a real blog post about that campaign, with an interactive comment section so the CTA's name actually matches what it does.
+
+**Approach:** Native build, tied to existing Vivo accounts — same reasoning as the earlier "very interactive" discussion: reusing the identity/points system that already exists beats bolting on a third-party widget with a separate login.
+
+---
+
+## Flow
+
+1. Hero displays the current seasonal campaign (e.g. "The New Old Money" / "Timeless silhouettes, refined details and effortless elegance, reimagined for the modern Vivo woman.").
+2. "Join the Conversation" links to a dedicated article page for that campaign.
+3. Article page shows: cover image (can reuse the hero image or a dedicated editorial shot), headline, body copy (the actual "conversation" — campaign story, styling notes, designer commentary, whatever Vivo wants to say about it), and a comment section below.
+4. Any logged-in Vivo user can post a comment using their existing account (same @handle/avatar shown elsewhere in the app, e.g. @achieng.o, @asha.k from the community feed).
+5. Comments display newest-first (or most-liked, see options below), with the commenter's handle, avatar initials, tier badge (Ruby/Tanzanite/etc. — already shown elsewhere), and timestamp.
+
+## Data model (new)
+
+- **Articles table:** id, title, subheading, cover image, body content, campaign/tag reference, published date, slug/URL.
+- **Comments table:** id, article id, user id, comment text, created timestamp, optional parent comment id (if you want threaded replies — see options below).
+
+## Interactivity options (pick what fits the effort level you want)
+
+- **Baseline (recommended to start):** logged-in users can post a top-level comment and like other comments. No threading, no editing after posting — simplest to build and moderate.
+- **Richer:** add threaded replies (reply to a specific comment), comment editing/deletion by the author, and an optional "pin" for Vivo team replies so the brand can visibly respond — makes it feel like a real conversation rather than a one-way comment wall.
+- **Gamified tie-in:** award a small number of points (e.g. +5) for a user's first comment on an article, reusing the same points system as the style survey. Cap it per-article (not per-comment) to avoid spam-farming points.
+
+## Moderation basics (needed regardless of which option above)
+
+- Require login to comment (no anonymous posting) — this alone filters out most spam/abuse since it's tied to a real account.
+- Basic profanity/spam filter on submit, plus a simple report/flag action on each comment.
+- A lightweight admin view (even just a database table Vivo's team can review) to delete comments if needed — doesn't need to be fancy for v1.
+
+## Placement of this work relative to other specs
+
+- This is separate from the earlier "Johari News" spec (the magazine-style headline section) — that can still be built later as its own module. This spec is specifically about the hero's existing "Join the Conversation" button and the campaign article it should lead to.
+
+## Implementation notes for the Replit agent
+
+- Reuse the existing user/account system for comment authorship — do not build a separate identity for commenters.
+- Reuse the existing avatar-initials + tier-badge display pattern already used in the community feed cards, so comments look visually consistent with the rest of the app.
+- The article page itself can start as a single hardcoded campaign article for launch (just "The New Old Money"), with the Articles table structured so more campaigns can be added later without new page templates.
+- If points are awarded for commenting, hook into whatever event system currently awards points for the style survey/community posts, rather than building a parallel points mechanism.

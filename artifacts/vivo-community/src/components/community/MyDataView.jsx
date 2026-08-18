@@ -159,9 +159,10 @@ export default function MyDataView({ onBack, onOpenPage }) {
   const quiz = data?.style_quiz;
   const surveys = data?.surveys || [];
   const journey = data?.journey;
+  const articleComments = data?.article_comments || [];
   const downloadReq = openRequest("download");
   const deleteReq = openRequest("delete_account");
-  const hasAnything = photos.length || looks.length || designs.length || messages.length || quiz || surveys.length || journey;
+  const hasAnything = photos.length || looks.length || designs.length || messages.length || quiz || surveys.length || journey || articleComments.length;
 
   return (
     <div className="max-w-xl mx-auto space-y-4" data-testid="mydata-view">
@@ -450,6 +451,38 @@ export default function MyDataView({ onBack, onOpenPage }) {
               armedLabel="Tap again to delete"
               testid="mydata-survey-del"
             />
+          </div>
+        </SectionCard>
+      )}
+
+      {/* Campaign article comments — hers only; deleting removes them from
+          the article page (points already earned stay, same contract). */}
+      {articleComments.length > 0 && (
+        <SectionCard
+          icon={ClipboardList}
+          title="Article comments"
+          sub="Comments you've posted on campaign stories. Deleting one removes it from the article; points you earned stay yours."
+          testid="mydata-article-comments-card"
+        >
+          <div className="px-5 pb-5 space-y-3">
+            {articleComments.map((c) => (
+              <div key={c.id} data-testid={`mydata-article-comment-${c.id}`} className="flex items-center justify-between gap-4">
+                <div className="text-[12px] text-muted-foreground min-w-0">
+                  <span className="text-foreground">"{c.body.length > 80 ? `${c.body.slice(0, 80)}…` : c.body}"</span>
+                  {" "}on {c.title} — {fmt(c.created_at)}
+                </div>
+                <ArmDelete
+                  id={`acomment-${c.id}`}
+                  armed={armed}
+                  setArmed={setArmed}
+                  busy={busyKey === `acomment-${c.id}`}
+                  onDelete={() => run(`acomment-${c.id}`, () => api.articleDeleteComment(c.id))}
+                  label="Delete"
+                  armedLabel="Tap again"
+                  testid={`mydata-article-comment-del-${c.id}`}
+                />
+              </div>
+            ))}
           </div>
         </SectionCard>
       )}

@@ -86,6 +86,49 @@ TRYON_PENDING_STALE_SEC = 300        # pending older than this self-heals to fai
 TRYON_FORCE_DEMO = os.environ.get("TRYON_DEMO_MODE", "").strip() == "1"
 QUIZ_BONUS_PTS = 50            # one-time Style Quiz completion bonus (instant, no moderation)
 SURVEY_BONUS_PTS = 30          # per-wave customer survey bonus (instant, once per wave)
+ARTICLE_COMMENT_BONUS_PTS = 5  # first comment on a campaign article (once per article)
+# Submit-time comment blocklist (basic profanity/spam net; reports + the
+# author-delete path cover what slips through). Word-boundary matched,
+# case-insensitive — keep entries lowercase.
+_COMMENT_BLOCKLIST = re.compile(
+    r"\b(fuck\w*|shit\w*|bitch\w*|cunt|nigg\w+|malaya|mavi|kuma\w*|"
+    r"takataka|mjinga|pumbavu|whore|slut)\b|https?://|www\.",
+    re.IGNORECASE)
+
+# ---- Campaign articles ("Join the Conversation") ---------------------------
+# Articles are DB rows (community_articles). The boot seed keeps the launch
+# article in sync with these constants (title/body edits reach every
+# environment on boot); future campaigns are new rows — no new templates.
+ARTICLE_SLUG_LAUNCH = "the-new-old-money"
+_ARTICLE_SEED = {
+    "slug": ARTICLE_SLUG_LAUNCH,
+    "title": "The New Old Money",
+    "subheading": ("Timeless silhouettes, refined details and effortless "
+                   "elegance, reimagined for the modern Vivo woman."),
+    "cover_image": "/app/assets/brand/hero.jpg",
+    "tag": "This season's conversation",
+    "body": [
+        "Quiet luxury has been having a moment everywhere — but Nairobi has "
+        "always known how to do it with warmth. This season we asked a "
+        "simple question: what does old money elegance look like when it's "
+        "designed here, for her?",
+        "The answer is a collection built on restraint. Clean tailoring "
+        "that skims rather than clings. Buttery neutrals — ivory, camel, "
+        "deep chocolate — lifted by the occasional flash of Vivo orange. "
+        "Fabrics you want to touch, cut generously enough to live in.",
+        "Styling notes from the studio: pair the structured shirt dress "
+        "with flat leather sandals and one bold gold piece, never three. "
+        "A headscarf, tied soft, does more than any logo could. And the "
+        "column skirt is worth sizing to your waist, not your hips — the "
+        "line is the whole point.",
+        "Our design team calls it 'inheritance dressing' — pieces that "
+        "look like they've always been yours and always will be. Less "
+        "trend, more heirloom.",
+        "Now it's your turn. What does old money style mean to you — and "
+        "how are you wearing it? Drop a comment below; the team reads "
+        "every one, and your take might shape where we go next season.",
+    ],
+}
 
 # ---- Customer survey ("Help us dress you better") --------------------------
 # Waves are DB rows (community_survey_waves): each wave carries its own
@@ -1001,6 +1044,49 @@ def _ensure_tables():
             created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             UNIQUE (comment_id, reporter_member_id)
         );
+        -- Campaign articles ("Join the Conversation" blog). Comments mirror
+        -- the feed-comment tables one-for-one so the UI + moderation model
+        -- stay familiar; reports get their own table (reviewable via CRM
+        -- later, DB-review is the v1 contract).
+        CREATE TABLE IF NOT EXISTS community_articles (
+            id SERIAL PRIMARY KEY,
+            slug TEXT NOT NULL UNIQUE,
+            title TEXT NOT NULL,
+            subheading TEXT,
+            cover_image TEXT,
+            tag TEXT,
+            body JSONB NOT NULL DEFAULT '[]'::jsonb,
+            published_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+        CREATE TABLE IF NOT EXISTS community_article_comments (
+            id SERIAL PRIMARY KEY,
+            article_id INT NOT NULL REFERENCES community_articles(id) ON DELETE CASCADE,
+            member_id INT NOT NULL REFERENCES community_members(id) ON DELETE CASCADE,
+            body TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'visible',
+            removed_by TEXT,
+            removed_at TIMESTAMPTZ,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+        CREATE INDEX IF NOT EXISTS community_article_comments_article_idx
+            ON community_article_comments (article_id, status, created_at);
+        CREATE TABLE IF NOT EXISTS community_article_comment_likes (
+            comment_id INT NOT NULL REFERENCES community_article_comments(id) ON DELETE CASCADE,
+            member_id INT NOT NULL REFERENCES community_members(id) ON DELETE CASCADE,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            PRIMARY KEY (comment_id, member_id)
+        );
+        CREATE TABLE IF NOT EXISTS community_article_comment_reports (
+            id SERIAL PRIMARY KEY,
+            comment_id INT NOT NULL REFERENCES community_article_comments(id) ON DELETE CASCADE,
+            reporter_member_id INT NOT NULL REFERENCES community_members(id) ON DELETE CASCADE,
+            reason TEXT,
+            status TEXT NOT NULL DEFAULT 'open',
+            resolved_by TEXT,
+            resolved_at TIMESTAMPTZ,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            UNIQUE (comment_id, reporter_member_id)
+        );
         -- Interactive challenges. Entries ARE community_feed_posts rows
         -- (challenge_id set) so likes, comments, reports and the CRM
         -- moderation queue reuse the feed machinery unchanged. Photos sit
@@ -1140,6 +1226,26 @@ def _ensure_tables():
                             OR community_survey_waves.questions IS DISTINCT FROM EXCLUDED.questions""",
                     (SURVEY_WAVE1_KEY, SURVEY_WAVE1_TITLE,
                      json.dumps(SURVEY_WAVE1_QUESTIONS)))
+                # Launch campaign article seed — same upsert contract as the
+                # survey wave: constants win only when they actually differ.
+                cur.execute(
+                    """INSERT INTO community_articles
+                           (slug, title, subheading, cover_image, tag, body)
+                       VALUES (%s, %s, %s, %s, %s, %s::jsonb)
+                       ON CONFLICT (slug) DO UPDATE
+                           SET title = EXCLUDED.title,
+                               subheading = EXCLUDED.subheading,
+                               cover_image = EXCLUDED.cover_image,
+                               tag = EXCLUDED.tag,
+                               body = EXCLUDED.body
+                         WHERE community_articles.title IS DISTINCT FROM EXCLUDED.title
+                            OR community_articles.subheading IS DISTINCT FROM EXCLUDED.subheading
+                            OR community_articles.cover_image IS DISTINCT FROM EXCLUDED.cover_image
+                            OR community_articles.tag IS DISTINCT FROM EXCLUDED.tag
+                            OR community_articles.body IS DISTINCT FROM EXCLUDED.body""",
+                    (_ARTICLE_SEED["slug"], _ARTICLE_SEED["title"],
+                     _ARTICLE_SEED["subheading"], _ARTICLE_SEED["cover_image"],
+                     _ARTICLE_SEED["tag"], json.dumps(_ARTICLE_SEED["body"])))
                 _seed_feed_posts(cur)
                 _seed_challenges(cur)
                 _seed_vivo_edits(cur)
@@ -5308,6 +5414,209 @@ def register_community_routes(app, api_pg_module):
     # Flagged-comment review lives under /api/crm/ (staff session + CRM role
     # gates run upstream, same as the contact-message queue below).
 
+    # ---- Campaign articles: "Join the Conversation" blog + comments ----
+    # Mirrors the feed-comment endpoints one-for-one (same auth, throttle
+    # and response shapes) over the article tables. Reads are guest-open;
+    # every write requires a member session. First comment on an article
+    # earns ARTICLE_COMMENT_BONUS_PTS once via the shared points ledger
+    # (UNIQUE(member_id, kind) — kind is per-article, so per-article cap).
+
+    def _article_row(cur, slug):
+        cur.execute("""SELECT id, slug, title, subheading, cover_image,
+                              tag, body, published_at
+                        FROM community_articles WHERE slug = %s""", (slug,))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Article not found")
+        return row
+
+    @app.get("/api/community/articles/{slug}")
+    def community_article(slug: str, request: Request):
+        _ensure_tables()
+        _throttle(request, "art", [("ip", 120, 60), ("global", 6000, 60)])
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                a = _article_row(cur, slug)
+                cur.execute("""SELECT COUNT(*)::int AS n
+                                FROM community_article_comments
+                                WHERE article_id = %s AND status = 'visible'""",
+                            (a["id"],))
+                n = int(cur.fetchone()["n"])
+        return {"article": {
+            "slug": a["slug"], "title": a["title"],
+            "subheading": a["subheading"], "cover_image": a["cover_image"],
+            "tag": a["tag"], "body": a["body"] or [],
+            "published_at": a["published_at"].isoformat() if a["published_at"] else None,
+            "comment_count": n,
+        }}
+
+    @app.get("/api/community/articles/{slug}/comments")
+    def community_article_comments_list(slug: str, request: Request):
+        _ensure_tables()
+        _throttle(request, "arc", [("ip", 120, 60), ("global", 6000, 60)])
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                mid = _feed_member_id(cur, request) or -1
+                a = _article_row(cur, slug)
+                # Newest-first — the campaign page reads like a comment wall.
+                cur.execute("""
+                    SELECT c.id, c.body, c.created_at, c.member_id,
+                           m.username, m.full_name, m.show_tier,
+                           m.customer_id, m.customer_store_id,
+                           (SELECT COUNT(*) FROM community_article_comment_likes cl
+                             WHERE cl.comment_id = c.id)::int AS like_count,
+                           EXISTS (SELECT 1 FROM community_article_comment_likes cl2
+                                    WHERE cl2.comment_id = c.id
+                                      AND cl2.member_id = %s) AS my_liked
+                    FROM community_article_comments c
+                    JOIN community_members m ON m.id = c.member_id
+                    WHERE c.article_id = %s AND c.status = 'visible'
+                    ORDER BY c.created_at DESC, c.id DESC
+                    LIMIT 500""", (mid, a["id"]))
+                rows = cur.fetchall()
+                # Tier badge honours the member's show_tier opt-in; computed
+                # once per distinct opted-in commenter (lifetime-based, same
+                # maths as /me and event gates).
+                tiers = {}
+                for r in rows:
+                    key = r["member_id"]
+                    if r["show_tier"] and key not in tiers:
+                        tiers[key] = _tier_for(_lifetime_points(cur, r))[0]
+        return {"items": [{
+            "tier": tiers.get(r["member_id"]),
+            "id": r["id"],
+            "body": r["body"],
+            "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+            "username": (r["username"] or "").strip() or "vivomember",
+            "initials": _initials(r["full_name"] or r["username"]),
+            "like_count": int(r["like_count"] or 0),
+            "my_liked": bool(r["my_liked"]),
+            "mine": bool(mid > 0 and r["member_id"] == mid),
+        } for r in rows]}
+
+    @app.post("/api/community/articles/{slug}/comments")
+    def community_article_comment_add(slug: str, request: Request,
+                                      payload: dict = Body(...)):
+        _ensure_tables()
+        _throttle(request, "aca", [("ip", 10, 60), ("ip", 200, 86400),
+                                   ("global", 2000, 3600)])
+        body = re.sub(r"\s+", " ", str((payload or {}).get("body") or "")).strip()
+        if not body:
+            raise HTTPException(status_code=400, detail="Say something first")
+        if len(body) > 500:
+            raise HTTPException(status_code=400,
+                                detail="Keep it under 500 characters")
+        if _COMMENT_BLOCKLIST.search(body):
+            raise HTTPException(
+                status_code=400,
+                detail="Let's keep it kind — please rephrase (no links).")
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                m = _require_member(cur, request)
+                a = _article_row(cur, slug)
+                cur.execute("""INSERT INTO community_article_comments
+                                   (article_id, member_id, body)
+                               VALUES (%s, %s, %s)
+                               RETURNING id, created_at""",
+                            (a["id"], m["id"], body))
+                row = cur.fetchone()
+                # +5 for her FIRST comment on this article — idempotent via
+                # the shared ledger's UNIQUE(member_id, kind); the kind is
+                # per-article so more comments never farm more points.
+                cur.execute("""INSERT INTO community_points_events
+                                   (member_id, kind, points)
+                               VALUES (%s, %s, %s)
+                               ON CONFLICT (member_id, kind) DO NOTHING
+                               RETURNING id""",
+                            (m["id"], f"article_comment_{slug}",
+                             ARTICLE_COMMENT_BONUS_PTS))
+                awarded = cur.fetchone() is not None
+                cur.execute("""SELECT COUNT(*)::int AS n
+                                FROM community_article_comments
+                                WHERE article_id = %s AND status = 'visible'""",
+                            (a["id"],))
+                n = int(cur.fetchone()["n"])
+                my_tier = (_tier_for(_lifetime_points(cur, m))[0]
+                           if m.get("show_tier") else None)
+            conn.commit()
+        return {"ok": True, "comment_count": n,
+                "awarded": awarded,
+                "awarded_points": ARTICLE_COMMENT_BONUS_PTS if awarded else 0,
+                "comment": {
+                    "id": row["id"], "body": body,
+                    "created_at": row["created_at"].isoformat(),
+                    "username": (m.get("username") or "").strip() or "you",
+                    "initials": _initials(m.get("full_name") or m.get("username")),
+                    "tier": my_tier,
+                    "like_count": 0, "my_liked": False, "mine": True}}
+
+    @app.post("/api/community/article-comments/{cid}/like")
+    def community_article_comment_like(cid: int, request: Request):
+        _ensure_tables()
+        _throttle(request, "acl", [("ip", 60, 60), ("global", 4000, 3600)])
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                m = _require_member(cur, request)
+                cur.execute("""SELECT 1 FROM community_article_comments
+                                WHERE id = %s AND status = 'visible'""", (cid,))
+                if not cur.fetchone():
+                    raise HTTPException(status_code=404, detail="Comment not found")
+                cur.execute("""DELETE FROM community_article_comment_likes
+                                WHERE comment_id = %s AND member_id = %s""",
+                            (cid, m["id"]))
+                liked = cur.rowcount == 0
+                if liked:
+                    cur.execute("""INSERT INTO community_article_comment_likes
+                                       (comment_id, member_id)
+                                   VALUES (%s, %s) ON CONFLICT DO NOTHING""",
+                                (cid, m["id"]))
+                cur.execute("""SELECT COUNT(*)::int AS n
+                                FROM community_article_comment_likes
+                                WHERE comment_id = %s""", (cid,))
+                n = int(cur.fetchone()["n"])
+            conn.commit()
+        return {"ok": True, "liked": liked, "like_count": n}
+
+    @app.delete("/api/community/article-comments/{cid}")
+    def community_article_comment_delete(cid: int, request: Request):
+        """Author-only removal (soft delete) — the My Data / DPA path.
+        Points already earned stay (same contract as survey deletion)."""
+        _ensure_tables()
+        _throttle(request, "acd", [("ip", 30, 3600), ("global", 1000, 3600)])
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                m = _require_member(cur, request)
+                cur.execute("""UPDATE community_article_comments
+                                SET status = 'removed', removed_by = 'author',
+                                    removed_at = now()
+                                WHERE id = %s AND member_id = %s
+                                  AND status = 'visible'""", (cid, m["id"]))
+                if cur.rowcount == 0:
+                    raise HTTPException(status_code=404, detail="Comment not found")
+            conn.commit()
+        return {"ok": True}
+
+    @app.post("/api/community/article-comments/{cid}/report")
+    def community_article_comment_report(cid: int, request: Request,
+                                         payload: dict = Body(default={})):
+        _ensure_tables()
+        _throttle(request, "acr", [("ip", 20, 3600), ("global", 1000, 3600)])
+        reason = str((payload or {}).get("reason") or "").strip()[:300]
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                m = _require_member(cur, request)
+                cur.execute("""SELECT 1 FROM community_article_comments
+                                WHERE id = %s AND status = 'visible'""", (cid,))
+                if not cur.fetchone():
+                    raise HTTPException(status_code=404, detail="Comment not found")
+                cur.execute("""INSERT INTO community_article_comment_reports
+                                   (comment_id, reporter_member_id, reason)
+                               VALUES (%s, %s, %s)
+                               ON CONFLICT (comment_id, reporter_member_id)
+                               DO NOTHING""", (cid, m["id"], reason or None))
+            conn.commit()
+        return {"ok": True, "note": "Thank you — our team will take a look."}
+
     # ---- Challenges: catalogue, gallery, enter flow, voting ------------
     # Entries reuse the feed machinery (same post ids → same like/comment
     # endpoints and the same CRM flagged-comments queue). Pending entries
@@ -7334,6 +7643,13 @@ def register_community_routes(app, api_pg_module):
                          FROM community_journey_profile WHERE member_id = %s""", (mid,))
                 journey = cur.fetchone()
                 cur.execute(
+                    """SELECT c.id, c.body, c.created_at, a.title, a.slug
+                         FROM community_article_comments c
+                         JOIN community_articles a ON a.id = c.article_id
+                        WHERE c.member_id = %s AND c.status = 'visible'
+                        ORDER BY c.created_at DESC""", (mid,))
+                article_comments = [dict(r) for r in cur.fetchall()]
+                cur.execute(
                     """SELECT id, kind, status, created_at
                          FROM community_data_requests
                         WHERE member_id = %s
@@ -7347,6 +7663,7 @@ def register_community_routes(app, api_pg_module):
             "style_quiz": dict(quiz) if quiz else None,
             "surveys": surveys,
             "journey": dict(journey) if journey else None,
+            "article_comments": article_comments,
             "requests": reqs,
         }
 

@@ -26,6 +26,7 @@ import StoreLocatorView from "@/components/community/StoreLocatorView";
 import { DeliveryInfoView, ReturnsInfoView } from "@/components/community/ShoppingInfoViews";
 import LegalPage from "@/components/community/LegalPage";
 import NewsArticle from "@/components/community/NewsArticle";
+import CampaignArticle from "@/components/community/CampaignArticle";
 import { isNewsPageId } from "@/components/community/newsData";
 import { Home, Users, ShoppingBag, Gift, User, Heart, HelpCircle, Search } from "lucide-react";
 
@@ -40,7 +41,10 @@ const TABS = [
 // Static help & legal pages routed via the ?page= param. News articles ride
 // the same param as "news-{id}", validated against the NEWS list.
 const PAGES = ["faq", "contact", "terms", "privacy", "guidelines", "tryon", "mydata", "help", "givingback", "styleprefs", "stores", "delivery", "returns", "edits"];
-const isValidPage = (v) => PAGES.includes(v) || isNewsPageId(v);
+// Campaign articles ride ?page=article-{slug} — server-validated (404 UI on
+// unknown slugs), guest-readable like news pages (composer is member-gated).
+const isArticlePageId = (v) => /^article-[a-z0-9-]+$/.test(v || "");
+const isValidPage = (v) => PAGES.includes(v) || isNewsPageId(v) || isArticlePageId(v);
 
 const badgeCls = "absolute top-0.5 right-0 min-w-[18px] h-[18px] px-1 rounded-full bg-primary-ink text-primary-foreground text-[10px] font-bold flex items-center justify-center";
 const iconBtnCls = "relative w-11 h-11 flex items-center justify-center rounded-full text-foreground hover:bg-secondary transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2";
@@ -530,6 +534,8 @@ function ShellInner() {
             <VivoEditsAllView onBack={closePage} onOpenEdit={openEdit} />
           ) : page === "faq" ? (
             <HelpFaqView onBack={closePage} onOpenPage={openPage} />
+          ) : isArticlePageId(page) ? (
+            <CampaignArticle slug={page.slice("article-".length)} member={member} onBack={closePage} onJoin={exitGuest} />
           ) : isNewsPageId(page) ? (
             <NewsArticle pageId={page} onBack={closePage} onOpenPage={openPage} onOpenEvents={openEvents} onOpenEvent={openEventDetail} />
           ) : (
