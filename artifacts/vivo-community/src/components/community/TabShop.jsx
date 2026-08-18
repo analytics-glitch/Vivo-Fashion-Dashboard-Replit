@@ -352,8 +352,14 @@ export default function TabShop({ onOpenProduct, onOpenTryOn, onOpenPage, onOpen
 
   // A category tile filters the grid when the live catalogue has a matching
   // category; otherwise it just shows the full collection.
+  // "Men's" is a special tile that switches the gender toggle rather than a
+  // category — it clears any active category so the full men's range shows.
   const pickCategory = (label) => {
     setSfyMode(false);
+    if (label === "Men's") {
+      setFilters((f) => ({ ...f, cats: [], gender: "men" }));
+      return;
+    }
     const l = label.toLowerCase();
     const match = cats.find((c) => {
       const n = (c.name || "").toLowerCase();
@@ -382,6 +388,12 @@ export default function TabShop({ onOpenProduct, onOpenTryOn, onOpenPage, onOpen
   const mySizeOn = !!mySizes && mySizes.length === filters.sizes.length && mySizes.every((s) => filters.sizes.includes(s));
   const activeCat = filters.cats.length === 1 ? filters.cats[0] : filters.cats.length === 0 ? "All" : null;
   const chips = ["All", ...cats.slice(0, 8).map((c) => c.name)];
+  const activeGender = filters.gender || "all"; // "all" | "women" | "men"
+  const GENDER_TABS = [
+    { id: "women", label: "Women's" },
+    { id: "all",   label: "All" },
+    { id: "men",   label: "Men's" },
+  ];
 
   return (
     <div className="animate-in fade-in duration-500">
@@ -410,7 +422,7 @@ export default function TabShop({ onOpenProduct, onOpenTryOn, onOpenPage, onOpen
             <h2 className="font-serif text-2xl sm:text-3xl leading-tight mb-4 text-white">Pieces made for the sun</h2>
             <button
               data-testid="hero-shop-now"
-              onClick={() => { setSfyMode(false); setFilters(emptyFilters()); }}
+              onClick={() => { setSfyMode(false); setFilters(emptyFilters()); /* defaults to Women's */ }}
               className="h-11 px-6 rounded bg-white text-neutral-900 font-medium text-[13px] hover:bg-white/90 active:scale-[0.98] transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
             >
               Shop the edit
@@ -470,6 +482,29 @@ export default function TabShop({ onOpenProduct, onOpenTryOn, onOpenPage, onOpen
       {/* Filter + sort controls (hidden in the Styled-for-You view) */}
       <div ref={gridTopRef} className="scroll-mt-24" aria-hidden="true" />
       {!sfyMode && (
+      <>
+      {/* Gender toggle — Women's / All / Men's. Sits above the filter row so
+          it's always visible and clearly separate from drawer-based filters. */}
+      <div className="flex items-center justify-center mb-4" data-testid="shop-gender-toggle">
+        <div className="inline-flex rounded-sm border border-border overflow-hidden">
+          {GENDER_TABS.map(({ id, label }) => (
+            <button
+              key={id}
+              type="button"
+              data-testid={`shop-gender-${id}`}
+              aria-pressed={activeGender === id}
+              onClick={() => setFilters((f) => ({ ...f, gender: id === "all" ? "" : id, cats: [] }))}
+              className={`px-5 h-9 text-[12px] font-bold uppercase tracking-wider transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset ${
+                activeGender === id
+                  ? "bg-foreground text-background"
+                  : "bg-background text-muted-foreground hover:bg-secondary"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
       <div className="flex flex-wrap items-center gap-2 mb-4 px-1">
         <button
           type="button"
@@ -524,6 +559,7 @@ export default function TabShop({ onOpenProduct, onOpenTryOn, onOpenPage, onOpen
           <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-muted-foreground" />
         </div>
       </div>
+      </>
       )}
 
       {/* Category pills — quick single-category shortcut into the same filter

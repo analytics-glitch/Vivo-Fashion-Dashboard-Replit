@@ -7,19 +7,25 @@ import { btnPrimary } from "./ui";
 /* Shop filter model                                                   */
 /* ------------------------------------------------------------------ */
 
+// Default to Women's so men's pieces don't appear in the initial grid.
+// The toggle always lets shoppers switch to All or Men's explicitly.
 export const emptyFilters = () => ({
   cats: [], sizes: [], colors: [], bands: [], brands: [], prints: [],
+  gender: "women",   // "women" | "" (all) | "men"
 });
 
 export const countActive = (f) =>
   f.cats.length + f.sizes.length + f.colors.length +
   f.bands.length + f.brands.length + f.prints.length;
+  // gender is a top-level toggle (always visible), not counted in the drawer badge
 
 // Filter state -> api.products params. When the selection is JUST one
 // category (the pills' fast path) send the legacy single-category param so
 // the server's shared response cache still applies to pill browsing.
 export const filtersToParams = (f, extra = {}) => {
-  const onlyCat = f.cats.length === 1 && countActive(f) === 1;
+  // Legacy single-category fast path: only when exactly one category and NO
+  // other drawer filters AND no gender — so the server's shared cache applies.
+  const onlyCat = f.cats.length === 1 && countActive(f) === 1 && !f.gender;
   return {
     ...(onlyCat ? { category: f.cats[0] } : { categories: f.cats }),
     sizes: f.sizes,
@@ -27,6 +33,7 @@ export const filtersToParams = (f, extra = {}) => {
     priceBands: f.bands,
     brands: f.brands,
     prints: f.prints,
+    gender: f.gender || "",
     ...extra,
   };
 };

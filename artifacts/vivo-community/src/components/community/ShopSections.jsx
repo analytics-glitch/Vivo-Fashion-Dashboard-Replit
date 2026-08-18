@@ -110,12 +110,15 @@ export function ProductRail({ kicker, title, sub, products, onOpenProduct, onSee
 
 /* Shop by Category — two-column editorial grid on the uploaded campaign
    photography. Whole tile is the tap target; `onSelect(label)` decides what
-   a tap does (filter the shop grid, or navigate into Shop from elsewhere). */
+   a tap does (filter the shop grid, or navigate into Shop from elsewhere).
+   The Men's tile is a special entry that triggers the gender filter rather
+   than a category filter — TabShop's pickCategory() handles the distinction. */
 export const CATEGORY_TILES = [
   { label: "Workwear", img: "cat-workwear.jpg" },
   { label: "Dresses", img: "cat-dresses.jpg" },
   { label: "Everyday", img: "cat-everyday.jpg" },
   { label: "Activewear", img: "cat-active.jpg" },
+  { label: "Men's", img: "cat-mens.jpg", kicker: "For him" },
 ];
 export function CategoryGrid({ onSelect }) {
   return (
@@ -125,7 +128,7 @@ export function CategoryGrid({ onSelect }) {
         {CATEGORY_TILES.map((t) => (
           <button
             key={t.label}
-            data-testid={`shop-cat-tile-${t.label.toLowerCase()}`}
+            data-testid={`shop-cat-tile-${t.label.toLowerCase().replace(/[^a-z0-9]/g, "-")}`}
             onClick={() => onSelect?.(t.label)}
             className="relative rounded overflow-hidden aspect-[3/4] bg-secondary group text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
           >
@@ -138,6 +141,9 @@ export function CategoryGrid({ onSelect }) {
             />
             <div className="absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-black/65 to-transparent pointer-events-none" />
             <div className="absolute bottom-0 left-0 p-4">
+              {t.kicker && (
+                <span className="block text-[10px] font-bold uppercase tracking-[0.2em] text-white/70 mb-0.5">{t.kicker}</span>
+              )}
               <span className="font-serif text-white text-lg sm:text-xl">{t.label}</span>
               <span className="block text-[11px] text-white/80 mt-0.5 flex items-center gap-1">Shop now <ChevronRight size={11} /></span>
             </div>

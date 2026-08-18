@@ -3692,7 +3692,7 @@ def register_community_routes(app, api_pg_module):
                            brands: str = "", sizes: str = "",
                            colors: str = "", prints: str = "",
                            price_bands: str = "", sort: str = "new",
-                           count_only: int = 0):
+                           count_only: int = 0, gender: str = ""):
         _ensure_tables()
         _throttle(request, "prod", [("ip", 120, 60)])
         limit = max(1, min(int(limit or 24), 48))
@@ -3719,12 +3719,20 @@ def register_community_routes(app, api_pg_module):
         f_colors = [c for c in _csv(colors) if c in COMMUNITY_COLOR_BUCKETS]
         f_prints = [x for x in _csv(prints, cap=2) if x in ("Print", "Plain")]
         f_bands = [b for b in _csv(price_bands, cap=4, ln=10) if b in _PRICE_BAND_MAP]
+        # Gender filter: derive from style_name.
+        # "men" = style names containing a standalone 'men' / 'mens' word
+        # (Postgres word-boundary anchors; the NOT-women guard is implicit
+        # because \mmen\M never matches 'women' — 'm' is not at a word boundary
+        # inside 'women').
+        f_gender = (gender or "").strip().lower()
+        if f_gender not in ("men", "women"):
+            f_gender = ""
         sort = (sort or "new").strip()
         if sort not in COMMUNITY_SHOP_SORTS:
             sort = "new"
         count_only = 1 if str(count_only) in ("1", "true") else 0
         filtered = bool(f_cats or f_brands or f_sizes or f_colors
-                        or f_prints or f_bands)
+                        or f_prints or f_bands or f_gender)
         # Optional Style-DNA re-ranking: only when asked for, and only when
         # the Bearer token resolves to a member with a completed quiz. Public
         # callers and quiz-skippers keep the curated default order — and only
@@ -3752,6 +3760,12 @@ def register_community_routes(app, api_pg_module):
                 return _stamp_badges(cached[1])
 
         extra, extra_params = [], {}
+        if f_gender == "men":
+            # Match styles whose name contains 'men' or 'mens' as a standalone
+            # word (Postgres \m = word-start boundary, \M = word-end boundary).
+            extra.append(r"AND LOWER(c.style_name) ~ '\m(mens|men)\M'")
+        elif f_gender == "women":
+            extra.append(r"AND NOT (LOWER(c.style_name) ~ '\m(mens|men)\M')")
         if f_cats:
             extra.append("AND c.category = ANY(%(f_cats)s)")
             extra_params["f_cats"] = f_cats

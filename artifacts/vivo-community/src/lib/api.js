@@ -54,7 +54,7 @@ async function req(path, { method = "GET", body, auth = false } = {}) {
 const buildProductQuery = ({
   category = "", categories = [], brands = [], sizes = [], colors = [],
   prints = [], priceBands = [], sort = "new", limit = 24, offset = 0,
-  personalize = false,
+  personalize = false, gender = "",
 } = {}) => {
   const q = new URLSearchParams();
   if (category) q.set("category", category);
@@ -66,6 +66,7 @@ const buildProductQuery = ({
   q.set("limit", String(limit));
   q.set("offset", String(offset));
   if (personalize) q.set("personalize", "1");
+  if (gender) q.set("gender", gender);
   return q;
 };
 
