@@ -376,15 +376,19 @@ export default function TabShop({ onOpenProduct, onOpenTryOn, onOpenPage, onOpen
       {/* Seasonal hero — moved from Home (Home-vs-Shop rewire spec §4).
           The "Shop the edit" CTA now lives here, atop the collection. */}
       <section data-testid="shop-hero" className="relative rounded overflow-hidden bg-secondary mb-10 -mx-4 sm:mx-0">
-        <div className="aspect-[4/5] sm:aspect-[21/9] relative">
-          {/* Art-directed hero crops (Shop Fixes spec): tall 3:4 crop for mobile,
-              wide 21:9 upper-body crop for desktop — two separate exports, not one image scaled. */}
+        <div className="aspect-[4/5] sm:aspect-[12/5] relative">
+          {/* Art-directed hero crops: swirl-print dress on the bench. Two separate
+              exports (not one image scaled) — desktop 1920×800 (2.4:1, retina 2x
+              via srcSet), mobile 1000×1250 (4:5, tighter on the model). */}
           <picture>
-            <source media="(min-width: 640px)" srcSet={brandAsset("hero-desktop.jpg")} />
+            <source
+              media="(min-width: 640px)"
+              srcSet={`${brandAsset("hero-desktop.jpg")} 1x, ${brandAsset("hero-desktop@2x.webp")} 2x`}
+            />
             <img
               src={brandAsset("hero-mobile.jpg")}
               alt=""
-              className="w-full h-full object-cover object-top"
+              className="w-full h-full object-cover"
               draggable={false}
             />
           </picture>
