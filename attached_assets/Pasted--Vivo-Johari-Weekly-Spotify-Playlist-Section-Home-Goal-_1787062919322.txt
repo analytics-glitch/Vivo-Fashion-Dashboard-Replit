@@ -1,0 +1,49 @@
+# Vivo Johari — Weekly Spotify Playlist Section (Home)
+
+**Goal:** Add a "listen to our weekly Vivo playlist" section to Home, positioned near "Reels we can't stop replaying" since it's the same category of brand/community content — not shopping.
+
+**Approach:** Start simple — a Spotify embed widget (iframe), no auth, no backend, no API keys. No custom playback UI for v1.
+
+---
+
+## Placement
+
+Directly after (or directly before) the "Fresh from Vivo — Reels we can't stop replaying" section on Home. Both are brand-content modules with a similar job (music/video you can consume in the moment), so keeping them adjacent groups Home's "brand content" sections together rather than scattering them.
+
+## Section content
+
+- **Eyebrow label:** "FRESH FROM VIVO" (reuse the existing label style from the Reels section, or a matching one like "THIS WEEK'S SOUND")
+- **Heading:** "This Week's Vivo Playlist" (or similar — final copy is a design call)
+- **Subcopy:** short line, e.g. "Our weekly mix — the songs on rotation in-store and behind the scenes."
+- **Embed:** Spotify's standard playlist iframe:
+  ```html
+  <iframe
+    src="https://open.spotify.com/embed/playlist/{PLAYLIST_ID}?utm_source=generator"
+    width="100%"
+    height="352"
+    frameborder="0"
+    allowfullscreen=""
+    allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture"
+    loading="lazy">
+  </iframe>
+  ```
+  This renders Spotify's own player: cover art, track list, and a play button. Visitors get 30-second previews unless they're logged into Spotify with an active session (Premium users get full playback).
+
+## How "weekly" gets updated
+
+- Store the current playlist's Spotify ID as a config value (env var, CMS field, or simple constant) — **not hardcoded inline in the component** — so whoever manages the playlist can swap it out each week from Spotify without needing a code deploy.
+- Practical flow: create/update the playlist in Vivo's Spotify account each week → copy its share link → extract the playlist ID → update the config value.
+
+## What this does NOT include (v1 scope)
+
+- No Spotify Developer app, Client ID/Secret, or Web API calls.
+- No custom-styled player matching Vivo's own UI — it uses Spotify's default embed look.
+- No in-app playback control (skip, queue, etc.) beyond what the embed itself offers.
+- These are all reasonable v2 upgrades later if the standard embed feels too generic, but out of scope for the first version.
+
+## Implementation notes for the Replit agent
+
+- This is a static/config-driven embed — no new backend endpoints or database fields required for v1.
+- Make sure the iframe is responsive (the `width="100%"` above handles horizontal sizing; confirm the fixed `height="352"` still looks right at mobile widths, or reduce it via a media query if the section feels too tall on small screens).
+- Lazy-load the iframe (`loading="lazy"`, as shown above) so it doesn't block Home's initial page load.
+- Apply the same mobile image/section-sizing care noted elsewhere in this app's mobile fixes — this section should sit comfortably in the single-column mobile layout alongside Reels.

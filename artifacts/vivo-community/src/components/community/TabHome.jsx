@@ -7,6 +7,7 @@ import { api } from "@/lib/api";
 import { StyledForYouHome } from "./StyledForYou";
 import { NEWS, newsPageId } from "./newsData";
 import ReelsRow from "./ReelsRow";
+import WeeklyPlaylist from "./WeeklyPlaylist";
 
 const initialsOf = (u) =>
   (u || "?").split(/[._\s-]+/).filter(Boolean).slice(0, 2)
@@ -718,6 +719,10 @@ export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage,
 
       {/* 4 · Fresh from Vivo — capped reel carousel + View All */}
       <ReelsRow member={member} limit={5} onViewAll={() => onNavigate("community")} />
+
+      {/* 4b · This Week's Vivo Playlist — Spotify embed, grouped with Reels
+          as Home's brand-content block */}
+      <WeeklyPlaylist />
 
       {/* 5 · Styled for You — personalisation + the dress-you-better survey */}
       {member && (
