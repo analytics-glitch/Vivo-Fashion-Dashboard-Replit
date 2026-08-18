@@ -1,0 +1,43 @@
+# Vivo Johari — "Johari News" Section (Home)
+
+**Goal:** Bring the "Johari" name into the Home page copy (currently only appears in the nav lockup "Vivo | Johari") via a new editorial section styled like a magazine cover, inspired by the attached Vivo Fashion magazine mockup.
+
+**Decision:** Keep the existing top hero ("This Season's Conversation / Colour, out loud") as-is — it's doing seasonal-campaign work and shouldn't be replaced. Instead, **replace the existing "Vivo Stories — Styling, campaigns & what's on" section with "Johari News,"** since that section already serves the same purpose (milestones, store news, styling content) and is the natural home for a magazine-style treatment.
+
+---
+
+## Placement
+
+Same position in the Home page flow as the current "Vivo Stories" section (after Community Spotlight, before the Rewards strip) — this is a direct reskin/replacement of that section, not a new addition elsewhere.
+
+## Visual concept
+
+Not a literal recreation of a print magazine cover (that breaks down on responsive/mobile layouts). Instead, adapt the *idea* from the reference image — one strong editorial photo plus multiple linked headlines — into a scannable web module:
+
+- **Left (or full-width top on mobile):** one large editorial image — this is where the attached photo goes (the magazine-cover-style portrait). Treat it as a moody, editorial "cover" image rather than literal cover text.
+- **Right (or stacked below on mobile):** a short list of 3-4 clickable headlines/cover lines, each linking to its own story — reusing and extending what "Vivo Stories" already has:
+  - "Fifteen years of Vivo — and this is just the beginning" (milestone)
+  - "Karibu Galleria — our newest store is open" (new store)
+  - "Made for you: tailoring arrives at The Junction" (new service)
+  - One additional slot for rotating content (e.g. a styling guide, designer spotlight, or community feature — matches the reference image's "Kenyan Designers Making Waves," "Street Style Nairobi," "Sustainable Fashion" cover lines)
+- **Section label/heading:** "JOHARI NEWS" as the eyebrow/section label (small caps, matches the existing "VIVO STORIES" label style), with a subheading along the lines of "What's the latest" or "Styling, campaigns & what's on" (existing subcopy can carry over).
+- **Masthead touch (optional, low-risk):** a small "Vivo Fashion" or "Johari" masthead-style wordmark above the headline list, echoing the magazine mockup's masthead treatment, without going as far as literal newspaper/magazine chrome (bylines, issue dates, etc.) which would be overkill for a web module.
+
+## Copy changes
+
+- Section label changes from "VIVO STORIES" to "JOHARI NEWS."
+- Section heading changes from "Styling, campaigns & what's on" to something like "What's the latest" or "This month in Johari."
+- "Johari" now appears in visible Home copy for the first time (previously only in the nav lockup).
+
+## What stays the same
+
+- The underlying story cards/content (milestones, store openings, service launches) — this is a reskin of presentation and framing, not new content.
+- "View All Stories" link behavior, if it exists on the current section, carries over unchanged.
+- Top hero, mission banner, community post grid, reels, community spotlight, rewards strip, and everything else on Home — unaffected.
+
+## Implementation notes for the Replit agent
+
+- Rename the component/section from `VivoStories` to `JohariNews` (or add a wrapping rename) so it's clear in the codebase this is the same data source with new framing, not a duplicate section.
+- The layout shifts from the current 3-equal-image-card grid to a 1 large image + headline-list layout — this is a genuine layout change, not just a copy swap, so plan for a new grid/flex structure (likely 2-column on desktop, stacked on mobile).
+- Once the reference/final image is provided, treat it the same as other hero-style images in this app: separate desktop and mobile crops, responsive `srcset`, compressed under ~300-500KB (see the earlier Shop hero image-sizing notes for the same pattern).
+- Headline list items should each be clickable links/cards, not plain text, consistent with how the current Vivo Stories cards behave.

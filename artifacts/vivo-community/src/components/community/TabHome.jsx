@@ -554,16 +554,16 @@ function RewardsSummaryCard({ member, onNavigate }) {
   );
 }
 
-/* Vivo Stories — editorial covers over the news stories the app already
-   carries; tapping opens the full article page. */
-const STORY_COVERS = ["story-1.jpg", "story-2.jpg", "story-3.jpg"];
-function VivoStories({ onOpenNews, onViewAll }) {
-  const items = NEWS.slice(0, 3);
+/* Johari News — magazine-style reskin of the old Vivo Stories section: one
+   large editorial "cover" image + a list of clickable headlines over the same
+   NEWS data source. Tapping a headline opens the full article page. */
+function JohariNews({ onOpenNews, onViewAll }) {
+  const items = NEWS.slice(0, 4);
   if (!items.length) return null;
   return (
     <section data-testid="home-stories">
       <div className="flex items-end justify-between gap-4">
-        <SectionHeader kicker="Vivo Stories" title="Styling, campaigns & what's on" />
+        <SectionHeader kicker="Johari News" title="This month in Johari" />
         {onViewAll && (
           <button
             data-testid="home-stories-viewall"
@@ -574,28 +574,55 @@ function VivoStories({ onOpenNews, onViewAll }) {
           </button>
         )}
       </div>
-      <div className="flex gap-3 overflow-x-auto hide-scrollbar snap-x -mx-4 px-4 sm:mx-0 sm:px-0 pb-1 sm:grid sm:grid-cols-3 sm:overflow-visible">
-        {items.map((n, i) => (
-          <button
-            key={n.id}
-            data-testid={`home-story-${n.id}`}
-            onClick={() => onOpenNews(n.id)}
-            className="w-[240px] sm:w-auto shrink-0 snap-start text-left group rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-          >
-            <div className="relative aspect-[4/5] rounded overflow-hidden bg-secondary mb-3">
-              <img
-                src={brandAsset(STORY_COVERS[i % STORY_COVERS.length])}
-                alt=""
-                loading="lazy"
-                className="w-full h-full object-cover object-top transition-transform duration-700 group-hover:scale-[1.03]"
-                draggable={false}
-              />
+      <div className="grid sm:grid-cols-2 gap-6 sm:gap-10 items-stretch">
+        {/* Cover image — opens the lead story */}
+        <button
+          data-testid="home-johari-cover"
+          onClick={() => onOpenNews(items[0].id)}
+          aria-label={`Read: ${items[0].headline}`}
+          className="relative aspect-[4/5] rounded overflow-hidden bg-secondary text-left group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+        >
+          <img
+            src={brandAsset("johari-news.jpg")}
+            alt=""
+            loading="lazy"
+            className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-[1.03]"
+            draggable={false}
+          />
+          <div className="absolute inset-x-0 bottom-0 p-4 sm:p-5 bg-gradient-to-t from-black/70 via-black/30 to-transparent">
+            <div className="text-[10px] font-bold uppercase tracking-widest text-white/80 mb-1">{items[0].kicker}</div>
+            <div className="font-serif text-[18px] sm:text-[20px] leading-snug text-white group-hover:underline underline-offset-2 decoration-white/50">
+              {items[0].headline}
             </div>
-            <div className="text-[10px] font-bold uppercase tracking-wider text-primary-ink mb-1">{n.kicker}</div>
-            <div className="font-serif text-[16px] leading-snug text-foreground group-hover:underline underline-offset-2 decoration-border line-clamp-2">{n.headline}</div>
-            <div className="text-[11px] text-muted-foreground mt-1">{n.date}</div>
-          </button>
-        ))}
+          </div>
+        </button>
+        {/* Cover lines — masthead touch + the rest of the headlines */}
+        <div className="flex flex-col justify-center">
+          <div className="font-serif text-[22px] sm:text-[26px] tracking-tight text-foreground mb-4 sm:mb-6">
+            Vivo <span className="text-primary-ink">Johari</span>
+          </div>
+          <div className="divide-y divide-border border-y border-border">
+            {items.map((n) => (
+              <button
+                key={n.id}
+                data-testid={`home-story-${n.id}`}
+                onClick={() => onOpenNews(n.id)}
+                className="w-full py-4 sm:py-5 text-left group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary rounded"
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-[10px] font-bold uppercase tracking-wider text-primary-ink mb-1">{n.kicker}</div>
+                    <div className="font-serif text-[16px] leading-snug text-foreground group-hover:underline underline-offset-2 decoration-border line-clamp-2">
+                      {n.headline}
+                    </div>
+                    <div className="text-[11px] text-muted-foreground mt-1">{n.date}</div>
+                  </div>
+                  <ChevronRight size={16} className="shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
     </section>
   );
@@ -744,8 +771,8 @@ export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage,
       {/* 7 · Community Spotlight — Jewel + Voices merged into one feature */}
       <CommunitySpotlightCard jewel={cel?.jewel} onNavigate={onNavigate} />
 
-      {/* 8 · Vivo Stories — three editorial covers + view all */}
-      <VivoStories onOpenNews={openNews} onViewAll={() => onNavigate("community")} />
+      {/* 8 · Johari News — magazine-style cover + headline list + view all */}
+      <JohariNews onOpenNews={openNews} onViewAll={() => onNavigate("community")} />
 
       {/* 9 · Member Rewards — one compact preview */}
       <RewardsSummaryCard member={member} onNavigate={onNavigate} />
