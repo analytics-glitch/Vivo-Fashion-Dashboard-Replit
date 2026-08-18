@@ -3211,10 +3211,14 @@ def register_community_routes(app, api_pg_module):
                 m = _require_member(cur, request)
                 cur.execute("SELECT answers, dna, completed_at, shared_at FROM community_style_quiz WHERE member_id = %s", (m["id"],))
                 row = cur.fetchone()
+                cur.execute("SELECT opted_in FROM community_style_prefs WHERE member_id = %s", (m["id"],))
+                picks = cur.fetchone()
                 if not row:
-                    return {"answers": {}, "dna": None, "completed": False, "shared": False}
+                    return {"answers": {}, "dna": None, "completed": False, "shared": False,
+                            "weekly_picks_opted_in": bool((picks or {}).get("opted_in"))}
                 return {"answers": row["answers"] or {}, "dna": row["dna"],
-                        "completed": bool(row["completed_at"]), "shared": bool(row["shared_at"])}
+                        "completed": bool(row["completed_at"]), "shared": bool(row["shared_at"]),
+                        "weekly_picks_opted_in": bool((picks or {}).get("opted_in"))}
 
     @app.put("/api/community/style-quiz")
     def community_style_quiz_save(request: Request, payload: dict = Body(...)):
@@ -3225,6 +3229,9 @@ def register_community_routes(app, api_pg_module):
         _ensure_tables()
         _throttle(request, "quizsave", [("ip", 20, 60)])
         answers = _quiz_clean_answers((payload or {}).get("answers"))
+        weekly_picks = (payload or {}).get("weekly_picks_opt_in")
+        if not isinstance(weekly_picks, bool):
+            weekly_picks = None
         complete = _quiz_complete(answers)
         dna = _compose_style_dna(answers) if complete else None
         awarded = False
@@ -3252,6 +3259,19 @@ def register_community_routes(app, api_pg_module):
                          updated_at = now()""",
                     (m["id"], json.dumps(answers), json.dumps(dna) if dna else None, complete),
                 )
+                if complete and weekly_picks is not None:
+                    cur.execute(
+                        "INSERT INTO community_style_prefs (member_id) VALUES (%s) ON CONFLICT DO NOTHING",
+                        (m["id"],),
+                    )
+                    cur.execute(
+                        """UPDATE community_style_prefs SET
+                             opted_in = %s,
+                             opted_in_at = CASE WHEN %s AND opted_in_at IS NULL THEN now() ELSE opted_in_at END,
+                             updated_at = now()
+                           WHERE member_id = %s""",
+                        (weekly_picks, weekly_picks, m["id"]),
+                    )
                 if complete:
                     cur.execute(
                         """INSERT INTO community_points_events (member_id, kind, points)
@@ -3692,12 +3712,13 @@ def register_community_routes(app, api_pg_module):
                            brands: str = "", sizes: str = "",
                            colors: str = "", prints: str = "",
                            price_bands: str = "", sort: str = "new",
-                           count_only: int = 0, gender: str = ""):
+                           count_only: int = 0, gender: str = "", q: str = ""):
         _ensure_tables()
         _throttle(request, "prod", [("ip", 120, 60)])
         limit = max(1, min(int(limit or 24), 48))
         offset = max(0, min(int(offset or 0), 960))
         category = (category or "").strip()[:60]
+        search = " ".join((q or "").split())[:80]
 
         def _csv(v, cap=12, ln=60):
             out, seen = [], set()
@@ -3732,7 +3753,7 @@ def register_community_routes(app, api_pg_module):
             sort = "new"
         count_only = 1 if str(count_only) in ("1", "true") else 0
         filtered = bool(f_cats or f_brands or f_sizes or f_colors
-                        or f_prints or f_bands or f_gender)
+                        or f_prints or f_bands or f_gender or search)
         # Optional Style-DNA re-ranking: only when asked for, and only when
         # the Bearer token resolves to a member with a completed quiz. Public
         # callers and quiz-skippers keep the curated default order — and only
@@ -3751,7 +3772,7 @@ def register_community_routes(app, api_pg_module):
                         qrow = cur.fetchone()
                         if qrow and qrow.get("completed_at"):
                             quiz = _quiz_clean_answers(qrow["answers"])
-        key = (category, limit, offset, sort)
+        key = (category, limit, offset, sort, search)
         cacheable = (quiz is None and not filtered and not count_only
                      and sort in ("new", "best"))
         if cacheable:
@@ -3766,6 +3787,16 @@ def register_community_routes(app, api_pg_module):
             extra.append(r"AND LOWER(c.style_name) ~ '\m(mens|men)\M'")
         elif f_gender == "women":
             extra.append(r"AND NOT (LOWER(c.style_name) ~ '\m(mens|men)\M')")
+        if search:
+            extra.append("""AND (
+                c.style_name ILIKE %(search)s
+                OR c.color ILIKE %(search)s
+                OR c.category ILIKE %(search)s
+                OR c.subcategory ILIKE %(search)s
+                OR c.brand ILIKE %(search)s
+                OR c.print_plain ILIKE %(search)s
+            )""")
+            extra_params["search"] = "%" + search + "%"
         if f_cats:
             extra.append("AND c.category = ANY(%(f_cats)s)")
             extra_params["f_cats"] = f_cats

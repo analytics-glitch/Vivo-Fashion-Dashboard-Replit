@@ -16,7 +16,7 @@ export default function WeeklyPlaylist() {
     <section data-testid="home-weekly-playlist">
       <SectionHeader
         kicker="This week's sound"
-        title="This Week's Vivo Playlist"
+         title="This Week's Vivo Playlist by DJ Shaky"
         sub="Our weekly mix — the songs on rotation in-store and behind the scenes."
       />
       <div className="rounded overflow-hidden">

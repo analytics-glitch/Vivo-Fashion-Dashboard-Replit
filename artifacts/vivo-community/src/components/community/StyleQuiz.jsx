@@ -102,6 +102,7 @@ export default function StyleQuiz({ member, onClose, onMemberUpdate, onSeeFeed }
   const [error, setError] = useState("");
   const [result, setResult] = useState(null); // {dna, points_awarded, shared}
   const [shareState, setShareState] = useState("idle"); // idle | busy | done
+  const [weeklyPicks, setWeeklyPicks] = useState(false);
   const touch = useRef(null);
 
   // Prefill saved answers so editing feels like a conversation resumed.
@@ -109,6 +110,9 @@ export default function StyleQuiz({ member, onClose, onMemberUpdate, onSeeFeed }
     let on = true;
     api.styleQuiz()
       .then((d) => {
+        if (on && typeof d.weekly_picks_opted_in === "boolean") {
+          setWeeklyPicks(d.weekly_picks_opted_in);
+        }
         if (on && d.answers && Object.keys(d.answers).length) {
           setAnswers({ ...EMPTY, ...d.answers });
           if (d.shared) setShareState("done");
@@ -151,7 +155,7 @@ export default function StyleQuiz({ member, onClose, onMemberUpdate, onSeeFeed }
     setError("");
     const payload = includePrivate ? answers : { ...answers, size_range: "", fit_lean: "" };
     try {
-      const d = await api.styleQuizSave(payload);
+      const d = await api.styleQuizSave(payload, weeklyPicks);
       if (d.member && onMemberUpdate) onMemberUpdate(d.member);
       setResult({ dna: d.dna || [], points_awarded: !!d.points_awarded });
       if (d.shared) setShareState("done");
@@ -450,6 +454,20 @@ export default function StyleQuiz({ member, onClose, onMemberUpdate, onSeeFeed }
                 })}
               </div>
             </div>
+
+            <label className="flex items-start gap-3 rounded border border-primary/25 bg-primary/5 p-4 cursor-pointer">
+              <input
+                type="checkbox"
+                data-testid="quiz-weekly-picks"
+                checked={weeklyPicks}
+                onChange={(e) => setWeeklyPicks(e.target.checked)}
+                className="mt-0.5 h-4 w-4 accent-primary"
+              />
+              <span>
+                <span className="block text-[14px] font-medium text-foreground">Also send me weekly picks based on this</span>
+                <span className="block text-[12px] text-muted-foreground mt-1 leading-relaxed">Fresh suggestions selected from your Style DNA. You can turn this off any time.</span>
+              </span>
+            </label>
 
             {error && <div className="text-[13px] text-destructive mb-4">{error}</div>}
 

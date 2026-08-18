@@ -770,10 +770,7 @@ export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage,
           <StyledForYouHome
             member={member}
             onOpenProduct={onOpenProduct}
-            onViewAll={() => {
-              try { sessionStorage.setItem("vivo_shop_sfy", "1"); } catch { /* private mode */ }
-              onNavigate("shop");
-            }}
+            onViewAll={() => onNavigate("shop")}
             onPersonalise={() => onOpenPage("styleprefs")}
           />
         </div>

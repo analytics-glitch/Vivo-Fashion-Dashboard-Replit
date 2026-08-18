@@ -315,12 +315,11 @@ export function StylePrefsView({ onBack }) {
       </p>
 
       <div className="space-y-4">
-        <div className={`${cardCls} p-5 sm:p-6 flex items-center justify-between gap-4 border-l-2 border-l-primary`}>
+        <div className={`${cardCls} p-5 sm:p-6 border-l-2 border-l-primary`}>
           <div>
-            <div className="font-semibold text-[15px] text-foreground">Weekly Styled for You recommendations</div>
-            <div className="text-[12px] text-muted-foreground mt-0.5">Fresh picks every week, chosen around your preferences. Off by default — only you can switch it on.</div>
+            <div className="font-semibold text-[15px] text-foreground">Weekly picks are managed in the Style Quiz</div>
+            <div className="text-[12px] text-muted-foreground mt-0.5">Finish the quiz and choose “Also send me weekly picks based on this” to turn them on. You can switch them off from Profile.</div>
           </div>
-          <Toggle on={!!draft.opted_in} onChange={(v) => set({ opted_in: v })} testId="sfy-optin-toggle" label="Weekly Styled for You recommendations" />
         </div>
 
         <Section title="Clothing size" hint="Used for 'Recommended in Your Size' — private to you.">

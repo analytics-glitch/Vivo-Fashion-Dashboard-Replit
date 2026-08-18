@@ -137,7 +137,7 @@ const SUB_TABS = [
   { id: "feed", label: "Feed" },
   { id: "events", label: "Events" },
   { id: "challenges", label: "Challenges" },
-  { id: "leaderboard", label: "Shining This Week" },
+  { id: "leaderboard", label: "Meet a Gem" },
   { id: "style_boards", label: "Style Boards" },
 ];
 const SUB_IDS = SUB_TABS.map((t) => t.id);
@@ -225,7 +225,7 @@ export default function TabCommunity({ member, subNav, onSubChange, onOpenEvent,
   }, []);
   useEffect(() => { loadChallenges(); }, [loadChallenges]);
 
-  // Shining This Week — appreciation wall + past winners strip.
+  // Meet a Gem — appreciation wall + past winners strip.
   const [cel, setCel] = useState(null);
   useEffect(() => {
     let alive = true;
@@ -546,11 +546,11 @@ export default function TabCommunity({ member, subNav, onSubChange, onOpenEvent,
         </div>
       )}
 
-      {/* Shining This Week SubTab (id kept as "leaderboard" for URL stability) */}
+      {/* Meet a Gem SubTab (id kept as "leaderboard" for URL stability) */}
       {subTab === "leaderboard" && (
         <div className="max-w-3xl mx-auto space-y-8" data-testid="celebration-wall">
           <div>
-            <div className="text-[11px] font-bold uppercase tracking-wider text-primary-ink mb-1.5">Shining this week</div>
+            <div className="text-[11px] font-bold uppercase tracking-wider text-primary-ink mb-1.5">Meet a Gem</div>
             <h2 className="text-2xl font-serif text-foreground mb-1.5">A little love for our Johari Gems</h2>
             <p className="text-muted-foreground text-sm leading-relaxed">
               No ranks, no numbers — just the community celebrating each other. Celebrations rotate every week.

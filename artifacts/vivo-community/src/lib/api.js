@@ -54,7 +54,7 @@ async function req(path, { method = "GET", body, auth = false } = {}) {
 const buildProductQuery = ({
   category = "", categories = [], brands = [], sizes = [], colors = [],
   prints = [], priceBands = [], sort = "new", limit = 24, offset = 0,
-  personalize = false, gender = "",
+  personalize = false, gender = "", searchTerm = "",
 } = {}) => {
   const q = new URLSearchParams();
   if (category) q.set("category", category);
@@ -67,6 +67,7 @@ const buildProductQuery = ({
   q.set("offset", String(offset));
   if (personalize) q.set("personalize", "1");
   if (gender) q.set("gender", gender);
+  if (searchTerm) q.set("q", searchTerm.trim().slice(0, 80));
   return q;
 };
 
@@ -99,7 +100,8 @@ export const api = {
   styledForYou: () => req("/styled-for-you", { auth: true }),
   // Home-only lightweight probe: opt-in status without product payloads.
   styledForYouStatus: () => req("/styled-for-you?meta_only=1", { auth: true }),
-  styleQuizSave: (answers) => req("/style-quiz", { method: "PUT", body: { answers }, auth: true }),
+  styleQuizSave: (answers, weeklyPicksOptIn = false) =>
+    req("/style-quiz", { method: "PUT", body: { answers, weekly_picks_opt_in: weeklyPicksOptIn }, auth: true }),
   styleQuizShare: () => req("/style-quiz/share", { method: "POST", auth: true }),
   contactSubmit: (payload) => req("/contact", { method: "POST", body: payload, auth: true }),
   product: (sku) => req("/product/" + encodeURIComponent(sku)),

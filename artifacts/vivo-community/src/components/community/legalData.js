@@ -175,7 +175,7 @@ export const FAQ_SECTIONS = [
       {
         id: "privacy-leaderboard",
         q: "Can I stay out of community celebrations?",
-        a: "Absolutely. Turn off 'Appear in community celebrations' in Profile, under Privacy — we'll never feature you as jewel of the week, in weekly celebrations or winner spotlights, and you'll still earn points for everything you do, just privately. And a quiet promise either way: there are no public leaderboards or point tallies here at all. Shining This Week celebrates moments, never numbers.",
+        a: "Absolutely. Turn off 'Appear in community celebrations' in Profile, under Privacy — we'll never feature you as jewel of the week, in weekly celebrations or winner spotlights, and you'll still earn points for everything you do, just privately. And a quiet promise either way: there are no public leaderboards or point tallies here at all. Meet a Gem celebrates moments, never numbers.",
       },
       {
         id: "privacy-username",
