@@ -6,90 +6,105 @@ id = "lmwd83kHaYOQbQgx6LHd2"
 uri = "file://replenishment_ibt_audit.md"
 type = "text"
 title = "Replenishment & IBT — Audit, Gap Analysis & Improvement Plan"
+logical_id = "c5d0a485-1658-494f-a798-748075560284"
 
 [[outputs]]
 id = "MUDBi4GmHfIGFQG-RDTsf"
 uri = "file://.local/qr/expo-qr.png"
 type = "image"
 title = "Expo QR — Vivo BI Mobile"
+logical_id = "9d081998-adb0-43dd-9d00-6893d0c7adbc"
 
 [[outputs]]
 id = "wdCNsuTnVRzPrAH1_4Vyz"
 uri = "file://attached_assets/returns_in_ours_not_bq.csv"
 type = "table"
 title = "222 return orders in our table not in BigQuery"
+logical_id = "77287b92-151a-4fc1-b860-cabfe7ecbb0f"
 
 [[outputs]]
 id = "doOqrB-loImWNTWs8haeU"
 uri = "file://exports/subcategory_sor_june2026_excl_online.csv"
 type = "table"
 title = "Subcategory SOR — June 2026 excl. Online (corrected, gap repaired)"
+logical_id = "c2286c5c-1882-416c-bd1f-f78c912fff88"
 
 [[outputs]]
 id = "JcYG4g_cNuOz0-iUgrmCd"
 uri = "file://exports/subcategory_sor_may2026_excl_online.csv"
 type = "table"
 title = "Subcategory SOR — May 2026 excl. Online (corrected)"
+logical_id = "3b4335ce-3a15-4c59-9dc3-dba69a86b2ba"
 
 [[outputs]]
 id = "F3ZIQzit6tk_4IDFxmFEO"
 uri = "file://exports/subcategory_sor_june2026_excl_online_PROD.csv"
 type = "table"
 title = "June 2026 subcategory SOR — matches the live dashboard"
+logical_id = "64517809-1bbf-45bf-a893-e79e7c5211fa"
 
 [[outputs]]
 id = "wz98mhaanSKtJzBm5h5uT"
 uri = "file://exports/subcategory_sor_may2026_excl_online_PROD.csv"
 type = "table"
 title = "May 2026 subcategory SOR — matches the live dashboard"
+logical_id = "49a7276c-aee4-4152-8254-abfc41a393ce"
 
 [[outputs]]
 id = "sK5PgRGAm7fPofzhwpXau"
 uri = "file://exports/subcategory_sor_june2026_all_business_PROD.csv"
 type = "table"
 title = "June 2026 subcategory SOR — all business incl. Online (matches dashboard)"
+logical_id = "ff647847-fdcc-469f-bcf9-ca5adcf68dc7"
 
 [[outputs]]
 id = "NQxLGhDuGVjq5no1AmIbA"
 uri = "file://exports/subcategory_sor_april2026_excl_online_PROD.csv"
 type = "table"
 title = "April 2026 subcategory SOR — excl. Online (matches dashboard)"
+logical_id = "bdb5176d-03d2-48c4-86ee-bf0e60598d17"
 
 [[outputs]]
 id = "Dt90ljqCnilq-IIjG3783"
 uri = "file://exports/retired_no_online_sales_4w_shopzetu.csv"
 type = "table"
 title = "Retired items — no Shop Zetu online sales in 4 weeks"
+logical_id = "d7ad4c2f-82ad-40f4-abbd-ed71b28df856"
 
 [[outputs]]
 id = "D9oPYFwl0cTBV1-q2CJ_L"
 uri = "file://retired_styles_odoo_product_names.csv"
 type = "table"
 title = "Retired Styles — Odoo Product Names (12,202 rows)"
+logical_id = "0b05547e-1fa6-4f49-8449-5af56f8901f3"
 
 [[outputs]]
 id = "mpGG6ag6_lW_dnJGsYxar"
 uri = "file://retired_styles_not_found_in_odoo.csv"
 type = "table"
 title = "47 Styles Not Found in Odoo"
+logical_id = "e1f7696b-dcc7-4e91-9b8a-895a7f9bf713"
 
 [[outputs]]
 id = "fIwVLqeA7NMTBe_px-Mno"
 uri = "file://exports/Tier_and_Retirement_Rules.docx"
 type = "word_document"
 title = "Tier & Retirement Rules — Current Application"
+logical_id = "a2a4fa78-c7a3-4cf9-b679-ef924277e154"
 
 [[outputs]]
 id = "ZuKIzAaRE1KdcXcLIsHos"
 uri = "file://attached_assets/product_variants_by_style.xlsx"
 type = "table"
 title = "Product Variants with External ID"
+logical_id = "b3bbef34-a03b-474d-af83-dff3c0c32fc0"
 
 [[outputs]]
 id = "R31C51EVKUFRiqhhQEobp"
 uri = "file://attached_assets/aged_stock_by_store.xlsx"
 type = "table"
 title = "Aged Stock by Store — 90+ Days No Sale"
+logical_id = "a9f8d49f-151e-4a95-86d1-5b3ba2331346"
 
 [[outputs]]
 id = "7_-Yt3KuCVxG1Qi11b_Vp"
@@ -97,6 +112,7 @@ uri = "file://.local/exports/customer-data-architecture.html"
 type = "unspecified"
 title = "Customer Data Architecture"
 description = "Full visual reference — where customer data lives, how it flows, and key constraints. Open in browser then Ctrl+P → Save as PDF."
+logical_id = "7bedb5ba-9c38-4301-9299-d28818f372ff"
 
 [[outputs]]
 id = "Ml1FoNDaOvuMl-gpROt69"
@@ -104,6 +120,7 @@ uri = "file://attached_assets/replenishment_report_junction_sarit_2026-08-03.xls
 type = "table"
 title = "Replenishment Report — Junction & Sarit, 3 Aug 2026"
 description = "Sales by SKU + SOH & recommended daily replenishment with reasons for non-recommended lines."
+logical_id = "b626ffee-0909-43c5-b04a-1bbf88873997"
 
 [[outputs]]
 id = "TlqA52Pm8StUJn_Ef3KsR"
@@ -111,3 +128,4 @@ uri = "file://docs/system-diagnosis-2026-08-04.md"
 type = "text"
 title = "System Diagnosis — 2026-08-04"
 description = "Full findings: production incident mechanism, architecture map, DB/table/query health, what's working, prioritized fixes."
+logical_id = "726040fa-7fe1-4608-b7b3-b26db093f26d"
