@@ -4,41 +4,12 @@ import { ShoppingBag, Heart, ChevronRight, ChevronDown, Sparkles, SlidersHorizon
 import { api } from "@/lib/api";
 import { useWishlist } from "@/context/WishlistContext";
 import { FilterSheet, AppliedChips, emptyFilters, countActive, filtersToParams, MY_SIZE_LABELS } from "./ShopFilters";
-import { CategoryGrid, ProductRail, RailCard } from "./ShopSections";
+import { CategoryGrid, ProductRail, RailCard, PromoBanner, GenderToggle } from "./ShopSections";
 import { VivoEditsHome } from "./VivoEdits";
 import { useAuth } from "@/context/AuthContext";
 import { QuickAddModal } from "./QuickAddModal";
 
 const PAGE = 24;
-
-/* Promotional banner — moved here from the homepage. Editable in one place:
-   change SHOP_PROMO to swap in delivery offers, sales, new collections or
-   store openings. */
-const SHOP_PROMO = {
-  kicker: "For a limited time",
-  title: "Free delivery over KES 5,000",
-  sub: "Nairobi, Kigali and Kampala — straight to your door.",
-  image: "promo.jpg",
-};
-function PromoBanner() {
-  return (
-    <section data-testid="shop-promo-banner" className="-mx-4 sm:mx-0 relative overflow-hidden sm:rounded bg-foreground mb-10">
-      <img
-        src={brandAsset(SHOP_PROMO.image)}
-        alt=""
-        loading="lazy"
-        className="absolute inset-0 w-full h-full object-cover object-[center_30%] opacity-80"
-        draggable={false}
-      />
-      <div className="absolute inset-0 bg-gradient-to-r from-black/75 via-black/45 to-black/20 pointer-events-none" />
-      <div className="relative p-6 sm:p-8 max-w-md text-white">
-        <div className="text-[10px] font-bold uppercase tracking-[0.25em] text-white/75 mb-2">{SHOP_PROMO.kicker}</div>
-        <h3 className="font-serif text-2xl sm:text-3xl leading-tight mb-1.5 text-white">{SHOP_PROMO.title}</h3>
-        <p className="text-[13px] text-white/85">{SHOP_PROMO.sub}</p>
-      </div>
-    </section>
-  );
-}
 
 // What the wishlist stores about a piece (a display snapshot — live stock
 // and sizes are fetched fresh on the Wishlist page).
@@ -345,7 +316,20 @@ function ChosenForYou({ loading, picked, items, member, onOpenProduct, onOpenQui
 
 export default function TabShop({ onOpenProduct, onOpenTryOn, onOpenPage, onOpenQuiz, onOpenEdit, onOpenEdits }) {
   const { member } = useAuth();
-  const [filters, setFilters] = useState(emptyFilters());
+  const [shopGenderHandoff] = useState(() => {
+    try {
+      const value = sessionStorage.getItem("vivo_shop_gender_handoff");
+      return ["women", "all", "men"].includes(value) ? value : "";
+    } catch {
+      return "";
+    }
+  });
+  const [filters, setFilters] = useState(() => {
+    const next = emptyFilters();
+    if (shopGenderHandoff === "all") next.gender = "";
+    else if (shopGenderHandoff === "men") next.gender = "men";
+    return next;
+  });
   const [sort, setSort] = useState("new");
   const [items, setItems] = useState([]);
   const [cats, setCats] = useState([]);
@@ -361,6 +345,11 @@ export default function TabShop({ onOpenProduct, onOpenTryOn, onOpenPage, onOpen
   const [counting, setCounting] = useState(false);
   const [sizeRange, setSizeRange] = useState(null); // Style-Quiz size_range id
   const [searchTerm, setSearchTerm] = useState("");
+
+  useEffect(() => {
+    if (!shopGenderHandoff) return;
+    try { sessionStorage.removeItem("vivo_shop_gender_handoff"); } catch { /* private mode */ }
+  }, [shopGenderHandoff]);
 
   const filtersKey = JSON.stringify({ filters, searchTerm });
   const nActive = countActive(filters);
@@ -494,11 +483,6 @@ export default function TabShop({ onOpenProduct, onOpenTryOn, onOpenPage, onOpen
   const activeCat = filters.cats.length === 1 ? filters.cats[0] : filters.cats.length === 0 ? "All" : null;
   const chips = ["All", ...cats.slice(0, 8).map((c) => c.name)];
   const activeGender = filters.gender || "all"; // "all" | "women" | "men"
-  const GENDER_TABS = [
-    { id: "women", label: "Women's" },
-    { id: "all",   label: "All" },
-    { id: "men",   label: "Men's" },
-  ];
 
   return (
     <div className="animate-in fade-in duration-500">
@@ -615,8 +599,7 @@ export default function TabShop({ onOpenProduct, onOpenTryOn, onOpenPage, onOpen
         <CategoryGrid onSelect={pickCategory} />
       </div>
 
-      {/* Promotional banner — moved from the homepage (community-first brief).
-          Edit SHOP_PROMO to swap in sales, new collections or store openings. */}
+      {/* Promotional banner — shared with the Home discovery lead-in. */}
       <PromoBanner />
 
 
@@ -624,26 +607,10 @@ export default function TabShop({ onOpenProduct, onOpenTryOn, onOpenPage, onOpen
       <div ref={gridTopRef} className="scroll-mt-24" aria-hidden="true" />
       {/* Gender toggle — Women's / All / Men's. Sits above the filter row so
           it's always visible and clearly separate from drawer-based filters. */}
-      <div className="flex items-center justify-center mb-4" data-testid="shop-gender-toggle">
-        <div className="inline-flex rounded-sm border border-border overflow-hidden">
-          {GENDER_TABS.map(({ id, label }) => (
-            <button
-              key={id}
-              type="button"
-              data-testid={`shop-gender-${id}`}
-              aria-pressed={activeGender === id}
-              onClick={() => setFilters((f) => ({ ...f, gender: id === "all" ? "" : id, cats: [] }))}
-              className={`px-5 h-9 text-[12px] font-bold uppercase tracking-wider transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset ${
-                activeGender === id
-                  ? "bg-foreground text-background"
-                  : "bg-background text-muted-foreground hover:bg-secondary"
-              }`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-      </div>
+      <GenderToggle
+        activeGender={activeGender}
+        onChange={(id) => setFilters((f) => ({ ...f, gender: id === "all" ? "" : id, cats: [] }))}
+      />
       <div className="flex flex-wrap items-center gap-2 mb-4 px-1">
         <button
           type="button"

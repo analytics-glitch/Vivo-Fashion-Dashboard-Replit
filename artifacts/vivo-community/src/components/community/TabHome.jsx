@@ -8,6 +8,7 @@ import { StyledForYouHome } from "./StyledForYou";
 import { NEWS, newsPageId } from "./newsData";
 import ReelsRow from "./ReelsRow";
 import WeeklyPlaylist from "./WeeklyPlaylist";
+import { CategoryGrid, PromoBanner, GenderToggle } from "./ShopSections";
 
 const initialsOf = (u) =>
   (u || "?").split(/[._\s-]+/).filter(Boolean).slice(0, 2)
@@ -691,7 +692,20 @@ export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage,
         <WeeklyPlaylist />
       </div>
 
-      {/* 5 · Styled for You — personalisation + the dress-you-better survey */}
+       {/* 5 · Delivery promotion + gender discovery controls */}
+       <PromoBanner />
+       <GenderToggle
+         activeGender="women"
+         onChange={(id) => {
+           try { sessionStorage.setItem("vivo_shop_gender_handoff", id); } catch { /* private mode */ }
+           onNavigate("shop");
+         }}
+       />
+
+       {/* 6 · Shop by Category — compact discovery grid before personalisation */}
+       <CategoryGrid compact onSelect={() => onNavigate("shop")} />
+
+        {/* 7 · Styled for You — personalisation + the dress-you-better survey */}
       {member && (
         <div className="space-y-4">
           <StyledForYouHome

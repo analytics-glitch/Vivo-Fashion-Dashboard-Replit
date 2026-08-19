@@ -131,7 +131,6 @@ function ShellInner() {
   const initialSub = params.get("sub") || "";
   const [subNav, setSubNav] = useState(() => (initialSub ? { id: initialSub, n: 1 } : null));
   const [communityComposeAction, setCommunityComposeAction] = useState(null);
-  const [helpOpen, setHelpOpen] = useState(false);
   // #FabulasAtAnyAge story overlay — plain shell state (an overlay, not a
   // route): Escape/close never disturbs the URL underneath.
   const [fabulasId, setFabulasId] = useState("");
@@ -395,44 +394,16 @@ function ShellInner() {
                 )}
               </button>
             ))}
-            <div className="relative h-full flex items-center">
-              <button
-                data-testid="nav-help"
-                onClick={() => setHelpOpen((v) => !v)}
-                aria-expanded={helpOpen}
-                aria-haspopup="menu"
-                className={`h-full flex items-center gap-1 text-[13px] font-semibold uppercase tracking-wider whitespace-nowrap transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset ${
-                  helpOpen ? "text-foreground" : "text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                Help
-              </button>
-              {helpOpen && (
-                <>
-                  <div className="fixed inset-0 z-10" onClick={() => setHelpOpen(false)} aria-hidden="true" />
-                  <div role="menu" className="absolute right-0 top-full z-20 w-60 bg-background border border-border rounded shadow-lg py-2 animate-in fade-in slide-in-from-top-1 duration-150">
-                    {[
-                      ["help", "Help home"],
-                      ["faq", "Help & FAQs"],
-                      ["contact", "Contact Us"],
-                      ["mydata", "My Data & Privacy"],
-                      ["guidelines", "Community Guidelines"],
-                      ["givingback", "Give Your Vivo a Second Life"],
-                    ].map(([id, label]) => (
-                      <button
-                        key={id}
-                        role="menuitem"
-                        data-testid={`nav-help-${id}`}
-                        onClick={() => { setHelpOpen(false); openPage(id); }}
-                        className="w-full text-left px-4 py-2.5 text-[13px] text-foreground hover:bg-secondary transition-colors"
-                      >
-                        {label}
-                      </button>
-                    ))}
-                  </div>
-                </>
-              )}
-            </div>
+            <button
+              data-testid="nav-help"
+              onClick={() => openPage("help")}
+              className={`h-full flex items-center text-[13px] font-semibold uppercase tracking-wider whitespace-nowrap transition-colors relative focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset ${
+                page === "help" ? "text-primary-ink" : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              Help
+              {page === "help" && <span className="absolute bottom-0 left-0 w-full h-[2px] bg-primary" />}
+            </button>
           </div>
 
           <div className="flex items-center gap-3">

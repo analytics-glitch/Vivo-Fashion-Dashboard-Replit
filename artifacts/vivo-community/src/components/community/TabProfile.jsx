@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { api } from "@/lib/api";
 import { TierBadge, Avatar, cardCls, btnSecondary, inputCls } from "./ui";
-import { MapPin, Package, ArrowRight, LogOut, Camera, Ruler, Check, Loader2, ShieldCheck, AtSign, Clock, Heart, ChevronRight, HelpCircle, Hourglass, MessageCircle, Sparkles, ClipboardList, Trophy, Truck, RefreshCcw } from "lucide-react";
+import { MapPin, Package, ArrowRight, LogOut, Camera, Ruler, Check, Loader2, ShieldCheck, AtSign, Clock, Heart, ChevronRight, Hourglass, Trophy } from "lucide-react";
 import { useWishlist } from "@/context/WishlistContext";
 import EntryModal, { ENTRY_STATUS_COPY } from "./EntryModal";
 import { StylePrefsProfileCard } from "./StyledForYou";
@@ -538,114 +538,6 @@ export default function TabProfile({ member, onSignOut, onMemberUpdate, onOpenWi
               </span>
               <ChevronRight size={15} className="text-muted-foreground shrink-0" />
             </button>
-          </div>
-
-          {/* Help & Support + legal */}
-          <div className="text-[12px] font-bold uppercase tracking-wider text-muted-foreground px-1 -mb-6">Help & Support</div>
-          <div className={`${cardCls} overflow-hidden`} data-testid="help-legal-card">
-            <button
-              data-testid="profile-stores-link"
-              onClick={() => onOpenPage?.("stores")}
-              className="w-full p-5 flex items-center gap-4 text-left hover:bg-secondary/50 transition-colors group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset"
-            >
-              <span className="w-11 h-11 rounded-full bg-secondary border border-border flex items-center justify-center text-primary-ink shrink-0">
-                <MapPin size={18} strokeWidth={1.5} />
-              </span>
-              <span className="flex-grow min-w-0">
-                <span className="block font-medium text-foreground text-[15px]">Find a Store</span>
-                <span className="block text-[13px] text-muted-foreground mt-0.5">Every Vivo store in Kenya, Uganda & Rwanda.</span>
-              </span>
-              <ChevronRight size={16} className="text-muted-foreground group-hover:text-foreground transition-colors shrink-0" />
-            </button>
-            <button
-              data-testid="profile-delivery-link"
-              onClick={() => onOpenPage?.("delivery")}
-              className="w-full p-5 flex items-center gap-4 text-left border-t border-border hover:bg-secondary/50 transition-colors group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset"
-            >
-              <span className="w-11 h-11 rounded-full bg-secondary border border-border flex items-center justify-center text-primary-ink shrink-0">
-                <Truck size={18} strokeWidth={1.5} />
-              </span>
-              <span className="flex-grow min-w-0">
-                <span className="block font-medium text-foreground text-[15px]">Delivery Information</span>
-                <span className="block text-[13px] text-muted-foreground mt-0.5">Where we deliver, timelines and fees.</span>
-              </span>
-              <ChevronRight size={16} className="text-muted-foreground group-hover:text-foreground transition-colors shrink-0" />
-            </button>
-            <button
-              data-testid="profile-returns-link"
-              onClick={() => onOpenPage?.("returns")}
-              className="w-full p-5 flex items-center gap-4 text-left border-t border-border hover:bg-secondary/50 transition-colors group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset"
-            >
-              <span className="w-11 h-11 rounded-full bg-secondary border border-border flex items-center justify-center text-primary-ink shrink-0">
-                <RefreshCcw size={18} strokeWidth={1.5} />
-              </span>
-              <span className="flex-grow min-w-0">
-                <span className="block font-medium text-foreground text-[15px]">Returns & Exchanges</span>
-                <span className="block text-[13px] text-muted-foreground mt-0.5">Changed your mind? Here's how it works.</span>
-              </span>
-              <ChevronRight size={16} className="text-muted-foreground group-hover:text-foreground transition-colors shrink-0" />
-            </button>
-            <button
-              data-testid="profile-help-link"
-              onClick={() => onOpenPage?.("faq")}
-              className="w-full p-5 flex items-center gap-4 text-left border-t border-border hover:bg-secondary/50 transition-colors group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset"
-            >
-              <span className="w-11 h-11 rounded-full bg-secondary border border-border flex items-center justify-center text-primary-ink shrink-0">
-                <HelpCircle size={18} strokeWidth={1.5} />
-              </span>
-              <span className="flex-grow min-w-0">
-                <span className="block font-medium text-foreground text-[15px]">FAQs</span>
-                <span className="block text-[13px] text-muted-foreground mt-0.5">Points, tiers, sharing, shopping — answered.</span>
-              </span>
-              <ChevronRight size={16} className="text-muted-foreground group-hover:text-foreground transition-colors shrink-0" />
-            </button>
-            <button
-              data-testid="profile-tryon-link"
-              onClick={() => onOpenPage?.("tryon")}
-              className="w-full p-5 flex items-center gap-4 text-left border-t border-border hover:bg-secondary/50 transition-colors group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset"
-            >
-              <span className="w-11 h-11 rounded-full bg-secondary border border-border flex items-center justify-center text-primary-ink shrink-0">
-                <Sparkles size={18} strokeWidth={1.5} />
-              </span>
-              <span className="flex-grow min-w-0">
-                <span className="block font-medium text-foreground text-[15px]">Virtual Try-On</span>
-                <span className="block text-[13px] text-muted-foreground mt-0.5">Your photos and looks — private by default.</span>
-              </span>
-              <ChevronRight size={16} className="text-muted-foreground group-hover:text-foreground transition-colors shrink-0" />
-            </button>
-            <button
-              data-testid="profile-survey-link"
-              onClick={() => onOpenPage?.("styleprefs")}
-              className="w-full p-5 flex items-center gap-4 text-left border-t border-border hover:bg-secondary/50 transition-colors group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset"
-            >
-              <span className="w-11 h-11 rounded-full bg-secondary border border-border flex items-center justify-center text-primary-ink shrink-0">
-                <ClipboardList size={18} strokeWidth={1.5} />
-              </span>
-              <span className="flex-grow min-w-0">
-                <span className="block font-medium text-foreground text-[15px]">About your Vivo journey</span>
-                <span className="block text-[13px] text-muted-foreground mt-0.5">Four quick questions on Style Preferences — 30 points.</span>
-              </span>
-              <ChevronRight size={16} className="text-muted-foreground group-hover:text-foreground transition-colors shrink-0" />
-            </button>
-            <button
-              data-testid="profile-contact-link"
-              onClick={() => onOpenPage?.("contact")}
-              className="w-full p-5 flex items-center gap-4 text-left border-t border-border hover:bg-secondary/50 transition-colors group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset"
-            >
-              <span className="w-11 h-11 rounded-full bg-secondary border border-border flex items-center justify-center text-primary-ink shrink-0">
-                <MessageCircle size={18} strokeWidth={1.5} />
-              </span>
-              <span className="flex-grow min-w-0">
-                <span className="block font-medium text-foreground text-[15px]">Contact Us</span>
-                <span className="block text-[13px] text-muted-foreground mt-0.5">WhatsApp, message, call or visit — we're here.</span>
-              </span>
-              <ChevronRight size={16} className="text-muted-foreground group-hover:text-foreground transition-colors shrink-0" />
-            </button>
-            <div className="px-5 py-4 border-t border-border flex flex-wrap gap-x-5 gap-y-2">
-              <button data-testid="profile-link-terms" onClick={() => onOpenPage?.("terms")} className="text-[12px] font-medium text-muted-foreground hover:text-foreground transition-colors rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">Terms & Conditions</button>
-              <button data-testid="profile-link-privacy" onClick={() => onOpenPage?.("privacy")} className="text-[12px] font-medium text-muted-foreground hover:text-foreground transition-colors rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">Privacy Policy</button>
-              <button data-testid="profile-link-guidelines" onClick={() => onOpenPage?.("guidelines")} className="text-[12px] font-medium text-muted-foreground hover:text-foreground transition-colors rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">Community Guidelines</button>
-            </div>
           </div>
 
           <button

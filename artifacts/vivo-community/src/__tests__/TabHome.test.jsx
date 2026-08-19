@@ -488,4 +488,24 @@ describe("TabHome – homepage layout", () => {
     expect(onOpenEvents).toHaveBeenCalledOnce();
     expect(screen.queryByTestId("home-event-card")).not.toBeInTheDocument();
   });
+
+  it("places Shop by Category on Home before the personalised section", async () => {
+    const user = userEvent.setup();
+    const onNavigate = vi.fn();
+    render(<TabHome member={MEMBER} {...NO_OP} onNavigate={onNavigate} />);
+
+    const promo = screen.getByTestId("shop-promo-banner");
+    const genderToggle = screen.getByTestId("shop-gender-toggle");
+    const categoryGrid = screen.getByTestId("shop-category-grid");
+    const homeOrder = [promo, genderToggle, categoryGrid].map((node) =>
+      Array.from(document.querySelectorAll("[data-testid]")).indexOf(node)
+    );
+    expect(homeOrder[0]).toBeLessThan(homeOrder[1]);
+    expect(homeOrder[1]).toBeLessThan(homeOrder[2]);
+    expect(categoryGrid).toBeInTheDocument();
+    expect(screen.getAllByTestId(/shop-cat-tile-/)).toHaveLength(5);
+
+    await user.click(screen.getByTestId("shop-cat-tile-workwear"));
+    expect(onNavigate).toHaveBeenCalledWith("shop");
+  });
 });

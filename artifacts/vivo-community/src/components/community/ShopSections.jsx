@@ -108,7 +108,67 @@ export function ProductRail({ kicker, title, sub, products, onOpenProduct, onSee
   );
 }
 
-/* Shop by Category — two-column editorial grid on the uploaded campaign
+/* Shared delivery promotion — used on Shop and as the Home discovery lead-in.
+   Keep the content and art direction in one place so both surfaces stay
+   visually identical. */
+const SHOP_PROMO = {
+  kicker: "For a limited time",
+  title: "Free delivery over KES 5,000",
+  sub: "Nairobi, Kigali and Kampala — straight to your door.",
+  image: "promo.jpg",
+};
+
+export function PromoBanner() {
+  return (
+    <section data-testid="shop-promo-banner" className="-mx-4 sm:mx-0 relative overflow-hidden sm:rounded bg-foreground mb-10">
+      <img
+        src={brandAsset(SHOP_PROMO.image)}
+        alt=""
+        loading="lazy"
+        className="absolute inset-0 w-full h-full object-cover object-[center_30%] opacity-80"
+        draggable={false}
+      />
+      <div className="absolute inset-0 bg-gradient-to-r from-black/75 via-black/45 to-black/20 pointer-events-none" />
+      <div className="relative p-6 sm:p-8 max-w-md text-white">
+        <div className="text-[10px] font-bold uppercase tracking-[0.25em] text-white/75 mb-2">{SHOP_PROMO.kicker}</div>
+        <h3 className="font-serif text-2xl sm:text-3xl leading-tight mb-1.5 text-white">{SHOP_PROMO.title}</h3>
+        <p className="text-[13px] text-white/85">{SHOP_PROMO.sub}</p>
+      </div>
+    </section>
+  );
+}
+
+export function GenderToggle({ activeGender = "women", onChange }) {
+  const tabs = [
+    { id: "women", label: "Women's" },
+    { id: "all", label: "All" },
+    { id: "men", label: "Men's" },
+  ];
+  return (
+    <div className="flex items-center justify-center mb-4" data-testid="shop-gender-toggle">
+      <div className="inline-flex rounded-sm border border-border overflow-hidden">
+        {tabs.map(({ id, label }) => (
+          <button
+            key={id}
+            type="button"
+            data-testid={`shop-gender-${id}`}
+            aria-pressed={activeGender === id}
+            onClick={() => onChange?.(id)}
+            className={`px-5 h-9 text-[12px] font-bold uppercase tracking-wider transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset ${
+              activeGender === id
+                ? "bg-foreground text-background"
+                : "bg-background text-muted-foreground hover:bg-secondary"
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* Shop by Category — editorial grid on the uploaded campaign
    photography. Whole tile is the tap target; `onSelect(label)` decides what
    a tap does (filter the shop grid, or navigate into Shop from elsewhere).
    The Men's tile is a special entry that triggers the gender filter rather
@@ -120,17 +180,23 @@ export const CATEGORY_TILES = [
   { label: "Activewear", img: "cat-active.jpg" },
   { label: "Men's", img: "cat-mens.jpg", kicker: "For him" },
 ];
-export function CategoryGrid({ onSelect }) {
+export function CategoryGrid({ onSelect, compact = false }) {
+  const gridClass = compact
+    ? "grid grid-cols-2 gap-3 sm:grid-cols-5 sm:gap-4"
+    : "grid grid-cols-2 gap-3 sm:gap-4";
+  const tileClass = compact
+    ? "relative rounded overflow-hidden aspect-[4/5] bg-secondary group text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+    : "relative rounded overflow-hidden aspect-[3/4] bg-secondary group text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary";
   return (
     <section data-testid="shop-category-grid">
       <SectionHeader kicker="Explore" title="Shop by Category" />
-      <div className="grid grid-cols-2 gap-3 sm:gap-4">
+      <div className={gridClass}>
         {CATEGORY_TILES.map((t) => (
           <button
             key={t.label}
             data-testid={`shop-cat-tile-${t.label.toLowerCase().replace(/[^a-z0-9]/g, "-")}`}
             onClick={() => onSelect?.(t.label)}
-            className="relative rounded overflow-hidden aspect-[3/4] bg-secondary group text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+            className={tileClass}
           >
             <img
               src={brandAsset(t.img)}
@@ -144,7 +210,7 @@ export function CategoryGrid({ onSelect }) {
               {t.kicker && (
                 <span className="block text-[10px] font-bold uppercase tracking-[0.2em] text-white/70 mb-0.5">{t.kicker}</span>
               )}
-              <span className="font-serif text-white text-lg sm:text-xl">{t.label}</span>
+              <span className={`font-serif text-white ${compact ? "text-base sm:text-lg" : "text-lg sm:text-xl"}`}>{t.label}</span>
               <span className="block text-[11px] text-white/80 mt-0.5 flex items-center gap-1">Shop now <ChevronRight size={11} /></span>
             </div>
           </button>
