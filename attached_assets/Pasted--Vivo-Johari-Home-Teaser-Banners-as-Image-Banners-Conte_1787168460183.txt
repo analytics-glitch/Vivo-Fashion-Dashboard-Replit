@@ -1,0 +1,22 @@
+# Vivo Johari — Home Teaser Banners as Image Banners
+
+**Context:** The Home page reorder (hero, paired-row layout, Curators/Style Boards/This Month News teasers, etc.) has already been implemented. This is a follow-up, standalone fix: the four teaser blocks on Home should be real image banners with uploadable photos, not copy-only text tiles.
+
+## The four banners affected
+
+1. **"Vivo Spotted on Our Community"** — links to the full "Looks & conversations we loved" feed, which now lives in Community.
+2. **"Curators"** — links to the "Vivo Edits — Curated by Creators We Love" content in Community (Sharon, Phinie, Grace's curated looks).
+3. **"Style Boards"** — links to the Style Boards feature in Community.
+4. **"This Month News"** — the compact Johari News thumbnail, links to the full Johari News page.
+
+## What needs to change
+
+- Each of these four should be a proper **image banner**: an uploaded photo behind the headline/link, styled consistently with other image blocks already in the app (e.g. Styled For You, Johari News) — not a plain text-only tile.
+- The image field on each banner needs to be an **editable/uploadable asset**, not a hardcoded file path in the code. Sharon needs to be able to swap the photo in each banner herself (e.g. update Curators' image when the featured creators change) without needing a code deploy each time.
+- All four can likely share one banner component (image + headline + link), just with different image/copy/destination per instance — no need to build four separate components.
+
+## Implementation notes for the Replit agent
+
+- Add an image upload/asset-management field for each of the four banners, ideally through whatever admin/content interface already exists in the app (if none exists yet, even a simple config-driven image reference that's easy to update counts).
+- Confirm these render correctly at both desktop and mobile sizes once real photos are in place — apply the same responsive image guidance used elsewhere in the app (srcset, compressed file size, no oversized desktop images served to mobile).
+- Exact image count and final photos are still being finalized on Sharon's end — this spec covers the banner *capability* (uploadable image banners), not the specific images yet.

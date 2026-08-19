@@ -8,6 +8,7 @@ import { StyledForYouHome } from "./StyledForYou";
 import { NEWS, newsPageId } from "./newsData";
 import { NewsCover } from "./NewsSection";
 import { evImgUrl } from "./EventSpots";
+import { HOME_TEASER_BANNERS } from "./homeTeaserBanners";
 import ReelsRow from "./ReelsRow";
 import WeeklyPlaylist from "./WeeklyPlaylist";
 
@@ -350,44 +351,71 @@ function CommunitySpotlightCard({ jewel, onNavigate }) {
   );
 }
 
-function CuratorsTeaser({ onOpenPage }) {
+function HomeTeaserBanner({ banner, testId, ctaTestId, onOpen }) {
   return (
-    <section data-testid="home-curators-teaser" className="bg-card border border-border rounded p-6 sm:p-8 flex flex-col justify-center h-full text-center">
-      <div className="text-[10px] font-bold uppercase tracking-widest text-primary-ink mb-3">Vivo Edits</div>
-      <h3 className="font-serif text-2xl text-foreground mb-3">Curators</h3>
-      <p className="text-[13px] text-muted-foreground leading-relaxed mb-6 max-w-sm mx-auto">
-        Step into Sharon, Phinie and Grace's edits—creator-curated looks from women whose style we love.
-      </p>
+    <section data-testid={testId} className="h-full">
       <button
-        data-testid="home-curators-cta"
-        onClick={() => onOpenPage("edits")}
-        className="h-10 px-6 mx-auto rounded border border-border text-foreground text-[13px] font-medium hover:bg-secondary transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+        type="button"
+        data-testid={ctaTestId}
+        onClick={onOpen}
+        aria-label={`${banner.cta}: ${banner.title}`}
+        className="group relative h-full min-h-[390px] sm:min-h-[430px] w-full overflow-hidden rounded bg-foreground text-left shadow-[0_4px_24px_rgba(0,0,0,0.04)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
       >
-        Explore Vivo Edits
+        <img
+          src={brandAsset(banner.image960)}
+          srcSet={`${brandAsset(banner.image640)} 640w, ${brandAsset(banner.image960)} 960w`}
+          sizes="(max-width: 767px) calc(100vw - 32px), 432px"
+          alt={banner.alt}
+          loading="lazy"
+          decoding="async"
+          draggable={false}
+          className="absolute inset-0 h-full w-full object-cover transition-transform duration-700 group-hover:scale-[1.025]"
+          style={{ objectPosition: banner.objectPosition }}
+        />
+        <span className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/20 to-black/5 transition-colors group-hover:from-black/90" />
+        <span className="absolute inset-x-0 bottom-0 p-5 sm:p-7 text-white">
+          <span className="block text-[10px] font-bold uppercase tracking-[0.2em] text-white/75 mb-2">{banner.kicker}</span>
+          <span className="block font-serif text-2xl sm:text-3xl leading-tight text-white">{banner.title}</span>
+          <span className="block mt-2 max-w-sm text-[13px] leading-relaxed text-white/80">{banner.description}</span>
+          <span className="mt-4 inline-flex items-center gap-1 text-[13px] font-semibold text-white group-hover:underline underline-offset-4">
+            {banner.cta} <ChevronRight size={14} />
+          </span>
+        </span>
       </button>
     </section>
   );
 }
 
+function CommunityFeedTeaser({ onNavigate }) {
+  return (
+    <HomeTeaserBanner
+      banner={HOME_TEASER_BANNERS.community}
+      testId="home-community-teaser"
+      ctaTestId="home-view-community"
+      onOpen={() => onNavigate("community")}
+    />
+  );
+}
+
+function CuratorsTeaser({ onOpenPage }) {
+  return (
+    <HomeTeaserBanner
+      banner={HOME_TEASER_BANNERS.curators}
+      testId="home-curators-teaser"
+      ctaTestId="home-curators-cta"
+      onOpen={() => onOpenPage("edits")}
+    />
+  );
+}
+
 function StyleBoardsTeaser({ onOpenStyleBoards }) {
   return (
-    <section data-testid="home-styleboards-teaser" className="bg-secondary rounded p-6 sm:p-8 flex flex-col justify-center h-full relative overflow-hidden group">
-      <div className="absolute inset-0 bg-primary/5 opacity-50 mix-blend-multiply transition-opacity group-hover:opacity-70 duration-500" />
-      <div className="relative z-10 text-center">
-         <div className="text-[10px] font-bold uppercase tracking-widest text-foreground/60 mb-3">Get Inspired</div>
-         <h3 className="font-serif text-2xl text-foreground mb-3">Style Boards</h3>
-         <p className="text-[13px] text-muted-foreground leading-relaxed mb-6 max-w-sm mx-auto">
-           Mix, match and save your favourite pieces into custom moodboards for every occasion.
-         </p>
-         <button
-           data-testid="home-styleboards-cta"
-           onClick={() => onOpenStyleBoards?.()}
-           className="h-10 px-6 mx-auto rounded bg-foreground text-background text-[13px] font-medium hover:opacity-90 transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
-         >
-           Create a Style Board
-         </button>
-      </div>
-    </section>
+    <HomeTeaserBanner
+      banner={HOME_TEASER_BANNERS.styleBoards}
+      testId="home-styleboards-teaser"
+      ctaTestId="home-styleboards-cta"
+      onOpen={() => onOpenStyleBoards?.()}
+    />
   );
 }
 
@@ -395,29 +423,12 @@ function JohariNewsCompact({ onOpenNews }) {
   const item = NEWS[0];
   if (!item) return null;
   return (
-    <section data-testid="home-stories-compact" className="h-full flex flex-col">
-      <SectionHeader kicker="Johari News" title="This month in Johari" />
-      <button
-        data-testid="home-johari-news-cta"
-        onClick={() => onOpenNews(item.id)}
-        aria-label="Open this month's Johari News"
-        className="flex-grow group text-left relative overflow-hidden rounded bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary min-h-[310px]"
-      >
-        <img
-          src={brandAsset("johari-news.jpg")}
-          alt=""
-          loading="lazy"
-          className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-[1.03]"
-          draggable={false}
-        />
-        <div className="absolute inset-0 bg-gradient-to-t from-black/75 via-black/15 to-transparent" />
-        <div className="absolute inset-x-0 bottom-0 p-5 sm:p-6 text-white">
-          <div className="text-[10px] font-bold uppercase tracking-widest text-white/75 mb-1.5">{item.kicker}</div>
-          <div className="font-serif text-xl leading-snug group-hover:underline underline-offset-2 decoration-white/50">{item.headline}</div>
-          <div className="mt-3 inline-flex items-center gap-1 text-[12px] font-semibold">Read Johari News <ChevronRight size={13} /></div>
-        </div>
-      </button>
-    </section>
+    <HomeTeaserBanner
+      banner={HOME_TEASER_BANNERS.news}
+      testId="home-stories-compact"
+      ctaTestId="home-johari-news-cta"
+      onOpen={() => onOpenNews(item.id)}
+    />
   );
 }
 
@@ -537,33 +548,16 @@ function GiveBack({ onOpenPage }) {
 
 export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage, onOpenEvents, onOpenEvent, onOpenStyleBoards }) {
   const [cel, setCel] = useState(null);
-  const [feed, setFeed] = useState([]);
-  const [detailIdx, setDetailIdx] = useState(-1);
-  const [restoreY, setRestoreY] = useState(0);
   const [events, setEvents] = useState([]);
 
   useEffect(() => {
     let alive = true;
     api.celebrations().then((d) => { if (alive) setCel(d); }).catch(() => {});
-    api.feed(12).then((d) => { if (alive) setFeed(d.items || []); }).catch(() => {});
     api.events().then((d) => { if (alive) setEvents(d.items || []); }).catch(() => {});
     return () => { alive = false; };
   }, []);
 
-  const patchPost = (id, patch) => setFeed((list) => list.map((p) => (p.id === id ? { ...p, ...patch } : p)));
-  const openPost = (post) => {
-    setRestoreY(window.scrollY);
-    const i = feed.findIndex((p) => p.id === post.id);
-    if (i >= 0) setDetailIdx(i);
-  };
-  const P = feed;
-
   const openNews = (id) => onOpenPage?.(newsPageId(id));
-
-  const previewPosts = useMemo(() => {
-    const score = (p) => (p.variant !== "quote" && p.post_type !== "question" ? 100 : 0) + p.like_count * 2 + p.comment_count * 3;
-    return feed.slice().sort((a, b) => score(b) - score(a)).slice(0, 4);
-  }, [feed]);
 
   return (
     <div className="max-w-4xl mx-auto space-y-7 sm:space-y-9 pb-10">
@@ -574,7 +568,7 @@ export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage,
       {/* Row 1: Looks and conversations + Community Spotlight */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-5 sm:gap-6 items-stretch">
         <div className="col-span-1 h-full">
-          <FeedPreview posts={previewPosts} openPost={openPost} patchPost={patchPost} onNavigate={onNavigate} />
+          <CommunityFeedTeaser onNavigate={onNavigate} />
         </div>
         <div className="col-span-1 h-full">
           <CommunitySpotlightCard jewel={cel?.jewel} onNavigate={onNavigate} />
@@ -640,12 +634,6 @@ export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage,
       <ConfigurablePromoBanner />
       
       <GiveBack onOpenPage={onOpenPage} />
-
-      {detailIdx >= 0 && P[detailIdx] && (
-        <PostDetailModal restoreY={restoreY} posts={P} index={detailIdx} onIndex={setDetailIdx}
-                         onClose={() => setDetailIdx(-1)} onOpenProduct={onOpenProduct}
-                         onCounts={patchPost} />
-      )}
     </div>
   );
 }
