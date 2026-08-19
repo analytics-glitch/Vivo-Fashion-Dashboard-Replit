@@ -1,6 +1,7 @@
 import xmlrpc.client, os, sys, psycopg2, logging
 from psycopg2.extras import execute_values
 from datetime import datetime, timedelta
+import re
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -147,7 +148,104 @@ def _props_by_label(props):
                     v = v.strip() or None
                 if v:
                     out[p["string"]] = v
+                    out[_label_key(p["string"])] = v
     return out
+
+
+# Odoo Studio field ids are configuration data, not an API contract.  Keep the
+# business vocabulary here and resolve the live x_* field names from fields_get
+# for every product-master pull.  The aliases deliberately tolerate the small
+# label changes made by Studio (capitalisation, punctuation, and "(m)" suffixes).
+FABRIC_ATTRIBUTE_SPECS = {
+    "kg_per_mtr": (("Kg/Mtr", "Kg / Mtr", "KG/MTR"), False),
+    "width_m": (("Width (m)", "Width", "Width (M)"), True),
+    "gsm": (("GSM", "GSM (g/m²)", "GSM (g/m2)"), True),
+    "plain_print": (("Plain/Print", "Plain / Print"), False),
+    "fabric_structure": (("Fabric Structure",), False),
+    "fabric_category": (("Fabric Category",), False),
+    "fabric_subcategory": (("Fabric Sub-Category", "Fabric Subcategory"), False),
+    "stretch_type": (("Stretch Type",), False),
+    "weight_range": (("Weight Range",), False),
+    "fiber_content": (("Fiber Content %", "Fibre Content %", "Fiber Content", "Fibre Content"), False),
+    "fabric_type": (("Fabric Type",), False),
+    "supplier": (("Vendor/Supplier", "Supplier", "Vendor"), False),
+    "supplier_fabric_code": (("Supplier Fabric Code",), False),
+    "primary_color": (("Primary Color", "Primary Colour"), False),
+    "source_city": (("Source City",), False),
+    "source_country": (("Source Country",), False),
+}
+
+
+def _label_key(value):
+    """Normalize an Odoo display label for stable, punctuation-free matching."""
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").lower().replace("²", "2"))
+
+
+def resolve_fabric_fields(field_metadata):
+    """Return concept -> live product.product field name from fields_get data.
+
+    Optional attributes may be absent during a staged Odoo configuration change,
+    but Width and GSM are conversion-critical and must be present exactly once.
+    Raising before search_read/TRUNCATE is the fail-safe for both full and
+    incremental extracts.
+    """
+    by_label = {}
+    for name, meta in (field_metadata or {}).items():
+        if not isinstance(meta, dict) or not meta.get("string"):
+            continue
+        by_label.setdefault(_label_key(meta["string"]), []).append(name)
+
+    resolved = {}
+    problems = []
+    for concept, (aliases, required) in FABRIC_ATTRIBUTE_SPECS.items():
+        matches = []
+        matched_alias = None
+        for alias in aliases:
+            candidates = by_label.get(_label_key(alias), [])
+            if candidates:
+                matched_alias = alias
+                matches = candidates
+                break
+        if len(matches) == 1:
+            resolved[concept] = matches[0]
+            log.info("Fabric Odoo mapping %s=%s (label=%s)",
+                     concept, matches[0], matched_alias)
+        elif required:
+            reason = "missing" if not matches else "ambiguous: " + ", ".join(matches)
+            problems.append(f"{concept} ({aliases[0]}): {reason}")
+        elif matches:
+            log.warning("Ignoring ambiguous optional Fabric mapping %s: %s",
+                        concept, ", ".join(matches))
+    if problems:
+        raise RuntimeError(
+            "Fabric Odoo metadata is unsafe; conversion-critical mapping failed: "
+            + "; ".join(problems)
+            + ". No Fabric master rows were changed."
+        )
+    return resolved
+
+
+def _odoo_value(value):
+    """Normalize Odoo scalar, many2one, and selection values to a display value."""
+    if isinstance(value, (list, tuple)):
+        return value[1] if len(value) > 1 else None
+    if isinstance(value, dict):
+        return value.get("display_name") or value.get("name") or value.get("string")
+    return value
+
+
+def _fabric_value(record, field_name, numeric=False):
+    value = _odoo_value(record.get(field_name)) if field_name else None
+    if isinstance(value, str):
+        value = value.strip() or None
+    if numeric:
+        try:
+            return float(value) if value is not None else None
+        except (TypeError, ValueError):
+            log.warning("Non-numeric Fabric Odoo value %r for field %s", value, field_name)
+            return None
+    return value
+
 
 def extract_products(uid, models, cur, now, since=None):
     log.info("Extracting fabric products with attributes...")
@@ -214,35 +312,28 @@ def extract_products(uid, models, cur, now, since=None):
     offset = 0
     rows = []
     
+    # fields_get is intentionally called on every extract, rather than cached:
+    # Studio can move a field id while the worker is running.
+    try:
+        field_metadata = models.execute_kw(
+            ODOO_DB, uid, ODOO_PASSWORD, "product.product", "fields_get",
+            [[]], {"attributes": ["string", "type", "relation"]})
+    except Exception as exc:
+        raise RuntimeError(
+            f"Unable to inspect Odoo product-field metadata; "
+            f"Fabric master data was not changed: {exc}"
+        ) from exc
+    fabric_fields = resolve_fabric_fields(field_metadata)
+
     FABRIC_FIELDS = [
         "name", "default_code", "categ_id", "uom_id", 
         "standard_price", "active",
-        "x_vivo_attr_39",   # Kg/Mtr
-        "x_vivo_attr_25",   # Width (m)
-        "x_vivo_attr_38",   # GSM
-        "x_vivo_attr_100",  # Plain/Print
-        "x_vivo_attr_101",  # Fabric Structure
-        "x_vivo_attr_102",  # Fabric Category
-        "x_vivo_attr_103",  # Fabric Sub-Category
-        "x_vivo_attr_40",   # Stretch Type
-        "x_vivo_attr_45",   # Weight Range
-        "x_vivo_attr_46",   # Fiber Content %
-        "x_vivo_attr_47",   # Fabric Type
-        "x_vivo_attr_42",   # Vendor/Supplier
-        "x_vivo_attr_43",   # Supplier Fabric Code
-        "x_vivo_attr_48",   # Primary Color
-        "x_vivo_attr_124",  # Source City
-        "x_vivo_attr_125",  # Source Country
+        *fabric_fields.values(),
         "barcode",
         "product_properties",  # dedicated Fabric Name / Fabric Supplier Name / Fabric Colour live here
         "write_date",       # Odoo last-modified time (UTC) — drives the category tracker
     ]
     
-    def get_m2o(val):
-        if isinstance(val, list) and len(val) > 1:
-            return str(val[1])
-        return None
-
     # Incremental (fast-path) pull: only products whose Odoo write_date advanced
     # since the last successful pull (plus a small overlap for clock skew). This
     # is usually 0–few records, so the 60s cadence stays cheap. `since=None`
@@ -265,14 +356,14 @@ def extract_products(uid, models, cur, now, since=None):
             cat_name = cat[1] if cat else ""
             category = "Fabric" if "Raw" in str(cat_name) else "Trim"
             
-            kg_mtr = get_m2o(r.get("x_vivo_attr_39"))
-            width  = get_m2o(r.get("x_vivo_attr_25"))
-            gsm    = get_m2o(r.get("x_vivo_attr_38"))
+            kg_mtr = _fabric_value(r, fabric_fields.get("kg_per_mtr"), numeric=True)
+            width  = _fabric_value(r, fabric_fields["width_m"], numeric=True)
+            gsm    = _fabric_value(r, fabric_fields["gsm"], numeric=True)
 
             props = _props_by_label(r.get("product_properties"))
-            fabric_name_odoo     = props.get("Fabric Name")
-            fabric_supplier_odoo = props.get("Fabric Supplier Name")
-            fabric_color_odoo    = props.get("Fabric Colour")
+            fabric_name_odoo     = props.get(_label_key("Fabric Name"))
+            fabric_supplier_odoo = props.get(_label_key("Fabric Supplier Name"))
+            fabric_color_odoo    = props.get(_label_key("Fabric Colour"))
 
             rows.append((
                 r["id"],
@@ -282,22 +373,22 @@ def extract_products(uid, models, cur, now, since=None):
                 r["uom_id"][1] if r.get("uom_id") else None,
                 r.get("standard_price", 0),
                 r.get("active", True),
-                float(kg_mtr) if kg_mtr else None,
-                float(width) if width else None,
-                float(gsm) if gsm else None,
-                get_m2o(r.get("x_vivo_attr_100")),  # plain/print
-                get_m2o(r.get("x_vivo_attr_101")),  # structure
-                get_m2o(r.get("x_vivo_attr_102")),  # category
-                get_m2o(r.get("x_vivo_attr_103")),  # subcategory
-                get_m2o(r.get("x_vivo_attr_40")),   # stretch
-                get_m2o(r.get("x_vivo_attr_45")),   # weight range
-                get_m2o(r.get("x_vivo_attr_46")),   # fiber content
-                get_m2o(r.get("x_vivo_attr_47")),   # fabric type
-                get_m2o(r.get("x_vivo_attr_42")),   # supplier
-                get_m2o(r.get("x_vivo_attr_43")),   # supplier fabric code
-                get_m2o(r.get("x_vivo_attr_48")),   # primary color
-                get_m2o(r.get("x_vivo_attr_124")),  # source city
-                get_m2o(r.get("x_vivo_attr_125")),  # source country
+                kg_mtr,
+                width,
+                gsm,
+                _fabric_value(r, fabric_fields.get("plain_print")),
+                _fabric_value(r, fabric_fields.get("fabric_structure")),
+                _fabric_value(r, fabric_fields.get("fabric_category")),
+                _fabric_value(r, fabric_fields.get("fabric_subcategory")),
+                _fabric_value(r, fabric_fields.get("stretch_type")),
+                _fabric_value(r, fabric_fields.get("weight_range")),
+                _fabric_value(r, fabric_fields.get("fiber_content")),
+                _fabric_value(r, fabric_fields.get("fabric_type")),
+                _fabric_value(r, fabric_fields.get("supplier")),
+                _fabric_value(r, fabric_fields.get("supplier_fabric_code")),
+                _fabric_value(r, fabric_fields.get("primary_color")),
+                _fabric_value(r, fabric_fields.get("source_city")),
+                _fabric_value(r, fabric_fields.get("source_country")),
                 r.get("barcode") or None,
                 _derive_color(r.get("name","")),
                 _derive_color(r.get("name","")),
