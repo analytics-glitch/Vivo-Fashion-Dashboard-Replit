@@ -1610,7 +1610,7 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
       </div>
       <div>
        <label class="rsv-lbl">Defect Allowance %</label>
-       <input id="cost-pp-def-pct" type="number" min="0" max="100" step="any" value="10" style="width:90px;" oninput="costPreProdCalc()">
+        <input id="cost-pp-def-pct" type="number" min="0" max="100" step="any" value="4" style="width:90px;" oninput="costPreProdCalc()">
       </div>
       <div>
        <label class="rsv-lbl">CMT Start</label>
@@ -11082,6 +11082,14 @@ function costApplyStage(restoreOnly){
   // never touched.
   if(!costEdit.locked){
     if(isPreprod){
+      // New sheets are initially Main Production. Apply the Pre-production
+      // defaults only on their first switch into this stage, so Main
+      // Production initialization and saves retain their existing values.
+      if(!restoreOnly&&!costEdit.id&&!costEdit._preprodInitialized){
+        costEdit.defect_allowance_pct=COST_PP_DEFECT_DEFAULT;
+        costEdit.cost_per_minute=COST_PP_CPM_DEFAULT;
+        costEdit._preprodInitialized=true;
+      }
       if(!restoreOnly)costPreProdFillInputs();
       costPreProdSeedLines();
       costRenderLines();
@@ -11123,6 +11131,8 @@ function costApplyStage(restoreOnly){
 // machine-generated labels — so recalc ADOPTS them instead of duplicating.
 // User-added extra trim/overhead lines never match and are left alone.
 const COST_PP_AUTO_PREFIX='pre-production auto';
+const COST_PP_DEFECT_DEFAULT=4;
+const COST_PP_CPM_DEFAULT=22.71;
 const COST_PP_LEGACY_LABELS={
   trim:/^Accessories \([\d.]+% of fabric cost( — .*)?\)$/,
   cmt:/^CMT \([^)]*×[\d.]+\)$/,
@@ -11140,6 +11150,13 @@ function costPPMultInput(el){
   const n=Number(el&&el.value);
   if(isFinite(n)&&n>0){try{localStorage.setItem(COST_PP_MULT_KEY,String(n));}catch(e){}}
   costPreProdCalc();
+}
+function costPPInputNumber(id,fallback){
+  // Header values are allowed to be zero. Treat only an empty/invalid field
+  // as missing so the defaults are applied without converting an explicit 0.
+  const raw=((document.getElementById(id)||{}).value);
+  if(raw==null||String(raw).trim()==='')return fallback;
+  const n=Number(raw);return isFinite(n)&&n>=0?n:fallback;
 }
 // ── Accessories % — server-picked previous-month Done-DPS average ──
 // costEdit.accessories_pct carries the PRECISE stored value (the maths uses
@@ -11218,8 +11235,8 @@ function costPreProdFillInputs(){
   const set=(id,v)=>{const el=document.getElementById(id);if(el)el.value=v;};
   set('cost-pp-mpg',costEdit.mtrs_per_garment!=null?costEdit.mtrs_per_garment:'');
   costAccPctRender();
-  set('cost-pp-def-pct',costEdit.defect_allowance_pct!=null?costEdit.defect_allowance_pct:10);
-  set('cost-pp-cpm',costEdit.cost_per_minute!=null?costEdit.cost_per_minute:'');
+  set('cost-pp-def-pct',costEdit.defect_allowance_pct!=null?costEdit.defect_allowance_pct:COST_PP_DEFECT_DEFAULT);
+  set('cost-pp-cpm',costEdit.cost_per_minute!=null?costEdit.cost_per_minute:COST_PP_CPM_DEFAULT);
   set('cost-pp-mult',costEdit.production_multiplier!=null?costEdit.production_multiplier:COST_PP_MULT_DEFAULT);
   set('cost-pp-cmt-start',(costEdit.cmt_start_time||'').slice(0,8));
   set('cost-pp-cmt-stop',(costEdit.cmt_stop_time||'').slice(0,8));
@@ -11234,7 +11251,7 @@ function costPreProdSeedLines(){
   }
   const acc=costEdit.accessories_pct!=null?costEdit.accessories_pct:13;
   const accTxt=costAccPctFmt(acc)+'% of fabric cost'+costAccProvSuffix();
-  const def=costEdit.defect_allowance_pct!=null?costEdit.defect_allowance_pct:10;
+  const def=costEdit.defect_allowance_pct!=null?costEdit.defect_allowance_pct:COST_PP_DEFECT_DEFAULT;
    // A controlled retrofit may have retained a legacy Accessories amount
    // because no qualifying history existed. Never invent a new row for that
    // snapshot; future sheets use the normal qualifying-month picker.
@@ -11286,15 +11303,15 @@ function costPreProdCalc(opts){
   // Accessories % is server-picked and read-only — the sheet's stored PRECISE
   // value drives the maths; the DOM field is display-only (2 dp).
   const accPct=Number(costEdit.accessories_pct)||0;
-  const defPct=Number((document.getElementById('cost-pp-def-pct')||{}).value)||0;
-  const cpmVal=Number((document.getElementById('cost-pp-cpm')||{}).value)||0;
+  const defPct=costPPInputNumber('cost-pp-def-pct',COST_PP_DEFECT_DEFAULT);
+  const cpmVal=costPPInputNumber('cost-pp-cpm',COST_PP_CPM_DEFAULT);
   // Blank / invalid / non-positive multiplier → 1.40 until a new figure is typed.
   const mult=costPPMultNorm((document.getElementById('cost-pp-mult')||{}).value);
   const multTxt=costPPMultFmt(mult);
   const startStr=((document.getElementById('cost-pp-cmt-start')||{}).value||'').trim();
   const stopStr=((document.getElementById('cost-pp-cmt-stop')||{}).value||'').trim();
   costEdit.mtrs_per_garment=mpg||null;
-  costEdit.defect_allowance_pct=defPct;costEdit.cost_per_minute=cpmVal||null;
+  costEdit.defect_allowance_pct=defPct;costEdit.cost_per_minute=cpmVal;
   costEdit.production_multiplier=mult;
   costEdit.cmt_start_time=startStr||null;costEdit.cmt_stop_time=stopStr||null;
   // Only the MAIN fabric row mirrors Mtrs per Garment — additional fabric
@@ -11377,9 +11394,9 @@ async function costOpenSheet(id){
       stage:s.stage||'main_production',
       accessories_pct:s.accessories_pct!=null?Number(s.accessories_pct):13,
       accessories_meta:s.accessories_pct_meta||null,
-      defect_allowance_pct:s.defect_allowance_pct!=null?Number(s.defect_allowance_pct):10,
+      defect_allowance_pct:s.defect_allowance_pct!=null?Number(s.defect_allowance_pct):((s.stage||'main_production')==='pre_production'?COST_PP_DEFECT_DEFAULT:10),
       mtrs_per_garment:s.mtrs_per_garment!=null?Number(s.mtrs_per_garment):null,
-      cost_per_minute:s.cost_per_minute!=null?Number(s.cost_per_minute):null,
+      cost_per_minute:s.cost_per_minute!=null?Number(s.cost_per_minute):((s.stage||'main_production')==='pre_production'?COST_PP_CPM_DEFAULT:null),
       // Sheets saved before the field existed (NULL) used the hardcoded 1.40 —
       // reopen at 1.40 so their totals stay identical.
       production_multiplier:costPPMultNorm(s.production_multiplier),
@@ -11726,9 +11743,9 @@ async function costSaveSheet(){
   // 2 dp display — costEdit keeps the precise server-picked (or legacy
   // saved) value, and the server enforces it regardless of the payload.
   if(isPreprod){
-    costEdit.defect_allowance_pct=Number((document.getElementById('cost-pp-def-pct')||{}).value)||10;
+    costEdit.defect_allowance_pct=costPPInputNumber('cost-pp-def-pct',COST_PP_DEFECT_DEFAULT);
     costEdit.mtrs_per_garment=Number((document.getElementById('cost-pp-mpg')||{}).value)||null;
-    costEdit.cost_per_minute=Number((document.getElementById('cost-pp-cpm')||{}).value)||null;
+    costEdit.cost_per_minute=costPPInputNumber('cost-pp-cpm',COST_PP_CPM_DEFAULT);
     costEdit.production_multiplier=costPPMultNorm((document.getElementById('cost-pp-mult')||{}).value);
     costEdit.cmt_start_time=((document.getElementById('cost-pp-cmt-start')||{}).value||'').trim()||null;
     costEdit.cmt_stop_time=((document.getElementById('cost-pp-cmt-stop')||{}).value||'').trim()||null;
@@ -11750,9 +11767,9 @@ async function costSaveSheet(){
     selling_price:costParseSP(spEl),
     selling_price_is_auto:!!costEdit.sp_auto&&!isPreprod,
     accessories_pct:costEdit.accessories_pct!=null?costEdit.accessories_pct:13,
-    defect_allowance_pct:costEdit.defect_allowance_pct!=null?costEdit.defect_allowance_pct:10,
+    defect_allowance_pct:costEdit.defect_allowance_pct!=null?costEdit.defect_allowance_pct:(isPreprod?COST_PP_DEFECT_DEFAULT:10),
     mtrs_per_garment:costEdit.mtrs_per_garment||null,
-    cost_per_minute:costEdit.cost_per_minute||null,
+    cost_per_minute:costEdit.cost_per_minute!=null?costEdit.cost_per_minute:(isPreprod?COST_PP_CPM_DEFAULT:null),
     production_multiplier:costEdit.production_multiplier!=null?costEdit.production_multiplier:null,
     cmt_start_time:costEdit.cmt_start_time||null,
     cmt_stop_time:costEdit.cmt_stop_time||null,

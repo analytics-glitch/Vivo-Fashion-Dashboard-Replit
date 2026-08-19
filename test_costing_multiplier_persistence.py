@@ -48,6 +48,7 @@ import inspect
 import json
 import re
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
@@ -344,6 +345,35 @@ class CreateRoundTrip(_Harness):
                 _request(), _preprod_body(production_multiplier="abc"))
         self.assertEqual(ctx.exception.status_code, 400)
 
+    def test_preprod_create_uses_new_defaults_and_preserves_explicit_zeroes(self):
+        body = _preprod_body()
+        body.pop("defect_allowance_pct")
+        body.pop("cost_per_minute")
+        defaulted = fr.costing_sheet_create(_request(), body)
+        self.assertEqual(defaulted["defect_allowance_pct"], 4.0)
+        self.assertEqual(defaulted["cost_per_minute"], 22.71)
+
+        zeroed = fr.costing_sheet_create(
+            _request(), _preprod_body(style_name="Zero Inputs",
+                                      defect_allowance_pct=0,
+                                      cost_per_minute=0))
+        self.assertEqual(zeroed["defect_allowance_pct"], 0.0)
+        self.assertEqual(zeroed["cost_per_minute"], 0.0)
+
+    def test_main_production_keeps_its_existing_input_defaults(self):
+        body = _preprod_body(stage="main_production", dps_ref="DPS-MAIN")
+        body.pop("defect_allowance_pct")
+        body.pop("cost_per_minute")
+        payload = fr.costing_sheet_create(_request(), body)
+        self.assertEqual(payload["stage"], "main_production")
+        self.assertEqual(payload["defect_allowance_pct"], 10.0)
+        self.assertIsNone(payload["cost_per_minute"])
+
+    def test_schema_defaults_remain_safe_for_direct_main_production_inserts(self):
+        schema = Path(fr.__file__).read_text()
+        self.assertIn("ALTER COLUMN defect_allowance_pct\n                SET DEFAULT 10", schema)
+        self.assertIn("ALTER COLUMN cost_per_minute\n                DROP DEFAULT", schema)
+
 
 class UpdateRoundTrip(_Harness):
     """Update path: the multiplier survives an edit-save cycle."""
@@ -375,6 +405,19 @@ class UpdateRoundTrip(_Harness):
             sid, _request(), _preprod_body(production_multiplier=0))
         self.assertIsNone(p["production_multiplier"])
 
+    def test_preprod_update_uses_new_defaults_and_preserves_explicit_zeroes(self):
+        sid = self._create()
+        defaulted = fr.costing_sheet_update(
+            sid, _request(), _preprod_body(defect_allowance_pct="",
+                                            cost_per_minute=""))
+        self.assertEqual(defaulted["defect_allowance_pct"], 4.0)
+        self.assertEqual(defaulted["cost_per_minute"], 22.71)
+        zeroed = fr.costing_sheet_update(
+            sid, _request(), _preprod_body(defect_allowance_pct=0,
+                                            cost_per_minute=0))
+        self.assertEqual(zeroed["defect_allowance_pct"], 0.0)
+        self.assertEqual(zeroed["cost_per_minute"], 0.0)
+
 
 class LegacyNullSheet(_Harness):
     """A sheet saved before the field existed: NULL through the API, and the
@@ -401,6 +444,14 @@ class LegacyNullSheet(_Harness):
         self.assertIn("production_multiplier", payload,
                       "payload must carry the field even when NULL")
         self.assertIsNone(payload["production_multiplier"])
+
+    def test_payload_falls_back_to_new_preprod_input_defaults(self):
+        sid = self._legacy_id()
+        self.store.sheets[sid]["defect_allowance_pct"] = None
+        self.store.sheets[sid]["cost_per_minute"] = None
+        payload = fr._sheet_payload(FakeConn(self.store), sid)
+        self.assertEqual(payload["defect_allowance_pct"], 4.0)
+        self.assertEqual(payload["cost_per_minute"], 22.71)
 
     def test_display_fmt_falls_back_to_140(self):
         self.assertEqual(fr._costing_mult_fmt(None), "1.40")

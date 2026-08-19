@@ -14,3 +14,9 @@ description: Contract for the four auto Pre-production rows in the /fabric Produ
 
 **Why:** the original bug was recalc firing only on header typing + qty edits stripping AUTO, so 13%/10% lines showed KES 0.00; the label-regex adoption exists because that old flip bug persisted manual-flipped default rows in saved sheets.
 **How to apply:** any change to costing editor line handling, save payloads, or new derived line types must preserve the source-prefix tag, the all-fabric-lines basis, and the unlocked-only / editor-only re-sync scope.
+
+- **Stage-specific headers:** PostgreSQL column defaults are global; keep shared schema defaults compatible with Main Production and apply Pre-production-only header defaults in stage-aware server/UI paths.
+
+**Why:** a shared column default cannot distinguish `pre_production` from `main_production`, so changing it would silently alter direct Main Production inserts.
+
+**How to apply:** when adding or migrating stage-specific costing fields, use explicit stage normalization and an audited Pre-production backfill; do not encode the new value as a global column default.

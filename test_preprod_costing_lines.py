@@ -143,6 +143,30 @@ results.second_fabric = {
   count_after_del: afterDel.length,
 };
 
+// ── zero_values (zero is a valid explicit header value) ─────────────────────
+costEdit = { stage: 'pre_production', locked: false,
+  mtrs_per_garment: null, accessories_pct: 13, defect_allowance_pct: 4,
+  cost_per_minute: 22.71, cmt_start_time: null, cmt_stop_time: null,
+  lines: [{ kind: 'fabric', label: 'Test Fabric', qty: null,
+            unit_cost: 363.24, is_auto: false, source: null,
+            component_id: null, barcode: null }] };
+setDom({ 'cost-pp-mpg': '2.5', 'cost-pp-acc-pct': '13',
+         'cost-pp-def-pct': '0', 'cost-pp-cpm': '0',
+         'cost-pp-cmt-start': '08:00', 'cost-pp-cmt-stop': '08:30' });
+costPreProdSeedLines();
+costPreProdCalc();
+const zeroRows = snap();
+results.zero_values = {
+  defaults: { defect: COST_PP_DEFECT_DEFAULT, cpm: COST_PP_CPM_DEFAULT },
+  header: { defect: costEdit.defect_allowance_pct, cpm: costEdit.cost_per_minute },
+  defect: zeroRows.find(l => costPreProdMatchDefault(l, 'overhead')),
+  cmt: zeroRows.find(l => costPreProdMatchDefault(l, 'cmt')),
+  blank_fallback: {
+    defect: costPPInputNumber('cost-pp-missing', COST_PP_DEFECT_DEFAULT),
+    cpm: costPPInputNumber('cost-pp-missing', COST_PP_CPM_DEFAULT),
+  },
+};
+
 // ── adopt_legacy (reopen re-sync of a stale saved sheet) ────────────────────
 costEdit = { stage: 'pre_production', locked: false,
   mtrs_per_garment: 2.5, accessories_pct: 13, defect_allowance_pct: 10,
@@ -427,7 +451,7 @@ class PreProdCostingLinesTest(unittest.TestCase):
                    "costPreProdMatchDefault", "costPPDerivedKind",
                    "costPPMultNorm", "costPPMultFmt", "costPPMultLast",
                    "costPPMultInput", "costAccPctFmt", "costAccProvSuffix",
-                   "costAccPctNote", "costAccPctRender"):
+                    "costAccPctNote", "costAccPctRender", "costPPInputNumber"):
             if ("function %s(" % fn) not in block:
                 raise AssertionError("expected %s in extracted block" % fn)
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False,
@@ -484,6 +508,17 @@ class PreProdCostingLinesTest(unittest.TestCase):
         hs = self.results["worked_example"]["header_synced"]
         self.assertEqual(hs, {"mpg": 2.5, "cpm": 5,
                               "start": "08:00", "stop": "08:30"})
+
+    def test_new_defaults_and_explicit_zero_header_values(self):
+        zero = self.results["zero_values"]
+        self.assertEqual(zero["defaults"], {"defect": 4, "cpm": 22.71})
+        self.assertEqual(zero["header"], {"defect": 0, "cpm": 0},
+                         "0 must remain an explicit edit, not a missing value")
+        self.assertEqual(zero["defect"]["unit_cost"], 0)
+        self.assertEqual(zero["cmt"]["unit_cost"], 0)
+        self.assertIn("Defect Allowance (0% of fabric cost)", zero["defect"]["label"])
+        self.assertIn("KES 0/min", zero["cmt"]["label"])
+        self.assertEqual(zero["blank_fallback"], {"defect": 4, "cpm": 22.71})
 
     def test_second_fabric_row_feeds_basis_and_keeps_own_qty(self):
         sf = self.results["second_fabric"]

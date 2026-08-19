@@ -64,7 +64,7 @@ def _ensure_fabric_tables(conn):
     if _FABRIC_TABLES_READY:
         return
     with conn.cursor() as cur:
-        cur.execute("""
+        cur.execute(f"""
             CREATE TABLE IF NOT EXISTS fabric_reservations (
                 id               SERIAL PRIMARY KEY,
                 product_id       INTEGER NOT NULL,
@@ -13113,6 +13113,11 @@ _COSTING_TABLES_READY = False
 _COSTING_LINE_KINDS = ("fabric", "trim", "cmt", "overhead")
 
 
+_PP_DEFECT_ALLOWANCE_DEFAULT_PCT = 4.0
+_PP_COST_PER_MINUTE_DEFAULT = 22.71
+_PP_DEFAULTS_BACKFILL_KEY = "preprod_cost_defaults_v1"
+
+
 def _ensure_costing_tables(conn):
     """Lazily create the costing tables (idempotent, once per process).
     Prod is a separate DB, so tables appear there on first use."""
@@ -13216,11 +13221,23 @@ def _ensure_costing_tables(conn):
             ALTER TABLE fabric_costing_sheets
                 ADD COLUMN IF NOT EXISTS accessories_pct_meta JSONB;
             ALTER TABLE fabric_costing_sheets
-                ADD COLUMN IF NOT EXISTS defect_allowance_pct NUMERIC DEFAULT 10;
+                ADD COLUMN IF NOT EXISTS defect_allowance_pct NUMERIC
+                DEFAULT 10;
             ALTER TABLE fabric_costing_sheets
                 ADD COLUMN IF NOT EXISTS mtrs_per_garment NUMERIC;
             ALTER TABLE fabric_costing_sheets
                 ADD COLUMN IF NOT EXISTS cost_per_minute NUMERIC;
+            -- Controlled Pre-production default retrofit marker. Kept
+            -- separate from Accessories provenance so each maintenance
+            -- operation remains independently idempotent and auditable.
+            ALTER TABLE fabric_costing_sheets
+                ADD COLUMN IF NOT EXISTS preprod_defaults_meta JSONB;
+            ALTER TABLE fabric_costing_sheets
+                ALTER COLUMN defect_allowance_pct
+                SET DEFAULT 10;
+            ALTER TABLE fabric_costing_sheets
+                ALTER COLUMN cost_per_minute
+                DROP DEFAULT;
             ALTER TABLE fabric_costing_sheets
                 ADD COLUMN IF NOT EXISTS cmt_start_time TEXT;
             ALTER TABLE fabric_costing_sheets
@@ -14194,6 +14211,126 @@ _PP_AUTO_SOURCE_PREFIX = "pre-production auto"
 # lockstep with COST_PP_LEGACY_LABELS.trim in the editor JS.
 _PP_ACC_LINE_LABEL_RE = re.compile(
     r"^Accessories \([\d.]+% of fabric cost( — .*)?\)$")
+_PP_CMT_LINE_LABEL_RE = re.compile(r"^CMT \([^)]*×[\d.]+\)$")
+_PP_DEFECT_LINE_LABEL_RE = re.compile(
+    r"^Defect Allowance \([\d.]+% of fabric cost\)$")
+
+
+def _preprod_machine_line_indexes(lines, kind, label_re):
+    """Return only conclusively machine-generated Pre-production rows.
+
+    A controlled backfill is intentionally stricter than the live editor's
+    legacy-label adoption. A source tag proves machine ownership; a matching
+    historical label alone cannot distinguish an old generated row from a
+    user-authored same-label cost and must remain untouched.
+    """
+    return [
+        i for i, line in enumerate(lines)
+        if line.get("kind") == kind
+        and line.get("is_auto")
+        and (line.get("source") or "").startswith(_PP_AUTO_SOURCE_PREFIX)
+    ]
+
+
+def _preprod_fabric_total(lines):
+    return sum(
+        float(line.get("qty") or 0) * float(line.get("unit_cost") or 0)
+        for line in lines if line.get("kind") == "fabric")
+
+
+def _preprod_cmt_amount(start_time, stop_time, cost_per_minute,
+                        production_multiplier):
+    """Mirror the editor's time-based CMT calculation.
+
+    Invalid/missing times deliberately produce a zero auto line, which is the
+    existing client-side behavior. A stop before start wraps over midnight.
+    """
+    def minutes(value):
+        try:
+            parts = str(value or "").strip().split(":")
+            if len(parts) not in (2, 3):
+                return None
+            hour, minute = int(parts[0]), int(parts[1])
+            second = float(parts[2]) if len(parts) == 3 else 0.0
+            if not (0 <= hour < 24 and 0 <= minute < 60 and 0 <= second < 60):
+                return None
+            return hour * 60 + minute + second / 60.0
+        except (TypeError, ValueError):
+            return None
+
+    start, stop = minutes(start_time), minutes(stop_time)
+    if start is None or stop is None:
+        return 0.0
+    raw_minutes = stop - start
+    if raw_minutes < 0:
+        raw_minutes += 24 * 60
+    try:
+        multiplier = float(production_multiplier)
+    except (TypeError, ValueError):
+        multiplier = 1.40
+    if multiplier <= 0:
+        multiplier = 1.40
+    adjusted_minutes = math.floor(raw_minutes * multiplier * 100 + 0.5) / 100.0
+    return math.floor(adjusted_minutes * float(cost_per_minute) * 100 + 0.5) / 100.0
+
+
+def _preprod_stamp_default_lines(lines, defect_allowance_pct,
+                                 cost_per_minute, cmt_start_time,
+                                 cmt_stop_time, production_multiplier):
+    """Recalculate only the machine Pre-production CMT and defect rows.
+
+    The controlled default retrofit must not add rows that were never present
+    or rewrite user-added labour/overhead entries. Existing duplicate machine
+    rows are folded into the first, matching the editor's adoption behavior.
+    """
+    fabric_total = _preprod_fabric_total(lines)
+    defect_amount = math.floor(
+        float(defect_allowance_pct) / 100.0 * fabric_total * 100 + 0.5) / 100.0
+    cmt_amount = _preprod_cmt_amount(
+        cmt_start_time, cmt_stop_time, cost_per_minute, production_multiplier)
+    multiplier_text = _costing_mult_fmt(production_multiplier)
+    cpm_text = f"{float(cost_per_minute):g}"
+    cmt_label = (
+        f"CMT ({str(cmt_start_time or '?')}–{str(cmt_stop_time or '?')}, "
+        f"KES {cpm_text}/min ×{multiplier_text})")
+    defect_text = f"{float(defect_allowance_pct):g}% of fabric cost"
+    defaults = (
+        ("cmt", _PP_CMT_LINE_LABEL_RE, {
+            "label": cmt_label, "qty": 1.0, "unit_cost": round(cmt_amount, 4),
+            "total": round(cmt_amount, 2), "is_auto": True,
+            "source": f"{_PP_AUTO_SOURCE_PREFIX}: time-based CMT",
+            "component_id": None,
+        }),
+        ("overhead", _PP_DEFECT_LINE_LABEL_RE, {
+            "label": f"Defect Allowance ({defect_text})",
+            "qty": 1.0, "unit_cost": round(defect_amount, 4),
+            "total": round(defect_amount, 2), "is_auto": True,
+            "source": f"{_PP_AUTO_SOURCE_PREFIX}: {defect_text}",
+            "component_id": None,
+        }),
+    )
+    for kind, label_re, patch in defaults:
+        indexes = _preprod_machine_line_indexes(lines, kind, label_re)
+        if not indexes:
+            continue
+        lines[indexes[0]].update(patch)
+        for index in reversed(indexes[1:]):
+            lines.pop(index)
+    return lines
+
+
+def _preprod_embroidery_total(data):
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except Exception:
+            data = None
+    if not isinstance(data, dict) or not data.get("enabled"):
+        return 0.0
+    try:
+        return float(data.get("cost_per_run") or 0) * float(data.get("run_count") or 0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _preprod_stamp_accessories(lines, pct, meta, recalculate=True):
@@ -14456,6 +14593,150 @@ def _preprod_accessories_backfill(conn, uid, uname, today=None):
     return result
 
 
+def _preprod_defaults_backfill(conn, uid, uname):
+    """Apply the requested Pre-production defect/CMT defaults once per sheet.
+
+    This deliberately includes approved sheets: it is a narrowly-scoped,
+    recorded maintenance operation, not an editor mutation. It updates only
+    the two requested header inputs, their existing machine lines, and the
+    dependent proposed price; Main Production, user-added rows, signoffs, and
+    all unrelated headers are left intact.
+    """
+    run_at = datetime.datetime.now(ZoneInfo("Africa/Nairobi")).isoformat()
+    sheets = q(conn, """
+        SELECT s.id, s.style_name, s.defect_allowance_pct, s.cost_per_minute,
+               s.cmt_start_time, s.cmt_stop_time, s.production_multiplier,
+               s.selling_price, s.embroidery_data, s.preprod_defaults_meta,
+               EXISTS (
+                   SELECT 1 FROM fabric_costing_signoffs so
+                   WHERE so.sheet_id=s.id AND so.step=3
+               ) AS locked
+        FROM fabric_costing_sheets s
+        WHERE COALESCE(s.stage, 'main_production')='pre_production'
+        ORDER BY s.id
+        FOR UPDATE
+    """)
+    result = {
+        "migration_key": _PP_DEFAULTS_BACKFILL_KEY,
+        "defect_allowance_pct": _PP_DEFECT_ALLOWANCE_DEFAULT_PCT,
+        "cost_per_minute": _PP_COST_PER_MINUTE_DEFAULT,
+        "updated": 0,
+        "skipped": 0,
+        "errors": 0,
+        "locked_updated": 0,
+        "error_rows": [],
+    }
+    for sheet in sheets:
+        meta = sheet.get("preprod_defaults_meta")
+        if isinstance(meta, str):
+            try:
+                meta = json.loads(meta)
+            except Exception:
+                meta = None
+        if isinstance(meta, dict) and meta.get("migration_key") == _PP_DEFAULTS_BACKFILL_KEY:
+            result["skipped"] += 1
+            continue
+
+        sid = int(sheet["id"])
+        savepoint = f"cost_defaults_backfill_{sid}"
+        with conn.cursor() as cur:
+            cur.execute(f"SAVEPOINT {savepoint}")
+        try:
+            old_defect = sheet.get("defect_allowance_pct")
+            old_cpm = sheet.get("cost_per_minute")
+            old_price = sheet.get("selling_price")
+            lines = [dict(row) for row in q(conn, """
+                SELECT id, kind, label, qty, unit_cost, total, is_auto,
+                       source, position, component_id
+                FROM fabric_costing_lines
+                WHERE sheet_id=%s
+                ORDER BY position, id
+            """, (sid,))]
+            original_by_id = {int(line["id"]): dict(line) for line in lines}
+            _preprod_stamp_default_lines(
+                lines, _PP_DEFECT_ALLOWANCE_DEFAULT_PCT,
+                _PP_COST_PER_MINUTE_DEFAULT, sheet.get("cmt_start_time"),
+                sheet.get("cmt_stop_time"), sheet.get("production_multiplier"))
+            kept_ids = {int(line["id"]) for line in lines}
+            removed_ids = [
+                line_id for line_id in original_by_id if line_id not in kept_ids]
+            changed_lines = [
+                line for line in lines
+                if any(
+                    original_by_id[int(line["id"])].get(field) != line.get(field)
+                    for field in ("label", "qty", "unit_cost", "total", "is_auto",
+                                  "source", "component_id"))
+            ]
+            new_total = round(
+                sum(float(line.get("total") or 0) for line in lines)
+                + _preprod_embroidery_total(sheet.get("embroidery_data")), 2)
+            _, new_price = _preproduction_proposed_prices(new_total)
+            new_meta = dict(meta) if isinstance(meta, dict) else {}
+            new_meta.update({
+                "migration_key": _PP_DEFAULTS_BACKFILL_KEY,
+                "backfilled_at": run_at,
+                "defect_allowance_pct": _PP_DEFECT_ALLOWANCE_DEFAULT_PCT,
+                "cost_per_minute": _PP_COST_PER_MINUTE_DEFAULT,
+            })
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE fabric_costing_sheets
+                    SET defect_allowance_pct=%s, cost_per_minute=%s,
+                        selling_price=%s, preprod_defaults_meta=%s
+                    WHERE id=%s
+                """, (_PP_DEFECT_ALLOWANCE_DEFAULT_PCT,
+                      _PP_COST_PER_MINUTE_DEFAULT, new_price,
+                      json.dumps(new_meta), sid))
+                for line in changed_lines:
+                    cur.execute("""
+                        UPDATE fabric_costing_lines
+                        SET label=%s, qty=%s, unit_cost=%s, total=%s,
+                            is_auto=%s, source=%s, component_id=%s
+                        WHERE id=%s AND sheet_id=%s
+                    """, (line.get("label"), line.get("qty"),
+                          line.get("unit_cost"), line.get("total"),
+                          line.get("is_auto"), line.get("source"),
+                          line.get("component_id"), line["id"], sid))
+                if removed_ids:
+                    cur.execute("""
+                        DELETE FROM fabric_costing_lines
+                        WHERE sheet_id=%s AND id = ANY(%s)
+                    """, (sid, removed_ids))
+            _costing_history_write(
+                conn, sid, "preprod_defaults_backfill", uid, uname,
+                ("Pre-production defaults updated: Defect Allowance "
+                 f"{_PP_DEFECT_ALLOWANCE_DEFAULT_PCT:g}%; Cost per Minute "
+                 f"KES {_PP_COST_PER_MINUTE_DEFAULT:g}"),
+                {
+                    "migration_key": _PP_DEFAULTS_BACKFILL_KEY,
+                    "previous_defect_allowance_pct": old_defect,
+                    "defect_allowance_pct": _PP_DEFECT_ALLOWANCE_DEFAULT_PCT,
+                    "previous_cost_per_minute": old_cpm,
+                    "cost_per_minute": _PP_COST_PER_MINUTE_DEFAULT,
+                    "previous_selling_price": old_price,
+                    "selling_price": new_price,
+                    "default_lines_updated": len(changed_lines),
+                    "duplicate_machine_lines_removed": len(removed_ids),
+                    "approved_sheet": bool(sheet.get("locked")),
+                })
+            with conn.cursor() as cur:
+                cur.execute(f"RELEASE SAVEPOINT {savepoint}")
+            result["updated"] += 1
+            if sheet.get("locked"):
+                result["locked_updated"] += 1
+        except Exception as exc:
+            with conn.cursor() as cur:
+                cur.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                cur.execute(f"RELEASE SAVEPOINT {savepoint}")
+            result["errors"] += 1
+            result["error_rows"].append({
+                "sheet_id": sid,
+                "style_name": sheet.get("style_name"),
+                "error": str(exc)[:300],
+            })
+    return result
+
+
 def _clean_costing_lines(lines):
     """Validate + normalise posted cost lines; totals are recomputed
     server-side (never trusted from the client)."""
@@ -14639,6 +14920,13 @@ def _sheet_payload(conn, sheet_id, with_history=True):
     s["margin_pct"] = margin_pct
     stage = s.get("stage") or "main_production"
     s["stage"] = stage
+    if stage == "pre_production":
+        # A sheet opened before the controlled maintenance route is run still
+        # renders the new defaults consistently; the backfill persists them.
+        if s.get("defect_allowance_pct") is None:
+            s["defect_allowance_pct"] = _PP_DEFECT_ALLOWANCE_DEFAULT_PCT
+        if s.get("cost_per_minute") is None:
+            s["cost_per_minute"] = _PP_COST_PER_MINUTE_DEFAULT
     for _k in ("accessories_pct", "defect_allowance_pct", "mtrs_per_garment",
                "cost_per_minute", "production_multiplier"):
         s[_k] = float(s[_k]) if s.get(_k) is not None else None
@@ -15052,6 +15340,22 @@ def costing_backfill_preprod_accessories(request: Request):
     return result
 
 
+@fabric_router.post("/api/fabric/costing/maintenance/backfill-preprod-defaults")
+def costing_backfill_preprod_defaults(request: Request):
+    """Admin-only controlled migration of Pre-production default inputs."""
+    user = getattr(request.state, "user", None) or {}
+    if user.get("role") != "admin":
+        raise HTTPException(
+            status_code=403,
+            detail="Admin access is required for the Pre-production defaults retrofit")
+    uid, uname = _costing_user(request)
+    with _get_conn() as conn:
+        _ensure_costing_tables(conn)
+        result = _preprod_defaults_backfill(conn, uid, uname)
+        conn.commit()
+    return result
+
+
 @fabric_router.post("/api/fabric/costing/sheets")
 def costing_sheet_create(request: Request, body: dict = Body(...)):
     _costing_require_editor(request)
@@ -15082,9 +15386,17 @@ def costing_sheet_create(request: Request, body: dict = Body(...)):
     # sheets don't use it (stored at the legacy 13 default).
     accessories_pct = _PP_ACC_DEFAULT_PCT
     try:
-        defect_allowance_pct = float(body["defect_allowance_pct"]) if body.get("defect_allowance_pct") not in (None, "") else 10.0
+        defect_allowance_pct = (
+            float(body["defect_allowance_pct"])
+            if body.get("defect_allowance_pct") not in (None, "")
+            else (_PP_DEFECT_ALLOWANCE_DEFAULT_PCT
+                  if stage == "pre_production" else 10.0))
         mtrs_per_garment = float(body["mtrs_per_garment"]) if body.get("mtrs_per_garment") not in (None, "") else None
-        cost_per_minute = float(body["cost_per_minute"]) if body.get("cost_per_minute") not in (None, "") else None
+        cost_per_minute = (
+            float(body["cost_per_minute"])
+            if body.get("cost_per_minute") not in (None, "")
+            else (_PP_COST_PER_MINUTE_DEFAULT
+                  if stage == "pre_production" else None))
         production_multiplier = float(body["production_multiplier"]) if body.get("production_multiplier") not in (None, "") else None
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail="Pre-production numeric fields must be numbers")
@@ -15181,9 +15493,17 @@ def costing_sheet_update(sheet_id: int, request: Request, body: dict = Body(...)
     # client — it is read-only: the value picked at sheet creation (or the
     # hand-typed value saved on legacy sheets) always wins, below.
     try:
-        defect_allowance_pct = float(body["defect_allowance_pct"]) if body.get("defect_allowance_pct") not in (None, "") else 10.0
+        defect_allowance_pct = (
+            float(body["defect_allowance_pct"])
+            if body.get("defect_allowance_pct") not in (None, "")
+            else (_PP_DEFECT_ALLOWANCE_DEFAULT_PCT
+                  if stage == "pre_production" else 10.0))
         mtrs_per_garment = float(body["mtrs_per_garment"]) if body.get("mtrs_per_garment") not in (None, "") else None
-        cost_per_minute = float(body["cost_per_minute"]) if body.get("cost_per_minute") not in (None, "") else None
+        cost_per_minute = (
+            float(body["cost_per_minute"])
+            if body.get("cost_per_minute") not in (None, "")
+            else (_PP_COST_PER_MINUTE_DEFAULT
+                  if stage == "pre_production" else None))
         production_multiplier = float(body["production_multiplier"]) if body.get("production_multiplier") not in (None, "") else None
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail="Pre-production numeric fields must be numbers")
