@@ -42,9 +42,18 @@ describe("TabHome image teasers", () => {
     api.events.mockResolvedValue({ items: [] });
   });
 
-  it("renders all four teasers as responsive image banners", async () => {
+  it("renders the approved copy on all four responsive image banners", async () => {
     render(<TabHome member={MEMBER} {...NO_OP} />);
     await act(async () => {});
+
+    expect(screen.getByText("Vivo Spotted on Our Community")).toBeInTheDocument();
+    expect(screen.getByText("Styled by Our Influencers")).toBeInTheDocument();
+    expect(screen.getByText("Real looks from the creators who bring Vivo to life.")).toBeInTheDocument();
+    expect(screen.getByText("In partnership with Vivo")).toBeInTheDocument();
+    expect(screen.getByText("Build Your Own Style Board")).toBeInTheDocument();
+    expect(screen.getByText("Save the looks, prints and pieces you keep coming back to.")).toBeInTheDocument();
+    expect(screen.getByText("This Month in Johari")).toBeInTheDocument();
+    expect(screen.getByText("Milestones, new stores and what's next for Vivo.")).toBeInTheDocument();
 
     const testIds = [
       "home-community-teaser",
@@ -152,5 +161,17 @@ describe("TabHome image teasers", () => {
     expect(screen.queryByTestId("shop-gender-toggle")).not.toBeInTheDocument();
     expect(screen.queryByTestId("shop-category-grid")).not.toBeInTheDocument();
     expect(screen.queryByTestId("home-rewards-card")).not.toBeInTheDocument();
+  });
+
+  it("shows the approved Styled for You copy to guests", async () => {
+    render(<TabHome member={null} {...NO_OP} />);
+    await act(async () => {});
+
+    expect(screen.getByText("New")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Styled for You" })).toBeInTheDocument();
+    expect(screen.getByText(
+      "Get weekly outfit and product recommendations selected around your style, size and preferences."
+    )).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Personalise My Style" })).toBeInTheDocument();
   });
 });

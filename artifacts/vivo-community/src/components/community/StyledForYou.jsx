@@ -61,9 +61,9 @@ export function StyledForYouHome({ member, onViewAll, onPersonalise }) {
         <div className="flex items-start justify-between gap-4">
           <div>
             <div className="inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-primary-ink mb-2">
-              <Sparkles size={12} /> Styled for You
+              <Sparkles size={12} /> New
             </div>
-            <h2 className="font-serif text-xl sm:text-2xl text-foreground leading-tight">Weekly picks, chosen around you</h2>
+            <h2 className="font-serif text-xl sm:text-2xl text-foreground leading-tight">Styled for You</h2>
           </div>
           <button
             type="button"
@@ -83,7 +83,7 @@ export function StyledForYouHome({ member, onViewAll, onPersonalise }) {
         <p className="text-[13px] text-muted-foreground leading-relaxed mt-3">
           {state.opted_in
             ? "Your weekly recommendations are on. New picks will appear in Shop."
-            : "Switch on one personalised edit using your saved style and size preferences."}
+            : "Get weekly outfit and product recommendations selected around your style, size and preferences."}
         </p>
         {error && <p className="text-[12px] text-destructive mt-2">{error}</p>}
         {state.opted_in && (

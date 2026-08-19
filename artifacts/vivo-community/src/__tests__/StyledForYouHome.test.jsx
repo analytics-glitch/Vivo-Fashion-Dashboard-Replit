@@ -30,6 +30,11 @@ describe("StyledForYouHome", () => {
     const toggle = await screen.findByRole("switch", {
       name: "Weekly Styled for You recommendations",
     });
+    expect(screen.getByText("New")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Styled for You" })).toBeInTheDocument();
+    expect(screen.getByText(
+      "Get weekly outfit and product recommendations selected around your style, size and preferences."
+    )).toBeInTheDocument();
     expect(toggle).toHaveAttribute("aria-checked", "false");
     expect(screen.queryByText("Save preferences")).not.toBeInTheDocument();
 

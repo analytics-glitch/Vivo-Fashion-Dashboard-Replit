@@ -1,0 +1,90 @@
+# Vivo Johari — Home Page Copy, All Sections
+
+**Purpose:** One consolidated reference for every piece of copy discussed for the new Home page, in the page's actual top-to-bottom order (per the Home reorder spec). Use this alongside the layout/implementation specs — this doc is copy only.
+
+---
+
+## 1. Hero
+
+- Eyebrow: THIS SEASON'S CONVERSATION
+- Headline: "The New Old Money"
+- Subcopy: "Timeless silhouettes, refined details and effortless elegance, reimagined for the modern Vivo woman."
+- CTA: **"Join the Conversation"** (single button only — "Share a look" and "Start a conversation" removed)
+- Links to the campaign blog post + comments.
+
+## 2. Vivo Spotted on Our Community (banner, left) + Community Spotlight (right)
+
+**Left — image banner:**
+- Eyebrow: VIVO SPOTTED
+- Headline: "Vivo Spotted on Our Community"
+- Subcopy: "The looks, stories and conversations Vivo women are loving right now."
+- Link: "See the community"
+
+**Right — Community Spotlight (unchanged, now also links to Community):**
+- Label: COMMUNITY SPOTLIGHT
+- Quote: "Finding a community that celebrates African curves has completely changed how I shop. Vivo is more than fashion, it's family." — @nyambura.k
+- CTA: "Read Her Story"
+
+## 3. Reels (left, unchanged) + Influencers banner (right)
+
+**Right — image banner:**
+- Eyebrow: OUR INFLUENCERS
+- Headline: "Styled by Our Influencers"
+- Subcopy: "Real looks from the creators who bring Vivo to life."
+- Link: "See their looks"
+- Disclosure line (on banner or destination page): "In partnership with Vivo"
+
+## 4. Playlist (left, unchanged) + Style Boards banner (right)
+
+**Left — Spotify section (unchanged):**
+- Eyebrow: THIS WEEK'S SOUND
+- Headline: "This Week's Vivo Playlist by DJ Shaky"
+- Subcopy: "Our weekly mix — the songs on rotation in-store and behind the scenes."
+
+**Right — image banner:**
+- Eyebrow: STYLE BOARDS
+- Headline: "Build Your Own Style Board"
+- Subcopy: "Save the looks, prints and pieces you keep coming back to."
+- Link: "See style boards" (leads to existing boards, not a new-board creation flow)
+
+## 5. Styled For You opt-in (left) + This Month News banner (right)
+
+**Left — simplified opt-in (per the merge spec, no multi-question quiz on Home):**
+- Label: NEW
+- Headline: "Styled for You"
+- Subcopy: "Get weekly outfit and product recommendations selected around your style, size and preferences."
+- CTA: "Personalise My Style" / "Maybe Later"
+
+**Right — image banner:**
+- Eyebrow: JOHARI NEWS
+- Headline: "This Month in Johari"
+- Subcopy: "Milestones, new stores and what's next for Vivo."
+- Link: "Read the news"
+
+*(Full Johari News page content, for reference — this is what the banner links to, not new Home copy:)*
+- Section heading on the full page: "This month in Johari" / "Vivo Johari"
+- Headline list: "Fifteen years of Vivo — and this is just the beginning" (Milestone, May 2026), "Karibu Galleria — our newest store is open" (New Store, August 2026), "Made for you: tailoring arrives at The Junction" (New Service, July 2026), "Moi Avenue, but make it brand new" (Store News, June 2026)
+
+## 6. Events
+
+- Existing "What's On" style content, e.g. "An Evening of Styling at Galleria" — no copy changes discussed.
+
+## 7. Promo message banner (configurable slot)
+
+- Current message: "FOR A LIMITED TIME / Free delivery over KES 5,000 / Nairobi, Kigali and Kampala — straight to your door."
+- Reminder: this should be treated as a rotating slot, not fixed copy — swap the eyebrow/headline/subcopy as campaigns change.
+
+## 8. Give Back
+
+- Headline: "Give your Vivo a second life"
+- Subcopy: "Pieces you've outgrown can lift another woman up — bring them to any Vivo store."
+- CTA: "How it works"
+- No copy changes discussed — carrying over as-is.
+
+---
+
+## Notes
+
+- Everything under sections 3-5's right-hand banners (Influencers, Style Boards, This Month News) plus section 2's left banner (Vivo Spotted) share one visual pattern: eyebrow label, bold headline, one-line subcopy, arrow-style link — keep phrasing terse and consistent with that rhythm if any copy gets revised later.
+- The Influencers banner is the one exception needing a disclosure line — see the separate Influencers spec for why.
+- If Style Boards' "See style boards" destination turns out to be empty (no boards exist yet) for new users, that link/copy may need a fallback state — flagging as a future consideration, not addressed here.

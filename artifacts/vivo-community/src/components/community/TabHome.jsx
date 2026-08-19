@@ -380,6 +380,9 @@ function HomeTeaserBanner({ banner, testId, ctaTestId, onOpen }) {
           <span className="mt-4 inline-flex items-center gap-1 text-[13px] font-semibold text-white group-hover:underline underline-offset-4">
             {banner.cta} <ChevronRight size={14} />
           </span>
+          {banner.disclosure && (
+            <span className="block mt-2 text-[10px] leading-relaxed text-white/60">{banner.disclosure}</span>
+          )}
         </span>
       </button>
     </section>
@@ -535,7 +538,7 @@ function GiveBack({ onOpenPage }) {
           <h3 className="font-serif text-lg text-foreground">Give your Vivo a second life</h3>
         </div>
         <p className="text-[13px] text-muted-foreground leading-relaxed max-w-2xl">
-          Loved pieces you've outgrown can lift another woman up. Bring them to any Vivo store and we'll take it from there.
+          Pieces you've outgrown can lift another woman up — bring them to any Vivo store.
         </p>
         <button data-testid="givingback-open" onClick={() => onOpenPage?.("givingback")}
                 className="mt-3 inline-flex items-center gap-1 text-[13px] font-medium text-primary-ink hover:underline">
@@ -608,17 +611,17 @@ export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage,
           ) : (
             <div className={`${cardCls} p-6 sm:p-8 flex flex-col justify-center h-full`}>
                <div className="inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-primary-ink mb-3">
-                 Styled for You
+                  New
                </div>
-               <h3 className="font-serif text-2xl text-foreground mb-3">Your personalised picks</h3>
+               <h3 className="font-serif text-2xl text-foreground mb-3">Styled for You</h3>
                <p className="text-[13px] text-muted-foreground leading-relaxed mb-6">
-                 Get weekly outfit recommendations selected around your style and size. Sign in to switch it on.
+                  Get weekly outfit and product recommendations selected around your style, size and preferences.
                </p>
                <button
                  onClick={() => onNavigate("profile")}
                  className="h-10 px-6 sm:w-auto w-full rounded bg-primary text-primary-foreground text-[13px] font-medium hover:opacity-90 transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
                >
-                 Sign in
+                  Personalise My Style
                </button>
             </div>
           )}
