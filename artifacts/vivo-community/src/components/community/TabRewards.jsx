@@ -228,7 +228,7 @@ export default function TabRewards({ member, onMemberUpdate, onOpenPage }) {
             </span>
             <div className="flex-grow min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
-                <h3 className="font-semibold text-foreground text-[15px]">About your Vivo journey — {journey.points ?? 30} pts</h3>
+                <h3 className="font-semibold text-foreground text-[15px]">Tell us about your Vivo journey — {journey.points ?? 30} pts</h3>
                 {journey.completed && (
                   <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-primary-ink bg-primary/10 border border-primary/20 px-2 py-0.5 rounded-sm">
                     <Check size={11} strokeWidth={3} /> Done
