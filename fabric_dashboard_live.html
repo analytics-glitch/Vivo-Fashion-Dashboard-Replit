@@ -10651,7 +10651,10 @@ async function loadCosting(){
     body.innerHTML=costSheets.map(s=>{
       const mCls=s.margin==null?'':(s.margin<0?' style="color:var(--danger);font-weight:700;"':' style="color:var(--ok,#0a7d33);font-weight:700;"');
       const stageBadge=s.stage==='pre_production'?'&nbsp;<span class="pill pill-neutral" style="font-size:10px;padding:1px 5px;vertical-align:middle;">Pre-prod</span>':'';
-      return `<tr><td>${esc(s.style_name)}${stageBadge}</td><td>${esc(s.style_number||'—')}</td>`+
+      const accMeta=s.accessories_pct_meta;
+      const accSummary=s.stage==='pre_production'&&accMeta
+        ?`<div class="muted" style="font-size:10.5px;margin-top:3px;">Accessories ${esc(costAccPctFmt(s.accessories_pct))}%${esc(costAccProvSuffixFor(accMeta))} <span style="background:var(--accent,#2563eb);color:#fff;border-radius:4px;font-size:9px;padding:1px 5px;">AUTO</span></div>`:'';
+      return `<tr><td>${esc(s.style_name)}${stageBadge}${accSummary}</td><td>${esc(s.style_number||'—')}</td>`+
         `<td class="r">${fmtKES2(s.total_cost)}</td><td class="r">${fmtKES2(s.selling_price)}</td><td class="r">${fmtKES2(s.selling_price_ex_vat)}</td>`+
         `<td class="r"${mCls}>${fmtKES2(s.margin)}</td><td class="r"${mCls}>${s.margin_pct==null?'—':esc(s.margin_pct)+'%'}</td>`+
         `<td class="r">${esc(s.line_count)}</td>`+
@@ -11049,25 +11052,27 @@ function costPPMultInput(el){
 // READ-ONLY — the server enforces it on create/update; this UI never sends
 // an editable value.
 function costAccPctFmt(p){return String(Math.round((Number(p)||0)*100)/100);}
-function costAccProvSuffix(){
+function costAccProvSuffixFor(m){
   // Canonical label/source suffix — must match the server's
   // _preprod_acc_provenance_suffix character-for-character.
-  const m=costEdit&&costEdit.accessories_meta;
   if(!m)return '';
+  if(m.retrofit_status==='retained_no_history')return ' — retained (no qualifying Done-DPS history)';
   if(m.is_default)return ' — default (no Done-DPS history)';
   let t=' — '+(m.month_label||m.source_month||'?')+' Done-DPS avg, '+(Number(m.dps_count)||0)+' DPS';
   if(m.fallback)t+=' (fallback)';
   return t;
 }
+function costAccProvSuffix(){return costAccProvSuffixFor(costEdit&&costEdit.accessories_meta);}
 function costAccPctNote(){
   // Human sentence under the read-only % field (sheet-header provenance).
   if(!costEdit)return '';
   const m=costEdit.accessories_meta;
   if(!m)return costEdit.id?'Saved on this sheet (created before the auto-pick).':(costEdit._accLoading?'Loading previous-month Done-DPS average…':'');
+  if(m.retrofit_status==='retained_no_history')return 'Existing '+costAccPctFmt(costEdit.accessories_pct)+'% retained — no qualifying Done-DPS history was available during the controlled retrofit.';
   if(m.is_default)return 'Default '+costAccPctFmt(costEdit.accessories_pct)+'% — no month with qualifying Done-DPS data.';
   let t=(m.month_label||m.source_month)+' Done-DPS average ('+(Number(m.dps_count)||0)+' DPS)';
   if(m.fallback)t+=' — fallback month: '+(m.requested_month_label||'the previous month')+' had no qualifying DPS';
-  return t+'. Read-only — picked at sheet creation.';
+  return t+'. Read-only — '+(m.retrofit_status==='picked'?'backfilled automatically.':'picked at sheet creation.');
 }
 function costAccPctRender(){
   const el=document.getElementById('cost-pp-acc-pct');
@@ -11131,7 +11136,11 @@ function costPreProdSeedLines(){
   const acc=costEdit.accessories_pct!=null?costEdit.accessories_pct:13;
   const accTxt=costAccPctFmt(acc)+'% of fabric cost'+costAccProvSuffix();
   const def=costEdit.defect_allowance_pct!=null?costEdit.defect_allowance_pct:10;
-  if(!costEdit.lines.some(l=>costPreProdMatchDefault(l,'trim')))
+   // A controlled retrofit may have retained a legacy Accessories amount
+   // because no qualifying history existed. Never invent a new row for that
+   // snapshot; future sheets use the normal qualifying-month picker.
+   const accRetained=!!(costEdit.accessories_meta&&costEdit.accessories_meta.retrofit_status==='retained_no_history');
+   if(!accRetained&&!costEdit.lines.some(l=>costPreProdMatchDefault(l,'trim')))
     costEdit.lines.push({kind:'trim',label:'Accessories ('+accTxt+')',qty:1,unit_cost:0,is_auto:true,source:COST_PP_AUTO_PREFIX+': '+accTxt,component_id:null,barcode:null});
   if(!costEdit.lines.some(l=>costPreProdMatchDefault(l,'cmt')))
     costEdit.lines.push({kind:'cmt',label:'CMT (?–?, KES 0/min ×'+costPPMultFmt(costPPMultNorm(costEdit.production_multiplier))+')',qty:1,unit_cost:0,is_auto:true,source:COST_PP_AUTO_PREFIX+': time-based CMT',component_id:null,barcode:null});
@@ -11199,10 +11208,14 @@ function costPreProdCalc(opts){
   // Accessories auto-line — amount recalculates as % × Σ fabric line totals
   // exactly as always; label + source carry the provenance suffix when the
   // sheet has auto-pick meta (legacy sheets keep the bare wording).
-  const accTotal=Math.round(accPct/100*fabTotal*100)/100;
-  const accTxt=costAccPctFmt(accPct)+'% of fabric cost'+costAccProvSuffix();
-  const accLabel='Accessories ('+accTxt+')';
-  let structural=costPreProdUpsert('trim',{kind:'trim',label:accLabel,qty:1,unit_cost:accTotal,is_auto:true,source:COST_PP_AUTO_PREFIX+': '+accTxt,component_id:null,barcode:null});
+   const accRetained=!!(costEdit.accessories_meta&&costEdit.accessories_meta.retrofit_status==='retained_no_history');
+   let structural=false;
+   if(!accRetained){
+     const accTotal=Math.round(accPct/100*fabTotal*100)/100;
+     const accTxt=costAccPctFmt(accPct)+'% of fabric cost'+costAccProvSuffix();
+     const accLabel='Accessories ('+accTxt+')';
+     structural=costPreProdUpsert('trim',{kind:'trim',label:accLabel,qty:1,unit_cost:accTotal,is_auto:true,source:COST_PP_AUTO_PREFIX+': '+accTxt,component_id:null,barcode:null});
+   }
   // CMT auto-line from time inputs
   let cpmTotal=0;
   if(startStr&&stopStr){

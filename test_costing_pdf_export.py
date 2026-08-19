@@ -382,6 +382,33 @@ class CostingPdfAccessoriesProvenance(unittest.TestCase):
         pdf = fr._costing_build_pdf(s)
         self.assertTrue(pdf.startswith(b"%PDF"))
 
+    def test_backfilled_note_uses_retrofit_wording(self):
+        s = _base_sheet(
+            notes="", stage="pre_production",
+            accessories_pct=8.981039134139472,
+            accessories_pct_meta=_acc_meta(
+                migration_key=fr._PP_ACC_BACKFILL_KEY,
+                retrofit_status="picked",
+                backfilled_at="2026-08-19T10:00:00+03:00"))
+        d = fr._costing_to_build_data(s)
+        self.assertIn(
+            "the Jul 2026 Done-DPS average (75 DPS), backfilled automatically.",
+            d["basis_note"])
+        self.assertNotIn("picked at sheet creation", d["basis_note"])
+
+    def test_retained_note_explains_no_history(self):
+        s = _base_sheet(
+            notes="", stage="pre_production", accessories_pct=15,
+            accessories_pct_meta=_acc_meta(
+                pct=15, source_month=None, month_label=None, dps_count=0,
+                is_default=False, migration_key=fr._PP_ACC_BACKFILL_KEY,
+                retrofit_status="retained_no_history"))
+        d = fr._costing_to_build_data(s)
+        self.assertIn(
+            "existing value was retained because no qualifying Done-DPS "
+            "history was available during the controlled retrofit.",
+            d["basis_note"])
+
 
 if __name__ == "__main__":
     unittest.main()

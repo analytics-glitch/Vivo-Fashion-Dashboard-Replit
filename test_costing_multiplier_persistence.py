@@ -511,6 +511,10 @@ class AccessoriesPickPure(unittest.TestCase):
         self.assertEqual(
             fr._preprod_acc_provenance_suffix({"is_default": True}),
             " — default (no Done-DPS history)")
+        self.assertEqual(
+            fr._preprod_acc_provenance_suffix(
+                {"retrofit_status": "retained_no_history"}),
+            " — retained (no qualifying Done-DPS history)")
 
 
 class AccessoriesCreateReadOnly(_Harness):

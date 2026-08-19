@@ -374,12 +374,17 @@ const provFallback = { suffix: costAccProvSuffix(), note: costAccPctNote() };
 costEdit.accessories_meta = { is_default: true, fallback: false, dps_count: 0 };
 costEdit.accessories_pct = 13;
 const provDefault = { suffix: costAccProvSuffix(), note: costAccPctNote() };
+costEdit.accessories_meta = { retrofit_status: 'retained_no_history',
+  migration_key: 'preprod_accessories_pct_v1' };
+costEdit.accessories_pct = 15;
+const provRetained = { suffix: costAccProvSuffix(), note: costAccPctNote() };
 costEdit.accessories_meta = null;
 const provLegacy = { suffix: costAccProvSuffix(), note: costAccPctNote() };
 costEdit = { stage: 'pre_production', locked: false, id: null,
   accessories_pct: 13, accessories_meta: null, _accLoading: true };
 const provLoading = { note: costAccPctNote() };
 results.acc_prov = { fallback: provFallback, dflt: provDefault,
+                      retained: provRetained,
                      legacy: provLegacy, loading: provLoading };
 
 // ── main_prod_guard ────────────────────────────────────────────────────────
@@ -667,6 +672,11 @@ class PreProdCostingLinesTest(unittest.TestCase):
         self.assertEqual(ap["dflt"]["suffix"],
                          " — default (no Done-DPS history)")
         self.assertIn("Default 13%", ap["dflt"]["note"])
+        self.assertEqual(
+            ap["retained"]["suffix"],
+            " — retained (no qualifying Done-DPS history)")
+        self.assertIn("Existing 15% retained", ap["retained"]["note"])
+        self.assertIn("controlled retrofit", ap["retained"]["note"])
         self.assertEqual(ap["legacy"]["suffix"], "",
                          "legacy sheets keep their exact saved labels")
         self.assertEqual(ap["legacy"]["note"],

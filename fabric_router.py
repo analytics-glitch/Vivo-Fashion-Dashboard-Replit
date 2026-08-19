@@ -14079,6 +14079,8 @@ def _preprod_acc_provenance_suffix(meta):
     costAccProvSuffix in the editor JS character-for-character."""
     if not isinstance(meta, dict):
         return ""
+    if meta.get("retrofit_status") == "retained_no_history":
+        return " — retained (no qualifying Done-DPS history)"
     if meta.get("is_default"):
         return " — default (no Done-DPS history)"
     lbl = meta.get("month_label") or _preprod_month_label(meta.get("source_month"))
@@ -14194,18 +14196,15 @@ _PP_ACC_LINE_LABEL_RE = re.compile(
     r"^Accessories \([\d.]+% of fabric cost( — .*)?\)$")
 
 
-def _preprod_apply_accessories(lines, pct, meta):
+def _preprod_stamp_accessories(lines, pct, meta, recalculate=True):
     """Server-authoritative Accessories auto line for pre-production sheets.
 
-    The % is read-only (picked at creation / stored on the sheet), so the
-    derived line's amount, label and source are re-stamped here from the
-    SHEET's % — the client's figures for this one derived line are never
-    trusted, or a stale/tampered editor could bake a different % into the
-    saved maths. Line identity matches the editor's derived-row contract:
-    the 'pre-production auto' source tag, or the machine-generated label for
-    legacy rows; duplicate machine-labelled leftovers are folded into the
-    first. Sheets with no matching row are left alone — the server never
-    injects lines."""
+    When ``recalculate`` is true, the amount is rebuilt from all fabric line
+    totals. The one-time legacy retrofit passes false only when there is no
+    qualifying Done-DPS history: in that case the saved amount is deliberately
+    retained while the machine row gains explicit retained-value provenance.
+    Sheets with no matching row are left alone — the server never injects
+    lines."""
     idxs = []
     for i, ln in enumerate(lines):
         if ln.get("kind") != "trim":
@@ -14217,27 +14216,244 @@ def _preprod_apply_accessories(lines, pct, meta):
             idxs.append(i)
     if not idxs:
         return lines
-    fab_total = sum(float(ln.get("qty") or 0) * float(ln.get("unit_cost") or 0)
-                    for ln in lines if ln.get("kind") == "fabric")
-    # Same rounding as the editor (Math.round half-up) on the PRECISE %.
-    amount = math.floor(float(pct) / 100.0 * fab_total * 100 + 0.5) / 100.0
     txt = (f"{_preprod_acc_pct_fmt(pct)}% of fabric cost"
            f"{_preprod_acc_provenance_suffix(meta)}")
     keep = lines[idxs[0]]
-    keep.update({
+    patch = {
         "label": f"Accessories ({txt})",
-        "qty": 1.0,
-        "unit_cost": round(amount, 4),
-        "total": round(amount, 2),
         "is_auto": True,
         "source": f"{_PP_AUTO_SOURCE_PREFIX}: {txt}",
         "component_id": None,
-    })
+    }
+    if recalculate:
+        fab_total = sum(
+            float(ln.get("qty") or 0) * float(ln.get("unit_cost") or 0)
+            for ln in lines if ln.get("kind") == "fabric")
+        # Same rounding as the editor (Math.round half-up) on the PRECISE %.
+        amount = math.floor(
+            float(pct) / 100.0 * fab_total * 100 + 0.5) / 100.0
+        patch.update({
+            "qty": 1.0,
+            "unit_cost": round(amount, 4),
+            "total": round(amount, 2),
+        })
+    keep.update(patch)
     for j in reversed(idxs[1:]):
         lines.pop(j)
-    for p, ln in enumerate(lines):
-        ln["position"] = p
     return lines
+
+
+def _preprod_apply_accessories(lines, pct, meta):
+    """Re-stamp and recalculate the machine Accessories row from sheet state."""
+    return _preprod_stamp_accessories(lines, pct, meta, recalculate=True)
+
+
+def _preprod_restore_retained_amount(lines, saved_lines):
+    """Keep a no-history retrofit's original Accessories amount authoritative.
+
+    The browser normally posts the unchanged disabled derived row, but a
+    server-side restore is still required so a stale or tampered client cannot
+    turn a retained legacy cost into a user-editable override.
+    """
+    saved = next(
+        (l for l in saved_lines
+         if l.get("kind") == "trim"
+         and ((_PP_ACC_LINE_LABEL_RE.match((l.get("label") or "").strip()))
+              or (l.get("is_auto")
+                  and (l.get("source") or "").startswith(
+                      _PP_AUTO_SOURCE_PREFIX)))),
+        None)
+    posted = next(
+        (l for l in lines
+         if l.get("kind") == "trim"
+         and ((_PP_ACC_LINE_LABEL_RE.match((l.get("label") or "").strip()))
+              or (l.get("is_auto")
+                  and (l.get("source") or "").startswith(
+                      _PP_AUTO_SOURCE_PREFIX)))),
+        None)
+    if saved is not None and posted is not None:
+        posted.update({
+            "qty": saved.get("qty"),
+            "unit_cost": saved.get("unit_cost"),
+            "total": saved.get("total"),
+        })
+    return lines
+
+
+_PP_ACC_BACKFILL_KEY = "preprod_accessories_pct_v1"
+
+
+def _preprod_accessories_backfill(conn, uid, uname, today=None):
+    """Retrofit legacy pre-production sheets with one common Done-DPS pick.
+
+    The picker runs exactly once. Each eligible sheet is isolated by a
+    savepoint so a malformed legacy row cannot block the rest; successful
+    sheets receive an idempotency marker in ``accessories_pct_meta``. Approved
+    sheets are intentionally included without calling the normal edit-lock
+    guard because this migration may only touch Accessories provenance and its
+    existing machine-generated line.
+    """
+    pick = _preprod_accessories_pick(conn, today=today)
+    picked_meta = dict(pick["meta"])
+    has_history = not bool(picked_meta.get("is_default"))
+    run_at = datetime.datetime.now(ZoneInfo("Africa/Nairobi")).isoformat()
+    sheets = q(conn, """
+        SELECT s.id, s.style_name, s.accessories_pct,
+               s.accessories_pct_meta,
+               EXISTS (
+                   SELECT 1 FROM fabric_costing_signoffs so
+                   WHERE so.sheet_id=s.id AND so.step=3
+               ) AS locked
+        FROM fabric_costing_sheets s
+        WHERE COALESCE(s.stage, 'main_production')='pre_production'
+        ORDER BY s.id
+        FOR UPDATE
+    """)
+    result = {
+        "migration_key": _PP_ACC_BACKFILL_KEY,
+        "source_month": picked_meta.get("source_month") if has_history else None,
+        "month_label": picked_meta.get("month_label") if has_history else None,
+        "dps_count": int(picked_meta.get("dps_count") or 0) if has_history else 0,
+        "picked": 0,
+        "retained": 0,
+        "skipped": 0,
+        "errors": 0,
+        "locked_updated": 0,
+        "error_rows": [],
+    }
+    for sheet in sheets:
+        raw_meta = sheet.get("accessories_pct_meta")
+        if isinstance(raw_meta, str):
+            try:
+                raw_meta = json.loads(raw_meta)
+            except Exception:
+                raw_meta = None
+        if isinstance(raw_meta, dict):
+            result["skipped"] += 1
+            continue
+
+        sid = int(sheet["id"])
+        savepoint = f"cost_acc_backfill_{sid}"
+        with conn.cursor() as cur:
+            cur.execute(f"SAVEPOINT {savepoint}")
+        try:
+            old_pct = (float(sheet["accessories_pct"])
+                       if sheet.get("accessories_pct") is not None
+                       else _PP_ACC_DEFAULT_PCT)
+            if has_history:
+                pct = float(pick["pct"])
+                meta = dict(picked_meta)
+                meta.update({
+                    "migration_key": _PP_ACC_BACKFILL_KEY,
+                    "retrofit_status": "picked",
+                    "backfilled_at": run_at,
+                })
+                outcome = "picked"
+            else:
+                pct = old_pct
+                meta = {
+                    "pct": pct,
+                    "source_month": None,
+                    "month_label": None,
+                    "dps_count": 0,
+                    "fallback": False,
+                    "is_default": False,
+                    "requested_month": picked_meta.get("requested_month"),
+                    "requested_month_label": picked_meta.get(
+                        "requested_month_label"),
+                    "migration_key": _PP_ACC_BACKFILL_KEY,
+                    "retrofit_status": "retained_no_history",
+                    "backfilled_at": run_at,
+                }
+                outcome = "retained"
+
+            lines = [dict(r) for r in q(conn, """
+                SELECT id, kind, label, qty, unit_cost, total, is_auto,
+                       source, position, component_id
+                FROM fabric_costing_lines
+                WHERE sheet_id=%s
+                ORDER BY position, id
+            """, (sid,))]
+            original_by_id = {int(l["id"]): dict(l) for l in lines}
+            _preprod_stamp_accessories(
+                lines, pct, meta, recalculate=has_history)
+            kept_ids = {int(l["id"]) for l in lines}
+            removed_ids = [
+                line_id for line_id in original_by_id if line_id not in kept_ids]
+            changed_lines = []
+            for line in lines:
+                line_id = int(line["id"])
+                old = original_by_id[line_id]
+                fields = ("label", "qty", "unit_cost", "total", "is_auto",
+                          "source", "component_id")
+                if any(old.get(k) != line.get(k) for k in fields):
+                    changed_lines.append(line)
+
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE fabric_costing_sheets
+                    SET accessories_pct=%s, accessories_pct_meta=%s
+                    WHERE id=%s AND accessories_pct_meta IS NULL
+                """, (pct, json.dumps(meta), sid))
+                for line in changed_lines:
+                    if has_history:
+                        cur.execute("""
+                            UPDATE fabric_costing_lines
+                            SET label=%s, qty=%s, unit_cost=%s, total=%s,
+                                is_auto=%s, source=%s, component_id=%s
+                            WHERE id=%s AND sheet_id=%s
+                        """, (line.get("label"), line.get("qty"),
+                              line.get("unit_cost"), line.get("total"),
+                              line.get("is_auto"), line.get("source"),
+                              line.get("component_id"), line["id"], sid))
+                    else:
+                        cur.execute("""
+                            UPDATE fabric_costing_lines
+                            SET label=%s, is_auto=%s, source=%s
+                            WHERE id=%s AND sheet_id=%s
+                        """, (line.get("label"), line.get("is_auto"),
+                              line.get("source"), line["id"], sid))
+                if removed_ids:
+                    cur.execute("""
+                        DELETE FROM fabric_costing_lines
+                        WHERE sheet_id=%s AND id = ANY(%s)
+                    """, (sid, removed_ids))
+
+            summary = (
+                f"Accessories % retrofit: {_preprod_acc_pct_fmt(pct)}% from "
+                f"{meta.get('month_label')} Done-DPS average "
+                f"({int(meta.get('dps_count') or 0)} DPS)"
+                if has_history else
+                f"Accessories % retrofit: retained {_preprod_acc_pct_fmt(pct)}% "
+                "because no qualifying Done-DPS history was available"
+            )
+            _costing_history_write(
+                conn, sid, "accessories_pct_retrofit", uid, uname, summary, {
+                    "migration_key": _PP_ACC_BACKFILL_KEY,
+                    "retrofit_status": meta["retrofit_status"],
+                    "previous_pct": old_pct,
+                    "accessories_pct": pct,
+                    "accessories_pct_meta": meta,
+                    "accessories_line_updated": bool(changed_lines),
+                    "duplicate_machine_lines_removed": len(removed_ids),
+                    "approved_sheet": bool(sheet.get("locked")),
+                })
+            with conn.cursor() as cur:
+                cur.execute(f"RELEASE SAVEPOINT {savepoint}")
+            result[outcome] += 1
+            if sheet.get("locked"):
+                result["locked_updated"] += 1
+        except Exception as exc:
+            with conn.cursor() as cur:
+                cur.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                cur.execute(f"RELEASE SAVEPOINT {savepoint}")
+            result["errors"] += 1
+            result["error_rows"].append({
+                "sheet_id": sid,
+                "style_name": sheet.get("style_name"),
+                "error": str(exc)[:300],
+            })
+    return result
 
 
 def _clean_costing_lines(lines):
@@ -14495,7 +14711,8 @@ def costing_sheets_list():
         rows = q(conn, """
             SELECT s.id, s.style_name, s.style_number, s.selling_price,
                    s.dps_ref, s.color, s.updated_by_name, s.updated_at,
-                   s.embroidery_data, s.stage,
+                   s.embroidery_data, s.stage, s.accessories_pct,
+                   s.accessories_pct_meta,
                    -- Stored line totals only: sheets are a snapshot of the
                    -- cost at creation time and never re-price on read.
                    COALESCE(SUM(l.total),0) AS lines_total,
@@ -14523,6 +14740,12 @@ def costing_sheets_list():
             emb_rc  = float(raw_emb.get("run_count") or 0)
             tc = round(tc + emb_cpr * emb_rc, 2)
         sp_ex, margin, margin_pct = _costing_margin(sp, tc)
+        acc_meta = r.get("accessories_pct_meta")
+        if isinstance(acc_meta, str):
+            try:
+                acc_meta = json.loads(acc_meta)
+            except Exception:
+                acc_meta = None
         out.append({
             "id": r["id"], "style_name": r["style_name"],
             "style_number": r["style_number"], "selling_price": sp,
@@ -14536,6 +14759,11 @@ def costing_sheets_list():
             "signoff_status": ("approved" if r["approved"]
                                else "partial" if (r["n_signed"] or 0) else "draft"),
             "stage": r.get("stage") or "main_production",
+            "accessories_pct": (float(r["accessories_pct"])
+                                if r.get("accessories_pct") is not None
+                                else None),
+            "accessories_pct_meta": (acc_meta
+                                     if isinstance(acc_meta, dict) else None),
             "updated_by_name": r["updated_by_name"],
             "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
         })
@@ -14777,6 +15005,22 @@ def costing_preprod_accessories_pct():
     }
 
 
+@fabric_router.post("/api/fabric/costing/maintenance/backfill-preprod-accessories")
+def costing_backfill_preprod_accessories(request: Request):
+    """Admin-only, idempotent retrofit for pre-auto-pick pre-production sheets."""
+    user = getattr(request.state, "user", None) or {}
+    if user.get("role") != "admin":
+        raise HTTPException(
+            status_code=403,
+            detail="Admin access is required for the Accessories % retrofit")
+    uid, uname = _costing_user(request)
+    with _get_conn() as conn:
+        _ensure_costing_tables(conn)
+        result = _preprod_accessories_backfill(conn, uid, uname)
+        conn.commit()
+    return result
+
+
 @fabric_router.post("/api/fabric/costing/sheets")
 def costing_sheet_create(request: Request, body: dict = Body(...)):
     _costing_require_editor(request)
@@ -14920,11 +15164,18 @@ def costing_sheet_update(sheet_id: int, request: Request, body: dict = Body(...)
     emb_data_json = _parse_embroidery_data(body.get("embroidery_data"))
     with _get_conn() as conn:
         _ensure_costing_tables(conn)
-        sheets = q(conn, "SELECT * FROM fabric_costing_sheets WHERE id=%s", (sheet_id,))
+        # Serialize an editor save against the one-time legacy Accessories
+        # retrofit. Without the parent-row lock, a stale editor opened before
+        # the retrofit could write its old derived line after the migration
+        # committed, leaving new provenance paired with old maths.
+        sheets = q(conn, """
+            SELECT * FROM fabric_costing_sheets WHERE id=%s FOR UPDATE
+        """, (sheet_id,))
         if not sheets:
             raise HTTPException(status_code=404, detail="Sheet not found")
         # Approved sheets are read-only — the server, not the UI, enforces it.
         _costing_reject_if_locked(conn, sheet_id)
+        _acc_meta = None
         if stage == "pre_production":
             # Accessories % is READ-ONLY: keep the sheet's stored value
             # (picked at creation, or hand-typed on legacy sheets — never
@@ -14942,7 +15193,12 @@ def costing_sheet_update(sheet_id: int, request: Request, body: dict = Body(...)
                     _acc_meta = None
             if not isinstance(_acc_meta, dict):
                 _acc_meta = None
-            _preprod_apply_accessories(lines, _acc_pct, _acc_meta)
+            _preprod_stamp_accessories(
+                lines, _acc_pct, _acc_meta,
+                recalculate=not (
+                    isinstance(_acc_meta, dict)
+                    and _acc_meta.get("retrofit_status")
+                    == "retained_no_history"))
             _lines_total = sum(ln["total"] for ln in lines)
             try:
                 _raw_emb = json.loads(emb_data_json) if emb_data_json else {}
@@ -14957,6 +15213,10 @@ def costing_sheet_update(sheet_id: int, request: Request, body: dict = Body(...)
             FROM fabric_costing_lines WHERE sheet_id=%s
             ORDER BY (kind <> 'fabric'), position, id
         """, (sheet_id,))
+        if (isinstance(_acc_meta, dict)
+                and _acc_meta.get("retrofit_status")
+                == "retained_no_history"):
+            _preprod_restore_retained_amount(lines, old_lines)
         summary = _costing_change_summary(old_lines, lines, old_sp, sp)
         with conn.cursor() as cur:
             cur.execute("""
@@ -15436,15 +15696,24 @@ def _costing_to_build_data(s):
             _pct_txt = _preprod_acc_pct_fmt(
                 s.get("accessories_pct") if s.get("accessories_pct") is not None
                 else _m.get("pct"))
-            if _m.get("is_default"):
+            if _m.get("retrofit_status") == "retained_no_history":
+                acc_prov = (
+                    f"Accessories remain {_pct_txt}% of fabric cost — the "
+                    "existing value was retained because no qualifying "
+                    "Done-DPS history was available during the controlled "
+                    "retrofit.")
+            elif _m.get("is_default"):
                 acc_prov = (f"Accessories are {_pct_txt}% of fabric cost — the "
                             "standard default (no month with qualifying "
                             "Done-DPS data), picked at sheet creation.")
             else:
+                _picked_when = ("backfilled automatically."
+                                if _m.get("retrofit_status") == "picked"
+                                else "picked at sheet creation.")
                 acc_prov = (f"Accessories are {_pct_txt}% of fabric cost — the "
                             f"{_m.get('month_label') or _m.get('source_month')} "
                             f"Done-DPS average ({int(_m.get('dps_count') or 0)} "
-                            "DPS), picked at sheet creation.")
+                            f"DPS), {_picked_when}")
                 if _m.get("fallback"):
                     _req = _m.get("requested_month_label") or "the previous month"
                     acc_prov += (f" Fallback month: {_req} had no qualifying "
