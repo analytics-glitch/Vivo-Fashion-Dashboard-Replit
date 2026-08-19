@@ -130,6 +130,7 @@ function ShellInner() {
   // repeat request lands even when TabCommunity is already mounted.
   const initialSub = params.get("sub") || "";
   const [subNav, setSubNav] = useState(() => (initialSub ? { id: initialSub, n: 1 } : null));
+  const [communityComposeAction, setCommunityComposeAction] = useState(null);
   const [helpOpen, setHelpOpen] = useState(false);
   // #FabulasAtAnyAge story overlay — plain shell state (an overlay, not a
   // route): Escape/close never disturbs the URL underneath.
@@ -287,6 +288,15 @@ function ShellInner() {
     setSubNav(null);
     applyView({ tab: id, sku: "", ev: "", cart: false, wl: false, page: "", sub: "" }, "replace");
   }, [applyView]);
+
+  const openCommunityComposer = useCallback((type) => {
+    setCommunityComposeAction({ type, nonce: Date.now() });
+    goTab("community");
+  }, [goTab]);
+
+  const clearCommunityComposeAction = useCallback(() => {
+    setCommunityComposeAction(null);
+  }, []);
 
   // Deep-link into Community → Events from anywhere (home card, profile
   // mirror, news articles). Pushes history when coming from another view so
@@ -553,7 +563,7 @@ function ShellInner() {
           <VivoEditDetail editId={editId} onBack={closeEdit} onOpenProduct={openProduct} member={member} onGuest={exitGuest} />
         ) : (
           <>
-            {tab === "home" && <TabHome onNavigate={goTab} member={member} onOpenProduct={openProduct} onOpenPage={openPage} onOpenEvent={openEventDetail} onOpenFabulas={setFabulasId} />}
+            {tab === "home" && <TabHome onNavigate={goTab} member={member} onOpenProduct={openProduct} onOpenPage={openPage} onOpenEvents={openEvents} onOpenFabulas={setFabulasId} onOpenCommunityComposer={openCommunityComposer} />}
             {tab === "community" && !member && (
               <>
                 <GuestGate
@@ -568,7 +578,7 @@ function ShellInner() {
                 </div>
               </>
             )}
-            {tab === "community" && member && <TabCommunity member={member} subNav={subNav} onSubChange={syncSub} onOpenEvent={openEventDetail} onOpenProduct={openProduct} onOpenPage={openPage} onOpenFabulas={setFabulasId} onOpenEdit={openEdit} onOpenEdits={() => openPage("edits")} />}
+            {tab === "community" && member && <TabCommunity member={member} subNav={subNav} composeAction={communityComposeAction} onComposeActionConsumed={clearCommunityComposeAction} onSubChange={syncSub} onOpenEvent={openEventDetail} onOpenProduct={openProduct} onOpenPage={openPage} onOpenFabulas={setFabulasId} onOpenEdit={openEdit} onOpenEdits={() => openPage("edits")} />}
             {tab === "shop" && <TabShop onOpenProduct={openProduct} onOpenTryOn={() => openTryOn("")} onOpenPage={openPage} onOpenQuiz={openQuiz} onOpenEdit={openEdit} onOpenEdits={() => openPage("edits")} />}
             {tab === "rewards" && (member ? (
               <TabRewards member={member} onMemberUpdate={updateMember} onOpenPage={openPage} />

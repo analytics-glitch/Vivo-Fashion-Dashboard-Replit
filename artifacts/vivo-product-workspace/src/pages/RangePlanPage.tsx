@@ -1,7 +1,7 @@
 import { Fragment, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Check, Download, MoveRight, Plus, RefreshCw, Save, Target, TrendingDown, TrendingUp, X } from 'lucide-react';
+import { Check, Download, Plus, RefreshCw, Save, Target, TrendingDown, TrendingUp, X } from 'lucide-react';
 import {
   Bar,
   BarChart,
@@ -61,32 +61,6 @@ type RangePlanResponse = {
   otb: RangePlanOtb[];
   averageCostKes: number;
   health: RangePlanHealth;
-  assortmentQuarter: 'Q3 2026' | 'Q4 2026';
-  assortmentStyles: AssortmentStyle[];
-  carryOverStyles: AssortmentStyle[];
-  newStyles: AssortmentStyle[];
-  assortmentSummary: {
-    total: number;
-    counts: { total: number; noos: number; core: number; recent: number; newTest: number };
-    categoryBreakdown: Array<{ name: string; count: number }>;
-    stageBreakdown: Array<{ name: string; count: number }>;
-  };
-  quarterSummaries: Record<'Q3 2026' | 'Q4 2026', { total: number; counts: { total: number; noos: number; core: number; recent: number; newTest: number } }>;
-};
-type AssortmentStyle = {
-  id: string;
-  pdId: number | null;
-  source: 'all_products_clean' | 'pd_styles';
-  styleNumber: string;
-  name: string;
-  category: string;
-  subCategory: string;
-  stage: string;
-  designer: string;
-  season: string;
-  tier: Tier;
-  status: string;
-  excluded: boolean;
 };
 
 const tierLabels: Record<Tier, string> = {
@@ -202,53 +176,22 @@ function RangePlanPage() {
   const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<'matrix' | 'otb' | 'health'>('matrix');
   const [selectedSeasonId, setSelectedSeasonId] = useState<number | undefined>();
-  const [assortmentQuarter, setAssortmentQuarter] = useState<'Q3 2026' | 'Q4 2026'>('Q3 2026');
-  const [selectedStyleIds, setSelectedStyleIds] = useState<number[]>([]);
   const [addingTier, setAddingTier] = useState<Tier | null>(null);
   const [newSubCategory, setNewSubCategory] = useState('');
   const rangePlan = useQuery({
-    queryKey: ['workspace', 'range-plan', selectedSeasonId, assortmentQuarter],
-    queryFn: () => getRangePlan(selectedSeasonId, assortmentQuarter),
+    queryKey: ['workspace', 'range-plan', selectedSeasonId],
+    queryFn: () => getRangePlan(selectedSeasonId),
     staleTime: 60_000,
   });
-  const moveStyles = useMutation({
-    mutationFn: async ({ styleIds, season }: { styleIds: number[]; season: 'Q3 2026' | 'Q4 2026' }) => {
-      const response = await fetch('/api/workspace/range-plan/styles/bulk-season', {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ styleIds, season }),
-      });
-      if (!response.ok) throw new Error(`Could not move styles (${response.status})`);
-      return response.json();
-    },
-    onSuccess: () => {
-      setSelectedStyleIds([]);
-      queryClient.invalidateQueries({ queryKey: ['workspace', 'range-plan'] });
-    },
-  });
-  const moveStyle = useMutation({
-    mutationFn: async ({ id, season }: { id: number; season: 'Q3 2026' | 'Q4 2026' }) => {
-      const response = await fetch(`/api/workspace/range-plan/styles/${id}/season`, {
-        method: 'PATCH',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ season }),
-      });
-      if (!response.ok) throw new Error(`Could not move style (${response.status})`);
-      return response.json();
-    },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['workspace', 'range-plan'] }),
-  });
-  const toggleExclusion = useMutation({
-    mutationFn: async ({ styleId, excluded }: { styleId: string; excluded: boolean }) => {
-      const response = await fetch('/api/workspace/range-plan/exclusions', {
+  const updateSeason = useMutation({
+    mutationFn: async ({ id, data }: { id: number; data: { revenueTargetKes?: number; cogsBudgetPct?: number } }) => {
+      const response = await fetch(`/api/workspace/range-plan/seasons/${id}`, {
         method: 'PUT',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ season: assortmentQuarter, source: 'all_products_clean', styleId, excluded }),
+        body: JSON.stringify(data),
       });
-      if (!response.ok) throw new Error(`Could not update assortment exclusion (${response.status})`);
+      if (!response.ok) throw new Error(`Could not save season assumptions (${response.status})`);
       return response.json();
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['workspace', 'range-plan'] }),
@@ -308,9 +251,6 @@ function RangePlanPage() {
   const payload = rangePlan.data;
   const season = payload?.season;
   const rows = payload?.rows ?? [];
-  const assortmentStyles = payload?.assortmentStyles ?? [];
-  const carryOverStyles = payload?.carryOverStyles ?? assortmentStyles.filter((style) => style.source === 'all_products_clean');
-  const newStyles = payload?.newStyles ?? assortmentStyles.filter((style) => style.source === 'pd_styles');
   const totals = useMemo(() => {
     const totalStyles = rows.reduce((sum, row) => sum + row.styleCountTarget, 0);
     const totalUnits = rows.reduce((sum, row) => sum + row.totalUnitsImplied, 0);
@@ -322,6 +262,11 @@ function RangePlanPage() {
 
   const saveRow = (row: RangePlanRow, field: 'styleCountTarget' | 'aosUnits' | 'notes', value: string) => {
     updateRow.mutate({ id: row.id, data: { [field]: field === 'notes' ? value : Math.max(0, Number.parseInt(value || '0', 10) || 0) } });
+  };
+  const saveSeason = (field: 'revenueTargetKes' | 'cogsBudgetPct', value: string) => {
+    if (!season) return;
+    const numeric = Math.max(0, Number(value || 0));
+    updateSeason.mutate({ id: season.id, data: { [field]: numeric } });
   };
   const saveOtb = (month: RangePlanOtb, field: 'revenueTarget' | 'plannedUnits' | 'newStylesCount', value: string) => {
     if (!season) return;
@@ -336,11 +281,6 @@ function RangePlanPage() {
       },
     });
   };
-  const toggleStyle = (id: number) => setSelectedStyleIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
-  const allSelected = newStyles.length > 0 && newStyles.every((style) => style.pdId !== null && selectedStyleIds.includes(style.pdId));
-  const toggleAll = () => setSelectedStyleIds(allSelected ? [] : newStyles.flatMap((style) => style.pdId === null ? [] : [style.pdId]));
-  const seasonChip = (value: string) => value.includes(',') ? 'Q3+Q4' : value.replace(' 2026', '');
-  const otherQuarter = assortmentQuarter === 'Q3 2026' ? 'Q4 2026' : 'Q3 2026';
   const exportCsv = () => {
     if (!season) return;
     const header = ['Sub-Category', 'Tier', 'Style Target', 'Min', 'Max', 'AOS Units', 'Total Units', 'Notes'];
@@ -368,78 +308,20 @@ function RangePlanPage() {
         <div>
           <span className="range-eyebrow">Merchandising / Planning room</span>
           <h1>Range Plan</h1>
-          <p>Shape the season mix, commit capacity, and keep the buy honest.</p>
+          <p>How many styles, at what volume and cost?</p>
         </div>
         <div className="range-plan-season-tools">
           <label htmlFor="range-season">Planning season</label>
           <select id="range-season" value={season.id} onChange={(event) => setSelectedSeasonId(Number(event.target.value))}>
             {payload.seasons.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.seasonName} · {candidate.status}</option>)}
           </select>
-          <div className="range-plan-season-meta"><strong>{season.seasonName}</strong><span>{kesMillions(season.revenueTargetKes)} revenue target</span><span>{season.cogsBudgetPct}% COGS ceiling</span></div>
+          <div className="range-plan-season-meta">
+            <strong>{season.seasonName}</strong>
+            <label>Revenue target <InlineCell value={season.revenueTargetKes} displayValue={kesMillions(season.revenueTargetKes)} kind="number" ariaLabel="Revenue target" onSave={(value) => saveSeason('revenueTargetKes', value)} /></label>
+            <label>COGS ceiling <InlineCell value={season.cogsBudgetPct} displayValue={`${season.cogsBudgetPct}%`} kind="number" ariaLabel="COGS ceiling percentage" onSave={(value) => saveSeason('cogsBudgetPct', value)} /></label>
+          </div>
         </div>
       </div>
-
-      <section className="assortment-plan-section" aria-labelledby="assortment-plan-title">
-        <div className="range-section-toolbar assortment-toolbar">
-           <div><span className="range-eyebrow">Season-driven assortment</span><h2 id="assortment-plan-title">Move the edit with the season</h2><p>Carry-over range is always visible alongside the new styles entering this quarter.</p></div>
-          <div className="assortment-bulk-actions">
-            <span>{selectedStyleIds.length ? `${selectedStyleIds.length} selected` : 'Select styles to move'}</span>
-            <button type="button" className="button button-outline" disabled={!selectedStyleIds.length || moveStyles.isPending} onClick={() => moveStyles.mutate({ styleIds: selectedStyleIds, season: otherQuarter })}><MoveRight size={14} /> Move to {otherQuarter.replace(' 2026', '')}</button>
-          </div>
-        </div>
-        <div className="assortment-quarter-tabs" role="tablist" aria-label="Assortment quarters">
-          {(['Q3 2026', 'Q4 2026'] as const).map((quarter) => (
-            <button key={quarter} type="button" role="tab" aria-selected={assortmentQuarter === quarter} className={assortmentQuarter === quarter ? 'active' : ''} onClick={() => { setAssortmentQuarter(quarter); setSelectedStyleIds([]); }}>
-              <span>{quarter.replace(' 2026', '')}</span><strong>{payload.quarterSummaries?.[quarter]?.total ?? 0}</strong><small>styles</small>
-            </button>
-          ))}
-        </div>
-         <div className="assortment-summary-grid">
-           <StatTile label="Total Styles in Plan" value={numberFormat(payload.assortmentSummary.counts.total)} detail={`${assortmentQuarter.replace(' 2026', '')} assortment`} icon={<Target size={16} />} />
-           <StatTile label="NOOS" value={numberFormat(payload.assortmentSummary.counts.noos)} detail="Always included" />
-           <StatTile label="Core" value={numberFormat(payload.assortmentSummary.counts.core)} detail="Carry-over performers" />
-           <StatTile label="Recent" value={numberFormat(payload.assortmentSummary.counts.recent)} detail="Carry-over recent" />
-           <StatTile label="New/Test" value={numberFormat(payload.assortmentSummary.counts.newTest)} detail="New PLM styles" />
-        </div>
-        <div className="assortment-breakdowns">
-          <div><span>Category mix</span>{payload.assortmentSummary.categoryBreakdown.slice(0, 5).map((item) => <b key={item.name}>{item.name}<em>{item.count}</em></b>)}</div>
-          <div><span>Stage mix</span>{payload.assortmentSummary.stageBreakdown.slice(0, 5).map((item) => <b key={item.name}>{item.name}<em>{item.count}</em></b>)}</div>
-        </div>
-        <div className="assortment-table-card">
-           <div className="range-table-scroll">
-            <table className="range-table assortment-table">
-               <thead><tr><th><input type="checkbox" checked={allSelected} onChange={toggleAll} aria-label="Select all new styles" /></th><th>Style</th><th>Category</th><th>Tier</th><th>Status</th><th>Season</th><th /></tr></thead>
-              <tbody>
-                 {carryOverStyles.length > 0 && <tr className="assortment-group-heading"><td colSpan={7}><strong>CARRY-OVER RANGE</strong><span>Active and retired styles continuing in the quarter</span></td></tr>}
-                 {carryOverStyles.map((style) => (
-                   <tr key={style.id}>
-                     <td><span className="range-readonly">—</span></td>
-                     <td><strong>{style.styleNumber || '—'}</strong><small>{style.name}</small></td>
-                     <td>{style.category}</td>
-                     <td><span className={`range-tier-pill tier-${style.tier.replace('/', '-')}`}>{displayTier(style.tier)}</span></td>
-                     <td><span className={`range-stage-pill ${style.status === 'Retired' ? 'is-retired' : ''}`}>{style.status}</span></td>
-                     <td><span className="season-chip">{seasonChip(style.season)}</span></td>
-                     <td>{style.tier === 'NOOS' ? <span className="range-readonly">Always included</span> : <button type="button" className="assortment-move-link assortment-exclude-link" disabled={toggleExclusion.isPending} onClick={() => toggleExclusion.mutate({ styleId: style.styleNumber, excluded: true })}>Exclude <X size={13} /></button>}</td>
-                   </tr>
-                 ))}
-                 <tr className="assortment-group-heading"><td colSpan={7}><strong>NEW THIS QUARTER</strong><span>Product Development styles assigned to {assortmentQuarter}</span></td></tr>
-                 {newStyles.length ? newStyles.map((style) => (
-                   <tr key={style.id}>
-                     <td><input type="checkbox" checked={style.pdId !== null && selectedStyleIds.includes(style.pdId)} onChange={() => style.pdId !== null && toggleStyle(style.pdId)} aria-label={`Select ${style.styleNumber || style.name}`} /></td>
-                     <td><strong>{style.styleNumber || '—'}</strong><small>{style.name}</small></td>
-                     <td>{style.category}</td>
-                     <td><span className="range-tier-pill tier-New-Test">New/Test</span></td>
-                     <td><span className="range-stage-pill">{style.status}</span></td>
-                     <td><span className="season-chip">{seasonChip(style.season)}</span></td>
-                     <td>{style.pdId !== null && <button type="button" className="assortment-move-link" disabled={moveStyle.isPending} onClick={() => moveStyle.mutate({ id: style.pdId as number, season: otherQuarter })}>Move to {otherQuarter.replace(' 2026', '')} <MoveRight size={13} /></button>}</td>
-                   </tr>
-                 )) : <tr key="empty-assortment"><td colSpan={7} className="range-empty-cell">No new styles are assigned to this quarter yet.</td></tr>}
-              </tbody>
-            </table>
-          </div>
-        </div>
-        {moveStyles.isError || moveStyle.isError ? <div className="form-error">The season move could not be saved. Try again.</div> : null}
-      </section>
 
       <div className="range-plan-tabs" role="tablist" aria-label="Range Plan sections">
         {([['matrix', 'Mix Matrix'], ['otb', 'Monthly OTB'], ['health', 'Health Indicators']] as const).map(([tab, label]) => (
@@ -522,6 +404,20 @@ function RangePlanPage() {
             </div>
           </div>
           <div className="range-otb-note"><span className="range-gold-dot" /> OTB Value is the monthly COGS budget ceiling. Enter planned units and new style launches to make the buy cadence explicit.</div>
+           <div className="range-otb-category-card">
+             <div className="range-section-toolbar"><div><span className="range-eyebrow">Category intake budget</span><h2>Where the monthly buy goes</h2><p>Category allocations follow each line's share of the planned style count.</p></div></div>
+             <div className="range-table-scroll">
+               <table className="range-table range-otb-category-table">
+                 <thead><tr><th>Sub-Category</th>{payload.otb.map((month) => <th key={month.monthYear}>{monthShort(month.monthYear)}</th>)}</tr></thead>
+                 <tbody>
+                   {rows.map((row) => (
+                     <tr key={row.id}><td><strong>{row.subCategory}</strong><small>{displayTier(row.tier)} · {numberFormat(row.styleCountTarget)} styles</small></td>{payload.otb.map((month) => { const monthlyBudget = (month.revenueTarget ?? season.revenueTargetKes / 12) * season.cogsBudgetPct / 100; const share = totals.totalStyles ? row.styleCountTarget / totals.totalStyles : 0; return <td key={`${row.id}-${month.monthYear}`}>{kes(monthlyBudget * share)}</td>; })}</tr>
+                   ))}
+                   <tr className="range-grand-total"><td>Total category intake budget</td>{payload.otb.map((month) => <td key={month.monthYear}>{kes((month.revenueTarget ?? season.revenueTargetKes / 12) * season.cogsBudgetPct / 100)}</td>)}</tr>
+                 </tbody>
+               </table>
+             </div>
+           </div>
         </>
       )}
 

@@ -144,3 +144,5 @@
 - [Merch store size analysis](merch-store-size-analysis.md) — compare a selected store's size SOR/SOH against weighted network size benchmarks, not average store percentages.
 - ['Online' pseudo-country](online-pseudo-country.md) — Shop Zetu online rows sit under country='Online' in sales AND inventory; Kenya filters must fold it in on both sides of any ratio.
 - [Merch full-price sell-through](merch-full-price-sell-through.md) — strict selected-period zero-discount unit ratio, excluding returns and distinct from avg full-price %.
+- [Planning card images](planning-card-image-delivery.md) — keep large planning payloads lean; serve protected product images lazily by style URL.
+- [Community composer hand-off](community-composer-handoff.md) — Home CTAs pass a one-time look/question intent into Community, then consume it after opening the existing composer.

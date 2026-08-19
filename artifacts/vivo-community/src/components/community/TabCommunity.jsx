@@ -159,7 +159,7 @@ const FEED_CHIPS = [
   { id: "haul", label: "Hauls", type: "haul" },
 ];
 
-export default function TabCommunity({ member, subNav, onSubChange, onOpenEvent, onOpenProduct, onOpenPage, onOpenFabulas, onOpenEdit, onOpenEdits }) {
+export default function TabCommunity({ member, subNav, composeAction, onComposeActionConsumed, onSubChange, onOpenEvent, onOpenProduct, onOpenPage, onOpenFabulas, onOpenEdit, onOpenEdits }) {
   const [subTab, setSubTab] = useState(() => (SUB_IDS.includes(subNav?.id) ? subNav.id : "feed"));
   const [followed, setFollowed] = useState({});
   const [entryFor, setEntryFor] = useState(null);    // challenge entry composer
@@ -174,6 +174,16 @@ export default function TabCommunity({ member, subNav, onSubChange, onOpenEvent,
       setOpenEntry(null);
     }
   }, [subNav]);
+
+  useEffect(() => {
+    if (!composeAction?.type || !member) return;
+    setSubTab("feed");
+    setFeedView("");
+    setFeedType("");
+    setComposeType(composeAction.type);
+    onSubChange?.("feed");
+    onComposeActionConsumed?.();
+  }, [composeAction, member, onComposeActionConsumed, onSubChange]);
 
   // Member-initiated switches also tell the shell, so the URL's ?sub= stays
   // truthful and refresh/share restores the same view.
@@ -243,19 +253,19 @@ export default function TabCommunity({ member, subNav, onSubChange, onOpenEvent,
   return (
     <div className="animate-in fade-in duration-500">
       {/* Sub Tabs */}
-      <div className="flex gap-6 border-b border-border mb-8 overflow-x-auto hide-scrollbar">
+      <div className="flex gap-2 mb-8 overflow-x-auto hide-scrollbar pb-1">
         {SUB_TABS.map(t => (
           <button
             key={t.id}
             onClick={() => selectSub(t.id)}
-            className={`py-3 text-[13px] font-semibold uppercase tracking-wider whitespace-nowrap transition-colors relative ${
-              subTab === t.id ? "text-foreground" : "text-muted-foreground hover:text-foreground/80"
+            aria-current={subTab === t.id ? "page" : undefined}
+            className={`shrink-0 min-h-10 rounded-sm border px-3 py-2 text-[11px] font-semibold uppercase tracking-wider whitespace-nowrap transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
+              subTab === t.id
+                ? "border-[#FE5000] bg-[#FE5000] text-white"
+                : "border-border bg-background text-muted-foreground hover:border-primary/50 hover:text-foreground"
             }`}
           >
             {t.label}
-            {subTab === t.id && (
-              <span className="absolute bottom-0 left-0 w-full h-[2px] bg-foreground" />
-            )}
           </button>
         ))}
       </div>

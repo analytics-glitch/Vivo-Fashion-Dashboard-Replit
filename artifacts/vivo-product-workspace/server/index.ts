@@ -2611,11 +2611,12 @@ function seasonClause(column: string, parameter: string) {
 }
 
 function assortmentStylePayload(row: Record<string, unknown>) {
+  const styleNumber = String(row.styleNumber ?? "").trim();
   return {
     id: String(row.id ?? ""),
     pdId: row.pdId == null ? null : Number(row.pdId),
     source: String(row.source ?? ""),
-    styleNumber: String(row.styleNumber ?? ""),
+    styleNumber,
     name: String(row.name ?? ""),
     category: String(row.category ?? "Uncategorised"),
     subCategory: String(row.subCategory ?? ""),
@@ -2625,6 +2626,7 @@ function assortmentStylePayload(row: Record<string, unknown>) {
     tier: String(row.tier ?? "New/Test"),
     status: String(row.status ?? "Active"),
     excluded: Boolean(row.excluded),
+    image: styleNumber ? `/api/workspace/assortment-image/${encodeURIComponent(styleNumber)}` : null,
   };
 }
 
@@ -2659,7 +2661,7 @@ async function assortmentPlanData(quarter: string) {
          AND LOWER(COALESCE(a.status,'')) IN ('active','retired')
          AND a.style_number IS NOT NULL AND BTRIM(a.style_number) <> ''
        GROUP BY a.style_number
-     )
+      )
      SELECT
        'catalogue:' || r.style_number AS id,
        NULL::bigint AS "pdId",
@@ -2667,7 +2669,7 @@ async function assortmentPlanData(quarter: string) {
        r.style_number AS "styleNumber",
        r.name,r.category,r."subCategory",
        'Carry-over' AS stage,'Merchandising' AS designer,
-       $1 AS season,r.tier,r.status,
+        $1 AS season,r.tier,r.status,
        (e.style_id IS NOT NULL) AS excluded
      FROM style_rollup r
      LEFT JOIN ${schema}.assortment_exclusions e
@@ -2802,6 +2804,68 @@ router.get("/range-plan", async (req, res, next) => {
          "Q4 2026": { total: q4Assortment.total, counts: q4Assortment.counts },
       },
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get("/assortment-image/:styleNumber", requireUser, async (req, res, next) => {
+  try {
+    const styleNumber = decodeURIComponent(String(req.params.styleNumber ?? "")).trim();
+    if (!styleNumber) {
+      res.status(404).end();
+      return;
+    }
+    const result = await pool.query(
+      `SELECT i.image_512 AS image
+       FROM public.all_products_clean p
+       JOIN public.product_image_map m ON m.sku=p.sku
+       JOIN public.product_images i ON i.tmpl_id=m.tmpl_id
+       WHERE ${allowedBrand("p")}
+         AND LOWER(COALESCE(p.status,'')) IN ('active','retired')
+         AND p.style_number=$1
+         AND i.image_512 IS NOT NULL AND i.image_512 <> ''
+       ORDER BY p.sku
+       LIMIT 1`,
+      [styleNumber],
+    );
+    const raw = result.rows[0]?.image;
+    if (!raw) {
+      res.status(404).end();
+      return;
+    }
+    const image = String(raw).replace(/^data:image\/[^;]+;base64,/, "");
+    res.setHeader("Cache-Control", "private, max-age=3600");
+    res.type("jpeg").send(Buffer.from(image, "base64"));
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.put("/range-plan/seasons/:seasonId", async (req, res, next) => {
+  try {
+    const seasonId = Number(req.params.seasonId);
+    const revenueTargetKes = req.body?.revenueTargetKes === undefined ? null : Number(req.body.revenueTargetKes);
+    const cogsBudgetPct = req.body?.cogsBudgetPct === undefined ? null : Number(req.body.cogsBudgetPct);
+    if (!Number.isInteger(seasonId) || seasonId <= 0 || (revenueTargetKes !== null && (!Number.isFinite(revenueTargetKes) || revenueTargetKes < 0)) || (cogsBudgetPct !== null && (!Number.isFinite(cogsBudgetPct) || cogsBudgetPct < 0 || cogsBudgetPct > 100))) {
+      res.status(400).json({ error: "Invalid season assumptions" });
+      return;
+    }
+    const result = await pool.query(
+      `UPDATE ${schema}.range_plan_seasons
+       SET revenue_target_kes=COALESCE($2,revenue_target_kes),
+           cogs_budget_pct=COALESCE($3,cogs_budget_pct)
+       WHERE id=$1
+       RETURNING id,season_name AS "seasonName",season_year AS "seasonYear",
+         revenue_target_kes AS "revenueTargetKes",cogs_budget_pct AS "cogsBudgetPct",
+         factory_capacity_units AS "factoryCapacityUnits",status`,
+      [seasonId, revenueTargetKes, cogsBudgetPct],
+    );
+    if (!result.rows[0]) {
+      res.status(404).json({ error: "Planning season not found" });
+      return;
+    }
+    res.json(rangePlanSeasonPayload(result.rows[0]));
   } catch (error) {
     next(error);
   }

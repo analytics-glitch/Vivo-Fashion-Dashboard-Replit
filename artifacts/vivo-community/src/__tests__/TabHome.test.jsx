@@ -92,6 +92,7 @@ const NO_OP = {
   onNavigate: vi.fn(),
   onOpenProduct: vi.fn(),
   onOpenPage: vi.fn(),
+  onOpenEvents: vi.fn(),
   onOpenEvent: vi.fn(),
   onOpenEdit: vi.fn(),
   onOpenEdits: vi.fn(),
@@ -448,5 +449,43 @@ describe("TabHome – homepage layout", () => {
     expect(screen.queryByTestId("hero-shop-now")).not.toBeInTheDocument();
     expect(screen.getByTestId("endcap-community")).toHaveTextContent(/challenge/i);
     expect(screen.getByTestId("endcap-shop")).toHaveTextContent(/Go to Shop/);
+  });
+
+  it("Home hero exposes separate look, community, and question actions", async () => {
+    const user = userEvent.setup();
+    const onNavigate = vi.fn();
+    const onOpenCommunityComposer = vi.fn();
+    render(
+      <TabHome
+        member={MEMBER}
+        {...NO_OP}
+        onNavigate={onNavigate}
+        onOpenCommunityComposer={onOpenCommunityComposer}
+      />,
+    );
+    await user.click(screen.getByTestId("hero-share-look"));
+    await user.click(screen.getByTestId("hero-join-cta"));
+    await user.click(screen.getByTestId("hero-start-conversation"));
+
+    expect(onOpenCommunityComposer).toHaveBeenNthCalledWith(1, "look");
+    expect(onNavigate).toHaveBeenCalledWith("community");
+    expect(onOpenCommunityComposer).toHaveBeenNthCalledWith(2, "question");
+  });
+
+  it("does not render the duplicate rewards balance card on Home", async () => {
+    render(<TabHome member={MEMBER} {...NO_OP} />);
+    await act(async () => {});
+    expect(screen.queryByTestId("home-rewards-card")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("home-rewards-cta")).not.toBeInTheDocument();
+  });
+
+  it("uses the compact What's On link to open Community Events", async () => {
+    const user = userEvent.setup();
+    const onOpenEvents = vi.fn();
+    render(<TabHome member={MEMBER} {...NO_OP} onOpenEvents={onOpenEvents} />);
+
+    await user.click(screen.getByTestId("home-events-link"));
+    expect(onOpenEvents).toHaveBeenCalledOnce();
+    expect(screen.queryByTestId("home-event-card")).not.toBeInTheDocument();
   });
 });

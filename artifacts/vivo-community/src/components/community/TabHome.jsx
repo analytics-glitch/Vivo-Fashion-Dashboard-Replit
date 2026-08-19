@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Heart, MessageCircle, Share, ArrowRight, ChevronRight, Cake, Gift, X, Trophy, HandHeart, HelpCircle } from "lucide-react";
+import { Heart, MessageCircle, Share, ArrowRight, ChevronRight, Cake, Gift, X, Trophy, HelpCircle } from "lucide-react";
 import PostDetailModal from "./PostDetailModal";
 import { PostVisual, timeAgo } from "./PostBits";
 import { TierBadge, Avatar, cardCls, brandAsset, SectionHeader } from "./ui";
@@ -201,28 +201,6 @@ function WinnerCongratsCard() {
   );
 }
 
-/* Give Your Vivo a Second Life — quiet, warm entry into the giving page. */
-function SecondLifeCard({ onOpenPage }) {
-  return (
-    <div data-testid="home-secondlife-card" className={`${cardCls} p-5 sm:p-6 flex items-start gap-4`}>
-      <span className="w-11 h-11 rounded-full bg-secondary border border-border flex items-center justify-center text-primary-ink shrink-0">
-        <HandHeart size={18} strokeWidth={1.5} />
-      </span>
-      <div className="flex-grow min-w-0">
-        <div className="text-[10px] font-bold uppercase tracking-widest text-primary-ink mb-1">Give back</div>
-        <h3 className="font-serif text-[17px] text-foreground leading-snug mb-1">Give your Vivo a second life</h3>
-        <p className="text-[13px] text-muted-foreground leading-relaxed mb-3">
-          Pieces you've outgrown can lift another woman up — bring them to any Vivo store.
-        </p>
-        <button data-testid="home-secondlife-cta" onClick={() => onOpenPage?.("givingback")}
-                className="inline-flex items-center gap-1 text-[13px] font-medium text-primary-ink hover:underline">
-          How it works <ChevronRight size={14} />
-        </button>
-      </div>
-    </div>
-  );
-}
-
 /* Personal touch slot — renders only when relevant to the signed-in member:
    birthday month first, otherwise progress to the next tier, otherwise
    nothing (the feed simply flows on). */
@@ -410,37 +388,18 @@ function EndCap({ onNavigate }) {
   );
 }
 
-/* "What's on" — the soonest upcoming member event as one compact calendar
-   card in the feed. Tapping it opens that event's detail page. */
-function UpcomingEventCard({ ev, onOpen }) {
-  if (!ev) return null;
-  const mine = ev.my_rsvp?.status;
-  const note =
-    mine === "confirmed" ? "· You're in"
-    : mine === "waitlisted" ? `· #${ev.my_rsvp.position} on waitlist`
-    : ev.full ? "· Fully booked"
-    : (ev.spots_left ?? 99) <= 8 ? `· ${ev.spots_left} spot${ev.spots_left === 1 ? "" : "s"} left`
-    : null;
+/* Compact bridge to the full Events section in Community. */
+function UpcomingEventsLink({ onOpenEvents }) {
   return (
-    <button
-      data-testid="home-event-card"
-      onClick={() => onOpen?.(ev.id)}
-      className={`${cardCls} w-full text-left p-4 sm:p-5 flex items-center gap-4 sm:gap-5 transition-transform hover:-translate-y-0.5 duration-300 group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary`}
-    >
-      <span className="w-16 h-16 sm:w-[72px] sm:h-[72px] rounded bg-foreground text-background flex flex-col items-center justify-center shrink-0">
-        <span className="font-serif text-2xl sm:text-[28px] leading-none">{ev.day_num}</span>
-        <span className="text-[9px] font-bold uppercase tracking-widest opacity-75 mt-1">{ev.month_abbr}</span>
-      </span>
-      <span className="flex-grow min-w-0">
-        <span className="flex items-center gap-2 text-[10px] font-bold uppercase tracking-widest mb-1">
-          <span className="text-primary-ink">What's on</span>
-          {note && <span className="text-muted-foreground font-semibold">{note}</span>}
-        </span>
-        <span className="block font-serif text-[17px] leading-snug text-foreground truncate">{ev.title}</span>
-        <span className="block text-[12px] text-muted-foreground mt-1 truncate">{ev.date_label} · {ev.time_label} · {ev.venue}</span>
-      </span>
-      <ChevronRight size={16} className="text-muted-foreground group-hover:text-foreground transition-colors shrink-0" />
-    </button>
+    <div className="flex justify-end pt-3 sm:pt-4">
+      <button
+        data-testid="home-events-link"
+        onClick={onOpenEvents}
+        className="inline-flex h-9 items-center gap-1.5 rounded-sm border border-border bg-background px-3 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+      >
+        What's On <ArrowRight size={14} />
+      </button>
+    </div>
   );
 }
 
@@ -451,7 +410,7 @@ function UpcomingEventCard({ ev, onOpen }) {
 
 /* Hero campaign — one strong vertical campaign photo, overlay only where the
    copy sits so faces and the garment stay untouched. */
-function HeroCampaign({ onNavigate, onOpenPage }) {
+function HeroCampaign({ onNavigate, onOpenPage, onOpenCommunityComposer }) {
   const [loaded, setLoaded] = useState(false);
   return (
     <section data-testid="home-hero" className="-mx-4 sm:mx-0 relative overflow-hidden sm:rounded bg-secondary">
@@ -473,13 +432,27 @@ function HeroCampaign({ onNavigate, onOpenPage }) {
           <div className="text-[11px] font-bold uppercase tracking-[0.25em] text-white/80 mb-2">This season's conversation</div>
           <h2 className="font-serif text-3xl sm:text-4xl leading-tight mb-2 text-white">The New Old Money</h2>
           <p className="text-[14px] text-white/85 mb-5 max-w-sm">Timeless silhouettes, refined details and effortless elegance, reimagined for the modern Vivo woman.</p>
-          <div className="flex flex-wrap items-center gap-3">
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+            <button
+              data-testid="hero-share-look"
+              onClick={() => (onOpenCommunityComposer ? onOpenCommunityComposer("look") : onNavigate("community"))}
+              className="h-10 sm:h-11 px-5 rounded bg-white/15 border border-white/70 text-white font-medium text-[13px] hover:bg-white/25 active:scale-[0.98] transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
+            >
+              Share a look
+            </button>
             <button
               data-testid="hero-join-cta"
-              onClick={() => (onOpenPage ? onOpenPage("article-the-new-old-money") : onNavigate("community"))}
-              className="h-11 px-8 rounded bg-white text-neutral-900 font-medium text-[14px] hover:bg-white/90 active:scale-[0.98] transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
+              onClick={() => onNavigate("community")}
+              className="h-10 sm:h-11 px-5 rounded bg-white text-neutral-900 font-medium text-[13px] hover:bg-white/90 active:scale-[0.98] transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
             >
               Join the Conversation
+            </button>
+            <button
+              data-testid="hero-start-conversation"
+              onClick={() => (onOpenCommunityComposer ? onOpenCommunityComposer("question") : onNavigate("community"))}
+              className="h-10 sm:h-11 px-5 rounded bg-white/15 border border-white/70 text-white font-medium text-[13px] hover:bg-white/25 active:scale-[0.98] transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white"
+            >
+              Start a conversation
             </button>
           </div>
         </div>
@@ -524,42 +497,6 @@ function CommunitySpotlight({ onNavigate }) {
           </button>
         </div>
       </div>
-    </section>
-  );
-}
-
-/* Member Rewards summary — a slim horizontal progress banner. */
-function RewardsSummaryCard({ member, onNavigate }) {
-  if (!member) return null;
-  const lifetime = member.lifetime_points ?? member.points ?? 0;
-  const next = lifetime < 500 ? { tier: "Ruby", at: 500 } : lifetime < 1000 ? { tier: "Tanzanite", at: 1000 } : null;
-  const pct = next ? Math.min(100, Math.round((lifetime / next.at) * 100)) : 100;
-  return (
-    <section data-testid="home-rewards-card" className={`${cardCls} p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center gap-4`}>
-      <div className="flex-grow min-w-0">
-        <div className="flex items-center gap-3 mb-2">
-          <div className="font-serif text-2xl text-foreground leading-none">
-            {(member.points ?? 0).toLocaleString()} <span className="text-sm text-muted-foreground font-sans">pts</span>
-          </div>
-          {member.tier && <TierBadge tier={member.tier} />}
-        </div>
-        <div className="flex items-center justify-between text-[11px] mb-1.5">
-          <span className="text-muted-foreground truncate">
-            {next ? `${(next.at - lifetime).toLocaleString()} pts to ${next.tier}` : "Top tier — Tanzanite ✦"}
-          </span>
-          <span className="text-muted-foreground tabular-nums ml-2">{pct}%</span>
-        </div>
-        <div className="h-1 rounded-full bg-secondary overflow-hidden">
-          <div className="h-full bg-primary rounded-full transition-all" style={{ width: `${pct}%` }} />
-        </div>
-      </div>
-      <button
-        data-testid="home-rewards-cta"
-        onClick={() => onNavigate("rewards")}
-        className="shrink-0 h-10 w-full sm:w-auto px-6 rounded bg-foreground text-background font-medium text-[13px] hover:opacity-90 active:scale-[0.98] transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
-      >
-        View Rewards
-      </button>
     </section>
   );
 }
@@ -638,8 +575,7 @@ function JohariNews({ onOpenNews, onViewAll }) {
   );
 }
 
-export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage, onOpenEvent }) {
-  const [events, setEvents] = useState([]);
+export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage, onOpenEvents, onOpenCommunityComposer }) {
   // Live challenges — the mission card and sidebar feature the first open one.
   const [liveChallenges, setLiveChallenges] = useState([]);
   // Celebrations feed the sidebar jewel (same rotation the wall shows).
@@ -648,11 +584,6 @@ export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage,
 
   useEffect(() => {
     let alive = true;
-    // Soonest upcoming event feeds the "What's on" card; quiet-failure
-    // rule — the Events sub-tab owns loading/error states.
-    api.events()
-      .then((d) => { if (alive) setEvents(d.items || []); })
-      .catch(() => {});
     api.challenges()
       .then((d) => { if (alive) setLiveChallenges(d.items || []); })
       .catch(() => {});
@@ -661,8 +592,6 @@ export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage,
       .catch(() => {});
     return () => { alive = false; };
   }, []);
-
-  const nextEvent = events[0] || null;
 
   const openNews = (id) => onOpenPage?.(newsPageId(id));
   // Interactive feed — same DB-backed list the Community tab shows.
@@ -708,19 +637,17 @@ export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage,
      mission → personal moments → community feed preview → Fresh from Vivo
      reels → style question of the week → upcoming event → Community
      Spotlight → Styled for You (+ survey) → Shop Community Looks →
-     Member Rewards → Vivo Stories → Second Life. Shopping promos, try-on,
+     Member Rewards → Vivo Stories. Shopping promos, try-on,
      fit notes and boards live on Shop / product pages / Community now. */
   return (
-    <div className="max-w-4xl mx-auto space-y-16 sm:space-y-24">
+    <div className="max-w-4xl mx-auto space-y-8 sm:space-y-10">
       <div className="-mt-2">
-        <HeroCampaign onNavigate={onNavigate} onOpenPage={onOpenPage} />
+        <HeroCampaign onNavigate={onNavigate} onOpenPage={onOpenPage} onOpenCommunityComposer={onOpenCommunityComposer} />
+        <UpcomingEventsLink onOpenEvents={onOpenEvents} />
       </div>
 
       {/* 2 · This Week's Mission */}
       <MissionCard challenge={featuredChallenge} onNavigate={onNavigate} />
-
-      {/* Give your Vivo a second life — moved up beside the featured challenge */}
-      <SecondLifeCard onOpenPage={onOpenPage} />
 
       {/* Personal one-shot moments — celebration/winner/tier, member-only */}
       {member && (
@@ -742,7 +669,7 @@ export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage,
                 <PostCard key={p.id} post={p} onOpen={openPost} onCounts={patchPost} />
               ))}
             </div>
-            <div className="mt-8 text-center">
+            <div className="mt-5 sm:mt-6 text-center">
               <button
                 data-testid="home-view-community"
                 onClick={() => onNavigate("community")}
@@ -757,12 +684,12 @@ export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage,
         <CommunitySpotlight onNavigate={onNavigate} />
       )}
 
-      {/* 4 · Fresh from Vivo — capped reel carousel + View All */}
-      <ReelsRow member={member} limit={5} onViewAll={() => onNavigate("community")} />
-
-      {/* 4b · This Week's Vivo Playlist — Spotify embed, grouped with Reels
-          as Home's brand-content block */}
-      <WeeklyPlaylist />
+      {/* 4 · Fresh from Vivo + This Week's Vivo Playlist — one compact
+           brand-content block with a smaller internal rhythm. */}
+      <div className="space-y-5 sm:space-y-6" data-testid="home-brand-content">
+        <ReelsRow member={member} limit={5} onViewAll={() => onNavigate("community")} />
+        <WeeklyPlaylist />
+      </div>
 
       {/* 5 · Styled for You — personalisation + the dress-you-better survey */}
       {member && (
@@ -784,9 +711,6 @@ export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage,
       {/* 8 · Johari News — magazine-style cover + headline list + view all */}
       <JohariNews onOpenNews={openNews} onViewAll={() => onNavigate("community")} />
 
-      {/* 9 · Member Rewards — one compact preview */}
-      <RewardsSummaryCard member={member} onNavigate={onNavigate} />
-
       {/* Style Question of the Week — one featured conversation */}
       {member && questionOfWeek && (
         <section data-testid="home-style-question">
@@ -794,9 +718,6 @@ export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage,
           <PostCard post={questionOfWeek} onOpen={openPost} onCounts={patchPost} />
         </section>
       )}
-
-      {/* Upcoming event — the next one only; calendar stays in Community */}
-      <UpcomingEventCard ev={nextEvent} onOpen={onOpenEvent} />
 
       {detailIdx >= 0 && P[detailIdx] && (
         <PostDetailModal restoreY={restoreY} posts={P} index={detailIdx} onIndex={setDetailIdx}
