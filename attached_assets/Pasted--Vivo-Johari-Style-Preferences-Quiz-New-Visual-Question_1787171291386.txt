@@ -1,0 +1,49 @@
+# Vivo Johari — Style Preferences Quiz: New Visual Questions
+
+**Context:** Confirming the "Styled for You" opt-in on Home still leads into the full Style Preferences quiz (via "Personalise My Style," same as today) — that flow stays as-is. This spec adds new questions to that quiz, on top of the existing ones (Clothing size, Preferred fit, Favourite colours, Preferred categories, What do you dress for, Rather not see, How often, Notifications & data).
+
+---
+
+## New questions to add
+
+**1. Plain or Prints**
+- Ask whether the shopper leans toward plain/solid pieces, prints/patterns, or both.
+- Show as **image-based options** rather than text buttons — e.g. two or three swatch images (a plain solid-color fabric swatch, a printed/patterned fabric swatch) the user taps to select, similar to how "Clothing size" currently uses tap-to-select tiles but with photos instead of text.
+- Multi-select (someone can like both).
+
+**2. Color Shades**
+- Goes further than the existing "Favourite colours" field (which is broad categories like Black, Blue, Green, Neutrals). This question shows actual **color swatch chips/images** — specific shades within those families (e.g. under "Green": olive, sage, emerald) — so the recommendation engine gets more precise color data than just the broad category.
+- Multi-select, tap-to-select swatches.
+
+**3. Fabrics**
+- Ask about fabric/material preference — e.g. cotton, silk, chiffon, denim, knit, linen.
+- Show as **image swatches of fabric textures**, not just text labels, so shoppers can visually recognize what they're choosing rather than guessing from a fabric name alone.
+- Multi-select.
+
+## Why images instead of text
+
+The existing quiz fields (Preferred fit, What do you dress for, Rather not see) work fine as text buttons because the concepts are self-explanatory from the word alone ("Fitted," "Workwear"). Plain/prints, specific color shades, and fabric types are visual concepts — showing a picture is faster to understand and more accurate than reading a swatch name, and makes the quiz feel more interactive rather than like a form.
+
+## Placement in the existing quiz
+
+Insert these three after "Favourite colours" and before "Preferred categories," so the flow groups visually-driven questions together:
+
+1. Weekly recommendations toggle
+2. Clothing size
+3. Preferred fit
+4. Favourite colours
+5. **Plain or Prints** *(new)*
+6. **Color Shades** *(new)*
+7. **Fabrics** *(new)*
+8. Preferred categories
+9. What do you dress for?
+10. Rather not see
+11. How often?
+12. Notifications & data
+
+## Implementation notes for the Replit agent
+
+- These three new fields need an image asset per option (e.g. one swatch photo per fabric type, per color shade, per plain/print example) — this is new content to source, not just new form fields. Expect a follow-up with the actual images once available.
+- Keep the same tap-to-select interaction pattern already used elsewhere in this quiz (multi-select tiles), just swap plain color/text tiles for image-backed tiles for these three questions specifically.
+- These three new answers should feed into the same recommendation engine/data model as the existing style-preference fields (size, fit, colour, category) — not a separate data structure.
+- Confirm image tile sizing works responsively on mobile (a grid of swatches needs to reflow sensibly on a narrow screen, not just shrink).
