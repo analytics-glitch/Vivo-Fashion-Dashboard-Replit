@@ -259,6 +259,14 @@ const RANGE_PLAN_ROW_SEEDS = [
   ["Limited Editions", "New/Test", 5, 3, 8],
 ] as const;
 
+const RANGE_PLAN_AOS_DEFAULTS: Record<string, number> = {
+  NOOS: 450,
+  Core: 450,
+  Recent: 450,
+  "New/Test": 350,
+};
+const rangePlanAosDefault = (tier: string) => RANGE_PLAN_AOS_DEFAULTS[tier] ?? RANGE_PLAN_AOS_DEFAULTS.Core;
+
 const L10_AGENDA = [
   { key: "checkin", number: "①", label: "Check-In", durationMinutes: 5 },
   { key: "scorecard", number: "②", label: "Scorecard", durationMinutes: 5 },
@@ -854,12 +862,17 @@ async function ensureRangePlanData() {
       await pool.query(
         `INSERT INTO ${schema}.range_plan_rows
           (season_id,sub_category,tier,style_count_target,style_count_min,style_count_max,aos_units)
-         VALUES ($1,$2,$3::${schema}.range_plan_tier,$4,$5,$6,350)
+         VALUES ($1,$2,$3::${schema}.range_plan_tier,$4,$5,$6,$7)
          ON CONFLICT (season_id,sub_category) DO NOTHING`,
-        [seasonId, subCategory, tier, target, minimum, maximum],
+        [seasonId, subCategory, tier, target, minimum, maximum, rangePlanAosDefault(String(tier))],
       );
     }
   }
+  await pool.query(
+    `UPDATE ${schema}.range_plan_rows
+     SET aos_units=450
+     WHERE tier IN ('NOOS','Core','Recent') AND aos_units=350`,
+  );
 }
 
 async function isDatabaseReachable() {
@@ -2620,6 +2633,10 @@ function assortmentStylePayload(row: Record<string, unknown>) {
     name: String(row.name ?? ""),
     category: String(row.category ?? "Uncategorised"),
     subCategory: String(row.subCategory ?? ""),
+    fabricCategory: String(row.fabricCategory ?? ""),
+    brand: String(row.brand ?? ""),
+    primaryColour: String(row.primaryColour ?? ""),
+    edit: String(row.edit ?? ""),
     stage: String(row.stage ?? "Concept"),
     designer: String(row.designer ?? "Unassigned"),
     season: String(row.season ?? ""),
@@ -2640,6 +2657,10 @@ async function assortmentPlanData(quarter: string) {
          MAX(a.style_name) AS name,
          COALESCE(MAX(NULLIF(TRIM(a.category),'')), MAX(NULLIF(TRIM(a.product_type),'')), 'Uncategorised') AS category,
          COALESCE(MAX(NULLIF(TRIM(a.product_type),'')), '') AS "subCategory",
+          COALESCE(MAX(NULLIF(TRIM(a.fabric_category),'')), '') AS "fabricCategory",
+          COALESCE(MAX(NULLIF(TRIM(a.brand),'')), '') AS brand,
+          COALESCE(MAX(NULLIF(TRIM(a.color_print),'')), '') AS "primaryColour",
+          COALESCE(MAX(NULLIF(TRIM(a.collection),'')), '') AS edit,
          CASE WHEN BOOL_OR(LOWER(COALESCE(a.status,''))='active') THEN 'Active' ELSE 'Retired' END AS status,
          CASE
            WHEN BOOL_OR(COALESCE(a.is_noos,FALSE) OR UPPER(COALESCE(a.tier,''))='NOOS' OR UPPER(COALESCE(a.range_tier,''))='NOOS') THEN 'NOOS'
@@ -2667,7 +2688,7 @@ async function assortmentPlanData(quarter: string) {
        NULL::bigint AS "pdId",
        'all_products_clean' AS source,
        r.style_number AS "styleNumber",
-       r.name,r.category,r."subCategory",
+        r.name,r.category,r."subCategory",r."fabricCategory",r.brand,r."primaryColour",r.edit,
        'Carry-over' AS stage,'Merchandising' AS designer,
         $1 AS season,r.tier,r.status,
        (e.style_id IS NOT NULL) AS excluded
@@ -2688,6 +2709,10 @@ async function assortmentPlanData(quarter: string) {
        s.style_name AS name,
        COALESCE(NULLIF(TRIM(s.category),''),'Uncategorised') AS category,
        COALESCE(NULLIF(TRIM(s.sub_category),''),'') AS "subCategory",
+        COALESCE(NULLIF(TRIM(s.fabric_type),''),NULLIF(TRIM(s.fabric_name),''),'') AS "fabricCategory",
+        COALESCE(NULLIF(TRIM(s.brand),''),'') AS brand,
+        COALESCE(NULLIF(TRIM(s.sample_colour),''),'') AS "primaryColour",
+        COALESCE(NULLIF(TRIM(s.theme),''),'') AS edit,
        COALESCE(NULLIF(TRIM(ps.stage_name),''),INITCAP(REPLACE(COALESCE(s.current_stage,'concept'),'_',' ')),'Concept') AS stage,
        COALESCE(NULLIF(TRIM(s.assignee_name),''),'Unassigned') AS designer,
        s.season,
@@ -2712,6 +2737,9 @@ async function assortmentPlanData(quarter: string) {
       .sort((left, right) => right.count - left.count || left.name.localeCompare(right.name));
   };
   const countTier = (tier: string) => styles.filter((row) => String(row.tier) === tier).length;
+  const filterOptions = (field: "tier" | "status" | "category" | "subCategory" | "fabricCategory" | "brand" | "primaryColour" | "edit") =>
+    [...new Set(styles.map((row) => String(row[field] ?? "").trim()).filter(Boolean))]
+      .sort((left, right) => left.localeCompare(right));
   return {
     styles: styles.map(assortmentStylePayload),
     carryOverStyles: carryOverResult.rows.map(assortmentStylePayload),
@@ -2726,6 +2754,16 @@ async function assortmentPlanData(quarter: string) {
     },
     categoryBreakdown: breakdown("category"),
     stageBreakdown: breakdown("stage"),
+    filterOptions: {
+      tier: filterOptions("tier"),
+      status: filterOptions("status"),
+      category: filterOptions("category"),
+      subCategory: filterOptions("subCategory"),
+      fabricCategory: filterOptions("fabricCategory"),
+      brand: filterOptions("brand"),
+      primaryColour: filterOptions("primaryColour"),
+      edit: filterOptions("edit"),
+    },
   };
 }
 
@@ -2798,11 +2836,22 @@ router.get("/range-plan", async (req, res, next) => {
          counts: selectedAssortment.counts,
         categoryBreakdown: selectedAssortment.categoryBreakdown,
         stageBreakdown: selectedAssortment.stageBreakdown,
+         filterOptions: selectedAssortment.filterOptions,
       },
       quarterSummaries: {
          "Q3 2026": { total: q3Assortment.total, counts: q3Assortment.counts },
          "Q4 2026": { total: q4Assortment.total, counts: q4Assortment.counts },
       },
+       assortmentFilterOptions: {
+         tier: [...new Set([...q3Assortment.filterOptions.tier, ...q4Assortment.filterOptions.tier])].sort(),
+         status: [...new Set([...q3Assortment.filterOptions.status, ...q4Assortment.filterOptions.status])].sort(),
+         category: [...new Set([...q3Assortment.filterOptions.category, ...q4Assortment.filterOptions.category])].sort(),
+         subCategory: [...new Set([...q3Assortment.filterOptions.subCategory, ...q4Assortment.filterOptions.subCategory])].sort(),
+         fabricCategory: [...new Set([...q3Assortment.filterOptions.fabricCategory, ...q4Assortment.filterOptions.fabricCategory])].sort(),
+         brand: [...new Set([...q3Assortment.filterOptions.brand, ...q4Assortment.filterOptions.brand])].sort(),
+         primaryColour: [...new Set([...q3Assortment.filterOptions.primaryColour, ...q4Assortment.filterOptions.primaryColour])].sort(),
+         edit: [...new Set([...q3Assortment.filterOptions.edit, ...q4Assortment.filterOptions.edit])].sort(),
+       },
     });
   } catch (error) {
     next(error);
@@ -3021,7 +3070,7 @@ router.post("/range-plan/seasons/:seasonId/rows", async (req, res, next) => {
     const styleCountTarget = Number(req.body?.styleCountTarget ?? 0);
     const styleCountMin = Number(req.body?.styleCountMin ?? 0);
     const styleCountMax = Number(req.body?.styleCountMax ?? 0);
-    const aosUnits = Number(req.body?.aosUnits ?? 350);
+    const aosUnits = Number(req.body?.aosUnits ?? rangePlanAosDefault(tier));
     if (!subCategory || subCategory.length > 120 || !["NOOS", "Core", "Recent", "New/Test"].includes(tier) ||
       ![styleCountTarget, styleCountMin, styleCountMax, aosUnits].every((value) => Number.isInteger(value) && value >= 0)) {
       res.status(400).json({ error: "A sub-category, valid tier and non-negative whole-number targets are required" });
@@ -3040,6 +3089,83 @@ router.post("/range-plan/seasons/:seasonId/rows", async (req, res, next) => {
     res.status(201).json(rangePlanRowPayload(result.rows[0]));
   } catch (error) {
     next(error);
+  }
+});
+
+router.post("/range-plan/add-style", async (req: AuthRequest, res, next) => {
+  const seasonId = Number(req.body?.seasonId);
+  const source = String(req.body?.source ?? "").trim();
+  const styleNumber = String(req.body?.styleNumber ?? "").trim();
+  const pdId = Number(req.body?.pdId);
+  if (!Number.isInteger(seasonId) || seasonId <= 0 || !["all_products_clean", "pd_styles"].includes(source)) {
+    res.status(400).json({ error: "A valid range plan season and style source are required" });
+    return;
+  }
+  const client = await pool.connect();
+  try {
+    let style: { subCategory: string; tier: string } | undefined;
+    if (source === "all_products_clean") {
+      if (!styleNumber || styleNumber.length > 200) {
+        res.status(400).json({ error: "A catalogue style number is required" });
+        return;
+      }
+      const result = await client.query<{ subCategory: string; tier: string }>(
+        `SELECT
+           COALESCE(MAX(NULLIF(TRIM(a.product_type),'')),MAX(NULLIF(TRIM(a.category),'')),'Uncategorised') AS "subCategory",
+           CASE
+             WHEN BOOL_OR(COALESCE(a.is_noos,FALSE) OR UPPER(COALESCE(a.tier,''))='NOOS' OR UPPER(COALESCE(a.range_tier,''))='NOOS') THEN 'NOOS'
+             WHEN BOOL_OR(UPPER(COALESCE(a.range_tier,''))='CORE') THEN 'Core'
+             WHEN BOOL_OR(UPPER(COALESCE(a.range_tier,''))='RECENT') THEN 'Recent'
+             WHEN COALESCE(SUM(COALESCE(i.available,0)),0)>100 THEN 'Core'
+             ELSE 'Recent'
+           END AS tier
+         FROM public.all_products_clean a
+         LEFT JOIN public.all_inventory i ON i.sku=a.sku
+         WHERE ${allowedBrand("a")} AND LOWER(COALESCE(a.status,'')) IN ('active','retired')
+           AND a.style_number=$1
+         GROUP BY a.style_number`,
+        [styleNumber],
+      ).then((result) => result.rows[0]);
+    } else {
+      if (!Number.isInteger(pdId) || pdId <= 0) {
+        res.status(400).json({ error: "A Product Development style is required" });
+        return;
+      }
+      const result = await client.query<{ subCategory: string; tier: string }>(
+        `SELECT COALESCE(NULLIF(TRIM(s.sub_category),''),NULLIF(TRIM(s.category),''),'Uncategorised') AS "subCategory",
+                'New/Test' AS tier
+         FROM public.pd_styles s
+         WHERE ${allowedBrand("s")} AND s.id=$1`,
+        [pdId],
+      );
+      style = result.rows[0];
+    }
+    if (!style) {
+      res.status(404).json({ error: "Assortment style not found" });
+      return;
+    }
+    const subCategory = String(style.subCategory || "Uncategorised").trim().slice(0, 120);
+    const tier = ["NOOS", "Core", "Recent", "New/Test"].includes(style.tier) ? style.tier : "Core";
+    await client.query("BEGIN");
+    const result = await client.query(
+      `INSERT INTO ${schema}.range_plan_rows
+         (season_id,sub_category,tier,style_count_target,style_count_min,style_count_max,aos_units,notes)
+       VALUES ($1,$2,$3::${schema}.range_plan_tier,1,0,1,$4,'')
+       ON CONFLICT (season_id,sub_category) DO UPDATE
+         SET style_count_target=${schema}.range_plan_rows.style_count_target+1
+       RETURNING id,season_id AS "seasonId",sub_category AS "subCategory",tier::text,
+         style_count_target AS "styleCountTarget",style_count_min AS "styleCountMin",
+         style_count_max AS "styleCountMax",aos_units AS "aosUnits",
+         total_units_implied AS "totalUnitsImplied",notes`,
+      [seasonId, subCategory, rangePlanAosDefault(tier)],
+    );
+    await client.query("COMMIT");
+    res.status(201).json({ row: rangePlanRowPayload(result.rows[0]), subCategory, tier });
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    next(error);
+  } finally {
+    client.release();
   }
 });
 

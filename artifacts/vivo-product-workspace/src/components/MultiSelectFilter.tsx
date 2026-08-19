@@ -15,6 +15,7 @@ export default function MultiSelectFilter({
   onChange,
   testId,
   variant = 'catalogue',
+  alwaysShowCount = false,
 }: {
   label: string;
   options: string[];
@@ -22,6 +23,7 @@ export default function MultiSelectFilter({
   onChange: (next: string[]) => void;
   testId?: string;
   variant?: 'catalogue' | 'plm';
+  alwaysShowCount?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -65,7 +67,7 @@ export default function MultiSelectFilter({
       >
         <span className="msf-label">{label}</span>
         <span className="msf-summary" title={values.join(', ') || 'All'}>{summary}</span>
-        {values.length > 1 && <span className="msf-badge">×{values.length}</span>}
+        {values.length > 1 || (alwaysShowCount && values.length > 0) ? <span className="msf-badge">×{values.length}</span> : null}
         <ChevronDown size={13} className="msf-caret" />
       </button>
       {open && (

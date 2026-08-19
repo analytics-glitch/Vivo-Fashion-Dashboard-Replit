@@ -1,7 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ImageIcon, MoveRight, RefreshCw, Target, X } from 'lucide-react';
+import MultiSelectFilter from '../components/MultiSelectFilter';
 
 type AssortmentQuarter = 'Q3 2026' | 'Q4 2026';
 type AssortmentTier = 'NOOS' | 'Core' | 'Recent' | 'New/Test';
@@ -14,6 +15,10 @@ type AssortmentStyle = {
   name: string;
   category: string;
   subCategory: string;
+  fabricCategory: string;
+  brand: string;
+  primaryColour: string;
+  edit: string;
   stage: string;
   designer: string;
   season: string;
@@ -26,6 +31,7 @@ type AssortmentStyle = {
 type AssortmentSummary = {
   total: number;
   counts: { total: number; noos: number; core: number; recent: number; newTest: number };
+  filterOptions?: AssortmentFilterOptions;
 };
 
 type AssortmentResponse = {
@@ -35,9 +41,29 @@ type AssortmentResponse = {
   newStyles: AssortmentStyle[];
   assortmentSummary: AssortmentSummary;
   quarterSummaries: Record<AssortmentQuarter, AssortmentSummary>;
+  seasons?: RangePlanSeason[];
+  assortmentFilterOptions?: AssortmentFilterOptions;
 };
 
+type RangePlanSeason = { id: number; seasonName: string; status: string };
+type AssortmentFilterKey = 'tier' | 'status' | 'category' | 'subCategory' | 'fabricCategory' | 'brand' | 'primaryColour' | 'edit';
+type AssortmentFilters = Record<AssortmentFilterKey, string[]>;
+type AssortmentFilterOptions = Record<AssortmentFilterKey, string[]>;
+
 const quarters: AssortmentQuarter[] = ['Q3 2026', 'Q4 2026'];
+const filterDefinitions: Array<{ key: AssortmentFilterKey; label: string }> = [
+  { key: 'tier', label: 'Tier' },
+  { key: 'status', label: 'Status' },
+  { key: 'category', label: 'Category' },
+  { key: 'subCategory', label: 'Sub-category' },
+  { key: 'fabricCategory', label: 'Fabric Category' },
+  { key: 'brand', label: 'Brand' },
+  { key: 'primaryColour', label: 'Primary Colour' },
+  { key: 'edit', label: 'Edit' },
+];
+const emptyFilters: AssortmentFilters = {
+  tier: [], status: [], category: [], subCategory: [], fabricCategory: [], brand: [], primaryColour: [], edit: [],
+};
 
 function numberFormat(value: number | null | undefined) {
   if (value === null || value === undefined || !Number.isFinite(Number(value))) return '—';
@@ -58,6 +84,49 @@ async function getAssortmentPlan(quarter: AssortmentQuarter) {
 
 function TierBadge({ tier }: { tier: AssortmentTier }) {
   return <span className={`assortment-tier-badge tier-${tier.replace('/', '-')}`}>{displayTier(tier)}</span>;
+}
+
+function AddToRangePlan({
+  style,
+  seasons,
+  pending,
+  onAdd,
+}: {
+  style: AssortmentStyle;
+  seasons: RangePlanSeason[];
+  pending: boolean;
+  onAdd: (seasonId: number) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="assortment-range-action">
+      <button
+        type="button"
+        className="assortment-card-button"
+        disabled={pending || seasons.length === 0}
+        onClick={() => setOpen((current) => !current)}
+        aria-expanded={open}
+      >
+        + Range Plan <MoveRight size={13} />
+      </button>
+      {open && seasons.length > 0 ? (
+        <div className="assortment-season-menu" role="menu">
+          <span>Choose season</span>
+          {seasons.map((season) => (
+            <button
+              key={season.id}
+              type="button"
+              role="menuitem"
+              disabled={pending}
+              onClick={() => { setOpen(false); onAdd(season.id); }}
+            >
+              {season.seasonName}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 function StyleCard({
@@ -105,6 +174,8 @@ function SummaryBar({ summary }: { summary: AssortmentSummary }) {
 function AssortmentPlanPage() {
   const queryClient = useQueryClient();
   const [quarter, setQuarter] = useState<AssortmentQuarter>('Q3 2026');
+  const [filters, setFilters] = useState<AssortmentFilters>(emptyFilters);
+  const [toast, setToast] = useState('');
   const assortment = useQuery({
     queryKey: ['workspace', 'assortment-plan', quarter],
     queryFn: () => getAssortmentPlan(quarter),
@@ -136,6 +207,35 @@ function AssortmentPlanPage() {
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['workspace', 'assortment-plan'] }),
   });
+  const addToRangePlan = useMutation({
+    mutationFn: async ({ style, seasonId }: { style: AssortmentStyle; seasonId: number }) => {
+      const response = await fetch('/api/workspace/range-plan/add-style', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          seasonId,
+          source: style.source,
+          styleNumber: style.styleNumber,
+          pdId: style.pdId,
+        }),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.error || `Could not add style to range plan (${response.status})`);
+      }
+      return response.json();
+    },
+    onSuccess: (_result, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['workspace', 'range-plan'] });
+      setToast(`${variables.style.name || variables.style.styleNumber} added to the range plan.`);
+    },
+  });
+  useEffect(() => {
+    if (!toast) return;
+    const timer = window.setTimeout(() => setToast(''), 4000);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
 
   if (assortment.isLoading) {
     return <section className="page"><div className="range-plan-loading"><RefreshCw size={20} /><span>Loading assortment plan…</span></div></section>;
@@ -147,7 +247,22 @@ function AssortmentPlanPage() {
   const payload = assortment.data;
   const carryOverStyles = payload.carryOverStyles ?? payload.assortmentStyles.filter((style) => style.source === 'all_products_clean');
   const newStyles = payload.newStyles ?? payload.assortmentStyles.filter((style) => style.source === 'pd_styles');
-  const summary = payload.assortmentSummary ?? payload.quarterSummaries[quarter];
+  const options = payload.assortmentFilterOptions ?? payload.assortmentSummary?.filterOptions ?? emptyFilters;
+  const matchesFilters = (style: AssortmentStyle) => filterDefinitions.every(({ key }) => !filters[key].length || filters[key].includes(String(style[key] ?? '')));
+  const filteredCarryOverStyles = carryOverStyles.filter(matchesFilters);
+  const filteredNewStyles = newStyles.filter(matchesFilters);
+  const filteredStyles = [...filteredCarryOverStyles, ...filteredNewStyles];
+  const filteredCounts = {
+    total: filteredStyles.length,
+    noos: filteredStyles.filter((style) => style.tier === 'NOOS').length,
+    core: filteredStyles.filter((style) => style.tier === 'Core').length,
+    recent: filteredStyles.filter((style) => style.tier === 'Recent').length,
+    newTest: filteredStyles.filter((style) => style.tier === 'New/Test').length,
+  };
+  const summary = { total: filteredStyles.length, counts: filteredCounts };
+  const activeFilterCount = Object.values(filters).reduce((total, values) => total + values.length, 0);
+  const seasons = payload.seasons ?? [];
+  const setFilter = (key: AssortmentFilterKey, values: string[]) => setFilters((current) => ({ ...current, [key]: values }));
 
   return (
     <section className="page assortment-plan-page">
@@ -173,22 +288,43 @@ function AssortmentPlanPage() {
         })}
       </div>
 
+      <div className="assortment-filter-toolbar" aria-label="Assortment filters">
+        <div className="assortment-filter-intro"><span>Filter range</span>{activeFilterCount ? <strong>{activeFilterCount} active</strong> : <small>All styles</small>}</div>
+        {filterDefinitions.map(({ key, label }) => (
+          <MultiSelectFilter
+            key={key}
+            label={label}
+            options={options[key] ?? []}
+            values={filters[key]}
+            onChange={(values) => setFilter(key, values)}
+            testId={`assortment-filter-${key}`}
+            alwaysShowCount
+          />
+        ))}
+        <button type="button" className="assortment-clear-filters" onClick={() => setFilters(emptyFilters)} disabled={!activeFilterCount}><X size={13} /> Clear all</button>
+      </div>
+
       <SummaryBar summary={summary} />
 
       <section className="assortment-style-section" aria-labelledby="carry-over-heading">
         <div className="assortment-section-heading">
           <div><span className="range-eyebrow">Always-on foundation</span><h2 id="carry-over-heading">Carry-over Range</h2><p>Active and retired NOOS, Core, and Recent styles continuing on the floor.</p></div>
-          <span className="assortment-section-count">{numberFormat(carryOverStyles.length)} styles</span>
+           <span className="assortment-section-count">{numberFormat(filteredCarryOverStyles.length)} styles</span>
         </div>
-        {carryOverStyles.length ? (
+        {filteredCarryOverStyles.length ? (
           <div className="assortment-card-grid">
-            {carryOverStyles.map((style) => (
+            {filteredCarryOverStyles.map((style) => (
               <StyleCard
                 key={style.id}
                 style={style}
-                action={style.tier === 'NOOS'
-                  ? <span className="assortment-always-on">Always included</span>
-                  : <button type="button" className="assortment-card-button" disabled={toggleExclusion.isPending} onClick={() => toggleExclusion.mutate({ styleId: style.styleNumber, excluded: true })}>Exclude from quarter <X size={13} /></button>}
+                action={(
+                  <div className="assortment-card-actions">
+                    {style.tier === 'NOOS'
+                      ? <span className="assortment-always-on">Always included</span>
+                      : <button type="button" className="assortment-card-button" disabled={toggleExclusion.isPending} onClick={() => toggleExclusion.mutate({ styleId: style.styleNumber, excluded: true })}>Exclude from quarter <X size={13} /></button>}
+                    <AddToRangePlan style={style} seasons={seasons} pending={addToRangePlan.isPending} onAdd={(seasonId) => addToRangePlan.mutate({ style, seasonId })} />
+                  </div>
+                )}
               />
             ))}
           </div>
@@ -198,23 +334,29 @@ function AssortmentPlanPage() {
       <section className="assortment-style-section" aria-labelledby="new-quarter-heading">
         <div className="assortment-section-heading">
           <div><span className="range-eyebrow">Product development pipeline</span><h2 id="new-quarter-heading">New This Quarter</h2><p>Styles from Product Development whose season includes {quarter}.</p></div>
-          <span className="assortment-section-count">{numberFormat(newStyles.length)} styles</span>
+           <span className="assortment-section-count">{numberFormat(filteredNewStyles.length)} styles</span>
         </div>
-        {newStyles.length ? (
+        {filteredNewStyles.length ? (
           <div className="assortment-card-grid">
-            {newStyles.map((style) => (
+            {filteredNewStyles.map((style) => (
               <StyleCard
                 key={style.id}
                 style={style}
-                action={quarter === 'Q3 2026' && style.pdId !== null
-                  ? <button type="button" className="assortment-card-button" disabled={moveStyle.isPending} onClick={() => moveStyle.mutate({ id: style.pdId as number, season: 'Q4 2026' })}>Move to Q4 <MoveRight size={13} /></button>
-                  : <span className="assortment-assigned">Assigned to {quarter.replace(' 2026', '')}</span>}
+                action={(
+                  <div className="assortment-card-actions">
+                    {quarter === 'Q3 2026' && style.pdId !== null
+                      ? <button type="button" className="assortment-card-button" disabled={moveStyle.isPending} onClick={() => moveStyle.mutate({ id: style.pdId as number, season: 'Q4 2026' })}>Move to Q4 <MoveRight size={13} /></button>
+                      : <span className="assortment-assigned">Assigned to {quarter.replace(' 2026', '')}</span>}
+                    <AddToRangePlan style={style} seasons={seasons} pending={addToRangePlan.isPending} onAdd={(seasonId) => addToRangePlan.mutate({ style, seasonId })} />
+                  </div>
+                )}
               />
             ))}
           </div>
         ) : <div className="assortment-empty">No new styles are assigned to this quarter yet.</div>}
       </section>
-      {moveStyle.isError || toggleExclusion.isError ? <div className="form-error">That assortment change could not be saved. Try again.</div> : null}
+      {toast ? <div className="assortment-toast" role="status">{toast}</div> : null}
+      {moveStyle.isError || toggleExclusion.isError || addToRangePlan.isError ? <div className="form-error">{addToRangePlan.error instanceof Error ? addToRangePlan.error.message : 'That assortment change could not be saved. Try again.'}</div> : null}
     </section>
   );
 }
