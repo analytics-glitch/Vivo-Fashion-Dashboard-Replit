@@ -1509,7 +1509,7 @@ const L10MigrationPanel = () => {
       <div className="px-4 py-3 border-b bg-muted/20 flex items-center gap-2">
         <Database size={14} className="text-muted-foreground" />
         <h2 className="text-sm font-semibold">Data Migration</h2>
-        <span className="text-xs text-muted-foreground">— export or import a full L10 snapshot</span>
+        <span className="text-xs text-muted-foreground">— export or import a Main BI L10 snapshot</span>
       </div>
       <div className="p-4 space-y-5">
 
@@ -1518,7 +1518,7 @@ const L10MigrationPanel = () => {
           <div>
             <p className="text-sm font-medium">Export &amp; Download</p>
             <p className="text-xs text-muted-foreground mt-0.5">
-              Downloads a JSON file containing all L10 folders, meetings, members, rocks, scorecard metrics, and history.
+              Downloads a JSON file containing Main BI L10 folders, meetings, members, rocks, scorecard metrics, and history.
             </p>
           </div>
           <button
@@ -2105,7 +2105,7 @@ const L10 = () => {
   const [folderId, setFolderId] = useState(() => {
     const param = new URLSearchParams(window.location.search).get('folder_id');
     const parsed = param ? parseInt(param, 10) : NaN;
-    return (!isNaN(parsed) && parsed > 0) ? parsed : 1;
+    return (!isNaN(parsed) && parsed > 0 && parsed !== 2) ? parsed : 1;
   });
   const [meetings, setMeetings] = useState([]);
   const [meetingId, setMeetingId] = useState(null);
@@ -2125,7 +2125,7 @@ const L10 = () => {
   // Load folders once
   useEffect(() => {
     api.get("/l10/folders", { forceFresh: true })
-      .then((r) => setFolders(r.data || []))
+      .then((r) => setFolders((r.data || []).filter((folder) => folder.id !== 2)))
       .catch(() => {});
   }, []);
 
@@ -2176,7 +2176,7 @@ const L10 = () => {
   }, [folderId]);
 
   const switchFolder = (id) => {
-    if (id === folderId) return;
+    if (id === 2 || id === folderId) return;
     setFolderId(id);
     setMeetingId(null);
     setMeetings([]);

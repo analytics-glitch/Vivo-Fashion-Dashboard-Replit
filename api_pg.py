@@ -1890,95 +1890,138 @@ async def clerk_auth_gate(request: Request, call_next):
     if path.startswith("/api/day-review") and user.get("role") not in ("admin", "leadership"):
         return JSONResponse({"detail": "Day in Review access requires a leadership or admin role"}, status_code=403)
 
-    # L10 Meeting Tracker — leadership, smt + admin surface.
-    # Three Supply Chain emails are also permitted but are STRICTLY SCOPED to
-    # folder 2 (Supply Chain). Privileged roles (admin/leadership/smt) keep full
-    # access to all folders.
+    # L10 Meeting Tracker has two server-owned product surfaces:
+    #   /api/fabric/l10/* -> Supply Chain only (folder 2)
+    #   /api/l10/*        -> Main BI only (all folders except 2)
+    # The legacy admin snapshot path is part of Main BI.  Folder query/body
+    # checks are not enough: ID routes are resolved against their owning table
+    # so a forged request cannot cross the surface boundary.
     _L10_SUPPLY_CHAIN_EMAILS = {
         "bedan@vivofashiongroup.com",
         "kevinl@vivofashiongroup.com",
         "hagai@vivofashiongroup.com",
     }
-    if path.startswith("/api/l10"):
+    _l10_fabric_path = path.startswith("/api/fabric/l10")
+    _l10_main_path = path.startswith("/api/l10") or path.startswith("/api/admin/l10")
+    if _l10_fabric_path or _l10_main_path:
         _l10_role = user.get("role", "")
         _l10_email = (user.get("email") or "").lower()
         _l10_privileged = _l10_role in ("admin", "leadership", "smt")
         _l10_sc = _l10_email in _L10_SUPPLY_CHAIN_EMAILS
-        # Per-user extra_pages grant: "l10" in extra_pages gives folder-2-scoped
-        # access (same as the hardcoded supply-chain email list) so individual
-        # users can be granted the Supply Chain L10 without a role change.
         _l10_extra = "l10" in (user.get("extra_pages") or [])
-        if not _l10_privileged and not _l10_sc and not _l10_extra:
+        _l10_fabric_user = _l10_privileged or _l10_sc or _l10_extra
+        _l10_main_user = _l10_privileged
+        if (_l10_fabric_path and not _l10_fabric_user) or (
+                _l10_main_path and not _l10_main_user):
             return JSONResponse(
                 {"detail": "L10 access requires a leadership or admin role"},
                 status_code=403)
-        # Enforce folder 2 scope for Supply Chain users and extra_pages grants.
-        if (_l10_sc or _l10_extra) and not _l10_privileged:
-            _sc_denied = JSONResponse(
-                {"detail": "Access restricted to Supply Chain folder"},
+        _l10_denied = JSONResponse(
+            {"detail": "L10 resource belongs to the other product surface"},
+            status_code=403)
+        _l10_prefix = "/api/fabric/l10" if _l10_fabric_path else "/api/l10"
+        _l10_requires_supply_chain = _l10_fabric_path
+
+        # Fabric owns one fixed folder and cannot create, rename, or delete a
+        # folder. Main BI can manage only its non-Supply-Chain folders.
+        if _l10_fabric_path and path.startswith("/api/fabric/l10/folders") \
+                and request.method != "GET":
+            return _l10_denied
+        # Preserve the existing L10 authorization rule: Supply Chain/extra-page
+        # grants can use the tracker, but only privileged roles may change its
+        # default meeting-time setting.
+        if _l10_fabric_path and path == "/api/fabric/l10/settings" \
+                and request.method != "GET" and not _l10_privileged:
+            return JSONResponse(
+                {"detail": "L10 settings require a leadership or admin role"},
                 status_code=403)
-            # Block folder management writes and settings writes.
-            if path.startswith("/api/l10/folders") and request.method != "GET":
-                return _sc_denied
-            if path == "/api/l10/settings" and request.method != "GET":
-                return _sc_denied
-            # Paths that need no folder_id check (folder list + global settings).
-            _SC_EXEMPT = {"/api/l10/folders", "/api/l10/settings"}
-            # Identify ID-based paths; each maps to the table that holds folder_id.
-            _sc_id_checks = [
-                (re.match(r'^/api/l10/(?:checkin|headlines|ids|conclude|scorecard)/(\d+)$', path),
-                 "l10_meetings"),
-                (re.match(r'^/api/l10/meetings/(\d+)$', path), "l10_meetings"),
-                (re.match(r'^/api/l10/members/(\d+)$', path), "l10_members"),
-                (re.match(r'^/api/l10/rocks/(\d+)$', path), "l10_rocks"),
-                (re.match(r'^/api/l10/todos/(\d+)$', path), "l10_todos"),
-                (re.match(r'^/api/l10/scorecard-metrics/(\d+)$', path),
-                 "l10_scorecard_metrics"),
-            ]
-            _sc_id_match = next(
-                ((m, t) for m, t in _sc_id_checks if m), None)
-            if _sc_id_match:
-                # ID-based path: verify the resource belongs to folder 2 via DB.
-                _sc_m, _sc_table = _sc_id_match
-                _sc_rid = int(_sc_m.group(1))
-                try:
-                    _sc_pool, _sc_conn = _acquire_conn()
+
+        _l10_id_checks = [
+            (re.match(rf'^{re.escape(_l10_prefix)}/(?:checkin|headlines|ids|conclude|scorecard)/(\d+)$', path),
+             "l10_meetings", False),
+            (re.match(rf'^{re.escape(_l10_prefix)}/meetings/(\d+)$', path),
+             "l10_meetings", False),
+            (re.match(rf'^{re.escape(_l10_prefix)}/members/(\d+)$', path),
+             "l10_members", False),
+            (re.match(rf'^{re.escape(_l10_prefix)}/rocks/(\d+)$', path),
+             "l10_rocks", False),
+            (re.match(rf'^{re.escape(_l10_prefix)}/todos/(\d+)$', path),
+             "l10_todos", False),
+            (re.match(rf'^{re.escape(_l10_prefix)}/scorecard-metrics/(\d+)$', path),
+             "l10_scorecard_metrics", False),
+            (re.match(rf'^{re.escape(_l10_prefix)}/folders/(\d+)$', path),
+             "l10_folders", True),
+        ]
+        _l10_id_match = next(
+            ((m, t, id_is_folder) for m, t, id_is_folder in _l10_id_checks if m),
+            None)
+        if _l10_id_match:
+            _l10_m, _l10_table, _l10_id_is_folder = _l10_id_match
+            _l10_rid = int(_l10_m.group(1))
+            try:
+                def _l10_load_folder_id():
+                    _pool, _conn = _acquire_conn()
                     try:
-                        _sc_conn.autocommit = True
-                        _sc_cur = _sc_conn.cursor()
-                        _sc_cur.execute(
-                            f"SELECT folder_id FROM {_sc_table} WHERE id = %s",
-                            (_sc_rid,))
-                        _sc_row = _sc_cur.fetchone()
-                        _sc_cur.close()
+                        _conn.autocommit = True
+                        _cur = _conn.cursor()
+                        try:
+                            if _l10_id_is_folder:
+                                _cur.execute(
+                                    "SELECT id AS folder_id FROM l10_folders WHERE id = %s",
+                                    (_l10_rid,))
+                            else:
+                                _cur.execute(
+                                    f"SELECT folder_id FROM {_l10_table} WHERE id = %s",
+                                    (_l10_rid,))
+                            _row = _cur.fetchone()
+                            return _row[0] if _row else None
+                        finally:
+                            _cur.close()
                     finally:
-                        _sc_pool.putconn(_sc_conn)
-                    if _sc_row is None or _sc_row[0] != 2:
-                        return _sc_denied
-                except Exception:
-                    return _sc_denied
-            elif path not in _SC_EXEMPT:
-                # Non-ID, non-exempt path: enforce folder_id=2 from query param
-                # (GET/HEAD) or JSON body (POST). PUT/DELETE without an ID in the
-                # path are unexpected and blocked as a safety measure.
+                        _pool.putconn(_conn)
+
+                _l10_folder_id = await run_in_threadpool(
+                    _l10_load_folder_id)
+                _l10_owned = (
+                    _l10_folder_id == 2 if _l10_requires_supply_chain
+                    else _l10_folder_id is not None and _l10_folder_id != 2
+                )
+                if not _l10_owned:
+                    return _l10_denied
+            except Exception:
+                return _l10_denied
+        else:
+            _l10_exempt = {
+                f"{_l10_prefix}/folders",
+                f"{_l10_prefix}/settings",
+                "/api/admin/l10/export",
+                "/api/admin/l10/import",
+                "/api/fabric/l10/admin/export",
+                "/api/fabric/l10/admin/import",
+            }
+            if path not in _l10_exempt:
+                _l10_folder_raw = None
                 if request.method in ("GET", "HEAD"):
-                    # Deny both absent and non-2 folder_id — the L10 UI always
-                    # sends folder_id explicitly, so absent means a raw API call
-                    # that would silently default to folder 1.
-                    if request.query_params.get("folder_id") != "2":
-                        return _sc_denied
+                    _l10_folder_raw = request.query_params.get("folder_id")
                 elif request.method == "POST":
-                    # Read the request body (Starlette caches it so the endpoint
-                    # still receives it). Require folder_id == 2 in the JSON body.
                     try:
-                        _sc_raw = await request.body()
-                        _sc_body = json.loads(_sc_raw) if _sc_raw else {}
-                        if str(_sc_body.get("folder_id", "")) != "2":
-                            return _sc_denied
+                        _l10_raw = await request.body()
+                        _l10_body = json.loads(_l10_raw) if _l10_raw else {}
+                        _l10_folder_raw = _l10_body.get("folder_id")
                     except Exception:
-                        return _sc_denied
+                        return _l10_denied
                 else:
-                    return _sc_denied
+                    return _l10_denied
+                try:
+                    _l10_folder_id = int(_l10_folder_raw)
+                except (TypeError, ValueError):
+                    return _l10_denied
+                _l10_owned = (
+                    _l10_folder_id == 2 if _l10_requires_supply_chain
+                    else _l10_folder_id != 2
+                )
+                if not _l10_owned:
+                    return _l10_denied
 
     # Odoo Reconciliation Agent (/api/recon/*) is the same finance-grade surface
     # (approve/reject + staging write-back) — leadership + admin only.
@@ -40121,19 +40164,57 @@ def _ensure_l10_folder_meetings(folder_id: int):
         d += timedelta(weeks=1)
 
 
+def _l10_is_fabric_request(request: Request) -> bool:
+    """Return the trusted L10 surface derived from the registered route."""
+    return bool(request and request.url.path.startswith("/api/fabric/l10"))
+
+
+def _l10_settings_key(request: Request) -> str:
+    return "l10_settings_fabric" if _l10_is_fabric_request(request) else "l10_settings_main"
+
+
+def _l10_require_linked_meeting(folder_id: int, meeting_id, field_name: str):
+    """Reject a cross-folder meeting reference used inside another write."""
+    if meeting_id in (None, ""):
+        return
+    rows = _users_exec(
+        "SELECT 1 FROM l10_meetings WHERE id=%s AND folder_id=%s",
+        (int(meeting_id), int(folder_id)), fetch=True)
+    if not rows:
+        raise HTTPException(
+            status_code=403,
+            detail=f"{field_name} belongs to another L10 product surface")
+
+
+def _l10_require_metric_for_meeting(metric_id: int, meeting_id: int):
+    rows = _users_exec(
+        "SELECT 1 FROM l10_scorecard_metrics metric "
+        "JOIN l10_meetings meeting ON meeting.id=%s "
+        "WHERE metric.id=%s AND metric.folder_id=meeting.folder_id",
+        (meeting_id, metric_id), fetch=True)
+    if not rows:
+        raise HTTPException(
+            status_code=403,
+            detail="Scorecard metric belongs to another L10 product surface")
+
+
 # ── Folders ───────────────────────────────────────────────────────────────────
 
 @app.get("/api/l10/folders")
 def l10_list_folders(request: Request):
     _ensure_l10_tables()
+    scope_sql = "id=2" if _l10_is_fabric_request(request) else "id<>2"
     return _users_exec(
-        "SELECT id, name, description, color, created_at FROM l10_folders ORDER BY id",
+        "SELECT id, name, description, color, created_at FROM l10_folders "
+        f"WHERE {scope_sql} ORDER BY id",
         fetch=True) or []
 
 
 @app.post("/api/l10/folders")
 async def l10_create_folder(request: Request):
     _ensure_l10_tables()
+    if _l10_is_fabric_request(request):
+        raise HTTPException(status_code=403, detail="Fabric L10 owns the Supply Chain series only")
     if getattr(request.state, "user", {}).get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin only")
     body = await request.json()
@@ -40152,6 +40233,8 @@ async def l10_create_folder(request: Request):
 @app.put("/api/l10/folders/{folder_id}")
 async def l10_update_folder(folder_id: int, request: Request):
     _ensure_l10_tables()
+    if _l10_is_fabric_request(request) or folder_id == 2:
+        raise HTTPException(status_code=403, detail="Supply Chain is owned by Fabric L10")
     if getattr(request.state, "user", {}).get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin only")
     body = await request.json()
@@ -40173,6 +40256,8 @@ async def l10_update_folder(folder_id: int, request: Request):
 @app.delete("/api/l10/folders/{folder_id}")
 def l10_delete_folder(folder_id: int, request: Request):
     _ensure_l10_tables()
+    if _l10_is_fabric_request(request) or folder_id == 2:
+        raise HTTPException(status_code=403, detail="Supply Chain is owned by Fabric L10")
     if getattr(request.state, "user", {}).get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin only")
     if folder_id == 1:
@@ -40569,6 +40654,7 @@ async def l10_upsert_scorecard_values(meeting_id: int, request: Request):
         metric_id = row.get("metric_id")
         if not metric_id:
             continue
+        _l10_require_metric_for_meeting(int(metric_id), meeting_id)
         value = row.get("value")
         on_track = row.get("on_track")
         _users_exec(
@@ -40777,6 +40863,8 @@ async def l10_add_todo(request: Request):
     if not desc:
         raise HTTPException(status_code=400, detail="description is required")
     folder_id = int(body.get("folder_id") or 1)
+    _l10_require_linked_meeting(
+        folder_id, body.get("opened_meeting_id"), "opened_meeting_id")
     rows = _users_exec(
         "INSERT INTO l10_todos (folder_id, description, open_date, owner, status, link, opened_meeting_id) "
         "VALUES (%s, %s, %s, %s, %s, %s, %s) "
@@ -40791,6 +40879,15 @@ async def l10_add_todo(request: Request):
 async def l10_update_todo(todo_id: int, request: Request):
     _ensure_l10_tables()
     body = await request.json()
+    todo_rows = _users_exec(
+        "SELECT folder_id FROM l10_todos WHERE id=%s", (todo_id,), fetch=True)
+    if not todo_rows:
+        raise HTTPException(status_code=404, detail="To-do not found")
+    todo_folder_id = todo_rows[0]["folder_id"]
+    for meeting_field in ("opened_meeting_id", "closed_meeting_id"):
+        if meeting_field in body:
+            _l10_require_linked_meeting(
+                todo_folder_id, body.get(meeting_field), meeting_field)
     fields = ["description", "open_date", "owner", "status", "link",
               "opened_meeting_id", "closed_meeting_id"]
     for col in fields:
@@ -40862,8 +40959,9 @@ async def l10_upsert_ids(meeting_id: int, request: Request):
         if row_id:
             _users_exec(
                 "UPDATE l10_ids_issues SET status=%s, raised_by=%s, updated_at=now() "
-                "WHERE id=%s AND (scorecard_metric_id IS NOT NULL OR rock_id IS NOT NULL)",
-                (r.get("status") or "open", r.get("raised_by"), row_id))
+                "WHERE id=%s AND meeting_id=%s "
+                "AND (scorecard_metric_id IS NOT NULL OR rock_id IS NOT NULL)",
+                (r.get("status") or "open", r.get("raised_by"), row_id, meeting_id))
     # Delete and re-insert only the manual rows
     _users_exec(
         "DELETE FROM l10_ids_issues WHERE meeting_id=%s AND scorecard_metric_id IS NULL AND rock_id IS NULL",
@@ -40950,11 +41048,20 @@ def l10_ratings_history(request: Request, limit: int = Query(8),
 @app.get("/api/l10/settings")
 def l10_get_settings(request: Request):
     _ensure_l10_tables()
+    settings_key = _l10_settings_key(request)
     try:
         row = _users_exec(
-            "SELECT value FROM app_config WHERE key='l10_settings'", fetch=True)
+            "SELECT value FROM app_config WHERE key=%s",
+            (settings_key,), fetch=True)
         if row:
             return json.loads(row[0]["value"])
+        # Cutover compatibility: both surfaces initially inherit the previously
+        # effective global value. Once either surface is edited it writes only
+        # its own key and can no longer affect the other.
+        legacy = _users_exec(
+            "SELECT value FROM app_config WHERE key='l10_settings'", fetch=True)
+        if legacy:
+            return json.loads(legacy[0]["value"])
     except Exception:
         pass
     return {"default_start_time": "08:00"}
@@ -40965,10 +41072,11 @@ async def l10_update_settings(request: Request):
     _ensure_l10_tables()
     body = await request.json()
     settings = {"default_start_time": body.get("default_start_time", "08:00")}
+    settings_key = _l10_settings_key(request)
     _users_exec(
-        "INSERT INTO app_config (key, value, updated_at) VALUES ('l10_settings', %s, now()) "
+        "INSERT INTO app_config (key, value, updated_at) VALUES (%s, %s, now()) "
         "ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()",
-        (json.dumps(settings),))
+        (settings_key, json.dumps(settings)))
     return settings
 
 
@@ -41216,27 +41324,46 @@ def _reset_l10_sequences(cur):
         )
 
 
-@app.get("/api/admin/l10/export")
-def l10_export():
-    """Export a full JSON snapshot of all l10_* tables in FK-safe order.
+def _l10_snapshot_select(table: str, fabric: bool) -> str:
+    folder_op = "=" if fabric else "<>"
+    meetings = f"SELECT id FROM l10_meetings WHERE folder_id {folder_op} 2"
+    metrics = f"SELECT id FROM l10_scorecard_metrics WHERE folder_id {folder_op} 2"
+    folder_owned = {
+        "l10_meetings",
+        "l10_members",
+        "l10_scorecard_metrics",
+        "l10_rocks",
+        "l10_todos",
+    }
+    meeting_owned = {
+        "l10_checkin",
+        "l10_headlines",
+        "l10_ids_issues",
+        "l10_conclude",
+        "l10_ratings",
+    }
+    if table == "l10_folders":
+        return f"SELECT * FROM {table} WHERE id {folder_op} 2 ORDER BY id"
+    if table in folder_owned:
+        return f"SELECT * FROM {table} WHERE folder_id {folder_op} 2 ORDER BY id"
+    if table in meeting_owned:
+        return (
+            f"SELECT * FROM {table} WHERE meeting_id IN ({meetings}) ORDER BY id")
+    if table == "l10_scorecard_values":
+        return (
+            f"SELECT * FROM {table} WHERE meeting_id IN ({meetings}) "
+            f"AND metric_id IN ({metrics}) ORDER BY id")
+    raise ValueError(f"Unsupported L10 snapshot table: {table}")
 
-    Returns::
 
-        {
-          "tables": {"l10_folders": [...], "l10_meetings": [...], ...},
-          "row_counts": {"l10_folders": N, ...},
-          "exported_at": "<ISO-8601>"
-        }
-
-    All timestamp/date columns are serialised as ISO-8601 strings.
-    Gated to admin role by the /api/admin path middleware.
-    """
+def _l10_export_snapshot(*, fabric: bool):
+    """Build a snapshot containing exactly one L10 product surface."""
     from datetime import datetime
     _ensure_l10_tables()
 
     snapshot = {}
     for tbl in _L10_INSERT_ORDER:
-        rows = _users_exec(f"SELECT * FROM {tbl} ORDER BY id", fetch=True)
+        rows = _users_exec(_l10_snapshot_select(tbl, fabric), fetch=True) or []
         cleaned = []
         for row in rows:
             r = {}
@@ -41249,10 +41376,128 @@ def l10_export():
         snapshot[tbl] = cleaned
 
     return {
+        "surface": "fabric" if fabric else "main",
         "tables": snapshot,
         "row_counts": {tbl: len(snapshot[tbl]) for tbl in _L10_INSERT_ORDER},
         "exported_at": datetime.utcnow().isoformat() + "Z",
     }
+
+
+@app.get("/api/admin/l10/export")
+def l10_export():
+    """Export a Main BI JSON snapshot in FK-safe order.
+
+    Returns::
+
+        {
+          "tables": {"l10_folders": [...], "l10_meetings": [...], ...},
+          "row_counts": {"l10_folders": N, ...},
+          "exported_at": "<ISO-8601>"
+        }
+
+    All timestamp/date columns are serialised as ISO-8601 strings.
+    Gated to admin role by the /api/admin path middleware.
+    """
+    return _l10_export_snapshot(fabric=False)
+
+
+def _l10_require_admin_request(request: Request):
+    if getattr(request.state, "user", {}).get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin only")
+
+
+def l10_fabric_export(request: Request):
+    _l10_require_admin_request(request)
+    return _l10_export_snapshot(fabric=True)
+
+
+def _l10_validate_import_scope(tables_data, *, fabric: bool):
+    """Validate every parent/child reference before the destructive import."""
+    expected_surface = "Fabric" if fabric else "Main BI"
+    folder_rows = tables_data.get("l10_folders", [])
+    folder_ids = {
+        int(row["id"]) for row in folder_rows if row.get("id") is not None
+    }
+    owns = (lambda fid: fid == 2) if fabric else (lambda fid: fid != 2)
+    if any(not owns(fid) for fid in folder_ids):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Snapshot contains a folder owned by the other L10 surface; {expected_surface} import rejected")
+
+    for table in (
+        "l10_meetings",
+        "l10_members",
+        "l10_scorecard_metrics",
+        "l10_rocks",
+        "l10_todos",
+    ):
+        for row in tables_data.get(table, []):
+            try:
+                folder_id = int(row.get("folder_id"))
+            except (TypeError, ValueError):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{table} row is missing a valid folder_id")
+            if folder_id not in folder_ids or not owns(folder_id):
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"{table} row belongs to the other L10 surface")
+
+    meeting_ids = {
+        int(row["id"]) for row in tables_data.get("l10_meetings", [])
+        if row.get("id") is not None
+    }
+    metric_ids = {
+        int(row["id"]) for row in tables_data.get("l10_scorecard_metrics", [])
+        if row.get("id") is not None
+    }
+    rock_ids = {
+        int(row["id"]) for row in tables_data.get("l10_rocks", [])
+        if row.get("id") is not None
+    }
+    for table in (
+        "l10_checkin",
+        "l10_scorecard_values",
+        "l10_headlines",
+        "l10_ids_issues",
+        "l10_conclude",
+        "l10_ratings",
+    ):
+        for row in tables_data.get(table, []):
+            try:
+                meeting_id = int(row.get("meeting_id"))
+            except (TypeError, ValueError):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{table} row is missing a valid meeting_id")
+            if meeting_id not in meeting_ids:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"{table} row references a meeting outside this L10 snapshot")
+
+    for row in tables_data.get("l10_scorecard_values", []):
+        if int(row.get("metric_id") or 0) not in metric_ids:
+            raise HTTPException(
+                status_code=403,
+                detail="l10_scorecard_values row references a metric outside this L10 snapshot")
+    for row in tables_data.get("l10_ids_issues", []):
+        if row.get("scorecard_metric_id") is not None and \
+                int(row["scorecard_metric_id"]) not in metric_ids:
+            raise HTTPException(
+                status_code=403,
+                detail="l10_ids_issues row references a metric outside this L10 snapshot")
+        if row.get("rock_id") is not None and int(row["rock_id"]) not in rock_ids:
+            raise HTTPException(
+                status_code=403,
+                detail="l10_ids_issues row references a rock outside this L10 snapshot")
+    for row in tables_data.get("l10_todos", []):
+        for field in ("opened_meeting_id", "closed_meeting_id"):
+            if row.get(field) is not None and int(row[field]) not in meeting_ids:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"l10_todos row references a meeting outside this L10 snapshot via {field}")
+
+    return sorted(folder_ids)
 
 
 @app.post("/api/admin/l10/import")
@@ -41270,6 +41515,10 @@ async def l10_import(request: Request):
     Returns a row-count summary per table.
     Gated to admin role by the /api/admin path middleware.
     """
+    return await _l10_import_snapshot(request, fabric=False)
+
+
+async def _l10_import_snapshot(request: Request, *, fabric: bool):
     _ensure_l10_tables()
     body = await request.json()
     tables_data = body.get("tables", {})
@@ -41293,6 +41542,7 @@ async def l10_import(request: Request):
             status_code=400,
         )
 
+    folder_ids = _l10_validate_import_scope(tables_data, fabric=fabric)
     ids_sql = ", ".join(str(int(fid)) for fid in folder_ids)
     mtg_sub = f"SELECT id FROM l10_meetings WHERE folder_id IN ({ids_sql})"
 
@@ -41351,6 +41601,69 @@ async def l10_import(request: Request):
         "folder_ids": folder_ids,
         "total_rows": sum(inserted.values()),
     }
+
+
+async def l10_fabric_import(request: Request):
+    _l10_require_admin_request(request)
+    return await _l10_import_snapshot(request, fabric=True)
+
+
+# Register Fabric aliases against the same endpoint implementations. The
+# original request path remains visible to auth and settings code, so the
+# trusted route prefix—not a body/query value—selects the product surface.
+_L10_FABRIC_ROUTES = [
+    ("/api/fabric/l10/folders", l10_list_folders, ["GET"]),
+    ("/api/fabric/l10/folders", l10_create_folder, ["POST"]),
+    ("/api/fabric/l10/folders/{folder_id}", l10_update_folder, ["PUT"]),
+    ("/api/fabric/l10/folders/{folder_id}", l10_delete_folder, ["DELETE"]),
+    ("/api/fabric/l10/meetings", l10_list_meetings, ["GET"]),
+    ("/api/fabric/l10/meetings", l10_create_meeting, ["POST"]),
+    ("/api/fabric/l10/meetings/{meeting_id}", l10_get_meeting, ["GET"]),
+    ("/api/fabric/l10/meetings/{meeting_id}", l10_update_meeting, ["PUT"]),
+    ("/api/fabric/l10/members", l10_list_members, ["GET"]),
+    ("/api/fabric/l10/members", l10_add_member, ["POST"]),
+    ("/api/fabric/l10/members/{member_id}", l10_update_member, ["PUT"]),
+    ("/api/fabric/l10/members/{member_id}", l10_delete_member, ["DELETE"]),
+    ("/api/fabric/l10/checkin/history", l10_checkin_history, ["GET"]),
+    ("/api/fabric/l10/checkin/{meeting_id}", l10_get_checkin, ["GET"]),
+    ("/api/fabric/l10/checkin/{meeting_id}", l10_upsert_checkin, ["PUT"]),
+    ("/api/fabric/l10/scorecard-metrics", l10_list_scorecard_metrics, ["GET"]),
+    ("/api/fabric/l10/scorecard-metrics", l10_add_scorecard_metric, ["POST"]),
+    ("/api/fabric/l10/scorecard-metrics/{metric_id}", l10_update_scorecard_metric, ["PUT"]),
+    ("/api/fabric/l10/scorecard-metrics/{metric_id}", l10_archive_scorecard_metric, ["DELETE"]),
+    ("/api/fabric/l10/scorecard", l10_get_scorecard, ["GET"]),
+    ("/api/fabric/l10/scorecard/{meeting_id}", l10_upsert_scorecard_values, ["PUT"]),
+    ("/api/fabric/l10/rocks", l10_list_rocks, ["GET"]),
+    ("/api/fabric/l10/rocks", l10_add_rock, ["POST"]),
+    ("/api/fabric/l10/rocks/{rock_id}", l10_update_rock, ["PUT"]),
+    ("/api/fabric/l10/rocks/{rock_id}", l10_archive_rock, ["DELETE"]),
+    ("/api/fabric/l10/headlines/history", l10_headlines_history, ["GET"]),
+    ("/api/fabric/l10/headlines/{meeting_id}", l10_get_headlines, ["GET"]),
+    ("/api/fabric/l10/headlines/{meeting_id}", l10_upsert_headlines, ["PUT"]),
+    ("/api/fabric/l10/todos", l10_list_todos, ["GET"]),
+    ("/api/fabric/l10/todos", l10_add_todo, ["POST"]),
+    ("/api/fabric/l10/todos/{todo_id}", l10_update_todo, ["PUT"]),
+    ("/api/fabric/l10/todos/{todo_id}", l10_delete_todo, ["DELETE"]),
+    ("/api/fabric/l10/ids/history", l10_ids_history, ["GET"]),
+    ("/api/fabric/l10/ids/{meeting_id}", l10_get_ids, ["GET"]),
+    ("/api/fabric/l10/ids/{meeting_id}", l10_upsert_ids, ["PUT"]),
+    ("/api/fabric/l10/conclude/{meeting_id}", l10_get_conclude, ["GET"]),
+    ("/api/fabric/l10/conclude/{meeting_id}", l10_upsert_conclude, ["PUT"]),
+    ("/api/fabric/l10/ratings/history", l10_ratings_history, ["GET"]),
+    ("/api/fabric/l10/settings", l10_get_settings, ["GET"]),
+    ("/api/fabric/l10/settings", l10_update_settings, ["PUT"]),
+    ("/api/fabric/l10/export/excel", l10_export_excel, ["GET"]),
+    ("/api/fabric/l10/admin/export", l10_fabric_export, ["GET"]),
+    ("/api/fabric/l10/admin/import", l10_fabric_import, ["POST"]),
+]
+for _l10_path, _l10_endpoint, _l10_methods in _L10_FABRIC_ROUTES:
+    app.add_api_route(
+        _l10_path,
+        _l10_endpoint,
+        methods=_l10_methods,
+        name=f"fabric_{_l10_endpoint.__name__}_{_l10_methods[0].lower()}",
+        include_in_schema=False,
+    )
 
 
 # ── Store Profile ─────────────────────────────────────────────────────────────

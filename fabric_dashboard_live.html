@@ -9667,7 +9667,7 @@ async function gateL10Tab(){
 // ── Native L10 Meeting Tracker (Supply Chain, folder_id=2) ──────────────────
 // Fully rendered in vanilla JS inside #l10-root; no iframe, no double-shell.
 const L10={
-  F:2, // folder_id = 2 (Supply Chain) — hardcoded, no backend changes needed
+  F:2, // folder_id = 2 (Supply Chain) — enforced again by /api/fabric/l10
   tab:'checkin',
   meetings:[],
   meetingId:null,
@@ -9678,7 +9678,7 @@ const L10={
 
   // ── API helper ──────────────────────────────────────────────────────────
   async req(method,path,body,params){
-    let url='/api/l10/'+path;
+    let url='/api/fabric/l10/'+path;
     if(params){const q=new URLSearchParams(params).toString();if(q)url+=(url.includes('?')?'&':'?')+q;}
     const h=vivoAuthHeaders();
     const opts={method,credentials:'include',headers:h};
@@ -9850,10 +9850,13 @@ const L10={
     const r=this.root();if(!r)return;
     this.loading('Loading L10 Meeting Tracker…');
     try{
+      const boot=(label,path,params)=>this.get(path,params).catch(e=>{
+        throw new Error(label+' endpoint failed: '+e.message);
+      });
       const[ml,ml2,sl]= await Promise.all([
-        this.get('meetings',{folder_id:this.F}),
-        this.get('members',{folder_id:this.F}),
-        this.get('settings',null).catch(()=>({})),
+        boot('Meetings','meetings',{folder_id:this.F}),
+        boot('Members','members',{folder_id:this.F}),
+        boot('Settings','settings',null),
       ]);
       this.meetings=ml||[];
       this.members=ml2||[];

@@ -45,7 +45,7 @@ BASE_PATH = "/feedback/"
 
 [[services]]
 name = "api"
-paths = [ "/api/workspace", "/api/workspace/", "/api/workspace/socket.io", "/api/l10", "/api/l10/", "/api/team", "/api/team/" ]
+paths = [ "/api/workspace", "/api/workspace/", "/api/workspace/socket.io", "/api/team", "/api/team/" ]
 localPort = 23661
 
 [services.development]

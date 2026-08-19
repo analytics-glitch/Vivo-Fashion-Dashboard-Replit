@@ -10,7 +10,8 @@
  *  3. When a meeting exists, the 8-tab bar renders with all expected labels.
  *  4. Clicking the Conclude tab loads the ratings table; when enough history
  *     is present the SVG sparkline card ("Meeting Rating Trend") is visible.
- *  5. The vivo-bi Main BI SPA nav does NOT contain an "L10 Meeting" entry.
+ *  5. Main BI opens only Main-owned folders, even with a forged folder_id=2 URL.
+ *  6. Direct list, bootstrap, and ID-mutation requests cannot cross surfaces.
  *
  * Auth: global-setup.js inserts a temporary admin session row into
  * user_sessions; global-teardown.js removes it.  The token lands in
@@ -60,6 +61,19 @@ async function openFabric(page) {
 
   // Confirm the Fabric BI header rendered (brand lockup is always visible).
   await page.waitForSelector(".fab-brandname", { timeout: 20_000 });
+}
+
+async function openMainL10(page, requestedFolder = 1) {
+  const token = process.env.VIVO_E2E_TOKEN;
+  if (!token)
+    throw new Error("VIVO_E2E_TOKEN not set — check global-setup.js");
+
+  await page.goto("/");
+  await page.context().addCookies([
+    { name: "session_token", value: token, url: page.url() },
+  ]);
+  await page.goto(`/l10?folder_id=${requestedFolder}`);
+  await page.waitForSelector('[data-testid="l10-page"]', { timeout: 25_000 });
 }
 
 /**
@@ -194,39 +208,91 @@ test.describe("L10 Meeting — Fabric BI smoke", () => {
   );
 
   test(
-    "Main BI SPA nav (vivo-bi) does not contain an L10 Meeting entry",
+    "Main BI ignores a forged folder_id=2 URL and never offers Supply Chain",
     async ({ page }) => {
-      const token = process.env.VIVO_E2E_TOKEN;
-      if (!token)
-        throw new Error("VIVO_E2E_TOKEN not set — check global-setup.js");
-
-      // The vivo-bi React SPA is served at the root path.
-      await page.goto("/");
-      // SPA auth rides on the httpOnly session cookie now (no localStorage token).
-      await page.context().addCookies([
-        { name: "session_token", value: token, url: page.url() },
-      ]);
-      await page.reload();
-
-      // Wait for the SPA to mount and paint at least part of the nav.
-      // The nav renders <nav> or an <aside> once auth resolves.
-      await page
-        .waitForSelector("nav, aside, [role='navigation']", { timeout: 25_000 })
-        .catch(() => {});
-
-      // Allow a brief settle for async nav items.
-      await page.waitForTimeout(2_000);
-
-      // Read all visible nav/sidebar text.
-      const navText = await page.evaluate(() => {
-        const containers = [
-          ...document.querySelectorAll("nav, aside, [role='navigation']"),
-        ];
-        return containers.map((el) => el.textContent).join(" ");
+      const requestedL10Urls = [];
+      page.on("request", (request) => {
+        if (request.url().includes("/api/l10/")) {
+          requestedL10Urls.push(request.url());
+        }
       });
 
-      // "L10 Meeting" must not appear anywhere in the nav surface.
-      expect(navText).not.toContain("L10 Meeting");
+      await openMainL10(page, 2);
+
+      await expect(page.getByTestId("l10-page")).toBeVisible();
+      await expect(
+        page.getByRole("button", { name: "Supply Chain", exact: true })
+      ).toHaveCount(0);
+      expect(
+        requestedL10Urls.some((url) => /[?&]folder_id=2(?:&|$)/.test(url))
+      ).toBe(false);
+    }
+  );
+
+  test(
+    "surface APIs preserve Fabric history and reject forged cross-surface reads and writes",
+    async ({ page }) => {
+      await openFabric(page);
+      const result = await page.evaluate(async () => {
+        const request = async (url, options) => {
+          const response = await fetch(url, {
+            credentials: "include",
+            headers: {
+              ...(window.localStorage.getItem("vivo_token")
+                ? { Authorization: `Bearer ${window.localStorage.getItem("vivo_token")}` }
+                : {}),
+              ...(options?.body ? { "Content-Type": "application/json" } : {}),
+            },
+            ...options,
+          });
+          let data = null;
+          try { data = await response.json(); } catch {}
+          return { status: response.status, data };
+        };
+
+        const fabricMeetings = await request(
+          "/api/fabric/l10/meetings?folder_id=2"
+        );
+        const fabricMembers = await request(
+          "/api/fabric/l10/members?folder_id=2"
+        );
+        const fabricSettings = await request("/api/fabric/l10/settings");
+        const mainFolders = await request("/api/l10/folders");
+        const mainCrossList = await request(
+          "/api/l10/meetings?folder_id=2"
+        );
+        const fabricCrossList = await request(
+          "/api/fabric/l10/meetings?folder_id=1"
+        );
+        const supplyMeeting = fabricMeetings.data?.[0];
+        const mainCrossMutation = supplyMeeting
+          ? await request(`/api/l10/meetings/${supplyMeeting.id}`, {
+              method: "PUT",
+              body: JSON.stringify({ start_time: supplyMeeting.start_time || "08:00" }),
+            })
+          : { status: 0 };
+
+        return {
+          fabricMeetings,
+          fabricMembers,
+          fabricSettings,
+          mainFolders,
+          mainCrossList,
+          fabricCrossList,
+          mainCrossMutation,
+        };
+      });
+
+      expect(result.fabricMeetings.status).toBe(200);
+      expect(result.fabricMeetings.data.length).toBeGreaterThan(0);
+      expect(result.fabricMeetings.data.every((meeting) => meeting.folder_id === 2)).toBe(true);
+      expect(result.fabricMembers.status).toBe(200);
+      expect(result.fabricSettings.status).toBe(200);
+      expect(result.mainFolders.status).toBe(200);
+      expect(result.mainFolders.data.some((folder) => folder.id === 2)).toBe(false);
+      expect(result.mainCrossList.status).toBe(403);
+      expect(result.fabricCrossList.status).toBe(403);
+      expect(result.mainCrossMutation.status).toBe(403);
     }
   );
 });

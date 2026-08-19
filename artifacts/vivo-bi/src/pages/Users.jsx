@@ -491,7 +491,7 @@ const L10FoldersAdmin = () => {
   const reload = useCallback(() => {
     setLoading(true);
     api.get("/l10/folders", { forceFresh: true })
-      .then((r) => setFolders(r.data || []))
+      .then((r) => setFolders((r.data || []).filter((folder) => folder.id !== 2)))
       .catch(() => {})
       .finally(() => setLoading(false));
   }, []);
