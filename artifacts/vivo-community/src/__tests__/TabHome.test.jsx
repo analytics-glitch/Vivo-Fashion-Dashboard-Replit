@@ -94,6 +94,7 @@ const NO_OP = {
   onOpenPage: vi.fn(),
   onOpenEvents: vi.fn(),
   onOpenEvent: vi.fn(),
+  onOpenStyleBoards: vi.fn(),
   onOpenEdit: vi.fn(),
   onOpenEdits: vi.fn(),
 };
@@ -146,11 +147,7 @@ describe("TabHome – homepage layout", () => {
     // Click the first preview card (the top-ranked post).
     // previewPosts are sorted by score; all have equal engagement so order
     // is feed order.  We open whichever card appears first in the DOM.
-    const firstCard = screen.getByTestId(`post-card-${posts[0].id}`);
-    const clickTarget = within(firstCard).getByRole("button", {
-      name: /open post/i,
-    });
-    await user.click(clickTarget);
+    await user.click(screen.getByTestId(`home-feed-tile-${posts[0].id}`));
 
     // The modal must be visible.
     await waitFor(() =>
@@ -168,7 +165,6 @@ describe("TabHome – homepage layout", () => {
     const posts = [
       makePost({ id: "alpha" }),
       makePost({ id: "beta" }),
-      makePost({ id: "gamma" }),
     ];
     api.feed.mockResolvedValue({ items: posts });
 
@@ -177,26 +173,21 @@ describe("TabHome – homepage layout", () => {
       expect(screen.getByTestId("home-feed-preview")).toBeInTheDocument()
     );
 
-    for (const post of posts) {
-      // If the modal is open from a previous iteration, close it first.
-      const closeBtn = screen.queryByTestId("post-close");
-      if (closeBtn) await user.click(closeBtn);
+    // We only check the first post now as it's a compact mini-feed
+    const post = posts[0];
+    await user.click(screen.getByTestId(`home-feed-tile-${post.id}`));
 
-      const card = screen.getByTestId(`post-card-${post.id}`);
-      await user.click(within(card).getByRole("button", { name: /open post/i }));
+    await waitFor(() =>
+      expect(screen.getByTestId("post-detail")).toBeInTheDocument()
+    );
+    const modal = screen.getByTestId("post-detail");
+    expect(within(modal).getByText(`@user_${post.id}`)).toBeInTheDocument();
 
-      await waitFor(() =>
-        expect(screen.getByTestId("post-detail")).toBeInTheDocument()
-      );
-      const modal = screen.getByTestId("post-detail");
-      expect(within(modal).getByText(`@user_${post.id}`)).toBeInTheDocument();
-
-      // Close modal before next iteration
-      await user.click(screen.getByTestId("post-close"));
-      await waitFor(() =>
-        expect(screen.queryByTestId("post-detail")).not.toBeInTheDocument()
-      );
-    }
+    // Close modal
+    await user.click(screen.getByTestId("post-close"));
+    await waitFor(() =>
+      expect(screen.queryByTestId("post-detail")).not.toBeInTheDocument()
+    );
   });
 
   // ── 2. next / prev navigation walks the full feed ─────────────────────
@@ -217,8 +208,7 @@ describe("TabHome – homepage layout", () => {
     );
 
     // Open the first post.
-    const card = screen.getByTestId("post-card-first");
-    await user.click(within(card).getByRole("button", { name: /open post/i }));
+    await user.click(screen.getByTestId("home-feed-tile-first"));
     await waitFor(() =>
       expect(screen.getByTestId("post-detail")).toBeInTheDocument()
     );
@@ -262,9 +252,7 @@ describe("TabHome – homepage layout", () => {
     );
 
     // Open the first post, then navigate to the second.
-    await user.click(
-      within(screen.getByTestId("post-card-one")).getByRole("button", { name: /open post/i })
-    );
+    await user.click(screen.getByTestId("home-feed-tile-one"));
     await waitFor(() => expect(screen.getByTestId("post-detail")).toBeInTheDocument());
     await user.click(screen.getByTestId("post-next"));
     await waitFor(() =>
@@ -292,9 +280,7 @@ describe("TabHome – homepage layout", () => {
       expect(screen.getByTestId("home-feed-preview")).toBeInTheDocument()
     );
 
-    await user.click(
-      within(screen.getByTestId("post-card-k1")).getByRole("button", { name: /open post/i })
-    );
+    await user.click(screen.getByTestId("home-feed-tile-k1"));
     await waitFor(() => expect(screen.getByTestId("post-detail")).toBeInTheDocument());
 
     await user.keyboard("{ArrowRight}");
@@ -308,101 +294,26 @@ describe("TabHome – homepage layout", () => {
     );
   });
 
-  // ── 3. empty feed — no blank sections ─────────────────────────────────
+  // ── 3. empty feed — renders nothing here text ─────────────────────────
 
-  it("empty feed renders without home-feed-preview, style-question, or shop-looks sections", async () => {
+  it("empty feed renders FeedPreview with nothing here text", async () => {
     api.feed.mockResolvedValue({ items: [] });
 
     render(<TabHome member={MEMBER} {...NO_OP} />);
-
-    // Wait for all effects to settle (api.feed resolved).
     await act(async () => {});
 
-    expect(screen.queryByTestId("home-feed-preview")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("home-style-question")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("home-shop-looks")).not.toBeInTheDocument();
+    expect(screen.getByTestId("home-feed-preview")).toBeInTheDocument();
+    expect(screen.getByText("Nothing here yet")).toBeInTheDocument();
   });
 
-  it("guest (no member prop) with empty feed shows community spotlight and not the feed preview", async () => {
+  it("guest (no member prop) with empty feed shows community spotlight and the feed preview", async () => {
     api.feed.mockResolvedValue({ items: [] });
 
     render(<TabHome member={null} {...NO_OP} />);
     await act(async () => {});
 
-    expect(screen.queryByTestId("home-feed-preview")).not.toBeInTheDocument();
-    expect(screen.getByTestId("home-community-spotlight")).toBeInTheDocument();
-  });
-
-  // ── 4. no questions in feed ────────────────────────────────────────────
-
-  it("feed with no question posts hides the Style Question of the Week section", async () => {
-    const posts = [
-      makePost({ id: "v1", post_type: "post" }),
-      makePost({ id: "v2", post_type: "post" }),
-    ];
-    api.feed.mockResolvedValue({ items: posts });
-
-    render(<TabHome member={MEMBER} {...NO_OP} />);
-    await waitFor(() =>
-      expect(screen.getByTestId("home-feed-preview")).toBeInTheDocument()
-    );
-
-    expect(screen.queryByTestId("home-style-question")).not.toBeInTheDocument();
-  });
-
-  it("feed with a question post shows the Style Question of the Week section", async () => {
-    const posts = [
-      makePost({ id: "q1", post_type: "question", like_count: 5, comment_count: 3 }),
-      makePost({ id: "v1", post_type: "post" }),
-    ];
-    api.feed.mockResolvedValue({ items: posts });
-
-    render(<TabHome member={MEMBER} {...NO_OP} />);
-    // The question is excluded from previewPosts so home-feed-preview may or
-    // may not appear depending on how many non-question posts exist; we only
-    // care that the question section appears.
-    await waitFor(() =>
-      expect(screen.getByTestId("home-style-question")).toBeInTheDocument()
-    );
-  });
-
-  // ── 5. no tagged posts — shop-looks absent ─────────────────────────────
-
-  it("feed with no tagged posts renders no community-look cards", async () => {
-    const posts = [
-      makePost({ id: "u1", tagged: [] }),
-      makePost({ id: "u2", tagged: [] }),
-    ];
-    api.feed.mockResolvedValue({ items: posts });
-
-    render(<TabHome member={MEMBER} {...NO_OP} />);
-    await waitFor(() =>
-      expect(screen.getByTestId("home-feed-preview")).toBeInTheDocument()
-    );
-
-    // The standalone section is gone; looks now live inside Vivo Edits —
-    // untagged posts must not produce any shop-look card there either.
-    expect(screen.queryByTestId("home-shop-looks")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("shop-look-u1")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("shop-look-u2")).not.toBeInTheDocument();
-  });
-
-  it("feed with tagged posts shows NO shop-look cards on Home (rewire: Vivo Edits moved to Community)", async () => {
-    const posts = [
-      makePost({ id: "t1", tagged: [{ sku: "SKU-001", name: "Green Dress" }] }),
-      makePost({ id: "t2", tagged: [{ sku: "SKU-002", name: "Red Blouse" }] }),
-    ];
-    api.feed.mockResolvedValue({ items: posts });
-
-    render(<TabHome member={MEMBER} {...NO_OP} />);
-    await waitFor(() =>
-      expect(screen.getByTestId("home-feed-preview")).toBeInTheDocument()
-    );
-    expect(screen.queryByTestId("home-vivo-edits")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("shop-look-t1")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("shop-look-t2")).not.toBeInTheDocument();
-    // Home post cards carry no product tag pill buttons.
-    expect(screen.queryByRole("button", { name: "Green Dress" })).not.toBeInTheDocument();
+    expect(screen.getByTestId("home-feed-preview")).toBeInTheDocument();
+    expect(screen.getByTestId("home-spotlight-card")).toBeInTheDocument();
   });
 
   // ── 6. close button restores state ────────────────────────────────────
@@ -417,9 +328,7 @@ describe("TabHome – homepage layout", () => {
       expect(screen.getByTestId("home-feed-preview")).toBeInTheDocument()
     );
 
-    await user.click(
-      within(screen.getByTestId("post-card-z1")).getByRole("button", { name: /open post/i })
-    );
+    await user.click(screen.getByTestId("home-feed-tile-z1"));
     await waitFor(() => expect(screen.getByTestId("post-detail")).toBeInTheDocument());
 
     await user.click(screen.getByTestId("post-close"));
@@ -443,35 +352,6 @@ describe("TabHome – homepage layout", () => {
     expect(screen.queryByTestId("home-vivo-edit-e1")).not.toBeInTheDocument();
   });
 
-  it("Home hero and endcap carry no shop CTAs (challenge is primary; shop is a quiet link)", async () => {
-    render(<TabHome member={MEMBER} {...NO_OP} />);
-    await act(async () => {});
-    expect(screen.queryByTestId("hero-shop-now")).not.toBeInTheDocument();
-    expect(screen.getByTestId("endcap-community")).toHaveTextContent(/challenge/i);
-    expect(screen.getByTestId("endcap-shop")).toHaveTextContent(/Go to Shop/);
-  });
-
-  it("Home hero exposes separate look, community, and question actions", async () => {
-    const user = userEvent.setup();
-    const onNavigate = vi.fn();
-    const onOpenCommunityComposer = vi.fn();
-    render(
-      <TabHome
-        member={MEMBER}
-        {...NO_OP}
-        onNavigate={onNavigate}
-        onOpenCommunityComposer={onOpenCommunityComposer}
-      />,
-    );
-    await user.click(screen.getByTestId("hero-share-look"));
-    await user.click(screen.getByTestId("hero-join-cta"));
-    await user.click(screen.getByTestId("hero-start-conversation"));
-
-    expect(onOpenCommunityComposer).toHaveBeenNthCalledWith(1, "look");
-    expect(onNavigate).toHaveBeenCalledWith("community");
-    expect(onOpenCommunityComposer).toHaveBeenNthCalledWith(2, "question");
-  });
-
   it("does not render the duplicate rewards balance card on Home", async () => {
     render(<TabHome member={MEMBER} {...NO_OP} />);
     await act(async () => {});
@@ -479,33 +359,92 @@ describe("TabHome – homepage layout", () => {
     expect(screen.queryByTestId("home-rewards-cta")).not.toBeInTheDocument();
   });
 
-  it("uses the compact What's On link to open Community Events", async () => {
+  it("uses the compact View all link to open Community Events", async () => {
     const user = userEvent.setup();
     const onOpenEvents = vi.fn();
     render(<TabHome member={MEMBER} {...NO_OP} onOpenEvents={onOpenEvents} />);
 
-    await user.click(screen.getByTestId("home-events-link"));
+    await user.click(screen.getByRole("button", { name: /View all/i }));
     expect(onOpenEvents).toHaveBeenCalledOnce();
-    expect(screen.queryByTestId("home-event-card")).not.toBeInTheDocument();
   });
 
-  it("places Shop by Category on Home before the personalised section", async () => {
+  it("opens the campaign article from the hero's single CTA", async () => {
     const user = userEvent.setup();
-    const onNavigate = vi.fn();
-    render(<TabHome member={MEMBER} {...NO_OP} onNavigate={onNavigate} />);
+    const onOpenPage = vi.fn();
+    render(<TabHome member={MEMBER} {...NO_OP} onOpenPage={onOpenPage} />);
 
-    const promo = screen.getByTestId("shop-promo-banner");
-    const genderToggle = screen.getByTestId("shop-gender-toggle");
-    const categoryGrid = screen.getByTestId("shop-category-grid");
-    const homeOrder = [promo, genderToggle, categoryGrid].map((node) =>
-      Array.from(document.querySelectorAll("[data-testid]")).indexOf(node)
+    const hero = screen.getByTestId("home-hero");
+    expect(within(hero).getAllByRole("button")).toHaveLength(1);
+    await user.click(screen.getByTestId("hero-join-cta"));
+    expect(onOpenPage).toHaveBeenCalledWith("article-the-new-old-money");
+  });
+
+  it("renders the required Home rows in order and omits removed sections", async () => {
+    render(<TabHome member={MEMBER} {...NO_OP} />);
+    await act(async () => {});
+
+    const ordered = [
+      screen.getByTestId("home-hero"),
+      screen.getByTestId("home-feed-preview"),
+      screen.getByTestId("home-spotlight-card"),
+      screen.getByTestId("reels-row-mock"),
+      screen.getByTestId("home-curators-teaser"),
+      screen.getByTestId("home-weekly-playlist"),
+      screen.getByTestId("home-styleboards-teaser"),
+      screen.getByTestId("sfy-home-mock"),
+      screen.getByTestId("home-stories-compact"),
+      screen.getByTestId("home-events-row"),
+      screen.getByTestId("home-promo-banner"),
+      screen.getByTestId("home-givingback"),
+    ];
+    for (let i = 1; i < ordered.length; i += 1) {
+      expect(ordered[i - 1].compareDocumentPosition(ordered[i]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
+
+    expect(screen.queryByTestId("home-style-question")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("shop-gender-toggle")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("shop-category-grid")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("community-mission-card")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("personal-card")).not.toBeInTheDocument();
+  });
+
+  it("links the Curators and Style Boards teasers to their existing destinations", async () => {
+    const user = userEvent.setup();
+    const onOpenPage = vi.fn();
+    const onOpenStyleBoards = vi.fn();
+    render(
+      <TabHome
+        member={MEMBER}
+        {...NO_OP}
+        onOpenPage={onOpenPage}
+        onOpenStyleBoards={onOpenStyleBoards}
+      />
     );
-    expect(homeOrder[0]).toBeLessThan(homeOrder[1]);
-    expect(homeOrder[1]).toBeLessThan(homeOrder[2]);
-    expect(categoryGrid).toBeInTheDocument();
-    expect(screen.getAllByTestId(/shop-cat-tile-/)).toHaveLength(5);
 
-    await user.click(screen.getByTestId("shop-cat-tile-workwear"));
-    expect(onNavigate).toHaveBeenCalledWith("shop");
+    await user.click(screen.getByTestId("home-curators-cta"));
+    await user.click(screen.getByTestId("home-styleboards-cta"));
+    expect(onOpenPage).toHaveBeenCalledWith("edits");
+    expect(onOpenStyleBoards).toHaveBeenCalledOnce();
+  });
+
+  it("uses the live Events API labels and opens an event detail", async () => {
+    const user = userEvent.setup();
+    const onOpenEvent = vi.fn();
+    api.events.mockResolvedValue({
+      items: [{
+        id: "galleria-styling-evening",
+        title: "Styling Evening",
+        date_label: "Fri 28 Aug",
+        time_label: "5:30 PM – 8:00 PM EAT",
+        venue: "Vivo, Galleria Mall",
+      }],
+    });
+    render(<TabHome member={MEMBER} {...NO_OP} onOpenEvent={onOpenEvent} />);
+
+    const card = await screen.findByTestId("home-event-galleria-styling-evening");
+    expect(within(card).getByText("Fri 28 Aug · 5:30 PM – 8:00 PM EAT")).toBeInTheDocument();
+    expect(within(card).getByText("Vivo, Galleria Mall")).toBeInTheDocument();
+    await user.click(card);
+    expect(onOpenEvent).toHaveBeenCalledWith("galleria-styling-evening");
   });
 });

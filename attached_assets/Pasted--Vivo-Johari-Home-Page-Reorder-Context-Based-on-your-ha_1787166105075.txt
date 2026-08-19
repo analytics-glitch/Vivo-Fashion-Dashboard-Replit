@@ -1,0 +1,51 @@
+# Vivo Johari — Home Page Reorder
+
+**Context:** Based on your hand-drawn wireframe and the walkthrough that followed, this replaces the current Home page section order/grouping with a tighter, paired-row layout. This supersedes the loose ordering from earlier specs — treat this as the current source of truth for Home's structure.
+
+---
+
+## New Home page order
+
+1. **Hero.** Keep the existing hero as-is ("The New Old Money" campaign, magazine-style image), but **reduce to a single CTA: "Join the Conversation."** Remove "Share a look" and "Start a conversation" — the current three-button row gets trimmed to one. This links to the campaign blog post + comments (per the earlier blog/comments spec).
+
+2. **Looks We Love + Spotlight** (side by side)
+   - Left: "Looks & conversations we loved" — the existing community post grid (@achieng.o, @asha.k, etc.)
+   - Right: Community Spotlight (the testimonial quote card, e.g. @nyambura.k) — **now also acts as a link into the Community tab**, not just a standalone quote card.
+
+3. **Reels + Curators** (side by side)
+   - Left: "Reels we can't stop replaying" — unchanged.
+   - Right: **"Curators"** — a new teaser block linking through to the "Vivo Edits — Curated by Creators We Love" content that already lives in Community (Sharon, Phinie, Grace's curated looks). This is a preview/entry point on Home, not a duplication of the full content — clicking through takes you to where it actually lives in Community.
+
+4. **Playlist + Style Boards** (side by side)
+   - Left: "This Week's Vivo Playlist" — the Spotify embed, unchanged.
+   - Right: **"Style Boards"** — a teaser block linking through to the "Style Boards" feature that already exists under the Community tab. Same pattern as Curators: this is an entry point on Home, not a duplication — the actual content lives in Community.
+
+5. **Styled For You Questionnaire + This Month News** (side by side)
+   - Left: "Styled for You" opt-in (per the earlier merge spec — single toggle, no multi-question quiz on Home).
+   - Right: **"This Month News" (Johari News), shown compactly** — instead of the full image + multi-headline layout, use a single clickable image/thumbnail that links through to the full Johari News page. This is specifically to make it fit as a paired-row element alongside the questionnaire rather than needing its own full-width section.
+
+6. **Events** — existing "What's On" style event content (e.g. "An Evening of Styling at Galleria"), kept as its own row.
+
+7. **Promo message banner** — a message-style banner, kept as its own row. Not fixed to "free delivery" — this should be a reusable slot that can carry different offers/campaign messages over time (free delivery is just the current message in it), so build it as a configurable banner rather than hardcoding "free delivery" copy into the component.
+
+8. **Give Back** — stays at the very bottom of Home, as its own row after the promo banner. Same content as before ("Give your Vivo a second life" / "How it works").
+
+---
+
+## Confirmed removals / moves
+
+- **Rewards strip removed from Home.** Points are already visible in the top nav badge and in the Account/Rewards section, so the dedicated strip on Home was redundant.
+- **Style Question of the Week moves to Community.** No longer part of Home's structure.
+- **Give Back stays on Home**, positioned last (see item 8 above).
+
+## Spacing guidance
+
+Tighten the vertical spacing between sections compared to the current build — there's currently too much whitespace between rows. That said, don't over-correct into a cramped, edge-to-edge feel either — sections should read as clearly separate (via spacing, not just dividers) without the large gaps currently in place. A good target: enough breathing room to visually separate each paired row, but no more than that.
+
+## Implementation notes for the Replit agent
+
+- This is a layout/grouping change more than a content change — most of the underlying sections already exist (Looks We Love, Reels, Playlist, Spotlight, Johari News, Events); the work is mainly re-pairing them into two-column rows, trimming the hero to one CTA, and tightening section spacing.
+- "Curators" and "Style Boards" are both lightweight teaser/link components pointing to content that already exists in Community — not new features to build from scratch. Same for the compact "This Month News" thumbnail, which links to the existing full Johari News page.
+- The promo banner (item 7) should pull its message/image from a config value rather than being hardcoded, since it's meant to rotate between different offers and campaigns over time.
+- Image/thumbnail count for the new teaser blocks (Curators, Style Boards, This Month News) is still being finalized — expect a follow-up once the exact visuals are ready.
+- Confirm responsive behavior for the five paired rows — each should stack to a single column on mobile (left block above right block), consistent with the mobile-fixes guidance from the earlier spec.

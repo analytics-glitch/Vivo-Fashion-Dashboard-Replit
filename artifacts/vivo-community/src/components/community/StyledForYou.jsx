@@ -18,9 +18,8 @@ const LATER_KEY = "vivo_sfy_later";
 
 export function StyledForYouHome({ member, onViewAll, onPersonalise }) {
   const [state, setState] = useState(null); // null=loading | {opted_in, sections, week_label}
-  const [later, setLater] = useState(() => {
-    try { return sessionStorage.getItem(LATER_KEY) === "1"; } catch { return false; }
-  });
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
   useEffect(() => {
     if (!member) return;
     let on = true;
@@ -31,70 +30,72 @@ export function StyledForYouHome({ member, onViewAll, onPersonalise }) {
   }, [member?.id]);
   if (!member || !state) return null;
 
-  if (!state.opted_in) {
-    if (later) return null;
-    const dismiss = () => {
-      setLater(true);
-      try { sessionStorage.setItem(LATER_KEY, "1"); } catch { /* private mode */ }
-    };
-    return (
-      <div data-testid="sfy-invite" className={`${cardCls} overflow-hidden`}>
-        <div className="grid grid-cols-1 sm:grid-cols-2">
-          <div className="relative min-h-[180px] sm:min-h-0">
-            <img src={brandAsset("sfy-home.jpg")} alt="" draggable={false}
-              className="absolute inset-0 w-full h-full object-cover" />
-          </div>
-          <div className="p-6 sm:p-8">
-            <div className="inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-primary-ink mb-3">
-              <Sparkles size={12} /> New
-            </div>
-            <h2 className="font-serif text-2xl text-foreground leading-tight mb-2">Styled for You</h2>
-            <p className="text-[13px] text-muted-foreground leading-relaxed mb-6">
-              Get weekly outfit and product recommendations selected around your
-              style, size and preferences.
-            </p>
-            <div className="flex flex-col sm:flex-row sm:items-center gap-3">
-              <button data-testid="sfy-invite-cta" onClick={onPersonalise}
-                className="w-full sm:w-auto sm:px-7 bg-primary text-primary-foreground h-11 rounded font-medium text-[14px] flex items-center justify-center gap-2 hover:opacity-90 transition-all active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2">
-                Personalise My Style <ArrowRight size={15} />
-              </button>
-              <button data-testid="sfy-invite-later" onClick={dismiss}
-                className="w-full sm:w-auto sm:px-4 h-11 rounded text-[13px] text-muted-foreground hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
-                Maybe Later
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  }
+  const toggle = async () => {
+    const next = !state.opted_in;
+    setBusy(true);
+    setError("");
+    setState((current) => ({ ...current, opted_in: next }));
+    try {
+      const saved = await api.stylePrefsSave({ opted_in: next });
+      setState((current) => ({ ...current, opted_in: !!saved?.prefs?.opted_in }));
+    } catch {
+      setState((current) => ({ ...current, opted_in: !next }));
+      setError("We couldn't update this right now. Please try again.");
+    } finally {
+      setBusy(false);
+    }
+  };
 
-  /* Opted-in: Home shows only a quiet confirmation — the shoppable picks
-     themselves render inside Shop (Home-vs-Shop rewire spec, §6). */
-  const picks = (state.sections || []).find((s) => s.key === "picks");
   return (
-    <div data-testid="sfy-home-rail" className={`${cardCls} p-5 sm:p-6 flex flex-wrap items-center gap-4`}>
-      <span className="w-11 h-11 rounded-full bg-secondary border border-border flex items-center justify-center text-primary-ink shrink-0">
-        <Sparkles size={18} strokeWidth={1.5} />
-      </span>
-      <div className="flex-grow min-w-[200px]">
-        <div className="inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-muted-foreground mb-1">
-          <RefreshCw size={10} /> {state.cadence_label || "Updated weekly"}
-        </div>
-        <div className="font-serif text-lg text-foreground leading-snug">Styled for You</div>
-        <p className="text-[13px] text-muted-foreground mt-0.5">
-          {picks?.items?.length
-            ? picks.sub || "Your picks are ready in the Shop."
-            : "We're gathering pieces for you — your picks land in the Shop."}
-        </p>
+    <div data-testid="sfy-home-optin" className={`${cardCls} overflow-hidden h-full flex flex-col`}>
+      <div className="relative h-40 sm:h-44 bg-secondary">
+        <img
+          src={brandAsset("sfy-home.jpg")}
+          alt=""
+          loading="lazy"
+          draggable={false}
+          className="absolute inset-0 w-full h-full object-cover object-top"
+        />
       </div>
-      <button
-        data-testid="sfy-home-picks-cta"
-        onClick={onViewAll}
-        className="h-11 px-6 rounded bg-foreground text-background text-[13px] font-medium inline-flex items-center gap-2 hover:opacity-90 active:scale-[0.98] transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
-      >
-        See my picks in Shop <ArrowRight size={14} />
-      </button>
+      <div className="p-5 sm:p-6 flex flex-col flex-1">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <div className="inline-flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-widest text-primary-ink mb-2">
+              <Sparkles size={12} /> Styled for You
+            </div>
+            <h2 className="font-serif text-xl sm:text-2xl text-foreground leading-tight">Weekly picks, chosen around you</h2>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={!!state.opted_in}
+            aria-label="Weekly Styled for You recommendations"
+            data-testid="sfy-home-toggle"
+            disabled={busy}
+            onClick={toggle}
+            className={`relative mt-1 w-11 h-6 rounded-full transition-colors shrink-0 disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
+              state.opted_in ? "bg-primary" : "bg-border"
+            }`}
+          >
+            <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${state.opted_in ? "translate-x-5" : ""}`} />
+          </button>
+        </div>
+        <p className="text-[13px] text-muted-foreground leading-relaxed mt-3">
+          {state.opted_in
+            ? "Your weekly recommendations are on. New picks will appear in Shop."
+            : "Switch on one personalised edit using your saved style and size preferences."}
+        </p>
+        {error && <p className="text-[12px] text-destructive mt-2">{error}</p>}
+        {state.opted_in && (
+          <button
+            data-testid="sfy-home-picks-cta"
+            onClick={onViewAll}
+            className="mt-auto pt-5 text-[13px] font-medium text-primary-ink hover:underline underline-offset-2 inline-flex items-center gap-1 self-start rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          >
+            See my picks in Shop <ArrowRight size={14} />
+          </button>
+        )}
+      </div>
     </div>
   );
 }

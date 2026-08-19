@@ -311,6 +311,17 @@ function ShellInner() {
     );
   }, [applyView]);
 
+  const openStyleBoards = useCallback(() => {
+    const cur = viewRef.current;
+    const alreadyPlainCommunity =
+      cur.tab === "community" && !cur.sku && !cur.ev && !cur.cart && !cur.wl && !cur.page;
+    setSubNav((s) => ({ id: "style_boards", n: (s?.n || 0) + 1 }));
+    applyView(
+      { tab: "community", sku: "", ev: "", cart: false, wl: false, page: "", sub: "style_boards" },
+      alreadyPlainCommunity ? "replace" : "push"
+    );
+  }, [applyView]);
+
   // A Fabulas story's "share yours" hand-off — land on Community →
   // Challenges where the #FabulasAtAnyAge flagship lives (push: Back
   // returns to wherever she was reading).
@@ -534,7 +545,7 @@ function ShellInner() {
           <VivoEditDetail editId={editId} onBack={closeEdit} onOpenProduct={openProduct} member={member} onGuest={exitGuest} />
         ) : (
           <>
-            {tab === "home" && <TabHome onNavigate={goTab} member={member} onOpenProduct={openProduct} onOpenPage={openPage} onOpenEvents={openEvents} onOpenFabulas={setFabulasId} onOpenCommunityComposer={openCommunityComposer} />}
+            {tab === "home" && <TabHome onNavigate={goTab} member={member} onOpenProduct={openProduct} onOpenPage={openPage} onOpenEvents={openEvents} onOpenEvent={openEventDetail} onOpenStyleBoards={openStyleBoards} onOpenFabulas={setFabulasId} onOpenCommunityComposer={openCommunityComposer} />}
             {tab === "community" && !member && (
               <>
                 <GuestGate
