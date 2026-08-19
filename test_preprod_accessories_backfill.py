@@ -6,7 +6,11 @@ targeted line updates, no-history retention, audit rows, and idempotent reruns.
 """
 import copy
 import json
+import os
+import threading
+import time
 import unittest
+import uuid
 from types import SimpleNamespace
 from unittest import mock
 
@@ -298,6 +302,349 @@ class AccessAndSurfaceContract(unittest.TestCase):
         self.assertIn("s.accessories_pct_meta", html)
         self.assertIn("retained (no qualifying Done-DPS history)", html)
         self.assertIn("backfilled automatically", html)
+
+
+TEST_DB_URL = os.environ.get("TEST_DATABASE_URL")
+
+
+@unittest.skipUnless(TEST_DB_URL, "TEST_DATABASE_URL not set")
+class PostgresConcurrentRetrofit(unittest.TestCase):
+    """Exercise the real row locks with two PostgreSQL sessions.
+
+    The normal unit fakes cannot show whether ``FOR UPDATE`` actually queues a
+    stale editor behind the retrofit.  Each test creates a private schema and
+    shadows only the costing tables there, so no application data is read or
+    written.
+    """
+
+    PICK = {
+        "pct": 8.981039134139472,
+        "meta": {
+            "pct": 8.981039134139472,
+            "source_month": "2026-07",
+            "month_label": "Jul 2026",
+            "dps_count": 75,
+            "fallback": False,
+            "is_default": False,
+            "requested_month": "2026-07",
+            "requested_month_label": "Jul 2026",
+        },
+    }
+
+    def setUp(self):
+        import psycopg2
+
+        self.psycopg2 = psycopg2
+        self.schema = "costing_retrofit_test_" + uuid.uuid4().hex
+        # TEST_DATABASE_URL is deliberately separate from the application's
+        # DATABASE_URL.  The registered integration-test command supplies a
+        # disposable local PostgreSQL database and never exposes app data.
+        bootstrap = psycopg2.connect(TEST_DB_URL)
+        bootstrap.autocommit = True
+        try:
+            with bootstrap.cursor() as cur:
+                cur.execute(f"CREATE SCHEMA {self.schema}")
+        finally:
+            bootstrap.close()
+
+        self.admin = self._scoped_conn()
+        self.admin.autocommit = True
+        with self.admin.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE fabric_costing_sheets (
+                    id SERIAL PRIMARY KEY,
+                    style_name TEXT NOT NULL,
+                    selling_price NUMERIC,
+                    selling_price_is_auto BOOLEAN DEFAULT TRUE,
+                    notes TEXT,
+                    dps_ref TEXT,
+                    color TEXT,
+                    embroidery_data JSONB,
+                    stage TEXT DEFAULT 'main_production',
+                    accessories_pct NUMERIC DEFAULT 13,
+                    accessories_pct_meta JSONB,
+                    defect_allowance_pct NUMERIC DEFAULT 10,
+                    mtrs_per_garment NUMERIC,
+                    cost_per_minute NUMERIC,
+                    cmt_start_time TEXT,
+                    cmt_stop_time TEXT,
+                    production_multiplier NUMERIC,
+                    created_by TEXT,
+                    created_by_name TEXT,
+                    created_at TIMESTAMPTZ DEFAULT now(),
+                    updated_by TEXT,
+                    updated_by_name TEXT,
+                    updated_at TIMESTAMPTZ DEFAULT now()
+                );
+                CREATE TABLE fabric_costing_lines (
+                    id SERIAL PRIMARY KEY,
+                    sheet_id INTEGER NOT NULL REFERENCES fabric_costing_sheets(id)
+                        ON DELETE CASCADE,
+                    kind TEXT NOT NULL,
+                    label TEXT,
+                    qty NUMERIC,
+                    unit_cost NUMERIC,
+                    total NUMERIC,
+                    is_auto BOOLEAN DEFAULT FALSE,
+                    source TEXT,
+                    position INTEGER DEFAULT 0,
+                    component_id BIGINT
+                );
+                CREATE TABLE fabric_costing_history (
+                    id SERIAL PRIMARY KEY,
+                    sheet_id INTEGER NOT NULL REFERENCES fabric_costing_sheets(id)
+                        ON DELETE CASCADE,
+                    action TEXT NOT NULL,
+                    changed_by TEXT,
+                    changed_by_name TEXT,
+                    changed_at TIMESTAMPTZ DEFAULT now(),
+                    summary TEXT,
+                    snapshot JSONB
+                );
+                CREATE TABLE fabric_costing_signoffs (
+                    id SERIAL PRIMARY KEY,
+                    sheet_id INTEGER NOT NULL REFERENCES fabric_costing_sheets(id)
+                        ON DELETE CASCADE,
+                    step INTEGER NOT NULL,
+                    title TEXT NOT NULL,
+                    signed_by TEXT,
+                    signed_by_name TEXT,
+                    signed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    UNIQUE (sheet_id, step)
+                );
+            """)
+        self.addCleanup(self._drop_schema)
+
+    def _drop_schema(self):
+        try:
+            self.admin.rollback()
+            with self.admin.cursor() as cur:
+                cur.execute(f"DROP SCHEMA IF EXISTS {self.schema} CASCADE")
+        finally:
+            self.admin.close()
+
+    def _scoped_conn(self):
+        # Set the schema in the startup packet for every physical connection;
+        # no post-commit/session SET can be lost to a transaction pooler.
+        return self.psycopg2.connect(
+            TEST_DB_URL,
+            options=f"-c search_path={self.schema},pg_catalog")
+
+    def _conn(self):
+        conn = self._scoped_conn()
+        self.addCleanup(conn.close)
+        return conn
+
+    @staticmethod
+    def _direct_q(conn, sql, params=()):
+        with conn.cursor(cursor_factory=fr.psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, params)
+            return [dict(row) for row in cur.fetchall()]
+
+    def _seed_legacy_sheet(self, *, approved=False):
+        with self.admin.cursor() as cur:
+            cur.execute("""
+                INSERT INTO fabric_costing_sheets
+                    (style_name, selling_price, stage, accessories_pct,
+                     defect_allowance_pct, mtrs_per_garment, cost_per_minute)
+                VALUES ('Concurrent legacy style', 1000, 'pre_production',
+                        13, 10, 1, 5)
+                RETURNING id
+            """)
+            sheet_id = cur.fetchone()[0]
+            cur.executemany("""
+                INSERT INTO fabric_costing_lines
+                    (sheet_id, kind, label, qty, unit_cost, total, is_auto,
+                     source, position)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            """, [
+                (sheet_id, "fabric", "Main fabric", 1, 100, 100, True, None, 0),
+                (sheet_id, "trim", "Accessories (13% of fabric cost)",
+                 1, 13, 13, False, None, 1),
+                (sheet_id, "trim", "Buttons", 2, 7.5, 15, False, "manual", 2),
+            ])
+            if approved:
+                cur.execute("""
+                    INSERT INTO fabric_costing_signoffs
+                        (sheet_id, step, title, signed_by, signed_by_name)
+                    VALUES (%s, 3, 'Approved by', 'approver', 'Approver')
+                """, (sheet_id,))
+        return sheet_id
+
+    @staticmethod
+    def _editor_body():
+        return {
+            "stage": "pre_production",
+            "selling_price": None,
+            "notes": "stale editor save",
+            "defect_allowance_pct": 10,
+            "mtrs_per_garment": 1,
+            "cost_per_minute": 5,
+            "lines": [
+                {"kind": "fabric", "label": "Main fabric", "qty": 1,
+                 "unit_cost": 100, "is_auto": True, "source": None},
+                # This is intentionally stale: the save must re-stamp it from
+                # the retrofit state it reads after obtaining the row lock.
+                {"kind": "trim", "label": "Accessories (13% of fabric cost)",
+                 "qty": 1, "unit_cost": 13, "is_auto": False, "source": None},
+                {"kind": "trim", "label": "Buttons", "qty": 2,
+                 "unit_cost": 7.5, "is_auto": False, "source": "manual"},
+            ],
+        }
+
+    def _assert_editor_is_lock_blocked(self, backend_pid, editor_done):
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            with self.admin.cursor() as cur:
+                cur.execute("""
+                    SELECT wait_event_type
+                    FROM pg_catalog.pg_stat_activity
+                    WHERE pid=%s
+                """, (backend_pid,))
+                row = cur.fetchone()
+            if row and row[0] == "Lock":
+                self.assertFalse(
+                    editor_done.is_set(),
+                    "editor completed despite reporting a lock wait")
+                return
+            if editor_done.is_set():
+                self.fail("editor completed before blocking on the sheet row")
+            time.sleep(0.02)
+        self.fail("PostgreSQL never reported the editor waiting on the row lock")
+
+    def _run_race(self, sheet_id):
+        backfill_conn, editor_conn = self._conn(), self._conn()
+        retrofit_locked = threading.Event()
+        editor_attempted_lock = threading.Event()
+        editor_done = threading.Event()
+        release_retrofit = threading.Event()
+        errors, outcomes = [], {}
+
+        def serializing_q(conn, sql, params=()):
+            normalized = " ".join(sql.split())
+            if ("FROM fabric_costing_sheets s" in normalized
+                    and "FOR UPDATE" in normalized):
+                rows = self._direct_q(conn, sql, params)
+                retrofit_locked.set()
+                self.assertTrue(
+                    release_retrofit.wait(10),
+                    "test did not release the retrofit transaction")
+                return rows
+            if (normalized.startswith("SELECT * FROM fabric_costing_sheets")
+                    and "FOR UPDATE" in normalized):
+                editor_attempted_lock.set()
+            return self._direct_q(conn, sql, params)
+
+        def retrofit():
+            try:
+                outcomes["retrofit"] = fr._preprod_accessories_backfill(
+                    backfill_conn, "admin", "Admin", today=None)
+                backfill_conn.commit()
+            except BaseException as exc:
+                backfill_conn.rollback()
+                errors.append(exc)
+
+        def editor():
+            try:
+                outcomes["editor"] = fr.costing_sheet_update(
+                    sheet_id,
+                    SimpleNamespace(state=SimpleNamespace(user={
+                        "user_id": "editor", "name": "Editor"})),
+                    self._editor_body())
+            except BaseException as exc:
+                editor_conn.rollback()
+                outcomes["editor_error"] = exc
+            finally:
+                editor_done.set()
+
+        with mock.patch.object(fr, "q", serializing_q), \
+                mock.patch.object(fr, "_get_conn", lambda: editor_conn), \
+                mock.patch.object(fr, "_ensure_costing_tables", lambda conn: None), \
+                mock.patch.object(fr, "_costing_require_editor", lambda request: None), \
+                mock.patch.object(fr, "_preprod_accessories_pick",
+                                  lambda conn, today=None: copy.deepcopy(self.PICK)), \
+                mock.patch.object(fr, "_sheet_payload",
+                                  lambda conn, sid, **kwargs: {"id": sid}):
+            retrofit_thread = threading.Thread(target=retrofit)
+            retrofit_thread.start()
+            self.assertTrue(retrofit_locked.wait(10), "retrofit never locked sheet")
+            editor_thread = threading.Thread(target=editor)
+            editor_thread.start()
+            self.assertTrue(editor_attempted_lock.wait(10), "editor never attempted lock")
+            try:
+                self._assert_editor_is_lock_blocked(
+                    editor_conn.get_backend_pid(), editor_done)
+            finally:
+                release_retrofit.set()
+            retrofit_thread.join(15)
+            editor_thread.join(15)
+
+        self.assertFalse(retrofit_thread.is_alive(), "retrofit deadlocked")
+        self.assertFalse(editor_thread.is_alive(), "editor deadlocked")
+        self.assertEqual(errors, [])
+        return outcomes
+
+    def test_retrofit_and_stale_editor_save_keep_one_consistent_state(self):
+        sheet_id = self._seed_legacy_sheet()
+        outcomes = self._run_race(sheet_id)
+        self.assertNotIn("editor_error", outcomes)
+        self.assertEqual(outcomes["retrofit"]["picked"], 1)
+
+        with self.admin.cursor() as cur:
+            cur.execute("""
+                SELECT accessories_pct, accessories_pct_meta
+                FROM fabric_costing_sheets WHERE id=%s
+            """, (sheet_id,))
+            pct, meta = cur.fetchone()
+            cur.execute("""
+                SELECT label, qty, unit_cost, total, is_auto, source
+                FROM fabric_costing_lines WHERE sheet_id=%s ORDER BY position, id
+            """, (sheet_id,))
+            lines = cur.fetchall()
+            cur.execute("""
+                SELECT action, COUNT(*) FROM fabric_costing_history
+                WHERE sheet_id=%s GROUP BY action
+            """, (sheet_id,))
+            history = dict(cur.fetchall())
+
+        self.assertAlmostEqual(float(pct), self.PICK["pct"], places=10)
+        self.assertEqual(meta["retrofit_status"], "picked")
+        accessories = next(line for line in lines if line[0].startswith("Accessories"))
+        self.assertEqual(float(accessories[2]), 8.98)
+        self.assertEqual(float(accessories[3]), 8.98)
+        self.assertTrue(accessories[4])
+        self.assertIn("Jul 2026 Done-DPS avg, 75 DPS", accessories[0])
+        self.assertIn(("Buttons", 2, 7.5, 15, False, "manual"), lines)
+        self.assertEqual(history.get("accessories_pct_retrofit"), 1)
+        self.assertEqual(history.get("updated"), 1)
+
+    def test_retrofit_still_applies_once_when_approved_editor_is_queued(self):
+        sheet_id = self._seed_legacy_sheet(approved=True)
+        outcomes = self._run_race(sheet_id)
+        self.assertEqual(outcomes["retrofit"]["picked"], 1)
+        self.assertIsInstance(outcomes.get("editor_error"), HTTPException)
+        self.assertEqual(outcomes["editor_error"].status_code, 409)
+
+        with self.admin.cursor() as cur:
+            cur.execute("""
+                SELECT accessories_pct_meta FROM fabric_costing_sheets WHERE id=%s
+            """, (sheet_id,))
+            meta = cur.fetchone()[0]
+            cur.execute("""
+                SELECT label, qty, unit_cost, total FROM fabric_costing_lines
+                WHERE sheet_id=%s ORDER BY position, id
+            """, (sheet_id,))
+            lines = cur.fetchall()
+            cur.execute("""
+                SELECT action, COUNT(*) FROM fabric_costing_history
+                WHERE sheet_id=%s GROUP BY action
+            """, (sheet_id,))
+            history = dict(cur.fetchall())
+
+        self.assertEqual(meta["retrofit_status"], "picked")
+        self.assertEqual(len(lines), 3, "approved save must not delete any lines")
+        self.assertIn(("Buttons", 2, 7.5, 15), lines)
+        self.assertEqual(history, {"accessories_pct_retrofit": 1})
 
 
 if __name__ == "__main__":
