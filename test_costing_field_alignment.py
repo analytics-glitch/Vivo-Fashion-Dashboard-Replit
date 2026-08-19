@@ -22,10 +22,9 @@ either flex row:
   2. If such a helper div exists, the outer wrapper MUST carry
      ``position:relative`` in its inline style.
 
-The pre-production row additionally includes a direct-child info div
-(``#cost-pp-cmt-info``) that intentionally uses ``align-self:flex-end`` to
-sit at the bottom of the row without being a field wrapper — it is excluded
-from the per-wrapper checks (it has no label, no input).
+The pre-production row groups the CMT Start/Stop fields and their shared
+information note.  The note is an in-flow, full-width child of that group so
+the group reserves space for it instead of positioning it at the row bottom.
 
 Run with the stdlib test runner (no pytest required)::
 
@@ -368,6 +367,54 @@ class CostingFieldAlignmentTest(unittest.TestCase):
             acc_wrapper.has_style("position:relative"),
             f"Wrapper of #cost-pp-acc-note must be position:relative "
             f"(got style={acc_wrapper.style!r})"
+        )
+
+    def test_cmt_timer_note_is_in_flow_beneath_timer_pair(self):
+        """The shared timer note must belong to the Start/Stop group."""
+        pp_row = _find_by_id(self.root, "preproduction-fields")
+        self.assertIsNotNone(pp_row, "#preproduction-fields not found")
+        cmt_group = _find_by_id(pp_row, "cost-pp-cmt-group")
+        self.assertIsNotNone(cmt_group, "CMT Start/Stop group is missing")
+        self.assertIn(
+            "flex-wrap:wrap", cmt_group.style.replace(" ", ""),
+            "CMT group must wrap so the note can occupy its own line"
+        )
+        self.assertIn(
+            "align-content:flex-start", cmt_group.style.replace(" ", ""),
+            "CMT group must keep wrapped content anchored beneath the fields"
+        )
+
+        child_ids = [
+            child.id for child in cmt_group.children
+            if child.tag == "div"
+        ]
+        self.assertEqual(
+            child_ids[-1:], ["cost-pp-cmt-info"],
+            "Timer guidance must be the final, in-flow group child"
+        )
+        info = _find_by_id(cmt_group, "cost-pp-cmt-info")
+        self.assertIsNotNone(info, "Timer guidance note is missing")
+        self.assertRegex(
+            info.style,
+            r"flex\s*:\s*0\s+0\s+100%",
+            "Timer guidance must span a new line beneath both timer fields"
+        )
+        self.assertNotIn(
+            "position:absolute", info.style.replace(" ", ""),
+            "Timer guidance must remain in flow so the group reserves space"
+        )
+
+        start = _find_by_id(cmt_group, "cost-pp-cmt-start")
+        stop = _find_by_id(cmt_group, "cost-pp-cmt-stop")
+        self.assertIsNotNone(start, "CMT Start input missing from timer group")
+        self.assertIsNotNone(stop, "CMT Stop input missing from timer group")
+        self.assertLess(
+            cmt_group.children.index(
+                next(child for child in cmt_group.children
+                     if _find_by_id(child, "cost-pp-cmt-start") is not None)
+            ),
+            cmt_group.children.index(info),
+            "CMT Start must appear before the shared timer note"
         )
 
     # ── internal utility ─────────────────────────────────────────────────────

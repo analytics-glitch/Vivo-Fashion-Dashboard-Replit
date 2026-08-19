@@ -1612,14 +1612,17 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
        <label class="rsv-lbl">Defect Allowance %</label>
         <input id="cost-pp-def-pct" type="number" min="0" max="100" step="any" value="4" style="width:90px;" oninput="costPreProdCalc()">
       </div>
-      <div>
-       <label class="rsv-lbl">CMT Start</label>
-       <input id="cost-pp-cmt-start" type="time" step="1" style="width:155px;" oninput="costPreProdCalc()">
-      </div>
-      <div>
-       <label class="rsv-lbl">CMT Stop</label>
-       <input id="cost-pp-cmt-stop" type="time" step="1" style="width:155px;" oninput="costPreProdCalc()">
-      </div>
+       <div id="cost-pp-cmt-group" style="display:flex;flex:0 1 322px;min-width:280px;flex-wrap:wrap;column-gap:12px;row-gap:0;align-items:flex-end;align-content:flex-start;padding-bottom:2px;">
+        <div style="flex:1 1 0;min-width:0;">
+         <label class="rsv-lbl">CMT Start</label>
+         <input id="cost-pp-cmt-start" type="time" step="1" style="width:155px;max-width:100%;box-sizing:border-box;" oninput="costPreProdCalc()">
+        </div>
+        <div style="flex:1 1 0;min-width:0;">
+         <label class="rsv-lbl">CMT Stop</label>
+         <input id="cost-pp-cmt-stop" type="time" step="1" style="width:155px;max-width:100%;box-sizing:border-box;" oninput="costPreProdCalc()">
+        </div>
+        <div id="cost-pp-cmt-info" class="muted" style="flex:0 0 100%;font-size:11px;line-height:1.25;padding-top:3px;"></div>
+       </div>
       <div>
        <label class="rsv-lbl">Cost per Minute (KES)</label>
        <input id="cost-pp-cpm" type="number" min="0" step="any" style="width:130px;" oninput="costPreProdCalc()">
@@ -1628,7 +1631,6 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
        <label class="rsv-lbl" title="CMT efficiency factor — raw minutes × this multiplier = adjusted minutes per garment. Blank falls back to 1.40.">Production Multiplier</label>
        <input id="cost-pp-mult" type="number" min="0" step="any" placeholder="1.40" style="width:130px;" oninput="costPPMultInput(this)">
       </div>
-      <div id="cost-pp-cmt-info" class="muted" style="font-size:11px;align-self:flex-end;padding-bottom:5px;"></div>
      </div>
      <div id="cost-suggest-note" class="muted" style="font-size:12px;margin-bottom:8px;"></div>
      <div class="tbl-wrap">
