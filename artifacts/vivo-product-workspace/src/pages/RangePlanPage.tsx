@@ -39,6 +39,8 @@ type RangePlanRow = {
   styleCountMax: number;
   aosUnits: number;
   totalUnitsImplied: number;
+  asp: number;
+  potentialFpRevenue: number;
   notes: string;
 };
 type RangePlanOtb = {
@@ -60,6 +62,7 @@ type RangePlanResponse = {
   rows: RangePlanRow[];
   otb: RangePlanOtb[];
   averageCostKes: number;
+  potentialFpRevenue: number;
   health: RangePlanHealth;
 };
 
@@ -257,7 +260,10 @@ function RangePlanPage() {
     const estimatedCogs = totalUnits * (payload?.averageCostKes ?? 850);
     const cogsPct = season?.revenueTargetKes ? (estimatedCogs / season.revenueTargetKes) * 100 : 0;
     const capacityPct = season?.factoryCapacityUnits ? (totalUnits / season.factoryCapacityUnits) * 100 : 0;
-    return { totalStyles, totalUnits, estimatedCogs, cogsPct, capacityPct };
+    const potentialFpRevenue = rows
+      .filter((row) => row.tier !== 'New/Test')
+      .reduce((sum, row) => sum + row.potentialFpRevenue, 0);
+    return { totalStyles, totalUnits, estimatedCogs, cogsPct, capacityPct, potentialFpRevenue };
   }, [payload?.averageCostKes, rows, season]);
 
   const saveRow = (row: RangePlanRow, field: 'styleCountTarget' | 'aosUnits' | 'notes', value: string) => {
@@ -283,8 +289,8 @@ function RangePlanPage() {
   };
   const exportCsv = () => {
     if (!season) return;
-    const header = ['Sub-Category', 'Tier', 'Style Target', 'Min', 'Max', 'AOS Units', 'Total Units', 'Notes'];
-    const lines = rows.map((row) => [row.subCategory, displayTier(row.tier), row.styleCountTarget, row.styleCountMin, row.styleCountMax, row.aosUnits, row.totalUnitsImplied, row.notes].map((value) => `"${String(value ?? '').replaceAll('"', '""')}"`).join(','));
+     const header = ['Sub-Category', 'Tier', 'Style Target', 'Min', 'Max', 'AOS Units', 'Total Units', 'ASP', 'Potential FP Revenue', 'Notes'];
+     const lines = rows.map((row) => [row.subCategory, displayTier(row.tier), row.styleCountTarget, row.styleCountMin, row.styleCountMax, row.aosUnits, row.totalUnitsImplied, row.asp, row.potentialFpRevenue, row.notes].map((value) => `"${String(value ?? '').replaceAll('"', '""')}"`).join(','));
     const blob = new Blob([[header.join(','), ...lines].join('\n')], { type: 'text/csv;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
@@ -335,7 +341,8 @@ function RangePlanPage() {
             <StatTile label="Total styles planned" value={numberFormat(totals.totalStyles)} detail="Across all tier groups" icon={<Target size={16} />} />
             <StatTile label="Total units implied" value={numberFormat(totals.totalUnits)} detail={`${totals.capacityPct.toFixed(0)}% of ${numberFormat(season.factoryCapacityUnits)} factory capacity`} tone={capacityTone} icon={totals.capacityPct > 100 ? <TrendingUp size={16} /> : <TrendingDown size={16} />} />
             <StatTile label="Estimated COGS" value={kesMillions(totals.estimatedCogs)} detail={`${kes(payload.averageCostKes)} average cost per unit`} icon={<TrendingDown size={16} />} />
-            <StatTile label="COGS vs budget" value={`${totals.cogsPct.toFixed(1)}%`} detail={`${season.cogsBudgetPct}% budget ceiling · ${kesMillions(budgetCeiling)}`} tone={cogsTone} icon={<Save size={16} />} />
+             <StatTile label="Potential FP Revenue" value={kesMillions(totals.potentialFpRevenue)} detail="Planned NOOS, Core and Recent styles" tone="success" icon={<TrendingUp size={16} />} />
+             <StatTile label="COGS vs budget" value={`${totals.cogsPct.toFixed(1)}%`} detail={`${season.cogsBudgetPct}% budget ceiling · ${kesMillions(budgetCeiling)}`} tone={cogsTone} icon={<Save size={16} />} />
           </div>
           <div className="range-section-toolbar">
             <div><span className="range-eyebrow">Mix matrix</span><h2>Plan the shape of the season</h2><p>Click a gold value to edit. Changes save when you leave the cell.</p></div>
@@ -343,8 +350,8 @@ function RangePlanPage() {
           </div>
           <div className="range-matrix-card">
             <div className="range-table-scroll">
-              <table className="range-table">
-                <thead><tr><th>Sub-Category</th><th>Tier</th><th>Style Target</th><th>Min</th><th>Max</th><th>AOS (units)</th><th>Total Units</th><th>Notes</th></tr></thead>
+               <table className="range-table">
+                 <thead><tr><th>Sub-Category</th><th>Tier</th><th>Style Target</th><th>Min</th><th>Max</th><th>AOS (units)</th><th>Total Units</th><th>ASP</th><th>Potential FP Revenue</th><th>Notes</th></tr></thead>
                 <tbody>
                   {tierOrder.map((tier) => {
                     const groupRows = tierRows(tier);
@@ -352,7 +359,7 @@ function RangePlanPage() {
                     const groupUnits = groupRows.reduce((sum, row) => sum + row.totalUnitsImplied, 0);
                     return (
                       <Fragment key={tier}>
-                        <tr key={`${tier}-heading`} className="range-tier-heading"><td colSpan={8}><span className={`range-tier-dot tier-${tier.replace('/', '-')}`} /><strong>{tierLabels[tier]}</strong><span>{groupRows.length} planning lines</span></td></tr>
+                         <tr key={`${tier}-heading`} className="range-tier-heading"><td colSpan={10}><span className={`range-tier-dot tier-${tier.replace('/', '-')}`} /><strong>{tierLabels[tier]}</strong><span>{groupRows.length} planning lines</span></td></tr>
                         {groupRows.map((row) => (
                           <tr key={row.id}>
                             <td><strong>{row.subCategory}</strong></td>
@@ -362,19 +369,21 @@ function RangePlanPage() {
                             <td className="range-readonly">{numberFormat(row.styleCountMax)}</td>
                             <td><InlineCell value={row.aosUnits} kind="number" ariaLabel={`${row.subCategory} AOS`} onSave={(value) => saveRow(row, 'aosUnits', value)} /></td>
                             <td className="range-total-cell">{numberFormat(row.totalUnitsImplied)}</td>
+                             <td className="range-readonly">{kes(row.asp)}</td>
+                             <td className="range-total-cell">{row.tier === 'New/Test' ? '—' : kes(row.potentialFpRevenue)}</td>
                             <td><InlineCell value={row.notes} ariaLabel={`${row.subCategory} notes`} placeholder="Add note" onSave={(value) => saveRow(row, 'notes', value)} /></td>
                           </tr>
                         ))}
                         <tr className="range-subtotal"><td colSpan={2}>Subtotal · {tierLabels[tier]}</td><td>{numberFormat(groupStyles)}</td><td colSpan={3} /><td>{numberFormat(groupUnits)}</td><td /></tr>
                         {addingTier === tier ? (
-                          <tr className="range-add-row"><td colSpan={8}><div className="range-add-form"><input autoFocus value={newSubCategory} onChange={(event) => setNewSubCategory(event.target.value)} placeholder="New sub-category name" onKeyDown={(event) => { if (event.key === 'Enter' && season) createRow.mutate({ seasonId: season.id, tier, subCategory: newSubCategory.trim() }); }} /><button type="button" className="button button-gold" disabled={!newSubCategory.trim() || createRow.isPending} onClick={() => createRow.mutate({ seasonId: season.id, tier, subCategory: newSubCategory.trim() })}><Plus size={14} /> Add</button><button type="button" className="icon-button" onClick={() => { setAddingTier(null); setNewSubCategory(''); }} aria-label="Cancel add row"><X size={15} /></button></div></td></tr>
+                           <tr className="range-add-row"><td colSpan={10}><div className="range-add-form"><input autoFocus value={newSubCategory} onChange={(event) => setNewSubCategory(event.target.value)} placeholder="New sub-category name" onKeyDown={(event) => { if (event.key === 'Enter' && season) createRow.mutate({ seasonId: season.id, tier, subCategory: newSubCategory.trim() }); }} /><button type="button" className="button button-gold" disabled={!newSubCategory.trim() || createRow.isPending} onClick={() => createRow.mutate({ seasonId: season.id, tier, subCategory: newSubCategory.trim() })}><Plus size={14} /> Add</button><button type="button" className="icon-button" onClick={() => { setAddingTier(null); setNewSubCategory(''); }} aria-label="Cancel add row"><X size={15} /></button></div></td></tr>
                         ) : (
-                          <tr className="range-add-row"><td colSpan={8}><button type="button" className="range-add-button" onClick={() => { setAddingTier(tier); setNewSubCategory(''); }}><Plus size={14} /> Add row to {tierLabels[tier]}</button></td></tr>
+                           <tr className="range-add-row"><td colSpan={10}><button type="button" className="range-add-button" onClick={() => { setAddingTier(tier); setNewSubCategory(''); }}><Plus size={14} /> Add row to {tierLabels[tier]}</button></td></tr>
                         )}
                       </Fragment>
                     );
                   })}
-                  <tr className="range-grand-total"><td colSpan={2}>Grand total</td><td>{numberFormat(totals.totalStyles)}</td><td colSpan={3} /><td>{numberFormat(totals.totalUnits)}</td><td /></tr>
+                   <tr className="range-grand-total"><td colSpan={2}>Grand total</td><td>{numberFormat(totals.totalStyles)}</td><td colSpan={3} /><td>{numberFormat(totals.totalUnits)}</td><td /><td>{kes(totals.potentialFpRevenue)}</td><td /></tr>
                 </tbody>
               </table>
             </div>

@@ -909,13 +909,19 @@ export interface CatalogueStyle {
   styleNumber: string;
   styleName?: string | null;
   brand?: string | null;
+  tier?: string | null;
   subcategory?: string | null;
   category?: string | null;
+  fabricCategory?: string | null;
+  primaryColour?: string | null;
+  edit?: string | null;
   colourway?: string | null;
   price?: number | null;
   launchDate?: string | null;
   status: string;
   image?: string | null;
+  internalReference?: string | null;
+  sku?: string | null;
 }
 
 export interface CataloguePage {
@@ -925,6 +931,16 @@ export interface CataloguePage {
   pageSize: number;
   brands: string[];
   subcategories: string[];
+  filterOptions?: {
+    tier: string[];
+    status: string[];
+    category: string[];
+    subCategory: string[];
+    fabricCategory: string[];
+    brand: string[];
+    primaryColour: string[];
+    edit: string[];
+  };
 }
 
 export interface ShowcaseBoardSummary {
@@ -1046,9 +1062,14 @@ year?: number;
 
 export type ListCatalogueProductsParams = {
 search?: string;
+ tier?: string;
 brand?: string;
+category?: string;
 subcategory?: string;
-status?: ListCatalogueProductsStatus;
+fabricCategory?: string;
+primaryColour?: string;
+edit?: string;
+status?: ListCatalogueProductsStatus | string;
 page?: number;
 };
 

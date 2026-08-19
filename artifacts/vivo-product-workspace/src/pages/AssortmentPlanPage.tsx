@@ -148,7 +148,6 @@ function StyleCard({
         </div>
         <h3>{style.name || 'Unnamed style'}</h3>
         <span className="assortment-style-number">{style.styleNumber || 'Style number pending'}</span>
-        <span className="assortment-style-category">{style.category}</span>
         {action ? <div className="assortment-card-action">{action}</div> : null}
       </div>
     </article>
@@ -263,6 +262,18 @@ function AssortmentPlanPage() {
   const activeFilterCount = Object.values(filters).reduce((total, values) => total + values.length, 0);
   const seasons = payload.seasons ?? [];
   const setFilter = (key: AssortmentFilterKey, values: string[]) => setFilters((current) => ({ ...current, [key]: values }));
+  const renderStyleAction = (style: AssortmentStyle) => (
+    <div className="assortment-card-actions">
+      {style.source === 'all_products_clean'
+        ? <button type="button" className="assortment-card-button" disabled={toggleExclusion.isPending} onClick={() => toggleExclusion.mutate({ styleId: style.styleNumber, excluded: !style.excluded })}>
+            {style.excluded ? 'Include in quarter' : 'Exclude from quarter'} <X size={13} />
+          </button>
+        : quarter === 'Q3 2026' && style.pdId !== null
+          ? <button type="button" className="assortment-card-button" disabled={moveStyle.isPending} onClick={() => moveStyle.mutate({ id: style.pdId as number, season: 'Q4 2026' })}>Move to Q4 <MoveRight size={13} /></button>
+          : <span className="assortment-assigned">Assigned to {quarter.replace(' 2026', '')}</span>}
+      <AddToRangePlan style={style} seasons={seasons} pending={addToRangePlan.isPending} onAdd={(seasonId) => addToRangePlan.mutate({ style, seasonId })} />
+    </div>
+  );
 
   return (
     <section className="page assortment-plan-page">
@@ -306,54 +317,12 @@ function AssortmentPlanPage() {
 
       <SummaryBar summary={summary} />
 
-      <section className="assortment-style-section" aria-labelledby="carry-over-heading">
-        <div className="assortment-section-heading">
-          <div><span className="range-eyebrow">Always-on foundation</span><h2 id="carry-over-heading">Carry-over Range</h2><p>Active and retired NOOS, Core, and Recent styles continuing on the floor.</p></div>
-           <span className="assortment-section-count">{numberFormat(filteredCarryOverStyles.length)} styles</span>
-        </div>
-        {filteredCarryOverStyles.length ? (
+      <section className="assortment-style-section" aria-label="Assortment styles">
+        {filteredStyles.length ? (
           <div className="assortment-card-grid">
-            {filteredCarryOverStyles.map((style) => (
-              <StyleCard
-                key={style.id}
-                style={style}
-                action={(
-                  <div className="assortment-card-actions">
-                    {style.tier === 'NOOS'
-                      ? <span className="assortment-always-on">Always included</span>
-                      : <button type="button" className="assortment-card-button" disabled={toggleExclusion.isPending} onClick={() => toggleExclusion.mutate({ styleId: style.styleNumber, excluded: true })}>Exclude from quarter <X size={13} /></button>}
-                    <AddToRangePlan style={style} seasons={seasons} pending={addToRangePlan.isPending} onAdd={(seasonId) => addToRangePlan.mutate({ style, seasonId })} />
-                  </div>
-                )}
-              />
-            ))}
+            {filteredStyles.map((style) => <StyleCard key={style.id} style={style} action={renderStyleAction(style)} />)}
           </div>
-        ) : <div className="assortment-empty">No carry-over styles are available for this quarter.</div>}
-      </section>
-
-      <section className="assortment-style-section" aria-labelledby="new-quarter-heading">
-        <div className="assortment-section-heading">
-          <div><span className="range-eyebrow">Product development pipeline</span><h2 id="new-quarter-heading">New This Quarter</h2><p>Styles from Product Development whose season includes {quarter}.</p></div>
-           <span className="assortment-section-count">{numberFormat(filteredNewStyles.length)} styles</span>
-        </div>
-        {filteredNewStyles.length ? (
-          <div className="assortment-card-grid">
-            {filteredNewStyles.map((style) => (
-              <StyleCard
-                key={style.id}
-                style={style}
-                action={(
-                  <div className="assortment-card-actions">
-                    {quarter === 'Q3 2026' && style.pdId !== null
-                      ? <button type="button" className="assortment-card-button" disabled={moveStyle.isPending} onClick={() => moveStyle.mutate({ id: style.pdId as number, season: 'Q4 2026' })}>Move to Q4 <MoveRight size={13} /></button>
-                      : <span className="assortment-assigned">Assigned to {quarter.replace(' 2026', '')}</span>}
-                    <AddToRangePlan style={style} seasons={seasons} pending={addToRangePlan.isPending} onAdd={(seasonId) => addToRangePlan.mutate({ style, seasonId })} />
-                  </div>
-                )}
-              />
-            ))}
-          </div>
-        ) : <div className="assortment-empty">No new styles are assigned to this quarter yet.</div>}
+        ) : <div className="assortment-empty">No styles match the selected filters.</div>}
       </section>
       {toast ? <div className="assortment-toast" role="status">{toast}</div> : null}
       {moveStyle.isError || toggleExclusion.isError || addToRangePlan.isError ? <div className="form-error">{addToRangePlan.error instanceof Error ? addToRangePlan.error.message : 'That assortment change could not be saved. Try again.'}</div> : null}

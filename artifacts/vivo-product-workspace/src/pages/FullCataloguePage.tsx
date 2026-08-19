@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Check, ChevronLeft, ChevronRight, CircleAlert, Search, X } from 'lucide-react';
+import { Check, ChevronLeft, ChevronRight, CircleAlert, ExternalLink, MoveRight, Search, X } from 'lucide-react';
 import { getListCatalogueProductsQueryKey, useListCatalogueProducts } from '@workspace/api-client-react';
 import type { CatalogueStyle } from '@workspace/api-client-react';
 import MultiSelectFilter from '../components/MultiSelectFilter';
@@ -34,6 +34,73 @@ type CatalogueStyleDetailData = {
   stockUnits: number;
 };
 
+type FullCatalogueFilterKey = 'tier' | 'status' | 'category' | 'subCategory' | 'fabricCategory' | 'brand' | 'primaryColour' | 'edit';
+type FullCatalogueFilters = Record<FullCatalogueFilterKey, string[]>;
+const fullCatalogueFilters: Array<{ key: FullCatalogueFilterKey; label: string }> = [
+  { key: 'tier', label: 'Tier' },
+  { key: 'status', label: 'Status' },
+  { key: 'category', label: 'Category' },
+  { key: 'subCategory', label: 'Sub-category' },
+  { key: 'fabricCategory', label: 'Fabric Category' },
+  { key: 'brand', label: 'Brand' },
+  { key: 'primaryColour', label: 'Primary Colour' },
+  { key: 'edit', label: 'Edit' },
+];
+const emptyFullCatalogueFilters: FullCatalogueFilters = {
+  tier: [], status: [], category: [], subCategory: [], fabricCategory: [], brand: [], primaryColour: [], edit: [],
+};
+
+function AddToAssortmentPanel({
+  source,
+  styleNumber,
+  pdId,
+  styleName,
+  onClose,
+}: {
+  source: 'all_products_clean' | 'pd_styles';
+  styleNumber: string;
+  pdId?: number | null;
+  styleName: string;
+  onClose: () => void;
+}) {
+  const [season, setSeason] = useState<'Q3 2026' | 'Q4 2026'>('Q3 2026');
+  const [saving, setSaving] = useState(false);
+  const [notice, setNotice] = useState('');
+  const [error, setError] = useState('');
+  const add = async () => {
+    setSaving(true);
+    setNotice('');
+    setError('');
+    try {
+      const response = await fetch('/api/workspace/assortment-plan/add-style', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ season, source, styleNumber, pdId }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(String(body.error || 'Could not add style to the Assortment Plan'));
+      setNotice(body.added ? `Added to ${season}` : `Already in ${season}`);
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : 'Could not add style to the Assortment Plan');
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <aside className="catalogue-assortment-panel" aria-label="Add to Assortment Plan">
+      <div className="catalogue-assortment-panel-head">
+        <div><span className="range-eyebrow">Planning action</span><h3>Add to Assortment Plan</h3><p>{styleName || styleNumber}</p></div>
+        <button type="button" className="icon-button" onClick={onClose} aria-label="Close Assortment Plan panel"><X size={15} /></button>
+      </div>
+      <label>Planning quarter<select value={season} onChange={(event) => setSeason(event.target.value as typeof season)}><option>Q3 2026</option><option>Q4 2026</option></select></label>
+      <button type="button" className="button button-gold" disabled={saving} onClick={add}><MoveRight size={14} />{saving ? 'Adding…' : 'Add style'}</button>
+      {notice && <span className="style-save-notice"><Check size={14} /> {notice}</span>}
+      {error && <span className="form-error">{error}</span>}
+    </aside>
+  );
+}
+
 function CatalogueTierDetail({ styleNumber, onClose }: { styleNumber: string; onClose: () => void }) {
   const [detail, setDetail] = useState<CatalogueStyleDetailData | null>(null);
   const [tier, setTier] = useState<CatalogueStyleDetailData['rangeTier']>('Recent');
@@ -41,6 +108,7 @@ function CatalogueTierDetail({ styleNumber, onClose }: { styleNumber: string; on
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
+  const [planOpen, setPlanOpen] = useState(false);
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
@@ -80,7 +148,7 @@ function CatalogueTierDetail({ styleNumber, onClose }: { styleNumber: string; on
       <div className="catalogue-detail-toolbar"><button className="back-link" type="button" onClick={onClose}><X size={15} /> Close detail</button></div>
       {loading ? <div className="skeleton catalogue-detail-loading" /> : error ? <div className="empty-state error-state"><CircleAlert size={22} /><p>{error}</p></div> : detail ? (
         <div className="catalogue-detail-card">
-          <div><span className="mono">{detail.styleNumber}</span><h2>{detail.styleName || 'Unnamed style'}</h2><p>{detail.brand || '—'} · {detail.category || detail.subcategory || 'Uncategorised'} · {detail.status}</p></div>
+          <div><span className="mono">{detail.styleNumber}</span><h2>{detail.styleName || 'Unnamed style'}</h2><p>{detail.brand || '—'} · {detail.category || detail.subcategory || 'Uncategorised'} · {detail.status}</p><div className="catalogue-detail-actions"><button type="button" className="button button-outline" onClick={() => setPlanOpen((current) => !current)}><MoveRight size={14} /> Add to Assortment Plan</button><a className="button button-quiet" href={`/merchandising?tab=merch-deepdive&style=${encodeURIComponent(detail.styleNumber)}`} target="_blank" rel="noreferrer">View in BI <ExternalLink size={13} /></a></div></div>
           <div className="catalogue-tier-editor">
             <div><span className="range-eyebrow">Assortment tier</span><strong>{detail.rangeTier}</strong><small>{detail.stockUnits.toLocaleString('en-KE')} units at style level</small></div>
             <label>Carry-over tier<select value={tier} onChange={(event) => setTier(event.target.value as CatalogueStyleDetailData['rangeTier'])}><option value="NOOS">NOOS · always included</option><option value="Core">Core · carry-over performer</option><option value="Recent">Recent · recent performer</option></select></label>
@@ -88,6 +156,7 @@ function CatalogueTierDetail({ styleNumber, onClose }: { styleNumber: string; on
             {notice && <span className="style-save-notice"><Check size={14} /> {notice}</span>}
             {error && <span className="form-error">{error}</span>}
           </div>
+          {planOpen && <AddToAssortmentPanel source="all_products_clean" styleNumber={detail.styleNumber} styleName={detail.styleName} onClose={() => setPlanOpen(false)} />}
         </div>
       ) : null}
     </div>
@@ -97,31 +166,45 @@ function CatalogueTierDetail({ styleNumber, onClose }: { styleNumber: string; on
 export default function FullCataloguePage() {
   const [search, setSearch] = useState('');
   const [applied, setApplied] = useState('');
-  const [brands, setBrands] = useState<string[]>([]);
-  const [subcategories, setSubcategories] = useState<string[]>([]);
-  const [status, setStatus] = useState('');
+  const [filters, setFilters] = useState<FullCatalogueFilters>(emptyFullCatalogueFilters);
   const [page, setPage] = useState(1);
   const [selectedStyleNumber, setSelectedStyleNumber] = useState<string | null>(null);
   const params = useMemo(() => ({
     search: applied || undefined,
-    // multi-select values travel comma-separated; the API applies IN (...)
-    brand: brands.length ? brands.join(',') : undefined,
-    subcategory: subcategories.length ? subcategories.join(',') : undefined,
-    status: (status || undefined) as 'active' | 'retired' | undefined,
+    tier: filters.tier.length ? filters.tier.join(',') : undefined,
+    status: filters.status.length ? filters.status.map((value) => value.toLowerCase()).join(',') : undefined,
+    category: filters.category.length ? filters.category.join(',') : undefined,
+    subcategory: filters.subCategory.length ? filters.subCategory.join(',') : undefined,
+    fabricCategory: filters.fabricCategory.length ? filters.fabricCategory.join(',') : undefined,
+    brand: filters.brand.length ? filters.brand.join(',') : undefined,
+    primaryColour: filters.primaryColour.length ? filters.primaryColour.join(',') : undefined,
+    edit: filters.edit.length ? filters.edit.join(',') : undefined,
     page,
-  }), [applied, brands, subcategories, status, page]);
+  }), [applied, filters, page]);
   const catalogue = useListCatalogueProducts(params, { query: { queryKey: getListCatalogueProductsQueryKey(params), placeholderData: (previous) => previous }, request: { credentials: 'include' } });
   const data = catalogue.data;
   const totalPages = data ? Math.max(1, Math.ceil(data.total / data.pageSize)) : 1;
   const resetPage = () => setPage(1);
-  const clear = () => { setSearch(''); setApplied(''); setBrands([]); setSubcategories([]); setStatus(''); setPage(1); };
+  const clear = () => { setSearch(''); setApplied(''); setFilters(emptyFullCatalogueFilters); setPage(1); };
+  const options = data?.filterOptions || {
+    tier: [], status: ['Active', 'Retired'], category: [], subCategory: data?.subcategories || [],
+    fabricCategory: [], brand: data?.brands || [], primaryColour: [], edit: [],
+  };
   return (
     <>
       <div className="catalogue-tools full-cat-tools">
         <label className="search-field"><Search size={17} /><input type="search" value={search} onChange={(event) => { setSearch(event.target.value); setApplied(event.target.value); resetPage(); }} placeholder="Search by style name or number…" data-testid="input-full-cat-search" /></label>
-        <MultiSelectFilter label="Brand" options={data?.brands || []} values={brands} onChange={(next) => { setBrands(next); resetPage(); }} testId="select-full-cat-brand" />
-        <MultiSelectFilter label="Subcategory" options={data?.subcategories || []} values={subcategories} onChange={(next) => { setSubcategories(next); resetPage(); }} testId="select-full-cat-subcategory" />
-        <select value={status} onChange={(event) => { setStatus(event.target.value); resetPage(); }} aria-label="Filter by status" data-testid="select-full-cat-status"><option value="">All statuses</option><option value="active">Active</option><option value="retired">Retired</option></select>
+        {fullCatalogueFilters.map(({ key, label }) => (
+          <MultiSelectFilter
+            key={key}
+            label={label}
+            options={options[key] || []}
+            values={filters[key]}
+            onChange={(next) => { setFilters((current) => ({ ...current, [key]: next })); resetPage(); }}
+            testId={`select-full-cat-${key}`}
+            alwaysShowCount
+          />
+        ))}
         <button className="button button-quiet" onClick={clear} data-testid="button-full-cat-clear">Clear filters</button>
       </div>
       {catalogue.isLoading ? (
@@ -130,7 +213,7 @@ export default function FullCataloguePage() {
         <div className="empty-state error-state"><CircleAlert size={22} /><h3>Could not load the catalogue</h3><p>The workspace service is unreachable.</p><button className="button button-dark" onClick={() => catalogue.refetch()} data-testid="button-full-cat-retry">Try again</button></div>
       ) : (
         <>
-           <div className="catalogue-head"><span data-testid="text-full-cat-total">{data?.total ?? 0} styles</span><span>Odoo mirror · click a style to edit its assortment tier</span></div>
+           <div className="catalogue-head"><span data-testid="text-full-cat-total">{data?.total ?? 0} styles</span><span>BI mirror · click a style to edit its assortment tier</span></div>
           {data?.items.length ? (
             <div className={`full-cat-grid ${catalogue.isFetching ? 'is-refreshing' : ''}`}>
               {data.items.map((style) => (
@@ -141,12 +224,13 @@ export default function FullCataloguePage() {
                   </div>
                   <div className="full-cat-body">
                     <strong className="full-cat-name" title={style.styleName || undefined}>{style.styleName || 'Unnamed style'}</strong>
+                     <span className="full-cat-number">{style.styleNumber || style.internalReference || style.sku || 'Style number pending'}</span>
                     <span className="full-cat-colour" title={style.colourway || undefined}>{style.colourway || '\u00A0'}</span>
                     <div className="full-cat-meta-row">
                       <span className="full-cat-price">{fmtKES(style.price) || '—'}</span>
                       {style.launchDate ? <span className="full-cat-launch">{fmtMonthYear(style.launchDate)}</span> : null}
                     </div>
-                    <span className="full-cat-sub">{[style.category, style.subcategory].filter(Boolean).join(' · ') || '—'}</span>
+                     <span className="full-cat-sub">{[style.category, style.subcategory, style.fabricCategory].filter(Boolean).join(' · ') || '—'}</span>
                     <span className="full-cat-brand">{style.brand || '—'}</span>
                   </div>
                  </button>

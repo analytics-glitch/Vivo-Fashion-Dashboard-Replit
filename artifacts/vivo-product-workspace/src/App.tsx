@@ -3,7 +3,7 @@ import type { FormEvent, ReactNode } from 'react';
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, Route, Switch, Router as WouterRouter, useLocation, useParams } from 'wouter';
 import { io } from 'socket.io-client';
-import { ArrowLeft, ArrowRight, BarChart3, BookOpen, CalendarDays, Check, ChevronDown, ChevronRight, CircleAlert, Clock3, Columns3, FileText, GalleryHorizontalEnd, History, LayoutDashboard, Library, ListChecks, LogOut, Menu, MessageCircle, Package, Palette, Plus, Search, Settings2, Sparkles, UsersRound, X } from 'lucide-react';
+import { ArrowLeft, ArrowRight, BarChart3, BookOpen, CalendarDays, Check, ChevronDown, ChevronRight, CircleAlert, Clock3, Columns3, FileText, GalleryHorizontalEnd, History, LayoutDashboard, Library, ListChecks, LogOut, Menu, MessageCircle, MoveRight, Package, Palette, Plus, Search, Settings2, Sparkles, UsersRound, X } from 'lucide-react';
 import {
   getGetWorkspaceBoardQueryKey, getGetWorkspaceDashboardQueryKey, getGetWorkspacePlanQueryKey, getGetWorkspaceSessionQueryKey,
   getGetWorkspaceStyleQueryKey,
@@ -29,6 +29,7 @@ import RangePlanPage from '@/pages/RangePlanPage';
 import ResourcesPage from '@/pages/ResourcesPage';
 import FeedbackPage, { PublicFeedbackPage, StyleFeedbackPanel, useStyleFeedback } from '@/pages/FeedbackPage';
 import './index.css';
+import MultiSelectFilter from '@/components/MultiSelectFilter';
 
 const queryClient = new QueryClient();
 const nav = [
@@ -85,21 +86,56 @@ type PlmCatalogueStyle = {
   designer?: string | null;
   image?: string | null;
   progress?: number | null;
+  tier?: string | null;
+  fabricCategory?: string | null;
+  primaryColour?: string | null;
+  edit?: string | null;
 };
 
-function usePlmCatalogue(search: string, brand: string, enabled: boolean) {
-  return useQuery<{ items: PlmCatalogueStyle[]; brands: string[] }>({
-    queryKey: ['workspace', 'plm-catalogue', search, brand],
+type PlmCatalogueFilters = {
+  tier: string[];
+  status: string[];
+  category: string[];
+  subCategory: string[];
+  fabricCategory: string[];
+  brand: string[];
+  primaryColour: string[];
+  edit: string[];
+};
+const PLM_CATALOGUE_FILTERS: Array<{ key: keyof PlmCatalogueFilters; label: string }> = [
+  { key: 'tier', label: 'Tier' },
+  { key: 'status', label: 'Status / stage' },
+  { key: 'category', label: 'Category' },
+  { key: 'subCategory', label: 'Sub-category' },
+  { key: 'fabricCategory', label: 'Fabric Category' },
+  { key: 'brand', label: 'Brand' },
+  { key: 'primaryColour', label: 'Primary Colour' },
+  { key: 'edit', label: 'Edit' },
+];
+const EMPTY_PLM_CATALOGUE_FILTERS: PlmCatalogueFilters = {
+  tier: [], status: [], category: [], subCategory: [], fabricCategory: [], brand: [], primaryColour: [], edit: [],
+};
+type PlmCatalogueResponse = {
+  items: PlmCatalogueStyle[];
+  brands: string[];
+  filterOptions?: Partial<Record<keyof PlmCatalogueFilters, string[]>>;
+};
+
+function usePlmCatalogue(search: string, filters: PlmCatalogueFilters, enabled: boolean) {
+  return useQuery<PlmCatalogueResponse>({
+    queryKey: ['workspace', 'plm-catalogue', search, filters],
     enabled,
     queryFn: async () => {
       const params = new URLSearchParams();
       if (search) params.set('search', search);
-      if (brand) params.set('brand', brand);
+       Object.entries(filters).forEach(([key, values]) => {
+         if (values.length) params.set(key, values.join(','));
+       });
       const response = await fetch(`/api/workspace/plm-catalogue${params.toString() ? `?${params}` : ''}`, {
         credentials: 'include',
       });
       if (!response.ok) throw new Error(`PLM catalogue request failed (${response.status})`);
-      return response.json() as Promise<{ items: PlmCatalogueStyle[]; brands: string[] }>;
+       return response.json() as Promise<PlmCatalogueResponse>;
     },
   });
 }
@@ -489,20 +525,21 @@ function StylesPage() {
     window.history.replaceState(null, '', url.toString());
   };
   const [search, setSearch] = useState('');
-  const [brand, setBrand] = useState('');
-  const plmCatalogue = usePlmCatalogue(search, brand, tab === 'plm');
+  const [filters, setFilters] = useState<PlmCatalogueFilters>(EMPTY_PLM_CATALOGUE_FILTERS);
+  const plmCatalogue = usePlmCatalogue(search, filters, tab === 'plm');
   const [selected, setSelected] = useState<number | null>(() => params.id ? Number(params.id) : null);
-  const brands = useMemo(() => plmCatalogue.data?.brands || [], [plmCatalogue.data?.brands]);
+  const filterOptions = plmCatalogue.data?.filterOptions || {};
+  const clearFilters = () => { setSearch(''); setFilters(EMPTY_PLM_CATALOGUE_FILTERS); };
   if (selected) return <CatalogueStyleDetail id={selected} onBack={() => setLocation('/product-workspace/styles')} />;
   if (tab === 'plm' && plmCatalogue.isError) return <section className="page"><ErrorState onRetry={() => plmCatalogue.refetch()} /></section>;
   const tabBar = (
     <div className="cat-tabs" role="tablist" aria-label="Catalogue tabs">
       <button role="tab" aria-selected={tab === 'plm'} className={`cat-tab ${tab === 'plm' ? 'active' : ''}`} onClick={() => setTab('plm')} data-testid="tab-plm-catalogue">PLM Catalogue <span className="cat-tab-label">In Development</span></button>
-      <button role="tab" aria-selected={tab === 'full'} className={`cat-tab ${tab === 'full' ? 'active' : ''}`} onClick={() => setTab('full')} data-testid="tab-full-catalogue">Full Catalogue <span className="cat-tab-label">Odoo mirror</span></button>
+       <button role="tab" aria-selected={tab === 'full'} className={`cat-tab ${tab === 'full' ? 'active' : ''}`} onClick={() => setTab('full')} data-testid="tab-full-catalogue">Full Catalogue <span className="cat-tab-label">BI mirror</span></button>
     </div>
   );
-  if (tab === 'full') return <section className="page"><PageHeading eyebrow="Product library" title="Style catalogue" description="The full Vivo range — every active and retired style, straight from Odoo." />{tabBar}<FullCataloguePage /></section>;
-  return <section className="page"><PageHeading eyebrow="Product library" title="Style catalogue" description="Search the working language of the Vivo collection." />{tabBar}<div className="catalogue-tools"><label className="search-field"><Search size={17} /><input type="search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by style, number or designer…" data-testid="input-style-search" /></label><select value={brand} onChange={(e) => setBrand(e.target.value)} aria-label="Filter by brand" data-testid="select-style-brand"><option value="">All brands</option>{brands.map((item) => <option key={item} value={item}>{item}</option>)}</select><button className="button button-quiet" onClick={() => { setSearch(''); setBrand(''); }} data-testid="button-clear-style-filters">Clear filters</button></div>{plmCatalogue.isLoading ? <LoadingState /> : <div className="catalogue-list"><div className="catalogue-head"><span>{plmCatalogue.data?.items.length || 0} styles</span><span>Product Development · active styles</span></div>{plmCatalogue.data?.items.length ? plmCatalogue.data.items.map((style, i) => <button className="catalogue-row" key={style.id} onClick={() => setLocation(`/product-workspace/styles/${style.id}`)} data-testid={`row-catalogue-style-${style.id}`}><span className="row-index">{String(i + 1).padStart(2, '0')}</span><div className="catalogue-thumb" style={style.image ? { backgroundImage: `url(${style.image})` } : undefined}><Palette size={15} /></div><div className="catalogue-name"><strong>{style.name}</strong><span>{style.code} · {style.category || 'Uncategorised'}</span></div><div className="catalogue-stage"><span>Stage</span><strong>{style.currentStage || style.stage || style.status || 'Concept'}</strong></div><div className="catalogue-assignee"><span>Designer / assignee</span><strong>{style.designer || style.owner || 'Unassigned'}</strong></div><span className="catalogue-brand">{style.brand || '—'}</span><StatusPill value={style.status} /><div className="catalogue-progress"><Progress value={style.progress} /><span>{style.progress || 0}%</span></div><ChevronRight size={16} /></button>) : <EmptyState title="No styles in the catalogue" text="Try a different search or clear your filters." action={<button className="button button-quiet" onClick={() => { setSearch(''); setBrand(''); }} data-testid="button-empty-clear-filters">Clear filters</button>} />}</div>}</section>;
+  if (tab === 'full') return <section className="page"><PageHeading eyebrow="Product library" title="Style catalogue" description="The full Vivo, Safari by Vivo and Zoya range — every active and retired style, mirrored for planning." />{tabBar}<FullCataloguePage /></section>;
+  return <section className="page"><PageHeading eyebrow="Product library" title="Style catalogue" description="Search the working language of the Vivo, Safari by Vivo and Zoya collection." />{tabBar}<div className="catalogue-tools plm-catalogue-tools"><label className="search-field"><Search size={17} /><input type="search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by style, number or designer…" data-testid="input-style-search" /></label>{PLM_CATALOGUE_FILTERS.map(({ key, label }) => <MultiSelectFilter key={key} label={label} options={filterOptions[key] || []} values={filters[key]} onChange={(next) => setFilters((current) => ({ ...current, [key]: next }))} testId={`select-style-filter-${key}`} alwaysShowCount />)}<button className="button button-quiet" onClick={clearFilters} data-testid="button-clear-style-filters">Clear filters</button></div>{plmCatalogue.isLoading ? <LoadingState /> : <div className="catalogue-list"><div className="catalogue-head"><span>{plmCatalogue.data?.items.length || 0} styles</span><span>Product Development · active styles</span></div>{plmCatalogue.data?.items.length ? plmCatalogue.data.items.map((style, i) => <div className="catalogue-row-shell" key={style.id}><button className="catalogue-row" onClick={() => setLocation(`/product-workspace/styles/${style.id}`)} data-testid={`row-catalogue-style-${style.id}`}><span className="row-index">{String(i + 1).padStart(2, '0')}</span><div className="catalogue-thumb" style={style.image ? { backgroundImage: `url(${style.image})` } : undefined}><Palette size={15} /></div><div className="catalogue-name"><strong>{style.name}</strong><span>{style.code} · {style.category || 'Uncategorised'}</span></div><div className="catalogue-stage"><span>Stage</span><strong>{style.currentStage || style.stage || style.status || 'Concept'}</strong></div><div className="catalogue-assignee"><span>Designer / assignee</span><strong>{style.designer || style.owner || 'Unassigned'}</strong></div><span className="catalogue-brand">{style.brand || '—'}</span><StatusPill value={style.status} /><div className="catalogue-progress"><Progress value={style.progress} /><span>{style.progress || 0}%</span></div><ChevronRight size={16} /></button><div className="catalogue-row-actions"><a href={`/merchandising?tab=merch-deepdive&style=${encodeURIComponent(style.code)}`} target="_blank" rel="noreferrer">View in BI <ArrowRight size={13} /></a><button type="button" onClick={() => setLocation(`/product-workspace/styles/${style.id}`)}>Add to Assortment Plan <ArrowRight size={13} /></button></div></div>) : <EmptyState title="No styles in the catalogue" text="Try a different search or clear your filters." action={<button className="button button-quiet" onClick={clearFilters} data-testid="button-empty-clear-filters">Clear filters</button>} />}</div>}</section>;
 }
 function StyleDetail({ id, onBack }: { id: number; onBack: () => void }) { const style = useGetWorkspaceStyle(id, { query: { queryKey: getGetWorkspaceStyleQueryKey(id) }, request: { credentials: 'include' } }); const update = useUpdateWorkspaceStyle(); const [editing, setEditing] = useState(false); const [owner, setOwner] = useState(''); const save = () => update.mutate({ id, data: { owner } }, { onSuccess: () => { setEditing(false); queryClient.invalidateQueries({ queryKey: getGetWorkspaceStyleQueryKey(id) }); queryClient.invalidateQueries({ queryKey: getListWorkspaceStylesQueryKey() }); } }); return <section className="page">{<button className="back-link" onClick={onBack} data-testid="button-back-catalogue"><ArrowLeft size={15} /> Style catalogue</button>}{style.isLoading ? <LoadingState /> : style.isError ? <ErrorState onRetry={() => style.refetch()} /> : style.data ? <><PageHeading eyebrow={`Style / ${style.data.code}`} title={style.data.name} description={`${style.data.brand} · ${style.data.category} · ${style.data.market || 'East Africa'}`} action={<button className="button button-dark" onClick={() => { setOwner(style.data?.owner || ''); setEditing(!editing); }} data-testid="button-edit-style"><Settings2 size={15} /> Edit style</button>} />{editing && <div className="edit-inline"><label>Owner<input value={owner} onChange={(e) => setOwner(e.target.value)} data-testid="input-style-owner" /></label><button className="button button-gold" onClick={save} disabled={update.isPending} data-testid="button-save-style">Save changes <Check size={15} /></button></div>}<div className="style-detail-layout"><div className="style-detail-art" style={style.data.image ? { backgroundImage: `url(${style.data.image})` } : undefined}><div className="style-art-label"><span className="mono">{style.data.code}</span><b>{style.data.name}</b></div></div><div className="style-detail-info"><div className="detail-status"><StatusPill value={style.data.status} /><span className="mono">Target {date(style.data.targetDate)}</span></div><h2>A shape worth<br /><em>keeping close.</em></h2><div className="detail-progress"><div><span>Development progress</span><b>{style.data.progress || 0}%</b></div><Progress value={style.data.progress} /></div><div className="fact-list"><div><span>Owner</span><b>{style.data.owner}</b></div><div><span>Designer / assignee</span><b>{style.data.designer || style.data.owner || 'Unassigned'}</b></div><div><span>Design stage</span><b>{style.data.currentStage || style.data.stage || style.data.status || 'Concept'}</b></div><div><span>Price</span><b>{style.data.price ? `KES ${style.data.price.toLocaleString()}` : 'To be set'}</b></div><div><span>Market</span><b>{style.data.market || 'East Africa'}</b></div></div></div></div><div className="style-tabs"><button className="active" data-testid="button-style-overview">Overview</button><button data-testid="button-style-colourways">Colourways <span>{style.data.colorways?.length || 0}</span></button><button data-testid="button-style-fabrics">Fabrics <span>{style.data.fabrics?.length || 0}</span></button><button data-testid="button-style-samples">Samples <span>{style.data.samples?.length || 0}</span></button><button data-testid="button-style-production">Production</button></div></> : <ErrorState onRetry={() => style.refetch()} />}</section>; }
 
@@ -554,6 +591,38 @@ function ColourwayCard({ colourway, editing, draft, onDraftChange, onSave, onDro
   </article>;
 }
 
+function AddStyleToAssortment({ styleNumber, pdId, styleName }: { styleNumber: string; pdId: number; styleName: string }) {
+  const [season, setSeason] = useState<'Q3 2026' | 'Q4 2026'>('Q3 2026');
+  const [saving, setSaving] = useState(false);
+  const [notice, setNotice] = useState('');
+  const [error, setError] = useState('');
+  const save = async () => {
+    setSaving(true); setNotice(''); setError('');
+    try {
+      const response = await fetch('/api/workspace/assortment-plan/add-style', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ season, source: 'pd_styles', styleNumber, pdId }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(String(body.error || 'Could not add style'));
+      setNotice(body.added ? `Added ${styleName} to ${season}` : `${styleName} is already in ${season}`);
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : 'Could not add style');
+    } finally {
+      setSaving(false);
+    }
+  };
+  return <div className="catalogue-assortment-panel">
+    <div className="catalogue-assortment-panel-head"><div><span className="range-eyebrow">Planning action</span><h3>Add to Assortment Plan</h3><p>{styleNumber}</p></div></div>
+    <label>Planning quarter<select value={season} onChange={(event) => setSeason(event.target.value as typeof season)}><option>Q3 2026</option><option>Q4 2026</option></select></label>
+    <button type="button" className="button button-gold" disabled={saving} onClick={save}><MoveRight size={14} /> {saving ? 'Adding…' : 'Add style'}</button>
+    {notice && <span className="style-save-notice"><Check size={14} /> {notice}</span>}
+    {error && <span className="form-error">{error}</span>}
+  </div>;
+}
+
 function CatalogueStyleDetail({ id, onBack }: { id: number; onBack: () => void }) {
   const style = useGetWorkspaceStyle(id, { query: { queryKey: getGetWorkspaceStyleQueryKey(id) }, request: { credentials: 'include' } });
   const styleFeedback = useStyleFeedback(id);
@@ -563,6 +632,7 @@ function CatalogueStyleDetail({ id, onBack }: { id: number; onBack: () => void }
   const [editing, setEditing] = useState(false);
   const [activeTab, setActiveTab] = useState<'overview' | 'colourways' | 'fabrics' | 'samples' | 'production' | 'feedback'>('overview');
   const [notice, setNotice] = useState('');
+  const [assortmentOpen, setAssortmentOpen] = useState(false);
   const [form, setForm] = useState<CatalogueStyleForm>({ name: '', creativeDescription: '', price: '', market: '', stage: '', targetDate: '', sizeRange: '', trimsSpecialFeatures: [], predictedCost: '' });
   const [newColourway, setNewColourway] = useState<ColourwayDraft>({ name: '', hex: '#C9A96E', code: '' });
   const [colourwayDrafts, setColourwayDrafts] = useState<Record<number, ColourwayDraft>>({});
@@ -664,8 +734,13 @@ function CatalogueStyleDetail({ id, onBack }: { id: number; onBack: () => void }
           {renderFact('Size range', current.sizeRange || 'Not set', <input value={form.sizeRange} onChange={(event) => setForm((draft) => ({ ...draft, sizeRange: event.target.value }))} placeholder="XS – 3XL" aria-label="Size range" />)}
           <div className="style-fact style-fact-tags"><span>Trims & special features</span>{editing ? <TagEditor tags={form.trimsSpecialFeatures} onChange={(tags) => setForm((draft) => ({ ...draft, trimsSpecialFeatures: tags }))} /> : <div className="style-tag-list">{(current.trimsSpecialFeatures || []).length ? current.trimsSpecialFeatures?.map((tag) => <span className="style-tag" key={tag}>{tag}</span>) : <b>Not set</b>}</div>}</div>
           <div className="style-fact"><span>Predicted cost</span>{editing ? <input type="number" min="0" step="1" value={form.predictedCost} onChange={(event) => setForm((draft) => ({ ...draft, predictedCost: event.target.value }))} placeholder="KES estimate" aria-label="Predicted cost" /> : <b>{current.predictedCost ? <>{formatKes(current.predictedCost)} <small className="cost-label">est.</small>{current.confirmedCost !== null && current.confirmedCost !== undefined && <> · {formatKes(current.confirmedCost)} <small className="cost-label confirmed">confirmed</small></>}</> : 'Not set'}</b>}</div>
-          <div className="style-fact"><span>Brand</span><b>{current.brand || 'Vivo'}</b></div>
+           <div className="style-fact"><span>Brand</span><b>{current.brand || 'Vivo'}</b></div>
         </div>
+         <div className="catalogue-detail-actions">
+           <button type="button" className="button button-outline" onClick={() => setAssortmentOpen((open) => !open)}><MoveRight size={14} /> Add to Assortment Plan</button>
+           <a className="button button-quiet" href={`/merchandising?tab=merch-deepdive&style=${encodeURIComponent(current.code)}`} target="_blank" rel="noreferrer">View in BI <ArrowRight size={13} /></a>
+         </div>
+         {assortmentOpen && <AddStyleToAssortment styleNumber={current.code} pdId={current.id} styleName={current.name} />}
       </div>
     </div>}
     <div className="style-tabs" role="tablist" aria-label="Style detail sections">{tabs.map(([value, label, count]) => <button key={value} className={activeTab === value ? 'active' : ''} onClick={() => setActiveTab(value)} role="tab" aria-selected={activeTab === value} data-testid={`button-style-${value}`}>{label} {count !== undefined && <span>{count}</span>}</button>)}</div>

@@ -14,4 +14,14 @@ export interface CataloguePage {
   pageSize: number;
   brands: string[];
   subcategories: string[];
+  filterOptions?: {
+    tier: string[];
+    status: string[];
+    category: string[];
+    subCategory: string[];
+    fabricCategory: string[];
+    brand: string[];
+    primaryColour: string[];
+    edit: string[];
+  };
 }

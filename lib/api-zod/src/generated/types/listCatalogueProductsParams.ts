@@ -9,8 +9,13 @@ import type { ListCatalogueProductsStatus } from './listCatalogueProductsStatus'
 
 export type ListCatalogueProductsParams = {
 search?: string;
+  tier?: string;
 brand?: string;
+  category?: string;
 subcategory?: string;
-status?: ListCatalogueProductsStatus;
+  fabricCategory?: string;
+  primaryColour?: string;
+  edit?: string;
+  status?: ListCatalogueProductsStatus | string;
 page?: number;
 };

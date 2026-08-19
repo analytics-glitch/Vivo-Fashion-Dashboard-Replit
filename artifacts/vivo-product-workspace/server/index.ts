@@ -56,7 +56,7 @@ const PLM_LAUNCH_ROUTES = ["DTC", "Wholesale", "Marketplace", "Omnichannel"] as 
 const PLM_STYLE_CLASSIFICATIONS = ["Core", "Fashion", "Seasonal", "Test"] as const;
 const PLM_RANGE_TIERS = ["Tier 1", "Tier 2", "Tier 3", "Tier 4"] as const;
 const PLM_SEASONS = ["Q3 2026", "Q4 2026"] as const;
-const WORKSPACE_BRANDS = ["Vivo", "Safari by Vivo", "Safari", "Zoya"] as const;
+const WORKSPACE_BRANDS = ["Vivo", "Safari by Vivo", "Zoya"] as const;
 const ALLOWED_BRANDS_SQL = WORKSPACE_BRANDS.map((brand) => `'${brand}'`).join(",");
 const allowedBrand = (alias: string) => `${alias}.brand IN (${ALLOWED_BRANDS_SQL})`;
 const PD_STYLE_TEAM_DDL = `
@@ -850,9 +850,10 @@ async function ensureRangePlanData() {
     const seasonResult = await pool.query<{ id: number }>(
       `INSERT INTO ${schema}.range_plan_seasons
         (season_name,season_year,revenue_target_kes,cogs_budget_pct,factory_capacity_units,status)
-       VALUES ($1,2026,$2,42,180000,'active')
+       VALUES ($1,2026,$2,42,96000,'active')
        ON CONFLICT (season_name,season_year) DO UPDATE
-         SET season_name=EXCLUDED.season_name
+          SET season_name=EXCLUDED.season_name,
+              factory_capacity_units=96000
        RETURNING id`,
       [seasonName, revenueTarget],
     );
@@ -868,6 +869,11 @@ async function ensureRangePlanData() {
       );
     }
   }
+  await pool.query(
+    `UPDATE ${schema}.range_plan_seasons
+     SET factory_capacity_units=96000
+     WHERE factory_capacity_units IS DISTINCT FROM 96000`,
+  );
   await pool.query(
     `UPDATE ${schema}.range_plan_rows
      SET aos_units=450
@@ -914,6 +920,17 @@ async function runBestEffortMigration(label: string, text: string) {
 
 async function ensureRecentWorkspaceMigrations() {
   const migrations: Array<[string, string]> = [
+    ["workspace brand rename", `
+      UPDATE public.all_products_clean
+         SET brand='Safari by Vivo'
+       WHERE BTRIM(COALESCE(brand,''))='Safari';
+      UPDATE public.pd_styles
+         SET brand='Safari by Vivo'
+       WHERE BTRIM(COALESCE(brand,''))='Safari';
+      UPDATE ${schema}.styles
+         SET brand='Safari by Vivo'
+       WHERE BTRIM(COALESCE(brand,''))='Safari';
+    `],
     ["workspace_team_members birthday", `ALTER TABLE ${schema}.workspace_team_members ADD COLUMN IF NOT EXISTS birthday DATE`],
     ["workspace users team and date of birth", `
       ALTER TABLE ${schema}.workspace_users ADD COLUMN IF NOT EXISTS team TEXT NOT NULL DEFAULT '';
@@ -1018,6 +1035,19 @@ async function ensureRecentWorkspaceMigrations() {
     ["range plan indexes", `
       CREATE INDEX IF NOT EXISTS range_plan_rows_season_idx ON ${schema}.range_plan_rows (season_id, tier, id);
       CREATE INDEX IF NOT EXISTS range_plan_otb_season_month_idx ON ${schema}.range_plan_otb (season_id, month_year);
+    `],
+    ["assortment plan style membership", `
+      CREATE TABLE IF NOT EXISTS ${schema}.assortment_plan_styles (
+        season TEXT NOT NULL CHECK (season IN ('Q3 2026','Q4 2026')),
+        source TEXT NOT NULL CHECK (source IN ('all_products_clean','pd_styles')),
+        style_key TEXT NOT NULL,
+        style_number TEXT,
+        pd_style_id BIGINT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (season, source, style_key)
+      );
+      CREATE INDEX IF NOT EXISTS assortment_plan_styles_season_idx
+        ON ${schema}.assortment_plan_styles (season, source);
     `],
   ];
   for (const [label, text] of migrations) {
@@ -1137,6 +1167,17 @@ async function ensureSchema() {
        CHECK (source IN ('all_products_clean','pd_styles'))
      );
      CREATE INDEX IF NOT EXISTS assortment_exclusions_season_idx ON ${schema}.assortment_exclusions (season, source);
+      CREATE TABLE IF NOT EXISTS ${schema}.assortment_plan_styles (
+        season TEXT NOT NULL CHECK (season IN ('Q3 2026','Q4 2026')),
+        source TEXT NOT NULL CHECK (source IN ('all_products_clean','pd_styles')),
+        style_key TEXT NOT NULL,
+        style_number TEXT,
+        pd_style_id BIGINT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (season, source, style_key)
+      );
+      CREATE INDEX IF NOT EXISTS assortment_plan_styles_season_idx
+        ON ${schema}.assortment_plan_styles (season, source);
     CREATE TABLE IF NOT EXISTS ${schema}.colorways (
       id SERIAL PRIMARY KEY,
       style_id INTEGER NOT NULL REFERENCES ${schema}.styles(id) ON DELETE CASCADE,
@@ -2594,6 +2635,8 @@ function rangePlanSeasonPayload(row: Record<string, unknown>) {
 }
 
 function rangePlanRowPayload(row: Record<string, unknown>) {
+  const asp = Number(row.asp ?? 0);
+  const totalUnitsImplied = Number(row.totalUnitsImplied ?? 0);
   return {
     id: Number(row.id),
     seasonId: Number(row.seasonId),
@@ -2603,7 +2646,9 @@ function rangePlanRowPayload(row: Record<string, unknown>) {
     styleCountMin: Number(row.styleCountMin ?? 0),
     styleCountMax: Number(row.styleCountMax ?? 0),
     aosUnits: Number(row.aosUnits ?? 350),
-    totalUnitsImplied: Number(row.totalUnitsImplied ?? 0),
+    totalUnitsImplied,
+    asp: Number.isFinite(asp) ? asp : 0,
+    potentialFpRevenue: Number.isFinite(asp) ? totalUnitsImplied * asp : 0,
     notes: String(row.notes ?? ""),
   };
 }
@@ -2653,7 +2698,7 @@ async function assortmentPlanData(quarter: string) {
   const carryOverResult = await pool.query(
     `WITH style_rollup AS (
        SELECT
-         a.style_number,
+          COALESCE(NULLIF(TRIM(a.style_number),''),NULLIF(TRIM(a.sku),'')) AS style_number,
          MAX(a.style_name) AS name,
          COALESCE(MAX(NULLIF(TRIM(a.category),'')), MAX(NULLIF(TRIM(a.product_type),'')), 'Uncategorised') AS category,
          COALESCE(MAX(NULLIF(TRIM(a.product_type),'')), '') AS "subCategory",
@@ -2671,17 +2716,17 @@ async function assortmentPlanData(quarter: string) {
          END AS tier
        FROM public.all_products_clean a
        LEFT JOIN (
-         SELECT p.style_number, SUM(i.available) AS stock_units
+          SELECT COALESCE(NULLIF(TRIM(p.style_number),''),NULLIF(TRIM(p.sku),'')) AS style_number, SUM(i.available) AS stock_units
          FROM public.all_products_clean p
          JOIN public.all_inventory i ON i.sku=p.sku
          WHERE ${allowedBrand("p")}
            AND LOWER(COALESCE(p.status,'')) IN ('active','retired')
-         GROUP BY p.style_number
-       ) inv ON inv.style_number=a.style_number
+          GROUP BY COALESCE(NULLIF(TRIM(p.style_number),''),NULLIF(TRIM(p.sku),''))
+        ) inv ON inv.style_number=COALESCE(NULLIF(TRIM(a.style_number),''),NULLIF(TRIM(a.sku),''))
        WHERE ${allowedBrand("a")}
          AND LOWER(COALESCE(a.status,'')) IN ('active','retired')
-         AND a.style_number IS NOT NULL AND BTRIM(a.style_number) <> ''
-       GROUP BY a.style_number
+          AND COALESCE(NULLIF(TRIM(a.style_number),''),NULLIF(TRIM(a.sku),'')) IS NOT NULL
+        GROUP BY COALESCE(NULLIF(TRIM(a.style_number),''),NULLIF(TRIM(a.sku),''))
       )
      SELECT
        'catalogue:' || r.style_number AS id,
@@ -2691,11 +2736,13 @@ async function assortmentPlanData(quarter: string) {
         r.name,r.category,r."subCategory",r."fabricCategory",r.brand,r."primaryColour",r.edit,
        'Carry-over' AS stage,'Merchandising' AS designer,
         $1 AS season,r.tier,r.status,
-       (e.style_id IS NOT NULL) AS excluded
+        (e.style_id IS NOT NULL AND aps.style_key IS NULL) AS excluded
      FROM style_rollup r
      LEFT JOIN ${schema}.assortment_exclusions e
        ON e.season=$1 AND e.source='all_products_clean' AND e.style_id=r.style_number
-     WHERE r.tier='NOOS' OR e.style_id IS NULL
+      LEFT JOIN ${schema}.assortment_plan_styles aps
+        ON aps.season=$1 AND aps.source='all_products_clean' AND aps.style_key=r.style_number
+      WHERE r.tier='NOOS' OR e.style_id IS NULL OR aps.style_key IS NOT NULL
      ORDER BY CASE r.tier WHEN 'NOOS' THEN 1 WHEN 'Core' THEN 2 ELSE 3 END,
        LOWER(COALESCE(r.style_number,r.name))`,
     values,
@@ -2794,14 +2841,22 @@ router.get("/range-plan", async (req, res, next) => {
       assortmentPlanData("Q4 2026"),
     ]);
     const selectedAssortment = quarter === "Q4 2026" ? q4Assortment : q3Assortment;
-    const rowsResult = await pool.query(
-      `SELECT id,season_id AS "seasonId",sub_category AS "subCategory",tier::text,
+     const rowsResult = await pool.query(
+       `WITH style_asp AS (
+          SELECT subcategory,AVG(price)::numeric AS asp
+          FROM rollup_rm_prod
+          WHERE ${allowedBrand("rollup_rm_prod")}
+            AND price IS NOT NULL AND price > 0
+          GROUP BY subcategory
+        )
+        SELECT r.id,r.season_id AS "seasonId",r.sub_category AS "subCategory",r.tier::text,
          style_count_target AS "styleCountTarget",style_count_min AS "styleCountMin",
-         style_count_max AS "styleCountMax",aos_units AS "aosUnits",
-         total_units_implied AS "totalUnitsImplied",notes
-       FROM ${schema}.range_plan_rows
-       WHERE season_id=$1
-       ORDER BY CASE tier::text WHEN 'NOOS' THEN 1 WHEN 'Core' THEN 2 WHEN 'Recent' THEN 3 ELSE 4 END, id`,
+          style_count_max AS "styleCountMax",r.aos_units AS "aosUnits",
+          r.total_units_implied AS "totalUnitsImplied",COALESCE(a.asp,0) AS asp,r.notes
+        FROM ${schema}.range_plan_rows r
+        LEFT JOIN style_asp a ON LOWER(TRIM(a.subcategory))=LOWER(TRIM(r.sub_category))
+        WHERE r.season_id=$1
+        ORDER BY CASE r.tier::text WHEN 'NOOS' THEN 1 WHEN 'Core' THEN 2 WHEN 'Recent' THEN 3 ELSE 4 END, r.id`,
       [season.id],
     );
     const otbResult = await pool.query(
@@ -2820,10 +2875,15 @@ router.get("/range-plan", async (req, res, next) => {
        ORDER BY m.month_year`,
       [season.id],
     );
-    res.json({
+     const rangeRows = rowsResult.rows.map(rangePlanRowPayload);
+     const potentialFpRevenue = rangeRows
+       .filter((row) => ["NOOS", "Core", "Recent"].includes(row.tier))
+       .reduce((sum, row) => sum + row.potentialFpRevenue, 0);
+     res.json({
       seasons,
       season,
-      rows: rowsResult.rows.map(rangePlanRowPayload),
+       rows: rangeRows,
+       potentialFpRevenue,
       otb: otbResult.rows.map(rangePlanOtbPayload),
       averageCostKes: 850,
       health: await rangePlanHealth(),
@@ -2872,7 +2932,7 @@ router.get("/assortment-image/:styleNumber", requireUser, async (req, res, next)
        JOIN public.product_images i ON i.tmpl_id=m.tmpl_id
        WHERE ${allowedBrand("p")}
          AND LOWER(COALESCE(p.status,'')) IN ('active','retired')
-         AND p.style_number=$1
+          AND COALESCE(NULLIF(TRIM(p.style_number),''),NULLIF(TRIM(p.sku),''))=$1
          AND i.image_512 IS NOT NULL AND i.image_512 <> ''
        ORDER BY p.sku
        LIMIT 1`,
@@ -2975,7 +3035,8 @@ router.put("/range-plan/exclusions", async (req: AuthRequest, res, next) => {
     }
     const exists = await pool.query(
       `SELECT 1 FROM public.all_products_clean a
-       WHERE ${allowedBrand("a")} AND a.style_number=$1
+       WHERE ${allowedBrand("a")}
+         AND COALESCE(NULLIF(TRIM(a.style_number),''),NULLIF(TRIM(a.sku),''))=$1
          AND LOWER(COALESCE(a.status,'')) IN ('active','retired') LIMIT 1`,
       [styleId],
     );
@@ -2992,18 +3053,14 @@ router.put("/range-plan/exclusions", async (req: AuthRequest, res, next) => {
              JOIN public.all_inventory i ON i.sku=p.sku
              WHERE ${allowedBrand("p")}
                AND LOWER(COALESCE(p.status,'')) IN ('active','retired')
-               AND p.style_number=$1),0)>100 THEN 'Core' ELSE 'Recent' END)
+                AND COALESCE(NULLIF(TRIM(p.style_number),''),NULLIF(TRIM(p.sku),''))=$1),0)>100 THEN 'Core' ELSE 'Recent' END)
        END AS "rangeTier"
        FROM public.all_products_clean a
        WHERE ${allowedBrand("a")}
          AND LOWER(COALESCE(a.status,'')) IN ('active','retired')
-         AND a.style_number=$1`,
+          AND COALESCE(NULLIF(TRIM(a.style_number),''),NULLIF(TRIM(a.sku),''))=$1`,
       [styleId],
     );
-    if (tier.rows[0]?.rangeTier === "NOOS") {
-      res.status(409).json({ error: "NOOS styles are always included and cannot be excluded" });
-      return;
-    }
     if (excluded) {
       await pool.query(
         `INSERT INTO ${schema}.assortment_exclusions (season,style_id,source)
@@ -3122,7 +3179,7 @@ router.post("/range-plan/add-style", async (req: AuthRequest, res, next) => {
          FROM public.all_products_clean a
          LEFT JOIN public.all_inventory i ON i.sku=a.sku
          WHERE ${allowedBrand("a")} AND LOWER(COALESCE(a.status,'')) IN ('active','retired')
-           AND a.style_number=$1
+           AND COALESCE(NULLIF(TRIM(a.style_number),''),NULLIF(TRIM(a.sku),''))=$1
          GROUP BY a.style_number`,
         [styleNumber],
       ).then((result) => result.rows[0]);
@@ -3161,6 +3218,98 @@ router.post("/range-plan/add-style", async (req: AuthRequest, res, next) => {
     );
     await client.query("COMMIT");
     res.status(201).json({ row: rangePlanRowPayload(result.rows[0]), subCategory, tier });
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    next(error);
+  } finally {
+    client.release();
+  }
+});
+
+router.post("/assortment-plan/add-style", async (req: AuthRequest, res, next) => {
+  const season = String(req.body?.season ?? "").trim();
+  const source = String(req.body?.source ?? "").trim();
+  const styleNumber = String(req.body?.styleNumber ?? "").trim();
+  const pdId = Number(req.body?.pdId);
+  if (!PLM_SEASONS.includes(season as (typeof PLM_SEASONS)[number]) || !["all_products_clean", "pd_styles"].includes(source)) {
+    res.status(400).json({ error: "A valid quarter and catalogue source are required" });
+    return;
+  }
+  if (source === "all_products_clean" && (!styleNumber || styleNumber.length > 200)) {
+    res.status(400).json({ error: "A catalogue style number is required" });
+    return;
+  }
+  if (source === "pd_styles" && (!Number.isInteger(pdId) || pdId <= 0)) {
+    res.status(400).json({ error: "A Product Development style is required" });
+    return;
+  }
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    let styleKey = styleNumber;
+    let canonicalStyleNumber: string | null = styleNumber || null;
+    if (source === "all_products_clean") {
+      const result = await client.query<{ styleNumber: string }>(
+        `SELECT MAX(COALESCE(NULLIF(TRIM(a.style_number),''),NULLIF(TRIM(a.sku),''))) AS "styleNumber"
+           FROM public.all_products_clean a
+          WHERE ${allowedBrand("a")}
+            AND LOWER(COALESCE(a.status,'')) IN ('active','retired')
+            AND COALESCE(NULLIF(TRIM(a.style_number),''),NULLIF(TRIM(a.sku),''))=$1
+            AND LOWER(COALESCE(a.style_number,'')) NOT LIKE '%sample%'
+            AND LOWER(COALESCE(a.category,'')) NOT LIKE '%sample%'
+            AND LOWER(COALESCE(a.category,'')) NOT LIKE '%sale item%'
+            AND LOWER(COALESCE(a.style_name,'')) NOT LIKE '%sample%'
+          HAVING COUNT(*) > 0`,
+        [styleNumber],
+      );
+      if (!result.rows[0]?.styleNumber) {
+        await client.query("ROLLBACK");
+        res.status(404).json({ error: "Catalogue style not found" });
+        return;
+      }
+      canonicalStyleNumber = result.rows[0].styleNumber;
+      styleKey = canonicalStyleNumber;
+    } else {
+      const result = await client.query<{ styleNumber: string | null }>(
+        `SELECT style_number AS "styleNumber"
+           FROM public.pd_styles
+          WHERE ${allowedBrand("s")} AND s.id=$1`,
+        [pdId],
+      );
+      if (!result.rows[0]) {
+        await client.query("ROLLBACK");
+        res.status(404).json({ error: "Product Development style not found" });
+        return;
+      }
+      canonicalStyleNumber = result.rows[0].styleNumber;
+      styleKey = String(pdId);
+      await client.query(
+        `UPDATE public.pd_styles
+            SET season=CASE
+              WHEN season IS NULL OR BTRIM(season)='' THEN $1
+              WHEN POSITION($1 IN season) > 0 THEN season
+              ELSE season || ',' || $1
+            END
+          WHERE id=$2`,
+        [season, pdId],
+      );
+    }
+    const inserted = await client.query(
+      `INSERT INTO ${schema}.assortment_plan_styles
+        (season,source,style_key,style_number,pd_style_id)
+       VALUES ($1,$2,$3,$4,$5)
+       ON CONFLICT (season,source,style_key) DO NOTHING
+       RETURNING season`,
+      [season, source, styleKey, canonicalStyleNumber, source === "pd_styles" ? pdId : null],
+    );
+    await client.query("COMMIT");
+    res.status(inserted.rowCount ? 201 : 200).json({
+      added: Boolean(inserted.rowCount),
+      season,
+      source,
+      styleNumber: canonicalStyleNumber,
+      pdId: source === "pd_styles" ? pdId : null,
+    });
   } catch (error) {
     await client.query("ROLLBACK").catch(() => undefined);
     next(error);
@@ -4546,22 +4695,50 @@ router.get("/styles", async (req, res, next) => {
 // flow and has a different data model.
 router.get("/plm-catalogue", async (req, res, next) => {
   try {
-    const values: string[] = [];
+    const values: unknown[] = [];
+    const csv = (raw: unknown) => String(raw ?? "").split(",").map((value) => value.trim()).filter(Boolean);
+    const stageExpr = `COALESCE(NULLIF(TRIM(ps.stage_name),''), INITCAP(REPLACE(COALESCE(s.current_stage,'concept'),'_',' ')))`;
+    const tierExpr = `CASE
+      WHEN LOWER(COALESCE(s.tier,'')) IN ('1','tier 1') THEN 'Tier 1'
+      WHEN LOWER(COALESCE(s.tier,'')) IN ('2','tier 2') THEN 'Tier 2'
+      WHEN LOWER(COALESCE(s.tier,'')) IN ('3','tier 3') THEN 'Tier 3'
+      WHEN LOWER(COALESCE(s.tier,'')) IN ('4','tier 4') THEN 'Tier 4'
+      ELSE NULLIF(TRIM(s.tier),'')
+    END`;
     const clauses = [allowedBrand("s"), `LOWER(s.status) = 'active'`];
     const search = String(req.query.search ?? "").trim();
-    const brand = String(req.query.brand ?? "").trim();
+    const filters = {
+      tier: csv(req.query.tier),
+      status: csv(req.query.status ?? req.query.stage),
+      category: csv(req.query.category),
+      subCategory: csv(req.query.subcategory ?? req.query.subCategory),
+      fabricCategory: csv(req.query.fabricCategory ?? req.query.fabric_category),
+      brand: csv(req.query.brand),
+      primaryColour: csv(req.query.primaryColour ?? req.query.primary_colour),
+      edit: csv(req.query.edit),
+    };
     if (search) {
       values.push(`%${search}%`);
       clauses.push(`(
         s.style_name ILIKE $${values.length}
         OR s.style_number ILIKE $${values.length}
         OR s.assignee_name ILIKE $${values.length}
+        OR s.theme ILIKE $${values.length}
       )`);
     }
-    if (brand) {
-      values.push(brand);
-      clauses.push(`s.brand = $${values.length}`);
-    }
+    const addAny = (expression: string, valuesForFilter: string[]) => {
+      if (!valuesForFilter.length) return;
+      values.push(valuesForFilter);
+      clauses.push(`${expression} = ANY($${values.length})`);
+    };
+    addAny(tierExpr, filters.tier);
+    addAny(stageExpr, filters.status);
+    addAny(`NULLIF(TRIM(s.category),'')`, filters.category);
+    addAny(`COALESCE(NULLIF(TRIM(s.sub_category),''),NULLIF(TRIM(s.category),''))`, filters.subCategory);
+    addAny(`COALESCE(NULLIF(TRIM(s.fabric_type),''),NULLIF(TRIM(s.fabric_name),''))`, filters.fabricCategory);
+    addAny(`s.brand`, filters.brand);
+    addAny(`NULLIF(TRIM(s.sample_colour),'')`, filters.primaryColour);
+    addAny(`NULLIF(TRIM(s.theme),'')`, filters.edit);
     const result = await pool.query(
       `SELECT s.id,
           COALESCE(NULLIF(TRIM(s.style_number),''), 'PD-' || s.id::text) AS code,
@@ -4570,8 +4747,12 @@ router.get("/plm-catalogue", async (req, res, next) => {
           s.category,
           s.sub_category AS "subCategory",
           s.status,
-          s.current_stage AS stage,
-          s.current_stage AS "currentStage",
+           ${stageExpr} AS stage,
+           ${stageExpr} AS "currentStage",
+           ${tierExpr} AS tier,
+           COALESCE(NULLIF(TRIM(s.fabric_type),''),NULLIF(TRIM(s.fabric_name),'')) AS "fabricCategory",
+           s.sample_colour AS "primaryColour",
+           s.theme AS edit,
           COALESCE(NULLIF(TRIM(s.assignee_name),''),'Unassigned') AS owner,
           COALESCE(NULLIF(TRIM(s.assignee_name),''),'Unassigned') AS designer,
           to_char(s.stage_entered_at,'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "stageEnteredAt",
@@ -4580,22 +4761,38 @@ router.get("/plm-catalogue", async (req, res, next) => {
             WHEN i.image_data LIKE 'data:%' THEN i.image_data
             ELSE 'data:' || COALESCE(NULLIF(i.content_type,''),'image/jpeg') || ';base64,' || i.image_data
           END AS image
-       FROM public.pd_styles s
-       LEFT JOIN public.pd_style_images i ON i.style_id = s.id
+        FROM public.pd_styles s
+        LEFT JOIN public.pd_style_images i ON i.style_id = s.id
+        LEFT JOIN public.pd_stages ps ON ps.stage_key=s.current_stage
        WHERE ${clauses.join(" AND ")}
        ORDER BY s.current_stage, LOWER(s.style_name), s.id`,
       values,
     );
-    const brands = await pool.query(
-      `SELECT ARRAY(
-         SELECT DISTINCT brand
-         FROM public.pd_styles p
-         WHERE ${allowedBrand("p")} AND LOWER(p.status) = 'active'
-           AND p.brand IS NOT NULL AND TRIM(p.brand) <> ''
-         ORDER BY p.brand
-       ) AS brands`,
+    const facets = await pool.query(
+      `SELECT s.brand,s.category,s.sub_category AS "subCategory",
+          COALESCE(NULLIF(TRIM(s.fabric_type),''),NULLIF(TRIM(s.fabric_name),'')) AS "fabricCategory",
+          s.sample_colour AS "primaryColour",s.theme AS edit,
+          ${stageExpr} AS stage,${tierExpr} AS tier
+       FROM public.pd_styles s
+       LEFT JOIN public.pd_stages ps ON ps.stage_key=s.current_stage
+       WHERE ${allowedBrand("s")} AND LOWER(s.status)='active'`,
     );
-    res.json({ items: result.rows, brands: [...WORKSPACE_BRANDS] });
+    const options = (key: string) => [...new Set(facets.rows.map((row) => String(row[key] ?? "").trim()).filter(Boolean))]
+      .sort((left, right) => left.localeCompare(right));
+    res.json({
+      items: result.rows,
+      brands: [...WORKSPACE_BRANDS],
+      filterOptions: {
+        tier: options("tier"),
+        status: options("stage"),
+        category: options("category"),
+        subCategory: options("subCategory"),
+        fabricCategory: options("fabricCategory"),
+        brand: options("brand"),
+        primaryColour: options("primaryColour"),
+        edit: options("edit"),
+      },
+    });
   } catch (error) {
     next(error);
   }
@@ -5742,9 +5939,9 @@ router.get("/catalogue-products/detail", async (req, res, next) => {
          SELECT a.*,COALESCE(inv.stock_units,0) AS inventory_units,
            COALESCE(NULLIF(TRIM(a.range_tier),''), CASE
              WHEN BOOL_OR(COALESCE(a.is_noos,FALSE) OR UPPER(COALESCE(a.tier,''))='NOOS')
-                  OVER (PARTITION BY a.style_number) THEN 'NOOS'
+                  OVER (PARTITION BY COALESCE(NULLIF(TRIM(a.style_number),''),NULLIF(TRIM(a.sku),''))) THEN 'NOOS'
              WHEN SUM(COALESCE(inv.stock_units,0))
-                  OVER (PARTITION BY a.style_number) > 100 THEN 'Core'
+                  OVER (PARTITION BY COALESCE(NULLIF(TRIM(a.style_number),''),NULLIF(TRIM(a.sku),''))) > 100 THEN 'Core'
              ELSE 'Recent'
            END) AS effective_range_tier
          FROM public.all_products_clean a
@@ -5753,15 +5950,19 @@ router.get("/catalogue-products/detail", async (req, res, next) => {
            FROM public.all_inventory GROUP BY sku
          ) inv ON inv.sku=a.sku
          WHERE ${allowedBrand("a")}
-           AND a.style_number=$1 AND LOWER(COALESCE(a.status,'')) IN ('active','retired')
+           AND COALESCE(NULLIF(TRIM(a.style_number),''),NULLIF(TRIM(a.sku),''))=$1
+           AND LOWER(COALESCE(a.status,'')) IN ('active','retired')
        )
-       SELECT style_number AS "styleNumber",MAX(style_name) AS "styleName",
+       SELECT COALESCE(NULLIF(TRIM(style_number),''),NULLIF(TRIM(sku),'')) AS "styleNumber",
+         MAX(NULLIF(TRIM(style_number),'')) AS "internalReference",
+         MAX(NULLIF(TRIM(sku),'')) AS sku,
+         MAX(style_name) AS "styleName",
          MAX(brand) AS brand,MAX(category) AS category,MAX(product_type) AS subcategory,
          CASE WHEN BOOL_OR(LOWER(status)='active') THEN 'Active' ELSE 'Retired' END AS status,
          MAX(effective_range_tier) AS "rangeTier",
          COALESCE(SUM(inventory_units),0)::numeric AS "stockUnits"
        FROM style_rows
-       GROUP BY style_number`,
+       GROUP BY COALESCE(NULLIF(TRIM(style_number),''),NULLIF(TRIM(sku),''))`,
       [styleNumber],
     );
     if (!result.rows[0]) {
@@ -5785,7 +5986,8 @@ router.patch("/catalogue-products/range-tier", async (req, res, next) => {
     const noos = await pool.query(
       `SELECT BOOL_OR(COALESCE(a.is_noos,FALSE) OR UPPER(COALESCE(a.tier,''))='NOOS' OR UPPER(COALESCE(a.range_tier,''))='NOOS') AS is_noos
        FROM public.all_products_clean a
-       WHERE ${allowedBrand("a")} AND a.style_number=$1`,
+       WHERE ${allowedBrand("a")}
+         AND COALESCE(NULLIF(TRIM(a.style_number),''),NULLIF(TRIM(a.sku),''))=$1`,
       [styleNumber],
     );
     if (rangeTier !== "NOOS" && noos.rows[0]?.is_noos) {
@@ -5795,7 +5997,8 @@ router.patch("/catalogue-products/range-tier", async (req, res, next) => {
     const result = await pool.query(
       `UPDATE public.all_products_clean
        SET range_tier=$1
-       WHERE style_number=$2 AND LOWER(COALESCE(status,'')) IN ('active','retired')
+       WHERE COALESCE(NULLIF(TRIM(style_number),''),NULLIF(TRIM(sku),''))=$2
+         AND LOWER(COALESCE(status,'')) IN ('active','retired')
          AND brand IN (${ALLOWED_BRANDS_SQL})
        RETURNING style_number AS "styleNumber"`,
       [rangeTier, styleNumber],
@@ -5813,70 +6016,133 @@ router.patch("/catalogue-products/range-tier", async (req, res, next) => {
 router.get("/catalogue-products", async (req, res, next) => {
   try {
     const search = String(req.query.search ?? "").trim();
-    // brand / subcategory accept comma-separated multi-select values
     const csv = (raw: unknown) =>
       String(raw ?? "").split(",").map((v) => v.trim()).filter(Boolean);
-    const brands = csv(req.query.brand);
-    const subcategories = csv(req.query.subcategory);
+    const filters = {
+      tier: csv(req.query.tier),
+      status: csv(req.query.status),
+      category: csv(req.query.category),
+      subcategory: csv(req.query.subcategory),
+      fabricCategory: csv(req.query.fabricCategory ?? req.query.fabric_category),
+      brand: csv(req.query.brand),
+      primaryColour: csv(req.query.primaryColour ?? req.query.primary_colour),
+      edit: csv(req.query.edit),
+    };
     const statusFilter = String(req.query.status ?? "").trim().toLowerCase();
     const rawPage = Number(req.query.page);
     const page = Number.isInteger(rawPage) && rawPage >= 1 ? Math.min(rawPage, 10000) : 1;
     const pageSize = 50;
-     const where: string[] = [allowedBrand("a"), "LOWER(a.status) IN ('active','retired')", "a.style_number IS NOT NULL", "a.style_number <> ''"];
+    const styleKeyExpr = `COALESCE(NULLIF(TRIM(a.style_number),''),NULLIF(TRIM(a.sku),''))`;
+    const sampleSaleExclusion = `LOWER(COALESCE(a.style_number,'')) NOT LIKE '%sample%'
+      AND LOWER(COALESCE(a.category,'')) NOT LIKE '%sample%'
+      AND LOWER(COALESCE(a.category,'')) NOT LIKE '%sale item%'
+      AND LOWER(COALESCE(a.style_name,'')) NOT LIKE '%sample%'
+      AND LOWER(COALESCE(a.sku,'')) NOT LIKE '%sample%'`;
+    const where: string[] = [
+      allowedBrand("a"),
+      "LOWER(a.status) IN ('active','retired')",
+      `${styleKeyExpr} IS NOT NULL`,
+      sampleSaleExclusion,
+    ];
     const values: unknown[] = [];
+    const tierExpr = `CASE
+      WHEN BOOL_OR(COALESCE(a.is_noos,FALSE) OR UPPER(COALESCE(a.tier,''))='NOOS' OR UPPER(COALESCE(a.range_tier,''))='NOOS') THEN 'NOOS'
+      WHEN BOOL_OR(UPPER(COALESCE(a.range_tier,''))='CORE') THEN 'Core'
+      WHEN BOOL_OR(UPPER(COALESCE(a.range_tier,''))='RECENT') THEN 'Recent'
+      WHEN COALESCE(SUM(COALESCE(inv.stock_units,0)),0)>100 THEN 'Core'
+      ELSE 'Recent'
+    END`;
     if (search) {
       values.push(`%${search}%`);
-      where.push(`(a.style_name ILIKE $${values.length} OR a.style_number ILIKE $${values.length})`);
+      where.push(`(a.style_name ILIKE $${values.length} OR a.style_number ILIKE $${values.length} OR a.sku ILIKE $${values.length})`);
     }
-    if (brands.length) {
-      values.push(brands);
+    if (filters.brand.length) {
+      values.push(filters.brand);
       where.push(`a.brand = ANY($${values.length})`);
     }
-    if (subcategories.length) {
-      values.push(subcategories);
-      where.push(`a.product_type = ANY($${values.length})`);
+    const having: string[] = [];
+    if (filters.tier.length) {
+      values.push(filters.tier);
+      having.push(`${tierExpr} = ANY($${values.length})`);
     }
     if (statusFilter === "active" || statusFilter === "retired") {
       values.push(statusFilter === "active");
-      where.push(`BOOL_OR(LOWER(a.status)='active') = $${values.length}`);
+      having.push(`BOOL_OR(LOWER(a.status)='active') = $${values.length}`);
     }
-    // status filter applies to the aggregated style, so split into HAVING
-    const having = where.filter((clause) => clause.startsWith("BOOL_OR"));
-    const plainWhere = where.filter((clause) => !clause.startsWith("BOOL_OR"));
-     const baseQuery = `
-       FROM public.all_products_clean a
-       LEFT JOIN (
-         SELECT sku,SUM(available) AS stock_units
-         FROM public.all_inventory GROUP BY sku
-       ) inv ON inv.sku=a.sku
+    const addHavingAny = (expression: string, selected: string[]) => {
+      if (!selected.length) return;
+      values.push(selected);
+      having.push(`BOOL_OR(${expression} = ANY($${values.length}))`);
+    };
+    addHavingAny(`NULLIF(TRIM(a.category),'')`, filters.category);
+    addHavingAny(`NULLIF(TRIM(a.product_type),'')`, filters.subcategory);
+    addHavingAny(`NULLIF(TRIM(a.fabric_category),'')`, filters.fabricCategory);
+    addHavingAny(`NULLIF(TRIM(a.color_print),'')`, filters.primaryColour);
+    addHavingAny(`NULLIF(TRIM(a.collection),'')`, filters.edit);
+    // Status and tier are aggregate style attributes, so they belong in HAVING.
+    // The other seven facets are also OR-composed at style grain: a style remains
+    // selectable when any SKU carries the selected facet value.
+    const plainWhere = where;
+    const baseQuery = `
+      FROM public.all_products_clean a
+      LEFT JOIN (
+        SELECT sku,SUM(available) AS stock_units
+        FROM public.all_inventory GROUP BY sku
+      ) inv ON inv.sku=a.sku
       WHERE ${plainWhere.join(" AND ")}
-      GROUP BY a.style_number
+      GROUP BY ${styleKeyExpr}
       ${having.length ? `HAVING ${having.join(" AND ")}` : ""}
+    `;
+    const facetWhere = [
+      allowedBrand("a"),
+      "LOWER(a.status) IN ('active','retired')",
+      `${styleKeyExpr} IS NOT NULL`,
+      sampleSaleExclusion,
+    ].join(" AND ");
+    const facetTierExpr = tierExpr;
+    const facetsQuery = `
+      WITH facet_styles AS (
+        SELECT ${styleKeyExpr} AS style_key,${facetTierExpr} AS tier
+        FROM public.all_products_clean a
+        LEFT JOIN (
+          SELECT sku,SUM(available) AS stock_units
+          FROM public.all_inventory GROUP BY sku
+        ) inv ON inv.sku=a.sku
+        WHERE ${facetWhere}
+        GROUP BY ${styleKeyExpr}
+      )
+      SELECT
+        ARRAY(SELECT DISTINCT a.brand FROM public.all_products_clean a WHERE ${facetWhere} AND a.brand IS NOT NULL AND TRIM(a.brand) <> '' ORDER BY a.brand) AS brands,
+        ARRAY(SELECT DISTINCT a.product_type FROM public.all_products_clean a WHERE ${facetWhere} AND a.product_type IS NOT NULL AND TRIM(a.product_type) <> '' ORDER BY a.product_type) AS subcategories,
+        ARRAY(SELECT DISTINCT a.category FROM public.all_products_clean a WHERE ${facetWhere} AND a.category IS NOT NULL AND TRIM(a.category) <> '' ORDER BY a.category) AS categories,
+        ARRAY(SELECT DISTINCT a.fabric_category FROM public.all_products_clean a WHERE ${facetWhere} AND a.fabric_category IS NOT NULL AND TRIM(a.fabric_category) <> '' ORDER BY a.fabric_category) AS "fabricCategories",
+        ARRAY(SELECT DISTINCT a.color_print FROM public.all_products_clean a WHERE ${facetWhere} AND a.color_print IS NOT NULL AND TRIM(a.color_print) <> '' ORDER BY a.color_print) AS "primaryColours",
+        ARRAY(SELECT DISTINCT a.collection FROM public.all_products_clean a WHERE ${facetWhere} AND a.collection IS NOT NULL AND TRIM(a.collection) <> '' ORDER BY a.collection) AS edits,
+        ARRAY(SELECT DISTINCT tier FROM facet_styles WHERE tier IS NOT NULL ORDER BY tier) AS tiers
     `;
     const offset = (page - 1) * pageSize;
     const [rows, count, facets] = await Promise.all([
       pool.query(
         `SELECT s.*, img.image FROM (
-           SELECT a.style_number AS "styleNumber",
+           SELECT ${styleKeyExpr} AS "styleNumber",
+              MAX(NULLIF(TRIM(a.style_number),'')) AS "internalReference",
+              MAX(NULLIF(TRIM(a.sku),'')) AS sku,
              MAX(a.style_name) AS "styleName",
              MAX(a.brand) AS brand,
              MAX(a.product_type) AS subcategory,
              MAX(NULLIF(TRIM(COALESCE(a.category,'')),'')) AS category,
+              MAX(NULLIF(TRIM(COALESCE(a.fabric_category,'')),'')) AS "fabricCategory",
+              MAX(NULLIF(TRIM(COALESCE(a.color_print,'')),'')) AS "primaryColour",
+              MAX(NULLIF(TRIM(COALESCE(a.collection,'')),'')) AS edit,
              MAX(a.price)::float AS price,
              MAX(NULLIF(TRIM(COALESCE(a.style_launch_date,'')),'')) AS "launchDate",
              COUNT(DISTINCT NULLIF(TRIM(COALESCE(a.color_print,'')),'')) AS colour_count,
              MIN(NULLIF(TRIM(COALESCE(a.color_print,'')),'')) AS any_colour,
              CASE WHEN BOOL_OR(LOWER(a.status)='active') THEN 'Active' ELSE 'Retired' END AS status,
-              CASE
-                WHEN BOOL_OR(COALESCE(a.is_noos,FALSE) OR UPPER(COALESCE(a.tier,''))='NOOS' OR UPPER(COALESCE(a.range_tier,''))='NOOS') THEN 'NOOS'
-                WHEN BOOL_OR(UPPER(COALESCE(a.range_tier,''))='CORE') THEN 'Core'
-                WHEN BOOL_OR(UPPER(COALESCE(a.range_tier,''))='RECENT') THEN 'Recent'
-                WHEN COALESCE(SUM(COALESCE(inv.stock_units,0)),0)>100 THEN 'Core'
-                ELSE 'Recent'
-              END AS "rangeTier",
+              ${tierExpr} AS "rangeTier",
              (ARRAY_AGG(a.sku))[1] AS any_sku
            ${baseQuery}
-           ORDER BY MAX(a.style_name) NULLS LAST, a.style_number
+            ORDER BY MAX(a.style_name) NULLS LAST, ${styleKeyExpr}
            LIMIT ${pageSize} OFFSET ${offset}
          ) s
          LEFT JOIN LATERAL (
@@ -5886,28 +6152,13 @@ router.get("/catalogue-products", async (req, res, next) => {
            JOIN public.product_images i ON i.tmpl_id = m.tmpl_id
             WHERE ${allowedBrand("b")}
               AND LOWER(COALESCE(b.status,'')) IN ('active','retired')
-              AND b.style_number = s."styleNumber" AND i.image_512 IS NOT NULL AND i.image_512 <> ''
+               AND COALESCE(NULLIF(TRIM(b.style_number),''),NULLIF(TRIM(b.sku),'')) = s."styleNumber" AND i.image_512 IS NOT NULL AND i.image_512 <> ''
            LIMIT 1
          ) img ON TRUE`,
         values,
       ),
-      pool.query(`SELECT COUNT(*)::int AS total FROM (SELECT a.style_number ${baseQuery}) t`, values),
-      pool.query(
-        `SELECT ARRAY(
-                  SELECT DISTINCT a.brand
-                  FROM public.all_products_clean a
-                  WHERE ${allowedBrand("a")} AND LOWER(a.status) IN ('active','retired')
-                    AND a.brand IS NOT NULL AND a.brand <> ''
-                  ORDER BY a.brand
-                ) AS brands,
-                ARRAY(
-                  SELECT DISTINCT a.product_type
-                  FROM public.all_products_clean a
-                  WHERE ${allowedBrand("a")} AND LOWER(a.status) IN ('active','retired')
-                    AND a.product_type IS NOT NULL AND a.product_type <> ''
-                  ORDER BY a.product_type
-                ) AS subcategories`,
-      ),
+       pool.query(`SELECT COUNT(*)::int AS total FROM (SELECT ${styleKeyExpr} ${baseQuery}) t`, values),
+      pool.query(facetsQuery),
     ]);
     res.json({
       items: rows.rows.map(({ any_sku: _drop, colour_count, any_colour, image, ...row }) => ({
@@ -5921,8 +6172,18 @@ router.get("/catalogue-products", async (req, res, next) => {
       total: count.rows[0].total,
       page,
       pageSize,
-      brands: [...WORKSPACE_BRANDS],
-      subcategories: facets.rows[0].subcategories,
+      brands: facets.rows[0].brands || [...WORKSPACE_BRANDS],
+      subcategories: facets.rows[0].subcategories || [],
+      filterOptions: {
+        tier: facets.rows[0].tiers || [],
+        status: ["Active", "Retired"],
+        category: facets.rows[0].categories || [],
+        subCategory: facets.rows[0].subcategories || [],
+        fabricCategory: facets.rows[0].fabricCategories || [],
+        brand: facets.rows[0].brands || [...WORKSPACE_BRANDS],
+        primaryColour: facets.rows[0].primaryColours || [],
+        edit: facets.rows[0].edits || [],
+      },
     });
   } catch (error) {
     next(error);

@@ -10,7 +10,15 @@ export interface CatalogueStyle {
   styleNumber: string;
   styleName?: string | null;
   brand?: string | null;
+  tier?: string | null;
+  category?: string | null;
   subcategory?: string | null;
+  fabricCategory?: string | null;
+  primaryColour?: string | null;
+  edit?: string | null;
   status: string;
   image?: string | null;
+  price?: number | null;
+  launchDate?: string | null;
+  colourway?: string | null;
 }
