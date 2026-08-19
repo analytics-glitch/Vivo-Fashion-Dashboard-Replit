@@ -129,3 +129,59 @@ type = "text"
 title = "System Diagnosis — 2026-08-04"
 description = "Full findings: production incident mechanism, architecture map, DB/table/query health, what's working, prioritized fixes."
 logical_id = "726040fa-7fe1-4608-b7b3-b26db093f26d"
+
+[[outputs]]
+id = "u6juVsSSPRBDV_wcBjf1f"
+uri = "file://artifacts/vivo-community/exports/faq-community-guidelines/FAQ.md"
+type = "text"
+title = "FAQ.md"
+description = "Readable export of the Vivo Community FAQ content."
+logical_id = "962841b7-b5a3-4e21-a1fe-d204821fb5a4"
+content_hash = "sha256:a35af67ea22df1e7288ed7447d3b7ada8d062e4848a35333bc148e411ae0b960"
+size = 12354
+mtime_ms = 1787134445542
+storage_uri = "gcs://replit-rams-assets-kirk/rams/assets/repl:a2104183-e22b-4aee-99f6-fc604d080eee/962841b7-b5a3-4e21-a1fe-d204821fb5a4/0a637cb3-cf5b-4b57-b80d-470b9760bd9a"
+storage_version_token = "1787145804722510"
+content_type = "text/markdown"
+
+[[outputs]]
+id = "MjDSL7nGjMDNzWbWP_Qbj"
+uri = "file://artifacts/vivo-community/exports/faq-community-guidelines/COMMUNITY-GUIDELINES.md"
+type = "text"
+title = "COMMUNITY-GUIDELINES.md"
+description = "Readable export of the Vivo Community Guidelines content."
+logical_id = "05dcc040-3ace-49f7-82d2-ce5c22a9105d"
+content_hash = "sha256:f2a24321e6c49162dedeb0746af40ab6492516699189c91c17896c4ca6c90cab"
+size = 1112
+mtime_ms = 1787134446684
+storage_uri = "gcs://replit-rams-assets-kirk/rams/assets/repl:a2104183-e22b-4aee-99f6-fc604d080eee/05dcc040-3ace-49f7-82d2-ce5c22a9105d/70e2a834-37b0-4ffe-87ca-8da0ef683db0"
+storage_version_token = "1787145805476122"
+content_type = "text/markdown"
+
+[[outputs]]
+id = "LH-IQ_GXjOUFrn1lHhPw3"
+uri = "file://artifacts/vivo-community/exports/faq-community-guidelines/TERMS-AND-CONDITIONS.md"
+type = "text"
+title = "TERMS-AND-CONDITIONS.md"
+description = "Readable export of the Vivo Community Terms & Conditions."
+logical_id = "aca1960b-c0ad-462a-9197-b8e6c3a84990"
+content_hash = "sha256:e5eb449708c8b026933459f2ad18e17f14984acc1feadd7ef81e7941435a6dcd"
+size = 5194
+mtime_ms = 1787148384348
+storage_uri = "gcs://replit-rams-assets-kirk/rams/assets/repl:a2104183-e22b-4aee-99f6-fc604d080eee/aca1960b-c0ad-462a-9197-b8e6c3a84990/73f9fb31-6548-45a3-a8f6-165cebd9033e"
+storage_version_token = "1787148451519070"
+content_type = "text/markdown"
+
+[[outputs]]
+id = "K2-wBhP4z68U-IuN4W8Ek"
+uri = "file://artifacts/vivo-community/exports/faq-community-guidelines/PRIVACY-POLICY.md"
+type = "text"
+title = "PRIVACY-POLICY.md"
+description = "Readable export of the Vivo Community Privacy Policy."
+logical_id = "1d3cc05d-1a94-418c-86f9-a4cd9c21d45c"
+content_hash = "sha256:ca05d885b058ca38ce19ebf2497bc8bb040515fd9c8b007246a2094b97b5823b"
+size = 5436
+mtime_ms = 1787148390991
+storage_uri = "gcs://replit-rams-assets-kirk/rams/assets/repl:a2104183-e22b-4aee-99f6-fc604d080eee/1d3cc05d-1a94-418c-86f9-a4cd9c21d45c/01dc2eae-6ede-4e5c-ae63-e88ef3487ff3"
+storage_version_token = "1787148452162858"
+content_type = "text/markdown"
