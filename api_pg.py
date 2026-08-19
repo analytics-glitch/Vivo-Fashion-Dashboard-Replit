@@ -37957,178 +37957,193 @@ def _st_can_archive(request):
 _ST_WAREHOUSE_GATE_ENABLED = True
 
 
+# Tolerant style-name match shared by every warehouse-received surface:
+# exact match, or either side extends the other by whole suffix words
+# (tracker name vs Odoo name vs colourway variants). Written against
+# tracked(sid, sname, …) VALUES rows joined to a names(nm) relation aliased
+# n, so both queries match at the DISTINCT-name grain (fast) instead of per
+# product/transfer row; "%%" = literal % under paramstyle interpolation.
+_ST_WH_MATCH_NM = (
+    "(LOWER(n.nm) = LOWER(t.sname) "
+    " OR LOWER(t.sname) LIKE LOWER(n.nm) || ' %%' "
+    " OR LOWER(n.nm) LIKE LOWER(t.sname) || ' %%')")
+
+
 def _style_warehouse_pct(style_name, quantity, order_type=None, order_date=None):
-    """Fraction (0–100) of the style's order qty transferred to Warehouse Finished Goods.
-    Returns (pct_float, wh_units). Best-effort — returns (0.0, 0) on failure.
+    """Fraction (0–100) of the style's order qty received into Warehouse
+    Finished Goods, plus the receipt unit count. Returns (pct_float, wh_units).
+    Best-effort — returns (0.0, 0) on failure.
 
-    Matching is case-insensitive and tolerates suffix words (tracker name vs Odoo name).
-
-    For Re-Order and Replenishment styles with a known order_date:
-      • Compares against recent finishing→warehouse transfers SINCE order_date, not
-        total warehouse stock (which may include pre-existing inventory from prior runs).
-    For New styles (or when order_date is unknown):
-      • Original behaviour — compares against total Warehouse Finished Goods stock.
+    Delegates to _st_batch_warehouse_pct with a single synthetic row so the
+    board's "% Recv" column, the live /warehouse-pct endpoint and the ≥90%
+    Warehouse status gate all share ONE calculation contract (see that
+    function's docstring for the contract details).
     """
-    if not style_name or not quantity or int(quantity or 0) <= 0:
-        return 0.0, 0
-    qty = int(quantity)
-    _sn_match = (
-        "(LOWER(p.style_name) = LOWER(%s) "
-        " OR LOWER(%s) LIKE LOWER(p.style_name) || ' %%' "
-        " OR LOWER(p.style_name) LIKE LOWER(%s) || ' %%')"
-    )
     try:
-        is_replen = order_type in ("Re-Order", "Replenishment")
-        if is_replen and order_date is not None:
-            # Use recent finishing→warehouse transfers since the order date so
-            # pre-existing warehouse stock doesn't falsely satisfy the gate.
-            since = order_date.isoformat() if hasattr(order_date, "isoformat") else str(order_date)
-            rows = _users_exec(
-                "SELECT COALESCE(SUM(t.qty_done), 0)::int AS transferred_units "
-                "FROM stock_transfers t "
-                "LEFT JOIN LATERAL ("
-                "    SELECT style_name FROM all_products_clean "
-                "    WHERE sku = t.sku "
-                "    ORDER BY (active IS TRUE) DESC, barcode LIMIT 1"
-                ") p ON TRUE "
-                "WHERE t.transfer_type = 'finishing_to_warehouse' "
-                "  AND t.state = 'done' "
-                "  AND " + _sn_match +
-                "  AND (t.date_done + interval '3 hours')::date >= %s",
-                (style_name, style_name, style_name, since), fetch=True)
-            transferred = int((rows or [{}])[0].get("transferred_units") or 0)
-            pct = min(transferred / qty * 100, 100.0)
-            return pct, transferred
-        else:
-            # Original: total warehouse stock
-            rows = _users_exec(
-                "SELECT COALESCE(SUM(GREATEST(i.available, 0)), 0)::int AS wh_units "
-                "FROM all_inventory i "
-                "JOIN all_products_clean p ON i.sku = p.sku "
-                "WHERE " + _sn_match +
-                "  AND i.pos_location_name = 'Warehouse Finished Goods'",
-                (style_name, style_name, style_name), fetch=True)
-            wh = int((rows or [{}])[0].get("wh_units") or 0)
-            pct = min(wh / qty * 100, 100.0)
-            return pct, wh
+        got = _st_batch_warehouse_pct([{
+            "id": 0,
+            "style_name": style_name,
+            "quantity": quantity,
+            "order_type": order_type,
+            "order_date": order_date,
+        }])
+        return got.get(0, (0.0, 0))
     except Exception:
         return 0.0, 0
 
 
 def _st_batch_warehouse_pct(styles):
-    """Batch companion to _style_warehouse_pct for the board endpoint.
+    """Warehouse-received percentage for a batch of style rows.
 
     Returns {style_id: (pct_float, wh_units)} for every style row given,
-    computed with at most TWO set-based queries (one per matching strategy)
-    instead of one round-trip per style:
-      • Re-Order/Replenishment styles WITH an order_date — finishing→warehouse
-        transfers since that date (mirrors the per-style replen branch);
-      • everything else — current Warehouse Finished Goods stock.
+    computed with at most TWO set-based queries. This is THE calculation
+    contract for "% received in warehouse": the board's batch column, the
+    per-style /warehouse-pct endpoint and the ≥90% Warehouse status gate all
+    read it (the per-style paths via _style_warehouse_pct's single-row
+    delegation), so the badge, tooltip/export units and the gate can never
+    disagree.
 
-    Name matching is identical to _style_warehouse_pct (case-insensitive with
-    suffix-word tolerance). Best-effort: any failure leaves the affected group
-    at (0.0, 0); the per-style /warehouse-pct endpoint stays the authoritative
-    single-style path.
+    Contract:
+      1. Receipts first — for EVERY style the primary measure is completed
+         finishing→warehouse transfer units (stock_transfers, state='done').
+         A transfer row counts when ANY all_products_clean row for its SKU
+         matches the tracked style name, or when the transfer's own
+         product_name matches (style-name variants / product-master lag).
+         Semi-join semantics: each transfer row counts exactly once — no
+         LIMIT 1 row sampling, no fan-out duplication.
+      2. Re-Order/Replenishment styles with a parseable order_date only count
+         receipts whose EAT day ((date_done + 3h)::date) is on/after that
+         date, and NEVER fall back to stock — pre-existing warehouse
+         inventory from prior runs must not satisfy the gate.
+      3. All other styles (New/undated/unparseable date) count all receipts;
+         a style with zero receipt evidence falls back to current Warehouse
+         Finished Goods stock (the original behaviour, kept for styles whose
+         receipts predate stock_transfers history).
+      4. pct = min(units / quantity * 100, 100); wh_units is the true
+         non-negative receipt count and may exceed quantity — the UI shows a
+         capped badge and the real units in the tooltip/export.
+
+    Best-effort: any failure leaves the affected rows at (0.0, 0).
     """
     out = {}
-    stock_group = []  # [(id, name, qty)]
-    xfer_group = []   # [(id, name, qty, since_iso)]
+    eligible = []  # [(sid, name, qty, since_iso_or_None)]
     for s in styles:
         sid = s.get("id")
         if sid is None:
             continue
         out[sid] = (0.0, 0)
-        name = s.get("style_name")
+        name = (s.get("style_name") or "").strip()
         try:
             qty = int(s.get("quantity") or 0)
         except (TypeError, ValueError):
             qty = 0
         if not name or qty <= 0:
             continue
-        od = s.get("order_date")
-        if s.get("order_type") in ("Re-Order", "Replenishment") and od is not None:
-            since = od.isoformat() if hasattr(od, "isoformat") else str(od)
-            xfer_group.append((sid, name, qty, since))
-        else:
-            stock_group.append((sid, name, qty))
+        since = None
+        if s.get("order_type") in ("Re-Order", "Replenishment"):
+            od = s.get("order_date")
+            if od not in (None, ""):
+                if hasattr(od, "isoformat"):
+                    since = od.isoformat()[:10]
+                else:
+                    try:
+                        since = date.fromisoformat(str(od).strip()[:10]).isoformat()
+                    except ValueError:
+                        since = None  # unparseable → undated semantics
+        eligible.append((sid, name, qty, since))
+    if not eligible:
+        return out
 
-    # Same tolerant match as _style_warehouse_pct, rewritten against the
-    # tracked(sid, sname) VALUES rows ("%%" = literal % under paramstyle).
-    _match = ("(LOWER(p.style_name) = LOWER(t.sname) "
-              " OR LOWER(t.sname) LIKE LOWER(p.style_name) || ' %%' "
-              " OR LOWER(p.style_name) LIKE LOWER(t.sname) || ' %%')")
+    units = {}  # sid -> receipt/stock units (absent = no evidence found)
+    try:
+        values_sql = ", ".join(["(%s::bigint, %s::text, %s::date)"] * len(eligible))
+        params = []
+        for sid, name, _q, since in eligible:
+            params.extend([sid, name, since])
+        # Names-first shape: resolve each transfer row's product-master name
+        # once (sku is UNIQUE in all_products_clean), tolerant-match tracked
+        # styles against the DISTINCT master + transfer names, then join hits
+        # back by exact name. DISTINCT (sid, move_id) keeps each transfer row
+        # counted exactly once even when both name routes match.
+        got = _users_exec(
+            "WITH tracked(sid, sname, since) AS (VALUES " + values_sql + "), "
+            "x AS ("
+            "  SELECT tt.move_id, tt.sku, tt.product_name, tt.qty_done, "
+            "         (tt.date_done + interval '3 hours')::date AS day "
+            "  FROM stock_transfers tt "
+            "  WHERE tt.transfer_type = 'finishing_to_warehouse' "
+            "    AND tt.state = 'done'"
+            "), "
+            "xp AS ("
+            "  SELECT x.move_id, x.qty_done, x.day, "
+            "         p.style_name AS apc_name, x.product_name "
+            "  FROM x LEFT JOIN all_products_clean p ON p.sku = x.sku"
+            "), "
+            "names(nm) AS ("
+            "  SELECT DISTINCT apc_name FROM xp WHERE apc_name IS NOT NULL "
+            "  UNION "
+            "  SELECT DISTINCT product_name FROM xp WHERE product_name IS NOT NULL"
+            "), "
+            "nm_match AS ("
+            "  SELECT DISTINCT t.sid, t.since, n.nm "
+            "  FROM tracked t JOIN names n ON " + _ST_WH_MATCH_NM +
+            "), "
+            "hits AS ("
+            "  SELECT DISTINCT m.sid, xp.move_id, xp.qty_done "
+            "  FROM nm_match m "
+            "  JOIN xp ON (xp.apc_name = m.nm OR xp.product_name = m.nm) "
+            "         AND (m.since IS NULL OR xp.day >= m.since)"
+            ") "
+            "SELECT sid, COALESCE(SUM(qty_done), 0)::int AS wh_units "
+            "FROM hits GROUP BY sid",
+            tuple(params), fetch=True) or []
+        for r in got:
+            units[r.get("sid")] = max(0, int(r.get("wh_units") or 0))
+    except Exception as exc:
+        log.warning("_st_batch_warehouse_pct: receipts batch failed: %s", exc)
 
-    if stock_group:
+    # Stock fallback: undated styles with zero receipt evidence (also covers
+    # a failed receipts query). Dated Re-Order/Replenishment styles never
+    # fall back — pre-existing stock must not satisfy the gate.
+    fallback = [(sid, name) for sid, name, _q, since in eligible
+                if since is None and units.get(sid, 0) <= 0]
+    if fallback:
         try:
-            values_sql = ", ".join(["(%s::bigint, %s::text)"] * len(stock_group))
+            values_sql = ", ".join(["(%s::bigint, %s::text)"] * len(fallback))
             params = []
-            for sid, name, _q in stock_group:
+            for sid, name in fallback:
                 params.extend([sid, name])
+            # Same names-first shape: aggregate warehouse stock per master
+            # style name (sku UNIQUE in all_products_clean ⇒ no fan-out),
+            # then tolerant-match tracked styles at the name grain.
             got = _users_exec(
                 "WITH tracked(sid, sname) AS (VALUES " + values_sql + "), "
                 "wh AS ("
-                "  SELECT p.style_name, GREATEST(i.available, 0) AS avail "
+                "  SELECT i.sku, SUM(GREATEST(i.available, 0)) AS avail "
                 "  FROM all_inventory i "
-                "  JOIN all_products_clean p ON i.sku = p.sku "
-                "  WHERE i.pos_location_name = 'Warehouse Finished Goods'"
-                ") "
-                "SELECT t.sid, COALESCE(SUM(p.avail), 0)::int AS wh_units "
-                "FROM tracked t "
-                "JOIN wh p ON " + _match + " "
-                "GROUP BY t.sid",
-                tuple(params), fetch=True) or []
-            qty_by_id = {sid: q for sid, _n, q in stock_group}
-            for r in got:
-                sid = r.get("sid")
-                units = int(r.get("wh_units") or 0)
-                q = qty_by_id.get(sid) or 0
-                if q > 0:
-                    out[sid] = (min(units / q * 100.0, 100.0), units)
-        except Exception as exc:
-            log.warning("_st_batch_warehouse_pct: stock batch failed: %s", exc)
-
-    if xfer_group:
-        try:
-            values_sql = ", ".join(
-                ["(%s::bigint, %s::text, %s::date)"] * len(xfer_group))
-            params = []
-            for sid, name, _q, since in xfer_group:
-                params.extend([sid, name, since])
-            got = _users_exec(
-                "WITH tracked(sid, sname, since) AS (VALUES " + values_sql + "), "
-                "x AS ("
-                "  SELECT tt.sku, tt.qty_done, "
-                "         (tt.date_done + interval '3 hours')::date AS day "
-                "  FROM stock_transfers tt "
-                "  WHERE tt.transfer_type = 'finishing_to_warehouse' "
-                "    AND tt.state = 'done' "
-                "    AND (tt.date_done + interval '3 hours')::date >= "
-                "        (SELECT MIN(since) FROM tracked)"
+                "  WHERE i.pos_location_name = 'Warehouse Finished Goods' "
+                "  GROUP BY i.sku"
                 "), "
-                "xp AS ("
-                "  SELECT x.qty_done, x.day, p.style_name "
-                "  FROM x "
-                "  LEFT JOIN LATERAL ("
-                "    SELECT style_name FROM all_products_clean "
-                "    WHERE sku = x.sku "
-                "    ORDER BY (active IS TRUE) DESC, barcode LIMIT 1"
-                "  ) p ON TRUE"
+                "whn AS ("
+                "  SELECT p.style_name AS nm, SUM(w.avail) AS avail "
+                "  FROM wh w JOIN all_products_clean p ON p.sku = w.sku "
+                "  GROUP BY p.style_name"
                 ") "
-                "SELECT t.sid, COALESCE(SUM(p.qty_done), 0)::int AS wh_units "
+                "SELECT t.sid, COALESCE(SUM(n.avail), 0)::int AS wh_units "
                 "FROM tracked t "
-                "JOIN xp p ON " + _match + " AND p.day >= t.since "
+                "JOIN whn n ON " + _ST_WH_MATCH_NM + " "
                 "GROUP BY t.sid",
                 tuple(params), fetch=True) or []
-            qty_by_id = {sid: q for sid, _n, q, _s in xfer_group}
             for r in got:
-                sid = r.get("sid")
-                units = int(r.get("wh_units") or 0)
-                q = qty_by_id.get(sid) or 0
-                if q > 0:
-                    out[sid] = (min(units / q * 100.0, 100.0), units)
+                units[r.get("sid")] = max(0, int(r.get("wh_units") or 0))
         except Exception as exc:
-            log.warning("_st_batch_warehouse_pct: transfer batch failed: %s", exc)
+            log.warning("_st_batch_warehouse_pct: stock fallback failed: %s", exc)
 
+    for sid, _name, qty, _since in eligible:
+        u = units.get(sid)
+        if u is None:
+            continue  # no evidence either way — stays (0.0, 0)
+        out[sid] = (min(u / qty * 100.0, 100.0), u)
     return out
 
 
@@ -38452,8 +38467,9 @@ def _style_tracker_board_inner():
             fetch=True) or []
 
     # Batch "% received in warehouse" for every style (table view's % Recv
-    # column) — two set-based queries instead of one /warehouse-pct
-    # round-trip per row. Best-effort: (0.0, 0) on any failure/miss.
+    # column) — at most two set-based queries instead of one /warehouse-pct
+    # round-trip per row, and the SAME contract the per-style endpoint and
+    # Warehouse status gate use. Best-effort: (0.0, 0) on any failure/miss.
     wh_map = _st_batch_warehouse_pct(rows)
 
     # Fetch notes for all non-archived styles in one query
@@ -38691,22 +38707,29 @@ async def style_tracker_update(style_id: int, request: Request):
         return JSONResponse({"detail": "quantity must be between 1 and 1,000,000"}, status_code=400)
     if _st_parse_date(effective["deliver_by"], "deliver_by") is None:
         return JSONResponse({"detail": "deliver_by is required"}, status_code=400)
-    # Warehouse gate: must have ≥90% of order qty transferred to warehouse.
-    # For Re-Order/Replenishment the gate compares against recent transfers since
-    # order_date rather than total warehouse stock (pre-existing stock is excluded).
+    # Warehouse gate: must have ≥90% of order qty received into the warehouse.
+    # Same calculation as the board "% Recv" column and /warehouse-pct endpoint
+    # (_st_batch_warehouse_pct contract): completed finishing→warehouse receipts
+    # first — bounded to EAT days on/after order_date for Re-Order/Replenishment
+    # (pre-existing stock excluded) — with a warehouse-stock fallback only for
+    # undated styles that have no receipt evidence.
     new_status = fields.get("status")
     if (_ST_WAREHOUSE_GATE_ENABLED
             and new_status == "Warehouse" and ex.get("status") != "Warehouse"):
+        # Gate against the EFFECTIVE row being saved (a request may change
+        # style_name/quantity/order fields together with status) so the gate
+        # decision always matches the board/endpoint value for the saved row.
+        eff_name = fields.get("style_name", ex.get("style_name"))
         eff_order_type = fields.get("order_type", ex.get("order_type"))
         eff_order_date = fields.get("order_date", ex.get("order_date"))
         pct, wh_units = _style_warehouse_pct(
-            ex["style_name"], ex["quantity"],
+            eff_name, effective_qty,
             order_type=eff_order_type, order_date=eff_order_date)
         if pct < 90.0:
             return JSONResponse({
                 "detail": (
                     f"Only {pct:.0f}% transferred to warehouse "
-                    f"({wh_units} of {ex['quantity']} units) — need ≥90% to move to Warehouse"
+                    f"({wh_units} of {effective_qty} units) — need ≥90% to move to Warehouse"
                 ),
                 "warehouse_pct": round(pct, 1),
                 "wh_units": wh_units,
@@ -38855,9 +38878,11 @@ async def style_tracker_finishing_options_rename(option_id: int, request: Reques
 
 @app.get("/api/style-tracker/styles/{style_id}/warehouse-pct")
 def style_tracker_warehouse_pct_endpoint(style_id: int):
-    """Live warehouse transfer percentage for a style (vs its order quantity).
-    For Re-Order/Replenishment styles the percentage is computed from recent
-    finishing→warehouse transfers since the order_date, not total warehouse stock."""
+    """Live warehouse-received percentage for a style (vs its order quantity).
+    Shares the board/gate calculation (_st_batch_warehouse_pct): completed
+    finishing→warehouse receipts — bounded to EAT days on/after order_date for
+    Re-Order/Replenishment — with a warehouse-stock fallback only for undated
+    styles that have no receipt evidence."""
     _ensure_style_tracker_tables()
     style = _users_exec(
         "SELECT id, style_name, quantity, order_type, order_date "
