@@ -823,6 +823,9 @@ def _ensure_tables():
             size TEXT NOT NULL DEFAULT '',
             fit TEXT NOT NULL DEFAULT '',
             colours JSONB NOT NULL DEFAULT '[]'::jsonb,
+            print_preferences JSONB NOT NULL DEFAULT '[]'::jsonb,
+            colour_shades JSONB NOT NULL DEFAULT '[]'::jsonb,
+            fabrics JSONB NOT NULL DEFAULT '[]'::jsonb,
             categories JSONB NOT NULL DEFAULT '[]'::jsonb,
             interests JSONB NOT NULL DEFAULT '[]'::jsonb,
             avoid JSONB NOT NULL DEFAULT '[]'::jsonb,
@@ -834,6 +837,10 @@ def _ensure_tables():
             use_activity BOOLEAN NOT NULL DEFAULT FALSE,
             updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
         );
+        ALTER TABLE community_style_prefs
+            ADD COLUMN IF NOT EXISTS print_preferences JSONB NOT NULL DEFAULT '[]'::jsonb,
+            ADD COLUMN IF NOT EXISTS colour_shades JSONB NOT NULL DEFAULT '[]'::jsonb,
+            ADD COLUMN IF NOT EXISTS fabrics JSONB NOT NULL DEFAULT '[]'::jsonb;
         -- "About your Vivo journey" — customer-insight record collected on the
         -- Style Preferences page (merged from the old "Help us dress you
         -- better" survey). Kept SEPARATE from community_style_prefs: prefs
@@ -3310,14 +3317,36 @@ def register_community_routes(app, api_pg_module):
 
     # ------------------------------------------------------------------
     # "Styled for You" — opt-in weekly personalised recommendations.
-    # Preferences are member-entered (size/fit/colours/categories/interests/
-    # avoid/frequency/notifications); purchase history is used only while
-    # use_activity is true. Nobody is ever enrolled automatically.
+    # Preferences are member-entered (size/fit/colours/prints/shades/fabrics/
+    # categories/interests/avoid/frequency/notifications); purchase history is
+    # used only while use_activity is true. Nobody is ever enrolled automatically.
     # ------------------------------------------------------------------
     _SFY_SIZES = ["XS", "S", "M", "L", "XL", "XXL", "1X", "2X", "3X", "4X"]
     _SFY_FITS = ["Fitted", "True to size", "Relaxed", "Flowy"]
     _SFY_INTERESTS = ["Workwear", "Casual", "Occasionwear", "Activewear"]
     _SFY_FREQS = ["weekly", "fortnightly", "monthly"]
+    _SFY_PRINT_PREFS = ["Plain", "Prints"]
+    _SFY_COLOUR_SHADES = [
+        "Olive", "Sage", "Emerald", "Cobalt", "Navy", "Burgundy",
+        "Blush", "Terracotta", "Cocoa", "Ivory", "Charcoal", "Black",
+    ]
+    _SFY_FABRICS = ["Cotton", "Silk", "Chiffon", "Denim", "Knit", "Linen"]
+    _SFY_PRINT_KWS = (
+        "print", "pattern", "floral", "stripe", "check", "polka", "animal",
+        "abstract", "tie dye", "tropical", "leopard", "zebra",
+    )
+    _SFY_SHADE_KWS = {
+        "Olive": ("olive",), "Sage": ("sage",), "Emerald": ("emerald",),
+        "Cobalt": ("cobalt",), "Navy": ("navy",), "Burgundy": ("burgundy", "wine"),
+        "Blush": ("blush", "dusty pink"), "Terracotta": ("terracotta", "rust"),
+        "Cocoa": ("cocoa", "chocolate"), "Ivory": ("ivory", "cream"),
+        "Charcoal": ("charcoal",), "Black": ("black",),
+    }
+    _SFY_FABRIC_KWS = {
+        "Cotton": ("cotton",), "Silk": ("silk", "satin"),
+        "Chiffon": ("chiffon",), "Denim": ("denim", "jean"),
+        "Knit": ("knit", "rib"), "Linen": ("linen",),
+    }
     _SFY_INTEREST_KWS = {
         "Workwear": ("blazer", "trouser", "pant", "shirt", "suit", "office", "work"),
         "Casual": ("tee", "t-shirt", "denim", "jean", "knit", "top", "short", "casual"),
@@ -3326,6 +3355,7 @@ def register_community_routes(app, api_pg_module):
     }
     _SFY_DEFAULTS = {
         "opted_in": False, "size": "", "fit": "", "colours": [], "categories": [],
+        "print_preferences": [], "colour_shades": [], "fabrics": [],
         "interests": [], "avoid": [], "frequency": "weekly",
         "notify_push": True, "notify_email": False, "use_activity": False,
     }
@@ -3344,6 +3374,9 @@ def register_community_routes(app, api_pg_module):
     def _sfy_options():
         return {"sizes": _SFY_SIZES, "fits": _SFY_FITS,
                 "colours": sorted(COMMUNITY_COLOR_BUCKETS.keys()),
+                "print_preferences": _SFY_PRINT_PREFS,
+                "colour_shades": _SFY_COLOUR_SHADES,
+                "fabrics": _SFY_FABRICS,
                 "interests": _SFY_INTERESTS, "frequencies": _SFY_FREQS,
                 "journey": {"tenures": _JOURNEY_TENURES,
                             "discoveries": _JOURNEY_DISCOVERIES,
@@ -3423,6 +3456,9 @@ def register_community_routes(app, api_pg_module):
                 if isinstance(p.get("fit"), str):
                     nxt["fit"] = p["fit"] if p["fit"] in _SFY_FITS else ""
                 for key, allowed in (("colours", set(COMMUNITY_COLOR_BUCKETS)),
+                                     ("print_preferences", set(_SFY_PRINT_PREFS)),
+                                     ("colour_shades", set(_SFY_COLOUR_SHADES)),
+                                     ("fabrics", set(_SFY_FABRICS)),
                                      ("categories", None),
                                      ("interests", set(_SFY_INTERESTS)),
                                      ("avoid", None)):
@@ -3439,13 +3475,17 @@ def register_community_routes(app, api_pg_module):
                          opted_in = %s,
                          opted_in_at = CASE WHEN %s AND opted_in_at IS NULL THEN now() ELSE opted_in_at END,
                          size = %s, fit = %s,
-                         colours = %s::jsonb, categories = %s::jsonb,
+                         colours = %s::jsonb, print_preferences = %s::jsonb,
+                         colour_shades = %s::jsonb, fabrics = %s::jsonb,
+                         categories = %s::jsonb,
                          interests = %s::jsonb, avoid = %s::jsonb,
                          frequency = %s, notify_push = %s, notify_email = %s,
                          use_activity = %s, updated_at = now()
                        WHERE member_id = %s""",
                     (nxt["opted_in"], nxt["opted_in"], nxt["size"], nxt["fit"],
-                     json.dumps(nxt["colours"]), json.dumps(nxt["categories"]),
+                     json.dumps(nxt["colours"]), json.dumps(nxt["print_preferences"]),
+                     json.dumps(nxt["colour_shades"]), json.dumps(nxt["fabrics"]),
+                     json.dumps(nxt["categories"]),
                      json.dumps(nxt["interests"]), json.dumps(nxt["avoid"]),
                      nxt["frequency"], nxt["notify_push"], nxt["notify_email"],
                      nxt["use_activity"], m["id"]),
@@ -3604,6 +3644,11 @@ def register_community_routes(app, api_pg_module):
 
         colour_kws = sorted({kw for b in prefs["colours"]
                              for kw in COMMUNITY_COLOR_BUCKETS.get(b, ())})
+        shade_kws = sorted({kw for s in prefs["colour_shades"]
+                            for kw in _SFY_SHADE_KWS.get(s, ())})
+        fabric_kws = sorted({kw for f in prefs["fabrics"]
+                             for kw in _SFY_FABRIC_KWS.get(f, ())})
+        print_prefs = set(prefs["print_preferences"])
         pref_cats = {c.lower() for c in prefs["categories"]}
         fav_set = {c.lower() for c in fav_cats}
         interest_kws = {i: _SFY_INTEREST_KWS[i] for i in prefs["interests"] if i in _SFY_INTEREST_KWS}
@@ -3620,6 +3665,14 @@ def register_community_routes(app, api_pg_module):
                 sc += 3
             col = (it["color"] or "").lower()
             if colour_kws and any(k in col for k in colour_kws):
+                sc += 2
+            hay = " ".join((it["style_name"], col, it["subcategory"] or "")).lower()
+            if shade_kws and any(k in hay for k in shade_kws):
+                sc += 3
+            if fabric_kws and any(k in hay for k in fabric_kws):
+                sc += 2
+            is_print = any(k in hay for k in _SFY_PRINT_KWS)
+            if ("Prints" in print_prefs and is_print) or ("Plain" in print_prefs and not is_print):
                 sc += 2
             if interest_kws and any(_match_interest(it, kws) for kws in interest_kws.values()):
                 sc += 2

@@ -50,8 +50,9 @@ describe("TabHome image teasers", () => {
     expect(screen.getByText("Styled by Our Influencers")).toBeInTheDocument();
     expect(screen.getByText("Real looks from the creators who bring Vivo to life.")).toBeInTheDocument();
     expect(screen.getByText("In partnership with Vivo")).toBeInTheDocument();
-    expect(screen.getByText("Build Your Own Style Board")).toBeInTheDocument();
-    expect(screen.getByText("Save the looks, prints and pieces you keep coming back to.")).toBeInTheDocument();
+    expect(screen.getByText("Style Boards, Curated by Us")).toBeInTheDocument();
+    expect(screen.getByText("Mood boards and outfit inspiration, put together by the Vivo team.")).toBeInTheDocument();
+    expect(screen.getByText("See the boards")).toBeInTheDocument();
     expect(screen.getByText("This Month in Johari")).toBeInTheDocument();
     expect(screen.getByText("Milestones, new stores and what's next for Vivo.")).toBeInTheDocument();
 
@@ -164,7 +165,9 @@ describe("TabHome image teasers", () => {
   });
 
   it("shows the approved Styled for You copy to guests", async () => {
-    render(<TabHome member={null} {...NO_OP} />);
+    const user = userEvent.setup();
+    const onOpenPage = vi.fn();
+    render(<TabHome member={null} {...NO_OP} onOpenPage={onOpenPage} />);
     await act(async () => {});
 
     expect(screen.getByText("New")).toBeInTheDocument();
@@ -172,6 +175,7 @@ describe("TabHome image teasers", () => {
     expect(screen.getByText(
       "Get weekly outfit and product recommendations selected around your style, size and preferences."
     )).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Personalise My Style" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Personalise My Style" }));
+    expect(onOpenPage).toHaveBeenCalledWith("styleprefs");
   });
 });

@@ -59,6 +59,27 @@ const PLM_SEASONS = ["Q3 2026", "Q4 2026"] as const;
 const WORKSPACE_BRANDS = ["Vivo", "Safari by Vivo", "Zoya"] as const;
 const ALLOWED_BRANDS_SQL = WORKSPACE_BRANDS.map((brand) => `'${brand}'`).join(",");
 const allowedBrand = (alias: string) => `${alias}.brand IN (${ALLOWED_BRANDS_SQL})`;
+const ASSORTMENT_TIER_FILTERS = [
+  "Tier 1 · NOOS",
+  "Tier 2 · Core",
+  "Tier 3 · Recent",
+  "Tier 4 · New",
+  "Retired",
+] as const;
+const ASSORTMENT_WAREHOUSE_LOCATIONS = [
+  "Warehouse Finished Goods", "Warehouse Receiving", "In Transit",
+  "Holding Warehouse Finished Goods", "Finished Goods Production", "Production",
+  "Buying & Merchandise", "Raw Materials", "Fabric Trimming", "Dead Stock Fabric",
+  "Cutting - Spreading", "Washing", "Wandia", "Galleria Holding", "Studio Location",
+  "Product Development", "Repairs", "Sampling Fabric", "Sampling", "Sale Stock",
+  "Shopping Bags", "Recall Location", "Fabric Production", "Defects Location",
+  "Staff purchases", "Sew/Stock/A", "Sew/Stock/B", "Sew/Stock/C", "Sew/Stock/D",
+  "Sew/Stock/E",
+] as const;
+const ASSORTMENT_PIPELINE_LOCATIONS = [
+  "Fabric Trimming", "Finished Goods Production", "Sew/Stock/A", "Sew/Stock/B",
+  "Sew/Stock/C", "Sew/Stock/D", "Sew/Stock/E",
+] as const;
 const PD_STYLE_TEAM_DDL = `
 DO $$
 BEGIN
@@ -2670,6 +2691,7 @@ function seasonClause(column: string, parameter: string) {
 
 function assortmentStylePayload(row: Record<string, unknown>) {
   const styleNumber = String(row.styleNumber ?? "").trim();
+  const launchDate = row.launchDate;
   return {
     id: String(row.id ?? ""),
     pdId: row.pdId == null ? null : Number(row.pdId),
@@ -2685,94 +2707,202 @@ function assortmentStylePayload(row: Record<string, unknown>) {
     stage: String(row.stage ?? "Concept"),
     designer: String(row.designer ?? "Unassigned"),
     season: String(row.season ?? ""),
-    tier: String(row.tier ?? "New/Test"),
+    rangeTier: row.rangeTier == null ? null : String(row.rangeTier),
+    tier: row.tier == null ? null : String(row.tier),
     status: String(row.status ?? "Active"),
     excluded: Boolean(row.excluded),
+    unitsSold: row.unitsSold == null ? null : Number(row.unitsSold),
+    revenueKes: row.revenueKes == null ? null : Number(row.revenueKes),
+    sorPct: row.sorPct == null ? null : Number(row.sorPct),
+    launchDate: launchDate == null ? null : launchDate instanceof Date ? launchDate.toISOString().slice(0, 10) : String(launchDate),
+    price: row.price == null ? null : Number(row.price),
+    stockUnits: row.stockUnits == null ? null : Number(row.stockUnits),
     image: styleNumber ? `/api/workspace/assortment-image/${encodeURIComponent(styleNumber)}` : null,
   };
 }
 
 async function assortmentPlanData(quarter: string) {
-  const values = [quarter];
-  const where = seasonClause("s.season", "1");
-  const carryOverResult = await pool.query(
-    `WITH style_rollup AS (
+  const catalogueResult = await pool.query(
+    `WITH sku_style AS (
+       SELECT DISTINCT ON (sku) sku,style_name,style_number
+       FROM public.all_products_clean
+       WHERE sku IS NOT NULL
+         AND NULLIF(TRIM(style_name),'') IS NOT NULL
+         AND NULLIF(TRIM(style_number),'') IS NOT NULL
+       ORDER BY sku,(active IS TRUE) DESC,style_number
+     ),
+     style_rollup AS (
        SELECT
-          COALESCE(NULLIF(TRIM(a.style_number),''),NULLIF(TRIM(a.sku),'')) AS style_number,
-         MAX(a.style_name) AS name,
-         COALESCE(MAX(NULLIF(TRIM(a.category),'')), MAX(NULLIF(TRIM(a.product_type),'')), 'Uncategorised') AS category,
-         COALESCE(MAX(NULLIF(TRIM(a.product_type),'')), '') AS "subCategory",
-          COALESCE(MAX(NULLIF(TRIM(a.fabric_category),'')), '') AS "fabricCategory",
-          COALESCE(MAX(NULLIF(TRIM(a.brand),'')), '') AS brand,
-          COALESCE(MAX(NULLIF(TRIM(a.color_print),'')), '') AS "primaryColour",
-          COALESCE(MAX(NULLIF(TRIM(a.collection),'')), '') AS edit,
-         CASE WHEN BOOL_OR(LOWER(COALESCE(a.status,''))='active') THEN 'Active' ELSE 'Retired' END AS status,
-         CASE
-           WHEN BOOL_OR(COALESCE(a.is_noos,FALSE) OR UPPER(COALESCE(a.tier,''))='NOOS' OR UPPER(COALESCE(a.range_tier,''))='NOOS') THEN 'NOOS'
-           WHEN BOOL_OR(UPPER(COALESCE(a.range_tier,''))='CORE') THEN 'Core'
-           WHEN BOOL_OR(UPPER(COALESCE(a.range_tier,''))='RECENT') THEN 'Recent'
-           WHEN COALESCE(MAX(inv.stock_units),0) > 100 THEN 'Core'
-           ELSE 'Recent'
-         END AS tier
+         a.style_name,
+         LOWER(TRIM(MODE() WITHIN GROUP (ORDER BY a.style_number))) AS style_key,
+         MODE() WITHIN GROUP (ORDER BY NULLIF(TRIM(a.style_number),'')) AS style_number,
+         a.style_name AS name,
+         COALESCE(MAX(NULLIF(TRIM(a.category),'')),MAX(NULLIF(TRIM(a.product_type),'')),'Uncategorised') AS category,
+         COALESCE(MAX(NULLIF(TRIM(a.product_type),'')),'') AS "subCategory",
+         COALESCE(MAX(NULLIF(TRIM(a.fabric_category),'')),'') AS "fabricCategory",
+         COALESCE(MAX(NULLIF(TRIM(a.brand),'')),'') AS brand,
+         COALESCE(MAX(NULLIF(TRIM(a.color_print),'')),'') AS "primaryColour",
+          COALESCE(MAX(NULLIF(TRIM(a.collection),'')),'') AS edit,
+          (MODE() WITHIN GROUP (ORDER BY NULLIF(a.price,0))
+            FILTER (WHERE a.price IS NOT NULL AND a.price > 0))::float AS price,
+          MIN(CASE WHEN a.style_launch_date ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'
+            THEN LEFT(a.style_launch_date,10)::date END) AS catalogue_launch_date
        FROM public.all_products_clean a
-       LEFT JOIN (
-          SELECT COALESCE(NULLIF(TRIM(p.style_number),''),NULLIF(TRIM(p.sku),'')) AS style_number, SUM(i.available) AS stock_units
-         FROM public.all_products_clean p
-         JOIN public.all_inventory i ON i.sku=p.sku
-         WHERE ${allowedBrand("p")}
-           AND LOWER(COALESCE(p.status,'')) IN ('active','retired')
-          GROUP BY COALESCE(NULLIF(TRIM(p.style_number),''),NULLIF(TRIM(p.sku),''))
-        ) inv ON inv.style_number=COALESCE(NULLIF(TRIM(a.style_number),''),NULLIF(TRIM(a.sku),''))
-       WHERE ${allowedBrand("a")}
-         AND LOWER(COALESCE(a.status,'')) IN ('active','retired')
-          AND COALESCE(NULLIF(TRIM(a.style_number),''),NULLIF(TRIM(a.sku),'')) IS NOT NULL
-        GROUP BY COALESCE(NULLIF(TRIM(a.style_number),''),NULLIF(TRIM(a.sku),''))
-      )
+       WHERE NULLIF(TRIM(a.style_name),'') IS NOT NULL
+         AND COALESCE(a.brand,'') NOT ILIKE '%third party%'
+         AND NULLIF(TRIM(a.style_number),'') IS NOT NULL
+       GROUP BY a.style_name
+       HAVING NOT BOOL_OR(
+         COALESCE(a.category,'') ILIKE '%sample%'
+         OR COALESCE(a.style_number,'') ILIKE '%sample%'
+         OR COALESCE(a.style_name,'') ILIKE '%sample%'
+       )
+     ),
+     stock AS (
+       SELECT COALESCE(m.style_name,i.style_name) AS style_name,
+         COALESCE(SUM(i.available) FILTER (
+           WHERE NOT (i.pos_location_name=ANY($2::text[]))
+         ),0) AS soh_stores,
+         COALESCE(SUM(i.available) FILTER (
+           WHERE i.pos_location_name=ANY($2::text[])
+             AND NOT (i.pos_location_name=ANY($3::text[]))
+          ),0) AS soh_warehouse,
+          COALESCE(SUM(i.available) FILTER (
+            WHERE COALESCE(i.pos_location_name,'') <> ALL($3::text[])
+          ),0)::float AS stock_units
+       FROM public.all_inventory i
+       LEFT JOIN sku_style m ON m.sku=i.sku
+       WHERE NULLIF(TRIM(COALESCE(m.style_name,i.style_name)),'') IS NOT NULL
+       GROUP BY COALESCE(m.style_name,i.style_name)
+     ),
+     eligible AS (
+       SELECT DISTINCT ON (r.style_key)
+         r.*,o.status AS override_status,o.tier AS override_tier
+       FROM style_rollup r
+       JOIN public.style_tier_overrides o
+         ON LOWER(TRIM(o.style_number))=r.style_key
+       LEFT JOIN stock st ON st.style_name=r.style_name
+       WHERE LOWER(TRIM(COALESCE(o.status,''))) IN ('active','retired')
+         AND LOWER(COALESCE(o.status,'')) NOT LIKE '%archive%'
+         AND (
+           LOWER(TRIM(o.status))='active'
+           OR COALESCE(st.soh_stores,0)>0
+           OR COALESCE(st.soh_warehouse,0)>0
+         )
+       ORDER BY r.style_key,r.style_name
+      ),
+      rollup_sales AS (
+        SELECT r.style_key,
+          SUM(day.gross_units)::float AS units_sold,
+          SUM(day.net_revenue)::float AS revenue_kes
+        FROM eligible r
+        JOIN public.rollup_merch_style_day day ON day.style_name=r.style_name
+        GROUP BY r.style_key
+      ),
+      rollup_first_sale AS (
+        SELECT r.style_key,MIN(first_sale.first_sale_date) AS first_sale_date
+        FROM eligible r
+        JOIN public.rollup_merch_first_sale first_sale ON first_sale.style_name=r.style_name
+        GROUP BY r.style_key
+      ),
+      incremental_sales AS (
+        SELECT r.style_key,
+          SUM(CASE WHEN LOWER(COALESCE(sa.sale_kind,'')) IN ('sale','order')
+            THEN GREATEST(COALESCE(sa.ordered_item_quantity,0)::numeric,0) ELSE 0 END)::float AS units_sold,
+          SUM(CASE
+            WHEN LOWER(COALESCE(sa.sale_kind,'')) IN ('sale','order')
+              THEN (COALESCE(sa.total_sales_kes,0)::numeric - COALESCE(sa.discounts_kes,0)::numeric)
+                / CASE WHEN sa.country IN ('Uganda','Rwanda') THEN 1.18 ELSE 1.16 END
+            WHEN LOWER(COALESCE(sa.sale_kind,''))='return'
+              THEN -COALESCE(sa.returns_kes,0)::numeric
+                / CASE WHEN sa.country IN ('Uganda','Rwanda') THEN 1.18 ELSE 1.16 END
+            ELSE 0
+          END)::float AS revenue_kes,
+          MIN(CASE WHEN sa.sale_date ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'
+            THEN LEFT(sa.sale_date,10)::date END)
+            FILTER (WHERE LOWER(COALESCE(sa.sale_kind,'')) IN ('sale','order')) AS first_sale_date
+        FROM public.all_sales sa
+        JOIN sku_style m ON m.sku=sa.variant_sku
+        JOIN eligible r ON r.style_key=LOWER(TRIM(m.style_number))
+        WHERE sa.loaded_at > (
+          SELECT source_watermark FROM public.rollup_meta WHERE name='merch_style_day'
+        )
+          AND COALESCE(sa.pos_location_name,'') NOT IN (
+            'Staff purchases','Manual Order','Online - vivo-uganda',
+            'Online - vivowoman','Online Orders Location'
+          )
+          AND LOWER(COALESCE(sa.product_title,'')) NOT LIKE '%shopping bag%'
+          AND LOWER(COALESCE(sa.product_title,'')) NOT LIKE '%gift card%'
+          AND LOWER(COALESCE(sa.product_title,'')) NOT LIKE '%gift voucher%'
+          AND LOWER(COALESCE(sa.product_title,'')) NOT LIKE '%voucher%'
+          AND (
+            LOWER(COALESCE(sa.product_title,'')) NOT LIKE '%on specific products%'
+            OR (
+              COALESCE(sa.total_sales_kes,0)::numeric=0
+              AND COALESCE(sa.ordered_item_quantity,0)=0
+              AND COALESCE(sa.discounts_kes,0)::numeric<>0
+            )
+          )
+          AND LOWER(COALESCE(sa.variant_sku,'')) NOT LIKE '%vb00%'
+        GROUP BY r.style_key
+      ),
+      sales_by_style AS (
+        SELECT r.style_key,
+          CASE WHEN rollup.style_key IS NULL AND incremental.style_key IS NULL THEN NULL
+            ELSE COALESCE(rollup.units_sold,0) + COALESCE(incremental.units_sold,0) END AS units_sold,
+          CASE WHEN rollup.style_key IS NULL AND incremental.style_key IS NULL THEN NULL
+            ELSE COALESCE(rollup.revenue_kes,0) + COALESCE(incremental.revenue_kes,0) END AS revenue_kes,
+          COALESCE(first_sale.first_sale_date,incremental.first_sale_date) AS first_sale_date
+        FROM eligible r
+        LEFT JOIN rollup_sales rollup ON rollup.style_key=r.style_key
+        LEFT JOIN rollup_first_sale first_sale ON first_sale.style_key=r.style_key
+        LEFT JOIN incremental_sales incremental ON incremental.style_key=r.style_key
+     )
      SELECT
        'catalogue:' || r.style_number AS id,
        NULL::bigint AS "pdId",
        'all_products_clean' AS source,
        r.style_number AS "styleNumber",
-        r.name,r.category,r."subCategory",r."fabricCategory",r.brand,r."primaryColour",r.edit,
-       'Carry-over' AS stage,'Merchandising' AS designer,
-        $1 AS season,r.tier,r.status,
-        (e.style_id IS NOT NULL AND aps.style_key IS NULL) AS excluded
-     FROM style_rollup r
+       r.name,r.category,r."subCategory",r."fabricCategory",r.brand,r."primaryColour",r.edit,
+       'Carry-over' AS stage,'Merchandising' AS designer,$1 AS season,
+       CASE WHEN r.override_tier IN ('Tier 1','Tier 2','Tier 3','Tier 4') THEN r.override_tier ELSE NULL END AS "rangeTier",
+       CASE
+         WHEN LOWER(TRIM(r.override_status))='retired' THEN 'Retired'
+         WHEN r.override_tier='Tier 1' THEN 'Tier 1 · NOOS'
+         WHEN r.override_tier='Tier 2' THEN 'Tier 2 · Core'
+         WHEN r.override_tier='Tier 3' THEN 'Tier 3 · Recent'
+         WHEN r.override_tier='Tier 4' THEN 'Tier 4 · New'
+         ELSE NULL
+       END AS tier,
+       INITCAP(LOWER(TRIM(r.override_status))) AS status,
+        (e.style_id IS NOT NULL AND aps.style_key IS NULL) AS excluded,
+        sales.units_sold AS "unitsSold",
+        sales.revenue_kes AS "revenueKes",
+        CASE
+          WHEN COALESCE(sales.units_sold,0) + COALESCE(st.stock_units,0) > 0
+          THEN ROUND((100.0 * COALESCE(sales.units_sold,0)
+            / (COALESCE(sales.units_sold,0) + COALESCE(st.stock_units,0)))::numeric,2)::float
+          ELSE NULL
+        END AS "sorPct",
+        COALESCE(r.catalogue_launch_date,sales.first_sale_date) AS "launchDate",
+        r.price,
+        st.stock_units AS "stockUnits"
+     FROM eligible r
+      LEFT JOIN stock st ON st.style_name=r.style_name
+      LEFT JOIN sales_by_style sales ON sales.style_key=r.style_key
      LEFT JOIN ${schema}.assortment_exclusions e
-       ON e.season=$1 AND e.source='all_products_clean' AND e.style_id=r.style_number
-      LEFT JOIN ${schema}.assortment_plan_styles aps
-        ON aps.season=$1 AND aps.source='all_products_clean' AND aps.style_key=r.style_number
-      WHERE r.tier='NOOS' OR e.style_id IS NULL OR aps.style_key IS NOT NULL
-     ORDER BY CASE r.tier WHEN 'NOOS' THEN 1 WHEN 'Core' THEN 2 ELSE 3 END,
-       LOWER(COALESCE(r.style_number,r.name))`,
-    values,
+       ON e.season=$1 AND e.source='all_products_clean' AND LOWER(TRIM(e.style_id))=r.style_key
+     LEFT JOIN ${schema}.assortment_plan_styles aps
+       ON aps.season=$1 AND aps.source='all_products_clean' AND LOWER(TRIM(aps.style_key))=r.style_key
+     ORDER BY CASE
+       WHEN LOWER(TRIM(r.override_status))='retired' THEN 5
+       WHEN r.override_tier='Tier 1' THEN 1 WHEN r.override_tier='Tier 2' THEN 2
+       WHEN r.override_tier='Tier 3' THEN 3 WHEN r.override_tier='Tier 4' THEN 4 ELSE 6
+     END,LOWER(COALESCE(r.style_number,r.name))`,
+    [quarter, [...ASSORTMENT_WAREHOUSE_LOCATIONS], [...ASSORTMENT_PIPELINE_LOCATIONS]],
   );
-  const newStylesResult = await pool.query(
-    `SELECT
-       'pd_styles:' || s.id::text AS id,
-       s.id AS "pdId",
-       'pd_styles' AS source,
-       s.style_number AS "styleNumber",
-       s.style_name AS name,
-       COALESCE(NULLIF(TRIM(s.category),''),'Uncategorised') AS category,
-       COALESCE(NULLIF(TRIM(s.sub_category),''),'') AS "subCategory",
-        COALESCE(NULLIF(TRIM(s.fabric_type),''),NULLIF(TRIM(s.fabric_name),''),'') AS "fabricCategory",
-        COALESCE(NULLIF(TRIM(s.brand),''),'') AS brand,
-        COALESCE(NULLIF(TRIM(s.sample_colour),''),'') AS "primaryColour",
-        COALESCE(NULLIF(TRIM(s.theme),''),'') AS edit,
-       COALESCE(NULLIF(TRIM(ps.stage_name),''),INITCAP(REPLACE(COALESCE(s.current_stage,'concept'),'_',' ')),'Concept') AS stage,
-       COALESCE(NULLIF(TRIM(s.assignee_name),''),'Unassigned') AS designer,
-       s.season,
-       'New/Test' AS tier,
-       COALESCE(NULLIF(TRIM(s.status),''),'Active') AS status,
-       FALSE AS excluded
-     FROM public.pd_styles s
-     LEFT JOIN public.pd_stages ps ON ps.stage_key=s.current_stage
-      WHERE ${allowedBrand("s")} AND ${where}
-     ORDER BY LOWER(COALESCE(s.style_number,s.style_name)),s.id`,
-    values,
-  );
-  const styles = [...carryOverResult.rows, ...newStylesResult.rows];
+  const allStyles = catalogueResult.rows.map(assortmentStylePayload);
+  const styles = allStyles.filter((style) => !style.excluded);
   const breakdown = (field: "category" | "stage") => {
     const counts: Record<string, number> = {};
     for (const row of styles) {
@@ -2788,22 +2918,27 @@ async function assortmentPlanData(quarter: string) {
     [...new Set(styles.map((row) => String(row[field] ?? "").trim()).filter(Boolean))]
       .sort((left, right) => left.localeCompare(right));
   return {
-    styles: styles.map(assortmentStylePayload),
-    carryOverStyles: carryOverResult.rows.map(assortmentStylePayload),
-    newStyles: newStylesResult.rows.map(assortmentStylePayload),
+    styles,
+    carryOverStyles: styles,
+    newStyles: [],
     total: styles.length,
     counts: {
       total: styles.length,
-      noos: countTier("NOOS"),
-      core: countTier("Core"),
-      recent: countTier("Recent"),
-      newTest: countTier("New/Test"),
+      tier1: countTier("Tier 1 · NOOS"),
+      tier2: countTier("Tier 2 · Core"),
+      tier3: countTier("Tier 3 · Recent"),
+      tier4: countTier("Tier 4 · New"),
+      retired: countTier("Retired"),
+      noos: countTier("Tier 1 · NOOS"),
+      core: countTier("Tier 2 · Core"),
+      recent: countTier("Tier 3 · Recent"),
+      newTest: countTier("Tier 4 · New"),
     },
     categoryBreakdown: breakdown("category"),
     stageBreakdown: breakdown("stage"),
     filterOptions: {
-      tier: filterOptions("tier"),
-      status: filterOptions("status"),
+      tier: [...ASSORTMENT_TIER_FILTERS],
+      status: ["Active", "Retired"],
       category: filterOptions("category"),
       subCategory: filterOptions("subCategory"),
       fabricCategory: filterOptions("fabricCategory"),
@@ -2891,6 +3026,10 @@ router.get("/range-plan", async (req, res, next) => {
       assortmentStyles: selectedAssortment.styles,
        carryOverStyles: selectedAssortment.carryOverStyles,
        newStyles: selectedAssortment.newStyles,
+      quarterStyles: {
+        "Q3 2026": q3Assortment.styles,
+        "Q4 2026": q4Assortment.styles,
+      },
       assortmentSummary: {
         total: selectedAssortment.total,
          counts: selectedAssortment.counts,
@@ -2902,9 +3041,9 @@ router.get("/range-plan", async (req, res, next) => {
          "Q3 2026": { total: q3Assortment.total, counts: q3Assortment.counts },
          "Q4 2026": { total: q4Assortment.total, counts: q4Assortment.counts },
       },
-       assortmentFilterOptions: {
-         tier: [...new Set([...q3Assortment.filterOptions.tier, ...q4Assortment.filterOptions.tier])].sort(),
-         status: [...new Set([...q3Assortment.filterOptions.status, ...q4Assortment.filterOptions.status])].sort(),
+        assortmentFilterOptions: {
+          tier: [...ASSORTMENT_TIER_FILTERS],
+          status: ["Active", "Retired"],
          category: [...new Set([...q3Assortment.filterOptions.category, ...q4Assortment.filterOptions.category])].sort(),
          subCategory: [...new Set([...q3Assortment.filterOptions.subCategory, ...q4Assortment.filterOptions.subCategory])].sort(),
          fabricCategory: [...new Set([...q3Assortment.filterOptions.fabricCategory, ...q4Assortment.filterOptions.fabricCategory])].sort(),
@@ -3044,23 +3183,6 @@ router.put("/range-plan/exclusions", async (req: AuthRequest, res, next) => {
       res.status(404).json({ error: "Catalogue style not found" });
       return;
     }
-    const tier = await pool.query<{ rangeTier: string }>(
-      `SELECT CASE
-         WHEN BOOL_OR(COALESCE(is_noos,FALSE) OR UPPER(COALESCE(tier,''))='NOOS' OR UPPER(COALESCE(range_tier,''))='NOOS') THEN 'NOOS'
-         ELSE COALESCE(MAX(NULLIF(TRIM(range_tier),'')),
-           CASE WHEN COALESCE((SELECT SUM(i.available)
-             FROM public.all_products_clean p
-             JOIN public.all_inventory i ON i.sku=p.sku
-             WHERE ${allowedBrand("p")}
-               AND LOWER(COALESCE(p.status,'')) IN ('active','retired')
-                AND COALESCE(NULLIF(TRIM(p.style_number),''),NULLIF(TRIM(p.sku),''))=$1),0)>100 THEN 'Core' ELSE 'Recent' END)
-       END AS "rangeTier"
-       FROM public.all_products_clean a
-       WHERE ${allowedBrand("a")}
-         AND LOWER(COALESCE(a.status,'')) IN ('active','retired')
-          AND COALESCE(NULLIF(TRIM(a.style_number),''),NULLIF(TRIM(a.sku),''))=$1`,
-      [styleId],
-    );
     if (excluded) {
       await pool.query(
         `INSERT INTO ${schema}.assortment_exclusions (season,style_id,source)
@@ -4554,7 +4676,7 @@ router.get("/styles", async (req, res, next) => {
          COALESCE(NULLIF(TRIM(s.brand),''),'Vivo') AS brand,
          COALESCE(NULLIF(TRIM(s.category),''),'Uncategorised') AS category,
          COALESCE(NULLIF(TRIM(s.sub_category),''),'') AS "subCategory",
-         COALESCE(NULLIF(TRIM(ws.theme),''),'') AS theme,
+          COALESCE(NULLIF(TRIM(s.theme),''),NULLIF(TRIM(ws.theme),''),'') AS theme,
          COALESCE(NULLIF(TRIM(ws.order_type),''),'New') AS "orderType",
          COALESCE(NULLIF(TRIM(ws.tier),''),'—') AS tier,
           s.season,
@@ -4565,7 +4687,7 @@ router.get("/styles", async (req, res, next) => {
          COALESCE(NULLIF(TRIM(p.stage_name),''),INITCAP(REPLACE(COALESCE(NULLIF(TRIM(s.current_stage),''),'concept'),'_',' ')),'Concept') AS stage,
          COALESCE(NULLIF(TRIM(p.stage_name),''),INITCAP(REPLACE(COALESCE(NULLIF(TRIM(s.current_stage),''),'concept'),'_',' ')),'Concept') AS "currentStage",
          COALESCE(NULLIF(TRIM(s.assignee_name),''),NULLIF(TRIM(ws.owner),''),'Unassigned') AS owner,
-         COALESCE(NULLIF(TRIM(s.assignee_name),''),NULLIF(TRIM(ws.designer),''),NULLIF(TRIM(ws.owner),''),'Unassigned') AS designer,
+          COALESCE(NULLIF(TRIM(s.design_owner),''),NULLIF(TRIM(s.assignee_name),''),NULLIF(TRIM(ws.designer),''),NULLIF(TRIM(ws.owner),''),'Unassigned') AS designer,
          COALESCE(NULLIF(TRIM(ws.pattern_maker),''),'') AS "patternMaker",
          ws.designer_user_id AS "designUserId",
          ws.pattern_maker_user_id AS "patternUserId",
@@ -4693,17 +4815,51 @@ router.get("/styles", async (req, res, next) => {
 // tables, not the newer workspace.styles table.  Keep this route separate from
 // /styles because the latter also powers the workspace's editable style detail
 // flow and has a different data model.
+const CATALOGUE_SORT_KEYS = [
+  "units_desc",
+  "revenue_desc",
+  "sor_desc",
+  "newest",
+  "oldest",
+  "price_desc",
+  "price_asc",
+  "stock_desc",
+  "name_asc",
+  "name_desc",
+] as const;
+type CatalogueSortKey = (typeof CATALOGUE_SORT_KEYS)[number];
+const CATALOGUE_SORT_KEY_SET = new Set<string>(CATALOGUE_SORT_KEYS);
+const catalogueSortKey = (raw: unknown): CatalogueSortKey => {
+  const value = String(raw ?? "").trim();
+  return CATALOGUE_SORT_KEY_SET.has(value) ? value as CatalogueSortKey : "units_desc";
+};
+const catalogueOrderBy = (sort: CatalogueSortKey, alias: string) => {
+  const primary: Record<CatalogueSortKey, string> = {
+    units_desc: `${alias}."unitsSold" DESC NULLS LAST`,
+    revenue_desc: `${alias}."revenueKes" DESC NULLS LAST`,
+    sor_desc: `${alias}."sorPct" DESC NULLS LAST`,
+    newest: `${alias}."launchDate" DESC NULLS LAST`,
+    oldest: `${alias}."launchDate" ASC NULLS LAST`,
+    price_desc: `${alias}.price DESC NULLS LAST`,
+    price_asc: `${alias}.price ASC NULLS LAST`,
+    stock_desc: `${alias}."stockUnits" DESC NULLS LAST`,
+    name_asc: `LOWER(${alias}."styleName") ASC NULLS LAST`,
+    name_desc: `LOWER(${alias}."styleName") DESC NULLS LAST`,
+  };
+  return `${primary[sort]}, LOWER(${alias}."styleName") ASC NULLS LAST, ${alias}."styleNumber" ASC`;
+};
+
 router.get("/plm-catalogue", async (req, res, next) => {
   try {
     const values: unknown[] = [];
     const csv = (raw: unknown) => String(raw ?? "").split(",").map((value) => value.trim()).filter(Boolean);
     const stageExpr = `COALESCE(NULLIF(TRIM(ps.stage_name),''), INITCAP(REPLACE(COALESCE(s.current_stage,'concept'),'_',' ')))`;
     const tierExpr = `CASE
-      WHEN LOWER(COALESCE(s.tier,'')) IN ('1','tier 1') THEN 'Tier 1'
-      WHEN LOWER(COALESCE(s.tier,'')) IN ('2','tier 2') THEN 'Tier 2'
-      WHEN LOWER(COALESCE(s.tier,'')) IN ('3','tier 3') THEN 'Tier 3'
-      WHEN LOWER(COALESCE(s.tier,'')) IN ('4','tier 4') THEN 'Tier 4'
-      ELSE NULLIF(TRIM(s.tier),'')
+      WHEN LOWER(COALESCE(s.range_tier,'')) IN ('1','tier 1','tier 1 · noos','noos') THEN 'Tier 1 · NOOS'
+      WHEN LOWER(COALESCE(s.range_tier,'')) IN ('2','tier 2','tier 2 · core','core') THEN 'Tier 2 · Core'
+      WHEN LOWER(COALESCE(s.range_tier,'')) IN ('3','tier 3','tier 3 · recent','recent') THEN 'Tier 3 · Recent'
+      WHEN LOWER(COALESCE(s.range_tier,'')) IN ('4','tier 4','tier 4 · new','new') THEN 'Tier 4 · New'
+      ELSE NULLIF(TRIM(s.range_tier),'')
     END`;
     const clauses = [allowedBrand("s"), `LOWER(s.status) = 'active'`];
     const search = String(req.query.search ?? "").trim();
@@ -4717,6 +4873,7 @@ router.get("/plm-catalogue", async (req, res, next) => {
       primaryColour: csv(req.query.primaryColour ?? req.query.primary_colour),
       edit: csv(req.query.edit),
     };
+    const sort = catalogueSortKey(req.query.sort);
     if (search) {
       values.push(`%${search}%`);
       clauses.push(`(
@@ -4740,32 +4897,104 @@ router.get("/plm-catalogue", async (req, res, next) => {
     addAny(`NULLIF(TRIM(s.sample_colour),'')`, filters.primaryColour);
     addAny(`NULLIF(TRIM(s.theme),'')`, filters.edit);
     const result = await pool.query(
-      `SELECT s.id,
-          COALESCE(NULLIF(TRIM(s.style_number),''), 'PD-' || s.id::text) AS code,
-          s.style_name AS name,
-          s.brand,
-          s.category,
-          s.sub_category AS "subCategory",
-          s.status,
+      `WITH filtered_styles AS (
+         SELECT s.id,
+           COALESCE(NULLIF(TRIM(s.style_number),''), 'PD-' || s.id::text) AS code,
+           COALESCE(NULLIF(TRIM(s.style_number),''), 'PD-' || s.id::text) AS "styleNumber",
+           s.style_name AS name,
+           s.style_name AS "styleName",
+           s.brand,
+           s.category,
+           s.sub_category AS "subCategory",
+           s.status,
            ${stageExpr} AS stage,
            ${stageExpr} AS "currentStage",
            ${tierExpr} AS tier,
            COALESCE(NULLIF(TRIM(s.fabric_type),''),NULLIF(TRIM(s.fabric_name),'')) AS "fabricCategory",
            s.sample_colour AS "primaryColour",
            s.theme AS edit,
-          COALESCE(NULLIF(TRIM(s.assignee_name),''),'Unassigned') AS owner,
-          COALESCE(NULLIF(TRIM(s.assignee_name),''),'Unassigned') AS designer,
-          to_char(s.stage_entered_at,'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "stageEnteredAt",
-          CASE
-            WHEN i.image_data IS NULL OR i.image_data = '' THEN NULL
-            WHEN i.image_data LIKE 'data:%' THEN i.image_data
-            ELSE 'data:' || COALESCE(NULLIF(i.content_type,''),'image/jpeg') || ';base64,' || i.image_data
-          END AS image
-        FROM public.pd_styles s
-        LEFT JOIN public.pd_style_images i ON i.style_id = s.id
-        LEFT JOIN public.pd_stages ps ON ps.stage_key=s.current_stage
-       WHERE ${clauses.join(" AND ")}
-       ORDER BY s.current_stage, LOWER(s.style_name), s.id`,
+           COALESCE(NULLIF(TRIM(s.assignee_name),''),'Unassigned') AS owner,
+           COALESCE(NULLIF(TRIM(s.assignee_name),''),'Unassigned') AS designer,
+           to_char(s.stage_entered_at,'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS "stageEnteredAt",
+           CASE
+             WHEN i.image_data IS NULL OR i.image_data = '' THEN NULL
+             WHEN i.image_data LIKE 'data:%' THEN i.image_data
+             ELSE 'data:' || COALESCE(NULLIF(i.content_type,''),'image/jpeg') || ';base64,' || i.image_data
+           END AS image
+         FROM public.pd_styles s
+         LEFT JOIN public.pd_style_images i ON i.style_id = s.id
+         LEFT JOIN public.pd_stages ps ON ps.stage_key=s.current_stage
+         WHERE ${clauses.join(" AND ")}
+       ),
+       product_map AS (
+         SELECT a.sku,
+           MIN(COALESCE(NULLIF(TRIM(a.style_number),''),NULLIF(TRIM(a.sku),''))) AS style_key
+         FROM public.all_products_clean a
+         JOIN filtered_styles f
+           ON LOWER(f.code)=LOWER(COALESCE(NULLIF(TRIM(a.style_number),''),NULLIF(TRIM(a.sku),'')))
+         WHERE ${allowedBrand("a")} AND NULLIF(TRIM(a.sku),'') IS NOT NULL
+         GROUP BY a.sku
+       ),
+       catalogue_attributes AS (
+         SELECT COALESCE(NULLIF(TRIM(a.style_number),''),NULLIF(TRIM(a.sku),'')) AS style_key,
+           (MODE() WITHIN GROUP (ORDER BY NULLIF(a.price,0))
+             FILTER (WHERE a.price IS NOT NULL AND a.price > 0))::float AS price,
+           MAX(NULLIF(TRIM(COALESCE(a.style_launch_date,'')),'')) AS catalogue_launch_date
+         FROM public.all_products_clean a
+         JOIN filtered_styles f
+           ON LOWER(f.code)=LOWER(COALESCE(NULLIF(TRIM(a.style_number),''),NULLIF(TRIM(a.sku),'')))
+         WHERE ${allowedBrand("a")}
+         GROUP BY COALESCE(NULLIF(TRIM(a.style_number),''),NULLIF(TRIM(a.sku),''))
+       ),
+       inventory_by_sku AS (
+         SELECT sku,SUM(COALESCE(available,0))::float AS stock_units
+         FROM public.all_inventory
+         GROUP BY sku
+       ),
+       inventory_by_style AS (
+         SELECT pm.style_key,SUM(COALESCE(inv.stock_units,0))::float AS stock_units
+         FROM product_map pm
+         LEFT JOIN inventory_by_sku inv ON inv.sku=pm.sku
+         GROUP BY pm.style_key
+       ),
+       sales_by_style AS (
+         SELECT pm.style_key,
+           SUM(CASE WHEN LOWER(COALESCE(sa.sale_kind,'')) IN ('sale','order')
+             THEN GREATEST(COALESCE(sa.ordered_item_quantity,0)::numeric,0) ELSE 0 END)::float AS units_sold,
+           SUM(COALESCE(sa.total_sales_kes,0)::numeric
+             - COALESCE(sa.discounts_kes,0)::numeric
+             - COALESCE(sa.returns_kes,0)::numeric)::float AS revenue_kes,
+           MIN(CASE WHEN sa.sale_date ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'
+             THEN LEFT(sa.sale_date,10)::date END)
+             FILTER (WHERE LOWER(COALESCE(sa.sale_kind,'')) IN ('sale','order')) AS first_sale_date
+         FROM public.all_sales sa
+         JOIN product_map pm ON pm.sku=sa.variant_sku
+         GROUP BY pm.style_key
+       ),
+       enriched AS (
+         SELECT f.*,
+           ca.price,
+           COALESCE(
+             CASE WHEN ca.catalogue_launch_date ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'
+               THEN LEFT(ca.catalogue_launch_date,10)::date END,
+             sb.first_sale_date
+           ) AS "launchDate",
+           sb.units_sold AS "unitsSold",
+           sb.revenue_kes AS "revenueKes",
+           CASE
+             WHEN COALESCE(sb.units_sold,0) + COALESCE(ib.stock_units,0) > 0
+             THEN ROUND((100.0 * COALESCE(sb.units_sold,0)
+               / (COALESCE(sb.units_sold,0) + COALESCE(ib.stock_units,0)))::numeric,2)::float
+             ELSE NULL
+           END AS "sorPct",
+           ib.stock_units AS "stockUnits"
+         FROM filtered_styles f
+         LEFT JOIN catalogue_attributes ca ON LOWER(ca.style_key)=LOWER(f.code)
+         LEFT JOIN inventory_by_style ib ON LOWER(ib.style_key)=LOWER(f.code)
+         LEFT JOIN sales_by_style sb ON LOWER(sb.style_key)=LOWER(f.code)
+       )
+       SELECT * FROM enriched e
+       ORDER BY ${catalogueOrderBy(sort, "e")}`,
       values,
     );
     const facets = await pool.query(
@@ -6029,6 +6258,7 @@ router.get("/catalogue-products", async (req, res, next) => {
       edit: csv(req.query.edit),
     };
     const statusFilter = String(req.query.status ?? "").trim().toLowerCase();
+    const sort = catalogueSortKey(req.query.sort);
     const rawPage = Number(req.query.page);
     const page = Number.isInteger(rawPage) && rawPage >= 1 ? Math.min(rawPage, 10000) : 1;
     const pageSize = 50;
@@ -6123,26 +6353,74 @@ router.get("/catalogue-products", async (req, res, next) => {
     const offset = (page - 1) * pageSize;
     const [rows, count, facets] = await Promise.all([
       pool.query(
-        `SELECT s.*, img.image FROM (
+        `WITH style_rows AS (
            SELECT ${styleKeyExpr} AS "styleNumber",
-              MAX(NULLIF(TRIM(a.style_number),'')) AS "internalReference",
-              MAX(NULLIF(TRIM(a.sku),'')) AS sku,
+             MAX(NULLIF(TRIM(a.style_number),'')) AS "internalReference",
+             MAX(NULLIF(TRIM(a.sku),'')) AS sku,
              MAX(a.style_name) AS "styleName",
              MAX(a.brand) AS brand,
              MAX(a.product_type) AS subcategory,
              MAX(NULLIF(TRIM(COALESCE(a.category,'')),'')) AS category,
-              MAX(NULLIF(TRIM(COALESCE(a.fabric_category,'')),'')) AS "fabricCategory",
-              MAX(NULLIF(TRIM(COALESCE(a.color_print,'')),'')) AS "primaryColour",
-              MAX(NULLIF(TRIM(COALESCE(a.collection,'')),'')) AS edit,
-             MAX(a.price)::float AS price,
-             MAX(NULLIF(TRIM(COALESCE(a.style_launch_date,'')),'')) AS "launchDate",
+             MAX(NULLIF(TRIM(COALESCE(a.fabric_category,'')),'')) AS "fabricCategory",
+             MAX(NULLIF(TRIM(COALESCE(a.color_print,'')),'')) AS "primaryColour",
+             MAX(NULLIF(TRIM(COALESCE(a.collection,'')),'')) AS edit,
+             (MODE() WITHIN GROUP (ORDER BY NULLIF(a.price,0))
+               FILTER (WHERE a.price IS NOT NULL AND a.price > 0))::float AS price,
+             MAX(NULLIF(TRIM(COALESCE(a.style_launch_date,'')),'')) AS catalogue_launch_date,
+             COALESCE(SUM(COALESCE(inv.stock_units,0)),0)::float AS "stockUnits",
              COUNT(DISTINCT NULLIF(TRIM(COALESCE(a.color_print,'')),'')) AS colour_count,
              MIN(NULLIF(TRIM(COALESCE(a.color_print,'')),'')) AS any_colour,
              CASE WHEN BOOL_OR(LOWER(a.status)='active') THEN 'Active' ELSE 'Retired' END AS status,
-              ${tierExpr} AS "rangeTier",
+             ${tierExpr} AS "rangeTier",
              (ARRAY_AGG(a.sku))[1] AS any_sku
            ${baseQuery}
-            ORDER BY MAX(a.style_name) NULLS LAST, ${styleKeyExpr}
+         ),
+         product_map AS (
+           SELECT a.sku,
+             MIN(COALESCE(NULLIF(TRIM(a.style_number),''),NULLIF(TRIM(a.sku),''))) AS style_key
+           FROM public.all_products_clean a
+           JOIN style_rows f
+             ON f."styleNumber"=COALESCE(NULLIF(TRIM(a.style_number),''),NULLIF(TRIM(a.sku),''))
+           WHERE ${allowedBrand("a")}
+             AND ${sampleSaleExclusion}
+             AND NULLIF(TRIM(a.sku),'') IS NOT NULL
+           GROUP BY a.sku
+         ),
+         sales_by_style AS (
+           SELECT pm.style_key,
+             SUM(CASE WHEN LOWER(COALESCE(sa.sale_kind,'')) IN ('sale','order')
+               THEN GREATEST(COALESCE(sa.ordered_item_quantity,0)::numeric,0) ELSE 0 END)::float AS units_sold,
+             SUM(COALESCE(sa.total_sales_kes,0)::numeric
+               - COALESCE(sa.discounts_kes,0)::numeric
+               - COALESCE(sa.returns_kes,0)::numeric)::float AS revenue_kes,
+             MIN(CASE WHEN sa.sale_date ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'
+               THEN LEFT(sa.sale_date,10)::date END)
+               FILTER (WHERE LOWER(COALESCE(sa.sale_kind,'')) IN ('sale','order')) AS first_sale_date
+           FROM public.all_sales sa
+           JOIN product_map pm ON pm.sku=sa.variant_sku
+           GROUP BY pm.style_key
+         ),
+         enriched AS (
+           SELECT sr.*,
+             COALESCE(
+               CASE WHEN sr.catalogue_launch_date ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'
+                 THEN LEFT(sr.catalogue_launch_date,10)::date END,
+               sb.first_sale_date
+             ) AS "launchDate",
+             sb.units_sold AS "unitsSold",
+             sb.revenue_kes AS "revenueKes",
+             CASE
+               WHEN COALESCE(sb.units_sold,0) + COALESCE(sr."stockUnits",0) > 0
+               THEN ROUND((100.0 * COALESCE(sb.units_sold,0)
+                 / (COALESCE(sb.units_sold,0) + COALESCE(sr."stockUnits",0)))::numeric,2)::float
+               ELSE NULL
+             END AS "sorPct"
+           FROM style_rows sr
+           LEFT JOIN sales_by_style sb ON sb.style_key=sr."styleNumber"
+         )
+         SELECT s.*, img.image FROM (
+           SELECT * FROM enriched e
+           ORDER BY ${catalogueOrderBy(sort, "e")}
            LIMIT ${pageSize} OFFSET ${offset}
          ) s
          LEFT JOIN LATERAL (
@@ -6161,7 +6439,7 @@ router.get("/catalogue-products", async (req, res, next) => {
       pool.query(facetsQuery),
     ]);
     res.json({
-      items: rows.rows.map(({ any_sku: _drop, colour_count, any_colour, image, ...row }) => ({
+      items: rows.rows.map(({ any_sku: _drop, colour_count, any_colour, catalogue_launch_date: _dropLaunch, image, ...row }) => ({
         ...row,
         colourway:
           Number(colour_count) > 1

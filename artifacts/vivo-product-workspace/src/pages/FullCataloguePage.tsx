@@ -3,6 +3,7 @@ import { Check, ChevronLeft, ChevronRight, CircleAlert, ExternalLink, MoveRight,
 import { getListCatalogueProductsQueryKey, useListCatalogueProducts } from '@workspace/api-client-react';
 import type { CatalogueStyle } from '@workspace/api-client-react';
 import MultiSelectFilter from '../components/MultiSelectFilter';
+import CatalogueSortControl, { type CatalogueSortKey } from '../components/CatalogueSortControl';
 
 const fmtKES = (value?: number | null) =>
   value == null || Number.isNaN(Number(value)) ? null : `KES ${Math.round(Number(value)).toLocaleString('en-KE')}`;
@@ -167,6 +168,7 @@ export default function FullCataloguePage() {
   const [search, setSearch] = useState('');
   const [applied, setApplied] = useState('');
   const [filters, setFilters] = useState<FullCatalogueFilters>(emptyFullCatalogueFilters);
+  const [sort, setSort] = useState<CatalogueSortKey>('units_desc');
   const [page, setPage] = useState(1);
   const [selectedStyleNumber, setSelectedStyleNumber] = useState<string | null>(null);
   const params = useMemo(() => ({
@@ -179,8 +181,9 @@ export default function FullCataloguePage() {
     brand: filters.brand.length ? filters.brand.join(',') : undefined,
     primaryColour: filters.primaryColour.length ? filters.primaryColour.join(',') : undefined,
     edit: filters.edit.length ? filters.edit.join(',') : undefined,
+    sort,
     page,
-  }), [applied, filters, page]);
+  }), [applied, filters, page, sort]);
   const catalogue = useListCatalogueProducts(params, { query: { queryKey: getListCatalogueProductsQueryKey(params), placeholderData: (previous) => previous }, request: { credentials: 'include' } });
   const data = catalogue.data;
   const totalPages = data ? Math.max(1, Math.ceil(data.total / data.pageSize)) : 1;
@@ -205,6 +208,7 @@ export default function FullCataloguePage() {
             alwaysShowCount
           />
         ))}
+        <CatalogueSortControl value={sort} onChange={(next) => { setSort(next); resetPage(); }} testId="select-full-cat-sort" />
         <button className="button button-quiet" onClick={clear} data-testid="button-full-cat-clear">Clear filters</button>
       </div>
       {catalogue.isLoading ? (

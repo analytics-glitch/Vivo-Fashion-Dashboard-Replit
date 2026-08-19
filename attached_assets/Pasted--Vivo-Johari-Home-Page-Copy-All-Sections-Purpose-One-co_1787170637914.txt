@@ -43,9 +43,14 @@
 
 **Right — image banner:**
 - Eyebrow: STYLE BOARDS
-- Headline: "Build Your Own Style Board"
-- Subcopy: "Save the looks, prints and pieces you keep coming back to."
-- Link: "See style boards" (leads to existing boards, not a new-board creation flow)
+- Headline: "Style Boards, Curated by Us"
+- Subcopy: "Mood boards and outfit inspiration, put together by the Vivo team."
+- Link: "See the boards" (leads to existing Vivo-curated boards, not a new-board creation flow)
+- Supersedes: "Build Your Own Style Board" and its earlier subcopy.
+
+**Style Boards destination page:**
+- Page heading: "Style Boards"
+- Subcopy: "Curated looks and outfit inspiration from the Vivo team — mix, match, and make them your own."
 
 ## 5. Styled For You opt-in (left) + This Month News banner (right)
 

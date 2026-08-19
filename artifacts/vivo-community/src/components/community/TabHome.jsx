@@ -618,7 +618,7 @@ export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage,
                   Get weekly outfit and product recommendations selected around your style, size and preferences.
                </p>
                <button
-                 onClick={() => onNavigate("profile")}
+                  onClick={() => onOpenPage?.("styleprefs")}
                  className="h-10 px-6 sm:w-auto w-full rounded bg-primary text-primary-foreground text-[13px] font-medium hover:opacity-90 transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
                >
                   Personalise My Style

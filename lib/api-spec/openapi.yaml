@@ -1436,6 +1436,12 @@ paths:
         - name: status
           in: query
           schema: { type: string, enum: [active, retired] }
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: [units_desc, revenue_desc, sor_desc, newest, oldest, price_desc, price_asc, stock_desc, name_asc, name_desc]
+            default: units_desc
         - name: page
           in: query
           schema: { type: integer }
@@ -2803,6 +2809,10 @@ components:
         colourway: { type: string, nullable: true }
         price: { type: number, nullable: true }
         launchDate: { type: string, nullable: true }
+        unitsSold: { type: number, nullable: true }
+        revenueKes: { type: number, nullable: true }
+        sorPct: { type: number, nullable: true }
+        stockUnits: { type: number, nullable: true }
         status: { type: string }
         image: { type: string, nullable: true }
     CatalogueStyleDetail:

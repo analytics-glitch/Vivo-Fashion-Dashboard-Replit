@@ -2,10 +2,19 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 import { useEffect, useState } from 'react';
 import { ImageIcon, MoveRight, RefreshCw, Target, X } from 'lucide-react';
+import CatalogueSortControl, { type CatalogueSortKey } from '../components/CatalogueSortControl';
 import MultiSelectFilter from '../components/MultiSelectFilter';
+import {
+  countAssortmentStyles,
+  filteredAssortmentQuarterCounts,
+  matchesAssortmentFilters,
+  sortAssortmentStyles,
+  type AssortmentFilterState,
+} from '../lib/assortmentPlanFilters';
 
 type AssortmentQuarter = 'Q3 2026' | 'Q4 2026';
-type AssortmentTier = 'NOOS' | 'Core' | 'Recent' | 'New/Test';
+type AssortmentRangeTier = 'Tier 1' | 'Tier 2' | 'Tier 3' | 'Tier 4';
+type AssortmentTier = 'Tier 1 · NOOS' | 'Tier 2 · Core' | 'Tier 3 · Recent' | 'Tier 4 · New' | 'Retired';
 
 type AssortmentStyle = {
   id: string;
@@ -22,15 +31,33 @@ type AssortmentStyle = {
   stage: string;
   designer: string;
   season: string;
-  tier: AssortmentTier;
+  rangeTier: AssortmentRangeTier | null;
+  tier: AssortmentTier | null;
   status: string;
   excluded: boolean;
+  unitsSold: number | null;
+  revenueKes: number | null;
+  sorPct: number | null;
+  launchDate: string | null;
+  price: number | null;
+  stockUnits: number | null;
   image: string | null;
 };
 
 type AssortmentSummary = {
   total: number;
-  counts: { total: number; noos: number; core: number; recent: number; newTest: number };
+  counts: {
+    total: number;
+    tier1: number;
+    tier2: number;
+    tier3: number;
+    tier4: number;
+    retired: number;
+    noos?: number;
+    core?: number;
+    recent?: number;
+    newTest?: number;
+  };
   filterOptions?: AssortmentFilterOptions;
 };
 
@@ -41,13 +68,14 @@ type AssortmentResponse = {
   newStyles: AssortmentStyle[];
   assortmentSummary: AssortmentSummary;
   quarterSummaries: Record<AssortmentQuarter, AssortmentSummary>;
+  quarterStyles?: Record<AssortmentQuarter, AssortmentStyle[]>;
   seasons?: RangePlanSeason[];
   assortmentFilterOptions?: AssortmentFilterOptions;
 };
 
 type RangePlanSeason = { id: number; seasonName: string; status: string };
 type AssortmentFilterKey = 'tier' | 'status' | 'category' | 'subCategory' | 'fabricCategory' | 'brand' | 'primaryColour' | 'edit';
-type AssortmentFilters = Record<AssortmentFilterKey, string[]>;
+type AssortmentFilters = AssortmentFilterState;
 type AssortmentFilterOptions = Record<AssortmentFilterKey, string[]>;
 
 const quarters: AssortmentQuarter[] = ['Q3 2026', 'Q4 2026'];
@@ -70,10 +98,6 @@ function numberFormat(value: number | null | undefined) {
   return new Intl.NumberFormat('en-KE', { maximumFractionDigits: 0 }).format(Number(value));
 }
 
-function displayTier(tier: AssortmentTier) {
-  return tier === 'New/Test' ? 'New' : tier;
-}
-
 async function getAssortmentPlan(quarter: AssortmentQuarter) {
   const response = await fetch(`/api/workspace/range-plan?quarter=${encodeURIComponent(quarter)}`, {
     credentials: 'include',
@@ -82,8 +106,14 @@ async function getAssortmentPlan(quarter: AssortmentQuarter) {
   return response.json() as Promise<AssortmentResponse>;
 }
 
-function TierBadge({ tier }: { tier: AssortmentTier }) {
-  return <span className={`assortment-tier-badge tier-${tier.replace('/', '-')}`}>{displayTier(tier)}</span>;
+function TierBadge({ tier }: { tier: AssortmentTier | null }) {
+  const tone = tier?.startsWith('Tier 1') ? 'tier-1'
+    : tier?.startsWith('Tier 2') ? 'tier-2'
+      : tier?.startsWith('Tier 3') ? 'tier-3'
+        : tier?.startsWith('Tier 4') ? 'tier-4'
+          : tier === 'Retired' ? 'tier-retired'
+            : 'tier-unclassified';
+  return <span className={`assortment-tier-badge ${tone}`}>{tier ?? 'Unclassified'}</span>;
 }
 
 function AddToRangePlan({
@@ -157,10 +187,11 @@ function StyleCard({
 function SummaryBar({ summary }: { summary: AssortmentSummary }) {
   const tiles = [
     ['Total styles', summary.counts.total, 'total'],
-    ['NOOS', summary.counts.noos, 'noos'],
-    ['Core', summary.counts.core, 'core'],
-    ['Recent', summary.counts.recent, 'recent'],
-    ['New', summary.counts.newTest, 'new'],
+    ['Tier 1 · NOOS', summary.counts.tier1, 'noos'],
+    ['Tier 2 · Core', summary.counts.tier2, 'core'],
+    ['Tier 3 · Recent', summary.counts.tier3, 'recent'],
+    ['Tier 4 · New', summary.counts.tier4, 'new'],
+    ['Retired', summary.counts.retired, 'retired'],
   ] as const;
   return (
     <div className="assortment-summary-bar">
@@ -174,6 +205,7 @@ function AssortmentPlanPage() {
   const queryClient = useQueryClient();
   const [quarter, setQuarter] = useState<AssortmentQuarter>('Q3 2026');
   const [filters, setFilters] = useState<AssortmentFilters>(emptyFilters);
+  const [sort, setSort] = useState<CatalogueSortKey>('units_desc');
   const [toast, setToast] = useState('');
   const assortment = useQuery({
     queryKey: ['workspace', 'assortment-plan', quarter],
@@ -244,21 +276,19 @@ function AssortmentPlanPage() {
   }
 
   const payload = assortment.data;
-  const carryOverStyles = payload.carryOverStyles ?? payload.assortmentStyles.filter((style) => style.source === 'all_products_clean');
-  const newStyles = payload.newStyles ?? payload.assortmentStyles.filter((style) => style.source === 'pd_styles');
   const options = payload.assortmentFilterOptions ?? payload.assortmentSummary?.filterOptions ?? emptyFilters;
-  const matchesFilters = (style: AssortmentStyle) => filterDefinitions.every(({ key }) => !filters[key].length || filters[key].includes(String(style[key] ?? '')));
-  const filteredCarryOverStyles = carryOverStyles.filter(matchesFilters);
-  const filteredNewStyles = newStyles.filter(matchesFilters);
-  const filteredStyles = [...filteredCarryOverStyles, ...filteredNewStyles];
-  const filteredCounts = {
-    total: filteredStyles.length,
-    noos: filteredStyles.filter((style) => style.tier === 'NOOS').length,
-    core: filteredStyles.filter((style) => style.tier === 'Core').length,
-    recent: filteredStyles.filter((style) => style.tier === 'Recent').length,
-    newTest: filteredStyles.filter((style) => style.tier === 'New/Test').length,
+  const quarterStyles = payload.quarterStyles ?? {
+    'Q3 2026': quarter === 'Q3 2026' ? payload.assortmentStyles : [],
+    'Q4 2026': quarter === 'Q4 2026' ? payload.assortmentStyles : [],
   };
+  const filteredStyles = sortAssortmentStyles(
+    (quarterStyles[quarter] ?? payload.assortmentStyles)
+      .filter((style) => matchesAssortmentFilters(style, filters)),
+    sort,
+  );
+  const filteredCounts = countAssortmentStyles(filteredStyles);
   const summary = { total: filteredStyles.length, counts: filteredCounts };
+  const filteredQuarterTotals = filteredAssortmentQuarterCounts(quarterStyles, filters);
   const activeFilterCount = Object.values(filters).reduce((total, values) => total + values.length, 0);
   const seasons = payload.seasons ?? [];
   const setFilter = (key: AssortmentFilterKey, values: string[]) => setFilters((current) => ({ ...current, [key]: values }));
@@ -289,10 +319,11 @@ function AssortmentPlanPage() {
       <div className="assortment-quarter-tabs" role="tablist" aria-label="Assortment quarters">
         {quarters.map((candidate) => {
           const candidateSummary = payload.quarterSummaries?.[candidate];
+          const filteredTotal = filteredQuarterTotals[candidate];
           return (
             <button key={candidate} type="button" role="tab" aria-selected={quarter === candidate} className={quarter === candidate ? 'active' : ''} onClick={() => setQuarter(candidate)}>
               <span>{candidate}</span>
-              <strong>{numberFormat(candidateSummary?.total ?? 0)}</strong>
+              <strong>{numberFormat(Number.isFinite(filteredTotal) ? filteredTotal : candidateSummary?.total ?? 0)}</strong>
               <small>styles in range</small>
             </button>
           );
@@ -305,13 +336,15 @@ function AssortmentPlanPage() {
           <MultiSelectFilter
             key={key}
             label={label}
-            options={options[key] ?? []}
+            options={[...new Set((options[key] ?? []).map(String))]}
             values={filters[key]}
             onChange={(values) => setFilter(key, values)}
             testId={`assortment-filter-${key}`}
+            variant="catalogue"
             alwaysShowCount
           />
         ))}
+        <CatalogueSortControl value={sort} onChange={setSort} testId="select-assortment-sort" />
         <button type="button" className="assortment-clear-filters" onClick={() => setFilters(emptyFilters)} disabled={!activeFilterCount}><X size={13} /> Clear all</button>
       </div>
 

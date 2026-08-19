@@ -21,32 +21,30 @@ describe("StyledForYouHome", () => {
     api.styledForYouStatus.mockResolvedValue({ opted_in: false, sections: [] });
   });
 
-  it("opts a member in with one switch and no questionnaire", async () => {
+  it("sends an opted-out member into the full preferences quiz", async () => {
     const user = userEvent.setup();
-    api.stylePrefsSave.mockResolvedValue({ prefs: { opted_in: true } });
+    const onPersonalise = vi.fn();
 
-    render(<StyledForYouHome member={MEMBER} onViewAll={vi.fn()} />);
+    render(<StyledForYouHome member={MEMBER} onViewAll={vi.fn()} onPersonalise={onPersonalise} />);
 
-    const toggle = await screen.findByRole("switch", {
-      name: "Weekly Styled for You recommendations",
-    });
+    const personalise = await screen.findByTestId("sfy-home-personalise");
     expect(screen.getByText("New")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Styled for You" })).toBeInTheDocument();
     expect(screen.getByText(
       "Get weekly outfit and product recommendations selected around your style, size and preferences."
     )).toBeInTheDocument();
-    expect(toggle).toHaveAttribute("aria-checked", "false");
+    expect(screen.queryByRole("switch")).not.toBeInTheDocument();
     expect(screen.queryByText("Save preferences")).not.toBeInTheDocument();
 
-    await user.click(toggle);
+    await user.click(personalise);
 
-    expect(api.stylePrefsSave).toHaveBeenCalledWith({ opted_in: true });
-    await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "true"));
-    expect(screen.getByTestId("sfy-home-picks-cta")).toBeInTheDocument();
+    expect(onPersonalise).toHaveBeenCalledOnce();
+    expect(api.stylePrefsSave).not.toHaveBeenCalled();
   });
 
-  it("restores the previous switch state when saving fails", async () => {
+  it("restores an enrolled member's opt-in switch when opting out fails", async () => {
     const user = userEvent.setup();
+    api.styledForYouStatus.mockResolvedValue({ opted_in: true, sections: [] });
     api.stylePrefsSave.mockRejectedValue(new Error("offline"));
 
     render(<StyledForYouHome member={MEMBER} onViewAll={vi.fn()} />);
@@ -56,7 +54,7 @@ describe("StyledForYouHome", () => {
 
     await user.click(toggle);
 
-    await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "false"));
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-checked", "true"));
     expect(screen.getByText("We couldn't update this right now. Please try again.")).toBeInTheDocument();
   });
 });

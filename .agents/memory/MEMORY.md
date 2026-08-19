@@ -135,7 +135,7 @@
 - [Artifact service environments](artifact-service-environments.md) — when adding an API service, preserve the web artifact's global BASE_PATH env block or its managed Vite workflow will fail before startup.
 - [Product Workspace startup readiness](product-workspace-startup-readiness.md) — HTTP readiness and identity bootstrap must survive PostgreSQL timeouts; optional DDL cannot gate the shell.
 - [Product Workspace brand scope](product-workspace-brand-scope.md) — every style surface is server-filtered to Vivo, Safari by Vivo, Safari, and Zoya.
-- [Product Workspace PLM source](product-workspace-plm-source.md) — Style Development counts come from active public.pd_styles; workspace styles provide drawer/transition IDs and stage adapters.
+- [Product Workspace range sources](product-workspace-plm-source.md) — Style Development uses pd_styles; Assortment mirrors BI catalogue/override/stock rules and never mixes in PLM rows.
 - [Product Workspace user privacy](product-workspace-user-privacy.md) — workspace user DOB is admin-Settings-only; public team and birthday payloads never include the date.
 - [OpenAPI codegen compatibility](openapi-codegen-compatibility.md) — checked-in Orval 8.9.1 currently fails resolving this repo's OpenAPI input; restore generated outputs and patch the contract/types manually if needed.
 - [Product Workspace preview auth](product-workspace-preview-auth.md) — embedded HTTPS previews need Secure/SameSite=None session cookies or API pages can 401 after session bootstrap.

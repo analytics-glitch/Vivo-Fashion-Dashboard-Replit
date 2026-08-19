@@ -17,5 +17,6 @@ subcategory?: string;
   primaryColour?: string;
   edit?: string;
   status?: ListCatalogueProductsStatus | string;
+  sort?: string;
 page?: number;
 };

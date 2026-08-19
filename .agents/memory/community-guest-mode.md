@@ -10,3 +10,9 @@ Guest mode is a client-side sessionStorage flag (`vivo_guest`) in AuthContext (`
 **Why:** completion code review rejected twice for guests reaching RSVP/composer/like controls via Home links and direct URLs; tab-level gating alone is insufficient.
 
 **How to apply:** when adding any new member-write surface or page id, either gate it on `member` in CommunityShell's overlay fence list or fence its entry controls. Read-only browsing (products, cart/wishlist local state, news/legal/help) stays open to guests.
+
+Curated Style Boards are a read-only guest-open destination even though they live under Community; following a board remains a member action and must open the sign-in fence for guests.
+
+**Why:** The Home teaser is guest-visible, so sending its “See the boards” link to the generic Community guest gate makes the advertised destination unreachable.
+
+**How to apply:** Keep the landing content reusable outside the member-only Community tab. Guest entry may render the boards, but every Follow control must route through the guest fence instead of toggling locally or calling a protected endpoint.

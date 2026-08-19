@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useState } from "react";
-import { styleBoards } from "./mockData";
 import PostDetailModal from "./PostDetailModal";
 import ChallengeDetail from "./ChallengeDetail";
 import { api } from "@/lib/api";
@@ -15,6 +14,7 @@ import EntryModal, { ENTRY_STATUS_COPY } from "./EntryModal";
 import { VivoEditsHome } from "./VivoEdits";
 import EventsList from "./EventsList";
 import { FabulasCarousel } from "./FabulasStory";
+import StyleBoardsLanding from "./StyleBoardsLanding";
 
 const WELCOME_KEY = "vivo_community_welcome_dismissed";
 
@@ -161,7 +161,6 @@ const FEED_CHIPS = [
 
 export default function TabCommunity({ member, subNav, composeAction, onComposeActionConsumed, onSubChange, onOpenEvent, onOpenProduct, onOpenPage, onOpenFabulas, onOpenEdit, onOpenEdits }) {
   const [subTab, setSubTab] = useState(() => (SUB_IDS.includes(subNav?.id) ? subNav.id : "feed"));
-  const [followed, setFollowed] = useState({});
   const [entryFor, setEntryFor] = useState(null);    // challenge entry composer
   const [composeType, setComposeType] = useState(""); // standalone composer: "look" | "question"
 
@@ -641,34 +640,7 @@ export default function TabCommunity({ member, subNav, composeAction, onComposeA
 
       {/* Style Boards SubTab */}
       {subTab === "style_boards" && (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {styleBoards.map((board, i) => (
-            <div key={i} className={`${cardCls} overflow-hidden group`}>
-              <div className="grid grid-cols-2 grid-rows-2 h-48 gap-px bg-border p-px">
-                <ImagePlaceholder className="rounded-none h-full w-full border-none" aspectRatio="aspect-auto" text="" />
-                <ImagePlaceholder className="rounded-none h-full w-full border-none" aspectRatio="aspect-auto" text="" />
-                <ImagePlaceholder className="rounded-none h-full w-full col-span-2 border-none" aspectRatio="aspect-auto" text="" />
-              </div>
-              <div className="p-5 flex justify-between items-start bg-background">
-                <div>
-                  <h3 className="font-serif text-foreground text-lg mb-1">{board.title}</h3>
-                  <div className="text-xs text-muted-foreground tracking-wide uppercase">{board.items} items • {board.followers} followers</div>
-                </div>
-                <button
-                  data-testid="follow-btn"
-                  onClick={() => setFollowed(f => ({ ...f, [i]: !f[i] }))}
-                  className={`text-xs font-medium px-5 min-h-[44px] inline-flex items-center rounded transition-all active:scale-[0.95] border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 ${
-                    followed[i]
-                      ? "bg-primary border-primary text-primary-foreground"
-                      : "bg-background border-border text-foreground hover:bg-secondary"
-                  }`}
-                >
-                  {followed[i] ? "Following" : "Follow"}
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
+        <StyleBoardsLanding />
       )}
 
       {(entryFor || composeType) && (

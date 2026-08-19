@@ -20,5 +20,9 @@ export interface CatalogueStyle {
   image?: string | null;
   price?: number | null;
   launchDate?: string | null;
+  unitsSold?: number | null;
+  revenueKes?: number | null;
+  sorPct?: number | null;
+  stockUnits?: number | null;
   colourway?: string | null;
 }

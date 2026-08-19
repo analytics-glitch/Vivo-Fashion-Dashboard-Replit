@@ -486,6 +486,7 @@ export interface WorkspaceStyle {
   launchRoute?: 'DTC' | 'Wholesale' | 'Marketplace' | 'Omnichannel' | null;
   styleClassification?: 'Core' | 'Fashion' | 'Seasonal' | 'Test' | null;
   rangeTier?: 'Tier 1' | 'Tier 2' | 'Tier 3' | 'Tier 4' | null;
+  season?: 'Q3 2026' | 'Q4 2026' | null;
   status: string;
   stage?: string;
   currentStage?: string;
@@ -918,6 +919,10 @@ export interface CatalogueStyle {
   colourway?: string | null;
   price?: number | null;
   launchDate?: string | null;
+  unitsSold?: number | null;
+  revenueKes?: number | null;
+  sorPct?: number | null;
+  stockUnits?: number | null;
   status: string;
   image?: string | null;
   internalReference?: string | null;
@@ -1070,6 +1075,7 @@ fabricCategory?: string;
 primaryColour?: string;
 edit?: string;
 status?: ListCatalogueProductsStatus | string;
+sort?: string;
 page?: number;
 };
 

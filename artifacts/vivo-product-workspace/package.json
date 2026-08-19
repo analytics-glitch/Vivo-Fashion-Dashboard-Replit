@@ -10,7 +10,10 @@
     "server": "node server/dist/index.js",
     "build": "vite build --config vite.config.ts",
     "serve": "vite preview --config vite.config.ts --host 0.0.0.0",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test:assortment": "tsx --test src/lib/assortmentPlanFilters.test.ts",
+    "test:catalogue-sort": "tsx --test src/lib/catalogueSort.test.ts",
+    "test:plm-grouping": "tsx --test src/lib/plmGrouping.test.ts"
   },
   "devDependencies": {
     "@hookform/resolvers": "^3.10.0",

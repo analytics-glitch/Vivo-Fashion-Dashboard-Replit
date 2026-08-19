@@ -52,29 +52,23 @@ import {
 } from '@workspace/api-client-react';
 import type { StyleCreate, WorkspaceStyle, WorkspaceTeamMember } from '@workspace/api-client-react';
 import { StyleFeedbackPanel, useStyleFeedback } from '@/pages/FeedbackPage';
+import {
+  ALL_STAGES,
+  buildPlmBoardColumns,
+  GROUP_BY_OPTIONS,
+  groupLabel,
+  groupSlug,
+  MAIN_STAGES,
+  SIDE_STAGES,
+  stageFor,
+  stageIndex,
+} from '../lib/plmGrouping';
+import type { GroupBy } from '../lib/plmGrouping';
 
-const MAIN_STAGES = [
-  'Concept',
-  'Initial Design Tech Pack',
-  'Pattern',
-  'Initial Sample',
-  'Fit Session',
-  'Approved',
-  'Grading',
-  'Costing Sample',
-  'In Development',
-  'Production',
-  'Launched',
-] as const;
-const SIDE_STAGES = ['On Hold', 'Dropped'] as const;
-const ALL_STAGES = [...MAIN_STAGES, ...SIDE_STAGES];
 const LAUNCH_ROUTES = ['DTC', 'Wholesale', 'Marketplace', 'Omnichannel'] as const;
 const STYLE_CLASSIFICATIONS = ['Core', 'Fashion', 'Seasonal', 'Test'] as const;
 const RANGE_TIERS = ['Tier 1', 'Tier 2', 'Tier 3', 'Tier 4'] as const;
 const SEASONS = ['Q3 2026', 'Q4 2026'] as const;
-type PlmStage = typeof ALL_STAGES[number];
-type GroupBy = 'stage' | 'subCategory' | 'brand' | 'orderType' | 'theme' | 'patternMaker' | 'fabricType';
-type StyleWithFabric = WorkspaceStyle & { fabricType?: string };
 type StyleTeam = NonNullable<WorkspaceStyle['styleTeam']>;
 type StyleRole = 'design' | 'pattern' | 'cad' | 'sample' | 'buying';
 const STYLE_TEAM_ROLES: Array<{ key: StyleRole; label: string; shortLabel: string; idKey: 'designUserId' | 'patternUserId' | 'cadUserId' | 'sampleUserId' | 'buyingUserId' }> = [
@@ -83,15 +77,6 @@ const STYLE_TEAM_ROLES: Array<{ key: StyleRole; label: string; shortLabel: strin
   { key: 'cad', label: 'CAD', shortLabel: 'CAD', idKey: 'cadUserId' },
   { key: 'sample', label: 'Sample', shortLabel: 'Sample', idKey: 'sampleUserId' },
   { key: 'buying', label: 'Buying', shortLabel: 'Buying', idKey: 'buyingUserId' },
-];
-const GROUP_BY_OPTIONS: Array<{ value: GroupBy; label: string }> = [
-  { value: 'stage', label: 'PLM Stage' },
-  { value: 'subCategory', label: 'Sub-Category' },
-  { value: 'brand', label: 'Brand' },
-  { value: 'orderType', label: 'New / Repeat' },
-  { value: 'theme', label: 'Theme' },
-  { value: 'patternMaker', label: 'Pattern Maker' },
-  { value: 'fabricType', label: 'Fabric Type' },
 ];
 const GROUP_BY_STORAGE_KEY = 'vivo-plm-group-by';
 const TABS = ['Overview', 'Tech Pack', 'Pattern', 'Fit Session', 'Grading', 'Samples', 'Cost Estimate', 'POM QC', 'Production', 'Feedback'] as const;
@@ -121,43 +106,6 @@ const dateLabel = (value: unknown) => {
   return Number.isNaN(parsed.getTime()) ? String(value) : parsed.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
 };
 const initials = (name: string) => name.split(/\s+/).map((part) => part[0]).join('').slice(0, 2).toUpperCase();
-const PLM_STAGE_ALIASES: Record<string, PlmStage> = {
-  brief: 'Concept',
-  concept: 'Concept',
-  idea: 'Concept',
-  review: 'Initial Design Tech Pack',
-  initial_design_tech_pack: 'Initial Design Tech Pack',
-  pattern: 'Pattern',
-  sampling: 'Initial Sample',
-  sample: 'Initial Sample',
-  initial_sample: 'Initial Sample',
-  sample_review: 'Fit Session',
-  fit: 'Fit Session',
-  fit_session: 'Fit Session',
-  approved: 'Approved',
-  adopted: 'Approved',
-  grading: 'Grading',
-  set_sample: 'Costing Sample',
-  costing_sample: 'Costing Sample',
-  development: 'In Development',
-  in_development: 'In Development',
-  in_progress: 'In Development',
-  buying: 'Production',
-  production: 'Production',
-  launched: 'Launched',
-  live: 'Launched',
-  on_hold: 'On Hold',
-  hold: 'On Hold',
-  dropped: 'Dropped',
-  archived: 'Dropped',
-  cancelled: 'Dropped',
-};
-const stageFor = (style: WorkspaceStyle) => {
-  const candidate = text(style.currentStage || style.stage || style.status, 'Concept');
-  const normalized = candidate.trim().toLowerCase().replace(/[-\s]+/g, '_');
-  return PLM_STAGE_ALIASES[normalized] || ALL_STAGES.find((stage) => stage.toLowerCase() === candidate.toLowerCase()) || (candidate.match(/hold/i) ? 'On Hold' : candidate.match(/drop|cancel|archiv/i) ? 'Dropped' : 'Concept');
-};
-const stageIndex = (stage: string) => MAIN_STAGES.indexOf(stage as typeof MAIN_STAGES[number]);
 const isoWeekNumber = (value: Date) => {
   const date = new Date(Date.UTC(value.getFullYear(), value.getMonth(), value.getDate()));
   const day = date.getUTCDay() || 7;
@@ -180,21 +128,6 @@ const daysInStage = (style: WorkspaceStyle) => {
   return Number.isFinite(days) && days > 0 ? days : 0;
 };
 const imageFor = (style: WorkspaceStyle) => style.image || `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 560"><rect width="480" height="560" fill="${style.id % 2 ? '#d8d0c4' : '#d6dde0'}"/><path d="M134 118 195 80h90l61 38 54 91-55 36-33-57v254H168V188l-33 57-55-36z" fill="${style.id % 2 ? '#ede8df' : '#f4f0e8'}" stroke="#1A1A2E" stroke-width="4"/><path d="M195 81c4 45 86 45 90 0M167 264h146" fill="none" stroke="#C9A96E" stroke-width="4"/><text x="24" y="522" fill="#1A1A2E" font-family="sans-serif" font-size="18" letter-spacing="4">VIVO PLM</text></svg>`)}`;
-const groupLabel = (groupBy: GroupBy) => GROUP_BY_OPTIONS.find((option) => option.value === groupBy)?.label || 'PLM Stage';
-const groupSlug = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'uncategorised';
-const groupValueFor = (style: WorkspaceStyle, groupBy: GroupBy): string => {
-  if (groupBy === 'stage') return stageFor(style);
-  if (groupBy === 'orderType') return /repeat|rr/i.test(text(style.orderType, 'New')) ? 'Repeat (RR)' : 'New';
-  if (groupBy === 'patternMaker') return text(style.styleTeam?.pattern?.name || style.patternMaker, 'Unassigned');
-  const value = groupBy === 'fabricType' ? (style as StyleWithFabric).fabricType : style[groupBy];
-  return text(value, groupBy === 'theme' ? 'No theme' : 'Unassigned');
-};
-const groupKeysFor = (styles: WorkspaceStyle[], groupBy: GroupBy) => {
-  if (groupBy === 'stage') return [...ALL_STAGES];
-  if (groupBy === 'brand') return ['Vivo', 'Safari by Vivo', 'Zoya'];
-  if (groupBy === 'orderType') return ['New', 'Repeat (RR)'];
-  return Array.from(new Set(styles.map((style) => groupValueFor(style, groupBy)))).sort((a, b) => a.localeCompare(b));
-};
 
 async function createPulseRequest(style: WorkspaceStyle, mode: PulseMode): Promise<PulseCampaign> {
   const response = await fetch('/api/workspace/feedback/pulses', {
@@ -488,10 +421,7 @@ export default function PlmPage() {
       && (!snapshotFilter || (snapshotFilter === 'due' ? dueThisWeek : atRisk));
   }), [styles, filters, search, snapshotFilter]);
   const stageGrouped = useMemo(() => Object.fromEntries(ALL_STAGES.map((stage) => [stage, filtered.filter((style) => stageFor(style) === stage)])) as Record<string, WorkspaceStyle[]>, [filtered]);
-  const boardColumns = useMemo(() => {
-    const keys = groupKeysFor(styles, groupBy);
-    return keys.map((key) => ({ key, styles: filtered.filter((style) => groupValueFor(style, groupBy) === key) }));
-  }, [styles, filtered, groupBy]);
+  const boardColumns = useMemo(() => buildPlmBoardColumns(filtered, groupBy, styles), [styles, filtered, groupBy]);
   const transitionStyle = (id: number, toStage: string) => { setMenuOpen(null); transition.mutate({ id, data: { toStage } }, { onSuccess: () => { queryClient.invalidateQueries({ queryKey: getListWorkspaceStylesQueryKey() }); if (selected === id) { queryClient.invalidateQueries({ queryKey: getGetWorkspaceStylePlmQueryKey(id) }); queryClient.invalidateQueries({ queryKey: getGetWorkspaceStyleQueryKey(id) }); } } }); };
   const clearFilters = () => { setSearch(''); setFilters({ tier: [], stage: [], category: [], subCategory: [], fabricCategory: [], brand: [], primaryColour: [], edit: [] }); setSnapshotFilter(null); if (location.includes('?')) setLocation('/product-workspace/plm'); };
   const filtersActive = Object.values(filters).some((value) => value.length > 0);

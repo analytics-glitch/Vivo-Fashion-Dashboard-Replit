@@ -1,0 +1,47 @@
+# Vivo Johari — Shop Page Reorder
+
+**Context:** Based on your hand-drawn wireframe, this restructures the top portion of the Shop page — consolidating several separate full-width sections into a tighter row of compact cards, simplifying the controls, and confirming the curator content stays on Shop rather than moving to Community.
+
+---
+
+## New Shop page order
+
+1. **Banner (hero)** — unchanged, keep as-is (the bench/stone-wall photo already in place).
+
+2. **Four compact cards, single row:**
+   - **Free Delivery** — the existing free-delivery promo, condensed into a compact card instead of its current full-width banner treatment.
+   - **Collection** — links to **New Arrivals** (confirmed).
+   - **Take Your Quiz** — replaces the current "Pieces we think you'll love" section's CTA; this becomes the entry point into the Style Preferences quiz. Since this card now covers the quiz entry point, remove the separate "STYLED FOR YOU" tab from the filter/sort row below (per your note — consolidating rather than having it in two places).
+   - **Curated Looks By** — teaser card leading to the curator content (Sharon, Phinie, Grace) at the bottom of this same page.
+
+   These four replace what are currently several separate full-width sections stacked on top of each other — the goal is a tighter, scannable row instead of four long banners.
+
+3. **Controls row:** Filter | Search | Sorting | **Styled For You**. "Styled For You" stays in this row (it exists alongside the "Take Your Quiz" card above — the card is an entry point for the quiz itself, while this tab remains as a filter for browsing already-personalized picks). "Ranking" is still removed, per the original sketch.
+
+4. **Shop by Category** — kept as the existing image-tile grid (Workwear, Dresses, Everyday, Activewear, Men's), but **sized down** — smaller tiles than the current version, so it reads as a quick-access row rather than a large visual section. Your sketch's "Womens / Mens / Collections / Dresses" labels map to this same section, just confirming the category set — check whether "Collections" is meant as an additional category alongside the existing five, or another name for one of them.
+
+5. **Product grid** — unchanged.
+
+6. **"Community Looks" section — removed.** Go straight from the product grid (and "Load More Styles") into "Curated Looks by creators" below. No separate Community Looks step in between.
+
+7. **Curated Looks by creators** — **stays on Shop** (reversing the earlier decision to move this to Community — if it was already moved, move it back). Cards for **Sharon, Phinie, and Grace** (keeping "Grace" as the third curator for now, not "Wanjiku" from the sketch).
+
+---
+
+## Confirmed
+
+- **"Collection" card** links to New Arrivals.
+- **Third curator** is Grace.
+- **"Community Looks" section is removed** — product grid flows straight into "Curated Looks by creators."
+
+## Open items to confirm
+
+- **"Fresh off the Floor" carousel** — not mentioned in this sketch. Assuming it stays in its current state/position unless you want it repositioned or removed too.
+
+## Implementation notes for the Replit agent
+
+- This mainly consolidates four existing sections (Free Delivery, Live Collection, quiz CTA, Curated Looks teaser) into one compact card row — the underlying content/links already exist, this is a layout/sizing change.
+- "Styled For You" stays as a filter tab in the controls row; only "Ranking" is removed from that row. "Take Your Quiz" (the new card) and "Styled For You" (the tab) serve different jobs — one launches the quiz, the other filters the grid to already-personalized results — so both stay.
+- Shrinking the Shop by Category tiles is a sizing/CSS change, not a restructuring — same five categories, smaller footprint.
+- Removing "Community Looks" means the product grid's "Load More Styles" should flow directly into the "Curated Looks by creators" section — check spacing/divider styling reads cleanly with that section removed.
+- Confirm responsive behavior for the new four-card row on mobile — likely needs to stack 2x2 or scroll horizontally rather than trying to fit four cards in one row on a narrow screen.

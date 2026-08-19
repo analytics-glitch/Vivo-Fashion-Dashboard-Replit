@@ -5,6 +5,7 @@ import { WishlistProvider, useWishlist } from "@/context/WishlistContext";
 import { Avatar, VivoLogo, JohariWordmark } from "@/components/community/ui";
 import TabHome from "@/components/community/TabHome";
 import TabCommunity from "@/components/community/TabCommunity";
+import StyleBoardsLanding from "@/components/community/StyleBoardsLanding";
 import TabShop from "@/components/community/TabShop";
 import TabRewards from "@/components/community/TabRewards";
 import TabProfile from "@/components/community/TabProfile";
@@ -546,7 +547,10 @@ function ShellInner() {
         ) : (
           <>
             {tab === "home" && <TabHome onNavigate={goTab} member={member} onOpenProduct={openProduct} onOpenPage={openPage} onOpenEvents={openEvents} onOpenEvent={openEventDetail} onOpenStyleBoards={openStyleBoards} onOpenFabulas={setFabulasId} onOpenCommunityComposer={openCommunityComposer} />}
-            {tab === "community" && !member && (
+            {tab === "community" && !member && subNav?.id === "style_boards" && (
+              <StyleBoardsLanding onGuest={exitGuest} />
+            )}
+            {tab === "community" && !member && subNav?.id !== "style_boards" && (
               <>
                 <GuestGate
                   title="Join the conversation"

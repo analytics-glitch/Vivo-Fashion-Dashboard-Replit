@@ -194,12 +194,30 @@ export const posts = [
 ];
 
 export const styleBoards = [
-  { title: "Office to Evening", items: 12, followers: "3.2k" },
-  { title: "Weekend Errands", items: 8, followers: "1.9k" },
-  { title: "Vacation Ready", items: 15, followers: "4.7k" },
-  { title: "Curvy & Confident", items: 21, followers: "6.1k" },
-  { title: "Monochrome Magic", items: 9, followers: "2.4k" },
-  { title: "Print Mixing 101", items: 11, followers: "1.2k" },
+  {
+    title: "Boardroom to Weekend",
+    description: "Effortless pieces that carry you from Monday meetings to Saturday brunch.",
+    items: 12,
+    followers: "3.2k",
+  },
+  {
+    title: "Wedding Season Edit",
+    description: "Celebration-ready pieces for every RSVP, from the ceremony to the dance floor.",
+    items: 8,
+    followers: "1.9k",
+  },
+  {
+    title: "Prints We're Loving",
+    description: "Colour, pattern and texture combinations the Vivo team cannot get enough of.",
+    items: 15,
+    followers: "4.7k",
+  },
+  {
+    title: "Monochrome Moments",
+    description: "Easy tonal dressing, made to wear on repeat.",
+    items: 9,
+    followers: "2.4k",
+  },
 ];
 
 // Privacy: leaderboard ranks by weekly contribution activity (posts, comments,

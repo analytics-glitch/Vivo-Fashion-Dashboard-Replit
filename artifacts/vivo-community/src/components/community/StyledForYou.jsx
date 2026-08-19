@@ -3,6 +3,7 @@ import { ArrowRight, Check, RefreshCw, Sparkles, X } from "lucide-react";
 import { api } from "@/lib/api";
 import { cardCls, brandAsset } from "./ui";
 import { ProductRail, RailCard } from "./ShopSections";
+import { STYLE_PREFERENCE_VISUALS } from "./stylePreferenceVisuals";
 
 /* "Styled for You" — opt-in weekly personalised recommendations.
    Three connected surfaces share this file:
@@ -65,20 +66,20 @@ export function StyledForYouHome({ member, onViewAll, onPersonalise }) {
             </div>
             <h2 className="font-serif text-xl sm:text-2xl text-foreground leading-tight">Styled for You</h2>
           </div>
-          <button
-            type="button"
-            role="switch"
-            aria-checked={!!state.opted_in}
-            aria-label="Weekly Styled for You recommendations"
-            data-testid="sfy-home-toggle"
-            disabled={busy}
-            onClick={toggle}
-            className={`relative mt-1 w-11 h-6 rounded-full transition-colors shrink-0 disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
-              state.opted_in ? "bg-primary" : "bg-border"
-            }`}
-          >
-            <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${state.opted_in ? "translate-x-5" : ""}`} />
-          </button>
+          {state.opted_in && (
+            <button
+              type="button"
+              role="switch"
+              aria-checked
+              aria-label="Weekly Styled for You recommendations"
+              data-testid="sfy-home-toggle"
+              disabled={busy}
+              onClick={toggle}
+              className="relative mt-1 w-11 h-6 rounded-full transition-colors shrink-0 disabled:opacity-60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary bg-primary"
+            >
+              <span className="absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform translate-x-5" />
+            </button>
+          )}
         </div>
         <p className="text-[13px] text-muted-foreground leading-relaxed mt-3">
           {state.opted_in
@@ -93,6 +94,15 @@ export function StyledForYouHome({ member, onViewAll, onPersonalise }) {
             className="mt-auto pt-5 text-[13px] font-medium text-primary-ink hover:underline underline-offset-2 inline-flex items-center gap-1 self-start rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
           >
             See my picks in Shop <ArrowRight size={14} />
+          </button>
+        )}
+        {!state.opted_in && (
+          <button
+            data-testid="sfy-home-personalise"
+            onClick={onPersonalise}
+            className="mt-auto pt-5 text-[13px] font-medium text-primary-ink hover:underline underline-offset-2 inline-flex items-center gap-1 self-start rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          >
+            Personalise My Style <ArrowRight size={14} />
           </button>
         )}
       </div>
@@ -195,6 +205,9 @@ const FALLBACK_OPTIONS = {
   sizes: ["XS", "S", "M", "L", "XL", "XXL", "1X", "2X", "3X", "4X"],
   fits: ["Fitted", "True to size", "Relaxed", "Flowy"],
   colours: [],
+  print_preferences: ["Plain", "Prints"],
+  colour_shades: ["Olive", "Sage", "Emerald", "Cobalt", "Navy", "Burgundy", "Blush", "Terracotta", "Cocoa", "Ivory", "Charcoal", "Black"],
+  fabrics: ["Cotton", "Silk", "Chiffon", "Denim", "Knit", "Linen"],
   interests: ["Workwear", "Casual", "Occasionwear", "Activewear"],
   frequencies: ["weekly", "fortnightly", "monthly"],
 };
@@ -217,6 +230,62 @@ function Toggle({ on, onChange, testId, label }) {
       className={`relative w-11 h-6 rounded-full transition-colors shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${on ? "bg-primary" : "bg-border"}`}>
       <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow transition-transform ${on ? "translate-x-5" : ""}`} />
     </button>
+  );
+}
+
+function VisualChoiceGrid({ field, allowed, values, onToggle, columns }) {
+  const options = (STYLE_PREFERENCE_VISUALS[field] || [])
+    .filter((option) => !allowed?.length || allowed.includes(option.value));
+  return (
+    <div className={`grid gap-3 ${columns}`}>
+      {options.map((option) => {
+        const selected = (values || []).includes(option.value);
+        return (
+          <button
+            key={option.value}
+            type="button"
+            aria-pressed={selected}
+            aria-label={option.label}
+            data-testid={`sfy-${field.replace(/_/g, "-")}-${option.value.toLowerCase().replace(/\s+/g, "-")}`}
+            onClick={() => onToggle(option.value)}
+            className={`group relative overflow-hidden rounded border text-left transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 ${
+              selected
+                ? "border-primary ring-2 ring-primary/30 bg-primary/5"
+                : "border-border bg-card hover:-translate-y-0.5 hover:border-foreground/30"
+            }`}
+          >
+            <span className="relative block aspect-[3/2] overflow-hidden bg-secondary">
+              <img
+                src={option.image}
+                alt=""
+                loading="lazy"
+                decoding="async"
+                draggable={false}
+                className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.025]"
+              />
+              {selected && (
+                <span className="absolute right-2 top-2 inline-flex h-6 w-6 items-center justify-center rounded-full bg-primary text-primary-foreground shadow">
+                  <Check size={14} strokeWidth={2.5} />
+                </span>
+              )}
+            </span>
+            <span className="block px-3 py-2.5 text-[12px] font-semibold text-foreground">{option.label}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function PrefsSection({ title, hint, children }) {
+  return (
+    <div className={`${cardCls} p-5 sm:p-6`}>
+      <div className="mb-3">
+        <div className="font-semibold text-[15px] text-foreground">{title}</div>
+        {hint && <div className="text-[12px] text-muted-foreground mt-0.5">{hint}</div>}
+      </div>
+      {children}
+    </div>
   );
 }
 
@@ -294,16 +363,6 @@ export function StylePrefsView({ onBack }) {
     );
   }
 
-  const Section = ({ title, hint, children }) => (
-    <div className={`${cardCls} p-5 sm:p-6`}>
-      <div className="mb-3">
-        <div className="font-semibold text-[15px] text-foreground">{title}</div>
-        {hint && <div className="text-[12px] text-muted-foreground mt-0.5">{hint}</div>}
-      </div>
-      {children}
-    </div>
-  );
-
   return (
     <div className="max-w-2xl mx-auto animate-in fade-in duration-300 pb-24">
       <button onClick={onBack} className="text-[13px] text-muted-foreground hover:text-foreground mb-5 inline-flex items-center gap-1 rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary">
@@ -323,69 +382,99 @@ export function StylePrefsView({ onBack }) {
           </div>
         </div>
 
-        <Section title="Clothing size" hint="Used for 'Recommended in Your Size' — private to you.">
+        <PrefsSection title="Clothing size" hint="Used for 'Recommended in Your Size' — private to you.">
           <div className="flex flex-wrap gap-2">
             {options.sizes.map((s) => (
               <Chip key={s} on={draft.size === s} onClick={() => set({ size: draft.size === s ? "" : s })} testId={`sfy-size-${s}`}>{s}</Chip>
             ))}
           </div>
-        </Section>
+        </PrefsSection>
 
-        <Section title="Preferred fit">
+        <PrefsSection title="Preferred fit">
           <div className="flex flex-wrap gap-2">
             {options.fits.map((f) => (
               <Chip key={f} on={draft.fit === f} onClick={() => set({ fit: draft.fit === f ? "" : f })} testId={`sfy-fit-${f.replace(/\s+/g, "-")}`}>{f}</Chip>
             ))}
           </div>
-        </Section>
+        </PrefsSection>
 
         {options.colours.length > 0 && (
-          <Section title="Favourite colours" hint="Pick as many as you like.">
+          <PrefsSection title="Favourite colours" hint="Pick as many as you like.">
             <div className="flex flex-wrap gap-2">
               {options.colours.map((c) => (
                 <Chip key={c} on={(draft.colours || []).includes(c)} onClick={() => flip("colours", c)} testId={`sfy-colour-${c.replace(/\s+/g, "-")}`}>{c}</Chip>
               ))}
             </div>
-          </Section>
+          </PrefsSection>
         )}
 
+        <PrefsSection title="Plain or Prints" hint="Choose one or both — whichever feels most like you.">
+          <VisualChoiceGrid
+            field="print_preferences"
+            allowed={options.print_preferences}
+            values={draft.print_preferences}
+            onToggle={(value) => flip("print_preferences", value)}
+            columns="grid-cols-2"
+          />
+        </PrefsSection>
+
+        <PrefsSection title="Color Shades" hint="Choose the specific shades you reach for most.">
+          <VisualChoiceGrid
+            field="colour_shades"
+            allowed={options.colour_shades}
+            values={draft.colour_shades}
+            onToggle={(value) => flip("colour_shades", value)}
+            columns="grid-cols-3 sm:grid-cols-4"
+          />
+        </PrefsSection>
+
+        <PrefsSection title="Fabrics" hint="Select every texture and material you enjoy wearing.">
+          <VisualChoiceGrid
+            field="fabrics"
+            allowed={options.fabrics}
+            values={draft.fabrics}
+            onToggle={(value) => flip("fabrics", value)}
+            columns="grid-cols-2 sm:grid-cols-3"
+          />
+        </PrefsSection>
+
         {cats.length > 0 && (
-          <Section title="Preferred categories" hint="We'll lean your picks toward these.">
+          <PrefsSection title="Preferred categories" hint="We'll lean your picks toward these.">
             <div className="flex flex-wrap gap-2">
               {cats.map((c) => (
                 <Chip key={c} on={(draft.categories || []).includes(c)} onClick={() => flip("categories", c)} testId={`sfy-cat-${c.replace(/\s+/g, "-")}`}>{c}</Chip>
               ))}
             </div>
-          </Section>
+          </PrefsSection>
         )}
 
-        <Section title="What do you dress for?" hint="Workwear, casual, occasionwear or activewear — choose all that apply.">
+        <PrefsSection title="What do you dress for?" hint="Workwear, casual, occasionwear or activewear — choose all that apply.">
           <div className="flex flex-wrap gap-2">
             {options.interests.map((i) => (
               <Chip key={i} on={(draft.interests || []).includes(i)} onClick={() => flip("interests", i)} testId={`sfy-int-${i}`}>{i}</Chip>
             ))}
           </div>
-        </Section>
+        </PrefsSection>
 
         {cats.length > 0 && (
-          <Section title="Rather not see" hint="Styles we should leave out of your picks.">
+          <PrefsSection title="Rather not see" hint="Styles we should leave out of your picks.">
             <div className="flex flex-wrap gap-2">
               {cats.map((c) => (
                 <Chip key={c} on={(draft.avoid || []).includes(c)} onClick={() => flip("avoid", c)} testId={`sfy-avoid-${c.replace(/\s+/g, "-")}`}>{c}</Chip>
               ))}
             </div>
-          </Section>
+          </PrefsSection>
         )}
 
-        <Section title="How often?">
+        <PrefsSection title="How often?">
           <div className="flex flex-wrap gap-2">
             {options.frequencies.map((f) => (
               <Chip key={f} on={draft.frequency === f} onClick={() => set({ frequency: f })} testId={`sfy-freq-${f}`}>{FREQ_LABEL[f] || f}</Chip>
             ))}
           </div>
-        </Section>
+        </PrefsSection>
 
-        <Section title="Notifications & data">
+        <PrefsSection title="Notifications & data">
           <div className="space-y-4">
             <div className="flex items-center justify-between gap-4">
               <div className="text-[13px] text-foreground">Push notification when new picks land</div>
@@ -403,7 +492,7 @@ export function StylePrefsView({ onBack }) {
               <Toggle on={!!draft.use_activity} onChange={(v) => set({ use_activity: v })} testId="sfy-use-activity" label="Use my shopping activity" />
             </div>
           </div>
-        </Section>
+        </PrefsSection>
 
         {/* ---- About your Vivo journey (merged from the old "Help us dress
              you better" survey). Optional & skippable independently of the
@@ -429,7 +518,7 @@ export function StylePrefsView({ onBack }) {
               )}
             </div>
             <div className="space-y-4">
-              <Section title="How long have you been shopping with Vivo?">
+              <PrefsSection title="How long have you been shopping with Vivo?">
                 <div className="flex flex-wrap gap-2">
                   {(options.journey?.tenures || []).map((t) => (
                     <Chip key={t} on={jDraft.tenure === t}
@@ -437,8 +526,8 @@ export function StylePrefsView({ onBack }) {
                       testId={`sfy-journey-tenure-${t.replace(/[^a-zA-Z0-9]+/g, "-")}`}>{t}</Chip>
                   ))}
                 </div>
-              </Section>
-              <Section title="How did you discover Vivo?">
+              </PrefsSection>
+              <PrefsSection title="How did you discover Vivo?">
                 <div className="flex flex-wrap gap-2">
                   {(options.journey?.discoveries || []).map((t) => (
                     <Chip key={t} on={jDraft.discovery === t}
@@ -446,8 +535,8 @@ export function StylePrefsView({ onBack }) {
                       testId={`sfy-journey-disc-${t.replace(/[^a-zA-Z0-9]+/g, "-")}`}>{t}</Chip>
                   ))}
                 </div>
-              </Section>
-              <Section title="Roughly how often do you shop for clothing?" hint="Anywhere — not just Vivo.">
+              </PrefsSection>
+              <PrefsSection title="Roughly how often do you shop for clothing?" hint="Anywhere — not just Vivo.">
                 <div className="flex flex-wrap gap-2">
                   {(options.journey?.shop_frequencies || []).map((t) => (
                     <Chip key={t} on={jDraft.shop_frequency === t}
@@ -455,13 +544,13 @@ export function StylePrefsView({ onBack }) {
                       testId={`sfy-journey-shopfreq-${t.replace(/[^a-zA-Z0-9]+/g, "-")}`}>{t}</Chip>
                   ))}
                 </div>
-              </Section>
-              <Section title="Anything you wish Vivo did differently?" hint="Optional — skip it if nothing comes to mind.">
+              </PrefsSection>
+              <PrefsSection title="Anything you wish Vivo did differently?" hint="Optional — skip it if nothing comes to mind.">
                 <textarea data-testid="sfy-journey-feedback" value={jDraft.feedback} maxLength={1000}
                   onChange={(e) => setJDraft((j) => ({ ...j, feedback: e.target.value }))}
                   rows={3} placeholder="Tell us anything…"
                   className="w-full rounded border border-border bg-background px-3 py-2 text-[13px] text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary resize-none" />
-              </Section>
+              </PrefsSection>
             </div>
           </div>
         )}
@@ -499,6 +588,8 @@ export function StylePrefsProfileCard({ onOpenPrefs }) {
     prefs.size && `Size ${prefs.size}`,
     prefs.fit,
     (prefs.colours || []).slice(0, 3).join(", "),
+    (prefs.print_preferences || []).join(" & "),
+    (prefs.fabrics || []).slice(0, 2).join(", "),
     (prefs.interests || []).slice(0, 2).join(" · "),
   ].filter(Boolean);
   return (
