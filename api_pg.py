@@ -28,6 +28,24 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from security_config import cors_config, fastapi_docs_config
 from urllib.parse import urlencode, quote
 
+# Process telemetry is intentionally captured once at import/initialization time.
+# The wall-clock timestamp is operator-friendly, while the monotonic clock keeps
+# uptime accurate across wall-clock adjustments. Both values are DB-free so the
+# liveness probe remains safe during database outages.
+_PROCESS_STARTED_AT = datetime.now(timezone.utc)
+_PROCESS_START_MONOTONIC = time.monotonic()
+
+
+def _process_uptime_payload():
+    """Return the public, non-sensitive process liveness contract."""
+    uptime_seconds = max(0.0, time.monotonic() - _PROCESS_START_MONOTONIC)
+    return {
+        "status": "ok",
+        "started_at": _PROCESS_STARTED_AT.isoformat(),
+        "uptime_seconds": round(uptime_seconds, 3),
+    }
+
+
 # ── PII reveal (step-up) tokens ───────────────────────────────────────────────
 # Customer contact PII (phone/email) is masked in every response by default.
 # A short-lived, HMAC-signed reveal token — issued by POST /api/auth/verify-password
@@ -5232,7 +5250,7 @@ def healthz():
     # Lightweight liveness probe — deliberately does NOT touch the DB so it
     # stays green even if Postgres is briefly saturated, and is whitelisted in
     # _AUTH_PUBLIC_EXACT so the platform probe never gets a 401.
-    return {"status": "ok"}
+    return _process_uptime_payload()
 
 
 @app.get("/api/environment")
