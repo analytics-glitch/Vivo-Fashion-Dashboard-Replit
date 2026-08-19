@@ -246,6 +246,25 @@ select:focus,input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(26
 .muted{font-size:12px;color:var(--muted);}
 .variance-neg{color:var(--danger,#dc2626);font-weight:600;}
 .variance-ok{color:var(--muted,#888);}
+/* Product Costing list filters: buttons stay compact in the desktop toolbar,
+   while each menu exposes independently checkable values plus an All reset. */
+.cost-list-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap;margin-left:auto;min-width:0;}
+.cost-filter{position:relative;}
+.cost-filter-btn{display:inline-flex;align-items:center;justify-content:space-between;gap:7px;min-height:34px;padding:6px 10px;border:1px solid var(--border);border-radius:7px;background:#fff;color:var(--text);font:inherit;font-size:12.5px;font-weight:600;cursor:pointer;white-space:nowrap;}
+.cost-filter-btn:hover,.cost-filter-btn:focus-visible{border-color:var(--accent);outline:none;box-shadow:0 0 0 2px rgba(26,92,56,.1);}
+.cost-filter-btn::after{content:'⌄';font-size:14px;line-height:1;color:var(--muted);}
+.cost-filter-menu{position:absolute;top:calc(100% + 4px);right:0;z-index:35;min-width:224px;padding:6px;background:#fff;border:1px solid var(--border);border-radius:9px;box-shadow:0 8px 24px rgba(0,0,0,.12);}
+.cost-filter-option{display:flex;align-items:center;gap:8px;padding:7px 8px;border-radius:6px;color:var(--text);font-size:12.5px;cursor:pointer;}
+.cost-filter-option:hover{background:rgba(26,92,56,.07);}
+.cost-filter-option input{margin:0;accent-color:var(--accent);}
+.cost-filter-reset{width:100%;margin-top:3px;padding:6px 8px;border:0;border-top:1px solid var(--border);background:transparent;color:var(--accent);font:inherit;font-size:12px;font-weight:700;text-align:left;cursor:pointer;}
+.cost-filter-reset:hover{background:rgba(26,92,56,.07);}
+@media (max-width:620px){
+  .cost-list-actions{flex:1 1 100%;justify-content:flex-start;}
+  .cost-filter{flex:1 1 155px;}
+  .cost-filter-btn{width:100%;}
+  .cost-filter-menu{left:0;right:auto;max-width:calc(100vw - 2rem);}
+}
 
 .kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-bottom:1.2rem;align-items:stretch;}
 #bpd-kpi-cards{grid-template-columns:repeat(auto-fit,minmax(200px,260px));justify-content:start;}
@@ -1508,9 +1527,28 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
    <section id="page-costing" style="display:none;">
     <div id="cost-labour-note"></div>
     <div class="card">
-     <div class="section-head"><h3>Costing sheets</h3><span class="muted">per-style cost build-up vs current selling price</span>
-      <button class="btn" style="margin-left:auto;" onclick="costExportAll()">Export all (.xlsx)</button>
-      <button class="btn btn-primary" onclick="costNewSheet()">+ New costing sheet</button>
+      <div class="section-head"><h3>Costing sheets</h3><span class="muted">per-style cost build-up vs current selling price</span>
+       <div class="cost-list-actions">
+        <div class="cost-filter" id="cost-status-filter">
+         <button type="button" class="cost-filter-btn" id="cost-status-filter-btn" aria-haspopup="true" aria-expanded="false" aria-controls="cost-status-filter-menu" onclick="costToggleFilter(event,'status')">Status: All</button>
+         <div class="cost-filter-menu" id="cost-status-filter-menu" role="group" aria-label="Filter costing sheets by status" style="display:none;">
+          <label class="cost-filter-option"><input type="checkbox" value="approved" data-cost-filter="status" onchange="costUpdateFilter('status')"> Approved</label>
+          <label class="cost-filter-option"><input type="checkbox" value="partial" data-cost-filter="status" onchange="costUpdateFilter('status')"> Partially Signed</label>
+          <label class="cost-filter-option"><input type="checkbox" value="draft" data-cost-filter="status" onchange="costUpdateFilter('status')"> Draft Costing Sheets</label>
+          <button type="button" class="cost-filter-reset" onclick="costClearFilter('status')">All statuses</button>
+         </div>
+        </div>
+        <div class="cost-filter" id="cost-stage-filter">
+         <button type="button" class="cost-filter-btn" id="cost-stage-filter-btn" aria-haspopup="true" aria-expanded="false" aria-controls="cost-stage-filter-menu" onclick="costToggleFilter(event,'stage')">Sheet type: All</button>
+         <div class="cost-filter-menu" id="cost-stage-filter-menu" role="group" aria-label="Filter costing sheets by type" style="display:none;">
+          <label class="cost-filter-option"><input type="checkbox" value="pre_production" data-cost-filter="stage" onchange="costUpdateFilter('stage')"> Pre-Production Costing Sheets</label>
+          <label class="cost-filter-option"><input type="checkbox" value="main_production" data-cost-filter="stage" onchange="costUpdateFilter('stage')"> Main Production Costing Sheets</label>
+          <button type="button" class="cost-filter-reset" onclick="costClearFilter('stage')">All sheet types</button>
+         </div>
+        </div>
+        <button class="btn" onclick="costExportAll()">Export all (.xlsx)</button>
+        <button class="btn btn-primary" onclick="costNewSheet()">+ New costing sheet</button>
+       </div>
      </div>
      <div id="cost-list-err"></div>
      <div class="tbl-wrap">
@@ -10634,20 +10672,81 @@ function loadL10Page(){
 }
 const COST_KINDS={fabric:'Fabric',trim:'Trim / accessory',cmt:'CMT / labour',overhead:'Overhead / other'};
 let costSheets=[],costEdit=null; // costEdit = {id|null, style_name, style_number, dps_ref|null, lines:[], sp_auto, history:[]}
+const COST_FILTER_OPTIONS={
+  status:[['approved','Approved'],['partial','Partially Signed'],['draft','Draft Costing Sheets']],
+  stage:[['pre_production','Pre-Production Costing Sheets'],['main_production','Main Production Costing Sheets']]
+};
+let costFilters={status:[],stage:[]},costListLoadToken=0;
 const fmtKES2=n=>n==null||isNaN(n)?'—':'KES '+Number(n).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
 const costFmtSP=v=>v==null||v===''||isNaN(Number(v))?'':Math.round(Number(v)).toLocaleString('en-US');
 const costParseSP=el=>el.value===''?null:Number(String(el.value).replace(/,/g,''));
 function costSpStripFmt(el){const n=costParseSP(el);el.value=n==null?'':n;}
 function costSpApplyFmt(el){const n=costParseSP(el);el.value=costFmtSP(n);}
+function costFilterSummary(kind){
+  const selected=costFilters[kind]||[];
+  if(!selected.length)return 'All';
+  const labels=Object.fromEntries(COST_FILTER_OPTIONS[kind]);
+  return selected.length===1?(labels[selected[0]]||selected[0]):selected.length+' selected';
+}
+function costSyncFilter(kind){
+  const selected=new Set(costFilters[kind]||[]);
+  document.querySelectorAll(`[data-cost-filter="${kind}"]`).forEach(el=>{el.checked=selected.has(el.value);});
+  const button=document.getElementById('cost-'+kind+'-filter-btn');
+  if(button)button.textContent=(kind==='status'?'Status: ':'Sheet type: ')+costFilterSummary(kind);
+}
+function costCloseFilters(except){
+  ['status','stage'].forEach(kind=>{
+    if(kind===except)return;
+    const menu=document.getElementById('cost-'+kind+'-filter-menu');
+    const button=document.getElementById('cost-'+kind+'-filter-btn');
+    if(menu)menu.style.display='none';
+    if(button)button.setAttribute('aria-expanded','false');
+  });
+}
+function costToggleFilter(event,kind){
+  event.preventDefault();event.stopPropagation();
+  const menu=document.getElementById('cost-'+kind+'-filter-menu');
+  const button=document.getElementById('cost-'+kind+'-filter-btn');
+  if(!menu||!button)return;
+  const opening=menu.style.display==='none';
+  costCloseFilters(opening?kind:null);
+  menu.style.display=opening?'block':'none';
+  button.setAttribute('aria-expanded',opening?'true':'false');
+}
+function costUpdateFilter(kind){
+  costFilters[kind]=Array.from(document.querySelectorAll(`[data-cost-filter="${kind}"]:checked`),el=>el.value);
+  costSyncFilter(kind);
+  loadCosting();
+}
+function costClearFilter(kind){
+  if(!(costFilters[kind]||[]).length)return;
+  costFilters[kind]=[];
+  costSyncFilter(kind);
+  loadCosting();
+}
+function costListUrl(){
+  const params=new URLSearchParams();
+  if(costFilters.status.length)params.set('status',costFilters.status.join(','));
+  if(costFilters.stage.length)params.set('stage',costFilters.stage.join(','));
+  const query=params.toString();
+  return '/api/fabric/costing/sheets'+(query?'?'+query:'');
+}
 async function loadCosting(){
   const body=document.getElementById('cost-list-body');
   const note=document.getElementById('cost-labour-note');
+  const token=++costListLoadToken;
   if(note)note.innerHTML=costLabourAvailable?'' :
     '<div class="banner" style="margin-bottom:.9rem;">No labour-cost data has been synced from the Done DPS summary yet — CMT/labour will not auto-suggest and must be entered manually. It will appear after the next fabric-consumption sync.</div>';
   try{
-    const d=await apiFetch('/api/fabric/costing/sheets');
+    const d=await apiFetch(costListUrl());
+    if(token!==costListLoadToken)return;
     costSheets=d.sheets||[];
-    if(!costSheets.length){body.innerHTML='<tr><td colspan="11" class="muted" style="padding:.8rem;">No costing sheets yet — click “New costing sheet” to build the first one.</td></tr>';return;}
+    if(!costSheets.length){
+      const hasFilters=costFilters.status.length||costFilters.stage.length;
+      body.innerHTML='<tr><td colspan="11" class="muted" style="padding:.8rem;">'+
+        (hasFilters?'No costing sheets match the selected filters.':'No costing sheets yet — click “New costing sheet” to build the first one.')+'</td></tr>';
+      return;
+    }
     body.innerHTML=costSheets.map(s=>{
       const mCls=s.margin==null?'':(s.margin<0?' style="color:var(--danger);font-weight:700;"':' style="color:var(--ok,#0a7d33);font-weight:700;"');
       const stageBadge=s.stage==='pre_production'?'&nbsp;<span class="pill pill-neutral" style="font-size:10px;padding:1px 5px;vertical-align:middle;">Pre-prod</span>':'';
@@ -10663,7 +10762,7 @@ async function loadCosting(){
         `<td style="white-space:nowrap;"><button class="btn" onclick="costOpenSheet(${Number(s.id)})">${s.signoff_status==='approved'?'View':'Edit'}</button> `+
         `<button class="btn" title="Download the branded costing sheet PDF" onclick="costDownloadPdfById(${Number(s.id)},'${esc(s.style_name||'sheet')}')">PDF</button></td></tr>`;
     }).join('');
-  }catch(e){rowErr('cost-list-body',11,e);}
+   }catch(e){if(token===costListLoadToken)rowErr('cost-list-body',11,e);}
 }
 // Costing exports — credentialed blob fetch (same pattern as downloadMpgXlsx)
 // so auth is honoured and failures surface instead of a blank tab. The
@@ -11695,6 +11794,7 @@ async function init(){
   // Column picker + close-on-outside-click
   buildColPicker();
   document.addEventListener('click',e=>{
+     if(!e.target.closest('.cost-filter'))costCloseFilters();
     const p=document.getElementById('col-picker');
     if(p&&p.style.display!=='none'&&!e.target.closest('.popwrap'))p.style.display='none';
     // Reservations fabric dropdown: pick / close-on-outside
@@ -11717,6 +11817,7 @@ async function init(){
   // Esc closes the fabric detail modal or the PO drill modal.
   document.addEventListener('keydown',e=>{
     if(e.key!=='Escape')return;
+     costCloseFilters();
     if(document.getElementById('fab-detail-overlay').style.display!=='none')closeFabricDetail();
     const po=document.getElementById('po-drill-overlay');
     if(po&&po.style.display!=='none')closePODrill();

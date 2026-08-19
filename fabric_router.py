@@ -14704,8 +14704,31 @@ def _costing_change_summary(old, new_lines, old_sp, new_sp):
     return "; ".join(bits) or "saved (no value changes)"
 
 
+_COSTING_SHEET_STATUSES = frozenset(("approved", "partial", "draft"))
+_COSTING_SHEET_STAGES = frozenset(("pre_production", "main_production"))
+
+
+def _costing_sheet_filter_values(raw, allowed, label):
+    """Parse the comma-separated list filters accepted by the costing list."""
+    if raw is None or not str(raw).strip():
+        return set()
+    values = {value.strip().lower() for value in str(raw).split(",")
+              if value.strip()}
+    invalid = values - allowed
+    if invalid:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid costing sheet %s: %s" % (
+                label, ", ".join(sorted(invalid))))
+    return values
+
+
 @fabric_router.get("/api/fabric/costing/sheets")
-def costing_sheets_list():
+def costing_sheets_list(status: str = None, stage: str = None):
+    selected_statuses = _costing_sheet_filter_values(
+        status, _COSTING_SHEET_STATUSES, "status")
+    selected_stages = _costing_sheet_filter_values(
+        stage, _COSTING_SHEET_STAGES, "stage")
     with _get_conn() as conn:
         _ensure_costing_tables(conn)
         rows = q(conn, """
@@ -14746,7 +14769,7 @@ def costing_sheets_list():
                 acc_meta = json.loads(acc_meta)
             except Exception:
                 acc_meta = None
-        out.append({
+        sheet = {
             "id": r["id"], "style_name": r["style_name"],
             "style_number": r["style_number"], "selling_price": sp,
             "selling_price_ex_vat": sp_ex,
@@ -14766,7 +14789,15 @@ def costing_sheets_list():
                                      if isinstance(acc_meta, dict) else None),
             "updated_by_name": r["updated_by_name"],
             "updated_at": r["updated_at"].isoformat() if r["updated_at"] else None,
-        })
+        }
+        # Filter only after deriving the existing response values. This keeps
+        # the status calculation and costing totals identical for filtered and
+        # unfiltered list requests.
+        if selected_statuses and sheet["signoff_status"] not in selected_statuses:
+            continue
+        if selected_stages and sheet["stage"] not in selected_stages:
+            continue
+        out.append(sheet)
     return {"sheets": out}
 
 
