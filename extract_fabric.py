@@ -1,6 +1,9 @@
 import xmlrpc.client, os, sys, psycopg2, logging
 from psycopg2.extras import execute_values
 from datetime import datetime, timedelta
+from collections import Counter
+import json
+import math
 import re
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -156,6 +159,14 @@ def _props_by_label(props):
 # business vocabulary here and resolve the live x_* field names from fields_get
 # for every product-master pull.  The aliases deliberately tolerate the small
 # label changes made by Studio (capitalisation, punctuation, and "(m)" suffixes).
+#
+# One display label may legitimately be carried by SEVERAL live fields at once:
+# the catalogue exposes both a dedicated attribute GSM (many2one) and a plain
+# text GSM (char) under the exact same "GSM" label. That is valid configuration,
+# not an error — the resolver keeps every such candidate in a deterministic,
+# type-aware preference order (dedicated attribute first, free text last) and
+# the product pull walks that order per product, so the attribute value wins
+# whenever it is populated and the text value only fills the gaps.
 FABRIC_ATTRIBUTE_SPECS = {
     "kg_per_mtr": (("Kg/Mtr", "Kg / Mtr", "KG/MTR"), False),
     "width_m": (("Width (m)", "Width", "Width (M)"), True),
@@ -181,13 +192,33 @@ def _label_key(value):
     return re.sub(r"[^a-z0-9]+", "", str(value or "").lower().replace("²", "2"))
 
 
-def resolve_fabric_fields(field_metadata):
-    """Return concept -> live product.product field name from fields_get data.
+# Preference order when SEVERAL live Odoo fields carry the same display label:
+# a dedicated attribute / selection field is the primary source, a plain
+# numeric field is next, and a free-text field is the safe fallback. Two
+# fields at the SAME rank under the same label are genuinely indistinguishable
+# — the resolver refuses to guess between them.
+_TYPE_RANK = {
+    "many2one": 0, "many2many": 0, "one2many": 0, "reference": 0,
+    "selection": 0,
+    "float": 1, "integer": 1, "monetary": 1,
+    "char": 2, "text": 2, "html": 2,
+}
+_TYPE_RANK_OTHER = 3
 
-    Optional attributes may be absent during a staged Odoo configuration change,
-    but Width and GSM are conversion-critical and must be present exactly once.
-    Raising before search_read/TRUNCATE is the fail-safe for both full and
-    incremental extracts.
+
+def resolve_fabric_fields(field_metadata):
+    """Return concept -> ORDERED live product.product field names (best first).
+
+    Optional attributes may be absent during a staged Odoo configuration
+    change, but Width and GSM are conversion-critical and must resolve to at
+    least one unambiguous source. A duplicate display label is a VALID
+    configuration (the live catalogue carries an attribute-backed GSM and a
+    text GSM under the same "GSM" label): every candidate is kept, ordered by
+    _TYPE_RANK then alias order, and the product pull tries them per product
+    in that order (see _fabric_value_from). Raising before search_read /
+    TRUNCATE remains the fail-safe when a conversion-critical concept is
+    missing entirely or its best candidates are genuinely indistinguishable
+    (same label AND same type rank) — no Fabric master rows are changed then.
     """
     by_label = {}
     for name, meta in (field_metadata or {}).items():
@@ -195,27 +226,58 @@ def resolve_fabric_fields(field_metadata):
             continue
         by_label.setdefault(_label_key(meta["string"]), []).append(name)
 
+    def _field_type(name):
+        return str((field_metadata.get(name) or {}).get("type") or "")
+
     resolved = {}
     problems = []
     for concept, (aliases, required) in FABRIC_ATTRIBUTE_SPECS.items():
-        matches = []
-        matched_alias = None
-        for alias in aliases:
-            candidates = by_label.get(_label_key(alias), [])
-            if candidates:
-                matched_alias = alias
-                matches = candidates
+        seen = set()
+        cands = []  # (type_rank, alias_rank, field_name) — sorted = preference
+        for alias_rank, alias in enumerate(aliases):
+            for name in by_label.get(_label_key(alias), []):
+                if name in seen:
+                    continue
+                seen.add(name)
+                cands.append((
+                    _TYPE_RANK.get(_field_type(name), _TYPE_RANK_OTHER),
+                    alias_rank, name))
+        cands.sort()
+
+        ordered, tied = [], []
+        i = 0
+        while i < len(cands):
+            j = i + 1
+            while j < len(cands) and cands[j][:2] == cands[i][:2]:
+                j += 1
+            if j - i > 1:
+                # ≥2 fields share one label AND one type rank: no safe order
+                # exists from this point down — keep what was already ordered.
+                tied = [c[2] for c in cands[i:]]
                 break
-        if len(matches) == 1:
-            resolved[concept] = matches[0]
-            log.info("Fabric Odoo mapping %s=%s (label=%s)",
-                     concept, matches[0], matched_alias)
+            ordered.append(cands[i][2])
+            i = j
+
+        if tied and not ordered:
+            # The would-be PRIMARY source itself is ambiguous — never guess.
+            if required:
+                problems.append(
+                    f"{concept} ({aliases[0]}): ambiguous: " + ", ".join(tied))
+            else:
+                log.warning("Ignoring ambiguous optional Fabric mapping %s: %s",
+                            concept, ", ".join(tied))
+            continue
+        if tied:
+            log.warning(
+                "Fabric mapping %s: dropping indistinguishable lower-preference "
+                "candidate(s) %s (keeping %s)",
+                concept, ", ".join(tied), " > ".join(ordered))
+        if ordered:
+            resolved[concept] = ordered
+            log.info("Fabric Odoo mapping %s=%s", concept,
+                     " > ".join(f"{n}({_field_type(n)})" for n in ordered))
         elif required:
-            reason = "missing" if not matches else "ambiguous: " + ", ".join(matches)
-            problems.append(f"{concept} ({aliases[0]}): {reason}")
-        elif matches:
-            log.warning("Ignoring ambiguous optional Fabric mapping %s: %s",
-                        concept, ", ".join(matches))
+            problems.append(f"{concept} ({aliases[0]}): missing")
     if problems:
         raise RuntimeError(
             "Fabric Odoo metadata is unsafe; conversion-critical mapping failed: "
@@ -223,6 +285,52 @@ def resolve_fabric_fields(field_metadata):
             + ". No Fabric master rows were changed."
         )
     return resolved
+
+
+def mapping_signature(resolved, field_metadata):
+    """Canonical fingerprint of the current attribute source selection.
+
+    Captures which live fields feed each business attribute, their preference
+    order and their Odoo types. It is stored in fabric_sync_state after every
+    successful product pull; extract_products() promotes an incremental pull
+    to a FULL reconciliation whenever the current fingerprint differs from the
+    stored one (new duplicate label, moved/renamed Studio field, or a code
+    change to the precedence rules), so rows whose Odoo write_date predates
+    the change are repaired without waiting for each product to be edited.
+    """
+    payload = {
+        concept: [[name, str((field_metadata.get(name) or {}).get("type") or "")]
+                  for name in field_names]
+        for concept, field_names in (resolved or {}).items()
+    }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
+_MAPPING_STATE_KEY = "fabric_attribute_mapping"
+
+# Tiny key/value side table holding the last successfully-applied mapping
+# fingerprint. Created lazily by extract_products so every entry path (fast /
+# heavy / full bootstrap / watchdog rescue) is covered.
+_FABRIC_SYNC_STATE_DDL = """
+    CREATE TABLE IF NOT EXISTS fabric_sync_state (
+        key        TEXT PRIMARY KEY,
+        value      TEXT,
+        updated_at TIMESTAMP
+    )
+"""
+
+
+def _needs_full_reconcile(stored_signature, current_signature):
+    """True when the recorded source-selection fingerprint differs or is absent."""
+    return stored_signature != current_signature
+
+
+def _mapping_state_changed(cur, signature):
+    """Compare `signature` against the fingerprint stored in fabric_sync_state."""
+    cur.execute("SELECT value FROM fabric_sync_state WHERE key = %s",
+                (_MAPPING_STATE_KEY,))
+    row = cur.fetchone()
+    return _needs_full_reconcile(row[0] if row else None, signature)
 
 
 def _odoo_value(value):
@@ -234,17 +342,101 @@ def _odoo_value(value):
     return value
 
 
+# Numeric attribute display values ("157", "1.70", occasionally "157 gsm")
+# must become positive floats before persistence. Only magnitude-NEUTRAL unit
+# suffixes are tolerated; a magnitude-changing unit (cm, mm, g/cm² …) or free
+# text is rejected outright — deriving metres/cost from a misread number is
+# worse than an explicit "incomplete" row.
+_NUMERIC_VALUE_RE = re.compile(r"^(?P<num>[0-9][0-9.,]*)\s*(?P<unit>[a-z0-9²/%]*)$")
+_NUMERIC_UNIT_SUFFIXES = frozenset((
+    "gsm", "g/m2", "g/m²",
+    "m", "mtr", "mtrs", "metre", "metres", "meter", "meters",
+    "kg/m", "kg/mtr",
+))
+
+
+def _normalize_numeric(value, field_name=None):
+    """Odoo display value → positive float, or None when unusable.
+
+    Attribute display names arrive as strings ("157", "1.70"); text fields may
+    carry stray whitespace, thousands separators, a decimal comma, or a
+    harmless unit suffix. Odoo also marshals EMPTY fields as boolean False —
+    never a number. Anything that cannot be read as a positive finite number
+    (free text, unsupported units, zero/negative readings) returns None so a
+    bad source falls through to the next candidate — or leaves the row
+    explicitly incomplete — instead of quietly deriving a misleading metre or
+    cost figure.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        num = float(value)
+    else:
+        text = str(value).strip().lower()
+        if not text:
+            return None
+        m = _NUMERIC_VALUE_RE.match(text)
+        if not m:
+            log.warning("Non-numeric Fabric Odoo value %r for field %s",
+                        value, field_name)
+            return None
+        num_part, unit = m.group("num"), m.group("unit") or ""
+        if unit and unit not in _NUMERIC_UNIT_SUFFIXES:
+            log.warning("Fabric Odoo value %r for field %s carries unsupported "
+                        "unit %r — treated as unusable", value, field_name, unit)
+            return None
+        if "." in num_part and "," in num_part:
+            num_part = num_part.replace(",", "")            # 1,234.5 → 1234.5
+        elif "," in num_part:
+            if re.fullmatch(r"[0-9]{1,3}(?:,[0-9]{3})+", num_part):
+                num_part = num_part.replace(",", "")        # 1,234 → 1234
+            elif re.fullmatch(r"[0-9]+,[0-9]+", num_part):
+                num_part = num_part.replace(",", ".")       # 1,70 → 1.70
+            else:
+                log.warning("Non-numeric Fabric Odoo value %r for field %s",
+                            value, field_name)
+                return None
+        try:
+            num = float(num_part)
+        except ValueError:
+            log.warning("Non-numeric Fabric Odoo value %r for field %s",
+                        value, field_name)
+            return None
+    if not math.isfinite(num) or num <= 0:
+        # 0 is Odoo's "not set" for numeric fields — silently absent; anything
+        # else non-positive/non-finite is a real reading we refuse to use.
+        if num != 0:
+            log.warning("Rejecting non-positive Fabric Odoo value %r for "
+                        "field %s", value, field_name)
+        return None
+    return num
+
+
 def _fabric_value(record, field_name, numeric=False):
     value = _odoo_value(record.get(field_name)) if field_name else None
+    if numeric:
+        return _normalize_numeric(value, field_name)
+    if isinstance(value, bool):
+        # Odoo marshals an empty field as False — an absent value, not text.
+        return None
     if isinstance(value, str):
         value = value.strip() or None
-    if numeric:
-        try:
-            return float(value) if value is not None else None
-        except (TypeError, ValueError):
-            log.warning("Non-numeric Fabric Odoo value %r for field %s", value, field_name)
-            return None
     return value
+
+
+def _fabric_value_from(record, field_names, numeric=False):
+    """First usable value across the ordered candidate fields for one concept.
+
+    Returns (value, source_field_name). The preference order comes from
+    resolve_fabric_fields(): a populated dedicated attribute always wins, and
+    a text twin is only consulted when every better source is empty or
+    unusable (non-numeric / non-positive when numeric=True).
+    """
+    for field_name in (field_names or ()):
+        value = _fabric_value(record, field_name, numeric=numeric)
+        if value is not None:
+            return value, field_name
+    return None, None
 
 
 def extract_products(uid, models, cur, now, since=None):
@@ -324,11 +516,30 @@ def extract_products(uid, models, cur, now, since=None):
             f"Fabric master data was not changed: {exc}"
         ) from exc
     fabric_fields = resolve_fabric_fields(field_metadata)
+    mapping_sig = mapping_signature(fabric_fields, field_metadata)
+    cur.execute(_FABRIC_SYNC_STATE_DDL)
 
+    # A change in WHICH live fields feed each business attribute (a new
+    # duplicate label, a moved/renamed Studio field, or a code change to the
+    # precedence rules) invalidates rows whose Odoo write_date never advanced:
+    # they were extracted under the old selection. Promote THIS pull to a full
+    # reconciliation so those rows are repaired promptly; the incremental
+    # cadence resumes on the next cycle once the new fingerprint is stored.
+    if since is not None and _mapping_state_changed(cur, mapping_sig):
+        log.warning(
+            "Fabric attribute source selection changed (or has no recorded "
+            "state) — promoting this pull to a FULL product reconciliation "
+            "so previously-extracted rows are repaired.")
+        since = None
+
+    # Every candidate field for every concept is pulled, so the per-product
+    # fallback can inspect them all (dict.fromkeys dedupes, keeping order).
+    candidate_fields = list(dict.fromkeys(
+        f for fields in fabric_fields.values() for f in fields))
     FABRIC_FIELDS = [
         "name", "default_code", "categ_id", "uom_id", 
         "standard_price", "active",
-        *fabric_fields.values(),
+        *candidate_fields,
         "barcode",
         "product_properties",  # dedicated Fabric Name / Fabric Supplier Name / Fabric Colour live here
         "write_date",       # Odoo last-modified time (UTC) — drives the category tracker
@@ -344,6 +555,11 @@ def extract_products(uid, models, cur, now, since=None):
         domain.append(["write_date", ">=", since_str])
         log.info("Incremental product pull since %s (UTC)", since_str)
 
+    # Which live field actually supplied each conversion-critical value —
+    # logged once per pull so a fallback-heavy catalogue is visible in the
+    # sync logs without a per-product noise storm.
+    source_counts = {"width_m": Counter(), "gsm": Counter()}
+
     while True:
         records = models.execute_kw(ODOO_DB, uid, ODOO_PASSWORD, "product.product", "search_read",
             [domain],
@@ -355,10 +571,18 @@ def extract_products(uid, models, cur, now, since=None):
             cat = r.get("categ_id")
             cat_name = cat[1] if cat else ""
             category = "Fabric" if "Raw" in str(cat_name) else "Trim"
-            
-            kg_mtr = _fabric_value(r, fabric_fields.get("kg_per_mtr"), numeric=True)
-            width  = _fabric_value(r, fabric_fields["width_m"], numeric=True)
-            gsm    = _fabric_value(r, fabric_fields["gsm"], numeric=True)
+
+            def pick(concept, numeric=False):
+                return _fabric_value_from(
+                    r, fabric_fields.get(concept), numeric=numeric)[0]
+
+            kg_mtr = pick("kg_per_mtr", numeric=True)
+            width, width_src = _fabric_value_from(
+                r, fabric_fields.get("width_m"), numeric=True)
+            gsm, gsm_src = _fabric_value_from(
+                r, fabric_fields.get("gsm"), numeric=True)
+            source_counts["width_m"][width_src or "(none)"] += 1
+            source_counts["gsm"][gsm_src or "(none)"] += 1
 
             props = _props_by_label(r.get("product_properties"))
             fabric_name_odoo     = props.get(_label_key("Fabric Name"))
@@ -376,19 +600,19 @@ def extract_products(uid, models, cur, now, since=None):
                 kg_mtr,
                 width,
                 gsm,
-                _fabric_value(r, fabric_fields.get("plain_print")),
-                _fabric_value(r, fabric_fields.get("fabric_structure")),
-                _fabric_value(r, fabric_fields.get("fabric_category")),
-                _fabric_value(r, fabric_fields.get("fabric_subcategory")),
-                _fabric_value(r, fabric_fields.get("stretch_type")),
-                _fabric_value(r, fabric_fields.get("weight_range")),
-                _fabric_value(r, fabric_fields.get("fiber_content")),
-                _fabric_value(r, fabric_fields.get("fabric_type")),
-                _fabric_value(r, fabric_fields.get("supplier")),
-                _fabric_value(r, fabric_fields.get("supplier_fabric_code")),
-                _fabric_value(r, fabric_fields.get("primary_color")),
-                _fabric_value(r, fabric_fields.get("source_city")),
-                _fabric_value(r, fabric_fields.get("source_country")),
+                pick("plain_print"),
+                pick("fabric_structure"),
+                pick("fabric_category"),
+                pick("fabric_subcategory"),
+                pick("stretch_type"),
+                pick("weight_range"),
+                pick("fiber_content"),
+                pick("fabric_type"),
+                pick("supplier"),
+                pick("supplier_fabric_code"),
+                pick("primary_color"),
+                pick("source_city"),
+                pick("source_country"),
                 r.get("barcode") or None,
                 _derive_color(r.get("name","")),
                 _derive_color(r.get("name","")),
@@ -401,6 +625,15 @@ def extract_products(uid, models, cur, now, since=None):
         offset += batch_size
         if len(records) < batch_size:
             break
+
+    if since is None and not rows:
+        # A full pull that got NOTHING back from Odoo is a broken feed (the
+        # category ids vanished, a permissions change, …) — never an excuse to
+        # truncate the master. Keep the last known-good rows and fail loudly.
+        raise RuntimeError(
+            "Fabric full product pull returned 0 records from Odoo; refusing "
+            "to truncate the existing Fabric master."
+        )
 
     # Full pull replaces the whole table (also reconciles hard-deletes); the
     # incremental fast path upserts only the changed rows and leaves the rest.
@@ -446,6 +679,21 @@ def extract_products(uid, models, cur, now, since=None):
         # MAX(_loaded_at) age reflects this successful sync even on cycles where
         # nothing changed (0 changed rows is the normal steady state).
         cur.execute("UPDATE raw_fabric_products SET _loaded_at = %s", (now,))
+
+    # Record the source selection that produced THESE rows. The caller commits
+    # it atomically with the data: a failed pull rolls back both, so the next
+    # run sees the old fingerprint and retries the full reconciliation.
+    cur.execute("""
+        INSERT INTO fabric_sync_state (key, value, updated_at)
+        VALUES (%s, %s, %s)
+        ON CONFLICT (key) DO UPDATE
+           SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
+    """, (_MAPPING_STATE_KEY, mapping_sig, now))
+
+    if rows:
+        for concept, counts in source_counts.items():
+            log.info("Fabric %s value sources: %s", concept,
+                     ", ".join(f"{f}={c}" for f, c in counts.most_common()))
     log.info("✅ raw_fabric_products: %d changed rows (incremental=%s)",
              len(rows), since is not None)
 
