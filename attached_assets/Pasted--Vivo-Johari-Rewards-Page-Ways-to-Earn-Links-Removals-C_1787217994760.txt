@@ -1,0 +1,39 @@
+# Vivo Johari — Rewards Page: "Ways to Earn" Links + Removals
+
+**Context:** The Rewards page's "Ways to Earn" grid (Purchases, Text Review, Photo Review, Video Review, Community Look — Photo, Community Look — Video, Fit Notes, Join Challenge, Refer a Friend, Weekly Missions) currently isn't linked to anything — the tiles are static. This spec makes each tile link somewhere real, and removes two that don't need to exist.
+
+---
+
+## Per-tile changes
+
+| Tile | Change |
+|---|---|
+| **Purchases** | Links to **Shop**. |
+| **Text Review** | Links to **Community**. |
+| **Photo Review** | **Remove entirely.** |
+| **Video Review** | **Remove entirely.** |
+| **Community Look — Photo** | Links to the **Community landing page**. |
+| **Community Look — Video** | Links to the **Community landing page**. |
+| **Fit Notes** | No change specified — leave as-is for now. |
+| **Join Challenge** | Links to a **new Challenges page** (see below). |
+| **Refer a Friend** | Links to a **new Refer-a-Friend landing page** (see below). |
+| **Weekly Missions** | Links to a **new Weekly Missions landing page** (see below). |
+
+## New pages needed
+
+**Challenges page** — a landing page where users can browse and join active challenges (e.g. #MyVivoStory from Home's "This week's mission" banner). This is a new page, not something that currently exists elsewhere in the app.
+
+**Refer-a-Friend landing page** — lets a user either copy a referral link to share manually, or enter a friend's email address to have an invite sent directly. Both methods should generate/use the same underlying referral link so points are correctly attributed to the referrer regardless of which method the friend uses to join.
+
+**Weekly Missions landing page** — a dedicated page listing the current week's missions/tasks (distinct from the general "Ways to Earn" tile grid — this is specifically the rotating weekly set).
+
+## Related: Home page addition
+
+Per this conversation, Home should also get a **button/banner linking to Challenges, with an image** — this is a new entry point beyond the Rewards page tile. Flagging here since it originated from this discussion; see the separate Home reorder spec for where this should sit in the page layout (this needs to be added to that spec as a new banner, likely following the same image-banner pattern as Curators/Style Boards/Vivo Spotted).
+
+## Implementation notes for the Replit agent
+
+- Photo Review and Video Review removal: confirm whether removing these tiles also means removing the ability to earn points for photo/video reviews generally, or just removing their promotional tile from this grid (i.e., can a review still include photos/video, just without a dedicated points-earning tile calling it out?). Recommend clarifying with Sharon before removing any underlying earning logic, not just the tile.
+- The three new destination pages (Challenges, Refer-a-Friend, Weekly Missions) are net-new builds, not just links to existing content — scope these as their own small features, not one-line routing changes.
+- For Refer-a-Friend: decide whether the referral reward (currently shown as "200 PTS") triggers on link-share, on the friend's signup, or on the friend's first purchase — this affects the backend logic, not just the landing page UI.
+- "Community Look — Photo" and "Community Look — Video" both point to the same Community landing page destination — confirm that's intentional (two tiles, one destination) rather than needing distinct destinations per type.

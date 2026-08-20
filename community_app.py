@@ -749,8 +749,16 @@ def _ensure_tables():
         ALTER TABLE community_members ADD COLUMN IF NOT EXISTS show_tier BOOLEAN NOT NULL DEFAULT FALSE;
         ALTER TABLE community_members ADD COLUMN IF NOT EXISTS show_leaderboard BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE community_members ADD COLUMN IF NOT EXISTS consent_terms_version TEXT;
+        -- Referral codes are opaque public handles; the member id and contact
+        -- details never travel in a share link. A referrer is captured once,
+        -- when a genuinely new member completes signup.
+        ALTER TABLE community_members ADD COLUMN IF NOT EXISTS referral_code TEXT;
+        ALTER TABLE community_members ADD COLUMN IF NOT EXISTS referred_by_member_id INT
+            REFERENCES community_members(id);
         CREATE UNIQUE INDEX IF NOT EXISTS community_members_username_uq
             ON community_members (LOWER(username)) WHERE username IS NOT NULL;
+        CREATE UNIQUE INDEX IF NOT EXISTS community_members_referral_code_uq
+            ON community_members (referral_code) WHERE referral_code IS NOT NULL;
         -- Backfill existing members with a placeholder handle (first name +
         -- member id, unique by construction) they can change in Profile.
         UPDATE community_members
@@ -800,6 +808,14 @@ def _ensure_tables():
             points INT NOT NULL,
             created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             UNIQUE (member_id, kind)
+        );
+        -- At most one referrer can earn for a referred member. This is the
+        -- durable guard around the referral ledger event, not a UI promise.
+        CREATE TABLE IF NOT EXISTS community_referral_rewards (
+            referred_member_id INT PRIMARY KEY REFERENCES community_members(id),
+            referrer_member_id INT NOT NULL REFERENCES community_members(id),
+            awarded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            CHECK (referred_member_id <> referrer_member_id)
         );
         -- Style Quiz answers + composed Style DNA, one row per member. The
         -- size_range / fit_lean answers are private (member-only, never on
@@ -2018,6 +2034,125 @@ def _earned_bonus_points(cur, member_id):
     return int((cur.fetchone() or {}).get("p") or 0)
 
 
+_REFERRAL_CODE_RE = re.compile(r"^[A-Za-z0-9_-]{8,32}$")
+REFERRAL_REWARD_POINTS = 200
+COMMUNITY_APP_PATH = "/app/"
+COMMUNITY_PUBLIC_ORIGIN = (os.environ.get("COMMUNITY_PUBLIC_ORIGIN") or "").rstrip("/")
+REFERRAL_RECON_INTERVAL_SEC = 60
+_referral_reconciler_started = False
+_referral_reconciler_lock = threading.Lock()
+
+
+def _new_referral_code(cur):
+    """Return a collision-free, URL-safe code without exposing member ids."""
+    for _ in range(8):
+        code = secrets.token_urlsafe(9)
+        cur.execute(
+            "SELECT 1 FROM community_members WHERE referral_code = %s LIMIT 1",
+            (code,),
+        )
+        if not cur.fetchone():
+            return code
+    raise RuntimeError("Could not generate a referral code")
+
+
+def _referral_code_for_member(cur, member):
+    """Lazily provision legacy members' referral codes, safely under races."""
+    existing = (member.get("referral_code") or "").strip()
+    if existing:
+        return existing
+    for _ in range(8):
+        code = _new_referral_code(cur)
+        cur.execute(
+            """UPDATE community_members
+                  SET referral_code = %s
+                WHERE id = %s AND referral_code IS NULL
+              RETURNING referral_code""",
+            (code, member["id"]),
+        )
+        row = cur.fetchone()
+        if row:
+            return row["referral_code"]
+        cur.execute("SELECT referral_code FROM community_members WHERE id = %s", (member["id"],))
+        row = cur.fetchone() or {}
+        if row.get("referral_code"):
+            return row["referral_code"]
+    raise RuntimeError("Could not provision a referral code")
+
+
+def _clean_referral_code(value):
+    code = str(value or "").strip()
+    return code if _REFERRAL_CODE_RE.fullmatch(code) else ""
+
+
+def _award_referral_after_first_purchase(cur, member, order_count):
+    """Credit a referrer exactly once after the new member has a real order.
+
+    The aggregate customer record is only consulted after it has been linked
+    to the member, and the unique reward row keeps repeated /me calls and
+    sync backfills from double-crediting the referrer.
+    """
+    referrer_id = member.get("referred_by_member_id")
+    if not referrer_id or int(order_count or 0) < 1:
+        return
+    cur.execute(
+        """INSERT INTO community_referral_rewards
+               (referred_member_id, referrer_member_id)
+           VALUES (%s, %s)
+           ON CONFLICT (referred_member_id) DO NOTHING
+           RETURNING referrer_member_id""",
+        (member["id"], referrer_id),
+    )
+    row = cur.fetchone()
+    if not row:
+        return
+    cur.execute(
+        """INSERT INTO community_points_events (member_id, kind, points)
+           VALUES (%s, %s, %s)
+           ON CONFLICT (member_id, kind) DO NOTHING""",
+        (referrer_id, f"referral:{member['id']}", REFERRAL_REWARD_POINTS),
+    )
+    _me_cache.pop(referrer_id, None)
+
+
+def _reconcile_referral_rewards():
+    """Reconcile qualifying first purchases from the canonical customer sync.
+
+    This runs independently of member reads so a reward follows the purchase
+    data even when neither friend opens the app. The per-referred-member
+    primary key remains the concurrency/idempotency fence.
+    """
+    _ensure_tables()
+    with _db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """SELECT m.id, m.referred_by_member_id
+                   FROM community_members m
+                   JOIN all_customers c
+                     ON c.customer_id = m.customer_id
+                    AND c.store_id = m.customer_store_id
+                   LEFT JOIN community_referral_rewards rr
+                     ON rr.referred_member_id = m.id
+                  WHERE m.referred_by_member_id IS NOT NULL
+                    AND COALESCE(c.total_orders, 0) >= 1
+                    AND rr.referred_member_id IS NULL"""
+            )
+            for member in cur.fetchall():
+                _award_referral_after_first_purchase(cur, member, 1)
+        conn.commit()
+
+
+def _referral_reconciler_loop():
+    # Let the API bind its port before the optional DB reconciliation begins.
+    time.sleep(15)
+    while True:
+        try:
+            _reconcile_referral_rewards()
+        except Exception as e:
+            log.warning("community referral reconciliation failed: %s", type(e).__name__)
+        time.sleep(REFERRAL_RECON_INTERVAL_SEC)
+
+
 # ---- Style Quiz -------------------------------------------------------------
 # Whitelisted answer ids -> warm descriptor tokens. The composer respects the
 # member's own pick order, so the DNA reads like her taste, not our taxonomy.
@@ -2921,6 +3056,15 @@ def register_community_routes(app, api_pg_module):
     global A
     A = api_pg_module
 
+    # Purchase ingestion is outside this module. Reconcile referral rewards in
+    # a daemon worker after startup rather than coupling a customer-facing
+    # request to an order-sync run. The worker itself is idempotent.
+    global _referral_reconciler_started
+    with _referral_reconciler_lock:
+        if not _referral_reconciler_started:
+            threading.Thread(target=_referral_reconciler_loop, daemon=True).start()
+            _referral_reconciler_started = True
+
     # ---------- auth ----------
 
     @app.post("/api/community/auth/request-code")
@@ -3066,13 +3210,28 @@ def register_community_routes(app, api_pg_module):
                         "suggestions": _suggest_usernames(cur, username),
                     })
                 match = _match_customer(cur, phone)
+                referral_code = _clean_referral_code(payload.get("referral_code"))
+                referrer_id = None
+                # A referral only applies to someone who has not already
+                # purchased. Existing customers may join Johari, but cannot
+                # turn historical spend into a referral reward.
+                if referral_code and int((match or {}).get("total_orders") or 0) == 0:
+                    cur.execute(
+                        """SELECT id, phone FROM community_members
+                           WHERE referral_code = %s LIMIT 1""",
+                        (referral_code,),
+                    )
+                    referrer = cur.fetchone()
+                    if referrer and referrer["phone"] != phone:
+                        referrer_id = referrer["id"]
+                member_referral_code = _new_referral_code(cur)
                 try:
                     cur.execute(
                         """INSERT INTO community_members
                                (phone, full_name, email, dob, consent_at,
                                 customer_id, customer_store_id, last_login_at, username,
-                                consent_terms_version)
-                           VALUES (%s, %s, %s, %s, now(), %s, %s, now(), %s, %s)
+                                 consent_terms_version, referral_code, referred_by_member_id)
+                           VALUES (%s, %s, %s, %s, now(), %s, %s, now(), %s, %s, %s, %s)
                            ON CONFLICT (phone) DO NOTHING
                            RETURNING *""",
                         (
@@ -3081,6 +3240,8 @@ def register_community_routes(app, api_pg_module):
                             (match or {}).get("store_id"),
                             username,
                             terms_version,
+                            member_referral_code,
+                            referrer_id,
                         ),
                     )
                 except psycopg2.IntegrityError:
@@ -3132,6 +3293,56 @@ def register_community_routes(app, api_pg_module):
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 m = _require_member(cur, request)
                 return {"member": _member_payload(cur, m)}
+
+    @app.get("/api/community/referrals/me")
+    def community_referral_me(request: Request):
+        _ensure_tables()
+        _throttle(request, "ref-me", [("ip", 60, 600), ("global", 3000, 3600)])
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                m = _require_member(cur, request)
+                code = _referral_code_for_member(cur, m)
+                conn.commit()
+                return {
+                    "code": code,
+                    "reward_points": REFERRAL_REWARD_POINTS,
+                    "reward_timing": "first_purchase",
+                }
+
+    @app.post("/api/community/referrals/invite")
+    def community_referral_invite(request: Request, payload: dict = Body(...)):
+        _ensure_tables()
+        _throttle(request, "ref-invite", [("ip", 10, 3600), ("global", 1000, 3600)])
+        email = str(payload.get("email") or "").strip().lower()
+        if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+            raise HTTPException(status_code=400, detail="Enter a valid email address")
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                m = _require_member(cur, request)
+                if email == (m.get("email") or "").strip().lower():
+                    raise HTTPException(status_code=400, detail="Use a friend's email address")
+                code = _referral_code_for_member(cur, m)
+                conn.commit()
+        # Never derive email destinations from caller-controlled request
+        # headers. Community is mounted at /app/, so one canonical deployment
+        # origin makes every invite safe and routable.
+        if not re.fullmatch(r"https://[^/\s]+", COMMUNITY_PUBLIC_ORIGIN):
+            log.error("COMMUNITY_PUBLIC_ORIGIN is missing or invalid")
+            raise HTTPException(status_code=503, detail="Referral invites are temporarily unavailable")
+        referral_url = f"{COMMUNITY_PUBLIC_ORIGIN}{COMMUNITY_APP_PATH}?ref={code}"
+        name = (m.get("full_name") or "A Vivo Johari member").split()[0]
+        body = (
+            f"{name} has invited you to Vivo Johari.\n\n"
+            "Join with their invitation, then make your first Vivo purchase "
+            f"to thank them with {REFERRAL_REWARD_POINTS} Johari points.\n\n"
+            f"Join Vivo Johari: {referral_url}\n"
+        )
+        threading.Thread(
+            target=_send_member_email,
+            args=(email, "You're invited to Vivo Johari", body),
+            daemon=True,
+        ).start()
+        return {"ok": True, "message": "Your invitation is on its way."}
 
     @app.get("/api/community/auth/username-check")
     def community_username_check(request: Request, u: str = ""):

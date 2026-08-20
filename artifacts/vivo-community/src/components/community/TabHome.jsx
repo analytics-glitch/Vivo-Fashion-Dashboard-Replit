@@ -422,6 +422,17 @@ function StyleBoardsTeaser({ onOpenStyleBoards }) {
   );
 }
 
+function ChallengesTeaser({ onOpenChallenges }) {
+  return (
+    <HomeTeaserBanner
+      banner={HOME_TEASER_BANNERS.challenges}
+      testId="home-challenges-teaser"
+      ctaTestId="home-challenges-cta"
+      onOpen={() => onOpenChallenges?.()}
+    />
+  );
+}
+
 function JohariNewsCompact({ onOpenNews }) {
   const item = NEWS[0];
   if (!item) return null;
@@ -549,7 +560,7 @@ function GiveBack({ onOpenPage }) {
   );
 }
 
-export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage, onOpenEvents, onOpenEvent, onOpenStyleBoards }) {
+export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage, onOpenEvents, onOpenEvent, onOpenStyleBoards, onOpenChallenges }) {
   const [cel, setCel] = useState(null);
   const [events, setEvents] = useState([]);
 
@@ -631,8 +642,11 @@ export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage,
         </div>
       </div>
 
-      {/* Row 5: Events */}
-      <EventsRow events={events} onOpenEvents={onOpenEvents} onOpenEvent={onOpenEvent} />
+      {/* Row 5: Events + Challenges */}
+      <div data-testid="home-events-challenges-row" className="grid grid-cols-1 md:grid-cols-2 gap-5 sm:gap-6 items-stretch">
+        <EventsRow events={events} onOpenEvents={onOpenEvents} onOpenEvent={onOpenEvent} />
+        <ChallengesTeaser onOpenChallenges={onOpenChallenges} />
+      </div>
 
       <ConfigurablePromoBanner />
       

@@ -1,5 +1,6 @@
 import React from 'react';
-import { TierBadge, JohariWordmark, cardCls } from "./ui";
+import { TierBadge, JohariWordmark, Avatar, cardCls } from "./ui";
+import { AtSign, MapPin } from "lucide-react";
 
 // Johari rewards summary — the dark editorial band with tier badge, greeting,
 // available balance, voucher nudge and the tier-progress bar. Lives at the
@@ -49,7 +50,7 @@ export function WeeklyMissionsCard() {
   );
 }
 
-export default function RewardsSummaryCard({ member }) {
+function BalanceContent({ member }) {
   const m = member || {};
   const points = m.points ?? 0;
   // Tier progress runs on lifetime earn — redeeming a reward never walks
@@ -63,12 +64,7 @@ export default function RewardsSummaryCard({ member }) {
   const voucherValue = Math.floor(points / 300) * 500;
 
   return (
-    <div data-testid="rewards-balance-card" className="relative overflow-hidden rounded bg-foreground text-background p-6 sm:p-9 -mx-4 sm:mx-0">
-      <div className="absolute top-0 right-0 w-52 h-52 bg-white/5 rounded-full blur-3xl pointer-events-none" aria-hidden="true" />
-      <div className="flex items-center justify-between gap-4 mb-5">
-        <div data-testid="johari-wordmark" className="text-[12px] text-background/70"><JohariWordmark withVivo /></div>
-        <TierBadge tier={m.tier} />
-      </div>
+    <>
       <h2 className="font-serif text-2xl sm:text-3xl leading-tight mb-1 text-background">
         {firstName ? `You shine, ${firstName}.` : "You shine."}
       </h2>
@@ -97,6 +93,80 @@ export default function RewardsSummaryCard({ member }) {
           <span className={lifetimePoints >= 1000 ? 'text-background/90' : ''}>Tanzanite (1,000+)</span>
         </div>
       </div>
+    </>
+  );
+}
+
+export function AccountSummaryCard({ member, publishedPosts = 0 }) {
+  const m = member || {};
+  const stats = m.stats || {};
+  const name = m.name || m.full_name || "Vivo Member";
+  const following = stats.following ?? m.following ?? 0;
+
+  return (
+    <div data-testid="account-summary-card" className="relative overflow-hidden rounded bg-foreground text-background p-6 sm:p-9 -mx-4 sm:mx-0">
+      <div className="absolute top-0 right-0 w-52 h-52 bg-white/5 rounded-full blur-3xl pointer-events-none" aria-hidden="true" />
+
+      {/* Identity */}
+      <div className="relative z-10 flex items-center gap-4 sm:gap-6 pb-6 border-b border-white/15">
+        <Avatar initials={m.initials || "V"} tier={m.tier} size="lg" />
+        <div className="min-w-0 flex-grow">
+          <div className="flex flex-wrap items-center gap-2.5 mb-2">
+            <h1 data-testid="profile-name" className="text-2xl sm:text-3xl font-serif text-background">{name}</h1>
+            <TierBadge tier={m.tier} />
+          </div>
+          {m.username && (
+            <div data-testid="profile-username" className="text-sm text-background/70 mb-2 flex items-center gap-1">
+              <AtSign size={13} aria-hidden="true" /><span>@{m.username}</span>
+              <span className="opacity-60 ml-1">· your name stays private</span>
+            </div>
+          )}
+          <div className="text-background/70 text-sm flex flex-wrap items-center gap-x-3 gap-y-1">
+            <span className="flex items-center gap-1.5"><MapPin size={14} /> {stats.city || "Kenya"}</span>
+            <span className="opacity-40">•</span>
+            <span>Member since {m.joined || "today"}</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Available balance and tier progress */}
+      <div className="relative z-10 pt-6">
+        <div data-testid="johari-wordmark" className="text-[12px] text-background/70 mb-5"><JohariWordmark withVivo /></div>
+        <BalanceContent member={member} />
+      </div>
+
+      {/* Account stats */}
+      <div className="grid grid-cols-4 gap-2 sm:gap-4 mt-7 pt-6 border-t border-white/15 text-center relative z-10">
+        <div>
+          <div data-testid="profile-posts" className="text-2xl font-serif text-background">{publishedPosts}</div>
+          <div className="text-[10px] font-bold uppercase tracking-widest text-background/60 mt-2">Posts</div>
+        </div>
+        <div>
+          <div data-testid="profile-points" className="text-2xl font-serif text-primary">{(m.lifetime_points ?? 0).toLocaleString()}</div>
+          <div className="text-[10px] font-bold uppercase tracking-widest text-background/60 mt-2">Lifetime Pts</div>
+        </div>
+        <div>
+          <div data-testid="profile-orders" className="text-2xl font-serif text-background">{stats.orders ?? 0}</div>
+          <div className="text-[10px] font-bold uppercase tracking-widest text-background/60 mt-2">Orders</div>
+        </div>
+        <div>
+          <div className="text-2xl font-serif text-background">{following}</div>
+          <div className="text-[10px] font-bold uppercase tracking-widest text-background/60 mt-2">Following</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default function RewardsSummaryCard({ member }) {
+  return (
+    <div data-testid="rewards-balance-card" className="relative overflow-hidden rounded bg-foreground text-background p-6 sm:p-9 -mx-4 sm:mx-0">
+      <div className="absolute top-0 right-0 w-52 h-52 bg-white/5 rounded-full blur-3xl pointer-events-none" aria-hidden="true" />
+      <div className="flex items-center justify-between gap-4 mb-5">
+        <div data-testid="johari-wordmark" className="text-[12px] text-background/70"><JohariWordmark withVivo /></div>
+        <TierBadge tier={member?.tier} />
+      </div>
+      <BalanceContent member={member} />
     </div>
   );
 }

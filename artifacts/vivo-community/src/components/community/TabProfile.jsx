@@ -1,11 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { api } from "@/lib/api";
-import { TierBadge, Avatar, cardCls, btnSecondary, inputCls } from "./ui";
-import { MapPin, Package, ArrowRight, LogOut, Camera, Ruler, Check, Loader2, ShieldCheck, AtSign, Clock, Heart, ChevronRight, Hourglass, Trophy } from "lucide-react";
+import { cardCls, btnSecondary, inputCls } from "./ui";
+import { Package, ArrowRight, LogOut, Camera, Ruler, Check, Loader2, ShieldCheck, AtSign, Clock, Heart, ChevronRight, Hourglass, Trophy } from "lucide-react";
 import { useWishlist } from "@/context/WishlistContext";
 import EntryModal, { ENTRY_STATUS_COPY } from "./EntryModal";
 import { StylePrefsProfileCard } from "./StyledForYou";
-import RewardsSummaryCard, { WeeklyMissionsCard } from "./RewardsSummaryCard";
+import { AccountSummaryCard, WeeklyMissionsCard } from "./RewardsSummaryCard";
 
 const WIN_LABEL = { 1: "1st place", 2: "2nd place", 3: "3rd place" };
 
@@ -248,62 +248,14 @@ export default function TabProfile({ member, onSignOut, onMemberUpdate, onOpenWi
       {/* Johari rewards summary — moved here from the Rewards tab so her
           balance and tier greet her first on the Account page. */}
       <div className="mb-10 space-y-10">
-        <RewardsSummaryCard member={member} />
+        <AccountSummaryCard
+          member={member}
+          publishedPosts={myEntries.filter((e) => e.entry_status === "published").length}
+        />
         <WeeklyMissionsCard />
       </div>
-      {/* Profile header — editorial charcoal band matching the Rewards hero,
-          with the Style DNA / quiz block on the cream ground beneath it. */}
-      <div className="mb-10 rounded overflow-hidden -mx-4 sm:mx-0">
-        <div className="relative bg-foreground text-background p-6 sm:p-10 overflow-hidden">
-          <div className="absolute top-0 right-0 w-52 h-52 bg-white/5 rounded-full blur-3xl pointer-events-none" aria-hidden="true" />
-
-          <div className="relative flex flex-col md:flex-row items-center md:items-start gap-6 md:gap-8 z-10">
-            <Avatar initials={m.initials || "V"} tier={m.tier} size="lg" />
-
-            <div className="flex-grow text-center md:text-left flex flex-col items-center md:items-start">
-              <div className="flex flex-col md:flex-row md:items-center gap-3 mb-2">
-                <h1 data-testid="profile-name" className="text-3xl font-serif text-background">{m.name || "Vivo Member"}</h1>
-                <TierBadge tier={m.tier} className="self-center" />
-              </div>
-
-              {m.username && (
-                <div data-testid="profile-username" className="text-sm text-background/70 mb-3 flex items-center gap-1">
-                  <AtSign size={13} />{m.username}
-                  <span className="opacity-60 ml-1">· what members see · your name stays private</span>
-                </div>
-              )}
-
-              <div className="text-background/70 text-sm flex flex-wrap items-center justify-center md:justify-start gap-x-3 gap-y-1">
-                <span className="flex items-center gap-1.5"><MapPin size={14} /> {stats.city || "Kenya"}</span>
-                <span className="opacity-40">•</span>
-                <span>Member since {m.joined || "today"}</span>
-              </div>
-            </div>
-          </div>
-
-          {/* Stats Row */}
-          <div className="grid grid-cols-4 gap-4 mt-8 pt-6 border-t border-white/15 text-center relative z-10">
-            <div>
-              <div data-testid="profile-posts" className="text-2xl font-serif text-background">{myEntries.filter((e) => e.entry_status === "published").length}</div>
-              <div className="text-[10px] font-bold uppercase tracking-widest text-background/60 mt-2">Posts</div>
-            </div>
-            <div>
-              <div data-testid="profile-points" className="text-2xl font-serif text-primary">{(m.lifetime_points ?? 0).toLocaleString()}</div>
-              <div className="text-[10px] font-bold uppercase tracking-widest text-background/60 mt-2">Lifetime Pts</div>
-            </div>
-            <div>
-              <div data-testid="profile-orders" className="text-2xl font-serif text-background">{stats.orders ?? 0}</div>
-              <div className="text-[10px] font-bold uppercase tracking-widest text-background/60 mt-2">Orders</div>
-            </div>
-            <div>
-              <div className="text-2xl font-serif text-background">0</div>
-              <div className="text-[10px] font-bold uppercase tracking-widest text-background/60 mt-2">Following</div>
-            </div>
-          </div>
-        </div>
-
-        {/* Size + Style DNA strip on the cream ground */}
-        <div className="pt-6 px-1 sm:px-0 flex flex-col items-center md:items-start">
+      {/* Size + Style DNA strip on the cream ground */}
+      <div className="mb-10 pt-6 px-1 sm:px-0 flex flex-col items-center md:items-start">
 
             {stats.preferred_size && (
               <div className="inline-flex items-center gap-1.5 bg-secondary text-foreground text-xs font-medium px-3 py-1.5 rounded border border-border mb-6">
@@ -339,7 +291,6 @@ export default function TabProfile({ member, onSignOut, onMemberUpdate, onOpenWi
                 </div>
               </div>
             )}
-        </div>
       </div>
 
       {/* Styled for You — opt-in toggle + preference summary */}

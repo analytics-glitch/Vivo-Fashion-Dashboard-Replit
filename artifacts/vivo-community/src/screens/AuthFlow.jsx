@@ -48,6 +48,9 @@ export default function AuthFlow() {
   const [resendIn, setResendIn] = useState(0);
   const [page, setPage] = useState(""); // "" | faq | terms | privacy | guidelines
   const codeRef = useRef(null);
+  // Preserve an opaque referral code all the way through the phone-first
+  // verification journey. It is validated server-side at signup.
+  const referralCodeRef = useRef(new URLSearchParams(window.location.search).get("ref") || "");
 
   const phoneDigits = () => cc + local.replace(/\D/g, "").replace(/^0+/, "");
   const localOk = /^\d{9,10}$/.test(local.replace(/\D/g, "").replace(/^0+/, "")) ||
@@ -127,6 +130,7 @@ export default function AuthFlow() {
         email,
         dob,
         consent,
+        referral_code: referralCodeRef.current,
         // Version of the terms shown at the moment of consent — recorded
         // server-side as consent_terms_version.
         terms_version: LEGAL_META.terms.version,

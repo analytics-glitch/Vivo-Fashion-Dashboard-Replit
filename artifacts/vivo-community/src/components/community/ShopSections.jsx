@@ -21,9 +21,9 @@ const swatchFor = (color) => {
   return "";
 };
 
-/* Product rail card — image-led with wishlist heart, colour swatch and a
-   quick-add affordance. Tapping the bag icon opens the lightweight size
-   picker overlay so she can add to bag without leaving the rail. */
+/* Product rail card — image-led with a lower-right colour swatch, wishlist
+   heart and quick-add affordance. Tapping the bag icon opens the lightweight
+   size picker overlay so she can add to bag without leaving the rail. */
 export function RailCard({ p, onOpenProduct, idPrefix = "rail" }) {
   const { has, toggle } = useWishlist();
   const saved = has(p.sku);
@@ -31,13 +31,15 @@ export function RailCard({ p, onOpenProduct, idPrefix = "rail" }) {
   const [quickAdd, setQuickAdd] = useState(false);
   const hex = swatchFor(p.color);
   return (
-    <div className="w-[170px] sm:w-[200px] shrink-0 snap-start relative group">
-      <button
-        data-testid={`${idPrefix}-card-${p.sku}`}
-        onClick={() => onOpenProduct?.(p.sku)}
-        className="w-full text-left rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-      >
-        <div className="relative aspect-[3/4] rounded overflow-hidden bg-secondary mb-2.5">
+    <div className="w-[170px] sm:w-[200px] shrink-0 snap-start group">
+      <div className="relative aspect-[3/4] rounded overflow-hidden bg-secondary mb-2.5">
+        <button
+          type="button"
+          data-testid={`${idPrefix}-card-${p.sku}`}
+          aria-label={`View ${p.style_name}`}
+          onClick={() => onOpenProduct?.(p.sku)}
+          className="w-full h-full text-left rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+        >
           {imgOk ? (
             <img
               src={p.image_url}
@@ -50,37 +52,45 @@ export function RailCard({ p, onOpenProduct, idPrefix = "rail" }) {
             <ImagePlaceholder aspectRatio="h-full" text={p.style_name} className="rounded-none border-none" />
           )}
           <MerchBadge badge={p.badge} testId={`${idPrefix}-badge-${p.sku}`} className="absolute bottom-2 left-2" />
+        </button>
+        {p.color && hex && (
+          <div
+            data-testid={`${idPrefix}-swatch-${p.sku}`}
+            className="absolute bottom-2 right-2 z-10 rounded-full bg-background/85 p-1.5 backdrop-blur shadow-sm"
+            aria-label={`Colour: ${p.color}`}
+            title={p.color}
+          >
+            <span className="block w-5 h-5 rounded-full border-2 border-border" style={{ background: hex }} aria-hidden="true" />
+          </div>
+        )}
+        <div className="absolute top-2 right-2 z-10 flex flex-col gap-1.5">
+          <button
+            data-testid={`${idPrefix}-wish-${p.sku}`}
+            aria-label={saved ? `Remove ${p.style_name} from wishlist` : `Add ${p.style_name} to wishlist`}
+            aria-pressed={saved}
+            onClick={() => toggle({ sku: p.sku, name: p.style_name, price: p.price, image: p.image_url, color: p.color || "", category: p.category || "" })}
+            className="w-9 h-9 rounded-full bg-background/85 backdrop-blur flex items-center justify-center text-foreground hover:bg-background transition-colors shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          >
+            <Heart size={15} strokeWidth={1.5} className={saved ? "fill-primary text-primary-ink" : ""} />
+          </button>
+          <button
+            data-testid={`${idPrefix}-quickadd-${p.sku}`}
+            aria-label={`Quick add ${p.style_name}`}
+            onClick={(e) => { e.stopPropagation(); setQuickAdd(true); }}
+            className="w-9 h-9 rounded-full bg-background/85 backdrop-blur flex items-center justify-center text-foreground hover:bg-background transition-colors shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          >
+            <ShoppingBag size={14} strokeWidth={1.5} />
+          </button>
         </div>
-        <div className="font-serif text-[13px] leading-snug text-foreground line-clamp-2 mb-1">{p.style_name}</div>
-        <div className="flex items-center gap-2 mb-0.5">
-          {p.color && (
-            <span className="flex items-center gap-1.5 min-w-0">
-              {hex && <span className="w-3 h-3 rounded-full border border-border shrink-0" style={{ background: hex }} aria-hidden="true" />}
-              <span className="text-[11px] text-muted-foreground truncate">{p.color}</span>
-            </span>
-          )}
-        </div>
+      </div>
+      <button
+        type="button"
+        onClick={() => onOpenProduct?.(p.sku)}
+        className="block w-full text-left rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+      >
+        <div className="font-serif text-[13px] leading-snug text-foreground line-clamp-2 mb-2">{p.style_name}</div>
         <div className="text-[13px] font-medium text-foreground">{kes(p.price)}</div>
       </button>
-      <div className="absolute top-2 right-2 flex flex-col gap-1.5">
-        <button
-          data-testid={`${idPrefix}-wish-${p.sku}`}
-          aria-label={saved ? `Remove ${p.style_name} from wishlist` : `Add ${p.style_name} to wishlist`}
-          aria-pressed={saved}
-          onClick={() => toggle({ sku: p.sku, name: p.style_name, price: p.price, image: p.image_url, color: p.color || "", category: p.category || "" })}
-          className="w-9 h-9 rounded-full bg-background/85 backdrop-blur flex items-center justify-center text-foreground hover:bg-background transition-colors shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-        >
-          <Heart size={15} strokeWidth={1.5} className={saved ? "fill-primary text-primary-ink" : ""} />
-        </button>
-        <button
-          data-testid={`${idPrefix}-quickadd-${p.sku}`}
-          aria-label={`Quick add ${p.style_name}`}
-          onClick={(e) => { e.stopPropagation(); setQuickAdd(true); }}
-          className="w-9 h-9 rounded-full bg-background/85 backdrop-blur flex items-center justify-center text-foreground hover:bg-background transition-colors shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-        >
-          <ShoppingBag size={14} strokeWidth={1.5} />
-        </button>
-      </div>
       {quickAdd && (
         <QuickAddModal
           sku={p.sku}

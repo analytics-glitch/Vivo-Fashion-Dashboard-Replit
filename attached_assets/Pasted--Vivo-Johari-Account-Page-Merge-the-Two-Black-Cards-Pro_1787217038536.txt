@@ -1,0 +1,22 @@
+# Vivo Johari — Account Page: Merge the Two Black Cards
+
+**Problem:** The Account page currently has two separate black cards stacked on top of each other — a "You shine, Sharon" points/tier card, and a "Sharon Wamae" profile card below it. Both repeat the points balance (1,586 pts shows in both), which reads as redundant.
+
+## Fix: combine into one card
+
+Merge both into a single black card, structured top to bottom:
+
+1. **Identity row (from the current profile card):** avatar initials, name ("Sharon Wamae"), tier badge (TANZANITE), handle (@swamae · "your name stays private"), location and member-since line (Kenya · Member since July 2022).
+2. **Points balance (from the current points card):** "You shine, Sharon." headline, the points total ("1,586 pts available balance"), and the voucher-value line ("Worth up to KES 2,500 in vouchers — or keep climbing the ladder on the Rewards tab").
+3. **Tier progress bar** — unchanged, showing progress across Tsavorite / Ruby (500+) / Tanzanite (1,000+).
+4. **Stats row (from the current profile card):** Posts, Lifetime pts, Orders, Following — unchanged. Note "Lifetime pts" already covers the same number shown in the points balance above, so having both in one card makes that repetition feel intentional (lifetime total vs. current available balance) rather than like a duplicate section.
+
+## Why this works
+
+Right now the two cards split "who you are" and "how many points you have" into separate visual blocks that both use the same black background and both mention points — it reads as two versions of the same card rather than two different pieces of information. Combining them into one flow (identity → current balance → progress → lifetime stats) tells a single coherent story and removes the visual repetition, while keeping every piece of information that's currently there.
+
+## Implementation notes for the Replit agent
+
+- This is a layout/component merge, not a data change — all the same fields (points balance, tier, avatar, handle, location, member-since, stats) already exist; they're just currently split across two card components.
+- Keep the "This Week's Ways to Earn" section (Leave a Review / Post a Look cards) exactly where it is, positioned after this now-single merged card, same as today.
+- Confirm the merged card's internal spacing reads cleanly with four distinct groups (identity, balance, progress bar, stats) rather than feeling cramped — may need dividers or spacing adjustments between groups, not just concatenating the two existing cards' markup.

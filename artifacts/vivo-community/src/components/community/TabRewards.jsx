@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { TierBadge, cardCls, btnPrimary } from "./ui";
 import { api } from "@/lib/api";
 import TankRedeemFlow, { DesignThumb } from "./TankRedeemFlow";
-import { Star, Gift, ShoppingBag, Receipt, Ticket, Sparkles, Wand2, Video, Ruler, Users, CalendarCheck, Scissors, Truck, Shirt, ClipboardList, Check, Camera } from "lucide-react";
+import { Star, Gift, ShoppingBag, Receipt, Ticket, Sparkles, Wand2, Ruler, Users, CalendarCheck, Scissors, Truck, Shirt, ClipboardList, Check, Camera } from "lucide-react";
 
 function fmtDate(iso) {
   if (!iso) return "";
@@ -15,7 +15,7 @@ function fmtDate(iso) {
   }
 }
 
-export default function TabRewards({ member, onMemberUpdate, onOpenPage }) {
+export default function TabRewards({ member, onMemberUpdate, onOpenPage, onOpenShop, onOpenCommunity, onOpenChallenges }) {
   const m = member || {};
   const [tank, setTank] = useState(null);
   const [redemptions, setRedemptions] = useState([]);
@@ -124,16 +124,14 @@ export default function TabRewards({ member, onMemberUpdate, onOpenPage }) {
   ];
 
   const earnWays = [
-    { title: "Purchases", pts: "1 pt per 100 KES", icon: <ShoppingBag size={20} strokeWidth={1.5} /> },
-    { title: "Text Review", pts: "10 pts when published", icon: <Receipt size={20} strokeWidth={1.5} /> },
-    { title: "Photo Review", pts: "25 pts when published", icon: <Star size={20} strokeWidth={1.5} /> },
-    { title: "Video Review", pts: "40 pts when published", icon: <Video size={20} strokeWidth={1.5} /> },
-    { title: "Community Look — Photo", pts: "50 pts when published", icon: <Camera size={20} strokeWidth={1.5} /> },
-    { title: "Community Look — Video", pts: "100 pts when published", icon: <Gift size={20} strokeWidth={1.5} /> },
+    { title: "Purchases", pts: "1 pt per 100 KES", icon: <ShoppingBag size={20} strokeWidth={1.5} />, onClick: onOpenShop },
+    { title: "Text Review", pts: "10 pts when published", icon: <Receipt size={20} strokeWidth={1.5} />, onClick: onOpenCommunity },
+    { title: "Community Look — Photo", pts: "50 pts when published", icon: <Camera size={20} strokeWidth={1.5} />, onClick: onOpenCommunity },
+    { title: "Community Look — Video", pts: "100 pts when published", icon: <Gift size={20} strokeWidth={1.5} />, onClick: onOpenCommunity },
     { title: "Fit Notes", pts: "15 pts when published", icon: <Ruler size={20} strokeWidth={1.5} /> },
-    { title: "Join Challenge", pts: "Up to 150 pts when published", icon: <Ticket size={20} strokeWidth={1.5} /> },
-    { title: "Refer a Friend", pts: "200 pts", icon: <Users size={20} strokeWidth={1.5} /> },
-    { title: "Weekly Missions", pts: "Up to 100 pts", icon: <CalendarCheck size={20} strokeWidth={1.5} /> },
+    { title: "Join Challenge", pts: "Up to 150 pts when published", icon: <Ticket size={20} strokeWidth={1.5} />, onClick: onOpenChallenges },
+    { title: "Refer a Friend", pts: "200 pts after their first purchase", icon: <Users size={20} strokeWidth={1.5} />, onClick: () => onOpenPage?.("refer") },
+    { title: "Weekly Missions", pts: "Up to 100 pts", icon: <CalendarCheck size={20} strokeWidth={1.5} />, onClick: () => onOpenPage?.("missions") },
   ];
 
   return (
@@ -286,13 +284,21 @@ export default function TabRewards({ member, onMemberUpdate, onOpenPage }) {
         <div>
           <h2 className="text-xl font-serif text-foreground mb-6">How to Earn</h2>
           <div className="grid grid-cols-2 gap-3">
-            {earnWays.map(w => (
-              <div key={w.title} className="bg-secondary/50 rounded p-4 border border-border text-center flex flex-col items-center justify-center group hover:bg-secondary transition-colors">
+            {earnWays.map(w => {
+              const className = "bg-secondary/50 rounded p-4 border border-border text-center flex flex-col items-center justify-center group transition-colors";
+              const content = <>
                 <div className="text-muted-foreground group-hover:text-primary-ink transition-colors mb-3">{w.icon}</div>
                 <div className="font-medium text-foreground text-[13px] mb-1">{w.title}</div>
                 <div className="text-[11px] uppercase tracking-wider text-muted-foreground">{w.pts}</div>
-              </div>
-            ))}
+              </>;
+              return w.onClick ? (
+                <button key={w.title} type="button" data-testid={`earn-way-${w.title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`} onClick={w.onClick} className={`${className} hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary`}>
+                  {content}
+                </button>
+              ) : (
+                <div key={w.title} className={className}>{content}</div>
+              );
+            })}
           </div>
           <p className="text-[12px] text-muted-foreground leading-relaxed mt-4">
             Reviews, photos, videos, fit notes, style posts and challenge entries are reviewed with love before they go live — each earns its points when it's published.

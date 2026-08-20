@@ -3,10 +3,9 @@ import { ImagePlaceholder, MerchBadge, kes, swatchFor, brandAsset } from "./ui";
 import { ShoppingBag, Heart, ChevronDown, Sparkles, SlidersHorizontal, Search, X } from "lucide-react";
 import { api } from "@/lib/api";
 import { useWishlist } from "@/context/WishlistContext";
-import { FilterSheet, AppliedChips, emptyFilters, countActive, filtersToParams, MY_SIZE_LABELS } from "./ShopFilters";
+import { FilterSheet, AppliedChips, emptyFilters, countActive, filtersToParams } from "./ShopFilters";
 import { CategoryGrid, GenderToggle, ShopQuickLinks } from "./ShopSections";
 import { VivoEditsHome } from "./VivoEdits";
-import { useAuth } from "@/context/AuthContext";
 import { QuickAddModal } from "./QuickAddModal";
 
 const PAGE = 24;
@@ -23,15 +22,16 @@ const wishPayload = (p) => ({
 });
 
 /* Editorial product card — image-led, no box chrome: photo, then serif
-   two-line name, colour swatch and price on the open cream ground. The image
-   is the whole tap target; wishlist + quick-add float over the photo as
-   SIBLINGS (never nested). The shopping-bag icon opens a lightweight size
+   two-line name and price on the open cream ground. Colour swatches sit over
+   the lower-right of the image so the product gets more visual space. The
+   image is the whole tap target; wishlist + quick-add float over the photo
+   as SIBLINGS (never nested). The shopping-bag icon opens a lightweight size
    picker overlay so the shopper can add to bag without leaving the grid.
 
    Colourway swatches: when the server returns a `colourways` array (multiple
-   in-stock colourways for the style), tappable dot-swatches appear below the
-   name. Tapping one swaps the card thumbnail and colour label; opening the
-   card or the size picker navigates to that colourway's SKU. */
+   in-stock colourways for the style), tappable dot-swatches appear over the
+   image. Tapping one swaps the card thumbnail; opening the card or the size
+   picker navigates to that colourway's SKU. */
 function ProductCard({ product, onOpen }) {
   const { has, toggle } = useWishlist();
   // Active colourway: starts at the product itself, updated when a swatch is tapped.
@@ -59,14 +59,14 @@ function ProductCard({ product, onOpen }) {
   const open = () => onOpen(activeSku);
 
   return (
-    <div className="group relative">
-      <button
-        type="button"
-        data-testid={`product-card-${product.sku}`}
-        onClick={open}
-        className="flex flex-col w-full text-left cursor-pointer rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-      >
-        <div className="relative aspect-[3/4] rounded overflow-hidden bg-secondary mb-3">
+    <div className="group">
+      <div className="relative aspect-[3/4] rounded overflow-hidden bg-secondary mb-3">
+        <button
+          type="button"
+          aria-label={`View ${product.style_name}`}
+          onClick={open}
+          className="w-full h-full text-left cursor-pointer rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+        >
           {imgFailed ? (
             <ImagePlaceholder aspectRatio="aspect-[3/4]" text={product.style_name} className="rounded-none border-none h-full" />
           ) : (
@@ -79,81 +79,93 @@ function ProductCard({ product, onOpen }) {
             />
           )}
           <MerchBadge badge={product.badge} testId={`card-badge-${product.sku}`} className="absolute bottom-2.5 left-2.5" />
-        </div>
-        {/* Card reads: name → colour label → price. The whole card taps. */}
-        <h3 className="font-serif text-foreground text-[14px] sm:text-[15px] leading-snug mb-1 line-clamp-2">{product.style_name}</h3>
-        {activeColor && (
-          <div className="flex items-center gap-1.5 mb-1 min-w-0">
-            {activeHex && <span className="w-3 h-3 rounded-full border border-border shrink-0" style={{ background: activeHex }} aria-hidden="true" />}
-            <span className="text-[11px] text-muted-foreground truncate">{activeColor}</span>
+        </button>
+
+        {/* Colourway swatches are siblings of the image button: they stay
+            inside the photo while never nesting an interactive control. */}
+        {colourways && colourways.length > 1 && (
+          <div
+            data-testid={`swatches-${product.sku}`}
+            className="absolute bottom-2 right-2 z-10 flex max-w-[calc(100%-1rem)] flex-wrap justify-end gap-1 rounded-full bg-background/85 px-1.5 py-1 backdrop-blur shadow-sm"
+            role="group"
+            aria-label={`Colour options for ${product.style_name}`}
+          >
+            {colourways.slice(0, 6).map((cw) => {
+              const hex = swatchFor(cw.color);
+              const isActive = activeSku === cw.sku;
+              return (
+                <button
+                  key={cw.sku}
+                  type="button"
+                  data-testid={`swatch-${product.sku}-${cw.sku}`}
+                  aria-label={cw.color || "Colour option"}
+                  aria-pressed={isActive}
+                  onClick={(e) => pickColourway(e, cw)}
+                  className={`w-5 h-5 rounded-full border-2 transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
+                    isActive
+                      ? "border-foreground scale-110"
+                      : "border-border hover:border-foreground/50 hover:scale-105"
+                  }`}
+                  style={hex ? { background: hex } : { background: "transparent" }}
+                  title={cw.color}
+                >
+                  {/* Fallback for unnamed/no-hex colours: a tiny colour initial */}
+                  {!hex && (
+                    <span className="flex items-center justify-center w-full h-full text-[8px] font-bold text-muted-foreground uppercase leading-none">
+                      {(cw.color || "?")[0]}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+            {colourways.length > 6 && (
+              <span className="text-[10px] text-muted-foreground self-center">
+                +{colourways.length - 6}
+              </span>
+            )}
           </div>
         )}
+        {(!colourways || colourways.length <= 1) && activeHex && (
+          <div
+            data-testid={`swatches-${product.sku}`}
+            className="absolute bottom-2 right-2 z-10 rounded-full bg-background/85 p-1.5 backdrop-blur shadow-sm"
+            aria-label={`Colour: ${activeColor}`}
+            title={activeColor}
+          >
+            <span className="block w-5 h-5 rounded-full border-2 border-border" style={{ background: activeHex }} aria-hidden="true" />
+          </div>
+        )}
+
+        <div className="absolute top-2 right-2 z-10 flex flex-col gap-1.5">
+          <button
+            data-testid="wishlist-btn"
+            onClick={() => toggle(wishPayload(product))}
+            aria-label={saved ? `Remove ${product.style_name} from wishlist` : `Add ${product.style_name} to wishlist`}
+            aria-pressed={saved}
+            className="w-10 h-10 rounded-full bg-background/85 backdrop-blur flex items-center justify-center shadow-sm hover:bg-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          >
+            <Heart size={16} className={saved ? "fill-primary text-primary-ink" : "text-foreground"} strokeWidth={1.5} />
+          </button>
+          <button
+            data-testid={`card-quickadd-${product.sku}`}
+            aria-label={`Quick add ${product.style_name}`}
+            onClick={(e) => { e.stopPropagation(); setQuickAdd(true); }}
+            className="w-10 h-10 rounded-full bg-background/85 backdrop-blur flex items-center justify-center text-foreground shadow-sm hover:bg-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+          >
+            <ShoppingBag size={15} strokeWidth={1.5} />
+          </button>
+        </div>
+      </div>
+      <button
+        type="button"
+        data-testid={`product-card-${product.sku}`}
+        onClick={open}
+        className="block w-full text-left rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+      >
+        {/* Card reads: name → price. */}
+        <h3 className="font-serif text-foreground text-[14px] sm:text-[15px] leading-snug mb-2 line-clamp-2">{product.style_name}</h3>
         <div className="text-[14px] font-medium text-foreground">{kes(product.price)}</div>
       </button>
-
-      {/* Colourway swatches — shown only when the style has multiple colourways.
-          Rendered OUTSIDE the main card button so taps don't trigger navigation. */}
-      {colourways && colourways.length > 1 && (
-        <div
-          className="flex flex-wrap gap-1.5 mt-2"
-          role="group"
-          aria-label={`Colour options for ${product.style_name}`}
-        >
-          {colourways.slice(0, 6).map((cw) => {
-            const hex = swatchFor(cw.color);
-            const isActive = activeSku === cw.sku;
-            return (
-              <button
-                key={cw.sku}
-                type="button"
-                data-testid={`swatch-${product.sku}-${cw.sku}`}
-                aria-label={cw.color || "Colour option"}
-                aria-pressed={isActive}
-                onClick={(e) => pickColourway(e, cw)}
-                className={`w-5 h-5 rounded-full border-2 transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
-                  isActive
-                    ? "border-foreground scale-110"
-                    : "border-border hover:border-foreground/50 hover:scale-105"
-                }`}
-                style={hex ? { background: hex } : { background: "transparent" }}
-                title={cw.color}
-              >
-                {/* Fallback for unnamed/no-hex colours: a tiny colour initial */}
-                {!hex && (
-                  <span className="flex items-center justify-center w-full h-full text-[8px] font-bold text-muted-foreground uppercase leading-none">
-                    {(cw.color || "?")[0]}
-                  </span>
-                )}
-              </button>
-            );
-          })}
-          {colourways.length > 6 && (
-            <span className="text-[10px] text-muted-foreground self-center">
-              +{colourways.length - 6}
-            </span>
-          )}
-        </div>
-      )}
-
-      <div className="absolute top-2 right-2 z-10 flex flex-col gap-1.5">
-        <button
-          data-testid="wishlist-btn"
-          onClick={() => toggle(wishPayload(product))}
-          aria-label={saved ? `Remove ${product.style_name} from wishlist` : `Add ${product.style_name} to wishlist`}
-          aria-pressed={saved}
-          className="w-10 h-10 rounded-full bg-background/85 backdrop-blur flex items-center justify-center shadow-sm hover:bg-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-        >
-          <Heart size={16} className={saved ? "fill-primary text-primary-ink" : "text-foreground"} strokeWidth={1.5} />
-        </button>
-        <button
-          data-testid={`card-quickadd-${product.sku}`}
-          aria-label={`Quick add ${product.style_name}`}
-          onClick={(e) => { e.stopPropagation(); setQuickAdd(true); }}
-          className="w-10 h-10 rounded-full bg-background/85 backdrop-blur flex items-center justify-center text-foreground shadow-sm hover:bg-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-        >
-          <ShoppingBag size={15} strokeWidth={1.5} />
-        </button>
-      </div>
       {quickAdd && (
         <QuickAddModal
           sku={activeSku}
@@ -181,7 +193,6 @@ function SkeletonCard() {
 }
 
 export default function TabShop({ onOpenProduct, onOpenTryOn, onOpenPage, onOpenQuiz, onOpenEdit, onOpenEdits }) {
-  const { member } = useAuth();
   const [shopGenderHandoff] = useState(() => {
     try {
       const value = sessionStorage.getItem("vivo_shop_gender_handoff");
@@ -203,15 +214,12 @@ export default function TabShop({ onOpenProduct, onOpenTryOn, onOpenPage, onOpen
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState("");
-  const [personalized, setPersonalized] = useState(false);
   const [facets, setFacets] = useState(null);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [draft, setDraft] = useState(null); // the sheet's in-progress selection
   const [draftCount, setDraftCount] = useState(null);
   const [counting, setCounting] = useState(false);
-  const [sizeRange, setSizeRange] = useState(null); // Style-Quiz size_range id
   const [searchTerm, setSearchTerm] = useState("");
-  const [styledForYouMode, setStyledForYouMode] = useState(false);
 
   useEffect(() => {
     if (!shopGenderHandoff) return;
@@ -226,10 +234,7 @@ export default function TabShop({ onOpenProduct, onOpenTryOn, onOpenPage, onOpen
   const countSeq = useRef(0);
 
   const load = (offset) =>
-    // personalize is a request, not a demand: without a signed-in member and
-    // a finished quiz the server returns the curated order (personalized:false)
-    // — and an explicit sort always wins over the Style-DNA re-rank.
-    api.products(filtersToParams(filters, { limit: PAGE, offset, sort, personalize: styledForYouMode, searchTerm }));
+    api.products(filtersToParams(filters, { limit: PAGE, offset, sort, searchTerm }));
 
   useEffect(() => {
     queryVer.current += 1;
@@ -242,18 +247,15 @@ export default function TabShop({ onOpenProduct, onOpenTryOn, onOpenPage, onOpen
         setItems(d.items);
         setCats(d.categories || []);
         setHasMore(d.has_more);
-        setPersonalized(!!d.personalized);
       })
       .catch((e) => alive && setError(e.message))
       .finally(() => alive && setLoading(false));
     return () => { alive = false; };
-  }, [filtersKey, sort, styledForYouMode]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [filtersKey, sort]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Drawer options + her quiz size range, once. Both are decoration — the
-  // shop works fine if either fetch fails.
+  // Drawer options are decoration — the shop still works if this fetch fails.
   useEffect(() => {
     api.productFacets().then(setFacets).catch(() => {});
-    api.styleQuiz().then((d) => setSizeRange(d?.answers?.size_range || null)).catch(() => {});
   }, []);
 
   // Live "Show N styles" count while she tweaks the drawer selection. The
@@ -303,7 +305,6 @@ export default function TabShop({ onOpenProduct, onOpenTryOn, onOpenPage, onOpen
       if (ver === queryVer.current) {
         setItems((prev) => [...prev, ...d.items]);
         setHasMore(d.has_more);
-        setPersonalized(!!d.personalized);
       }
     } catch (e) {
       if (ver === queryVer.current) setError(e.message);
@@ -311,8 +312,6 @@ export default function TabShop({ onOpenProduct, onOpenTryOn, onOpenPage, onOpen
     setLoadingMore(false);
   };
 
-  const mySizes = (facets && sizeRange && facets.size_ranges?.[sizeRange]) || null;
-  const mySizeOn = !!mySizes && mySizes.length === filters.sizes.length && mySizes.every((s) => filters.sizes.includes(s));
   const activeGender = filters.gender || "all"; // "all" | "women" | "men"
 
   return (
@@ -377,9 +376,9 @@ export default function TabShop({ onOpenProduct, onOpenTryOn, onOpenPage, onOpen
         </button>
       )}
 
-      {/* Compact browsing controls: Filter, Search, Sorting and Styled for You. */}
+      {/* Core catalogue controls: Filter, Search, and Sorting. */}
       <div ref={gridTopRef} className="scroll-mt-24" aria-hidden="true" />
-      <div className="flex flex-wrap items-center gap-2 mb-4">
+      <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-2 mb-4 sm:flex sm:flex-wrap sm:items-center">
         <button
           type="button"
           data-testid="shop-filter-open"
@@ -401,7 +400,7 @@ export default function TabShop({ onOpenProduct, onOpenTryOn, onOpenPage, onOpen
         <form
           data-testid="shop-search"
           onSubmit={(e) => { e.preventDefault(); gridTopRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }); }}
-          className="order-4 basis-full sm:order-none sm:basis-auto sm:flex-1 flex items-center gap-2 border border-border rounded bg-background px-3 h-10 min-w-[220px] focus-within:ring-2 focus-within:ring-primary/40"
+          className="col-span-2 sm:col-auto sm:basis-auto sm:flex-1 flex items-center gap-2 border border-border rounded bg-background px-3 h-10 min-w-0 sm:min-w-[220px] focus-within:ring-2 focus-within:ring-primary/40"
         >
           <Search size={15} className="text-muted-foreground shrink-0" />
           <input
@@ -438,55 +437,11 @@ export default function TabShop({ onOpenProduct, onOpenTryOn, onOpenPage, onOpen
           </select>
           <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-muted-foreground" />
         </div>
-        <button
-          type="button"
-          data-testid="shop-styled-for-you"
-          aria-pressed={styledForYouMode}
-          onClick={() => {
-            if (!member?.quiz_completed) {
-              onOpenQuiz?.();
-              return;
-            }
-            setStyledForYouMode((on) => !on);
-          }}
-          className={`inline-flex items-center gap-2 px-4 h-10 rounded-sm border text-[12px] font-bold uppercase tracking-wider whitespace-nowrap transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
-            styledForYouMode
-              ? "border-primary text-primary-ink bg-primary/5"
-              : "border-border bg-background text-foreground hover:bg-secondary"
-          }`}
-        >
-          <Sparkles size={14} strokeWidth={1.8} />
-          Styled For You
-        </button>
-        <button
-          type="button"
-          data-testid="shop-my-size"
-          aria-pressed={mySizeOn}
-          onClick={() => {
-            if (!mySizes) {
-              onOpenQuiz?.();
-              return;
-            }
-            setFilters((f) => ({ ...f, sizes: mySizeOn ? [] : [...mySizes] }));
-          }}
-          className={`inline-flex items-center px-4 h-10 rounded-sm border text-[12px] font-bold uppercase tracking-wider whitespace-nowrap transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
-            mySizeOn
-              ? "border-primary text-primary-ink bg-primary/5"
-              : "border-border bg-background text-foreground hover:bg-secondary"
-          }`}
-        >
-          {mySizes ? `My Size · ${MY_SIZE_LABELS[sizeRange] || sizeRange}` : "My Size"}
-        </button>
       </div>
       <GenderToggle
         activeGender={activeGender}
         onChange={(id) => setFilters((f) => ({ ...f, gender: id === "all" ? "" : id, cats: [] }))}
       />
-      {personalized && styledForYouMode && (
-        <div data-testid="shop-personalized-hint" className="mb-5 flex items-center justify-center gap-1.5 text-[12px] font-medium text-primary-ink">
-          <Sparkles size={13} /> Sorted for your Style DNA
-        </div>
-      )}
       <AppliedChips filters={filters} facets={facets} onChange={setFilters} className="-mt-2 mb-7" />
 
       {/* Shop by Category stays intact, but becomes a quick-access grid. */}

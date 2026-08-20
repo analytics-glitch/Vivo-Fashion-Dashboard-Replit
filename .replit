@@ -157,6 +157,7 @@ LOYALTY_APP_STOREFRONT_BASE_URL = "https://www.shopzetu.com"
 NODE_ENV = "development"
 PORT = "4001"
 LOYALTY_APP_SERVE_FRONTEND = "true"
+COMMUNITY_PUBLIC_ORIGIN = "https://vivofashionbrands.com"
 
 [userenv.development]
 TIKTOK_USE_SANDBOX = "1"

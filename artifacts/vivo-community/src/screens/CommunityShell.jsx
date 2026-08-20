@@ -28,6 +28,7 @@ import { DeliveryInfoView, ReturnsInfoView } from "@/components/community/Shoppi
 import LegalPage from "@/components/community/LegalPage";
 import NewsArticle from "@/components/community/NewsArticle";
 import CampaignArticle from "@/components/community/CampaignArticle";
+import { ReferAFriendView, WeeklyMissionsView } from "@/components/community/DestinationViews";
 import { isNewsPageId } from "@/components/community/newsData";
 import { Home, Users, ShoppingBag, Gift, User, Heart, HelpCircle, Search } from "lucide-react";
 
@@ -41,7 +42,7 @@ const TABS = [
 
 // Static help & legal pages routed via the ?page= param. News articles ride
 // the same param as "news-{id}", validated against the NEWS list.
-const PAGES = ["faq", "contact", "terms", "privacy", "guidelines", "tryon", "mydata", "help", "givingback", "styleprefs", "stores", "delivery", "returns", "edits"];
+const PAGES = ["faq", "contact", "terms", "privacy", "guidelines", "tryon", "mydata", "help", "givingback", "styleprefs", "stores", "delivery", "returns", "edits", "refer", "missions"];
 // Campaign articles ride ?page=article-{slug} — server-validated (404 UI on
 // unknown slugs), guest-readable like news pages (composer is member-gated).
 const isArticlePageId = (v) => /^article-[a-z0-9-]+$/.test(v || "");
@@ -332,6 +333,17 @@ function ShellInner() {
     applyView({ tab: "community", sku: "", ev: "", cart: false, wl: false, page: "", sub: "challenges" }, "push");
   }, [applyView]);
 
+  const openChallenges = useCallback(() => {
+    const cur = viewRef.current;
+    const alreadyPlainCommunity =
+      cur.tab === "community" && !cur.sku && !cur.ev && !cur.cart && !cur.wl && !cur.page;
+    setSubNav((sn) => ({ id: "challenges", n: (sn?.n || 0) + 1 }));
+    applyView(
+      { tab: "community", sku: "", ev: "", cart: false, wl: false, page: "", sub: "challenges" },
+      alreadyPlainCommunity ? "replace" : "push"
+    );
+  }, [applyView]);
+
   // Keep the URL truthful when the member switches Community sub-tabs
   // themselves. Same history semantics as goTab: lateral tab moves replace
   // (never push), so refresh/share restores the sub-tab without Back having
@@ -498,7 +510,7 @@ function ShellInner() {
             via URL state (?page= / ?event=) that carry member-authenticated
             writes: try-on, survey, my-data, contact and event RSVP. Browsing
             surfaces (products, cart, wishlist, news, legal, help) stay open. */}
-        {!member && (quizOpen || eventId || ["tryon", "mydata", "contact", "styleprefs"].includes(page)) ? (
+        {!member && (quizOpen || eventId || ["tryon", "mydata", "contact", "styleprefs", "refer", "missions"].includes(page)) ? (
           <GuestGate
             title={quizOpen ? "Your Style Quiz is for members" : eventId ? "Events are for members" : "This is a member space"}
             body={quizOpen
@@ -507,7 +519,11 @@ function ShellInner() {
             onJoin={exitGuest}
           />
         ) : page ? (
-          page === "tryon" ? (
+          page === "refer" ? (
+            <ReferAFriendView onBack={closePage} />
+          ) : page === "missions" ? (
+            <WeeklyMissionsView onBack={closePage} />
+          ) : page === "tryon" ? (
             <TryOnView onBack={closePage} member={member} />
           ) : page === "styleprefs" ? (
             <StylePrefsView onBack={closePage} />
@@ -548,7 +564,7 @@ function ShellInner() {
           <VivoEditDetail editId={editId} onBack={closeEdit} onOpenProduct={openProduct} member={member} onGuest={exitGuest} />
         ) : (
           <>
-            {tab === "home" && <TabHome onNavigate={goTab} member={member} onOpenProduct={openProduct} onOpenPage={openPage} onOpenEvents={openEvents} onOpenEvent={openEventDetail} onOpenStyleBoards={openStyleBoards} onOpenFabulas={setFabulasId} onOpenCommunityComposer={openCommunityComposer} />}
+            {tab === "home" && <TabHome onNavigate={goTab} member={member} onOpenProduct={openProduct} onOpenPage={openPage} onOpenEvents={openEvents} onOpenEvent={openEventDetail} onOpenStyleBoards={openStyleBoards} onOpenChallenges={openChallenges} onOpenFabulas={setFabulasId} onOpenCommunityComposer={openCommunityComposer} />}
             {tab === "community" && !member && subNav?.id === "style_boards" && (
               <StyleBoardsLanding onGuest={exitGuest} />
             )}
@@ -569,7 +585,14 @@ function ShellInner() {
             {tab === "community" && member && <TabCommunity member={member} subNav={subNav} composeAction={communityComposeAction} onComposeActionConsumed={clearCommunityComposeAction} onSubChange={syncSub} onOpenEvent={openEventDetail} onOpenProduct={openProduct} onOpenPage={openPage} onOpenFabulas={setFabulasId} onOpenEdit={openEdit} onOpenEdits={() => openPage("edits")} />}
             {tab === "shop" && <TabShop onOpenProduct={openProduct} onOpenTryOn={() => openTryOn("")} onOpenPage={openPage} onOpenQuiz={openQuiz} onOpenEdit={openEdit} onOpenEdits={() => openPage("edits")} />}
             {tab === "rewards" && (member ? (
-              <TabRewards member={member} onMemberUpdate={updateMember} onOpenPage={openPage} />
+              <TabRewards
+                member={member}
+                onMemberUpdate={updateMember}
+                onOpenPage={openPage}
+                onOpenShop={() => goTab("shop")}
+                onOpenCommunity={() => goTab("community")}
+                onOpenChallenges={openChallenges}
+              />
             ) : (
               <GuestGate
                 title="Rewards are for members"

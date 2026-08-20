@@ -20,3 +20,7 @@ promo.jpg         — promotional banner background
 
 To swap an image, replace the file keeping the same name (portrait for the
 welcome/hero/category/story slots, landscape for promo.jpg).
+
+Home teaser banners use paired responsive files in home-teasers/. To update
+the Challenges image without changing its layout, copy, or destination, upload
+new WebP files over challenges-640.webp and challenges-960.webp.

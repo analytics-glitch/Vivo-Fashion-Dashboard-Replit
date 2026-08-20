@@ -109,6 +109,9 @@ export const api = {
   rsvpEvent: (id) => req("/events/" + encodeURIComponent(id) + "/rsvp", { method: "POST", auth: true }),
   cancelEventRsvp: (id) => req("/events/" + encodeURIComponent(id) + "/rsvp", { method: "DELETE", auth: true }),
   rewardsTank: () => req("/rewards/tank"),
+  referral: () => req("/referrals/me", { auth: true }),
+  sendReferralInvite: (email, referral_url) =>
+    req("/referrals/invite", { method: "POST", body: { email, referral_url }, auth: true }),
   redeemTank: (payload) => req("/rewards/tank/redeem", { method: "POST", body: payload, auth: true }),
   myRedemptions: () => req("/rewards/redemptions", { auth: true }),
   updateRedemptionDesign: (id, payload) =>

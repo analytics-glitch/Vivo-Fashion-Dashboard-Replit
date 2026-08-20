@@ -41,6 +41,16 @@ export const HOME_TEASER_BANNERS = {
     image960: "home-teasers/style-boards-960.webp",
     objectPosition: "center 40%",
   },
+  challenges: {
+    kicker: "CHALLENGES",
+    title: "Join a Challenge",
+    description: "Style prompts, community missions, and rewards for taking part.",
+    cta: "See the challenges",
+    alt: "Vivo women sharing a style moment together",
+    image640: "home-teasers/challenges-640.webp",
+    image960: "home-teasers/challenges-960.webp",
+    objectPosition: "center 48%",
+  },
   news: {
     kicker: "Johari News",
     title: "This Month in Johari",

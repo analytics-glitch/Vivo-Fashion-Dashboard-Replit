@@ -42,7 +42,7 @@ describe("TabHome image teasers", () => {
     api.events.mockResolvedValue({ items: [] });
   });
 
-  it("renders the approved copy on all four responsive image banners", async () => {
+  it("renders the approved copy on all five responsive image banners", async () => {
     render(<TabHome member={MEMBER} {...NO_OP} />);
     await act(async () => {});
 
@@ -53,6 +53,9 @@ describe("TabHome image teasers", () => {
     expect(screen.getByText("Style Boards, Curated by Us")).toBeInTheDocument();
     expect(screen.getByText("Mood boards and outfit inspiration, put together by the Vivo team.")).toBeInTheDocument();
     expect(screen.getByText("See the boards")).toBeInTheDocument();
+    expect(screen.getByText("Join a Challenge")).toBeInTheDocument();
+    expect(screen.getByText("Style prompts, community missions, and rewards for taking part.")).toBeInTheDocument();
+    expect(screen.getByText("See the challenges")).toBeInTheDocument();
     expect(screen.getByText("This Month in Johari")).toBeInTheDocument();
     expect(screen.getByText("Milestones, new stores and what's next for Vivo.")).toBeInTheDocument();
 
@@ -60,6 +63,7 @@ describe("TabHome image teasers", () => {
       "home-community-teaser",
       "home-curators-teaser",
       "home-styleboards-teaser",
+      "home-challenges-teaser",
       "home-stories-compact",
     ];
     for (const testId of testIds) {
@@ -77,6 +81,7 @@ describe("TabHome image teasers", () => {
     const onNavigate = vi.fn();
     const onOpenPage = vi.fn();
     const onOpenStyleBoards = vi.fn();
+    const onOpenChallenges = vi.fn();
     render(
       <TabHome
         member={MEMBER}
@@ -84,17 +89,20 @@ describe("TabHome image teasers", () => {
         onNavigate={onNavigate}
         onOpenPage={onOpenPage}
         onOpenStyleBoards={onOpenStyleBoards}
+        onOpenChallenges={onOpenChallenges}
       />
     );
 
     await user.click(screen.getByTestId("home-view-community"));
     await user.click(screen.getByTestId("home-curators-cta"));
     await user.click(screen.getByTestId("home-styleboards-cta"));
+    await user.click(screen.getByTestId("home-challenges-cta"));
     await user.click(screen.getByTestId("home-johari-news-cta"));
 
     expect(onNavigate).toHaveBeenCalledWith("community");
     expect(onOpenPage).toHaveBeenCalledWith("edits");
     expect(onOpenStyleBoards).toHaveBeenCalledOnce();
+    expect(onOpenChallenges).toHaveBeenCalledOnce();
     expect(onOpenPage).toHaveBeenCalledWith(expect.stringMatching(/^news-/));
   });
 
@@ -113,6 +121,7 @@ describe("TabHome image teasers", () => {
       screen.getByTestId("sfy-home-mock"),
       screen.getByTestId("home-stories-compact"),
       screen.getByTestId("home-events-row"),
+      screen.getByTestId("home-challenges-teaser"),
       screen.getByTestId("home-promo-banner"),
       screen.getByTestId("home-givingback"),
     ];

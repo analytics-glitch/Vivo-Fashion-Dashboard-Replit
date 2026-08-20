@@ -127,6 +127,7 @@
 - [Community Styled for You](community-styled-for-you.md) — opted_in and use_activity are separate FALSE-default consents; cadence-seeded rotation, server-owned labels; page id in PAGES + guest fence.
 - [Campaign articles](community-campaign-articles.md) — hero CTA blog + comments mirror feed-comment machinery; +5 once per article via ledger kind; blocklist + My Data/delete contract.
 - [Community entry/redemption pipeline](community-entry-pipeline.md) — points ONLY on CRM publish (questions never), redemption PUT ladder ⊋ member labels, vivo-crm build needs BASE_PATH=/crm/.
+- [Community referrals](community-referrals.md) — links use a canonical public origin; award referrers once from post-sync purchase reconciliation, never from member reads.
 - [vivo-bi cookie-only web auth](vivo-bi-cookie-only-auth.md) — staff SPA uses only the httpOnly session cookie (no vivo_token/Bearer); login has account+IP lockout; e2e auth via addCookies.
 - [Staff 2FA flow](staff-2fa-flow.md) — password/Google/native auth share a short-lived challenge before normal session creation; existing sessions survive reset.
 - [Sublimation costing canon](sublimation-costing-canon.md) — BOM op time = settable STANDARD throughput (default 60, actual = variance only); server recomputes saves; reprint on printing lines only; rate constants FE+BE lockstep.
