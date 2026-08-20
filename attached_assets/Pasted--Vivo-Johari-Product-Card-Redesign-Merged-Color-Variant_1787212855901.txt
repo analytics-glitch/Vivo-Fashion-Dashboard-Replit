@@ -1,0 +1,43 @@
+# Vivo Johari — Product Card Redesign: Merged Color Variants
+
+**Context:** The Shop grid currently shows each color of a style as a separate product card (e.g. "Safari 3/4 Sleeve Maxi Kimono With Headwrap" appears twice — once per colorway), sitting right next to each other. This reads as duplication and the swatch dots on each card are purely decorative. This spec merges same-style colors into one card with functional swatches, plus tightens up the card design generally.
+
+---
+
+## Core change: merge color variants into one card per style
+
+- Each **style** (not each color) gets exactly one card in the grid. "Safari 3/4 Sleeve Maxi Kimono With Headwrap" appears once, with both Mustard/Cream and Off White/Navy available as swatches on that single card.
+- Tapping a swatch **swaps the product photo** to that colorway's image, right there in the grid — no navigation away from the page required.
+- The price, "favourite" heart, and other card controls update to reflect the currently-selected color if any of that data differs by color (e.g. stock availability, if a specific colorway is sold out).
+- Tapping the photo (not a swatch) opens the full product page for whichever colorway is currently selected on the card.
+
+## Data model implication (flagging for the Replit agent up front)
+
+This isn't just a UI change — it requires product data to support **parent style + child color variants**, where:
+- One parent product record holds the shared info: name, description, base price (if consistent across colors).
+- Each color variant holds its own: image(s), specific price if it differs, stock/availability, SKU.
+- The grid queries and renders one card per parent, with variant data available for the swatch-swap interaction.
+
+If the current product catalog treats every color as a fully independent product (separate ID, no parent/child relationship), this needs a data restructuring pass before the frontend change can work — flag this as the first thing to check with whoever manages the product catalog/inventory system.
+
+## Card design cleanup (bundled into this same update)
+
+- **Remove the separate color-name text line** (e.g. "Mustard / Cream Print") — redundant once swatches exist. Keep the color name available via tap/hover on the swatch (accessibility), not as a permanent visible line.
+- **Move swatches onto the product photo itself**, positioned bottom-left, rather than as a separate row below the text block. Top-right of the photo stays reserved for the wishlist heart and bag icons — bottom-left keeps the two corners doing distinct jobs.
+- **Truncate product names to a single line** (with ellipsis, full name available on tap/hover) so every card in the grid is the same height — currently some names wrap to two lines and others to one, which makes rows misalign and reads as extra whitespace.
+
+## Resulting card structure (top to bottom)
+
+1. Product photo, with swatches overlaid bottom-left and wishlist/bag icons overlaid top-right.
+2. Product name (single line, truncated if needed).
+3. Price (reflecting selected color variant if price differs).
+
+That's it — no separate color-name line, no separate swatch row.
+
+## Implementation notes for the Replit agent
+
+- Start by confirming whether the product catalog already has a parent/child variant structure or treats each color as fully independent — this determines whether this is primarily a frontend change or requires backend/data work first.
+- The swatch-swap interaction should update the card's image, price, and heart/wishlist state without a full page reload — treat it as client-side state within the card component.
+- Wishlist/cart behavior needs a decision: does "adding to wishlist" or "adding to bag" apply to the specific selected color, or the style generally? (Recommend: the specific selected color, since that's what the shopper is actually looking at.)
+- Apply this same merged-card pattern consistently across all product grids in the app (main Shop grid, "Fresh off the Floor," "Pieces we think you'll love," category pages) — not just the primary grid — so the experience is consistent everywhere products are listed.
+- Confirm grid item height stays consistent across the redesigned cards on both desktop and mobile.
