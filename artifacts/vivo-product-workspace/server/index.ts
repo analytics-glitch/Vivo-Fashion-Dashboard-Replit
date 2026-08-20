@@ -1516,6 +1516,20 @@ async function ensureSchema() {
       notes TEXT NOT NULL DEFAULT '',
       UNIQUE (season_id, month_year)
     );
+    CREATE TABLE IF NOT EXISTS ${schema}.garment_images (
+      id SERIAL PRIMARY KEY,
+      source TEXT NOT NULL CHECK (source IN ('catalogue','plm')),
+      style_key TEXT NOT NULL,
+      object_path TEXT NOT NULL UNIQUE,
+      original_name TEXT NOT NULL,
+      content_type TEXT NOT NULL CHECK (content_type IN ('image/jpeg','image/png','image/webp')),
+      byte_size INTEGER NOT NULL CHECK (byte_size > 0 AND byte_size <= 8388608),
+      updated_by INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (source, style_key)
+    );
+    CREATE INDEX IF NOT EXISTS garment_images_style_key_idx ON ${schema}.garment_images (style_key);
     CREATE INDEX IF NOT EXISTS range_plan_rows_season_idx ON ${schema}.range_plan_rows (season_id, tier, id);
     CREATE INDEX IF NOT EXISTS range_plan_otb_season_month_idx ON ${schema}.range_plan_otb (season_id, month_year);
     CREATE TABLE IF NOT EXISTS ${schema}.l10_meetings (
@@ -2039,7 +2053,7 @@ function storageObjectParts(objectPath: string) {
   return { bucketName, objectName: parts.join("/") };
 }
 
-async function signedStorageUrl(objectPath: string, method: "GET" | "PUT", ttlSec: number) {
+async function signedStorageUrl(objectPath: string, method: "GET" | "PUT" | "DELETE", ttlSec: number) {
   const { bucketName, objectName } = storageObjectParts(objectPath);
   const response = await fetch("http://127.0.0.1:1106/object-storage/signed-object-url", {
     method: "POST",
@@ -2056,6 +2070,61 @@ async function signedStorageUrl(objectPath: string, method: "GET" | "PUT", ttlSe
   const body = await response.json() as { signed_url?: string };
   if (!body.signed_url) throw new Error("Object storage did not return a signed URL");
   return body.signed_url;
+}
+
+const GARMENT_IMAGE_TYPES = {
+  "image/jpeg": { extensions: ["jpg", "jpeg"], magic: (bytes: Uint8Array) => bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff },
+  "image/png": { extensions: ["png"], magic: (bytes: Uint8Array) => bytes.length >= 8 && [137, 80, 78, 71, 13, 10, 26, 10].every((value, index) => bytes[index] === value) },
+  "image/webp": { extensions: ["webp"], magic: (bytes: Uint8Array) => bytes.length >= 12 && new TextDecoder().decode(bytes.slice(0, 4)) === "RIFF" && new TextDecoder().decode(bytes.slice(8, 12)) === "WEBP" },
+} as const;
+type GarmentImageSource = "catalogue" | "plm";
+const garmentImageSource = (value: unknown): GarmentImageSource | null =>
+  value === "catalogue" || value === "plm" ? value : null;
+const garmentImageKey = (value: unknown) => String(value ?? "").trim().toLowerCase();
+const garmentImageUrl = (source: GarmentImageSource, styleKey: string) =>
+  `/api/workspace/garment-images/${source}/${encodeURIComponent(styleKey)}`;
+
+async function applyGarmentImageOverrides<T extends Record<string, unknown>>(
+  rows: T[],
+  source: GarmentImageSource,
+  keyFor: (row: T) => unknown,
+) {
+  const keys = [...new Set(rows.map((row) => garmentImageKey(keyFor(row))).filter(Boolean))];
+  if (!keys.length) return rows;
+  const result = await pool.query<{ styleKey: string }>(
+    `SELECT style_key AS "styleKey" FROM ${schema}.garment_images
+     WHERE source=$1 AND style_key=ANY($2::text[])`,
+    [source, keys],
+  );
+  const available = new Set(result.rows.map((row) => row.styleKey));
+  return rows.map((row) => {
+    const key = garmentImageKey(keyFor(row));
+    return available.has(key) ? { ...row, image: garmentImageUrl(source, key) } : row;
+  });
+}
+
+function validateGarmentImageMeta(name: unknown, size: unknown, contentType: unknown) {
+  const originalName = String(name ?? "").trim();
+  const byteSize = Number(size ?? 0);
+  const type = String(contentType ?? "").trim().toLowerCase() as keyof typeof GARMENT_IMAGE_TYPES;
+  if (!originalName || originalName.length > 255 || !Number.isFinite(byteSize) || byteSize < 1 || byteSize > 8 * 1024 * 1024) {
+    return { error: "Image must be between 1 byte and 8 MB" } as const;
+  }
+  const config = GARMENT_IMAGE_TYPES[type];
+  if (!config) return { error: "Use a JPEG, PNG, or WebP image" } as const;
+  const extension = originalName.split(".").pop()?.toLowerCase();
+  if (!extension || !config.extensions.includes(extension as never)) return { error: "The file extension does not match its image type" } as const;
+  return { originalName, byteSize, contentType: type } as const;
+}
+
+async function deleteGarmentObject(objectPath: string | null | undefined) {
+  if (!objectPath) return;
+  try {
+    await fetch(await signedStorageUrl(objectPath, "DELETE", 120), { method: "DELETE", signal: AbortSignal.timeout(30_000) });
+  } catch (error) {
+    // A failed cleanup leaves an inaccessible orphan, never a stale primary record.
+    console.warn("Unable to clean up replaced garment image", error);
+  }
 }
 
 function isPlmStage(value: unknown): value is PlmStage {
@@ -4310,6 +4379,116 @@ router.get("/team-directory/:id/photo", async (req, res, next) => {
     if (contentLength) res.setHeader("Content-Length", contentLength);
     res.setHeader("Cache-Control", "private, max-age=300");
     Readable.fromWeb(photo.body as ReadableStream<Uint8Array>).pipe(res);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post("/garment-images/upload-url", requireUser, async (req: AuthRequest, res, next) => {
+  try {
+    const source = garmentImageSource(req.body?.source);
+    const styleKey = garmentImageKey(req.body?.styleKey);
+    const validation = validateGarmentImageMeta(req.body?.name, req.body?.size, req.body?.contentType);
+    if (!source || !styleKey || styleKey.length > 200) {
+      res.status(400).json({ error: "A valid garment image source and style identifier are required" });
+      return;
+    }
+    if ("error" in validation) {
+      res.status(400).json({ error: validation.error });
+      return;
+    }
+    const objectPath = `/objects/garment-images/${source}/${crypto.randomUUID()}.${validation.originalName.split(".").pop()!.toLowerCase()}`;
+    const uploadUrl = await signedStorageUrl(objectPath, "PUT", 900);
+    res.json({ uploadUrl, objectPath, expiresInSeconds: 900 });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post("/garment-images/finalize", requireUser, async (req: AuthRequest, res, next) => {
+  let newObjectPath = "";
+  try {
+    const source = garmentImageSource(req.body?.source);
+    const styleKey = garmentImageKey(req.body?.styleKey);
+    const validation = validateGarmentImageMeta(req.body?.name, req.body?.size, req.body?.contentType);
+    newObjectPath = String(req.body?.objectPath ?? "");
+    const expectedPrefix = source ? `/objects/garment-images/${source}/` : "";
+    if (!source || !styleKey || styleKey.length > 200 || !newObjectPath.startsWith(expectedPrefix) || newObjectPath.includes("..")) {
+      res.status(400).json({ error: "Invalid garment image upload" });
+      return;
+    }
+    if ("error" in validation) {
+      res.status(400).json({ error: validation.error });
+      return;
+    }
+    const stored = await fetch(await signedStorageUrl(newObjectPath, "GET", 120), { signal: AbortSignal.timeout(30_000) });
+    const storedBytes = new Uint8Array(await stored.arrayBuffer());
+    const config = GARMENT_IMAGE_TYPES[validation.contentType];
+    if (!stored.ok || storedBytes.length !== validation.byteSize || !config.magic(storedBytes)) {
+      await deleteGarmentObject(newObjectPath);
+      res.status(400).json({ error: "The uploaded file does not match the selected image type" });
+      return;
+    }
+    const client = await pool.connect();
+    let replacedPath: string | null = null;
+    try {
+      await client.query("BEGIN");
+      const prior = await client.query<{ objectPath: string }>(
+        `SELECT object_path AS "objectPath" FROM ${schema}.garment_images WHERE source=$1 AND style_key=$2 FOR UPDATE`,
+        [source, styleKey],
+      );
+      replacedPath = prior.rows[0]?.objectPath ?? null;
+      await client.query(
+        `INSERT INTO ${schema}.garment_images
+          (source,style_key,object_path,original_name,content_type,byte_size,updated_by,updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
+         ON CONFLICT (source,style_key) DO UPDATE SET
+           object_path=EXCLUDED.object_path,original_name=EXCLUDED.original_name,
+           content_type=EXCLUDED.content_type,byte_size=EXCLUDED.byte_size,
+           updated_by=EXCLUDED.updated_by,updated_at=NOW()`,
+        [source, styleKey, newObjectPath, validation.originalName, validation.contentType, validation.byteSize, req.workspaceUser?.id ?? null],
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+    if (replacedPath && replacedPath !== newObjectPath) void deleteGarmentObject(replacedPath);
+    res.json({ source, styleKey, imageUrl: garmentImageUrl(source, styleKey) });
+  } catch (error) {
+    if (newObjectPath) void deleteGarmentObject(newObjectPath);
+    next(error);
+  }
+});
+
+router.get("/garment-images/:source/:styleKey", requireUser, async (req, res, next) => {
+  try {
+    const source = garmentImageSource(req.params.source);
+    const styleKey = garmentImageKey(req.params.styleKey);
+    if (!source || !styleKey) {
+      res.status(404).json({ error: "Image not found" });
+      return;
+    }
+    const image = await pool.query<{ objectPath: string; contentType: string }>(
+      `SELECT object_path AS "objectPath",content_type AS "contentType"
+       FROM ${schema}.garment_images WHERE source=$1 AND style_key=$2`,
+      [source, styleKey],
+    );
+    const row = image.rows[0];
+    if (!row) {
+      res.status(404).json({ error: "Image not found" });
+      return;
+    }
+    const object = await fetch(await signedStorageUrl(row.objectPath, "GET", 300));
+    if (!object.ok || !object.body) {
+      res.status(404).json({ error: "Image not found" });
+      return;
+    }
+    res.setHeader("Content-Type", row.contentType);
+    res.setHeader("Cache-Control", "private, max-age=300");
+    Readable.fromWeb(object.body as ReadableStream<Uint8Array>).pipe(res);
   } catch (error) {
     next(error);
   }

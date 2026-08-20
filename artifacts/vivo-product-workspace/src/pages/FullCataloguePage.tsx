@@ -4,6 +4,7 @@ import { getListCatalogueProductsQueryKey, useListCatalogueProducts } from '@wor
 import type { CatalogueStyle } from '@workspace/api-client-react';
 import MultiSelectFilter from '../components/MultiSelectFilter';
 import CatalogueSortControl, { type CatalogueSortKey } from '../components/CatalogueSortControl';
+import GarmentImage from '../components/GarmentImage';
 
 const fmtKES = (value?: number | null) =>
   value == null || Number.isNaN(Number(value)) ? null : `KES ${Math.round(Number(value)).toLocaleString('en-KE')}`;
@@ -221,11 +222,11 @@ export default function FullCataloguePage() {
           {data?.items.length ? (
             <div className={`full-cat-grid ${catalogue.isFetching ? 'is-refreshing' : ''}`}>
               {data.items.map((style) => (
-                 <button className="full-cat-card" type="button" onClick={() => setSelectedStyleNumber(style.styleNumber)} key={style.styleNumber} data-testid={`card-full-cat-${style.styleNumber}`}>
-                  <div className="full-cat-thumb">
+                 <article className="full-cat-card" onClick={() => setSelectedStyleNumber(style.styleNumber)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') setSelectedStyleNumber(style.styleNumber); }} role="button" tabIndex={0} key={style.styleNumber} data-testid={`card-full-cat-${style.styleNumber}`}>
+                  <GarmentImage className="full-cat-thumb" source="catalogue" styleKey={style.styleNumber} image={style.image} alt={style.styleName || style.styleNumber} onSaved={() => void catalogue.refetch()}>
                     <span className={`full-cat-status-badge ${style.status === 'Active' ? 'is-active' : 'is-retired'}`}>{style.status}</span>
-                    {style.image ? <img src={style.image} alt={style.styleName || style.styleNumber} loading="lazy" /> : <span className="full-cat-initials">{styleInitials(style)}</span>}
-                  </div>
+                    {!style.image ? <span className="full-cat-initials">{styleInitials(style)}</span> : null}
+                  </GarmentImage>
                   <div className="full-cat-body">
                     <strong className="full-cat-name" title={style.styleName || undefined}>{style.styleName || 'Unnamed style'}</strong>
                      <span className="full-cat-number">{style.styleNumber || style.internalReference || style.sku || 'Style number pending'}</span>
@@ -237,7 +238,7 @@ export default function FullCataloguePage() {
                      <span className="full-cat-sub">{[style.category, style.subcategory, style.fabricCategory].filter(Boolean).join(' · ') || '—'}</span>
                     <span className="full-cat-brand">{style.brand || '—'}</span>
                   </div>
-                 </button>
+                 </article>
               ))}
             </div>
           ) : (

@@ -1,9 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 import { useEffect, useState } from 'react';
-import { ImageIcon, MoveRight, RefreshCw, Target, X } from 'lucide-react';
+import { MoveRight, RefreshCw, Target, X } from 'lucide-react';
 import CatalogueSortControl, { type CatalogueSortKey } from '../components/CatalogueSortControl';
 import MultiSelectFilter from '../components/MultiSelectFilter';
+import GarmentImage from '../components/GarmentImage';
 import {
   countAssortmentStyles,
   filteredAssortmentQuarterCounts,
@@ -168,9 +169,7 @@ function StyleCard({
 }) {
   return (
     <article className="assortment-style-card">
-      <div className="assortment-style-image">
-        {style.image ? <img src={style.image} alt="" loading="lazy" /> : <ImageIcon size={22} />}
-      </div>
+      <GarmentImage className="assortment-style-image" source={style.source === 'pd_styles' ? 'plm' : 'catalogue'} styleKey={style.styleNumber || style.pdId} image={style.image} alt={style.name || 'Style'} />
       <div className="assortment-style-copy">
         <div className="assortment-style-topline">
           <TierBadge tier={style.tier} />
