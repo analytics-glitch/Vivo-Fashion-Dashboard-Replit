@@ -81,7 +81,15 @@ function EditCard({ edit, onOpen, testId }) {
    "Worn by the community" sub-cards render WITHOUT Shop-the-Look CTAs —
    shopping entry points live only in Shop / the edit detail view. */
 
-export function VivoEditsHome({ onOpenEdit, onViewAll, feed }) {
+export function VivoEditsHome({
+  onOpenEdit,
+  onViewAll,
+  feed,
+  includeCommunityLooks = true,
+  kicker = "Vivo Edits",
+  title = "Curated by Creators We Love",
+  sub = "Editorial looks, shoppable to the last piece.",
+}) {
   const [state, setState] = useState(null); // null = loading | { items, total }
 
   useEffect(() => {
@@ -93,7 +101,9 @@ export function VivoEditsHome({ onOpenEdit, onViewAll, feed }) {
   }, []);
 
   // Worn by the Community integration (Point 4)
-  const looks = (feed || []).filter((p) => p?.tagged?.length && p.post_type !== "question").slice(0, 3);
+  const looks = includeCommunityLooks
+    ? (feed || []).filter((p) => p?.tagged?.length && p.post_type !== "question").slice(0, 3)
+    : [];
 
   // Render the section if we have EITHER items or community looks (to show the related community looks)
   if ((!state || !state.items.length) && (!looks || !looks.length)) return null;
@@ -101,7 +111,7 @@ export function VivoEditsHome({ onOpenEdit, onViewAll, feed }) {
   const items = state ? state.items.slice(0, 3) : [];
   
   // Create an array with length of max(items.length, looks.length) up to 3
-  const length = Math.max(items.length, looks.length);
+  const length = includeCommunityLooks ? Math.max(items.length, looks.length) : items.length;
   const combined = Array.from({ length }).map((_, i) => ({
     edit: items[i] || null,
     look: looks[i] || null
@@ -110,7 +120,7 @@ export function VivoEditsHome({ onOpenEdit, onViewAll, feed }) {
   return (
     <section data-testid="home-vivo-edits">
       <div className="flex items-end justify-between gap-4 mb-4">
-        <SectionHeader kicker="Vivo Edits" title="Curated by Creators We Love" sub="Editorial looks, shoppable to the last piece." />
+        <SectionHeader kicker={kicker} title={title} sub={sub} />
         {state && state.total > 3 && (
           <button
             data-testid="home-vivo-edits-viewall"

@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Heart, ShoppingBag, ChevronRight } from "lucide-react";
+import { Heart, ShoppingBag, ChevronRight, Sparkles, Truck, UsersRound } from "lucide-react";
 import { ImagePlaceholder, MerchBadge, kes, brandAsset, SectionHeader } from "./ui";
 import { useWishlist } from "@/context/WishlistContext";
 import { QuickAddModal } from "./QuickAddModal";
@@ -138,6 +138,68 @@ export function PromoBanner() {
   );
 }
 
+/* The Shop landing shortcuts deliberately compress four former full-width
+   sections into one quick decision row. They are navigation/entry points, not
+   another product promotion, so their compact card treatment keeps the actual
+   collection high on the page. */
+export function ShopQuickLinks({ onBrowseNew, onOpenDelivery, onOpenQuiz, onOpenCurated }) {
+  const links = [
+    {
+      id: "delivery",
+      icon: Truck,
+      eyebrow: "Vivo delivers",
+      title: "Free Delivery",
+      copy: "On orders over KES 5,000.",
+      action: onOpenDelivery,
+    },
+    {
+      id: "collection",
+      icon: ShoppingBag,
+      eyebrow: "Just landed",
+      title: "New Arrivals",
+      copy: "Shop what just landed.",
+      action: onBrowseNew,
+    },
+    {
+      id: "quiz",
+      icon: Sparkles,
+      eyebrow: "Your style, refined",
+      title: "Take Your Quiz",
+      copy: "Tell us what you love.",
+      action: onOpenQuiz,
+    },
+    {
+      id: "curators",
+      icon: UsersRound,
+      eyebrow: "Vivo edits",
+      title: "Curated Looks By",
+      copy: "Meet Sharon, Phinie & Grace.",
+      action: onOpenCurated,
+    },
+  ];
+
+  return (
+    <section data-testid="shop-quick-links" className="grid grid-cols-2 gap-3 sm:grid-cols-4 mb-10">
+      {links.map(({ id, icon: Icon, eyebrow, title, copy, action }) => (
+        <button
+          key={id}
+          type="button"
+          data-testid={`shop-quick-${id}`}
+          onClick={action}
+          className="group min-h-[138px] rounded border border-border bg-secondary/45 p-4 text-left transition-all hover:bg-secondary hover:border-foreground/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
+        >
+          <span className="mb-5 flex h-8 w-8 items-center justify-center rounded-full border border-border bg-background text-primary-ink transition-transform group-hover:-translate-y-0.5">
+            <Icon size={15} strokeWidth={1.5} />
+          </span>
+          <span className="block text-[9px] font-bold uppercase tracking-[0.18em] text-muted-foreground mb-1">{eyebrow}</span>
+          <span className="block font-serif text-[17px] leading-tight text-foreground">{title}</span>
+          <span className="mt-1 block text-[11px] leading-snug text-muted-foreground">{copy}</span>
+        </button>
+      ))}
+    </section>
+  );
+}
+
 export function GenderToggle({ activeGender = "women", onChange }) {
   const tabs = [
     { id: "women", label: "Women's" },
@@ -185,7 +247,7 @@ export function CategoryGrid({ onSelect, compact = false }) {
     ? "grid grid-cols-2 gap-3 sm:grid-cols-5 sm:gap-4"
     : "grid grid-cols-2 gap-3 sm:gap-4";
   const tileClass = compact
-    ? "relative rounded overflow-hidden aspect-[4/5] bg-secondary group text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+    ? "relative rounded overflow-hidden aspect-[5/4] sm:aspect-[4/5] bg-secondary group text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
     : "relative rounded overflow-hidden aspect-[3/4] bg-secondary group text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary";
   return (
     <section data-testid="shop-category-grid">

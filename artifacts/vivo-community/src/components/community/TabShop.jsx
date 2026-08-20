@@ -1,10 +1,10 @@
 import React, { useEffect, useRef, useState } from "react";
 import { ImagePlaceholder, MerchBadge, kes, swatchFor, brandAsset } from "./ui";
-import { ShoppingBag, Heart, ChevronRight, ChevronDown, Sparkles, SlidersHorizontal, Search, X } from "lucide-react";
+import { ShoppingBag, Heart, ChevronDown, Sparkles, SlidersHorizontal, Search, X } from "lucide-react";
 import { api } from "@/lib/api";
 import { useWishlist } from "@/context/WishlistContext";
 import { FilterSheet, AppliedChips, emptyFilters, countActive, filtersToParams, MY_SIZE_LABELS } from "./ShopFilters";
-import { CategoryGrid, ProductRail, RailCard, PromoBanner, GenderToggle } from "./ShopSections";
+import { CategoryGrid, GenderToggle, ShopQuickLinks } from "./ShopSections";
 import { VivoEditsHome } from "./VivoEdits";
 import { useAuth } from "@/context/AuthContext";
 import { QuickAddModal } from "./QuickAddModal";
@@ -21,91 +21,6 @@ const wishPayload = (p) => ({
   color: p.color || "",
   category: p.category || "",
 });
-
-function LookWishButton({ prod }) {
-  const { has, toggle } = useWishlist();
-  const saved = has(prod.sku);
-  return (
-    <button
-      data-testid={`look-wish-${prod.sku}`}
-      aria-label={saved ? `Remove ${prod.style_name} from wishlist` : `Add ${prod.style_name} to wishlist`}
-      aria-pressed={saved}
-      onClick={(e) => { e.stopPropagation(); toggle(wishPayload(prod)); }}
-      className="w-10 h-10 shrink-0 rounded-full flex items-center justify-center text-foreground hover:bg-secondary transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-    >
-      <Heart size={15} strokeWidth={1.5} className={saved ? "fill-primary text-primary-ink" : ""} />
-    </button>
-  );
-}
-
-function ShoppableLook({ post, tagged, onOpen }) {
-  const [revealed, setRevealed] = useState(false);
-  const [imgFailed, setImgFailed] = useState(false);
-  return (
-    <div
-      data-testid={`shop-look-${post.id}`}
-      onClick={() => setRevealed((r) => !r)}
-      className="relative group rounded overflow-hidden aspect-[3/4] bg-foreground cursor-pointer"
-    >
-      {post.image_url && !imgFailed ? (
-        <img
-          src={post.image_url}
-          alt={post.caption || "Community look"}
-          loading="lazy"
-          onError={() => setImgFailed(true)}
-          className="absolute inset-0 w-full h-full object-cover opacity-90 group-hover:opacity-60 transition-opacity"
-          draggable={false}
-        />
-      ) : (
-        <ImagePlaceholder aspectRatio="h-full w-full opacity-60 group-hover:opacity-40 transition-opacity border-none rounded-none" text="Look" className="rounded-none border-none" />
-      )}
-      <div className="absolute inset-x-0 bottom-0 h-2/3 bg-gradient-to-t from-black/75 via-black/30 to-transparent pointer-events-none" />
-      <div
-        className={`absolute top-4 right-4 bg-background/90 backdrop-blur text-foreground text-[10px] font-bold uppercase tracking-wider px-3 py-1.5 rounded-sm shadow-sm transition-opacity duration-300 ${
-          revealed ? "opacity-0" : "opacity-100 group-hover:opacity-0"
-        }`}
-      >
-        Shop this look
-      </div>
-      <div className="absolute inset-0 flex flex-col justify-end p-6">
-        <div
-          className={`transform transition-all duration-500 ease-out ${
-            revealed ? "translate-y-0 opacity-100" : "translate-y-6 opacity-0"
-          } group-hover:translate-y-0 group-hover:opacity-100`}
-        >
-          <div className="text-white/90 font-medium mb-4 text-[15px] drop-shadow-md line-clamp-2">"{post.caption}"</div>
-          <div className="flex flex-col gap-2">
-            {tagged.map((prod) => (
-              <div
-                key={prod.sku}
-                className="bg-background/95 backdrop-blur rounded p-2 pr-1.5 flex items-center gap-2 shadow-md border border-border/50"
-              >
-                <button
-                  data-testid={`shop-look-product-${prod.sku}`}
-                  onClick={(e) => { e.stopPropagation(); onOpen(prod.sku); }}
-                  className="flex items-center gap-3 flex-grow min-w-0 text-left rounded hover:opacity-90 transition-opacity focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-                >
-                  <img
-                    src={prod.image_url}
-                    alt=""
-                    loading="lazy"
-                    className="w-12 h-12 object-contain rounded shrink-0 border border-border bg-secondary"
-                  />
-                  <div className="flex-grow min-w-0">
-                    <div className="text-[13px] font-medium text-foreground truncate">{prod.style_name}</div>
-                    <div className="text-xs text-primary-ink font-medium mt-0.5">{kes(prod.price)}</div>
-                  </div>
-                  <ChevronRight size={14} className="text-muted-foreground shrink-0" />
-                </button>
-                <LookWishButton prod={prod} />
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 /* Editorial product card — image-led, no box chrome: photo, then serif
    two-line name, colour swatch and price on the open cream ground. The image
@@ -265,55 +180,6 @@ function SkeletonCard() {
   );
 }
 
-function ChosenForYou({ loading, picked, items, member, onOpenProduct, onOpenQuiz }) {
-  if (loading) return null;
-  if (picked.length > 0) {
-    return (
-      <div className="mb-12" data-testid="picked-for-you">
-        <ProductRail
-          kicker="Chosen for You"
-          title="Pieces we think you'll love"
-          sub="Your Style DNA at work — refreshed weekly when you opt in."
-          products={picked}
-          onOpenProduct={onOpenProduct}
-          testId="picked-for-you"
-          idPrefix="pfy"
-        />
-      </div>
-    );
-  }
-  const chosen = items.slice(4, 12);
-  if (chosen.length === 0) return null;
-  return (
-    <div className="mb-12" data-testid="picked-for-you">
-      <div className="flex flex-wrap items-end justify-between gap-4 mb-5">
-        <div>
-          <div className="text-[10px] font-bold uppercase tracking-[0.25em] text-primary-ink mb-1.5">Chosen for You</div>
-          <h2 className="text-2xl font-serif text-foreground">Pieces we think you'll love</h2>
-          <p className="text-[13px] text-muted-foreground mt-1">
-            {member?.quiz_completed
-              ? "Update your Style Quiz and we'll tune these to you."
-              : "Take the Style Quiz and we'll tune these to you."}
-          </p>
-        </div>
-        {member && typeof onOpenQuiz === "function" && (
-          <button
-            type="button"
-            data-testid="shop-quiz-cta"
-            onClick={onOpenQuiz}
-            className="h-11 px-6 rounded bg-foreground text-background font-medium text-[13px] hover:bg-foreground/90 active:scale-[0.98] transition-all inline-flex items-center gap-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-          >
-            <Sparkles size={14} /> {member?.quiz_completed ? "Update my Style Quiz" : "Take the Style Quiz"}
-          </button>
-        )}
-      </div>
-      <div data-testid="picked-for-you-rail" className="flex gap-3 overflow-x-auto hide-scrollbar snap-x -mx-4 px-4 sm:mx-0 sm:px-0 pb-1">
-        {chosen.map((p) => <RailCard key={p.sku} p={p} onOpenProduct={onOpenProduct} idPrefix="pfy" />)}
-      </div>
-    </div>
-  );
-}
-
 export default function TabShop({ onOpenProduct, onOpenTryOn, onOpenPage, onOpenQuiz, onOpenEdit, onOpenEdits }) {
   const { member } = useAuth();
   const [shopGenderHandoff] = useState(() => {
@@ -345,6 +211,7 @@ export default function TabShop({ onOpenProduct, onOpenTryOn, onOpenPage, onOpen
   const [counting, setCounting] = useState(false);
   const [sizeRange, setSizeRange] = useState(null); // Style-Quiz size_range id
   const [searchTerm, setSearchTerm] = useState("");
+  const [styledForYouMode, setStyledForYouMode] = useState(false);
 
   useEffect(() => {
     if (!shopGenderHandoff) return;
@@ -362,7 +229,7 @@ export default function TabShop({ onOpenProduct, onOpenTryOn, onOpenPage, onOpen
     // personalize is a request, not a demand: without a signed-in member and
     // a finished quiz the server returns the curated order (personalized:false)
     // — and an explicit sort always wins over the Style-DNA re-rank.
-    api.products(filtersToParams(filters, { limit: PAGE, offset, sort, personalize: true, searchTerm }));
+    api.products(filtersToParams(filters, { limit: PAGE, offset, sort, personalize: styledForYouMode, searchTerm }));
 
   useEffect(() => {
     queryVer.current += 1;
@@ -380,7 +247,7 @@ export default function TabShop({ onOpenProduct, onOpenTryOn, onOpenPage, onOpen
       .catch((e) => alive && setError(e.message))
       .finally(() => alive && setLoading(false));
     return () => { alive = false; };
-  }, [filtersKey, sort]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [filtersKey, sort, styledForYouMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Drawer options + her quiz size range, once. Both are decoration — the
   // shop works fine if either fetch fails.
@@ -404,45 +271,11 @@ export default function TabShop({ onOpenProduct, onOpenTryOn, onOpenPage, onOpen
     return () => clearTimeout(t);
   }, [sheetOpen, JSON.stringify(draft)]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // "Pieces we think you'll love" — her Style DNA re-ranks the live
-  // catalogue server-side; members who skipped the quiz get a curated slice
-  // of the collection instead, so the rail is never empty. (Moved here from
-  // the homepage — this is Shop content.)
-  const [picked, setPicked] = useState([]);
-  useEffect(() => {
-    if (!member?.quiz_completed) { setPicked([]); return; }
-    let on = true;
-    api.styledForYouStatus()
-      .then((status) => {
-        if (!on || !status.opted_in) { if (on) setPicked([]); return null; }
-        return api.products({ limit: 8, personalize: true });
-      })
-      .then((d) => { if (on && d) setPicked(d.personalized ? (d.items || []) : []); })
-      .catch(() => { if (on) setPicked([]); });
-    return () => { on = false; };
-  }, [member?.quiz_completed, (member?.style_dna || []).join("|")]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // "Community Looks" — real community posts (photo + tagged pieces) from
-  // the public feed, replacing the old placeholder tiles. A look qualifies
-  // only if it has BOTH a photo and at least one tagged live product.
-  const [looks, setLooks] = useState([]);
-  useEffect(() => {
-    let on = true;
-    api.feed(30)
-      .then((d) => {
-        if (!on) return;
-        const qualified = (d.items || []).filter(
-          (p) => p.image_url && (p.tagged || []).length > 0 && p.post_type !== "question"
-        );
-        setLooks(qualified.slice(0, 2));
-      })
-      .catch(() => {});
-    return () => { on = false; };
-  }, []);
-
   // Anchor target for "Shop the latest pieces" — scrolls to the grid controls.
   const gridTopRef = useRef(null);
+  const curatorsRef = useRef(null);
   const scrollToGrid = () => gridTopRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  const scrollToCurators = () => curatorsRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   const clearSearch = () => setSearchTerm("");
 
   // A category tile filters the grid when the live catalogue has a matching
@@ -480,8 +313,6 @@ export default function TabShop({ onOpenProduct, onOpenTryOn, onOpenPage, onOpen
 
   const mySizes = (facets && sizeRange && facets.size_ranges?.[sizeRange]) || null;
   const mySizeOn = !!mySizes && mySizes.length === filters.sizes.length && mySizes.every((s) => filters.sizes.includes(s));
-  const activeCat = filters.cats.length === 1 ? filters.cats[0] : filters.cats.length === 0 ? "All" : null;
-  const chips = ["All", ...cats.slice(0, 8).map((c) => c.name)];
   const activeGender = filters.gender || "all"; // "all" | "women" | "men"
 
   return (
@@ -520,60 +351,12 @@ export default function TabShop({ onOpenProduct, onOpenTryOn, onOpenPage, onOpen
         </div>
       </section>
 
-      {/* Unified quiz/picks entry: the same Style DNA powers the general
-          collection order and the optional weekly curated rail. */}
-      <ChosenForYou
-        loading={loading}
-        picked={picked}
-        items={items}
-        member={member}
-        onOpenProduct={onOpenProduct}
+      <ShopQuickLinks
+        onBrowseNew={() => { setFilters(emptyFilters()); setSort("new"); scrollToGrid(); }}
+        onOpenDelivery={() => onOpenPage?.("delivery")}
         onOpenQuiz={onOpenQuiz}
+        onOpenCurated={scrollToCurators}
       />
-
-      {/* Live Collection block — now a real anchor into the product grid
-          (Shop Fixes spec: it must earn its place, not duplicate the hero CTA). */}
-      <div className="mb-10 text-center space-y-2">
-        <h2 className="text-3xl font-serif text-foreground">The Live Collection</h2>
-        {personalized && (
-          <div data-testid="shop-personalized-hint" className="inline-flex items-center gap-1.5 text-[12px] font-medium text-primary-ink mt-2">
-            <Sparkles size={13} /> Sorted for your Style DNA
-          </div>
-        )}
-        <button
-          type="button"
-          data-testid="live-collection-anchor"
-          onClick={scrollToGrid}
-          className="block mx-auto text-muted-foreground text-sm uppercase tracking-widest hover:text-foreground transition-colors rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-        >
-          Shop the latest pieces ↓
-        </button>
-      </div>
-
-      {/* Shop-local search is intentionally separate from the app-wide header
-          search/navigation control. */}
-      <form
-        data-testid="shop-search"
-        onSubmit={(e) => { e.preventDefault(); gridTopRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }); }}
-        className="mb-10 flex items-center gap-2 border border-border rounded bg-background px-3 h-12 focus-within:ring-2 focus-within:ring-primary/40"
-      >
-        <Search size={17} className="text-muted-foreground shrink-0" />
-        <input
-          type="search"
-          data-testid="shop-search-input"
-          aria-label="Search products"
-          value={searchTerm}
-          onChange={(e) => setSearchTerm(e.target.value)}
-          placeholder="Search styles, colours or categories"
-          className="min-w-0 flex-1 bg-transparent outline-none text-[14px] text-foreground placeholder:text-muted-foreground"
-        />
-        {searchTerm && (
-          <button type="button" data-testid="shop-search-clear" onClick={clearSearch} aria-label="Clear product search" className="p-1 text-muted-foreground hover:text-foreground">
-            <X size={16} />
-          </button>
-        )}
-        <button type="submit" className="h-8 px-3 rounded bg-foreground text-background text-[12px] font-medium">Search</button>
-      </form>
 
       {/* Virtual Try-On entry */}
       {typeof onOpenTryOn === "function" && (
@@ -594,24 +377,9 @@ export default function TabShop({ onOpenProduct, onOpenTryOn, onOpenPage, onOpen
         </button>
       )}
 
-      {/* Shop by Category — editorial tiles (moved from the homepage) */}
-      <div className="mb-10">
-        <CategoryGrid onSelect={pickCategory} />
-      </div>
-
-      {/* Promotional banner — shared with the Home discovery lead-in. */}
-      <PromoBanner />
-
-
-      {/* Filter + sort controls for the same unified Shop catalogue. */}
+      {/* Compact browsing controls: Filter, Search, Sorting and Styled for You. */}
       <div ref={gridTopRef} className="scroll-mt-24" aria-hidden="true" />
-      {/* Gender toggle — Women's / All / Men's. Sits above the filter row so
-          it's always visible and clearly separate from drawer-based filters. */}
-      <GenderToggle
-        activeGender={activeGender}
-        onChange={(id) => setFilters((f) => ({ ...f, gender: id === "all" ? "" : id, cats: [] }))}
-      />
-      <div className="flex flex-wrap items-center gap-2 mb-4 px-1">
+      <div className="flex flex-wrap items-center gap-2 mb-4">
         <button
           type="button"
           data-testid="shop-filter-open"
@@ -630,22 +398,28 @@ export default function TabShop({ onOpenProduct, onOpenTryOn, onOpenPage, onOpen
             </span>
           )}
         </button>
-        {mySizes && (
-          <button
-            type="button"
-            data-testid="shop-my-size"
-            aria-pressed={mySizeOn}
-            onClick={() => setFilters((f) => ({ ...f, sizes: mySizeOn ? [] : [...mySizes] }))}
-            className={`inline-flex items-center px-4 h-10 rounded-sm border text-[12px] font-bold uppercase tracking-wider whitespace-nowrap transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
-              mySizeOn
-                ? "border-primary text-primary-ink bg-primary/5"
-                : "border-border bg-background text-foreground hover:bg-secondary"
-            }`}
-          >
-            My size · {MY_SIZE_LABELS[sizeRange] || sizeRange}
-          </button>
-        )}
-        <div className="ml-auto relative shrink-0">
+        <form
+          data-testid="shop-search"
+          onSubmit={(e) => { e.preventDefault(); gridTopRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }); }}
+          className="order-4 basis-full sm:order-none sm:basis-auto sm:flex-1 flex items-center gap-2 border border-border rounded bg-background px-3 h-10 min-w-[220px] focus-within:ring-2 focus-within:ring-primary/40"
+        >
+          <Search size={15} className="text-muted-foreground shrink-0" />
+          <input
+            type="search"
+            data-testid="shop-search-input"
+            aria-label="Search products"
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            placeholder="Search styles, colours or categories"
+            className="min-w-0 flex-1 bg-transparent outline-none text-[13px] text-foreground placeholder:text-muted-foreground"
+          />
+          {searchTerm && (
+            <button type="button" data-testid="shop-search-clear" onClick={clearSearch} aria-label="Clear product search" className="p-1 text-muted-foreground hover:text-foreground">
+              <X size={15} />
+            </button>
+          )}
+        </form>
+        <div className="relative shrink-0">
           <select
             data-testid="shop-sort"
             aria-label="Sort styles"
@@ -664,27 +438,61 @@ export default function TabShop({ onOpenProduct, onOpenTryOn, onOpenPage, onOpen
           </select>
           <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-muted-foreground" />
         </div>
+        <button
+          type="button"
+          data-testid="shop-styled-for-you"
+          aria-pressed={styledForYouMode}
+          onClick={() => {
+            if (!member?.quiz_completed) {
+              onOpenQuiz?.();
+              return;
+            }
+            setStyledForYouMode((on) => !on);
+          }}
+          className={`inline-flex items-center gap-2 px-4 h-10 rounded-sm border text-[12px] font-bold uppercase tracking-wider whitespace-nowrap transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
+            styledForYouMode
+              ? "border-primary text-primary-ink bg-primary/5"
+              : "border-border bg-background text-foreground hover:bg-secondary"
+          }`}
+        >
+          <Sparkles size={14} strokeWidth={1.8} />
+          Styled For You
+        </button>
+        <button
+          type="button"
+          data-testid="shop-my-size"
+          aria-pressed={mySizeOn}
+          onClick={() => {
+            if (!mySizes) {
+              onOpenQuiz?.();
+              return;
+            }
+            setFilters((f) => ({ ...f, sizes: mySizeOn ? [] : [...mySizes] }));
+          }}
+          className={`inline-flex items-center px-4 h-10 rounded-sm border text-[12px] font-bold uppercase tracking-wider whitespace-nowrap transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
+            mySizeOn
+              ? "border-primary text-primary-ink bg-primary/5"
+              : "border-border bg-background text-foreground hover:bg-secondary"
+          }`}
+        >
+          {mySizes ? `My Size · ${MY_SIZE_LABELS[sizeRange] || sizeRange}` : "My Size"}
+        </button>
       </div>
-      {/* Category pills — quick single-category shortcuts into the same
-          catalogue that the Shop search and Style DNA ordering use. */}
-      <div className="flex gap-2 mb-10 overflow-x-auto hide-scrollbar pb-2 px-1">
-        {chips.map((b) => (
-          <button
-            key={b}
-            data-testid={`shop-filter-${b}`}
-            onClick={() => setFilters((f) => ({ ...f, cats: b === "All" ? [] : [b] }))}
-            className={`px-5 py-2 rounded-sm text-[11px] font-bold uppercase tracking-wider whitespace-nowrap transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
-              activeCat === b
-                ? "bg-foreground text-background shadow-sm"
-                : "bg-background text-muted-foreground hover:bg-secondary border border-border"
-            }`}
-          >
-            {b}
-          </button>
-        ))}
-      </div>
+      <GenderToggle
+        activeGender={activeGender}
+        onChange={(id) => setFilters((f) => ({ ...f, gender: id === "all" ? "" : id, cats: [] }))}
+      />
+      {personalized && styledForYouMode && (
+        <div data-testid="shop-personalized-hint" className="mb-5 flex items-center justify-center gap-1.5 text-[12px] font-medium text-primary-ink">
+          <Sparkles size={13} /> Sorted for your Style DNA
+        </div>
+      )}
+      <AppliedChips filters={filters} facets={facets} onChange={setFilters} className="-mt-2 mb-7" />
 
-      <AppliedChips filters={filters} facets={facets} onChange={setFilters} className="-mt-4 mb-8" />
+      {/* Shop by Category stays intact, but becomes a quick-access grid. */}
+      <div className="mb-10">
+        <CategoryGrid onSelect={pickCategory} compact />
+      </div>
 
       {error && (
         <div className="mb-8 rounded bg-destructive/5 border border-destructive/20 text-destructive text-[13px] font-medium px-4 py-3">
@@ -732,43 +540,17 @@ export default function TabShop({ onOpenProduct, onOpenTryOn, onOpenPage, onOpen
         </div>
       )}
 
-      {/* "Fresh off the floor" removed (Shop Fixes spec): it duplicated the
-          first rows of the default newest-first grid. The "Newest first" sort
-          covers new arrivals. */}
-
-      {/* Shoppable UGC — REAL community posts with a photo and tagged live
-          pieces (Shop Fixes spec: the old tiles rendered empty placeholders).
-          Hidden entirely when no qualifying looks exist. */}
-      {!loading && looks.length > 0 && (
-        <div className="border-t border-border pt-16">
-          <div className="mb-10 text-center space-y-2">
-            <h2 className="text-2xl font-serif text-foreground">Community Looks</h2>
-            <p className="text-muted-foreground text-[11px] uppercase tracking-widest">Shop how others wear it</p>
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-6 max-w-4xl mx-auto">
-            {looks.map((post) => (
-              <ShoppableLook
-                key={post.id}
-                post={post}
-                tagged={(post.tagged || []).slice(0, 2).map((t) => ({
-                  sku: t.sku,
-                  style_name: t.name,
-                  price: t.price,
-                  image_url: `/api/community/product-image/${encodeURIComponent(t.sku)}`,
-                  color: "",
-                  category: "",
-                }))}
-                onOpen={onOpenProduct}
-              />
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Vivo Edits — creator/editorial section, with its own clear header
-          divider so it reads as a distinct block on Shop too. */}
-      <div className="border-t border-border pt-16 mt-16" data-testid="shop-vivo-edits">
-        <VivoEditsHome onOpenEdit={onOpenEdit} onViewAll={onOpenEdits} />
+      {/* The grid now flows directly into creator edits; community looks stay
+          in the Community tab rather than interrupting the Shop journey. */}
+      <div ref={curatorsRef} className="border-t border-border pt-16 mt-16 scroll-mt-24" data-testid="shop-vivo-edits">
+        <VivoEditsHome
+          onOpenEdit={onOpenEdit}
+          onViewAll={onOpenEdits}
+          includeCommunityLooks={false}
+          kicker="Vivo Edits"
+          title="Curated Looks by creators"
+          sub="Sharon, Phinie and Grace share the edits they love."
+        />
       </div>
 
       <FilterSheet

@@ -498,10 +498,12 @@ function ShellInner() {
             via URL state (?page= / ?event=) that carry member-authenticated
             writes: try-on, survey, my-data, contact and event RSVP. Browsing
             surfaces (products, cart, wishlist, news, legal, help) stay open. */}
-        {!member && (eventId || ["tryon", "mydata", "contact", "styleprefs"].includes(page)) ? (
+        {!member && (quizOpen || eventId || ["tryon", "mydata", "contact", "styleprefs"].includes(page)) ? (
           <GuestGate
-            title={eventId ? "Events are for members" : "This is a member space"}
-            body="Sign in or create a free account to RSVP to events, use member tools and get in touch — it only takes a minute."
+            title={quizOpen ? "Your Style Quiz is for members" : eventId ? "Events are for members" : "This is a member space"}
+            body={quizOpen
+              ? "Create a free Vivo Johari account to save your Style DNA and receive a collection made for you."
+              : "Sign in or create a free account to RSVP to events, use member tools and get in touch — it only takes a minute."}
             onJoin={exitGuest}
           />
         ) : page ? (
