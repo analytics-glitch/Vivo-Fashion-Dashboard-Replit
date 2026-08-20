@@ -21,6 +21,8 @@ Run with::
     python -m unittest test_merch_router_schema_smoke
 """
 import unittest
+import threading
+import time
 from unittest import mock
 
 import merch_router
@@ -329,6 +331,71 @@ class TestMerchRouterSchemaSmoke(unittest.TestCase):
             result = merch_router._fetch_styles()
         self.assertTrue(len(result) > 0)
         self.assertEqual(result[0]["tier"], "Tier 1")
+
+    def test_online_performance_uses_shared_source_aggregates(self):
+        """The primary payload should scan each source once per request."""
+        sales = [{
+            "period_kind": "current", "bucket": "2026-08-01",
+            "category": "Dresses", "size": "M", "colour": "Black",
+            "channel_group": "online", "net_revenue": 1160,
+            "gross_revenue": 1160, "units": 2, "fp_units": 2,
+            "discounts": 0, "promo_revenue": 0, "returns_kes": 0,
+        }, {
+            "period_kind": "current", "bucket": "2026-08-01",
+            "category": "Dresses", "size": "M", "colour": "Black",
+            "channel_group": "retail", "net_revenue": 580,
+            "gross_revenue": 580, "units": 1, "fp_units": 1,
+            "discounts": 0, "promo_revenue": 0, "returns_kes": 0,
+        }, {
+            "period_kind": "ly", "bucket": None,
+            "category": "Dresses", "size": "M", "colour": "Black",
+            "channel_group": "online", "net_revenue": 500,
+            "gross_revenue": 500, "units": 1, "fp_units": 1,
+            "discounts": 0, "promo_revenue": 0, "returns_kes": 0,
+        }]
+        inventory = [{
+            "sku": "SKU-1", "category": "Dresses", "size": "M",
+            "colour": "Black", "soh_online": 5, "soh_retail": 8,
+        }]
+        with mock.patch.object(
+            merch_router, "_db_exec", side_effect=[sales, inventory]
+        ) as db:
+            result = merch_router._online_perf_payload(
+                "2026-08-01", "2026-08-31", country="Kenya"
+            )
+        self.assertEqual(db.call_count, 2)
+        self.assertEqual(result["kpis"]["online_rev"], 1160.0)
+        self.assertEqual(result["kpis"]["online_rev_ly"], 500.0)
+        self.assertEqual(result["categories"][0]["category"], "Dresses")
+        self.assertEqual(result["sizes"][0]["online_soh"], 5.0)
+        self.assertIn("s.country = ANY", db.call_args_list[0].args[0])
+        self.assertIn("Online", str(db.call_args_list[0].args[1]))
+
+    def test_online_performance_cache_coalesces_concurrent_requests(self):
+        """A slow cold request is computed once for overlapping callers."""
+        key = "test-online-single-flight"
+        merch_router._cache_store.pop(key, None)
+        calls = []
+
+        def work():
+            calls.append(1)
+            time.sleep(0.02)
+            return {"ok": True}
+
+        results = []
+        threads = [
+            threading.Thread(target=lambda: results.append(
+                merch_router._cached(key, 60, work)
+            ))
+            for _ in range(2)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=3)
+        self.assertEqual(calls, [1])
+        self.assertEqual(results, [{"ok": True}, {"ok": True}])
+        merch_router._cache_store.pop(key, None)
 
     def test_retired_status_yields_retired_tier(self):
         """An all-Retired style must produce tier='Retired'."""

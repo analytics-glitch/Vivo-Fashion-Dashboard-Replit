@@ -46,6 +46,8 @@ import asyncio
 import time as _time
 import threading as _threading
 _cache_store = {}
+_cache_locks = {}
+_cache_locks_guard = _threading.Lock()
 
 # Per-key single-flight locks for the heavy style-universe computation
 # (see _styles_cached). Guard protects the dict itself.
@@ -58,9 +60,18 @@ def _cached(key, ttl, fn):
     entry = _cache_store.get(key)
     if entry and (now - entry[0]) < ttl:
         return entry[1]
-    result = fn()
-    _cache_store[key] = (now, result)
-    return result
+    with _cache_locks_guard:
+        lock = _cache_locks.setdefault(key, _threading.Lock())
+    # Re-check after waiting: concurrent requests for the same filter now
+    # share one computation instead of starting duplicate heavy SQL scans.
+    with lock:
+        now = _time.monotonic()
+        entry = _cache_store.get(key)
+        if entry and (now - entry[0]) < ttl:
+            return entry[1]
+        result = fn()
+        _cache_store[key] = (_time.monotonic(), result)
+        return result
 
 
 # ── DB execution ───────────────────────────────────────────────────────────────
@@ -4790,6 +4801,76 @@ def _op_soh_sql(country=None):
     return sql, params
 
 
+def _online_perf_sources(from_date, to_date, country=None, brand=None,
+                         subcategory=None, ly_from=None, ly_to=None):
+    """Fetch the two reusable source aggregates for Online Performance.
+
+    The old implementation scanned all_sales once for every KPI/trend/dimension
+    and all_inventory once for every stock dimension.  Keep the source grain
+    small (SKU + product dimensions + channel + period bucket), then derive all
+    response sections in Python from these two result sets.
+    """
+    from datetime import date as _date
+    d_from = _date.fromisoformat(from_date)
+    d_to = _date.fromisoformat(to_date)
+    ly_from = ly_from or str(d_from - timedelta(days=365))
+    ly_to = ly_to or str(d_to - timedelta(days=365))
+    span_days = max(1, (d_to - d_from).days + 1)
+    gran = "week" if span_days <= 140 else "month"
+    bucket = f"date_trunc('{gran}', s.sale_date::date)::date"
+    fwhere, fparams = _op_filters(country, brand, subcategory)
+    extra = ("AND " + " AND ".join(fwhere)) if fwhere else ""
+    sales = _db_exec(f"""
+        SELECT
+            CASE WHEN s.sale_date::date BETWEEN %s AND %s
+                 THEN 'current' ELSE 'ly' END AS period_kind,
+            CASE WHEN s.sale_date::date BETWEEN %s AND %s
+                 THEN {bucket} ELSE NULL END AS bucket,
+            p.category, p.size, p.color_print AS colour,
+            CASE WHEN {_ONLINE_SALE_PRED} THEN 'online' ELSE 'retail' END
+                AS channel_group,
+            SUM({_NET_SALES_EXPR})::numeric AS net_revenue,
+            SUM(CASE WHEN s.sale_kind IN ('sale','order')
+                     THEN s.total_sales_kes::numeric ELSE 0 END) AS gross_revenue,
+            SUM(CASE WHEN s.sale_kind IN ('sale','order')
+                     THEN COALESCE(s.ordered_item_quantity,0) ELSE 0 END) AS units,
+            SUM(CASE WHEN s.sale_kind IN ('sale','order')
+                       AND COALESCE(s.discounts_kes,0)::numeric = 0
+                     THEN COALESCE(s.ordered_item_quantity,0) ELSE 0 END) AS fp_units,
+            SUM(CASE WHEN s.sale_kind IN ('sale','order')
+                     THEN COALESCE(s.discounts_kes,0)::numeric ELSE 0 END) AS discounts,
+            SUM(CASE WHEN s.sale_kind IN ('sale','order')
+                       AND COALESCE(s.discounts_kes,0)::numeric > 0
+                       AND s.total_sales_kes::numeric > 0
+                     THEN ({_NET_SALES_EXPR}) ELSE 0 END) AS promo_revenue,
+            SUM(CASE WHEN s.sale_kind = 'return'
+                     THEN ABS(COALESCE(s.returns_kes,0)::numeric) ELSE 0 END) AS returns_kes
+        FROM all_sales s
+        LEFT JOIN all_products_clean p ON p.sku = s.variant_sku
+        WHERE {_BASE_FILTERS}
+          AND (
+              s.sale_date::date BETWEEN %s AND %s
+              OR s.sale_date::date BETWEEN %s AND %s
+          )
+          {extra}
+        GROUP BY 1, 2, 3, 4, 5, 6
+    """, [from_date, to_date, from_date, to_date,
+          from_date, to_date, ly_from, ly_to] + fparams)
+
+    soh_sql, soh_params = _op_soh_sql(country)
+    w, prm = _op_filters(None, brand, subcategory)
+    ex = ("AND " + " AND ".join(w)) if w else ""
+    inventory = _db_exec(f"""
+        WITH soh AS ({soh_sql})
+        SELECT p.category, p.size, p.color_print AS colour,
+               soh.sku, soh.soh_online, soh.soh_retail
+        FROM soh
+        LEFT JOIN all_products_clean p ON p.sku = soh.sku
+        WHERE 1=1 {ex}
+    """, soh_params + prm)
+    return sales, inventory, gran
+
+
 def _online_perf_payload(from_date, to_date, country=None, brand=None,
                          subcategory=None):
     from datetime import date as _date, timedelta as _td
@@ -4833,9 +4914,41 @@ def _online_perf_payload(from_date, to_date, country=None, brand=None,
                      THEN ABS(COALESCE(s.returns_kes,0)::numeric) ELSE 0 END) AS returns_kes
         """
 
+    # Shared source aggregates: one sales scan and one inventory scan feed all
+    # headline, trend, dimension, SOH, and benchmark calculations below.
+    source_sales, source_inventory, gran = _online_perf_sources(
+        from_date, to_date, country, brand, subcategory,
+        str(d_from - _td(days=365)), str(d_to - _td(days=365)))
+
+    def _num(row, key):
+        return float(row.get(key) or 0)
+
+    current_sales = [r for r in source_sales if r["period_kind"] == "current"]
+    ly_sales = [r for r in source_sales if r["period_kind"] == "ly"]
+
+    def _aggregate(rows, key=None):
+        out = {}
+        for r in rows:
+            if key is not None:
+                k = r.get(key)
+                if k is None or k == "":
+                    continue
+            else:
+                k = "all"
+            ch = r["channel_group"]
+            e = out.setdefault((k, ch), {
+                **({key: k} if key is not None else {}),
+                "channel_group": ch, "net_revenue": 0, "gross_revenue": 0,
+                "units": 0, "fp_units": 0, "discounts": 0,
+                "promo_revenue": 0, "returns_kes": 0,
+            })
+            for field in ("net_revenue", "gross_revenue", "units", "fp_units",
+                          "discounts", "promo_revenue", "returns_kes"):
+                e[field] += _num(r, field)
+        return list(out.values())
+
     # 1) headline per-channel aggregates (this period)
-    kpi_rows = _db_exec(
-        f"SELECT {_chan_aggs()} {base} GROUP BY 1", [from_date, to_date] + fparams)
+    kpi_rows = _aggregate(current_sales)
     k = {r["channel_group"]: r for r in kpi_rows}
 
     def g(ch, f, dflt=0):
@@ -4843,22 +4956,21 @@ def _online_perf_payload(from_date, to_date, country=None, brand=None,
         return float(v) if v is not None else dflt
 
     # 2) online revenue same period last year (YoY)
-    ly_from, ly_to = str(d_from - _td(days=365)), str(d_to - _td(days=365))
-    ly = _db_exec(f"""
-        SELECT SUM({_NET_SALES_EXPR})::numeric AS net_revenue
-        FROM all_sales s
-        LEFT JOIN all_products_clean p ON p.sku = s.variant_sku
-        WHERE {_BASE_FILTERS} AND {_ONLINE_SALE_PRED}
-          AND s.sale_date::date BETWEEN %s AND %s {extra}
-    """, [ly_from, ly_to] + fparams)
-    online_rev_ly = float(ly[0]["net_revenue"] or 0) if ly else 0.0
+    online_rev_ly = sum(_num(r, "net_revenue") for r in ly_sales
+                         if r["channel_group"] == "online")
 
     # 3) trend buckets (revenue + discount depth + promo share per channel)
-    trend_rows = _db_exec(
-        f"SELECT {bucket} AS bucket, {_chan_aggs()} {base} GROUP BY 1, 2 ORDER BY 1",
-        [from_date, to_date] + fparams)
     tmap = {}
-    for r in trend_rows:
+    trend_agg = {}
+    for r in current_sales:
+        key = (r.get("bucket"), r["channel_group"])
+        e = trend_agg.setdefault(key, {"bucket": r.get("bucket"),
+                                       "channel_group": r["channel_group"],
+                                       "net_revenue": 0, "gross_revenue": 0,
+                                       "discounts": 0, "promo_revenue": 0})
+        for field in ("net_revenue", "gross_revenue", "discounts", "promo_revenue"):
+            e[field] += _num(r, field)
+    for r in trend_agg.values():
         b = str(r["bucket"])
         t = tmap.setdefault(b, {"bucket": b})
         ch = r["channel_group"]
@@ -4875,24 +4987,19 @@ def _online_perf_payload(from_date, to_date, country=None, brand=None,
     soh_sql, soh_params = _op_soh_sql(country)
 
     def _soh_by(dim_expr, dim_name):
-        w, prm = _op_filters(None, brand, subcategory)
-        ex = ("AND " + " AND ".join(w)) if w else ""
-        return _db_exec(f"""
-            WITH soh AS ({soh_sql})
-            SELECT {dim_expr} AS {dim_name},
-                   SUM(soh.soh_online) AS soh_online,
-                   SUM(soh.soh_retail) AS soh_retail
-            FROM soh JOIN all_products_clean p ON p.sku = soh.sku
-            WHERE COALESCE({dim_expr},'') <> '' {ex}
-            GROUP BY 1
-        """, soh_params + prm)
+        out = {}
+        for r in source_inventory:
+            key = r.get(dim_name)
+            if not key:
+                continue
+            e = out.setdefault(key, {dim_name: key, "soh_online": 0,
+                                     "soh_retail": 0})
+            e["soh_online"] += _num(r, "soh_online")
+            e["soh_retail"] += _num(r, "soh_retail")
+        return list(out.values())
 
     def _sales_by(dim_expr, dim_name):
-        return _db_exec(f"""
-            SELECT {dim_expr} AS {dim_name}, {_chan_aggs()}
-            {base} AND COALESCE({dim_expr},'') <> ''
-            GROUP BY 1, 2
-        """, [from_date, to_date] + fparams)
+        return _aggregate(current_sales, dim_name)
 
     def _fold(dim_name, sales_rows, soh_rows):
         m = {}
