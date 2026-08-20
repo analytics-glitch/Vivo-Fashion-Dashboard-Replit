@@ -1,0 +1,36 @@
+# Vivo Johari — "Style DNA" Toggle on Shop
+
+**Context:** Add a "Curate based on my Style DNA from the style quiz" control to Shop's filter area — this is the return of a personalization filter (previously "Styled For You," removed from the controls row in an earlier pass), now reframed around the quiz results specifically and given proper two-state behavior.
+
+---
+
+## Behavior
+
+**If the shopper hasn't taken the Style Preferences quiz yet:**
+- The control shows as available but inactive/off.
+- Tapping it **routes to the style quiz** (Style Preferences page) rather than toggling anything — there's nothing to curate from yet.
+
+**If the shopper has already taken the quiz:**
+- The control shows as a **toggle, defaulted to ON**.
+- When ON, the product grid filters/reorders to match their Style DNA results (size, fit, colour, categories, plain/prints, shades, fabrics — everything captured in the quiz).
+- The shopper can switch it OFF to see the unfiltered grid, and back ON again — this is a real toggle, not a one-way action.
+
+## Copy
+
+- Label: **"Curate based on my Style DNA"**
+- Subtext (optional, small): "From your style quiz results"
+
+## Placement
+
+In the Shop filter area, alongside Filter / Search / Sorting — same general zone as the earlier "Styled For You" tab, but now specifically framed around "Style DNA" and with the two-state (route-to-quiz vs. toggle) behavior described above, rather than being a plain filter tab.
+
+## Style quiz → Shop link-back
+
+When a shopper completes (saves) the Style Preferences quiz, they should be **routed back to Shop with the Style DNA toggle already ON** and the grid filtered to their new preferences — not dropped back at a generic Shop landing state. This closes the loop: take the quiz → immediately see it reflected in what you're shown.
+
+## Implementation notes for the Replit agent
+
+- Requires checking quiz-completion state per user (has this shopper saved Style Preferences at all, even partially) to decide which of the two control states to show.
+- The toggle's "ON" filtering logic can likely reuse whatever matching logic already exists from the earlier "Styled For You" tab/quiz-recommendation work — this isn't a new recommendation engine, just a new entry point and toggle UI around it.
+- The redirect-back-to-Shop-with-toggle-on behavior needs the quiz's "save" action to pass a signal (e.g. a query param or redirect state) so Shop knows to default the toggle ON immediately after quiz completion, not just on subsequent visits.
+- If a shopper updates their quiz answers later (not just first-time completion), the same redirect-back behavior should apply — refreshed Style DNA should immediately reflect on Shop.

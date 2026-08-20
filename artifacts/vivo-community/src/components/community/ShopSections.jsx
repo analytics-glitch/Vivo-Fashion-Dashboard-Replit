@@ -249,7 +249,7 @@ export const CATEGORY_TILES = [
   { label: "Workwear", img: "cat-workwear.jpg" },
   { label: "Dresses", img: "cat-dresses.jpg" },
   { label: "Everyday", img: "cat-everyday.jpg" },
-  { label: "Activewear", img: "cat-active.jpg" },
+  { label: "Loungewear", img: "cat-active.jpg" },
   { label: "Men's", img: "cat-mens.jpg", kicker: "For him" },
 ];
 export function CategoryGrid({ onSelect, compact = false }) {

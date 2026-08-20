@@ -94,7 +94,7 @@ function StepHeading({ kicker, title, sub }) {
   );
 }
 
-export default function StyleQuiz({ member, onClose, onMemberUpdate, onSeeFeed }) {
+export default function StyleQuiz({ member, onClose, onMemberUpdate, onSeeShop }) {
   const completedBefore = !!member?.quiz_completed;
   const [step, setStep] = useState(completedBefore ? 1 : 0); // 0 welcome · 1–6 questions · "result"
   const [answers, setAnswers] = useState(EMPTY);
@@ -516,8 +516,8 @@ export default function StyleQuiz({ member, onClose, onMemberUpdate, onSeeFeed }
               )}
 
               <div className="flex flex-col sm:flex-row justify-center gap-3 mt-8">
-                <button data-testid="quiz-see-feed" onClick={onSeeFeed} className={`${btnPrimary} h-12 px-8`}>
-                  See my personalized feed
+                <button data-testid="quiz-see-shop" onClick={onSeeShop} className={`${btnPrimary} h-12 px-8`}>
+                  See my Style DNA in Shop
                 </button>
                 <button
                   data-testid="quiz-share"

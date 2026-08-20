@@ -14,6 +14,7 @@ cat-workwear.jpg  — Shop by Category tiles
 cat-dresses.jpg
 cat-everyday.jpg
 cat-active.jpg
+cat-mens.jpg
 community.jpg     — The Vivo Community spotlight
 story-1..3.jpg    — Vivo Stories covers
 promo.jpg         — promotional banner background

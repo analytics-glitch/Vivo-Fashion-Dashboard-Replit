@@ -226,8 +226,12 @@ function ShellInner() {
     applyView({ ...viewRef.current, quiz: false }, "replace");
   }, [applyView]);
 
-  const quizSeeFeed = useCallback(() => {
-    applyView({ tab: "home", sku: "", ev: "", cart: false, wl: false, page: "", quiz: false, sub: "" }, "replace");
+  const quizSeeShop = useCallback(() => {
+    // This tap is the one-shot bridge from quiz completion to Shop. TabShop
+    // also defaults completed members to curated, but preserving the intent
+    // avoids a brief uncurated render while member state refreshes.
+    try { sessionStorage.setItem("vivo_shop_style_dna_handoff", "1"); } catch { /* private mode */ }
+    applyView({ tab: "shop", sku: "", ev: "", cart: false, wl: false, page: "", quiz: false, sub: "" }, "replace");
   }, [applyView]);
 
   const closeProduct = useCallback(() => {
@@ -583,7 +587,7 @@ function ShellInner() {
               </>
             )}
             {tab === "community" && member && <TabCommunity member={member} subNav={subNav} composeAction={communityComposeAction} onComposeActionConsumed={clearCommunityComposeAction} onSubChange={syncSub} onOpenEvent={openEventDetail} onOpenProduct={openProduct} onOpenPage={openPage} onOpenFabulas={setFabulasId} onOpenEdit={openEdit} onOpenEdits={() => openPage("edits")} />}
-            {tab === "shop" && <TabShop onOpenProduct={openProduct} onOpenTryOn={() => openTryOn("")} onOpenPage={openPage} onOpenQuiz={openQuiz} onOpenEdit={openEdit} onOpenEdits={() => openPage("edits")} />}
+            {tab === "shop" && <TabShop member={member} onOpenProduct={openProduct} onOpenTryOn={() => openTryOn("")} onOpenPage={openPage} onOpenQuiz={openQuiz} onOpenEdit={openEdit} onOpenEdits={() => openPage("edits")} />}
             {tab === "rewards" && (member ? (
               <TabRewards
                 member={member}
@@ -622,7 +626,7 @@ function ShellInner() {
           </>
         )}
         {quizOpen && member && (
-          <StyleQuiz member={member} onClose={closeQuiz} onMemberUpdate={updateMember} onSeeFeed={quizSeeFeed} />
+          <StyleQuiz member={member} onClose={closeQuiz} onMemberUpdate={updateMember} onSeeShop={quizSeeShop} />
         )}
         {fabulasId && (
           <FabulasStoryView

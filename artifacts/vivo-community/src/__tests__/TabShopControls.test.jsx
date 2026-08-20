@@ -22,6 +22,7 @@ vi.mock("@/context/WishlistContext", () => ({
 
 import { api } from "@/lib/api";
 import TabShop from "@/components/community/TabShop";
+import { CATEGORY_TILES, CategoryGrid } from "@/components/community/ShopSections";
 
 const props = {
   onOpenProduct: vi.fn(),
@@ -50,11 +51,18 @@ describe("TabShop browsing controls", () => {
     expect(screen.getByTestId("shop-filter-open")).toBeInTheDocument();
     expect(screen.getByTestId("shop-search")).toHaveClass("col-span-2");
     expect(screen.getByTestId("shop-sort")).toBeInTheDocument();
+    expect(screen.getByTestId("shop-style-dna")).toHaveTextContent("Curate based on my Style DNA");
+    expect(screen.getByTestId("shop-style-dna")).toHaveTextContent("Take the quiz to unlock");
     expect(screen.queryByTestId("shop-styled-for-you")).not.toBeInTheDocument();
     expect(screen.queryByTestId("shop-my-size")).not.toBeInTheDocument();
     expect(screen.queryByTestId("shop-personalized-hint")).not.toBeInTheDocument();
     expect(api.styleQuiz).not.toHaveBeenCalled();
     expect(api.products.mock.calls[0][0]).not.toHaveProperty("personalize");
+
+    // The control is visible before the quiz is complete, but its tap sends
+    // the member to Style Preferences rather than making a personalized call.
+    await user.click(screen.getByTestId("shop-style-dna"));
+    expect(props.onOpenQuiz).toHaveBeenCalledOnce();
 
     await user.click(screen.getByTestId("shop-filter-open"));
     expect(await screen.findByTestId("shop-filter-sheet")).toBeInTheDocument();
@@ -72,7 +80,49 @@ describe("TabShop browsing controls", () => {
     )).toBe(true));
 
     await user.click(screen.getByTestId("shop-quick-quiz"));
-    expect(props.onOpenQuiz).toHaveBeenCalledOnce();
+    expect(props.onOpenQuiz).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses Style DNA by default for a completed quiz and can turn it off and back on", async () => {
+    const user = userEvent.setup();
+    render(<TabShop {...props} member={{ quiz_completed: true }} />);
+
+    const control = await screen.findByTestId("shop-style-dna");
+    expect(control).toHaveAttribute("role", "switch");
+    expect(control).toHaveAttribute("aria-checked", "true");
+    expect(control).toHaveTextContent("From your style quiz results");
+    await waitFor(() => expect(api.products.mock.calls.some(
+      ([opts]) => opts.personalize === true
+    )).toBe(true));
+
+    await user.click(control);
+    expect(control).toHaveAttribute("aria-checked", "false");
+    await waitFor(() => expect(api.products.mock.calls.some(
+      ([opts]) => !Object.hasOwn(opts, "personalize")
+    )).toBe(true));
+
+    await user.click(control);
+    expect(control).toHaveAttribute("aria-checked", "true");
+    await waitFor(() => expect(
+      api.products.mock.calls.filter(([opts]) => opts.personalize === true)
+    ).toHaveLength(2));
+  });
+
+  it("shows the Loungewear category tile with the existing image", () => {
+    render(<CategoryGrid onSelect={vi.fn()} compact />);
+
+    const loungewear = CATEGORY_TILES.find((tile) => tile.label === "Loungewear");
+    expect(loungewear).toMatchObject({ img: "cat-active.jpg" });
+    expect(screen.getByTestId("shop-cat-tile-loungewear")).toHaveTextContent("Loungewear");
+  });
+
+  it("uses the men's campaign image and keeps the For him entry point", () => {
+    render(<CategoryGrid onSelect={vi.fn()} compact />);
+
+    const mens = screen.getByTestId("shop-cat-tile-men-s");
+    expect(mens).toHaveTextContent("For him");
+    expect(mens).toHaveTextContent("Men's");
+    expect(mens.querySelector("img")).toHaveAttribute("src", expect.stringContaining("/assets/brand/cat-mens.jpg"));
   });
 
   it("keeps colour swatches on the product image instead of repeating the colour name below it", async () => {

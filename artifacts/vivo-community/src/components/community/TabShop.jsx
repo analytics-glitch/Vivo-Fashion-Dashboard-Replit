@@ -192,7 +192,46 @@ function SkeletonCard() {
   );
 }
 
-export default function TabShop({ onOpenProduct, onOpenTryOn, onOpenPage, onOpenQuiz, onOpenEdit, onOpenEdits }) {
+function StyleDnaControl({ hasQuiz, enabled, onToggle, onOpenQuiz }) {
+  const activate = () => {
+    if (hasQuiz) onToggle(!enabled);
+    else onOpenQuiz?.();
+  };
+
+  return (
+    <button
+      type="button"
+      data-testid="shop-style-dna"
+      role={hasQuiz ? "switch" : undefined}
+      aria-checked={hasQuiz ? enabled : undefined}
+      aria-label={hasQuiz ? "Curate based on my Style DNA" : "Take the Style Quiz to curate based on my Style DNA"}
+      onClick={activate}
+      className={`col-span-2 sm:col-span-1 inline-flex items-center gap-2.5 px-3 h-10 rounded-sm border text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary ${
+        hasQuiz
+          ? enabled
+            ? "border-primary bg-primary/10 text-primary-ink"
+            : "border-border bg-background text-foreground hover:bg-secondary"
+          : "border-border bg-background text-foreground hover:bg-secondary"
+      }`}
+    >
+      <span className={`relative flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${
+        hasQuiz && enabled ? "bg-primary" : "bg-border"
+      }`}>
+        <span className={`absolute left-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${
+          hasQuiz && enabled ? "translate-x-4" : ""
+        }`} />
+      </span>
+      <span className="min-w-0 leading-tight">
+        <span className="block text-[11px] font-semibold whitespace-nowrap">Curate based on my Style DNA</span>
+        <span className="block text-[10px] text-muted-foreground whitespace-nowrap">
+          {hasQuiz ? "From your style quiz results" : "Take the quiz to unlock"}
+        </span>
+      </span>
+    </button>
+  );
+}
+
+export default function TabShop({ member, onOpenProduct, onOpenTryOn, onOpenPage, onOpenQuiz, onOpenEdit, onOpenEdits }) {
   const [shopGenderHandoff] = useState(() => {
     try {
       const value = sessionStorage.getItem("vivo_shop_gender_handoff");
@@ -220,21 +259,42 @@ export default function TabShop({ onOpenProduct, onOpenTryOn, onOpenPage, onOpen
   const [draftCount, setDraftCount] = useState(null);
   const [counting, setCounting] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
+  const [styleDnaOn, setStyleDnaOn] = useState(() => {
+    let handoff = false;
+    try {
+      handoff = sessionStorage.getItem("vivo_shop_style_dna_handoff") === "1";
+      if (handoff) sessionStorage.removeItem("vivo_shop_style_dna_handoff");
+    } catch { /* private mode */ }
+    return handoff || !!member?.quiz_completed;
+  });
+
+  const hasStyleDna = !!member?.quiz_completed;
+  const styleDnaActive = hasStyleDna && styleDnaOn;
 
   useEffect(() => {
     if (!shopGenderHandoff) return;
     try { sessionStorage.removeItem("vivo_shop_gender_handoff"); } catch { /* private mode */ }
   }, [shopGenderHandoff]);
 
-  const filtersKey = JSON.stringify({ filters, searchTerm });
+  // A completed quiz always starts a fresh Shop visit curated. A shopper can
+  // still switch it off for this visit; the dependency only changes when the
+  // quiz moves from incomplete to complete (for example, after saving it).
+  useEffect(() => {
+    if (hasStyleDna) setStyleDnaOn(true);
+  }, [hasStyleDna]);
+
+  const filtersKey = JSON.stringify({ filters, searchTerm, styleDnaActive });
   const nActive = countActive(filters);
   // Bumped whenever the query (filters/sort) changes; an in-flight load-more
   // from an older query must never append into the new grid.
   const queryVer = useRef(0);
   const countSeq = useRef(0);
 
-  const load = (offset) =>
-    api.products(filtersToParams(filters, { limit: PAGE, offset, sort, searchTerm }));
+  const load = (offset) => {
+    const extra = { limit: PAGE, offset, sort, searchTerm };
+    if (styleDnaActive) extra.personalize = true;
+    return api.products(filtersToParams(filters, extra));
+  };
 
   useEffect(() => {
     queryVer.current += 1;
@@ -397,6 +457,12 @@ export default function TabShop({ onOpenProduct, onOpenTryOn, onOpenPage, onOpen
             </span>
           )}
         </button>
+        <StyleDnaControl
+          hasQuiz={hasStyleDna}
+          enabled={styleDnaActive}
+          onToggle={setStyleDnaOn}
+          onOpenQuiz={onOpenQuiz}
+        />
         <form
           data-testid="shop-search"
           onSubmit={(e) => { e.preventDefault(); gridTopRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }); }}

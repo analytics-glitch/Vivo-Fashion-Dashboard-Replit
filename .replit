@@ -40,6 +40,10 @@ args = "loyalty-smoke"
 task = "workflow.run"
 args = "costing-pg-concurrency"
 
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "community-referral-pg"
+
 [[workflows.workflow]]
 name = "Sync Watchdog"
 author = "agent"
@@ -102,6 +106,17 @@ author = "agent"
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "python3 run_preprod_accessories_pg_test.py"
+
+[workflows.workflow.metadata]
+isValidation = true
+
+[[workflows.workflow]]
+name = "community-referral-pg"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python3 run_community_referral_pg_test.py"
 
 [workflows.workflow.metadata]
 isValidation = true
