@@ -24,7 +24,12 @@ export default function HelpLandingView({ onBack, onOpenPage }) {
         </p>
       </header>
 
-      <div className="text-[12px] font-bold uppercase tracking-wider text-muted-foreground px-1 -mb-6">Help &amp; Support</div>
+      <div
+        data-testid="help-section-label"
+        className="px-5 pt-4 pb-3 text-[10px] font-bold uppercase tracking-widest text-primary-ink"
+      >
+        Help &amp; Support
+      </div>
       <HelpSupportCard onOpenPage={onOpenPage} />
     </div>
   );

@@ -39247,6 +39247,14 @@ store_feedback.register_store_feedback_routes(app)
 import community_app_images
 community_app_images.register_community_app_image_routes(app)
 
+
+@_deferred_startup
+def _init_community_shop_card_images():
+    try:
+        community_app_images.seed_shop_card_defaults()
+    except Exception as e:
+        log.error("community Shop-card image init failed: %s", e)
+
 # Staff Rota endpoints (/api/rota/*). Same placement rationale as the HR module.
 # Gated in clerk_auth_gate to leadership + hr + admin.
 import rota_router

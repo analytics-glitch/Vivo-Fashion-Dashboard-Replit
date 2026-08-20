@@ -10,6 +10,10 @@ describe("HelpLandingView", () => {
     const onOpenPage = vi.fn();
     render(<HelpLandingView onBack={vi.fn()} onOpenPage={onOpenPage} />);
 
+    const sectionLabel = screen.getByTestId("help-section-label");
+    expect(sectionLabel).toHaveTextContent("Help & Support");
+    expect(sectionLabel).toHaveClass("px-5", "pt-4", "pb-3", "tracking-widest");
+
     const card = screen.getByTestId("help-legal-card");
     const ids = ["stores", "delivery", "returns", "faq", "tryon", "styleprefs", "contact", "terms", "privacy", "guidelines"];
     const rows = ids.map((id) => within(card).getByTestId(`help-link-${id}`));

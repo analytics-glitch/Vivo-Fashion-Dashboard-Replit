@@ -102,11 +102,15 @@ _COMMENT_BLOCKLIST = re.compile(
 ARTICLE_SLUG_LAUNCH = "the-new-old-money"
 _ARTICLE_SEED = {
     "slug": ARTICLE_SLUG_LAUNCH,
+    "article_type": "campaign",
     "title": "The New Old Money",
     "subheading": ("Timeless silhouettes, refined details and effortless "
                    "elegance, reimagined for the modern Vivo woman."),
     "cover_image": "/app/assets/brand/hero.jpg",
     "tag": "This season's conversation",
+    "subject": None,
+    "byline": None,
+    "gallery": [],
     "body": [
         "Quiet luxury has been having a moment everywhere — but Nairobi has "
         "always known how to do it with warmth. This season we asked a "
@@ -129,6 +133,110 @@ _ARTICLE_SEED = {
         "every one, and your take might shape where we go next season.",
     ],
 }
+
+# Community Spotlights use the exact same article + comment model as campaign
+# stories. These launch profiles belong to the rotating fictional launch
+# jewels; they seed only once so a future staff-authored interview is never
+# overwritten by application startup.
+_SPOTLIGHT_ARTICLE_SEEDS = [
+    {
+        "slug": "nyambura-finding-her-shape",
+        "article_type": "spotlight",
+        "title": "Nyambura's style began with making room",
+        "subheading": ("For Nyambura, finding clothes that fitted well was the "
+                       "start. Finding women who made room for one another "
+                       "changed everything."),
+        "cover_image": "/app/assets/brand/home-teasers/community-960.webp",
+        "tag": "Community spotlight",
+        "subject": "Nyambura K.",
+        "byline": "Words by Vivo Community",
+        "gallery": [
+            {
+                "image": "/app/assets/brand/home-teasers/community-960.webp",
+                "alt": "Vivo women sharing a bright studio moment together",
+                "caption": "The kind of room Nyambura says every woman deserves.",
+            },
+            {
+                "image": "/app/assets/brand/home-teasers/style-boards-960.webp",
+                "alt": "A Vivo editorial look in warm tones",
+                "caption": "One of the softer, structured looks that helped her see a new silhouette.",
+            },
+            {
+                "image": "/app/assets/brand/home-teasers/curators-960.webp",
+                "alt": "Vivo women in polished evening looks",
+                "caption": "A reminder that a good look can feel like an introduction.",
+            },
+        ],
+        "body": [
+            "“Finding a community that celebrates African curves has completely changed how I shop. Vivo is more than fashion, it’s family.”",
+            "Nyambura joined Vivo Community after a friend sent her a fitting-room photo and a message that read: try the dress you think is ‘not for you’. She had loved colour and a good occasion look for as long as she could remember, but shopping had often begun with a quiet calculation: what would hide, what would skim, what would ask the least of her body.",
+            "Her first Vivo piece was a wrap dress she nearly left on the rail. In the fitting room, the waist sat where it was meant to, the sleeves gave her room to move, and the print did not apologise for taking up space. She wore it to a cousin’s birthday with flat sandals and gold hoops. By the end of the evening, three women had asked where she found it.",
+            "That question started a habit. Nyambura began saving the fit notes she found in Community, then adding her own: size up here if you want a softer drape; belt this one at the natural waist; keep the earrings simple and let the print speak. The posts were practical, but the replies were what stayed with her — women celebrating one another before they had ever met.",
+            "These days, she reaches first for pieces with shape: a defined waist, a generous sleeve, a skirt that moves when she does. The makeover was never about becoming someone else. It was learning that being seen clearly can be a comfort.",
+            "Her advice to another woman standing outside a fitting room door is simple: take the piece in. Try the colour. Let the mirror tell a fuller story than the one you arrived with.",
+        ],
+    },
+    {
+        "slug": "halima-dressing-to-arrive",
+        "article_type": "spotlight",
+        "title": "Halima stopped dressing to disappear",
+        "subheading": ("A fitting-room note, a bright print and a patient "
+                       "community helped Halima trade hiding for arriving."),
+        "cover_image": "/app/assets/brand/home-teasers/style-boards-960.webp",
+        "tag": "Community spotlight",
+        "subject": "Halima S.",
+        "byline": "Words by Vivo Community",
+        "gallery": [
+            {
+                "image": "/app/assets/brand/home-teasers/style-boards-960.webp",
+                "alt": "A Vivo editorial look in warm tones",
+                "caption": "The shape-led look that made Halima pause at the mirror.",
+            },
+            {
+                "image": "/app/assets/brand/home-teasers/community-960.webp",
+                "alt": "Vivo women sharing a bright studio moment together",
+                "caption": "Community fit notes made a first try feel less daunting.",
+            },
+        ],
+        "body": [
+            "“I used to buy clothes to hide. These days I dress to arrive — and this community did that.”",
+            "For a long time, Halima’s wardrobe was a collection of compromises: safe colours, forgiving shapes and pieces chosen for the smallest possible reaction. She had shopped Vivo before, but it was the Community’s unfiltered fit notes that persuaded her to revisit a dress she had dismissed from a thumbnail.",
+            "She ordered the print in the size members kept recommending, then took her time with it at home. The first look was not a grand reveal — just the dress, a clean shoe and the decision to leave the jacket behind. But it felt different. The fabric moved with her instead of asking her to disappear behind it.",
+            "Halima started posting the details she used to keep to herself: where the waist sits, how the sleeve feels after a full day, the size she would choose if she wanted a closer fit. Her honesty made other women braver with their own questions, and soon the comments turned into a small styling circle.",
+            "Her most-worn formula now is a bold piece with one quiet companion: a printed dress with a simple bag, a bright top with a straight trouser, a soft jacket over a colour she would once have avoided. The point is not to be louder. It is to be present.",
+        ],
+    },
+    {
+        "slug": "asha-wearing-her-story-proudly",
+        "article_type": "spotlight",
+        "title": "Asha learned to wear every chapter proudly",
+        "subheading": ("Asha's style story is built from shared notes, joyful "
+                       "prints and the permission to change her mind."),
+        "cover_image": "/app/assets/brand/home-teasers/curators-960.webp",
+        "tag": "Community spotlight",
+        "subject": "Asha K.",
+        "byline": "Words by Vivo Community",
+        "gallery": [
+            {
+                "image": "/app/assets/brand/home-teasers/curators-960.webp",
+                "alt": "Vivo women in polished evening looks",
+                "caption": "Asha now starts with the feeling she wants an outfit to hold.",
+            },
+            {
+                "image": "/app/assets/brand/home-teasers/community-960.webp",
+                "alt": "Vivo women sharing a bright studio moment together",
+                "caption": "The best styling advice, she says, feels like a friend cheering.",
+            },
+        ],
+        "body": [
+            "“Every woman here taught me something about wearing my own story proudly.”",
+            "Asha arrived in Vivo Community looking for outfit ideas before a friend’s wedding. She stayed because every saved look came with a conversation: someone explaining a hem, another member suggesting a colour, a third reminding her that an outfit only works if she can laugh and dance in it.",
+            "The wedding look was a turning point. Asha paired a fluid skirt with a sharper top, chose a print she would once have called too much, and spent the evening receiving compliments that felt less about the clothes than the ease she carried in them. She still has the photo, but what she remembers most is not checking whether she looked right.",
+            "Since then, she has built a wardrobe by feeling rather than rules. Some weeks it is soft tailoring and a low heel. Some weeks it is a saturated colour, large earrings and no need to explain either choice. The through-line is that every piece makes space for her life as it is now.",
+            "Asha leaves the same note under new members’ posts whenever she can: begin with one thing you love. The rest of the look — and the rest of the story — can meet you there.",
+        ],
+    },
+]
 
 # ---- Customer survey ("Help us dress you better") --------------------------
 # Waves are DB rows (community_survey_waves): each wave carries its own
@@ -208,13 +316,16 @@ ZETU_SHOOT_POINTS = 3000           # top of the ladder: photoshoot at Zetu Studi
 # (celebrated, client-side). Fictional launch voices, same as the feed seeds.
 _CELEBRATION_JEWELS = [
     {"username": "nyambura.k", "tier": "Tanzanite", "show_tier": True,
+     "article_slug": "nyambura-finding-her-shape",
      "quote": "Finding a community that celebrates African curves has "
               "completely changed how I shop. Vivo is more than fashion, "
               "it's family."},
     {"username": "halima.s", "tier": None, "show_tier": False,
+     "article_slug": "halima-dressing-to-arrive",
      "quote": "I used to buy clothes to hide. These days I dress to "
               "arrive — and this community did that."},
     {"username": "asha.k", "tier": "Tanzanite", "show_tier": True,
+     "article_slug": "asha-wearing-her-story-proudly",
      "quote": "Every woman here taught me something about wearing my own "
               "story proudly."},
 ]
@@ -1074,13 +1185,22 @@ def _ensure_tables():
         CREATE TABLE IF NOT EXISTS community_articles (
             id SERIAL PRIMARY KEY,
             slug TEXT NOT NULL UNIQUE,
+            article_type TEXT NOT NULL DEFAULT 'campaign',
             title TEXT NOT NULL,
             subheading TEXT,
             cover_image TEXT,
             tag TEXT,
+            subject TEXT,
+            byline TEXT,
+            gallery JSONB NOT NULL DEFAULT '[]'::jsonb,
             body JSONB NOT NULL DEFAULT '[]'::jsonb,
             published_at TIMESTAMPTZ NOT NULL DEFAULT now()
         );
+        ALTER TABLE community_articles
+            ADD COLUMN IF NOT EXISTS article_type TEXT NOT NULL DEFAULT 'campaign',
+            ADD COLUMN IF NOT EXISTS subject TEXT,
+            ADD COLUMN IF NOT EXISTS byline TEXT,
+            ADD COLUMN IF NOT EXISTS gallery JSONB NOT NULL DEFAULT '[]'::jsonb;
         CREATE TABLE IF NOT EXISTS community_article_comments (
             id SERIAL PRIMARY KEY,
             article_id INT NOT NULL REFERENCES community_articles(id) ON DELETE CASCADE,
@@ -1253,22 +1373,48 @@ def _ensure_tables():
                 # survey wave: constants win only when they actually differ.
                 cur.execute(
                     """INSERT INTO community_articles
-                           (slug, title, subheading, cover_image, tag, body)
-                       VALUES (%s, %s, %s, %s, %s, %s::jsonb)
+                           (slug, article_type, title, subheading, cover_image,
+                            tag, subject, byline, gallery, body)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb)
                        ON CONFLICT (slug) DO UPDATE
-                           SET title = EXCLUDED.title,
+                           SET article_type = EXCLUDED.article_type,
+                               title = EXCLUDED.title,
                                subheading = EXCLUDED.subheading,
                                cover_image = EXCLUDED.cover_image,
                                tag = EXCLUDED.tag,
+                               subject = EXCLUDED.subject,
+                               byline = EXCLUDED.byline,
+                               gallery = EXCLUDED.gallery,
                                body = EXCLUDED.body
-                         WHERE community_articles.title IS DISTINCT FROM EXCLUDED.title
+                         WHERE community_articles.article_type IS DISTINCT FROM EXCLUDED.article_type
+                            OR community_articles.title IS DISTINCT FROM EXCLUDED.title
                             OR community_articles.subheading IS DISTINCT FROM EXCLUDED.subheading
                             OR community_articles.cover_image IS DISTINCT FROM EXCLUDED.cover_image
                             OR community_articles.tag IS DISTINCT FROM EXCLUDED.tag
+                            OR community_articles.subject IS DISTINCT FROM EXCLUDED.subject
+                            OR community_articles.byline IS DISTINCT FROM EXCLUDED.byline
+                            OR community_articles.gallery IS DISTINCT FROM EXCLUDED.gallery
                             OR community_articles.body IS DISTINCT FROM EXCLUDED.body""",
-                    (_ARTICLE_SEED["slug"], _ARTICLE_SEED["title"],
+                    (_ARTICLE_SEED["slug"], _ARTICLE_SEED["article_type"],
+                     _ARTICLE_SEED["title"],
                      _ARTICLE_SEED["subheading"], _ARTICLE_SEED["cover_image"],
-                     _ARTICLE_SEED["tag"], json.dumps(_ARTICLE_SEED["body"])))
+                     _ARTICLE_SEED["tag"], _ARTICLE_SEED["subject"],
+                     _ARTICLE_SEED["byline"], json.dumps(_ARTICLE_SEED["gallery"]),
+                     json.dumps(_ARTICLE_SEED["body"])))
+                # Spotlight stories are launch content, not system defaults:
+                # create each one once but never overwrite a future interview
+                # or gallery replacement made by the Community team.
+                for article in _SPOTLIGHT_ARTICLE_SEEDS:
+                    cur.execute(
+                        """INSERT INTO community_articles
+                               (slug, article_type, title, subheading, cover_image,
+                                tag, subject, byline, gallery, body)
+                           VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb)
+                           ON CONFLICT (slug) DO NOTHING""",
+                        (article["slug"], article["article_type"], article["title"],
+                         article["subheading"], article["cover_image"], article["tag"],
+                         article["subject"], article["byline"],
+                         json.dumps(article["gallery"]), json.dumps(article["body"])))
                 _seed_feed_posts(cur)
                 _seed_challenges(cur)
                 _seed_vivo_edits(cur)
@@ -5792,8 +5938,8 @@ def register_community_routes(app, api_pg_module):
     # (UNIQUE(member_id, kind) — kind is per-article, so per-article cap).
 
     def _article_row(cur, slug):
-        cur.execute("""SELECT id, slug, title, subheading, cover_image,
-                              tag, body, published_at
+        cur.execute("""SELECT id, slug, article_type, title, subheading, cover_image,
+                              tag, subject, byline, gallery, body, published_at
                         FROM community_articles WHERE slug = %s""", (slug,))
         row = cur.fetchone()
         if not row:
@@ -5813,9 +5959,11 @@ def register_community_routes(app, api_pg_module):
                             (a["id"],))
                 n = int(cur.fetchone()["n"])
         return {"article": {
-            "slug": a["slug"], "title": a["title"],
+            "slug": a["slug"], "article_type": a["article_type"],
+            "title": a["title"],
             "subheading": a["subheading"], "cover_image": a["cover_image"],
-            "tag": a["tag"], "body": a["body"] or [],
+            "tag": a["tag"], "subject": a["subject"], "byline": a["byline"],
+            "gallery": a["gallery"] or [], "body": a["body"] or [],
             "published_at": a["published_at"].isoformat() if a["published_at"] else None,
             "comment_count": n,
         }}

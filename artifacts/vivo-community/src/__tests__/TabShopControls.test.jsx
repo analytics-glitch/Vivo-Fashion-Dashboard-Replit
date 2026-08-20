@@ -8,6 +8,7 @@ vi.mock("@/lib/api", () => ({
     products: vi.fn(),
     productsCount: vi.fn(),
     productFacets: vi.fn(),
+    shopCards: vi.fn(),
     styleQuiz: vi.fn(),
   },
 }));
@@ -40,6 +41,12 @@ describe("TabShop browsing controls", () => {
     api.productsCount.mockResolvedValue({ total: 0 });
     api.productFacets.mockResolvedValue({
       categories: [], sizes: [], colors: [], price_bands: [], brands: [], prints: [],
+    });
+    api.shopCards.mockResolvedValue({
+      cards: [
+        { id: "delivery", image_url: "/api/community/shop-cards/delivery/image?v=1" },
+        { id: "collection", image_url: "/api/community/shop-cards/collection/image?v=1" },
+      ],
     });
   });
 
@@ -81,6 +88,26 @@ describe("TabShop browsing controls", () => {
 
     await user.click(screen.getByTestId("shop-quick-quiz"));
     expect(props.onOpenQuiz).toHaveBeenCalledTimes(2);
+  });
+
+  it("renders configured Shop shortcut imagery while retaining every quick-link action", async () => {
+    const user = userEvent.setup();
+    render(<TabShop {...props} />);
+
+    const delivery = await screen.findByTestId("shop-quick-delivery");
+    await waitFor(() => expect(delivery.querySelector("img")).toHaveAttribute(
+      "src", "/api/community/shop-cards/delivery/image?v=1"
+    ));
+    expect(screen.getByTestId("shop-quick-collection").querySelector("img")).toHaveAttribute(
+      "src", "/api/community/shop-cards/collection/image?v=1"
+    );
+    expect(screen.getByTestId("shop-quick-quiz")).toHaveTextContent("Take Your Quiz");
+    expect(screen.getByTestId("shop-quick-curators")).toHaveTextContent("Curated Looks By");
+
+    await user.click(delivery);
+    expect(props.onOpenPage).toHaveBeenCalledWith("delivery");
+    await user.click(screen.getByTestId("shop-quick-quiz"));
+    expect(props.onOpenQuiz).toHaveBeenCalledOnce();
   });
 
   it("uses Style DNA by default for a completed quiz and can turn it off and back on", async () => {

@@ -254,6 +254,7 @@ export default function TabShop({ member, onOpenProduct, onOpenTryOn, onOpenPage
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState("");
   const [facets, setFacets] = useState(null);
+  const [shopCards, setShopCards] = useState([]);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [draft, setDraft] = useState(null); // the sheet's in-progress selection
   const [draftCount, setDraftCount] = useState(null);
@@ -316,6 +317,14 @@ export default function TabShop({ member, onOpenProduct, onOpenTryOn, onOpenPage
   // Drawer options are decoration — the shop still works if this fetch fails.
   useEffect(() => {
     api.productFacets().then(setFacets).catch(() => {});
+  }, []);
+
+  // Shortcut art is decorative enhancement: fallbacks remain interactive if a
+  // public artwork fetch is briefly unavailable.
+  useEffect(() => {
+    api.shopCards?.()
+      .then((data) => setShopCards(Array.isArray(data?.cards) ? data.cards : []))
+      .catch(() => {});
   }, []);
 
   // Live "Show N styles" count while she tweaks the drawer selection. The
@@ -411,6 +420,7 @@ export default function TabShop({ member, onOpenProduct, onOpenTryOn, onOpenPage
       </section>
 
       <ShopQuickLinks
+        cards={shopCards}
         onBrowseNew={() => { setFilters(emptyFilters()); setSort("new"); scrollToGrid(); }}
         onOpenDelivery={() => onOpenPage?.("delivery")}
         onOpenQuiz={onOpenQuiz}

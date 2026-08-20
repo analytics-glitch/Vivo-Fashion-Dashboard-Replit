@@ -320,10 +320,11 @@ function FeedPreview({ posts, openPost, patchPost, onNavigate }) {
   );
 }
 
-function CommunitySpotlightCard({ jewel, onNavigate }) {
+function CommunitySpotlightCard({ jewel, onOpenPage }) {
   const username = jewel?.username || "amina_h";
   const quote = jewel?.quote || "I came for the dresses. I stayed for the women.";
   const tier = jewel?.show_tier ? jewel?.tier : undefined;
+  const storySlug = jewel?.article_slug || "nyambura-finding-her-shape";
   return (
     <section data-testid="home-spotlight-card" className="bg-foreground text-background rounded p-6 sm:p-10 relative overflow-hidden flex flex-col justify-center h-full">
       <div className="absolute top-0 right-0 w-48 h-48 bg-white/5 rounded-full blur-3xl pointer-events-none" />
@@ -341,7 +342,7 @@ function CommunitySpotlightCard({ jewel, onNavigate }) {
       <div className="mt-auto relative z-10">
         <button
           data-testid="spotlight-story-cta"
-          onClick={() => onNavigate("community")}
+          onClick={() => onOpenPage?.(`article-${storySlug}`)}
           className="h-10 px-6 rounded border border-background/40 text-background text-[13px] font-medium hover:bg-white/10 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-background"
         >
           Read Her Story
@@ -585,7 +586,7 @@ export default function TabHome({ onNavigate, member, onOpenProduct, onOpenPage,
           <CommunityFeedTeaser onNavigate={onNavigate} />
         </div>
         <div className="col-span-1 h-full">
-          <CommunitySpotlightCard jewel={cel?.jewel} onNavigate={onNavigate} />
+          <CommunitySpotlightCard jewel={cel?.jewel} onOpenPage={onOpenPage} />
         </div>
       </div>
 

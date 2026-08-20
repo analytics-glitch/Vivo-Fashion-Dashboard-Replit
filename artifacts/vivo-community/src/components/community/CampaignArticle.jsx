@@ -10,6 +10,13 @@ import { timeAgo } from "./PostBits";
    guest-open; guests see a sign-in invite instead of the composer. First
    comment on an article earns +5 pts (server-enforced, once per article). */
 
+function articleDate(value) {
+  if (!value) return "";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return "";
+  return new Intl.DateTimeFormat("en-KE", { day: "numeric", month: "long", year: "numeric" }).format(parsed);
+}
+
 function CommentRow({ c, onLike, onReport, reported, member }) {
   const [confirming, setConfirming] = useState(false);
   return (
@@ -172,6 +179,13 @@ export default function CampaignArticle({ slug, member, onBack, onJoin }) {
         <div className="text-[11px] font-bold uppercase tracking-[0.25em] text-primary-ink mb-2">{article.tag}</div>
       )}
       <h1 className="font-serif text-3xl sm:text-4xl leading-tight text-foreground mb-3">{article.title}</h1>
+      {(article.subject || article.byline || article.published_at) && (
+        <div className="flex flex-wrap gap-x-3 gap-y-1 text-[12px] text-muted-foreground mb-5">
+          {article.subject && <span>{article.article_type === "spotlight" ? `In the spotlight: ${article.subject}` : article.subject}</span>}
+          {article.byline && <span>{article.byline}</span>}
+          {articleDate(article.published_at) && <span>{articleDate(article.published_at)}</span>}
+        </div>
+      )}
       {article.subheading && (
         <p className="text-[15px] text-muted-foreground leading-relaxed mb-6">{article.subheading}</p>
       )}
@@ -180,6 +194,24 @@ export default function CampaignArticle({ slug, member, onBack, onJoin }) {
           <p key={i} className="text-[15px] text-foreground/90 leading-relaxed">{p}</p>
         ))}
       </div>
+      {Array.isArray(article.gallery) && article.gallery.length > 0 && (
+        <section className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-12" aria-label="Looks from this story">
+          {article.gallery.map((image, index) => (
+            <figure key={`${image.image}-${index}`} className={index === 0 ? "sm:col-span-2" : ""}>
+              <div className={`relative overflow-hidden rounded bg-secondary ${index === 0 ? "aspect-[16/9]" : "aspect-[4/5]"}`}>
+                <img
+                  src={image.image}
+                  alt={image.alt || "Vivo style moment"}
+                  loading="lazy"
+                  className="absolute inset-0 w-full h-full object-cover"
+                  draggable={false}
+                />
+              </div>
+              {image.caption && <figcaption className="mt-2 text-[12px] leading-relaxed text-muted-foreground">{image.caption}</figcaption>}
+            </figure>
+          ))}
+        </section>
+      )}
 
       {/* ---- The conversation ---- */}
       <section className="border-t border-border pt-8" data-testid="article-comments">

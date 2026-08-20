@@ -1,0 +1,28 @@
+# Vivo Johari — "Read Her Story" Needs Real Content
+
+**Problem:** The Community Spotlight card's "Read Her Story" button currently doesn't lead anywhere real. It should open an actual written feature about the spotlighted member — something like a styling journey or makeover piece, not just a longer version of the pull-quote already shown on the card.
+
+## What "Her Story" should contain
+
+A short feature article, in the same spirit as a magazine profile — for example:
+
+- **Intro:** who she is, a bit of context (how long she's been part of Vivo, what brought her in).
+- **The journey/makeover:** the actual narrative — what changed for her, styling-wise or otherwise (e.g. finding pieces that fit her properly, discovering a style she didn't know suited her, a specific look she built with Vivo pieces). This is the core of the piece, not just a quote.
+- **Photos:** before/after or a small gallery of looks referenced in the story — this is where real photography matters, since a text-only "story" won't feel like much of a feature.
+- **The quote:** the existing pull-quote ("Finding a community that celebrates African curves...") can open or close the piece, giving it a "cover line" role rather than being the entire content.
+- **Optional:** product tags for pieces mentioned in the story, linking to Shop — consistent with how product tags work elsewhere, though this should stay secondary to the narrative, not the point of the page.
+- **Comments:** confirmed — spotlight stories should include a comment section, same as the campaign blog. Readers can react to and discuss the member's story, using their existing Vivo account (same handle/avatar/tier badge pattern as elsewhere).
+
+## Where this lives technically
+
+This can reuse the same **Article** content structure already specced for the campaign blog ("Join the Conversation" → blog post + comments) — title, cover image, body content, author/subject, published date. A Community Spotlight story is just another article type using that same underlying model, tagged as a "spotlight" rather than a "campaign" piece.
+
+## Content need
+
+This requires an actual written piece per spotlighted member — Sharon (or whoever runs Community) will need to either interview/write these up herself or coordinate with the member being featured. This is a content production task, not just a build task — flagging so it's clear the engineering side (linking the button, building the article page) is separate from having actual stories ready to publish.
+
+## Implementation notes for the Replit agent
+
+- Reuse the Article content model/component from the campaign blog spec rather than building a separate content type from scratch.
+- "Read Her Story" should link to this article page instead of being a dead button.
+- Comments are confirmed for spotlight stories — reuse the same comment component/data model from the campaign blog spec (login required to comment, tied to the shopper's existing Vivo account, same moderation basics: profanity/spam filter, report/flag action, lightweight admin review).

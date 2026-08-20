@@ -106,6 +106,26 @@ describe("TabHome image teasers", () => {
     expect(onOpenPage).toHaveBeenCalledWith(expect.stringMatching(/^news-/));
   });
 
+  it("opens the active community spotlight as a real article", async () => {
+    const user = userEvent.setup();
+    const onOpenPage = vi.fn();
+    api.celebrations.mockResolvedValue({
+      jewel: {
+        username: "nyambura.k",
+        tier: "Tanzanite",
+        show_tier: true,
+        quote: "Finding a community that celebrates African curves has completely changed how I shop.",
+        article_slug: "nyambura-finding-her-shape",
+      },
+    });
+
+    render(<TabHome member={MEMBER} {...NO_OP} onOpenPage={onOpenPage} />);
+    await waitFor(() => expect(screen.getByText("@nyambura.k")).toBeInTheDocument());
+    await user.click(screen.getByTestId("spotlight-story-cta"));
+
+    expect(onOpenPage).toHaveBeenCalledWith("article-nyambura-finding-her-shape");
+  });
+
   it("keeps the approved section order around the new banners", async () => {
     render(<TabHome member={MEMBER} {...NO_OP} />);
     await act(async () => {});

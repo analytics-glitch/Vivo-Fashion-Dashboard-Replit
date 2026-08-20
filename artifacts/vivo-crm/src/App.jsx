@@ -21,6 +21,7 @@ import Lookbooks from "@/pages/Lookbooks";
 import Inbox from "@/pages/Inbox";
 import CommunityInbox from "@/pages/CommunityInbox";
 import VivoEdits from "@/pages/VivoEdits";
+import ShopCards from "@/pages/ShopCards";
 import Service from "@/pages/Service";
 import TeamQueue from "@/pages/TeamQueue";
 import Reports from "@/pages/Reports";
@@ -52,6 +53,7 @@ function ProtectedRoutes() {
         <Route path="/inbox" element={<Inbox />} />
         <Route path="/community-inbox" element={<CommunityInbox />} />
         <Route path="/vivo-edits" element={<VivoEdits />} />
+        <Route path="/shop-cards" element={<ShopCards />} />
         <Route path="/service" element={<Service />} />
         <Route path="/team-queue" element={user.role === "manager" ? <TeamQueue /> : <Navigate to="/dashboard" replace />} />
         <Route path="/reports" element={user.role === "manager" ? <Reports /> : <Navigate to="/dashboard" replace />} />

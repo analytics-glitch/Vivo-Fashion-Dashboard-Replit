@@ -93,6 +93,9 @@ export const api = {
     return req("/products?" + q.toString());
   },
   productFacets: () => req("/products/facets"),
+  // Public, four-slot editorial artwork for the Shop shortcut cards. The
+  // metadata deliberately contains only active image URLs and versions.
+  shopCards: () => req("/shop-cards"),
   styleQuiz: () => req("/style-quiz", { auth: true }),
   // Styled for You — opt-in weekly recommendations + the preference editor.
   stylePrefs: () => req("/style-prefs", { auth: true }),

@@ -152,7 +152,53 @@ export function PromoBanner() {
    sections into one quick decision row. They are navigation/entry points, not
    another product promotion, so their compact card treatment keeps the actual
    collection high on the page. */
-export function ShopQuickLinks({ onBrowseNew, onOpenDelivery, onOpenQuiz, onOpenCurated }) {
+const SHOP_CARD_CROPS = {
+  delivery: "42% 28%",
+  collection: "42% 22%",
+  quiz: "50% 26%",
+  curators: "52% 38%",
+};
+
+function ShopQuickLinkCard({ card, imageUrl }) {
+  const [imageFailed, setImageFailed] = useState(false);
+  const Icon = card.icon;
+  const showImage = Boolean(imageUrl) && !imageFailed;
+  return (
+    <button
+      type="button"
+      data-testid={`shop-quick-${card.id}`}
+      onClick={card.action}
+      className="group relative min-h-[188px] overflow-hidden rounded bg-[#3a2930] text-left isolate shadow-sm transition-transform duration-300 hover:-translate-y-0.5 hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 sm:min-h-[208px]"
+    >
+      {showImage ? (
+        <img
+          src={imageUrl}
+          alt=""
+          loading="lazy"
+          onError={() => setImageFailed(true)}
+          className="absolute inset-0 -z-20 h-full w-full object-cover transition-transform duration-700 group-hover:scale-[1.035]"
+          style={{ objectPosition: SHOP_CARD_CROPS[card.id] || "center" }}
+          draggable={false}
+        />
+      ) : (
+        <div className="absolute inset-0 -z-20 bg-gradient-to-br from-[#7f4e4d] via-[#4b3537] to-[#221d25]" aria-hidden="true" />
+      )}
+      <div className="absolute inset-0 -z-10 bg-gradient-to-t from-black/90 via-black/42 to-black/10" aria-hidden="true" />
+      <div className="relative flex h-full min-h-[188px] flex-col justify-end p-4 sm:min-h-[208px]">
+        {!showImage && (
+          <span className="mb-auto flex h-8 w-8 items-center justify-center rounded-full border border-white/35 bg-black/20 text-white">
+            <Icon size={15} strokeWidth={1.5} />
+          </span>
+        )}
+        <span className="mb-1 block text-[9px] font-bold uppercase tracking-[0.18em] text-white/75">{card.eyebrow}</span>
+        <span className="block font-serif text-[17px] leading-tight text-white">{card.title}</span>
+        <span className="mt-1 block text-[11px] leading-snug text-white/82">{card.copy}</span>
+      </div>
+    </button>
+  );
+}
+
+export function ShopQuickLinks({ cards = [], onBrowseNew, onOpenDelivery, onOpenQuiz, onOpenCurated }) {
   const links = [
     {
       id: "delivery",
@@ -187,24 +233,12 @@ export function ShopQuickLinks({ onBrowseNew, onOpenDelivery, onOpenQuiz, onOpen
       action: onOpenCurated,
     },
   ];
+  const imageById = Object.fromEntries((cards || []).map((card) => [card.id, card.image_url]));
 
   return (
     <section data-testid="shop-quick-links" className="grid grid-cols-2 gap-3 sm:grid-cols-4 mb-10">
-      {links.map(({ id, icon: Icon, eyebrow, title, copy, action }) => (
-        <button
-          key={id}
-          type="button"
-          data-testid={`shop-quick-${id}`}
-          onClick={action}
-          className="group min-h-[138px] rounded border border-border bg-secondary/45 p-4 text-left transition-all hover:bg-secondary hover:border-foreground/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2"
-        >
-          <span className="mb-5 flex h-8 w-8 items-center justify-center rounded-full border border-border bg-background text-primary-ink transition-transform group-hover:-translate-y-0.5">
-            <Icon size={15} strokeWidth={1.5} />
-          </span>
-          <span className="block text-[9px] font-bold uppercase tracking-[0.18em] text-muted-foreground mb-1">{eyebrow}</span>
-          <span className="block font-serif text-[17px] leading-tight text-foreground">{title}</span>
-          <span className="mt-1 block text-[11px] leading-snug text-muted-foreground">{copy}</span>
-        </button>
+      {links.map((card) => (
+        <ShopQuickLinkCard key={card.id} card={card} imageUrl={imageById[card.id]} />
       ))}
     </section>
   );
