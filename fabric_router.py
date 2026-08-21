@@ -16768,14 +16768,21 @@ def sublimation_costing_delete(costing_id: int, request: Request):
 
 
 # ── Manufacturing component availability ───────────────────────────────────
-def _mfg_filters(mo_ref="", style="", component="", state="", source="", status=""):
+def _mfg_filters(mo_ref="", dps_ref="", style="", component="", state="", source="", status=""):
     clauses, params = [], []
     # These are one user-entered search expression: a match in any filled
     # highlighted field qualifies the reservation. Status is deliberately not
     # part of this OR group; it is an explicit post-aggregation filter.
+    # Cascade selections are scope constraints, not free-text alternatives.
+    # This prevents a selected DPS from leaking rows because another field
+    # happened to match a different order.
+    for value, column in ((dps_ref, "dps_ref"), (mo_ref, "mo_ref")):
+        value = str(value or "").strip()[:120]
+        if value:
+            clauses.append(f"{column} ILIKE %s")
+            params.append("%" + value + "%")
     searches = []
     for value, expressions in (
-        (mo_ref, ("mo_ref", "dps_ref")),
         (style, ("style_name", "finished_sku", "finished_name")),
         (component, ("component_match",)),
         (state, ("order_state",)),
@@ -16840,7 +16847,8 @@ def _mfg_rows(conn, filters=None):
 
 @fabric_router.get("/api/fabric/manufacturing")
 def manufacturing_availability(
-    mo_ref: str = Query(default=""), style: str = Query(default=""),
+    mo_ref: str = Query(default=""), dps_ref: str = Query(default=""),
+    style: str = Query(default=""),
     component: str = Query(default=""), state: str = Query(default=""),
     source: str = Query(default=""), status: str = Query(default=""),
     full: bool = Query(default=False)):
@@ -16850,7 +16858,7 @@ def manufacturing_availability(
             return {"summary": {"components": 0, "orders": 0, "required_kg": 0,
                                 "available_kg": 0, "short": 0, "partial": 0,
                                 "available": 0}, "components": [], "freshness": None}
-        rows = _mfg_rows(conn, {"mo_ref": mo_ref, "style": style,
+        rows = _mfg_rows(conn, {"mo_ref": mo_ref, "dps_ref": dps_ref, "style": style,
                                 "component": component, "state": state,
                                 "source": source, "status": status})
         groups = {}
@@ -16884,11 +16892,47 @@ def manufacturing_availability(
                           if g["availability_status"] == status]
         else:
             components = list(groups.values())
+        allowed_component_ids = None
+        if status in ("available", "partial", "short"):
+            allowed_component_ids = {
+                g["component_id"] for g in components
+            }
+        dps_groups = {}
+        for r in rows:
+            if allowed_component_ids is not None and r.get("component_id") not in allowed_component_ids:
+                continue
+            dps_key = str(r.get("dps_ref") or "Unknown DPS")
+            dps = dps_groups.setdefault(dps_key, {
+                "dps_id": dps_key, "dps_ref": r.get("dps_ref"),
+                "label": r.get("dps_ref") or "Unknown DPS", "mos": {}
+            })
+            mo_key = str(r.get("odoo_mo_id") or r.get("mo_ref") or "")
+            mo = dps["mos"].setdefault(mo_key, {
+                "mo_id": r.get("odoo_mo_id"), "mo_ref": r.get("mo_ref"),
+                "dps_ref": r.get("dps_ref"), "order_state": r.get("order_state"),
+                "style_name": r.get("style_name"), "finished_sku": r.get("finished_sku"),
+                "finished_name": r.get("finished_name"), "finished_date": r.get("date_planned"),
+                "components": []
+            })
+            mo["components"].append({
+                "component_id": r.get("component_id"), "component_sku": r.get("component_sku"),
+                "component_name": r.get("component_name"), "required_kg": float(r.get("required_kg") or 0),
+                "reserved_kg": float(r.get("reserved_kg") or 0),
+                "available_kg": float(r.get("available_kg") or 0),
+                "availability_status": r.get("availability_status"),
+                "source_location": r.get("source_location"), "stock_locations": r.get("stock_locations")
+            })
+        for dps in dps_groups.values():
+            dps["mos"] = list(dps["mos"].values())
         freshness = q(conn, """
            SELECT MAX(_loaded_at) AS loaded_at,
                  COUNT(DISTINCT odoo_mo_id) AS orders
           FROM mo_open_component_requirements
           WHERE order_state IN ('confirmed', 'progress')
+        """)[0]
+        stock_freshness = q(conn, """
+            SELECT MAX(_loaded_at) AS loaded_at
+            FROM raw_fabric_inventory
         """)[0]
         counts = {s: sum(1 for g in components if g["availability_status"] == s)
                   for s in ("available", "partial", "short")}
@@ -16896,19 +16940,20 @@ def manufacturing_availability(
                     "source": "Odoo mrp.production/stock.move snapshot + synced stock",
                     "target_states": {"confirmed": "Confirmed", "progress": "In-progress"},
                     "excluded_states": ["draft", "planned", "to_close", "done", "cancel"],
-                    "search": "OR across filled mo_ref, style, component, state, source fields; status is additional",
+                     "search": "DPS scopes MO; remaining filled fields are ORed; status is additional",
+                     "cascade": {"dps_required_for_mo": True, "scope": {"dps_ref": dps_ref, "mo_ref": mo_ref}},
                 },
                 "summary": {"components": len(components),
                             "orders": int(freshness.get("orders") or 0),
                             "required_kg": round(sum(g["required_kg"] for g in components), 3),
                             "available_kg": round(sum(g["available_kg"] for g in components), 3),
                             **counts},
-                "components": components,
-                "freshness": {"odoo_snapshot": freshness.get("loaded_at"),
-                              "stock_snapshot": freshness.get("loaded_at")}}
+                 "components": components, "dps_groups": list(dps_groups.values()),
+                 "freshness": {"odoo_snapshot": freshness.get("loaded_at"),
+                               "stock_snapshot": stock_freshness.get("loaded_at")}}
 
 
-def _mfg_live_suggestions(field, term, limit=20):
+def _mfg_live_suggestions(field, term, dps_ref="", limit=20):
     """Small, read-only current-Odoo lookup for the five report fields.
 
     The report remains available from the last successful snapshot when Odoo is
@@ -16932,8 +16977,20 @@ def _mfg_live_suggestions(field, term, limit=20):
             raise RuntimeError("Odoo authentication failed")
         models = xmlrpc.client.ServerProxy(f"{url.rstrip('/')}/xmlrpc/2/object")
         target = [["state", "in", ["confirmed", "progress"]], ["dps_id", "!=", False]]
+        if field == "dps":
+            recs = models.execute_kw(db, uid, password, "mrp.production",
+                                     "search_read", [target + [["dps_id", "ilike", term]]],
+                                     {"fields": ["dps_id", "state"], "limit": limit, "order": "id desc"})
+            seen = {}
+            for r in recs:
+                dps = r.get("dps_id") or [None, ""]
+                if dps[0] and dps[0] not in seen:
+                    seen[dps[0]] = {"id": dps[0], "label": dps[1], "state": r.get("state")}
+            return list(seen.values())
         if field == "mo":
             domain = target + ["|", ["name", "ilike", term], ["dps_id", "ilike", term]]
+            if dps_ref:
+                domain += [["dps_id", "ilike", dps_ref]]
             recs = models.execute_kw(db, uid, password, "mrp.production",
                                       "search_read", [domain],
                                       {"fields": ["name", "dps_id", "state"],
@@ -16980,27 +17037,58 @@ def _mfg_live_suggestions(field, term, limit=20):
         socket.setdefaulttimeout(old_timeout)
 
 
+def _mfg_snapshot_suggestions(field, term, dps_ref=""):
+    term = str(term or "").strip().lower()
+    with _get_conn() as conn:
+        if not q(conn, "SELECT to_regclass('public.mo_open_component_requirements') AS t")[0].get("t"):
+            return []
+        extra = ["order_state IN ('confirmed','progress')"]
+        params = []
+        if term:
+            if field == "dps":
+                extra.append("LOWER(COALESCE(dps_ref,'')) LIKE %s"); params.append("%"+term+"%")
+            elif field == "mo":
+                extra.append("LOWER(COALESCE(mo_ref,'')) LIKE %s"); params.append("%"+term+"%")
+        if dps_ref and field == "mo":
+            extra.append("dps_ref=%s"); params.append(dps_ref)
+        if field not in ("dps", "mo"): return []
+        rows = q(conn, f"SELECT DISTINCT dps_ref, mo_ref, odoo_mo_id, order_state FROM mo_open_component_requirements WHERE {' AND '.join(extra)} ORDER BY dps_ref, mo_ref LIMIT 50", tuple(params))
+        if field == "dps":
+            seen = {}
+            for r in rows:
+                key = r.get("dps_ref")
+                if key and key not in seen: seen[key] = {"id": key, "label": key, "state": r.get("order_state")}
+            return list(seen.values())
+        return [{"id": r.get("odoo_mo_id"), "label": r.get("mo_ref") or "", "detail": r.get("dps_ref"), "state": r.get("order_state")} for r in rows]
+
+
 @fabric_router.get("/api/fabric/manufacturing/search")
 def manufacturing_search(field: str = Query(default=""),
-                          q: str = Query(default="")):
-    if field not in ("mo", "style", "component", "state", "source"):
+                          q: str = Query(default=""), dps_ref: str = Query(default="")):
+    if field not in ("dps", "mo", "style", "component", "state", "source"):
         raise HTTPException(status_code=400, detail="Unsupported manufacturing search field")
     try:
-        return {"live": True, "field": field, "suggestions": _mfg_live_suggestions(field, q)}
+        return {"live": True, "field": field, "suggestions": _mfg_live_suggestions(field, q, dps_ref)}
     except Exception as exc:
-        return {"live": False, "field": field, "suggestions": [],
-                "error": "Odoo live search unavailable", "detail": str(exc)}
+        try:
+            suggestions = _mfg_snapshot_suggestions(field, q, dps_ref)
+        except Exception:
+            suggestions = []
+        return {"live": False, "field": field, "suggestions": suggestions,
+                "error": "Odoo live search unavailable; showing synced snapshot",
+                "detail": str(exc)}
 
 
 @fabric_router.get("/api/fabric/manufacturing.xlsx")
 def manufacturing_availability_xlsx(
-    mo_ref: str = Query(default=""), style: str = Query(default=""),
+    mo_ref: str = Query(default=""), dps_ref: str = Query(default=""),
+    style: str = Query(default=""),
     component: str = Query(default=""), state: str = Query(default=""),
     source: str = Query(default=""), status: str = Query(default="")):
     import io
     import openpyxl
     from openpyxl.styles import Font
-    filters = {"mo_ref": mo_ref, "style": style, "component": component,
+    filters = {"mo_ref": mo_ref, "dps_ref": dps_ref, "style": style, "component": component,
                "state": state, "source": source, "status": status}
     with _get_conn() as conn:
         rows = _mfg_rows(conn, filters)
