@@ -132,6 +132,7 @@
 - [vivo-bi cookie-only web auth](vivo-bi-cookie-only-auth.md) — staff SPA uses only the httpOnly session cookie (no vivo_token/Bearer); login has account+IP lockout; e2e auth via addCookies.
 - [Staff 2FA flow](staff-2fa-flow.md) — password/Google/native auth share a short-lived challenge before normal session creation; existing sessions survive reset.
 - [Sublimation costing canon](sublimation-costing-canon.md) — BOM op time = settable STANDARD throughput (default 60, actual = variance only); server recomputes saves; reprint on printing lines only; rate constants FE+BE lockstep.
+- [Manufacturing live search](manufacturing-search-contract.md) — target only confirmed/progress DPS MOs; OR text search, aggregate status filter, and separate Odoo/stock freshness.
 - [Product Workspace L10](product-workspace-l10.md) — keep EOS meeting data in the workspace schema; migrate existing public rocks once, then let workspace status edits own the records.
 - [Product Workspace Resources](product-workspace-resources.md) — markdown reference library is idempotently seeded, server-admin-gated for mutations, and rendered with safe structured tables.
 - [Artifact service environments](artifact-service-environments.md) — when adding an API service, preserve the web artifact's global BASE_PATH env block or its managed Vite workflow will fail before startup.

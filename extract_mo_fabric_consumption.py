@@ -132,6 +132,7 @@ def create_table(cur):
             finished_sku TEXT,
             finished_name TEXT,
             style_name TEXT,
+            date_planned TEXT,
             source_move_ids BIGINT[] NOT NULL DEFAULT '{}',
             _loaded_at TIMESTAMP NOT NULL,
             PRIMARY KEY (odoo_mo_id, component_id)
@@ -142,6 +143,8 @@ def create_table(cur):
             ON mo_open_component_requirements(order_state);
         """
     )
+    cur.execute("ALTER TABLE mo_open_component_requirements "
+                "ADD COLUMN IF NOT EXISTS date_planned TEXT")
 
 
 def _chunks(seq, size):
@@ -419,9 +422,11 @@ def extract_open_requirements(uid, models, cur, now):
     mo_fields = ["name", "state", "product_id", "move_raw_ids"]
     if "dps_id" in prod_fields:
         mo_fields.append("dps_id")
+    if "date_planned" in prod_fields:
+        mo_fields.append("date_planned")
     mos = models.execute_kw(
         ODOO_DB, uid, ODOO_PASSWORD, "mrp.production", "search_read",
-        [[["state", "not in", ["done", "cancel"]], ["dps_id", "!=", False]]],
+        [[["state", "in", ["confirmed", "progress"]], ["dps_id", "!=", False]]],
         {"fields": mo_fields, "order": "id asc"})
     move_to_mo, meta = {}, {}
     finished_ids, dps_ids = set(), set()
@@ -433,7 +438,8 @@ def extract_open_requirements(uid, models, cur, now):
         if did: dps_ids.add(did)
         meta[mo["id"]] = {
             "mo_ref": mo.get("name"), "dps_ref": dps[1] if dps else None,
-            "state": mo.get("state") or "unknown", "finished_product_id": fpid}
+            "state": mo.get("state") or "unknown", "finished_product_id": fpid,
+            "date_planned": mo.get("date_planned")}
         for move_id in mo.get("move_raw_ids") or []:
             move_to_mo[move_id] = mo["id"]
     move_fields = models.execute_kw(
@@ -487,14 +493,15 @@ def extract_open_requirements(uid, models, cur, now):
         rows.append((mo_id, m["mo_ref"], m["dps_ref"], m["state"], pid, rec["sku"],
                      rec["name"], rec["required"], rec["reserved"], rec["uom"],
                      ", ".join(sorted(rec["locs"])) or None, m["finished_product_id"],
-                     fp.get("default_code"), fp.get("name"), tmpl[1], rec["moves"], now))
+                     fp.get("default_code"), fp.get("name"), tmpl[1],
+                     m.get("date_planned"), rec["moves"], now))
     cur.execute("TRUNCATE mo_open_component_requirements")
     if rows:
         execute_values(cur, """
             INSERT INTO mo_open_component_requirements
             (odoo_mo_id,mo_ref,dps_ref,order_state,component_id,component_sku,
              component_name,required_qty,reserved_qty,uom,source_location,
-             finished_product_id,finished_sku,finished_name,style_name,
+             finished_product_id,finished_sku,finished_name,style_name,date_planned,
              source_move_ids,_loaded_at) VALUES %s
         """, rows, page_size=500)
     log.info("mo_open_component_requirements: refreshed %d rows from %d open MOs",

@@ -16770,15 +16770,24 @@ def sublimation_costing_delete(costing_id: int, request: Request):
 # ── Manufacturing component availability ───────────────────────────────────
 def _mfg_filters(mo_ref="", style="", component="", state="", source="", status=""):
     clauses, params = [], []
-    for value, column in ((mo_ref, "mo_ref"), (style, "style_name"),
-                          (component, "component_match"), (state, "order_state"),
-                          (source, "source_match")):
+    # These are one user-entered search expression: a match in any filled
+    # highlighted field qualifies the reservation. Status is deliberately not
+    # part of this OR group; it is an explicit post-aggregation filter.
+    searches = []
+    for value, expressions in (
+        (mo_ref, ("mo_ref", "dps_ref")),
+        (style, ("style_name", "finished_sku", "finished_name")),
+        (component, ("component_match",)),
+        (state, ("order_state",)),
+        (source, ("source_match",)),
+    ):
         value = str(value or "").strip()[:120]
         if value:
-            if column in ("component_match", "source_match"):
-                clauses.append(f"{column} ILIKE %s"); params.append("%" + value + "%")
-            else:
-                clauses.append(f"{column} ILIKE %s"); params.append("%" + value + "%")
+            searches.append("(" + " OR ".join(f"{column} ILIKE %s"
+                                              for column in expressions) + ")")
+            params.extend(["%" + value + "%"] * len(expressions))
+    if searches:
+        clauses.append("(" + " OR ".join(searches) + ")")
     # Availability status is computed after shared components are rolled up.
     # Filtering it here would classify each MO independently and hide a shared
     # component whose final aggregate status differs from one reservation row.
@@ -16811,13 +16820,16 @@ def _mfg_rows(conn, filters=None):
         ), enriched AS (
           SELECT d.*, COALESCE(s.available_kg,0) AS available_kg,
                  COALESCE(s.stock_locations,'No synced stock') AS stock_locations,
-                 (d.component_sku || ' ' || d.component_name) AS component_match,
-                 (d.source_location || ' ' || s.stock_locations) AS source_match,
+                  (COALESCE(d.component_sku,'') || ' ' ||
+                   COALESCE(d.component_name,'')) AS component_match,
+                  (COALESCE(d.source_location,'') || ' ' ||
+                   COALESCE(s.stock_locations,'')) AS source_match,
                  CASE WHEN COALESCE(s.available_kg,0) >= d.required_kg
                       THEN 'available'
                       WHEN COALESCE(s.available_kg,0) > 0 THEN 'partial'
                       ELSE 'short' END AS availability_status
-          FROM demand d LEFT JOIN stock s ON s.product_id=d.component_id
+           FROM demand d LEFT JOIN stock s ON s.product_id=d.component_id
+           WHERE d.order_state IN ('confirmed', 'progress')
         )
         SELECT * FROM enriched WHERE {where}
         ORDER BY CASE availability_status WHEN 'short' THEN 0
@@ -16858,8 +16870,11 @@ def manufacturing_availability(
                 "dps_ref": r.get("dps_ref"), "order_state": r.get("order_state"),
                 "style_name": r.get("style_name"), "finished_sku": r.get("finished_sku"),
                 "finished_name": r.get("finished_name"),
+                "finished_date": r.get("date_planned"),
                 "required_kg": float(r.get("required_kg") or 0),
                 "reserved_kg": float(r.get("reserved_kg") or 0),
+                "available_kg": float(r.get("available_kg") or 0),
+                "availability_status": r.get("availability_status"),
                 "source_location": r.get("source_location")})
         for g in groups.values():
             g["availability_status"] = ("available" if g["available_kg"] >= g["required_kg"]
@@ -16870,19 +16885,111 @@ def manufacturing_availability(
         else:
             components = list(groups.values())
         freshness = q(conn, """
-          SELECT MAX(_loaded_at) AS loaded_at,
+           SELECT MAX(_loaded_at) AS loaded_at,
                  COUNT(DISTINCT odoo_mo_id) AS orders
           FROM mo_open_component_requirements
+          WHERE order_state IN ('confirmed', 'progress')
         """)[0]
         counts = {s: sum(1 for g in components if g["availability_status"] == s)
                   for s in ("available", "partial", "short")}
-        return {"summary": {"components": len(components),
+        return {"contract": {
+                    "source": "Odoo mrp.production/stock.move snapshot + synced stock",
+                    "target_states": {"confirmed": "Confirmed", "progress": "In-progress"},
+                    "excluded_states": ["draft", "planned", "to_close", "done", "cancel"],
+                    "search": "OR across filled mo_ref, style, component, state, source fields; status is additional",
+                },
+                "summary": {"components": len(components),
                             "orders": int(freshness.get("orders") or 0),
                             "required_kg": round(sum(g["required_kg"] for g in components), 3),
                             "available_kg": round(sum(g["available_kg"] for g in components), 3),
                             **counts},
-                "components": components if full else components[:1000],
-                "freshness": freshness.get("loaded_at")}
+                "components": components,
+                "freshness": {"odoo_snapshot": freshness.get("loaded_at"),
+                              "stock_snapshot": freshness.get("loaded_at")}}
+
+
+def _mfg_live_suggestions(field, term, limit=20):
+    """Small, read-only current-Odoo lookup for the five report fields.
+
+    The report remains available from the last successful snapshot when Odoo is
+    down; callers can distinguish that case from a live lookup error.
+    """
+    import socket
+    import xmlrpc.client
+    term = str(term or "").strip()[:80]
+    if len(term) < 2:
+        return []
+    url, db = os.environ.get("ODOO_URL"), os.environ.get("ODOO_DB")
+    user, password = os.environ.get("ODOO_USER"), os.environ.get("ODOO_PASSWORD")
+    if not all((url, db, user, password)):
+        raise RuntimeError("Odoo live search is not configured")
+    old_timeout = socket.getdefaulttimeout()
+    socket.setdefaulttimeout(8)
+    try:
+        common = xmlrpc.client.ServerProxy(f"{url.rstrip('/')}/xmlrpc/2/common")
+        uid = common.authenticate(db, user, password, {})
+        if not uid:
+            raise RuntimeError("Odoo authentication failed")
+        models = xmlrpc.client.ServerProxy(f"{url.rstrip('/')}/xmlrpc/2/object")
+        target = [["state", "in", ["confirmed", "progress"]], ["dps_id", "!=", False]]
+        if field == "mo":
+            domain = target + ["|", ["name", "ilike", term], ["dps_id", "ilike", term]]
+            recs = models.execute_kw(db, uid, password, "mrp.production",
+                                      "search_read", [domain],
+                                      {"fields": ["name", "dps_id", "state"],
+                                       "limit": limit, "order": "id desc"})
+            return [{"id": r["id"], "label": r.get("name") or "",
+                     "detail": (r.get("dps_id") or [None, ""])[1],
+                     "state": r.get("state")} for r in recs]
+        if field == "state":
+            return [{"id": value, "label": label}
+                    for value, label in (("confirmed", "Confirmed"),
+                                         ("progress", "In-progress"))
+                    if term.lower() in label.lower() or term.lower() in value]
+        # Product lookups are current Odoo data and are bounded to the
+        # categories used by the manufacturing extractor.
+        if field in ("component", "style"):
+            domain = [["name", "ilike", term]]
+            if field == "component":
+                domain = ["|", ["name", "ilike", term],
+                          ["default_code", "ilike", term]]
+            recs = models.execute_kw(db, uid, password, "product.product",
+                                      "search_read", [domain],
+                                      {"fields": ["default_code", "name"],
+                                       "limit": limit, "order": "name"})
+            return [{"id": r["id"],
+                     "label": " ".join(x for x in (r.get("default_code"), r.get("name")) if x)}
+                    for r in recs]
+        # Source values are location names in stock.move, narrowed by current
+        # target-state MOs rather than exposing the entire location catalogue.
+        mo_recs = models.execute_kw(db, uid, password, "mrp.production",
+                                    "search_read", [target],
+                                    {"fields": ["move_raw_ids"], "limit": 500})
+        move_ids = [x for r in mo_recs for x in (r.get("move_raw_ids") or [])]
+        if not move_ids:
+            return []
+        moves = models.execute_kw(db, uid, password, "stock.move", "read",
+                                  [move_ids], {"fields": ["location_id"]})
+        seen = {}
+        for move in moves:
+            loc = move.get("location_id")
+            if loc and term.lower() in (loc[1] or "").lower():
+                seen[loc[0]] = loc[1]
+        return [{"id": key, "label": label} for key, label in list(seen.items())[:limit]]
+    finally:
+        socket.setdefaulttimeout(old_timeout)
+
+
+@fabric_router.get("/api/fabric/manufacturing/search")
+def manufacturing_search(field: str = Query(default=""),
+                          q: str = Query(default="")):
+    if field not in ("mo", "style", "component", "state", "source"):
+        raise HTTPException(status_code=400, detail="Unsupported manufacturing search field")
+    try:
+        return {"live": True, "field": field, "suggestions": _mfg_live_suggestions(field, q)}
+    except Exception as exc:
+        return {"live": False, "field": field, "suggestions": [],
+                "error": "Odoo live search unavailable", "detail": str(exc)}
 
 
 @fabric_router.get("/api/fabric/manufacturing.xlsx")

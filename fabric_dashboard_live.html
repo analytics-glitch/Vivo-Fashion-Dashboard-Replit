@@ -773,12 +773,18 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
     </div>
     <div id="mfg-kpis" class="kpi-grid"></div>
     <div class="mfg-toolbar">
-     <input id="mfg-mo" placeholder="DPS/MO reference" oninput="mfgDebouncedLoad()">
-     <input id="mfg-style" placeholder="Finished style/product" oninput="mfgDebouncedLoad()">
-     <input id="mfg-component" placeholder="Component or SKU" oninput="mfgDebouncedLoad()">
-     <input id="mfg-state" placeholder="Order state" oninput="mfgDebouncedLoad()">
-     <input id="mfg-source" placeholder="Source/location" oninput="mfgDebouncedLoad()">
+      <input id="mfg-mo" list="mfg-mo-options" placeholder="DPS/MO reference" oninput="mfgSuggest('mo')" onkeydown="mfgKey(event)">
+      <datalist id="mfg-mo-options"></datalist>
+      <input id="mfg-style" list="mfg-style-options" placeholder="Finished style/product" oninput="mfgSuggest('style')" onkeydown="mfgKey(event)">
+      <datalist id="mfg-style-options"></datalist>
+      <input id="mfg-component" list="mfg-component-options" placeholder="Component or SKU" oninput="mfgSuggest('component')" onkeydown="mfgKey(event)">
+      <datalist id="mfg-component-options"></datalist>
+      <input id="mfg-state" list="mfg-state-options" placeholder="Order state (Confirmed/In-progress)" oninput="mfgSuggest('state')" onkeydown="mfgKey(event)">
+      <datalist id="mfg-state-options"></datalist>
+      <input id="mfg-source" list="mfg-source-options" placeholder="Source/location" oninput="mfgSuggest('source')" onkeydown="mfgKey(event)">
+      <datalist id="mfg-source-options"></datalist>
      <select id="mfg-status" onchange="loadManufacturing()"><option value="">All availability</option><option value="short">Short</option><option value="partial">Partial</option><option value="available">Available</option></select>
+      <button class="btn" onclick="loadManufacturing(true)">Search</button>
      <button class="btn ghost" onclick="mfgClearFilters()">Clear filters</button>
     </div>
     <div id="mfg-error"></div>
@@ -2766,7 +2772,7 @@ function qcExportDetail(){
 }
 
 // ── Manufacturing component availability ──
-let mfgData=null,mfgTimer=null;
+let mfgData=null,mfgTimer=null,mfgSuggestTimers={};
 function mfgParams(){
   const p=new URLSearchParams();
   [['mo','mo_ref'],['style','style'],['component','component'],['state','state'],['source','source'],['status','status']]
@@ -2774,7 +2780,21 @@ function mfgParams(){
   return p;
 }
 function mfgNum(v){return Number(v||0).toLocaleString(undefined,{maximumFractionDigits:2});}
-function mfgDebouncedLoad(){clearTimeout(mfgTimer);mfgTimer=setTimeout(()=>loadManufacturing(),350);}
+function mfgKey(e){if(e.key==='Enter'){e.preventDefault();loadManufacturing(true);}}
+function mfgSuggest(field){
+  clearTimeout(mfgSuggestTimers[field]);
+  const input=document.getElementById('mfg-'+field), term=(input?.value||'').trim();
+  if(term.length<2)return;
+  mfgSuggestTimers[field]=setTimeout(async()=>{
+    try{
+      const result=await apiFetch('/api/fabric/manufacturing/search?field='+encodeURIComponent(field)+'&q='+encodeURIComponent(term));
+      const list=document.getElementById('mfg-'+field+'-options');
+      if(list)list.innerHTML=(result.suggestions||[]).map(x=>`<option value="${esc(x.label||'')}">${esc(x.detail||x.state||'')}</option>`).join('');
+      const notice=document.getElementById('mfg-fresh');
+      if(result.live===false)notice.textContent='Live Odoo search unavailable; report uses last synced snapshot';
+    }catch(_){/* report search remains usable when Odoo is unavailable */}
+  },300);
+}
 async function loadManufacturing(force=false){
   const body=document.getElementById('mfg-body'), err=document.getElementById('mfg-error');
   if(!body)return; if(!mfgData)body.innerHTML='<tr><td colspan="7" class="loading">Loading…</td></tr>';
@@ -2790,16 +2810,19 @@ async function loadManufacturing(force=false){
       ['Available',mfgNum(s.available_kg)+' kg','synced stock'],
       ['Short / partial',`${s.short||0} / ${s.partial||0}`,'component status']
     ].map((x,i)=>`<div class="kpi ${i===4?'hero':''}"><span class="eyebrow">${x[0]}</span><div class="kpi-value">${x[1]}</div><div class="kpi-sub">${x[2]}</div></div>`).join('');
-    document.getElementById('mfg-fresh').textContent=mfgData.freshness?'Source refreshed '+new Date(mfgData.freshness).toLocaleString():'No open manufacturing snapshot yet';
+    const fresh=mfgData.freshness||{};
+    document.getElementById('mfg-fresh').textContent=fresh.odoo_snapshot
+      ? 'Odoo states: Confirmed + In-progress · stock snapshot '+new Date(fresh.stock_snapshot||fresh.odoo_snapshot).toLocaleString()
+      :'No open manufacturing snapshot yet';
     body.innerHTML=(mfgData.components||[]).map((r,i)=>`<tr class="mfg-row" onclick="mfgToggle(${i})">
       <td>${r.reservations?.length>0?'▸':''}</td><td><b>${esc(r.component_sku||'—')}</b><br><span class="muted">${esc(r.component_name||'Missing product')}</span></td>
       <td class="r num">${mfgNum(r.required_kg)}</td><td class="r num">${mfgNum(r.available_kg)}</td><td class="r num">${mfgNum(r.reserved_kg)}</td>
       <td><span class="mfg-status ${esc(r.availability_status)}">${esc(r.availability_status)}</span></td><td>${esc(r.source_location||'—')}<br><span class="muted">${esc(r.stock_locations||'—')}</span></td></tr>
-      <tr id="mfg-detail-${i}" class="mfg-detail" style="display:none"><td></td><td colspan="6"><table class="data"><thead><tr><th>DPS/MO</th><th>Finished style/product</th><th>State</th><th class="r">Required kg</th><th class="r">Reserved kg</th><th>Source</th></tr></thead><tbody>${(r.reservations||[]).map(d=>`<tr><td>${esc(d.dps_ref||d.mo_ref||'—')}<br><span class="muted">${esc(d.mo_ref||'')}</span></td><td>${esc(d.style_name||d.finished_name||'—')}<br><span class="muted">${esc(d.finished_sku||'')}</span></td><td>${esc(d.order_state||'—')}</td><td class="r num">${mfgNum(d.required_kg)}</td><td class="r num">${mfgNum(d.reserved_kg)}</td><td>${esc(d.source_location||'—')}</td></tr>`).join('')}</tbody></table></td></tr>`).join('')||'<tr><td colspan="7" class="muted">No open or in-progress component requirements match these filters.</td></tr>';
+      <tr id="mfg-detail-${i}" class="mfg-detail" style="display:none"><td></td><td colspan="6"><table class="data"><thead><tr><th>DPS/MO</th><th>Finished style/product</th><th>State/date</th><th class="r">Required kg</th><th class="r">Reserved kg</th><th class="r">Available kg</th><th>Status</th><th>Source</th></tr></thead><tbody>${(r.reservations||[]).map(d=>`<tr><td>${esc(d.dps_ref||d.mo_ref||'—')}<br><span class="muted">${esc(d.mo_ref||'')}</span></td><td>${esc(d.style_name||d.finished_name||'—')}<br><span class="muted">${esc(d.finished_sku||'')}</span></td><td>${esc(d.order_state||'—')}<br><span class="muted">${esc(d.finished_date||'')}</span></td><td class="r num">${mfgNum(d.required_kg)}</td><td class="r num">${mfgNum(d.reserved_kg)}</td><td class="r num">${mfgNum(d.available_kg)}</td><td><span class="mfg-status ${esc(d.availability_status||'')}">${esc(d.availability_status||'—')}</span></td><td>${esc(d.source_location||'—')}</td></tr>`).join('')}</tbody></table></td></tr>`).join('')||'<tr><td colspan="7" class="muted">No open or in-progress component requirements match these filters.</td></tr>';
   }catch(e){err.innerHTML='<div class="banner banner-err">'+esc(e.message||'Manufacturing report failed')+'</div>';body.innerHTML='<tr><td colspan="7"></td></tr>';}
 }
 function mfgToggle(i){const r=document.getElementById('mfg-detail-'+i);if(r)r.style.display=r.style.display==='none'?'table-row':'none';}
-function mfgClearFilters(){['mo','style','component','state','source','status'].forEach(x=>{const e=document.getElementById('mfg-'+x);if(e)e.value='';});loadManufacturing();}
+function mfgClearFilters(){['mo','style','component','state','source','status'].forEach(x=>{const e=document.getElementById('mfg-'+x);if(e)e.value='';});mfgData=null;loadManufacturing(true);}
 function mfgExport(full=false){const q=full?new URLSearchParams():mfgParams();q.set('download','xlsx');window.location.href='/api/fabric/manufacturing.xlsx?'+q.toString();}
 
 // ── Navigation ──
