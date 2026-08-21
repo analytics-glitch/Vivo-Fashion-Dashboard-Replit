@@ -236,6 +236,12 @@ select:focus,input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(26
 .fab-av-more{background:var(--fab-muted);font-size:9px;}
 .fab-av-lg{width:26px;height:26px;font-size:11px;}
 .content{padding:1.4rem;overflow:auto;flex:1;}
+.mfg-toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:1rem;}
+.mfg-toolbar input,.mfg-toolbar select{min-width:145px;}
+.mfg-status{display:inline-flex;align-items:center;border-radius:999px;padding:3px 9px;font-size:11px;font-weight:700;text-transform:capitalize;}
+.mfg-status.available{background:#dcfce7;color:#166534}.mfg-status.partial{background:#fef3c7;color:#92400e}.mfg-status.short{background:#fee2e2;color:#991b1b}
+.mfg-row{cursor:pointer}.mfg-row:hover{background:#fff7ed}.mfg-detail{background:#fffaf5}.mfg-detail td{font-size:12px;color:var(--text-sub)}
+@media(max-width:620px){.mfg-toolbar input,.mfg-toolbar select{flex:1 1 100%;min-width:0}.mfg-toolbar .btn{flex:1 1 auto}}
 
 .eyebrow{text-transform:uppercase;letter-spacing:.09em;font-size:.62rem;font-weight:700;color:var(--muted);}
 .card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:1.1rem 1.25rem;margin-bottom:1.2rem;box-shadow:0 1px 2px rgba(16,40,24,.04);}
@@ -636,6 +642,7 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
       <li><button type="button" class="nav-item active" data-page="overview" aria-current="page"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg><span>Overview</span></button></li>
       <li><button type="button" class="nav-item" data-page="movement"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"></polyline><polyline points="17 6 23 6 23 12"></polyline></svg><span>Trends</span></button></li>
       <li><button type="button" class="nav-item" data-page="buyingpd"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.83z"></path><line x1="7" y1="7" x2="7.01" y2="7"></line></svg><span>Buying &amp; PD</span></button></li>
+      <li><button type="button" class="nav-item" data-page="manufacturing"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 21h18"></path><path d="M5 21V8l7-4 7 4v13"></path><path d="M9 21v-6h6v6"></path><path d="M9 10h.01M15 10h.01"></path></svg><span>Manufacturing</span></button></li>
      </ul>
     </li>
     <li class="nav-groupli">
@@ -756,6 +763,30 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
       </table>
      </div>
     </div>
+   </section>
+
+   <!-- MANUFACTURING / COMPONENT AVAILABILITY -->
+   <section id="page-manufacturing" style="display:none;">
+    <div class="section-head">
+     <div><h3>Manufacturing component availability</h3><div class="muted">Open and in-progress DPS/MOs · completed and cancelled work is excluded</div></div>
+     <div class="flex" style="gap:8px;align-items:center;"><span id="mfg-fresh" class="muted"></span><button class="btn ghost" onclick="loadManufacturing(true)">Refresh</button><button class="btn" onclick="mfgExport()">Export filtered Excel</button><button class="btn ghost" onclick="mfgExport(true)">Export full Excel</button></div>
+    </div>
+    <div id="mfg-kpis" class="kpi-grid"></div>
+    <div class="mfg-toolbar">
+     <input id="mfg-mo" placeholder="DPS/MO reference" oninput="mfgDebouncedLoad()">
+     <input id="mfg-style" placeholder="Finished style/product" oninput="mfgDebouncedLoad()">
+     <input id="mfg-component" placeholder="Component or SKU" oninput="mfgDebouncedLoad()">
+     <input id="mfg-state" placeholder="Order state" oninput="mfgDebouncedLoad()">
+     <input id="mfg-source" placeholder="Source/location" oninput="mfgDebouncedLoad()">
+     <select id="mfg-status" onchange="loadManufacturing()"><option value="">All availability</option><option value="short">Short</option><option value="partial">Partial</option><option value="available">Available</option></select>
+     <button class="btn ghost" onclick="mfgClearFilters()">Clear filters</button>
+    </div>
+    <div id="mfg-error"></div>
+    <div class="card" style="padding:0;"><div class="tbl-wrap">
+     <table class="data"><thead><tr><th></th><th>Component / SKU</th><th class="r">Required kg</th><th class="r">Available kg</th><th class="r">Reserved kg</th><th>Status</th><th>Source / stock location</th></tr></thead>
+      <tbody id="mfg-body"><tr><td colspan="7" class="loading">Loading…</td></tr></tbody>
+     </table>
+    </div></div>
    </section>
 
    <section id="page-overview">
@@ -2734,9 +2765,46 @@ function qcExportDetail(){
   mixDownloadCsv(cols,qcData.detail||[],'fabric-qc-roll-detail.csv',qcMeta());
 }
 
+// ── Manufacturing component availability ──
+let mfgData=null,mfgTimer=null;
+function mfgParams(){
+  const p=new URLSearchParams();
+  [['mo','mo_ref'],['style','style'],['component','component'],['state','state'],['source','source'],['status','status']]
+    .forEach(([id,key])=>{const v=(document.getElementById('mfg-'+id)?.value||'').trim();if(v)p.set(key,v);});
+  return p;
+}
+function mfgNum(v){return Number(v||0).toLocaleString(undefined,{maximumFractionDigits:2});}
+function mfgDebouncedLoad(){clearTimeout(mfgTimer);mfgTimer=setTimeout(()=>loadManufacturing(),350);}
+async function loadManufacturing(force=false){
+  const body=document.getElementById('mfg-body'), err=document.getElementById('mfg-error');
+  if(!body)return; if(!mfgData)body.innerHTML='<tr><td colspan="7" class="loading">Loading…</td></tr>';
+  err.innerHTML='';
+  try{
+    const query=mfgParams(); if(force)query.set('full','true');
+    mfgData=await apiFetch('/api/fabric/manufacturing?'+query.toString());
+    const s=mfgData.summary||{};
+    document.getElementById('mfg-kpis').innerHTML=[
+      ['Components',s.components||0,'shared components rolled up'],
+      ['Open DPS/MOs',s.orders||0,'live production orders'],
+      ['Required',mfgNum(s.required_kg)+' kg','total component demand'],
+      ['Available',mfgNum(s.available_kg)+' kg','synced stock'],
+      ['Short / partial',`${s.short||0} / ${s.partial||0}`,'component status']
+    ].map((x,i)=>`<div class="kpi ${i===4?'hero':''}"><span class="eyebrow">${x[0]}</span><div class="kpi-value">${x[1]}</div><div class="kpi-sub">${x[2]}</div></div>`).join('');
+    document.getElementById('mfg-fresh').textContent=mfgData.freshness?'Source refreshed '+new Date(mfgData.freshness).toLocaleString():'No open manufacturing snapshot yet';
+    body.innerHTML=(mfgData.components||[]).map((r,i)=>`<tr class="mfg-row" onclick="mfgToggle(${i})">
+      <td>${r.reservations?.length>0?'▸':''}</td><td><b>${esc(r.component_sku||'—')}</b><br><span class="muted">${esc(r.component_name||'Missing product')}</span></td>
+      <td class="r num">${mfgNum(r.required_kg)}</td><td class="r num">${mfgNum(r.available_kg)}</td><td class="r num">${mfgNum(r.reserved_kg)}</td>
+      <td><span class="mfg-status ${esc(r.availability_status)}">${esc(r.availability_status)}</span></td><td>${esc(r.source_location||'—')}<br><span class="muted">${esc(r.stock_locations||'—')}</span></td></tr>
+      <tr id="mfg-detail-${i}" class="mfg-detail" style="display:none"><td></td><td colspan="6"><table class="data"><thead><tr><th>DPS/MO</th><th>Finished style/product</th><th>State</th><th class="r">Required kg</th><th class="r">Reserved kg</th><th>Source</th></tr></thead><tbody>${(r.reservations||[]).map(d=>`<tr><td>${esc(d.dps_ref||d.mo_ref||'—')}<br><span class="muted">${esc(d.mo_ref||'')}</span></td><td>${esc(d.style_name||d.finished_name||'—')}<br><span class="muted">${esc(d.finished_sku||'')}</span></td><td>${esc(d.order_state||'—')}</td><td class="r num">${mfgNum(d.required_kg)}</td><td class="r num">${mfgNum(d.reserved_kg)}</td><td>${esc(d.source_location||'—')}</td></tr>`).join('')}</tbody></table></td></tr>`).join('')||'<tr><td colspan="7" class="muted">No open or in-progress component requirements match these filters.</td></tr>';
+  }catch(e){err.innerHTML='<div class="banner banner-err">'+esc(e.message||'Manufacturing report failed')+'</div>';body.innerHTML='<tr><td colspan="7"></td></tr>';}
+}
+function mfgToggle(i){const r=document.getElementById('mfg-detail-'+i);if(r)r.style.display=r.style.display==='none'?'table-row':'none';}
+function mfgClearFilters(){['mo','style','component','state','source','status'].forEach(x=>{const e=document.getElementById('mfg-'+x);if(e)e.value='';});loadManufacturing();}
+function mfgExport(full=false){const q=full?new URLSearchParams():mfgParams();q.set('download','xlsx');window.location.href='/api/fabric/manufacturing.xlsx?'+q.toString();}
+
 // ── Navigation ──
-const LOADERS={buyingpd:loadBuyingPD,dashboard:loadFabricMixFirst,register:()=>loadRegister(0),deadstock:loadDeadStock,defects:loadFabricQC,dataquality:loadDataQuality,support:loadSupport,movement:initTrendBuilder,pos:loadPOsPage,suppliers:loadSuppliers,reservations:loadReservations,rolls:()=>loadRolls(0),receiving:loadReceivingBatches,sublimation:loadSublimation,createprod:loadCreateProducts,costing:loadCosting,l10:loadL10Page};
-const DESCS={buyingpd:'Buying & Product Development — garment fabric-efficiency KPIs from Done-DPS manufacturing orders',dashboard:'Stock Mix — each category\'s share of consumption vs share of available stock',overview:'Fabric stock, value and health across the warehouse',register:'',ageing:'Stock ageing analysis — coming soon',deadstock:'Fabric that has been sitting without movement',defects:'Roll-level quality results from the Receiving tab — pass rates, shrinkage, bleeding and width checks by supplier, fabric and month',dataquality:'Fabrics missing a kg-per-metre conversion — stock or usage that can only be shown in kg',support:'Lining, interfacing & support overrides — excluded from the main dashboard',movement:'Build your own KPI-over-time panels — fabric metrics in metres, page-local date range',pos:'Inbound purchase orders and delivery performance',suppliers:'Outstanding exposure by supplier',reservations:'Earmark fabric for a style, track how long it has been held, then mark it used',rolls:'Physical roll counts recorded by hand per fabric per location, shown next to the Odoo quantity',receiving:'Record the rolls of an arriving fabric delivery, then print the Fabric Receiving Information Sheet',sublimation:'Sublimation print-run costing — ink, paper and machine conversion per run, with the Odoo BOM per kg ready for manual entry',createprod:'Bulk-create fabric products in Odoo — enter or upload rows, review the validation preview, then confirm. Duplicates are always skipped',costing:'Per-style cost sheets — fabric, trims, CMT/labour and overheads vs the current selling price, with auto-suggestions from fabric data and Done DPS',l10:'Supply Chain L10 Meeting — weekly Level 10 meeting tracker for the Supply Chain team'};
+const LOADERS={buyingpd:loadBuyingPD,manufacturing:loadManufacturing,dashboard:loadFabricMixFirst,register:()=>loadRegister(0),deadstock:loadDeadStock,defects:loadFabricQC,dataquality:loadDataQuality,support:loadSupport,movement:initTrendBuilder,pos:loadPOsPage,suppliers:loadSuppliers,reservations:loadReservations,rolls:()=>loadRolls(0),receiving:loadReceivingBatches,sublimation:loadSublimation,createprod:loadCreateProducts,costing:loadCosting,l10:loadL10Page};
+const DESCS={buyingpd:'Buying & Product Development — garment fabric-efficiency KPIs from Done-DPS manufacturing orders',manufacturing:'Live component availability for open and in-progress DPS/MOs — shared requirements, stock and reservations',dashboard:'Stock Mix — each category\'s share of consumption vs share of available stock',overview:'Fabric stock, value and health across the warehouse',register:'',ageing:'Stock ageing analysis — coming soon',deadstock:'Fabric that has been sitting without movement',defects:'Roll-level quality results from the Receiving tab — pass rates, shrinkage, bleeding and width checks by supplier, fabric and month',dataquality:'Fabrics missing a kg-per-metre conversion — stock or usage that can only be shown in kg',support:'Lining, interfacing & support overrides — excluded from the main dashboard',movement:'Build your own KPI-over-time panels — fabric metrics in metres, page-local date range',pos:'Inbound purchase orders and delivery performance',suppliers:'Outstanding exposure by supplier',reservations:'Earmark fabric for a style, track how long it has been held, then mark it used',rolls:'Physical roll counts recorded by hand per fabric per location, shown next to the Odoo quantity',receiving:'Record the rolls of an arriving fabric delivery, then print the Fabric Receiving Information Sheet',sublimation:'Sublimation print-run costing — ink, paper and machine conversion per run, with the Odoo BOM per kg ready for manual entry',createprod:'Bulk-create fabric products in Odoo — enter or upload rows, review the validation preview, then confirm. Duplicates are always skipped',costing:'Per-style cost sheets — fabric, trims, CMT/labour and overheads vs the current selling price, with auto-suggestions from fabric data and Done DPS',l10:'Supply Chain L10 Meeting — weekly Level 10 meeting tracker for the Supply Chain team'};
 const loadedOnce={};
 
 // Bind ONLY real page tabs ([data-page]) — the "More ▾" trigger is also a

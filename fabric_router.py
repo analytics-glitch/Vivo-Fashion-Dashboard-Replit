@@ -16767,6 +16767,186 @@ def sublimation_costing_delete(costing_id: int, request: Request):
         return {"ok": True}
 
 
+# ── Manufacturing component availability ───────────────────────────────────
+def _mfg_filters(mo_ref="", style="", component="", state="", source="", status=""):
+    clauses, params = [], []
+    for value, column in ((mo_ref, "mo_ref"), (style, "style_name"),
+                          (component, "component_match"), (state, "order_state"),
+                          (source, "source_match")):
+        value = str(value or "").strip()[:120]
+        if value:
+            if column in ("component_match", "source_match"):
+                clauses.append(f"{column} ILIKE %s"); params.append("%" + value + "%")
+            else:
+                clauses.append(f"{column} ILIKE %s"); params.append("%" + value + "%")
+    # Availability status is computed after shared components are rolled up.
+    # Filtering it here would classify each MO independently and hide a shared
+    # component whose final aggregate status differs from one reservation row.
+    return (" AND ".join(clauses) or "TRUE"), params
+
+
+def _mfg_rows(conn, filters=None):
+    filters = filters or {}
+    where, params = _mfg_filters(**filters)
+    # All quantities are normalised to kg at the query boundary.  Odoo can
+    # return grams on one move and kg on another; duplicate moves are already
+    # collapsed by the extractor at MO/component grain.
+    sql = f"""
+        WITH demand AS (
+          SELECT d.*,
+            CASE WHEN lower(COALESCE(d.uom,'')) IN ('g','gram','grams')
+                 THEN d.required_qty/1000 ELSE d.required_qty END AS required_kg,
+            CASE WHEN lower(COALESCE(d.uom,'')) IN ('g','gram','grams')
+                 THEN d.reserved_qty/1000 ELSE d.reserved_qty END AS reserved_kg
+          FROM mo_open_component_requirements d
+        ), stock AS (
+          SELECT product_id,
+                 SUM(CASE WHEN lower(COALESCE(uom,'')) IN ('g','gram','grams')
+                          THEN COALESCE(available, quantity)/1000
+                          ELSE COALESCE(available, quantity) END) AS available_kg,
+                 STRING_AGG(DISTINCT NULLIF(location_name,''), ', '
+                            ORDER BY NULLIF(location_name,'')) AS stock_locations
+          FROM raw_fabric_inventory
+          GROUP BY product_id
+        ), enriched AS (
+          SELECT d.*, COALESCE(s.available_kg,0) AS available_kg,
+                 COALESCE(s.stock_locations,'No synced stock') AS stock_locations,
+                 (d.component_sku || ' ' || d.component_name) AS component_match,
+                 (d.source_location || ' ' || s.stock_locations) AS source_match,
+                 CASE WHEN COALESCE(s.available_kg,0) >= d.required_kg
+                      THEN 'available'
+                      WHEN COALESCE(s.available_kg,0) > 0 THEN 'partial'
+                      ELSE 'short' END AS availability_status
+          FROM demand d LEFT JOIN stock s ON s.product_id=d.component_id
+        )
+        SELECT * FROM enriched WHERE {where}
+        ORDER BY CASE availability_status WHEN 'short' THEN 0
+                 WHEN 'partial' THEN 1 ELSE 2 END, component_name, mo_ref
+    """
+    return q(conn, sql, tuple(params))
+
+
+@fabric_router.get("/api/fabric/manufacturing")
+def manufacturing_availability(
+    mo_ref: str = Query(default=""), style: str = Query(default=""),
+    component: str = Query(default=""), state: str = Query(default=""),
+    source: str = Query(default=""), status: str = Query(default=""),
+    full: bool = Query(default=False)):
+    with _get_conn() as conn:
+        table = q(conn, "SELECT to_regclass('public.mo_open_component_requirements') AS t")
+        if not table or not table[0].get("t"):
+            return {"summary": {"components": 0, "orders": 0, "required_kg": 0,
+                                "available_kg": 0, "short": 0, "partial": 0,
+                                "available": 0}, "components": [], "freshness": None}
+        rows = _mfg_rows(conn, {"mo_ref": mo_ref, "style": style,
+                                "component": component, "state": state,
+                                "source": source, "status": status})
+        groups = {}
+        for r in rows:
+            key = r["component_id"]
+            g = groups.setdefault(key, {
+                "component_id": key, "component_sku": r.get("component_sku"),
+                "component_name": r.get("component_name"), "uom": "kg",
+                "required_kg": 0.0, "available_kg": float(r.get("available_kg") or 0),
+                "reserved_kg": 0.0, "source_location": r.get("source_location"),
+                "stock_locations": r.get("stock_locations"),
+                "reservations": []})
+            g["required_kg"] += float(r.get("required_kg") or 0)
+            g["reserved_kg"] += float(r.get("reserved_kg") or 0)
+            g["reservations"].append({
+                "mo_id": r["odoo_mo_id"], "mo_ref": r.get("mo_ref"),
+                "dps_ref": r.get("dps_ref"), "order_state": r.get("order_state"),
+                "style_name": r.get("style_name"), "finished_sku": r.get("finished_sku"),
+                "finished_name": r.get("finished_name"),
+                "required_kg": float(r.get("required_kg") or 0),
+                "reserved_kg": float(r.get("reserved_kg") or 0),
+                "source_location": r.get("source_location")})
+        for g in groups.values():
+            g["availability_status"] = ("available" if g["available_kg"] >= g["required_kg"]
+                else "partial" if g["available_kg"] > 0 else "short")
+        if status in ("available", "partial", "short"):
+            components = [g for g in groups.values()
+                          if g["availability_status"] == status]
+        else:
+            components = list(groups.values())
+        freshness = q(conn, """
+          SELECT MAX(_loaded_at) AS loaded_at,
+                 COUNT(DISTINCT odoo_mo_id) AS orders
+          FROM mo_open_component_requirements
+        """)[0]
+        counts = {s: sum(1 for g in components if g["availability_status"] == s)
+                  for s in ("available", "partial", "short")}
+        return {"summary": {"components": len(components),
+                            "orders": int(freshness.get("orders") or 0),
+                            "required_kg": round(sum(g["required_kg"] for g in components), 3),
+                            "available_kg": round(sum(g["available_kg"] for g in components), 3),
+                            **counts},
+                "components": components if full else components[:1000],
+                "freshness": freshness.get("loaded_at")}
+
+
+@fabric_router.get("/api/fabric/manufacturing.xlsx")
+def manufacturing_availability_xlsx(
+    mo_ref: str = Query(default=""), style: str = Query(default=""),
+    component: str = Query(default=""), state: str = Query(default=""),
+    source: str = Query(default=""), status: str = Query(default="")):
+    import io
+    import openpyxl
+    from openpyxl.styles import Font
+    filters = {"mo_ref": mo_ref, "style": style, "component": component,
+               "state": state, "source": source, "status": status}
+    with _get_conn() as conn:
+        rows = _mfg_rows(conn, filters)
+        generated = datetime.datetime.now(ZoneInfo("Africa/Nairobi")).strftime("%Y-%m-%d %H:%M %Z")
+        wb = openpyxl.Workbook()
+        ws = wb.active; ws.title = "Component Summary"
+        detail = wb.create_sheet("DPS-MO Reservations")
+        headers = ["Component SKU", "Component", "Required (kg)", "Available (kg)",
+                   "Reserved (kg)", "Status", "Source location", "Stock locations"]
+        ws.append(["Manufacturing availability", "Generated", generated, "Filters", json.dumps(filters)])
+        ws.append(headers)
+        grouped = {}
+        for r in rows:
+            if r["component_id"] not in grouped:
+                grouped[r["component_id"]] = r.copy()
+                grouped[r["component_id"]]["required_kg"] = float(r.get("required_kg") or 0)
+                grouped[r["component_id"]]["reserved_kg"] = float(r.get("reserved_kg") or 0)
+            else:
+                g = grouped[r["component_id"]]
+                g["required_kg"] += float(r.get("required_kg") or 0)
+                g["reserved_kg"] += float(r.get("reserved_kg") or 0)
+        for g in grouped.values():
+            avail = float(g.get("available_kg") or 0); req = float(g.get("required_kg") or 0)
+            current_status = "available" if avail >= req else "partial" if avail > 0 else "short"
+            if status in ("available", "partial", "short") and current_status != status:
+                continue
+            ws.append([g.get("component_sku"), g.get("component_name"), req, avail,
+                       float(g.get("reserved_kg") or 0),
+                       current_status,
+                       g.get("source_location"), g.get("stock_locations")])
+        dh = ["DPS/MO", "DPS ref", "Finished style/product", "Finished SKU",
+              "State", "Component SKU", "Component", "Required (kg)",
+              "Reserved (kg)", "Source/location"]
+        detail.append(["DPS/MO reservations", "Generated", generated])
+        detail.append(dh)
+        for r in rows:
+            detail.append([r.get("mo_ref"), r.get("dps_ref"), r.get("style_name") or r.get("finished_name"),
+                           r.get("finished_sku"), r.get("order_state"), r.get("component_sku"),
+                           r.get("component_name"), float(r.get("required_kg") or 0),
+                           float(r.get("reserved_kg") or 0), r.get("source_location")])
+        for sheet in (ws, detail):
+            sheet.freeze_panes = "A3"; sheet.auto_filter.ref = sheet.dimensions
+            for cell in sheet[2]:
+                cell.font = Font(bold=True)
+            for col in sheet.columns:
+                sheet.column_dimensions[col[0].column_letter].width = min(
+                    34, max(12, max(len(str(c.value or "")) for c in col) + 2))
+        out = io.BytesIO(); wb.save(out); out.seek(0)
+        return Response(content=out.getvalue(),
+                        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        headers={"Content-Disposition": 'attachment; filename="manufacturing-availability.xlsx"'})
+
+
 if __name__ == "__main__":
     # Standalone one-time backfill of the Months-of-Cover daily snapshot. The
     # writer is idempotent (upserts on today's EAT capture date), so this is safe

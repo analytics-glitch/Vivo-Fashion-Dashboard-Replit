@@ -116,6 +116,30 @@ def create_table(cur):
         -- for costing suggestions (never latest-PO pricing).
         ALTER TABLE mo_fabric_consumption ADD COLUMN IF NOT EXISTS is_main_fabric BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE mo_fabric_consumption ADD COLUMN IF NOT EXISTS unit_cost_mo   NUMERIC;
+        CREATE TABLE IF NOT EXISTS mo_open_component_requirements (
+            odoo_mo_id BIGINT NOT NULL,
+            mo_ref TEXT,
+            dps_ref TEXT,
+            order_state TEXT NOT NULL,
+            component_id BIGINT NOT NULL,
+            component_sku TEXT,
+            component_name TEXT,
+            required_qty NUMERIC NOT NULL DEFAULT 0,
+            reserved_qty NUMERIC NOT NULL DEFAULT 0,
+            uom TEXT,
+            source_location TEXT,
+            finished_product_id BIGINT,
+            finished_sku TEXT,
+            finished_name TEXT,
+            style_name TEXT,
+            source_move_ids BIGINT[] NOT NULL DEFAULT '{}',
+            _loaded_at TIMESTAMP NOT NULL,
+            PRIMARY KEY (odoo_mo_id, component_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_mo_open_component
+            ON mo_open_component_requirements(component_id);
+        CREATE INDEX IF NOT EXISTS idx_mo_open_state
+            ON mo_open_component_requirements(order_state);
         """
     )
 
@@ -381,6 +405,103 @@ def _upsert_rows(cur, rows):
     )
 
 
+def extract_open_requirements(uid, models, cur, now):
+    """Snapshot raw components on open/in-progress DPS MOs.
+
+    Odoo exposes the demand and reservation on stock.move as
+    product_uom_qty/reserved_availability.  We deliberately aggregate duplicate
+    moves at (MO, component), retain the source locations and refresh the whole
+    snapshot so cancelled/done MOs cannot linger.
+    """
+    prod_fields = models.execute_kw(
+        ODOO_DB, uid, ODOO_PASSWORD, "mrp.production", "fields_get", [],
+        {"attributes": ["type"]})
+    mo_fields = ["name", "state", "product_id", "move_raw_ids"]
+    if "dps_id" in prod_fields:
+        mo_fields.append("dps_id")
+    mos = models.execute_kw(
+        ODOO_DB, uid, ODOO_PASSWORD, "mrp.production", "search_read",
+        [[["state", "not in", ["done", "cancel"]], ["dps_id", "!=", False]]],
+        {"fields": mo_fields, "order": "id asc"})
+    move_to_mo, meta = {}, {}
+    finished_ids, dps_ids = set(), set()
+    for mo in mos:
+        fpid = mo.get("product_id", [None])[0] if mo.get("product_id") else None
+        if fpid: finished_ids.add(fpid)
+        dps = mo.get("dps_id")
+        did = dps[0] if dps else None
+        if did: dps_ids.add(did)
+        meta[mo["id"]] = {
+            "mo_ref": mo.get("name"), "dps_ref": dps[1] if dps else None,
+            "state": mo.get("state") or "unknown", "finished_product_id": fpid}
+        for move_id in mo.get("move_raw_ids") or []:
+            move_to_mo[move_id] = mo["id"]
+    move_fields = models.execute_kw(
+        ODOO_DB, uid, ODOO_PASSWORD, "stock.move", "fields_get", [],
+        {"attributes": ["type"]})
+    qty_field = "product_uom_qty" if "product_uom_qty" in move_fields else "quantity"
+    reserve_field = "reserved_availability" if "reserved_availability" in move_fields else None
+    wanted = ["product_id", qty_field, "product_uom", "location_id", "state"]
+    if reserve_field: wanted.append(reserve_field)
+    moves = []
+    move_ids = list(move_to_mo)
+    for chunk in _chunks(move_ids, 500):
+        moves += models.execute_kw(ODOO_DB, uid, ODOO_PASSWORD, "stock.move",
+                                   "read", [chunk], {"fields": wanted})
+    pids = sorted({m["product_id"][0] for m in moves if m.get("product_id")})
+    products = {}
+    for chunk in _chunks(pids, 500):
+        for p in models.execute_kw(ODOO_DB, uid, ODOO_PASSWORD, "product.product",
+                                   "read", [chunk],
+                                   {"fields": ["default_code", "name", "categ_id"]}):
+            products[p["id"]] = p
+    finished = {}
+    for chunk in _chunks(sorted(finished_ids), 500):
+        for p in models.execute_kw(ODOO_DB, uid, ODOO_PASSWORD, "product.product",
+                                   "read", [chunk],
+                                   {"fields": ["default_code", "name", "product_tmpl_id"]}):
+            finished[p["id"]] = p
+    agg = defaultdict(lambda: {"required": 0.0, "reserved": 0.0, "uom": None,
+                               "name": None, "sku": None, "locs": set(), "moves": []})
+    for mv in moves:
+        if mv.get("state") in ("done", "cancel") or not mv.get("product_id"):
+            continue
+        pid = mv["product_id"][0]
+        p = products.get(pid)
+        if not p or (p.get("categ_id") and p["categ_id"][0] not in KEEP_CATEGS):
+            continue
+        mo_id = move_to_mo.get(mv["id"])
+        if mo_id is None: continue
+        rec = agg[(mo_id, pid)]
+        rec["required"] += float(mv.get(qty_field) or 0)
+        rec["reserved"] += float(mv.get(reserve_field) or 0) if reserve_field else 0
+        rec["uom"] = (mv.get("product_uom") or [None, None])[1] or rec["uom"]
+        rec["name"], rec["sku"] = p.get("name"), p.get("default_code")
+        loc = (mv.get("location_id") or [None, None])[1]
+        if loc: rec["locs"].add(loc)
+        rec["moves"].append(mv["id"])
+    rows = []
+    for (mo_id, pid), rec in agg.items():
+        m, fp = meta[mo_id], finished.get(meta[mo_id]["finished_product_id"]) or {}
+        tmpl = fp.get("product_tmpl_id") or [None, None]
+        rows.append((mo_id, m["mo_ref"], m["dps_ref"], m["state"], pid, rec["sku"],
+                     rec["name"], rec["required"], rec["reserved"], rec["uom"],
+                     ", ".join(sorted(rec["locs"])) or None, m["finished_product_id"],
+                     fp.get("default_code"), fp.get("name"), tmpl[1], rec["moves"], now))
+    cur.execute("TRUNCATE mo_open_component_requirements")
+    if rows:
+        execute_values(cur, """
+            INSERT INTO mo_open_component_requirements
+            (odoo_mo_id,mo_ref,dps_ref,order_state,component_id,component_sku,
+             component_name,required_qty,reserved_qty,uom,source_location,
+             finished_product_id,finished_sku,finished_name,style_name,
+             source_move_ids,_loaded_at) VALUES %s
+        """, rows, page_size=500)
+    log.info("mo_open_component_requirements: refreshed %d rows from %d open MOs",
+             len(rows), len(mos))
+    return len(rows)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument(
@@ -402,6 +523,7 @@ def main():
     since = datetime.now() - timedelta(days=days)
     since_str = since.strftime("%Y-%m-%d %H:%M:%S")
     extract(uid, models, cur, since_str, now)
+    extract_open_requirements(uid, models, cur, now)
     conn.commit()
 
     cur.execute("SELECT COUNT(*) FROM mo_fabric_consumption")
