@@ -17035,7 +17035,8 @@ def manufacturing_availability(
             dps_key = str(r.get("dps_ref") or "Unknown DPS")
             dps = dps_groups.setdefault(dps_key, {
                 "dps_id": dps_key, "dps_ref": r.get("dps_ref"),
-                "label": r.get("dps_ref") or "Unknown DPS", "mos": {}
+                "label": r.get("dps_ref") or "Unknown DPS", "mos": {},
+                "components": {}
             })
             mo_key = str(r.get("odoo_mo_id") or r.get("mo_ref") or "")
             mo = dps["mos"].setdefault(mo_key, {
@@ -17059,8 +17060,63 @@ def manufacturing_availability(
                 "stock_locations": r.get("stock_locations"),
                 "reservation_contributors": r.get("reservations") or []
             })
+            component_key = str(r.get("component_id") or
+                                r.get("component_sku") or
+                                r.get("component_name") or "")
+            summary_component = dps["components"].setdefault(component_key, {
+                "key": dps_key + "::" + component_key,
+                "component_id": r.get("component_id"),
+                "component_sku": r.get("component_sku"),
+                "component_name": r.get("component_name"),
+                "uom": "kg", "required_kg": 0.0, "soh_kg": 0.0,
+                "reserved_kg": 0.0, "available_kg": 0.0, "shortfall_kg": 0.0,
+                "mo_count": 0, "mos": [], "_mo_keys": set(),
+                "source_location": r.get("source_location"),
+                "source_stock_location": r.get("source_stock_location", "PROD/Stock"),
+                "stock_location": r.get("stock_location"),
+                "stock_locations": r.get("stock_locations"),
+                "reservation_contributors": r.get("reservations") or [],
+            })
+            summary_component["required_kg"] += float(r.get("required_kg") or 0)
+            # Stock and reservations are a shared component snapshot.  Add them
+            # once per DPS/component rather than once for every contributing MO.
+            if not summary_component["mos"]:
+                summary_component["soh_kg"] = float(r.get("soh_kg") or 0)
+                summary_component["reserved_kg"] = float(r.get("reserved_kg") or 0)
+                summary_component["available_kg"] = float(r.get("available_kg") or 0)
+            mo_line = mo
+            mo_identity = str(mo.get("mo_id") or mo.get("mo_ref") or "")
+            if mo_identity not in summary_component["_mo_keys"]:
+                summary_component["_mo_keys"].add(mo_identity)
+                summary_component["mo_count"] += 1
+                summary_component["mos"].append(mo_line)
         for dps in dps_groups.values():
             dps["mos"] = list(dps["mos"].values())
+            for component in dps["components"].values():
+                component["shortfall_kg"] = round(
+                    max(0, component["required_kg"] - component["available_kg"]), 3)
+                component["availability_status"] = (
+                    "available" if component["available_kg"] >= component["required_kg"]
+                    else "partial" if component["available_kg"] > 0 else "short")
+                component["mos"] = [
+                    {"mo_id": mo.get("mo_id"), "mo_ref": mo.get("mo_ref"),
+                     "order_state": mo.get("order_state"),
+                     "style_name": mo.get("style_name"),
+                     "finished_sku": mo.get("finished_sku"),
+                     "finished_name": mo.get("finished_name"),
+                     "finished_date": mo.get("finished_date"),
+                     "components": [c for c in mo.get("components", [])
+                                    if str(c.get("component_id") or
+                                           c.get("component_sku") or
+                                           c.get("component_name") or "") ==
+                                    str(component["component_id"] or
+                                        component["component_sku"] or
+                                        component["component_name"] or "")]
+                    }
+                    for mo in component["mos"]
+                ]
+                component.pop("_mo_keys", None)
+            dps["components"] = list(dps["components"].values())
         raw_categories = q(conn, """
             SELECT DISTINCT LOWER(COALESCE(category,'')) AS category
             FROM raw_fabric_products
@@ -17293,39 +17349,46 @@ def manufacturing_availability_xlsx(
         rows = _mfg_rows(conn, filters)
         generated = datetime.datetime.now(ZoneInfo("Africa/Nairobi")).strftime("%Y-%m-%d %H:%M %Z")
         wb = openpyxl.Workbook()
-        ws = wb.active; ws.title = "Component Summary"
+        ws = wb.active; ws.title = "DPS Component Summary"
         detail = wb.create_sheet("DPS-MO Reservations")
-        headers = ["Component SKU", "Component", "Required (kg)", "SOH (kg)",
-                   "Reserved (kg)", "Available (kg)", "Status",
+        headers = ["DPS ref", "Component SKU", "Component", "MO count",
+                   "Required (kg)", "SOH (kg)", "Reserved (kg)",
+                   "Available (kg)", "Shortfall (kg)", "Status",
                    "Source location", "Source stock", "Stock location", "Stock locations"]
         ws.append(["Manufacturing availability", "Generated", generated, "Filters", json.dumps(filters)])
         ws.append(headers)
         grouped = {}
         for r in rows:
-            if r["component_id"] not in grouped:
-                grouped[r["component_id"]] = r.copy()
-                grouped[r["component_id"]]["required_kg"] = float(r.get("required_kg") or 0)
-                grouped[r["component_id"]]["soh_kg"] = float(r.get("soh_kg") or 0)
-                grouped[r["component_id"]]["available_kg"] = float(r.get("available_kg") or 0)
-                grouped[r["component_id"]]["reserved_kg"] = float(r.get("reserved_kg") or 0)
+            key = (str(r.get("dps_ref") or "Unknown DPS"), r["component_id"])
+            if key not in grouped:
+                grouped[key] = r.copy()
+                grouped[key]["required_kg"] = float(r.get("required_kg") or 0)
+                grouped[key]["soh_kg"] = float(r.get("soh_kg") or 0)
+                grouped[key]["available_kg"] = float(r.get("available_kg") or 0)
+                grouped[key]["reserved_kg"] = float(r.get("reserved_kg") or 0)
+                grouped[key]["mo_refs"] = {
+                    str(r.get("odoo_mo_id") or r.get("mo_ref") or "")
+                }
             else:
-                g = grouped[r["component_id"]]
+                g = grouped[key]
                 g["required_kg"] += float(r.get("required_kg") or 0)
+                g["mo_refs"].add(
+                    str(r.get("odoo_mo_id") or r.get("mo_ref") or "")
+                )
         for g in grouped.values():
             avail = float(g.get("available_kg") or 0); req = float(g.get("required_kg") or 0)
             current_status = "available" if avail >= req else "partial" if avail > 0 else "short"
             g["availability_status"] = current_status
-        grouped_status = {component_id: g["availability_status"]
-                          for component_id, g in grouped.items()}
+        grouped_status = {key: g["availability_status"] for key, g in grouped.items()}
         for g in grouped.values():
             if availability_statuses and g["availability_status"] not in availability_statuses:
                 continue
             req = float(g.get("required_kg") or 0)
             avail = float(g.get("available_kg") or 0)
-            ws.append([g.get("component_sku"), g.get("component_name"), req,
-                       float(g.get("soh_kg") or 0),
+            ws.append([g.get("dps_ref"), g.get("component_sku"), g.get("component_name"),
+                       len(g["mo_refs"]), req, float(g.get("soh_kg") or 0),
                        float(g.get("reserved_kg") or 0),
-                       avail,
+                       avail, max(0, req - avail),
                        g["availability_status"],
                        g.get("source_location"), g.get("source_stock_location"),
                        g.get("stock_location"), g.get("stock_locations")])
@@ -17336,7 +17399,8 @@ def manufacturing_availability_xlsx(
         detail.append(["DPS/MO reservations", "Generated", generated])
         detail.append(dh)
         for r in rows:
-            if availability_statuses and r["component_id"] not in grouped_status:
+            key = (str(r.get("dps_ref") or "Unknown DPS"), r["component_id"])
+            if availability_statuses and key not in grouped_status:
                 continue
             detail.append([r.get("mo_ref"), r.get("dps_ref"), r.get("style_name") or r.get("finished_name"),
                            r.get("finished_sku"), r.get("order_state"), r.get("component_sku"),
@@ -17344,7 +17408,7 @@ def manufacturing_availability_xlsx(
                             float(r.get("soh_kg") or 0),
                             float(r.get("reserved_kg") or 0),
                             float(r.get("available_kg") or 0),
-                           grouped_status.get(r["component_id"], r.get("availability_status")),
+                            grouped_status.get(key, r.get("availability_status")),
                             r.get("stock_location"),
                             (str(r.get("source_stock_location") or "") + " · " +
                              str(r.get("source_location") or "")),

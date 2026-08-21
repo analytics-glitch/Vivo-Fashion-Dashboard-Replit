@@ -241,7 +241,7 @@ select:focus,input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(26
 .mfg-status{display:inline-flex;align-items:center;border-radius:999px;padding:3px 9px;font-size:11px;font-weight:700;text-transform:capitalize;}
 .mfg-component-picker{position:relative;min-width:240px}.mfg-component-trigger{width:100%;min-height:38px;padding:8px 11px;border:1px solid var(--line,#d6d3d1);border-radius:8px;background:#fff;text-align:left;color:var(--text,#292524);cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.mfg-component-trigger:disabled{cursor:not-allowed;opacity:.65}.mfg-component-menu{position:absolute;z-index:20;top:calc(100% + 5px);left:0;width:330px;max-width:calc(100vw - 28px);padding:8px;background:#fff;border:1px solid #d6d3d1;border-radius:10px;box-shadow:0 10px 25px #0002}.mfg-component-menu input{width:100%;min-width:0;margin-bottom:6px}.mfg-component-options{max-height:230px;overflow:auto}.mfg-component-option{display:flex;gap:8px;align-items:flex-start;padding:7px 5px;border-radius:6px;cursor:pointer}.mfg-component-option:hover{background:#fff7ed}.mfg-component-option input{width:auto;margin:3px 0 0}.mfg-component-option small{display:block;color:var(--text-sub,#78716c);font-size:11px}.mfg-component-clear{margin-top:7px;width:100%}
 .mfg-status.available{background:#dcfce7;color:#166534}.mfg-status.partial{background:#fef3c7;color:#92400e}.mfg-status.short{background:#fee2e2;color:#991b1b}
-.mfg-row{cursor:pointer}.mfg-row:hover{background:#fff7ed}.mfg-detail{background:#fffaf5}.mfg-detail td{font-size:12px;color:var(--text-sub)}
+ .mfg-row{cursor:pointer}.mfg-row:hover{background:#fff7ed}.mfg-summary{background:#fffaf5}.mfg-summary td{font-weight:600}.mfg-detail{background:#fffaf5}.mfg-detail td{font-size:12px;color:var(--text-sub)}.mfg-disclosure{width:28px;border:0;background:transparent;color:inherit;font-size:16px;cursor:pointer}.mfg-shortfall{color:#991b1b;font-weight:700}
 @media(max-width:620px){.mfg-toolbar input,.mfg-toolbar select{flex:1 1 100%;min-width:0}.mfg-toolbar .btn{flex:1 1 auto}}
 
 .eyebrow{text-transform:uppercase;letter-spacing:.09em;font-size:.62rem;font-weight:700;color:var(--muted);}
@@ -2881,40 +2881,34 @@ async function loadManufacturing(force=false){
 function mfgRenderGroups(groups,selectedDps,selectedMo){
   const out=[];
   groups.forEach((d,di)=>{
-     out.push('<tr class="mfg-row"><td colspan="8"><b'+(selectedDps===d.dps_ref?' class="mfg-selected"':'')+'>DPS '+esc(d.label)+'</b> <span class="muted">'+d.mos.length+' eligible MO(s)</span></td></tr>');
-    (d.mos||[]).forEach((mo,mi)=>{
-      const cs=mo.components||[];
-      const total=(key)=>cs.reduce((a,x)=>a+Number(x[key]||0),0);
-      const id=di+'_'+mi;
-      out.push('<tr class="mfg-row" onclick="mfgToggle(\''+id+'\')"><td>'+ (cs.length?'▸':'') +
-        '</td><td><b'+(selectedMo===mo.mo_ref?' class="mfg-selected"':'')+'>'+esc(mo.mo_ref||'—')+
-         '</b><br><span class="muted">'+esc(mo.style_name||mo.finished_name||'—')+' · '+esc(mo.finished_sku||'')+
-         '</span></td><td class="r num">'+mfgNum(total('required_kg'))+'</td><td class="r num">'+mfgNum(total('soh_kg'))+
-         '</td><td class="r num">'+mfgNum(total('reserved_kg'))+'</td><td class="r num">'+mfgNum(total('available_kg'))+
-         '</td><td><span class="mfg-status">'+esc(mo.order_state||'—')+
-         '</span></td><td>'+esc(mo.finished_date||'—')+'<br><span class="muted">Source: '+
-         esc([...new Set(cs.map(x=>x.source_stock_location||'').filter(Boolean))].join(', ')||'—')+' · Target: '+
-         esc([...new Set(cs.map(x=>x.stock_location||'').filter(Boolean))].join(', ')||'—')+
-         '</span></td></tr>');
-      const details=cs.map(c=>{
+      out.push('<tr class="mfg-row"><td colspan="8"><b'+(selectedDps===d.dps_ref?' class="mfg-selected"':'')+'>DPS '+esc(d.label)+'</b> <span class="muted">'+(d.mos||[]).length+' eligible MO(s)</span></td></tr>');
+      (d.components||[]).forEach((c,ci)=>{
+       const id='d'+di+'c'+ci;
+       const mos=c.mos||[];
+       const details=mos.map(mo=> (mo.components||[]).map(component=>{
          const contributors=(c.reservation_contributors||[]).map(x=>
            '<div class="muted">'+esc(x.mo_ref||x.dps_ref||x.transaction_ref||x.move_reference||'Odoo move')+
            ' · '+mfgNum(x.quantity_kg)+' kg · '+esc(x.state||'')+' · '+esc(x.source_location||'')+'</div>').join('');
-         return '<tr><td>'+esc(c.component_sku||'—')+'<br><span class="muted">'+esc(c.component_name||'')+
-         '</span></td><td class="r num">'+mfgNum(c.required_kg)+'</td><td class="r num">'+mfgNum(c.soh_kg)+
-         '</td><td class="r num">'+mfgNum(c.reserved_kg)+'</td><td class="r num">'+mfgNum(c.available_kg)+
-         '</td><td><span class="mfg-status '+esc(c.availability_status||'')+
-         '">'+esc(c.availability_status||'—')+'</span></td><td>'+esc(c.source_location||'—')+'<br><span class="muted">'+
-         'Source: '+esc(c.source_stock_location||'PROD/Stock')+' · Target: '+esc(c.stock_location||'—')+
-         '<br>'+esc(c.stock_locations||'—')+'</span><br><b>Reservation contributors</b>'+
+          return '<tr><td><b'+(selectedMo===mo.mo_ref?' class="mfg-selected"':'')+'>'+esc(mo.mo_ref||'—')+
+          '</b><br><span class="muted">'+esc(mo.style_name||mo.finished_name||'—')+' · '+esc(mo.finished_sku||'')+
+          '</span></td><td>'+esc(component.component_sku||'—')+'<br><span class="muted">'+esc(component.component_name||'')+
+          '</span></td><td class="r num">'+mfgNum(component.required_kg)+'</td><td class="r num">'+mfgNum(component.soh_kg)+
+          '</td><td class="r num">'+mfgNum(component.reserved_kg)+'</td><td class="r num">'+mfgNum(component.available_kg)+
+          '</td><td><span class="mfg-status '+esc(component.availability_status||'')+
+          '">'+esc(component.availability_status||'—')+'</span></td><td>'+esc(component.source_location||'—')+'<br><span class="muted">'+
+          'Source: '+esc(component.source_stock_location||'PROD/Stock')+' · Target: '+esc(component.stock_location||'—')+
+          '<br>'+esc(component.stock_locations||'—')+'</span><br><b>Reservation contributors</b>'+
          (contributors||'<div class="muted">No reservation detail in snapshot</div>')+'</td></tr>';
-       }).join('');
-       out.push('<tr id="mfg-detail-'+id+'" class="mfg-detail" style="display:none"><td></td><td colspan="7"><table class="data"><thead><tr><th>Component / SKU</th><th class="r">Required kg</th><th class="r">SOH kg</th><th class="r">Reserved kg</th><th class="r">Available kg</th><th>Status</th><th>Source / reservations</th></tr></thead><tbody>'+details+'</tbody></table></td></tr>');
+        })).join('');
+       const source=[...new Set(mos.flatMap(m=>(m.components||[]).map(x=>x.source_stock_location||'').filter(Boolean)))].join(', ')||'—';
+       const target=[...new Set(mos.flatMap(m=>(m.components||[]).map(x=>x.stock_location||'').filter(Boolean)))].join(', ')||'—';
+       out.push('<tr class="mfg-row mfg-summary" tabindex="0" role="button" aria-expanded="false" aria-controls="mfg-detail-'+id+'" onclick="mfgToggle(\''+id+'\',this)" onkeydown="if(event.key===\'Enter\'||event.key===\' \'){event.preventDefault();mfgToggle(\''+id+'\',this)}"><td><button class="mfg-disclosure" tabindex="-1" aria-hidden="true">▸</button></td><td><b>'+esc(c.component_sku||'—')+'</b><br><span class="muted">'+esc(c.component_name||'')+'</span><br><span class="muted">DPS '+esc(d.label)+' · '+c.mo_count+' MO(s)</span></td><td class="r num">'+mfgNum(c.required_kg)+'</td><td class="r num">'+mfgNum(c.soh_kg)+'</td><td class="r num">'+mfgNum(c.reserved_kg)+'</td><td class="r num">'+mfgNum(c.available_kg)+'</td><td><span class="mfg-status '+esc(c.availability_status||'')+'">'+esc(c.availability_status||'—')+'</span><br><span class="mfg-shortfall">Short '+mfgNum(c.shortfall_kg)+' kg</span></td><td>Source: '+esc(source)+' · Target: '+esc(target)+'</td></tr>');
+       out.push('<tr id="mfg-detail-'+id+'" class="mfg-detail" style="display:none"><td></td><td colspan="7"><table class="data"><thead><tr><th>MO / finished product</th><th>Component / SKU</th><th class="r">Required kg</th><th class="r">SOH kg</th><th class="r">Reserved kg</th><th class="r">Available kg</th><th>Status</th><th>Source / reservations</th></tr></thead><tbody>'+details+'</tbody></table></td></tr>');
     });
   });
    return out.join('')||'<tr><td colspan="8" class="muted">No eligible Confirmed or In-progress DPS/MOs match these filters.</td></tr>';
 }
-function mfgToggle(i){const r=document.getElementById('mfg-detail-'+i);if(r)r.style.display=r.style.display==='none'?'table-row':'none';}
+ function mfgToggle(i,row){const r=document.getElementById('mfg-detail-'+i);if(!r)return;const open=r.style.display==='none';r.style.display=open?'table-row':'none';if(row){row.setAttribute('aria-expanded',String(open));const b=row.querySelector('.mfg-disclosure');if(b)b.textContent=open?'▾':'▸';}}
  function mfgClearFilters(){['dps','mo','category','state','source'].forEach(x=>{const e=document.getElementById('mfg-'+x);if(e){e.value='';if(x==='mo')e.disabled=true;}});mfgClearComponents();mfgComponentOptions=[];mfgUpdateComponentTrigger();mfgLoadComponentOptions();const status=document.getElementById('mfg-status');if(status)[...status.options].forEach(o=>o.selected=false);mfgData=null;loadManufacturing(true);}
  function mfgExport(full=false){
     const q=full?new URLSearchParams():mfgParams();
