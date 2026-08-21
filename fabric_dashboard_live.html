@@ -239,6 +239,7 @@ select:focus,input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(26
 .mfg-toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:1rem;}
 .mfg-toolbar input,.mfg-toolbar select{min-width:145px;}
 .mfg-status{display:inline-flex;align-items:center;border-radius:999px;padding:3px 9px;font-size:11px;font-weight:700;text-transform:capitalize;}
+.mfg-component-picker{position:relative;min-width:240px}.mfg-component-trigger{width:100%;min-height:38px;padding:8px 11px;border:1px solid var(--line,#d6d3d1);border-radius:8px;background:#fff;text-align:left;color:var(--text,#292524);cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.mfg-component-trigger:disabled{cursor:not-allowed;opacity:.65}.mfg-component-menu{position:absolute;z-index:20;top:calc(100% + 5px);left:0;width:330px;max-width:calc(100vw - 28px);padding:8px;background:#fff;border:1px solid #d6d3d1;border-radius:10px;box-shadow:0 10px 25px #0002}.mfg-component-menu input{width:100%;min-width:0;margin-bottom:6px}.mfg-component-options{max-height:230px;overflow:auto}.mfg-component-option{display:flex;gap:8px;align-items:flex-start;padding:7px 5px;border-radius:6px;cursor:pointer}.mfg-component-option:hover{background:#fff7ed}.mfg-component-option input{width:auto;margin:3px 0 0}.mfg-component-option small{display:block;color:var(--text-sub,#78716c);font-size:11px}.mfg-component-clear{margin-top:7px;width:100%}
 .mfg-status.available{background:#dcfce7;color:#166534}.mfg-status.partial{background:#fef3c7;color:#92400e}.mfg-status.short{background:#fee2e2;color:#991b1b}
 .mfg-row{cursor:pointer}.mfg-row:hover{background:#fff7ed}.mfg-detail{background:#fffaf5}.mfg-detail td{font-size:12px;color:var(--text-sub)}
 @media(max-width:620px){.mfg-toolbar input,.mfg-toolbar select{flex:1 1 100%;min-width:0}.mfg-toolbar .btn{flex:1 1 auto}}
@@ -775,16 +776,21 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
     <div class="mfg-toolbar">
        <input id="mfg-dps" list="mfg-dps-options" placeholder="DPS search / select" oninput="mfgDpsChanged()" onkeydown="mfgKey(event)">
        <datalist id="mfg-dps-options"></datalist>
-       <input id="mfg-mo" list="mfg-mo-options" placeholder="MO search / select (choose DPS first)" disabled oninput="mfgSuggest('mo')" onkeydown="mfgKey(event)">
+       <input id="mfg-mo" list="mfg-mo-options" placeholder="MO search / select (choose DPS first)" disabled oninput="mfgMoChanged()" onkeydown="mfgKey(event)">
       <datalist id="mfg-mo-options"></datalist>
-       <select id="mfg-category" aria-label="Product Category">
+       <select id="mfg-category" aria-label="Product Category" onchange="mfgScopeChanged()">
         <option value="">Product Category (all)</option>
         <option value="03. Accessories &amp; Trims">03. Accessories &amp; Trims</option>
-        <option value="Accessories and Trims">Accessories and Trims</option>
         <option value="02. Raw Materials-Fabric">02. Raw Materials-Fabric</option>
        </select>
-      <input id="mfg-component" list="mfg-component-options" placeholder="Component or SKU" oninput="mfgSuggest('component')" onkeydown="mfgKey(event)">
-      <datalist id="mfg-component-options"></datalist>
+       <div class="mfg-component-picker" id="mfg-component-picker">
+        <button type="button" class="mfg-component-trigger" id="mfg-component" aria-haspopup="listbox" aria-expanded="false" onclick="mfgToggleComponents(event)" disabled>Choose components…</button>
+        <div class="mfg-component-menu" id="mfg-component-menu" role="listbox" aria-multiselectable="true" hidden>
+         <input id="mfg-component-search" placeholder="Search SKU or component" autocomplete="off" oninput="mfgRenderComponentOptions()" onkeydown="mfgComponentKey(event)">
+         <div id="mfg-component-options" class="mfg-component-options"><div class="muted">Choose a DPS/MO or category first.</div></div>
+         <button type="button" class="btn ghost mfg-component-clear" onclick="mfgClearComponents()">Clear selection</button>
+        </div>
+       </div>
       <input id="mfg-state" list="mfg-state-options" placeholder="Order state (Confirmed/In-progress)" oninput="mfgSuggest('state')" onkeydown="mfgKey(event)">
       <datalist id="mfg-state-options"></datalist>
       <input id="mfg-source" list="mfg-source-options" placeholder="Source/location" oninput="mfgSuggest('source')" onkeydown="mfgKey(event)">
@@ -2783,11 +2789,12 @@ function qcExportDetail(){
 }
 
 // ── Manufacturing component availability ──
-let mfgData=null,mfgTimer=null,mfgSuggestTimers={};
+let mfgData=null,mfgTimer=null,mfgSuggestTimers={},mfgComponentOptions=[],mfgComponentSelection=new Map(),mfgComponentRequest=0;
  function mfgParams(){
   const p=new URLSearchParams();
-    [['dps','dps_ref'],['mo','mo_ref'],['category','category'],['component','component'],['state','state'],['source','source']]
+    [['dps','dps_ref'],['mo','mo_ref'],['category','category'],['state','state'],['source','source']]
      .forEach(([id,key])=>{const v=(document.getElementById('mfg-'+id)?.value||'').trim();if(v)p.set(key,v);});
+    mfgComponentSelection.forEach((_,id)=>p.append('component_id',id));
    [...(document.getElementById('mfg-status')?.selectedOptions||[])].forEach(o=>p.append('status',o.value));
   return p;
 }
@@ -2811,8 +2818,34 @@ function mfgKey(e){if(e.key==='Enter'){e.preventDefault();loadManufacturing(true
  function mfgDpsChanged(){
    const dps=document.getElementById('mfg-dps'), mo=document.getElementById('mfg-mo');
    if(mo){mo.value='';mo.disabled=!(dps&&dps.value.trim());}
-   mfgSuggest('dps'); mfgData=null; loadManufacturing(true);
+    mfgSuggest('dps'); mfgScopeChanged();
  }
+ function mfgMoChanged(){mfgSuggest('mo');mfgScopeChanged();}
+ function mfgScopeChanged(){
+   mfgComponentSelection.clear(); mfgComponentOptions=[]; mfgUpdateComponentTrigger();
+   mfgLoadComponentOptions(); mfgData=null; loadManufacturing(true);
+ }
+ async function mfgLoadComponentOptions(){
+   const dps=(document.getElementById('mfg-dps')?.value||'').trim(),mo=(document.getElementById('mfg-mo')?.value||'').trim(),category=(document.getElementById('mfg-category')?.value||'').trim(), trigger=document.getElementById('mfg-component');
+   if(trigger)trigger.disabled=!(dps||mo||category);
+   const request=++mfgComponentRequest, list=document.getElementById('mfg-component-options');
+   if(!dps&&!mo&&!category){if(list)list.innerHTML='<div class="muted">Choose a DPS/MO or category first.</div>';return;}
+   if(list)list.innerHTML='<div class="loading">Loading components…</div>';
+   try{const q=new URLSearchParams();if(dps)q.set('dps_ref',dps);if(mo)q.set('mo_ref',mo);if(category)q.set('category',category);
+     const result=await apiFetch('/api/fabric/manufacturing/component-options?'+q);
+     if(request!==mfgComponentRequest)return;mfgComponentOptions=result.options||[];mfgReconcileComponents();mfgRenderComponentOptions();
+   }catch(e){if(request!==mfgComponentRequest)return;mfgComponentOptions=[];if(list)list.innerHTML='<div class="banner banner-err">'+esc(e.message||'Component options failed')+'</div>';}
+ }
+ function mfgReconcileComponents(){const allowed=new Map(mfgComponentOptions.map(x=>[String(x.id),x]));[...mfgComponentSelection.keys()].forEach(id=>{if(!allowed.has(String(id)))mfgComponentSelection.delete(id);});mfgUpdateComponentTrigger();}
+ function mfgUpdateComponentTrigger(){const button=document.getElementById('mfg-component');if(!button)return;const names=[...mfgComponentSelection.values()].map(x=>x.label);button.textContent=names.length?names.join(', '):'Choose components…';button.title=names.join(', ');}
+ function mfgRenderComponentOptions(){const list=document.getElementById('mfg-component-options'),term=(document.getElementById('mfg-component-search')?.value||'').trim().toLowerCase();if(!list)return;
+   const options=mfgComponentOptions.filter(x=>!term||x.label.toLowerCase().includes(term));list.innerHTML=options.length?options.map(x=>`<label class="mfg-component-option"><input type="checkbox" value="${esc(String(x.id))}" ${mfgComponentSelection.has(String(x.id))?'checked':''} onchange="mfgComponentChanged(this)"><span>${esc(x.sku||x.name||'—')}<small>${esc(x.name||'')}</small></span></label>`).join(''):'<div class="muted">No matching components in this scope.</div>';
+ }
+ function mfgComponentChanged(input){const option=mfgComponentOptions.find(x=>String(x.id)===input.value);if(!option)return;if(input.checked)mfgComponentSelection.set(input.value,option);else mfgComponentSelection.delete(input.value);mfgUpdateComponentTrigger();}
+ function mfgToggleComponents(event){event.stopPropagation();const menu=document.getElementById('mfg-component-menu'),button=document.getElementById('mfg-component');if(!menu||button.disabled)return;menu.hidden=!menu.hidden;button.setAttribute('aria-expanded',String(!menu.hidden));if(!menu.hidden)document.getElementById('mfg-component-search')?.focus();}
+ function mfgClearComponents(){mfgComponentSelection.clear();mfgUpdateComponentTrigger();mfgRenderComponentOptions();}
+ function mfgComponentKey(event){if(event.key==='Escape'){document.getElementById('mfg-component-menu').hidden=true;document.getElementById('mfg-component').setAttribute('aria-expanded','false');}else if(event.key==='Enter'){event.preventDefault();}}
+ document.addEventListener('click',e=>{if(!e.target.closest('.mfg-component-picker')){const menu=document.getElementById('mfg-component-menu');if(menu){menu.hidden=true;document.getElementById('mfg-component')?.setAttribute('aria-expanded','false');}}});
 async function loadManufacturing(force=false){
   const body=document.getElementById('mfg-body'), err=document.getElementById('mfg-error');
    if(!body)return; if(!mfgData)body.innerHTML='<tr><td colspan="8" class="loading">Loading…</td></tr>';
@@ -2827,6 +2860,7 @@ async function loadManufacturing(force=false){
          mfgData.category_options.map(o=>`<option value="${esc(o.value)}">${esc(o.label)}</option>`).join('');
        categorySelect.value=active;
      }
+     mfgLoadComponentOptions();
     const s=mfgData.summary||{};
     document.getElementById('mfg-kpis').innerHTML=[
       ['Components',s.components||0,'shared components rolled up'],
@@ -2881,7 +2915,7 @@ function mfgRenderGroups(groups,selectedDps,selectedMo){
    return out.join('')||'<tr><td colspan="8" class="muted">No eligible Confirmed or In-progress DPS/MOs match these filters.</td></tr>';
 }
 function mfgToggle(i){const r=document.getElementById('mfg-detail-'+i);if(r)r.style.display=r.style.display==='none'?'table-row':'none';}
-  function mfgClearFilters(){['dps','mo','category','component','state','source'].forEach(x=>{const e=document.getElementById('mfg-'+x);if(e){e.value='';if(x==='mo')e.disabled=true;}});const status=document.getElementById('mfg-status');if(status)[...status.options].forEach(o=>o.selected=false);mfgData=null;loadManufacturing(true);}
+ function mfgClearFilters(){['dps','mo','category','state','source'].forEach(x=>{const e=document.getElementById('mfg-'+x);if(e){e.value='';if(x==='mo')e.disabled=true;}});mfgClearComponents();mfgComponentOptions=[];mfgUpdateComponentTrigger();mfgLoadComponentOptions();const status=document.getElementById('mfg-status');if(status)[...status.options].forEach(o=>o.selected=false);mfgData=null;loadManufacturing(true);}
  function mfgExport(full=false){
     const q=full?new URLSearchParams():mfgParams();
    if(full){const category=(document.getElementById('mfg-category')?.value||'').trim();if(category)q.set('category',category);}

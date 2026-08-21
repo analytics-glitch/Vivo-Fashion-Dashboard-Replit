@@ -16805,7 +16805,7 @@ def _mfg_statuses(value):
     return [status for status in _MFG_AVAILABILITY_STATUSES if status in found]
 
 
-def _mfg_filters(mo_ref="", dps_ref="", category="", component="", state="", source="", status=""):
+def _mfg_filters(mo_ref="", dps_ref="", category="", component="", state="", source="", status="", component_ids=None):
     clauses, params = [], []
     # These are one user-entered search expression: a match in any filled
     # highlighted field qualifies the reservation. Status is deliberately not
@@ -16835,6 +16835,16 @@ def _mfg_filters(mo_ref="", dps_ref="", category="", component="", state="", sou
     if category:
         clauses.append("canonical_category = %s")
         params.append(category)
+    if component_ids:
+        ids = []
+        for value in component_ids:
+            try:
+                ids.append(int(value))
+            except (TypeError, ValueError):
+                continue
+        if ids:
+            clauses.append("component_id = ANY(%s)")
+            params.append(ids)
     # Availability status is computed after shared components are rolled up.
     # Filtering it here would classify each MO independently and hide a shared
     # component whose final aggregate status differs from one reservation row.
@@ -16947,7 +16957,8 @@ def manufacturing_availability(
     mo_ref: str = Query(default=""), dps_ref: str = Query(default=""),
     category: str = Query(default=""),
     component: str = Query(default=""), state: str = Query(default=""),
-    source: str = Query(default=""), status: list[str] = Query(default=[]),
+     source: str = Query(default=""), component_id: list[int] = Query(default=[]),
+     status: list[str] = Query(default=[]),
     full: bool = Query(default=False)):
     availability_statuses = _mfg_statuses(status)
     with _get_conn() as conn:
@@ -16965,7 +16976,8 @@ def manufacturing_availability(
                     "freshness": None}
         rows = _mfg_rows(conn, {"mo_ref": mo_ref, "dps_ref": dps_ref, "category": category,
                                 "component": component, "state": state,
-                                 "source": source, "status": availability_statuses})
+                                  "source": source, "status": availability_statuses,
+                                  "component_ids": component_id})
         groups = {}
         for r in rows:
             key = r["component_id"]
@@ -17059,10 +17071,8 @@ def manufacturing_availability(
             category_options.append({"value": "02. Raw Materials-Fabric",
                                      "label": "02. Raw Materials-Fabric"})
         if any(r.get("category") == "trim" for r in raw_categories):
-            category_options.extend([
-                {"value": "03. Accessories & Trims", "label": "03. Accessories & Trims"},
-                {"value": "Accessories and Trims", "label": "Accessories and Trims"},
-            ])
+            category_options.append({"value": "03. Accessories & Trims",
+                                     "label": "03. Accessories & Trims"})
         freshness = q(conn, """
            SELECT MAX(_loaded_at) AS loaded_at,
                  COUNT(DISTINCT odoo_mo_id) AS orders
@@ -17086,7 +17096,8 @@ def manufacturing_availability(
                      "search": "DPS scopes MO; remaining filled fields are ORed; status is additional",
                      "active_filters": {"category": _mfg_category_label(category) or None,
                                         "dps_ref": dps_ref or None, "mo_ref": mo_ref or None,
-                                        "component": component or None, "state": state or None,
+                                         "component": component or None, "component_ids": component_id,
+                                         "state": state or None,
                                          "source": source or None,
                                          "status": availability_statuses[0] if len(availability_statuses) == 1 else None,
                                          "availability_statuses": availability_statuses},
@@ -17233,12 +17244,42 @@ def manufacturing_search(field: str = Query(default=""),
                 "detail": str(exc)}
 
 
+@fabric_router.get("/api/fabric/manufacturing/component-options")
+def manufacturing_component_options(
+    mo_ref: str = Query(default=""), dps_ref: str = Query(default=""),
+    category: str = Query(default="")):
+    """Return the deduplicated component universe for the current report scope."""
+    canonical_category = _mfg_category_label(category)
+    if not dps_ref.strip() and not mo_ref.strip() and not canonical_category:
+        return {"options": [], "scope_ready": False, "live": False}
+    with _get_conn() as conn:
+        rows = _mfg_rows(conn, {"mo_ref": mo_ref, "dps_ref": dps_ref,
+                                "category": canonical_category})
+    seen = {}
+    for row in rows:
+        component_id = row.get("component_id")
+        if component_id is None or component_id in seen:
+            continue
+        seen[component_id] = {
+            "id": component_id,
+            "sku": row.get("component_sku") or "",
+            "name": row.get("component_name") or "",
+            "label": " · ".join(x for x in
+                                (row.get("component_sku"), row.get("component_name"))
+                                if x),
+        }
+    return {"options": sorted(seen.values(),
+                              key=lambda x: (x["name"].casefold(), x["sku"].casefold())),
+            "scope_ready": True, "canonical_category": canonical_category or None}
+
+
 @fabric_router.get("/api/fabric/manufacturing.xlsx")
 def manufacturing_availability_xlsx(
     mo_ref: str = Query(default=""), dps_ref: str = Query(default=""),
     category: str = Query(default=""),
     component: str = Query(default=""), state: str = Query(default=""),
-    source: str = Query(default=""), status: list[str] = Query(default=[])):
+    source: str = Query(default=""), component_id: list[int] = Query(default=[]),
+    status: list[str] = Query(default=[])):
     import io
     import openpyxl
     from openpyxl.styles import Font
@@ -17246,6 +17287,7 @@ def manufacturing_availability_xlsx(
     filters = {"mo_ref": mo_ref, "dps_ref": dps_ref,
                "category": _mfg_category_label(category), "component": component,
                "state": state, "source": source,
+               "component_ids": component_id,
                "status": availability_statuses}
     with _get_conn() as conn:
         rows = _mfg_rows(conn, filters)
