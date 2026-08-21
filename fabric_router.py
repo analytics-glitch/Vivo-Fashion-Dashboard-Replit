@@ -16788,6 +16788,23 @@ def _mfg_category_label(value):
     return _MFG_CATEGORY_LABELS.get(" ".join(raw.casefold().split()), raw[:120])
 
 
+_MFG_AVAILABILITY_STATUSES = ("short", "partial", "available")
+
+
+def _mfg_statuses(value):
+    """Return supported availability statuses from repeated or CSV input."""
+    if value is None:
+        return []
+    values = value if isinstance(value, (list, tuple, set)) else [value]
+    found = set()
+    for item in values:
+        for status in str(item or "").split(","):
+            status = status.strip().lower()
+            if status in _MFG_AVAILABILITY_STATUSES:
+                found.add(status)
+    return [status for status in _MFG_AVAILABILITY_STATUSES if status in found]
+
+
 def _mfg_filters(mo_ref="", dps_ref="", category="", component="", state="", source="", status=""):
     clauses, params = [], []
     # These are one user-entered search expression: a match in any filled
@@ -16930,8 +16947,9 @@ def manufacturing_availability(
     mo_ref: str = Query(default=""), dps_ref: str = Query(default=""),
     category: str = Query(default=""),
     component: str = Query(default=""), state: str = Query(default=""),
-    source: str = Query(default=""), status: str = Query(default=""),
+    source: str = Query(default=""), status: list[str] = Query(default=[]),
     full: bool = Query(default=False)):
+    availability_statuses = _mfg_statuses(status)
     with _get_conn() as conn:
         table = q(conn, "SELECT to_regclass('public.mo_open_component_requirements') AS t")
         if not table or not table[0].get("t"):
@@ -16940,11 +16958,14 @@ def manufacturing_availability(
                                 "short": 0, "partial": 0,
                                 "available": 0}, "components": [],
                     "category_options": [],
-                    "contract": {"active_filters": {"category": _mfg_category_label(category) or None}},
+                    "contract": {"active_filters": {
+                        "category": _mfg_category_label(category) or None,
+                        "status": availability_statuses[0] if len(availability_statuses) == 1 else None,
+                        "availability_statuses": availability_statuses}},
                     "freshness": None}
         rows = _mfg_rows(conn, {"mo_ref": mo_ref, "dps_ref": dps_ref, "category": category,
                                 "component": component, "state": state,
-                                "source": source, "status": status})
+                                 "source": source, "status": availability_statuses})
         groups = {}
         for r in rows:
             key = r["component_id"]
@@ -16985,13 +17006,13 @@ def manufacturing_availability(
         for g in groups.values():
             g["availability_status"] = ("available" if g["available_kg"] >= g["required_kg"]
                 else "partial" if g["available_kg"] > 0 else "short")
-        if status in ("available", "partial", "short"):
+        if availability_statuses:
             components = [g for g in groups.values()
-                          if g["availability_status"] == status]
+                          if g["availability_status"] in availability_statuses]
         else:
             components = list(groups.values())
         allowed_component_ids = None
-        if status in ("available", "partial", "short"):
+        if availability_statuses:
             allowed_component_ids = {
                 g["component_id"] for g in components
             }
@@ -17019,7 +17040,7 @@ def manufacturing_availability(
                 "reserved_kg": float(r.get("reserved_kg") or 0),
                 "available_kg": float(r.get("available_kg") or 0),
                 "stock_location_available_kg": float(r.get("stock_location_available_kg") or 0),
-                "availability_status": r.get("availability_status"),
+                "availability_status": groups[r.get("component_id")]["availability_status"],
                 "source_location": r.get("source_location"),
                 "source_stock_location": r.get("source_stock_location", "PROD/Stock"),
                 "stock_location": r.get("stock_location"),
@@ -17066,7 +17087,9 @@ def manufacturing_availability(
                      "active_filters": {"category": _mfg_category_label(category) or None,
                                         "dps_ref": dps_ref or None, "mo_ref": mo_ref or None,
                                         "component": component or None, "state": state or None,
-                                        "source": source or None, "status": status or None},
+                                         "source": source or None,
+                                         "status": availability_statuses[0] if len(availability_statuses) == 1 else None,
+                                         "availability_statuses": availability_statuses},
                      "category_options": category_options,
                      "cascade": {"dps_required_for_mo": True, "scope": {"dps_ref": dps_ref, "mo_ref": mo_ref}},
                 },
@@ -17215,13 +17238,15 @@ def manufacturing_availability_xlsx(
     mo_ref: str = Query(default=""), dps_ref: str = Query(default=""),
     category: str = Query(default=""),
     component: str = Query(default=""), state: str = Query(default=""),
-    source: str = Query(default=""), status: str = Query(default="")):
+    source: str = Query(default=""), status: list[str] = Query(default=[])):
     import io
     import openpyxl
     from openpyxl.styles import Font
+    availability_statuses = _mfg_statuses(status)
     filters = {"mo_ref": mo_ref, "dps_ref": dps_ref,
                "category": _mfg_category_label(category), "component": component,
-               "state": state, "source": source, "status": status}
+               "state": state, "source": source,
+               "status": availability_statuses}
     with _get_conn() as conn:
         rows = _mfg_rows(conn, filters)
         generated = datetime.datetime.now(ZoneInfo("Africa/Nairobi")).strftime("%Y-%m-%d %H:%M %Z")
@@ -17247,28 +17272,37 @@ def manufacturing_availability_xlsx(
         for g in grouped.values():
             avail = float(g.get("available_kg") or 0); req = float(g.get("required_kg") or 0)
             current_status = "available" if avail >= req else "partial" if avail > 0 else "short"
-            if status in ("available", "partial", "short") and current_status != status:
+            g["availability_status"] = current_status
+        grouped_status = {component_id: g["availability_status"]
+                          for component_id, g in grouped.items()}
+        for g in grouped.values():
+            if availability_statuses and g["availability_status"] not in availability_statuses:
                 continue
+            req = float(g.get("required_kg") or 0)
+            avail = float(g.get("available_kg") or 0)
             ws.append([g.get("component_sku"), g.get("component_name"), req,
                        float(g.get("soh_kg") or 0),
                        float(g.get("reserved_kg") or 0),
                        avail,
-                       current_status,
+                       g["availability_status"],
                        g.get("source_location"), g.get("source_stock_location"),
                        g.get("stock_location"), g.get("stock_locations")])
         dh = ["DPS/MO", "DPS ref", "Finished style/product", "Finished SKU",
               "State", "Component SKU", "Component", "Required (kg)", "SOH (kg)",
-              "Reserved (kg)", "Available (kg)", "Stock location", "Source/location",
+              "Reserved (kg)", "Available (kg)", "Status", "Stock location", "Source/location",
               "Reservation contributors"]
         detail.append(["DPS/MO reservations", "Generated", generated])
         detail.append(dh)
         for r in rows:
+            if availability_statuses and r["component_id"] not in grouped_status:
+                continue
             detail.append([r.get("mo_ref"), r.get("dps_ref"), r.get("style_name") or r.get("finished_name"),
                            r.get("finished_sku"), r.get("order_state"), r.get("component_sku"),
                            r.get("component_name"), float(r.get("required_kg") or 0),
                             float(r.get("soh_kg") or 0),
                             float(r.get("reserved_kg") or 0),
                             float(r.get("available_kg") or 0),
+                           grouped_status.get(r["component_id"], r.get("availability_status")),
                             r.get("stock_location"),
                             (str(r.get("source_stock_location") or "") + " · " +
                              str(r.get("source_location") or "")),

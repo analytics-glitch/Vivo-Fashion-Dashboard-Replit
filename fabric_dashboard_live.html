@@ -789,7 +789,12 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
       <datalist id="mfg-state-options"></datalist>
       <input id="mfg-source" list="mfg-source-options" placeholder="Source/location" oninput="mfgSuggest('source')" onkeydown="mfgKey(event)">
       <datalist id="mfg-source-options"></datalist>
-     <select id="mfg-status" onchange="loadManufacturing()"><option value="">All availability</option><option value="short">Short</option><option value="partial">Partial</option><option value="available">Available</option></select>
+      <label class="mfg-availability-filter">Availability
+       <select id="mfg-status" aria-label="Availability (select one or more)" multiple size="3" onchange="loadManufacturing()">
+        <option value="short">Short</option><option value="partial">Partial</option><option value="available">Available</option>
+       </select>
+       <span class="muted">None selected = all</span>
+      </label>
       <button class="btn" onclick="loadManufacturing(true)">Search</button>
      <button class="btn ghost" onclick="mfgClearFilters()">Clear filters</button>
     </div>
@@ -2781,8 +2786,9 @@ function qcExportDetail(){
 let mfgData=null,mfgTimer=null,mfgSuggestTimers={};
  function mfgParams(){
   const p=new URLSearchParams();
-    [['dps','dps_ref'],['mo','mo_ref'],['category','category'],['component','component'],['state','state'],['source','source'],['status','status']]
-    .forEach(([id,key])=>{const v=(document.getElementById('mfg-'+id)?.value||'').trim();if(v)p.set(key,v);});
+    [['dps','dps_ref'],['mo','mo_ref'],['category','category'],['component','component'],['state','state'],['source','source']]
+     .forEach(([id,key])=>{const v=(document.getElementById('mfg-'+id)?.value||'').trim();if(v)p.set(key,v);});
+   [...(document.getElementById('mfg-status')?.selectedOptions||[])].forEach(o=>p.append('status',o.value));
   return p;
 }
 function mfgNum(v){return Number(v||0).toLocaleString(undefined,{maximumFractionDigits:2});}
@@ -2875,10 +2881,11 @@ function mfgRenderGroups(groups,selectedDps,selectedMo){
    return out.join('')||'<tr><td colspan="8" class="muted">No eligible Confirmed or In-progress DPS/MOs match these filters.</td></tr>';
 }
 function mfgToggle(i){const r=document.getElementById('mfg-detail-'+i);if(r)r.style.display=r.style.display==='none'?'table-row':'none';}
- function mfgClearFilters(){['dps','mo','category','component','state','source','status'].forEach(x=>{const e=document.getElementById('mfg-'+x);if(e){e.value='';if(x==='mo')e.disabled=true;}});mfgData=null;loadManufacturing(true);}
+  function mfgClearFilters(){['dps','mo','category','component','state','source'].forEach(x=>{const e=document.getElementById('mfg-'+x);if(e){e.value='';if(x==='mo')e.disabled=true;}});const status=document.getElementById('mfg-status');if(status)[...status.options].forEach(o=>o.selected=false);mfgData=null;loadManufacturing(true);}
  function mfgExport(full=false){
-   const q=full?new URLSearchParams():mfgParams();
+    const q=full?new URLSearchParams():mfgParams();
    if(full){const category=(document.getElementById('mfg-category')?.value||'').trim();if(category)q.set('category',category);}
+    if(full)[...(document.getElementById('mfg-status')?.selectedOptions||[])].forEach(o=>q.append('status',o.value));
    q.set('download','xlsx');window.location.href='/api/fabric/manufacturing.xlsx?'+q.toString();
  }
 
