@@ -777,8 +777,12 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
        <datalist id="mfg-dps-options"></datalist>
        <input id="mfg-mo" list="mfg-mo-options" placeholder="MO search / select (choose DPS first)" disabled oninput="mfgSuggest('mo')" onkeydown="mfgKey(event)">
       <datalist id="mfg-mo-options"></datalist>
-      <input id="mfg-style" list="mfg-style-options" placeholder="Finished style/product" oninput="mfgSuggest('style')" onkeydown="mfgKey(event)">
-      <datalist id="mfg-style-options"></datalist>
+       <select id="mfg-category" aria-label="Product Category">
+        <option value="">Product Category (all)</option>
+        <option value="03. Accessories &amp; Trims">03. Accessories &amp; Trims</option>
+        <option value="Accessories and Trims">Accessories and Trims</option>
+        <option value="02. Raw Materials-Fabric">02. Raw Materials-Fabric</option>
+       </select>
       <input id="mfg-component" list="mfg-component-options" placeholder="Component or SKU" oninput="mfgSuggest('component')" onkeydown="mfgKey(event)">
       <datalist id="mfg-component-options"></datalist>
       <input id="mfg-state" list="mfg-state-options" placeholder="Order state (Confirmed/In-progress)" oninput="mfgSuggest('state')" onkeydown="mfgKey(event)">
@@ -2777,7 +2781,7 @@ function qcExportDetail(){
 let mfgData=null,mfgTimer=null,mfgSuggestTimers={};
  function mfgParams(){
   const p=new URLSearchParams();
-   [['dps','dps_ref'],['mo','mo_ref'],['style','style'],['component','component'],['state','state'],['source','source'],['status','status']]
+    [['dps','dps_ref'],['mo','mo_ref'],['category','category'],['component','component'],['state','state'],['source','source'],['status','status']]
     .forEach(([id,key])=>{const v=(document.getElementById('mfg-'+id)?.value||'').trim();if(v)p.set(key,v);});
   return p;
 }
@@ -2810,6 +2814,13 @@ async function loadManufacturing(force=false){
   try{
     const query=mfgParams(); if(force)query.set('full','true');
     mfgData=await apiFetch('/api/fabric/manufacturing?'+query.toString());
+     const categorySelect=document.getElementById('mfg-category');
+     if(categorySelect&&Array.isArray(mfgData.category_options)){
+       const active=categorySelect.value;
+       categorySelect.innerHTML='<option value="">Product Category (all)</option>'+
+         mfgData.category_options.map(o=>`<option value="${esc(o.value)}">${esc(o.label)}</option>`).join('');
+       categorySelect.value=active;
+     }
     const s=mfgData.summary||{};
     document.getElementById('mfg-kpis').innerHTML=[
       ['Components',s.components||0,'shared components rolled up'],
@@ -2864,8 +2875,12 @@ function mfgRenderGroups(groups,selectedDps,selectedMo){
    return out.join('')||'<tr><td colspan="8" class="muted">No eligible Confirmed or In-progress DPS/MOs match these filters.</td></tr>';
 }
 function mfgToggle(i){const r=document.getElementById('mfg-detail-'+i);if(r)r.style.display=r.style.display==='none'?'table-row':'none';}
- function mfgClearFilters(){['dps','mo','style','component','state','source','status'].forEach(x=>{const e=document.getElementById('mfg-'+x);if(e){e.value='';if(x==='mo')e.disabled=true;}});mfgData=null;loadManufacturing(true);}
-function mfgExport(full=false){const q=full?new URLSearchParams():mfgParams();q.set('download','xlsx');window.location.href='/api/fabric/manufacturing.xlsx?'+q.toString();}
+ function mfgClearFilters(){['dps','mo','category','component','state','source','status'].forEach(x=>{const e=document.getElementById('mfg-'+x);if(e){e.value='';if(x==='mo')e.disabled=true;}});mfgData=null;loadManufacturing(true);}
+ function mfgExport(full=false){
+   const q=full?new URLSearchParams():mfgParams();
+   if(full){const category=(document.getElementById('mfg-category')?.value||'').trim();if(category)q.set('category',category);}
+   q.set('download','xlsx');window.location.href='/api/fabric/manufacturing.xlsx?'+q.toString();
+ }
 
 // ── Navigation ──
 const LOADERS={buyingpd:loadBuyingPD,manufacturing:loadManufacturing,dashboard:loadFabricMixFirst,register:()=>loadRegister(0),deadstock:loadDeadStock,defects:loadFabricQC,dataquality:loadDataQuality,support:loadSupport,movement:initTrendBuilder,pos:loadPOsPage,suppliers:loadSuppliers,reservations:loadReservations,rolls:()=>loadRolls(0),receiving:loadReceivingBatches,sublimation:loadSublimation,createprod:loadCreateProducts,costing:loadCosting,l10:loadL10Page};

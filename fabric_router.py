@@ -16768,7 +16768,27 @@ def sublimation_costing_delete(costing_id: int, request: Request):
 
 
 # ── Manufacturing component availability ───────────────────────────────────
-def _mfg_filters(mo_ref="", dps_ref="", style="", component="", state="", source="", status=""):
+_MFG_CATEGORY_LABELS = {
+    "fabric": "02. Raw Materials-Fabric",
+    "raw materials-fabric": "02. Raw Materials-Fabric",
+    "02 raw materials-fabric": "02. Raw Materials-Fabric",
+    "02. raw materials-fabric": "02. Raw Materials-Fabric",
+    "trim": "03. Accessories & Trims",
+    "accessories & trims": "03. Accessories & Trims",
+    "accessories and trims": "03. Accessories & Trims",
+    "03 accessories & trims": "03. Accessories & Trims",
+    "03. accessories & trims": "03. Accessories & Trims",
+}
+
+
+def _mfg_category_label(value):
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    return _MFG_CATEGORY_LABELS.get(" ".join(raw.casefold().split()), raw[:120])
+
+
+def _mfg_filters(mo_ref="", dps_ref="", category="", component="", state="", source="", status=""):
     clauses, params = [], []
     # These are one user-entered search expression: a match in any filled
     # highlighted field qualifies the reservation. Status is deliberately not
@@ -16783,7 +16803,6 @@ def _mfg_filters(mo_ref="", dps_ref="", style="", component="", state="", source
             params.append("%" + value + "%")
     searches = []
     for value, expressions in (
-        (style, ("style_name", "finished_sku", "finished_name")),
         (component, ("component_match",)),
         (state, ("order_state",)),
         (source, ("source_match",)),
@@ -16795,6 +16814,10 @@ def _mfg_filters(mo_ref="", dps_ref="", style="", component="", state="", source
             params.extend(["%" + value + "%"] * len(expressions))
     if searches:
         clauses.append("(" + " OR ".join(searches) + ")")
+    category = _mfg_category_label(category)
+    if category:
+        clauses.append("canonical_category = %s")
+        params.append(category)
     # Availability status is computed after shared components are rolled up.
     # Filtering it here would classify each MO independently and hide a shared
     # component whose final aggregate status differs from one reservation row.
@@ -16828,7 +16851,10 @@ def _mfg_rows(conn, filters=None):
                  THEN d.reserved_qty/1000 ELSE d.reserved_qty END AS reserved_kg
           FROM mo_open_component_requirements d
         ), product_category AS (
-           SELECT id AS product_id, COALESCE(category, 'Trim') AS inventory_category
+           SELECT id AS product_id, COALESCE(category, 'Trim') AS inventory_category,
+                  CASE WHEN LOWER(COALESCE(category,'')) = 'fabric'
+                       THEN '02. Raw Materials-Fabric'
+                       ELSE '03. Accessories & Trims' END AS canonical_category
            FROM raw_fabric_products
         ), stock_by_product AS (
            SELECT i.product_id,
@@ -16873,6 +16899,7 @@ def _mfg_rows(conn, filters=None):
                   COALESCE(s.stock_locations, 'No synced stock') AS stock_locations,
                    COALESCE(s.stock_location, CASE WHEN LOWER(COALESCE(p.inventory_category,'')) = 'fabric'
                         THEN 'RMAT/Stock' ELSE 'PDACC/Stock' END) AS source_stock_location,
+                   p.canonical_category,
                   (COALESCE(d.component_sku,'') || ' ' ||
                    COALESCE(d.component_name,'')) AS component_match,
                   (COALESCE(d.source_location,'') || ' ' ||
@@ -16901,7 +16928,7 @@ def _mfg_rows(conn, filters=None):
 @fabric_router.get("/api/fabric/manufacturing")
 def manufacturing_availability(
     mo_ref: str = Query(default=""), dps_ref: str = Query(default=""),
-    style: str = Query(default=""),
+    category: str = Query(default=""),
     component: str = Query(default=""), state: str = Query(default=""),
     source: str = Query(default=""), status: str = Query(default=""),
     full: bool = Query(default=False)):
@@ -16911,8 +16938,11 @@ def manufacturing_availability(
             return {"summary": {"components": 0, "orders": 0, "required_kg": 0,
                                 "soh_kg": 0, "reserved_kg": 0, "available_kg": 0,
                                 "short": 0, "partial": 0,
-                                "available": 0}, "components": [], "freshness": None}
-        rows = _mfg_rows(conn, {"mo_ref": mo_ref, "dps_ref": dps_ref, "style": style,
+                                "available": 0}, "components": [],
+                    "category_options": [],
+                    "contract": {"active_filters": {"category": _mfg_category_label(category) or None}},
+                    "freshness": None}
+        rows = _mfg_rows(conn, {"mo_ref": mo_ref, "dps_ref": dps_ref, "category": category,
                                 "component": component, "state": state,
                                 "source": source, "status": status})
         groups = {}
@@ -16998,6 +17028,20 @@ def manufacturing_availability(
             })
         for dps in dps_groups.values():
             dps["mos"] = list(dps["mos"].values())
+        raw_categories = q(conn, """
+            SELECT DISTINCT LOWER(COALESCE(category,'')) AS category
+            FROM raw_fabric_products
+            WHERE LOWER(COALESCE(category,'')) IN ('fabric', 'trim')
+        """)
+        category_options = []
+        if any(r.get("category") == "fabric" for r in raw_categories):
+            category_options.append({"value": "02. Raw Materials-Fabric",
+                                     "label": "02. Raw Materials-Fabric"})
+        if any(r.get("category") == "trim" for r in raw_categories):
+            category_options.extend([
+                {"value": "03. Accessories & Trims", "label": "03. Accessories & Trims"},
+                {"value": "Accessories and Trims", "label": "Accessories and Trims"},
+            ])
         freshness = q(conn, """
            SELECT MAX(_loaded_at) AS loaded_at,
                  COUNT(DISTINCT odoo_mo_id) AS orders
@@ -17019,16 +17063,22 @@ def manufacturing_availability(
                     "target_states": {"confirmed": "Confirmed", "progress": "In-progress"},
                     "excluded_states": ["draft", "planned", "to_close", "done", "cancel"],
                      "search": "DPS scopes MO; remaining filled fields are ORed; status is additional",
+                     "active_filters": {"category": _mfg_category_label(category) or None,
+                                        "dps_ref": dps_ref or None, "mo_ref": mo_ref or None,
+                                        "component": component or None, "state": state or None,
+                                        "source": source or None, "status": status or None},
+                     "category_options": category_options,
                      "cascade": {"dps_required_for_mo": True, "scope": {"dps_ref": dps_ref, "mo_ref": mo_ref}},
                 },
                 "summary": {"components": len(components),
-                            "orders": int(freshness.get("orders") or 0),
+                             "orders": len({r.get("odoo_mo_id") for r in rows}),
                             "required_kg": round(sum(g["required_kg"] for g in components), 3),
                      "available_kg": round(sum(g["available_kg"] for g in components), 3),
                              "soh_kg": round(sum(g["soh_kg"] for g in components), 3),
                              "reserved_kg": round(sum(g["reserved_kg"] for g in components), 3),
                             **counts},
-                 "components": components, "dps_groups": list(dps_groups.values()),
+                  "components": components, "dps_groups": list(dps_groups.values()),
+                  "category_options": category_options,
                   "freshness": {"odoo_snapshot": freshness.get("loaded_at"),
                                 "stock_snapshot": stock_freshness.get("loaded_at"),
                                 "reservation_snapshot": reservation_freshness.get("loaded_at"),
@@ -17036,7 +17086,7 @@ def manufacturing_availability(
 
 
 def _mfg_live_suggestions(field, term, dps_ref="", limit=20):
-    """Small, read-only current-Odoo lookup for the five report fields.
+    """Small, read-only current-Odoo lookup for the remaining report fields.
 
     The report remains available from the last successful snapshot when Odoo is
     down; callers can distinguish that case from a live lookup error.
@@ -17087,11 +17137,10 @@ def _mfg_live_suggestions(field, term, dps_ref="", limit=20):
                     if term.lower() in label.lower() or term.lower() in value]
         # Product lookups are current Odoo data and are bounded to the
         # categories used by the manufacturing extractor.
-        if field in ("component", "style"):
+        if field == "component":
             domain = [["name", "ilike", term]]
-            if field == "component":
-                domain = ["|", ["name", "ilike", term],
-                          ["default_code", "ilike", term]]
+            domain = ["|", ["name", "ilike", term],
+                      ["default_code", "ilike", term]]
             recs = models.execute_kw(db, uid, password, "product.product",
                                       "search_read", [domain],
                                       {"fields": ["default_code", "name"],
@@ -17147,7 +17196,7 @@ def _mfg_snapshot_suggestions(field, term, dps_ref=""):
 @fabric_router.get("/api/fabric/manufacturing/search")
 def manufacturing_search(field: str = Query(default=""),
                           q: str = Query(default=""), dps_ref: str = Query(default="")):
-    if field not in ("dps", "mo", "style", "component", "state", "source"):
+    if field not in ("dps", "mo", "component", "state", "source"):
         raise HTTPException(status_code=400, detail="Unsupported manufacturing search field")
     try:
         return {"live": True, "field": field, "suggestions": _mfg_live_suggestions(field, q, dps_ref)}
@@ -17164,13 +17213,14 @@ def manufacturing_search(field: str = Query(default=""),
 @fabric_router.get("/api/fabric/manufacturing.xlsx")
 def manufacturing_availability_xlsx(
     mo_ref: str = Query(default=""), dps_ref: str = Query(default=""),
-    style: str = Query(default=""),
+    category: str = Query(default=""),
     component: str = Query(default=""), state: str = Query(default=""),
     source: str = Query(default=""), status: str = Query(default="")):
     import io
     import openpyxl
     from openpyxl.styles import Font
-    filters = {"mo_ref": mo_ref, "dps_ref": dps_ref, "style": style, "component": component,
+    filters = {"mo_ref": mo_ref, "dps_ref": dps_ref,
+               "category": _mfg_category_label(category), "component": component,
                "state": state, "source": source, "status": status}
     with _get_conn() as conn:
         rows = _mfg_rows(conn, filters)
