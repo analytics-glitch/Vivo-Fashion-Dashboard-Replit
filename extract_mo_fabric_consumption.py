@@ -141,6 +141,25 @@ def create_table(cur):
             ON mo_open_component_requirements(component_id);
         CREATE INDEX IF NOT EXISTS idx_mo_open_state
             ON mo_open_component_requirements(order_state);
+        CREATE TABLE IF NOT EXISTS mo_component_reservation_contributors (
+            move_id BIGINT PRIMARY KEY,
+            component_id BIGINT NOT NULL,
+            component_sku TEXT,
+            component_name TEXT,
+            quantity NUMERIC NOT NULL DEFAULT 0,
+            uom TEXT,
+            state TEXT,
+            source_location TEXT,
+            move_reference TEXT,
+            move_origin TEXT,
+            transaction_ref TEXT,
+            odoo_mo_id BIGINT,
+            mo_ref TEXT,
+            dps_ref TEXT,
+            _loaded_at TIMESTAMP NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_mo_res_component_location
+            ON mo_component_reservation_contributors(component_id, source_location);
         """
     )
     cur.execute("ALTER TABLE mo_open_component_requirements "
@@ -509,6 +528,90 @@ def extract_open_requirements(uid, models, cur, now):
     return len(rows)
 
 
+def extract_reservation_contributors(uid, models, cur, now):
+    """Snapshot active Odoo reservations at component/source-location grain."""
+    fields = models.execute_kw(
+        ODOO_DB, uid, ODOO_PASSWORD, "stock.move", "fields_get", [],
+        {"attributes": ["type"]})
+    reserve_field = ("reserved_availability"
+                     if "reserved_availability" in fields else None)
+    if not reserve_field:
+        cur.execute("TRUNCATE mo_component_reservation_contributors")
+        return 0
+    optional = ["raw_material_production_id", "production_id", "picking_id",
+                "reference", "origin", "name"]
+    wanted = [x for x in optional if x in fields]
+    wanted += ["product_id", "product_uom", "location_id", reserve_field, "state"]
+    domain = [["state", "in", ["confirmed", "waiting", "assigned",
+                                "partially_available"]],
+              ["product_id.categ_id", "in", list(KEEP_CATEGS)],
+              ["location_id.usage", "=", "internal"]]
+    moves, offset = [], 0
+    while True:
+        batch = models.execute_kw(
+            ODOO_DB, uid, ODOO_PASSWORD, "stock.move", "search_read",
+            [domain], {"fields": wanted, "limit": 500, "offset": offset,
+                       "order": "id asc"})
+        if not batch:
+            break
+        moves.extend(batch)
+        offset += len(batch)
+        if len(batch) < 500:
+            break
+    pids = sorted({m["product_id"][0] for m in moves if m.get("product_id")})
+    products = {}
+    for chunk in _chunks(pids, 500):
+        for p in models.execute_kw(ODOO_DB, uid, ODOO_PASSWORD,
+                                   "product.product", "read", [chunk],
+                                   {"fields": ["default_code", "name"]}):
+            products[p["id"]] = p
+    mo_ids = set()
+    for mv in moves:
+        for field in ("raw_material_production_id", "production_id"):
+            value = mv.get(field)
+            if value:
+                mo_ids.add(value[0] if isinstance(value, list) else value)
+    mo_meta = {}
+    for chunk in _chunks(sorted(mo_ids), 500):
+        for mo in models.execute_kw(ODOO_DB, uid, ODOO_PASSWORD,
+                                    "mrp.production", "read", [chunk],
+                                    {"fields": ["name", "dps_id"]}):
+            dps = mo.get("dps_id") or [None, None]
+            mo_meta[mo["id"]] = (mo.get("name"), dps[1])
+    rows = []
+    for mv in moves:
+        product, loc = mv.get("product_id"), mv.get("location_id")
+        qty = float(mv.get(reserve_field) or 0)
+        if not product or not loc or qty <= 0:
+            continue
+        mo_id = None
+        for field in ("raw_material_production_id", "production_id"):
+            value = mv.get(field)
+            if value:
+                mo_id = value[0] if isinstance(value, list) else value
+                break
+        mo_ref, dps_ref = mo_meta.get(mo_id, (None, None))
+        transaction = mv.get("reference") or mv.get("picking_id") or \
+            mv.get("origin") or mv.get("name")
+        if isinstance(transaction, list):
+            transaction = transaction[1]
+        p = products.get(product[0], {})
+        rows.append((mv["id"], product[0], p.get("default_code"), p.get("name"),
+                     qty, (mv.get("product_uom") or [None, None])[1],
+                     mv.get("state"), loc[1], mv.get("reference"), mv.get("origin"),
+                     transaction, mo_id, mo_ref, dps_ref, now))
+    cur.execute("TRUNCATE mo_component_reservation_contributors")
+    if rows:
+        execute_values(cur, """
+            INSERT INTO mo_component_reservation_contributors
+            (move_id,component_id,component_sku,component_name,quantity,uom,state,
+             source_location,move_reference,move_origin,transaction_ref,odoo_mo_id,
+             mo_ref,dps_ref,_loaded_at) VALUES %s
+        """, rows, page_size=500)
+    log.info("mo_component_reservation_contributors: refreshed %d rows", len(rows))
+    return len(rows)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument(
@@ -531,6 +634,7 @@ def main():
     since_str = since.strftime("%Y-%m-%d %H:%M:%S")
     extract(uid, models, cur, since_str, now)
     extract_open_requirements(uid, models, cur, now)
+    extract_reservation_contributors(uid, models, cur, now)
     conn.commit()
 
     cur.execute("SELECT COUNT(*) FROM mo_fabric_consumption")

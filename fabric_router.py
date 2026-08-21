@@ -16807,6 +16807,18 @@ def _mfg_rows(conn, filters=None):
     # All quantities are normalised to kg at the query boundary.  Odoo can
     # return grams on one move and kg on another; duplicate moves are already
     # collapsed by the extractor at MO/component grain.
+    reservation_table = "mo_component_reservation_contributors"
+    if not q(conn, "SELECT to_regclass('public.mo_component_reservation_contributors') AS t")[0].get("t"):
+        reservation_table = """(
+          SELECT NULL::bigint AS move_id, NULL::bigint AS component_id,
+                 NULL::text AS component_sku, NULL::text AS component_name,
+                 0::numeric AS quantity, NULL::text AS uom, NULL::text AS state,
+                 NULL::text AS source_location, NULL::text AS move_reference,
+                 NULL::text AS move_origin, NULL::text AS transaction_ref,
+                 NULL::bigint AS odoo_mo_id, NULL::text AS mo_ref,
+                 NULL::text AS dps_ref, NULL::timestamp AS _loaded_at
+          WHERE FALSE
+        )"""
     sql = f"""
         WITH demand AS (
           SELECT d.*,
@@ -16820,18 +16832,12 @@ def _mfg_rows(conn, filters=None):
            FROM raw_fabric_products
         ), stock_by_product AS (
            SELECT i.product_id,
-                  SUM(CASE WHEN i.location_name = 'PROD/Stock' THEN
-                           CASE WHEN lower(COALESCE(i.uom,'')) IN ('g','gram','grams')
-                                THEN COALESCE(i.available, i.quantity)/1000
-                                ELSE COALESCE(i.available, i.quantity) END
-                           ELSE 0 END) AS available_kg,
-                  SUM(CASE WHEN i.location_name =
-                              CASE WHEN LOWER(COALESCE(p.inventory_category,'')) = 'fabric'
-                                   THEN 'RMAT/Stock' ELSE 'PDACC/Stock' END THEN
-                           CASE WHEN lower(COALESCE(i.uom,'')) IN ('g','gram','grams')
-                                THEN COALESCE(i.available, i.quantity)/1000
-                                ELSE COALESCE(i.available, i.quantity) END
-                           ELSE 0 END) AS stock_location_available_kg,
+                   SUM(CASE WHEN i.location_name =
+                               CASE WHEN LOWER(COALESCE(p.inventory_category,'')) = 'fabric'
+                                    THEN 'RMAT/Stock' ELSE 'PDACC/Stock' END THEN
+                            CASE WHEN lower(COALESCE(i.uom,'')) IN ('g','gram','grams')
+                                 THEN COALESCE(i.quantity,0)/1000
+                                 ELSE COALESCE(i.quantity,0) END ELSE 0 END) AS soh_kg,
                   CASE WHEN LOWER(COALESCE(p.inventory_category,'')) = 'fabric'
                        THEN 'RMAT/Stock' ELSE 'PDACC/Stock' END AS stock_location,
                  STRING_AGG(DISTINCT NULLIF(location_name,''), ', '
@@ -16839,26 +16845,50 @@ def _mfg_rows(conn, filters=None):
            FROM raw_fabric_inventory i
            LEFT JOIN product_category p ON p.product_id=i.product_id
            GROUP BY i.product_id, p.inventory_category
-        ), enriched AS (
-           SELECT d.*, COALESCE(s.available_kg,0) AS available_kg,
-                  COALESCE(s.stock_location_available_kg,0) AS stock_location_available_kg,
+         ), reservation_by_product AS (
+            SELECT r.component_id, r.source_location,
+                   SUM(CASE WHEN lower(COALESCE(r.uom,'')) IN ('g','gram','grams')
+                            THEN r.quantity/1000 ELSE r.quantity END) AS reserved_kg,
+                   MAX(r._loaded_at) AS reservation_loaded_at,
+                   jsonb_agg(jsonb_build_object(
+                     'move_id',r.move_id, 'mo_id',r.odoo_mo_id, 'mo_ref',r.mo_ref,
+                     'dps_ref',r.dps_ref, 'transaction_ref',r.transaction_ref,
+                     'move_reference',r.move_reference, 'move_origin',r.move_origin,
+                     'quantity_kg',CASE WHEN lower(COALESCE(r.uom,'')) IN ('g','gram','grams')
+                                       THEN r.quantity/1000 ELSE r.quantity END,
+                     'quantity',r.quantity, 'uom',r.uom, 'state',r.state,
+                     'source_location',r.source_location)
+                     ORDER BY r.move_id) AS reservations
+            FROM {reservation_table} r
+            GROUP BY r.component_id, r.source_location
+         ), enriched AS (
+            SELECT d.*, COALESCE(s.soh_kg,0) AS soh_kg,
+                   COALESCE(rb.reserved_kg,0) AS reserved_kg,
+                   GREATEST(0, COALESCE(s.soh_kg,0) - COALESCE(rb.reserved_kg,0)) AS available_kg,
+                   COALESCE(s.soh_kg,0) AS stock_location_available_kg,
+                   rb.reservations, rb.reservation_loaded_at,
                   COALESCE(s.stock_location,
                            CASE WHEN LOWER(COALESCE(p.inventory_category,'')) = 'fabric'
                                 THEN 'RMAT/Stock' ELSE 'PDACC/Stock' END) AS stock_location,
                   COALESCE(s.stock_locations, 'No synced stock') AS stock_locations,
-                  'PROD/Stock' AS source_stock_location,
+                   COALESCE(s.stock_location, CASE WHEN LOWER(COALESCE(p.inventory_category,'')) = 'fabric'
+                        THEN 'RMAT/Stock' ELSE 'PDACC/Stock' END) AS source_stock_location,
                   (COALESCE(d.component_sku,'') || ' ' ||
                    COALESCE(d.component_name,'')) AS component_match,
                   (COALESCE(d.source_location,'') || ' ' ||
                    'PROD/Stock ' ||
                    ' ' || COALESCE(s.stock_location,'')) AS source_match,
-                 CASE WHEN COALESCE(s.available_kg,0) >= d.required_kg
+                  CASE WHEN GREATEST(0, COALESCE(s.soh_kg,0) - COALESCE(rb.reserved_kg,0)) >= d.required_kg
                       THEN 'available'
-                      WHEN COALESCE(s.available_kg,0) > 0 THEN 'partial'
+                       WHEN GREATEST(0, COALESCE(s.soh_kg,0) - COALESCE(rb.reserved_kg,0)) > 0 THEN 'partial'
                       ELSE 'short' END AS availability_status
             FROM demand d
             LEFT JOIN stock_by_product s ON s.product_id=d.component_id
             LEFT JOIN product_category p ON p.product_id=d.component_id
+            LEFT JOIN reservation_by_product rb
+              ON rb.component_id=d.component_id AND rb.source_location =
+                 CASE WHEN LOWER(COALESCE(p.inventory_category,'')) = 'fabric'
+                      THEN 'RMAT/Stock' ELSE 'PDACC/Stock' END
            WHERE d.order_state IN ('confirmed', 'progress')
         )
         SELECT * FROM enriched WHERE {where}
@@ -16879,7 +16909,8 @@ def manufacturing_availability(
         table = q(conn, "SELECT to_regclass('public.mo_open_component_requirements') AS t")
         if not table or not table[0].get("t"):
             return {"summary": {"components": 0, "orders": 0, "required_kg": 0,
-                                "available_kg": 0, "short": 0, "partial": 0,
+                                "soh_kg": 0, "reserved_kg": 0, "available_kg": 0,
+                                "short": 0, "partial": 0,
                                 "available": 0}, "components": [], "freshness": None}
         rows = _mfg_rows(conn, {"mo_ref": mo_ref, "dps_ref": dps_ref, "style": style,
                                 "component": component, "state": state,
@@ -16892,13 +16923,18 @@ def manufacturing_availability(
                 "component_name": r.get("component_name"), "uom": "kg",
                  "required_kg": 0.0, "available_kg": 0.0,
                  "stock_location_available_kg": 0.0,
+                 "soh_kg": 0.0,
                 "reserved_kg": 0.0, "source_location": r.get("source_location"),
                  "source_stock_location": r.get("source_stock_location", "PROD/Stock"),
                  "stock_location": r.get("stock_location"),
-                "stock_locations": r.get("stock_locations"),
-                "reservations": []})
+                 "stock_locations": r.get("stock_locations"),
+                 "reservation_contributors": r.get("reservations") or [],
+                 "reservations": []})
             g["required_kg"] += float(r.get("required_kg") or 0)
-            g["reserved_kg"] += float(r.get("reserved_kg") or 0)
+            if len(g["reservations"]) == 0:
+                g["soh_kg"] = float(r.get("soh_kg") or 0)
+                g["reserved_kg"] = float(r.get("reserved_kg") or 0)
+                g["available_kg"] = float(r.get("available_kg") or 0)
             g["reservations"].append({
                 "mo_id": r["odoo_mo_id"], "mo_ref": r.get("mo_ref"),
                 "dps_ref": r.get("dps_ref"), "order_state": r.get("order_state"),
@@ -16913,7 +16949,9 @@ def manufacturing_availability(
                 "source_location": r.get("source_location"),
                 "source_stock_location": r.get("source_stock_location", "PROD/Stock"),
                 "stock_location": r.get("stock_location"),
-                "stock_locations": r.get("stock_locations")})
+                 "stock_locations": r.get("stock_locations"),
+                 "soh_kg": float(r.get("soh_kg") or 0),
+                 "reservation_contributors": r.get("reservations") or []})
         for g in groups.values():
             g["availability_status"] = ("available" if g["available_kg"] >= g["required_kg"]
                 else "partial" if g["available_kg"] > 0 else "short")
@@ -16947,6 +16985,7 @@ def manufacturing_availability(
             mo["components"].append({
                 "component_id": r.get("component_id"), "component_sku": r.get("component_sku"),
                 "component_name": r.get("component_name"), "required_kg": float(r.get("required_kg") or 0),
+                "soh_kg": float(r.get("soh_kg") or 0),
                 "reserved_kg": float(r.get("reserved_kg") or 0),
                 "available_kg": float(r.get("available_kg") or 0),
                 "stock_location_available_kg": float(r.get("stock_location_available_kg") or 0),
@@ -16954,7 +16993,8 @@ def manufacturing_availability(
                 "source_location": r.get("source_location"),
                 "source_stock_location": r.get("source_stock_location", "PROD/Stock"),
                 "stock_location": r.get("stock_location"),
-                "stock_locations": r.get("stock_locations")
+                "stock_locations": r.get("stock_locations"),
+                "reservation_contributors": r.get("reservations") or []
             })
         for dps in dps_groups.values():
             dps["mos"] = list(dps["mos"].values())
@@ -16968,6 +17008,10 @@ def manufacturing_availability(
             SELECT MAX(_loaded_at) AS loaded_at
             FROM raw_fabric_inventory
         """)[0]
+        reservation_freshness = q(conn, """
+            SELECT MAX(_loaded_at) AS loaded_at
+            FROM mo_component_reservation_contributors
+        """)[0] if q(conn, "SELECT to_regclass('public.mo_component_reservation_contributors') AS t")[0].get("t") else {}
         counts = {s: sum(1 for g in components if g["availability_status"] == s)
                   for s in ("available", "partial", "short")}
         return {"contract": {
@@ -16980,11 +17024,15 @@ def manufacturing_availability(
                 "summary": {"components": len(components),
                             "orders": int(freshness.get("orders") or 0),
                             "required_kg": round(sum(g["required_kg"] for g in components), 3),
-                    "available_kg": round(sum(g["available_kg"] for g in components), 3),
+                     "available_kg": round(sum(g["available_kg"] for g in components), 3),
+                             "soh_kg": round(sum(g["soh_kg"] for g in components), 3),
+                             "reserved_kg": round(sum(g["reserved_kg"] for g in components), 3),
                             **counts},
                  "components": components, "dps_groups": list(dps_groups.values()),
-                 "freshness": {"odoo_snapshot": freshness.get("loaded_at"),
-                               "stock_snapshot": stock_freshness.get("loaded_at")}}
+                  "freshness": {"odoo_snapshot": freshness.get("loaded_at"),
+                                "stock_snapshot": stock_freshness.get("loaded_at"),
+                                "reservation_snapshot": reservation_freshness.get("loaded_at"),
+                                "data_gap": not bool(reservation_freshness.get("loaded_at"))}}
 
 
 def _mfg_live_suggestions(field, term, dps_ref="", limit=20):
@@ -17130,8 +17178,8 @@ def manufacturing_availability_xlsx(
         wb = openpyxl.Workbook()
         ws = wb.active; ws.title = "Component Summary"
         detail = wb.create_sheet("DPS-MO Reservations")
-        headers = ["Component SKU", "Component", "Required (kg)", "Available (kg)",
-                   "Stock Location Available (kg)", "Reserved (kg)", "Status",
+        headers = ["Component SKU", "Component", "Required (kg)", "SOH (kg)",
+                   "Reserved (kg)", "Available (kg)", "Status",
                    "Source location", "Source stock", "Stock location", "Stock locations"]
         ws.append(["Manufacturing availability", "Generated", generated, "Filters", json.dumps(filters)])
         ws.append(headers)
@@ -17140,41 +17188,41 @@ def manufacturing_availability_xlsx(
             if r["component_id"] not in grouped:
                 grouped[r["component_id"]] = r.copy()
                 grouped[r["component_id"]]["required_kg"] = float(r.get("required_kg") or 0)
+                grouped[r["component_id"]]["soh_kg"] = float(r.get("soh_kg") or 0)
                 grouped[r["component_id"]]["available_kg"] = float(r.get("available_kg") or 0)
-                grouped[r["component_id"]]["stock_location_available_kg"] = float(
-                    r.get("stock_location_available_kg") or 0)
                 grouped[r["component_id"]]["reserved_kg"] = float(r.get("reserved_kg") or 0)
             else:
                 g = grouped[r["component_id"]]
                 g["required_kg"] += float(r.get("required_kg") or 0)
-                g["reserved_kg"] += float(r.get("reserved_kg") or 0)
         for g in grouped.values():
             avail = float(g.get("available_kg") or 0); req = float(g.get("required_kg") or 0)
             current_status = "available" if avail >= req else "partial" if avail > 0 else "short"
             if status in ("available", "partial", "short") and current_status != status:
                 continue
-            ws.append([g.get("component_sku"), g.get("component_name"), req, avail,
-                       float(g.get("stock_location_available_kg") or 0),
+            ws.append([g.get("component_sku"), g.get("component_name"), req,
+                       float(g.get("soh_kg") or 0),
                        float(g.get("reserved_kg") or 0),
+                       avail,
                        current_status,
                        g.get("source_location"), g.get("source_stock_location"),
                        g.get("stock_location"), g.get("stock_locations")])
         dh = ["DPS/MO", "DPS ref", "Finished style/product", "Finished SKU",
-              "State", "Component SKU", "Component", "Required (kg)",
-              "Reserved (kg)", "Available (kg) PROD/Stock",
-              "Stock Location Available (kg)", "Stock location", "Source/location"]
+              "State", "Component SKU", "Component", "Required (kg)", "SOH (kg)",
+              "Reserved (kg)", "Available (kg)", "Stock location", "Source/location",
+              "Reservation contributors"]
         detail.append(["DPS/MO reservations", "Generated", generated])
         detail.append(dh)
         for r in rows:
             detail.append([r.get("mo_ref"), r.get("dps_ref"), r.get("style_name") or r.get("finished_name"),
                            r.get("finished_sku"), r.get("order_state"), r.get("component_sku"),
                            r.get("component_name"), float(r.get("required_kg") or 0),
+                            float(r.get("soh_kg") or 0),
                             float(r.get("reserved_kg") or 0),
                             float(r.get("available_kg") or 0),
-                            float(r.get("stock_location_available_kg") or 0),
                             r.get("stock_location"),
-                            (str(r.get("source_stock_location") or "PROD/Stock") +
-                             " · " + str(r.get("source_location") or ""))])
+                            (str(r.get("source_stock_location") or "") + " · " +
+                             str(r.get("source_location") or "")),
+                            json.dumps(r.get("reservations") or [], default=str)])
         for sheet in (ws, detail):
             sheet.freeze_panes = "A3"; sheet.auto_filter.ref = sheet.dimensions
             for cell in sheet[2]:

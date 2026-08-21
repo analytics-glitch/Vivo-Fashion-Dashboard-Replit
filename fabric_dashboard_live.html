@@ -791,7 +791,7 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
     </div>
     <div id="mfg-error"></div>
     <div class="card" style="padding:0;"><div class="tbl-wrap">
-      <table class="data"><thead><tr><th></th><th>Component / SKU</th><th class="r">Required kg</th><th class="r">Available kg<br><span class="muted">PROD/Stock</span></th><th class="r">Stock location available kg</th><th class="r">Reserved kg</th><th>Status<br><span class="muted">PROD/Stock</span></th><th>Source / target location</th></tr></thead>
+      <table class="data"><thead><tr><th></th><th>Component / SKU</th><th class="r">Required kg</th><th class="r">SOH kg<br><span class="muted">source</span></th><th class="r">Reserved kg<br><span class="muted">source</span></th><th class="r">Available kg<br><span class="muted">SOH − Reserved</span></th><th>Status</th><th>Source / target location</th></tr></thead>
        <tbody id="mfg-body"><tr><td colspan="8" class="loading">Loading…</td></tr></tbody>
      </table>
     </div></div>
@@ -2815,12 +2815,13 @@ async function loadManufacturing(force=false){
       ['Components',s.components||0,'shared components rolled up'],
       ['Open DPS/MOs',s.orders||0,'live production orders'],
       ['Required',mfgNum(s.required_kg)+' kg','total component demand'],
-      ['Available',mfgNum(s.available_kg)+' kg','synced stock'],
+      ['SOH / reserved',mfgNum(s.soh_kg)+' / '+mfgNum(s.reserved_kg)+' kg','source-location snapshot'],
       ['Short / partial',`${s.short||0} / ${s.partial||0}`,'component status']
     ].map((x,i)=>`<div class="kpi ${i===4?'hero':''}"><span class="eyebrow">${x[0]}</span><div class="kpi-value">${x[1]}</div><div class="kpi-sub">${x[2]}</div></div>`).join('');
     const fresh=mfgData.freshness||{};
     document.getElementById('mfg-fresh').textContent=fresh.odoo_snapshot
-      ? 'Odoo states: Confirmed + In-progress · stock snapshot '+new Date(fresh.stock_snapshot||fresh.odoo_snapshot).toLocaleString()
+      ? 'Odoo states: Confirmed + In-progress · source stock '+new Date(fresh.stock_snapshot||fresh.odoo_snapshot).toLocaleString()+
+        (fresh.data_gap?' · reservation data gap — showing zero holds':'')
       :'No open manufacturing snapshot yet';
      const selectedDps=(document.getElementById('mfg-dps')?.value||'').trim(), selectedMo=(document.getElementById('mfg-mo')?.value||'').trim();
      body.innerHTML=mfgRenderGroups(mfgData.dps_groups||[],selectedDps,selectedMo);
@@ -2837,20 +2838,27 @@ function mfgRenderGroups(groups,selectedDps,selectedMo){
       out.push('<tr class="mfg-row" onclick="mfgToggle(\''+id+'\')"><td>'+ (cs.length?'▸':'') +
         '</td><td><b'+(selectedMo===mo.mo_ref?' class="mfg-selected"':'')+'>'+esc(mo.mo_ref||'—')+
          '</b><br><span class="muted">'+esc(mo.style_name||mo.finished_name||'—')+' · '+esc(mo.finished_sku||'')+
-         '</span></td><td class="r num">'+mfgNum(total('required_kg'))+'</td><td class="r num">'+mfgNum(total('available_kg'))+
-         '</td><td class="r num">'+mfgNum(total('stock_location_available_kg'))+'</td><td class="r num">'+mfgNum(total('reserved_kg'))+
+         '</span></td><td class="r num">'+mfgNum(total('required_kg'))+'</td><td class="r num">'+mfgNum(total('soh_kg'))+
+         '</td><td class="r num">'+mfgNum(total('reserved_kg'))+'</td><td class="r num">'+mfgNum(total('available_kg'))+
          '</td><td><span class="mfg-status">'+esc(mo.order_state||'—')+
-         '</span></td><td>'+esc(mo.finished_date||'—')+'<br><span class="muted">Source: PROD/Stock · Target: '+
+         '</span></td><td>'+esc(mo.finished_date||'—')+'<br><span class="muted">Source: '+
+         esc([...new Set(cs.map(x=>x.source_stock_location||'').filter(Boolean))].join(', ')||'—')+' · Target: '+
          esc([...new Set(cs.map(x=>x.stock_location||'').filter(Boolean))].join(', ')||'—')+
          '</span></td></tr>');
-      const details=cs.map(c=>'<tr><td>'+esc(c.component_sku||'—')+'<br><span class="muted">'+esc(c.component_name||'')+
-         '</span></td><td class="r num">'+mfgNum(c.required_kg)+'</td><td class="r num">'+mfgNum(c.reserved_kg)+
-         '</td><td class="r num">'+mfgNum(c.available_kg)+'</td><td class="r num">'+mfgNum(c.stock_location_available_kg)+
+      const details=cs.map(c=>{
+         const contributors=(c.reservation_contributors||[]).map(x=>
+           '<div class="muted">'+esc(x.mo_ref||x.dps_ref||x.transaction_ref||x.move_reference||'Odoo move')+
+           ' · '+mfgNum(x.quantity_kg)+' kg · '+esc(x.state||'')+' · '+esc(x.source_location||'')+'</div>').join('');
+         return '<tr><td>'+esc(c.component_sku||'—')+'<br><span class="muted">'+esc(c.component_name||'')+
+         '</span></td><td class="r num">'+mfgNum(c.required_kg)+'</td><td class="r num">'+mfgNum(c.soh_kg)+
+         '</td><td class="r num">'+mfgNum(c.reserved_kg)+'</td><td class="r num">'+mfgNum(c.available_kg)+
          '</td><td><span class="mfg-status '+esc(c.availability_status||'')+
-        '">'+esc(c.availability_status||'—')+'</span></td><td>'+esc(c.source_location||'—')+'<br><span class="muted">'+
+         '">'+esc(c.availability_status||'—')+'</span></td><td>'+esc(c.source_location||'—')+'<br><span class="muted">'+
          'Source: '+esc(c.source_stock_location||'PROD/Stock')+' · Target: '+esc(c.stock_location||'—')+
-         '<br>'+esc(c.stock_locations||'—')+'</span></td></tr>').join('');
-       out.push('<tr id="mfg-detail-'+id+'" class="mfg-detail" style="display:none"><td></td><td colspan="7"><table class="data"><thead><tr><th>Component / SKU</th><th class="r">Required kg</th><th class="r">Reserved kg</th><th class="r">Available kg<br><span class="muted">PROD/Stock</span></th><th class="r">Stock location available kg</th><th>Status</th><th>Source / target</th></tr></thead><tbody>'+details+'</tbody></table></td></tr>');
+         '<br>'+esc(c.stock_locations||'—')+'</span><br><b>Reservation contributors</b>'+
+         (contributors||'<div class="muted">No reservation detail in snapshot</div>')+'</td></tr>';
+       }).join('');
+       out.push('<tr id="mfg-detail-'+id+'" class="mfg-detail" style="display:none"><td></td><td colspan="7"><table class="data"><thead><tr><th>Component / SKU</th><th class="r">Required kg</th><th class="r">SOH kg</th><th class="r">Reserved kg</th><th class="r">Available kg</th><th>Status</th><th>Source / reservations</th></tr></thead><tbody>'+details+'</tbody></table></td></tr>');
     });
   });
    return out.join('')||'<tr><td colspan="8" class="muted">No eligible Confirmed or In-progress DPS/MOs match these filters.</td></tr>';
