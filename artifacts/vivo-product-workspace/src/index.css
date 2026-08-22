@@ -816,9 +816,9 @@ a { color: inherit; text-decoration: none; }
 .assortment-summary-item strong { color: var(--navy); font: 600 22px var(--app-font-serif); }
 .assortment-summary-item.tone-noos strong { color: #9d7b39; }.assortment-summary-item.tone-core strong { color: #557c7a; }.assortment-summary-item.tone-recent strong { color: #8974a3; }.assortment-summary-item.tone-new strong { color: #b86b58; }
 .assortment-filter-toolbar { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 9px; margin: 0 0 28px; padding: 12px; border: 1px solid #ded6ca; background: #fffdf8; overflow: visible; }
-.assortment-filter-intro { display: grid; flex: 0 0 100%; grid-template-columns: auto auto; align-items: baseline; justify-content: space-between; gap: 8px; padding: 0 0 9px; border-bottom: 1px solid #e8e1d7; color: #7b8490; font: 10px var(--app-font-mono); letter-spacing: .04em; text-transform: uppercase; }
-.assortment-filter-intro strong { color: #9b7c42; font-size: 9px; font-weight: 500; }
-.assortment-filter-intro small { color: #a39d92; font-size: 9px; }
+.assortment-filter-intro { display: grid; flex: 0 0 100%; grid-template-columns: auto auto; align-items: baseline; justify-content: space-between; gap: 8px; padding: 0 0 10px; border-bottom: 1px solid #e8e1d7; color: #2d2d2d; font: 11px var(--app-font-mono); letter-spacing: .04em; text-transform: uppercase; }
+.assortment-filter-intro strong { color: #1A1A2E; font-size: 11px; font-weight: 700; }
+.assortment-filter-intro small { color: #2d2d2d; font-size: 11px; font-weight: 600; }
 .assortment-filter-toolbar .msf { flex: 1 1 160px; min-width: 160px; padding: 0; border: 0; }
 .assortment-filter-toolbar .msf-button { width: 100%; max-width: none; }
 .assortment-filter-toolbar .catalogue-sort-control { flex: 1 1 190px; min-width: 190px; }
@@ -995,17 +995,17 @@ a { color: inherit; text-decoration: none; }
 .plm-group-menu { position: absolute; z-index: 20; top: calc(100% + 7px); left: 0; min-width: 190px; padding: 5px; border: 1px solid var(--plm-line); border-radius: 4px; background: #fff; box-shadow: 0 12px 28px rgba(26,26,46,.14); }
 .plm-group-menu button { width: 100%; min-height: 32px; padding: 0 8px; border: 0; border-radius: 2px; background: transparent; color: var(--plm-ink); display: flex; align-items: center; justify-content: space-between; gap: 12px; cursor: pointer; text-align: left; font-size: 11px; }
 .plm-group-menu button:hover, .plm-group-menu button.active { background: #f5f2ec; color: var(--plm-ink); }
-.plm-filter-label { display: inline-flex; align-items: center; gap: 5px; border-left: 1px solid var(--plm-line); padding-left: 13px; color: var(--plm-muted); font: 600 10px 'DM Mono', monospace; text-transform: uppercase; white-space: nowrap; }
+.plm-filter-label { display: inline-flex; align-items: center; gap: 5px; border-left: 1px solid var(--plm-line); padding-left: 13px; color: #2d2d2d; font: 700 11px 'DM Mono', monospace; text-transform: uppercase; white-space: nowrap; }
 .plm-filter { position: relative; min-width: 105px; display: grid; gap: 1px; padding: 3px 20px 3px 9px; border-left: 1px solid var(--plm-line); }
-.plm-filter span { color: #96939a; font: 9px 'DM Mono', monospace; text-transform: uppercase; }
-.plm-filter select { appearance: none; border: 0; outline: 0; width: 100%; padding: 0; background: transparent; color: var(--plm-ink); font-size: 11px; cursor: pointer; }
+.plm-filter span { color: #2d2d2d; font: 700 11px 'DM Mono', monospace; text-transform: uppercase; }
+.plm-filter select { appearance: none; border: 0; outline: 0; width: 100%; padding: 0; background: transparent; color: #1A1A2E; font-size: 14px; font-weight: 600; cursor: pointer; }
 .plm-filter svg { position: absolute; right: 6px; bottom: 6px; pointer-events: none; color: var(--plm-muted); }
 .plm-clear-filter { border: 0; background: transparent; display: inline-flex; align-items: center; gap: 4px; color: var(--plm-red); white-space: nowrap; cursor: pointer; font-size: 10px; margin-left: auto; }
 /* ── Multi-select filter dropdown (PLM toolbar + Full Catalogue tools) ── */
 .msf { position: relative; }
 .msf-button { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; max-width: 220px; }
-.msf-label { color: #96939a; font: 9px var(--app-font-mono, 'DM Mono', monospace); text-transform: uppercase; white-space: nowrap; }
-.msf-summary { color: var(--ink, #1a1a2e); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 110px; }
+.msf-label { color: #2d2d2d; font: 700 11px var(--app-font-mono, 'DM Mono', monospace); text-transform: uppercase; white-space: nowrap; }
+.msf-summary { color: #1A1A2E; font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 110px; }
 .msf-badge { flex: 0 0 auto; min-width: 17px; padding: 1px 4px; border-radius: 8px; background: var(--gold, #b08d3f); color: #fff; font: 700 9px 'Inter', sans-serif; text-align: center; }
 .msf-caret { flex: 0 0 auto; color: #8993a0; }
 .msf-menu { position: absolute; z-index: 30; top: calc(100% + 6px); left: 0; min-width: 200px; max-width: 270px; padding: 5px; border: 1px solid var(--line, #d9d2c5); border-radius: 4px; background: #fff; box-shadow: 0 12px 28px rgba(26,26,46,.14); }
@@ -1020,18 +1020,18 @@ a { color: inherit; text-decoration: none; }
 .msf-option-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .msf-empty { padding: 8px; color: #8993a0; font-size: 11px; font-style: italic; }
 /* PLM toolbar variant — matches the .plm-filter column look */
-.msf-plm { border-left: 1px solid var(--plm-line, #e3ded4); padding: 3px 9px; min-width: 105px; }
+.msf-plm { border-left: 1px solid var(--plm-line, #e3ded4); padding: 5px 9px; min-width: 105px; }
 .msf-plm .msf-button { display: grid; grid-template-columns: auto auto; grid-template-areas: 'label label' 'summary caret'; gap: 1px 4px; border: 0; background: transparent; padding: 0; text-align: left; }
 .msf-plm .msf-label { grid-area: label; }
 .msf-plm .msf-summary { grid-area: summary; }
 .msf-plm .msf-caret { grid-area: caret; align-self: center; }
 .msf-plm .msf-badge { position: absolute; top: 0; right: 2px; }
 /* Full Catalogue variant — matches the .catalogue-tools select boxes */
-.msf-catalogue .msf-button { border: 1px solid var(--line); background: var(--paper); padding: 8px 12px; min-width: 145px; min-height: 38px; }
+.msf-catalogue .msf-button { border: 1px solid var(--line); background: var(--paper); padding: 9px 12px; min-width: 145px; min-height: 42px; }
 .msf-catalogue .msf-button.has-selection { border-color: var(--gold, #b08d3f); }
-.catalogue-sort-control { position: relative; display: grid; grid-template-columns: minmax(138px, 1fr) auto; grid-template-areas: 'label label' 'select caret'; gap: 1px 5px; min-width: 190px; min-height: 38px; border: 1px solid var(--line); background: var(--paper); padding: 5px 10px 4px 12px; cursor: pointer; }
-.catalogue-sort-control > span { grid-area: label; color: #96939a; font: 9px var(--app-font-mono, 'DM Mono', monospace); text-transform: uppercase; }
-.catalogue-sort-control select { grid-area: select; min-width: 0; width: 100%; appearance: none; border: 0; outline: 0; background: transparent; color: var(--ink, #1a1a2e); font: 11px var(--app-font-sans, 'Inter', sans-serif); cursor: pointer; }
+.catalogue-sort-control { position: relative; display: grid; grid-template-columns: minmax(138px, 1fr) auto; grid-template-areas: 'label label' 'select caret'; gap: 2px 5px; min-width: 190px; min-height: 42px; border: 1px solid var(--line); background: var(--paper); padding: 6px 10px 5px 12px; cursor: pointer; }
+.catalogue-sort-control > span { grid-area: label; color: #2d2d2d; font: 700 11px var(--app-font-mono, 'DM Mono', monospace); text-transform: uppercase; }
+.catalogue-sort-control select { grid-area: select; min-width: 0; width: 100%; appearance: none; border: 0; outline: 0; background: transparent; color: #1A1A2E; font: 600 14px var(--app-font-sans, 'Inter', sans-serif); cursor: pointer; }
 .catalogue-sort-control svg { grid-area: caret; align-self: center; color: #8993a0; pointer-events: none; }
 .catalogue-sort-control:focus-within { border-color: var(--gold, #b08d3f); box-shadow: 0 0 0 2px rgba(176,141,63,.12); }
 .plm-board-wrap { border: 1px solid var(--plm-line); border-radius: 4px; background: #f0ede8; overflow-x: auto; overflow-y: hidden; }
