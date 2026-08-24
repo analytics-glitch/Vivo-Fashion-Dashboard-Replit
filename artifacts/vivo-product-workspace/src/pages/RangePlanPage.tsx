@@ -28,6 +28,7 @@ type RangePlanSeason = {
   cogsBudgetPct: number;
   factoryCapacityUnits: number;
   status: string;
+  cadence: 'quarterly' | 'monthly';
 };
 type RangePlanRow = {
   id: number;
@@ -103,10 +104,9 @@ function displayTier(tier: string) {
   return tierLabels[tier as Tier] || tier;
 }
 
-async function getRangePlan(seasonId?: number, quarter: 'Q3 2026' | 'Q4 2026' = 'Q3 2026') {
+async function getRangePlan(seasonId?: number) {
   const params = new URLSearchParams();
   if (seasonId) params.set('seasonId', String(seasonId));
-  params.set('quarter', quarter);
   const query = `?${params.toString()}`;
   const response = await fetch(`/api/workspace/range-plan${query}`, { credentials: 'include' });
   if (!response.ok) throw new Error(`Range Plan request failed (${response.status})`);
@@ -254,6 +254,8 @@ function RangePlanPage() {
   const payload = rangePlan.data;
   const season = payload?.season;
   const rows = payload?.rows ?? [];
+  const quarterlyPlans = (payload?.seasons ?? []).filter((candidate) => candidate.cadence === 'quarterly');
+  const monthlyPlans = (payload?.seasons ?? []).filter((candidate) => candidate.cadence === 'monthly');
   const totals = useMemo(() => {
     const totalStyles = rows.reduce((sum, row) => sum + row.styleCountTarget, 0);
     const totalUnits = rows.reduce((sum, row) => sum + row.totalUnitsImplied, 0);
@@ -317,12 +319,17 @@ function RangePlanPage() {
           <p>How many styles, at what volume and cost?</p>
         </div>
         <div className="range-plan-season-tools">
-          <label htmlFor="range-season">Planning season</label>
-          <select id="range-season" value={season.id} onChange={(event) => setSelectedSeasonId(Number(event.target.value))}>
-            {payload.seasons.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.seasonName} · {candidate.status}</option>)}
+          <label htmlFor="range-season">Planning plan</label>
+          <select id="range-season" value={season.id} onChange={(event) => setSelectedSeasonId(Number(event.target.value))} data-testid="select-range-plan-season">
+            <optgroup label="Quarterly plans">
+              {quarterlyPlans.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.seasonName} · {candidate.status}</option>)}
+            </optgroup>
+            <optgroup label="Monthly plans">
+              {monthlyPlans.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.seasonName} · {candidate.status}</option>)}
+            </optgroup>
           </select>
           <div className="range-plan-season-meta">
-            <strong>{season.seasonName}</strong>
+            <strong>{season.seasonName} <span className={`range-plan-cadence ${season.cadence}`}>{season.cadence === 'monthly' ? 'Monthly' : 'Quarterly'}</span></strong>
             <label>Revenue target <InlineCell value={season.revenueTargetKes} displayValue={kesMillions(season.revenueTargetKes)} kind="number" ariaLabel="Revenue target" onSave={(value) => saveSeason('revenueTargetKes', value)} /></label>
             <label>COGS ceiling <InlineCell value={season.cogsBudgetPct} displayValue={`${season.cogsBudgetPct}%`} kind="number" ariaLabel="COGS ceiling percentage" onSave={(value) => saveSeason('cogsBudgetPct', value)} /></label>
           </div>

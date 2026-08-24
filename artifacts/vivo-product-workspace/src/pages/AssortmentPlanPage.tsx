@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { MoveRight, RefreshCw, Target, X } from 'lucide-react';
 import CatalogueSortControl, { type CatalogueSortKey } from '../components/CatalogueSortControl';
 import MultiSelectFilter from '../components/MultiSelectFilter';
@@ -74,7 +74,12 @@ type AssortmentResponse = {
   assortmentFilterOptions?: AssortmentFilterOptions;
 };
 
-type RangePlanSeason = { id: number; seasonName: string; status: string };
+type RangePlanSeason = {
+  id: number;
+  seasonName: string;
+  status: string;
+  cadence?: 'quarterly' | 'monthly';
+};
 type AssortmentFilterKey = 'tier' | 'status' | 'category' | 'subCategory' | 'fabricCategory' | 'brand' | 'primaryColour' | 'edit';
 type AssortmentFilters = AssortmentFilterState;
 type AssortmentFilterOptions = Record<AssortmentFilterKey, string[]>;
@@ -129,8 +134,27 @@ function AddToRangePlan({
   onAdd: (seasonId: number) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const pickerRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    const closeOnOutsideClick = (event: PointerEvent) => {
+      if (pickerRef.current && !pickerRef.current.contains(event.target as Node)) setOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setOpen(false);
+      }
+    };
+    document.addEventListener('pointerdown', closeOnOutsideClick);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutsideClick);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [open]);
   return (
-    <div className="assortment-range-action">
+    <div className="assortment-range-action" ref={pickerRef}>
       <button
         type="button"
         className="assortment-card-button"
@@ -142,7 +166,10 @@ function AddToRangePlan({
       </button>
       {open && seasons.length > 0 ? (
         <div className="assortment-season-menu" role="menu">
-          <span>Choose season</span>
+          <div className="assortment-season-menu-head">
+            <span>Choose season</span>
+            <button type="button" className="assortment-season-close" onClick={() => setOpen(false)} aria-label="Close season picker" data-testid="button-close-assortment-season-picker"><X size={13} /></button>
+          </div>
           {seasons.map((season) => (
             <button
               key={season.id}
@@ -176,7 +203,10 @@ function StyleCard({
           <span className={`assortment-status ${style.status.toLowerCase()}`}>{style.status}</span>
         </div>
         <h3>{style.name || 'Unnamed style'}</h3>
-        <span className="assortment-style-number">{style.styleNumber || 'Style number pending'}</span>
+        <span className="assortment-style-identity">
+          <span className="assortment-style-number">{style.styleNumber || 'Style number pending'}</span>
+          <span className="assortment-style-soh">SOH {numberFormat(style.stockUnits ?? 0)}</span>
+        </span>
         {action ? <div className="assortment-card-action">{action}</div> : null}
       </div>
     </article>
@@ -310,7 +340,7 @@ function AssortmentPlanPage() {
         <div>
           <span className="range-eyebrow">Merchandising / Store edit</span>
           <h1>Assortment Plan</h1>
-          <p>The full range on the floor — every style available in stores by quarter</p>
+          <p>The active and retired Vivo, Safari by Vivo, and Zoya styles available in stores by quarter.</p>
         </div>
         <div className="assortment-plan-hero-mark">V</div>
       </header>

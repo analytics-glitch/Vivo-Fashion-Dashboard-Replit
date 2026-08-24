@@ -2547,7 +2547,7 @@ components:
               total: { type: integer }
     WorkspaceRangePlanSeason:
       type: object
-      required: [id, seasonName, seasonYear, status]
+      required: [id, seasonName, seasonYear, status, cadence]
       properties:
         id: { type: integer }
         seasonName: { type: string }
@@ -2556,6 +2556,9 @@ components:
         cogsBudgetPct: { type: number }
         factoryCapacityUnits: { type: integer }
         status: { type: string }
+        cadence:
+          type: string
+          enum: [quarterly, monthly]
     StyleTransition:
       type: object
       required: [toStage]

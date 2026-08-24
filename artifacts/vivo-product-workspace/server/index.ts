@@ -70,6 +70,14 @@ const PLM_LAUNCH_ROUTES = ["DTC", "Wholesale", "Marketplace", "Omnichannel"] as 
 const PLM_STYLE_CLASSIFICATIONS = ["Core", "Fashion", "Seasonal", "Test"] as const;
 const PLM_RANGE_TIERS = ["Tier 1", "Tier 2", "Tier 3", "Tier 4"] as const;
 const PLM_SEASONS = ["Q3 2026", "Q4 2026"] as const;
+const RANGE_PLAN_SEASON_SEEDS = [
+  { seasonName: "Q3 2026", revenueTarget: 360000000, factoryCapacityUnits: 96000, cadence: "quarterly" as const },
+  { seasonName: "Q4 2026", revenueTarget: 362500000, factoryCapacityUnits: 96000, cadence: "quarterly" as const },
+  { seasonName: "September 2026", revenueTarget: 30000000, factoryCapacityUnits: 32000, cadence: "monthly" as const, otbMonth: "2026-09-01" },
+  { seasonName: "October 2026", revenueTarget: 30000000, factoryCapacityUnits: 32000, cadence: "monthly" as const, otbMonth: "2026-10-01" },
+  { seasonName: "November 2026", revenueTarget: 30000000, factoryCapacityUnits: 32000, cadence: "monthly" as const, otbMonth: "2026-11-01" },
+  { seasonName: "December 2026", revenueTarget: 30000000, factoryCapacityUnits: 32000, cadence: "monthly" as const, otbMonth: "2026-12-01" },
+] as const;
 const WORKSPACE_BRANDS = ["Vivo", "Safari by Vivo", "Zoya"] as const;
 const ALLOWED_BRANDS_SQL = WORKSPACE_BRANDS.map((brand) => `'${brand}'`).join(",");
 const allowedBrand = (alias: string) => `${alias}.brand IN (${ALLOWED_BRANDS_SQL})`;
@@ -927,16 +935,16 @@ async function ensureWorkspaceResources() {
 }
 
 async function ensureRangePlanData() {
-  for (const [seasonName, revenueTarget] of [["Q3 2026", 360000000], ["Q4 2026", 362500000]] as const) {
+  for (const seasonSeed of RANGE_PLAN_SEASON_SEEDS) {
     const seasonResult = await pool.query<{ id: number }>(
       `INSERT INTO ${schema}.range_plan_seasons
         (season_name,season_year,revenue_target_kes,cogs_budget_pct,factory_capacity_units,status)
-       VALUES ($1,2026,$2,42,96000,'active')
+       VALUES ($1,2026,$2,42,$3,'active')
        ON CONFLICT (season_name,season_year) DO UPDATE
           SET season_name=EXCLUDED.season_name,
-              factory_capacity_units=96000
+              factory_capacity_units=EXCLUDED.factory_capacity_units
        RETURNING id`,
-      [seasonName, revenueTarget],
+      [seasonSeed.seasonName, seasonSeed.revenueTarget, seasonSeed.factoryCapacityUnits],
     );
     const seasonId = seasonResult.rows[0]?.id;
     if (!seasonId) continue;
@@ -949,16 +957,30 @@ async function ensureRangePlanData() {
         [seasonId, subCategory, tier, target, minimum, maximum, rangePlanAosDefault(String(tier))],
       );
     }
+    if (seasonSeed.cadence === "monthly") {
+      await pool.query(
+        `INSERT INTO ${schema}.range_plan_otb
+          (season_id,month_year,revenue_target,planned_units,new_styles_count,notes)
+         VALUES ($1,$2,$3,NULL,NULL,'')
+         ON CONFLICT (season_id,month_year) DO NOTHING`,
+        [seasonId, seasonSeed.otbMonth, seasonSeed.revenueTarget],
+      );
+      await pool.query(
+        `DELETE FROM ${schema}.range_plan_otb
+         WHERE season_id=$1 AND month_year<>$2`,
+        [seasonId, seasonSeed.otbMonth],
+      );
+    }
   }
-  await pool.query(
-    `UPDATE ${schema}.range_plan_seasons
-     SET factory_capacity_units=96000
-     WHERE factory_capacity_units IS DISTINCT FROM 96000`,
-  );
   await pool.query(
     `UPDATE ${schema}.range_plan_rows
      SET aos_units=450
-     WHERE tier IN ('NOOS','Core','Recent') AND aos_units=350`,
+     WHERE tier IN ('NOOS','Core','Recent')
+       AND season_id IN (
+         SELECT id FROM ${schema}.range_plan_seasons
+         WHERE season_name IN ('Q3 2026','Q4 2026')
+       )
+       AND aos_units=350`,
   );
 }
 
@@ -3191,15 +3213,22 @@ router.post("/feedback/pulses", async (req: AuthRequest, res, next) => {
 });
 
 function rangePlanSeasonPayload(row: Record<string, unknown>) {
+  const seasonName = String(row.seasonName ?? "");
   return {
     id: Number(row.id),
-    seasonName: String(row.seasonName ?? ""),
+    seasonName,
     seasonYear: Number(row.seasonYear ?? 0),
     revenueTargetKes: Number(row.revenueTargetKes ?? 0),
     cogsBudgetPct: Number(row.cogsBudgetPct ?? 0),
     factoryCapacityUnits: Number(row.factoryCapacityUnits ?? 0),
     status: String(row.status ?? "active"),
+    cadence: seasonName.startsWith("Q") ? "quarterly" : "monthly",
   };
+}
+
+function rangePlanMonthForSeason(seasonName: string): string | null {
+  const season = RANGE_PLAN_SEASON_SEEDS.find((candidate) => candidate.seasonName === seasonName);
+  return season?.cadence === "monthly" ? season.otbMonth : null;
 }
 
 function rangePlanRowPayload(row: Record<string, unknown>) {
@@ -3296,7 +3325,7 @@ async function assortmentPlanData(quarter: string) {
             THEN LEFT(a.style_launch_date,10)::date END) AS catalogue_launch_date
        FROM public.all_products_clean a
        WHERE NULLIF(TRIM(a.style_name),'') IS NOT NULL
-         AND COALESCE(a.brand,'') NOT ILIKE '%third party%'
+          AND ${allowedBrand("a")}
          AND NULLIF(TRIM(a.style_number),'') IS NOT NULL
        GROUP BY a.style_name
        HAVING NOT BOOL_OR(
@@ -3503,7 +3532,17 @@ router.get("/range-plan", async (req, res, next) => {
          revenue_target_kes AS "revenueTargetKes",cogs_budget_pct AS "cogsBudgetPct",
          factory_capacity_units AS "factoryCapacityUnits",status
        FROM ${schema}.range_plan_seasons
-       ORDER BY CASE WHEN status='active' THEN 0 ELSE 1 END, season_year DESC, id DESC`,
+       ORDER BY CASE season_name
+          WHEN 'Q3 2026' THEN 1
+          WHEN 'Q4 2026' THEN 2
+          WHEN 'September 2026' THEN 3
+          WHEN 'October 2026' THEN 4
+          WHEN 'November 2026' THEN 5
+          WHEN 'December 2026' THEN 6
+          ELSE 99
+        END,
+        CASE WHEN status='active' THEN 0 ELSE 1 END,
+        season_year DESC, id DESC`,
     );
     const seasons = seasonsResult.rows.map(rangePlanSeasonPayload);
     const quarter = PLM_SEASONS.includes(String(req.query.quarter ?? "") as (typeof PLM_SEASONS)[number])
@@ -3541,13 +3580,20 @@ router.get("/range-plan", async (req, res, next) => {
         ORDER BY CASE r.tier::text WHEN 'NOOS' THEN 1 WHEN 'Core' THEN 2 WHEN 'Recent' THEN 3 ELSE 4 END, r.id`,
       [season.id],
     );
+    const planMonth = rangePlanMonthForSeason(season.seasonName);
     const otbResult = await pool.query(
       `WITH months AS (
+         SELECT month_year
+         FROM ${schema}.range_plan_otb
+         WHERE season_id=$1
+           AND ($2::boolean IS FALSE OR month_year=$3::date)
+         UNION
          SELECT generate_series(
            date_trunc('month', CURRENT_DATE)::date,
            (date_trunc('month', CURRENT_DATE) + INTERVAL '5 months')::date,
            INTERVAL '1 month'
          )::date AS month_year
+         WHERE $2::boolean IS FALSE
        )
        SELECT o.id,m.month_year::text AS "monthYear",o.revenue_target AS "revenueTarget",
          o.planned_units AS "plannedUnits",o.new_styles_count AS "newStylesCount",o.notes
@@ -3555,7 +3601,7 @@ router.get("/range-plan", async (req, res, next) => {
        LEFT JOIN ${schema}.range_plan_otb o
          ON o.season_id=$1 AND o.month_year=m.month_year
        ORDER BY m.month_year`,
-      [season.id],
+      [season.id, planMonth !== null, planMonth],
     );
      const rangeRows = rowsResult.rows.map(rangePlanRowPayload);
      const potentialFpRevenue = rangeRows
@@ -3802,6 +3848,15 @@ router.post("/range-plan/seasons/:seasonId/rows", async (req, res, next) => {
       res.status(400).json({ error: "A sub-category, valid tier and non-negative whole-number targets are required" });
       return;
     }
+    if (!Number.isInteger(seasonId) || seasonId <= 0) {
+      res.status(404).json({ error: "Planning season not found" });
+      return;
+    }
+    const seasonExists = await pool.query(`SELECT 1 FROM ${schema}.range_plan_seasons WHERE id=$1`, [seasonId]);
+    if (!seasonExists.rows[0]) {
+      res.status(404).json({ error: "Planning season not found" });
+      return;
+    }
     const result = await pool.query(
       `INSERT INTO ${schema}.range_plan_rows
         (season_id,sub_category,tier,style_count_target,style_count_min,style_count_max,aos_units,notes)
@@ -3829,13 +3884,18 @@ router.post("/range-plan/add-style", async (req: AuthRequest, res, next) => {
   }
   const client = await pool.connect();
   try {
+    const seasonExists = await client.query(`SELECT 1 FROM ${schema}.range_plan_seasons WHERE id=$1`, [seasonId]);
+    if (!seasonExists.rows[0]) {
+      res.status(404).json({ error: "Planning season not found" });
+      return;
+    }
     let style: { subCategory: string; tier: string } | undefined;
     if (source === "all_products_clean") {
       if (!styleNumber || styleNumber.length > 200) {
         res.status(400).json({ error: "A catalogue style number is required" });
         return;
       }
-      const result = await client.query<{ subCategory: string; tier: string }>(
+      style = await client.query<{ subCategory: string; tier: string }>(
         `SELECT
            COALESCE(MAX(NULLIF(TRIM(a.product_type),'')),MAX(NULLIF(TRIM(a.category),'')),'Uncategorised') AS "subCategory",
            CASE
@@ -3845,11 +3905,12 @@ router.post("/range-plan/add-style", async (req: AuthRequest, res, next) => {
              WHEN COALESCE(SUM(COALESCE(i.available,0)),0)>100 THEN 'Core'
              ELSE 'Recent'
            END AS tier
-         FROM public.all_products_clean a
-         LEFT JOIN public.all_inventory i ON i.sku=a.sku
-         WHERE ${allowedBrand("a")} AND LOWER(COALESCE(a.status,'')) IN ('active','retired')
-           AND COALESCE(NULLIF(TRIM(a.style_number),''),NULLIF(TRIM(a.sku),''))=$1
-         GROUP BY a.style_number`,
+          FROM public.all_products_clean a
+          LEFT JOIN public.all_inventory i ON i.sku=a.sku
+          WHERE LOWER(BTRIM(COALESCE(a.brand,''))) = ANY(ARRAY['vivo','safari by vivo','zoya'])
+            AND LOWER(BTRIM(COALESCE(a.status,''))) IN ('active','retired')
+            AND LOWER(BTRIM(COALESCE(NULLIF(TRIM(a.style_number),''),NULLIF(TRIM(a.sku),''))))=LOWER(BTRIM($1))
+          GROUP BY COALESCE(NULLIF(TRIM(a.style_number),''),NULLIF(TRIM(a.sku),''))`,
         [styleNumber],
       ).then((result) => result.rows[0]);
     } else {
@@ -3883,7 +3944,7 @@ router.post("/range-plan/add-style", async (req: AuthRequest, res, next) => {
          style_count_target AS "styleCountTarget",style_count_min AS "styleCountMin",
          style_count_max AS "styleCountMax",aos_units AS "aosUnits",
          total_units_implied AS "totalUnitsImplied",notes`,
-      [seasonId, subCategory, rangePlanAosDefault(tier)],
+      [seasonId, subCategory, tier, rangePlanAosDefault(tier)],
     );
     await client.query("COMMIT");
     res.status(201).json({ row: rangePlanRowPayload(result.rows[0]), subCategory, tier });
@@ -3999,6 +4060,23 @@ router.put("/range-plan/seasons/:seasonId/otb", async (req, res, next) => {
       (plannedUnits !== null && (!Number.isInteger(plannedUnits) || plannedUnits < 0)) ||
       (newStylesCount !== null && (!Number.isInteger(newStylesCount) || newStylesCount < 0))) {
       res.status(400).json({ error: "Month and OTB values are invalid" });
+      return;
+    }
+    if (!Number.isInteger(seasonId) || seasonId <= 0) {
+      res.status(404).json({ error: "Planning season not found" });
+      return;
+    }
+    const seasonResult = await pool.query<{ seasonName: string }>(
+      `SELECT season_name AS "seasonName" FROM ${schema}.range_plan_seasons WHERE id=$1`,
+      [seasonId],
+    );
+    if (!seasonResult.rows[0]) {
+      res.status(404).json({ error: "Planning season not found" });
+      return;
+    }
+    const allowedMonth = rangePlanMonthForSeason(seasonResult.rows[0].seasonName);
+    if (allowedMonth !== null && monthYear !== allowedMonth) {
+      res.status(400).json({ error: "Monthly plans only accept their configured OTB month" });
       return;
     }
     const result = await pool.query(
