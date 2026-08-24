@@ -11,6 +11,20 @@ import cookieParser from "cookie-parser";
 import pg from "pg";
 import { Server as SocketServer } from "socket.io";
 import { RESOURCE_SEEDS } from "./resource-seeds.js";
+import {
+  FEEDBACK_IMAGE_MAX_FILES,
+  FEEDBACK_IMAGE_MAX_BYTES,
+  FEEDBACK_IMAGE_UPLOAD_RATE_LIMIT,
+  FEEDBACK_IMAGE_UPLOAD_RATE_WINDOW_MS,
+  FEEDBACK_IMAGE_UPLOAD_TTL_SECONDS,
+  FEEDBACK_QUARTER_START_SQL,
+  detectFeedbackImageContentType,
+  feedbackImageExtension,
+  feedbackImageTokens,
+  validateFeedbackImageMeta,
+  validateFeedbackImageUpload,
+  type FeedbackImageContentType,
+} from "./feedback-policy.js";
 
 const { Pool } = pg;
 const pool = new Pool({
@@ -1496,7 +1510,6 @@ async function ensureSchema() {
       id BIGSERIAL PRIMARY KEY,
       submitter_name TEXT NOT NULL,
       submitter_team TEXT NOT NULL,
-      submitter_department TEXT,
       style_id INTEGER REFERENCES ${schema}.styles(id) ON DELETE SET NULL,
       style_number TEXT,
       colourway TEXT NOT NULL DEFAULT 'All colourways / General',
@@ -1512,20 +1525,23 @@ async function ensureSchema() {
       reviewed_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
-    CREATE TABLE IF NOT EXISTS ${schema}.style_feedback_attachments (
+    CREATE TABLE IF NOT EXISTS ${schema}.style_feedback_images (
       id BIGSERIAL PRIMARY KEY,
-      feedback_id BIGINT NOT NULL REFERENCES ${schema}.style_feedback(id) ON DELETE CASCADE,
+      feedback_id BIGINT REFERENCES ${schema}.style_feedback(id) ON DELETE CASCADE,
+      upload_token TEXT UNIQUE,
       object_path TEXT NOT NULL UNIQUE,
       original_name TEXT NOT NULL,
-      content_type TEXT NOT NULL,
+      content_type TEXT NOT NULL CHECK (content_type IN ('image/jpeg','image/png','image/heic','image/heif')),
       byte_size INTEGER NOT NULL CHECK (byte_size > 0),
+      uploaded_at TIMESTAMPTZ,
+      expires_at TIMESTAMPTZ NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     ALTER TABLE ${schema}.style_feedback ADD COLUMN IF NOT EXISTS style_number TEXT;
     ALTER TABLE ${schema}.style_feedback ADD COLUMN IF NOT EXISTS colourway TEXT NOT NULL DEFAULT 'All colourways / General';
     ALTER TABLE ${schema}.style_feedback ADD COLUMN IF NOT EXISTS pulse_id BIGINT REFERENCES ${schema}.style_feedback_pulses(id) ON DELETE SET NULL;
     ALTER TABLE ${schema}.style_feedback ADD COLUMN IF NOT EXISTS pulse_mode TEXT;
-    ALTER TABLE ${schema}.style_feedback ADD COLUMN IF NOT EXISTS submitter_department TEXT;
+    ALTER TABLE ${schema}.style_feedback_images ADD COLUMN IF NOT EXISTS uploaded_at TIMESTAMPTZ;
     DO $$ BEGIN
       ALTER TABLE ${schema}.style_feedback ADD CONSTRAINT style_feedback_pulse_mode_check CHECK (pulse_mode IS NULL OR pulse_mode IN ('investigate','champion'));
     EXCEPTION WHEN duplicate_object THEN NULL;
@@ -1533,7 +1549,8 @@ async function ensureSchema() {
     CREATE INDEX IF NOT EXISTS style_feedback_created_at_idx ON ${schema}.style_feedback (created_at DESC);
     CREATE INDEX IF NOT EXISTS style_feedback_style_id_idx ON ${schema}.style_feedback (style_id);
     CREATE INDEX IF NOT EXISTS style_feedback_pulse_idx ON ${schema}.style_feedback (pulse_id);
-    CREATE INDEX IF NOT EXISTS style_feedback_attachments_feedback_idx ON ${schema}.style_feedback_attachments (feedback_id, id);
+    CREATE INDEX IF NOT EXISTS style_feedback_images_feedback_idx ON ${schema}.style_feedback_images (feedback_id);
+    CREATE INDEX IF NOT EXISTS style_feedback_images_expiry_idx ON ${schema}.style_feedback_images (expires_at) WHERE feedback_id IS NULL;
     DO $$ BEGIN
       CREATE TYPE ${schema}.range_plan_tier AS ENUM ('NOOS','Core','Recent','New/Test');
     EXCEPTION
@@ -2150,6 +2167,102 @@ async function signedStorageUrl(objectPath: string, method: "GET" | "PUT" | "DEL
   return body.signed_url;
 }
 
+const feedbackUploadAttempts = new Map<string, number[]>();
+
+function feedbackUploadRateKey(req: Request) {
+  const peer = req.socket.remoteAddress || "unknown";
+  const trustedLocalProxy = peer === "::1" || peer === "127.0.0.1" || peer.startsWith("::ffff:127.");
+  const forwarded = String(req.headers["x-forwarded-for"] ?? "").split(",").map((part) => part.trim()).filter(Boolean).at(-1);
+  return trustedLocalProxy && forwarded ? forwarded : peer;
+}
+
+function allowFeedbackUpload(req: Request, bucket: "handshake" | "transfer", limit: number) {
+  const now = Date.now();
+  const key = `${bucket}:${feedbackUploadRateKey(req)}`;
+  const recent = (feedbackUploadAttempts.get(key) ?? []).filter((timestamp) => now - timestamp < FEEDBACK_IMAGE_UPLOAD_RATE_WINDOW_MS);
+  if (recent.length >= limit) {
+    feedbackUploadAttempts.set(key, recent);
+    return false;
+  }
+  recent.push(now);
+  feedbackUploadAttempts.set(key, recent);
+  if (feedbackUploadAttempts.size > 1000) {
+    for (const [candidate, timestamps] of feedbackUploadAttempts) {
+      if (!timestamps.length || now - timestamps[timestamps.length - 1] > FEEDBACK_IMAGE_UPLOAD_RATE_WINDOW_MS) feedbackUploadAttempts.delete(candidate);
+    }
+  }
+  return true;
+}
+
+function allowFeedbackUploadHandshake(req: Request) {
+  return allowFeedbackUpload(req, "handshake", FEEDBACK_IMAGE_UPLOAD_RATE_LIMIT);
+}
+
+async function deleteFeedbackObject(objectPath: string) {
+  try {
+    const response = await fetch(await signedStorageUrl(objectPath, "DELETE", 120), { method: "DELETE", signal: AbortSignal.timeout(30_000) });
+    if (!response.ok && response.status !== 404) throw new Error(`Object storage returned ${response.status}`);
+    return true;
+  } catch (error) {
+    console.warn("Unable to remove rejected feedback image", error);
+    return false;
+  }
+}
+
+async function cleanupExpiredFeedbackImageUploads() {
+  const expired = await pool.query<{ id: number; objectPath: string }>(
+    `SELECT id,object_path AS "objectPath"
+       FROM ${schema}.style_feedback_images
+      WHERE feedback_id IS NULL AND expires_at <= NOW()`,
+  );
+  for (const item of expired.rows) {
+    if (await deleteFeedbackObject(item.objectPath)) {
+      await pool.query(`DELETE FROM ${schema}.style_feedback_images WHERE id=$1 AND feedback_id IS NULL AND expires_at <= NOW()`, [item.id]);
+    }
+  }
+}
+
+async function discardPendingFeedbackImage(id: number) {
+  const pending = await pool.query<{ objectPath: string }>(
+    `SELECT object_path AS "objectPath"
+       FROM ${schema}.style_feedback_images
+      WHERE id=$1 AND feedback_id IS NULL`,
+    [id],
+  );
+  const item = pending.rows[0];
+  if (!item) return;
+  if (await deleteFeedbackObject(item.objectPath)) {
+    await pool.query(`DELETE FROM ${schema}.style_feedback_images WHERE id=$1 AND feedback_id IS NULL`, [id]);
+  } else {
+    await pool.query(`UPDATE ${schema}.style_feedback_images SET expires_at=NOW() WHERE id=$1 AND feedback_id IS NULL`, [id]);
+  }
+}
+
+async function readFeedbackImageAtMost(response: globalThis.Response) {
+  if (!response.body) return new Uint8Array();
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.length;
+      if (total > FEEDBACK_IMAGE_MAX_BYTES) throw new Error("Uploaded image exceeds the maximum size");
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return bytes;
+}
+
 const GARMENT_IMAGE_TYPES = {
   "image/jpeg": { extensions: ["jpg", "jpeg"], magic: (bytes: Uint8Array) => bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff },
   "image/png": { extensions: ["png"], magic: (bytes: Uint8Array) => bytes.length >= 8 && [137, 80, 78, 71, 13, 10, 26, 10].every((value, index) => bytes[index] === value) },
@@ -2635,16 +2748,6 @@ const FEEDBACK_TEAM_OPTIONS = [
   "Customer Service",
   "Other",
 ] as const;
-const FEEDBACK_DEPARTMENTS = [
-  "Retail",
-  "E-commerce",
-  "CEX",
-  "Production",
-  "QC",
-  "Studio",
-  "Warehouse",
-  "Other",
-] as const;
 const FEEDBACK_TYPE_OPTIONS = ["Fit & Sizing", "Fabric & Quality", "Colour & Print", "Price & Value", "Styling & VM", "Customer Reaction", "Stock & Availability", "Other"] as const;
 const PULSE_INVESTIGATE_OPTIONS = ["Fit doesn't work for our customer", "Fabric feels low quality", "Price feels too high", "Colour/print not right for this market", "Poor VM / hard to style on the floor", "Customers haven't noticed it", "Size availability issues", "Strong competition from another style", "Other"] as const;
 const PULSE_CHAMPION_OPTIONS = ["The fit is excellent", "Fabric quality stands out", "Great value for money", "Colour/print is a hit", "Versatile — works for multiple occasions", "Customers are recommending it to others", "Strong repeat purchases", "VM / styling is working well", "Other"] as const;
@@ -2654,126 +2757,13 @@ const FEEDBACK_SENTIMENTS = ["positive", "mixed", "negative"] as const;
 const FEEDBACK_URGENCIES = ["note", "discuss", "urgent"] as const;
 type FeedbackSentiment = (typeof FEEDBACK_SENTIMENTS)[number];
 type FeedbackUrgency = (typeof FEEDBACK_URGENCIES)[number];
-const FEEDBACK_IMAGE_TYPES = {
-  "image/jpeg": {
-    extensions: ["jpg", "jpeg"],
-    magic: (bytes: Uint8Array) => bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff,
-  },
-  "image/png": {
-    extensions: ["png"],
-    magic: (bytes: Uint8Array) => bytes.length >= 8 && [137, 80, 78, 71, 13, 10, 26, 10].every((value, index) => bytes[index] === value),
-  },
-  "image/heic": {
-    extensions: ["heic"],
-    magic: (bytes: Uint8Array) => bytes.length >= 12
-      && new TextDecoder().decode(bytes.slice(4, 8)) === "ftyp"
-      && ["heic", "heix", "hevc", "hevx", "mif1", "msf1"].includes(new TextDecoder().decode(bytes.slice(8, 12))),
-  },
-  "image/heif": {
-    extensions: ["heif"],
-    magic: (bytes: Uint8Array) => bytes.length >= 12
-      && new TextDecoder().decode(bytes.slice(4, 8)) === "ftyp"
-      && ["heic", "heix", "hevc", "hevx", "mif1", "msf1"].includes(new TextDecoder().decode(bytes.slice(8, 12))),
-  },
-} as const;
-type FeedbackImageContentType = keyof typeof FEEDBACK_IMAGE_TYPES;
-const FEEDBACK_ATTACHMENT_MAX_COUNT = 4;
-const FEEDBACK_ATTACHMENT_MAX_BYTES = 8 * 1024 * 1024;
-
-function validateFeedbackImageMeta(name: unknown, size: unknown, contentType: unknown) {
-  const originalName = String(name ?? "").trim();
-  const byteSize = Number(size ?? 0);
-  const type = String(contentType ?? "").trim().toLowerCase() as FeedbackImageContentType;
-  if (!originalName || originalName.length > 255 || !Number.isFinite(byteSize) || byteSize < 1 || byteSize > FEEDBACK_ATTACHMENT_MAX_BYTES) {
-    return { error: "Each image must be between 1 byte and 8 MB" } as const;
-  }
-  const config = FEEDBACK_IMAGE_TYPES[type];
-  if (!config) return { error: "Use a JPEG, PNG, HEIC, or HEIF image" } as const;
-  const extension = originalName.split(".").pop()?.toLowerCase();
-  if (!extension || !config.extensions.includes(extension as never)) {
-    return { error: "The image file extension does not match its type" } as const;
-  }
-  return { originalName, byteSize, contentType: type } as const;
-}
-
-function feedbackAttachmentUrl(feedbackId: number, attachmentId: number) {
-  return `/api/workspace/feedback/${feedbackId}/attachments/${attachmentId}`;
-}
-
-function feedbackAttachmentPayload(row: Record<string, unknown>) {
-  const id = Number(row.id);
-  const feedbackId = Number(row.feedbackId);
-  return {
-    id,
-    filename: String(row.filename ?? ""),
-    contentType: String(row.contentType ?? ""),
-    byteSize: Number(row.byteSize ?? 0),
-    url: Number.isInteger(feedbackId) && feedbackId > 0 && Number.isInteger(id) && id > 0
-      ? feedbackAttachmentUrl(feedbackId, id)
-      : null,
-  };
-}
-
-async function deleteFeedbackAttachmentObject(objectPath: string | null | undefined) {
-  if (!objectPath) return;
-  try {
-    await fetch(await signedStorageUrl(objectPath, "DELETE", 120), {
-      method: "DELETE",
-      signal: AbortSignal.timeout(30_000),
-    });
-  } catch {
-    // Failed cleanup only leaves an unreachable upload; it cannot expose it.
-  }
-}
-
-type PreparedFeedbackAttachment = {
-  objectPath: string;
-  originalName: string;
-  contentType: FeedbackImageContentType;
-  byteSize: number;
-};
-
-type PreparedFeedbackAttachmentsResult = { attachments: PreparedFeedbackAttachment[] } | { error: string };
-
-async function prepareFeedbackAttachments(value: unknown): Promise<PreparedFeedbackAttachmentsResult> {
-  if (value == null) return { attachments: [] as PreparedFeedbackAttachment[] };
-  if (!Array.isArray(value) || value.length > FEEDBACK_ATTACHMENT_MAX_COUNT) {
-    return { error: `Attach up to ${FEEDBACK_ATTACHMENT_MAX_COUNT} images` } as const;
-  }
-  const prepared: PreparedFeedbackAttachment[] = [];
-  const seenPaths = new Set<string>();
-  for (const candidate of value) {
-    const item = candidate as Record<string, unknown>;
-    const objectPath = String(item?.objectPath ?? "");
-    const validation = validateFeedbackImageMeta(item?.name, item?.size, item?.contentType);
-    if (!objectPath.startsWith("/objects/style-feedback/attachments/") || objectPath.includes("..") || seenPaths.has(objectPath)) {
-      return { error: "Invalid feedback image upload" } as const;
-    }
-    if ("error" in validation) return { error: String(validation.error || "Invalid feedback image") };
-    seenPaths.add(objectPath);
-    const stored = await fetch(await signedStorageUrl(objectPath, "GET", 120), {
-      signal: AbortSignal.timeout(30_000),
-    });
-    if (!stored.ok) {
-      return { error: "One of the selected images could not be found. Please select it again." } as const;
-    }
-    const bytes = new Uint8Array(await stored.arrayBuffer());
-    const typeConfig = FEEDBACK_IMAGE_TYPES[validation.contentType];
-    if (bytes.length !== validation.byteSize || !typeConfig.magic(bytes)) {
-      await deleteFeedbackAttachmentObject(objectPath);
-      return { error: "One of the selected images does not match its file type." } as const;
-    }
-    prepared.push({ objectPath, ...validation });
-  }
-  return { attachments: prepared };
-}
 
 function feedbackPayload(row: Record<string, unknown>) {
+  const rawAttachments = Array.isArray(row.imageAttachments) ? row.imageAttachments : [];
   return {
     id: Number(row.id),
     submitterName: String(row.submitterName ?? ""),
     submitterTeam: String(row.submitterTeam ?? ""),
-    submitterDepartment: String(row.submitterDepartment ?? ""),
     styleId: row.styleId == null ? null : Number(row.styleId),
     styleName: String(row.styleName ?? row.styleNameFreetext ?? ""),
     styleNumber: row.styleNumber == null ? null : String(row.styleNumber),
@@ -2790,11 +2780,109 @@ function feedbackPayload(row: Record<string, unknown>) {
     reviewedBy: row.reviewedBy == null ? null : Number(row.reviewedBy),
     reviewedAt: row.reviewedAt ?? null,
     createdAt: row.createdAt ?? null,
-    attachments: Array.isArray(row.attachments)
-      ? row.attachments.map((attachment) => feedbackAttachmentPayload(attachment as Record<string, unknown>))
-      : [],
+    imageAttachments: rawAttachments.map((attachment) => {
+      const item = attachment as Record<string, unknown>;
+      return {
+        id: Number(item.id),
+        filename: String(item.filename ?? "feedback-image"),
+        contentType: String(item.contentType ?? "application/octet-stream"),
+        sizeBytes: Number(item.sizeBytes ?? 0),
+        viewUrl: `/api/workspace/feedback/images/${Number(item.id)}`,
+        downloadUrl: `/api/workspace/feedback/images/${Number(item.id)}?download=1`,
+      };
+    }),
   };
 }
+
+router.post("/feedback/public/upload-url", async (req, res, next) => {
+  try {
+    if (!allowFeedbackUploadHandshake(req)) {
+      res.setHeader("Retry-After", "600");
+      res.status(429).json({ error: "Too many image upload attempts. Please try again in a few minutes." });
+      return;
+    }
+    await cleanupExpiredFeedbackImageUploads();
+    const validation = validateFeedbackImageMeta(req.body?.name, req.body?.size, req.body?.contentType);
+    if ("error" in validation) {
+      res.status(400).json({ error: validation.error });
+      return;
+    }
+    const uploadToken = sessionToken();
+    const objectPath = `/objects/style-feedback/${crypto.randomUUID()}.${feedbackImageExtension(validation.originalName)}`;
+    await pool.query(
+      `INSERT INTO ${schema}.style_feedback_images
+        (upload_token,object_path,original_name,content_type,byte_size,uploaded_at,expires_at)
+       VALUES ($1,$2,$3,$4,$5,NULL,NOW()+$6::interval)`,
+      [uploadToken, objectPath, validation.originalName, validation.declaredType, validation.byteSize, `${FEEDBACK_IMAGE_UPLOAD_TTL_SECONDS} seconds`],
+    );
+    res.status(201).json({ uploadUrl: "/api/workspace/feedback/public/upload", uploadToken, expiresInSeconds: FEEDBACK_IMAGE_UPLOAD_TTL_SECONDS });
+  } catch (error) {
+    next(error);
+  }
+});
+
+const feedbackImageUploadBody = express.raw({ type: () => true, limit: FEEDBACK_IMAGE_MAX_BYTES });
+router.put("/feedback/public/upload", (req, res, next) => {
+  if (!allowFeedbackUpload(req, "transfer", FEEDBACK_IMAGE_UPLOAD_RATE_LIMIT * 2)) {
+    res.setHeader("Retry-After", "600");
+    res.status(429).json({ error: "Too many image upload attempts. Please try again in a few minutes." });
+    return;
+  }
+  feedbackImageUploadBody(req, res, (error) => {
+    if (error && typeof error === "object" && "type" in error && error.type === "entity.too.large") {
+      res.status(413).json({ error: `Images must be smaller than ${FEEDBACK_IMAGE_MAX_BYTES / (1024 * 1024)} MB` });
+      return;
+    }
+    next(error);
+  });
+}, async (req, res, next) => {
+  let imageId: number | null = null;
+  try {
+    const uploadToken = String(req.header("x-feedback-upload-token") ?? "");
+    if (!/^[a-f0-9]{64}$/.test(uploadToken) || !Buffer.isBuffer(req.body)) {
+      res.status(400).json({ error: "Invalid feedback image upload" });
+      return;
+    }
+    const pending = await pool.query<{ id: number; objectPath: string; contentType: FeedbackImageContentType; byteSize: number }>(
+      `SELECT id,object_path AS "objectPath",content_type AS "contentType",byte_size AS "byteSize"
+         FROM ${schema}.style_feedback_images
+        WHERE upload_token=$1 AND feedback_id IS NULL AND uploaded_at IS NULL AND expires_at > NOW()
+        FOR UPDATE`,
+      [uploadToken],
+    );
+    const image = pending.rows[0];
+    if (!image) {
+      res.status(404).json({ error: "This image upload has expired. Please choose the file again." });
+      return;
+    }
+    imageId = image.id;
+    const requestType = String(req.header("content-type") ?? "").split(";")[0].trim().toLowerCase();
+    const bytes = new Uint8Array(req.body);
+    const validation = validateFeedbackImageUpload(bytes, image.byteSize, image.contentType, requestType);
+    if ("error" in validation) {
+      await discardPendingFeedbackImage(image.id);
+      imageId = null;
+      res.status(400).json({ error: `${validation.error}. Please choose it again.` });
+      return;
+    }
+    const stored = await fetch(await signedStorageUrl(image.objectPath, "PUT", 180), {
+      method: "PUT",
+      headers: { "Content-Type": image.contentType, "Content-Length": String(bytes.length) },
+      body: bytes,
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!stored.ok) throw new Error(`Unable to store feedback image (${stored.status})`);
+    await pool.query(
+      `UPDATE ${schema}.style_feedback_images SET uploaded_at=NOW() WHERE id=$1 AND feedback_id IS NULL AND uploaded_at IS NULL`,
+      [image.id],
+    );
+    imageId = null;
+    res.status(204).end();
+  } catch (error) {
+    if (imageId != null) await discardPendingFeedbackImage(imageId).catch(() => undefined);
+    next(error);
+  }
+});
 
 function feedbackImagePayload(value: unknown) {
   if (value == null || value === "") return null;
@@ -2914,27 +3002,11 @@ router.get("/feedback/pulses/resolve", async (req, res, next) => {
   }
 });
 
-router.post("/feedback/attachments/upload-url", async (req, res, next) => {
-  try {
-    const validation = validateFeedbackImageMeta(req.body?.name, req.body?.size, req.body?.contentType);
-    if ("error" in validation) {
-      res.status(400).json({ error: validation.error });
-      return;
-    }
-    const extension = validation.originalName.split(".").pop()!.toLowerCase();
-    const objectPath = `/objects/style-feedback/attachments/${crypto.randomUUID()}.${extension}`;
-    const uploadUrl = await signedStorageUrl(objectPath, "PUT", 900);
-    res.json({ uploadUrl, objectPath, expiresInSeconds: 900 });
-  } catch (error) {
-    next(error);
-  }
-});
-
 router.post("/feedback/public", async (req, res, next) => {
+  let pendingObjects: Array<{ id: number; objectPath: string }> = [];
   try {
     const submitterName = String(req.body?.submitterName ?? "").trim();
     const submitterTeam = String(req.body?.submitterTeam ?? "").trim();
-    const submitterDepartment = String(req.body?.submitterDepartment ?? "").trim();
     const requestedStyleName = String(req.body?.styleName ?? "").trim();
     const requestedStyleNumber = String(req.body?.styleNumber ?? "").trim();
     const requestedColourway = String(req.body?.colourway ?? "").trim() || "All colourways / General";
@@ -2949,13 +3021,14 @@ router.post("/feedback/public", async (req, res, next) => {
     const urgency = String(req.body?.urgency ?? "note") as FeedbackUrgency;
     const commentText = String(req.body?.commentText ?? "").trim();
     const rawStyleId = Number(req.body?.styleId);
-    if (!submitterName || !submitterTeam || !FEEDBACK_DEPARTMENTS.includes(submitterDepartment as never) || !requestedStyleNumber || !feedbackTypes.length || !FEEDBACK_SENTIMENTS.includes(sentiment) || !FEEDBACK_URGENCIES.includes(urgency) || commentText.length < 8) {
-      res.status(400).json({ error: "Name, team, department, style, at least one issue type and a useful comment are required" });
+    const requestedImageTokenInput = feedbackImageTokens(req.body?.feedbackImageTokens);
+    const requestedImageTokens = requestedImageTokenInput.tokens;
+    if (!requestedImageTokenInput.valid) {
+      res.status(400).json({ error: `You can attach up to ${FEEDBACK_IMAGE_MAX_FILES} valid images` });
       return;
     }
-    const preparedAttachments = await prepareFeedbackAttachments(req.body?.attachments);
-    if ("error" in preparedAttachments) {
-      res.status(400).json({ error: preparedAttachments.error });
+    if (!submitterName || !submitterTeam || !requestedStyleNumber || !feedbackTypes.length || !FEEDBACK_SENTIMENTS.includes(sentiment) || !FEEDBACK_URGENCIES.includes(urgency) || commentText.length < 8) {
+      res.status(400).json({ error: "Name, team, style, at least one issue type and a useful comment are required" });
       return;
     }
     const catalogueStyle = await pool.query<{ styleName: string; styleNumber: string }>(
@@ -3003,85 +3076,76 @@ router.post("/feedback/public", async (req, res, next) => {
       );
       resolvedPulseId = pulse.rows[0]?.id ?? null;
     }
+    if (requestedImageTokens.length) {
+      const pending = await pool.query<{ id: number; objectPath: string; uploadToken: string; originalName: string; declaredType: FeedbackImageContentType; byteSize: number }>(
+        `SELECT id,object_path AS "objectPath",upload_token AS "uploadToken",original_name AS "originalName",
+            content_type AS "declaredType",byte_size AS "byteSize"
+           FROM ${schema}.style_feedback_images
+          WHERE upload_token=ANY($1::text[]) AND feedback_id IS NULL AND uploaded_at IS NOT NULL AND expires_at > NOW()
+          ORDER BY id`,
+        [requestedImageTokens],
+      );
+      if (pending.rows.length !== requestedImageTokens.length) {
+        res.status(400).json({ error: "One or more image uploads have expired. Please choose them again." });
+        return;
+      }
+      pendingObjects = pending.rows.map(({ id, objectPath }) => ({ id, objectPath }));
+      for (const pendingImage of pending.rows) {
+        const stored = await fetch(await signedStorageUrl(pendingImage.objectPath, "GET", 120), { signal: AbortSignal.timeout(30_000) });
+        const storedBytes = stored.ok ? await readFeedbackImageAtMost(stored) : new Uint8Array();
+        const detectedType = stored.ok && storedBytes.length === Number(pendingImage.byteSize)
+          ? detectFeedbackImageContentType(storedBytes)
+          : null;
+        if (!stored.ok || !detectedType || detectedType !== pendingImage.declaredType) {
+          await Promise.all(pendingObjects.map((item) => discardPendingFeedbackImage(item.id)));
+          pendingObjects = [];
+          res.status(400).json({ error: "One or more images did not match their declared format" });
+          return;
+        }
+      }
+    }
     const client = await pool.connect();
-    let committed = false;
+    let result;
     try {
       await client.query("BEGIN");
-      const result = await client.query(
-        `INSERT INTO ${schema}.style_feedback
-          (submitter_name,submitter_team,submitter_department,style_id,style_number,colourway,style_name_freetext,feedback_types,sentiment,urgency,comment_text,pulse_id,pulse_mode)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8::text[],$9,$10,$11,$12,$13)
-         RETURNING id,submitter_name AS "submitterName",submitter_team AS "submitterTeam",
-          submitter_department AS "submitterDepartment",style_id AS "styleId",style_number AS "styleNumber",colourway,
-          style_name_freetext AS "styleNameFreetext",feedback_types AS "feedbackTypes",
-          sentiment,urgency,comment_text AS "commentText",pulse_id AS "pulseId",pulse_mode AS "pulseMode",reviewed,reviewed_by AS "reviewedBy",
-          reviewed_at AS "reviewedAt",created_at AS "createdAt"`,
-        [submitterName, submitterTeam, submitterDepartment, styleId, styleNumber, requestedColourway, styleName, feedbackTypes, sentiment, urgency, commentText, resolvedPulseId, pulseMode],
+      result = await client.query(
+      `INSERT INTO ${schema}.style_feedback
+        (submitter_name,submitter_team,style_id,style_number,colourway,style_name_freetext,feedback_types,sentiment,urgency,comment_text,pulse_id,pulse_mode)
+       VALUES ($1,$2,$3,$4,$5,$6,$7::text[],$8,$9,$10,$11,$12)
+       RETURNING id,submitter_name AS "submitterName",submitter_team AS "submitterTeam",
+        style_id AS "styleId",style_number AS "styleNumber",colourway,
+        style_name_freetext AS "styleNameFreetext",feedback_types AS "feedbackTypes",
+        sentiment,urgency,comment_text AS "commentText",pulse_id AS "pulseId",pulse_mode AS "pulseMode",reviewed,reviewed_by AS "reviewedBy",
+        reviewed_at AS "reviewedAt",created_at AS "createdAt"`,
+        [submitterName, submitterTeam, styleId, styleNumber, requestedColourway, styleName, feedbackTypes, sentiment, urgency, commentText, resolvedPulseId, pulseMode],
       );
-      const feedback = result.rows[0];
-      const attachments = [];
-      for (const attachment of preparedAttachments.attachments) {
-        const inserted = await client.query(
-          `INSERT INTO ${schema}.style_feedback_attachments
-            (feedback_id,object_path,original_name,content_type,byte_size)
-           VALUES ($1,$2,$3,$4,$5)
-           RETURNING id,feedback_id AS "feedbackId",original_name AS filename,
-             content_type AS "contentType",byte_size AS "byteSize"`,
-          [feedback.id, attachment.objectPath, attachment.originalName, attachment.contentType, attachment.byteSize],
+      if (requestedImageTokens.length) {
+        const attached = await client.query(
+          `UPDATE ${schema}.style_feedback_images
+              SET feedback_id=$1,upload_token=NULL,expires_at=NOW()
+            WHERE upload_token=ANY($2::text[]) AND feedback_id IS NULL AND uploaded_at IS NOT NULL
+            RETURNING id`,
+          [result.rows[0].id, requestedImageTokens],
         );
-        attachments.push(inserted.rows[0]);
+        if (attached.rows.length !== requestedImageTokens.length) throw new Error("Feedback image association changed before submission completed");
       }
       await client.query("COMMIT");
-      committed = true;
-      res.status(201).json(feedbackPayload({ ...feedback, attachments }));
     } catch (error) {
       await client.query("ROLLBACK");
-      if (!committed) {
-        await Promise.all(preparedAttachments.attachments.map((attachment) => deleteFeedbackAttachmentObject(attachment.objectPath)));
-      }
       throw error;
     } finally {
       client.release();
     }
+    res.status(201).json(feedbackPayload(result.rows[0]));
   } catch (error) {
+    if (pendingObjects.length) {
+      await Promise.all(pendingObjects.map((item) => discardPendingFeedbackImage(item.id)));
+    }
     next(error);
   }
 });
 
 router.use(requireUser);
-
-router.get("/feedback/:feedbackId/attachments/:attachmentId", async (req, res, next) => {
-  try {
-    const feedbackId = Number(req.params.feedbackId);
-    const attachmentId = Number(req.params.attachmentId);
-    if (!Number.isInteger(feedbackId) || feedbackId <= 0 || !Number.isInteger(attachmentId) || attachmentId <= 0) {
-      res.status(404).json({ error: "Feedback image not found" });
-      return;
-    }
-    const attachment = await pool.query<{ objectPath: string; contentType: string; originalName: string }>(
-      `SELECT a.object_path AS "objectPath",a.content_type AS "contentType",a.original_name AS "originalName"
-       FROM ${schema}.style_feedback_attachments a
-       WHERE a.id=$1 AND a.feedback_id=$2`,
-      [attachmentId, feedbackId],
-    );
-    const row = attachment.rows[0];
-    if (!row) {
-      res.status(404).json({ error: "Feedback image not found" });
-      return;
-    }
-    const object = await fetch(await signedStorageUrl(row.objectPath, "GET", 300));
-    if (!object.ok || !object.body) {
-      res.status(404).json({ error: "Feedback image not found" });
-      return;
-    }
-    res.setHeader("Content-Type", row.contentType);
-    res.setHeader("Content-Disposition", `inline; filename="${row.originalName.replace(/["\\]/g, "_")}"`);
-    res.setHeader("Cache-Control", "private, max-age=300");
-    Readable.fromWeb(object.body as ReadableStream<Uint8Array>).pipe(res);
-  } catch (error) {
-    next(error);
-  }
-});
 
 router.post("/feedback/pulses", async (req: AuthRequest, res, next) => {
   try {
@@ -4109,20 +4173,15 @@ router.get("/feedback", async (req: AuthRequest, res, next) => {
     }
     const result = await pool.query(
        `SELECT f.id,f.submitter_name AS "submitterName",f.submitter_team AS "submitterTeam",
-         f.submitter_department AS "submitterDepartment",
          f.style_id AS "styleId",COALESCE(NULLIF(TRIM(s.name),''),NULLIF(TRIM(f.style_name_freetext),''),'Unassigned style') AS "styleName",
          COALESCE(s.code,f.style_number) AS "styleNumber",s.image AS "styleImage",f.colourway,
          f.style_name_freetext AS "styleNameFreetext",
+         (SELECT COALESCE(jsonb_agg(jsonb_build_object(
+             'id',i.id,'filename',i.original_name,'contentType',i.content_type,'sizeBytes',i.byte_size
+           ) ORDER BY i.id),'[]'::jsonb)
+            FROM ${schema}.style_feedback_images i WHERE i.feedback_id=f.id) AS "imageAttachments",
         f.feedback_types AS "feedbackTypes",f.sentiment,f.urgency,f.comment_text AS "commentText",
-         f.reviewed,f.reviewed_by AS "reviewedBy",f.reviewed_at AS "reviewedAt",f.created_at AS "createdAt",
-         COALESCE((
-           SELECT json_agg(json_build_object(
-             'id',a.id,'feedbackId',a.feedback_id,'filename',a.original_name,
-             'contentType',a.content_type,'byteSize',a.byte_size
-           ) ORDER BY a.id)
-           FROM ${schema}.style_feedback_attachments a
-           WHERE a.feedback_id=f.id
-         ), '[]'::json) AS attachments
+        f.reviewed,f.reviewed_by AS "reviewedBy",f.reviewed_at AS "reviewedAt",f.created_at AS "createdAt"
        FROM ${schema}.style_feedback f
         LEFT JOIN ${schema}.styles s ON s.id=f.style_id AND ${allowedBrand("s")}
        WHERE ${clauses.join(" AND ")}
@@ -4134,14 +4193,14 @@ router.get("/feedback", async (req: AuthRequest, res, next) => {
       `WITH base AS (
         SELECT f.*,COALESCE(NULLIF(TRIM(s.name),''),NULLIF(TRIM(f.style_name_freetext),''),'Unassigned style') AS style_name
          FROM ${schema}.style_feedback f LEFT JOIN ${schema}.styles s ON s.id=f.style_id AND ${allowedBrand("s")}
-          WHERE f.created_at >= date_trunc('quarter', CURRENT_DATE)
+         WHERE f.created_at >= ${FEEDBACK_QUARTER_START_SQL}
            AND (f.style_id IS NULL OR s.id IS NOT NULL)
       )
       SELECT COUNT(*)::int AS "totalSubmissionsThisQuarter",
         (SELECT style_name FROM base WHERE style_name <> 'Unassigned style'
-         GROUP BY style_name ORDER BY COUNT(*) DESC,style_name LIMIT 1) AS "mostFlaggedStyle",
+         GROUP BY style_name ORDER BY COUNT(*) DESC,style_name LIMIT 1) AS "mostFlaggedStyleThisQuarter",
         (SELECT type FROM base,UNNEST(feedback_types) AS type
-         GROUP BY type ORDER BY COUNT(*) DESC,type LIMIT 1) AS "mostCommonFeedbackType",
+         GROUP BY type ORDER BY COUNT(*) DESC,type LIMIT 1) AS "mostCommonFeedbackTypeThisQuarter",
         COALESCE(ROUND(100.0 * COUNT(*) FILTER (WHERE sentiment='negative') / NULLIF(COUNT(*),0),1),0)::float AS "negativePercentThisQuarter"
        FROM base`,
     );
@@ -4162,8 +4221,8 @@ router.get("/feedback", async (req: AuthRequest, res, next) => {
       viewer: { role: req.workspaceUser?.role ?? null },
       stats: quarterly.rows[0] ?? {
         totalSubmissionsThisQuarter: 0,
-        mostFlaggedStyle: null,
-        mostCommonFeedbackType: null,
+        mostFlaggedStyleThisQuarter: null,
+        mostCommonFeedbackTypeThisQuarter: null,
         negativePercentThisQuarter: 0,
       },
       submissions: result.rows.map((row) => feedbackPayload(row)),
@@ -4180,6 +4239,40 @@ router.get("/feedback", async (req: AuthRequest, res, next) => {
         responseCount: Number(row.responseCount ?? 0),
       })),
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get("/feedback/images/:id", async (req, res, next) => {
+  try {
+    const imageId = Number(req.params.id);
+    if (!Number.isInteger(imageId) || imageId < 1) {
+      res.status(404).json({ error: "Image not found" });
+      return;
+    }
+    const image = await pool.query<{ objectPath: string; originalName: string; contentType: string }>(
+      `SELECT object_path AS "objectPath",original_name AS "originalName",content_type AS "contentType"
+         FROM ${schema}.style_feedback_images
+        WHERE id=$1 AND feedback_id IS NOT NULL`,
+      [imageId],
+    );
+    const row = image.rows[0];
+    if (!row) {
+      res.status(404).json({ error: "Image not found" });
+      return;
+    }
+    const object = await fetch(await signedStorageUrl(row.objectPath, "GET", 300), { signal: AbortSignal.timeout(30_000) });
+    if (!object.ok || !object.body) {
+      res.status(404).json({ error: "Image not found" });
+      return;
+    }
+    const safeFilename = row.originalName.replace(/["\\\r\n]/g, "_") || "feedback-image";
+    const download = String(req.query.download ?? "") === "1";
+    res.setHeader("Content-Type", row.contentType);
+    res.setHeader("Content-Disposition", `${download ? "attachment" : "inline"}; filename="${safeFilename}"`);
+    res.setHeader("Cache-Control", "private, no-store");
+    Readable.fromWeb(object.body as ReadableStream<Uint8Array>).pipe(res);
   } catch (error) {
     next(error);
   }
@@ -7181,6 +7274,10 @@ httpServer.listen(port, "0.0.0.0", () => {
       schemaReady = true;
       lastDbProbeResult = true;
       console.log("Vivo workspace database ready");
+      void cleanupExpiredFeedbackImageUploads().catch((error) => console.warn("Unable to clean expired feedback images", error));
+      setInterval(() => {
+        void cleanupExpiredFeedbackImageUploads().catch((error) => console.warn("Unable to clean expired feedback images", error));
+      }, 5 * 60 * 1000).unref();
     })
     .catch(async (error) => {
       console.error("Unable to initialise workspace database", error);
