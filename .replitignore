@@ -4,8 +4,16 @@
 # No need to store the pnpm store twice.
 .local
 
+# Editor/runtime metadata is not part of the application image.
+.config
+.git
+
 # Vite / build tool cache — grows continuously during dev, not needed at runtime.
 .cache
+
+# Publishing installs the workspace dependencies during the build; do not copy
+# development node_modules into the image first.
+**/node_modules
 
 # Legacy dashboard app that is no longer used in production.
 # Its node_modules alone are ~1.1 GiB.

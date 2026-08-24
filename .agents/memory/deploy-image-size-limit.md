@@ -11,4 +11,7 @@ description: Publish fails with "image size is over the limit of 8 GiB" — caus
 - Diagnose with `du -xsh * .[!.]*` at workspace root — remember `du dir/*` misses dot-children (`.config` looked 151M until `.config/.[!.]*` revealed vscode-server).
 - Safe to delete anytime: `.config/.vscode-server` (may need 2 rm passes while an editor is connected), `.config/npm`, `.cache/{pnpm,typescript,uv,node-gyp,prisma,jedi,pip}`, `dashboard/node_modules` (legacy app, nothing runs it), `loyalty-app/*/node_modules` (nothing runs the node backend; the Python API serves `the-loyalty-app/build/client`, and deployment build never rebuilds loyalty-app).
 - `.local/share/pnpm` (store) is safe too: root `node_modules` files are hardlinks, so deleting the store leaves them working (dev servers verified fine after).
-- Leave `.local/state/replit` (platform state), root `node_modules`, `.pythonlibs`, `attached_assets`.
+- Keep `.local/state/replit` (platform state), root `node_modules`, `.pythonlibs`,
+  and `attached_assets` available during development. For publishing, exclude
+  `.config`, `.git`, and `**/node_modules` with `.replitignore` rather than
+  deleting local dependencies; the managed build reinstalls what it needs.
