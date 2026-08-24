@@ -38,6 +38,10 @@ const clearLegacyToken = () => {
 };
 
 const AuthContext = createContext(null);
+// The route guard depends on this request. A busy BI worker must not leave the
+// entire application on a blank loading screen for Axios's general 120-second
+// API timeout; a short failure safely falls through to the sign-in screen.
+const SESSION_CHECK_TIMEOUT_MS = 12_000;
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
@@ -49,7 +53,7 @@ export const AuthProvider = ({ children }) => {
   const checkAuth = useCallback(async () => {
     clearLegacyToken();
     try {
-      const r = await api.get("/auth/me");
+      const r = await api.get("/auth/me", { timeout: SESSION_CHECK_TIMEOUT_MS });
       const u = r?.data && r.data.user_id ? r.data : null;
       setUser(u);
       return u;
