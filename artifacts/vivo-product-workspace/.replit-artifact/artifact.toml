@@ -56,7 +56,7 @@ run = "pnpm --filter @workspace/vivo-product-workspace run server:dev"
 args = [ "pnpm", "--filter", "@workspace/vivo-product-workspace", "run", "build:server" ]
 
 [services.production.run]
-args = [ "pnpm", "--filter", "@workspace/vivo-product-workspace", "run", "server" ]
+args = [ "node", "/home/runner/workspace/artifacts/vivo-product-workspace/server/dist/index.cjs" ]
 
 [services.production.run.env]
 PORT = "23661"

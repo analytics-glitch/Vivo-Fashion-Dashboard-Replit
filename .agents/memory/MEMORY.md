@@ -138,6 +138,7 @@
 - [Product Workspace L10](product-workspace-l10.md) — keep EOS meeting data in the workspace schema; migrate existing public rocks once, then let workspace status edits own the records.
 - [Product Workspace Resources](product-workspace-resources.md) — markdown reference library is idempotently seeded, server-admin-gated for mutations, and rendered with safe structured tables.
 - [Artifact service environments](artifact-service-environments.md) — when adding an API service, preserve the web artifact's global BASE_PATH env block or its managed Vite workflow will fail before startup.
+- [Production Node server bundling](artifact-production-node-bundling.md) — artifact runtime may omit workspace node_modules; bundle service dependencies during the production build.
 - [Product Workspace startup readiness](product-workspace-startup-readiness.md) — HTTP readiness and identity bootstrap must survive PostgreSQL timeouts; optional DDL cannot gate the shell.
 - [Product Workspace brand scope](product-workspace-brand-scope.md) — every style surface is server-filtered to Vivo, Safari by Vivo, Safari, and Zoya.
 - [Product Workspace range sources](product-workspace-plm-source.md) — Style Development uses pd_styles; Assortment mirrors BI catalogue/override/stock rules and never mixes in PLM rows.

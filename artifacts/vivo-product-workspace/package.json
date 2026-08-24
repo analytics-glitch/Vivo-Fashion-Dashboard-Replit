@@ -6,8 +6,8 @@
   "scripts": {
     "dev": "vite --config vite.config.ts --host 0.0.0.0",
     "server:dev": "PORT=23661 tsx server/index.ts",
-    "build:server": "tsc -p server/tsconfig.json",
-    "server": "node server/dist/index.js",
+    "build:server": "tsc -p server/tsconfig.json && ../../node_modules/.pnpm/esbuild@0.27.3/node_modules/esbuild/bin/esbuild server/index.ts --bundle --platform=node --format=cjs --target=node20 --outfile=server/dist/index.cjs",
+    "server": "node server/dist/index.cjs",
     "build": "vite build --config vite.config.ts",
     "serve": "vite preview --config vite.config.ts --host 0.0.0.0",
     "typecheck": "tsc -p tsconfig.json --noEmit",
