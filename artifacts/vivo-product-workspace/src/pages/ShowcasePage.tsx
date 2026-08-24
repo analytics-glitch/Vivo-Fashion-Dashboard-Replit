@@ -57,6 +57,71 @@ function PurposeTag({ purpose }: { purpose: string }) {
   return <span className={`sc-purpose sc-purpose-${purpose.toLowerCase().replaceAll(' ', '-')}`}>{purpose}</span>;
 }
 
+const Q2_TREND_BOARD_TITLE = 'Q2 2026 Trend Analysis';
+const Q2_TREND_SECTION_TITLES = ['COLOURS', 'FABRICS', 'PRINTS', 'STYLE FEATURES'] as const;
+type Q2TrendSectionTitle = typeof Q2_TREND_SECTION_TITLES[number];
+
+function parseTrendBody(body?: string | null) {
+  const lines = (body || '').split('\n').map((line) => line.trim()).filter(Boolean);
+  const [intro = '', ...items] = lines;
+  return { intro, rows: items.map((line) => line.split('|').map((part) => part.trim())) };
+}
+
+function TrendSectionContent({ title, body }: { title: Q2TrendSectionTitle; body?: string | null }) {
+  const { intro, rows } = parseTrendBody(body);
+  if (title === 'COLOURS') {
+    const colours = rows
+      .map(([name, hex, description]) => ({ name, hex, description }))
+      .filter((colour) => colour.name && /^#[\da-f]{6}$/i.test(colour.hex || ''));
+    return (
+      <div className="sc-trend-colours" data-testid="trend-content-colours">
+        <p className="sc-trend-intro">{intro}</p>
+        {colours.map((colour) => (
+          <article className="sc-trend-colour" key={colour.name}>
+            <div className="sc-trend-colour-swatch" style={{ backgroundColor: colour.hex }} aria-label={`${colour.name}, ${colour.hex}`} />
+            <div className="sc-trend-colour-copy">
+              <div><strong>{colour.name}</strong><code>{colour.hex}</code></div>
+              {colour.description && <p>{colour.description}</p>}
+            </div>
+          </article>
+        ))}
+      </div>
+    );
+  }
+  if (title === 'FABRICS') {
+    return (
+      <div className="sc-trend-fabrics" data-testid="trend-content-fabrics">
+        <p className="sc-trend-intro">{intro}</p>
+        <div>{rows.map(([fabric]) => fabric && <span className="sc-trend-fabric-chip" key={fabric}>{fabric}</span>)}</div>
+      </div>
+    );
+  }
+  if (title === 'PRINTS') {
+    const patterns = { 'Polka Dots': 'polka', 'Gingham Sets': 'gingham', 'Striped Sets': 'stripes' } as Record<string, string>;
+    return (
+      <div className="sc-trend-prints" data-testid="trend-content-prints">
+        <p className="sc-trend-intro">{intro}</p>
+        {rows.map(([name, note]) => name && (
+          <article className="sc-trend-print-card" key={name}>
+            <div className={`sc-trend-pattern sc-trend-pattern-${patterns[name] || 'plain'}`} aria-hidden="true" />
+            <div><strong>{name}</strong>{note && <p>{note}</p>}</div>
+          </article>
+        ))}
+      </div>
+    );
+  }
+  return (
+    <div className="sc-trend-features-wrap" data-testid="trend-content-style-features">
+      <p className="sc-trend-intro">{intro}</p>
+      <ol className="sc-trend-features">
+        {rows.map(([name, description], index) => name && (
+          <li key={name}><span>{String(index + 1).padStart(2, '0')}</span><div><strong>{name}</strong><p>{description}</p></div></li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
 export default function ShowcasePage() {
   const params = useParams<{ id?: string }>();
   if (params.id) return <ShowcaseBoardPage id={Number(params.id)} />;
@@ -263,6 +328,7 @@ function ShowcaseBoardPage({ id }: { id: number }) {
             <SectionBlock
               key={section.id}
               section={section}
+               trendTitle={data.title === Q2_TREND_BOARD_TITLE && Q2_TREND_SECTION_TITLES.includes(section.title.trim().toUpperCase() as Q2TrendSectionTitle) ? section.title.trim().toUpperCase() as Q2TrendSectionTitle : undefined}
               editing={editing}
               onCommitTitle={(title) => stageSection(section.id, { title })}
               onCommitBody={(body) => stageSection(section.id, { body })}
@@ -313,8 +379,9 @@ function ShowcaseBoardPage({ id }: { id: number }) {
   );
 }
 
-function SectionBlock({ section, editing, onCommitTitle, onCommitBody, onRemove, onUpload, onPullPlm, onRemoveImage, uploading }: {
+function SectionBlock({ section, trendTitle, editing, onCommitTitle, onCommitBody, onRemove, onUpload, onPullPlm, onRemoveImage, uploading }: {
   section: ShowcaseSection; editing: boolean; onCommitTitle: (title: string) => void; onCommitBody: (body: string) => void;
+  trendTitle?: Q2TrendSectionTitle;
   onRemove: () => void; onUpload: (event: ChangeEvent<HTMLInputElement>) => void; onPullPlm: () => void; onRemoveImage: (id: number) => void; uploading: boolean;
 }) {
   const fileInput = useRef<HTMLInputElement>(null);
@@ -325,7 +392,12 @@ function SectionBlock({ section, editing, onCommitTitle, onCommitBody, onRemove,
         <Editable as="h2" value={section.title} editing={editing} onCommit={onCommitTitle} className="sc-section-title" placeholder="Section title" testId={`text-section-title-${section.id}`} />
         {editing && <button className="icon-button sc-section-remove" onClick={onRemove} aria-label="Remove section" data-testid={`button-remove-section-${section.id}`}><Trash2 size={15} /></button>}
       </div>
-      <Editable as="p" value={section.body} editing={editing} onCommit={onCommitBody} className="sc-section-body" placeholder="Write the story for this section…" testId={`text-section-body-${section.id}`} />
+       {trendTitle ? (
+         <>
+           {editing && <Editable as="p" value={section.body} editing={editing} onCommit={onCommitBody} className="sc-section-body" placeholder="Write the story for this section…" testId={`text-section-body-${section.id}`} />}
+           <TrendSectionContent title={trendTitle} body={section.body} />
+         </>
+       ) : <Editable as="p" value={section.body} editing={editing} onCommit={onCommitBody} className="sc-section-body" placeholder="Write the story for this section…" testId={`text-section-body-${section.id}`} />}
       {(images.length > 0 || editing) && (
         <div className={`sc-image-grid sc-grid-${Math.min(images.length || 1, 3)}`}>
           {images.map((image) => (

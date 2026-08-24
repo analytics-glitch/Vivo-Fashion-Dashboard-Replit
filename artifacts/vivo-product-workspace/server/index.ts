@@ -186,6 +186,56 @@ const boardSeeds = [
   ["Leadership review", "A concise view of the work that needs a yes, no, or next step."],
 ];
 
+const Q2_TREND_BOARD_TITLE = "Q2 2026 Trend Analysis";
+const Q2_TREND_BOARD_DESCRIPTION = "Sourced from the design trend deck for the Buying Council and Scouting Circle.";
+const Q2_TREND_SECTION_SEEDS = [
+  ["COLOURS", [
+    "A calm base of softened neutrals, sun-warmed accents, and confident blue-green notes for Q2 2026.",
+    "Butter Yellow | #EBCB68 | A sunlit accent that brings warmth without overpowering the story.",
+    "Dusty Rose | #C98D8E | A softened romantic note with a grown-up, grounded feel.",
+    "Terracotta | #B8664C | Earth-warmed energy for confident separates and print grounds.",
+    "Ocean Blue | #3E718A | A clear, assured blue that keeps the palette connected to water and sky.",
+    "Olive Leaf | #7B8660 | A natural green that gives utility pieces a refined, modern calm.",
+    "Cocoa Brown | #674A3D | A rich neutral for depth, polish, and easy tonal dressing.",
+    "Sky Mist | #AFC8CC | A quiet blue-green lightness for airy layers and relaxed tailoring.",
+    "Soft Airy White | #F7F3EA | An off-white cream base with a calm, modern-minimalist feel.",
+  ].join("\n")],
+  ["FABRICS", [
+    "Base cloths that balance breathable ease, quiet texture, fluid movement, and a considered handfeel.",
+    "Linen Blend",
+    "Cotton Poplin",
+    "Cotton Voile",
+    "Tencel Twill",
+    "Viscose Crepe",
+    "Silk Habotai",
+    "Recycled Satin",
+    "Ramie Slub",
+    "Lightweight Denim",
+    "Fine Gauge Knit",
+  ].join("\n")],
+  ["PRINTS", [
+    "Three pattern families to carry the season story from easy coordinates to expressive statement pieces.",
+    "Polka Dots | Playful punctuation, scaled from delicate spots to confident graphic repeats.",
+    "Gingham Sets | A familiar check made modern through coordinated separates and varied scale.",
+    "Striped Sets | Directional lines that bring rhythm to relaxed tailoring and easy coordinates.",
+  ].join("\n")],
+  ["STYLE FEATURES", [
+    "Construction directions that make familiar garments feel fresh, useful, and distinctly Vivo.",
+    "Sculpted waist seam | Curved panel lines shape the torso without adding bulk.",
+    "Soft utility pocket | Low-profile patch pockets add function to fluid dresses and skirts.",
+    "Asymmetric wrap closure | Offset ties create adjustable movement across the body.",
+    "Elongated cuff | Extended cuffs finish relaxed sleeves with a precise, rolled-up ease.",
+    "Pleated volume | Controlled pleats add movement through trousers, skirts, and dresses.",
+    "Cut-out neckline | Small considered openings bring lightness while keeping coverage.",
+    "Statement shoulder | A gently built shoulder gives simple separates a confident line.",
+    "Draped side panel | A floating panel creates movement at the hip and breaks clean columns.",
+    "Adjustable drawcord | Fine drawcords let the wearer tune shape and comfort.",
+    "Layered hem | A stepped or split hem gives everyday silhouettes a light, directional finish.",
+    "Exposed topstitch | Tonal topstitching traces construction and elevates utility cloth.",
+    "Convertible tie detail | A tie can be worn loose, wrapped, or knotted for styling flexibility.",
+  ].join("\n")],
+] as const;
+
 const TEAM_DIRECTORY_SEEDS = [
   ["Leadership", "Head of Product", "Sets the product direction and keeps the range connected to the Vivo customer.", true, 0],
   ["Leadership", "Product Director", "Brings design, development, buying, and planning together around the season.", false, 1],
@@ -1897,6 +1947,26 @@ async function ensureSchema() {
                 ($1,'Review proto notes','One open fit point remains before the next sample round.','brief',1,$4,'["fit","next"]'::jsonb,'["Technical team"]'::jsonb,$3)
          ON CONFLICT DO NOTHING`,
         [boardId, styleResult.rows[0]?.id ?? null, userId, styleResult.rows[1]?.id ?? null],
+      );
+    }
+  }
+
+  const trendBoardInsert = await pool.query<{ id: number }>(
+    `INSERT INTO ${schema}.showcase_boards
+       (title,purpose,description,creator_user_id,creator_name,creator_role)
+     SELECT $1,'Trend Brief',$2,NULL,'Vivo Product Team','Buying Council · Scouting Circle'
+     WHERE NOT EXISTS (SELECT 1 FROM ${schema}.showcase_boards WHERE title=$1)
+     RETURNING id`,
+    [Q2_TREND_BOARD_TITLE, Q2_TREND_BOARD_DESCRIPTION],
+  );
+  const trendBoardId = trendBoardInsert.rows[0]?.id;
+  if (trendBoardId) {
+    for (let position = 0; position < Q2_TREND_SECTION_SEEDS.length; position += 1) {
+      const [title, body] = Q2_TREND_SECTION_SEEDS[position];
+      await pool.query(
+        `INSERT INTO ${schema}.showcase_sections (board_id,title,body,position)
+         VALUES ($1,$2,$3,$4)`,
+        [trendBoardId, title, body, position],
       );
     }
   }
