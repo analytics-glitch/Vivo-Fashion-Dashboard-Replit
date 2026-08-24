@@ -5242,11 +5242,11 @@ def _rollup_fresh(name, min_schema=None):
 
 
 @app.get("/api/")
-def root():
+async def root():
     return {"status": "ok", "service": "Vivo BI API (PostgreSQL)"}
 
 @app.get("/api/healthz")
-def healthz():
+async def healthz():
     # Lightweight liveness probe — deliberately does NOT touch the DB so it
     # stays green even if Postgres is briefly saturated, and is whitelisted in
     # _AUTH_PUBLIC_EXACT so the platform probe never gets a 401.
@@ -5254,7 +5254,7 @@ def healthz():
 
 
 @app.get("/api/environment")
-def environment_signal():
+async def environment_signal():
     # Public, DB-free environment signal consumed by every staff web surface to
     # decide whether to show the development-preview banner. Server-side
     # detection: Replit sets REPLIT_DEPLOYMENT only in published deployments
@@ -5266,7 +5266,15 @@ def environment_signal():
 
 
 @app.get("/api/readyz")
-def readyz():
+async def readyz():
+    # Keep readiness probes off Starlette's shared sync worker pool. During a
+    # dashboard-query burst that pool can be full of long-running PostgreSQL
+    # requests; the probe must still be admitted so a busy-but-live instance is
+    # not reported as down. The database work itself remains in a worker thread.
+    return await run_in_threadpool(_readyz_sync)
+
+
+def _readyz_sync():
     """Readiness probe for deploy promotion + external monitors.
 
     Distinct from /api/healthz (liveness, deliberately DB-free): readiness asserts

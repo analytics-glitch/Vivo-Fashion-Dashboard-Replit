@@ -37,3 +37,8 @@ over HTTP (not just the DB) needs the same two guards: boot grace + first-
 timeout abort. When a monitor flags an outage, check deployment logs for the
 healthcheck line and the access-log silence window before assuming real
 downtime — a single failed probe cycle recovers on the next check.
+
+**Probe implementation rule:** public liveness/root probes must be async and
+DB-free; readiness may perform DB checks only after offloading them from the
+shared sync worker pool. A live API can otherwise look offline when BI queries
+occupy every worker.
