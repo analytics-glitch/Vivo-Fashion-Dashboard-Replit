@@ -78,7 +78,18 @@ type FeedbackAnalytics = {
   stylePulses?: StylePulse[];
 };
 
-const feedbackTypes = ["Fit & Sizing", "Fabric & Quality", "Colour & Print", "Price & Value", "Styling & VM", "Customer Reaction", "Stock & Availability", "Other"];
+const feedbackTypeOptions = [
+  { label: "Sizing", hint: "e.g. Not true to size" },
+  { label: "Fit", hint: "e.g. Arms fit very tight" },
+  { label: "Fabric Quality", hint: undefined },
+  { label: "Stitching Quality", hint: "e.g. Seams ripping" },
+  { label: "Price", hint: "e.g. Customers complaining it's too expensive" },
+  { label: "Stock Availability", hint: "e.g. Supply not meeting demand" },
+  { label: "Style Adjustments", hint: "e.g. Too short" },
+  { label: "Colour & Print", hint: "e.g. Customers asking for it in Red" },
+  { label: "Other", hint: undefined },
+] as const;
+const feedbackTypes = feedbackTypeOptions.map(({ label }) => label);
 const pulseInvestigateTypes = ["Fit doesn't work for our customer", "Fabric feels low quality", "Price feels too high", "Colour/print not right for this market", "Poor VM / hard to style on the floor", "Customers haven't noticed it", "Size availability issues", "Strong competition from another style", "Other"];
 const pulseChampionTypes = ["The fit is excellent", "Fabric quality stands out", "Great value for money", "Colour/print is a hit", "Versatile — works for multiple occasions", "Customers are recommending it to others", "Strong repeat purchases", "VM / styling is working well", "Other"];
 type PulseMode = "investigate" | "champion";
@@ -498,7 +509,10 @@ export function PublicFeedbackPage() {
               <legend>Choose all that apply</legend>
               <div className={`feedback-type-picker ${typesOpen ? "open" : ""}`}>
                 <button type="button" className="feedback-type-trigger" onClick={() => setTypesOpen((open) => !open)} aria-expanded={typesOpen} aria-controls="feedback-type-options"><span>{form.feedbackTypes.length ? `${form.feedbackTypes.length} selected · ${form.feedbackTypes.slice(0, 2).join(", ")}${form.feedbackTypes.length > 2 ? "…" : ""}` : isPulse ? pulseMode === "investigate" ? "Select the barriers you’re hearing" : "Select the reasons customers love it" : "Select one or more issue types"}</span><ChevronDown size={16} /></button>
-                {typesOpen && <div className="feedback-type-options" id="feedback-type-options" role="group" aria-label="Feedback issue types">{pulseTypes.map((type) => <label key={type} className={`feedback-type-option ${form.feedbackTypes.includes(type) ? "selected" : ""}`}><input type="checkbox" checked={form.feedbackTypes.includes(type)} onChange={() => toggleType(type)} data-testid={`checkbox-feedback-type-${type.toLowerCase().replaceAll(" ", "-")}`} /><span>{type}</span>{form.feedbackTypes.includes(type) && <Check size={15} />}</label>)}</div>}
+                 {typesOpen && <div className="feedback-type-options" id="feedback-type-options" role="group" aria-label="Feedback issue types">{pulseTypes.map((type) => {
+                   const hint = !isPulse ? feedbackTypeOptions.find((option) => option.label === type)?.hint : undefined;
+                   return <label key={type} className={`feedback-type-option ${form.feedbackTypes.includes(type) ? "selected" : ""}`}><input type="checkbox" checked={form.feedbackTypes.includes(type)} onChange={() => toggleType(type)} data-testid={`checkbox-feedback-type-${type.toLowerCase().replaceAll(" ", "-")}`} /><span className="feedback-type-copy"><strong>{type}</strong>{hint && <small>{hint}</small>}</span>{form.feedbackTypes.includes(type) && <Check size={15} />}</label>;
+                 })}</div>}
               </div>
             </fieldset>
           </section>

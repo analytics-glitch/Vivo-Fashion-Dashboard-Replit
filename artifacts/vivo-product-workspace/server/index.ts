@@ -2770,7 +2770,7 @@ const FEEDBACK_TEAM_OPTIONS = [
   "Customer Service",
   "Other",
 ] as const;
-const FEEDBACK_TYPE_OPTIONS = ["Fit & Sizing", "Fabric & Quality", "Colour & Print", "Price & Value", "Styling & VM", "Customer Reaction", "Stock & Availability", "Other"] as const;
+const FEEDBACK_TYPE_OPTIONS = ["Sizing", "Fit", "Fabric Quality", "Stitching Quality", "Price", "Stock Availability", "Style Adjustments", "Colour & Print", "Other"] as const;
 const PULSE_INVESTIGATE_OPTIONS = ["Fit doesn't work for our customer", "Fabric feels low quality", "Price feels too high", "Colour/print not right for this market", "Poor VM / hard to style on the floor", "Customers haven't noticed it", "Size availability issues", "Strong competition from another style", "Other"] as const;
 const PULSE_CHAMPION_OPTIONS = ["The fit is excellent", "Fabric quality stands out", "Great value for money", "Colour/print is a hit", "Versatile — works for multiple occasions", "Customers are recommending it to others", "Strong repeat purchases", "VM / styling is working well", "Other"] as const;
 const PULSE_MODES = ["investigate", "champion"] as const;

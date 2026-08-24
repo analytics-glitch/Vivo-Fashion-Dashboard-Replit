@@ -1854,7 +1854,9 @@ a { color: inherit; text-decoration: none; }
 .feedback-type-option { display: flex; align-items: center; gap: 9px; min-height: 35px; padding: 6px 8px; color: #5d6370; cursor: pointer; font: 12px var(--app-font-sans); }
 .feedback-type-option:hover, .feedback-type-option.selected { color: #1A1A2E; background: #fbf5e8; }
 .feedback-type-option input { width: 15px; height: 15px; accent-color: #1A1A2E; }
-.feedback-type-option span { flex: 1; }
+.feedback-type-option .feedback-type-copy { display: grid; gap: 2px; min-width: 0; flex: 1; }
+.feedback-type-option .feedback-type-copy strong { color: inherit; font: inherit; letter-spacing: 0; text-transform: none; }
+.feedback-type-option .feedback-type-copy small { color: #978f84; font: 10px/1.3 var(--app-font-sans); letter-spacing: 0; }
 .feedback-type-option svg { color: #66846f; }
 .feedback-step-more .feedback-field > span { color: #1A1A2E; }
 .feedback-step-images { display: grid; gap: 11px; }
