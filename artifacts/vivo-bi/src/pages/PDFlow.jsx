@@ -71,6 +71,7 @@ const PD_ASSIGNEES = [
   "Jewel","Marion","Mary","Maryann","Mercy","Natasha","Pech","Queen",
   "Re","Rose","Tony","Victoria","Wandia","Wanjohi","Yvonne",
 ];
+const PD_STYLE_DELETE_EMAIL = "marynyambura@vivofashiongroup.com";
 const CATEGORY_SUBCATS = {
   ACCESSORIES:  ["Bangles & Bracelets","Belts","Body Mists & Fragrances","Earrings","Necklaces","Rings","Scarves","Shopping Bags"],
   BOTTOMS:      ["Culottes & Capri Pants","Full Length Pants","Jumpsuits & Playsuits","Leggings","Shorts & Skorts"],
@@ -483,13 +484,15 @@ const FField = ({ label, name, value, onChange, type = "text", placeholder = "" 
 );
 
 // ── Detail drawer with the stage timeline ────────────────────────────────────
-const DetailDrawer = ({ styleId, onClose, onMove, onRefreshBoard, allStages }) => {
+const DetailDrawer = ({ styleId, onClose, onMove, onRefreshBoard, allStages, canDelete }) => {
   const [data, setData] = useState(null);
   const [err, setErr] = useState(null);
   const [editing, setEditing] = useState(false);
   const [form, setForm] = useState({});
   const [saving, setSaving] = useState(false);
   const [saveErr, setSaveErr] = useState(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteErr, setDeleteErr] = useState(null);
 
   const load = () => {
     setData(null); setErr(null); setEditing(false);
@@ -538,6 +541,21 @@ const DetailDrawer = ({ styleId, onClose, onMove, onRefreshBoard, allStages }) =
     }
   };
 
+  const deleteStyle = async () => {
+    if (!st || !window.confirm(`Delete “${st.style_name}” from Product Development Flow? This removes the style and its stage history.`)) return;
+    setDeleting(true);
+    setDeleteErr(null);
+    try {
+      await api.delete(`/pd/styles/${styleId}`);
+      onClose();
+      onRefreshBoard?.();
+    } catch (e) {
+      setDeleteErr(e?.response?.data?.detail || e.message || "Could not delete style");
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   const st = data?.style;
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex justify-end" onClick={onClose}>
@@ -546,16 +564,26 @@ const DetailDrawer = ({ styleId, onClose, onMove, onRefreshBoard, allStages }) =
           <h3 className="font-extrabold text-[16px]">{st ? st.style_name : "Loading…"}</h3>
           <div className="flex items-center gap-2">
             {st && !editing && (
-              <button onClick={() => startEdit(st)}
-                className="inline-flex items-center gap-1 text-[11.5px] font-semibold text-brand hover:text-brand-deep"
-                data-testid="pd-edit-details-btn" title="Edit style details">
-                <PencilSimple size={14} /> Edit
-              </button>
+              <>
+                <button onClick={() => startEdit(st)}
+                  className="inline-flex items-center gap-1 text-[11.5px] font-semibold text-brand hover:text-brand-deep"
+                  data-testid="pd-edit-details-btn" title="Edit style details">
+                  <PencilSimple size={14} /> Edit
+                </button>
+                {canDelete && (
+                  <button onClick={deleteStyle} disabled={deleting}
+                    className="inline-flex items-center gap-1 text-[11.5px] font-semibold text-rose-600 hover:text-rose-800 disabled:opacity-50"
+                    data-testid="pd-delete-style-btn" title="Delete style">
+                    <Trash size={14} /> {deleting ? "Deleting…" : "Delete"}
+                  </button>
+                )}
+              </>
             )}
             <button onClick={onClose} className="text-muted hover:text-foreground"><X size={18} /></button>
           </div>
         </div>
         {err && <ErrorBox message={err} />}
+        {deleteErr && <div className="mb-3 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-[11.5px] text-rose-700">{deleteErr}</div>}
         {!data && !err && <Loading />}
         {st && (
           <>
@@ -1265,6 +1293,7 @@ const TABS = [
 const PDFlow = () => {
   const { user } = useAuth();
   const isAdmin = (user?.role || "").toLowerCase() === "admin";
+  const canDeleteStyle = isAdmin || (user?.email || "").trim().toLowerCase() === PD_STYLE_DELETE_EMAIL;
   const [tab, setTab] = useState("board");
   const [board, setBoard] = useState(null);
   const [err, setErr] = useState(null);
@@ -1432,7 +1461,7 @@ const PDFlow = () => {
       {detail != null && (
         <DetailDrawer styleId={detail} onClose={() => setDetail(null)} allStages={board.stages}
           onMove={(st) => { setMoving(st); }}
-          onRefreshBoard={refresh} />
+          onRefreshBoard={refresh} canDelete={canDeleteStyle} />
       )}
       {slaOpen && board && (
         <SlaDialog stages={board.stages} onClose={() => setSlaOpen(false)}

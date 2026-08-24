@@ -12,7 +12,8 @@ admin (enforced in clerk_auth_gate). SLA edits are admin-only (checked here).
 
 No Odoo linkage — styles are entered manually at adoption (out of scope by
 design). The movement log is append-only: there are no update/delete endpoints
-for pd_movements, so the audit trail can never be rewritten.
+for pd_movements, so the audit trail can never be rewritten. Style deletion is
+separate and restricted to admins plus the named PD owner.
 """
 
 import base64
@@ -45,6 +46,7 @@ _STAGES = [
 _STAGE_ORDER = {k: i for k, (k2, _, i, *_r) in enumerate(_STAGES) for k in [k2]}
 _STAGE_KEYS = [s[0] for s in _STAGES]
 _STAGE_NAMES = {s[0]: s[1] for s in _STAGES}
+_STYLE_DELETE_EMAILS = {"marynyambura@vivofashiongroup.com"}
 
 
 def _db(sql, params=None, fetch=True):
@@ -274,6 +276,11 @@ def _actor(request: Request):
     return (u.get("email") or "unknown", u.get("name") or u.get("email") or "Unknown", (u.get("role") or "").lower())
 
 
+def _can_delete_style(request: Request):
+    email, _name, role = _actor(request)
+    return role == "admin" or email.strip().lower() in _STYLE_DELETE_EMAILS
+
+
 def _stages():
     return _db("SELECT stage_key, stage_name, sort_order, sla_days, default_role, is_terminal FROM pd_stages ORDER BY sort_order") or []
 
@@ -457,6 +464,41 @@ def register_pd_routes(app, api_pg_module):
         except Exception:
             pass
         return {"ok": True, "style": _style_out(st)}
+
+    @app.delete("/api/pd/styles/{style_id}")
+    def pd_style_delete(style_id: int, request: Request):
+        if not _can_delete_style(request):
+            raise HTTPException(
+                status_code=403,
+                detail="Only admins or marynyambura@vivofashiongroup.com can delete styles",
+            )
+        email, name, _role = _actor(request)
+        st = _style(style_id)
+        _db("DELETE FROM pd_styles WHERE id = %s", (style_id,), fetch=False)
+        try:
+            A._log_activity(
+                request,
+                "DELETE",
+                f"/api/pd/styles/{style_id}",
+                json.dumps({
+                    "action": "pd_style_delete",
+                    "style_id": style_id,
+                    "style_name": st.get("style_name"),
+                    "style_number": st.get("style_number"),
+                    "current_stage": st.get("current_stage"),
+                    "status": st.get("status"),
+                }),
+            )
+        except Exception:
+            pass
+        log.info(
+            "PD style deleted: id=%s style_number=%s stage=%s by=%s",
+            style_id,
+            st.get("style_number"),
+            st.get("current_stage"),
+            email or name,
+        )
+        return {"ok": True, "deleted_style_id": style_id}
 
     @app.get("/api/pd/styles/{style_id}/notes")
     def pd_style_notes_get(style_id: int):

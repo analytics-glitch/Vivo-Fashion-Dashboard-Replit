@@ -1960,10 +1960,19 @@ async def clerk_auth_gate(request: Request, call_next):
 
     # Product Development Flow (/api/pd/*) — the pre-production style kanban.
     # Same audience as the production tracker; SLA edits are additionally
-    # admin-checked inside pd_flow_router.
+    # admin-checked inside pd_flow_router. The named style-delete allowlist is
+    # allowed through this broad audience gate only for the exact DELETE style
+    # endpoint; the router repeats the check so this exception cannot widen any
+    # other PD capability.
+    _pd_style_delete_allowlisted = (
+        request.method == "DELETE"
+        and re.fullmatch(r"/api/pd/styles/\d+", path or "") is not None
+        and (user.get("email") or "").strip().lower()
+            in {"marynyambura@vivofashiongroup.com"}
+    )
     if path.startswith("/api/pd/") and user.get("role") not in (
         "product_development", "production", "leadership", "smt", "admin"
-    ):
+    ) and not _pd_style_delete_allowlisted:
         return JSONResponse({"detail": "Product Development Flow access requires a production, product development, leadership or admin role"}, status_code=403)
 
     # Quality dashboard (/api/quality/*) — repairs, complaints and washing data.
