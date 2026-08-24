@@ -16765,9 +16765,51 @@ def sublimation_fabric_search(q_: str = Query(default="", alias="q"),
 def sublimation_costings_list():
     with _get_conn() as conn:
         _ensure_sublimation_tables(conn)
-        return {"items": q(conn, """
+        items = q(conn, """
             SELECT * FROM sublimation_costings ORDER BY saved_at DESC, id DESC
-        """)}
+        """)
+    # Keep the saved totals/schema unchanged, but expose the same server-derived
+    # BOM lines used by the calculator for detail/print views.  These are
+    # deliberately response-only: nothing client-supplied is persisted.
+    for row in items:
+        comp = _sublim_compute(row)
+        width = float(row.get("fabric_width_m") or 0)
+        gsm = float(row.get("fabric_gsm") or 0)
+        basem = float(row.get("base_fabric_cost_per_m") or 0)
+        ink_cost = float(row.get("ink_cost_per_ml") or 0)
+        sub_pm = float(row.get("sub_paper_cost_per_m") or 0)
+        prot_pm = float(row.get("prot_paper_cost_per_m") or 0)
+        m_per_kg = comp.get("_metres_per_kg")
+        if m_per_kg and gsm > 0 and width > 0:
+            tile = (float(row.get("tile_width_cm") or 0) *
+                    float(row.get("tile_height_cm") or 0)) / 10000.0
+            print_w = width + 2 * float(row.get("print_margin_cm") or 0) / 100.0
+            pm2_per_kg = (1000.0 / gsm) * (print_w / width)
+            ink_q = {
+                "Cyan": (float(row.get("ink_cyan_ml") or 0) / tile * pm2_per_kg) if tile > 0 else 0,
+                "Yellow": (float(row.get("ink_yellow_ml") or 0) / tile * pm2_per_kg) if tile > 0 else 0,
+                "Magenta": (float(row.get("ink_magenta_ml") or 0) / tile * pm2_per_kg) if tile > 0 else 0,
+                "Black": (float(row.get("ink_black_ml") or 0) / tile * pm2_per_kg) if tile > 0 else 0,
+            }
+            lines = [{"name": "Base fabric (greige)", "qty": 1, "uom": "kg",
+                      "cost": basem * m_per_kg, "dp": 3}]
+            for name, qty in ink_q.items():
+                lines.append({"name": "Ink — " + name, "qty": qty, "uom": "ml",
+                              "cost": qty * ink_cost, "dp": 4})
+            lines.extend([
+                {"name": "Sublimation paper", "qty": m_per_kg, "uom": "m",
+                 "cost": m_per_kg * sub_pm, "dp": 3},
+                {"name": "Protective paper", "qty": m_per_kg, "uom": "m",
+                 "cost": m_per_kg * prot_pm, "dp": 3},
+            ])
+            row["bom_lines"] = lines
+            row["bom_material_subtotal"] = comp.get("_material_subtotal_per_kg")
+            row["bom_operation_min_per_kg"] = comp.get("_operation_min_per_kg")
+            row["bom_machine_cost_per_kg"] = comp.get("_machine_cost_per_kg")
+            row["bom_clean_standard_cost_per_kg"] = comp.get("_clean_std_cost_per_kg")
+        else:
+            row["bom_lines"] = []
+    return {"items": items}
 
 @fabric_router.post("/api/fabric/sublimation/costings")
 def sublimation_costing_save(request: Request, body: dict = Body(...)):
