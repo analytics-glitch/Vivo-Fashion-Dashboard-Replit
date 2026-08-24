@@ -28,6 +28,7 @@ import os
 import re
 import logging
 import xmlrpc.client
+import uuid
 from collections import defaultdict
 
 import psycopg2
@@ -48,6 +49,8 @@ COST_FIELD_CANDIDATES = (
     "cost_price_kes", "cost_price", "unit_cost", "price_unit",
     "unit_price", "purchase_price", "standard_cost",
 )
+SYNC_CLAIM_KEY = "production_tracker_sync"
+SYNC_CLAIM_TTL_MINUTES = 20
 
 
 # ----------------------------------------------------------------------
@@ -59,6 +62,55 @@ def odoo_connect():
     models = xmlrpc.client.ServerProxy(f"{ODOO_URL}/xmlrpc/2/object")
     log.info("Connected to Odoo as uid=%s", uid)
     return uid, models
+
+
+def claim_sync():
+    """Claim the production tracker pull across all supervisors.
+
+    The scheduled sync and the watchdog's stale-feed recovery can both request
+    this script. A pooler-safe claim row prevents their intake reconciliation
+    from running concurrently: concurrent delta calculations could otherwise
+    append the same intake movement twice. The lease also expires after a
+    crashed worker, so a later watchdog recovery can take over.
+    """
+    owner = uuid.uuid4().hex
+    conn = psycopg2.connect(DATABASE_URL)
+    try:
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS app_singleflight (
+                    key TEXT PRIMARY KEY,
+                    owner TEXT NOT NULL,
+                    claimed_at TIMESTAMPTZ NOT NULL
+                )
+            """)
+            cur.execute("""
+                INSERT INTO app_singleflight (key, owner, claimed_at)
+                VALUES (%s, %s, now())
+                ON CONFLICT (key) DO UPDATE
+                   SET owner = EXCLUDED.owner, claimed_at = now()
+                 WHERE app_singleflight.claimed_at
+                       < now() - (%s * interval '1 minute')
+                RETURNING key
+            """, (SYNC_CLAIM_KEY, owner, SYNC_CLAIM_TTL_MINUTES))
+            won = cur.fetchone() is not None
+        return conn, owner if won else None
+    except Exception:
+        conn.close()
+        raise
+
+
+def release_sync_claim(conn, owner):
+    """Release a successful or failed claim without deleting a newer owner."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM app_singleflight WHERE key = %s AND owner = %s",
+                (SYNC_CLAIM_KEY, owner),
+            )
+    finally:
+        conn.close()
 
 
 def fetch_buying_orders(uid, models):
@@ -688,40 +740,47 @@ def stamp_sync_heartbeat(cur, status, orders_synced):
 
 
 def main():
-    uid, models = odoo_connect()
-    bos = fetch_buying_orders(uid, models)
-    all_line_ids = [lid for b in bos for lid in b.get("line_ids", [])]
-    lines = fetch_lines(uid, models, all_line_ids)
-    all_variant_ids = [
-        vid for ln in lines for vid in (ln.get("variant_line_ids") or [])
-    ]
-    variants = fetch_variants(uid, models, all_variant_ids)
-    orders, order_lines, order_variants = build(bos, lines, variants)
-
-    # Only orders with a quantity get an intake movement.
-    orders_with_qty = [o for o in orders if o["order_qty"] > 0]
-
-    # The fetch is a FULL refresh of every BO, so any colour line / size variant
-    # not in these sets has been removed upstream in Odoo and must be pruned, or
-    # the report's colour/size counts drift above Odoo truth over time.
-    line_keep = {l["odoo_line_id"] for l in order_lines}
-    variant_keep = {v["odoo_variant_id"] for v in order_variants}
-
-    conn = psycopg2.connect(DATABASE_URL)
+    claim_conn, owner = claim_sync()
+    if owner is None:
+        claim_conn.close()
+        log.info("Production tracker sync already running; skipping duplicate request")
+        return
     try:
-        with conn:
-            with conn.cursor() as cur:
-                ensure_schema(cur)
-                upsert_orders(cur, orders)
-                upsert_lines(cur, order_lines)
-                prune_lines(cur, line_keep)
-                upsert_variants(cur, order_variants)
-                prune_variants(cur, variant_keep)
-                sync_intake(cur, orders_with_qty, order_variants)
-                stamp_sync_heartbeat(cur, "ok", len(orders))
-        log.info("Done: %s buying orders synced", len(orders))
+        uid, models = odoo_connect()
+        bos = fetch_buying_orders(uid, models)
+        all_line_ids = [lid for b in bos for lid in b.get("line_ids", [])]
+        lines = fetch_lines(uid, models, all_line_ids)
+        all_variant_ids = [
+            vid for ln in lines for vid in (ln.get("variant_line_ids") or [])
+        ]
+        variants = fetch_variants(uid, models, all_variant_ids)
+        orders, order_lines, order_variants = build(bos, lines, variants)
+
+        # Only orders with a quantity get an intake movement.
+        orders_with_qty = [o for o in orders if o["order_qty"] > 0]
+
+        # The fetch is a FULL refresh of every BO, so any colour line / size
+        # variant not in these sets has been removed upstream and must be pruned.
+        line_keep = {l["odoo_line_id"] for l in order_lines}
+        variant_keep = {v["odoo_variant_id"] for v in order_variants}
+
+        conn = psycopg2.connect(DATABASE_URL)
+        try:
+            with conn:
+                with conn.cursor() as cur:
+                    ensure_schema(cur)
+                    upsert_orders(cur, orders)
+                    upsert_lines(cur, order_lines)
+                    prune_lines(cur, line_keep)
+                    upsert_variants(cur, order_variants)
+                    prune_variants(cur, variant_keep)
+                    sync_intake(cur, orders_with_qty, order_variants)
+                    stamp_sync_heartbeat(cur, "ok", len(orders))
+            log.info("Done: %s buying orders synced", len(orders))
+        finally:
+            conn.close()
     finally:
-        conn.close()
+        release_sync_claim(claim_conn, owner)
 
 
 if __name__ == "__main__":

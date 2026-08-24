@@ -5,6 +5,7 @@ connection so database failures and each sync-heartbeat state are deterministic.
 """
 
 import json
+import asyncio
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
@@ -82,7 +83,7 @@ class ApiUptimeTests(unittest.TestCase):
         pool = _FakePool(conn)
         with patch.object(api_pg, "_acquire_conn", return_value=(pool, conn)), \
              patch.object(api_pg, "_DATABASE_URL_DIRECT_IS_FALLBACK", True):
-            response = api_pg.readyz()
+            response = asyncio.run(api_pg.readyz())
         return response.status_code, json.loads(response.body)
 
     def test_readyz_reports_starting_when_heartbeat_is_missing(self):
@@ -106,7 +107,7 @@ class ApiUptimeTests(unittest.TestCase):
         with patch.object(
             api_pg, "_acquire_conn", side_effect=RuntimeError("database offline")
         ), patch.object(api_pg, "_DATABASE_URL_DIRECT_IS_FALLBACK", True):
-            response = api_pg.readyz()
+            response = asyncio.run(api_pg.readyz())
 
         body = json.loads(response.body)
         self.assertEqual(response.status_code, 503)

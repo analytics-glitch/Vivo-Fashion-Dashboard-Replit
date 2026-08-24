@@ -140,6 +140,13 @@ FABRIC_DATA_CRITICAL_MIN = 240    # data >4h stale → critical (tight) cooldown
 FABRIC_ESCALATE_STALE_MIN = 360   # data >6h stale AND…
 FABRIC_ESCALATE_FAILURES = 3      # …≥3 consecutive failed recoveries → restart sync
 
+# The buying-order board has its own Odoo heartbeat. The general sync heartbeat
+# can remain healthy while a long main cycle repeatedly fails before it reaches
+# the production-tracker block, so monitor this feed independently.
+PRODUCTION_SYNC_FRESH_MIN = 120
+PRODUCTION_SYNC_RECOVERY_COOLDOWN_MIN = 30
+PRODUCTION_SYNC_TIMEOUT_SEC = 300
+
 # One-time full rebuild (correct this environment's historical all_sales).
 REBUILD_ON_BOOT = os.environ.get("REBUILD_ON_BOOT", "0").lower() not in ("0", "", "false")
 REBUILD_REFRESH_RAW = os.environ.get("REBUILD_REFRESH_RAW", "1").lower() not in ("0", "", "false")
@@ -170,6 +177,7 @@ _last_fabric_recovery = None  # when the last one-shot fabric rescue ran (cooldo
 _fabric_recovery_failures = 0  # consecutive failed fabric recoveries (reset on
                                # success) — drives the >6h-stale escalation to a
                                # full sync-process restart
+_last_production_sync_recovery = None
 
 
 def _db():
@@ -373,6 +381,61 @@ def check_fabric():
         and data_min is not None and data_min <= FABRIC_FRESH_MIN
     )
     return healthy, hb_last, hb_min, data_min
+
+
+def check_production_tracker():
+    """Return freshness of the Odoo buying-order tracker heartbeat.
+
+    This deliberately checks the successful-sync stamp, not the main BI loop's
+    heartbeat. It detects a stale buying-order board even if sales, inventory,
+    and other feeds are still progressing normally.
+    """
+    last_run = None
+    try:
+        with _db() as conn, conn.cursor() as cur:
+            cur.execute("SELECT to_regclass('public.production_sync_heartbeat')")
+            if cur.fetchone()[0] is None:
+                return False, None, None
+            cur.execute(
+                "SELECT last_run_at FROM production_sync_heartbeat WHERE id = 1"
+            )
+            row = cur.fetchone()
+            last_run = row[0] if row else None
+    except Exception as e:
+        log.error("Production tracker freshness query failed: %s", e)
+        return False, None, None
+    if last_run is None:
+        return False, None, None
+    if last_run.tzinfo is None:
+        last_run = last_run.replace(tzinfo=timezone.utc)
+    minutes = (datetime.now(timezone.utc) - last_run).total_seconds() / 60.0
+    return minutes <= PRODUCTION_SYNC_FRESH_MIN, last_run, minutes
+
+
+def run_production_tracker_recovery(reason=""):
+    """Run a bounded standalone buying-order refresh for a stale board.
+
+    sync_production_tracker.py owns a pooler-safe claim, so this can safely
+    overlap a delayed scheduled request without duplicating intake movements.
+    """
+    global _last_production_sync_recovery
+    log.warning("Production tracker recovery: running Odoo sync%s",
+                f" ({reason})" if reason else "")
+    try:
+        result = subprocess.run(
+            [sys.executable, os.path.join(ROOT, "sync_production_tracker.py")],
+            cwd=ROOT,
+            timeout=PRODUCTION_SYNC_TIMEOUT_SEC,
+        )
+        if result.returncode == 0:
+            return "production tracker sync completed (rc=0)"
+        return f"production tracker sync FAILED (rc={result.returncode})"
+    except subprocess.TimeoutExpired:
+        return f"production tracker sync TIMED OUT ({PRODUCTION_SYNC_TIMEOUT_SEC}s)"
+    except Exception as e:
+        return f"production tracker sync error: {e}"
+    finally:
+        _last_production_sync_recovery = datetime.now(timezone.utc)
 
 
 def run_fabric_recovery(reason=""):
@@ -704,6 +767,32 @@ def health_loop():
                 notes.append(
                     f"fabric stale; recovery on cooldown "
                     f"({cooldown_min:.0f}/{cooldown_limit} min)"
+                )
+
+        # Buying-order tracker freshness — independent from the main sync and
+        # fabric worker checks above. A targeted, rate-limited recovery closes
+        # the gap when Odoo orders exist but the production board's successful
+        # heartbeat has stopped advancing.
+        prod_ok, _, prod_min = check_production_tracker()
+        if prod_min is not None:
+            notes.append(f"production tracker {prod_min:.1f} min old")
+        if not prod_ok:
+            recovery_age = (
+                None if _last_production_sync_recovery is None else
+                (datetime.now(timezone.utc) - _last_production_sync_recovery
+                 ).total_seconds() / 60.0
+            )
+            if (recovery_age is None
+                    or recovery_age >= PRODUCTION_SYNC_RECOVERY_COOLDOWN_MIN):
+                actions.append("production_tracker_recovery")
+                notes.append(run_production_tracker_recovery(
+                    reason="missing heartbeat" if prod_min is None
+                    else "stale heartbeat"
+                ))
+            else:
+                notes.append(
+                    "production tracker stale; recovery on cooldown "
+                    f"({recovery_age:.0f}/{PRODUCTION_SYNC_RECOVERY_COOLDOWN_MIN} min)"
                 )
 
         log_health(api_ok, sync_ok, last_sync,
