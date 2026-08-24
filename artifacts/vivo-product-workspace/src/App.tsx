@@ -67,13 +67,6 @@ function date(value: unknown) { if (!value) return 'No date'; const d = new Date
 function getPathValue(item: unknown, keys: string[]) { const record = item as Record<string, unknown>; return keys.map((key) => record?.[key]).find((value) => value !== undefined); }
 
 type WorkspaceIdentity = { id: string; name: string; role: string };
-const IDENTITY_FALLBACK_TEAM = [
-  { id: 1, name: 'Amara Wanjiku', role: 'Admin', department: 'Leadership' },
-  { id: 2, name: 'Daniel Otieno', role: 'Merchandising Lead', department: 'Merchandising' },
-  { id: 3, name: 'Lerato Mokoena', role: 'Product Developer', department: 'Merchandising' },
-  { id: 4, name: 'Nia Kamau', role: 'Technical Designer', department: 'Merchandising' },
-  { id: 5, name: 'Aisha Hassan', role: 'Commercial Director', department: 'Leadership' },
-];
 type PlmCatalogueStyle = {
   id: number;
   code: string;
@@ -160,7 +153,15 @@ function IdentityModal({ onPick, onClose, canClose }: { onPick: (identity: Works
     query: { queryKey: getListWorkspaceTeamQueryKey(), retry: false },
     request: { credentials: 'include' },
   });
-  const teamMembers = team.data ?? (team.isError ? IDENTITY_FALLBACK_TEAM : undefined);
+  const teamMembers = useMemo(
+    () => [...(team.data ?? [])].filter((member) => member.name.trim()).sort((a, b) => {
+      const aIsAdmin = a.role.trim().toLowerCase() === 'admin';
+      const bIsAdmin = b.role.trim().toLowerCase() === 'admin';
+      if (aIsAdmin !== bIsAdmin) return aIsAdmin ? -1 : 1;
+      return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+    }),
+    [team.data],
+  );
   return (
     <div className="settings-modal-backdrop" onClick={canClose ? onClose : undefined}>
       <div className="settings-modal identity-modal" role="dialog" aria-modal="true" aria-label="Who are you?" onClick={(e) => e.stopPropagation()}>
@@ -169,9 +170,11 @@ function IdentityModal({ onPick, onClose, canClose }: { onPick: (identity: Works
           {canClose && <button className="icon-button" onClick={onClose} aria-label="Close" data-testid="button-close-identity"><X size={16} /></button>}
         </div>
         <p className="settings-note">Pick your name so your work is attributed correctly.</p>
-        {team.isLoading && !team.isError ? (
+        {team.isLoading ? (
           <p className="settings-empty">Loading the team…</p>
-        ) : teamMembers?.length ? (
+        ) : team.isError ? (
+          <p className="settings-empty">We couldn't load the team list right now. Please try again shortly.</p>
+        ) : teamMembers.length ? (
           <div className="identity-list">
             {teamMembers.map((member) => (
               <button
@@ -186,7 +189,7 @@ function IdentityModal({ onPick, onClose, canClose }: { onPick: (identity: Works
             ))}
           </div>
         ) : (
-          <p className="settings-empty">No team members have been added yet. Ask an admin to add you in Settings.</p>
+          <p className="settings-empty">No team members set up yet — ask your admin to add you in the Meet the Team section.</p>
         )}
       </div>
     </div>
@@ -196,6 +199,7 @@ function IdentityModal({ onPick, onClose, canClose }: { onPick: (identity: Works
 function Shell({ children }: { children: ReactNode }) {
   const [location, setLocation] = useLocation();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem('workspace_sidebar_collapsed') === 'true');
   const session = useGetWorkspaceSession({ query: { queryKey: getGetWorkspaceSessionQueryKey(), retry: false } });
   const logout = useLogoutWorkspace();
   const [identity, setIdentity] = useState<WorkspaceIdentity | null>(() => readIdentity());
@@ -226,18 +230,27 @@ function Shell({ children }: { children: ReactNode }) {
     setIdentity(picked);
     setIdentityOpen(false);
   };
-  const user = session.data?.user;
   const login = location.includes('/login');
   if (login) return <>{children}</>;
   if (session.isLoading) return <LoadingState />;
   const doLogout = () => logout.mutate(undefined, { onSuccess: () => setLocation('/product-workspace/login') });
+  const collapseSidebar = () => {
+    setSidebarCollapsed(true);
+    setMobileOpen(false);
+    localStorage.setItem('workspace_sidebar_collapsed', 'true');
+  };
+  const expandSidebar = () => {
+    setSidebarCollapsed(false);
+    localStorage.setItem('workspace_sidebar_collapsed', 'false');
+    if (window.matchMedia('(max-width: 760px)').matches) setMobileOpen(true);
+  };
   return (
-    <div className="workspace-app">
-      <aside className={`workspace-sidebar ${mobileOpen ? 'is-open' : ''}`}>
+    <div className={`workspace-app ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
+      <aside className={`workspace-sidebar ${mobileOpen ? 'is-open' : ''} ${sidebarCollapsed ? 'is-collapsed' : ''}`}>
         <div className="brand-lockup">
           <div className="brand-mark">V</div>
           <div><div className="brand-name">Vivo</div><div className="brand-sub">Product workspace</div></div>
-          <button className="icon-button mobile-close" onClick={() => setMobileOpen(false)} aria-label="Close menu" data-testid="button-close-menu"><X size={18} /></button>
+          <button className="icon-button sidebar-close" onClick={collapseSidebar} aria-label="Collapse sidebar" data-testid="button-collapse-sidebar"><X size={18} /></button>
         </div>
         <div className="workspace-rule" />
         <div className="eyebrow sidebar-eyebrow">East Africa / 29 stores</div>
@@ -256,9 +269,10 @@ function Shell({ children }: { children: ReactNode }) {
         <div className="sidebar-bottom">
           <div className="sidebar-note"><Sparkles size={15} /><span>Decision room<br /><b>Q3 2026</b></span></div>
           <button className="workspace-nav-link logout-button" onClick={doLogout} data-testid="button-logout"><LogOut size={17} /><span>Sign out</span></button>
-          <div className="profile-mini" data-testid="text-current-user"><div className="avatar" style={{ background: user?.color || '#d7a943' }}>{user?.initials || initials(user?.name)}</div><div><strong>{user?.name || 'Workspace member'}</strong><span>{user?.role || 'Merchandising'}</span></div><Settings2 size={15} /></div>
+          <div className="profile-mini" data-testid="text-current-user"><div className="avatar" style={{ background: '#C9A96E' }}>{identity ? initials(identity.name) : 'V'}</div><div><strong>{identity?.name || 'Workspace member'}</strong><span>{identity?.role || 'Select your identity'}</span></div><Settings2 size={15} /></div>
         </div>
       </aside>
+      {sidebarCollapsed && <button className="icon-button sidebar-expand-toggle" onClick={expandSidebar} aria-label="Open sidebar" data-testid="button-expand-sidebar"><Menu size={20} /></button>}
       <main className="workspace-main">
         <header className="workspace-topbar">
           <a
@@ -274,7 +288,7 @@ function Shell({ children }: { children: ReactNode }) {
             <span className="dashboard-back-arrow" aria-hidden="true">←</span>
             <span className="dashboard-back-label">Dashboard</span>
           </a>
-          <button className="icon-button mobile-menu" onClick={() => setMobileOpen(true)} aria-label="Open menu" data-testid="button-open-menu"><Menu size={20} /></button>
+          <button className="icon-button mobile-menu" onClick={() => { setSidebarCollapsed(false); setMobileOpen(true); }} aria-label="Open menu" data-testid="button-open-menu"><Menu size={20} /></button>
           <div className="topbar-context"><span className="topbar-dot" /> Live workspace <span className="slash">/</span> Q3 2026</div>
           <div className="topbar-actions"><button className="topbar-action" onClick={() => setLocation('/product-workspace/styles')} data-testid="button-search"><Search size={16} /> <span>Search workspace</span><kbd>⌘ K</kbd></button><button className="icon-button" onClick={() => setLocation('/product-workspace/')} data-testid="button-notifications"><CircleAlert size={18} /></button><button className="identity-pill" onClick={() => setIdentityOpen(true)} data-testid="button-identity-pill">{identity ? <>Signed in as <b>{identity.name}</b> · {identity.role}</> : 'Who are you?'}</button></div>
         </header>

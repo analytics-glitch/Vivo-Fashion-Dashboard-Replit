@@ -143,11 +143,7 @@ type UserRow = {
 type AuthRequest = Request & { workspaceUser?: UserRow };
 
 const users = [
-  { name: "Amara Wanjiku", email: "amara@vivo.co.ke", role: "Admin", initials: "AW", color: "#B97D55" },
-  { name: "Daniel Otieno", email: "daniel@vivo.co.ke", role: "Merchandising Lead", initials: "DO", color: "#456C70" },
-  { name: "Lerato Mokoena", email: "lerato@vivo.co.ke", role: "Product Developer", initials: "LM", color: "#8B6B45" },
-  { name: "Nia Kamau", email: "nia@vivo.co.ke", role: "Technical Designer", initials: "NK", color: "#7F6D8A" },
-  { name: "Aisha Hassan", email: "aisha@vivo.co.ke", role: "Commercial Director", initials: "AH", color: "#A75D52" },
+  { name: "Vivo Workspace", email: "workspace@vivo.local", role: "Admin", initials: "VW", color: "#C9A96E" },
 ];
 
 const fabrics = [
@@ -162,26 +158,26 @@ const fabrics = [
 ];
 
 const styleSeeds = [
-  ["VIVO-2601", "Mara Column Dress", "Vivo", "Dresses", "In review", "Amara Wanjiku", "2026-07-18", 78, 6900, "EA"],
-  ["VIVO-2602", "Nairobi Pleat Trouser", "Vivo", "Trousers", "Proto", "Nia Kamau", "2026-07-24", 62, 5200, "EA"],
-  ["VIVO-2603", "Lamu Tie Shirt", "Vivo", "Shirts", "Approved", "Lerato Mokoena", "2026-07-12", 94, 4100, "EA"],
-  ["VIVO-2604", "Kilimani Wrap Skirt", "Vivo", "Skirts", "In review", "Amara Wanjiku", "2026-08-02", 71, 4500, "EA"],
-  ["VIVO-2605", "Amani Knit Polo", "Vivo", "Knitwear", "Proto", "Lerato Mokoena", "2026-08-08", 55, 3800, "EA"],
-  ["VIVO-2606", "Tsavo Utility Jacket", "Vivo", "Outerwear", "Concept", "Daniel Otieno", "2026-08-15", 33, 8900, "EA"],
-  ["VIVO-2607", "Karura Bias Cami", "Vivo", "Tops", "Approved", "Amara Wanjiku", "2026-07-09", 98, 2900, "EA"],
-  ["VIVO-2608", "Rift Belted Jumpsuit", "Vivo", "Jumpsuits", "In review", "Nia Kamau", "2026-08-04", 66, 7800, "EA"],
-  ["VIVO-2609", "Sauti Linen Short", "Vivo", "Shorts", "Proto", "Lerato Mokoena", "2026-08-11", 49, 3200, "EA"],
-  ["VIVO-2610", "Kora Pleat Blouse", "Vivo", "Blouses", "Approved", "Amara Wanjiku", "2026-07-22", 91, 4700, "EA"],
-  ["SBF-2601", "Diani Resort Dress", "Safari by Vivo", "Dresses", "In review", "Daniel Otieno", "2026-07-28", 74, 6200, "EA"],
-  ["SBF-2602", "Kisumu Camp Shirt", "Safari by Vivo", "Shirts", "Proto", "Lerato Mokoena", "2026-08-05", 58, 4300, "EA"],
-  ["SBF-2603", "Samburu Cargo Pant", "Safari by Vivo", "Trousers", "Approved", "Nia Kamau", "2026-07-19", 96, 5600, "EA"],
-  ["SBF-2604", "Maji Slip Dress", "Safari by Vivo", "Dresses", "Concept", "Amara Wanjiku", "2026-08-18", 29, 5900, "EA"],
-  ["SBF-2605", "Zanzibar Shirt Dress", "Safari by Vivo", "Dresses", "In review", "Daniel Otieno", "2026-08-09", 68, 6500, "EA"],
-  ["SBF-2606", "Serengeti Overshirt", "Safari by Vivo", "Outerwear", "Proto", "Lerato Mokoena", "2026-08-14", 51, 7200, "EA"],
-  ["SBF-2607", "Usambara Jersey Top", "Safari by Vivo", "Tops", "Approved", "Amara Wanjiku", "2026-07-14", 93, 2800, "EA"],
-  ["SBF-2608", "Mombasa Drawstring Pant", "Safari by Vivo", "Trousers", "In review", "Nia Kamau", "2026-08-07", 72, 4900, "EA"],
-  ["SBF-2609", "Kagera Easy Short", "Safari by Vivo", "Shorts", "Concept", "Daniel Otieno", "2026-08-20", 36, 3100, "EA"],
-  ["SBF-2610", "Nile Gathered Skirt", "Safari by Vivo", "Skirts", "Approved", "Amara Wanjiku", "2026-07-25", 89, 4400, "EA"],
+  ["VIVO-2601", "Mara Column Dress", "Vivo", "Dresses", "In review", "Product team", "2026-07-18", 78, 6900, "EA"],
+  ["VIVO-2602", "Nairobi Pleat Trouser", "Vivo", "Trousers", "Proto", "Technical team", "2026-07-24", 62, 5200, "EA"],
+  ["VIVO-2603", "Lamu Tie Shirt", "Vivo", "Shirts", "Approved", "Design team", "2026-07-12", 94, 4100, "EA"],
+  ["VIVO-2604", "Kilimani Wrap Skirt", "Vivo", "Skirts", "In review", "Product team", "2026-08-02", 71, 4500, "EA"],
+  ["VIVO-2605", "Amani Knit Polo", "Vivo", "Knitwear", "Proto", "Design team", "2026-08-08", 55, 3800, "EA"],
+  ["VIVO-2606", "Tsavo Utility Jacket", "Vivo", "Outerwear", "Concept", "Merchandising team", "2026-08-15", 33, 8900, "EA"],
+  ["VIVO-2607", "Karura Bias Cami", "Vivo", "Tops", "Approved", "Product team", "2026-07-09", 98, 2900, "EA"],
+  ["VIVO-2608", "Rift Belted Jumpsuit", "Vivo", "Jumpsuits", "In review", "Technical team", "2026-08-04", 66, 7800, "EA"],
+  ["VIVO-2609", "Sauti Linen Short", "Vivo", "Shorts", "Proto", "Design team", "2026-08-11", 49, 3200, "EA"],
+  ["VIVO-2610", "Kora Pleat Blouse", "Vivo", "Blouses", "Approved", "Product team", "2026-07-22", 91, 4700, "EA"],
+  ["SBF-2601", "Diani Resort Dress", "Safari by Vivo", "Dresses", "In review", "Merchandising team", "2026-07-28", 74, 6200, "EA"],
+  ["SBF-2602", "Kisumu Camp Shirt", "Safari by Vivo", "Shirts", "Proto", "Design team", "2026-08-05", 58, 4300, "EA"],
+  ["SBF-2603", "Samburu Cargo Pant", "Safari by Vivo", "Trousers", "Approved", "Technical team", "2026-07-19", 96, 5600, "EA"],
+  ["SBF-2604", "Maji Slip Dress", "Safari by Vivo", "Dresses", "Concept", "Product team", "2026-08-18", 29, 5900, "EA"],
+  ["SBF-2605", "Zanzibar Shirt Dress", "Safari by Vivo", "Dresses", "In review", "Merchandising team", "2026-08-09", 68, 6500, "EA"],
+  ["SBF-2606", "Serengeti Overshirt", "Safari by Vivo", "Outerwear", "Proto", "Design team", "2026-08-14", 51, 7200, "EA"],
+  ["SBF-2607", "Usambara Jersey Top", "Safari by Vivo", "Tops", "Approved", "Product team", "2026-07-14", 93, 2800, "EA"],
+  ["SBF-2608", "Mombasa Drawstring Pant", "Safari by Vivo", "Trousers", "In review", "Technical team", "2026-08-07", 72, 4900, "EA"],
+  ["SBF-2609", "Kagera Easy Short", "Safari by Vivo", "Shorts", "Concept", "Merchandising team", "2026-08-20", 36, 3100, "EA"],
+  ["SBF-2610", "Nile Gathered Skirt", "Safari by Vivo", "Skirts", "Approved", "Product team", "2026-07-25", 89, 4400, "EA"],
 ] as const;
 
 const boardSeeds = [
@@ -1897,8 +1893,8 @@ async function ensureSchema() {
     if (boardId) {
       await pool.query(
         `INSERT INTO ${schema}.board_cards (board_id,title,description,column_id,position,style_id,tags,assignees,created_by)
-         VALUES ($1,'Confirm colour story','Three colourways are ready for commercial sign-off.','deciding',0,$2,'["colour","decision"]'::jsonb,'["Amara Wanjiku","Aisha Hassan"]'::jsonb,$3),
-                ($1,'Review proto notes','One open fit point remains before the next sample round.','brief',1,$4,'["fit","next"]'::jsonb,'["Nia Kamau"]'::jsonb,$3)
+         VALUES ($1,'Confirm colour story','Three colourways are ready for commercial sign-off.','deciding',0,$2,'["colour","decision"]'::jsonb,'["Leadership team"]'::jsonb,$3),
+                ($1,'Review proto notes','One open fit point remains before the next sample round.','brief',1,$4,'["fit","next"]'::jsonb,'["Technical team"]'::jsonb,$3)
          ON CONFLICT DO NOTHING`,
         [boardId, styleResult.rows[0]?.id ?? null, userId, styleResult.rows[1]?.id ?? null],
       );
@@ -2362,38 +2358,35 @@ router.post("/logout", async (req, res, next) => {
 // session exists. Mutations sit behind the session gate below.
 router.get("/team", async (_req, res, next) => {
   if (!schemaReady && !lastDbProbeResult) {
-    res.json(users.map((user, index) => ({
-      id: index + 1,
-      name: user.name,
-      role: user.role,
-      department: user.role.includes("Director") || user.role === "Admin" ? "Leadership" : "Merchandising",
-      team: "",
-      createdAt: null,
-    })));
+    res.json([]);
     return;
   }
   try {
-    const sessionUser = await findUserBySession(_req.cookies?.[sessionCookie]);
-    const privateColumns = sessionUser?.role === "Admin" ? `,date_of_birth::text AS "dateOfBirth"` : "";
     const result = await withTimeout(
       pool.query(
-        `SELECT id,name,role,department,team${privateColumns},created_at AS "createdAt"
-         FROM ${schema}.workspace_users ORDER BY name`,
+        `SELECT tm.id,
+                NULLIF(TRIM(tm.name),'') AS name,
+                COALESCE(NULLIF(TRIM(wu.role),''),NULLIF(TRIM(tm.role_title),''),'Team member') AS role,
+                COALESCE(NULLIF(TRIM(wu.department),''),NULLIF(TRIM(tm.team_section),''),'') AS department,
+                '' AS team,
+                tm.created_at AS "createdAt"
+         FROM ${schema}.workspace_team_members tm
+         LEFT JOIN ${schema}.workspace_users wu
+           ON LOWER(TRIM(wu.name)) = LOWER(TRIM(tm.name))
+         WHERE NULLIF(TRIM(tm.name),'') IS NOT NULL
+         ORDER BY CASE
+                    WHEN LOWER(COALESCE(NULLIF(TRIM(wu.role),''),TRIM(tm.role_title),'')) = 'admin' THEN 0
+                    ELSE 1
+                  END,
+                  LOWER(TRIM(tm.name)),
+                  tm.id`,
       ),
       4000,
       "workspace team lookup",
     );
     res.json(result.rows);
   } catch (error) {
-    console.warn("Workspace team lookup unavailable; using seeded identity list", error);
-    res.json(users.map((user, index) => ({
-      id: index + 1,
-      name: user.name,
-      role: user.role,
-      department: user.role.includes("Director") || user.role === "Admin" ? "Leadership" : "Merchandising",
-      team: "",
-      createdAt: null,
-    })));
+    next(error);
   }
 });
 
@@ -4808,9 +4801,9 @@ router.get("/dashboard", async (_req, res, next) => {
       activity: recent.rows,
       pipeline: Object.entries(countByStatus).map(([status, count]) => ({ status, count })),
       upcoming: [
-        { day: "18", month: "AUG", title: "Proto round 2 · Mara Column Dress", detail: "Lerato Mokoena · Fit" },
-        { day: "21", month: "AUG", title: "Q3 leadership read", detail: "Aisha Hassan · Review" },
-        { day: "26", month: "AUG", title: "High Summer fabric lock", detail: "Daniel Otieno · Material" },
+        { day: "18", month: "AUG", title: "Proto round 2 · Mara Column Dress", detail: "Design team · Fit" },
+        { day: "21", month: "AUG", title: "Q3 leadership read", detail: "Leadership team · Review" },
+        { day: "26", month: "AUG", title: "High Summer fabric lock", detail: "Merchandising team · Material" },
       ],
       boards: boards.rows,
     });

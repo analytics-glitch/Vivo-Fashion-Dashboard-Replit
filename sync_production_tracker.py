@@ -417,7 +417,9 @@ def upsert_orders(cur, orders):
             updated_at             = now()
     """,
         rows,
-        template="(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now())",
+        # Keep this in lockstep with the 18 values in each row above.  The
+        # explicit template is required because updated_at is server-owned.
+        template="(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now())",
     )
     log.info("Upserted %s production_orders", len(rows))
 

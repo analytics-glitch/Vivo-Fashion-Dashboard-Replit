@@ -45,6 +45,14 @@ const memberInitials = (name: string, roleTitle: string) => {
   return letters.slice(0, 2).toUpperCase();
 };
 
+const formatBirthday = (birthday?: string | null) => {
+  if (!birthday) return '';
+  const date = new Date(`${birthday.slice(0, 10)}T00:00:00Z`);
+  return Number.isNaN(date.getTime())
+    ? ''
+    : new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'long', timeZone: 'UTC' }).format(date);
+};
+
 const asDraft = (member: WorkspaceTeamDirectoryMember): Draft => ({
   name: member.name || '',
   description: member.description || '',
@@ -179,6 +187,9 @@ function MemberCard({
             <p className="team-member-description" data-testid={`text-team-description-${member.id}`}>{member.description || 'The story behind this role is still being written.'}</p>
           </>
         )}
+        {!editing && member.birthday && formatBirthday(member.birthday) && (
+          <p className="team-member-birthday" data-testid={`text-team-birthday-${member.id}`}>🎂 {formatBirthday(member.birthday)}</p>
+        )}
         {editing && uploading && <span className="team-card-saving"><Upload size={12} /> Saving photo</span>}
       </div>
     </article>
@@ -197,6 +208,8 @@ export default function TeamDirectoryPage() {
   const [drafts, setDrafts] = useState<Record<number, Draft>>({});
   const [draggedId, setDraggedId] = useState<number | null>(null);
   const [uploadingId, setUploadingId] = useState<number | null>(null);
+  const [newMemberSection, setNewMemberSection] = useState<SectionName | null>(null);
+  const [newMemberDraft, setNewMemberDraft] = useState({ name: '', roleTitle: '', birthday: '' });
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
   const isAdmin = session.data?.user.role?.toLowerCase() === 'admin';
@@ -265,22 +278,37 @@ export default function TeamDirectoryPage() {
     }
   };
 
-  const addMember = (section: SectionName) => {
+  const openAddMember = (section: SectionName) => {
     setError('');
     const newRoleCount = (bySection.get(section) || []).filter((member) => member.roleTitle.startsWith('New role')).length;
+    setNewMemberDraft({ name: '', roleTitle: `New role ${newRoleCount + 1}`, birthday: '' });
+    setNewMemberSection(section);
+  };
+
+  const closeAddMember = () => {
+    if (createMember.isPending) return;
+    setNewMemberSection(null);
+    setNewMemberDraft({ name: '', roleTitle: '', birthday: '' });
+  };
+
+  const saveNewMember = () => {
+    if (!newMemberSection || !newMemberDraft.roleTitle.trim()) return;
+    setError('');
     createMember.mutate({
       data: {
-        name: '',
-        roleTitle: `New role ${newRoleCount + 1}`,
-        teamSection: section,
+        name: newMemberDraft.name.trim(),
+        roleTitle: newMemberDraft.roleTitle.trim(),
+        teamSection: newMemberSection,
         description: '',
-        birthday: null,
+        birthday: newMemberDraft.birthday || null,
         isLma: false,
       },
     }, {
       onSuccess: async () => {
         await queryClient.invalidateQueries({ queryKey: getListWorkspaceTeamDirectoryQueryKey() });
-        setNotice(`New member slot added to ${section}.`);
+        setNotice(`New member slot added to ${newMemberSection}.`);
+        setNewMemberSection(null);
+        setNewMemberDraft({ name: '', roleTitle: '', birthday: '' });
       },
       onError: () => setError('Could not add a member slot. Please try again.'),
     });
@@ -401,7 +429,7 @@ export default function TeamDirectoryPage() {
           <section className="team-section" key={section} aria-labelledby={`team-section-${section.replaceAll(' ', '-').toLowerCase()}`}>
             <div className="team-section-header">
               <div className="team-section-title"><h2 id={`team-section-${section.replaceAll(' ', '-').toLowerCase()}`}>{section}</h2><span className="team-section-count">{String(sectionMembers.length).padStart(2, '0')} {sectionMembers.length === 1 ? 'member' : 'members'}</span></div>
-              {editing && isAdmin && <button className="team-section-action" onClick={() => addMember(section)} disabled={createMember.isPending} data-testid={`button-add-team-member-${section.replaceAll(' ', '-').toLowerCase()}`}><Plus size={14} /> Add member</button>}
+              {editing && isAdmin && <button className="team-section-action" onClick={() => openAddMember(section)} disabled={createMember.isPending} data-testid={`button-add-team-member-${section.replaceAll(' ', '-').toLowerCase()}`}><Plus size={14} /> Add member</button>}
             </div>
             {sectionMembers.length ? (
               <div className="team-member-grid">
@@ -428,6 +456,23 @@ export default function TeamDirectoryPage() {
       })}
 
       {editing && <div className="team-save-bar"><p><strong>{dirtyMembers.length}</strong> unsaved {dirtyMembers.length === 1 ? 'change' : 'changes'} <span>·</span> photo uploads save immediately</p><button className="button button-dark" onClick={saveChanges} disabled={updateMember.isPending || !dirtyMembers.length} data-testid="button-save-team-directory-bottom"><Save size={15} /> Save changes</button></div>}
+      {newMemberSection && (
+        <div className="modal-backdrop" onClick={closeAddMember}>
+          <div className="modal-card team-add-member-modal" role="dialog" aria-modal="true" aria-labelledby="team-add-member-title" onClick={(event) => event.stopPropagation()}>
+            <div className="drawer-header">
+              <div><span className="eyebrow">Meet the team</span><h2 id="team-add-member-title">Add member</h2></div>
+              <button className="icon-button" onClick={closeAddMember} aria-label="Close add member dialog" data-testid="button-close-add-member"><X size={17} /></button>
+            </div>
+            <div className="team-add-member-fields">
+              <label><span>NAME</span><input autoFocus value={newMemberDraft.name} onChange={(event) => setNewMemberDraft((current) => ({ ...current, name: event.target.value }))} placeholder="Full name" data-testid="input-new-team-name" /></label>
+              <label><span>ROLE</span><input value={newMemberDraft.roleTitle} onChange={(event) => setNewMemberDraft((current) => ({ ...current, roleTitle: event.target.value }))} placeholder="Role title" data-testid="input-new-team-role" /></label>
+              <label><span>TEAM</span><select value={newMemberSection} onChange={(event) => setNewMemberSection(event.target.value as SectionName)} data-testid="select-new-team-section">{SECTIONS.map((option) => <option key={option}>{option}</option>)}</select></label>
+              <label><span>BIRTHDAY</span><input type="date" value={newMemberDraft.birthday} onChange={(event) => setNewMemberDraft((current) => ({ ...current, birthday: event.target.value }))} aria-describedby="team-birthday-help" data-testid="input-new-team-birthday" /><small id="team-birthday-help">Used for birthday celebrations; only the day and month are shown publicly.</small></label>
+            </div>
+            <button className="button button-dark button-wide" onClick={saveNewMember} disabled={createMember.isPending || !newMemberDraft.roleTitle.trim()} data-testid="button-save-new-member"><Save size={15} /> {createMember.isPending ? 'Saving…' : 'Save member'}</button>
+          </div>
+        </div>
+      )}
     </section>
   );
 }
