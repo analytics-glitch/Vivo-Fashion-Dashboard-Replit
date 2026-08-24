@@ -16580,6 +16580,32 @@ def _ensure_sublimation_tables(conn):
                     "ADD COLUMN IF NOT EXISTS final_product_name TEXT")
         cur.execute("ALTER TABLE sublimation_costings "
                     "ADD COLUMN IF NOT EXISTS final_fabric_barcode TEXT")
+        # Edit metadata is deliberately separate from saved_at/saved_by: those
+        # two columns are the immutable original-save record shown to users.
+        cur.execute("ALTER TABLE sublimation_costings "
+                    "ADD COLUMN IF NOT EXISTS last_edited_at TIMESTAMPTZ")
+        cur.execute("ALTER TABLE sublimation_costings "
+                    "ADD COLUMN IF NOT EXISTS last_edited_by TEXT")
+        # This is append-only application history. It intentionally has no
+        # foreign key to the costing row because deletion must leave its audit
+        # trail behind.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS sublimation_costing_history (
+                id                  BIGSERIAL PRIMARY KEY,
+                costing_id          INTEGER NOT NULL,
+                action              TEXT NOT NULL,
+                changed_by          TEXT,
+                changed_by_name     TEXT,
+                changed_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+                summary             TEXT NOT NULL,
+                before_snapshot     JSONB,
+                after_snapshot      JSONB
+            )
+        """)
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_sublimation_costing_history_costing
+            ON sublimation_costing_history(costing_id, changed_at, id)
+        """)
     conn.commit()
     _SUBLIM_READY = True
 
@@ -16602,8 +16628,48 @@ _SUBLIM_TEXT_FIELDS = (
     "fabric_name", "fabric_barcode", "print_name", "style_name", "print_code",
     "final_product_name", "final_fabric_barcode",
 )
+_SUBLIM_AUDIT_SNAPSHOT_FIELDS = (
+    "id", "saved_at", "saved_by", "last_edited_at", "last_edited_by",
+    *_SUBLIM_INPUT_FLOAT_FIELDS, *_SUBLIM_INT_FIELDS, *_SUBLIM_TEXT_FIELDS,
+    *_SUBLIM_COMPUTED_FIELDS,
+)
+
+_SUBLIM_AUDIT_LABELS = {
+    "fabric_product_id": "fabric product",
+    "fabric_name": "fabric",
+    "fabric_barcode": "fabric barcode",
+    "fabric_width_m": "fabric width",
+    "fabric_gsm": "GSM",
+    "metres_printed": "metres printed",
+    "machine_time_h": "machine hours",
+    "machine_time_min": "machine minutes",
+    "ink_cost_per_ml": "ink cost",
+    "tile_width_cm": "tile width",
+    "tile_height_cm": "tile height",
+    "ink_cyan_ml": "cyan ink",
+    "ink_yellow_ml": "yellow ink",
+    "ink_magenta_ml": "magenta ink",
+    "ink_black_ml": "black ink",
+    "sub_paper_cost_per_m": "sublimation paper cost",
+    "prot_paper_cost_per_m": "protective paper cost",
+    "reprint_pct": "reprint allowance",
+    "base_fabric_cost_per_m": "greige cost",
+    "print_margin_cm": "print margin",
+    "std_throughput_m_hr": "standard throughput",
+    "print_name": "print name",
+    "style_name": "style name",
+    "print_code": "print code",
+    "final_product_name": "final product",
+    "final_fabric_barcode": "final fabric barcode",
+}
 
 SUBLIM_STD_THROUGHPUT_DEFAULT = 60.0
+SUBLIM_COSTING_EDITOR_EMAIL = "bedan@vivofashiongroup.com"
+
+def _sublimation_can_edit(user):
+    """Only the requested costing editor may update an existing library row."""
+    return (str((user or {}).get("email") or "").strip().lower()
+            == SUBLIM_COSTING_EDITOR_EMAIL)
 
 def _sublim_num(body, field, kind):
     v = body.get(field)
@@ -16721,6 +16787,84 @@ def _sublim_prepare(body):
         vals[f] = comp[f]
     return vals
 
+def _sublim_snapshot(row):
+    """Return only persisted costing values for an audit revision snapshot."""
+    return {field: row.get(field) for field in _SUBLIM_AUDIT_SNAPSHOT_FIELDS
+            if field in row}
+
+def _sublim_change_summary(before, after):
+    changed = []
+    for field in (*_SUBLIM_INPUT_FLOAT_FIELDS, *_SUBLIM_INT_FIELDS,
+                  *_SUBLIM_TEXT_FIELDS):
+        old, new = before.get(field), after.get(field)
+        if old != new:
+            label = _SUBLIM_AUDIT_LABELS.get(field, field.replace("_", " "))
+            changed.append(f"{label} ({old if old not in (None, '') else 'blank'}"
+                           f" → {new if new not in (None, '') else 'blank'})")
+    if not changed:
+        return "Saved edit with no input changes; derived values were recalculated."
+    return "Changed " + "; ".join(changed) + ". Derived values were recalculated."
+
+def _sublim_audit_insert(cur, costing_id, action, uid, name, summary,
+                         before=None, after=None):
+    cur.execute("""
+        INSERT INTO sublimation_costing_history
+            (costing_id, action, changed_by, changed_by_name, summary,
+             before_snapshot, after_snapshot)
+        VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s::jsonb)
+    """, (
+        costing_id, action, uid, name, summary,
+        json.dumps(_sublim_snapshot(before or {}), default=str)
+            if before is not None else None,
+        json.dumps(_sublim_snapshot(after or {}), default=str)
+            if after is not None else None,
+    ))
+
+def _sublim_enrich_row(row):
+    """Add response-only BOM lines and derived BOM figures to one saved row."""
+    comp = _sublim_compute(row)
+    width = float(row.get("fabric_width_m") or 0)
+    gsm = float(row.get("fabric_gsm") or 0)
+    basem = float(row.get("base_fabric_cost_per_m") or 0)
+    ink_cost = float(row.get("ink_cost_per_ml") or 0)
+    sub_pm = float(row.get("sub_paper_cost_per_m") or 0)
+    prot_pm = float(row.get("prot_paper_cost_per_m") or 0)
+    m_per_kg = comp.get("_metres_per_kg")
+    if m_per_kg and gsm > 0 and width > 0:
+        tile = (float(row.get("tile_width_cm") or 0) *
+                float(row.get("tile_height_cm") or 0)) / 10000.0
+        print_w = width + 2 * float(row.get("print_margin_cm") or 0) / 100.0
+        pm2_per_kg = (1000.0 / gsm) * (print_w / width)
+        ink_q = {
+            "Cyan": (float(row.get("ink_cyan_ml") or 0) / tile * pm2_per_kg)
+                if tile > 0 else 0,
+            "Yellow": (float(row.get("ink_yellow_ml") or 0) / tile * pm2_per_kg)
+                if tile > 0 else 0,
+            "Magenta": (float(row.get("ink_magenta_ml") or 0) / tile * pm2_per_kg)
+                if tile > 0 else 0,
+            "Black": (float(row.get("ink_black_ml") or 0) / tile * pm2_per_kg)
+                if tile > 0 else 0,
+        }
+        lines = [{"name": "Base fabric (greige)", "qty": 1, "uom": "kg",
+                  "cost": basem * m_per_kg, "dp": 3}]
+        for name, qty in ink_q.items():
+            lines.append({"name": "Ink — " + name, "qty": qty, "uom": "ml",
+                          "cost": qty * ink_cost, "dp": 4})
+        lines.extend([
+            {"name": "Sublimation paper", "qty": m_per_kg, "uom": "m",
+             "cost": m_per_kg * sub_pm, "dp": 3},
+            {"name": "Protective paper", "qty": m_per_kg, "uom": "m",
+             "cost": m_per_kg * prot_pm, "dp": 3},
+        ])
+        row["bom_lines"] = lines
+        row["bom_material_subtotal"] = comp.get("_material_subtotal_per_kg")
+        row["bom_operation_min_per_kg"] = comp.get("_operation_min_per_kg")
+        row["bom_machine_cost_per_kg"] = comp.get("_machine_cost_per_kg")
+        row["bom_clean_standard_cost_per_kg"] = comp.get("_clean_std_cost_per_kg")
+    else:
+        row["bom_lines"] = []
+    return row
+
 @fabric_router.get("/api/fabric/sublimation/machine-rate")
 def sublimation_machine_rate():
     """Locked machine-rate engine constants for the read-only info panel."""
@@ -16762,7 +16906,7 @@ def sublimation_fabric_search(q_: str = Query(default="", alias="q"),
         """, params + exact_order_params + [limit])
 
 @fabric_router.get("/api/fabric/sublimation/costings")
-def sublimation_costings_list():
+def sublimation_costings_list(request: Request):
     with _get_conn() as conn:
         _ensure_sublimation_tables(conn)
         items = q(conn, """
@@ -16772,44 +16916,29 @@ def sublimation_costings_list():
     # BOM lines used by the calculator for detail/print views.  These are
     # deliberately response-only: nothing client-supplied is persisted.
     for row in items:
-        comp = _sublim_compute(row)
-        width = float(row.get("fabric_width_m") or 0)
-        gsm = float(row.get("fabric_gsm") or 0)
-        basem = float(row.get("base_fabric_cost_per_m") or 0)
-        ink_cost = float(row.get("ink_cost_per_ml") or 0)
-        sub_pm = float(row.get("sub_paper_cost_per_m") or 0)
-        prot_pm = float(row.get("prot_paper_cost_per_m") or 0)
-        m_per_kg = comp.get("_metres_per_kg")
-        if m_per_kg and gsm > 0 and width > 0:
-            tile = (float(row.get("tile_width_cm") or 0) *
-                    float(row.get("tile_height_cm") or 0)) / 10000.0
-            print_w = width + 2 * float(row.get("print_margin_cm") or 0) / 100.0
-            pm2_per_kg = (1000.0 / gsm) * (print_w / width)
-            ink_q = {
-                "Cyan": (float(row.get("ink_cyan_ml") or 0) / tile * pm2_per_kg) if tile > 0 else 0,
-                "Yellow": (float(row.get("ink_yellow_ml") or 0) / tile * pm2_per_kg) if tile > 0 else 0,
-                "Magenta": (float(row.get("ink_magenta_ml") or 0) / tile * pm2_per_kg) if tile > 0 else 0,
-                "Black": (float(row.get("ink_black_ml") or 0) / tile * pm2_per_kg) if tile > 0 else 0,
-            }
-            lines = [{"name": "Base fabric (greige)", "qty": 1, "uom": "kg",
-                      "cost": basem * m_per_kg, "dp": 3}]
-            for name, qty in ink_q.items():
-                lines.append({"name": "Ink — " + name, "qty": qty, "uom": "ml",
-                              "cost": qty * ink_cost, "dp": 4})
-            lines.extend([
-                {"name": "Sublimation paper", "qty": m_per_kg, "uom": "m",
-                 "cost": m_per_kg * sub_pm, "dp": 3},
-                {"name": "Protective paper", "qty": m_per_kg, "uom": "m",
-                 "cost": m_per_kg * prot_pm, "dp": 3},
-            ])
-            row["bom_lines"] = lines
-            row["bom_material_subtotal"] = comp.get("_material_subtotal_per_kg")
-            row["bom_operation_min_per_kg"] = comp.get("_operation_min_per_kg")
-            row["bom_machine_cost_per_kg"] = comp.get("_machine_cost_per_kg")
-            row["bom_clean_standard_cost_per_kg"] = comp.get("_clean_std_cost_per_kg")
-        else:
-            row["bom_lines"] = []
-    return {"items": items}
+        _sublim_enrich_row(row)
+    return {"items": items,
+            "can_edit": _sublimation_can_edit(
+                getattr(request.state, "user", None))}
+
+@fabric_router.get("/api/fabric/sublimation/costings/{costing_id}")
+def sublimation_costing_detail(costing_id: int):
+    with _get_conn() as conn:
+        _ensure_sublimation_tables(conn)
+        rows = q(conn, "SELECT * FROM sublimation_costings WHERE id=%s",
+                 (costing_id,))
+        if not rows:
+            raise HTTPException(status_code=404, detail="costing not found")
+        history = q(conn, """
+            SELECT id, costing_id, action, changed_by, changed_by_name,
+                   changed_at, summary
+            FROM sublimation_costing_history
+            WHERE costing_id=%s
+            ORDER BY changed_at ASC, id ASC
+        """, (costing_id,))
+    row = _sublim_enrich_row(rows[0])
+    row["history"] = history
+    return row
 
 @fabric_router.post("/api/fabric/sublimation/costings")
 def sublimation_costing_save(request: Request, body: dict = Body(...)):
@@ -16825,6 +16954,10 @@ def sublimation_costing_save(request: Request, body: dict = Body(...)):
                 % (", ".join(cols), ", ".join(["%s"] * len(cols))),
                 params)
             row = cur.fetchone()
+            _sublim_audit_insert(
+                cur, row["id"], "created", uid, name or uid,
+                f"Created sublimation costing for {vals['fabric_name']}.",
+                after=row)
         conn.commit()
         _log_fabric_change("Saved sublimation costing", {
             "id": row["id"], "fabric": vals["fabric_name"],
@@ -16835,23 +16968,67 @@ def sublimation_costing_save(request: Request, body: dict = Body(...)):
         }, request)
         return row
 
+@fabric_router.put("/api/fabric/sublimation/costings/{costing_id}")
+def sublimation_costing_update(costing_id: int, request: Request,
+                               body: dict = Body(...)):
+    user = getattr(request.state, "user", None) or {}
+    if not _sublimation_can_edit(user):
+        raise HTTPException(status_code=403,
+                            detail="Only the authorized costing editor may edit saved costings")
+    uid, name = _fabric_actor(request)
+    vals = _sublim_prepare(body)
+    with _get_conn() as conn:
+        _ensure_sublimation_tables(conn)
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT * FROM sublimation_costings WHERE id=%s FOR UPDATE",
+                        (costing_id,))
+            before = cur.fetchone()
+            if not before:
+                raise HTTPException(status_code=404, detail="costing not found")
+            update_vals = dict(vals)
+            update_vals["last_edited_at"] = datetime.datetime.now(
+                datetime.timezone.utc)
+            update_vals["last_edited_by"] = name or uid or None
+            assignments = ", ".join(f"{column}=%s"
+                                    for column in update_vals)
+            cur.execute(
+                f"UPDATE sublimation_costings SET {assignments} "
+                "WHERE id=%s RETURNING *",
+                list(update_vals.values()) + [costing_id])
+            after = cur.fetchone()
+            _sublim_audit_insert(
+                cur, costing_id, "edited", uid, name or uid,
+                _sublim_change_summary(before, after),
+                before=before, after=after)
+        conn.commit()
+    _log_fabric_change("Edited sublimation costing", {
+        "id": costing_id, "fabric": vals["fabric_name"],
+        "metres": vals["metres_printed"],
+        "total_printing_cost": vals["total_printing_cost"],
+        "std_cost_per_kg": vals["std_cost_per_kg"],
+    }, request)
+    return after
+
 @fabric_router.delete("/api/fabric/sublimation/costings/{costing_id}")
 def sublimation_costing_delete(costing_id: int, request: Request):
     with _get_conn() as conn:
         _ensure_sublimation_tables(conn)
-        # Snapshot BEFORE the row is gone so the audit log stays human-readable.
-        snap = q(conn, """
-            SELECT id, fabric_name, fabric_barcode, metres_printed
-            FROM sublimation_costings WHERE id=%s
-        """, (costing_id,))
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM sublimation_costings WHERE id=%s", (costing_id,))
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT * FROM sublimation_costings WHERE id=%s FOR UPDATE",
+                        (costing_id,))
+            snap = cur.fetchone()
+            if not snap:
+                raise HTTPException(status_code=404, detail="costing not found")
+            uid, name = _fabric_actor(request)
+            _sublim_audit_insert(
+                cur, costing_id, "deleted", uid, name or uid,
+                f"Deleted sublimation costing for {snap.get('fabric_name') or 'unknown fabric'}.",
+                before=snap)
+            cur.execute("DELETE FROM sublimation_costings WHERE id=%s",
+                        (costing_id,))
             deleted = cur.rowcount
         conn.commit()
-        if not deleted:
-            raise HTTPException(status_code=404, detail="costing not found")
-        _log_fabric_change("Deleted sublimation costing",
-                           snap[0] if snap else {"id": costing_id}, request)
+        _log_fabric_change("Deleted sublimation costing", snap, request)
         return {"ok": True}
 
 

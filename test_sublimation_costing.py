@@ -12,7 +12,11 @@ Two invariants this file exists to protect:
 2. The server recomputes every derived column on save (_sublim_prepare);
    client-sent totals are ignored, so a stored row always matches its inputs.
 """
+import json
+import re
 import unittest
+from types import SimpleNamespace
+from unittest import mock
 
 from fastapi import HTTPException
 
@@ -164,6 +168,146 @@ class SavedCostIntegrity(unittest.TestCase):
         with self.assertRaises(HTTPException) as ctx:
             fr._sublim_prepare({**WORKED, "fabric_gsm": "abc"})
         self.assertEqual(ctx.exception.status_code, 400)
+
+
+class SavedCostRevisionRules(unittest.TestCase):
+    """Saved-library edits keep identity/original metadata and write revisions."""
+
+    def test_only_bedan_can_edit_existing_costings(self):
+        self.assertTrue(fr._sublimation_can_edit(
+            {"email": "Bedan@vivofashiongroup.com"}))
+        self.assertFalse(fr._sublimation_can_edit(
+            {"email": "another.user@vivofashiongroup.com"}))
+        self.assertFalse(fr._sublimation_can_edit({}))
+
+    def test_change_summary_is_readable_and_snapshot_is_server_owned(self):
+        before = {**fr._sublim_prepare(WORKED), "id": 8, "saved_by": "Original",
+                  "client_only": "must not be audited"}
+        after = {**before, "metres_printed": 420.0,
+                 "total_printing_cost": 123.0}
+        summary = fr._sublim_change_summary(before, after)
+        self.assertIn("metres printed", summary)
+        self.assertNotIn("total_printing_cost", summary)
+        snapshot = fr._sublim_snapshot(before)
+        self.assertNotIn("client_only", snapshot)
+        self.assertEqual(snapshot["id"], 8)
+        self.assertIn("std_cost_per_kg", snapshot)
+
+    def test_authorized_update_recalculates_and_audits_before_commit(self):
+        store = _RevisionStore()
+        conn = _RevisionConn(store)
+        request = _revision_request("bedan@vivofashiongroup.com")
+        body = {**WORKED, "metres_printed": 400,
+                "total_printing_cost": 1, "std_cost_per_kg": 1}
+        with mock.patch.object(fr, "_get_conn", lambda: conn), \
+             mock.patch.object(fr, "_ensure_sublimation_tables", lambda _c: None), \
+             mock.patch.object(fr, "_log_fabric_change", lambda *a, **k: None):
+            result = fr.sublimation_costing_update(8, request, body)
+
+        self.assertEqual(result["id"], 8)
+        self.assertEqual(len(store.rows), 1, "update must not create a duplicate row")
+        self.assertEqual(store.row["saved_by"], "Original saver")
+        self.assertEqual(store.row["saved_at"], "2026-08-01T09:00:00Z")
+        self.assertEqual(store.row["last_edited_by"], "Bedan")
+        self.assertAlmostEqual(
+            float(store.row["total_printing_cost"]),
+            fr._sublim_compute({**WORKED, "metres_printed": 400})["total_printing_cost"],
+            delta=0.001)
+        self.assertEqual(conn.commits, 1)
+        self.assertEqual(len(store.history), 1)
+        audit = store.history[0]
+        self.assertEqual(audit["action"], "edited")
+        self.assertIn("metres printed", audit["summary"])
+        self.assertEqual(audit["before"]["metres_printed"], WORKED["metres_printed"])
+        self.assertEqual(audit["after"]["metres_printed"], 400.0)
+
+    def test_unauthorized_update_does_not_touch_saved_row(self):
+        store = _RevisionStore()
+        conn = _RevisionConn(store)
+        with mock.patch.object(fr, "_get_conn", lambda: conn):
+            with self.assertRaises(HTTPException) as ctx:
+                fr.sublimation_costing_update(
+                    8, _revision_request("not-bedan@vivofashiongroup.com"),
+                    {**WORKED, "metres_printed": 400})
+        self.assertEqual(ctx.exception.status_code, 403)
+        self.assertEqual(store.row["metres_printed"], WORKED["metres_printed"])
+        self.assertEqual(store.history, [])
+        self.assertEqual(conn.commits, 0)
+
+
+class _RevisionStore:
+    def __init__(self):
+        self.row = {
+            **fr._sublim_prepare(WORKED),
+            "id": 8,
+            "saved_at": "2026-08-01T09:00:00Z",
+            "saved_by": "Original saver",
+            "last_edited_at": None,
+            "last_edited_by": None,
+        }
+        self.rows = [self.row]
+        self.history = []
+
+
+class _RevisionCursor:
+    def __init__(self, store):
+        self.store = store
+        self._result = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def execute(self, sql, params=()):
+        compact = " ".join(sql.split())
+        if compact.startswith("SELECT * FROM sublimation_costings"):
+            self._result = dict(self.store.row)
+            return
+        if compact.startswith("UPDATE sublimation_costings SET"):
+            columns = re.findall(r"([a-z_]+)=%s", compact)
+            for column, value in zip(columns, params[:-1]):
+                self.store.row[column] = value
+            self._result = dict(self.store.row)
+            return
+        if compact.startswith("INSERT INTO sublimation_costing_history"):
+            before = json.loads(params[5]) if params[5] else None
+            after = json.loads(params[6]) if params[6] else None
+            self.store.history.append({
+                "costing_id": params[0], "action": params[1],
+                "summary": params[4], "before": before, "after": after,
+            })
+            self._result = None
+            return
+        raise AssertionError(f"Unexpected revision SQL: {compact}")
+
+    def fetchone(self):
+        return self._result
+
+
+class _RevisionConn:
+    def __init__(self, store):
+        self.store = store
+        self.commits = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def cursor(self, *args, **kwargs):
+        return _RevisionCursor(self.store)
+
+    def commit(self):
+        self.commits += 1
+
+
+def _revision_request(email):
+    return SimpleNamespace(state=SimpleNamespace(user={
+        "email": email, "user_id": "local:" + email, "name": "Bedan",
+    }))
 
 
 if __name__ == "__main__":

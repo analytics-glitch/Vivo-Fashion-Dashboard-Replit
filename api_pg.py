@@ -1905,6 +1905,18 @@ async def clerk_auth_gate(request: Request, call_next):
             return JSONResponse({"detail": "Costing access restricted"},
                                 status_code=403)
 
+    # Sublimation costing library rows remain broadly viewable and deletable,
+    # but updating an existing saved costing is restricted to the one named
+    # editor. Keep this server-side so hiding the Edit button is not the
+    # enforcement point for direct PUT requests.
+    if re.match(r"^/api/fabric/sublimation/costings/\d+$", path) \
+            and request.method == "PUT":
+        from fabric_router import _sublimation_can_edit
+        if not _sublimation_can_edit(user):
+            return JSONResponse(
+                {"detail": "Saved sublimation costing editing is restricted"},
+                status_code=403)
+
     # Support-scope overrides: viewing the rule list is broadly accessible (the
     # Support tab surfaces the active rules), but ADDING/REMOVING a rule is
     # admin-only — same server-side pattern as the rolls write gate above.

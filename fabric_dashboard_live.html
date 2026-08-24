@@ -339,6 +339,10 @@ select:focus,input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(26
 .sub-detail-block h4{margin:0 0 8px;font-size:12px;text-transform:uppercase;letter-spacing:.06em;color:var(--accent);}
 .sub-detail-row{display:flex;justify-content:space-between;gap:12px;font-size:12px;padding:3px 0;border-bottom:1px solid #f3eee9;}
 .sub-detail-row:last-child{border-bottom:0}.sub-detail-row span:last-child{text-align:right;overflow-wrap:anywhere}
+.sub-history-item{border-top:1px solid #f3eee9;padding:9px 0;font-size:12px;}
+.sub-history-item:first-child{border-top:0;padding-top:0;}
+.sub-history-meta{display:flex;gap:8px;flex-wrap:wrap;align-items:baseline;margin-bottom:3px;color:var(--text-sub);}
+.sub-history-action{font-weight:700;color:var(--accent);text-transform:capitalize;}
 .sub-print-sheet{display:none}
 @media print{
   body.sub-printing>*:not(#sub-print-sheet){display:none!important}
@@ -1501,6 +1505,7 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
        </div>
        <div style="margin-top:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
         <button class="btn btn-primary" id="sub-save-btn" onclick="saveSublimation()">Save to library</button>
+        <button class="btn" id="sub-cancel-edit-btn" type="button" onclick="subCancelEdit()" style="display:none;">Cancel edit</button>
         <span id="sub-save-msg" style="font-size:12.5px;"></span>
        </div>
       </div>
@@ -1543,7 +1548,7 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
     <div class="sub-modal-card">
      <div class="sub-modal-head"><div><div class="eyebrow">Saved sublimation costing</div><h2 id="sub-detail-title">Costing detail</h2></div><button class="btn" type="button" onclick="subCloseDetail()" aria-label="Close costing detail">&times;</button></div>
      <div id="sub-detail-content"></div>
-     <div class="sub-modal-actions"><button class="btn" type="button" onclick="subCloseDetail()">Close</button><button class="btn btn-primary" type="button" onclick="subPrintSelected()">Print costing</button></div>
+     <div class="sub-modal-actions"><button class="btn" type="button" onclick="subCloseDetail()">Close</button><button class="btn" id="sub-detail-edit-btn" type="button" onclick="subEditSelected()" style="display:none;">Edit costing</button><button class="btn btn-primary" type="button" onclick="subPrintSelected()">Print costing</button></div>
     </div>
    </div>
    <article id="sub-print-sheet" class="sub-print-sheet" aria-hidden="true"></article>
@@ -9204,7 +9209,8 @@ const SUBLIM_MACHINE_RATE={
 // run's actual rate, so the exported Odoo standard cost is run-independent.
 // The actual rate (metres ÷ machine time) appears as a variance readout only.
 const SUBLIM_STD_THROUGHPUT=60;
-let subPickedFabric=null, subSearchRows=[], subLibRows=[], subCalc=null, subSelectedId=null;
+let subPickedFabric=null, subSearchRows=[], subLibRows=[], subCalc=null, subSelectedId=null,
+  subCanEdit=false, subEditingId=null;
 let subPsTimer, subBound=false;
 const subFmt=(n,d)=>(n==null||!isFinite(n))?'—':Number(n).toLocaleString(undefined,{minimumFractionDigits:d==null?2:d,maximumFractionDigits:d==null?2:d});
 function subNum(id){const v=parseFloat(document.getElementById(id).value);return isFinite(v)?v:0;}
@@ -9427,20 +9433,30 @@ async function saveSublimation(){
     final_fabric_barcode:(document.getElementById('sub-final-fabric-barcode').value.trim()||null)
   };
   const btn=document.getElementById('sub-save-btn');
-  btn.disabled=true;const old=btn.textContent;btn.textContent='Saving…';
+  const editingId=subEditingId;
+  btn.disabled=true;const old=btn.textContent;btn.textContent=editingId?'Updating…':'Saving…';
   try{
-    const r=await fetch('/api/fabric/sublimation/costings',{method:'POST',credentials:'include',headers:vivoAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(body)});
+    const url=editingId?'/api/fabric/sublimation/costings/'+encodeURIComponent(editingId):'/api/fabric/sublimation/costings';
+    const r=await fetch(url,{method:editingId?'PUT':'POST',credentials:'include',headers:vivoAuthHeaders({'Content-Type':'application/json'}),body:JSON.stringify(body)});
     if(!r.ok){let d={};try{d=await r.json();}catch(_){}throw new Error(d.detail||('http '+r.status));}
-    msg.style.color='#166534';msg.textContent='Saved to library ✓';
-    setTimeout(()=>{if(msg.textContent==='Saved to library ✓')msg.textContent='';},4000);
+    const saved=await r.json();
+    subEditingId=null;
+    document.getElementById('sub-cancel-edit-btn').style.display='none';
+    btn.textContent='Save to library';
+    document.getElementById('sub-fabric-hint').textContent=editingId
+      ?'Updated saved costing #'+saved.id+'.'
+      :'Saved new costing #'+saved.id+'.';
+    msg.style.color='#166534';msg.textContent=editingId?'Updated saved costing ✓':'Saved to library ✓';
+    setTimeout(()=>{if(msg.textContent.includes('saved costing')||msg.textContent==='Saved to library ✓')msg.textContent='';},4000);
     loadSublimationLibrary();
   }catch(e){msg.style.color='#991b1b';msg.textContent=e.message==='auth'?'Your session has expired — sign in again.':('Could not save: '+e.message);}
-  finally{btn.disabled=false;btn.textContent=old;}
+  finally{btn.disabled=false;if(subEditingId===editingId)btn.textContent=old;}
 }
 async function loadSublimationLibrary(){
   try{
     const d=await apiFetch('/api/fabric/sublimation/costings');
     subLibRows=d.items||[];
+    subCanEdit=!!d.can_edit;
     if(subSelectedId!=null&&!subLibRows.some(x=>String(x.id)===String(subSelectedId)))subSelectedId=null;
     renderSubLibrary();
   }catch(e){rowErr('sub-lib-body',15,e);}
@@ -9470,6 +9486,7 @@ function renderSubLibrary(){
      <button class="btn" data-subopen="${r.id}" style="padding:4px 8px;font-size:12px;">Open</button>
      <button class="btn" data-subprint="${r.id}" style="padding:4px 8px;font-size:12px;">Print</button>
      <button class="btn" data-subload="${r.id}" style="padding:4px 10px;font-size:12px;">Load</button>
+     ${subCanEdit?`<button class="btn" data-subedit="${r.id}" style="padding:4px 10px;font-size:12px;">Edit</button>`:''}
      <button class="btn" data-subdel="${r.id}" style="padding:4px 8px;font-size:12px;color:#991b1b;">Delete</button>
     </td></tr>`).join('');
 }
@@ -9488,6 +9505,14 @@ function subPrintRows(items){
 function subBomTableRows(lines){
   return (lines||[]).map(l=>'<tr><td>'+esc(l.name)+'</td><td class="r">'+subNumber(l.qty,l.dp)+'</td><td>'+esc(subBlank(l.uom))+'</td><td class="r">'+subNumber(l.cost,2)+'</td></tr>').join('');
 }
+function subHistoryHtml(history){
+  if(!Array.isArray(history)||!history.length)return '<div class="muted">No activity history is available for this legacy costing.</div>';
+  return history.map(h=>{
+    const who=h.changed_by_name||h.changed_by||'Unknown user';
+    const action={created:'Saved',edited:'Edited',deleted:'Deleted'}[h.action]||h.action||'Updated';
+    return `<div class="sub-history-item"><div class="sub-history-meta"><span class="sub-history-action">${esc(action)}</span><span>${esc(who)}</span><span>${esc(fmtNairobi(h.changed_at)||'—')}</span></div><div>${esc(h.summary||'No change summary was recorded.')}</div></div>`;
+  }).join('');
+}
 function subDetailHtml(r){
   const inputs=[
     ['Fabric width (m)',subNumber(r.fabric_width_m,3)],['GSM (g/m²)',subNumber(r.fabric_gsm,1)],
@@ -9502,15 +9527,31 @@ function subDetailHtml(r){
   const totals=[['Total printing (KES)',subNumber(r.total_printing_cost,2)],['Printing cost / m (KES)',subNumber(r.printing_cost_per_m,2)],['Printing cost / kg (KES)',subNumber(r.printing_cost_per_kg,2)],['Finished cost / m (KES)',subNumber(r.finished_cost_per_m,2)],['Finished cost / kg (KES)',subNumber(r.finished_cost_per_kg,2)],['Standard cost / kg (KES)',subNumber(r.std_cost_per_kg,2)]];
   const lines=r.bom_lines||[];
   const bom=lines.length?`<table class="data"><thead><tr><th>Component</th><th class="r">Qty per kg</th><th>UoM</th><th class="r">Cost (KES/kg)</th></tr></thead><tbody>${subBomTableRows(lines)}<tr><td class="sub-print-total">Material subtotal</td><td></td><td></td><td class="r sub-print-total">${subNumber(r.bom_material_subtotal,2)}</td></tr><tr><td>Print operation</td><td class="r">${subNumber(r.bom_operation_min_per_kg,3)}</td><td>min</td><td class="r">${subNumber(r.bom_machine_cost_per_kg,2)}</td></tr><tr><td class="sub-print-total">Standard cost / kg (clean)</td><td></td><td></td><td class="r sub-print-total">${subNumber(r.bom_clean_standard_cost_per_kg,2)}</td></tr></tbody></table>`:'<div class="muted">No per-kg BOM is available for this saved entry.</div>';
-  return `<div class="sub-detail-grid"><div class="sub-detail-block"><h4>Saved entry</h4>${subDetailRows([['Saved date',fmtNairobi(r.saved_at)||'—'],['Saved by',r.saved_by],['Print name',r.print_name],['Style name',r.style_name],['Print code',r.print_code]])}</div><div class="sub-detail-block"><h4>Product & fabric</h4>${subDetailRows([['Final product',r.final_product_name],['Final fabric barcode',r.final_fabric_barcode],['Fabric',r.fabric_name],['Fabric barcode',r.fabric_barcode]])}</div><div class="sub-detail-block"><h4>Saved totals</h4>${subDetailRows(totals)}</div></div><div class="sub-detail-block"><h4>Run and calculation inputs</h4><div class="sub-detail-grid" style="margin:0;">${subDetailRows(inputs)}</div></div><div class="sub-detail-block" style="margin-top:12px;"><h4>Odoo BOM — per 1 kg</h4>${bom}</div>`;
+  const savedMeta=[['Original saved',fmtNairobi(r.saved_at)||'—'],['Original saved by',r.saved_by],['Latest edit',r.last_edited_at?fmtNairobi(r.last_edited_at):'Not edited'],['Latest edited by',r.last_edited_by||'—'],['Print name',r.print_name],['Style name',r.style_name],['Print code',r.print_code]];
+  return `<div class="sub-detail-grid"><div class="sub-detail-block"><h4>Original save & latest edit</h4>${subDetailRows(savedMeta)}</div><div class="sub-detail-block"><h4>Product & fabric</h4>${subDetailRows([['Final product',r.final_product_name],['Final fabric barcode',r.final_fabric_barcode],['Fabric',r.fabric_name],['Fabric barcode',r.fabric_barcode]])}</div><div class="sub-detail-block"><h4>Current saved totals</h4>${subDetailRows(totals)}</div></div><div class="sub-detail-block"><h4>Run and calculation inputs</h4><div class="sub-detail-grid" style="margin:0;">${subDetailRows(inputs)}</div></div><div class="sub-detail-block" style="margin-top:12px;"><h4>Odoo BOM — per 1 kg</h4>${bom}</div><div class="sub-detail-block" style="margin-top:12px;"><h4>Activity history</h4>${subHistoryHtml(r.history)}</div>`;
 }
-function subOpenDetail(id){
-  const r=subPickSaved(id);if(!r)return;
+async function subOpenDetail(id){
+  let r=subPickSaved(id);if(!r)return;
+  try{
+    const detail=await apiFetch('/api/fabric/sublimation/costings/'+encodeURIComponent(id));
+    r=detail;
+    const index=subLibRows.findIndex(x=>String(x.id)===String(id));
+    if(index>=0)subLibRows[index]={...subLibRows[index],...detail};
+  }catch(e){/* The list row remains viewable if the detail fetch fails. */}
   document.getElementById('sub-detail-title').textContent='Costing #'+r.id+(r.print_name?' — '+r.print_name:'');
   document.getElementById('sub-detail-content').innerHTML=subDetailHtml(r);
+  // The modal's Edit action must always target the record currently open,
+  // not a previously checked comparison row (or no row at all).
+  subSelectedId=r.id;
+  document.getElementById('sub-detail-edit-btn').style.display=subCanEdit?'':'none';
   document.getElementById('sub-detail-modal').style.display='flex';
 }
 function subCloseDetail(){const el=document.getElementById('sub-detail-modal');if(el)el.style.display='none';}
+function subEditSelected(){
+  if(subSelectedId==null)return;
+  subCloseDetail();
+  subEditRow(subSelectedId);
+}
 function subPrintSelected(id){
   const r=id?subPickSaved(id):subLibRows.find(x=>String(x.id)===String(subSelectedId));
   if(!r){alert('Select one costing to print.');return;}
@@ -9540,7 +9581,7 @@ function subPrintSelected(id){
   window.addEventListener('afterprint',restorePrintSheet,{once:true});
   try{window.print();}catch(err){restorePrintSheet();throw err;}
 }
-function subLoadRow(id){
+function subLoadRow(id,editMode=false){
   const r=subLibRows.find(x=>String(x.id)===String(id));if(!r)return;
   subPickedFabric={id:r.fabric_product_id,name:r.fabric_name||'',barcode:r.fabric_barcode||''};
   document.getElementById('sub-product-id').value=r.fabric_product_id==null?'':r.fabric_product_id;
@@ -9556,9 +9597,29 @@ function subLoadRow(id){
   set('sub-print-name',r.print_name);set('sub-style-name',r.style_name);set('sub-print-code',r.print_code);
   set('sub-final-fabric-barcode',r.final_fabric_barcode);set('sub-final-product-name',r.final_product_name);
   document.getElementById('sub-barcode-hint').style.display='none';
-  document.getElementById('sub-fabric-hint').textContent='Loaded saved costing #'+r.id+(r.saved_at?' ('+(fmtNairobi(r.saved_at)||'')+')':'')+' — edit and save again to store a new copy.';
+  subEditingId=editMode?r.id:null;
+  document.getElementById('sub-save-btn').textContent=editMode?'Update saved costing':'Save to library';
+  document.getElementById('sub-cancel-edit-btn').style.display=editMode?'':'none';
+  document.getElementById('sub-fabric-hint').textContent=editMode
+    ?'Editing saved costing #'+r.id+' — Save updates this same library row.'
+    :'Loaded saved costing #'+r.id+(r.saved_at?' ('+(fmtNairobi(r.saved_at)||'')+')':'')+' — saving creates a new copy.';
   recalcSublimation();
   document.getElementById('page-sublimation').scrollIntoView({behavior:'smooth',block:'start'});
+}
+function subEditRow(id){
+  if(!subCanEdit)return;
+  subLoadRow(id,true);
+}
+function subCancelEdit(){
+  subEditingId=null;subPickedFabric=null;
+  document.querySelectorAll('#page-sublimation input').forEach(el=>{el.value=el.defaultValue;});
+  document.getElementById('sub-product-id').value='';
+  document.getElementById('sub-fabric-list').style.display='none';
+  document.getElementById('sub-barcode-hint').style.display='none';
+  document.getElementById('sub-save-btn').textContent='Save to library';
+  document.getElementById('sub-cancel-edit-btn').style.display='none';
+  document.getElementById('sub-fabric-hint').textContent='Edit cancelled — ready to create a new costing.';
+  recalcSublimation();
 }
 async function subDeleteRow(id){
   if(!confirm('Delete this saved costing?'))return;
@@ -9625,11 +9686,14 @@ async function loadSublimation(){
       const o=e.target.closest('button[data-subopen]');
       const p=e.target.closest('button[data-subprint]');
       const l=e.target.closest('button[data-subload]');
+      const ed=e.target.closest('button[data-subedit]');
       const d=e.target.closest('button[data-subdel]');
       if(s){subSelectedId=s.checked?s.dataset.subselect:null;renderSubLibrary();}
       else if(o)subOpenDetail(o.dataset.subopen);
       else if(p)subPrintSelected(p.dataset.subprint);
-      else if(l)subLoadRow(l.dataset.subload);else if(d)subDeleteRow(d.dataset.subdel);
+      else if(l)subLoadRow(l.dataset.subload);
+      else if(ed)subEditRow(ed.dataset.subedit);
+      else if(d)subDeleteRow(d.dataset.subdel);
     });
     const detailModal=document.getElementById('sub-detail-modal');
     if(detailModal)detailModal.addEventListener('click',e=>{if(e.target===detailModal)subCloseDetail();});
