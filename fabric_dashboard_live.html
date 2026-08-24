@@ -341,7 +341,7 @@ select:focus,input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(26
 .sub-detail-row:last-child{border-bottom:0}.sub-detail-row span:last-child{text-align:right;overflow-wrap:anywhere}
 .sub-print-sheet{display:none}
 @media print{
-  body>*{display:none!important}
+  body.sub-printing>*:not(#sub-print-sheet){display:none!important}
   #sub-print-sheet{display:block!important;font-family:Arial,sans-serif;color:#1a1a1a;padding:0;line-height:1.35}
   #sub-print-sheet .sub-print-header{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #f15a24;padding-bottom:12px;margin-bottom:18px}
   #sub-print-sheet .sub-print-logo{background:#f15a24;color:#fff;font-size:21px;font-weight:800;padding:7px 11px;border-radius:5px}
@@ -9519,7 +9519,26 @@ function subPrintSelected(id){
   const totals=[['Total printing (KES)',subNumber(r.total_printing_cost,2)],['Printing cost / m (KES)',subNumber(r.printing_cost_per_m,2)],['Printing cost / kg (KES)',subNumber(r.printing_cost_per_kg,2)],['Finished cost / m (KES)',subNumber(r.finished_cost_per_m,2)],['Finished cost / kg (KES)',subNumber(r.finished_cost_per_kg,2)],['Standard cost / kg (KES)',subNumber(r.std_cost_per_kg,2)]];
   const sheet=document.getElementById('sub-print-sheet');
   sheet.innerHTML=`<header class="sub-print-header"><div><span class="sub-print-logo">Vivo</span><h1>Sublimation Printing Costing</h1><div class="sub-print-meta">Saved ${esc(fmtNairobi(r.saved_at)||'—')} · By ${esc(subBlank(r.saved_by))}</div></div><div class="sub-print-meta">Costing #${esc(r.id)}</div></header><section class="sub-print-section"><h2>Product and fabric</h2><table><tbody>${subPrintRows([['Final product',r.final_product_name],['Final fabric barcode',r.final_fabric_barcode],['Fabric',r.fabric_name],['Fabric barcode',r.fabric_barcode],['Print name',r.print_name],['Style name',r.style_name],['Print code',r.print_code]])}</tbody></table></section><section class="sub-print-section"><h2>Inputs and saved totals</h2><div class="sub-print-grid"><table><tbody>${subPrintRows(inputRows.slice(0,6))}</tbody></table><table><tbody>${subPrintRows(inputRows.slice(6))}</tbody></table><table><tbody>${subPrintRows(totals)}</tbody></table></div></section><section class="sub-print-section"><h2>Odoo BOM — per 1 kg of printed fabric</h2><table><thead><tr><th>Component</th><th class="sub-print-num">Qty per kg</th><th>UoM</th><th class="sub-print-num">Cost (KES/kg)</th></tr></thead><tbody>${subBomTableRows(lines)}<tr><td class="sub-print-total">Material subtotal</td><td></td><td></td><td class="sub-print-num sub-print-total">${subNumber(r.bom_material_subtotal,2)}</td></tr><tr><td>Print operation</td><td class="sub-print-num">${subNumber(r.bom_operation_min_per_kg,3)}</td><td>min</td><td class="sub-print-num">${subNumber(r.bom_machine_cost_per_kg,2)}</td></tr><tr><td class="sub-print-total">Standard cost / kg (clean)</td><td></td><td></td><td class="sub-print-num sub-print-total">${subNumber(r.bom_clean_standard_cost_per_kg,2)}</td></tr></tbody></table></section>`;
-  subCloseDetail(); window.print();
+  subCloseDetail();
+
+  // The sheet normally lives inside .layout, but the print stylesheet hides
+  // that application tree. Move only this populated sheet to the document
+  // level for printing, then put it back after preview closes.
+  const originalParent=sheet.parentNode;
+  const originalNext=sheet.nextSibling;
+  const restorePrintSheet=()=>{
+    if(originalParent){
+      if(originalNext&&originalNext.parentNode===originalParent)originalParent.insertBefore(sheet,originalNext);
+      else originalParent.appendChild(sheet);
+    }
+    sheet.setAttribute('aria-hidden','true');
+    document.body.classList.remove('sub-printing');
+  };
+  document.body.classList.add('sub-printing');
+  sheet.setAttribute('aria-hidden','false');
+  document.body.appendChild(sheet);
+  window.addEventListener('afterprint',restorePrintSheet,{once:true});
+  try{window.print();}catch(err){restorePrintSheet();throw err;}
 }
 function subLoadRow(id){
   const r=subLibRows.find(x=>String(x.id)===String(id));if(!r)return;
