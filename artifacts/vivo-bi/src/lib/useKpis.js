@@ -105,39 +105,42 @@ export function useKpis({ compare = false } = {}) {
     let cancelled = false;
     setLoading(true);
     setError(null);
+    // A prior filter's delta must never be briefly calculated against the
+    // newly-arrived current period. The comparison is optional enrichment, so
+    // clear it while the matching request is in flight.
+    setPrevKpis(null);
     const params = buildKpiParams(applied);
-    const calls = [fetchKpis(params)];
-    if (compare) {
-      const prev = computePrevRange(applied.dateFrom, applied.dateTo, applied.compareMode, applied.compareDateFrom, applied.compareDateTo);
-      calls.push(prev ? fetchKpis({ ...params, ...prev }) : Promise.resolve(null));
-    }
-    // Iter 84 — Promise.allSettled instead of Promise.all so a compare-
-    // window failure (e.g. snapshot miss for a custom date pick) DOESN'T
-    // wipe out the current-window KPIs. The banner now appears ONLY when
-    // the CURRENT window itself fails; compare-window failure silently
-    // hides the delta arrows but the headline numbers still render.
-    Promise.allSettled(calls)
-      .then(([currR, prevR]) => {
+    // The current period is the page's usable state. Do not keep it behind
+    // a slower comparison query: the delta can arrive later without making
+    // staff stare at the Overview skeleton.
+    fetchKpis(params)
+      .then((data) => {
         if (cancelled) return;
-        if (currR.status === "fulfilled") {
-          setKpis(currR.value);
-          setError(null);
-        } else {
-          setError(currR.reason?.response?.data?.detail || currR.reason?.message || "fetch failed");
-        }
-        if (prevR?.status === "fulfilled") {
-          setPrevKpis(prevR.value || null);
-        } else {
-          // Don't surface compare-window errors to the user — just
-          // suppress the delta. Log for support visibility.
-          setPrevKpis(null);
-          if (prevR?.reason) {
-            // eslint-disable-next-line no-console
-            console.warn("[useKpis] compare window failed (suppressed):", prevR.reason?.message);
-          }
+        setKpis(data);
+        setError(null);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setError(err?.response?.data?.detail || err?.message || "fetch failed");
         }
       })
       .finally(() => !cancelled && setLoading(false));
+
+    const prev = compare
+      ? computePrevRange(applied.dateFrom, applied.dateTo, applied.compareMode, applied.compareDateFrom, applied.compareDateTo)
+      : null;
+    if (!prev) {
+      // No comparison selected; the effect-start reset above is sufficient.
+    } else {
+      fetchKpis({ ...params, ...prev })
+        .then((data) => !cancelled && setPrevKpis(data || null))
+        .catch((err) => {
+          if (cancelled) return;
+          setPrevKpis(null);
+          // eslint-disable-next-line no-console
+          console.warn("[useKpis] compare window failed (suppressed):", err?.message);
+        });
+    }
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [

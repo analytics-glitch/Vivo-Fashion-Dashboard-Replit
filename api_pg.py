@@ -2,6 +2,7 @@ from fastapi import FastAPI, Query, Request, Body, HTTPException, UploadFile, Fi
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 import calendar
+import contextlib
 import logging
 from collections import deque
 from datetime import date, timedelta, datetime, timezone
@@ -187,6 +188,14 @@ _SWR_GRACE_MAX = 3600      # never serve anything staler than ttl + 1h
 _SWR_MAX_INFLIGHT = 6      # bound background refresh threads (pool is 20 conns)
 _swr_inflight = set()      # keys being refreshed; guarded by _CACHE_LOCK
 _swr_ctx = threading.local()  # .bypass_key: force a real recompute of ONE key
+_snapshot_ctx = threading.local()  # .force_fresh_inner while rebuilding a stale snapshot
+# The prewarmer is deliberately lower priority than a staff page load.  It is
+# important for cold-cache resilience, but it must never make a real person wait
+# while the sync loop is already using the same database.
+_prewarmer_ctx = threading.local()
+_interactive_dashboard_loads = 0
+_INTERACTIVE_DASHBOARD_LOCK = threading.Lock()
+_dashboard_snapshot_inflight = {}  # key -> {"event": Event, "error": Exception|None}
 
 
 def _swr_grace(ttl):
@@ -249,6 +258,127 @@ def swr_refresh(key, fn, label=""):
 
     threading.Thread(target=_run, daemon=True, name=f"swr-{label or 'refresh'}").start()
 
+
+@contextlib.contextmanager
+def _interactive_dashboard_load():
+    """Mark a cache miss from a staff-facing Overview/KPI request.
+
+    Direct prewarmer calls and SWR worker threads are intentionally excluded:
+    those are background work and must yield to real browser traffic instead of
+    making the prewarmer think it is busy with a user.
+    """
+    global _interactive_dashboard_loads
+    background = bool(
+        getattr(_prewarmer_ctx, "active", False)
+        or getattr(_swr_ctx, "bypass_key", None)
+    )
+    if not background:
+        with _INTERACTIVE_DASHBOARD_LOCK:
+            _interactive_dashboard_loads += 1
+    try:
+        yield
+    finally:
+        if not background:
+            with _INTERACTIVE_DASHBOARD_LOCK:
+                _interactive_dashboard_loads = max(0, _interactive_dashboard_loads - 1)
+
+
+def _interactive_dashboard_load_active():
+    with _INTERACTIVE_DASHBOARD_LOCK:
+        return _interactive_dashboard_loads > 0
+
+
+def _dashboard_snapshot_key(kind, date_from, date_to, country=None, channel=None,
+                            compare_from=None, compare_to=None):
+    """Canonical cache key for an Overview response or KPI payload.
+
+    Country/POS selections are sets from the filter bar, so normalising their
+    order collapses equivalent browser loads onto one server-side snapshot.
+    """
+    def _scope(value):
+        if value is None or str(value).strip() == "":
+            return ""
+        # Preserve empty comma elements. build_filters() treats "Kenya," as a
+        # different SQL predicate from "Kenya", so collapsing it here could let
+        # a malformed request poison the healthy filter's shared snapshot.
+        return sorted(part.strip() for part in str(value).split(","))
+
+    scope = {
+        "kind": kind,
+        "date_from": str(date_from or ""),
+        "date_to": str(date_to or ""),
+        "country": _scope(country),
+        "channel": _scope(channel),
+        "compare_from": str(compare_from or ""),
+        "compare_to": str(compare_to or ""),
+    }
+    digest = hashlib.sha256(
+        json.dumps(scope, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return f"dashboard-snapshot:{kind}:{digest}"
+
+
+def _cached_dashboard_snapshot(key, date_to, build, label):
+    """Serve a complete dashboard response from SWR cache when available.
+
+    This sits above SQL-text caching. It avoids rebuilding the entire Overview
+    payload for every simultaneous staff load, and guarantees a failed refresh
+    leaves the last successful snapshot available during the grace window.
+    """
+    cached, fresh = cache_get_swr(key)
+    if cached is not None:
+        if not fresh:
+            swr_refresh(
+                key,
+                lambda: _cached_dashboard_snapshot(key, date_to, build, label),
+                label=label,
+            )
+        return cached
+
+    # Coalesce a cold burst as well as stale refreshes. An Overview response
+    # contains several aggregate queries, so letting ten simultaneous browser
+    # loads each build it independently is worse than a single cold wait.
+    with _CACHE_LOCK:
+        entry = _dashboard_snapshot_inflight.get(key)
+        if entry is None:
+            entry = {"event": threading.Event(), "error": None}
+            _dashboard_snapshot_inflight[key] = entry
+            owner = True
+        else:
+            owner = False
+
+    if not owner:
+        entry["event"].wait()
+        cached, _ = cache_get_swr(key)
+        if cached is not None:
+            return cached
+        if entry["error"] is not None:
+            raise entry["error"]
+        raise RuntimeError(f"Dashboard snapshot build ended without a payload: {label}")
+
+    started = time.monotonic()
+    stale_rebuild = bool(getattr(_swr_ctx, "bypass_key", None) == key)
+    try:
+        with _interactive_dashboard_load():
+            _snapshot_ctx.force_fresh_inner = stale_rebuild
+            try:
+                payload = build()
+            finally:
+                _snapshot_ctx.force_fresh_inner = False
+        cache_set(key, payload, ttl=smart_ttl(date_to))
+        elapsed = time.monotonic() - started
+        if elapsed >= SLOW_QUERY_WARN_SEC:
+            log.warning("SLOW DASHBOARD SNAPSHOT %.1fs: %s", elapsed, label)
+        return payload
+    except Exception as exc:
+        entry["error"] = exc
+        raise
+    finally:
+        entry["event"].set()
+        with _CACHE_LOCK:
+            _dashboard_snapshot_inflight.pop(key, None)
+
+
 def cache_set(key, val, ttl=120):
     with _CACHE_LOCK:
         _cache[key] = (val, time.time(), ttl)
@@ -261,7 +391,6 @@ def cache_set(key, val, ttl=120):
                 _cache_stats["evictions"] += 1
 
 _CACHE_LOCK = threading.Lock()
-import contextlib
 from psycopg2 import pool as _pg_pool
 
 # Cap concurrent DB connections per worker.  With multiple uvicorn workers the
@@ -444,12 +573,21 @@ def run_query(query, date_to=None, ttl=None):
     key = hashlib.md5(query.encode()).hexdigest()
     cached, fresh = cache_get_swr(key)
     if cached is not None:
-        if not fresh:
-            # Serve the stale rows instantly; recompute in the background so
-            # the next caller gets fresh data without anyone paying the wait.
-            swr_refresh(key, lambda: run_query(query, date_to=date_to, ttl=ttl),
-                        label="run_query")
-        return cached
+        # A stale complete Overview snapshot is served immediately, then rebuilt
+        # in the background. Its rebuild must not compose that new snapshot from
+        # stale component queries and reset the snapshot's TTL around old data.
+        if not fresh and getattr(_snapshot_ctx, "force_fresh_inner", False):
+            # Fall through to the database read below. Keep the old SQL cache
+            # entry intact so normal callers can still use SWR if this forced
+            # refresh fails.
+            pass
+        else:
+            if not fresh:
+                # Serve the stale rows instantly; recompute in the background so
+                # the next caller gets fresh data without anyone paying the wait.
+                swr_refresh(key, lambda: run_query(query, date_to=date_to, ttl=ttl),
+                            label="run_query")
+            return cached
     pool, conn = _acquire_conn()
     t0 = time.time()
     try:
@@ -2329,9 +2467,18 @@ def _start_cache_prewarmer():
         # fresh before the HEAVY_DASH_TTL (900s) lapses.
         cycle = 0
         last_rollup_kick = 0.0
+        opportunistic_index = 0
         while True:
             t0 = time.time()
             cycle += 1
+            # A warm cache is useful only if it does not compete with a staff
+            # member opening the Overview.  This is checked before buffer
+            # scans, rollup checks and every individual target so a fresh load
+            # can claim capacity as soon as it arrives.
+            if _interactive_dashboard_load_active():
+                print("Cache prewarm deferred: interactive dashboard load active", flush=True)
+                time.sleep(30)
+                continue
             # Warm Postgres shared_buffers so cold-start queries hit RAM not disk
             # — but only for the first few cycles after startup. Buffers are hot
             # after that (the warm targets themselves keep touching the tables),
@@ -2380,7 +2527,27 @@ def _start_cache_prewarmer():
                           flush=True)
             except Exception as _rk_e:
                 log.warning("Rollup self-heal check failed (non-fatal): %s", _rk_e)
-            targets = [
+            # The initial Overview and its headline KPI are the only targets
+            # that directly control the staff landing page. Keep them warm each
+            # cycle. Everything else is opportunistic and is rotated one-at-a-
+            # time below so a long whole-history scan cannot monopolise the API
+            # merely to prewarm a screen nobody is viewing.
+            _today = date.today()
+            _previous_month = _today.month - 1 or 12
+            _previous_year = _today.year if _today.month > 1 else _today.year - 1
+            _previous_day = min(
+                _today.day, calendar.monthrange(_previous_year, _previous_month)[1])
+            priority_targets = [
+                ("overview-default", lambda: bootstrap_overview(
+                    date_from=str(date.today().replace(day=1)),
+                    date_to=str(date.today()), country=None, channel=None,
+                    compare_from=str(date(_previous_year, _previous_month, 1)),
+                    compare_to=str(date(_previous_year, _previous_month, _previous_day)))),
+                ("kpis-mtd", lambda: get_kpis(
+                    date_from=str(date.today().replace(day=1)),
+                    date_to=str(date.today()), country=None, channel=None)),
+            ]
+            opportunistic_targets = [
                 ("weeks-of-cover", lambda: analytics_weeks_of_cover(
                     date_from=None, date_to=None, country=None)),
                 ("aged-stock", lambda: analytics_aged_stock(
@@ -2407,24 +2574,6 @@ def _start_cache_prewarmer():
                 ("ibt-suggestions", lambda: ibt_suggestions(
                     country=None, demand_days=28, limit=300,
                     low_pct=20, high_pct=150, use_clustering=True)),
-                # KPI endpoint: warm the four most-used date presets so
-                # navigating the filter bar after a restart is instant.
-                ("kpis-today", lambda: get_kpis(
-                    date_from=str(date.today()),
-                    date_to=str(date.today()),
-                    country=None, channel=None)),
-                ("kpis-mtd", lambda: get_kpis(
-                    date_from=str(date.today().replace(day=1)),
-                    date_to=str(date.today()),
-                    country=None, channel=None)),
-                ("kpis-7d", lambda: get_kpis(
-                    date_from=str(date.today() - timedelta(days=7)),
-                    date_to=str(date.today()),
-                    country=None, channel=None)),
-                ("kpis-30d", lambda: get_kpis(
-                    date_from=str(date.today() - timedelta(days=30)),
-                    date_to=str(date.today()),
-                    country=None, channel=None)),
                 ("production-flow",    lambda: production_flow()),
                 ("production-summary", lambda: production_summary()),
                 ("retail-desk-overview", retail_desk_router._overview_snapshot),
@@ -2437,11 +2586,23 @@ def _start_cache_prewarmer():
                     from_date=None, to_date=None, country=None,
                     pos_location=None)),
             ]
+            targets = priority_targets
+            if opportunistic_targets:
+                targets = targets + [opportunistic_targets[
+                    opportunistic_index % len(opportunistic_targets)]]
+                opportunistic_index += 1
             for name, fn in targets:
+                if _interactive_dashboard_load_active():
+                    print("Cache prewarm yielded before %s: interactive dashboard load active" % name,
+                          flush=True)
+                    break
                 try:
+                    _prewarmer_ctx.active = True
                     fn()
                 except Exception as e:
                     log.warning("Cache prewarm %s failed: %s", name, e)
+                finally:
+                    _prewarmer_ctx.active = False
             # print (not log.info) so the line is visible in deployed logs,
             # matching the "Deferred startup complete" pattern.
             print("Cache prewarm cycle done in %.1fs" % (time.time() - t0), flush=True)
@@ -6102,8 +6263,12 @@ def get_kpis(
     country:   str = Query(default=None),
     channel:   str = Query(default=None),
 ):
-    where = build_filters(date_from, date_to, country, channel)
-    rows = run_query("""
+    _kpis_ck = _dashboard_snapshot_key(
+        "kpis", date_from, date_to, country=country, channel=channel)
+
+    def _build():
+        where = build_filters(date_from, date_to, country, channel)
+        rows = run_query("""
         SELECT
             ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric ELSE 0 END) - SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.discounts_kes::numeric ELSE 0 END) - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END), 0) AS total_sales,
             ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.gross_sales_kes::numeric ELSE 0 END), 0) AS gross_sales,
@@ -6126,7 +6291,9 @@ def get_kpis(
                 / NULLIF(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.gross_sales_kes::numeric ELSE 0 END), 0) * 100, 2) AS return_rate
         FROM all_sales s
         WHERE """ + where, date_to=date_to)
-    return rows[0] if rows else {}
+        return rows[0] if rows else {}
+
+    return _cached_dashboard_snapshot(_kpis_ck, date_to, _build, "kpis")
 
 @app.get("/api/kpis/customer-type-split")
 def get_kpis_customer_type_split(
@@ -9884,20 +10051,28 @@ def bootstrap_overview(
     compare_to:   str = Query(default=None),
 ):
     has_prev = bool(compare_from and compare_to)
-    return {
-        "country_summary":      _country_summary_q(date_from, date_to, country, channel),
-        "country_summary_prev": _country_summary_q(compare_from, compare_to, country, channel) if has_prev else [],
-        "sales_summary":        get_sales_summary(date_from, date_to, country, channel),
-        "sales_summary_prev":   get_sales_summary(compare_from, compare_to, country, channel) if has_prev else [],
-        "top_styles":           get_top_skus(date_from, date_to, country, channel, 10),
-        "subcategory_sales":      get_subcategory_sales(date_from, date_to, country, channel),
-        "subcategory_sales_prev": get_subcategory_sales(compare_from, compare_to, country, channel) if has_prev else [],
-        "footfall":             get_footfall(date_from, date_to, channel),
-        "footfall_prev":        get_footfall(compare_from, compare_to, channel) if has_prev else [],
-        "locations":            get_locations(),
-        "daily_by_country":      _daily_by_country_q(date_from, date_to, country, channel),
-        "daily_by_country_prev": _daily_by_country_q(compare_from, compare_to, country, channel) if has_prev else {},
-    }
+    _overview_ck = _dashboard_snapshot_key(
+        "overview", date_from, date_to, country=country, channel=channel,
+        compare_from=compare_from, compare_to=compare_to)
+
+    def _build():
+        return {
+            "country_summary":      _country_summary_q(date_from, date_to, country, channel),
+            "country_summary_prev": _country_summary_q(compare_from, compare_to, country, channel) if has_prev else [],
+            "sales_summary":        get_sales_summary(date_from, date_to, country, channel),
+            "sales_summary_prev":   get_sales_summary(compare_from, compare_to, country, channel) if has_prev else [],
+            "top_styles":           get_top_skus(date_from, date_to, country, channel, 10),
+            "subcategory_sales":      get_subcategory_sales(date_from, date_to, country, channel),
+            "subcategory_sales_prev": get_subcategory_sales(compare_from, compare_to, country, channel) if has_prev else [],
+            "footfall":             get_footfall(date_from, date_to, channel),
+            "footfall_prev":        get_footfall(compare_from, compare_to, channel) if has_prev else [],
+            "locations":            get_locations(),
+            "daily_by_country":      _daily_by_country_q(date_from, date_to, country, channel),
+            "daily_by_country_prev": _daily_by_country_q(compare_from, compare_to, country, channel) if has_prev else {},
+        }
+
+    return _cached_dashboard_snapshot(
+        _overview_ck, date_to, _build, "bootstrap_overview")
 
 # ── Sales by Hour (Overview bottom chart) ────────────────────────────────────
 # all_sales.sale_date is date-only, so hour-of-day comes from the RAW order
