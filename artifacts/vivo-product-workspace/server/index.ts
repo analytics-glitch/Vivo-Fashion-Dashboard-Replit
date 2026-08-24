@@ -2353,38 +2353,167 @@ router.post("/logout", async (req, res, next) => {
   }
 });
 
+type TeamPickerRow = {
+  id: string;
+  name: string;
+  role: string;
+  department: string;
+  team: string;
+  createdAt?: Date | string | null;
+  dateOfBirth?: Date | string | null;
+};
+
+function mergeTeamPickerRows(rows: Array<Partial<TeamPickerRow>>) {
+  const merged = new Map<string, TeamPickerRow>();
+  for (const row of rows) {
+    const name = String(row.name ?? "").trim();
+    if (!name) continue;
+    const key = name.toLocaleLowerCase();
+    if (merged.has(key)) continue;
+    merged.set(key, {
+      id: String(row.id ?? ""),
+      name,
+      role: String(row.role ?? "").trim() || "Team member",
+      department: String(row.department ?? "").trim(),
+      team: String(row.team ?? "").trim(),
+      createdAt: row.createdAt ?? null,
+      dateOfBirth: row.dateOfBirth ?? null,
+    });
+  }
+  return [...merged.values()].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+}
+
+async function readTeamPickerRows() {
+  // The UNION is the normal path and keeps the picker independent of a name
+  // match between the two tables. These aliases reflect the current Workspace
+  // schema (role_title/full_name were used by older deployments).
+  try {
+    const result = await withTimeout(
+      pool.query<TeamPickerRow>(
+        `SELECT name, id::text, role_title AS role, team_section AS department,
+                ''::text AS team, created_at AS "createdAt", birthday AS "dateOfBirth"
+           FROM ${schema}.workspace_team_members
+          WHERE name IS NOT NULL AND name != ''
+         UNION
+         SELECT name, id::text, role, department, team,
+                created_at AS "createdAt", date_of_birth AS "dateOfBirth"
+           FROM ${schema}.workspace_users
+          WHERE name IS NOT NULL AND name != ''
+         ORDER BY name`,
+      ),
+      4000,
+      "workspace team picker union",
+    );
+    return mergeTeamPickerRows(result.rows);
+  } catch (error) {
+    console.warn("Workspace team picker UNION unavailable; reading tables independently", error);
+  }
+
+  // Keep each table isolated: a missing table or a legacy column name must not
+  // prevent the other table from supplying the login choices.
+  const rows: Array<Partial<TeamPickerRow>> = [];
+  try {
+    const result = await withTimeout(
+      pool.query<TeamPickerRow>(
+        `SELECT name, id::text, role_title AS role, team_section AS department,
+                ''::text AS team, created_at AS "createdAt", birthday AS "dateOfBirth"
+           FROM ${schema}.workspace_team_members
+          WHERE name IS NOT NULL AND name != ''`,
+      ),
+      4000,
+      "workspace team members picker lookup",
+    );
+    rows.push(...result.rows);
+  } catch (error) {
+    console.warn("Workspace team members picker lookup failed", error);
+    try {
+      const result = await withTimeout(
+        pool.query<TeamPickerRow>(
+          `SELECT name, id::text, role
+             FROM ${schema}.workspace_team_members
+            WHERE name IS NOT NULL AND name != ''`,
+        ),
+        4000,
+        "legacy workspace team members picker lookup",
+      );
+      rows.push(...result.rows);
+    } catch (legacyError) {
+      console.warn("Legacy workspace team members picker lookup failed", legacyError);
+    }
+  }
+  try {
+    const result = await withTimeout(
+      pool.query<TeamPickerRow>(
+        `SELECT full_name AS name, id::text, role
+           FROM ${schema}.workspace_users
+          WHERE full_name IS NOT NULL AND full_name != ''`,
+      ),
+      4000,
+      "workspace users full name picker lookup",
+    );
+    rows.push(...result.rows);
+  } catch (error) {
+    console.warn("Workspace users full name picker lookup failed; trying name", error);
+    try {
+      const result = await withTimeout(
+        pool.query<TeamPickerRow>(
+          `SELECT name, id::text, role, department, team,
+                  created_at AS "createdAt", date_of_birth AS "dateOfBirth"
+             FROM ${schema}.workspace_users
+            WHERE name IS NOT NULL AND name != ''`,
+        ),
+        4000,
+        "workspace users picker lookup",
+      );
+      rows.push(...result.rows);
+    } catch (legacyError) {
+      console.warn("Workspace users picker lookup failed", legacyError);
+    }
+  }
+  return mergeTeamPickerRows(rows);
+}
+
+async function readTeamMemberDebug() {
+  const output = {
+    workspace_team_members: { count: 0, names: [] as string[] },
+    workspace_users: { count: 0, names: [] as string[] },
+    errors: {} as Record<string, string>,
+  };
+  try {
+    const result = await withTimeout(
+      pool.query<{ name: string }>(
+        `SELECT name FROM ${schema}.workspace_team_members
+         WHERE name IS NOT NULL AND name != '' ORDER BY name`,
+      ),
+      4000,
+      "workspace team members debug lookup",
+    );
+    output.workspace_team_members = { count: result.rows.length, names: result.rows.map((row) => row.name) };
+  } catch (error) {
+    output.errors.workspace_team_members = error instanceof Error ? error.message : String(error);
+  }
+  try {
+    const result = await withTimeout(
+      pool.query<{ name: string }>(
+        `SELECT name FROM ${schema}.workspace_users
+         WHERE name IS NOT NULL AND name != '' ORDER BY name`,
+      ),
+      4000,
+      "workspace users debug lookup",
+    );
+    output.workspace_users = { count: result.rows.length, names: result.rows.map((row) => row.name) };
+  } catch (error) {
+    output.errors.workspace_users = error instanceof Error ? error.message : String(error);
+  }
+  return output;
+}
+
 // Team directory — read is intentionally public within the workspace app: the
 // first-visit "Who are you?" selector needs the list before any identity or
 // session exists. Mutations sit behind the session gate below.
 router.get("/team", async (_req, res, next) => {
-  if (!schemaReady && !lastDbProbeResult) {
-    res.json([]);
-    return;
-  }
   try {
-    const result = await withTimeout(
-      pool.query(
-        `SELECT tm.id,
-                NULLIF(TRIM(tm.name),'') AS name,
-                COALESCE(NULLIF(TRIM(wu.role),''),NULLIF(TRIM(tm.role_title),''),'Team member') AS role,
-                COALESCE(NULLIF(TRIM(wu.department),''),NULLIF(TRIM(tm.team_section),''),'') AS department,
-                '' AS team,
-                tm.created_at AS "createdAt"
-         FROM ${schema}.workspace_team_members tm
-         LEFT JOIN ${schema}.workspace_users wu
-           ON LOWER(TRIM(wu.name)) = LOWER(TRIM(tm.name))
-         WHERE NULLIF(TRIM(tm.name),'') IS NOT NULL
-         ORDER BY CASE
-                    WHEN LOWER(COALESCE(NULLIF(TRIM(wu.role),''),TRIM(tm.role_title),'')) = 'admin' THEN 0
-                    ELSE 1
-                  END,
-                  LOWER(TRIM(tm.name)),
-                  tm.id`,
-      ),
-      4000,
-      "workspace team lookup",
-    );
-    res.json(result.rows);
+    res.json(await readTeamPickerRows());
   } catch (error) {
     next(error);
   }
@@ -6705,6 +6834,13 @@ app.patch("/api/styles/:id", requireUser, async (req, res, next) => {
       return;
     }
     res.json(result.rows[0]);
+  } catch (error) {
+    next(error);
+  }
+});
+app.get("/api/debug/team-members", async (_req, res, next) => {
+  try {
+    res.json(await readTeamMemberDebug());
   } catch (error) {
     next(error);
   }

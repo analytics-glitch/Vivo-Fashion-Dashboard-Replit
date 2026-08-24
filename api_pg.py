@@ -669,7 +669,7 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response, Streamin
 
 # Exact /api paths reachable without a session (health probes + proxy prefix).
 _AUTH_PUBLIC_EXACT = {"/api", "/api/", "/api/healthz", "/api/readyz", "/api/sync-status",
-                      "/api/environment"}
+                      "/api/environment", "/api/debug/team-members"}
 
 # Endpoints that internal sync jobs (no staff session) may write to, authenticated
 # by the shared SESSION_SECRET via the X-Internal-Token header (validated in the
@@ -5263,6 +5263,38 @@ async def environment_signal():
     # login pages can read it before a session exists.
     is_prod = bool((os.environ.get("REPLIT_DEPLOYMENT") or "").strip())
     return {"environment": "production" if is_prod else "development"}
+
+
+@app.get("/api/debug/team-members")
+async def debug_team_members():
+    """Return raw Workspace identity-table counts and names for deployment triage."""
+    def _read_debug():
+        output = {
+            "workspace_team_members": {"count": 0, "names": []},
+            "workspace_users": {"count": 0, "names": []},
+            "errors": {},
+        }
+        queries = {
+            "workspace_team_members": """
+                SELECT name FROM product_workspace.workspace_team_members
+                WHERE name IS NOT NULL AND name != '' ORDER BY name
+            """,
+            "workspace_users": """
+                SELECT name FROM product_workspace.workspace_users
+                WHERE name IS NOT NULL AND name != '' ORDER BY name
+            """,
+        }
+        for key, query in queries.items():
+            try:
+                rows = _users_exec(query, fetch=True) or []
+                output[key] = {
+                    "count": len(rows),
+                    "names": [str(row.get("name") or "") for row in rows],
+                }
+            except Exception as exc:
+                output["errors"][key] = str(exc)
+        return output
+    return await run_in_threadpool(_read_debug)
 
 
 @app.get("/api/readyz")

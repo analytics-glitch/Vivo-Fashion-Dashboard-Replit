@@ -149,6 +149,7 @@ function readIdentity(): WorkspaceIdentity | null {
 }
 
 function IdentityModal({ onPick, onClose, canClose }: { onPick: (identity: WorkspaceIdentity) => void; onClose: () => void; canClose: boolean }) {
+  const [typedName, setTypedName] = useState('');
   const team = useListWorkspaceTeam({
     query: { queryKey: getListWorkspaceTeamQueryKey(), retry: false },
     request: { credentials: 'include' },
@@ -162,6 +163,13 @@ function IdentityModal({ onPick, onClose, canClose }: { onPick: (identity: Works
     }),
     [team.data],
   );
+  const submitTypedName = (event: FormEvent) => {
+    event.preventDefault();
+    const name = typedName.trim();
+    if (!name) return;
+    onPick({ id: `custom:${name.toLocaleLowerCase()}`, name, role: 'Team member' });
+  };
+  const continueAsGuest = () => onPick({ id: 'guest', name: 'Guest', role: 'Guest' });
   return (
     <div className="settings-modal-backdrop" onClick={canClose ? onClose : undefined}>
       <div className="settings-modal identity-modal" role="dialog" aria-modal="true" aria-label="Who are you?" onClick={(e) => e.stopPropagation()}>
@@ -189,8 +197,23 @@ function IdentityModal({ onPick, onClose, canClose }: { onPick: (identity: Works
             ))}
           </div>
         ) : (
-          <p className="settings-empty">No team members set up yet — ask your admin to add you in the Meet the Team section.</p>
+          <p className="settings-empty">No saved team members yet. You can still continue below.</p>
         )}
+        <form className="identity-fallback" onSubmit={submitTypedName}>
+          <label htmlFor="identity-name">Or type your name...</label>
+          <div className="identity-fallback-row">
+            <input
+              id="identity-name"
+              value={typedName}
+              onChange={(event) => setTypedName(event.target.value)}
+              placeholder="Type your name..."
+              autoComplete="name"
+              data-testid="input-identity-name"
+            />
+            <button className="button button-dark" type="submit" disabled={!typedName.trim()} data-testid="button-continue-identity">Continue →</button>
+          </div>
+        </form>
+        <button className="identity-guest-link" type="button" onClick={continueAsGuest} data-testid="button-continue-guest">Continue as guest</button>
       </div>
     </div>
   );
@@ -209,7 +232,7 @@ function Shell({ children }: { children: ReactNode }) {
     request: { credentials: 'include' },
   });
   useEffect(() => {
-    if (!team.data || !identity) return;
+    if (!team.data || !identity || identity.id === 'guest' || identity.id.startsWith('custom:')) return;
     const member = team.data.find((m) => String(m.id) === identity.id);
     if (!member) {
       localStorage.removeItem('workspace_user_id');

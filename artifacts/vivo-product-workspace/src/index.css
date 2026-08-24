@@ -1291,6 +1291,13 @@ a { color: inherit; text-decoration: none; }
 .identity-card-copy { display: grid; }
 .identity-card-copy strong { font-size: 13px; color: var(--plm-ink); }
 .identity-card-copy span { font-size: 11px; color: var(--plm-muted); }
+.identity-fallback { display: grid; gap: 7px; padding: 18px 18px 0; border-top: 1px solid var(--plm-line); margin-top: 16px; }
+.identity-fallback label { color: var(--plm-muted); font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.identity-fallback-row { display: flex; gap: 8px; }
+.identity-fallback input { min-width: 0; flex: 1; border: 1px solid var(--plm-line); border-radius: 4px; padding: 10px 11px; color: var(--plm-ink); font: inherit; }
+.identity-fallback input:focus { outline: 2px solid rgba(201,169,110,.45); outline-offset: 1px; border-color: var(--plm-gold); }
+.identity-guest-link { display: block; margin: 14px auto 18px; border: 0; background: transparent; color: var(--plm-muted); cursor: pointer; font-size: 12px; text-decoration: underline; text-underline-offset: 3px; }
+.identity-guest-link:hover { color: var(--plm-ink); }
 .identity-pill { border: 1px solid #718097; background: #202e47; border-radius: 4px; padding: 6px 12px; font-size: 12px; font-weight: 500; color: #F0EDE8; cursor: pointer; white-space: nowrap; }
 .identity-pill b { color: #fff; font-weight: 700; }
 .identity-pill:hover { border-color: #C9A96E; background: #263754; }
