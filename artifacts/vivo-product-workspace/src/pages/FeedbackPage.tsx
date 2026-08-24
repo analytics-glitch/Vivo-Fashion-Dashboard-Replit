@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -7,7 +7,6 @@ import {
   ChevronDown,
   CircleAlert,
   CircleCheck,
-  Clock3,
   Copy,
   Filter,
   Image as ImageIcon,
@@ -17,7 +16,6 @@ import {
   Share2,
   ThumbsDown,
   ThumbsUp,
-  UsersRound,
   X,
 } from "lucide-react";
 
@@ -25,6 +23,7 @@ export type FeedbackSubmission = {
   id: number | string;
   submitterName: string;
   submitterTeam: string;
+  submitterDepartment: string;
   styleId: number | null;
   styleName: string;
   styleNumber: string | null;
@@ -41,6 +40,15 @@ export type FeedbackSubmission = {
   reviewedBy: string | null;
   reviewedAt: string | null;
   createdAt: string;
+  attachments: FeedbackAttachment[];
+};
+
+export type FeedbackAttachment = {
+  id: number;
+  filename: string;
+  contentType: string;
+  byteSize: number;
+  url: string | null;
 };
 
 export type FeedbackStyleResult = {
@@ -54,10 +62,10 @@ export type FeedbackStyleResult = {
 type FeedbackAnalytics = {
   viewer?: { role: string | null };
   stats?: {
-    totalSubmissionsThisWeek?: number;
+    totalSubmissionsThisQuarter?: number;
     mostFlaggedStyle?: string | null;
     mostCommonFeedbackType?: string | null;
-    negativePercentThisWeek?: number;
+    negativePercentThisQuarter?: number;
   };
   submissions?: FeedbackSubmission[];
   styleSummaries?: Array<Record<string, unknown>>;
@@ -88,6 +96,24 @@ const teamOptions = [
   "Vivo Kileleshwa", "Vivo T-Mall", "Vivo Greenspan", "Vivo Meru", "Online Team", "Marketing Team",
   "Customer Service", "Other",
 ];
+const departmentOptions = ["Retail", "E-commerce", "CEX", "Production", "QC", "Studio", "Warehouse", "Other"];
+const feedbackImageAccept = "image/jpeg,image/png,image/heic,image/heif,.heic,.heif";
+const maxFeedbackImages = 4;
+const maxFeedbackImageBytes = 8 * 1024 * 1024;
+type PendingFeedbackImage = { file: File; previewUrl: string | null; contentType: "image/jpeg" | "image/png" | "image/heic" | "image/heif" };
+
+function feedbackImageContentType(file: File): PendingFeedbackImage["contentType"] | null {
+  const suppliedType = file.type.toLowerCase();
+  if (suppliedType === "image/jpeg" || suppliedType === "image/png" || suppliedType === "image/heic" || suppliedType === "image/heif") {
+    return suppliedType;
+  }
+  const extension = file.name.split(".").pop()?.toLowerCase();
+  if (extension === "jpg" || extension === "jpeg") return "image/jpeg";
+  if (extension === "png") return "image/png";
+  if (extension === "heic") return "image/heic";
+  if (extension === "heif") return "image/heif";
+  return null;
+}
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -227,6 +253,7 @@ export function PublicFeedbackPage() {
   const [form, setForm] = useState({
     submitterName: "",
     submitterTeam: "",
+    submitterDepartment: "",
     colourway: targetColourway,
     feedbackTypes: [] as string[],
     commentText: "",
@@ -235,6 +262,9 @@ export function PublicFeedbackPage() {
   const [style, setStyle] = useState<FeedbackStyleResult | null>(null);
   const [typesOpen, setTypesOpen] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  const [images, setImages] = useState<PendingFeedbackImage[]>([]);
+  const [imageError, setImageError] = useState<string | null>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
   const targetStyleQuery = useQuery<FeedbackStyleResult[]>({
     queryKey: ["feedback", "pulse-style", targetStyleNumber],
     enabled: isPulse,
@@ -271,29 +301,92 @@ export function PublicFeedbackPage() {
   const canSubmit = Boolean(
     form.submitterName.trim()
       && form.submitterTeam.trim()
+      && form.submitterDepartment
       && style?.code
       && form.feedbackTypes.length
       && form.commentText.trim().length >= 8,
   );
+  const addImages = (files: FileList | null) => {
+    setImageError(null);
+    const incoming = Array.from(files || []);
+    const available = maxFeedbackImages - images.length;
+    if (incoming.length > available) setImageError(`You can attach up to ${maxFeedbackImages} images.`);
+    const accepted: PendingFeedbackImage[] = [];
+    for (const file of incoming.slice(0, Math.max(available, 0))) {
+      const contentType = feedbackImageContentType(file);
+      if (!contentType) {
+        setImageError(`${file.name} is not a JPEG, PNG, HEIC, or HEIF image.`);
+        continue;
+      }
+      if (file.size > maxFeedbackImageBytes) {
+        setImageError(`${file.name} is larger than 8 MB.`);
+        continue;
+      }
+      accepted.push({
+        file,
+        contentType,
+        previewUrl: contentType === "image/heic" || contentType === "image/heif" ? null : URL.createObjectURL(file),
+      });
+    }
+    if (accepted.length) setImages((current) => [...current, ...accepted].slice(0, maxFeedbackImages));
+  };
+  const removeImage = (index: number) => setImages((current) => {
+    const removed = current[index];
+    if (removed?.previewUrl) URL.revokeObjectURL(removed.previewUrl);
+    return current.filter((_, currentIndex) => currentIndex !== index);
+  });
+  const clearImages = () => setImages((current) => {
+    current.forEach((image) => { if (image.previewUrl) URL.revokeObjectURL(image.previewUrl); });
+    return [];
+  });
   const submit = useMutation({
-    mutationFn: () => request<FeedbackSubmission>("/api/workspace/feedback/public", {
-      method: "POST",
-      body: JSON.stringify({
-        submitterName: form.submitterName.trim(),
-        submitterTeam: form.submitterTeam.trim(),
-        styleId: style?.id ?? null,
-        styleName: style?.name || "",
-        styleNumber: style?.code || "",
-        colourway: form.colourway,
-        feedbackTypes: form.feedbackTypes,
-        pulseMode: isPulse ? pulseMode : null,
-        pulseCampaignId: isPulse ? pulseResolution.data?.id ?? null : null,
-        sentiment: "mixed",
-        urgency: "note",
-        commentText: form.commentText.trim(),
-      }),
-    }),
-    onSuccess: () => setSubmitted(true),
+    mutationFn: async () => {
+      const attachments = await Promise.all(images.map(async (image) => {
+        const requested = await request<{ uploadUrl: string; objectPath: string }>("/api/workspace/feedback/attachments/upload-url", {
+          method: "POST",
+          body: JSON.stringify({
+            name: image.file.name,
+            size: image.file.size,
+            contentType: image.contentType,
+          }),
+        });
+        const uploaded = await fetch(requested.uploadUrl, {
+          method: "PUT",
+          headers: { "Content-Type": image.contentType },
+          body: image.file,
+        });
+        if (!uploaded.ok) throw new Error(`Could not upload ${image.file.name}. Please try again.`);
+        return {
+          objectPath: requested.objectPath,
+          name: image.file.name,
+          size: image.file.size,
+          contentType: image.contentType,
+        };
+      }));
+      return request<FeedbackSubmission>("/api/workspace/feedback/public", {
+        method: "POST",
+        body: JSON.stringify({
+          submitterName: form.submitterName.trim(),
+          submitterTeam: form.submitterTeam.trim(),
+          submitterDepartment: form.submitterDepartment,
+          styleId: style?.id ?? null,
+          styleName: style?.name || "",
+          styleNumber: style?.code || "",
+          colourway: form.colourway,
+          feedbackTypes: form.feedbackTypes,
+          pulseMode: isPulse ? pulseMode : null,
+          pulseCampaignId: isPulse ? pulseResolution.data?.id ?? null : null,
+          sentiment: "mixed",
+          urgency: "note",
+          commentText: form.commentText.trim(),
+          attachments,
+        }),
+      });
+    },
+    onSuccess: () => {
+      clearImages();
+      setSubmitted(true);
+    },
   });
   const toggleType = (type: string) => setForm((current) => ({
     ...current,
@@ -308,7 +401,9 @@ export function PublicFeedbackPage() {
       setStyleSearch("");
     }
     setTypesOpen(false);
-    setForm({ submitterName: "", submitterTeam: "", colourway: isPulse ? targetColourway : generalColourway, feedbackTypes: [], commentText: "" });
+    clearImages();
+    setImageError(null);
+    setForm({ submitterName: "", submitterTeam: "", submitterDepartment: "", colourway: isPulse ? targetColourway : generalColourway, feedbackTypes: [], commentText: "" });
   };
   return <main className="public-feedback-page">
     <header className="public-feedback-header">
@@ -317,16 +412,15 @@ export function PublicFeedbackPage() {
     </header>
     <div className="public-feedback-layout">
       <section className="public-feedback-intro">
-        <span className="feedback-kicker">{isPulse ? `Style Pulse · ${pulseMode}` : "A note from the floor"}</span>
-        <h1>{isPulse ? pulseMode === "investigate" ? "Help us understand this style" : "Tell us what's working" : "Help shape the next collection."}</h1>
-        <p>{isPulse ? pulseMode === "investigate" ? "This style isn't moving as expected. We'd love your on-the-ground perspective." : "This style is flying. Help us understand why so we can do it again." : "A clear style, colourway, and observation gives the product team something useful to act on."}</p>
+        {isPulse && <span className="feedback-kicker">Style Pulse · {pulseMode}</span>}
+        <h1>{isPulse ? pulseMode === "investigate" ? "Help us understand this style" : "Tell us what's working" : "Product Feedback"}</h1>
+        {isPulse && <p>{pulseMode === "investigate" ? "This style isn't moving as expected. We'd love your on-the-ground perspective." : "This style is flying. Help us understand why so we can do it again."}</p>}
         {isPulse && <div className="feedback-pulse-hero" data-testid="feedback-pulse-hero">
           {targetStyleQuery.isLoading ? <div className="feedback-pulse-hero-loading" /> : style?.image ? <img src={style.image} alt="" /> : <div className="feedback-pulse-hero-placeholder"><ImageIcon size={28} /></div>}
           <div><span>Focused input on</span><strong>{style?.name || targetStyleNumber}</strong><small>{style?.code || targetStyleNumber}</small></div>
         </div>}
-        <div className="public-feedback-proof"><span><UsersRound size={16} /> Retail, marketing, online and service teams</span><span><Clock3 size={16} /> About two minutes</span></div>
       </section>
-      <section className="public-feedback-card" aria-labelledby="feedback-form-title">
+      <section className="public-feedback-card" aria-label="Product feedback form">
         {submitted ? <div className="feedback-success">
           <div className="feedback-success-mark"><CircleCheck size={28} /></div>
           <span className="feedback-kicker">Received by the product room</span>
@@ -334,12 +428,13 @@ export function PublicFeedbackPage() {
           <p>Your feedback has been submitted and the product team will review it.</p>
           <button className="feedback-button dark" type="button" onClick={reset} data-testid="button-submit-another-feedback">Submit another <ArrowRight size={16} /></button>
         </div> : <form onSubmit={(event: FormEvent) => { event.preventDefault(); if (canSubmit) submit.mutate(); }} className="public-feedback-form">
-          <div className="feedback-form-heading"><div><span className="feedback-kicker">Customer observation</span><h2 id="feedback-form-title">Leave a useful note.</h2></div><span className="feedback-required">* Required</span></div>
+          <div className="feedback-form-heading"><span className="feedback-required">* Required</span></div>
 
           <section className="feedback-step feedback-step-who" aria-labelledby="feedback-step-who">
-            <div className="feedback-step-heading"><span className="feedback-step-number">01</span><div><span className="feedback-step-kicker">Step 1</span><h3 id="feedback-step-who">Who are you?</h3></div></div>
+            <h3 id="feedback-step-who">Who are you?</h3>
             <div className="feedback-form-grid">
-              <Field label="Your name"><input required value={form.submitterName} onChange={(event) => setForm((current) => ({ ...current, submitterName: event.target.value }))} placeholder="Your name" autoComplete="name" data-testid="input-feedback-name" /></Field>
+              <div className="feedback-field"><input required value={form.submitterName} onChange={(event) => setForm((current) => ({ ...current, submitterName: event.target.value }))} placeholder="Your name" autoComplete="name" aria-label="Your name" data-testid="input-feedback-name" /></div>
+              <Field label="Department"><select required value={form.submitterDepartment} onChange={(event) => setForm((current) => ({ ...current, submitterDepartment: event.target.value }))} data-testid="select-feedback-department"><option value="">Select department</option>{departmentOptions.map((department) => <option key={department} value={department}>{department}</option>)}</select></Field>
               <Field label="Your store / team"><input required list="feedback-team-options" value={form.submitterTeam} onChange={(event) => setForm((current) => ({ ...current, submitterTeam: event.target.value }))} placeholder="Store or team" autoComplete="organization" data-testid="input-feedback-team" /><datalist id="feedback-team-options">{teamOptions.map((team) => <option key={team} value={team} />)}</datalist></Field>
             </div>
           </section>
@@ -377,10 +472,24 @@ export function PublicFeedbackPage() {
             <Field label={isPulse ? "What are customers saying?" : "Your observation"}><textarea required minLength={8} rows={6} value={form.commentText} onChange={(event) => setForm((current) => ({ ...current, commentText: event.target.value }))} placeholder={isPulse ? pulseMode === "investigate" ? "What are customers saying when they put it back?" : "What are customers saying when they buy it?" : "Customer quotes, specific fit issues, sizing observations..."} data-testid="textarea-feedback-comment" /></Field>
           </section>
 
-          {submit.isError && <div className="feedback-form-error"><CircleAlert size={16} /> We couldn't send that note. Please try again.</div>}
-          {!canSubmit && <p className="feedback-inline-hint">Complete your name, store / team, style, issue type, and observation to submit.</p>}
+          <section className="feedback-step feedback-step-images" aria-labelledby="feedback-step-images">
+            <div className="feedback-step-heading"><span className="feedback-step-number">06</span><div><span className="feedback-step-kicker">Optional</span><h3 id="feedback-step-images">Add images</h3></div></div>
+            <p className="feedback-image-help">Add up to {maxFeedbackImages} images to show the product, fit, fabric, colour or display. JPEG, PNG, HEIC and HEIF, up to 8 MB each.</p>
+            <input ref={imageInputRef} type="file" accept={feedbackImageAccept} multiple hidden onChange={(event) => { addImages(event.target.files); event.target.value = ""; }} />
+            <div className="feedback-image-list">
+              {images.map((image, index) => <div className="feedback-image-item" key={`${image.file.name}-${image.file.lastModified}-${index}`}>
+                {image.previewUrl ? <img src={image.previewUrl} alt="" /> : <div className="feedback-image-file"><ImageIcon size={19} /><span>{image.contentType === "image/heic" ? "HEIC" : "HEIF"}</span></div>}
+                <button type="button" onClick={() => removeImage(index)} aria-label={`Remove ${image.file.name}`}><X size={13} /></button>
+              </div>)}
+              {images.length < maxFeedbackImages && <button type="button" className="feedback-image-add" onClick={() => imageInputRef.current?.click()} data-testid="button-add-feedback-images"><ImageIcon size={18} /><span>Add image</span></button>}
+            </div>
+            {imageError && <div className="feedback-form-error"><CircleAlert size={16} /> {imageError}</div>}
+          </section>
+
+          {submit.isError && <div className="feedback-form-error"><CircleAlert size={16} /> {submit.error instanceof Error ? submit.error.message : "We couldn't send that note. Please try again."}</div>}
+          {!canSubmit && <p className="feedback-inline-hint">Complete your name, department, store / team, style, issue type, and observation to submit.</p>}
           <div className="feedback-submit-step">
-            <div className="feedback-step-heading"><span className="feedback-step-number">06</span><div><span className="feedback-step-kicker">Step 6</span><h3>Submit</h3></div></div>
+            <div className="feedback-step-heading"><span className="feedback-step-number">07</span><div><span className="feedback-step-kicker">Step 7</span><h3>Submit</h3></div></div>
             <button className="feedback-button dark feedback-submit" type="submit" disabled={submit.isPending || !canSubmit} data-testid="button-submit-feedback">{submit.isPending ? "Sending to the room…" : "Submit feedback"} <ArrowRight size={16} /></button>
           </div>
           <p className="feedback-privacy"><ShieldCheck size={14} /> Shared with the Vivo product team for product decisions.</p>
@@ -395,6 +504,17 @@ function Metric({ label, value, note, accent }: { label: string; value: string; 
   return <div className={`feedback-metric ${accent || ""}`}><span>{label}</span><strong data-testid={`metric-feedback-${label.toLowerCase().replaceAll(" ", "-")}`}>{value}</strong><small>{note}</small></div>;
 }
 
+function FeedbackAttachments({ attachments }: { attachments: FeedbackAttachment[] }) {
+  if (!attachments.length) return null;
+  return <div className="feedback-row-attachments" aria-label={`${attachments.length} feedback attachment${attachments.length === 1 ? "" : "s"}`}>
+    {attachments.map((attachment) => <a key={attachment.id} href={attachment.url || undefined} target="_blank" rel="noreferrer" className="feedback-row-attachment" title={attachment.filename}>
+      {attachment.contentType === "image/heic" || attachment.contentType === "image/heif"
+        ? <span className="feedback-row-heif"><ImageIcon size={15} />{attachment.contentType === "image/heic" ? "HEIC" : "HEIF"}</span>
+        : <img src={attachment.url || undefined} alt={`Attached image: ${attachment.filename}`} />}
+    </a>)}
+  </div>;
+}
+
 function FeedbackRow({ item, onReview, reviewing, canReview }: { item: FeedbackSubmission; onReview: (item: FeedbackSubmission) => void; reviewing: boolean; canReview: boolean }) {
   const [expanded, setExpanded] = useState(false);
   const isLong = item.commentText.length > 190;
@@ -404,8 +524,9 @@ function FeedbackRow({ item, onReview, reviewing, canReview }: { item: FeedbackS
       <div className="feedback-row-top"><div><strong>{item.styleName || item.styleNameFreetext || "Unassigned style"}</strong>{item.styleNumber && <span className="mono">{item.styleNumber}</span>}</div><span className={`feedback-urgency-badge ${item.urgency}`}>{item.urgency === "urgent" ? "Needs attention" : item.urgency === "discuss" ? "Discuss soon" : "Note"}</span></div>
       <p className={!expanded && isLong ? "feedback-comment-truncated" : ""}>{item.commentText}</p>
       {isLong && <button className="feedback-comment-toggle" type="button" onClick={() => setExpanded((value) => !value)}>{expanded ? "Show less" : "Read full comment"}</button>}
-      <div className="feedback-row-meta"><span className="feedback-avatar">{initials(item.submitterName)}</span><span>{item.submitterName || "Vivo team"} · {item.submitterTeam || "Team"}</span><span className="feedback-dot">·</span><span>{displayDate(item.createdAt)} {shortTime(item.createdAt)}</span>{item.reviewed && <span className="reviewed-label"><Check size={12} /> Reviewed</span>}</div>
+      <div className="feedback-row-meta"><span className="feedback-avatar">{initials(item.submitterName)}</span><span>{item.submitterName || "Vivo team"} · {item.submitterTeam || "Team"}{item.submitterDepartment ? ` · ${item.submitterDepartment}` : ""}</span><span className="feedback-dot">·</span><span>{displayDate(item.createdAt)} {shortTime(item.createdAt)}</span>{item.reviewed && <span className="reviewed-label"><Check size={12} /> Reviewed</span>}</div>
       <div className="feedback-tag-row">{(item.feedbackTypes || []).map((type) => <span key={type}>{type}</span>)}</div>
+      <FeedbackAttachments attachments={item.attachments || []} />
     </div>
      {canReview && !item.reviewed && <button className="feedback-review-button" type="button" onClick={() => onReview(item)} disabled={reviewing} data-testid={`button-review-feedback-${item.id}`}>{reviewing ? "Saving…" : "Mark reviewed"} <Check size={14} /></button>}
   </article>;
@@ -519,7 +640,7 @@ export function WorkspaceFeedbackPage() {
   if (analytics.isError) return <section className="page"><div className="empty-state error-state"><CircleAlert size={22} /><h3>Feedback inbox is unavailable</h3><p>{analytics.error instanceof Error ? analytics.error.message : "The workspace service did not respond."}</p><button className="button button-dark" onClick={() => analytics.refetch()} data-testid="button-retry-feedback">Try again</button></div></section>;
   return <section className="page feedback-workspace-page">
      <div className="feedback-workspace-heading"><div><span className="eyebrow gold-eyebrow">Customer voice / product decisions</span><h1>Feedback, close to the work.</h1><p>A calm inbox for the observations that should shape the next Vivo collection.</p></div><div className="feedback-heading-actions"><button className="button button-quiet" type="button" onClick={copyLink} data-testid="button-copy-feedback-link"><span>{copied ? "Copied" : "Copy feedback link"}</span><ArrowRight size={15} /></button><div className="feedback-heading-mark"><MessageCircle size={21} /><span>Live inbox</span></div></div></div>
-     <div className="feedback-metrics"><Metric label="Submissions this week" value={String(stats?.totalSubmissionsThisWeek ?? 0)} note="All teams" /><Metric label="Most flagged style" value={stats?.mostFlaggedStyle || "—"} note="This week" accent="gold" /><Metric label="Common feedback type" value={stats?.mostCommonFeedbackType || "—"} note="This week" accent="green" /><Metric label="Negative sentiment" value={`${stats?.negativePercentThisWeek ?? 0}%`} note="This week" accent={(stats?.negativePercentThisWeek ?? 0) >= 20 ? "coral" : "gold"} /></div>
+     <div className="feedback-metrics"><Metric label="Submissions this quarter" value={String(stats?.totalSubmissionsThisQuarter ?? 0)} note="Quarter to date" /><Metric label="Most flagged style" value={stats?.mostFlaggedStyle || "—"} note="Quarter to date" accent="gold" /><Metric label="Common feedback type" value={stats?.mostCommonFeedbackType || "—"} note="Quarter to date" accent="green" /><Metric label="Negative sentiment" value={`${stats?.negativePercentThisQuarter ?? 0}%`} note="Quarter to date" accent={(stats?.negativePercentThisQuarter ?? 0) >= 20 ? "coral" : "gold"} /></div>
      <div className="feedback-view-tabs" role="tablist"><button className={view === "inbox" ? "active" : ""} onClick={() => setView("inbox")} role="tab" aria-selected={view === "inbox"} data-testid="tab-feedback-inbox"><MessageCircle size={15} /> Inbox <span>{openCount}</span></button><button className={view === "styles" ? "active" : ""} onClick={() => setView("styles")} role="tab" aria-selected={view === "styles"} data-testid="tab-feedback-by-style"><Filter size={15} /> By style <span>{summaries.length}</span></button><button className={view === "pulses" ? "active" : ""} onClick={() => setView("pulses")} role="tab" aria-selected={view === "pulses"} data-testid="tab-feedback-style-pulses"><Share2 size={15} /> Style Pulses <span>{analytics.data?.stylePulses?.length ?? 0}</span></button></div>
      {view === "inbox" ? <div className="feedback-inbox-panel">
        <div className="feedback-toolbar"><label className="feedback-toolbar-search"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search notes or people" aria-label="Search feedback" data-testid="input-search-feedback" />{search && <button onClick={() => setSearch("")} aria-label="Clear feedback search" data-testid="button-clear-feedback-search"><X size={14} /></button>}</label><div className="feedback-filter-group"><label><span>Date</span><select value={dateRange} onChange={(event) => setDateRange(event.target.value as typeof dateRange)} data-testid="select-feedback-date"><option value="all">All dates</option><option value="week">This week</option><option value="month">Last 30 days</option></select><ChevronDown size={13} /></label><label><span>Store / team</span><select value={teamFilter} onChange={(event) => setTeamFilter(event.target.value)} data-testid="select-feedback-team-filter"><option value="all">All stores and teams</option>{teamOptions.map((team) => <option key={team}>{team}</option>)}</select><ChevronDown size={13} /></label><label><span>Type</span><select value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)} data-testid="select-feedback-type-filter"><option value="all">All types</option>{feedbackTypes.map((type) => <option key={type}>{type}</option>)}</select><ChevronDown size={13} /></label><label><span>Sentiment</span><select value={sentimentFilter} onChange={(event) => setSentimentFilter(event.target.value as typeof sentimentFilter)} data-testid="select-feedback-sentiment-filter"><option value="all">All sentiment</option><option value="positive">Positive</option><option value="mixed">Mixed</option><option value="negative">Negative</option></select><ChevronDown size={13} /></label><label><span>Style</span><input value={styleSearch} onChange={(event) => setStyleSearch(event.target.value)} placeholder="Style or number" aria-label="Filter by style" data-testid="input-filter-feedback-style" /></label><label><span>Status</span><select value={status} onChange={(event) => setStatus(event.target.value as typeof status)} data-testid="select-feedback-status"><option value="all">All notes</option><option value="open">Open</option><option value="reviewed">Reviewed</option></select><ChevronDown size={13} /></label><label><span>Priority</span><select value={urgency} onChange={(event) => setUrgency(event.target.value as typeof urgency)} data-testid="select-feedback-urgency"><option value="all">All priorities</option><option value="urgent">Needs attention</option><option value="discuss">Discuss soon</option></select><ChevronDown size={13} /></label><button className="button button-quiet" type="button" onClick={clearFilters} data-testid="button-clear-feedback-filters">Clear</button></div></div>
