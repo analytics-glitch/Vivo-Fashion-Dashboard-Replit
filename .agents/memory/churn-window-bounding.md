@@ -39,6 +39,17 @@ query is the primary cure; `ttl=900` on these run_query calls is the storm
 shield. Cold-miss request coalescing in run_query remains an open follow-up if
 a storm ever recurs with fast queries.
 
-**How to apply:** any new customer-gap analytics (churn, win-back, dormancy)
-must start from the bounded pattern in `customers_churn_events`; any new
-consumer of `_WALKIN_PSEUDO_COND` must period-scope it.
+**Rule 4 — selected-period return tables need candidate-first prior seeks.**
+For a visible list of customers who returned in the currently selected period,
+start from distinct in-period `(customer_id, purchase_date)` candidates, then
+seek that customer's immediately previous in-scope purchase. This is exact and
+avoids running a second broad LAG scan alongside the Customers page's startup
+fan-out.
+
+**Why:** a bounded LAG scan can still queue for more than a minute when the
+Customers dashboard concurrently starts its other expensive cards; the
+candidate-first seek completed successfully in the live page flow.
+
+**How to apply:** use the bounded LAG/history-probe pattern for aggregate event
+counts, but use candidate-first prior-purchase seeks for selected-period return
+tables. Any new consumer of `_WALKIN_PSEUDO_COND` must period-scope it.

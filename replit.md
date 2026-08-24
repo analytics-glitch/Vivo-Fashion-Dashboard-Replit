@@ -99,7 +99,7 @@ In-app CRM (`src/pages/CRM.jsx`, `/api/crm/*` in `api_pg.py`): contacts/360 (FUL
 - JOIN RULE (user-mandated): joins between `all_sales`, `all_inventory`, `all_products_clean` MUST be on SKU (barcode acceptable) — NEVER `style_name` (~16.7k inventory rows have blank style_name). See `.agents/memory/triad-joins-sku-only.md`.
 - `all_sales.sale_date` is TEXT — cast `::date` before date functions. See `.agents/memory/pg-text-date-columns.md`.
 - `pos_location_name = 'vivowoman'` is the PRIMARY Kenya POS (~84% of sales) — never exclude it in `BASE_FILTERS` (only `Staff purchases`/`Manual Order`/`Online - vivo-uganda` are excluded). See `.agents/memory/vivowoman-base-filter.md`.
-- Churn: churned = no transaction in 90 days; rate = churned / eligible base (first purchase older than 90d). The ~97% rate is correct (largely historical dataset), not a bug.
+- Customer lifecycle: Active = last purchase <90 days; At Risk = 90–363 days; Churned = 364+ days. Returned means a new purchase after a 365+ day prior gap. Churn rate uses the 364-day assessable base.
 - Backend Python packages: `uv pip install --target .pythonlibs/lib/python3.11/site-packages` (pip and the package tools fail here). See `.agents/memory/python-deps-pythonlibs.md`.
 - DEV-ONLY HMR ghost: editing `src/lib/filters.jsx` prints hook errors + a transient "stuck on skeleton" — not a real bug. See `.agents/memory/hmr-fast-refresh-ghost.md`.
 - ENVIRONMENT: the `u-root-cmds` Nix package shadows GNU coreutils and breaks checkpointing — remove it and fully restart if it reappears.

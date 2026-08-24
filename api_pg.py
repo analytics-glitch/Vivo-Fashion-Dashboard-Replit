@@ -6915,6 +6915,16 @@ def _not_walkin_pseudo_sql(alias: str = "s") -> str:
             "WHERE customer_id IS NOT NULL AND " + _WALKIN_PSEUDO_COND + ")")
 
 
+# Customer lifecycle definitions are intentionally server-owned. Legacy callers
+# may still send churn_days / min_gap_days, but they cannot override these
+# business rules and create conflicting Customers segments.
+CUSTOMER_ACTIVE_WINDOW_DAYS = 90       # active when days since last purchase < 90
+CUSTOMER_AT_RISK_MIN_DAYS = 90
+CUSTOMER_AT_RISK_MAX_DAYS = 363
+CUSTOMER_CHURN_DAYS = 364              # churned when days since last purchase >= 364
+CUSTOMER_RETURN_GAP_DAYS = 365         # returned after a prior purchase gap >= 365
+
+
 @app.get("/api/customers")
 def get_customers(
     date_from: str = Query(default=str(date.today().replace(day=1))),
@@ -6930,21 +6940,22 @@ def get_customers(
     # to the live full-scan SQL when the rollup is missing/stale (so prod is safe
     # before its first sync-loop refresh). The rollup churn read is byte-identical
     # to the live CTE (parity-verified): eligible_base = customers whose first sale
-    # predates the 90d cutoff, churned = those whose last sale also predates it.
+    # is at least 364 days ago, churned = those whose last sale is also at least
+    # 364 days ago.
     if _rollup_fresh("customer_lifetime") and _rollup_fresh("customer_first_purchase"):
-        churned_cte = """churned AS (
+        churned_cte = f"""churned AS (
             SELECT
-                COUNT(*) FILTER (WHERE last_sale < CURRENT_DATE - INTERVAL '90 days') AS churned_count,
+                COUNT(*) FILTER (WHERE last_sale <= CURRENT_DATE - INTERVAL '{CUSTOMER_CHURN_DAYS} days') AS churned_count,
                 COUNT(*) AS eligible_base
             FROM rollup_customer_lifetime
-            WHERE first_sale < CURRENT_DATE - INTERVAL '90 days'
+            WHERE first_sale <= CURRENT_DATE - INTERVAL '{CUSTOMER_CHURN_DAYS} days'
         )"""
         first_purchase_cte = ("first_purchase AS ("
             "SELECT customer_id, first_purchase_date FROM rollup_customer_first_purchase)")
     else:
-        churned_cte = """churned AS (
+        churned_cte = f"""churned AS (
             SELECT
-                COUNT(*) FILTER (WHERE last_sale < CURRENT_DATE - INTERVAL '90 days') AS churned_count,
+                COUNT(*) FILTER (WHERE last_sale <= CURRENT_DATE - INTERVAL '{CUSTOMER_CHURN_DAYS} days') AS churned_count,
                 COUNT(*) AS eligible_base
             FROM (
                 SELECT customer_id,
@@ -6954,7 +6965,7 @@ def get_customers(
                   AND customer_id NOT IN ('None','null','')
                   AND sale_date >= (CURRENT_DATE - INTERVAL '5 years')::text
                 GROUP BY customer_id
-                HAVING MIN(sale_date::date) < CURRENT_DATE - INTERVAL '90 days'
+                HAVING MIN(sale_date::date) <= CURRENT_DATE - INTERVAL '{CUSTOMER_CHURN_DAYS} days'
             ) t
         )"""
         first_purchase_cte = _unified_first_purchase_ctes()
@@ -8417,9 +8428,14 @@ def get_customers_by_location(
 @app.get("/api/churned-customers")
 def get_churned_customers(
     request: Request,
-    days:  int = Query(default=90),
+    days:  int = Query(default=None),
+    country: str = Query(default=None),
+    channel: str = Query(default=None),
     reveal: bool = Query(default=False),
 ):
+    # `days` is a legacy compatibility input. Churn is fixed at 364+ days.
+    country_filter = ("AND s.country IN (" + csv_to_sql(country) + ")") if country else ""
+    channel_filter = ("AND s.pos_location_name IN (" + csv_to_sql(channel) + ")") if channel else ""
     rows = run_query("""
         WITH last_purchase AS (
             SELECT s.customer_id,
@@ -8432,6 +8448,8 @@ def get_churned_customers(
             AND s.customer_id NOT IN ('None','null','')
             AND """ + BASE_FILTERS + """
             AND """ + _not_walkin_pseudo_sql() + """
+            """ + country_filter + """
+            """ + channel_filter + """
             GROUP BY s.customer_id
         )
         SELECT lp.customer_id,
@@ -8442,7 +8460,7 @@ def get_churned_customers(
             CURRENT_DATE - lp.last_purchase_date AS days_since_last_purchase
         FROM last_purchase lp
         LEFT JOIN all_customers c ON lp.customer_id = c.customer_id
-        WHERE CURRENT_DATE - lp.last_purchase_date > """ + str(days) + """
+        WHERE CURRENT_DATE - lp.last_purchase_date >= """ + str(CUSTOMER_CHURN_DAYS) + """
         ORDER BY lp.lifetime_spend DESC""", ttl=HEAVY_DASH_TTL)
     return mask_pii_rows(rows, request)
 
@@ -15241,12 +15259,12 @@ def customers_churn_rate():
     # all_sales rows. Pseudo-account exclusion is omitted (they're absent from the
     # rollup and are a negligible fraction), so the result may differ by < 0.1%.
     if _rollup_fresh("customer_lifetime"):
-        rows = run_query("""
+        rows = run_query(f"""
             WITH agg AS (
                 SELECT
-                    COUNT(*) FILTER (WHERE last_sale <  CURRENT_DATE - INTERVAL '90 days') AS churned_count,
-                    COUNT(*) FILTER (WHERE last_sale >= CURRENT_DATE - INTERVAL '90 days') AS active_count,
-                    COUNT(*) FILTER (WHERE first_sale < CURRENT_DATE - INTERVAL '90 days') AS eligible_base
+                    COUNT(*) FILTER (WHERE last_sale <= CURRENT_DATE - INTERVAL '{CUSTOMER_CHURN_DAYS} days') AS churned_count,
+                    COUNT(*) FILTER (WHERE last_sale > CURRENT_DATE - INTERVAL '{CUSTOMER_ACTIVE_WINDOW_DAYS} days') AS active_count,
+                    COUNT(*) FILTER (WHERE first_sale <= CURRENT_DATE - INTERVAL '{CUSTOMER_CHURN_DAYS} days') AS eligible_base
                 FROM rollup_customer_lifetime
             )
             SELECT churned_count, active_count, eligible_base AS base,
@@ -15256,7 +15274,7 @@ def customers_churn_rate():
     else:
         # Fallback: live scan when rollup is stale (first boot / just after deploy).
         # Bounded to 5 years so it doesn't need to touch decade-old rows.
-        rows = run_query("""
+        rows = run_query(f"""
             WITH per_customer AS (
                 SELECT customer_id,
                     MAX(sale_date::date) AS last_sale,
@@ -15270,9 +15288,9 @@ def customers_churn_rate():
             ),
             agg AS (
                 SELECT
-                    COUNT(*) FILTER (WHERE last_sale <  CURRENT_DATE - INTERVAL '90 days') AS churned_count,
-                    COUNT(*) FILTER (WHERE last_sale >= CURRENT_DATE - INTERVAL '90 days') AS active_count,
-                    COUNT(*) FILTER (WHERE first_sale < CURRENT_DATE - INTERVAL '90 days') AS eligible_base
+                    COUNT(*) FILTER (WHERE last_sale <= CURRENT_DATE - INTERVAL '{CUSTOMER_CHURN_DAYS} days') AS churned_count,
+                    COUNT(*) FILTER (WHERE last_sale > CURRENT_DATE - INTERVAL '{CUSTOMER_ACTIVE_WINDOW_DAYS} days') AS active_count,
+                    COUNT(*) FILTER (WHERE first_sale <= CURRENT_DATE - INTERVAL '{CUSTOMER_CHURN_DAYS} days') AS eligible_base
                 FROM per_customer
             )
             SELECT churned_count, active_count, eligible_base AS base,
@@ -15281,10 +15299,13 @@ def customers_churn_rate():
         """, ttl=HEAVY_DASH_TTL)
     if not rows:
         return {"churn_rate": 0, "churned_count": 0, "churned_customers": 0,
-                "active_customers_90d": 0, "base": 0}
+                "active_customers": 0, "active_customers_90d": 0, "base": 0,
+                "churn_days": CUSTOMER_CHURN_DAYS}
     r = rows[0]
     r["churned_customers"] = r.get("churned_count")
-    r["active_customers_90d"] = int(r.get("active_count") or 0)
+    r["active_customers"] = int(r.get("active_count") or 0)
+    r["active_customers_90d"] = r["active_customers"]  # legacy response alias
+    r["churn_days"] = CUSTOMER_CHURN_DAYS
     return r
 
 @app.get("/api/customers/churn-events")
@@ -15293,19 +15314,18 @@ def customers_churn_events(
     date_to:    str = Query(default=str(date.today())),
     country:    str = Query(default=None),
     channel:    str = Query(default=None),
-    churn_days: int = Query(default=90),
+    churn_days: int = Query(default=None),
 ):
-    """Two-in-one: churned_in_period + unchurned_in_period counts.
+    """Two-in-one: churned_in_period + returned_in_period counts.
 
     churned_in_period  — customers who CROSSED the churn threshold inside the
-                         window: their last purchase + churn_days lands in
+                         window: their last purchase + 364 days lands in
                          [date_from, date_to] and they made no purchase within
-                         that churn_days gap.  I.e. they "entered" churn during
+                         that gap. I.e. they "entered" churn during
                          the period (works for recent windows too).
 
-    unchurned_in_period — customers with a purchase inside the window after a
-                          prior gap of >= churn_days.  They were churned but
-                          reactivated in the period.
+    returned_in_period — customers with a purchase inside the window after a
+                          prior gap of >= 365 days. They returned in the period.
 
     Both CTEs apply _not_walkin_pseudo_sql + BASE_FILTERS (country/channel).
     sale_date is TEXT — cast ::date before all date arithmetic.
@@ -15326,15 +15346,17 @@ def customers_churn_events(
     Parity-verified against the full-history query on 5 window/cd/country/
     channel combos (identical counts; ~4s vs ~36s cold, uncontended).
     """
-    # Clamp: guards date overflow in both SQL (d + cd) and Python timedelta —
-    # churn_days is an unbounded query int; the UI maxes out at 365.
-    cd = max(1, min(int(churn_days), 3650))
+    # `churn_days` remains accepted for old clients but lifecycle definitions
+    # are fixed. The scan reaches back 365 days because return detection needs
+    # one extra day beyond the 364-day churn boundary.
+    cd = CUSTOMER_CHURN_DAYS
+    return_gap = CUSTOMER_RETURN_GAP_DAYS
     country_filter = ("AND s.country IN (" + csv_to_sql(country) + ")") if country else ""
     channel_filter = ("AND s.pos_location_name IN (" + csv_to_sql(channel) + ")") if channel else ""
     not_walkin = _not_walkin_pseudo_sql()
     try:
         scan_from = (date.fromisoformat(str(date_from)[:10])
-                     - timedelta(days=cd)).isoformat()
+                     - timedelta(days=return_gap)).isoformat()
         # Half-open end bound: sale_date is TEXT, so a hypothetical
         # 'YYYY-MM-DDT..' suffix on date_to would sort AFTER the bare date and
         # slip past an inclusive BETWEEN; < next-day is suffix-proof and stays
@@ -15383,7 +15405,7 @@ def customers_churn_events(
         ),
         -- In-window purchases with no earlier purchase inside the scan range:
         -- their true previous purchase (if any) predates scan_from, making the
-        -- gap ≥ churn_days by construction — only EXISTENCE of history needs
+        -- gap ≥ 365 days by construction — only EXISTENCE of history needs
         -- checking, via an index probe under the same scope filters.
         prevnull AS (
             SELECT DISTINCT customer_id
@@ -15405,28 +15427,33 @@ def customers_churn_events(
                   {channel_filter}
             )
         ),
-        -- Unchurned in period: a purchase in-window preceded by a gap >=
-        -- churn_days (i.e. the customer was churned, then came back).
-        unchurned_in_period AS (
+        -- Returned in period: a purchase in-window preceded by a gap >= 365
+        -- days. A 364-day silence reaches the churn boundary but is not a
+        -- return under the stated 365+ return rule.
+        returned_in_period AS (
             SELECT COUNT(DISTINCT g.customer_id) AS cnt
             FROM gaps g
             WHERE g.d BETWEEN '{date_from}'::date AND '{date_to}'::date
               AND (
-                    (g.prev_d IS NOT NULL AND (g.d - g.prev_d) >= {cd})
+                    (g.prev_d IS NOT NULL AND (g.d - g.prev_d) >= {return_gap})
                  OR (g.prev_d IS NULL AND g.customer_id IN (SELECT customer_id FROM hist))
               )
         )
         SELECT
             (SELECT cnt FROM churned_in_period)  AS churned_count,
-            (SELECT cnt FROM unchurned_in_period) AS unchurned_count
+            (SELECT cnt FROM returned_in_period) AS returned_count
     """, ttl=900)  # storm shield: page-load + auto-refresh ticks reuse one compute
     if not rows:
-        return {"churned_count": 0, "unchurned_count": 0, "churn_days": cd}
+        return {"churned_count": 0, "returned_count": 0, "unchurned_count": 0,
+                "churn_days": cd, "return_gap_days": return_gap}
     r = rows[0]
+    returned_count = int(r.get("returned_count") or 0)
     return {
         "churned_count":  int(r.get("churned_count") or 0),
-        "unchurned_count": int(r.get("unchurned_count") or 0),
+        "returned_count": returned_count,
+        "unchurned_count": returned_count,  # legacy response alias
         "churn_days": cd,
+        "return_gap_days": return_gap,
     }
 
 
@@ -15441,24 +15468,16 @@ def customers_at_risk(
     reveal:     bool = Query(default=False),
 ):
     """At-risk customers: identified, non-pseudo customers whose LAST purchase
-    was between (churn_days - band_days) and (churn_days - 1) days ago — i.e.
-    still reachable before they cross the churn threshold. The band is defined
-    relative to the churn-days setting so the count reconciles with the
-    "Churned" logic: at churn_days=90 / band_days=30 it is 60–89 days of
-    silence. Snapshot as of TODAY (not the selected date window), matching the
+    was between 90 and 363 days ago, inclusive. Snapshot as of TODAY (not the
+    selected date window), matching the
     /churned-customers list. Respects country/channel filters, BASE_FILTERS and
     the pseudo-customer exclusions; phone/email masked unless reveal-authorized.
     """
-    try:
-        cd = max(2, min(int(churn_days), 3650))
-    except (ValueError, OverflowError):
-        cd = 90
-    try:
-        band = min(max(1, int(band_days)), cd - 1)
-    except (ValueError, OverflowError):
-        band = 30
-    lo = cd - band          # inclusive lower bound of days-since-last-purchase
-    hi = cd - 1             # inclusive upper bound (one day short of churn)
+    # Legacy churn_days/band_days inputs are deliberately ignored: the at-risk
+    # lifecycle band is fixed at 90–363 days and cannot drift from churn.
+    lo = CUSTOMER_AT_RISK_MIN_DAYS
+    hi = CUSTOMER_AT_RISK_MAX_DAYS
+    cd = CUSTOMER_CHURN_DAYS
     lim = min(max(1, int(limit)), 2000)
     country_filter = ("AND s.country IN (" + csv_to_sql(country) + ")") if country else ""
     channel_filter = ("AND s.pos_location_name IN (" + csv_to_sql(channel) + ")") if channel else ""
@@ -20176,48 +20195,245 @@ def exec_summary(
 def stub_analytics_insights(): return []
 @app.get("/api/analytics/re-order-list")
 def stub_analytics_re_order_list(): return []
-@app.get("/api/analytics/recently-unchurned")
-def analytics_recently_unchurned(
+@app.get("/api/analytics/recently-unchurned-legacy")
+def analytics_recently_unchurned_legacy(
     date_from: str = Query(default=None),
     date_to:   str = Query(default=None),
-    min_gap_days: int = Query(default=90),
+    country: str = Query(default=None),
+    channel: str = Query(default=None),
+    min_gap_days: int = Query(default=None),
     limit: int = Query(default=100),
 ):
-    # Win-back signal: customers whose latest purchase follows a long dormant
-    # gap (>= min_gap_days) and landed in the last 60 days.
-    return run_query("""
-        WITH purch AS (
+    return analytics_recently_returned(
+        date_from=date_from,
+        date_to=date_to,
+        country=country,
+        channel=channel,
+        min_gap_days=min_gap_days,
+        limit=limit,
+    )
+
+
+@app.get("/api/analytics/recently-returned-v1")
+def analytics_recently_returned_v1(
+    date_from: str = Query(default=None),
+    date_to: str = Query(default=None),
+    country: str = Query(default=None),
+    channel: str = Query(default=None),
+    min_gap_days: int = Query(default=None),
+    limit: int = Query(default=100),
+):
+    """List returns in the selected period after a fixed 365+ day prior gap.
+
+    The old route and min_gap_days input remain accepted for compatibility, but
+    callers cannot override the lifecycle definition. The bounded window and
+    scoped history probe preserve exact LAG semantics without a full scan.
+    """
+    try:
+        window_from = (date.fromisoformat(str(date_from)[:10])
+                       if date_from else date.today().replace(day=1))
+        window_to = date.fromisoformat(str(date_to)[:10]) if date_to else date.today()
+    except ValueError:
+        raise HTTPException(status_code=422, detail="date_from and date_to must be ISO dates")
+    if window_from > window_to:
+        raise HTTPException(status_code=422, detail="date_from must be on or before date_to")
+
+    scan_from = (window_from - timedelta(days=CUSTOMER_RETURN_GAP_DAYS)).isoformat()
+    scan_end = (window_to + timedelta(days=1)).isoformat()
+    window_from_s = window_from.isoformat()
+    window_to_s = window_to.isoformat()
+    lim = min(max(1, int(limit)), 500)
+    country_filter = ("AND s.country IN (" + csv_to_sql(country) + ")") if country else ""
+    channel_filter = ("AND s.pos_location_name IN (" + csv_to_sql(channel) + ")") if channel else ""
+    not_walkin = _not_walkin_pseudo_sql()
+
+    return run_query(f"""
+        WITH base_sales AS (
             SELECT s.customer_id, s.sale_date::date AS d
             FROM all_sales s
             WHERE s.sale_kind IN ('sale','order')
-              AND s.customer_id IS NOT NULL AND s.customer_id <> ''
-              AND s.sale_date ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'
+              AND s.customer_id IS NOT NULL
+              AND s.customer_id NOT IN ('None','null','')
+              AND s.sale_date >= '{scan_from}' AND s.sale_date < '{scan_end}'
+              AND s.sale_date ~ '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}'
+              AND {not_walkin}
+              AND {BASE_FILTERS}
+              {country_filter}
+              {channel_filter}
         ),
         gaps AS (
             SELECT customer_id, d,
                 LAG(d) OVER (PARTITION BY customer_id ORDER BY d) AS prev_d
-            FROM purch
+            FROM base_sales
         ),
-        winback AS (
-            SELECT customer_id, d AS return_date, (d - prev_d) AS gap_days
+        prevnull AS (
+            SELECT DISTINCT customer_id
             FROM gaps
-            WHERE prev_d IS NOT NULL
-              AND (d - prev_d) >= """ + str(int(min_gap_days)) + """
-              AND d >= CURRENT_DATE - INTERVAL '60 days'
+            WHERE d BETWEEN '{window_from_s}'::date AND '{window_to_s}'::date
+              AND prev_d IS NULL
+        ),
+        hist AS (
+            SELECT p.customer_id, MAX(s.sale_date::date) AS prev_d
+            FROM prevnull p
+            JOIN all_sales s ON s.customer_id = p.customer_id
+            WHERE s.sale_kind IN ('sale','order')
+              AND s.sale_date < '{scan_from}'
+              AND s.sale_date ~ '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}'
+              AND {not_walkin}
+              AND {BASE_FILTERS}
+              {country_filter}
+              {channel_filter}
+            GROUP BY p.customer_id
+        ),
+        returned_events AS (
+            SELECT DISTINCT ON (g.customer_id)
+                g.customer_id,
+                COALESCE(g.prev_d, h.prev_d) AS prev_order_date,
+                g.d AS last_order_date,
+                (g.d - COALESCE(g.prev_d, h.prev_d)) AS gap_days
+            FROM gaps g
+            LEFT JOIN hist h ON h.customer_id = g.customer_id
+            WHERE g.d BETWEEN '{window_from_s}'::date AND '{window_to_s}'::date
+              AND (
+                    (g.prev_d IS NOT NULL AND (g.d - g.prev_d) >= {CUSTOMER_RETURN_GAP_DAYS})
+                 OR (g.prev_d IS NULL AND h.customer_id IS NOT NULL)
+              )
+            ORDER BY g.customer_id, g.d DESC
+        ),
+        period_stats AS (
+            SELECT s.customer_id,
+                COUNT(DISTINCT s.order_id) AS total_orders_window,
+                ROUND(SUM(s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric), 0) AS total_spend_kes_window
+            FROM all_sales s
+            JOIN returned_events r ON r.customer_id = s.customer_id
+            WHERE s.sale_kind IN ('sale','order')
+              AND s.sale_date >= '{window_from_s}' AND s.sale_date < '{scan_end}'
+              AND {BASE_FILTERS}
+              {country_filter}
+              {channel_filter}
+            GROUP BY s.customer_id
+        ),
+        profiles AS (
+            SELECT c.customer_id,
+                MAX(NULLIF(TRIM(COALESCE(c.first_name,'') || ' ' || COALESCE(c.last_name,'')), '')) AS customer_name
+            FROM all_customers c
+            JOIN returned_events r ON r.customer_id = c.customer_id
+            GROUP BY c.customer_id
         )
-        SELECT w.customer_id,
-            NULLIF(TRIM(COALESCE(c.first_name,'') || ' ' || COALESCE(c.last_name,'')), '') AS name,
-            c.phone, c.email,
-            MAX(w.return_date) AS last_order_date,
-            MAX(w.gap_days) AS gap_days,
-            COALESCE(MAX(c.total_orders), 0) AS total_orders,
-            COALESCE(ROUND(MAX(c.total_spend_kes)), 0) AS total_spend,
-            (CURRENT_DATE - MAX(w.return_date)) AS days_since_last
-        FROM winback w
-        LEFT JOIN all_customers c ON c.customer_id = w.customer_id
-        GROUP BY w.customer_id, c.first_name, c.last_name, c.phone, c.email
-        ORDER BY last_order_date DESC, gap_days DESC
-        LIMIT """ + str(int(limit)))
+        SELECT r.customer_id, p.customer_name, r.prev_order_date, r.last_order_date,
+            r.gap_days,
+            COALESCE(ps.total_orders_window, 0) AS total_orders_window,
+            COALESCE(ps.total_spend_kes_window, 0) AS total_spend_kes_window,
+            (CURRENT_DATE - r.last_order_date) AS days_since_last
+        FROM returned_events r
+        LEFT JOIN profiles p ON p.customer_id = r.customer_id
+        LEFT JOIN period_stats ps ON ps.customer_id = r.customer_id
+        ORDER BY r.last_order_date DESC, r.gap_days DESC
+        LIMIT {lim}
+    """, ttl=900)
+
+
+@app.get("/api/analytics/recently-unchurned")
+@app.get("/api/analytics/recently-returned")
+def analytics_recently_returned(
+    date_from: str = Query(default=None),
+    date_to: str = Query(default=None),
+    country: str = Query(default=None),
+    channel: str = Query(default=None),
+    min_gap_days: int = Query(default=None),
+    limit: int = Query(default=100),
+):
+    """List selected-period returns through index-friendly prior-purchase seeks.
+
+    This is exact: each in-window purchase is compared with that customer's
+    immediately preceding in-scope purchase. It deliberately avoids a
+    wide LAG/LEAD scan while preserving the fixed 365+ day definition.
+    """
+    try:
+        window_from = (date.fromisoformat(str(date_from)[:10])
+                       if date_from else date.today().replace(day=1))
+        window_to = date.fromisoformat(str(date_to)[:10]) if date_to else date.today()
+    except ValueError:
+        raise HTTPException(status_code=422, detail="date_from and date_to must be ISO dates")
+    if window_from > window_to:
+        raise HTTPException(status_code=422, detail="date_from must be on or before date_to")
+
+    window_from_s = window_from.isoformat()
+    scan_end = (window_to + timedelta(days=1)).isoformat()
+    lim = min(max(1, int(limit)), 500)
+    country_filter = ("AND s.country IN (" + csv_to_sql(country) + ")") if country else ""
+    channel_filter = ("AND s.pos_location_name IN (" + csv_to_sql(channel) + ")") if channel else ""
+    not_walkin = _not_walkin_pseudo_sql()
+
+    return run_query(f"""
+        WITH period_purchases AS (
+            SELECT DISTINCT s.customer_id, s.sale_date::date AS return_date
+            FROM all_sales s
+            WHERE s.sale_kind IN ('sale','order')
+              AND s.customer_id IS NOT NULL
+              AND s.customer_id NOT IN ('None','null','')
+              AND s.sale_date >= '{window_from_s}' AND s.sale_date < '{scan_end}'
+              AND s.sale_date ~ '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}'
+              AND {not_walkin}
+              AND {BASE_FILTERS}
+              {country_filter}
+              {channel_filter}
+        ),
+        returned_events AS (
+            SELECT DISTINCT ON (p.customer_id)
+                p.customer_id,
+                prev.prev_order_date,
+                p.return_date AS last_order_date,
+                (p.return_date - prev.prev_order_date) AS gap_days
+            FROM period_purchases p
+            CROSS JOIN LATERAL (
+                SELECT s.sale_date::date AS prev_order_date
+                FROM all_sales s
+                WHERE s.customer_id = p.customer_id
+                  AND s.sale_kind IN ('sale','order')
+                  AND s.sale_date < p.return_date::text
+                  AND s.sale_date ~ '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}'
+                  AND {not_walkin}
+                  AND {BASE_FILTERS}
+                  {country_filter}
+                  {channel_filter}
+                ORDER BY s.sale_date DESC
+                LIMIT 1
+            ) prev
+            WHERE (p.return_date - prev.prev_order_date) >= {CUSTOMER_RETURN_GAP_DAYS}
+            ORDER BY p.customer_id, p.return_date DESC
+        ),
+        period_stats AS (
+            SELECT s.customer_id,
+                COUNT(DISTINCT s.order_id) AS total_orders_window,
+                ROUND(SUM(s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric), 0) AS total_spend_kes_window
+            FROM all_sales s
+            JOIN returned_events r ON r.customer_id = s.customer_id
+            WHERE s.sale_kind IN ('sale','order')
+              AND s.sale_date >= '{window_from_s}' AND s.sale_date < '{scan_end}'
+              AND {BASE_FILTERS}
+              {country_filter}
+              {channel_filter}
+            GROUP BY s.customer_id
+        ),
+        profiles AS (
+            SELECT c.customer_id,
+                MAX(NULLIF(TRIM(COALESCE(c.first_name,'') || ' ' || COALESCE(c.last_name,'')), '')) AS customer_name
+            FROM all_customers c
+            JOIN returned_events r ON r.customer_id = c.customer_id
+            GROUP BY c.customer_id
+        )
+        SELECT r.customer_id, p.customer_name, r.prev_order_date, r.last_order_date,
+            r.gap_days,
+            COALESCE(ps.total_orders_window, 0) AS total_orders_window,
+            COALESCE(ps.total_spend_kes_window, 0) AS total_spend_kes_window,
+            (CURRENT_DATE - r.last_order_date) AS days_since_last
+        FROM returned_events r
+        LEFT JOIN profiles p ON p.customer_id = r.customer_id
+        LEFT JOIN period_stats ps ON ps.customer_id = r.customer_id
+        ORDER BY r.last_order_date DESC, r.gap_days DESC
+        LIMIT {lim}
+    """, ttl=900)
 # ── Phase 2 A3 — size-curve replenishment helpers ─────────────────────────────
 _SIZE_ORDER = {s: i for i, s in enumerate(
     ["XXXS", "XXS", "XS", "S", "S/M", "M", "M/L", "L", "L/XL",

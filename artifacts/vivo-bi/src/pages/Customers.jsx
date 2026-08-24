@@ -48,6 +48,15 @@ const telHref = (p) => {
   return digits.length >= 7 ? `tel:${digits}` : null;
 };
 
+// Customer lifecycle definitions are server-owned. Keep these display values
+// aligned with the API contract; there is intentionally no user-adjustable
+// threshold control on this page.
+const ACTIVE_WINDOW_DAYS = 90;
+const AT_RISK_MIN_DAYS = 90;
+const AT_RISK_MAX_DAYS = 363;
+const CHURN_DAYS = 364;
+const RETURN_GAP_DAYS = 365;
+
 // Loyalty segment classifier (from total_orders in the period).
 // 1 order → New, 2 → Emerging, 3-4 → Loyal, 5+ → VIP.
 const segmentFor = (orders) => {
@@ -160,9 +169,6 @@ const Customers = () => {
   const [searchResults, setSearchResults] = useState([]);
   const [searching, setSearching] = useState(false);
 
-  // Days-inactive filter for the churned customers list. Upstream supports
-  // any integer; UI offers 60 / 90 / 120 / 180 day presets. Default 90.
-  const [churnDays, setChurnDays] = useState(90);
   const [selectedCustomer, setSelectedCustomer] = useState(null);
   const [customerProducts, setCustomerProducts] = useState([]);
   const [loadingProducts, setLoadingProducts] = useState(false);
@@ -186,15 +192,13 @@ const Customers = () => {
   const [typeSpend, setTypeSpend] = useState(null);
   const [repeatCustomers, setRepeatCustomers] = useState([]);
   const [repeatCustomersLoading, setRepeatCustomersLoading] = useState(false);
-  const [unchurned, setUnchurned] = useState(null);
-  const [unchurnedDays, setUnchurnedDays] = useState(90); // 30 / 60 / 90 / 180
-  const [unchurnedLoading, setUnchurnedLoading] = useState(false);
+  const [returned, setReturned] = useState(null);
+  const [returnedLoading, setReturnedLoading] = useState(false);
   const [churnEvents, setChurnEvents] = useState(null);
   const [churnEventsLoading, setChurnEventsLoading] = useState(true);
 
-  // At-risk customers — last purchase (churnDays−30)…(churnDays−1) days ago,
-  // still reachable before they cross the churn threshold. Snapshot as of
-  // today; respects country/channel + pseudo exclusions (backend).
+  // At-risk customers — last purchase 90–363 days ago, inclusive. Snapshot as
+  // of today; respects country/channel + pseudo exclusions (backend).
   const [atRisk, setAtRisk] = useState(null);
   const [atRiskLoading, setAtRiskLoading] = useState(true);
   const [atRiskOpen, setAtRiskOpen] = useState(false);
@@ -255,7 +259,8 @@ const Customers = () => {
       }
     }
     setError(null);
-    const country = countries.length === 1 ? countries[0] : undefined;
+    const country = countries.length ? countries.join(",") : undefined;
+    const countryForTypeSpend = countries.length === 1 ? countries[0] : undefined;
     const channel = channels.length ? channels.join(",") : undefined;
     const dateP = { date_from: dateFrom, date_to: dateTo, country, channel };
 
@@ -299,7 +304,7 @@ const Customers = () => {
       ["freq", api.get("/customer-frequency", { params: { date_from: dateFrom, date_to: dateTo, country, channel } }).catch(() => ({ data: [] }))],
       ["byLoc", api.get("/customers-by-location", { params: { date_from: dateFrom, date_to: dateTo, channel } }).catch(() => ({ data: [] }))],
       ["churned", api.get("/churned-customers", {
-        params: { days: churnDays, ...(revealToken ? { reveal: true } : {}) },
+        params: { country, channel, ...(revealToken ? { reveal: true } : {}) },
         ...(revealToken ? { headers: { "X-PII-Reveal-Token": revealToken } } : {}),
       }).catch(() => ({ data: [] }))],
       ["np", api.get("/new-customer-products", { params: { date_from: dateFrom, date_to: dateTo, limit: 20 } }).catch(() => ({ data: [] }))],
@@ -320,7 +325,7 @@ const Customers = () => {
       // Returning ABV split agrees with the New / Returning customer
       // counts shown elsewhere on the page. Country is forwarded only
       // when exactly one country is selected (see backend note).
-      ["typeSpend", api.get("/customer-type-spend", { params: { date_from: dateFrom, date_to: dateTo, country } }).catch(() => ({ data: null }))],
+      ["typeSpend", api.get("/customer-type-spend", { params: { date_from: dateFrom, date_to: dateTo, country: countryForTypeSpend } }).catch(() => ({ data: null }))],
       // Identified customers with ≥2 distinct orders in the window — drives
       // the "Repeat Customers Detail" expandable table.
       ["repeatCustomers", api.get("/analytics/repeat-customers", { params: { date_from: dateFrom, date_to: dateTo, country, channel } }).catch(() => ({ data: [] }))],
@@ -359,10 +364,10 @@ const Customers = () => {
       setCust((prev) => {
         if (!prev) {
           // /customers hasn't resolved yet — stash, apply on arrival.
-          pendingChurn = { ...data, churned_last_90d: data.churned_customers };
+          pendingChurn = { ...data, churned_customers: data.churned_customers };
           return prev;
         }
-        return { ...prev, ...data, churned_last_90d: data.churned_customers };
+        return { ...prev, ...data, churned_customers: data.churned_customers };
       });
     };
     api.get("/customers/churn-rate", {
@@ -392,18 +397,17 @@ const Customers = () => {
         });
       });
 
-    // Churned / unchurned THIS PERIOD — period-scoped, depends on churnDays.
+    // Churned / returned THIS PERIOD — fixed lifecycle definitions.
     setChurnEventsLoading(true);
     api.get("/customers/churn-events", {
-      params: { date_from: dateFrom, date_to: dateTo, country, channel, churn_days: churnDays },
+      params: { date_from: dateFrom, date_to: dateTo, country, channel },
       timeout: 60000,
     })
       .then((r) => { if (!cancelled) setChurnEvents(r.data || null); })
-      .catch(() => { if (!cancelled) setChurnEvents({ churned_count: 0, unchurned_count: 0, churn_days: churnDays }); })
+      .catch(() => { if (!cancelled) setChurnEvents({ churned_count: 0, returned_count: 0, churn_days: CHURN_DAYS, return_gap_days: RETURN_GAP_DAYS }); })
       .finally(() => { if (!cancelled) setChurnEventsLoading(false); });
 
-    // At-risk customers — band derived from churnDays on the backend
-    // (churn_days − 30 … churn_days − 1 days of silence, as of today).
+    // At-risk customers — server-owned fixed 90–363-day band.
     setAtRiskLoading(true);
     // The Customers page fires a storm of heavy parallel queries on load, so
     // the first at-risk call can hit a transient 503 (DB pool briefly
@@ -412,7 +416,7 @@ const Customers = () => {
     // after the storm subsides is cheap.
     const fetchAtRisk = (attempt = 0) =>
       api.get("/customers/at-risk", {
-        params: { country, channel, churn_days: churnDays, ...(revealToken ? { reveal: true } : {}) },
+        params: { country, channel, ...(revealToken ? { reveal: true } : {}) },
         ...(revealToken ? { headers: { "X-PII-Reveal-Token": revealToken } } : {}),
         timeout: 60000,
       })
@@ -459,7 +463,7 @@ const Customers = () => {
     }
     return () => { cancelled = true; };
     // eslint-disable-next-line
-  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), compareMode, dataVersion, churnDays, topN, refreshTick]);
+  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), compareMode, dataVersion, topN, refreshTick]);
 
   // PII reveal cascade — when the user verifies the reveal password the
   // /churned-customers AND /top-customers endpoints must be re-fetched
@@ -478,7 +482,11 @@ const Customers = () => {
       channel: channels.length ? channels.join(",") : undefined };
     Promise.all([
       api.get("/churned-customers", {
-        params: { days: churnDays, reveal: true },
+        params: {
+          country: countries.length ? countries.join(",") : undefined,
+          channel: channels.length ? channels.join(",") : undefined,
+          reveal: true,
+        },
         headers,
       }).catch(() => ({ data: null })),
       api.get("/top-customers", {
@@ -487,9 +495,9 @@ const Customers = () => {
       }).catch(() => ({ data: null })),
       api.get("/customers/at-risk", {
         params: {
-          country: countries.length === 1 ? countries[0] : undefined,
+          country: countries.length ? countries.join(",") : undefined,
           channel: channels.length ? channels.join(",") : undefined,
-          churn_days: churnDays, reveal: true,
+          reveal: true,
         },
         headers,
         timeout: 60000,
@@ -502,22 +510,27 @@ const Customers = () => {
     });
     return () => { cancelled = true; };
     // eslint-disable-next-line
-  }, [revealToken, churnDays, topN]);
+  }, [revealToken, topN, JSON.stringify(countries), JSON.stringify(channels)]);
 
-  // Recently-unchurned table — re-fetches whenever the slider days change,
-  // independent of the main page fetch since it can be slow (10-min cache).
+  // Recently returned table — fixed 365+ day prior gap, scoped to the selected
+  // date, country, and channel filters.
   useEffect(() => {
     let cancelled = false;
-    setUnchurnedLoading(true);
-    api.get("/analytics/recently-unchurned", {
-      params: { date_from: dateFrom, date_to: dateTo, min_gap_days: unchurnedDays },
+    setReturnedLoading(true);
+    api.get("/analytics/recently-returned", {
+      params: {
+        date_from: dateFrom,
+        date_to: dateTo,
+        country: countries.length ? countries.join(",") : undefined,
+        channel: channels.length ? channels.join(",") : undefined,
+      },
       timeout: 120000,
     })
-      .then((r) => { if (!cancelled) setUnchurned(r.data || []); })
-      .catch(() => { if (!cancelled) setUnchurned([]); })
-      .finally(() => { if (!cancelled) setUnchurnedLoading(false); });
+      .then((r) => { if (!cancelled) setReturned(r.data || []); })
+      .catch(() => { if (!cancelled) setReturned([]); })
+      .finally(() => { if (!cancelled) setReturnedLoading(false); });
     return () => { cancelled = true; };
-  }, [dateFrom, dateTo, unchurnedDays, dataVersion]);
+  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), dataVersion]);
 
   // debounced search
   useEffect(() => {
@@ -1016,14 +1029,13 @@ const Customers = () => {
             <KPICard
               testId="kpi-active-customers"
               label="Active Customers"
-              sub={cust.churn_source === "computing" ? "computing…" : "purchased in last 90 days · as of today"}
+              sub={cust.churn_source === "computing" ? "computing…" : "purchased within 90 days · as of today"}
               formula={
-                "Customers with at least one purchase in the last 90 days (rolling window from today).\n\n" +
+                "Customers whose last purchase was fewer than 90 days ago (rolling snapshot from today).\n\n" +
                 "This is a global snapshot — independent of the selected date filter.\n\n" +
-                "Includes new and returning customers who are actively buying. " +
-                "The complement of Churned Customers: Active + Churned ≈ all customers ever seen."
+                "The lifecycle bands are Active (<90 days), At Risk (90–363 days), and Churned (364+ days)."
               }
-              value={cust.churn_source === "computing" ? "…" : fmtNum(cust.active_customers_90d || 0)}
+              value={cust.churn_source === "computing" ? "…" : fmtNum(cust.active_customers ?? 0)}
               icon={Users}
               showDelta={false}
             />
@@ -1033,7 +1045,7 @@ const Customers = () => {
               // /api/customers/churn-rate) take NO date params, so the figure
               // does NOT depend on the selected window and is always shown.
               // The denominator is the ASSESSABLE base — customers whose FIRST
-              // purchase predates the 90-day cutoff (old enough to be judged
+              // purchase predates the 364-day cutoff (old enough to be judged
               // churned) — NOT total customers and NOT the selected period.
               // (Earlier copy described a period-scoped churn the backend never
               //  implemented, and a short-window guard hid the valid figure as
@@ -1043,9 +1055,9 @@ const Customers = () => {
                   <KPICard
                     testId="kpi-churned-count"
                     label="Churned Customers"
-                    sub={cust.churn_source === "computing" ? "computing…" : "no purchase in 90+ days · lifetime"}
-                    formula={`Global, lifetime count (independent of the selected date filter): of the assessable base — customers whose FIRST purchase was more than 90 days ago — those whose LAST purchase was also more than 90 days ago (as of today). Source: /api/customers/churn-rate.`}
-                    value={cust.churn_source === "computing" ? "…" : fmtNum(cust.churned_last_90d || cust.churned_customers || 0)}
+                    sub={cust.churn_source === "computing" ? "computing…" : "no purchase in 364+ days · lifetime"}
+                    formula="Global, lifetime count (independent of the selected date filter): of the assessable base — customers whose FIRST purchase was at least 364 days ago — those whose LAST purchase was also at least 364 days ago (as of today). Source: /api/customers/churn-rate."
+                    value={cust.churn_source === "computing" ? "…" : fmtNum(cust.churned_customers || 0)}
                     icon={UserMinus}
                     higherIsBetter={false}
                     showDelta={false}
@@ -1053,13 +1065,13 @@ const Customers = () => {
                   <KPICard
                     testId="kpi-churn"
                     label="Churn Rate"
-                    sub={cust.churn_source === "computing" ? "computing…" : "of assessable base · lifetime · 90-day cutoff"}
+                    sub={cust.churn_source === "computing" ? "computing…" : "of assessable base · lifetime · 364-day cutoff"}
                     formula={
                       `Churn Rate = churned ÷ assessable base × 100.\n\n` +
                       `Global, lifetime figure — independent of the selected date filter.\n\n` +
                       `Assessable base = customers whose FIRST purchase was more than ` +
-                      `90 days ago (old enough to be judged). A customer is CHURNED when ` +
-                      `their LAST purchase was also more than 90 days ago (as of today). ` +
+                      `364 days ago (old enough to be judged). A customer is CHURNED when ` +
+                      `their LAST purchase was also at least 364 days ago (as of today). ` +
                       `It is NOT divided by total customers and NOT scoped to the selected period.`
                     }
                     value={cust.churn_source === "computing" ? "…" : fmtPct(cust.churn_rate, 2)}
@@ -1074,13 +1086,13 @@ const Customers = () => {
                   <KPICard
                     testId="kpi-retention-rate"
                     label="Retention Rate"
-                    sub={cust.churn_source === "computing" ? "computing…" : "of assessable base · lifetime · 90-day cutoff"}
+                    sub={cust.churn_source === "computing" ? "computing…" : "of assessable base · lifetime · 364-day cutoff"}
                     formula={
                       `Retention Rate = 100 − Churn Rate = retained ÷ assessable base × 100.\n\n` +
                       `Global, lifetime figure — independent of the selected date filter.\n\n` +
                       `Assessable base = customers whose FIRST purchase was more than ` +
-                      `90 days ago (old enough to be judged). A customer is RETAINED when ` +
-                      `they have purchased within the last 90 days (as of today). ` +
+                      `364 days ago (old enough to be judged). A customer is RETAINED when ` +
+                      `they are not currently churned (their last purchase is fewer than 364 days ago). ` +
                       `Retention + Churn always sum to 100% of the assessable base.`
                     }
                     value={
@@ -1098,33 +1110,35 @@ const Customers = () => {
                       churn + high reactivation = a noisy but recoverable
                       base; low churn + low reactivation = stable + cold. */}
                   {(() => {
-                    const unchurnedCount = Array.isArray(unchurned) ? unchurned.length : 0;
-                    const totalChurned = Number(cust.churned_last_90d || cust.churned_customers || 0);
+                    // The returned-customer drill-down is capped for rendering,
+                    // so rate math must use the complete period count returned
+                    // by /customers/churn-events.
+                    const returnedCount = Number(churnEvents?.returned_count ?? 0);
+                    const totalChurned = Number(cust.churned_customers || 0);
                     // Denominator = current churned + the ones who reactivated
                     // in-window (because those were previously in the churned
                     // pool). This is the textbook "win-back rate" definition
                     // used in CRM: reactivations / (reactivations + still-churned).
-                    const denom = totalChurned + unchurnedCount;
-                    const rate = denom > 0 ? (unchurnedCount / denom) * 100 : null;
+                    const denom = totalChurned + returnedCount;
+                    const rate = denom > 0 ? (returnedCount / denom) * 100 : null;
                     return (
                       <KPICard
                         testId="kpi-reactivation-rate"
                         label="Reactivation Rate"
                         sub={
-                          unchurnedLoading || cust.churn_source === "computing"
+                          returnedLoading || cust.churn_source === "computing"
                             ? "computing…"
-                            : `${fmtNum(unchurnedCount)} reactivated · ${unchurnedDays}-day gap`
+                            : `${fmtNum(returnedCount)} returned · ${RETURN_GAP_DAYS}+ day gap`
                         }
                         formula={
-                          `Reactivation Rate = unchurned ÷ (unchurned + total_churned) × 100.\n\n` +
-                          `"Unchurned" = identified customers whose latest visit falls in the selected ` +
-                          `window AND who had been silent for ≥ ${unchurnedDays} days before that visit ` +
-                          `(see Reactivation Opportunity slider below).\n\n` +
-                          `"Total Churned" = customers with no purchase in 90+ days as of today.\n\n` +
+                          `Reactivation Rate = returned ÷ (returned + total_churned) × 100.\n\n` +
+                          `"Returned" = identified customers whose latest visit falls in the selected ` +
+                          `window AND follows a prior silence of ≥ ${RETURN_GAP_DAYS} days.\n\n` +
+                          `"Total Churned" = customers with no purchase in 364+ days as of today.\n\n` +
                           `Higher is better — it tells you how effective your win-back signals are.`
                         }
                         value={
-                          unchurnedLoading || cust.churn_source === "computing"
+                          returnedLoading || cust.churn_source === "computing"
                             ? "…"
                             : rate == null ? "—" : fmtPct(rate, 1)
                         }
@@ -1141,34 +1155,34 @@ const Customers = () => {
                     sub={
                       churnEventsLoading
                         ? "computing…"
-                        : `Hit ${churnEvents?.churn_days ?? churnDays} days since last purchase`
+                        : `Hit ${churnEvents?.churn_days ?? CHURN_DAYS} days since last purchase`
                     }
                     formula={
-                      `Churned This Period = customers who crossed the ${churnDays}-day churn threshold ` +
-                      `during the selected date window — i.e. their ${churnDays}th day of silence since ` +
+                      `Churned This Period = customers who crossed the ${CHURN_DAYS}-day churn threshold ` +
+                      `during the selected date window — i.e. their ${CHURN_DAYS}th day of silence since ` +
                       `their last purchase falls inside the period, with no purchase made within that gap. ` +
-                      `They "entered" churn in this period. Respects country, channel and churn-days filters.`
+                      `They "entered" churn in this period. Respects country and channel filters.`
                     }
                     value={churnEventsLoading ? "…" : fmtNum(churnEvents?.churned_count ?? 0)}
                     icon={UserMinus}
                     higherIsBetter={false}
                     showDelta={false}
                   />
-                  {/* ---- Unchurned This Period ---- */}
+                  {/* ---- Returned This Period ---- */}
                   <KPICard
-                    testId="kpi-unchurned-this-period"
-                    label="Unchurned This Period"
+                    testId="kpi-returned-this-period"
+                    label="Returned This Period"
                     sub={
                       churnEventsLoading
                         ? "computing…"
-                        : `Returned after ${churnEvents?.churn_days ?? churnDays}+ day gap`
+                        : `Returned after ${churnEvents?.return_gap_days ?? RETURN_GAP_DAYS}+ day gap`
                     }
                     formula={
-                      `Unchurned This Period = customers who made a purchase inside the selected date ` +
-                      `window after a prior gap of at least ${churnDays} days — i.e. they were churned ` +
-                      `but reactivated in the period. Respects country, channel and churn-days filters.`
+                      `Returned This Period = customers who made a purchase inside the selected date ` +
+                      `window after a prior gap of at least ${RETURN_GAP_DAYS} days. ` +
+                      `Respects country and channel filters.`
                     }
-                    value={churnEventsLoading ? "…" : fmtNum(churnEvents?.unchurned_count ?? 0)}
+                    value={churnEventsLoading ? "…" : fmtNum(churnEvents?.returned_count ?? 0)}
                     icon={UserPlus}
                     higherIsBetter={true}
                     showDelta={false}
@@ -1182,14 +1196,14 @@ const Customers = () => {
                         ? "computing…"
                         : atRisk?._error
                           ? "upstream unavailable"
-                          : `${atRisk?.band_from_days ?? Math.max(1, churnDays - 30)}–${atRisk?.band_to_days ?? churnDays - 1} days since last purchase`
+                          : `${atRisk?.band_from_days ?? AT_RISK_MIN_DAYS}–${atRisk?.band_to_days ?? AT_RISK_MAX_DAYS} days since last purchase`
                     }
                     formula={
                       `At-Risk Customers = identified customers whose LAST purchase was between ` +
-                      `${atRisk?.band_from_days ?? Math.max(1, churnDays - 30)} and ${atRisk?.band_to_days ?? churnDays - 1} days ago (as of today) — ` +
-                      `inside the 30-day band just below the ${churnDays}-day churn threshold. ` +
+                      `${atRisk?.band_from_days ?? AT_RISK_MIN_DAYS} and ${atRisk?.band_to_days ?? AT_RISK_MAX_DAYS} days ago (as of today), inclusive. ` +
+                      `They are between the active (<${ACTIVE_WINDOW_DAYS} days) and churned (${CHURN_DAYS}+ days) lifecycle bands. ` +
                       `They have NOT churned yet and are still reachable for a win-back offer. ` +
-                      `Respects country, channel and pseudo-customer exclusions; band moves with the churn-window setting.`
+                      `Respects country, channel and pseudo-customer exclusions.`
                     }
                     value={atRiskLoading ? "…" : fmtNum(atRisk?.at_risk_count ?? 0)}
                     icon={Warning}
@@ -1651,8 +1665,8 @@ const Customers = () => {
                       {row("Avg Orders / Customer", cur.avg_orders_per_customer, prev.avg_orders_per_customer, "dec", "Total orders ÷ active customers. Green ▲ = customers buying more frequently.")}
 
                       {groupHeader("Retention Signals")}
-                      {row("Churn Rate (selected period)", cur.churn_rate, prev.churn_rate, "pctInv", "% of customers who bought in the period but have not returned in 90+ days. Green ▼ = retention improving. Red ▲ = retention weakening.")}
-                      {row("Churned Customers", cur.churned_customers, prev.churned_customers, "numInv", "Count of churned customers in the selected period (90-day cutoff). Lower is better — green ▼.")}
+                      {row("Churn Rate (lifetime snapshot)", cur.churn_rate, prev.churn_rate, "pctInv", "Churned customers ÷ the assessable lifetime base, using the fixed 364-day churn threshold. Green ▼ = retention improving. Red ▲ = retention weakening.")}
+                      {row("Churned Customers (lifetime snapshot)", cur.churned_customers, prev.churned_customers, "numInv", "Customers with no purchase in 364+ days, independent of the selected period. Lower is better — green ▼.")}
                     </tbody>
                   </table>
                 </div>
@@ -2465,7 +2479,7 @@ const Customers = () => {
               <div className="flex items-start justify-between gap-3">
                 <SectionTitle
                   title={`At-Risk Customers · ${fmtNum(atRisk?.at_risk_count ?? 0)}`}
-                  subtitle={`Last purchase ${atRisk?.band_from_days ?? Math.max(1, churnDays - 30)}–${atRisk?.band_to_days ?? churnDays - 1} days ago (as of today) — still short of the ${churnDays}-day churn threshold. Contact them now to win them back before they churn. Respects country/channel filters; the band moves with the churn-window setting above the Reactivation table.`}
+                  subtitle={`Last purchase ${atRisk?.band_from_days ?? AT_RISK_MIN_DAYS}–${atRisk?.band_to_days ?? AT_RISK_MAX_DAYS} days ago (as of today), inclusive — still short of the ${CHURN_DAYS}-day churn threshold. Contact them now to win them back before they churn. Respects country/channel filters.`}
                 />
                 <button
                   type="button"
@@ -2517,7 +2531,7 @@ const Customers = () => {
                       { key: "last_purchase_date", label: "Last Purchase", align: "left" },
                       { key: "days_since_last_purchase", label: "Days Silent", numeric: true,
                         render: (r) => (
-                          <span className={r.days_since_last_purchase >= churnDays - 10 ? "pill-red" : "pill-amber"}>
+                          <span className={r.days_since_last_purchase >= AT_RISK_MAX_DAYS - 9 ? "pill-red" : "pill-amber"}>
                             {r.days_since_last_purchase}
                           </span>
                         ),
@@ -2544,41 +2558,30 @@ const Customers = () => {
             </div>
           )}
 
-          {/* ---- Recently Unchurned (customers returning after a long silence) ---- */}
-          <div className="card-white p-5" data-testid="recently-unchurned-section">
+          {/* ---- Recently Returned (customers returning after a long silence) ---- */}
+          <div className="card-white p-5" data-testid="recently-returned-section">
             <SectionTitle
-              title="Recently Unchurned Customers"
-              subtitle={`Customers whose latest visit happened in the selected window AND came after a silence of ${unchurnedDays}+ days. These shoppers JUST proved they still respond — perfect targets for win-back nudges, loyalty re-onboarding, or a personalised email/SMS within the next 7 days.`}
+              title="Recently Returned Customers"
+              subtitle={`Customers whose latest visit happened in the selected window after a prior silence of ${RETURN_GAP_DAYS}+ days. These shoppers just proved they still respond — strong candidates for thoughtful re-engagement.`}
             />
             <div className="flex flex-wrap items-center gap-3 mb-3">
-              <span className="eyebrow">Min silence gap</span>
-              <div className="inline-flex rounded-md overflow-hidden border border-border" data-testid="unchurned-days-toggle">
-                {[30, 60, 90, 180].map((d) => (
-                  <button
-                    key={d}
-                    onClick={() => setUnchurnedDays(d)}
-                    data-testid={`unchurned-days-${d}`}
-                    className={`text-[11px] font-bold px-3 py-1.5 transition-colors ${unchurnedDays === d ? "bg-[#1a5c38] text-white" : "bg-white text-[#1a5c38] hover:bg-[#fef3e0]"}`}
-                  >
-                    {d} days
-                  </button>
-                ))}
-              </div>
-              {unchurnedLoading && <span className="text-[11px] text-muted">computing…</span>}
-              {!unchurnedLoading && unchurned && (
-                <span className="text-[11px] text-muted" data-testid="unchurned-count">
-                  {fmtNum(unchurned.length)} customer{unchurned.length === 1 ? "" : "s"} found
+              <span className="eyebrow">Return definition</span>
+              <span className="text-[11px] text-muted">Prior gap of {RETURN_GAP_DAYS}+ days</span>
+              {returnedLoading && <span className="text-[11px] text-muted">computing…</span>}
+              {!returnedLoading && returned && (
+                <span className="text-[11px] text-muted" data-testid="returned-count">
+                  {fmtNum(returned.length)} customer{returned.length === 1 ? "" : "s"} found
                 </span>
               )}
             </div>
-            {unchurnedLoading && <Loading label={`scanning last ${unchurnedDays + 30} days of orders…`} />}
-            {!unchurnedLoading && unchurned && unchurned.length === 0 && (
-              <UpstreamNotReady label={`No customers came back from a ${unchurnedDays}+ day silence in this window.`} />
+            {returnedLoading && <Loading label="checking selected-period returns…" />}
+            {!returnedLoading && returned && returned.length === 0 && (
+              <Empty label={`No customers returned after a ${RETURN_GAP_DAYS}+ day silence in this window.`} />
             )}
-            {!unchurnedLoading && unchurned && unchurned.length > 0 && (
+            {!returnedLoading && returned && returned.length > 0 && (
               <SortableTable
-                testId="unchurned-table"
-                exportName={`recently-unchurned_${unchurnedDays}d.csv`}
+                testId="returned-table"
+                exportName={`recently-returned_${RETURN_GAP_DAYS}d.csv`}
                 pageSize={20}
                 initialSort={{ key: "gap_days", dir: "desc" }}
                 columns={[
@@ -2613,7 +2616,7 @@ const Customers = () => {
                     render: (r) => <span className="font-bold">{fmtKES(r.total_spend_kes_window)}</span>,
                     csv: (r) => r.total_spend_kes_window },
                 ]}
-                rows={unchurned}
+                rows={returned}
               />
             )}
           </div>
@@ -2827,8 +2830,8 @@ const Customers = () => {
             // Priority scorer — combines LTV, orders, recency, contact.
             // Score logic:
             //   contact valid (phone present) required for Hot/Warm
-            //   Hot   = LTV ≥ 50k AND orders ≥ 5 AND days ≤ 60 AND has contact
-            //   Warm  = (LTV ≥ 10k OR orders ≥ 3) AND days ≤ 120 AND has contact
+            //   Hot   = LTV ≥ 50k AND orders ≥ 5 AND days ≤ 424 AND has contact
+            //   Warm  = (LTV ≥ 10k OR orders ≥ 3) AND days ≤ 484 AND has contact
             //   Cold  = everything else (missing contact auto-cold regardless of LTV)
             // These thresholds are tuned for Vivo KES spend; adjust as needed.
             const priorityFor = (r) => {
@@ -2837,8 +2840,8 @@ const Customers = () => {
               const days = r.days_since_last_purchase || 0;
               const hasContact = Boolean(r.phone);
               if (!hasContact) return { key: "cold", label: "❄️ Cold", cls: "pill-neutral", rank: 1, tip: "No contact on file — cannot run automated reactivation. Consider completing profile at next in-store visit." };
-              if (ltv >= 50000 && orders >= 5 && days <= 60) return { key: "hot", label: "🔥 Hot", cls: "pill-red", rank: 4, tip: "High LTV + frequent + recent churn → immediate personal outreach." };
-              if ((ltv >= 10000 || orders >= 3) && days <= 120) return { key: "warm", label: "🌡️ Warm", cls: "pill-amber", rank: 3, tip: "Meaningful value + still recent → automated win-back campaign with offer." };
+              if (ltv >= 50000 && orders >= 5 && days <= CHURN_DAYS + 60) return { key: "hot", label: "🔥 Hot", cls: "pill-red", rank: 4, tip: "High LTV + frequent + newly churned → immediate personal outreach." };
+              if ((ltv >= 10000 || orders >= 3) && days <= CHURN_DAYS + 120) return { key: "warm", label: "🌡️ Warm", cls: "pill-amber", rank: 3, tip: "Meaningful value + recently churned → automated win-back campaign with offer." };
               return { key: "cold", label: "❄️ Cold", cls: "pill-neutral", rank: 1, tip: "Low value or very old churn → bulk low-cost campaign or deprioritize." };
             };
 
@@ -2858,8 +2861,8 @@ const Customers = () => {
               if (reactivationChip === "hot") return r.priority.key === "hot";
               if (reactivationChip === "ex_vip") return (r.total_orders || 0) >= 5;
               if (reactivationChip === "high_spender") return (r.lifetime_spend || 0) >= 100000;
-              if (reactivationChip === "recent") return days <= 60;
-              if (reactivationChip === "long") return days > 180;
+              if (reactivationChip === "recent") return days <= CHURN_DAYS + 60;
+              if (reactivationChip === "long") return days >= CHURN_DAYS + 180;
               if (reactivationChip === "contactable") return r.hasContact;
               return true;
             });
@@ -2869,21 +2872,21 @@ const Customers = () => {
             const top50 = [...decorated].sort((a, b) => (b.lifetime_spend || 0) - (a.lifetime_spend || 0)).slice(0, 50);
             const top50Rev = top50.reduce((s, r) => s + (r.lifetime_spend || 0), 0);
             const top50Pct = revAtRisk ? (top50Rev / revAtRisk) * 100 : 0;
-            const recentChurn = decorated.filter((r) => (r.days_since_last_purchase || 0) <= 30).length;
+            const recentChurn = decorated.filter((r) => (r.days_since_last_purchase || 0) <= CHURN_DAYS + 60).length;
 
             const CHIPS = [
               ["all", `All (${decorated.length})`,
-                "Every churned customer — no purchase in the selected churn window. Use this view for bulk export or campaign planning."],
+                `Every churned customer — no purchase in ${CHURN_DAYS}+ days. Use this view for bulk export or campaign planning.`],
               ["hot", `🔥 Hot (${decorated.filter((r) => r.priority.key === "hot").length})`,
-                "Lifetime spend ≥ KES 50k + ≥5 orders + churned ≤60 days ago + has phone. Highest win-back ROI — prioritise for personal outreach by a team member."],
+                `Lifetime spend ≥ KES 50k + ≥5 orders + churned within the last 60 days (day ${CHURN_DAYS}–${CHURN_DAYS + 60}) + has phone. Highest win-back ROI — prioritise for personal outreach by a team member.`],
               ["ex_vip", `Ex-VIP (${decorated.filter((r) => (r.total_orders || 0) >= 5).length})`,
                 "≥5 lifetime orders — were frequent, loyal buyers. Even without recent churn, they know the brand well and respond well to targeted reactivation offers."],
               ["high_spender", `High Spenders (${decorated.filter((r) => (r.lifetime_spend || 0) >= 100000).length})`,
                 "Lifetime spend ≥ KES 100k. High-value customers worth significant win-back investment — a personalised offer or VIP invite can justify the cost."],
-              ["recent", `Recent 30–60d (${decorated.filter((r) => (r.days_since_last_purchase || 0) <= 60).length})`,
-                "Churned within the last 30–60 days. Still top-of-mind — statistically the highest probability of reactivation with a timely, relevant offer."],
-              ["long", `Long >180d (${decorated.filter((r) => (r.days_since_last_purchase || 0) > 180).length})`,
-                "No purchase in over 180 days. Hardest to reactivate — consider a strong incentive (deep discount, exclusive product) or reclassify as dormant."],
+              ["recent", `Newly churned ${CHURN_DAYS}–${CHURN_DAYS + 60}d (${decorated.filter((r) => (r.days_since_last_purchase || 0) <= CHURN_DAYS + 60).length})`,
+                `Churned within the last 60 days (silent for ${CHURN_DAYS}–${CHURN_DAYS + 60} days). Still top-of-mind — statistically the highest probability of reactivation with a timely, relevant offer.`],
+              ["long", `Long ${CHURN_DAYS + 180}d+ (${decorated.filter((r) => (r.days_since_last_purchase || 0) >= CHURN_DAYS + 180).length})`,
+                `No purchase in ${CHURN_DAYS + 180}+ days. Hardest to reactivate — consider a strong incentive (deep discount, exclusive product) or reclassify as dormant.`],
               ["contactable", `Contactable (${decorated.filter((r) => r.hasContact).length})`,
                 "Has a phone number on file — can be reached by personal call or automated SMS campaign. Customers without contact info can only be reached if they return to a store."],
             ];
@@ -2892,7 +2895,7 @@ const Customers = () => {
             const csvCountry = countries.length === 1 ? slug(countries[0]) : countries.length ? `${countries.length}-countries` : "all-countries";
             const csvChipLabel = reactivationChip === "all" ? "" : `_${reactivationChip}`;
             const csvDate = new Date().toISOString().slice(0, 10);
-            const csvFilename = `reactivation-list_${csvCountry}_${churnDays}d-churn${csvChipLabel}_${csvDate}.csv`;
+            const csvFilename = `reactivation-list_${csvCountry}_${CHURN_DAYS}d-churn${csvChipLabel}_${csvDate}.csv`;
 
             // Column definitions shared between the table and the header Download CSV button.
             const churnedColumns = [
@@ -2987,25 +2990,7 @@ const Customers = () => {
                 <div className="flex items-start justify-between gap-3 flex-wrap">
                   <SectionTitle
                     title={`Reactivation Opportunity · ${fmtNum(decorated.length)} Churned Customers`}
-                    subtitle={`Customers with no purchase in the last ${churnDays} days. Prioritized by reactivation value — target high-LTV / high-frequency / recent-churn segments first for win-back campaigns.`}
-                    action={
-                      <div className="inline-flex items-center gap-1.5 text-[11.5px] flex-wrap" data-testid="churn-days-filter">
-                        <span className="text-muted font-medium">Churn window:</span>
-                        {[30, 45, 60, 90, 120, 180].map((d) => (
-                          <button
-                            key={d}
-                            type="button"
-                            onClick={() => setChurnDays(d)}
-                            data-testid={`churn-days-${d}`}
-                            className={`px-2 py-0.5 rounded-md font-semibold transition-colors ${
-                              churnDays === d ? "bg-brand text-white" : "bg-panel text-foreground/70 hover:bg-white border border-border"
-                            }`}
-                          >
-                            {d}d
-                          </button>
-                        ))}
-                      </div>
-                    }
+                    subtitle={`Customers with no purchase in ${CHURN_DAYS}+ days. Prioritized by reactivation value — target high-LTV / high-frequency / newly churned segments first for win-back campaigns.`}
                   />
                 </div>
 
@@ -3019,7 +3004,7 @@ const Customers = () => {
                       <span>🎯 <strong>Top 50:</strong> {fmtKES(top50Rev)} ({top50Pct.toFixed(0)}% of churn LTV) — prioritize for personal outreach.</span>
                     </div>
                     <div className="flex items-start gap-2 mt-1">
-                      <span>⏰ <strong>Recent (≤30d):</strong> {fmtNum(recentChurn)} customers — highest reactivation probability.</span>
+                      <span>⏰ <strong>Newly churned (${CHURN_DAYS}–${CHURN_DAYS + 60}d):</strong> {fmtNum(recentChurn)} customers — highest reactivation probability.</span>
                     </div>
                   </div>
                 )}
@@ -3101,7 +3086,7 @@ const Customers = () => {
 
                 {decorated.length === 0 ? (
                   <div className="rounded-xl border border-amber-300/60 bg-amber-50 p-4 text-[12.5px] text-amber-900">
-                    ⚠️ Upstream <code>/churned-customers?days={churnDays}</code> returned no rows. The aggregated count ({fmtNum(cust.churned_last_90d || cust.churned_customers || 0)}) from <code>/customers</code> is used for the KPI above.
+                    ⚠️ Upstream <code>/churned-customers</code> returned no rows. The aggregated count ({fmtNum(cust.churned_customers || 0)}) from <code>/customers</code> is used for the KPI above.
                   </div>
                 ) : filtered.length === 0 ? (
                   <Empty label={`No churned customers match "${CHIPS.find(([k]) => k === reactivationChip)?.[1] || reactivationChip}".`} />
