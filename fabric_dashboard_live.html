@@ -4942,7 +4942,9 @@ function renderColorInsights(d){
 // backend's null sentinel to show "no usage / ∞" for held-but-unused colours.
 function renderColorMerged(d){
   const el=document.getElementById('color-merged'); if(!el)return;
-  const rows=(d.rows||[]).filter(r=>(r.stock_kg||0)>0||(r.stock_metres||0)>0||(r.cons_kg||0)>0||(r.cons_metres||0)>0);
+  // Zero-SOH colour groups are valid Fabric rows.  Keep them in the table;
+  // null conversion fields are still handled separately below.
+  const rows=d.rows||[];
   if(!rows.length){el.innerHTML='<p class="muted">No data.</p>';return;}
   const totStockM=d.total_stock_metres||0, totConsM=d.total_cons_metres||0;
   const star=inc=>inc?'<span title="Some stock has no kg→metre conversion — its kg are counted but its metres are not." style="cursor:help;">*</span>':'';

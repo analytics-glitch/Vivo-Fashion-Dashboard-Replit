@@ -911,7 +911,7 @@ def _compute_cover_snapshot(conn):
         SELECT ROUND(SUM(i.quantity)::numeric,1) AS kg
         FROM raw_fabric_inventory i
         JOIN raw_fabric_products p ON p.id = i.product_id
-        WHERE i.quantity > 0 AND p.category='Fabric' AND i.location_name='RMAT/Stock'
+        WHERE i.quantity >= 0 AND p.category='Fabric' AND i.location_name='RMAT/Stock'
           AND {_scope_sql('main')}
     """)[0]['kg'] or 0
     cover = _months_of_cover(conn, rmat_kg, "main")
@@ -923,7 +923,7 @@ def _compute_cover_snapshot(conn):
         basic_kg = q(conn, f"""
             SELECT ROUND(SUM(i.quantity)::numeric,1) AS kg
             FROM raw_fabric_inventory i
-            WHERE i.quantity > 0 AND i.location_name='RMAT/Stock'
+            WHERE i.quantity >= 0 AND i.location_name='RMAT/Stock'
               AND i.product_id IN ({",".join(str(int(x)) for x in basic_ids)})
         """)[0]['kg'] or 0
         basic = _months_of_cover(conn, basic_kg, "main", product_ids=basic_ids)
@@ -1178,7 +1178,7 @@ def summary(location: str = Query(default="RMAT/Stock"),
               ROUND(SUM(i.total_value)::numeric,0) as value_kes
             FROM raw_fabric_inventory i
             JOIN raw_fabric_products p ON p.id = i.product_id
-            WHERE i.quantity > 0 AND {scope_sql}
+            WHERE i.quantity >= 0 AND {scope_sql}
             GROUP BY i.location_name, p.category
         """)
         
@@ -1224,7 +1224,7 @@ def summary(location: str = Query(default="RMAT/Stock"),
                    ROUND(SUM(i.total_value) FILTER (WHERE p.kg_per_mtr_eff IS NULL)::numeric,0) as excluded_value
             FROM raw_fabric_inventory i
             JOIN raw_fabric_products p ON p.id = i.product_id
-            WHERE i.quantity > 0 AND p.category='Fabric' AND i.location_name='RMAT/Stock'
+            WHERE i.quantity >= 0 AND p.category='Fabric' AND i.location_name='RMAT/Stock'
               AND {scope_sql}
         """)[0]
         acpm_stock_excluded_count = int(acpm_stock['excluded_count'] or 0)
@@ -1440,7 +1440,7 @@ def summary(location: str = Query(default="RMAT/Stock"),
             basic_stock_kg = q(conn, f"""
                 SELECT ROUND(SUM(i.quantity)::numeric,1) AS kg
                 FROM raw_fabric_inventory i
-                WHERE i.quantity > 0
+                WHERE i.quantity >= 0
                   AND i.location_name='RMAT/Stock'
                   AND i.product_id IN ({",".join(str(int(x)) for x in basic_ids)})
             """)[0]['kg'] or 0
@@ -1556,7 +1556,7 @@ def acpm_excluded(figure: str = Query(default="stock"),
                        p.width_m AS width_m, p.gsm AS gsm
                 FROM raw_fabric_inventory i
                 JOIN raw_fabric_products p ON p.id = i.product_id
-                WHERE i.quantity > 0 AND p.category='Fabric' AND i.location_name='RMAT/Stock'
+                WHERE i.quantity >= 0 AND p.category='Fabric' AND i.location_name='RMAT/Stock'
                   AND p.kg_per_mtr_eff IS NULL
                   AND {scope_sql}
                 GROUP BY p.id, p.barcode, p.default_code, p.name, p.width_m, p.gsm
@@ -2889,7 +2889,7 @@ def basic_fabrics_cover_xlsx():
             for r in q(conn, f"""
                 SELECT i.product_id AS pid, ROUND(SUM(i.quantity)::numeric, 1) AS kg
                 FROM raw_fabric_inventory i
-                WHERE i.quantity > 0
+                WHERE i.quantity >= 0
                   AND i.location_name = 'RMAT/Stock'
                   AND i.product_id IN ({ids_csv})
                 GROUP BY i.product_id
@@ -2902,7 +2902,7 @@ def basic_fabrics_cover_xlsx():
             basic_stock_kg = q(conn, f"""
                 SELECT ROUND(SUM(i.quantity)::numeric, 1) AS kg
                 FROM raw_fabric_inventory i
-                WHERE i.quantity > 0
+                WHERE i.quantity >= 0
                   AND i.location_name = 'RMAT/Stock'
                   AND i.product_id IN ({ids_csv})
             """)[0]["kg"] or 0
@@ -3078,7 +3078,7 @@ def months_of_cover_xlsx():
             SELECT ROUND(SUM(i.quantity)::numeric,1) AS kg
             FROM raw_fabric_inventory i
             JOIN raw_fabric_products p ON p.id = i.product_id
-            WHERE i.quantity > 0 AND p.category='Fabric' AND i.location_name='RMAT/Stock'
+            WHERE i.quantity >= 0 AND p.category='Fabric' AND i.location_name='RMAT/Stock'
               AND {_scope_sql('main')}
         """)[0]['kg'] or 0
         rmat_kg = round(float(rmat_kg), 1)
@@ -3175,7 +3175,7 @@ def months_of_cover_prev_month_xlsx():
             SELECT ROUND(SUM(i.quantity)::numeric,1) AS kg
             FROM raw_fabric_inventory i
             JOIN raw_fabric_products p ON p.id = i.product_id
-            WHERE i.quantity > 0 AND p.category='Fabric' AND i.location_name='RMAT/Stock'
+            WHERE i.quantity >= 0 AND p.category='Fabric' AND i.location_name='RMAT/Stock'
               AND {_scope_sql('main')}
         """)[0]['kg'] or 0
         rmat_kg = round(float(rmat_kg), 1)
@@ -3463,7 +3463,7 @@ def by_category(location: str = Query(default="RMAT/Stock"),
                    ELSE NULL END::numeric,2) as cost_metre
             FROM raw_fabric_inventory i
             JOIN raw_fabric_products p ON p.id = i.product_id
-            WHERE i.quantity > 0
+            WHERE i.quantity >= 0
               {loc_sql}
               AND p.category = 'Fabric'
               AND p.fabric_category IS NOT NULL
@@ -3521,9 +3521,17 @@ def register(
         sort_col = sort if sort in ALLOWED_SORT else "value_kes"
         sort_dir = "ASC" if str(dir).lower() == "asc" else "DESC"
         order_by = f"ORDER BY {sort_col} {sort_dir} NULLS LAST"
-        where = ["i.quantity > %s"]
+        # Zero-SOH rows are intentional register rows.  The inventory extract
+        # carries a row for each tracked product/location even when quantity is
+        # zero; keep those rows searchable and let the numeric columns render
+        # zero rather than treating them as missing.
+        where = ["COALESCE(i.quantity, 0) >= %s"]
         params = [min_qty]
-        loc_sql, loc_params = _loc_filter(location)
+        # Build the row universe from the product master × the tracked
+        # locations, then attach already-aggregated inventory.  This is what
+        # makes a product/location with no inventory row as explicit zero
+        # rather than silently dropping it.
+        loc_sql, loc_params = _loc_filter(location, alias="l")
         if loc_sql:
             where.append(loc_sql.replace(" AND ", "", 1)); params.extend(loc_params)
         if category:
@@ -3589,35 +3597,52 @@ def register(
               ROUND(p.standard_price::numeric,2) as cost_per_kg,
               ROUND(CASE WHEN p.kg_per_mtr_eff>0 THEN p.standard_price*p.kg_per_mtr_eff ELSE NULL END::numeric,2) as cost_metre,
               ROUND(CASE WHEN p.kg_per_mtr_eff>0 THEN 1.0/p.kg_per_mtr_eff ELSE NULL END::numeric,3) as m_per_kg,
-              ROUND(i.quantity::numeric,2) as qty_kg,
-              ROUND(i.reserved_qty::numeric,2) as reserved_kg,
-              ROUND(i.available::numeric,2) as available_kg,
-              ROUND(CASE WHEN p.kg_per_mtr_eff>0 THEN i.quantity/p.kg_per_mtr_eff ELSE NULL END::numeric,1) as qty_metres,
-              ROUND(CASE WHEN p.kg_per_mtr_eff>0 THEN i.available/p.kg_per_mtr_eff ELSE NULL END::numeric,1) as available_metres,
-              ROUND(i.total_value::numeric,0) as value_kes,
+              ROUND(COALESCE(i.quantity,0)::numeric,2) as qty_kg,
+              ROUND(COALESCE(i.reserved_qty,0)::numeric,2) as reserved_kg,
+              ROUND(COALESCE(i.available,0)::numeric,2) as available_kg,
+              ROUND(CASE WHEN p.kg_per_mtr_eff>0 THEN COALESCE(i.quantity,0)/p.kg_per_mtr_eff ELSE NULL END::numeric,1) as qty_metres,
+              ROUND(CASE WHEN p.kg_per_mtr_eff>0 THEN COALESCE(i.available,0)/p.kg_per_mtr_eff ELSE NULL END::numeric,1) as available_metres,
+              ROUND(COALESCE(i.total_value,0)::numeric,0) as value_kes,
               CASE WHEN COALESCE(c.consumed_kg,0) > 0
-                   THEN ROUND((i.quantity * ({days}/7.0) / c.consumed_kg)::numeric,1)
+              THEN ROUND((COALESCE(i.quantity,0) * ({days}/7.0) / c.consumed_kg)::numeric,1)
                    ELSE NULL END as weeks_cover,
               CASE WHEN COALESCE(c.consumed_kg,0) > 0
-                   THEN ROUND((i.quantity * ({days}/{DAYS_PER_MONTH}) / c.consumed_kg)::numeric,1)
+              THEN ROUND((COALESCE(i.quantity,0) * ({days}/{DAYS_PER_MONTH}) / c.consumed_kg)::numeric,1)
                    ELSE NULL END as months_cover,
               ROUND(COALESCE(rv.reserved_kg,0)::numeric,2) as team_reserved_kg,
               ROUND(CASE WHEN p.kg_per_mtr_eff>0 THEN COALESCE(rv.reserved_kg,0)/p.kg_per_mtr_eff ELSE NULL END::numeric,1) as team_reserved_metres,
               lmc.last_move AS last_move,
               CURRENT_DATE - lmc.last_move AS days_since_move
-            FROM raw_fabric_inventory i
-            JOIN raw_fabric_products p ON p.id = i.product_id
-            LEFT JOIN cons_win c ON c.product_id = i.product_id
-            LEFT JOIN resv rv ON rv.product_id = i.product_id
-            LEFT JOIN last_move_cte lmc ON lmc.product_id = i.product_id
+            FROM raw_fabric_products p
+            CROSS JOIN (VALUES ('RMAT/Stock'), ('Dead/Stock Fabric')) AS l(location_name)
+            LEFT JOIN (
+              SELECT product_id, location_name,
+                     SUM(quantity) AS quantity,
+                     SUM(reserved_qty) AS reserved_qty,
+                     SUM(available) AS available,
+                     SUM(total_value) AS total_value
+              FROM raw_fabric_inventory
+              WHERE location_name IN ('RMAT/Stock', 'Dead/Stock Fabric')
+              GROUP BY product_id, location_name
+            ) i ON i.product_id = p.id AND i.location_name = l.location_name
+            LEFT JOIN cons_win c ON c.product_id = p.id
+            LEFT JOIN resv rv ON rv.product_id = p.id
+            LEFT JOIN last_move_cte lmc ON lmc.product_id = p.id
             WHERE {' AND '.join(where)}
             {order_by}
             LIMIT %s OFFSET %s
         """, params + [limit, offset])
 
         total = q(conn, f"""
-            SELECT COUNT(*) as n FROM raw_fabric_inventory i
-            JOIN raw_fabric_products p ON p.id = i.product_id
+            SELECT COUNT(*) as n
+            FROM raw_fabric_products p
+            CROSS JOIN (VALUES ('RMAT/Stock'), ('Dead/Stock Fabric')) AS l(location_name)
+            LEFT JOIN (
+              SELECT product_id, location_name, SUM(quantity) AS quantity
+              FROM raw_fabric_inventory
+              WHERE location_name IN ('RMAT/Stock', 'Dead/Stock Fabric')
+              GROUP BY product_id, location_name
+            ) i ON i.product_id = p.id AND i.location_name = l.location_name
             WHERE {' AND '.join(where)}
         """, params)[0]['n']
 
@@ -3668,7 +3693,7 @@ def ageing(location: str = Query(default="RMAT/Stock"),
               JOIN raw_fabric_products p ON p.id = i.product_id
               LEFT JOIN raw_fabric_moves m ON m.product_id = i.product_id
                 AND {_real_move_sql('m')}
-              WHERE i.quantity > 0 {loc_sql}
+              WHERE i.quantity >= 0 {loc_sql}
                 AND p.category = 'Fabric'
                 AND {_scope_sql(scope)}
               GROUP BY i.product_id, i.quantity, p.kg_per_mtr_eff, i.total_value
@@ -3799,7 +3824,7 @@ def category_stock_consumption(
                    ROUND(SUM(i.quantity)::numeric,1) as stock_kg
             FROM raw_fabric_inventory i
             JOIN raw_fabric_products p ON p.id = i.product_id
-            WHERE i.quantity > 0 {loc_sql}
+            WHERE i.quantity >= 0 {loc_sql}
               AND p.category = 'Fabric'
               AND {_scope_sql(scope)}
             GROUP BY 1, 2
@@ -3928,7 +3953,7 @@ def fabric_mix(
                    ROUND(SUM(i.total_value)::numeric,0) as tied_up_kes
             FROM raw_fabric_inventory i
             JOIN raw_fabric_products p ON p.id = i.product_id
-            WHERE i.quantity > 0 AND p.category = 'Fabric' {loc_sql}
+            WHERE i.quantity >= 0 AND p.category = 'Fabric' {loc_sql}
               AND {_scope_sql(scope)}
             GROUP BY 1, 2, 3, 4
         """, loc_params)
@@ -4337,7 +4362,7 @@ def missing_kg_per_metre(scope: str = Query(default="main")):
                      STRING_AGG(DISTINCT i.location_name, ', '
                                 ORDER BY i.location_name) AS locations
               FROM raw_fabric_inventory i
-              WHERE i.quantity > 0 {loc_sql}
+              WHERE i.quantity >= 0 {loc_sql}
               GROUP BY i.product_id
             ), usage AS (
               SELECT m.product_id, SUM({_net_kg('m')}) AS usage_kg
@@ -4460,7 +4485,7 @@ def dead_stock(scope: str = Query(default="main")):
             LEFT JOIN raw_fabric_products p ON p.id = i.product_id
             LEFT JOIN raw_fabric_moves m ON m.product_id = i.product_id
               AND {_real_move_sql('m')}
-            WHERE i.location_name = 'Dead/Stock Fabric' AND i.quantity > 0
+            WHERE i.location_name = 'Dead/Stock Fabric' AND i.quantity >= 0
               AND p.category = 'Fabric'
               AND {_scope_sql(scope)}
             GROUP BY 1, 2, 3,
@@ -4515,7 +4540,7 @@ def bom_lookup(sku: str = Query(default=None), style: str = Query(default=None),
               i.location_name
             FROM raw_fabric_boms b
             LEFT JOIN raw_fabric_products p ON p.id = b.component_id
-            LEFT JOIN raw_fabric_inventory i ON i.product_id = b.component_id AND i.quantity > 0
+            LEFT JOIN raw_fabric_inventory i ON i.product_id = b.component_id AND i.quantity >= 0
             WHERE {where}
               AND p.category = 'Fabric'
               AND {_scope_sql(scope)}
@@ -4536,7 +4561,7 @@ def attribute_split(location: str = Query(default="RMAT/Stock"), scope: str = Qu
                   ROUND(SUM(i.total_value)::numeric,0) as value_kes
                 FROM raw_fabric_inventory i
                 JOIN raw_fabric_products p ON p.id = i.product_id
-                WHERE i.quantity > 0 {loc_sql}
+                WHERE i.quantity >= 0 {loc_sql}
                   AND p.category = 'Fabric'
                   AND {_scope_sql(scope)}
                 GROUP BY 1
@@ -4564,7 +4589,7 @@ def attribute_split(location: str = Query(default="RMAT/Stock"), scope: str = Qu
                   ROUND(SUM(i.total_value)::numeric,0) as value_kes
                 FROM raw_fabric_inventory i
                 JOIN raw_fabric_products p ON p.id = i.product_id
-                WHERE i.quantity > 0 {loc_sql}
+                WHERE i.quantity >= 0 {loc_sql}
                   AND p.category = 'Fabric'
                   AND {_scope_sql(scope)}
                 GROUP BY 1
@@ -4579,7 +4604,7 @@ def attribute_split(location: str = Query(default="RMAT/Stock"), scope: str = Qu
               ROUND(SUM(i.total_value)::numeric,0) as value_kes
             FROM raw_fabric_inventory i
             JOIN raw_fabric_products p ON p.id = i.product_id
-            WHERE i.quantity > 0 {loc_sql}
+            WHERE i.quantity >= 0 {loc_sql}
               AND p.category = 'Fabric'
               AND {_scope_sql(scope)}
               AND p.fiber_content IS NOT NULL AND p.fiber_content <> ''
@@ -4598,7 +4623,7 @@ def attribute_split(location: str = Query(default="RMAT/Stock"), scope: str = Qu
 # The full audit trail behind the "Solid vs Print" donut: every fabric product
 # that contributes, its derived classification (Solid/Print/Unknown), WHICH rule
 # matched it, its on-hand kg, the kg→metre conversion applied, its derived metres
-# and KES value. The classification CASE + filters (i.quantity > 0, location,
+# and KES value. The classification CASE + filters (i.quantity >= 0, location,
 # scope) MUST mirror attribute_split's split_plain_print EXACTLY so the workbook
 # reconciles to the donut. The Summary sheet reuses the SAME single-aggregate
 # GROUP BY query the donut is fed, so its totals are guaranteed identical.
@@ -4639,7 +4664,7 @@ def solid_vs_print_xlsx(location: str = Query(default="RMAT/Stock"),
               ROUND(SUM(i.total_value)::numeric,0) as value_kes
             FROM raw_fabric_inventory i
             JOIN raw_fabric_products p ON p.id = i.product_id
-            WHERE i.quantity > 0 {loc_sql}
+            WHERE i.quantity >= 0 {loc_sql}
               AND {_scope_sql(scope)}
             GROUP BY 1
             ORDER BY value_kes DESC NULLS LAST
@@ -4657,7 +4682,7 @@ def solid_vs_print_xlsx(location: str = Query(default="RMAT/Stock"),
               ROUND(SUM(i.total_value)::numeric,0) as value_kes
             FROM raw_fabric_inventory i
             JOIN raw_fabric_products p ON p.id = i.product_id
-            WHERE i.quantity > 0 {loc_sql}
+            WHERE i.quantity >= 0 {loc_sql}
               AND {_scope_sql(scope)}
             GROUP BY i.product_id, p.name, p.default_code, p.supplier,
                      p.plain_print, p.fabric_category, p.kg_per_mtr_eff,
@@ -4808,7 +4833,7 @@ def color_mix(
                    ROUND(SUM(CASE WHEN p.kg_per_mtr_eff IS NULL THEN i.quantity ELSE 0 END)::numeric,1) as kg_nometre
             FROM raw_fabric_inventory i
             JOIN raw_fabric_products p ON p.id = i.product_id
-            WHERE i.quantity > 0 AND p.category = 'Fabric' {loc_sql}
+            WHERE i.quantity >= 0 AND p.category = 'Fabric' {loc_sql}
               AND {_scope_sql(scope)}
             GROUP BY 1, 2, 3
         """, loc_params)
@@ -4908,7 +4933,7 @@ def top_consumed(days: int = Query(default=90), limit: int = Query(default=20), 
               HAVING SUM({_net_kg('m')}) > 0
             ), stock AS (
               SELECT product_id, SUM(quantity) as qty_kg
-              FROM raw_fabric_inventory WHERE quantity>0 GROUP BY 1
+              FROM raw_fabric_inventory WHERE quantity>=0 GROUP BY 1
             )
             SELECT o.product_name,
               ROUND(o.consumed_kg::numeric,1) as consumed_kg,
@@ -5110,7 +5135,7 @@ def trend_series(
                        BOOL_OR(p.kg_per_mtr_eff IS NULL OR p.kg_per_mtr_eff <= 0) AS incomplete
                 FROM raw_fabric_inventory i
                 JOIN raw_fabric_products p ON p.id = i.product_id
-                WHERE i.quantity > 0 AND {_scope_sql('main')}
+                WHERE i.quantity >= 0 AND {_scope_sql('main')}
                   {scope_sql}{iloc_sql}
             """, list(scope_params) + list(iloc_params))[0]
             current_m = float(inv["metres"] or 0)
@@ -5217,7 +5242,7 @@ def trend_options():
         fabrics = q(conn, f"""
             SELECT p.id, p.name
             FROM raw_fabric_products p
-            WHERE p.id IN (SELECT DISTINCT product_id FROM raw_fabric_inventory WHERE quantity > 0)
+            WHERE p.id IN (SELECT DISTINCT product_id FROM raw_fabric_inventory WHERE quantity >= 0)
               AND {_scope_sql('main')}
             ORDER BY p.name
             LIMIT 2000
@@ -5225,7 +5250,9 @@ def trend_options():
         locs = q(conn, """
             SELECT DISTINCT location_name AS value
             FROM raw_fabric_inventory
-            WHERE quantity > 0 AND location_name IS NOT NULL AND btrim(location_name) <> ''
+            WHERE quantity >= 0
+              AND location_name IN ('RMAT/Stock', 'Dead/Stock Fabric')
+              AND location_name IS NOT NULL AND btrim(location_name) <> ''
             ORDER BY 1
         """)
     return {
@@ -5399,9 +5426,13 @@ def filters(scope: str = Query(default="main")):
             FROM raw_fabric_products
             WHERE fabric_subcategory IS NOT NULL AND {_scope_sql(scope, 'fabric_category')} ORDER BY 1, 2
         """)
+        # Location choices are the fixed Fabric dashboard locations, not
+        # whatever happens to have positive inventory today.  This keeps a
+        # zero-SOH product/location visible without leaking trims or warehouses.
         locs = q(conn, """
-            SELECT DISTINCT location_name as value FROM raw_fabric_inventory
-            WHERE quantity > 0 ORDER BY 1
+            SELECT location_name AS value
+            FROM (VALUES ('RMAT/Stock'), ('Dead/Stock Fabric')) AS v(location_name)
+            ORDER BY 1
         """)
         colors = q(conn, """
             SELECT DISTINCT INITCAP(BTRIM(fabric_color)) as value FROM raw_fabric_products
@@ -5428,24 +5459,39 @@ _RESV_UOMS = {"m", "kg"}
 
 @fabric_router.get("/api/fabric/product-search")
 def product_search(q_: str = Query(default="", alias="q"), limit: int = Query(default=20)):
-    """Lightweight fabric picker for the reservation form."""
+    """Lightweight fabric picker for the reservation form.
+
+    The product master is the inclusion anchor: a Fabric remains searchable
+    after its tracked stock reaches zero.  Inventory is aggregated separately
+    over the two dashboard locations so a missing/zero stock row is represented
+    as numeric zero, while trims and excluded warehouses cannot enter the
+    picker.
+    """
     term = (q_ or "").strip()
     limit = max(1, min(int(limit or 20), 50))
     with _get_conn() as conn:
-        where = "i.quantity > 0"
+        where = "p.category = 'Fabric'"
         params = []
         if term:
             where += " AND (p.name ILIKE %s OR p.default_code ILIKE %s OR p.barcode ILIKE %s)"
             params += [f"%{term}%", f"%{term}%", f"%{term}%"]
         return q(conn, f"""
-            SELECT p.id, p.name, p.default_code, p.uom,
+            SELECT p.id, p.name, p.default_code, p.barcode, p.uom,
               ROUND(p.kg_per_mtr_eff::numeric,4) as kg_per_mtr, p.kg_per_mtr_src,
-              ROUND(SUM(i.available)::numeric,2) as available_kg,
-              ROUND(CASE WHEN p.kg_per_mtr_eff>0 THEN SUM(i.available)/p.kg_per_mtr_eff ELSE NULL END::numeric,1) as available_metres
-            FROM raw_fabric_inventory i
-            JOIN raw_fabric_products p ON p.id = i.product_id
+              ROUND(COALESCE(inv.available_kg,0)::numeric,2) as available_kg,
+              ROUND(CASE WHEN p.kg_per_mtr_eff>0
+                         THEN COALESCE(inv.available_kg,0)/p.kg_per_mtr_eff
+                         ELSE NULL END::numeric,1) as available_metres
+            FROM raw_fabric_products p
+            LEFT JOIN (
+              SELECT product_id, SUM(available) AS available_kg
+              FROM raw_fabric_inventory
+              WHERE location_name IN ('RMAT/Stock', 'Dead/Stock Fabric')
+              GROUP BY product_id
+            ) inv ON inv.product_id = p.id
             WHERE {where}
-            GROUP BY p.id, p.name, p.default_code, p.uom, p.kg_per_mtr_eff, p.kg_per_mtr_src
+            GROUP BY p.id, p.name, p.default_code, p.barcode, p.uom,
+                     p.kg_per_mtr_eff, p.kg_per_mtr_src, inv.available_kg
             ORDER BY p.name
             LIMIT %s
         """, params + [limit])
@@ -6114,7 +6160,7 @@ def rolls_list(
         order_by = f"ORDER BY {sort_col} {sort_dir} NULLS LAST, p.id ASC"
 
         where = ["i.location_name IN ('RMAT/Stock','Dead/Stock Fabric')",
-                 "i.quantity > 0", "p.category = 'Fabric'", _scope_sql(scope)]
+                 "i.quantity >= 0", "p.category = 'Fabric'", _scope_sql(scope)]
         params = []
         if category:
             where.append("p.fabric_category = %s"); params.append(category)
