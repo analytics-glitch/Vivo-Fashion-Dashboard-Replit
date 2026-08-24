@@ -53,6 +53,57 @@ def _db(sql, params=None, fetch=True):
     return A._users_exec(sql, params, fetch=fetch)
 
 
+def _reconcile_pd_stage_state_from_movements():
+    """Restore lifecycle state from the append-only PD movement audit trail.
+
+    A past startup import incorrectly reapplied an old Excel stage snapshot to
+    existing styles. Styles that have a movement log are recoverable because a
+    move is the canonical, durable stage change. Styles with no moves retain
+    their imported initial state.
+    """
+    repaired = _db("""
+        WITH latest_move AS (
+            SELECT DISTINCT ON (style_id)
+                style_id, to_stage, direction, created_at
+            FROM pd_movements
+            ORDER BY style_id, created_at DESC, id DESC
+        )
+        UPDATE pd_styles s
+        SET current_stage = COALESCE(m.to_stage, s.current_stage),
+            stage_entered_at = CASE
+                WHEN m.to_stage IS NOT NULL
+                 AND s.current_stage IS DISTINCT FROM m.to_stage
+                THEN m.created_at
+                ELSE s.stage_entered_at
+            END,
+            status = CASE WHEN m.direction = 'approve' THEN 'completed' ELSE 'active' END,
+            outcome = CASE WHEN m.direction = 'approve' THEN 'approved' ELSE NULL END,
+            completed_at = CASE
+                WHEN m.direction = 'approve' THEN COALESCE(s.completed_at, m.created_at)
+                ELSE NULL
+            END
+        FROM latest_move m
+        WHERE s.id = m.style_id
+          AND (
+              (m.to_stage IS NOT NULL AND s.current_stage IS DISTINCT FROM m.to_stage)
+              OR (m.direction = 'approve' AND (
+                    s.status IS DISTINCT FROM 'completed'
+                    OR s.outcome IS DISTINCT FROM 'approved'
+                    OR s.completed_at IS NULL
+              ))
+              OR (m.direction <> 'approve' AND (
+                    s.status IS DISTINCT FROM 'active'
+                    OR s.outcome IS NOT NULL
+                    OR s.completed_at IS NOT NULL
+              ))
+          )
+        RETURNING s.id
+    """) or []
+    if repaired:
+        log.warning("restored PD Flow lifecycle state for %d styles from movement history", len(repaired))
+    return len(repaired)
+
+
 def ensure_pd_tables():
     """Idempotent DDL + stage seed. Never truncates; SLA edits survive reboots."""
     _db("""
@@ -197,11 +248,12 @@ def ensure_pd_tables():
                     def _add(col, val):
                         if val is not None:
                             _sets.append(f"{col} = %s"); _pms.append(val)
-                    if _stage:
-                        _sets += ["current_stage = %s", "status = %s"]
-                        _pms  += [_stage, _pstatus]
-                        if _pstatus == "completed":
-                            _sets.append("completed_at = COALESCE(completed_at, now())")
+                    # The Excel file is a bootstrap snapshot, not the source of
+                    # truth for lifecycle state. Existing styles may have moved
+                    # through PD Flow since this file was generated; overwriting
+                    # current_stage/status here on every API boot made a
+                    # republish silently undo those moves. New rows below may
+                    # still use the snapshot stage as their initial state.
                     _add("brand",               _pr.get("brand"))
                     _add("category",            _pr.get("category"))
                     _add("sub_category",        _pr.get("sub_category"))
@@ -267,6 +319,8 @@ def ensure_pd_tables():
                      _ok, _ins, _img, _skip)
         except Exception as _pe:
             log.warning("pd_excel_patch failed (non-fatal): %s", _pe)
+
+    _reconcile_pd_stage_state_from_movements()
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────

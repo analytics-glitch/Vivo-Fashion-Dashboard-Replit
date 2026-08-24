@@ -156,3 +156,4 @@
 - [Community composer hand-off](community-composer-handoff.md) — Home CTAs pass a one-time look/question intent into Community, then consume it after opening the existing composer.
 - [Style Tracker % Recv](style-tracker-warehouse-pct.md) — receipts-first shared batch calc feeds board/endpoint/gate; names-first match grain; dated styles never fall back to stock.
 - [Disposable PostgreSQL tests](disposable-postgres-tests.md) — concurrency tests must run on a local throwaway cluster via TEST_DATABASE_URL, never DATABASE_URL.
+- [PD Flow stage persistence](pd-flow-stage-persistence.md) — Excel bootstrap snapshots may seed missing styles, but lifecycle state belongs to the append-only movement log.
