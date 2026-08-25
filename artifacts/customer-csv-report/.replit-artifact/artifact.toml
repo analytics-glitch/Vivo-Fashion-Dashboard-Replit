@@ -1,0 +1,28 @@
+kind = "data-app"
+previewPath = "/customer-csv-report/"
+title = "Customer Report · CSV Export"
+description = "A standalone, source-faithful preview of the supplied customer workbook with one Excel-compatible combined CSV download across all three worksheets."
+version = "1.0.0"
+id = "artifacts/customer-csv-report"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/customer-csv-report/" ]
+localPort = 22802
+
+[services.development]
+run = "pnpm --filter @workspace/customer-csv-report run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/customer-csv-report", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/customer-csv-report/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "22802"
+BASE_PATH = "/customer-csv-report/"
