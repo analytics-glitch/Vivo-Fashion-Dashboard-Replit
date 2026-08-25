@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useFilters } from "@/lib/filters";
-import { api, fmtKES, fmtNum, fmtDate } from "@/lib/api";
+import { api, fmtKES, fmtKESLong, fmtNum, fmtDate } from "@/lib/api";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import SortableTable from "@/components/SortableTable";
 import MultiSelect from "@/components/MultiSelect";
@@ -57,9 +57,9 @@ const metricColumns = (selDays = 180) => [
   { key: "pct_in_wh", label: "% WH", sortable: true, align: "right",
     render: (r) => `${(r.pct_in_wh ?? 0).toFixed(1)}%` },
   { key: "asp_6m", label: "ASP 6M", sortable: true, align: "right",
-    render: (r) => r.asp_6m == null ? <span className="text-muted">—</span> : fmtKES(r.asp_6m) },
+    render: (r) => r.asp_6m == null ? <span className="text-muted">—</span> : fmtKESLong(r.asp_6m) },
   { key: "original_price", label: "Full Price", sortable: true, align: "right",
-    render: (r) => r.original_price == null ? <span className="text-muted">—</span> : fmtKES(r.original_price) },
+    render: (r) => r.original_price == null ? <span className="text-muted">—</span> : fmtKESLong(r.original_price) },
   { key: "days_since_last_sale", label: "Last Sale", sortable: true, align: "right",
     render: (r) => {
       const d = r.days_since_last_sale;
@@ -76,7 +76,7 @@ const metricColumns = (selDays = 180) => [
   { key: "sor_sel", label: `SOR Sel (${selDays}d)`, sortable: true, align: "right",
     render: (r) => <SorPct v={r.sor_sel} /> },
   { key: "asp_sel", label: `ASP Sel (${selDays}d)`, sortable: true, align: "right",
-    render: (r) => r.asp_sel == null ? <span className="text-muted">—</span> : fmtKES(r.asp_sel) },
+    render: (r) => r.asp_sel == null ? <span className="text-muted">—</span> : fmtKESLong(r.asp_sel) },
   { key: "pct_of_full", label: "% Full Price", sortable: true, align: "right",
     render: (r) => {
       if (r.pct_of_full == null) return <span className="text-muted">—</span>;
