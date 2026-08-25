@@ -150,18 +150,19 @@ const DateRangeButton = ({ autoPairToday = false }) => {
             preset list stay reachable; on desktop we keep the dual-pane
             layout where each side scrolls independently. */}
         <div className="flex flex-col sm:flex-row max-h-[85vh] overflow-y-auto sm:overflow-visible">
-          {/* Mobile: horizontal scrollable preset chips at the top so users
-              can pick "Yesterday / Last 7 days / Last month" with one tap.
-              Desktop: vertical preset list — hidden on mobile. */}
-          <div className="sm:hidden border-b border-border bg-[#fffaf3] px-2 py-2 overflow-x-auto">
-            <div className="flex gap-1.5 whitespace-nowrap">
+          {/* Mobile: wrap every preset into a width-safe grid so all choices
+              are visible and keyboard/touch reachable without relying on a
+              clipped nested horizontal scroll region. Desktop: vertical
+              preset list — hidden on mobile. */}
+          <div className="sm:hidden border-b border-border bg-[#fffaf3] px-2 py-2">
+            <div className="grid grid-cols-2 gap-1.5">
               {PRESET_GROUPS.flatMap((g) => g.items).map(([k, lbl]) => (
                 <button
                   key={k}
                   type="button"
                   data-testid={`preset-${k}-mobile`}
                   onClick={() => choosePreset(k)}
-                  className={`shrink-0 px-3 py-1.5 rounded-full text-[12px] font-medium transition-colors ${
+                  className={`min-w-0 min-h-9 px-2 py-1.5 rounded-lg text-[12px] font-medium transition-colors ${
                     f.preset === k
                       ? "bg-brand text-white"
                       : "bg-white text-foreground/80 border border-border hover:border-brand/40"
@@ -174,7 +175,7 @@ const DateRangeButton = ({ autoPairToday = false }) => {
                 type="button"
                 data-testid="preset-custom-mobile"
                 onClick={() => choosePreset("custom")}
-                className={`shrink-0 px-3 py-1.5 rounded-full text-[12px] font-medium transition-colors ${
+                className={`min-w-0 min-h-9 px-2 py-1.5 rounded-lg text-[12px] font-medium transition-colors ${
                   f.preset === "custom"
                     ? "bg-brand text-white"
                     : "bg-white text-foreground/80 border border-border"
