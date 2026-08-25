@@ -135,17 +135,10 @@
 - [Staff 2FA flow](staff-2fa-flow.md) — password/Google/native auth share a short-lived challenge before normal session creation; existing sessions survive reset.
 - [Sublimation costing canon](sublimation-costing-canon.md) — BOM op time = settable STANDARD throughput (default 60, actual = variance only); server recomputes saves; reprint on printing lines only; rate constants FE+BE lockstep.
 - [Manufacturing live search](manufacturing-search-contract.md) — target only confirmed/progress DPS MOs; OR text search, aggregate status filter, and separate Odoo/stock freshness.
-- [Product Workspace L10](product-workspace-l10.md) — keep EOS meeting data in the workspace schema; migrate existing public rocks once, then let workspace status edits own the records.
-- [Product Workspace Resources](product-workspace-resources.md) — markdown reference library is idempotently seeded, server-admin-gated for mutations, and rendered with safe structured tables.
 - [Artifact service environments](artifact-service-environments.md) — preserve managed-service env blocks and give every production route exactly one runnable owner.
 - [Production Node server bundling](artifact-production-node-bundling.md) — artifact runtime may omit workspace node_modules; bundle service dependencies during the production build.
-- [Product Workspace startup readiness](product-workspace-startup-readiness.md) — HTTP readiness and identity bootstrap must survive PostgreSQL timeouts; optional DDL cannot gate the shell.
-- [Product Workspace brand scope](product-workspace-brand-scope.md) — every style surface is server-filtered to Vivo, Safari by Vivo, Safari, and Zoya.
-- [Product Workspace range sources](product-workspace-plm-source.md) — Style Development uses pd_styles; Assortment mirrors BI catalogue/override/stock rules and never mixes in PLM rows.
-- [Product Workspace user privacy](product-workspace-user-privacy.md) — workspace user DOB is admin-Settings-only; public team and birthday payloads never include the date.
 - [OpenAPI codegen compatibility](openapi-codegen-compatibility.md) — checked-in Orval 8.9.1 currently fails resolving this repo's OpenAPI input; restore generated outputs and patch the contract/types manually if needed.
-- [Product Workspace preview auth](product-workspace-preview-auth.md) — embedded HTTPS previews need Secure/SameSite=None session cookies or API pages can 401 after session bootstrap.
-- [Product Workspace public feedback](product-workspace-public-feedback.md) — public feedback selects catalogue styles/colourways from all_products_clean and stores canonical style number plus colourway.
+- [Product Workspace guidance](product-workspace-guidance.md) — shared rules for L10, resources, resilient startup, brand scope, profile privacy, preview auth, and public feedback.
 - [Community guest mode](community-guest-mode.md) — guest fence must cover deep-linkable URL-state overlays (?event=, member ?page= ids) and every member-write control, not just tabs.
 - [Merch empty-universe poison + deep-dive crash](merch-core-empty-poison.md) — never cache an empty style universe (raise in compute fn); "search crash" reports may be selected-style render bugs, assert error boundary absent.
 - [Merch store size analysis](merch-store-size-analysis.md) — compare a selected store's size SOR/SOH against weighted network size benchmarks, not average store percentages.
@@ -157,3 +150,4 @@
 - [Disposable PostgreSQL tests](disposable-postgres-tests.md) — concurrency tests must run on a local throwaway cluster via TEST_DATABASE_URL, never DATABASE_URL.
 - [PD Flow stage persistence](pd-flow-stage-persistence.md) — Excel bootstrap snapshots may seed missing styles, but lifecycle state belongs to the append-only movement log.
 - [Production workspace revision integrity](production-workspace-revision-integrity.md) — frozen-plan inputs must be revision-scoped and cross-plan references guarded in both API and database.
+- [Production workspace feasibility governance](production-workspace-feasibility-governance.md) — capacity, targets, SAMs, and readiness must be approved, dated, and auditable before a plan is feasible.

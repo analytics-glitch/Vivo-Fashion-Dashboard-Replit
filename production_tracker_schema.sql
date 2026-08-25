@@ -266,6 +266,51 @@ CREATE TABLE IF NOT EXISTS production_workspace_skills (
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Reusable operation master data. Plan revisions copy the selected values into
+-- production_workspace_operations so a later SAM edit cannot rewrite history.
+CREATE TABLE IF NOT EXISTS production_workspace_operation_definitions (
+    id                  BIGSERIAL PRIMARY KEY,
+    operation_code      TEXT NOT NULL UNIQUE,
+    name                TEXT NOT NULL,
+    default_sam_minutes NUMERIC NOT NULL CHECK (default_sam_minutes > 0),
+    capability_id       BIGINT REFERENCES production_workspace_capabilities(id) ON DELETE SET NULL,
+    active              BOOLEAN NOT NULL DEFAULT TRUE,
+    status              TEXT NOT NULL DEFAULT 'draft'
+                        CHECK (status IN ('draft', 'approved', 'retired')),
+    version_token       BIGINT NOT NULL DEFAULT 1 CHECK (version_token > 0),
+    created_by          TEXT,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_by          TEXT,
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE production_workspace_operation_definitions
+    ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'draft';
+ALTER TABLE production_workspace_operation_definitions
+    DROP CONSTRAINT IF EXISTS production_workspace_operation_definitions_status_check;
+ALTER TABLE production_workspace_operation_definitions
+    ADD CONSTRAINT production_workspace_operation_definitions_status_check
+    CHECK (status IN ('draft', 'approved', 'retired'));
+
+-- Approved production targets are maintained independently from a plan, then
+-- selected by planners as the target-output denominator for a dated line plan.
+CREATE TABLE IF NOT EXISTS production_workspace_targets (
+    id              BIGSERIAL PRIMARY KEY,
+    factory_id      BIGINT NOT NULL REFERENCES production_workspace_factories(id) ON DELETE RESTRICT,
+    line_id         BIGINT REFERENCES production_workspace_lines(id) ON DELETE RESTRICT,
+    target_date     DATE NOT NULL,
+    target_qty      NUMERIC NOT NULL CHECK (target_qty > 0),
+    status          TEXT NOT NULL DEFAULT 'approved'
+                    CHECK (status IN ('draft', 'approved', 'retired')),
+    version_token   BIGINT NOT NULL DEFAULT 1 CHECK (version_token > 0),
+    created_by      TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_by      TEXT,
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (factory_id, line_id, target_date)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_workspace_target_grain
+    ON production_workspace_targets(factory_id, COALESCE(line_id, -1), target_date);
+
 CREATE TABLE IF NOT EXISTS production_workspace_operator_skills (
     operator_id     BIGINT NOT NULL REFERENCES production_workspace_operators(id) ON DELETE CASCADE,
     skill_id        BIGINT NOT NULL REFERENCES production_workspace_skills(id) ON DELETE RESTRICT,
@@ -391,12 +436,23 @@ CREATE TABLE IF NOT EXISTS production_workspace_readiness_gates (
     status           TEXT NOT NULL DEFAULT 'pending'
                     CHECK (status IN ('pending', 'passed', 'failed', 'waived')),
     quality_ref      TEXT,
+    evidence_ref     TEXT,
+    owner_user_id    TEXT,
+    due_date         DATE,
+    exception_authorized_by TEXT,
+    exception_authorized_at TIMESTAMPTZ,
     checked_by       TEXT,
     checked_at       TIMESTAMPTZ,
     note             TEXT,
     version_token    BIGINT NOT NULL DEFAULT 1 CHECK (version_token > 0),
     UNIQUE (plan_version_id, gate_key)
 );
+ALTER TABLE production_workspace_readiness_gates
+    ADD COLUMN IF NOT EXISTS evidence_ref TEXT,
+    ADD COLUMN IF NOT EXISTS owner_user_id TEXT,
+    ADD COLUMN IF NOT EXISTS due_date DATE,
+    ADD COLUMN IF NOT EXISTS exception_authorized_by TEXT,
+    ADD COLUMN IF NOT EXISTS exception_authorized_at TIMESTAMPTZ;
 
 CREATE TABLE IF NOT EXISTS production_workspace_assignments (
     id              BIGSERIAL PRIMARY KEY,
@@ -437,6 +493,21 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_workspace_capacity_grain
         plan_version_id, COALESCE(calendar_id, -1), COALESCE(line_id, -1),
         COALESCE(machine_id, -1)
     );
+
+CREATE TABLE IF NOT EXISTS production_workspace_changeovers (
+    id                BIGSERIAL PRIMARY KEY,
+    plan_version_id   BIGINT NOT NULL REFERENCES production_workspace_plan_versions(id) ON DELETE CASCADE,
+    line_id           BIGINT REFERENCES production_workspace_lines(id) ON DELETE RESTRICT,
+    from_work_item_id BIGINT REFERENCES production_workspace_work_items(id) ON DELETE RESTRICT,
+    to_work_item_id   BIGINT REFERENCES production_workspace_work_items(id) ON DELETE RESTRICT,
+    changeover_date   DATE NOT NULL,
+    minutes           NUMERIC NOT NULL CHECK (minutes >= 0),
+    note              TEXT,
+    version_token     BIGINT NOT NULL DEFAULT 1 CHECK (version_token > 0),
+    created_by        TEXT,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (plan_version_id, line_id, changeover_date, from_work_item_id, to_work_item_id)
+);
 
 CREATE TABLE IF NOT EXISTS production_workspace_execution_references (
     id                  BIGSERIAL PRIMARY KEY,
@@ -551,6 +622,11 @@ DROP TRIGGER IF EXISTS production_workspace_capacity_mutable
 CREATE TRIGGER production_workspace_capacity_mutable
     BEFORE INSERT OR UPDATE OR DELETE ON production_workspace_capacity_inputs
     FOR EACH ROW EXECUTE FUNCTION production_workspace_plan_input_mutable();
+DROP TRIGGER IF EXISTS production_workspace_changeovers_mutable
+    ON production_workspace_changeovers;
+CREATE TRIGGER production_workspace_changeovers_mutable
+    BEFORE INSERT OR UPDATE OR DELETE ON production_workspace_changeovers
+    FOR EACH ROW EXECUTE FUNCTION production_workspace_plan_input_mutable();
 
 -- An assignment is meaningful only within the revision that owns its
 -- operation. Keep the relationship valid even if a later route writes SQL
@@ -648,6 +724,11 @@ DECLARE
     effective_line_id BIGINT;
     capability_machine_id BIGINT;
     capability_line_id BIGINT;
+    related_machine_id BIGINT;
+    capability_key TEXT;
+    operator_is_active BOOLEAN;
+    machine_is_active BOOLEAN;
+    skill_qualified BOOLEAN;
     new_row JSONB := to_jsonb(NEW);
     old_row JSONB := CASE WHEN TG_OP = 'UPDATE' THEN to_jsonb(OLD) ELSE NULL END;
 BEGIN
@@ -671,6 +752,8 @@ BEGIN
                (new_row->>'factory_id') IS DISTINCT FROM (old_row->>'factory_id')
                OR (new_row->>'line_id') IS DISTINCT FROM (old_row->>'line_id')
                OR (new_row->>'shift_id') IS DISTINCT FROM (old_row->>'shift_id')
+                OR (new_row->>'planned_start') IS DISTINCT FROM (old_row->>'planned_start')
+                OR (new_row->>'planned_end') IS DISTINCT FROM (old_row->>'planned_end')
            )
            AND EXISTS (
                SELECT 1 FROM production_workspace_operations
@@ -681,6 +764,9 @@ BEGIN
                UNION ALL
                SELECT 1 FROM production_workspace_capacity_inputs
                WHERE plan_version_id = (new_row->>'id')::BIGINT
+                UNION ALL
+                SELECT 1 FROM production_workspace_changeovers
+                WHERE plan_version_id = (new_row->>'id')::BIGINT
            ) THEN
             RAISE EXCEPTION
                 'Plan factory, line and shift are locked after planning inputs are added';
@@ -725,6 +811,37 @@ BEGIN
         IF effective_line_id IS NOT NULL AND related_line_id IS NOT NULL
            AND related_line_id <> effective_line_id THEN
             RAISE EXCEPTION 'Plan input machine must match the plan line';
+        END IF;
+    END IF;
+
+    IF TG_TABLE_NAME = 'production_workspace_assignments'
+       AND (new_row->>'operation_id') IS NOT NULL THEN
+        SELECT capability_id INTO capability_machine_id
+        FROM production_workspace_operations WHERE id = (new_row->>'operation_id')::BIGINT;
+        IF capability_machine_id IS NOT NULL THEN
+            IF (new_row->>'operator_id') IS NULL OR (new_row->>'machine_id') IS NULL THEN
+                RAISE EXCEPTION 'Capability-bound operation assignments require an operator and machine';
+            END IF;
+            SELECT cap.machine_id, cap.capability_key, worker.active, machine.active,
+                   EXISTS (
+                       SELECT 1 FROM production_workspace_operator_skills os
+                       JOIN production_workspace_skills sk ON sk.id=os.skill_id
+                       WHERE os.operator_id=worker.id AND sk.skill_key=cap.capability_key AND sk.active
+                   )
+            INTO related_machine_id, capability_key, operator_is_active, machine_is_active, skill_qualified
+            FROM production_workspace_capabilities cap
+            JOIN production_workspace_operators worker ON worker.id=(new_row->>'operator_id')::BIGINT
+            JOIN production_workspace_machines machine ON machine.id=(new_row->>'machine_id')::BIGINT
+            WHERE cap.id = capability_machine_id;
+            IF NOT COALESCE(operator_is_active, FALSE)
+               OR NOT COALESCE(machine_is_active, FALSE)
+               OR NOT COALESCE(skill_qualified, FALSE) THEN
+                RAISE EXCEPTION 'Capability assignment requires active, skill-qualified operator and machine';
+            END IF;
+            IF related_machine_id IS NOT NULL
+               AND related_machine_id <> (new_row->>'machine_id')::BIGINT THEN
+                RAISE EXCEPTION 'Assignment machine is incompatible with operation capability';
+            END IF;
         END IF;
     END IF;
 
@@ -799,7 +916,7 @@ CREATE TRIGGER production_workspace_capability_scope_guard
 DROP TRIGGER IF EXISTS production_workspace_plan_scope_guard
     ON production_workspace_plan_versions;
 CREATE TRIGGER production_workspace_plan_scope_guard
-    BEFORE INSERT OR UPDATE OF factory_id, line_id, shift_id
+    BEFORE INSERT OR UPDATE OF factory_id, line_id, shift_id, planned_start, planned_end
     ON production_workspace_plan_versions
     FOR EACH ROW EXECUTE FUNCTION production_workspace_plan_scope_guard();
 DROP TRIGGER IF EXISTS production_workspace_operation_scope_guard
@@ -811,7 +928,7 @@ CREATE TRIGGER production_workspace_operation_scope_guard
 DROP TRIGGER IF EXISTS production_workspace_assignment_scope_guard
     ON production_workspace_assignments;
 CREATE TRIGGER production_workspace_assignment_scope_guard
-    BEFORE INSERT OR UPDATE OF plan_version_id, line_id, machine_id
+    BEFORE INSERT OR UPDATE OF plan_version_id, operation_id, operator_id, line_id, machine_id
     ON production_workspace_assignments
     FOR EACH ROW EXECUTE FUNCTION production_workspace_plan_scope_guard();
 DROP TRIGGER IF EXISTS production_workspace_capacity_scope_guard
@@ -819,6 +936,12 @@ DROP TRIGGER IF EXISTS production_workspace_capacity_scope_guard
 CREATE TRIGGER production_workspace_capacity_scope_guard
     BEFORE INSERT OR UPDATE OF plan_version_id, calendar_id, line_id, machine_id
     ON production_workspace_capacity_inputs
+    FOR EACH ROW EXECUTE FUNCTION production_workspace_plan_scope_guard();
+DROP TRIGGER IF EXISTS production_workspace_changeover_scope_guard
+    ON production_workspace_changeovers;
+CREATE TRIGGER production_workspace_changeover_scope_guard
+    BEFORE INSERT OR UPDATE OF plan_version_id, line_id
+    ON production_workspace_changeovers
     FOR EACH ROW EXECUTE FUNCTION production_workspace_plan_scope_guard();
 
 -- Factory ownership is the root of every compatibility check. It is an

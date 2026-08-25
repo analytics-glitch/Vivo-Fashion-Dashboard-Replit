@@ -50,12 +50,21 @@ class MutationCursor:
             self.pending = {"id": 22, "status": "pending", "version_token": 1}
         elif query.startswith("UPDATE production_workspace_readiness_gates"):
             self.pending = {"id": 22, "status": "passed", "version_token": 2}
+        elif query.startswith("SELECT * FROM production_workspace_operation_definitions"):
+            self.pending = {
+                "id": 41, "operation_code": "CUT", "name": "Cutting",
+                "default_sam_minutes": 1, "capability_id": None, "status": "approved",
+            }
         elif query.startswith("INSERT INTO production_workspace_operations"):
             self.pending = {"id": 31, "operation_code": "CUT"}
         elif query.startswith("INSERT INTO production_workspace_assignments"):
             self.pending = {"id": 32, "assignment_role": "operator"}
         elif query.startswith("INSERT INTO production_workspace_capacity_inputs"):
             self.pending = {"id": 33, "available_minutes": 60}
+        elif query.startswith("SELECT calendar_date,capacity_minutes FROM production_workspace_calendars"):
+            self.pending = {"calendar_date": "2099-01-01", "capacity_minutes": 120}
+        elif query.startswith("SELECT ci.available_minutes FROM production_workspace_capacity_inputs"):
+            self.pending = []
         elif query.startswith("UPDATE production_workspace_plan_versions"):
             self.pending = {"id": 1, "version_token": 2}
         elif query.startswith("INSERT INTO production_workspace_audit_events"):
@@ -66,6 +75,12 @@ class MutationCursor:
             raise AssertionError(f"Unexpected workspace mutation query: {query}")
 
     def fetchone(self):
+        if self.pending is None:
+            raise AssertionError("The previous cursor result was not available to consume")
+        result, self.pending = self.pending, None
+        return result
+
+    def fetchall(self):
         if self.pending is None:
             raise AssertionError("The previous cursor result was not available to consume")
         result, self.pending = self.pending, None
@@ -112,6 +127,10 @@ class ProductionWorkspaceFoundationTests(unittest.TestCase):
         self.assertIn("production_workspace_master_scope_guard", sql)
         self.assertIn("production_workspace_factory_owner_immutable", sql)
         self.assertIn("Plan factory, line and shift are locked after planning inputs are added", sql)
+        plan_scope = sql.split("CREATE OR REPLACE FUNCTION production_workspace_plan_scope_guard()", 1)[1]
+        self.assertIn("SELECT 1 FROM production_workspace_changeovers", plan_scope)
+        self.assertIn("UPDATE OF factory_id, line_id, shift_id, planned_start, planned_end", sql)
+        self.assertIn("UPDATE OF plan_version_id, operation_id, operator_id, line_id, machine_id", sql)
 
         workspace._SCHEMA_READY = False
         workspace.ensure_production_workspace_tables()
@@ -220,21 +239,23 @@ class ProductionWorkspaceFoundationTests(unittest.TestCase):
         plan = {
             "id": 1, "work_item_id": 7, "factory_id": 4, "line_id": 5,
             "shift_id": 6, "owner_user_id": "user-1", "status": "draft",
-            "version_token": 1,
+            "version_token": 1, "planned_start": "2099-01-01",
+            "planned_end": "2099-01-01",
         }
         cases = (
             (workspace._gate_update, (1, "quality"), {
                 "status": "passed", "expected_version": 1, "reason": "quality cleared",
+                "owner_user_id": "quality-owner", "due_date": "2099-01-01",
             }),
             (workspace._operation_create, (1,), {
-                "operation_code": "CUT", "name": "Cutting", "sequence_no": 1,
-                "sam_minutes": 1, "expected_version": 1, "reason": "add operation",
+                "operation_definition_id": 41, "sequence_no": 1,
+                "expected_version": 1, "reason": "add operation",
             }),
             (workspace._assignment_create, (1,), {
                 "planned_minutes": 60, "expected_version": 1, "reason": "assign operator",
             }),
             (workspace._capacity_create, (1,), {
-                "available_minutes": 60, "required_minutes": 45,
+                "calendar_id": 9, "available_minutes": 60, "required_minutes": 45,
                 "expected_version": 1, "reason": "set capacity",
             }),
         )
@@ -252,6 +273,34 @@ class ProductionWorkspaceFoundationTests(unittest.TestCase):
             self.assertEqual(result["record"]["id"], 1)
             self.assertEqual(cursor.audit_count, 2)
             self.assertIn('"version_token": 2', cursor.audit_after_json[-1])
+
+    def test_bulk_import_rejects_approved_governed_master_records(self):
+        class ApprovedMasterCursor:
+            def execute(self, query, params=None):
+                self.query = " ".join(query.split())
+
+            def fetchone(self):
+                self.assert_called = True
+                return {"status": "approved"}
+
+        preview = {
+            "valid": True,
+            "rows": [{"values": {
+                "operation_code": "CUT", "name": "Cutting", "default_sam_minutes": 1,
+                "capability_id": None, "active": True, "status": "draft",
+            }}],
+        }
+        cursor = ApprovedMasterCursor()
+        with patch.object(workspace, "_bulk_validate", return_value=preview), \
+                patch.object(workspace, "_ensure_schema"), \
+                patch.object(workspace, "_require_role", return_value=None), \
+                patch.object(workspace, "_tx", return_value=FakeTransaction(cursor)):
+            result = workspace._bulk_import(
+                "operation_definitions", request_for("production"),
+                {"rows": preview["rows"], "reason": "load definitions"},
+            )
+        self.assertIsInstance(result, JSONResponse)
+        self.assertEqual(result.status_code, 409)
 
 
 if __name__ == "__main__":
