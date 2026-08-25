@@ -6,7 +6,8 @@ must not silently turn missing evidence into performance scores.
 
 import unittest
 import inspect
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
+from types import SimpleNamespace
 
 from fastapi import FastAPI
 
@@ -41,7 +42,88 @@ def assignment_row(**overrides):
     return row
 
 
+def command_plan_row(timestamp, **overrides):
+    row = {
+        "plan_version_id": 11,
+        "status": "approved",
+        "planned_start": date.today(),
+        "planned_end": date.today(),
+        "planned_qty": 0,
+        "plan_fresh_at": timestamp,
+        "factory_id": 1,
+        "factory_name": "Factory One",
+        "line_id": 3,
+        "line_name": "Line Three",
+        "shift_id": None,
+        "shift_name": None,
+        "owner_user_id": "owner-a",
+        "stage_key": "sewing",
+        "good_qty": 0,
+        "reject_qty": 0,
+        "rework_qty": 0,
+        "output_fresh_at": timestamp,
+        "qc_defect_qty": 0,
+        "downtime_minutes": 0,
+        "event_fresh_at": None,
+        "available_minutes": 0,
+        "required_minutes": 0,
+    }
+    row.update(overrides)
+    return row
+
+
+def command_productivity_row(timestamp, **overrides):
+    row = assignment_row(
+        plan_version_id=11,
+        planned_qty=0,
+        good_qty=0,
+        reject_qty=0,
+        rework_qty=0,
+        qc_defect_qty=0,
+        output_fresh_at=timestamp,
+        quality_fresh_at=timestamp,
+        downtime_fresh_at=timestamp,
+        attendance_fresh_at=timestamp,
+    )
+    row.update(overrides)
+    return row
+
+
 class ProductionInsightsContractTests(unittest.TestCase):
+    def _command_response(self, *, plan_timestamp, recovery_error=False):
+        """Run the aggregate endpoint against controlled source responses."""
+        original = {
+            "_command_plan_rows": insights._command_plan_rows,
+            "_productivity_rows": insights._productivity_rows,
+            "_recovery_candidates": insights._recovery_candidates,
+            "_db": insights._db,
+            "_API": insights._API,
+        }
+        now = datetime.now(timezone.utc)
+        try:
+            insights._command_plan_rows = lambda *args: [command_plan_row(plan_timestamp)]
+            insights._productivity_rows = lambda *args: [command_productivity_row(now)]
+            insights._recovery_candidates = (
+                (lambda *args: (_ for _ in ()).throw(RuntimeError("delivery source down")))
+                if recovery_error else (lambda *args: [])
+            )
+            insights._db = lambda *args, **kwargs: [{
+                "last_run_at": now,
+                "last_status": "ok",
+                "orders_synced": 0,
+                "age_seconds": 10,
+            }]
+            insights._API = SimpleNamespace(
+                _production_flow_stages=lambda: ([], {"last_updated": now})
+            )
+            request = SimpleNamespace(state=SimpleNamespace(user={
+                "user_id": "test-user", "role": "admin", "name": "Test User",
+            }))
+            return insights._command_centre(request)
+        finally:
+            for name, value in original.items():
+                setattr(insights, name, value)
+
     def test_earned_minutes_and_efficiency_use_approved_sam_and_attendance(self):
         metric = insights._metric_row(assignment_row())
         self.assertEqual(metric["earned_minutes"], 50)
@@ -102,6 +184,45 @@ class ProductionInsightsContractTests(unittest.TestCase):
         self.assertIsNone(rows[0]["available_minutes"])
         self.assertEqual(rows[0]["metric_state"], "incomplete")
         self.assertIsNone(rows[0]["efficiency_pct"])
+
+    def test_command_centre_partial_when_delivery_source_fails(self):
+        response = self._command_response(
+            plan_timestamp=datetime.now(timezone.utc),
+            recovery_error=True,
+        )
+        self.assertEqual(response["sections"]["delivery"]["state"], "error")
+        self.assertEqual(response["completeness"]["state"], "partial")
+        self.assertIn("delivery", response["completeness"]["missing"])
+
+    def test_command_centre_partial_when_required_source_is_stale(self):
+        response = self._command_response(
+            plan_timestamp=datetime.now(timezone.utc) - timedelta(hours=25),
+        )
+        self.assertEqual(response["source_freshness"]["approved_plan"]["state"], "stale")
+        self.assertEqual(response["sections"]["plan_actual"]["state"], "stale")
+        self.assertEqual(response["completeness"]["state"], "partial")
+        self.assertIn("approved_plan", response["completeness"]["missing"])
+
+    def test_command_centre_keeps_valid_zero_activity_distinct_from_missing(self):
+        response = self._command_response(plan_timestamp=datetime.now(timezone.utc))
+        self.assertEqual(response["metrics"]["actual_qty"], 0)
+        self.assertEqual(response["metrics"]["wip_units"], 0)
+        self.assertEqual(response["sections"]["delivery"]["state"], "empty")
+        self.assertEqual(response["sections"]["wip"]["state"], "empty")
+        self.assertEqual(response["source_freshness"]["quality_and_downtime"]["state"], "empty")
+        self.assertEqual(response["completeness"]["state"], "complete")
+
+    def test_freshness_uses_timestamps_and_rejects_date_only_age(self):
+        now = datetime(2026, 8, 25, 12, tzinfo=timezone.utc)
+        self.assertEqual(
+            insights._freshness_state(now - timedelta(hours=23, minutes=59), now=now)["state"],
+            "fresh",
+        )
+        self.assertEqual(
+            insights._freshness_state(now - timedelta(hours=24, minutes=1), now=now)["state"],
+            "stale",
+        )
+        self.assertEqual(insights._freshness_state(date(2026, 8, 25), now=now)["state"], "unknown")
 
     def test_command_contract_keeps_sales_filters_out_of_production_scope(self):
         source = inspect.getsource(insights._command_scope)

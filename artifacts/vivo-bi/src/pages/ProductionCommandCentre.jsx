@@ -26,7 +26,7 @@ function asEAT(value) {
 
 function stateTone(state) {
   if (state === "fresh" || state === "ready" || state === "complete") return "bg-emerald-50 text-emerald-800 border-emerald-200";
-  if (state === "stale" || state === "partial" || state === "incomplete" || state === "unavailable") return "bg-amber-50 text-amber-800 border-amber-200";
+  if (state === "stale" || state === "partial" || state === "incomplete" || state === "unavailable" || state === "missing" || state === "unknown") return "bg-amber-50 text-amber-800 border-amber-200";
   if (state === "error") return "bg-rose-50 text-rose-800 border-rose-200";
   return "bg-slate-50 text-slate-700 border-slate-200";
 }
@@ -94,7 +94,7 @@ function Freshness({ sources }) {
               <span className="text-[10px] font-bold capitalize">{item.state}</span>
             </div>
             <div className="mt-1 text-[10.5px] opacity-90">{asEAT(item.as_of)} EAT</div>
-            <div className="mt-0.5 text-[10px] opacity-80 capitalize">{item.refresh_status || item.detail || "No refresh status"}</div>
+            <div className="mt-0.5 text-[10px] opacity-80">{item.detail || item.refresh_status || "No refresh status"}</div>
           </div>
         );
       })}
@@ -233,7 +233,12 @@ export default function ProductionCommandCentre({ onOpenWorkspace }) {
           {data?.completeness?.state !== "complete" && (
             <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2.5 text-[12px] text-amber-900" data-testid="command-completeness-warning">
               <div className="font-bold flex items-center gap-1.5"><ShieldWarning size={15} />Decision data is incomplete</div>
-              <div className="mt-0.5">{data.completeness.message} Missing: {(data.completeness.missing || []).join(", ")}.</div>
+              <div className="mt-0.5">{data.completeness.message}</div>
+              {(data.completeness.issues || []).length > 0 && (
+                <ul className="mt-1 list-disc pl-4">
+                  {data.completeness.issues.map((issue) => <li key={`${issue.key}-${issue.state}`}>{title(issue.key)}: {issue.message}</li>)}
+                </ul>
+              )}
             </div>
           )}
           <ContextFilters data={data} query={query} onChange={changeQuery} onClear={clearQuery} />

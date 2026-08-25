@@ -8,7 +8,7 @@ turns a missing denominator into a zero or a ranking.
 import json
 import logging
 import os
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from fastapi import Body, Request
@@ -39,6 +39,14 @@ COMMAND_CENTRE_THRESHOLDS = {
     "high_load_pct": 85,
     "overloaded_pct": 100,
 }
+
+_COMMAND_REQUIRED_SECTIONS = (
+    "plan_actual",
+    "productivity",
+    "delivery",
+    "wip",
+)
+_COMMAND_UNHEALTHY_STATES = {"error", "unavailable", "stale", "incomplete", "missing", "unknown"}
 
 
 def _jsonable(value):
@@ -117,20 +125,105 @@ def _nullable_sum(rows, field, *, when=None):
     return sum(_number(row.get(field)) for row in selected)
 
 
-def _freshness_state(timestamp, *, stale_hours=None):
+def _freshness_state(timestamp, *, stale_hours=None, now=None):
+    """Return a timestamp-precise source health state.
+
+    A calendar date says which operating day a record belongs to, not when the
+    source was refreshed.  Date-only values therefore remain explicitly
+    unknown instead of being silently rounded to midnight and presented as an
+    hourly freshness calculation.
+    """
     if not timestamp:
         return {"state": "missing", "as_of": None}
     stale_hours = stale_hours or COMMAND_CENTRE_THRESHOLDS["source_stale_hours"]
     try:
-        value = timestamp if isinstance(timestamp, date) else date.fromisoformat(str(timestamp)[:10])
-        age_days = max(0, (date.today() - value).days)
+        if isinstance(timestamp, datetime):
+            value = timestamp
+        elif isinstance(timestamp, date):
+            return {
+                "state": "unknown",
+                "as_of": _jsonable(timestamp),
+                "detail": "A timestamp is required to calculate source freshness.",
+            }
+        else:
+            raw = str(timestamp).strip()
+            if "T" not in raw and " " not in raw:
+                return {
+                    "state": "unknown",
+                    "as_of": _jsonable(timestamp),
+                    "detail": "A timestamp is required to calculate source freshness.",
+                }
+            value = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        current = now or datetime.now(timezone.utc)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=timezone.utc)
+        age_seconds = max(0, (current.astimezone(timezone.utc) - value.astimezone(timezone.utc)).total_seconds())
         return {
-            "state": "stale" if age_days * 24 > stale_hours else "fresh",
+            "state": "stale" if age_seconds > stale_hours * 60 * 60 else "fresh",
             "as_of": _jsonable(timestamp),
-            "age_hours": age_days * 24,
+            "age_seconds": round(age_seconds),
+            "age_hours": round(age_seconds / 3600, 2),
         }
     except (TypeError, ValueError):
         return {"state": "unknown", "as_of": _jsonable(timestamp)}
+
+
+def _command_source_state(timestamp, *, query_failed=False, empty=False,
+                          stale_hours=None, detail=None, refresh_status=None):
+    """Build source health without confusing successful empty activity with loss."""
+    if query_failed:
+        state = {
+            "state": "error",
+            "as_of": None,
+            "detail": detail or "This source could not be read.",
+        }
+    elif empty:
+        state = {
+            "state": "empty",
+            "as_of": None,
+            "detail": detail or "No activity was recorded in this scope.",
+        }
+    else:
+        state = _freshness_state(timestamp, stale_hours=stale_hours)
+        if detail:
+            state["detail"] = detail
+    if refresh_status:
+        state["refresh_status"] = refresh_status
+    return state
+
+
+def _command_completeness(sections, source_freshness):
+    """Summarise required section and source health for stand-up decisions."""
+    issues = []
+    for key in _COMMAND_REQUIRED_SECTIONS:
+        section = sections.get(key, {})
+        state = section.get("state")
+        if state in _COMMAND_UNHEALTHY_STATES:
+            issues.append({
+                "key": key,
+                "state": state,
+                "message": section.get("message") or f"{key.replace('_', ' ')} is {state}.",
+            })
+    for key, source in source_freshness.items():
+        state = source.get("state")
+        if state in _COMMAND_UNHEALTHY_STATES:
+            issues.append({
+                "key": key,
+                "state": state,
+                "message": source.get("detail") or f"{key.replace('_', ' ')} is {state}.",
+            })
+    return {
+        "state": "partial" if issues else "complete",
+        "missing": [issue["key"] for issue in issues],
+        "issues": issues,
+        "message": (
+            "One or more required decision sources are failed, unavailable, stale, or incomplete."
+            if issues else
+            "All required decision sources are available and current."
+        ),
+    }
 
 
 def _ensure_tables():
@@ -291,7 +384,7 @@ attendance AS (
              WHERE COALESCE(is_complete,false) AND hours_worked IS NOT NULL
            ) AS attended_minutes,
            COUNT(*) FILTER (WHERE COALESCE(is_complete,false)) AS attendance_days,
-           MAX(attendance_date) AS attendance_fresh_at
+            MAX(COALESCE(pushed_at, synced_at)) AS attendance_fresh_at
     FROM vivo_attendance
     WHERE attendance_date BETWEEN %s AND %s
     GROUP BY lower(trim(employee_name))
@@ -352,7 +445,7 @@ attendance AS (
              WHERE COALESCE(is_complete,false) AND hours_worked IS NOT NULL
            ) AS attended_minutes,
            COUNT(*) FILTER (WHERE COALESCE(is_complete,false)) AS attendance_days,
-           MAX(attendance_date) AS attendance_fresh_at
+            MAX(COALESCE(pushed_at, synced_at)) AS attendance_fresh_at
     FROM vivo_attendance
     WHERE attendance_date BETWEEN %s AND %s
     GROUP BY lower(trim(employee_name))
@@ -1018,10 +1111,10 @@ def _command_plan_rows(start, end, scope):
                (SELECT MAX(o.created_at)
                   FROM production_workspace_execution_output o
                  WHERE o.plan_version_id=p.id AND o.capture_date BETWEEN %s AND %s) AS output_fresh_at,
-               (SELECT SUM(e.quantity) FILTER (WHERE e.event_type='qc_defect')
+               (SELECT COALESCE(SUM(e.quantity) FILTER (WHERE e.event_type='qc_defect'),0)
                   FROM production_workspace_execution_events e
                  WHERE e.plan_version_id=p.id AND e.event_date BETWEEN %s AND %s) AS qc_defect_qty,
-               (SELECT SUM(e.duration_minutes) FILTER (WHERE e.event_type='downtime')
+               (SELECT COALESCE(SUM(e.duration_minutes) FILTER (WHERE e.event_type='downtime'),0)
                   FROM production_workspace_execution_events e
                  WHERE e.plan_version_id=p.id AND e.event_date BETWEEN %s AND %s) AS downtime_minutes,
                (SELECT MAX(e.created_at)
@@ -1152,11 +1245,14 @@ def _command_centre(request, date_from=None, date_to=None, stage="", factory_id=
     sections, errors = {}, {}
     planned_ids = set()
     plans, productivity, productivity_raw, productivity_metrics, recovery, stages, tracker_status = [], [], [], [], [], [], {}
+    plan_query_succeeded = productivity_query_succeeded = recovery_query_succeeded = False
+    tracker_query_succeeded = heartbeat_query_failed = False
     try:
         plans = [dict(row) for row in _command_plan_rows(start, end, scope)]
         planned_ids = {
             plan.get("plan_version_id") for plan in plans if plan.get("plan_version_id") is not None
         }
+        plan_query_succeeded = True
         sections["plan_actual"] = {"state": "ready" if plans else "empty", "rows": len(plans)}
     except Exception as exc:
         log.exception("Command Centre plan facts failed")
@@ -1179,6 +1275,7 @@ def _command_centre(request, date_from=None, date_to=None, stage="", factory_id=
         productivity = _aggregate(
             productivity_metrics, ("factory_id", "line_id"), "line_name", worker=True,
         )
+        productivity_query_succeeded = True
         sections["productivity"] = {"state": "ready" if productivity else "empty", "rows": len(productivity)}
     except Exception:
         log.exception("Command Centre productivity facts failed")
@@ -1202,6 +1299,7 @@ def _command_centre(request, date_from=None, date_to=None, stage="", factory_id=
             ).lower()]
         if scope["stage"]:
             recovery = [r for r in recovery if str(r.get("current_stage") or "") == scope["stage"]]
+        recovery_query_succeeded = True
         sections["delivery"] = {"state": "ready" if recovery else "empty", "rows": len(recovery)}
     except Exception:
         log.exception("Command Centre recovery facts failed")
@@ -1220,6 +1318,7 @@ def _command_centre(request, date_from=None, date_to=None, stage="", factory_id=
             stages = [dict(row) for row in _API._production_flow_stages()[0]]
             if scope["stage"]:
                 stages = [row for row in stages if row.get("stage_key") == scope["stage"]]
+            tracker_query_succeeded = True
             sections["wip"] = {"state": "ready" if stages else "empty", "rows": len(stages)}
         except Exception:
             log.exception("Command Centre tracker facts failed")
@@ -1234,6 +1333,8 @@ def _command_centre(request, date_from=None, date_to=None, stage="", factory_id=
         )
         tracker_status = dict(heartbeat[0]) if heartbeat else {}
     except Exception:
+        heartbeat_query_failed = True
+        log.exception("Command Centre tracker heartbeat failed")
         tracker_status = {}
 
     captured_productivity_plan_ids = {
@@ -1268,42 +1369,87 @@ def _command_centre(request, date_from=None, date_to=None, stage="", factory_id=
         if efficiency_evidence_complete and sum(_number(row.get("attended_minutes")) for row in productivity) > 0
         else None
     )
+    if plan_query_succeeded and not plans:
+        # A successful selected scope with no commitments is a genuine zero,
+        # not a missing plan source.
+        target = actual = qc_defects = downtime = 0
     wip_rows = [row for row in stages if not row.get("is_terminal")]
-    wip_units = sum(_number(row.get("units")) for row in wip_rows) if stages else None
-    active_orders = sum(_number(row.get("orders")) for row in wip_rows) if stages else None
-    incomplete = {
-        "plan": not bool(plans),
-        "execution": actual is None,
-        "capacity": available_minutes is None or required_minutes is None,
-        "quality": qc_defects is None,
-        "productivity": efficiency is None,
-        "tracker_wip": wip_units is None,
-    }
+    wip_units = sum(_number(row.get("units")) for row in wip_rows) if tracker_query_succeeded else None
+    active_orders = sum(_number(row.get("orders")) for row in wip_rows) if tracker_query_succeeded else None
     source_freshness = {
-        "odoo_tracker": {
-            "state": (
-                "missing" if not tracker_status.get("last_run_at") else
-                "stale" if _number(tracker_status.get("age_seconds")) > COMMAND_CENTRE_THRESHOLDS["tracker_stale_seconds"]
-                else "fresh"
-            ),
-            "as_of": _jsonable(tracker_status.get("last_run_at")),
-            "age_seconds": _number(tracker_status.get("age_seconds")) if tracker_status else None,
-            "detail": "Verified Odoo production tracker balances.",
-            "refresh_status": tracker_status.get("last_status") or "not recorded",
-        },
-        "approved_plan": {**_freshness_state(max((p.get("plan_fresh_at") for p in plans if p.get("plan_fresh_at")), default=None)), "refresh_status": "approved-plan snapshot"},
-        "execution_capture": {**_freshness_state(max((p.get("output_fresh_at") for p in plans if p.get("output_fresh_at")), default=None)), "refresh_status": "validated capture ledger"},
-        "quality_and_downtime": {**_freshness_state(max((p.get("event_fresh_at") for p in plans if p.get("event_fresh_at")), default=None)), "refresh_status": "validated event ledger"},
-        "attendance_and_sam": _freshness_state(max((
-            row.get("attendance_fresh_at") for row in productivity_raw if row.get("attendance_fresh_at")
-        ), default=None)),
+        "odoo_tracker": _command_source_state(
+            tracker_status.get("last_run_at"),
+            query_failed=heartbeat_query_failed,
+            empty=not tracker_query_succeeded and not heartbeat_query_failed,
+            stale_hours=COMMAND_CENTRE_THRESHOLDS["tracker_stale_seconds"] / 3600,
+            detail="Verified Odoo production tracker balances.",
+            refresh_status=tracker_status.get("last_status") or "not recorded",
+        ),
+        "approved_plan": _command_source_state(
+            max((p.get("plan_fresh_at") for p in plans if p.get("plan_fresh_at")), default=None),
+            query_failed=not plan_query_succeeded,
+            empty=plan_query_succeeded and not plans,
+            detail="Approved-plan snapshot.",
+            refresh_status="approved-plan snapshot",
+        ),
+        "execution_capture": _command_source_state(
+            max((p.get("output_fresh_at") for p in plans if p.get("output_fresh_at")), default=None),
+            query_failed=not productivity_query_succeeded,
+            empty=plan_query_succeeded and not plans,
+            detail="Validated execution capture ledger.",
+            refresh_status="validated capture ledger",
+        ),
+        "quality_and_downtime": _command_source_state(
+            max((p.get("event_fresh_at") for p in plans if p.get("event_fresh_at")), default=None),
+            query_failed=not plan_query_succeeded,
+            # No defect/downtime events is a valid zero-activity result.
+            empty=plan_query_succeeded and not any(p.get("event_fresh_at") for p in plans),
+            detail="Validated quality and downtime event ledger.",
+            refresh_status="validated event ledger",
+        ),
+        "attendance_and_sam": _command_source_state(
+            max((row.get("attendance_fresh_at") for row in productivity_raw if row.get("attendance_fresh_at")), default=None),
+            query_failed=not productivity_query_succeeded,
+            empty=plan_query_succeeded and not plans,
+            detail="Complete attendance plus approved operation SAM are required before efficiency is available.",
+            refresh_status="denominator validation",
+        ),
     }
-    # The productivity endpoint is the source of truth for attendance
-    # freshness; its line rows do not carry it, so absence remains explicit.
-    source_freshness["attendance_and_sam"]["detail"] = (
-        "Complete attendance plus approved operation SAM are required before efficiency is available."
-    )
-    source_freshness["attendance_and_sam"]["refresh_status"] = "denominator validation"
+    if tracker_status.get("last_status", "").lower() in {"error", "failed", "failure", "timeout"}:
+        source_freshness["odoo_tracker"]["state"] = "error"
+        source_freshness["odoo_tracker"]["detail"] = "The latest Odoo tracker refresh failed."
+    if sections.get("plan_actual", {}).get("state") == "ready" and (
+        actual is None or available_minutes is None or required_minutes is None
+    ):
+        sections["plan_actual"].update({
+            "state": "incomplete",
+            "message": "Approved-plan, execution, or capacity evidence is incomplete for this scope.",
+        })
+    if sections.get("productivity", {}).get("state") == "ready" and efficiency is None:
+        sections["productivity"].update({
+            "state": "incomplete",
+            "message": "Execution, attendance, or approved SAM evidence is incomplete for this scope.",
+        })
+    for section_key, source_keys in {
+        "plan_actual": ("approved_plan", "execution_capture"),
+        "productivity": ("execution_capture", "attendance_and_sam"),
+        "delivery": ("approved_plan", "execution_capture", "quality_and_downtime"),
+        "wip": ("odoo_tracker",),
+    }.items():
+        section = sections.get(section_key, {})
+        if section.get("state") in {"empty", "error", "unavailable", "incomplete"}:
+            continue
+        bad_source = next(
+            (source_freshness[key] for key in source_keys
+             if source_freshness[key].get("state") in _COMMAND_UNHEALTHY_STATES),
+            None,
+        )
+        if bad_source:
+            sections[section_key] = {
+                **section,
+                "state": bad_source["state"],
+                "message": bad_source.get("detail") or "A required source is not healthy.",
+            }
     options = {
         "factories": sorted({(p.get("factory_id"), p.get("factory_name")) for p in plans if p.get("factory_id")}, key=lambda x: str(x[1])),
         "lines": sorted({(p.get("line_id"), p.get("line_name")) for p in plans if p.get("line_id")}, key=lambda x: str(x[1])),
@@ -1322,11 +1468,7 @@ def _command_centre(request, date_from=None, date_to=None, stage="", factory_id=
         "source_freshness": source_freshness,
         "sections": sections,
         "partial_errors": errors,
-        "completeness": {
-            "state": "complete" if not any(incomplete.values()) else "partial",
-            "missing": [key for key, value in incomplete.items() if value],
-            "message": "Unavailable metrics are source gaps, not operational zeroes.",
-        },
+        "completeness": _command_completeness(sections, source_freshness),
         "thresholds": COMMAND_CENTRE_THRESHOLDS,
         "definitions": {
             "wip": "Current units from verified Odoo tracker stage balances.",
