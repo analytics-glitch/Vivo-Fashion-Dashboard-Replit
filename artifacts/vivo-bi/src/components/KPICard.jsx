@@ -3,7 +3,7 @@ import { Info, ArrowRight, ArrowUp, ArrowDown } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import { fmtDelta, api } from "@/lib/api";
 
-const DeltaBadge = ({ delta, higherIsBetter = true, label, accent = false, muted = false, mutedNote = null }) => {
+const DeltaBadge = ({ delta, higherIsBetter = true, label, accent = false, muted = false, mutedNote = null, suffix = "%" }) => {
   if (delta === null || delta === undefined) {
     return (
       <span className="inline-flex items-center gap-0.5 text-[11.5px] delta-flat" data-testid="delta-na">
@@ -42,7 +42,11 @@ const DeltaBadge = ({ delta, higherIsBetter = true, label, accent = false, muted
         </span>
       )}
       <ArrowIcon size={13} weight="bold" />
-      <span>{fmtDelta(Math.abs(delta))}</span>
+      <span>
+        {suffix === "pp"
+          ? `${delta > 0 ? "+" : ""}${Math.abs(delta).toFixed(1)}pp`
+          : fmtDelta(Math.abs(delta))}
+      </span>
       {muted && (
         <span className={`ml-1 font-normal ${accent ? "text-white/50" : "text-muted/80"}`}>
           (partial day)
@@ -74,6 +78,9 @@ export const KPICard = ({
   // the base period is complete while the current one is still accruing.
   deltaMuted = false,
   deltaMutedNote = null,
+  // A conversion movement is expressed in percentage points rather than a
+  // percent-of-percent change. Existing cards retain the default "%".
+  deltaSuffix = "%",
   // NEW — docs/formula tooltips on top right (ⓘ icon). Hover shows the
   // formula verbatim; the whole card also carries the formula as a native
   // tooltip (`title`) so users can read it anywhere.
@@ -207,6 +214,7 @@ export const KPICard = ({
             accent={accent}
             muted={deltaMuted}
             mutedNote={deltaMutedNote}
+            suffix={deltaSuffix}
           />
           {prevValue != null && delta != null && (
             <span

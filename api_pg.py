@@ -6333,6 +6333,315 @@ def get_kpis(
 
     return _cached_dashboard_snapshot(_kpis_ck, date_to, _build, "kpis")
 
+
+# ── Retail customer engagement ----------------------------------------------
+# These buckets intentionally differ from the legacy Customers page lifecycle
+# constants below.  This is a recency view for the selected as-of date, not a
+# replacement for the global churn definitions used by existing workflows.
+RETAIL_ENGAGEMENT_BUCKETS = (
+    ("active", "Active", 0, 90),
+    ("cooling", "Cooling", 91, 180),
+    ("at_risk", "At Risk", 181, 270),
+    ("high_risk", "High Risk", 271, 365),
+    ("lapsed", "Lapsed", 366, None),
+)
+
+
+def _retail_engagement_bucket(days_since_purchase):
+    """Return the retail engagement bucket for an inclusive day boundary."""
+    days = int(days_since_purchase)
+    for key, label, low, high in RETAIL_ENGAGEMENT_BUCKETS:
+        if days >= low and (high is None or days <= high):
+            return key, label
+    # Negative values are possible for a future-dated source row. Keep the
+    # contract total and safe rather than silently dropping that customer.
+    return "active", "Active"
+
+
+def _retail_year_back(d):
+    """Shift an ISO date one calendar year back, clamping 29 February."""
+    value = date.fromisoformat(str(d)[:10])
+    try:
+        return value.replace(year=value.year - 1).isoformat()
+    except ValueError:
+        return value.replace(year=value.year - 1, day=28).isoformat()
+
+
+def _retail_customer_health_sql(as_of, prior_as_of, country=None, channel=None):
+    """Build current + prior aggregate customer-health cohorts in one scan.
+
+    The history CTE deliberately has no lower date bound: a short dashboard
+    window must still classify customers whose last purchase was 366+ days ago.
+    The per-customer aggregate deliberately computes both as-of dates from the
+    same materialized history: this avoids four full-history scans when the
+    Locations page asks for its selected and comparison periods at once.
+    """
+    country_filter = (" AND s.country IN (" + csv_to_sql(country) + ")") if country else ""
+    channel_filter = (" AND s.pos_location_name IN (" + csv_to_sql(channel) + ")") if channel else ""
+    as_of = str(as_of)[:10]
+    return """
+        WITH history AS (
+            SELECT COALESCE(oc.shopify_user_id::text, s.customer_id) AS customer_id,
+                   s.sale_date::date AS purchase_date,
+                   s.pos_location_name AS store,
+                   s.sale_kind,
+                   CASE WHEN s.sale_kind IN ('sale','order')
+                        THEN COALESCE(s.total_sales_kes, 0)::numeric
+                             - COALESCE(s.discounts_kes, 0)::numeric
+                        WHEN s.sale_kind = 'return'
+                        THEN -COALESCE(s.returns_kes, 0)::numeric
+                        ELSE 0 END AS revenue
+            FROM all_sales s
+            LEFT JOIN raw_odoo_customers oc
+                   ON oc.id::text = s.customer_id
+                  AND oc.shopify_user_id IS NOT NULL
+            WHERE s.sale_date::date <= '""" + as_of + """'::date
+              AND s.sale_kind IN ('sale','order','return')
+              AND s.customer_id IS NOT NULL
+              AND s.customer_id NOT IN ('None','null','')
+              AND """ + _not_walkin_pseudo_sql("s") + """
+              AND """ + BASE_FILTERS + country_filter + channel_filter + """
+        ),
+        per_customer AS (
+            SELECT customer_id,
+                   MAX(purchase_date) FILTER (
+                     WHERE sale_kind IN ('sale','order')
+                   ) AS current_purchase_date,
+                   (ARRAY_AGG(store ORDER BY purchase_date DESC, store DESC)
+                     FILTER (WHERE sale_kind IN ('sale','order')))[1] AS current_store,
+                   MAX(purchase_date) FILTER (
+                     WHERE sale_kind IN ('sale','order')
+                       AND purchase_date <= '""" + str(prior_as_of)[:10] + """'::date
+                   ) AS prior_purchase_date,
+                   (ARRAY_AGG(store ORDER BY purchase_date DESC, store DESC)
+                     FILTER (WHERE sale_kind IN ('sale','order')
+                       AND purchase_date <= '""" + str(prior_as_of)[:10] + """'::date))[1] AS prior_store,
+                   SUM(revenue) AS current_historical_revenue,
+                   SUM(revenue) FILTER (
+                     WHERE purchase_date <= '""" + str(prior_as_of)[:10] + """'::date
+                   ) AS prior_historical_revenue
+            FROM history
+            GROUP BY customer_id
+        ),
+        classified AS (
+            SELECT 'current' AS period, current_store AS store,
+                   ('""" + as_of + """'::date - current_purchase_date) AS days_since_purchase,
+                   COALESCE(current_historical_revenue, 0) AS historical_revenue
+            FROM per_customer
+            WHERE current_purchase_date IS NOT NULL
+            UNION ALL
+            SELECT 'prior_year' AS period, prior_store AS store,
+                   ('""" + str(prior_as_of)[:10] + """'::date - prior_purchase_date) AS days_since_purchase,
+                   COALESCE(prior_historical_revenue, 0) AS historical_revenue
+            FROM per_customer
+            WHERE prior_purchase_date IS NOT NULL
+        )
+        SELECT period,
+               CASE
+                 WHEN days_since_purchase BETWEEN 0 AND 90 THEN 'active'
+                 WHEN days_since_purchase BETWEEN 91 AND 180 THEN 'cooling'
+                 WHEN days_since_purchase BETWEEN 181 AND 270 THEN 'at_risk'
+                 WHEN days_since_purchase BETWEEN 271 AND 365 THEN 'high_risk'
+                 ELSE 'lapsed'
+               END AS status,
+               store,
+               COUNT(*) AS customer_count,
+               ROUND(SUM(historical_revenue), 0) AS revenue_at_risk
+        FROM classified
+        GROUP BY 1, 2, 3
+        ORDER BY 1, 2, 3
+    """
+
+
+def _retail_customer_health_period_sql(date_from, date_to, country=None, channel=None):
+    """Headline sales and identified-customer measures for a report window."""
+    where = build_filters(
+        date_from, date_to, country, channel,
+        extra="s.sale_kind IN ('sale','order') "
+              "AND s.customer_id IS NOT NULL "
+              "AND s.customer_id NOT IN ('None','null','') "
+              "AND " + _not_walkin_pseudo_sql("s"),
+    )
+    return """
+        SELECT
+          COUNT(DISTINCT COALESCE(oc.shopify_user_id::text, s.customer_id)) AS unique_customers,
+          COUNT(DISTINCT s.order_id) AS transactions,
+          ROUND(SUM(COALESCE(s.total_sales_kes, 0)::numeric
+                    - COALESCE(s.discounts_kes, 0)::numeric), 0) AS total_sales
+        FROM all_sales s
+        LEFT JOIN raw_odoo_customers oc
+               ON oc.id::text = s.customer_id
+              AND oc.shopify_user_id IS NOT NULL
+        WHERE """ + where
+
+
+def _retail_customer_health_payload(
+    date_from, date_to, country=None, channel=None, compare_from=None, compare_to=None
+):
+    """Compute the JSON-safe, aggregate-only retail engagement contract."""
+    as_of = str(date_to)[:10]
+    prior_as_of = str(compare_to or _retail_year_back(as_of))[:10]
+    cohort_rows = run_query(
+        _retail_customer_health_sql(as_of, prior_as_of, country, channel),
+        ttl=HEAVY_DASH_TTL,
+        date_to=as_of,
+    ) or []
+    current_rows = [row for row in cohort_rows if row.get("period") == "current"]
+    prior_rows = [row for row in cohort_rows if row.get("period") == "prior_year"]
+    current_period = (run_query(
+        _retail_customer_health_period_sql(date_from, date_to, country, channel),
+        ttl=smart_ttl(date_to),
+        date_to=date_to,
+    ) or [{}])[0]
+    prior_period = (run_query(
+        _retail_customer_health_period_sql(
+            compare_from or _retail_year_back(date_from),
+            compare_to or prior_as_of,
+            country,
+            channel,
+        ),
+        ttl=smart_ttl(prior_as_of),
+        date_to=prior_as_of,
+    ) or [{}])[0]
+    current_footfall = footfall_clean_rows(date_from, date_to, channel, country)
+    prior_footfall = footfall_clean_rows(
+        compare_from or _retail_year_back(date_from),
+        compare_to or prior_as_of,
+        channel,
+        country,
+    )
+
+    def _number(value):
+        return float(value or 0)
+
+    def _traffic(rows):
+        # A counter that failed the shared sensor-gap rule is deliberately not
+        # folded into the summary denominator. Returning zero conversion would
+        # make unavailable traffic read like weak retail performance.
+        valid = [
+            row for row in (rows or [])
+            if row.get("ff_counter_ok") is not False
+        ]
+        footfall = sum(_number(row.get("total_footfall")) for row in valid)
+        clean_orders = sum(_number(row.get("clean_orders")) for row in valid)
+        return {
+            "footfall": round(footfall) if valid else None,
+            "footfall_available": bool(valid),
+            "traffic_stores": len(valid),
+            "unavailable_traffic_stores": len(rows or []) - len(valid),
+            "conversion_rate": round(clean_orders * 100.0 / footfall, 2)
+            if footfall else None,
+        }
+
+    def _aggregate(rows):
+        by_status = {
+            key: {
+                "key": key,
+                "label": label,
+                "min_days": low,
+                "max_days": high,
+                "count": 0,
+                "revenue_at_risk": 0,
+                "stores": [],
+            }
+            for key, label, low, high in RETAIL_ENGAGEMENT_BUCKETS
+        }
+        for row in rows:
+            key = row.get("status")
+            if key not in by_status:
+                continue
+            item = by_status[key]
+            count = int(row.get("customer_count") or 0)
+            revenue = _number(row.get("revenue_at_risk"))
+            item["count"] += count
+            item["revenue_at_risk"] += revenue
+            item["stores"].append({
+                "store": row.get("store") or "Unknown",
+                "count": count,
+                "revenue_at_risk": revenue,
+            })
+        for item in by_status.values():
+            item["revenue_at_risk"] = round(item["revenue_at_risk"])
+            item["stores"].sort(key=lambda r: (-r["count"], r["store"]))
+        total = sum(item["count"] for item in by_status.values())
+        for item in by_status.values():
+            item["share"] = round(item["count"] * 100.0 / total, 2) if total else 0
+        return list(by_status.values()), total
+
+    cohorts, customer_base = _aggregate(current_rows)
+    prior_cohorts, prior_base = _aggregate(prior_rows)
+    prior_by_key = {row["key"]: row for row in prior_cohorts}
+    for item in cohorts:
+        previous = prior_by_key[item["key"]]
+        item["previous_count"] = previous["count"]
+        item["previous_share"] = previous["share"]
+        item["previous_revenue_at_risk"] = previous["revenue_at_risk"]
+        item["change_pct"] = (
+            round((item["count"] - previous["count"]) * 100.0 / previous["count"], 2)
+            if previous["count"] else None
+        )
+        item["store_count_reconciles"] = (
+            sum(row["count"] for row in item["stores"]) == item["count"]
+        )
+
+    return {
+        "scope": {
+            "date_from": str(date_from)[:10],
+            "date_to": as_of,
+            "country": country or "",
+            "channel": channel or "",
+            "comparison": {
+                "date_from": str(compare_from or _retail_year_back(date_from))[:10],
+                "date_to": prior_as_of,
+            },
+        },
+        "metrics": {
+            "unique_customers": int(current_period.get("unique_customers") or 0),
+            "previous_unique_customers": int(prior_period.get("unique_customers") or 0),
+            "transactions": int(current_period.get("transactions") or 0),
+            "previous_transactions": int(prior_period.get("transactions") or 0),
+            "total_sales": _number(current_period.get("total_sales")),
+            "previous_total_sales": _number(prior_period.get("total_sales")),
+            **_traffic(current_footfall),
+            **{
+                "previous_" + key: value
+                for key, value in _traffic(prior_footfall).items()
+            },
+        },
+        "customer_base": customer_base,
+        "previous_customer_base": prior_base,
+        "cohorts": cohorts,
+    }
+
+
+@app.get("/api/retail/customer-health")
+def get_retail_customer_health(
+    date_from: str = Query(default=str(date.today().replace(day=1))),
+    date_to: str = Query(default=str(date.today())),
+    country: str = Query(default=None),
+    channel: str = Query(default=None),
+    compare_from: str = Query(default=None),
+    compare_to: str = Query(default=None),
+):
+    snapshot_key = _dashboard_snapshot_key(
+        "retail-customer-health",
+        date_from,
+        date_to,
+        country=country,
+        channel=channel,
+        compare_from=compare_from,
+        compare_to=compare_to,
+    )
+    return _cached_dashboard_snapshot(
+        snapshot_key,
+        date_to,
+        lambda: _retail_customer_health_payload(
+            date_from, date_to, country, channel, compare_from, compare_to
+        ),
+        "retail customer health",
+    )
+
+
 @app.get("/api/kpis/customer-type-split")
 def get_kpis_customer_type_split(
     date_from: str = Query(default=str(date.today().replace(day=1))),
@@ -6682,7 +6991,7 @@ def get_inventory_summary(country: str = Query(default=None), locations: str = Q
         ],
     }
 
-def footfall_clean_rows(date_from, date_to, channel=None):
+def footfall_clean_rows(date_from, date_to, channel=None, country=None):
     """Per-store footfall×sales day-level rows with the ONE broken-counter rule
     applied (WS5/T503). Shared by /api/footfall AND the Stock Movement report's
     Conversion Rate column (/api/analytics/store-flow, T1304) so the two
@@ -6694,7 +7003,18 @@ def footfall_clean_rows(date_from, date_to, channel=None):
     # matches the renamed sensor spellings introduced 2026-06-07.
     sales_where = "s.sale_date BETWEEN '" + date_from + "' AND '" + date_to + "' AND " + BASE_FILTERS
     # Applied after the day-level FULL OUTER JOIN, on the canonical location.
-    loc_filter = (" WHERE loc IN (" + csv_to_sql(channel) + ")") if channel else ""
+    loc_filters = []
+    if channel:
+        loc_filters.append("loc IN (" + csv_to_sql(channel) + ")")
+    if country:
+        # Footfall has no country column. Resolve the selected store scope
+        # against the canonical sales master after sensor-name canonicalisation.
+        loc_filters.append(
+            "loc IN (SELECT s_scope.pos_location_name FROM all_sales s_scope "
+            "WHERE s_scope.country IN (" + csv_to_sql(country) + ") "
+            "GROUP BY s_scope.pos_location_name)"
+        )
+    loc_filter = (" WHERE " + " AND ".join(loc_filters)) if loc_filters else ""
     # Day-level join (footfall vs sales) so we can detect "sensor-gap" days —
     # days where a store made sales but the footfall counter reported zero —
     # and recompute a clean conversion that excludes those days. Top-level

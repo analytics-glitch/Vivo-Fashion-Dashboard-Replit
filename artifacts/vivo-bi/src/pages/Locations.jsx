@@ -15,7 +15,8 @@ import LocationsAttentionPanel from "@/components/LocationsAttentionPanel";
 import MonthlyTargetsTracker from "@/components/MonthlyTargetsTracker";
 import StockToSalesBySubcategory from "@/components/StockToSalesBySubcategory";
 import StoreHeatmap from "@/components/locations/StoreHeatmap";
-import { Storefront, ArrowsDownUp, ArrowUpRight, Warning, CaretDown, CaretRight, Footprints, Target, Coins, Stack, Tag } from "@phosphor-icons/react";
+import CustomerEngagementStatus, { retailEngagementKpis, useRetailCustomerHealth } from "@/components/CustomerEngagementStatus";
+import { Storefront, ArrowsDownUp, ArrowUpRight, Warning, CaretDown, CaretRight, Footprints, Target, Coins, Stack, Tag, UsersThree } from "@phosphor-icons/react";
 import { useAuth } from "@/lib/auth";
 
 // --- Footfall & Conversion table tuning ---------------------------------
@@ -102,6 +103,12 @@ const Locations = () => {
 
   // Shared KPI state — guarantees Total Sales/Orders/Units match Overview & CEO Report.
   const { kpis: rawKpis, prevKpis: rawKpisPrev, loading: kpisLoading, error: kpisError } = useKpis({ compare: true });
+  const {
+    health: customerHealth,
+    comparison: customerHealthComparison,
+    loading: customerHealthLoading,
+    error: customerHealthError,
+  } = useRetailCustomerHealth();
 
   const [rows, setRows] = useState([]);
   const [prevRows, setPrevRows] = useState([]);
@@ -459,6 +466,10 @@ const Locations = () => {
 
   const compareLbl = compareMode === "yesterday" ? "vs Yesterday" : compareMode === "last_month" ? "vs Last Month" : compareMode === "last_year" ? "vs Last Year" : null;
   const d = (cur, prev) => (cur != null && prev != null) ? pctDelta(cur, prev) : null;
+  const engagementKpis = useMemo(
+    () => retailEngagementKpis(customerHealth, customerHealthComparison),
+    [customerHealth, customerHealthComparison],
+  );
 
   // Data-quality outlier flagging on return-rate. Physical + online stores
   // whose return rate falls ≥ 2σ above the group mean OR ≥ 30% (structural
@@ -679,7 +690,53 @@ const Locations = () => {
               showDelta={compareMode !== "none"}
               action={{ label: "Sort by MSI", onClick: () => { setSortKey && setSortKey("msi"); document.querySelector('[data-testid="locations-grid"]')?.scrollIntoView({ behavior: "smooth" }); } }}
             />
+            <KPICard
+              small
+              testId="loc-kpi-footfall"
+              label="Footfall"
+              sub={customerHealthLoading ? "Loading traffic…" : engagementKpis?.footfall == null ? "Traffic unavailable" : "Clean-footfall stores only"}
+              value={customerHealthLoading ? "…" : engagementKpis?.footfall == null ? "—" : fmtNum(engagementKpis.footfall)}
+              delta={engagementKpis?.footfallDelta ?? null}
+              deltaLabel={compareLbl}
+              prevValue={compareMode !== "none" && engagementKpis?.previousFootfall != null ? fmtNum(engagementKpis.previousFootfall) : null}
+              showDelta={compareMode !== "none"}
+              icon={Footprints}
+              formula="Clean visitor count across stores with a reliable counter."
+            />
+            <KPICard
+              small
+              testId="loc-kpi-conversion"
+              label="Conversion Rate"
+              sub={customerHealthLoading ? "Loading traffic…" : engagementKpis?.conversion == null ? "Traffic unavailable" : "Clean orders ÷ clean footfall"}
+              value={customerHealthLoading ? "…" : engagementKpis?.conversion == null ? "—" : fmtPct(engagementKpis.conversion)}
+              delta={engagementKpis?.conversionDeltaPp ?? null}
+              deltaSuffix="pp"
+              deltaLabel={compareLbl}
+              prevValue={compareMode !== "none" && engagementKpis?.previousConversion != null ? fmtPct(engagementKpis.previousConversion) : null}
+              showDelta={compareMode !== "none"}
+              icon={Target}
+              formula="Clean orders divided by clean footfall. Unavailable when no reliable traffic denominator exists."
+            />
+            <KPICard
+              small
+              testId="loc-kpi-unique-customers"
+              label="Unique Customers"
+              sub="Identified customers in selected period"
+              value={customerHealthLoading ? "…" : fmtNum(engagementKpis?.uniqueCustomers || 0)}
+              delta={engagementKpis?.uniqueCustomersDelta ?? null}
+              deltaLabel={compareLbl}
+              prevValue={compareMode !== "none" && engagementKpis?.previousUniqueCustomers != null ? fmtNum(engagementKpis.previousUniqueCustomers) : null}
+              showDelta={compareMode !== "none"}
+              icon={UsersThree}
+              formula="Distinct real customer IDs, excluding anonymous and pseudo accounts."
+            />
           </div>
+
+          <CustomerEngagementStatus
+            health={customerHealth}
+            loading={customerHealthLoading}
+            error={customerHealthError}
+          />
 
           {/* Tab bar — one pill per report section, same style as the Sort-by row */}
           <div className="card-white p-3 flex items-center gap-2 flex-wrap" data-testid="locations-tab-bar">
