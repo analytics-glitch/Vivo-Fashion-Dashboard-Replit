@@ -2040,12 +2040,14 @@ const SizeDemandTab = React.lazy(() => import("./SizeDemand"));
 // NOOS (Never Out Of Stock) tracker — weeks of cover + store gaps for the
 // Odoo-flagged Tier 1 styles, so they get replenished BEFORE stocking out.
 const NoosTrackerTab = React.lazy(() => import("./NoosTracker"));
+const StoreStockRequestsTab = React.lazy(() => import("./StoreStockRequests"));
 
 const INV_TABS = [
   { id: "stock", label: "Stock on Hand", pageId: "inventory", el: null },
   { id: "velocity", label: "Velocity & Cover", pageId: "inventory", el: null },
   { id: "stuck", label: "Stuck & Declining", pageId: "inventory", el: null },
   { id: "noos", label: "NOOS Tracker", pageId: "inventory", el: NoosTrackerTab },
+  { id: "store-stock-requests", label: "Store Stock Requests", pageId: "store-stock-requests", el: StoreStockRequestsTab },
   { id: "replenishments", label: "Replenishments", pageId: "replenishments", el: ReplenishmentsTab },
   { id: "replenish-by-sku", label: "Replenish by Style/SKU", pageId: "replenish-by-item", el: ReplenishByItemTab },
   { id: "size-health", label: "Size Health", pageId: "size-health", el: SizeHealthTab },

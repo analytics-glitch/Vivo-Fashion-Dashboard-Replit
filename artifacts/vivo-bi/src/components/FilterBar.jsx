@@ -819,7 +819,9 @@ const FilterBar = () => {
             {ControlsInline}
           </div>
         </MobileFiltersSheet>
-        <DataUpdatedPill />
+        <div className="hidden sm:block shrink-0">
+          <DataUpdatedPill />
+        </div>
         <button
           type="button"
           onClick={handleShare}

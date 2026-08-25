@@ -966,14 +966,14 @@ _LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "quarter-
 
 DEFAULT_ROLE_PAGES = {
     "product_development": ["product-analysis", "range-mgmt", "catalogue", "gallery", "inventory", "size-health", "data-quality", "fabric", "exports", "production", "production-report", "style-tracker", "pd-flow", "product-workspace", "partner-brands", "sops", "central-tracker"] + _MERCH_PAGES,
-    "retail": ["store-flow", "overview", "exec-summary", "locations", "footfall", "store-profiling", "trend-analysis", "customers", "product-analysis", "gallery", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "exports", "partner-brands", "sops", "ask", "store-feedback"],
-    "warehouse": ["store-flow", "inventory", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "re-order", "allocations", "data-quality", "exports", "sops"],
-    "store_manager": ["overview", "store-flow", "locations", "footfall", "store-profiling", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "sops", "store-feedback"],
-    "leadership": _LEADERSHIP_PAGES,
+    "retail": ["store-flow", "overview", "exec-summary", "locations", "footfall", "store-profiling", "trend-analysis", "customers", "product-analysis", "gallery", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "exports", "partner-brands", "sops", "ask", "store-feedback", "store-stock-requests"],
+    "warehouse": ["store-flow", "inventory", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "re-order", "allocations", "data-quality", "exports", "sops", "store-stock-requests"],
+    "store_manager": ["overview", "store-flow", "locations", "footfall", "store-profiling", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "sops", "store-feedback", "store-stock-requests"],
+    "leadership": _LEADERSHIP_PAGES + ["store-stock-requests"],
     # SMT (Senior Management Team) — everything SLT (leadership) sees EXCEPT the
     # Finance Reports Suite and Day in Review. The /api/finance and
     # /api/day-review gates below also exclude "smt".
-    "smt": [p for p in _LEADERSHIP_PAGES if p not in ("finance", "margin", "day-review")],
+    "smt": [p for p in _LEADERSHIP_PAGES if p not in ("finance", "margin", "day-review")] + ["store-stock-requests"],
     # Production department — manufacturing board + report, style tracker, fabric warehouse view.
     "production": ["production", "production-report", "style-tracker", "pd-flow", "fabric", "quality", "sops"],
     # Fabric Warehouse department — fabric stock + general inventory.
@@ -1668,14 +1668,26 @@ def _destroy_session(token):
 
 
 def _user_dict(row):
-    return {
+    user = {
         "id": row["user_id"], "user_id": row["user_id"],
         "email": row["email"], "name": row["name"],
         "role": row["role"], "status": row["status"],
         "active": row["status"] == "active", "picture": None,
+        "pos_location_name": row.get("pos_location_name"),
         "extra_pages": list(row["extra_pages"]) if row.get("extra_pages") else [],
         "two_factor_enabled": bool(row.get("totp_enabled")),
     }
+    # Keep the session identity aligned with /api/auth/me. Store managers whose
+    # profile predates the explicit home-store field still receive a safe,
+    # sales-backed store scope from their canonical Vivo email.
+    if (user.get("role") == "store_manager"
+            and not (user.get("pos_location_name") or "").strip()):
+        derived = _derive_pos_from_email(user.get("email", ""))
+        if derived:
+            user["pos_location_name"] = derived
+    user["allowed_pages"] = _effective_pages_for_role(user.get("role"))
+    _apply_extra_pages(user)
+    return user
 
 
 def _user_for_session(token):
@@ -1688,7 +1700,8 @@ def _user_for_session(token):
         if cached and (now - cached[1]) < _SESSION_CACHE_TTL:
             return cached[0]
     rows = _users_exec(
-        "SELECT u.user_id, u.email, u.name, u.role, u.status, u.extra_pages "
+        "SELECT u.user_id, u.email, u.name, u.role, u.status, "
+        "u.pos_location_name, u.extra_pages "
         "FROM user_sessions s JOIN app_users u ON u.user_id = s.user_id "
         "WHERE s.session_token=%s AND s.expires_at > now()",
         (token,), fetch=True)
@@ -16334,7 +16347,7 @@ def _ibt_audit(consignment_id, action, reason, detail, request):
 
 
 def _ibt_reserved_units(pos_location, sku):
-    """Sum of IN-FLIGHT soft-reservations on (pos_location, sku) across IBT +
+    """Sum of IN-FLIGHT soft-reservations on a donor (pos_location, sku) across IBT +
     Replenishment — both 'active' pre-dispatch HOLDS and 'consumed' dispatched
     units whose stock has NOT yet been reflected in all_inventory.
 
@@ -16346,7 +16359,10 @@ def _ibt_reserved_units(pos_location, sku):
     scan-out to cover the extract lag); once it expires we stop subtracting so we
     do not double-penalise the donor after inventory has caught up, and the
     nightly sweep releases it. Best-effort; 0 on any error or before the ledger
-    exists."""
+    exists. Store-stock requests deliberately do not appear here: they reserve
+    central warehouse capacity for a destination store, not stock at an IBT
+    donor. Warehouse request capacity instead subtracts only warehouse-located
+    IBT reservations in the shared catalog/create formula."""
     _ensure_ibt_lifecycle_tables()
     try:
         rows = _users_exec(
@@ -16376,6 +16392,517 @@ def _ibt_donor_available(store, sku):
     except Exception:
         return -1
     return 0
+
+
+# ── Store stock requests ─────────────────────────────────────────────────────
+# This is deliberately a small, independent ledger rather than a field on
+# all_inventory.  Inventory snapshots are imported asynchronously; the ledger is
+# the authoritative short-lived promise made to a store while a warehouse picker
+# works the request.
+STORE_STOCK_REQUEST_HOLD_HOURS = 72
+STORE_STOCK_REQUEST_FULFILLED_HOLD_HOURS = _IBT_INFLIGHT_HOLD_HOURS
+_store_stock_request_ready = False
+
+
+def _ensure_store_stock_request_tables():
+    """Create the request ledger and the SKU rows used for row-level capacity locks."""
+    global _store_stock_request_ready
+    if _store_stock_request_ready:
+        return
+    # Catalog and mutation capacity calculations share the IBT reservation ledger.
+    # Ensure it exists before either path references transfer_reservations.
+    _ensure_ibt_lifecycle_tables()
+    _users_exec("""CREATE TABLE IF NOT EXISTS store_stock_request (
+        id BIGSERIAL PRIMARY KEY, store TEXT NOT NULL, date_from DATE NOT NULL,
+        date_to DATE NOT NULL, requested_by TEXT, requested_by_name TEXT, idempotency_key TEXT,
+        status TEXT NOT NULL DEFAULT 'OPEN', created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now())""")
+    _users_exec("""CREATE TABLE IF NOT EXISTS store_stock_request_line (
+        id BIGSERIAL PRIMARY KEY, request_id BIGINT NOT NULL REFERENCES store_stock_request(id),
+        sku TEXT NOT NULL, quantity INTEGER NOT NULL CHECK (quantity > 0),
+        actual_units INTEGER, transfer_ref TEXT, status TEXT NOT NULL DEFAULT 'OPEN',
+        expires_at TIMESTAMPTZ NOT NULL DEFAULT now() + interval '72 hours',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now())""")
+    _users_exec("ALTER TABLE store_stock_request ADD COLUMN IF NOT EXISTS requested_by_name TEXT")
+    _users_exec("""CREATE TABLE IF NOT EXISTS store_stock_request_history (
+        id BIGSERIAL PRIMARY KEY, line_id BIGINT NOT NULL REFERENCES store_stock_request_line(id),
+        action TEXT NOT NULL, from_status TEXT, to_status TEXT, actual_units INTEGER,
+        transfer_ref TEXT, acted_by TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT now())""")
+    _users_exec("CREATE TABLE IF NOT EXISTS store_stock_request_capacity_lock (sku TEXT PRIMARY KEY)")
+    _users_exec("""CREATE TABLE IF NOT EXISTS store_stock_request_idempotency (
+        store TEXT NOT NULL, idempotency_key TEXT NOT NULL, request_ids BIGINT[] NOT NULL DEFAULT '{}',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        PRIMARY KEY (store,idempotency_key))""")
+    _users_exec("CREATE UNIQUE INDEX IF NOT EXISTS ux_ssr_idempotency "
+                "ON store_stock_request(store,idempotency_key) WHERE idempotency_key IS NOT NULL")
+    _users_exec("CREATE UNIQUE INDEX IF NOT EXISTS ux_ssr_line_sku "
+                "ON store_stock_request_line(request_id,sku)")
+    _users_exec("CREATE INDEX IF NOT EXISTS ix_ssr_open_sku "
+                "ON store_stock_request_line(sku,expires_at) WHERE status IN ('OPEN','PICKING')")
+    _users_exec("CREATE INDEX IF NOT EXISTS ix_ssr_capacity_sku_v2 "
+                "ON store_stock_request_line(sku,expires_at) "
+                "WHERE status IN ('OPEN','PICKING','FULFILLED')")
+    _users_exec("CREATE INDEX IF NOT EXISTS ix_ssr_store_created "
+                "ON store_stock_request(store,created_at DESC)")
+    _store_stock_request_ready = True
+
+
+def _ssr_user(request, action="read"):
+    """Return (user, role, home store); page access is always checked server-side."""
+    from fastapi import HTTPException
+    u = getattr(getattr(request, "state", None), "user", None) or {}
+    role = u.get("role") or ""
+    pages = u.get("allowed_pages")
+    # Authentication middleware normally supplies allowed_pages.  Falling back to
+    # the effective defaults makes direct/internal calls retain the same policy.
+    if pages is None:
+        effective = dict(u)
+        effective["allowed_pages"] = _effective_pages_for_role(role)
+        _apply_extra_pages(effective)
+        pages = effective["allowed_pages"]
+    if "store-stock-requests" not in (pages or []):
+        raise HTTPException(status_code=403, detail="You do not have access to Store Stock Requests.")
+    home = (u.get("pos_location_name") or "").strip()
+    if role == "store_manager" and not home:
+        raise HTTPException(status_code=403, detail="Your account has no assigned home store.")
+    if action == "request" and role not in ("store_manager", "warehouse", "admin"):
+        raise HTTPException(status_code=403, detail="Your role is read-only for store stock requests.")
+    if action == "manage" and role not in ("warehouse", "admin"):
+        raise HTTPException(status_code=403, detail="Only warehouse or admin users can manage request picking.")
+    return u, role, home
+
+
+def _ssr_expire(cur):
+    """Expire promises exactly once and append an audit row while holding the tx."""
+    cur.execute("""WITH due AS (
+                     SELECT id,status AS from_status FROM store_stock_request_line
+                     WHERE status IN ('OPEN','PICKING') AND expires_at <= now() FOR UPDATE)
+                   UPDATE store_stock_request_line l SET status='EXPIRED', updated_at=now()
+                   FROM due WHERE l.id=due.id RETURNING l.id,l.request_id,due.from_status""")
+    affected = set()
+    for row in cur.fetchall():
+        affected.add(row["request_id"])
+        cur.execute("""INSERT INTO store_stock_request_history
+                       (line_id,action,from_status,to_status)
+                       VALUES (%s,'expire',%s,'EXPIRED')""", (row["id"], row["from_status"]))
+    for request_id in affected:
+        _ssr_recompute_header_status(cur, request_id)
+
+
+def _ssr_recompute_header_status(cur, request_id):
+    """Derive the header status from its lines; a mixed basket is never terminal."""
+    cur.execute("""SELECT COUNT(*) n,
+                   COUNT(*) FILTER (WHERE status='OPEN') open_n,
+                   COUNT(*) FILTER (WHERE status='PICKING') picking_n,
+                   COUNT(*) FILTER (WHERE status='FULFILLED') fulfilled_n,
+                   COUNT(*) FILTER (WHERE status='CANCELLED') cancelled_n,
+                   COUNT(*) FILTER (WHERE status='EXPIRED') expired_n
+                   FROM store_stock_request_line WHERE request_id=%s""", (request_id,))
+    r = dict(cur.fetchone() or {})
+    n = int(r.get("n") or 0)
+    if r.get("open_n"):
+        status = "OPEN"              # OPEN wins over a concurrently picked sibling.
+    elif r.get("picking_n"):
+        status = "PICKING"
+    elif n and int(r.get("fulfilled_n") or 0) == n:
+        status = "FULFILLED"
+    elif n and int(r.get("cancelled_n") or 0) == n:
+        status = "CANCELLED"
+    elif n and int(r.get("expired_n") or 0) == n:
+        status = "EXPIRED"
+    else:
+        status = "MIXED"
+    cur.execute("UPDATE store_stock_request SET status=%s,updated_at=now() WHERE id=%s",
+                (status, request_id))
+    return status
+
+
+def _ssr_actor(user):
+    """Stable audit identity plus display name across legacy auth payload shapes."""
+    user = user or {}
+    identity = user.get("user_id") or user.get("id") or user.get("sub") or user.get("email")
+    name = user.get("name") or user.get("full_name") or user.get("email") or identity
+    return identity, name
+
+
+def _ssr_available_capacity(warehouse_units, all_store_request_units, warehouse_ibt_units):
+    """Single capacity formula shared by request mutation tests and UI semantics."""
+    return max(0, int(warehouse_units or 0) - int(all_store_request_units or 0)
+               - int(warehouse_ibt_units or 0))
+
+
+def _ssr_capacity_units_sql(alias="l"):
+    """SQL expression for warehouse units still promised by request lines."""
+    return (f"SUM(CASE WHEN {alias}.status='FULFILLED' "
+            f"THEN COALESCE({alias}.actual_units,0) ELSE {alias}.quantity END)")
+
+
+def _ssr_request_object(cur, request_id):
+    cur.execute("""SELECT h.id,h.store,h.date_from,h.date_to,h.status,h.requested_by,h.requested_by_name,
+                   h.idempotency_key,h.created_at,h.updated_at,
+                   l.id AS line_id,l.sku,l.quantity,l.actual_units,l.transfer_ref,
+                   l.status AS line_status,l.expires_at,l.created_at AS line_created_at
+                   FROM store_stock_request h JOIN store_stock_request_line l ON l.request_id=h.id
+                   WHERE h.id=%s ORDER BY l.id""", (request_id,))
+    rows = [dict(x) for x in cur.fetchall()]
+    if not rows:
+        return None
+    h = {k: rows[0][k] for k in ("id", "store", "date_from", "date_to", "status",
+                                  "requested_by", "requested_by_name", "idempotency_key", "created_at", "updated_at")}
+    active_expiries = [r["expires_at"] for r in rows
+                       if r["line_status"] in ("OPEN", "PICKING") and r["expires_at"]]
+    h["expires_at"] = min(active_expiries, default=None)
+    h["lines"] = [{k: r[k] for k in ("line_id", "sku", "quantity", "actual_units",
+                                      "transfer_ref", "line_status", "expires_at", "line_created_at")}
+                  for r in rows]
+    line_ids = [r["line_id"] for r in rows]
+    cur.execute("""SELECT line_id,action,from_status,to_status,actual_units,transfer_ref,
+                   acted_by,created_at FROM store_stock_request_history
+                   WHERE line_id = ANY(%s) ORDER BY id""", (line_ids,))
+    history = {}
+    for event in cur.fetchall():
+        event = dict(event)
+        history.setdefault(event.pop("line_id"), []).append(event)
+    for line in h["lines"]:
+        line["history"] = history.get(line["line_id"], [])
+    return h
+
+
+@app.get("/api/store-stock-requests/catalog")
+async def store_stock_request_catalog(request: Request, date_from: str, date_to: str,
+                                      q: str = "", store: str = ""):
+    from fastapi import HTTPException
+    _ensure_store_stock_request_tables()
+    _, role, home = _ssr_user(request)
+    try:
+        df, dt = date.fromisoformat(date_from), date.fromisoformat(date_to)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="date_from and date_to must be ISO dates.")
+    if dt < df:
+        raise HTTPException(status_code=400, detail="date_to must be on or after date_from.")
+    scoped = home if role == "store_manager" else (store or "").strip()
+    if not scoped:
+        return {"store": None, "date_from": str(df), "date_to": str(dt),
+                "hold_hours": STORE_STOCK_REQUEST_HOLD_HOURS,
+                "can_request": role in ("store_manager", "warehouse", "admin"),
+                "can_manage": role in ("warehouse", "admin"), "rows": []}
+    with _users_tx() as cur:
+        _ssr_expire(cur)
+    # all values are bound: q is intentionally a literal search term, never SQL.
+    rows = _users_exec(f"""WITH sold AS (
+          SELECT variant_sku sku, SUM(net_quantity)::int units_sold FROM all_sales
+          WHERE pos_location_name=%s AND sale_kind IN ('sale','order')
+            AND sale_date >= %s AND sale_date <= %s GROUP BY variant_sku),
+        ss AS (SELECT sku,SUM(available)::int soh_store FROM all_inventory
+               WHERE pos_location_name=%s GROUP BY sku),
+        wh AS (SELECT sku,SUM(available)::int soh_warehouse FROM all_inventory
+               WHERE pos_location_name IN ({WAREHOUSE_LOCATIONS})
+                  AND pos_location_name NOT ILIKE '%%pipeline%%'
+                  AND pos_location_name NOT ILIKE '%%production%%'
+                  AND pos_location_name NOT ILIKE '%%online%%'
+                  AND pos_location_name NOT ILIKE '%%wholesale%%'
+                  AND pos_location_name NOT ILIKE '%%non-sellable%%'
+                  AND pos_location_name NOT ILIKE '%%holding%%'
+                  AND pos_location_name NOT ILIKE '%%retired%%' GROUP BY sku),
+        active_requests AS (SELECT l.sku,{_ssr_capacity_units_sql('l')}::int q
+                 FROM store_stock_request_line l JOIN store_stock_request h ON h.id=l.request_id
+                 WHERE l.status IN ('OPEN','PICKING','FULFILLED') AND l.expires_at>now()
+                 GROUP BY l.sku),
+        mine AS (SELECT l.sku,SUM(l.quantity)::int q,MAX(l.id) line_id
+                 FROM store_stock_request_line l JOIN store_stock_request h ON h.id=l.request_id
+                 WHERE h.store=%s AND l.status IN ('OPEN','PICKING') AND l.expires_at>now()
+                 GROUP BY l.sku),
+        ibt AS (SELECT sku,SUM(qty)::int q FROM transfer_reservations
+                WHERE status IN ('active','consumed') AND (expires_at IS NULL OR expires_at>now())
+                  AND pos_location IN ({WAREHOUSE_LOCATIONS})
+                  AND pos_location NOT ILIKE '%%pipeline%%'
+                  AND pos_location NOT ILIKE '%%production%%'
+                  AND pos_location NOT ILIKE '%%online%%'
+                  AND pos_location NOT ILIKE '%%wholesale%%'
+                  AND pos_location NOT ILIKE '%%non-sellable%%'
+                  AND pos_location NOT ILIKE '%%holding%%'
+                  AND pos_location NOT ILIKE '%%retired%%'
+                GROUP BY sku)
+        SELECT p.sku,p.barcode,COALESCE(NULLIF(p.product_name,''),p.style_name) product_name,
+          p.style_name,p.category,p.product_type,p.brand,p.size,p.color_print,
+          COALESCE(wb.bin,'') bin,COALESCE(sold.units_sold,0) units_sold,
+          COALESCE(ss.soh_store,0) soh_store,COALESCE(wh.soh_warehouse,0) soh_warehouse,
+          COALESCE(active_requests.q,0) reserved_store_requests,COALESCE(ibt.q,0) reserved_ibt,
+          GREATEST(COALESCE(wh.soh_warehouse,0)-COALESCE(active_requests.q,0)-COALESCE(ibt.q,0),0) available_to_request,
+          mine.line_id existing_open_line_id,COALESCE(mine.q,0) existing_open_qty
+        FROM all_products_clean p
+        LEFT JOIN sold ON sold.sku=p.sku LEFT JOIN ss ON ss.sku=p.sku LEFT JOIN wh ON wh.sku=p.sku
+        LEFT JOIN active_requests ON active_requests.sku=p.sku LEFT JOIN mine ON mine.sku=p.sku LEFT JOIN ibt ON ibt.sku=p.sku
+        LEFT JOIN warehouse_bins wb ON wb.barcode=p.barcode
+        WHERE p.sku IS NOT NULL AND p.sku<>'' AND COALESCE(wh.soh_warehouse,0)>0 AND
+          (%s='' OR p.sku ILIKE '%%'||%s||'%%' OR p.barcode ILIKE '%%'||%s||'%%'
+           OR p.style_name ILIKE '%%'||%s||'%%' OR p.product_name ILIKE '%%'||%s||'%%'
+           OR p.category ILIKE '%%'||%s||'%%' OR p.product_type ILIKE '%%'||%s||'%%'
+           OR p.brand ILIKE '%%'||%s||'%%' OR p.size ILIKE '%%'||%s||'%%' OR p.color_print ILIKE '%%'||%s||'%%')
+        ORDER BY units_sold DESC,p.sku LIMIT 1000""",
+        (scoped, str(df), str(dt), scoped, scoped, q, q, q, q, q, q, q, q, q, q), fetch=True) or []
+    return {"store": scoped, "date_from": str(df), "date_to": str(dt),
+            "hold_hours": STORE_STOCK_REQUEST_HOLD_HOURS,
+            "can_request": role in ("store_manager", "warehouse", "admin"),
+            "can_manage": role in ("warehouse", "admin"), "rows": rows}
+
+
+@app.get("/api/store-stock-requests/requests")
+async def store_stock_requests(request: Request, store: str = "", status: str = "", q: str = ""):
+    _ensure_store_stock_request_tables()
+    _, role, home = _ssr_user(request)
+    scoped = home if role == "store_manager" else (store or "").strip()
+    allowed_status = {"OPEN", "PICKING", "FULFILLED", "CANCELLED", "EXPIRED", "MIXED"}
+    if status and status.upper() not in allowed_status:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="Invalid status.")
+    with _users_tx() as cur:
+        _ssr_expire(cur)
+        clauses, params = ["(%s='' OR h.store=%s)", "(%s='' OR h.status=%s)",
+                           """(%s='' OR h.store ILIKE '%%'||%s||'%%' OR l.sku ILIKE '%%'||%s||'%%'
+                               OR p.barcode ILIKE '%%'||%s||'%%' OR p.product_name ILIKE '%%'||%s||'%%'
+                               OR p.style_name ILIKE '%%'||%s||'%%' OR p.category ILIKE '%%'||%s||'%%'
+                               OR p.product_type ILIKE '%%'||%s||'%%' OR p.brand ILIKE '%%'||%s||'%%'
+                               OR p.size ILIKE '%%'||%s||'%%' OR p.color_print ILIKE '%%'||%s||'%%')"""], \
+                          [scoped, scoped, status.upper(), status.upper()] + [q] * 11
+        cur.execute("""SELECT h.id,h.store,h.date_from,h.date_to,h.status,h.requested_by,h.requested_by_name,h.created_at,
+                       h.updated_at,l.id line_id,l.sku,l.quantity,l.actual_units,l.transfer_ref,
+                       l.status line_status,l.expires_at,p.barcode,p.product_name,p.style_name,p.category,
+                       p.product_type,p.brand,p.size,p.color_print,COALESCE(wb.bin,'') bin
+                       FROM store_stock_request h JOIN store_stock_request_line l ON l.request_id=h.id
+                       LEFT JOIN all_products_clean p ON p.sku=l.sku
+                       LEFT JOIN warehouse_bins wb ON wb.barcode=p.barcode WHERE """ +
+                    " AND ".join(clauses) + " ORDER BY h.created_at DESC,l.id", params)
+        grouped = {}
+        for r in cur.fetchall():
+            r = dict(r); hid = r["id"]
+            header = grouped.setdefault(hid, {k: r[k] for k in ("id","store","date_from","date_to","status",
+                                                        "requested_by","requested_by_name","created_at","updated_at")})
+            if r["line_status"] in ("OPEN", "PICKING") and r["expires_at"]:
+                header["expires_at"] = min(header.get("expires_at"), r["expires_at"]) if header.get("expires_at") else r["expires_at"]
+            header.setdefault("lines", []).append({
+                "id": r["line_id"], "line_id": r["line_id"], "sku": r["sku"],
+                "status": r["line_status"], "line_status": r["line_status"],
+                "requested_qty": r["quantity"], "quantity": r["quantity"],
+                **{k: r[k] for k in ("actual_units","transfer_ref","expires_at","barcode","product_name",
+                                      "style_name","category","product_type","brand","size","color_print","bin")}})
+        ids = [line["line_id"] for header in grouped.values() for line in header["lines"]]
+        histories = {}
+        if ids:
+            cur.execute("""SELECT line_id,action,from_status,to_status,actual_units,transfer_ref,
+                           acted_by,created_at FROM store_stock_request_history
+                           WHERE line_id=ANY(%s) ORDER BY id""", (ids,))
+            for event in cur.fetchall():
+                event = dict(event)
+                histories.setdefault(event.pop("line_id"), []).append(event)
+        for header in grouped.values():
+            for line in header["lines"]:
+                line["history"] = histories.get(line["line_id"], [])
+        cur.execute(f"""SELECT DISTINCT pos_location_name AS store FROM all_inventory
+                        WHERE pos_location_name NOT IN ({WAREHOUSE_LOCATIONS}) ORDER BY 1""")
+        stores = [r["store"] for r in cur.fetchall() if r.get("store")]
+    return {"scoped_store": scoped or None, "can_request": role in ("store_manager","warehouse","admin"),
+            "can_manage": role in ("warehouse","admin"), "stores": stores,
+            "hold_hours": STORE_STOCK_REQUEST_HOLD_HOURS, "requests": list(grouped.values())}
+
+
+@app.post("/api/store-stock-requests/requests")
+async def create_store_stock_request(request: Request):
+    from fastapi import HTTPException
+    _ensure_store_stock_request_tables()
+    user, role, home = _ssr_user(request, "request")
+    body = await request.json()
+    store = home if role == "store_manager" else (body.get("store") or "").strip()
+    if not store:
+        raise HTTPException(status_code=400, detail="A store is required.")
+    try:
+        df, dt = date.fromisoformat(body["date_from"]), date.fromisoformat(body["date_to"])
+    except (KeyError, TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="date_from and date_to must be ISO dates.")
+    if dt < df:
+        raise HTTPException(status_code=400, detail="date_to must be on or after date_from.")
+    raw_lines = body.get("lines")
+    if not isinstance(raw_lines, list) or not raw_lines:
+        raise HTTPException(status_code=400, detail="At least one line is required.")
+    lines = {}
+    for x in raw_lines:
+        sku = str(x.get("sku") or "").strip()
+        try: qty = int(x.get("quantity"))
+        except (TypeError, ValueError): qty = 0
+        if not sku or qty <= 0:
+            raise HTTPException(status_code=400, detail="Each line needs sku and quantity > 0.")
+        lines[sku] = lines.get(sku, 0) + qty
+    key = (body.get("idempotency_key") or "").strip() or None
+    with _users_tx() as cur:
+        _ssr_expire(cur)
+        if key:
+            # Claim the idempotency key before any SKU mutation. A concurrent
+            # replay blocks on the row, then reads the first transaction's
+            # completed request_ids instead of incrementing the lines twice.
+            cur.execute("""INSERT INTO store_stock_request_idempotency
+                           (store,idempotency_key,request_ids) VALUES (%s,%s,'{}')
+                           ON CONFLICT (store,idempotency_key) DO NOTHING
+                           RETURNING request_ids""", (store, key))
+            claimed = cur.fetchone()
+            if not claimed:
+                cur.execute("""SELECT request_ids FROM store_stock_request_idempotency
+                               WHERE store=%s AND idempotency_key=%s FOR UPDATE""",
+                            (store, key))
+                replay = cur.fetchone() or {}
+                replay_ids = list(replay.get("request_ids") or [])
+                replay_results = [_ssr_request_object(cur, i) for i in replay_ids]
+                replay_results = [x for x in replay_results if x]
+                return {"ok": True, "idempotent": True,
+                        "request": replay_results[0] if len(replay_results) == 1 else None,
+                        "requests": replay_results,
+                        "affected_request_ids": replay_ids}
+            cur.execute("SELECT id FROM store_stock_request WHERE store=%s AND idempotency_key=%s",
+                        (store, key))
+            old = cur.fetchone()
+            if old:
+                return {"ok": True, "idempotent": True, "request": _ssr_request_object(cur, old["id"])}
+        # Stable sorted lock order prevents deadlocks between concurrent baskets.
+        existing, new_lines = {}, {}
+        for sku in sorted(lines):
+            cur.execute("INSERT INTO store_stock_request_capacity_lock(sku) VALUES (%s) ON CONFLICT DO NOTHING", (sku,))
+            cur.execute("SELECT sku FROM store_stock_request_capacity_lock WHERE sku=%s FOR UPDATE", (sku,))
+            cur.execute(f"""SELECT COALESCE(SUM(available),0)::int q FROM all_inventory
+                            WHERE sku=%s AND pos_location_name IN ({WAREHOUSE_LOCATIONS})
+                              AND pos_location_name NOT ILIKE '%%pipeline%%' AND pos_location_name NOT ILIKE '%%production%%'
+                              AND pos_location_name NOT ILIKE '%%online%%' AND pos_location_name NOT ILIKE '%%wholesale%%'
+                              AND pos_location_name NOT ILIKE '%%non-sellable%%' AND pos_location_name NOT ILIKE '%%holding%%'
+                              AND pos_location_name NOT ILIKE '%%retired%%'""", (sku,))
+            wh = int((cur.fetchone() or {}).get("q") or 0)
+            cur.execute(f"""SELECT COALESCE({_ssr_capacity_units_sql('l')},0)::int q
+                            FROM store_stock_request_line l
+                            WHERE l.sku=%s AND l.status IN ('OPEN','PICKING','FULFILLED')
+                              AND l.expires_at>now()""", (sku,))
+            ours = int((cur.fetchone() or {}).get("q") or 0)
+            cur.execute("""SELECT COALESCE(SUM(qty),0)::int q FROM transfer_reservations
+                           WHERE sku=%s AND status IN ('active','consumed')
+                           AND pos_location IN (""" + WAREHOUSE_LOCATIONS + """)
+                           AND pos_location NOT ILIKE '%%pipeline%%'
+                           AND pos_location NOT ILIKE '%%production%%'
+                           AND pos_location NOT ILIKE '%%online%%'
+                           AND pos_location NOT ILIKE '%%wholesale%%'
+                           AND pos_location NOT ILIKE '%%non-sellable%%'
+                           AND pos_location NOT ILIKE '%%holding%%'
+                           AND pos_location NOT ILIKE '%%retired%%'
+                           AND (expires_at IS NULL OR expires_at>now())""", (sku,))
+            ibt = int((cur.fetchone() or {}).get("q") or 0)
+            # The capacity lock serializes this lookup with every other basket
+            # for the SKU, making duplicate same-store OPEN lines impossible.
+            cur.execute("""SELECT l.id,l.request_id,l.status FROM store_stock_request_line l
+                           JOIN store_stock_request h ON h.id=l.request_id
+                           WHERE h.store=%s AND l.sku=%s AND l.status IN ('OPEN','PICKING')
+                             AND l.expires_at>now() ORDER BY l.id LIMIT 1 FOR UPDATE""",
+                        (store, sku))
+            same_store = cur.fetchone()
+            if same_store and same_store["status"] == "PICKING":
+                raise HTTPException(status_code=409,
+                                    detail=f"{sku} is already being picked and cannot be amended.")
+            available = _ssr_available_capacity(wh, ours, ibt)
+            if available < lines[sku]:
+                raise HTTPException(status_code=409, detail={"error":"warehouse_shortage","sku":sku,
+                    "available":available,"requested":lines[sku],
+                    "message":f"Only {available} sellable warehouse unit(s) of {sku} remain."})
+            if same_store:
+                existing[sku] = dict(same_store)
+            else:
+                new_lines[sku] = lines[sku]
+        actor_id, actor_name = _ssr_actor(user)
+        affected_ids = set()
+        for sku, line in existing.items():
+            cur.execute("""UPDATE store_stock_request_line
+                           SET quantity=quantity+%s,expires_at=now()+interval '72 hours',updated_at=now()
+                           WHERE id=%s""", (lines[sku], line["id"]))
+            cur.execute("""INSERT INTO store_stock_request_history
+                           (line_id,action,from_status,to_status,acted_by)
+                           VALUES (%s,'increase','OPEN','OPEN',%s)""", (line["id"], actor_id))
+            affected_ids.add(line["request_id"])
+            _ssr_recompute_header_status(cur, line["request_id"])
+        if new_lines:
+            cur.execute("""INSERT INTO store_stock_request
+                           (store,date_from,date_to,requested_by,requested_by_name,idempotency_key)
+                           VALUES (%s,%s,%s,%s,%s,%s) RETURNING id""",
+                        (store, df, dt, actor_id, actor_name, key))
+            rid = cur.fetchone()["id"]
+            affected_ids.add(rid)
+        else:
+            rid = None
+        for sku, qty in new_lines.items():
+            cur.execute("""INSERT INTO store_stock_request_line(request_id,sku,quantity,expires_at)
+                           VALUES (%s,%s,%s,now()+interval '72 hours') RETURNING id""", (rid,sku,qty))
+            lid = cur.fetchone()["id"]
+            cur.execute("""INSERT INTO store_stock_request_history(line_id,action,to_status,acted_by)
+                           VALUES (%s,'create','OPEN',%s)""", (lid,actor_id))
+        if key:
+            cur.execute("""UPDATE store_stock_request_idempotency SET request_ids=%s
+                           WHERE store=%s AND idempotency_key=%s""",
+                        (sorted(affected_ids), store, key))
+        results = [_ssr_request_object(cur, i) for i in sorted(affected_ids)]
+    return {"ok": True, "idempotent": False, "request": results[0] if len(results) == 1 else None,
+            "requests": results, "affected_request_ids": sorted(affected_ids)}
+
+
+@app.patch("/api/store-stock-requests/lines/{line_id}")
+async def update_store_stock_request_line(line_id: int, request: Request):
+    from fastapi import HTTPException
+    _ensure_store_stock_request_tables()
+    body = await request.json()
+    action = (body.get("action") or "").lower()
+    if action not in ("cancel", "picking", "fulfill"):
+        raise HTTPException(status_code=400, detail="action must be cancel, picking, or fulfill.")
+    user, role, home = _ssr_user(request, "manage" if action in ("picking","fulfill") else "read")
+    with _users_tx() as cur:
+        _ssr_expire(cur)
+        cur.execute("""SELECT l.*,h.store,h.id request_id FROM store_stock_request_line l
+                       JOIN store_stock_request h ON h.id=l.request_id WHERE l.id=%s FOR UPDATE""", (line_id,))
+        row = cur.fetchone()
+        if not row: raise HTTPException(status_code=404, detail="Request line not found.")
+        row = dict(row)
+        if action == "cancel":
+            if role == "store_manager" and row["store"] != home:
+                raise HTTPException(status_code=403, detail="You can only cancel requests for your home store.")
+            if role not in ("store_manager","warehouse","admin"):
+                raise HTTPException(status_code=403, detail="Your role is read-only.")
+            if role == "store_manager" and row["status"] != "OPEN":
+                raise HTTPException(status_code=409,
+                                    detail="Store managers may cancel only OPEN request lines.")
+            target = "CANCELLED"
+        else:
+            target = "PICKING" if action == "picking" else "FULFILLED"
+        if row["status"] == target:
+            return {"ok": True, "idempotent": True, "line_id": line_id, "status": target}
+        if row["status"] not in ("OPEN","PICKING"):
+            raise HTTPException(status_code=409, detail=f"Line is already {row['status'].lower()}.")
+        if action == "picking" and row["status"] != "OPEN":
+            raise HTTPException(status_code=409, detail="Only an open line can start picking.")
+        if action == "fulfill" and row["status"] != "PICKING":
+            raise HTTPException(status_code=409, detail="Start picking before fulfilling this line.")
+        actual = None
+        if action == "fulfill":
+            try: actual = int(body.get("actual_units"))
+            except (TypeError, ValueError): raise HTTPException(status_code=400, detail="fulfill requires actual_units.")
+            if actual < 0 or actual > int(row["quantity"]):
+                raise HTTPException(status_code=400, detail="actual_units must be between 0 and requested quantity.")
+        cur.execute("""UPDATE store_stock_request_line
+                       SET status=%s,actual_units=COALESCE(%s,actual_units),
+                           transfer_ref=COALESCE(%s,transfer_ref),
+                           expires_at=CASE WHEN %s='FULFILLED'
+                             THEN now()+make_interval(hours => %s) ELSE expires_at END,
+                           updated_at=now()
+                       WHERE id=%s""",
+                    (target, actual, body.get("transfer_ref"), target,
+                     STORE_STOCK_REQUEST_FULFILLED_HOLD_HOURS, line_id))
+        cur.execute("""INSERT INTO store_stock_request_history
+                       (line_id,action,from_status,to_status,actual_units,transfer_ref,acted_by)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s)""",
+                    (line_id,action,row["status"],target,actual,body.get("transfer_ref"),
+                     _ssr_actor(user)[0]))
+        header_status = _ssr_recompute_header_status(cur, row["request_id"])
+    return {"ok": True, "idempotent": False, "line_id": line_id, "status": target,
+            "request_status": header_status, "actual_units": actual}
 
 
 def _ibt_proj_calibration():

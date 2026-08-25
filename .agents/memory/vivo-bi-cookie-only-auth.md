@@ -12,3 +12,4 @@ Staff-facing web SPAs (vivo-bi, vivo-crm, vivo-hr — all converted) authenticat
 - Client-IP decisions (rate limits, audit) must use the trusted-proxy contract: rightmost X-Forwarded-For entry, never the spoofable leftmost.
 - e2e specs authenticate via `addCookies` with `session_token`, not localStorage injection.
 - Staff login has brute-force protection (per-account lockout + per-IP throttle) — keep it when touching the login handler.
+- Server-enforced user scope attributes must be loaded into the resolved session identity itself. Enriching only the `/auth/me` response leaves every other API handler's request identity unaware of the scope.

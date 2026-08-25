@@ -258,7 +258,7 @@ function App() {
                 <Route path="/locations" element={<Navigate to="/retail?tab=locations" replace />} />
                 {/* Legacy pages merged into tabs — keep old URLs working */}
                 <Route path="/products" element={<Navigate to="/product-analysis" replace />} />
-                <Route path="/inventory" element={<ProtectedShell anyOfPageIds={["inventory", "replenishments", "replenish-by-item", "size-health"]}><Inventory /></ProtectedShell>} />
+                <Route path="/inventory" element={<ProtectedShell anyOfPageIds={["inventory", "replenishments", "replenish-by-item", "size-health", "store-stock-requests"]}><Inventory /></ProtectedShell>} />
                 <Route path="/velocity" element={<Navigate to="/inventory" replace />} />
                 <Route path="/size-health" element={<Navigate to="/inventory?tab=size-health" replace />} />
                 <Route path="/finance" element={<ProtectedShell pageId="finance"><Finance /></ProtectedShell>} />
