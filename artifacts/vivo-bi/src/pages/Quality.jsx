@@ -381,6 +381,46 @@ const Washing = () => {
   );
 };
 
+// Supervisor-captured defects and rework stay in the established Quality
+// experience as well as on the Production Capture tab. The source remains
+// clearly labelled so these observations are never confused with the Quality
+// sheet's historical aggregates above.
+const ExecutionQualityEvents = () => {
+  const [events, setEvents] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState(null);
+  const load = useCallback(async () => {
+    setLoading(true); setErr(null);
+    try {
+      const { data } = await api.get("/production-workspace/execution/events", {
+        params: { event_type: "qc_defect" }, forceFresh: true,
+      });
+      setEvents(data?.events || []);
+    } catch (e) {
+      setErr(e?.response?.data?.detail || e.message || "Could not load captured defects.");
+    } finally { setLoading(false); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+  return (
+    <Section title="Supervisor-captured QC defects & rework" icon={Warning}
+      controls={<button onClick={load} className="text-xs font-semibold text-indigo-700 hover:underline">Refresh</button>}>
+      {loading && <Loading />}
+      {err && <ErrorBox message={err} />}
+      {!loading && !err && events.length === 0 && (
+        <Empty message="No supervisor-captured QC defects yet. Use Production → Execution Capture to record one against an approved plan." />
+      )}
+      {!loading && !err && events.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[680px] text-left text-xs">
+            <thead className="border-b border-gray-100 text-gray-500"><tr><th className="px-2 py-2">Date</th><th className="px-2 py-2">Style / order</th><th className="px-2 py-2">Line</th><th className="px-2 py-2">Defect</th><th className="px-2 py-2">Qty</th><th className="px-2 py-2">Status</th></tr></thead>
+            <tbody>{events.slice(0, 30).map((event) => <tr className="border-b border-gray-100" key={event.id}><td className="px-2 py-2">{event.event_date}</td><td className="px-2 py-2 font-medium text-gray-800">{event.style_number || event.external_ref || event.production_order_ref || "—"}</td><td className="px-2 py-2">{event.line_name || "—"}</td><td className="px-2 py-2">{event.reason}</td><td className="px-2 py-2">{event.quantity ?? "—"}</td><td className="px-2 py-2 capitalize">{event.status}</td></tr>)}</tbody>
+          </table>
+        </div>
+      )}
+    </Section>
+  );
+};
+
 // ── Page root ─────────────────────────────────────────────────────────────────
 export default function Quality() {
   return (
@@ -403,6 +443,7 @@ export default function Quality() {
       {/* Sections */}
       <OverallRepairs />
       <RepairsByLine />
+      <ExecutionQualityEvents />
       <Complaints />
       <Washing />
     </div>

@@ -428,6 +428,16 @@ def _plan_detail_from_cur(cur, plan):
     )
     execution_references = cur.fetchall()
     cur.execute(
+        "SELECT * FROM production_workspace_execution_output "
+        "WHERE plan_version_id=%s ORDER BY capture_date DESC, id DESC LIMIT 200", (pid,),
+    )
+    execution_output = cur.fetchall()
+    cur.execute(
+        "SELECT * FROM production_workspace_execution_events "
+        "WHERE plan_version_id=%s ORDER BY event_date DESC, id DESC LIMIT 200", (pid,),
+    )
+    execution_events = cur.fetchall()
+    cur.execute(
         "SELECT * FROM production_workspace_workflow_revisions "
         "WHERE plan_version_id=%s ORDER BY revision_no", (pid,),
     )
@@ -441,6 +451,8 @@ def _plan_detail_from_cur(cur, plan):
         "capacity_inputs": _rows(capacity_inputs),
         "changeovers": _rows(changeovers),
         "execution_references": _rows(execution_references),
+        "execution_output": _rows(execution_output),
+        "execution_events": _rows(execution_events),
         "workflow_revisions": _rows(revisions),
     }
 
@@ -2258,6 +2270,1016 @@ def _execution_ref_create(plan_id: int, request: Request, body: dict):
         return _error("Could not create the execution reference", 500)
 
 
+# ── Execution capture ---------------------------------------------------------
+# These routes deliberately live beside the planning API, but execution data is
+# a separate append-friendly ledger.  Plans become the authorization boundary:
+# only approved/frozen plans can be captured, and no route here writes
+# stage_movements (the Odoo-backed tracker remains the stage source of truth).
+EXECUTION_CAPTURE_ROLES = VIEW_ROLES
+# Viewing an approved plan is intentionally wider than changing its execution
+# ledger. Production supervisors/admins own output and operational capture;
+# Quality users may add or resolve QC evidence only.
+EXECUTION_OUTPUT_ROLES = {"admin", "production"}
+EXECUTION_EVENT_WRITE_ROLES = {
+    "wip": {"admin", "production"},
+    "downtime": {"admin", "production"},
+    "attendance": {"admin", "production"},
+    "qc_defect": {"admin", "production", "quality", "fabric_quality_supervisor"},
+    "recovery": {"admin", "production"},
+}
+EXECUTION_EVENT_TYPES = {"wip", "downtime", "attendance", "qc_defect", "recovery"}
+EXECUTION_EVENT_STATUSES = {"open", "in_progress", "resolved", "excused", "closed"}
+
+
+class ExecutionBulkValidationError(Exception):
+    """Abort an in-flight bulk transaction without committing partial rows."""
+
+
+def _execution_date(value):
+    if value in (None, ""):
+        return None
+    try:
+        return date.fromisoformat(str(value)[:10])
+    except (TypeError, ValueError):
+        return None
+
+
+def _execution_number(value, field, *, required=False):
+    if value in (None, ""):
+        if required:
+            raise ValueError(f"{field} is required")
+        return 0.0
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{field} must be numeric")
+    if result < 0:
+        raise ValueError(f"{field} cannot be negative")
+    return result
+
+
+def _execution_context(cur, body, actor, *, assignment_required=False,
+                       event_type=None):
+    """Validate the immutable plan/context tuple used by every capture."""
+    try:
+        plan_id = int(body.get("plan_version_id"))
+    except (TypeError, ValueError):
+        return None, None, _error("plan_version_id is required", 400)
+    plan = _plan_from_cur(cur, plan_id, lock=True)
+    if not plan:
+        return None, None, _error(f"Plan {plan_id} not found", 404)
+    if plan["status"] not in ("approved", "frozen"):
+        return None, None, _error(
+            "Execution can only be captured against an approved or frozen plan.",
+            409, code="workspace_execution_plan_not_approved",
+        )
+    if actor["role"] == "production" and not _can_manage_plan(actor, plan):
+        cur.execute(
+            """
+            SELECT 1
+            FROM production_workspace_assignments a
+            JOIN production_workspace_operators o ON o.id=a.operator_id
+            WHERE a.plan_version_id=%s AND o.user_id=%s AND o.active
+            LIMIT 1
+            """,
+            (plan_id, actor["user_id"]),
+        )
+        if not cur.fetchone():
+            return None, None, _error(
+                "This capture user is not assigned to the approved plan.",
+                403, code="workspace_execution_assignment_required",
+            )
+    capture_date = _execution_date(body.get("capture_date") or body.get("event_date"))
+    if not capture_date:
+        return None, None, _error("A valid capture_date is required", 400)
+    if capture_date < plan["planned_start"] or capture_date > plan["planned_end"]:
+        return None, None, _error(
+            "The capture date is outside the approved plan dates.",
+            409, code="workspace_execution_plan_stale",
+        )
+    assignment = None
+    assignment_id = body.get("assignment_id")
+    if assignment_id not in (None, ""):
+        try:
+            assignment_id = int(assignment_id)
+        except (TypeError, ValueError):
+            return None, None, _error("assignment_id must be numeric", 400)
+        cur.execute(
+            """
+            SELECT a.*, o.user_id AS operator_user_id
+            FROM production_workspace_assignments a
+            LEFT JOIN production_workspace_operators o ON o.id=a.operator_id
+            WHERE a.id=%s AND a.plan_version_id=%s FOR UPDATE OF a
+            """,
+            (assignment_id, plan_id),
+        )
+        assignment = cur.fetchone()
+        if not assignment:
+            return None, None, _error(
+                "The assignment does not belong to this plan revision.",
+                409, code="workspace_execution_assignment_mismatch",
+            )
+    elif assignment_required:
+        return None, None, _error(
+            "Choose an approved line assignment before recording output.",
+            400, code="workspace_execution_assignment_required",
+        )
+    if assignment and plan.get("line_id") and assignment.get("line_id") \
+            and int(plan["line_id"]) != int(assignment["line_id"]):
+        return None, None, _error(
+            "The assignment line does not match the approved plan line.",
+            409, code="workspace_execution_scope_mismatch",
+        )
+    if actor["role"] == "production" and assignment and assignment.get("operator_user_id") \
+            and assignment["operator_user_id"] != actor["user_id"] \
+            and not _can_manage_plan(actor, plan):
+        return None, None, _error(
+            "Only the assigned operator or plan owner can capture this row.",
+            403, code="workspace_execution_assignment_required",
+        )
+    work_item_id = body.get("work_item_id") or plan["work_item_id"]
+    try:
+        work_item_id = int(work_item_id)
+    except (TypeError, ValueError):
+        return None, None, _error("work_item_id must be numeric", 400)
+    if work_item_id != int(plan["work_item_id"]):
+        return None, None, _error(
+            "Execution must belong to the plan's work item.",
+            409, code="workspace_execution_work_item_mismatch",
+        )
+    cur.execute(
+        """
+        SELECT wi.*, po.order_ref AS tracker_order_ref
+        FROM production_workspace_work_items wi
+        LEFT JOIN production_orders po ON po.order_ref=wi.production_order_ref
+        WHERE wi.id=%s
+        """,
+        (work_item_id,),
+    )
+    work_item = cur.fetchone()
+    if not work_item:
+        return None, None, _error("The plan work item was not found.", 404)
+    supplied_operation_id = body.get("operation_id")
+    if assignment and assignment.get("operation_id"):
+        if supplied_operation_id not in (None, "", assignment["operation_id"]):
+            try:
+                if int(supplied_operation_id) != int(assignment["operation_id"]):
+                    return None, None, _error(
+                        "The operation does not match the approved assignment.",
+                        409, code="workspace_execution_operation_mismatch",
+                    )
+            except (TypeError, ValueError):
+                return None, None, _error("operation_id must be numeric", 400)
+    elif supplied_operation_id not in (None, ""):
+        try:
+            supplied_operation_id = int(supplied_operation_id)
+        except (TypeError, ValueError):
+            return None, None, _error("operation_id must be numeric", 400)
+        cur.execute(
+            "SELECT id FROM production_workspace_operations "
+            "WHERE id=%s AND plan_version_id=%s",
+            (supplied_operation_id, plan_id),
+        )
+        if not cur.fetchone():
+            return None, None, _error(
+                "The operation does not belong to this approved plan.",
+                409, code="workspace_execution_operation_mismatch",
+            )
+    # Quality inspectors may capture a defect against an approved assignment,
+    # but they cannot create production output, downtime, WIP, or recovery.
+    if event_type == "qc_defect" and actor["role"] not in EXECUTION_EVENT_WRITE_ROLES[event_type]:
+        return None, None, _error("Only authorized quality or production users can capture QC.", 403)
+    return (plan, assignment, work_item, capture_date), None, None
+
+
+def _execution_record_context_values(body, plan, assignment, work_item):
+    operation_id = (assignment.get("operation_id") if assignment
+                    and assignment.get("operation_id") else body.get("operation_id"))
+    if operation_id not in (None, ""):
+        operation_id = int(operation_id)
+    return {
+        "plan_version_id": plan["id"],
+        "assignment_id": assignment["id"] if assignment else None,
+        "work_item_id": work_item["id"],
+        "production_order_ref": work_item.get("production_order_ref"),
+        "factory_id": plan["factory_id"],
+        "line_id": (assignment.get("line_id") if assignment and assignment.get("line_id")
+                    else plan.get("line_id")),
+        "shift_id": plan.get("shift_id"),
+        "operation_id": operation_id,
+    }
+
+
+def _execution_output_payload(body):
+    kind = str(body.get("capture_kind") or "").strip().lower()
+    if kind not in ("hourly", "shift"):
+        raise ValueError("capture_kind must be hourly or shift")
+    hour = body.get("hour_no")
+    if kind == "hourly":
+        if hour in (None, ""):
+            raise ValueError("hour_no is required for hourly capture")
+        try:
+            hour = int(hour)
+        except (TypeError, ValueError):
+            raise ValueError("hour_no must be an integer from 0 to 23")
+        if hour < 0 or hour > 23:
+            raise ValueError("hour_no must be an integer from 0 to 23")
+    else:
+        hour = None
+    planned = _execution_number(body.get("planned_qty"), "planned_qty", required=True)
+    good = _execution_number(body.get("good_qty"), "good_qty")
+    reject = _execution_number(body.get("reject_qty"), "reject_qty")
+    rework = _execution_number(body.get("rework_qty"), "rework_qty")
+    total = good + reject + rework
+    if planned <= 0:
+        raise ValueError("planned_qty must be greater than zero")
+    if total > planned:
+        raise ValueError("Good + reject + rework cannot exceed planned quantity")
+    key = str(body.get("capture_key") or "").strip()
+    if not key:
+        raise ValueError("capture_key is required for safe retry")
+    if len(key) > 180:
+        raise ValueError("capture_key is too long")
+    return {
+        "capture_kind": kind, "hour_no": hour, "capture_key": key,
+        "planned_qty": planned, "good_qty": good, "reject_qty": reject,
+        "rework_qty": rework, "comments": str(body.get("comments") or "").strip() or None,
+    }
+
+
+def _execution_output_response(row, *, idempotent=False):
+    result = {"record": _jsonable(row), "idempotent": bool(idempotent)}
+    return result
+
+
+def _execution_output_create(plan_id: int, request: Request, body: dict):
+    _ensure_schema()
+    denied = _require_role(request, EXECUTION_OUTPUT_ROLES, "Production output capture")
+    if denied:
+        return denied
+    reason = _reason(body)
+    if not reason:
+        return _error("reason is required for every execution capture")
+    actor = _actor(request)
+    try:
+        output = _execution_output_payload(body)
+    except ValueError as exc:
+        return _error(str(exc), 400)
+    # The path id and payload id must agree, avoiding a stale form writing to
+    # another plan after the user changes tabs.
+    if body.get("plan_version_id") not in (None, "", plan_id):
+        try:
+            if int(body["plan_version_id"]) != int(plan_id):
+                return _error("The plan path and payload do not match.", 409)
+        except (TypeError, ValueError):
+            return _error("plan_version_id must be numeric", 400)
+    body = dict(body)
+    body["plan_version_id"] = plan_id
+    try:
+        with _tx() as cur:
+            context, _, failure = _execution_context(
+                cur, body, actor, assignment_required=True,
+            )
+            if failure:
+                return failure
+            plan, assignment, work_item, capture_date = context
+            values = _execution_record_context_values(body, plan, assignment, work_item)
+            cur.execute(
+                "SELECT * FROM production_workspace_execution_output "
+                "WHERE capture_key=%s FOR UPDATE", (output["capture_key"],),
+            )
+            existing = cur.fetchone()
+            if existing:
+                comparable = (
+                    int(existing["plan_version_id"]) == int(values["plan_version_id"])
+                    and (existing["assignment_id"] or None) == values["assignment_id"]
+                    and str(existing["capture_kind"]) == output["capture_kind"]
+                    and str(existing["capture_date"]) == capture_date.isoformat()
+                    and (existing["hour_no"] or None) == output["hour_no"]
+                    and all(abs(float(existing[k] or 0) - output[k]) < 0.00001
+                            for k in ("planned_qty", "good_qty", "reject_qty", "rework_qty"))
+                )
+                if not comparable:
+                    return _error(
+                        "This capture key already belongs to different values. "
+                        "Use a new key for a correction.",
+                        409, code="workspace_execution_duplicate_conflict",
+                    )
+                return _execution_output_response(existing, idempotent=True)
+            cur.execute(
+                """
+                INSERT INTO production_workspace_execution_output
+                    (plan_version_id,assignment_id,work_item_id,production_order_ref,
+                     factory_id,line_id,shift_id,operation_id,capture_kind,capture_date,
+                     hour_no,capture_key,planned_qty,good_qty,reject_qty,rework_qty,
+                     comments,created_by,updated_by)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                RETURNING *
+                """,
+                (
+                    values["plan_version_id"], values["assignment_id"], values["work_item_id"],
+                    values["production_order_ref"], values["factory_id"], values["line_id"],
+                    values["shift_id"], values["operation_id"], output["capture_kind"],
+                    capture_date, output["hour_no"], output["capture_key"],
+                    output["planned_qty"], output["good_qty"], output["reject_qty"],
+                    output["rework_qty"], output["comments"], actor["user_id"],
+                    actor["user_id"],
+                ),
+            )
+            row = cur.fetchone()
+            audit = _audit(
+                cur, "execution_output", row["id"], "created", actor, reason,
+                after=row, request_id=_request_id(request),
+            )
+        result = _execution_output_response(row)
+        result["audit_event_id"] = audit["id"]
+        return result
+    except Exception as exc:
+        if "check constraint" in str(exc).lower():
+            return _error("Output quantities do not reconcile with planned quantity.", 400)
+        if "duplicate" in str(exc).lower() or "unique" in str(exc).lower():
+            return _error("This capture was submitted already. Refresh and retry.", 409,
+                          code="workspace_execution_duplicate_conflict")
+        log.exception("execution output create failed")
+        return _error("Could not save the output capture", 500)
+
+
+def _execution_output_update(output_id: int, request: Request, body: dict):
+    _ensure_schema()
+    denied = _require_role(request, EXECUTION_OUTPUT_ROLES, "Production output correction")
+    if denied:
+        return denied
+    reason = _reason(body)
+    expected = _expected(body)
+    if not reason or expected is None:
+        return _error("expected_version and reason are required for a correction")
+    actor = _actor(request)
+    try:
+        with _tx() as cur:
+            cur.execute(
+                "SELECT * FROM production_workspace_execution_output WHERE id=%s FOR UPDATE",
+                (output_id,),
+            )
+            before = cur.fetchone()
+            if not before:
+                return _error("Output capture not found", 404)
+            if expected != int(before["version_token"]):
+                return _version_error(expected, int(before["version_token"]))
+            context_body = {
+                "plan_version_id": before["plan_version_id"],
+                "work_item_id": before["work_item_id"],
+                "assignment_id": before["assignment_id"],
+                "capture_date": before["capture_date"],
+            }
+            context, _, failure = _execution_context(cur, context_body, actor)
+            if failure:
+                return failure
+            candidate = dict(before)
+            candidate.update(body)
+            candidate["planned_qty"] = body.get("planned_qty", before["planned_qty"])
+            candidate["good_qty"] = body.get("good_qty", before["good_qty"])
+            candidate["reject_qty"] = body.get("reject_qty", before["reject_qty"])
+            candidate["rework_qty"] = body.get("rework_qty", before["rework_qty"])
+            payload = _execution_output_payload({
+                **candidate, "capture_kind": before["capture_kind"],
+                "capture_key": before["capture_key"],
+            })
+            cur.execute(
+                """
+                UPDATE production_workspace_execution_output
+                SET planned_qty=%s,good_qty=%s,reject_qty=%s,rework_qty=%s,
+                    comments=%s,version_token=version_token+1,updated_by=%s,updated_at=now()
+                WHERE id=%s RETURNING *
+                """,
+                (payload["planned_qty"], payload["good_qty"], payload["reject_qty"],
+                 payload["rework_qty"], payload["comments"], actor["user_id"], output_id),
+            )
+            after = cur.fetchone()
+            audit = _audit(
+                cur, "execution_output", output_id, "corrected", actor, reason,
+                before=before, after=after, request_id=_request_id(request),
+            )
+        result = _execution_output_response(after)
+        result["audit_event_id"] = audit["id"]
+        return result
+    except ValueError as exc:
+        return _error(str(exc), 400)
+    except Exception:
+        log.exception("execution output correction failed")
+        return _error("Could not save the output correction", 500)
+
+
+def _execution_outputs(request: Request, capture_date=None, plan_version_id=None):
+    _ensure_schema()
+    denied = _require_role(request, EXECUTION_CAPTURE_ROLES, "Production execution viewing")
+    if denied:
+        return denied
+    clauses, params = [], []
+    if capture_date and _execution_date(capture_date):
+        clauses.append("o.capture_date=%s")
+        params.append(_execution_date(capture_date))
+    if plan_version_id:
+        clauses.append("o.plan_version_id=%s")
+        params.append(plan_version_id)
+    where = " WHERE " + " AND ".join(clauses) if clauses else ""
+    rows = _db(
+        f"""
+        SELECT o.*,f.name AS factory_name,l.name AS line_name,sh.name AS shift_name,
+               wi.external_ref,wi.style_number,po.product_name AS order_style_name,
+               op.name AS operation_name
+        FROM production_workspace_execution_output o
+        JOIN production_workspace_factories f ON f.id=o.factory_id
+        LEFT JOIN production_workspace_lines l ON l.id=o.line_id
+        LEFT JOIN production_workspace_shifts sh ON sh.id=o.shift_id
+        JOIN production_workspace_work_items wi ON wi.id=o.work_item_id
+        LEFT JOIN production_orders po ON po.order_ref=o.production_order_ref
+        LEFT JOIN production_workspace_operations op ON op.id=o.operation_id
+        {where}
+        ORDER BY o.capture_date DESC,o.capture_kind,o.hour_no NULLS LAST,o.id DESC
+        LIMIT 500
+        """,
+        params, fetch=True,
+    )
+    return {"output": _rows(rows)}
+
+
+def _execution_worklist(request: Request, capture_date=None):
+    _ensure_schema()
+    denied = _require_role(request, EXECUTION_CAPTURE_ROLES, "Production execution viewing")
+    if denied:
+        return denied
+    actor = _actor(request)
+    day = _execution_date(capture_date) or date.today()
+    rows = _db(
+        """
+        SELECT p.id AS plan_version_id,p.version_no,p.status,p.planned_start,p.planned_end,
+               p.planned_qty,p.factory_id,f.code AS factory_code,f.name AS factory_name,
+               p.line_id,l.code AS line_code,l.name AS line_name,
+               p.shift_id,sh.code AS shift_code,sh.name AS shift_name,
+               wi.id AS work_item_id,wi.external_ref,wi.style_number,wi.description,
+               wi.production_order_ref,po.product_name AS order_style_name,
+               a.id AS assignment_id,a.assignment_role,a.planned_minutes,
+               a.operation_id,op.operation_code,op.name AS operation_name,
+               a.operator_id,worker.display_name AS operator_name,
+               COALESCE(outp.output_qty,0) AS captured_qty,
+               COALESCE(outp.capture_count,0) AS capture_count
+        FROM production_workspace_plan_versions p
+        JOIN production_workspace_factories f ON f.id=p.factory_id
+        LEFT JOIN production_workspace_lines l ON l.id=p.line_id
+        LEFT JOIN production_workspace_shifts sh ON sh.id=p.shift_id
+        JOIN production_workspace_work_items wi ON wi.id=p.work_item_id
+        LEFT JOIN production_orders po ON po.order_ref=wi.production_order_ref
+        JOIN production_workspace_assignments a ON a.plan_version_id=p.id
+        LEFT JOIN production_workspace_operators worker ON worker.id=a.operator_id
+        LEFT JOIN production_workspace_operations op ON op.id=a.operation_id
+        LEFT JOIN LATERAL (
+            SELECT SUM(total_qty) AS output_qty, COUNT(*) AS capture_count
+            FROM production_workspace_execution_output o
+            WHERE o.plan_version_id=p.id AND o.capture_date=%s
+        ) outp ON TRUE
+        WHERE p.status IN ('approved','frozen')
+          AND %s BETWEEN p.planned_start AND p.planned_end
+          AND (
+            %s <> 'production'
+            OR p.owner_user_id=%s
+            OR EXISTS (
+              SELECT 1 FROM production_workspace_assignments ua
+              JOIN production_workspace_operators uo ON uo.id=ua.operator_id
+              WHERE ua.plan_version_id=p.id AND uo.user_id=%s AND uo.active
+            )
+          )
+        ORDER BY p.planned_start,p.id,a.id
+        """,
+        (day, day, actor["role"], actor["user_id"], actor["user_id"]), fetch=True,
+    )
+    return {
+        "schema_version": WORKSPACE_SCHEMA_VERSION,
+        "capture_date": day.isoformat(),
+        "state": "ready" if rows else "missing_plan",
+        "message": None if rows else "No approved production assignment is scheduled for this date.",
+        "worklist": _rows(rows),
+    }
+
+
+def _execution_events(request: Request, event_type=None, plan_version_id=None,
+                      event_date=None):
+    _ensure_schema()
+    denied = _require_role(request, EXECUTION_CAPTURE_ROLES, "Production execution viewing")
+    if denied:
+        return denied
+    clauses, params = [], []
+    if event_type:
+        if event_type not in EXECUTION_EVENT_TYPES:
+            return _error("Unknown execution event type", 400)
+        clauses.append("e.event_type=%s")
+        params.append(event_type)
+    if plan_version_id:
+        clauses.append("e.plan_version_id=%s")
+        params.append(plan_version_id)
+    if event_date and _execution_date(event_date):
+        clauses.append("e.event_date=%s")
+        params.append(_execution_date(event_date))
+    where = " WHERE " + " AND ".join(clauses) if clauses else ""
+    rows = _db(
+        f"""
+        SELECT e.*,f.name AS factory_name,l.name AS line_name,sh.name AS shift_name,
+               wi.external_ref,wi.style_number,po.product_name AS order_style_name,
+               op.name AS operation_name
+        FROM production_workspace_execution_events e
+        JOIN production_workspace_factories f ON f.id=e.factory_id
+        LEFT JOIN production_workspace_lines l ON l.id=e.line_id
+        LEFT JOIN production_workspace_shifts sh ON sh.id=e.shift_id
+        JOIN production_workspace_work_items wi ON wi.id=e.work_item_id
+        LEFT JOIN production_orders po ON po.order_ref=e.production_order_ref
+        LEFT JOIN production_workspace_operations op ON op.id=e.operation_id
+        {where}
+        ORDER BY e.event_date DESC,e.created_at DESC,e.id DESC LIMIT 500
+        """,
+        params, fetch=True,
+    )
+    return {"events": _rows(rows), "event_type": event_type}
+
+
+def _execution_event_create(request: Request, body: dict):
+    _ensure_schema()
+    event_type = str(body.get("event_type") or "").strip().lower()
+    if event_type not in EXECUTION_EVENT_TYPES:
+        return _error("event_type must be wip, downtime, attendance, qc_defect or recovery")
+    denied = _require_role(request, EXECUTION_EVENT_WRITE_ROLES[event_type],
+                           f"Production {event_type} capture")
+    if denied:
+        return denied
+    reason = _reason(body)
+    event_key = str(body.get("event_key") or "").strip()
+    if not reason or not event_key:
+        return _error("event_key and reason are required for safe retry")
+    if event_type == "downtime" and (
+            not str(body.get("cause") or "").strip()
+            or not str(body.get("action") or "").strip()):
+        return _error("cause and action are required for downtime")
+    if event_type == "recovery" and not str(body.get("action") or "").strip():
+        return _error("action is required for recovery")
+    if event_type == "wip" and (
+            not body.get("from_stage") or not body.get("to_stage")
+            or not body.get("stage_movement_id")):
+        return _error(
+            "from_stage, to_stage and an existing tracker stage_movement_id are required for WIP"
+        )
+    if len(event_key) > 180:
+        return _error("event_key is too long")
+    actor = _actor(request)
+    try:
+        quantity = None if body.get("quantity") in (None, "") else _execution_number(body["quantity"], "quantity")
+        duration = None if body.get("duration_minutes") in (None, "") else _execution_number(body["duration_minutes"], "duration_minutes")
+    except ValueError as exc:
+        return _error(str(exc), 400)
+    body = dict(body)
+    body["event_date"] = body.get("event_date") or body.get("capture_date")
+    try:
+        with _tx() as cur:
+            context, _, failure = _execution_context(
+                cur, body, actor, event_type=event_type,
+            )
+            if failure:
+                return failure
+            plan, assignment, work_item, event_date = context
+            if body.get("from_stage") and body.get("to_stage"):
+                cur.execute(
+                    "SELECT allowed_next FROM production_stages WHERE stage_key=%s",
+                    (body["from_stage"],),
+                )
+                stage = cur.fetchone()
+                if not stage or body["to_stage"] not in (stage["allowed_next"] or []):
+                    return _error(
+                        "The WIP transition is not an allowed production stage move.",
+                        409, code="workspace_execution_invalid_stage_transition",
+                    )
+            movement_id = body.get("stage_movement_id")
+            if movement_id:
+                cur.execute(
+                    """
+                    SELECT id FROM stage_movements
+                    WHERE id=%s AND order_ref=%s
+                      AND (%s IS NULL OR from_stage=%s)
+                      AND (%s IS NULL OR to_stage=%s)
+                    """,
+                    (movement_id, work_item.get("production_order_ref"),
+                     body.get("from_stage"), body.get("from_stage"),
+                     body.get("to_stage"), body.get("to_stage")),
+                )
+                if not cur.fetchone():
+                    return _error(
+                        "The linked stage movement does not match this order and WIP event.",
+                        409, code="workspace_execution_movement_mismatch",
+                    )
+            values = _execution_record_context_values(body, plan, assignment, work_item)
+            cur.execute(
+                "SELECT * FROM production_workspace_execution_events "
+                "WHERE event_key=%s FOR UPDATE", (event_key,),
+            )
+            existing = cur.fetchone()
+            if existing:
+                effective_owner = body.get("owner_user_id") or actor["user_id"]
+                comparable = (
+                    existing["event_type"] == event_type
+                    and int(existing["plan_version_id"]) == int(plan["id"])
+                    and (existing["assignment_id"] or None) == values["assignment_id"]
+                    and int(existing["work_item_id"]) == int(values["work_item_id"])
+                    and (existing["operation_id"] or None) == (values["operation_id"] or None)
+                    and str(existing["event_date"]) == event_date.isoformat()
+                    and existing["from_stage"] == body.get("from_stage")
+                    and existing["to_stage"] == body.get("to_stage")
+                    and (existing["stage_movement_id"] or None) == (movement_id or None)
+                    and abs(float(existing["quantity"] or 0) - float(quantity or 0)) < 0.00001
+                    and abs(float(existing["duration_minutes"] or 0) - float(duration or 0)) < 0.00001
+                    and (existing["reason"] or "") == reason
+                    and (existing["cause"] or "") == (body.get("cause") or "")
+                    and (existing["action"] or "") == (body.get("action") or "")
+                    and (existing["owner_user_id"] or "") == effective_owner
+                    and existing["status"] == (body.get("status") or "open").strip().lower()
+                    and (existing["evidence_ref"] or "") == (body.get("evidence_ref") or "")
+                    and (existing["notes"] or "") == (body.get("notes") or "")
+                )
+                if not comparable:
+                    return _error(
+                        "This event key already belongs to different values. "
+                        "Use a new key for a distinct event.",
+                        409, code="workspace_execution_duplicate_conflict",
+                    )
+                return {"record": _jsonable(existing), "idempotent": True}
+            status = str(body.get("status") or "open").strip().lower()
+            if status not in EXECUTION_EVENT_STATUSES:
+                return _error("Unknown event status", 400)
+            cur.execute(
+                """
+                INSERT INTO production_workspace_execution_events
+                    (plan_version_id,assignment_id,work_item_id,production_order_ref,
+                     factory_id,line_id,shift_id,operation_id,event_type,event_date,
+                     event_key,from_stage,to_stage,stage_movement_id,quantity,
+                     duration_minutes,reason,cause,action,owner_user_id,status,
+                     evidence_ref,notes,created_by,updated_by)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                        %s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                RETURNING *
+                """,
+                (
+                    values["plan_version_id"], values["assignment_id"], values["work_item_id"],
+                    values["production_order_ref"], values["factory_id"], values["line_id"],
+                    values["shift_id"], values["operation_id"], event_type, event_date,
+                    event_key, body.get("from_stage"), body.get("to_stage"), movement_id,
+                    quantity, duration, reason, body.get("cause"), body.get("action"),
+                    body.get("owner_user_id") or actor["user_id"], status,
+                    body.get("evidence_ref"), body.get("notes"), actor["user_id"],
+                    actor["user_id"],
+                ),
+            )
+            row = cur.fetchone()
+            audit = _audit(
+                cur, "execution_event", row["id"], "created", actor, reason,
+                after=row, request_id=_request_id(request),
+            )
+        return {"record": _jsonable(row), "idempotent": False,
+                "audit_event_id": audit["id"]}
+    except Exception as exc:
+        if "check constraint" in str(exc).lower():
+            return _error("The event details are not valid for this event type.", 400)
+        if "duplicate" in str(exc).lower() or "unique" in str(exc).lower():
+            return _error("This event was submitted already. Refresh and retry.", 409,
+                          code="workspace_execution_duplicate_conflict")
+        log.exception("execution event create failed")
+        return _error("Could not save the execution event", 500)
+
+
+def _execution_event_update(event_id: int, request: Request, body: dict):
+    _ensure_schema()
+    # The existing event tells us which narrowly-scoped write role is required.
+    denied = _require_role(request, EXECUTION_CAPTURE_ROLES, "Production execution correction")
+    if denied:
+        return denied
+    reason = _reason(body)
+    expected = _expected(body)
+    if not reason or expected is None:
+        return _error("expected_version and reason are required for an event update")
+    status = str(body.get("status") or "").strip().lower()
+    if status not in EXECUTION_EVENT_STATUSES:
+        return _error("A valid status is required")
+    actor = _actor(request)
+    try:
+        with _tx() as cur:
+            cur.execute(
+                "SELECT * FROM production_workspace_execution_events WHERE id=%s FOR UPDATE",
+                (event_id,),
+            )
+            before = cur.fetchone()
+            if not before:
+                return _error("Execution event not found", 404)
+            if actor["role"] not in EXECUTION_EVENT_WRITE_ROLES[before["event_type"]]:
+                return _error("This role cannot update that execution event type.", 403)
+            if expected != int(before["version_token"]):
+                return _version_error(expected, int(before["version_token"]))
+            context_body = {
+                "plan_version_id": before["plan_version_id"],
+                "work_item_id": before["work_item_id"],
+                "assignment_id": before["assignment_id"],
+                "event_date": before["event_date"],
+            }
+            _, _, failure = _execution_context(
+                cur, context_body, actor, event_type=before["event_type"],
+            )
+            if failure:
+                return failure
+            cur.execute(
+                """
+                UPDATE production_workspace_execution_events
+                SET status=%s,action=COALESCE(%s,action),notes=COALESCE(%s,notes),
+                    owner_user_id=COALESCE(%s,owner_user_id),
+                    evidence_ref=COALESCE(%s,evidence_ref),
+                    version_token=version_token+1,updated_by=%s,updated_at=now()
+                WHERE id=%s RETURNING *
+                """,
+                (status, body.get("action"), body.get("notes"),
+                 body.get("owner_user_id"), body.get("evidence_ref"),
+                 actor["user_id"], event_id),
+            )
+            after = cur.fetchone()
+            audit = _audit(
+                cur, "execution_event", event_id, "updated", actor, reason,
+                before=before, after=after, request_id=_request_id(request),
+            )
+        return {"record": _jsonable(after), "idempotent": False,
+                "audit_event_id": audit["id"]}
+    except Exception:
+        log.exception("execution event update failed")
+        return _error("Could not update the execution event", 500)
+
+
+def _execution_summary(request: Request, capture_date=None):
+    worklist = _execution_worklist(request, capture_date)
+    if isinstance(worklist, JSONResponse):
+        return worklist
+    day = worklist["capture_date"]
+    rows = _db(
+        """
+        SELECT
+          COALESCE(SUM(good_qty),0) AS good_qty,
+          COALESCE(SUM(reject_qty),0) AS reject_qty,
+          COALESCE(SUM(rework_qty),0) AS rework_qty,
+          COUNT(*) AS output_entries
+        FROM production_workspace_execution_output
+        WHERE capture_date=%s
+        """, (day,), fetch=True,
+    )
+    counts = _db(
+        "SELECT event_type,COUNT(*) AS count FROM production_workspace_execution_events "
+        "WHERE event_date=%s GROUP BY event_type ORDER BY event_type",
+        (day,), fetch=True,
+    )
+    summary = dict(rows[0]) if rows else {}
+    summary["events"] = _rows(counts)
+    return {"capture_date": day, "state": worklist["state"], "summary": _jsonable(summary)}
+
+
+def _execution_bulk_rows(body):
+    rows = body.get("rows") if isinstance(body, dict) else None
+    if isinstance(rows, list):
+        return rows
+    text = str((body or {}).get("csv") or "").strip()
+    if not text:
+        return []
+    return list(csv.DictReader(io.StringIO(text)))
+
+
+def _execution_bulk_preview(request: Request, body: dict):
+    _ensure_schema()
+    denied = _require_role(request, EXECUTION_OUTPUT_ROLES, "Production output bulk capture")
+    if denied:
+        return denied
+    rows = _execution_bulk_rows(body)
+    if not rows:
+        return _error("Upload at least one output row to preview.", 400)
+    if len(rows) > 1000:
+        return _error("A single execution import is limited to 1,000 rows.", 400)
+    actor = _actor(request)
+    results = []
+    seen = set()
+    with _tx() as cur:
+        for index, raw in enumerate(rows, start=1):
+            row = dict(raw or {})
+            errors = []
+            try:
+                plan_id = int(row.get("plan_version_id"))
+                row["plan_version_id"] = plan_id
+            except (TypeError, ValueError):
+                errors.append("plan_version_id is required")
+            try:
+                if not errors:
+                    context, _, failure = _execution_context(
+                        cur, row, actor, assignment_required=True,
+                    )
+                    if failure:
+                        errors.append(failure.body.decode("utf-8") if hasattr(failure, "body") else "Invalid plan context")
+            except Exception as exc:
+                errors.append(str(exc))
+            try:
+                payload = _execution_output_payload(row)
+            except ValueError as exc:
+                payload = None
+                errors.append(str(exc))
+            key = str(row.get("capture_key") or "").strip()
+            if key in seen:
+                errors.append("duplicate capture_key in this batch")
+            seen.add(key)
+            if key:
+                cur.execute("SELECT 1 FROM production_workspace_execution_output WHERE capture_key=%s", (key,))
+                if cur.fetchone():
+                    errors.append("capture_key already exists; retry the same row or use a correction")
+            results.append({
+                "row": index, "capture_key": key, "values": row,
+                "valid": not errors, "errors": errors,
+            })
+    return {
+        "batch_key": str(body.get("batch_key") or ""),
+        "columns": [
+            "plan_version_id", "assignment_id", "capture_kind", "capture_date",
+            "hour_no", "planned_qty", "good_qty", "reject_qty", "rework_qty",
+            "capture_key", "comments", "reason",
+        ],
+        "rows": results, "row_count": len(results),
+        "valid": all(r["valid"] for r in results),
+    }
+
+
+def _execution_bulk_commit(request: Request, body: dict):
+    _ensure_schema()
+    denied = _require_role(request, EXECUTION_OUTPUT_ROLES, "Production output bulk capture")
+    if denied:
+        return denied
+    rows = _execution_bulk_rows(body)
+    if not rows:
+        return _error("Upload at least one output row to commit.", 400)
+    if len(rows) > 1000:
+        return _error("A single execution import is limited to 1,000 rows.", 400)
+    batch_key = str(body.get("batch_key") or "").strip()
+    if not batch_key:
+        return _error("batch_key is required for an idempotent commit")
+    reason = _reason(body)
+    if not reason:
+        return _error("reason is required before committing a bulk capture")
+    payload_hash = uuid.uuid5(uuid.NAMESPACE_URL, json.dumps(rows, sort_keys=True, default=str)).hex
+    actor = _actor(request)
+    try:
+        # Check the durable idempotency marker before preview. A client may
+        # retry after losing the response; preview quite correctly rejects
+        # already-used capture keys, so it must not run first for a matching
+        # completed batch.
+        with _tx() as cur:
+            cur.execute(
+                "SELECT * FROM production_workspace_execution_batches "
+                "WHERE batch_key=%s FOR UPDATE", (batch_key,),
+            )
+            existing_batch = cur.fetchone()
+            if existing_batch:
+                if existing_batch["payload_hash"] != payload_hash:
+                    return _error("batch_key was already used for different rows.", 409,
+                                  code="workspace_execution_batch_conflict")
+                cur.execute(
+                    "SELECT * FROM production_workspace_execution_output "
+                    "WHERE batch_key=%s ORDER BY id", (batch_key,),
+                )
+                return {
+                    "batch_key": batch_key, "committed": len(rows),
+                    "idempotent": True, "records": _rows(cur.fetchall()),
+                }
+        # The preview is useful feedback for a first attempt. The final
+        # transaction below repeats all validation, so a race cannot create a
+        # partial import.
+        preview = _execution_bulk_preview(request, body)
+        if isinstance(preview, JSONResponse):
+            return preview
+        if not preview["valid"]:
+            return _error("Fix every row error before committing this import.", 422,
+                          preview=preview, code="workspace_execution_bulk_invalid")
+        with _tx() as cur:
+            cur.execute(
+                "SELECT * FROM production_workspace_execution_batches "
+                "WHERE batch_key=%s FOR UPDATE", (batch_key,),
+            )
+            existing_batch = cur.fetchone()
+            if existing_batch:
+                if existing_batch["payload_hash"] != payload_hash:
+                    return _error("batch_key was already used for different rows.", 409,
+                                  code="workspace_execution_batch_conflict")
+                cur.execute(
+                    "SELECT * FROM production_workspace_execution_output "
+                    "WHERE batch_key=%s ORDER BY id", (batch_key,),
+                )
+                return {
+                    "batch_key": batch_key, "committed": len(rows),
+                    "idempotent": True, "records": _rows(cur.fetchall()),
+                }
+            # Preview is advisory: each row is checked again under the final
+            # transaction before the batch marker or any output is written.
+            # Raising (rather than returning) guarantees _tx rolls back if a
+            # plan was frozen/reopened or a duplicate arrived after preview.
+            prepared = []
+            for raw in rows:
+                row = dict(raw)
+                try:
+                    int(row["plan_version_id"])
+                except (KeyError, TypeError, ValueError):
+                    raise ExecutionBulkValidationError(
+                        "The batch changed while committing; preview again."
+                    )
+                context, _, failure = _execution_context(
+                    cur, row, actor, assignment_required=True,
+                )
+                if failure:
+                    raise ExecutionBulkValidationError(
+                        "The batch changed while committing; preview again."
+                    )
+                try:
+                    payload = _execution_output_payload(row)
+                except ValueError as exc:
+                    raise ExecutionBulkValidationError(str(exc))
+                cur.execute(
+                    "SELECT 1 FROM production_workspace_execution_output "
+                    "WHERE capture_key=%s FOR UPDATE",
+                    (payload["capture_key"],),
+                )
+                if cur.fetchone():
+                    raise ExecutionBulkValidationError(
+                        "A capture row already exists. Preview again before retrying."
+                    )
+                plan, assignment, work_item, capture_date = context
+                prepared.append((
+                    _execution_record_context_values(row, plan, assignment, work_item),
+                    payload, capture_date,
+                ))
+            cur.execute(
+                """
+                INSERT INTO production_workspace_execution_batches
+                    (batch_key,payload_hash,row_count,created_by)
+                VALUES (%s,%s,%s,%s)
+                """,
+                (batch_key, payload_hash, len(rows), actor["user_id"]),
+            )
+            written = []
+            for values, payload, capture_date in prepared:
+                cur.execute(
+                    """
+                    INSERT INTO production_workspace_execution_output
+                        (plan_version_id,assignment_id,work_item_id,production_order_ref,
+                         factory_id,line_id,shift_id,operation_id,capture_kind,capture_date,
+                         hour_no,capture_key,planned_qty,good_qty,reject_qty,rework_qty,
+                         comments,batch_key,created_by,updated_by)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    RETURNING *
+                    """,
+                    (
+                        values["plan_version_id"], values["assignment_id"], values["work_item_id"],
+                        values["production_order_ref"], values["factory_id"], values["line_id"],
+                        values["shift_id"], values["operation_id"], payload["capture_kind"],
+                        capture_date, payload["hour_no"], payload["capture_key"],
+                        payload["planned_qty"], payload["good_qty"], payload["reject_qty"],
+                        payload["rework_qty"], payload["comments"], batch_key,
+                        actor["user_id"], actor["user_id"],
+                    ),
+                )
+                after = cur.fetchone()
+                _audit(cur, "execution_output", after["id"], "bulk_created", actor,
+                       reason, after=after, request_id=_request_id(request))
+                written.append(after)
+        return {"batch_key": batch_key, "committed": len(written),
+                "idempotent": False, "records": _rows(written)}
+    except ExecutionBulkValidationError as exc:
+        return _error(str(exc), 409, code="workspace_execution_bulk_conflict")
+    except Exception as exc:
+        if "duplicate" in str(exc).lower() or "unique" in str(exc).lower():
+            return _error("A capture row already exists. Preview again before retrying.", 409,
+                          code="workspace_execution_duplicate_conflict")
+        log.exception("execution bulk commit failed")
+        return _error("The execution import was not committed. No partial rows were saved.", 500)
+
+
+def _execution_bulk_template(request: Request):
+    _ensure_schema()
+    denied = _require_role(request, EXECUTION_CAPTURE_ROLES, "Production execution viewing")
+    if denied:
+        return denied
+    return {
+        "columns": [
+            "plan_version_id", "assignment_id", "capture_kind", "capture_date",
+            "hour_no", "planned_qty", "good_qty", "reject_qty", "rework_qty",
+            "capture_key", "comments", "reason",
+        ],
+        "example": {
+            "capture_kind": "hourly", "hour_no": 8, "planned_qty": 40,
+            "good_qty": 36, "reject_qty": 2, "rework_qty": 2,
+            "capture_key": "plan-123-2026-08-25-08",
+        },
+    }
+
+
 def _audit_timeline(entity_type: str, entity_id: str, request: Request):
     _ensure_schema()
     denied = _require_role(request, VIEW_ROLES, "Production workspace audit viewing")
@@ -2408,6 +3430,59 @@ def _execution_ref_create_endpoint(plan_id: int, request: Request,
     return _execution_ref_create(plan_id, request, body)
 
 
+def _execution_output_create_endpoint(plan_id: int, request: Request,
+                                      body: dict = Body(default={})):
+    return _execution_output_create(plan_id, request, body)
+
+
+def _execution_output_update_endpoint(output_id: int, request: Request,
+                                      body: dict = Body(default={})):
+    return _execution_output_update(output_id, request, body)
+
+
+def _execution_outputs_endpoint(request: Request, capture_date: str = None,
+                                plan_version_id: int = None):
+    return _execution_outputs(request, capture_date, plan_version_id)
+
+
+def _execution_worklist_endpoint(request: Request, capture_date: str = None):
+    return _execution_worklist(request, capture_date)
+
+
+def _execution_summary_endpoint(request: Request, capture_date: str = None):
+    return _execution_summary(request, capture_date)
+
+
+def _execution_events_endpoint(request: Request, event_type: str = None,
+                               plan_version_id: int = None,
+                               event_date: str = None):
+    return _execution_events(request, event_type, plan_version_id, event_date)
+
+
+def _execution_event_create_endpoint(request: Request,
+                                     body: dict = Body(default={})):
+    return _execution_event_create(request, body)
+
+
+def _execution_event_update_endpoint(event_id: int, request: Request,
+                                     body: dict = Body(default={})):
+    return _execution_event_update(event_id, request, body)
+
+
+def _execution_bulk_preview_endpoint(request: Request,
+                                     body: dict = Body(default={})):
+    return _execution_bulk_preview(request, body)
+
+
+def _execution_bulk_commit_endpoint(request: Request,
+                                    body: dict = Body(default={})):
+    return _execution_bulk_commit(request, body)
+
+
+def _execution_bulk_template_endpoint(request: Request):
+    return _execution_bulk_template(request)
+
+
 def _audit_timeline_endpoint(entity_type: str, entity_id: str, request: Request):
     return _audit_timeline(entity_type, entity_id, request)
 
@@ -2467,6 +3542,28 @@ def register_production_workspace_routes(app, api_module):
                       _plan_input_delete_endpoint, methods=["DELETE"])
     app.add_api_route("/api/production-workspace/plans/{plan_id}/execution-references",
                       _execution_ref_create_endpoint, methods=["POST"])
+    app.add_api_route("/api/production-workspace/execution/worklist",
+                      _execution_worklist_endpoint, methods=["GET"])
+    app.add_api_route("/api/production-workspace/execution/summary",
+                      _execution_summary_endpoint, methods=["GET"])
+    app.add_api_route("/api/production-workspace/execution/events",
+                      _execution_events_endpoint, methods=["GET"])
+    app.add_api_route("/api/production-workspace/execution/events",
+                      _execution_event_create_endpoint, methods=["POST"])
+    app.add_api_route("/api/production-workspace/execution/events/{event_id}",
+                      _execution_event_update_endpoint, methods=["PATCH"])
+    app.add_api_route("/api/production-workspace/execution/plans/{plan_id}/output",
+                      _execution_output_create_endpoint, methods=["POST"])
+    app.add_api_route("/api/production-workspace/execution/output",
+                      _execution_outputs_endpoint, methods=["GET"])
+    app.add_api_route("/api/production-workspace/execution/output/{output_id}",
+                      _execution_output_update_endpoint, methods=["PATCH"])
+    app.add_api_route("/api/production-workspace/execution/bulk/template",
+                      _execution_bulk_template_endpoint, methods=["GET"])
+    app.add_api_route("/api/production-workspace/execution/bulk/preview",
+                      _execution_bulk_preview_endpoint, methods=["POST"])
+    app.add_api_route("/api/production-workspace/execution/bulk/commit",
+                      _execution_bulk_commit_endpoint, methods=["POST"])
     app.add_api_route("/api/production-workspace/audit/{entity_type}/{entity_id}",
                       _audit_timeline_endpoint, methods=["GET"])
     app.add_api_route(

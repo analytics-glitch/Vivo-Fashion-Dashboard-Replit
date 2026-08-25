@@ -525,6 +525,99 @@ CREATE TABLE IF NOT EXISTS production_workspace_execution_references (
     UNIQUE (reference_type, reference_key)
 );
 
+-- ============================================================
+-- Production Execution Capture
+-- ============================================================
+-- Execution is an additive capture ledger. It records what supervisors
+-- observed against an approved plan, but never writes Odoo or stage_movements.
+-- WIP rows may point at an existing stage movement for traceability; the
+-- movement ledger remains the only source of stage balances.
+CREATE TABLE IF NOT EXISTS production_workspace_execution_batches (
+    id              BIGSERIAL PRIMARY KEY,
+    batch_key       TEXT NOT NULL UNIQUE,
+    payload_hash    TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'committed'
+                    CHECK (status IN ('committed')),
+    row_count       INT NOT NULL CHECK (row_count >= 0),
+    created_by      TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS production_workspace_execution_output (
+    id              BIGSERIAL PRIMARY KEY,
+    plan_version_id BIGINT NOT NULL REFERENCES production_workspace_plan_versions(id) ON DELETE RESTRICT,
+    assignment_id   BIGINT REFERENCES production_workspace_assignments(id) ON DELETE RESTRICT,
+    work_item_id    BIGINT NOT NULL REFERENCES production_workspace_work_items(id) ON DELETE RESTRICT,
+    production_order_ref TEXT REFERENCES production_orders(order_ref) ON DELETE SET NULL,
+    factory_id      BIGINT NOT NULL REFERENCES production_workspace_factories(id) ON DELETE RESTRICT,
+    line_id         BIGINT NULL REFERENCES production_workspace_lines(id) ON DELETE RESTRICT,
+    shift_id        BIGINT NULL REFERENCES production_workspace_shifts(id) ON DELETE RESTRICT,
+    operation_id    BIGINT NULL REFERENCES production_workspace_operations(id) ON DELETE RESTRICT,
+    capture_kind    TEXT NOT NULL CHECK (capture_kind IN ('hourly', 'shift')),
+    capture_date    DATE NOT NULL,
+    hour_no         INT CHECK (hour_no IS NULL OR (hour_no >= 0 AND hour_no <= 23)),
+    capture_key     TEXT NOT NULL UNIQUE,
+    planned_qty     NUMERIC NOT NULL CHECK (planned_qty > 0),
+    good_qty        NUMERIC NOT NULL DEFAULT 0 CHECK (good_qty >= 0),
+    reject_qty      NUMERIC NOT NULL DEFAULT 0 CHECK (reject_qty >= 0),
+    rework_qty      NUMERIC NOT NULL DEFAULT 0 CHECK (rework_qty >= 0),
+    total_qty       NUMERIC GENERATED ALWAYS AS (good_qty + reject_qty + rework_qty) STORED,
+    comments        TEXT,
+    batch_key       TEXT REFERENCES production_workspace_execution_batches(batch_key) ON DELETE SET NULL,
+    version_token   BIGINT NOT NULL DEFAULT 1 CHECK (version_token > 0),
+    created_by      TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_by      TEXT,
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK (good_qty + reject_qty + rework_qty <= planned_qty)
+);
+CREATE INDEX IF NOT EXISTS idx_workspace_execution_output_scope
+    ON production_workspace_execution_output(plan_version_id, capture_date, line_id);
+
+CREATE TABLE IF NOT EXISTS production_workspace_execution_events (
+    id              BIGSERIAL PRIMARY KEY,
+    plan_version_id BIGINT NOT NULL REFERENCES production_workspace_plan_versions(id) ON DELETE RESTRICT,
+    assignment_id   BIGINT REFERENCES production_workspace_assignments(id) ON DELETE RESTRICT,
+    work_item_id    BIGINT NOT NULL REFERENCES production_workspace_work_items(id) ON DELETE RESTRICT,
+    production_order_ref TEXT REFERENCES production_orders(order_ref) ON DELETE SET NULL,
+    factory_id      BIGINT NOT NULL REFERENCES production_workspace_factories(id) ON DELETE RESTRICT,
+    line_id         BIGINT NULL REFERENCES production_workspace_lines(id) ON DELETE RESTRICT,
+    shift_id        BIGINT NULL REFERENCES production_workspace_shifts(id) ON DELETE RESTRICT,
+    operation_id    BIGINT NULL REFERENCES production_workspace_operations(id) ON DELETE RESTRICT,
+    event_type      TEXT NOT NULL CHECK (event_type IN ('wip', 'downtime', 'attendance', 'qc_defect', 'recovery')),
+    event_date      DATE NOT NULL,
+    event_key       TEXT NOT NULL UNIQUE,
+    from_stage      TEXT REFERENCES production_stages(stage_key),
+    to_stage        TEXT REFERENCES production_stages(stage_key),
+    stage_movement_id BIGINT REFERENCES stage_movements(id) ON DELETE SET NULL,
+    quantity        NUMERIC CHECK (quantity IS NULL OR quantity >= 0),
+    duration_minutes NUMERIC CHECK (duration_minutes IS NULL OR duration_minutes >= 0),
+    reason          TEXT,
+    cause           TEXT,
+    action          TEXT,
+    owner_user_id   TEXT,
+    status          TEXT NOT NULL DEFAULT 'open'
+                    CHECK (status IN ('open', 'in_progress', 'resolved', 'excused', 'closed')),
+    evidence_ref    TEXT,
+    notes           TEXT,
+    version_token   BIGINT NOT NULL DEFAULT 1 CHECK (version_token > 0),
+    created_by      TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_by      TEXT,
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK (event_type <> 'wip' OR (
+        from_stage IS NOT NULL AND to_stage IS NOT NULL AND stage_movement_id IS NOT NULL
+    )),
+    CHECK (event_type <> 'downtime' OR reason IS NOT NULL),
+    CHECK (event_type <> 'attendance' OR reason IS NOT NULL),
+    CHECK (event_type <> 'qc_defect' OR reason IS NOT NULL),
+    CHECK (event_type <> 'recovery' OR action IS NOT NULL)
+);
+CREATE INDEX IF NOT EXISTS idx_workspace_execution_events_scope
+    ON production_workspace_execution_events(plan_version_id, event_date, event_type);
+CREATE INDEX IF NOT EXISTS idx_workspace_execution_events_order
+    ON production_workspace_execution_events(production_order_ref, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS production_workspace_workflow_revisions (
     id              BIGSERIAL PRIMARY KEY,
     plan_version_id  BIGINT NOT NULL REFERENCES production_workspace_plan_versions(id) ON DELETE RESTRICT,
