@@ -792,6 +792,8 @@ app.include_router(production_wallboard_router)
 # Odoo-backed tracker tables and stage movement ledger.
 import production_workspace
 production_workspace.register_production_workspace_routes(app, sys.modules[__name__])
+import production_insights_router
+production_insights_router.register_production_insights_routes(app, sys.modules[__name__])
 app.add_middleware(
     CORSMiddleware,
     **cors_config(),
@@ -38008,6 +38010,15 @@ def _init_production_workspace_store():
         production_workspace.ensure_production_workspace_tables()
     except Exception as e:
         log.error("Production workspace table init failed: %s", e)
+
+
+@_deferred_startup
+def _init_production_insights_store():
+    """Install the additive recovery-action register after the workspace."""
+    try:
+        production_insights_router.ensure_production_insights_tables()
+    except Exception as e:
+        log.error("Production insights table init failed: %s", e)
 
 
 def _ensure_replen_tables():

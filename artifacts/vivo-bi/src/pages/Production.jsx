@@ -558,12 +558,14 @@ const StyleTrackerTab = React.lazy(() => import("./StyleTracker"));
 const ProductionWallboardTab = React.lazy(() => import("./ProductionWallboard"));
 const ProductionWorkspaceTab = React.lazy(() => import("./ProductionWorkspace"));
 const ProductionExecutionTab = React.lazy(() => import("./ProductionExecution"));
+const ProductionInsightsTab = React.lazy(() => import("./ProductionInsights"));
 
 const PROD_TABS = [
   { id: "overview", label: "Overview", pageId: "production", el: ProductionOverviewTab },
   { id: "tracker", label: "Production Tracker", pageId: "production", el: null },
   { id: "workspace", label: "Planning Workspace", pageId: "production-workspace", el: ProductionWorkspaceTab },
   { id: "capture", label: "Execution Capture", pageId: "production-workspace", el: ProductionExecutionTab },
+  { id: "insights", label: "Productivity & Recovery", pageId: "production-workspace", el: ProductionInsightsTab },
   { id: "wallboard", label: "Wallboard", pageId: "production", el: ProductionWallboardTab },
   { id: "report", label: "Production Report", pageId: "production-report", el: ProductionReportTab },
   { id: "style-tracker", label: "Style Launch Planner", pageId: "style-tracker", el: StyleTrackerTab },
