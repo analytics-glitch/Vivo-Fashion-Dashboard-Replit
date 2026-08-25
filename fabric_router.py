@@ -10,6 +10,7 @@ import json
 import math
 import os
 import re
+import time
 from urllib.parse import quote
 import psycopg2.extras
 from fastapi import APIRouter, Query, Request, Body, HTTPException
@@ -314,6 +315,54 @@ def _get_api():
     import sys, importlib
     sys.path.insert(0, '/home/runner/workspace')
     return importlib.import_module('api_pg')
+
+
+_FABRIC_MASTER_VERSION_MEMO = ("", 0.0)
+_FABRIC_MASTER_VERSION_MEMO_SEC = 5
+
+
+def _fabric_master_version():
+    """A tiny, direct master-data stamp for Fabric summary cache coherence.
+
+    The Odoo worker commits product attributes before the dashboard is read.
+    Keying summary responses on that commit stamp makes a valid Width/GSM edit
+    visible on the next request instead of leaving the prior "excluded" payload
+    in the API process cache for its full TTL.  The short memo prevents this
+    lightweight MAX query becoming a per-request cost.
+    """
+    global _FABRIC_MASTER_VERSION_MEMO
+    version, checked_at = _FABRIC_MASTER_VERSION_MEMO
+    now = time.monotonic()
+    if version and now - checked_at < _FABRIC_MASTER_VERSION_MEMO_SEC:
+        return version
+    conn = None
+    try:
+        conn = _get_conn()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT COALESCE(MAX(_loaded_at)::text, '') "
+                "FROM raw_fabric_products"
+            )
+            row = cur.fetchone()
+        version = (row[0] if row else "") or "empty"
+        _FABRIC_MASTER_VERSION_MEMO = (version, now)
+        return version
+    except Exception:
+        # Keep the existing summary cache functional during a transient DB
+        # failure.  A healthy subsequent request replaces this fallback key.
+        return "nover"
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def _fabric_summary_cache_key(location, scope, master_version=None):
+    """Stable cache key that rolls forward whenever the Fabric master refreshes."""
+    return "fabric:summary:{}:{}:{}".format(
+        master_version if master_version is not None else _fabric_master_version(),
+        location,
+        scope,
+    )
 
 _MO_CONS_COLS_READY = False
 
@@ -1157,7 +1206,7 @@ def cover_snapshot_lookup(date: str = Query(default=None)):
 def summary(location: str = Query(default="RMAT/Stock"),
             scope: str = Query(default="main")):
     _api = _get_api()
-    _ck = f"fabric:summary:{location}:{scope}"
+    _ck = _fabric_summary_cache_key(location, scope)
     _hit = _api.cache_get(_ck)
     if _hit is not None:
         return _hit
@@ -1254,6 +1303,21 @@ def summary(location: str = Query(default="RMAT/Stock"),
               AND {scope_sql}
             GROUP BY po.supplier
         """)
+        # Keep the headline's exclusion coverage on the exact same distinct
+        # product grain as /acpm-excluded.  Summing supplier-level distinct
+        # counts would report a fabric twice if it had received POs from two
+        # suppliers, while the drill-down correctly lists it once.
+        acpm_purchases_coverage = q(conn, f"""
+            SELECT COUNT(DISTINCT p.id) FILTER (WHERE p.kg_per_mtr_eff IS NULL)
+                     AS excluded_count,
+                   ROUND(SUM(po.qty_received*po.price_unit)
+                         FILTER (WHERE p.kg_per_mtr_eff IS NULL)::numeric,0)
+                     AS excluded_value
+            FROM raw_fabric_purchase_orders po
+            JOIN raw_fabric_products p ON p.id = po.product_id
+            WHERE po.state != 'cancel' AND po.qty_received > 0 AND p.category='Fabric'
+              AND {scope_sql}
+        """)[0]
         # Culprit fabrics behind every "incomplete" supplier: received fabrics whose
         # kg→metre conversion is missing (kg_per_mtr_eff IS NULL) so their value lands
         # in the numerator but contributes no metres. Same base/filters as pur_rows
@@ -1285,8 +1349,6 @@ def summary(location: str = Query(default="RMAT/Stock"),
         purchases_by_supplier = []
         pur_total_value = 0.0
         pur_total_metres = 0.0
-        pur_excluded_count = 0
-        pur_excluded_value = 0.0
         for r in pur_rows:
             exc = int(r['excluded_count'] or 0)
             exc_val = float(r['excluded_value'] or 0)
@@ -1294,8 +1356,6 @@ def summary(location: str = Query(default="RMAT/Stock"),
             met = float(r['metres'] or 0)
             pur_total_value += val
             pur_total_metres += met
-            pur_excluded_count += exc
-            pur_excluded_value += exc_val
             purchases_by_supplier.append({
                 "supplier": r['supplier'] or "(unknown)",
                 "value_kes": round(val),
@@ -1309,6 +1369,12 @@ def summary(location: str = Query(default="RMAT/Stock"),
                 "excluded_value": round(exc_val),
                 "missing_fabrics": missing_by_supplier.get(r['supplier'], []),
             })
+        pur_excluded_count = int(
+            acpm_purchases_coverage['excluded_count'] or 0
+        )
+        pur_excluded_value = round(float(
+            acpm_purchases_coverage['excluded_value'] or 0
+        ))
         # Sort by cost per metre desc; rows with no figure (no convertible metres)
         # sink to the bottom.
         purchases_by_supplier.sort(

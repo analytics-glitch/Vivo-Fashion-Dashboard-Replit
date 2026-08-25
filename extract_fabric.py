@@ -169,8 +169,19 @@ def _props_by_label(props):
 # whenever it is populated and the text value only fills the gaps.
 FABRIC_ATTRIBUTE_SPECS = {
     "kg_per_mtr": (("Kg/Mtr", "Kg / Mtr", "KG/MTR"), False),
-    "width_m": (("Width (m)", "Width", "Width (M)"), True),
-    "gsm": (("GSM", "GSM (g/m²)", "GSM (g/m2)"), True),
+    "width_m": (
+        ("Width (m)", "Width", "Width (M)",
+         "Width (m) - From Fabric Reference",
+         "Width - From Fabric Reference"),
+        True,
+    ),
+    "gsm": (
+        ("GSM", "GSM (g/m²)", "GSM (g/m2)",
+         "GSM - From Fabric Reference",
+         "GSM (g/m²) - From Fabric Reference",
+         "GSM (g/m2) - From Fabric Reference"),
+        True,
+    ),
     "plain_print": (("Plain/Print", "Plain / Print"), False),
     "fabric_structure": (("Fabric Structure",), False),
     "fabric_category": (("Fabric Category",), False),
@@ -214,7 +225,7 @@ def resolve_fabric_fields(field_metadata):
     least one unambiguous source. A duplicate display label is a VALID
     configuration (the live catalogue carries an attribute-backed GSM and a
     text GSM under the same "GSM" label): every candidate is kept, ordered by
-    _TYPE_RANK then alias order, and the product pull tries them per product
+    source-alias order then _TYPE_RANK, and the product pull tries them per product
     in that order (see _fabric_value_from). Raising before search_read /
     TRUNCATE remains the fail-safe when a conversion-critical concept is
     missing entirely or its best candidates are genuinely indistinguishable
@@ -233,15 +244,19 @@ def resolve_fabric_fields(field_metadata):
     problems = []
     for concept, (aliases, required) in FABRIC_ATTRIBUTE_SPECS.items():
         seen = set()
-        cands = []  # (type_rank, alias_rank, field_name) — sorted = preference
+        # Direct business fields must win over "From Fabric Reference" fallbacks
+        # even if Odoo exposes a direct value as a less-specific type (e.g.
+        # char). Within one business-label alias, type rank breaks the tie.
+        cands = []  # (alias_rank, type_rank, field_name) — sorted = preference
         for alias_rank, alias in enumerate(aliases):
             for name in by_label.get(_label_key(alias), []):
                 if name in seen:
                     continue
                 seen.add(name)
                 cands.append((
+                    alias_rank,
                     _TYPE_RANK.get(_field_type(name), _TYPE_RANK_OTHER),
-                    alias_rank, name))
+                    name))
         cands.sort()
 
         ordered, tied = [], []
@@ -307,6 +322,10 @@ def mapping_signature(resolved, field_metadata):
 
 
 _MAPPING_STATE_KEY = "fabric_attribute_mapping"
+_INCOMPLETE_RECHECK_CURSOR_KEY = "fabric_incomplete_recheck_cursor"
+_INCOMPLETE_RECHECK_LIMIT = max(
+    1, int(os.environ.get("FABRIC_INCOMPLETE_RECHECK_LIMIT", "2000"))
+)
 
 # Tiny key/value side table holding the last successfully-applied mapping
 # fingerprint. Created lazily by extract_products so every entry path (fast /
@@ -331,6 +350,51 @@ def _mapping_state_changed(cur, signature):
                 (_MAPPING_STATE_KEY,))
     row = cur.fetchone()
     return _needs_full_reconcile(row[0] if row else None, signature)
+
+
+def _incomplete_fabric_product_ids(cur):
+    """Return incomplete Fabric-master rows for the fast related-field recheck.
+
+    Some Odoo Width/GSM values are related from the Fabric Reference record.  An
+    edit to that source can update the related value without advancing the
+    product variant's own write_date, which would otherwise leave a false
+    "missing Width/GSM" row behind until the next heavy full reconcile.  Re-read
+    just the currently incomplete Fabric rows alongside the ordinary incremental
+    window; once a row becomes convertible it naturally leaves this small
+    recheck set.
+    """
+    cur.execute("SELECT value FROM fabric_sync_state WHERE key = %s",
+                (_INCOMPLETE_RECHECK_CURSOR_KEY,))
+    state = cur.fetchone()
+    try:
+        after_id = max(0, int(state[0])) if state and state[0] is not None else 0
+    except (TypeError, ValueError):
+        after_id = 0
+
+    where = """
+        category = 'Fabric'
+        AND (COALESCE(width_m, 0) <= 0 OR COALESCE(gsm, 0) <= 0)
+    """
+    cur.execute(f"""
+        SELECT id
+        FROM raw_fabric_products
+        WHERE {where} AND id > %s
+        ORDER BY id
+        LIMIT %s
+    """, (after_id, _INCOMPLETE_RECHECK_LIMIT))
+    ids = [row[0] for row in cur.fetchall()]
+    if len(ids) < _INCOMPLETE_RECHECK_LIMIT:
+        # Wrap after reaching the end: if the incomplete population exceeds the
+        # cap, a corrected row can never be stranded behind the oldest records.
+        cur.execute(f"""
+            SELECT id
+            FROM raw_fabric_products
+            WHERE {where} AND id <= %s
+            ORDER BY id
+            LIMIT %s
+        """, (after_id, _INCOMPLETE_RECHECK_LIMIT - len(ids)))
+        ids.extend(row[0] for row in cur.fetchall())
+    return ids, (ids[-1] if ids else None)
 
 
 def _odoo_value(value):
@@ -549,11 +613,29 @@ def extract_products(uid, models, cur, now, since=None):
     # since the last successful pull (plus a small overlap for clock skew). This
     # is usually 0–few records, so the 60s cadence stays cheap. `since=None`
     # (bootstrap / heavy reconcile) pulls every product.
+    incomplete_recheck_cursor = None
     domain = [["categ_id", "in", FABRIC_CATS]]
     if since is not None:
         since_str = since.strftime("%Y-%m-%d %H:%M:%S")
-        domain.append(["write_date", ">=", since_str])
-        log.info("Incremental product pull since %s (UTC)", since_str)
+        incomplete_ids, incomplete_recheck_cursor = _incomplete_fabric_product_ids(cur)
+        if incomplete_ids:
+            # Odoo domains are ANDed by default; this adds
+            # (recently-written OR currently-incomplete) below the Fabric/Trim
+            # category guard.  The latter catches related-field edits whose
+            # product.product write_date did not move.
+            domain.extend([
+                "|",
+                ["write_date", ">=", since_str],
+                ["id", "in", incomplete_ids],
+            ])
+            log.info(
+                "Incremental product pull since %s (UTC) + %d incomplete "
+                "Fabric rows for related-field refresh",
+                since_str, len(incomplete_ids),
+            )
+        else:
+            domain.append(["write_date", ">=", since_str])
+            log.info("Incremental product pull since %s (UTC)", since_str)
 
     # Which live field actually supplied each conversion-critical value —
     # logged once per pull so a fallback-heavy catalogue is visible in the
@@ -689,6 +771,13 @@ def extract_products(uid, models, cur, now, since=None):
         ON CONFLICT (key) DO UPDATE
            SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
     """, (_MAPPING_STATE_KEY, mapping_sig, now))
+    if incomplete_recheck_cursor is not None:
+        cur.execute("""
+            INSERT INTO fabric_sync_state (key, value, updated_at)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (key) DO UPDATE
+               SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
+        """, (_INCOMPLETE_RECHECK_CURSOR_KEY, str(incomplete_recheck_cursor), now))
 
     if rows:
         for concept, counts in source_counts.items():
