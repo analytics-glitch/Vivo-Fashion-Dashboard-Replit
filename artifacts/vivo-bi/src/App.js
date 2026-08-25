@@ -284,7 +284,7 @@ function App() {
                 <Route path="/excess-inventory" element={<Navigate to="/retail?tab=excess-inventory" replace />} />
                 <Route path="/store-flow" element={<Navigate to="/retail?tab=stock-movement" replace />} />
                 <Route path="/ibt" element={<Navigate to="/retail?tab=ibt" replace />} />
-                <Route path="/production" element={<ProtectedShell anyOfPageIds={["production", "production-report", "style-tracker"]}><Production /></ProtectedShell>} />
+                <Route path="/production" element={<ProtectedShell anyOfPageIds={["production", "production-workspace", "production-report", "style-tracker"]}><Production /></ProtectedShell>} />
                 <Route path="/production-wallboard" element={<WallboardRedirect />} />
                 <Route path="/production-report" element={<Navigate to="/production?tab=report" replace />} />
                 <Route path="/quality" element={<ProtectedShell pageId="quality"><Quality /></ProtectedShell>} />

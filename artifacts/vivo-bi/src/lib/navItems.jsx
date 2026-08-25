@@ -154,10 +154,11 @@ export const PRIMARY_NAV = [
   // OPERATIONAL pages — actions that move, return or make stock.
   {
     to: "/production", label: "Production Pipeline", icon: Factory, id: "production",
-    anyOfPageIds: ["production", "production-report", "style-tracker"],
+    anyOfPageIds: ["production", "production-workspace", "production-report", "style-tracker"],
     group: "Operations & Production", desc: "Kanban tracker of buying orders through the manufacturing stages, plus the detailed production report and Style Launch Planner",
     subReports: [
       { pageId: "production",        label: "Overview & Tracker" },
+      { pageId: "production-workspace", label: "Workspace Foundation" },
       { pageId: "production-report", label: "Production Report" },
       { pageId: "style-tracker",     label: "Style Launch Planner" },
     ],

@@ -557,9 +557,77 @@ const ProductionOverviewTab = React.lazy(() => import("./ProductionOverview"));
 const StyleTrackerTab = React.lazy(() => import("./StyleTracker"));
 const ProductionWallboardTab = React.lazy(() => import("./ProductionWallboard"));
 
+// This intentionally stops at the shared foundation contract. Full factory
+// planning/data-entry screens are a follow-on workspace feature; showing the
+// contract here makes the governed state and role capability discoverable
+// without creating a second planning UI before the shared API is in use.
+function ProductionWorkspaceFoundationTab() {
+  const [workspace, setWorkspace] = useState(null);
+  const [error, setError] = useState(null);
+
+  useEffect(() => {
+    let active = true;
+    api.get("/production-workspace")
+      .then((res) => { if (active) setWorkspace(res.data || {}); })
+      .catch((err) => {
+        if (active) setError(err?.response?.data?.detail || "Could not load production workspace access.");
+      });
+    return () => { active = false; };
+  }, []);
+
+  if (error) return <ErrorBox message={error} />;
+  if (!workspace) return <Loading label="Loading workspace foundation…" />;
+  const permissions = workspace.permissions || {};
+  const statuses = workspace.workflow?.statuses || [];
+  return (
+    <div className="rounded-xl border border-line bg-white p-5 space-y-4" data-testid="production-workspace-foundation">
+      <div>
+        <div className="text-[11px] uppercase tracking-[0.14em] font-bold text-[#1a5c38]">Production workspace</div>
+        <h2 className="mt-1 text-lg font-bold text-foreground">Governed planning foundation</h2>
+        <p className="mt-1 text-sm text-muted max-w-3xl">
+          Factory records, plans and execution references now use the same source of truth as the Production Tracker,
+          while tracker movements and Odoo synchronization remain unchanged.
+        </p>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-3">
+        {[
+          ["View workspace", permissions.can_view],
+          ["Create & submit plans", permissions.can_plan],
+          ["Approve, freeze & reopen", permissions.can_approve],
+        ].map(([label, allowed]) => (
+          <div key={label} className="rounded-lg border border-line px-3 py-3">
+            <div className="text-xs text-muted">{label}</div>
+            <div className={`mt-1 text-sm font-semibold ${allowed ? "text-emerald-700" : "text-slate-500"}`}>
+              {allowed ? "Allowed for your role" : "Read-only / not granted"}
+            </div>
+          </div>
+        ))}
+      </div>
+      <div>
+        <div className="text-sm font-semibold text-foreground">Lifecycle</div>
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          {statuses.map((status) => (
+            <React.Fragment key={status.key}>
+              <span className="rounded-full border border-line bg-slate-50 px-3 py-1 text-xs font-medium text-slate-700">
+                {status.label}
+              </span>
+              {status.allowed_next?.length > 0 && <span className="text-slate-400">→</span>}
+            </React.Fragment>
+          ))}
+        </div>
+        <p className="mt-3 text-xs text-muted">
+          Submission requires operations/SAMs, capacity and passed readiness gates. Frozen plans are retained; reopening
+          requires an authorized reason and creates a new auditable revision.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 const PROD_TABS = [
   { id: "overview", label: "Overview", pageId: "production", el: ProductionOverviewTab },
   { id: "tracker", label: "Production Tracker", pageId: "production", el: null },
+  { id: "workspace", label: "Workspace Foundation", pageId: "production-workspace", el: ProductionWorkspaceFoundationTab },
   { id: "wallboard", label: "Wallboard", pageId: "production", el: ProductionWallboardTab },
   { id: "report", label: "Production Report", pageId: "production-report", el: ProductionReportTab },
   { id: "style-tracker", label: "Style Launch Planner", pageId: "style-tracker", el: StyleTrackerTab },

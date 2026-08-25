@@ -24,6 +24,7 @@ import base64
 import re
 import secrets
 import uuid
+import sys
 import requests
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from security_config import cors_config, fastapi_docs_config
@@ -787,6 +788,10 @@ from quality_router import quality_router
 app.include_router(quality_router)
 from production_wallboard import production_wallboard_router
 app.include_router(production_wallboard_router)
+# Additive factory-planning foundation. It links to, but never rewrites, the
+# Odoo-backed tracker tables and stage movement ledger.
+import production_workspace
+production_workspace.register_production_workspace_routes(app, sys.modules[__name__])
 app.add_middleware(
     CORSMiddleware,
     **cors_config(),
@@ -962,10 +967,10 @@ _VIEWER_PAGES = ["overview", "exec-summary", "locations", "footfall", "trend-ana
 # arrivals into merch-lifecycle. Retired ids live on only as
 # _LEGACY_PAGE_ALIASES entries so stored group grants keep working.
 _MERCH_PAGES = ["merchandising", "merch-overview", "merch-sales", "merch-inventory", "merch-lifecycle", "merch-deepdive", "merch-store", "merch-attribute-performance", "merch-online"]
-_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "quarter-scorecard", "product-analysis", "range-mgmt", "size-health", "inventory", "warehouse-returns", "excess-inventory", "rebalancing", "store-flow", "marketing", "social", "crm", "order-explorer", "data-quality", "custom-report", "exports", "hr", "production", "production-report", "style-tracker", "pd-flow", "product-workspace", "partner-brands", "finance", "margin", "l10", "rota", "growth", "retail-desk", "day-review", "product-desk", "workforce-desk", "customer-desk", "marketing-desk", "supply-chain-desk", "production-desk", "the-chair", "quality", "store-profiling", "store-feedback", "central-tracker", "community-app"] + _MERCH_PAGES)
+_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "quarter-scorecard", "product-analysis", "range-mgmt", "size-health", "inventory", "warehouse-returns", "excess-inventory", "rebalancing", "store-flow", "marketing", "social", "crm", "order-explorer", "data-quality", "custom-report", "exports", "hr", "production", "production-workspace", "production-report", "style-tracker", "pd-flow", "product-workspace", "partner-brands", "finance", "margin", "l10", "rota", "growth", "retail-desk", "day-review", "product-desk", "workforce-desk", "customer-desk", "marketing-desk", "supply-chain-desk", "production-desk", "the-chair", "quality", "store-profiling", "store-feedback", "central-tracker", "community-app"] + _MERCH_PAGES)
 
 DEFAULT_ROLE_PAGES = {
-    "product_development": ["product-analysis", "range-mgmt", "catalogue", "gallery", "inventory", "size-health", "data-quality", "fabric", "exports", "production", "production-report", "style-tracker", "pd-flow", "product-workspace", "partner-brands", "sops", "central-tracker"] + _MERCH_PAGES,
+    "product_development": ["product-analysis", "range-mgmt", "catalogue", "gallery", "inventory", "size-health", "data-quality", "fabric", "exports", "production", "production-workspace", "production-report", "style-tracker", "pd-flow", "product-workspace", "partner-brands", "sops", "central-tracker"] + _MERCH_PAGES,
     "retail": ["store-flow", "overview", "exec-summary", "locations", "footfall", "store-profiling", "trend-analysis", "customers", "product-analysis", "gallery", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "exports", "partner-brands", "sops", "ask", "store-feedback", "store-stock-requests"],
     "warehouse": ["store-flow", "inventory", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "re-order", "allocations", "data-quality", "exports", "sops", "store-stock-requests"],
     "store_manager": ["overview", "store-flow", "locations", "footfall", "store-profiling", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "sops", "store-feedback", "store-stock-requests"],
@@ -975,14 +980,14 @@ DEFAULT_ROLE_PAGES = {
     # /api/day-review gates below also exclude "smt".
     "smt": [p for p in _LEADERSHIP_PAGES if p not in ("finance", "margin", "day-review")] + ["store-stock-requests"],
     # Production department — manufacturing board + report, style tracker, fabric warehouse view.
-    "production": ["production", "production-report", "style-tracker", "pd-flow", "fabric", "quality", "sops"],
+    "production": ["production", "production-workspace", "production-report", "style-tracker", "pd-flow", "fabric", "quality", "sops"],
     # Fabric Warehouse department — fabric stock + general inventory.
     "fabric_warehouse": ["fabric", "inventory", "sops"],
     # Fabric Quality Supervisor — fabric dashboard only (QC approvals + delivery signoff).
     # Carries no extra BI page grants beyond the fabric surface by design.
-    "fabric_quality_supervisor": ["fabric", "quality", "sops"],
+    "fabric_quality_supervisor": ["fabric", "quality", "production-workspace", "sops"],
     # Quality department — production quality trackers (repairs, complaints, washing).
-    "quality": ["quality", "sops"],
+    "quality": ["quality", "production-workspace", "sops"],
     "customer_service": ["customers", "customer-details", "crm", "order-explorer", "footfall", "sops", "store-feedback"],
     "marketing": ["marketing", "social", "crm", "order-explorer", "customers", "customer-details", "product-analysis", "footfall", "trend-analysis", "sops", "ask", "store-feedback", "community-app"],
     "hr": ["hr", "sops", "rota"],
@@ -1961,6 +1966,18 @@ async def clerk_auth_gate(request: Request, call_next):
         "marketing", "leadership", "smt", "admin"
     ) and not _is_crm_admin_user(user):
         return JSONResponse({"detail": "Social access requires a marketing, leadership or admin role"}, status_code=403)
+
+    # Production Workspace is a separate planning domain. Quality and product
+    # development may read its references; the workspace router applies the
+    # narrower per-action planner and approver checks below this broad fence.
+    if path.startswith("/api/production-workspace") and user.get("role") not in (
+        "quality", "fabric_quality_supervisor", "product_development", "production",
+        "leadership", "smt", "admin",
+    ):
+        return JSONResponse(
+            {"detail": "Production workspace access requires a production, quality, product development, leadership or admin role"},
+            status_code=403,
+        )
 
     # Production Tracker (/api/production/*) is a work-in-progress board for the
     # product development team to move buying-order quantities through the
@@ -37977,6 +37994,20 @@ def _init_production_store():
         _ensure_production_tables()
     except Exception as e:
         log.error("Production tracker table init failed: %s", e)
+
+
+@_deferred_startup
+def _init_production_workspace_store():
+    """Install the additive planning foundation after the tracker/user stores.
+
+    The workspace schema only creates new production_workspace_* tables and
+    links to the existing tracker; a failure here must not block the tracker or
+    API port from starting.
+    """
+    try:
+        production_workspace.ensure_production_workspace_tables()
+    except Exception as e:
+        log.error("Production workspace table init failed: %s", e)
 
 
 def _ensure_replen_tables():
