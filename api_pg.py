@@ -2186,10 +2186,14 @@ async def clerk_auth_gate(request: Request, call_next):
                 f"{_l10_prefix}/settings",
                 "/api/admin/l10/export",
                 "/api/admin/l10/import",
+                "/api/admin/l10/finance-operations/status",
+                "/api/admin/l10/finance-operations/restore",
+                "/api/admin/l10/finance-operations/backups",
                 "/api/fabric/l10/admin/export",
                 "/api/fabric/l10/admin/import",
             }
-            if path not in _l10_exempt:
+            if path not in _l10_exempt and not path.startswith(
+                    "/api/admin/l10/finance-operations/backups/"):
                 _l10_folder_raw = None
                 if request.method in ("GET", "HEAD"):
                     _l10_folder_raw = request.query_params.get("folder_id")
@@ -40915,6 +40919,20 @@ def _ensure_l10_tables():
             UNIQUE(meeting_id, member_name)
         )
         """,
+        # A durable, server-owned pre-restore artifact.  It intentionally holds
+        # the complete Main BI surface so an administrator can recover every
+        # row that was visible immediately before a scoped department restore.
+        """
+        CREATE TABLE IF NOT EXISTS l10_finance_restore_backups (
+            id              SERIAL PRIMARY KEY,
+            created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+            created_by      TEXT,
+            target_folder_id INT,
+            source_metadata JSONB NOT NULL,
+            row_counts      JSONB NOT NULL,
+            snapshot        JSONB NOT NULL
+        )
+        """,
     ]
     for stmt in stmts:
         try:
@@ -42482,6 +42500,51 @@ def _l10_export_snapshot(*, fabric: bool):
     }
 
 
+def _l10_export_snapshot_from_cursor(cur, *, fabric: bool):
+    """Build an L10 snapshot on the caller's transaction/lock connection."""
+    from datetime import datetime
+
+    tables = {}
+    for table in _L10_INSERT_ORDER:
+        cur.execute(_l10_snapshot_select(table, fabric))
+        rows = cur.fetchall() or []
+        cleaned = []
+        for row in rows:
+            cleaned.append({
+                key: value.isoformat() if hasattr(value, "isoformat") else value
+                for key, value in row.items()
+            })
+        tables[table] = cleaned
+    return {
+        "surface": "fabric" if fabric else "main",
+        "tables": tables,
+        "row_counts": {table: len(tables[table]) for table in _L10_INSERT_ORDER},
+        "exported_at": datetime.utcnow().isoformat() + "Z",
+    }
+
+
+def _l10_store_finance_restore_backup(cur, snapshot, *, actor=None,
+                                      target_folder_id=None, source_metadata=None):
+    """Persist a retrievable pre-restore artifact before Finance is mutated."""
+    cur.execute(
+        """
+        INSERT INTO l10_finance_restore_backups
+            (created_by, target_folder_id, source_metadata, row_counts, snapshot)
+        VALUES (%s, %s, %s::jsonb, %s::jsonb, %s::jsonb)
+        RETURNING id
+        """,
+        (
+            actor,
+            target_folder_id,
+            json.dumps(source_metadata or {}),
+            json.dumps(snapshot["row_counts"]),
+            json.dumps(snapshot),
+        ),
+    )
+    row = cur.fetchone()
+    return row["id"] if isinstance(row, dict) else row[0]
+
+
 @app.get("/api/admin/l10/export")
 def l10_export():
     """Export a Main BI JSON snapshot in FK-safe order.
@@ -42597,6 +42660,600 @@ def _l10_validate_import_scope(tables_data, *, fabric: bool):
                     detail=f"l10_todos row references a meeting outside this L10 snapshot via {field}")
 
     return sorted(folder_ids)
+
+
+_L10_FINANCE_FOLDER_NAME = "Finance & Operations"
+_L10_FINANCE_FOLDER_COLOR = "#0f766e"
+
+# Only explicitly-listed current-schema columns can be restored.  This makes a
+# historic export safe to read even if it has harmless legacy/UI-only fields,
+# while keeping the server—not the uploaded JSON—in control of every SQL
+# identifier used by the restore.
+_L10_RESTORE_COLUMNS = {
+    "l10_folders": (
+        "name", "description", "color", "created_at", "created_by",
+    ),
+    "l10_meetings": (
+        "folder_id", "week_label", "meeting_date", "start_time", "created_at",
+    ),
+    "l10_members": (
+        "folder_id", "name", "sort_order", "active", "created_at",
+    ),
+    "l10_scorecard_metrics": (
+        "folder_id", "who", "measurable", "goal", "uom", "goal_direction",
+        "sort_order", "active", "created_at",
+    ),
+    "l10_rocks": (
+        "folder_id", "description", "rock_type", "owner", "on_track", "done",
+        "results", "link", "quarter_label", "sort_order", "active",
+        "created_at",
+    ),
+    "l10_todos": (
+        "folder_id", "description", "open_date", "owner", "status", "link",
+        "opened_meeting_id", "closed_meeting_id", "created_at", "updated_at",
+    ),
+    "l10_checkin": (
+        "meeting_id", "member_name", "personal_news", "professional_news",
+        "updated_at",
+    ),
+    "l10_scorecard_values": (
+        "metric_id", "meeting_id", "value", "on_track", "updated_at",
+    ),
+    "l10_headlines": (
+        "meeting_id", "headline", "date", "added_by", "link", "sort_order",
+        "moved_to_ids", "updated_at",
+    ),
+    "l10_ids_issues": (
+        "meeting_id", "issue", "raised_by", "sort_order", "status",
+        "updated_at", "scorecard_metric_id", "rock_id",
+    ),
+    "l10_conclude": (
+        "meeting_id", "cascading_messages", "updated_at",
+    ),
+    "l10_ratings": (
+        "meeting_id", "member_name", "rating", "updated_at",
+    ),
+}
+
+
+def _l10_finance_folder_matches(name) -> bool:
+    """Match the historic folder name without accepting a different department."""
+    return re.sub(r"[^a-z0-9]+", "", str(name or "").lower()) == \
+        "financeoperations"
+
+
+def _l10_validate_finance_source(snapshot):
+    """Extract and validate one complete Finance & Operations folder snapshot.
+
+    Generic L10 exports may contain SLT and other Main BI folders.  This helper
+    selects only the explicitly named Finance & Operations folder and rejects
+    incomplete or cross-folder references before any live row can be deleted.
+    Source IDs are deliberately retained only inside this in-memory structure;
+    the write path below remaps every generated database ID.
+    """
+    if not isinstance(snapshot, dict):
+        raise HTTPException(status_code=400, detail="A JSON L10 snapshot is required")
+    if snapshot.get("surface") not in (None, "main"):
+        raise HTTPException(
+            status_code=403,
+            detail="Finance & Operations must be restored from a Main BI snapshot",
+        )
+    tables = snapshot.get("tables")
+    if not isinstance(tables, dict):
+        raise HTTPException(status_code=400, detail="Snapshot is missing tables")
+    missing = [table for table in _L10_INSERT_ORDER if table not in tables]
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Snapshot is missing required table keys: {missing}",
+        )
+    row_counts = snapshot.get("row_counts")
+    if not isinstance(row_counts, dict):
+        raise HTTPException(status_code=400, detail="Snapshot is missing row_counts")
+    for table in _L10_INSERT_ORDER:
+        rows = tables.get(table)
+        if not isinstance(rows, list):
+            raise HTTPException(status_code=400, detail=f"{table} must be an array")
+        try:
+            declared = int(row_counts.get(table))
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Snapshot row_counts is missing a valid count for {table}",
+            )
+        if declared != len(rows):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Snapshot row count mismatch for {table}: declared {declared}, found {len(rows)}",
+            )
+
+    finance_folders = [
+        row for row in tables["l10_folders"]
+        if _l10_finance_folder_matches(row.get("name"))
+    ]
+    if len(finance_folders) != 1:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Snapshot must contain exactly one folder named "
+                f"{_L10_FINANCE_FOLDER_NAME}"
+            ),
+        )
+    source_folder = finance_folders[0]
+    try:
+        source_folder_id = int(source_folder["id"])
+    except (TypeError, ValueError, KeyError):
+        raise HTTPException(status_code=400, detail="Finance folder is missing a valid id")
+
+    def _int_value(value, table, field):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=400,
+                detail=f"{table} row is missing a valid {field}",
+            )
+
+    source = {"l10_folders": [source_folder]}
+    folder_tables = (
+        "l10_meetings", "l10_members", "l10_scorecard_metrics",
+        "l10_rocks", "l10_todos",
+    )
+    for table in folder_tables:
+        selected = []
+        for row in tables[table]:
+            if row.get("folder_id") is None:
+                continue
+            if _int_value(row.get("folder_id"), table, "folder_id") == source_folder_id:
+                selected.append(row)
+        source[table] = selected
+
+    def _ids(table):
+        values = []
+        for row in source[table]:
+            try:
+                values.append(int(row["id"]))
+            except (TypeError, ValueError, KeyError):
+                raise HTTPException(status_code=400, detail=f"{table} row is missing a valid id")
+        if len(values) != len(set(values)):
+            raise HTTPException(status_code=400, detail=f"{table} contains duplicate ids")
+        return set(values)
+
+    meeting_ids = _ids("l10_meetings")
+    metric_ids = _ids("l10_scorecard_metrics")
+    rock_ids = _ids("l10_rocks")
+
+    meeting_tables = (
+        "l10_checkin", "l10_headlines", "l10_ids_issues", "l10_conclude",
+        "l10_ratings",
+    )
+    for table in meeting_tables:
+        selected = []
+        for row in tables[table]:
+            if row.get("meeting_id") is None:
+                continue
+            if _int_value(row.get("meeting_id"), table, "meeting_id") in meeting_ids:
+                selected.append(row)
+        source[table] = selected
+    source["l10_scorecard_values"] = []
+    for row in tables["l10_scorecard_values"]:
+        if row.get("meeting_id") is None:
+            continue
+        if _int_value(row.get("meeting_id"), "l10_scorecard_values", "meeting_id") in meeting_ids:
+            source["l10_scorecard_values"].append(row)
+
+    # Parent/child validation covers every recovered relation.  A child whose
+    # parent belongs to another source folder is never silently copied.
+    for table in meeting_tables + ("l10_scorecard_values",):
+        for row in source[table]:
+            if _int_value(row.get("meeting_id"), table, "meeting_id") not in meeting_ids:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{table} references a meeting outside Finance & Operations",
+                )
+    for row in source["l10_scorecard_values"]:
+        try:
+            metric_id = _int_value(row.get("metric_id"), "l10_scorecard_values", "metric_id")
+        except (TypeError, ValueError, KeyError):
+            raise HTTPException(
+                status_code=400,
+                detail="l10_scorecard_values row is missing a valid metric_id",
+            )
+        if metric_id not in metric_ids:
+            raise HTTPException(
+                status_code=400,
+                detail="l10_scorecard_values references a metric outside Finance & Operations",
+            )
+    for row in source["l10_ids_issues"]:
+        if row.get("scorecard_metric_id") is not None and \
+                _int_value(row.get("scorecard_metric_id"), "l10_ids_issues", "scorecard_metric_id") not in metric_ids:
+            raise HTTPException(
+                status_code=400,
+                detail="l10_ids_issues references a metric outside Finance & Operations",
+            )
+        if row.get("rock_id") is not None and \
+                _int_value(row.get("rock_id"), "l10_ids_issues", "rock_id") not in rock_ids:
+            raise HTTPException(
+                status_code=400,
+                detail="l10_ids_issues references a rock outside Finance & Operations",
+            )
+    for row in source["l10_todos"]:
+        for field in ("opened_meeting_id", "closed_meeting_id"):
+            if row.get(field) is not None and \
+                    _int_value(row.get(field), "l10_todos", field) not in meeting_ids:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"l10_todos references a meeting outside Finance & Operations via {field}",
+                )
+
+    return {
+        "source": source,
+        "source_folder_id": source_folder_id,
+        "source_counts": {
+            table: len(source.get(table, [])) for table in _L10_INSERT_ORDER
+        },
+        "source_metadata": {
+            "folder_name": source_folder.get("name"),
+            "source_folder_id": source_folder_id,
+            "exported_at": snapshot.get("exported_at"),
+        },
+    }
+
+
+def _l10_folder_record_counts(folder_id):
+    """Return per-section counts for exactly one folder, without cross-surface data."""
+    return {
+        "l10_folders": 1,
+        "l10_meetings": len(_users_exec(
+            "SELECT id FROM l10_meetings WHERE folder_id=%s", (folder_id,), fetch=True) or []),
+        "l10_members": len(_users_exec(
+            "SELECT id FROM l10_members WHERE folder_id=%s", (folder_id,), fetch=True) or []),
+        "l10_scorecard_metrics": len(_users_exec(
+            "SELECT id FROM l10_scorecard_metrics WHERE folder_id=%s", (folder_id,), fetch=True) or []),
+        "l10_rocks": len(_users_exec(
+            "SELECT id FROM l10_rocks WHERE folder_id=%s", (folder_id,), fetch=True) or []),
+        "l10_todos": len(_users_exec(
+            "SELECT id FROM l10_todos WHERE folder_id=%s", (folder_id,), fetch=True) or []),
+        "l10_checkin": len(_users_exec(
+            "SELECT c.id FROM l10_checkin c JOIN l10_meetings m ON m.id=c.meeting_id "
+            "WHERE m.folder_id=%s", (folder_id,), fetch=True) or []),
+        "l10_scorecard_values": len(_users_exec(
+            "SELECT v.id FROM l10_scorecard_values v JOIN l10_meetings m ON m.id=v.meeting_id "
+            "WHERE m.folder_id=%s", (folder_id,), fetch=True) or []),
+        "l10_headlines": len(_users_exec(
+            "SELECT h.id FROM l10_headlines h JOIN l10_meetings m ON m.id=h.meeting_id "
+            "WHERE m.folder_id=%s", (folder_id,), fetch=True) or []),
+        "l10_ids_issues": len(_users_exec(
+            "SELECT i.id FROM l10_ids_issues i JOIN l10_meetings m ON m.id=i.meeting_id "
+            "WHERE m.folder_id=%s", (folder_id,), fetch=True) or []),
+        "l10_conclude": len(_users_exec(
+            "SELECT c.id FROM l10_conclude c JOIN l10_meetings m ON m.id=c.meeting_id "
+            "WHERE m.folder_id=%s", (folder_id,), fetch=True) or []),
+        "l10_ratings": len(_users_exec(
+            "SELECT r.id FROM l10_ratings r JOIN l10_meetings m ON m.id=r.meeting_id "
+            "WHERE m.folder_id=%s", (folder_id,), fetch=True) or []),
+    }
+
+
+def _l10_find_finance_folder():
+    rows = _users_exec(
+        "SELECT id, name, description, color FROM l10_folders "
+        "WHERE id NOT IN (1, 2) ORDER BY id",
+        fetch=True,
+    ) or []
+    return next((row for row in rows if _l10_finance_folder_matches(row.get("name"))), None)
+
+
+def _l10_insert_restored_row(cur, table, row, overrides):
+    columns = [
+        column for column in _L10_RESTORE_COLUMNS[table]
+        if column in row or column in overrides
+    ]
+    values = [overrides[column] if column in overrides else row.get(column)
+              for column in columns]
+    cur.execute(
+        f"INSERT INTO {table} ({', '.join(columns)}) "
+        f"VALUES ({', '.join(['%s'] * len(columns))}) RETURNING id",
+        values,
+    )
+    inserted = cur.fetchone()
+    return inserted["id"] if isinstance(inserted, dict) else inserted[0]
+
+
+def _l10_sync_folder_sequence(cur):
+    """Advance the serial sequence after explicit SLT/Supply Chain seed IDs."""
+    cur.execute(
+        "SELECT setval(pg_get_serial_sequence('l10_folders', 'id'), "
+        "COALESCE((SELECT MAX(id) FROM l10_folders), 1), true)"
+    )
+
+
+def _l10_assert_no_external_department_references(cur, folder_id):
+    """Stop before deleting a target that has cross-department FK dependencies.
+
+    Scorecard values and IDS entries cascade from both their meeting and their
+    metric/rock. A historic manually-created cross-link could therefore delete
+    a child owned by SLT or Supply Chain while replacing Finance. Treat that
+    corrupt relationship as a repair-required blocker, never as restore input.
+    """
+    cur.execute(
+        """
+        SELECT reference_type, record_id
+        FROM (
+            SELECT 'scorecard value crosses department' AS reference_type, v.id AS record_id
+            FROM l10_scorecard_values v
+            JOIN l10_meetings meeting ON meeting.id = v.meeting_id
+            JOIN l10_scorecard_metrics metric ON metric.id = v.metric_id
+            WHERE (meeting.folder_id = %s) <> (metric.folder_id = %s)
+
+            UNION ALL
+
+            SELECT 'IDS scorecard link crosses department', issue.id
+            FROM l10_ids_issues issue
+            JOIN l10_meetings meeting ON meeting.id = issue.meeting_id
+            JOIN l10_scorecard_metrics metric ON metric.id = issue.scorecard_metric_id
+            WHERE issue.scorecard_metric_id IS NOT NULL
+              AND (meeting.folder_id = %s) <> (metric.folder_id = %s)
+
+            UNION ALL
+
+            SELECT 'IDS rock link crosses department', issue.id
+            FROM l10_ids_issues issue
+            JOIN l10_meetings meeting ON meeting.id = issue.meeting_id
+            JOIN l10_rocks rock ON rock.id = issue.rock_id
+            WHERE issue.rock_id IS NOT NULL
+              AND (meeting.folder_id = %s) <> (rock.folder_id = %s)
+
+            UNION ALL
+
+            SELECT 'to-do references target meeting from another department', todo.id
+            FROM l10_todos todo
+            JOIN l10_meetings meeting
+              ON meeting.id = todo.opened_meeting_id
+              OR meeting.id = todo.closed_meeting_id
+            WHERE todo.folder_id <> %s
+              AND meeting.folder_id = %s
+        ) protected_references
+        LIMIT 1
+        """,
+        (folder_id, folder_id, folder_id, folder_id, folder_id, folder_id,
+         folder_id, folder_id),
+    )
+    bad_reference = cur.fetchone()
+    if bad_reference:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Finance & Operations restore is blocked because "
+                f"{bad_reference['reference_type']} (record {bad_reference['record_id']}) "
+                "would cross a department boundary. Repair that reference before retrying."
+            ),
+        )
+
+
+def _l10_delete_department_rows(cur, folder_id):
+    """Delete one Main BI department leaf-first; SLT and Supply Chain are fenced."""
+    if folder_id in (1, 2):
+        raise HTTPException(status_code=403, detail="SLT and Supply Chain cannot be restored over")
+    mtg_sub = "SELECT id FROM l10_meetings WHERE folder_id=%s"
+    for statement in (
+        f"DELETE FROM l10_ratings WHERE meeting_id IN ({mtg_sub})",
+        f"DELETE FROM l10_conclude WHERE meeting_id IN ({mtg_sub})",
+        f"DELETE FROM l10_ids_issues WHERE meeting_id IN ({mtg_sub})",
+        f"DELETE FROM l10_headlines WHERE meeting_id IN ({mtg_sub})",
+        f"DELETE FROM l10_scorecard_values WHERE meeting_id IN ({mtg_sub})",
+        f"DELETE FROM l10_checkin WHERE meeting_id IN ({mtg_sub})",
+        "DELETE FROM l10_todos WHERE folder_id=%s",
+        "DELETE FROM l10_rocks WHERE folder_id=%s",
+        "DELETE FROM l10_scorecard_metrics WHERE folder_id=%s",
+        "DELETE FROM l10_members WHERE folder_id=%s",
+        "DELETE FROM l10_meetings WHERE folder_id=%s",
+    ):
+        cur.execute(statement, (folder_id,))
+
+
+def _l10_restore_finance_source(cur, prepared, acting_email=None):
+    """Replace only Finance & Operations and remap every historic primary key."""
+    source = prepared["source"]
+    _l10_sync_folder_sequence(cur)
+    existing = _l10_find_finance_folder()
+    if existing:
+        target_folder_id = int(existing["id"])
+        _l10_assert_no_external_department_references(cur, target_folder_id)
+        _l10_delete_department_rows(cur, target_folder_id)
+        cur.execute(
+            "UPDATE l10_folders SET name=%s, description=%s, color=%s WHERE id=%s",
+            (
+                _L10_FINANCE_FOLDER_NAME,
+                source["l10_folders"][0].get("description"),
+                source["l10_folders"][0].get("color") or _L10_FINANCE_FOLDER_COLOR,
+                target_folder_id,
+            ),
+        )
+    else:
+        target_folder_id = _l10_insert_restored_row(
+            cur,
+            "l10_folders",
+            source["l10_folders"][0],
+            {
+                "name": _L10_FINANCE_FOLDER_NAME,
+                "color": source["l10_folders"][0].get("color") or _L10_FINANCE_FOLDER_COLOR,
+                "created_by": acting_email or source["l10_folders"][0].get("created_by"),
+            },
+        )
+
+    inserted = {"l10_folders": 1}
+    meeting_map, metric_map, rock_map = {}, {}, {}
+    for table, id_map, overrides in (
+        ("l10_meetings", meeting_map, {"folder_id": target_folder_id}),
+        ("l10_members", None, {"folder_id": target_folder_id}),
+        ("l10_scorecard_metrics", metric_map, {"folder_id": target_folder_id}),
+        ("l10_rocks", rock_map, {"folder_id": target_folder_id}),
+    ):
+        count = 0
+        for row in source[table]:
+            new_id = _l10_insert_restored_row(cur, table, row, overrides)
+            if id_map is not None:
+                id_map[int(row["id"])] = new_id
+            count += 1
+        inserted[table] = count
+
+    inserted["l10_todos"] = 0
+    for row in source["l10_todos"]:
+        _l10_insert_restored_row(
+            cur,
+            "l10_todos",
+            row,
+            {
+                "folder_id": target_folder_id,
+                "opened_meeting_id": meeting_map.get(
+                    int(row["opened_meeting_id"])) if row.get("opened_meeting_id") is not None else None,
+                "closed_meeting_id": meeting_map.get(
+                    int(row["closed_meeting_id"])) if row.get("closed_meeting_id") is not None else None,
+            },
+        )
+        inserted["l10_todos"] += 1
+
+    for table in ("l10_checkin", "l10_headlines", "l10_conclude", "l10_ratings"):
+        inserted[table] = 0
+        for row in source[table]:
+            _l10_insert_restored_row(
+                cur, table, row, {"meeting_id": meeting_map[int(row["meeting_id"])]})
+            inserted[table] += 1
+
+    inserted["l10_scorecard_values"] = 0
+    for row in source["l10_scorecard_values"]:
+        _l10_insert_restored_row(
+            cur,
+            "l10_scorecard_values",
+            row,
+            {
+                "meeting_id": meeting_map[int(row["meeting_id"])],
+                "metric_id": metric_map[int(row["metric_id"])],
+            },
+        )
+        inserted["l10_scorecard_values"] += 1
+
+    inserted["l10_ids_issues"] = 0
+    for row in source["l10_ids_issues"]:
+        overrides = {"meeting_id": meeting_map[int(row["meeting_id"])]}
+        if row.get("scorecard_metric_id") is not None:
+            overrides["scorecard_metric_id"] = metric_map[int(row["scorecard_metric_id"])]
+        if row.get("rock_id") is not None:
+            overrides["rock_id"] = rock_map[int(row["rock_id"])]
+        _l10_insert_restored_row(cur, "l10_ids_issues", row, overrides)
+        inserted["l10_ids_issues"] += 1
+
+    if inserted != prepared["source_counts"]:
+        raise RuntimeError("Finance & Operations restore counts did not reconcile")
+    return target_folder_id, inserted
+
+
+@app.get("/api/admin/l10/finance-operations/status")
+def l10_finance_operations_restore_status(request: Request):
+    """Report the safe recovery state without creating a department or data."""
+    _l10_require_admin_request(request)
+    _ensure_l10_tables()
+    existing = _l10_find_finance_folder()
+    if existing:
+        return {
+            "status": "restored_workspace_present",
+            "target": existing,
+            "target_counts": _l10_folder_record_counts(int(existing["id"])),
+            "message": "Finance & Operations is present. Upload a verified source only to replace this department.",
+        }
+    return {
+        "status": "missing_source",
+        "target": None,
+        "message": (
+            "No verified Finance & Operations source is available in this environment. "
+            "Upload the original Main BI L10 JSON export containing exactly one "
+            "Finance & Operations folder and all per-table row_counts."
+        ),
+        "required_tables": _L10_INSERT_ORDER,
+    }
+
+
+@app.post("/api/admin/l10/finance-operations/restore")
+async def l10_restore_finance_operations(request: Request):
+    """Preview or safely restore the Finance & Operations history only.
+
+    The preview is non-mutating.  A confirming request takes a current Main BI
+    snapshot first, then replaces only the named department in one transaction.
+    Source IDs are never reused, so historic IDs cannot collide with SLT or the
+    Fabric-owned Supply Chain series.
+    """
+    _l10_require_admin_request(request)
+    _ensure_l10_tables()
+    body = await request.json()
+    snapshot = body.get("snapshot") if isinstance(body, dict) else None
+    prepared = _l10_validate_finance_source(snapshot)
+    existing = _l10_find_finance_folder()
+    pre_restore = {
+        "target": existing,
+        "target_counts": _l10_folder_record_counts(int(existing["id"]))
+        if existing else {table: 0 for table in _L10_INSERT_ORDER},
+    }
+    response = {
+        "source": prepared["source_metadata"],
+        "source_counts": prepared["source_counts"],
+        "pre_restore": pre_restore,
+        "target_name": _L10_FINANCE_FOLDER_NAME,
+    }
+    if not body.get("confirm"):
+        return {**response, "status": "ready_to_restore"}
+
+    acting = getattr(request.state, "user", {})
+    with _users_tx() as cur:
+        cur.execute("SELECT pg_advisory_xact_lock(%s)", (_L10_IMPORT_LOCK_KEY,))
+        # This durable snapshot is captured after the mutual-exclusion lock and
+        # before any delete. Direct API confirmation is therefore as recoverable
+        # as the UI flow; a browser download is only a convenient second copy.
+        current_snapshot = _l10_export_snapshot_from_cursor(cur, fabric=False)
+        backup_id = _l10_store_finance_restore_backup(
+            cur,
+            current_snapshot,
+            actor=acting.get("email"),
+            target_folder_id=int(existing["id"]) if existing else None,
+            source_metadata=prepared["source_metadata"],
+        )
+        target_folder_id, inserted = _l10_restore_finance_source(
+            cur, prepared, acting.get("email"))
+        _reset_l10_sequences(cur)
+
+    if inserted != prepared["source_counts"]:
+        raise HTTPException(status_code=500, detail="Finance restore count reconciliation failed")
+    return {
+        **response,
+        "status": "restored",
+        "target": {
+            "folder_id": target_folder_id,
+            "name": _L10_FINANCE_FOLDER_NAME,
+        },
+        "restored_counts": inserted,
+        "reconciled": True,
+        "total_rows": sum(inserted.values()),
+        "pre_restore_backup": {
+            "id": backup_id,
+            "row_counts": current_snapshot["row_counts"],
+            "download_path": f"/api/admin/l10/finance-operations/backups/{backup_id}",
+        },
+    }
+
+
+@app.get("/api/admin/l10/finance-operations/backups/{backup_id}")
+def l10_download_finance_restore_backup(backup_id: int, request: Request):
+    """Return the durable Main BI snapshot created immediately before a restore."""
+    _l10_require_admin_request(request)
+    _ensure_l10_tables()
+    rows = _users_exec(
+        "SELECT snapshot FROM l10_finance_restore_backups WHERE id=%s",
+        (backup_id,),
+        fetch=True,
+    ) or []
+    if not rows:
+        raise HTTPException(status_code=404, detail="Finance restore backup not found")
+    return rows[0]["snapshot"]
 
 
 @app.post("/api/admin/l10/import")

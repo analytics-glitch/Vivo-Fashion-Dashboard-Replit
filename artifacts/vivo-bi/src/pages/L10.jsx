@@ -1678,8 +1678,238 @@ const L10MigrationPanel = () => {
   );
 };
 
+// ─── Finance & Operations Recovery (admin only) ───────────────────────────────
+const FinanceOperationsRestorePanel = ({ onRestored }) => {
+  const fileRef = useRef(null);
+  const [status, setStatus] = useState(null);
+  const [snapshot, setSnapshot] = useState(null);
+  const [preview, setPreview] = useState(null);
+  const [error, setError] = useState(null);
+  const [restoring, setRestoring] = useState(false);
+  const [result, setResult] = useState(null);
+
+  const loadStatus = useCallback(() => {
+    api.get("/admin/l10/finance-operations/status", { forceFresh: true })
+      .then((r) => setStatus(r.data))
+      .catch((e) => setError(e?.response?.data?.detail || e.message || "Could not check recovery status."));
+  }, []);
+
+  useEffect(() => { loadStatus(); }, [loadStatus]);
+
+  const clear = () => {
+    setSnapshot(null);
+    setPreview(null);
+    setError(null);
+    setResult(null);
+    if (fileRef.current) fileRef.current.value = "";
+  };
+
+  const selectSnapshot = (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setError(null);
+    setPreview(null);
+    setResult(null);
+    const reader = new FileReader();
+    reader.onload = async (readEvent) => {
+      try {
+        const parsed = JSON.parse(readEvent.target.result);
+        if (!parsed?.tables || !parsed?.row_counts) {
+          throw new Error("Choose a complete L10 JSON export with tables and row_counts.");
+        }
+        setSnapshot(parsed);
+        const { data } = await api.post("/admin/l10/finance-operations/restore", {
+          snapshot: parsed,
+          confirm: false,
+        });
+        setPreview(data);
+      } catch (e) {
+        setSnapshot(null);
+        setError(e?.response?.data?.detail || e.message || "The recovery source could not be verified.");
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  const downloadCurrentBackup = async () => {
+    const { data } = await api.get("/admin/l10/export");
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `l10-before-finance-operations-restore-${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const downloadDurableBackup = async () => {
+    if (!result?.pre_restore_backup?.download_path) return;
+    try {
+      const { data } = await api.get(result.pre_restore_backup.download_path);
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `l10-server-backup-before-finance-operations-restore-${result.pre_restore_backup.id}.json`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setError(e?.response?.data?.detail || e.message || "Could not download the server backup.");
+    }
+  };
+
+  const restore = async () => {
+    if (!snapshot || !preview) return;
+    setRestoring(true);
+    setError(null);
+    try {
+      // The backup must finish before the request that can replace department rows.
+      await downloadCurrentBackup();
+      const { data } = await api.post("/admin/l10/finance-operations/restore", {
+        snapshot,
+        confirm: true,
+      });
+      setResult(data);
+      setSnapshot(null);
+      setPreview(null);
+      if (fileRef.current) fileRef.current.value = "";
+      loadStatus();
+      if (data?.target?.folder_id) onRestored?.(data.target.folder_id);
+    } catch (e) {
+      setError(e?.response?.data?.detail || e.message || "Restore failed. Live L10 data was not changed.");
+    } finally {
+      setRestoring(false);
+    }
+  };
+
+  const rows = result?.restored_counts || preview?.source_counts;
+  const isPresent = status?.status === "restored_workspace_present";
+
+  return (
+    <div className="rounded-xl border bg-card" data-testid="finance-operations-restore">
+      <div className="px-4 py-3 border-b bg-muted/20 flex items-center gap-2">
+        <Database size={14} className="text-muted-foreground" />
+        <div>
+          <h2 className="text-sm font-semibold">Finance &amp; Operations Recovery</h2>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Restores only this Main BI department. SLT and Supply Chain are never included.
+          </p>
+        </div>
+      </div>
+      <div className="p-4 space-y-3">
+        {status && (
+          <div className={`text-xs rounded-md border px-3 py-2 ${
+            isPresent
+              ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+              : "border-amber-200 bg-amber-50 text-amber-800"
+          }`}>
+            {status.message}
+          </div>
+        )}
+
+        {!snapshot && !result && (
+          <label className="flex items-center gap-3 cursor-pointer border-2 border-dashed border-border rounded-lg px-4 py-3 hover:border-primary/40 transition-colors">
+            <UploadSimple size={18} className="text-muted-foreground shrink-0" />
+            <span className="text-sm font-medium">Choose verified Finance &amp; Operations snapshot</span>
+            <input
+              ref={fileRef}
+              type="file"
+              accept=".json,application/json"
+              className="sr-only"
+              onChange={selectSnapshot}
+              data-testid="finance-operations-restore-file"
+            />
+          </label>
+        )}
+
+        {error && (
+          <div className="flex items-start gap-2 text-xs text-red-700 bg-red-50 border border-red-200 rounded-md px-3 py-2">
+            <Warning size={13} weight="fill" className="mt-0.5 shrink-0" />
+            <span className="flex-1">{error}</span>
+            <button type="button" onClick={clear} className="underline">Clear</button>
+          </div>
+        )}
+
+        {rows && (
+          <div className="overflow-x-auto rounded-md border border-border">
+            <table className="w-full text-xs">
+              <thead className="bg-muted/20">
+                <tr>
+                  <th className="text-left px-3 py-2 font-semibold text-muted-foreground">Verified section</th>
+                  <th className="text-right px-3 py-2 font-semibold text-muted-foreground">
+                    {result ? "Restored rows" : "Source rows"}
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {Object.entries(rows).map(([table, count]) => (
+                  <tr key={table} className="border-t border-border">
+                    <td className="px-3 py-1.5 font-mono">{table}</td>
+                    <td className="px-3 py-1.5 text-right tabular-nums">{Number(count).toLocaleString()}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {preview && !result && (
+          <div className="space-y-3">
+            <p className="text-xs text-muted-foreground">
+              Source: <strong className="text-foreground">{preview.source?.folder_name}</strong>
+              {preview.source?.exported_at && <> · exported {new Date(preview.source.exported_at).toLocaleString()}</>}
+              {" "}· the current Main BI snapshot will download before restore.
+            </p>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={restore}
+                disabled={restoring}
+                className="inline-flex items-center gap-2 text-sm font-semibold bg-primary text-primary-foreground px-4 py-1.5 rounded-lg hover:opacity-90 disabled:opacity-50"
+              >
+                {restoring ? <><CircleNotch size={13} className="animate-spin" /> Restoring…</> : <>Download Backup &amp; Restore</>}
+              </button>
+              <button
+                type="button"
+                onClick={clear}
+                disabled={restoring}
+                className="text-sm font-semibold text-muted-foreground border border-border px-4 py-1.5 rounded-lg hover:bg-muted disabled:opacity-50"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
+        {result && (
+          <div className="space-y-2">
+            <div className="flex items-center gap-2 text-sm font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-md px-3 py-2">
+              <CheckCircle size={15} weight="fill" />
+              Restored and reconciled — {result.total_rows?.toLocaleString()} rows in Finance &amp; Operations.
+            </div>
+            <div className="flex flex-wrap gap-x-4 gap-y-2">
+              {result.pre_restore_backup?.id && (
+                <button type="button" onClick={downloadDurableBackup} className="text-xs font-medium text-primary underline hover:opacity-80">
+                  Download server backup #{result.pre_restore_backup.id}
+                </button>
+              )}
+              <button type="button" onClick={clear} className="text-xs text-muted-foreground underline hover:text-foreground">
+                Restore another verified source
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
 // ─── Admin Tab ────────────────────────────────────────────────────────────────
-const AdminTab = ({ members, onMembersChanged, settings, onSettingsChanged, folderId = 1, isAdmin = false }) => {
+const AdminTab = ({ members, onMembersChanged, settings, onSettingsChanged, onFinanceRestored, folderId = 1, isAdmin = false }) => {
   const [metrics, setMetrics] = useState([]);
   const [rocks, setRocks] = useState([]);
   const [loadingMetrics, setLoadingMetrics] = useState(true);
@@ -1981,7 +2211,12 @@ const AdminTab = ({ members, onMembersChanged, settings, onSettingsChanged, fold
       </div>
 
       {/* Data Migration — admin only */}
-      {isAdmin && <L10MigrationPanel />}
+      {isAdmin && (
+        <>
+          <FinanceOperationsRestorePanel onRestored={onFinanceRestored} />
+          <L10MigrationPanel />
+        </>
+      )}
     </div>
   );
 };
@@ -2122,12 +2357,14 @@ const L10 = () => {
 
   const currentMeeting = meetings.find((m) => m.id === meetingId);
 
-  // Load folders once
-  useEffect(() => {
+  const reloadFolders = useCallback(() => (
     api.get("/l10/folders", { forceFresh: true })
       .then((r) => setFolders((r.data || []).filter((folder) => folder.id !== 2)))
-      .catch(() => {});
-  }, []);
+      .catch(() => {})
+  ), []);
+
+  // Load folders once and again after an admin restores a department.
+  useEffect(() => { reloadFolders(); }, [reloadFolders]);
 
   const reloadMeetings = useCallback((folderIdOverride) => {
     const fid = folderIdOverride ?? folderId;
@@ -2181,6 +2418,12 @@ const L10 = () => {
     setMeetingId(null);
     setMeetings([]);
     setMembers([]);
+  };
+
+  const handleFinanceRestored = (id) => {
+    reloadFolders();
+    setTab("agenda");
+    switchFolder(id);
   };
 
   const downloadExcel = async () => {
@@ -2442,6 +2685,7 @@ const L10 = () => {
                 onMembersChanged={reloadMembers}
                 settings={settings}
                 onSettingsChanged={reloadSettings}
+                onFinanceRestored={handleFinanceRestored}
                 folderId={folderId}
                 isAdmin={isAdmin}
               />
