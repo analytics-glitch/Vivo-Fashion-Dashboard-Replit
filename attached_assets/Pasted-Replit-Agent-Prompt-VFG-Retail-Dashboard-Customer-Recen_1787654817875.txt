@@ -1,0 +1,151 @@
+Replit Agent Prompt — VFG Retail Dashboard: Customer Recency KPIs + Footfall/Conversion Row
+Context
+
+You are extending an existing BI dashboard for Vivo Fashion Group — a retail fashion brand with 31 locations across Kenya, Uganda, and Rwanda. The dashboard is at /retail. The existing page already shows a KPI row with: Total Sales, Transactions, Total Units, ABV (Average Basket Value), ASP (Average Selling Price), and MSI (Multiple Sales Index).
+
+You are adding two things:
+
+Three new KPI tiles (Footfall, Conversion Rate, Unique Customers) appended to the right of the existing KPI row.
+A new Customer Recency row directly beneath the existing KPI row, showing how the current active customer base is distributed across five engagement/risk buckets — with network-level totals and a per-store breakdown, and a CSV download on every card.
+
+All additions must respect the existing page's filters: date range, currency, country, cluster, and POS selection. Every metric must update when these filters change.
+
+Part 1 — Add to existing KPI row (right side)
+
+Append three new tiles to the right of the current MSI card, matching the existing card design exactly:
+
+Footfall
+Label: FOOTFALL
+Value: Total visitor count for the selected period and stores (from footfall data source, if connected; otherwise show a "--" placeholder with tooltip "Footfall data not yet connected")
+Sub-line: vs Last Period with % change (up arrow green, down arrow red)
+CTA button: "Sort by Footfall →" — clicking re-sorts the store cards below by footfall descending
+CSV download: small download icon in the top-right corner of the card. CSV contains: Store Name, Footfall Count, vs Last Period, % Change — one row per store
+Conversion Rate
+Label: CONVERSION
+Definition: Transactions ÷ Footfall × 100. If footfall is not yet connected, show "--"
+Value: Shown as a percentage, e.g. "4.7%"
+Sub-line: vs Last Period with % change
+CTA button: "Sort by Conversion →"
+CSV download: Store Name, Transactions, Footfall, Conversion Rate, vs Last Period — one row per store
+Unique Customers
+Label: UNIQUE CUSTOMERS
+Definition: Count of distinct customer IDs with at least one transaction in the selected period and stores
+Value: Integer with comma formatting, e.g. "24,381"
+Sub-line: vs Last Period with % change
+CTA button: "Sort by Customers →"
+CSV download: Store Name, Unique Customers, vs Last Period, % Change — one row per store
+Part 2 — New Customer Recency row
+
+Place this as a full-width section immediately below the existing KPI tile row, before the Store Overview / Heatmap sub-tabs. Give it a subtle section header:
+
+CUSTOMER ENGAGEMENT STATUS  [ⓘ tooltip: "Days since each customer's last purchase, as of today. Updates daily. Filtered by selected stores and date range."]
+Five recency bucket cards
+
+Display five cards side by side in a single row. Each card represents one engagement tier based on how many days have elapsed since the customer's last purchase in any of the currently selected stores.
+
+Card	Label	Days since last purchase	Colour theme	Risk level
+1	ACTIVE	0 – 90 days	Green	Safe
+2	COOLING	91 – 180 days	Amber	Watch
+3	AT RISK	181 – 270 days	Orange	Elevated
+4	HIGH RISK	271 – 365 days	Red	High
+5	LAPSED	365+ days	Dark grey/charcoal	Critical
+
+Each card must show:
+
+Primary metric (large): Customer count in this bucket, e.g. "8,241"
+
+Secondary line: Percentage of total unique customer base, e.g. "33.8% of customers"
+
+Trend indicator: vs same period last year — show the count last year and the % change. If count is growing in the Cooling/At Risk/High Risk/Lapsed buckets, that is a negative signal — colour it red. If shrinking, colour it green. (Reverse logic from revenue: fewer at-risk customers is good.)
+
+Revenue at Risk line (for Cooling, At Risk, High Risk, Lapsed cards only): Estimated revenue at risk = customer count × their average historical spend per visit. Show as "~KES Xm at risk". Use muted text styling — this is an estimate, not a hard number.
+
+Expand/collapse toggle: A small "↓ By store" chevron in the bottom-right. When clicked, the card expands vertically to show a mini-table inside the card:
+
+Store	Customers	% of store base	Change vs LY
+Vivo Sarit	412	6.8%	+12
+Vivo Junction	389	7.8%	−44
+...	...	...	...
+
+Sort the store mini-table by customer count descending. Show a maximum of 10 stores in the expanded view; show a "View all →" link below if more than 10.
+
+CSV download: A small download icon (↓) in the top-right corner of each card. When clicked, download a CSV with the following columns:
+
+For network-level card: Store Name, Bucket (e.g. "Active 0-90d"), Customer Count, % of Store Total, Average Spend (KES), Revenue at Risk (KES), vs Last Year Count, vs Last Year %
+One row per store, sorted by customer count descending
+Filename: VFG_Recency_[BucketName]_[DateRange].csv
+Summary callout beneath the five cards
+
+After the five cards, show a one-line calculated summary in a light banner:
+
+[X]% of your customer base hasn't shopped in over 180 days — approximately KES [Y]M in at-risk spend.
+
+Calculate X as: (At Risk + High Risk + Lapsed) ÷ Total Unique Customers × 100. Calculate Y as: sum of Revenue at Risk across At Risk, High Risk, and Lapsed cards.
+
+Colour the banner background amber if X is below 40%, red if X is 40% or above.
+
+Data model
+Source: customer transaction data (Odoo POS/ERP)
+
+For the recency calculation, you need:
+
+SELECT
+  customer_id,
+  store_name,
+  MAX(order_date) AS last_purchase_date,
+  DATEDIFF(CURDATE(), MAX(order_date)) AS days_since_last_purchase,
+  COUNT(DISTINCT order_id) AS total_orders,
+  SUM(amount_total) / COUNT(DISTINCT order_id) AS avg_spend_per_visit
+FROM pos_orders
+WHERE customer_id IS NOT NULL
+GROUP BY customer_id, store_name
+
+Then assign each (customer_id, store_name) pair to a bucket based on days_since_last_purchase.
+
+Important: A customer who shops at multiple stores should appear in the recency bucket corresponding to their MOST RECENT purchase across ALL selected stores, not once per store. However, in the per-store breakdown inside each expanded card, attribute that customer to the store where their most recent purchase occurred.
+
+Source: footfall data
+
+Footfall should come from your footfall sensor/data source (e.g. a separate API or table). If not yet integrated, show placeholder cards with "--" values and a banner: "Connect footfall data source to unlock these metrics → [Settings]"
+
+Respecting existing filters
+
+All recency metrics must honour:
+
+Date range filter (e.g. "Last 90 days") — "days since last purchase" is calculated relative to the END date of the selected range, not today, so historical views remain consistent
+POS / store selection — only include customers who have transacted at one of the currently selected stores
+Country / Cluster filters
+UI behaviour
+The recency row should be collapsible — a "Hide customer health ↑" / "Show customer health ↓" toggle at the right edge of the section header so users who don't need it can collapse it
+On mobile, the five cards should stack vertically (one per row) rather than horizontally
+The expanded store mini-table inside each card should be scrollable if it exceeds ~300px in height, not overflow the card
+All five CSV downloads should also be available as a single combined download: add a "Download all recency data →" text link at the end of the section header row that downloads one CSV containing all five buckets, all stores, all columns
+Visual design
+
+Match the existing dashboard's design exactly:
+
+Card background: warm cream/off-white (matching existing KPI tiles)
+Section header: small caps, muted colour, same styling as "TOTAL SALES" etc.
+Active bucket: use the existing green accent colour
+Cooling: amber (
+#F59E0B or similar)
+At Risk: orange (
+#EA580C or similar)
+High Risk: red (
+#DC2626 or similar)
+Lapsed: charcoal (
+#374151 or similar)
+The colour should appear as a left border stripe on each card (4px), not as the card background — keep backgrounds consistent with existing tiles
+Revenue at Risk figures should appear in a smaller, muted font below the main count
+Download icon: a simple ↓ or cloud-down icon, positioned top-right of each card, 16px, muted colour that darkens on hover
+Acceptance criteria
+ Three new KPI tiles (Footfall, Conversion, Unique Customers) appear to the right of MSI in the existing row
+ Five recency bucket cards appear in a new full-width row below the existing KPI row
+ Each recency card shows: customer count, % of total, trend vs LY, revenue at risk estimate
+ Each card has a working "↓ By store" expand that shows the per-store breakdown
+ Each card has a working CSV download that exports the correct data with the correct filename
+ A "Download all recency data" link downloads a combined CSV
+ The summary callout below the cards shows the correct % and KES at-risk figure
+ All metrics update correctly when date range, store selection, country, or cluster filters change
+ The recency row is collapsible
+ Page renders correctly on both desktop and mobile
