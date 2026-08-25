@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useLocation } from "react-router-dom";
 import { api } from "@/lib/api";
 import { ErrorBox, Loading, SectionTitle } from "@/components/common";
 import {
@@ -311,6 +312,7 @@ function BulkTools({ reason, canPlan, onSaved }) {
 }
 
 export default function ProductionWorkspace() {
+  const location = useLocation();
   const [data, setData] = useState(null);
   const [selectedPlanId, setSelectedPlanId] = useState("");
   const [detail, setDetail] = useState(null);
@@ -320,6 +322,11 @@ export default function ProductionWorkspace() {
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  // Command Centre drill-downs retain the selected approved plan in the hub
+  // URL. The workspace remains independently usable when it is absent.
+  useEffect(() => {
+    setSelectedPlanId(new URLSearchParams(location.search).get("prod_plan") || "");
+  }, [location.search]);
 
   const refresh = useCallback(async () => {
     setLoading(true); setError(null);

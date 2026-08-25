@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
 import { api } from "@/lib/api";
 import { SectionTitle, Loading, ErrorBox } from "@/components/common";
 import ProductionOrderModal from "@/components/ProductionOrderModal";
@@ -554,6 +555,7 @@ function Production() {
 // can access ANY tab, and /production-report redirects here with ?tab=report.
 const ProductionReportTab = React.lazy(() => import("./ProductionReport"));
 const ProductionOverviewTab = React.lazy(() => import("./ProductionOverview"));
+const ProductionCommandCentreTab = React.lazy(() => import("./ProductionCommandCentre"));
 const StyleTrackerTab = React.lazy(() => import("./StyleTracker"));
 const ProductionWallboardTab = React.lazy(() => import("./ProductionWallboard"));
 const ProductionWorkspaceTab = React.lazy(() => import("./ProductionWorkspace"));
@@ -561,6 +563,7 @@ const ProductionExecutionTab = React.lazy(() => import("./ProductionExecution"))
 const ProductionInsightsTab = React.lazy(() => import("./ProductionInsights"));
 
 const PROD_TABS = [
+  { id: "dashboard", label: "Command Centre", pageId: "production-workspace", el: ProductionCommandCentreTab },
   { id: "overview", label: "Overview", pageId: "production", el: ProductionOverviewTab },
   { id: "tracker", label: "Production Tracker", pageId: "production", el: null },
   { id: "workspace", label: "Planning Workspace", pageId: "production-workspace", el: ProductionWorkspaceTab },
@@ -573,14 +576,32 @@ const PROD_TABS = [
 
 const ProductionPipelinePage = () => {
   const { user } = useAuth();
+  const navigate = useNavigate();
   const visibleTabs = PROD_TABS.filter((t) => canAccessPage(user, t.pageId));
   const initialTab = (() => {
     const wanted = new URLSearchParams(window.location.search).get("tab");
     return visibleTabs.some((t) => t.id === wanted) ? wanted : (visibleTabs[0]?.id || "tracker");
   })();
   const [tab, setTab] = useState(initialTab);
+  useEffect(() => {
+    const syncTab = () => {
+      const wanted = new URLSearchParams(window.location.search).get("tab");
+      if (visibleTabs.some((item) => item.id === wanted)) setTab(wanted);
+    };
+    window.addEventListener("popstate", syncTab);
+    return () => window.removeEventListener("popstate", syncTab);
+  }, [visibleTabs]);
   const active = visibleTabs.find((t) => t.id === tab) || visibleTabs[0];
   const ActiveEl = active?.el;
+  const selectTab = useCallback((nextTab, extra = {}) => {
+    const search = new URLSearchParams(window.location.search);
+    search.set("tab", nextTab);
+    Object.entries(extra).forEach(([key, value]) => {
+      if (value != null && value !== "") search.set(`prod_${key}`, String(value));
+    });
+    navigate({ pathname: window.location.pathname, search: `?${search.toString()}` });
+    setTab(nextTab);
+  }, [navigate]);
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-1.5 border-b border-border overflow-x-auto" data-testid="prod-tabs">
@@ -588,7 +609,7 @@ const ProductionPipelinePage = () => {
           <button
             key={t.id}
             type="button"
-            onClick={() => setTab(t.id)}
+            onClick={() => selectTab(t.id)}
             data-testid={`prod-tab-${t.id}`}
             className={
               "px-3.5 py-2 text-[13px] font-medium border-b-2 -mb-px transition-colors whitespace-nowrap " +
@@ -608,7 +629,17 @@ const ProductionPipelinePage = () => {
           <ActiveEl
             onOpenReport={
               visibleTabs.some((t) => t.id === "report")
-                ? () => setTab("report")
+                ? () => selectTab("report")
+                : null
+            }
+            onOpenWorkspace={
+              visibleTabs.some((t) => t.id === "workspace")
+                ? (plan) => selectTab("workspace", {
+                  factory_id: plan?.factory_id,
+                  line_id: plan?.line_id,
+                  shift_id: plan?.shift_id,
+                  plan: plan?.plan_version_id,
+                })
                 : null
             }
           />

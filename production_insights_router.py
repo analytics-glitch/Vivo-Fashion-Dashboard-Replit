@@ -8,7 +8,8 @@ turns a missing denominator into a zero or a ranking.
 import json
 import logging
 import os
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from fastapi import Body, Request
 from fastapi.responses import JSONResponse
@@ -25,6 +26,19 @@ ACTION_ROLES = {"admin", "production", "leadership", "smt"}
 ACTION_STATUSES = {"open", "in_progress", "blocked", "resolved", "closed"}
 QUALITY_ROLES = {"quality", "fabric_quality_supervisor"}
 PRODUCT_ROLES = {"product_development"}
+
+# One place for the thresholds exposed by the Command Centre.  They are part
+# of the response contract so a stand-up can see *why* a commitment is marked
+# for attention instead of relying on a hidden UI-only rule.
+COMMAND_CENTRE_THRESHOLDS = {
+    "tracker_stale_seconds": 2 * 60 * 60,
+    "source_stale_hours": 24,
+    "due_soon_days": 14,
+    "urgent_due_days": 7,
+    "early_stages": ("buying_order", "cutting", "waiting_sewing", "sewing"),
+    "high_load_pct": 85,
+    "overloaded_pct": 100,
+}
 
 
 def _jsonable(value):
@@ -87,6 +101,36 @@ def _number(value):
         return float(value or 0)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _nullable_sum(rows, field, *, when=None):
+    """Sum only when every included source row carries the measure.
+
+    A command metric is a decision aid, not a best-effort estimate.  Returning
+    ``None`` makes partial source capture visible to the caller; returning zero
+    would falsely imply that the factory produced nothing or had no quality
+    events.
+    """
+    selected = [row for row in rows if when is None or when(row)]
+    if not selected or any(row.get(field) is None for row in selected):
+        return None
+    return sum(_number(row.get(field)) for row in selected)
+
+
+def _freshness_state(timestamp, *, stale_hours=None):
+    if not timestamp:
+        return {"state": "missing", "as_of": None}
+    stale_hours = stale_hours or COMMAND_CENTRE_THRESHOLDS["source_stale_hours"]
+    try:
+        value = timestamp if isinstance(timestamp, date) else date.fromisoformat(str(timestamp)[:10])
+        age_days = max(0, (date.today() - value).days)
+        return {
+            "state": "stale" if age_days * 24 > stale_hours else "fresh",
+            "as_of": _jsonable(timestamp),
+            "age_hours": age_days * 24,
+        }
+    except (TypeError, ValueError):
+        return {"state": "unknown", "as_of": _jsonable(timestamp)}
 
 
 def _ensure_tables():
@@ -207,6 +251,7 @@ WITH selected_plans AS (
       AND p.planned_start <= %s AND p.planned_end >= %s
       AND (NULLIF(%s,'') IS NULL OR p.factory_id=NULLIF(%s,'')::bigint)
       AND (NULLIF(%s,'') IS NULL OR p.line_id=NULLIF(%s,'')::bigint)
+      AND (NULLIF(%s,'') IS NULL OR p.shift_id=NULLIF(%s,'')::bigint)
 ),
 outputs AS (
     SELECT plan_version_id, assignment_id,
@@ -255,7 +300,7 @@ SELECT sp.id AS plan_version_id, sp.version_no, sp.status,
        sp.planned_start, sp.planned_end, sp.planned_qty,
        sp.external_ref, sp.style_number, sp.description,
        sp.production_order_ref, sp.stage_key AS current_stage,
-       sp.factory_id, sp.factory_name, sp.line_id,
+       sp.factory_id, sp.factory_name, sp.line_id, sp.shift_id,
        COALESCE(sp.plan_line_name,'Unassigned line') AS line_name,
        a.id AS assignment_id, a.assignment_role, a.planned_minutes,
        o.id AS operator_id, o.user_id AS operator_user_id,
@@ -284,10 +329,11 @@ ORDER BY sp.factory_name, line_name, operator_name NULLS LAST, sp.planned_start
 """
 
 
-def _productivity_rows(start, end, actor, factory_id="", line_id=""):
+def _productivity_rows(start, end, actor, factory_id="", line_id="", shift_id=""):
     params = [
         end, start, str(factory_id or ""), str(factory_id or ""),
         str(line_id or ""), str(line_id or ""),
+        str(shift_id or ""), str(shift_id or ""),
         start, end, start, end, start, end, start, end,
         actor["role"], actor["user_id"], actor["user_id"],
     ]
@@ -321,7 +367,7 @@ attendance AS (
         )
         # Remove the two attendance parameters immediately before the role
         # filters in the fallback call.
-        fallback_params = params[:12] + params[14:]
+        fallback_params = params[:14] + params[16:]
         return _db(fallback, fallback_params, fetch=True)
 
 
@@ -559,7 +605,7 @@ SELECT p.id AS plan_version_id, p.version_no, p.planned_start, p.planned_end,
        p.planned_qty, p.owner_user_id, wi.id AS work_item_id,
        wi.external_ref, wi.style_number, wi.production_order_ref,
        COALESCE(w.tracker_stage, wi.stage_key) AS current_stage, f.name AS factory_name,
-       l.name AS line_name, p.factory_id, p.line_id,
+       l.name AS line_name, p.factory_id, p.line_id, p.shift_id, p.status,
        x.good_qty, x.reject_qty, x.rework_qty,
        x.last_output_date,
        e.downtime_minutes, e.qc_defect_qty, e.qc_rework_qty,
@@ -578,13 +624,16 @@ WHERE p.status IN ('approved','frozen')
   AND p.planned_start <= %s AND p.planned_end >= %s
   AND (NULLIF(%s,'') IS NULL OR p.factory_id=NULLIF(%s,'')::bigint)
   AND (NULLIF(%s,'') IS NULL OR p.line_id=NULLIF(%s,'')::bigint)
+  AND (NULLIF(%s,'') IS NULL OR p.shift_id=NULLIF(%s,'')::bigint)
+  AND (NULLIF(%s,'') IS NULL OR p.status=NULLIF(%s,''))
 ORDER BY p.planned_end, f.name, l.name, wi.style_number
 """
 
 
-def _recovery_candidates(start, end, factory_id="", line_id=""):
+def _recovery_candidates(start, end, factory_id="", line_id="", shift_id="", plan_status=""):
     params = [end, start, end, end, start, str(factory_id or ""), str(factory_id or ""),
-              str(line_id or ""), str(line_id or "")]
+              str(line_id or ""), str(line_id or ""), str(shift_id or ""), str(shift_id or ""),
+              str(plan_status or ""), str(plan_status or "")]
     rows = _db(_RECOVERY_SQL, params, fetch=True)
     # Every delivery-position signal is evaluated as of the selected end date.
     # The tracker balance view is live-only, so it is deliberately withheld
@@ -910,6 +959,412 @@ def _action_audit(action_id, request):
     return {"action_id": action_id, "audit": _rows(rows)}
 
 
+def _command_scope(request, *, stage="", factory_id="", line_id="", shift_id="", owner_user_id="",
+                   plan_status="", delivery_risk="", search=""):
+    """Build the Command Centre's explicit production-only scope.
+
+    Sales filters deliberately do not enter this function: country, POS,
+    channel, currency and comparison periods have no verified mapping to the
+    production tracker or workspace ledgers.
+    """
+    actor = _actor(request)
+    return {
+        "actor": actor,
+        "stage": str(stage or "").strip(),
+        "factory_id": str(factory_id or "").strip(),
+        "line_id": str(line_id or "").strip(),
+        "shift_id": str(shift_id or "").strip(),
+        "owner_user_id": str(owner_user_id or "").strip(),
+        "plan_status": str(plan_status or "").strip().lower(),
+        "delivery_risk": str(delivery_risk or "").strip().lower(),
+        "search": str(search or "").strip(),
+        "unsupported_sales_filters": [
+            "country", "channel", "POS", "currency", "comparison period",
+        ],
+    }
+
+
+def _command_plan_rows(start, end, scope):
+    """Return approved-plan facts at plan grain without inventing joins.
+
+    Every measure is isolated in a correlated aggregate.  Joining assignments,
+    capacity inputs and execution rows directly would fan out quantities and
+    create deceptively precise plan/actual or quality numbers.
+    """
+    return _db(
+        """
+        SELECT p.id AS plan_version_id,p.status,p.planned_start,p.planned_end,p.planned_qty,
+               p.owner_user_id,p.updated_at AS plan_fresh_at,
+               wi.id AS work_item_id,wi.external_ref,wi.style_number,
+               wi.production_order_ref,wi.stage_key,
+               f.id AS factory_id,f.name AS factory_name,
+               l.id AS line_id,l.name AS line_name,
+               sh.id AS shift_id,sh.name AS shift_name,
+               (SELECT SUM(ci.available_minutes)
+                  FROM production_workspace_capacity_inputs ci
+                 WHERE ci.plan_version_id=p.id) AS available_minutes,
+               (SELECT SUM(ci.required_minutes)
+                  FROM production_workspace_capacity_inputs ci
+                 WHERE ci.plan_version_id=p.id) AS required_minutes,
+               (SELECT SUM(o.good_qty)
+                  FROM production_workspace_execution_output o
+                 WHERE o.plan_version_id=p.id AND o.capture_date BETWEEN %s AND %s) AS good_qty,
+               (SELECT SUM(o.reject_qty)
+                  FROM production_workspace_execution_output o
+                 WHERE o.plan_version_id=p.id AND o.capture_date BETWEEN %s AND %s) AS reject_qty,
+               (SELECT SUM(o.rework_qty)
+                  FROM production_workspace_execution_output o
+                 WHERE o.plan_version_id=p.id AND o.capture_date BETWEEN %s AND %s) AS rework_qty,
+               (SELECT MAX(o.created_at)
+                  FROM production_workspace_execution_output o
+                 WHERE o.plan_version_id=p.id AND o.capture_date BETWEEN %s AND %s) AS output_fresh_at,
+               (SELECT SUM(e.quantity) FILTER (WHERE e.event_type='qc_defect')
+                  FROM production_workspace_execution_events e
+                 WHERE e.plan_version_id=p.id AND e.event_date BETWEEN %s AND %s) AS qc_defect_qty,
+               (SELECT SUM(e.duration_minutes) FILTER (WHERE e.event_type='downtime')
+                  FROM production_workspace_execution_events e
+                 WHERE e.plan_version_id=p.id AND e.event_date BETWEEN %s AND %s) AS downtime_minutes,
+               (SELECT MAX(e.created_at)
+                  FROM production_workspace_execution_events e
+                 WHERE e.plan_version_id=p.id AND e.event_date BETWEEN %s AND %s) AS event_fresh_at,
+               (SELECT COUNT(*) FILTER (WHERE g.status NOT IN ('passed','waived'))
+                  FROM production_workspace_readiness_gates g
+                 WHERE g.plan_version_id=p.id) AS incomplete_gate_count
+          FROM production_workspace_plan_versions p
+          JOIN production_workspace_work_items wi ON wi.id=p.work_item_id
+          JOIN production_workspace_factories f ON f.id=p.factory_id
+          LEFT JOIN production_workspace_lines l ON l.id=p.line_id
+          LEFT JOIN production_workspace_shifts sh ON sh.id=p.shift_id
+         WHERE p.status IN ('approved','frozen')
+           -- A selected-period target must be fully source-backed. Do not
+           -- compare a whole multi-week commitment with one day's output.
+           AND p.planned_start >= %s AND p.planned_end <= %s
+           AND (NULLIF(%s,'') IS NULL OR p.factory_id=NULLIF(%s,'')::bigint)
+           AND (NULLIF(%s,'') IS NULL OR p.line_id=NULLIF(%s,'')::bigint)
+           AND (NULLIF(%s,'') IS NULL OR p.shift_id=NULLIF(%s,'')::bigint)
+           AND (NULLIF(%s,'') IS NULL OR p.owner_user_id=NULLIF(%s,''))
+           AND (NULLIF(%s,'') IS NULL OR p.status=NULLIF(%s,''))
+           AND (NULLIF(%s,'') IS NULL OR wi.stage_key=NULLIF(%s,''))
+           AND (NULLIF(%s,'') IS NULL OR
+                concat_ws(' ',wi.external_ref,wi.style_number,wi.production_order_ref,
+                          f.name,l.name,p.owner_user_id) ILIKE '%%' || %s || '%%')
+           AND (%s <> 'production' OR p.owner_user_id=%s)
+         ORDER BY p.planned_end,f.name,l.name,wi.style_number
+        """,
+        [
+            start, end, start, end, start, end, start, end, start, end,
+            start, end, start, end,
+            start, end,
+            scope["factory_id"], scope["factory_id"],
+            scope["line_id"], scope["line_id"],
+            scope["shift_id"], scope["shift_id"],
+            scope["owner_user_id"], scope["owner_user_id"],
+            scope["plan_status"], scope["plan_status"],
+            scope["stage"], scope["stage"],
+            scope["search"], scope["search"],
+            scope["actor"]["role"], scope["actor"]["user_id"],
+        ],
+        fetch=True,
+    )
+
+
+def _command_line_rows(plans, productivity, covered_plan_ids=None):
+    """Produce one honest row per factory/line without shift misattribution."""
+    covered_plan_ids = set(covered_plan_ids or [])
+    rows = {}
+    for raw in plans:
+        plan = dict(raw)
+        key = (plan.get("factory_id"), plan.get("line_id"))
+        row = rows.setdefault(key, {
+            "factory_id": plan.get("factory_id"),
+            "factory_name": plan.get("factory_name") or "Unassigned factory",
+            "line_id": plan.get("line_id"),
+            "line_name": plan.get("line_name") or "Unassigned line",
+            "shifts": set(),
+            "plans": [],
+        })
+        row["plans"].append(plan)
+    productivity_by_line = {
+        (r.get("factory_id"), r.get("line_id")): r for r in productivity or []
+    }
+    out = []
+    for row in rows.values():
+        plans_for_line = row.pop("plans")
+        shifts = {(plan.get("shift_id"), plan.get("shift_name")) for plan in plans_for_line}
+        row["shift_id"] = next(iter(shifts))[0] if len(shifts) == 1 else None
+        row["shift_name"] = next(iter(shifts))[1] if len(shifts) == 1 else "All shifts"
+        row.pop("shifts", None)
+        target = _nullable_sum(plans_for_line, "planned_qty")
+        good = _nullable_sum(plans_for_line, "good_qty")
+        reject = _nullable_sum(plans_for_line, "reject_qty")
+        rework = _nullable_sum(plans_for_line, "rework_qty")
+        capacity = _nullable_sum(plans_for_line, "available_minutes")
+        required = _nullable_sum(plans_for_line, "required_minutes")
+        actual = (good + reject + rework
+                  if good is not None and reject is not None and rework is not None
+                  else None)
+        quality_total = actual + _nullable_sum(plans_for_line, "qc_defect_qty") \
+            if actual is not None and _nullable_sum(plans_for_line, "qc_defect_qty") is not None else None
+        effort = productivity_by_line.get((row["factory_id"], row["line_id"]), {})
+        efficiency_available = (
+            all(plan.get("plan_version_id") in covered_plan_ids for plan in plans_for_line)
+            and effort.get("metric_state") == "available"
+        )
+        row.update({
+            "plan_count": len(plans_for_line),
+            "owner_count": len({p.get("owner_user_id") for p in plans_for_line if p.get("owner_user_id")}),
+            "target_qty": target,
+            "good_qty": good,
+            "reject_qty": reject,
+            "rework_qty": rework,
+            "actual_qty": actual,
+            "available_minutes": capacity,
+            "required_minutes": required,
+            "load_pct": required / capacity * 100 if required is not None and capacity and capacity > 0 else None,
+            "quality_total": quality_total,
+            "efficiency_pct": effort.get("efficiency_pct") if efficiency_available else None,
+            "metric_state": "available" if actual is not None else "incomplete",
+            "unavailable_reason": (
+                None if actual is not None
+                else "One or more approved plans have no validated execution capture in this period."
+            ),
+        })
+        out.append(row)
+    return sorted(out, key=lambda r: (str(r["factory_name"]), str(r["line_name"]), str(r["shift_name"])))
+
+
+def _command_centre(request, date_from=None, date_to=None, stage="", factory_id="", line_id="",
+                    shift_id="", owner_user_id="", plan_status="", delivery_risk="",
+                    search=""):
+    """A read-only, source-labelled stand-up contract for the production hub."""
+    denied = _require(request, READ_ROLES, "Production Command Centre viewing")
+    if denied:
+        return denied
+    end = _day(date_to, date.today())
+    start = _day(date_from, end - timedelta(days=29))
+    if start > end:
+        return _error("date_from must be on or before date_to")
+    scope = _command_scope(
+        request, stage=stage, factory_id=factory_id, line_id=line_id, shift_id=shift_id,
+        owner_user_id=owner_user_id, plan_status=plan_status,
+        delivery_risk=delivery_risk, search=search,
+    )
+    sections, errors = {}, {}
+    planned_ids = set()
+    plans, productivity, productivity_raw, productivity_metrics, recovery, stages, tracker_status = [], [], [], [], [], [], {}
+    try:
+        plans = [dict(row) for row in _command_plan_rows(start, end, scope)]
+        planned_ids = {
+            plan.get("plan_version_id") for plan in plans if plan.get("plan_version_id") is not None
+        }
+        sections["plan_actual"] = {"state": "ready" if plans else "empty", "rows": len(plans)}
+    except Exception as exc:
+        log.exception("Command Centre plan facts failed")
+        errors["plan_actual"] = "Approved plan facts are unavailable."
+        sections["plan_actual"] = {"state": "error", "message": errors["plan_actual"]}
+    try:
+        productivity_raw = _productivity_rows(
+            start, end, scope["actor"], scope["factory_id"], scope["line_id"], scope["shift_id"],
+        )
+        # The productivity query's ordinary date semantics include plans that
+        # overlap the window. Command Centre compares whole commitments only,
+        # so its execution/attendance evidence must be restricted to exactly
+        # that fully-contained approved-plan universe.
+        productivity_raw = [
+            row for row in productivity_raw if row.get("plan_version_id") in planned_ids
+        ]
+        productivity_metrics = [_metric_row(row) for row in productivity_raw]
+        # Attendance is per person/day, not per operation. worker=True makes
+        # the line aggregate deduplicate it across an operator's assignments.
+        productivity = _aggregate(
+            productivity_metrics, ("factory_id", "line_id"), "line_name", worker=True,
+        )
+        sections["productivity"] = {"state": "ready" if productivity else "empty", "rows": len(productivity)}
+    except Exception:
+        log.exception("Command Centre productivity facts failed")
+        errors["productivity"] = "Attendance, approved SAM, or execution evidence is unavailable."
+        sections["productivity"] = {"state": "error", "message": errors["productivity"]}
+    try:
+        recovery = _recovery_candidates(
+            start, end, scope["factory_id"], scope["line_id"],
+            scope["shift_id"], scope["plan_status"],
+        )
+        if scope["actor"]["role"] == "production":
+            recovery = [r for r in recovery if str(r.get("owner_user_id") or "") == scope["actor"]["user_id"]]
+        if scope["delivery_risk"]:
+            recovery = [r for r in recovery if r.get("priority_band") == scope["delivery_risk"]]
+        if scope["owner_user_id"]:
+            recovery = [r for r in recovery if str(r.get("owner_user_id") or "") == scope["owner_user_id"]]
+        if scope["search"]:
+            needle = scope["search"].lower()
+            recovery = [r for r in recovery if needle in " ".join(
+                str(r.get(key) or "") for key in ("external_ref", "style_number", "production_order_ref", "factory_name", "line_name")
+            ).lower()]
+        if scope["stage"]:
+            recovery = [r for r in recovery if str(r.get("current_stage") or "") == scope["stage"]]
+        sections["delivery"] = {"state": "ready" if recovery else "empty", "rows": len(recovery)}
+    except Exception:
+        log.exception("Command Centre recovery facts failed")
+        errors["delivery"] = "Approved commitments and recovery evidence are unavailable."
+        sections["delivery"] = {"state": "error", "message": errors["delivery"]}
+    # The tracker is deliberately global only.  There is no verified mapping
+    # between legacy tracker balances and Workspace factory/line/shift keys.
+    tracker_is_scoped = any(scope[key] for key in ("factory_id", "line_id", "shift_id", "owner_user_id"))
+    if tracker_is_scoped:
+        sections["wip"] = {
+            "state": "unavailable",
+            "message": "Legacy tracker WIP has no approved factory, line, shift, or owner mapping for this scope.",
+        }
+    else:
+        try:
+            stages = [dict(row) for row in _API._production_flow_stages()[0]]
+            if scope["stage"]:
+                stages = [row for row in stages if row.get("stage_key") == scope["stage"]]
+            sections["wip"] = {"state": "ready" if stages else "empty", "rows": len(stages)}
+        except Exception:
+            log.exception("Command Centre tracker facts failed")
+            errors["wip"] = "Odoo tracker WIP is unavailable."
+            sections["wip"] = {"state": "error", "message": errors["wip"]}
+    try:
+        heartbeat = _db(
+            "SELECT last_run_at,last_status,orders_synced,"
+            "EXTRACT(EPOCH FROM (now()-last_run_at)) AS age_seconds "
+            "FROM production_sync_heartbeat WHERE id=1",
+            fetch=True,
+        )
+        tracker_status = dict(heartbeat[0]) if heartbeat else {}
+    except Exception:
+        tracker_status = {}
+
+    captured_productivity_plan_ids = {
+        row.get("plan_version_id") for row in productivity_metrics if row.get("plan_version_id") is not None
+    }
+    line_rows = _command_line_rows(plans, productivity, captured_productivity_plan_ids)
+    target = _nullable_sum(plans, "planned_qty")
+    good = _nullable_sum(plans, "good_qty")
+    reject = _nullable_sum(plans, "reject_qty")
+    rework = _nullable_sum(plans, "rework_qty")
+    actual = good + reject + rework if None not in (good, reject, rework) else None
+    available_minutes = _nullable_sum(plans, "available_minutes")
+    required_minutes = _nullable_sum(plans, "required_minutes")
+    qc_defects = _nullable_sum(plans, "qc_defect_qty")
+    downtime = _nullable_sum(plans, "downtime_minutes")
+    operator_line_scopes = {}
+    for row in productivity_metrics:
+        operator_id = row.get("operator_id")
+        if operator_id is not None:
+            operator_line_scopes.setdefault(operator_id, set()).add(
+                (row.get("factory_id"), row.get("line_id"))
+            )
+    efficiency_evidence_complete = (
+        bool(planned_ids)
+        and planned_ids == captured_productivity_plan_ids
+        and all(row.get("efficiency_pct") is not None for row in productivity)
+        and all(len(scopes) == 1 for scopes in operator_line_scopes.values())
+    )
+    efficiency = (
+        sum(_number(row.get("earned_minutes")) for row in productivity)
+        / sum(_number(row.get("attended_minutes")) for row in productivity) * 100
+        if efficiency_evidence_complete and sum(_number(row.get("attended_minutes")) for row in productivity) > 0
+        else None
+    )
+    wip_rows = [row for row in stages if not row.get("is_terminal")]
+    wip_units = sum(_number(row.get("units")) for row in wip_rows) if stages else None
+    active_orders = sum(_number(row.get("orders")) for row in wip_rows) if stages else None
+    incomplete = {
+        "plan": not bool(plans),
+        "execution": actual is None,
+        "capacity": available_minutes is None or required_minutes is None,
+        "quality": qc_defects is None,
+        "productivity": efficiency is None,
+        "tracker_wip": wip_units is None,
+    }
+    source_freshness = {
+        "odoo_tracker": {
+            "state": (
+                "missing" if not tracker_status.get("last_run_at") else
+                "stale" if _number(tracker_status.get("age_seconds")) > COMMAND_CENTRE_THRESHOLDS["tracker_stale_seconds"]
+                else "fresh"
+            ),
+            "as_of": _jsonable(tracker_status.get("last_run_at")),
+            "age_seconds": _number(tracker_status.get("age_seconds")) if tracker_status else None,
+            "detail": "Verified Odoo production tracker balances.",
+            "refresh_status": tracker_status.get("last_status") or "not recorded",
+        },
+        "approved_plan": {**_freshness_state(max((p.get("plan_fresh_at") for p in plans if p.get("plan_fresh_at")), default=None)), "refresh_status": "approved-plan snapshot"},
+        "execution_capture": {**_freshness_state(max((p.get("output_fresh_at") for p in plans if p.get("output_fresh_at")), default=None)), "refresh_status": "validated capture ledger"},
+        "quality_and_downtime": {**_freshness_state(max((p.get("event_fresh_at") for p in plans if p.get("event_fresh_at")), default=None)), "refresh_status": "validated event ledger"},
+        "attendance_and_sam": _freshness_state(max((
+            row.get("attendance_fresh_at") for row in productivity_raw if row.get("attendance_fresh_at")
+        ), default=None)),
+    }
+    # The productivity endpoint is the source of truth for attendance
+    # freshness; its line rows do not carry it, so absence remains explicit.
+    source_freshness["attendance_and_sam"]["detail"] = (
+        "Complete attendance plus approved operation SAM are required before efficiency is available."
+    )
+    source_freshness["attendance_and_sam"]["refresh_status"] = "denominator validation"
+    options = {
+        "factories": sorted({(p.get("factory_id"), p.get("factory_name")) for p in plans if p.get("factory_id")}, key=lambda x: str(x[1])),
+        "lines": sorted({(p.get("line_id"), p.get("line_name")) for p in plans if p.get("line_id")}, key=lambda x: str(x[1])),
+        "shifts": sorted({(p.get("shift_id"), p.get("shift_name")) for p in plans if p.get("shift_id")}, key=lambda x: str(x[1])),
+        "owners": sorted({p.get("owner_user_id") for p in plans if p.get("owner_user_id")}),
+        "stages": sorted({(row.get("stage_key"), row.get("stage_name")) for row in stages if row.get("stage_key")}, key=lambda x: str(x[1])),
+    }
+    return {
+        "schema_version": "1",
+        "as_of": datetime.now(ZoneInfo("Africa/Nairobi")).isoformat(),
+        "timezone": "Africa/Nairobi",
+        "scope": {
+            **{key: value for key, value in scope.items() if key != "actor"},
+            "snapshot_semantics": "Tracker WIP is a live current snapshot; approved plans and execution use the selected date range.",
+        },
+        "source_freshness": source_freshness,
+        "sections": sections,
+        "partial_errors": errors,
+        "completeness": {
+            "state": "complete" if not any(incomplete.values()) else "partial",
+            "missing": [key for key, value in incomplete.items() if value],
+            "message": "Unavailable metrics are source gaps, not operational zeroes.",
+        },
+        "thresholds": COMMAND_CENTRE_THRESHOLDS,
+        "definitions": {
+            "wip": "Current units from verified Odoo tracker stage balances.",
+            "plan_vs_actual": "Full approved commitments wholly contained in the selected period versus validated good + reject + rework capture in that same period.",
+            "capacity_load": "Saved approved capacity input required minutes ÷ available minutes.",
+            "quality": "Validated execution good/reject/rework plus captured QC defects where available.",
+            "productivity": "Good quantity × approved SAM ÷ complete attendance minutes; unavailable without either denominator.",
+            "delivery_risk": "Explainable recovery priority from approved commitments, remaining work, live WIP, capacity, quality and downtime.",
+        },
+        "metrics": {
+            "wip_units": wip_units,
+            "active_orders": active_orders,
+            "plan_qty": target,
+            "actual_qty": actual,
+            "good_qty": good,
+            "reject_qty": reject,
+            "rework_qty": rework,
+            "qc_defect_qty": qc_defects,
+            "available_minutes": available_minutes,
+            "required_minutes": required_minutes,
+            "load_pct": required_minutes / available_minutes * 100 if required_minutes is not None and available_minutes and available_minutes > 0 else None,
+            "downtime_minutes": downtime,
+            "efficiency_pct": efficiency,
+            "delivery_risk_count": len(recovery),
+            "assigned_owner_count": len({p.get("owner_user_id") for p in plans if p.get("owner_user_id")}),
+        },
+        "stage_wip": _rows(wip_rows),
+        "line_performance": _rows(line_rows),
+        "plan_vs_actual": _rows(plans),
+        "delivery_risk": _rows(recovery),
+        "filter_options": {
+            key: [{"id": value[0], "label": value[1]} for value in values]
+            if key != "owners" else [{"id": value, "label": value} for value in values]
+            for key, values in options.items()
+        },
+    }
+
+
 def _productivity_endpoint(request: Request, date_from: str = None,
                            date_to: str = None, view: str = "worker",
                            factory_id: str = "", line_id: str = ""):
@@ -920,6 +1375,17 @@ def _recovery_endpoint(request: Request, date_from: str = None,
                        date_to: str = None, factory_id: str = "",
                        line_id: str = ""):
     return _recovery(request, date_from, date_to, factory_id, line_id)
+
+
+def _command_centre_endpoint(
+        request: Request, date_from: str = None, date_to: str = None, stage: str = "",
+        factory_id: str = "", line_id: str = "", shift_id: str = "",
+        owner_user_id: str = "", plan_status: str = "", delivery_risk: str = "",
+        search: str = ""):
+    return _command_centre(
+        request, date_from, date_to, stage, factory_id, line_id, shift_id,
+        owner_user_id, plan_status, delivery_risk, search,
+    )
 
 
 def _action_create_endpoint(request: Request, body: dict = Body(default={})):
@@ -942,6 +1408,8 @@ def register_production_insights_routes(app, api_module):
                       _productivity_endpoint, methods=["GET"])
     app.add_api_route("/api/production-workspace/recovery",
                       _recovery_endpoint, methods=["GET"])
+    app.add_api_route("/api/production-workspace/command-centre",
+                      _command_centre_endpoint, methods=["GET"])
     app.add_api_route("/api/production-workspace/recovery/actions",
                       _action_create_endpoint, methods=["POST"])
     app.add_api_route("/api/production-workspace/recovery/actions/{action_id}",
