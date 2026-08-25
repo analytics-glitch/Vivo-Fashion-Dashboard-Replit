@@ -118,6 +118,22 @@ class StoreStockRequestPermissionTests(unittest.TestCase):
             self._request("warehouse", ["store-stock-requests"]), "manage")[1],
             "warehouse")
 
+    def test_fulfilment_report_has_its_own_role_gate_and_store_scope(self):
+        self.assertEqual(
+            api_pg._ssr_user(
+                self._request("store_manager", ["store-stock-requests"], "Vivo Scoped Store"),
+                "report",
+            )[2],
+            "Vivo Scoped Store",
+        )
+        self.assertEqual(
+            api_pg._ssr_user(self._request("retail", ["store-stock-requests"]), "report")[1],
+            "retail",
+        )
+        with self.assertRaises(HTTPException) as raised:
+            api_pg._ssr_user(self._request("marketing", ["store-stock-requests"]), "report")
+        self.assertEqual(raised.exception.status_code, 403)
+
 
 class _StatusCursor:
     """Tiny cursor fake for the pure header-status aggregation contract."""
@@ -163,6 +179,22 @@ class StoreStockRequestCapacityAndStatusTests(unittest.TestCase):
                                 "fulfilled_n": 1, "cancelled_n": 1, "expired_n": 0})
         self.assertEqual(api_pg._ssr_recompute_header_status(cursor, 44), "MIXED")
         self.assertEqual(cursor.calls[-1][1], ("MIXED", 44))
+
+    def test_queue_status_filter_targets_request_lines_not_headers(self):
+        # A request can have an OPEN sibling and a PICKING/fulfilled line. The
+        # header's aggregate status must not hide the matching line from its tab.
+        clause, params = api_pg._ssr_line_status_filter("picking")
+        self.assertEqual(clause, "l.status=%s")
+        self.assertEqual(params, ["PICKING"])
+
+        no_clause, no_params = api_pg._ssr_line_status_filter("")
+        self.assertIsNone(no_clause)
+        self.assertEqual(no_params, [])
+
+    def test_queue_rejects_header_only_mixed_filter(self):
+        with self.assertRaises(HTTPException) as raised:
+            api_pg._ssr_line_status_filter("mixed")
+        self.assertEqual(raised.exception.status_code, 400)
 
 
 if __name__ == "__main__":

@@ -6,7 +6,7 @@ import { Loading, ErrorBox, Empty, SectionTitle } from "@/components/common";
 import { useTableSort, SortableTh } from "@/lib/useTableSort";
 import {
   MagnifyingGlass, Storefront, X as XIcon, Clock,
-  ListDashes, Plus, WarningCircle
+  ListDashes, Plus, WarningCircle, FileText, DownloadSimple
 } from "@phosphor-icons/react";
 
 const fmtDateInput = (d) => {
@@ -35,6 +35,9 @@ export default function StoreStockRequests() {
   const { user } = useAuth();
   const role = String(user?.role || "").toLowerCase();
   const canCreateForRole = ["store_manager", "warehouse", "admin"].includes(role);
+  const canViewFulfilmentReport = [
+    "store_manager", "warehouse", "admin", "retail", "leadership", "smt"
+  ].includes(role);
   const [tab, setTab] = useState(() => canCreateForRole ? "catalog" : "queue");
   const appliedRoleDefault = useRef(false);
 
@@ -69,10 +72,20 @@ export default function StoreStockRequests() {
         >
           <ListDashes size={16} /> Request Queue
         </button>
+        {canViewFulfilmentReport && (
+          <button
+            onClick={() => setTab("report")}
+            className={`flex items-center gap-2 px-3 md:px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${tab === "report" ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"}`}
+            data-testid="tab-fulfilment-report"
+          >
+            <FileText size={16} /> Fulfilment Report
+          </button>
+        )}
       </div>
 
       {tab === "catalog" && <CatalogView />}
       {tab === "queue" && <QueueView />}
+      {tab === "report" && canViewFulfilmentReport && <FulfilmentReportView />}
     </div>
   );
 }
@@ -523,12 +536,55 @@ function QueueView() {
 
   const handleLineAction = async (lineId, action, params = {}) => {
     try {
-      await api.patch(`/store-stock-requests/lines/${lineId}`, {
+      const res = await api.patch(`/store-stock-requests/lines/${lineId}`, {
         action,
         ...params
       });
-      toast.success(`Action applied`);
-      fetchQueue(true);
+      const result = res.data || {};
+      const nextStatus = String(result.status || "").toLowerCase();
+      const actionLabel = action === "picking"
+        ? "Moved to Picking"
+        : action === "fulfill"
+          ? "Fulfilled"
+          : "Cancelled";
+
+      // Patch first so the person who performed the action sees the changed
+      // line immediately. The follow-up read keeps other browser sessions and
+      // mixed request headers in sync with the server.
+      setData(current => {
+        if (!current || !nextStatus) return current;
+        return {
+          ...current,
+          requests: (current.requests || []).map(request => ({
+            ...request,
+            status: request.lines?.some(line => line.id === lineId)
+              ? (result.request_status || request.status)
+              : request.status,
+            lines: (request.lines || []).map(line => line.id === lineId
+              ? {
+                  ...line,
+                  status: nextStatus,
+                  line_status: nextStatus,
+                  actual_units: result.actual_units ?? line.actual_units,
+                  transfer_ref: result.transfer_ref ?? line.transfer_ref,
+                  fulfilled_at: nextStatus === "fulfilled"
+                    ? (result.updated_at || line.fulfilled_at)
+                    : line.fulfilled_at
+                }
+              : line)
+          }))
+        };
+      });
+      toast.success(actionLabel);
+
+      // An OPEN filter should not make a successful "Start Picking" look like
+      // a disappearing/no-op action. Move to the new lifecycle view, then
+      // refetch it; leave All Statuses in place when it is already selected.
+      if (nextStatus && statusFilter !== "all" && statusFilter !== nextStatus) {
+        setStatusFilter(nextStatus);
+      } else {
+        fetchQueue(true);
+      }
     } catch (e) {
       toast.error(`Failed to apply action: ` + requestErrorMessage(e, "Please refresh and try again."));
     }
@@ -607,6 +663,7 @@ function QueueView() {
               request={req} 
               canManage={data?.can_manage} 
               canRequest={data?.can_request}
+              filteredStatus={statusFilter}
               onLineAction={handleLineAction} 
             />
           ))}
@@ -616,7 +673,240 @@ function QueueView() {
   );
 }
 
-function RequestCard({ request, canManage, canRequest, onLineAction }) {
+function FulfilmentReportView() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [storeFilter, setStoreFilter] = useState("");
+  const [dateRange, setDateRange] = useState(DATE_RANGES[2]);
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
+  const [q, setQ] = useState("");
+  const [debouncedQ, setDebouncedQ] = useState("");
+
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedQ(q), 300);
+    return () => clearTimeout(t);
+  }, [q]);
+
+  const effectiveFrom = useMemo(() => {
+    if (!dateRange) return customFrom;
+    const d = new Date();
+    d.setDate(d.getDate() - dateRange.days);
+    return fmtDateInput(d);
+  }, [dateRange, customFrom]);
+
+  const effectiveTo = useMemo(() => dateRange ? fmtDateInput(new Date()) : customTo,
+    [dateRange, customTo]);
+
+  const fetchReport = useCallback(async (isSilent = false) => {
+    if (!isSilent) setLoading(true);
+    setError(null);
+    try {
+      const res = await api.get("/store-stock-requests/fulfilment-report", {
+        params: {
+          store: storeFilter || undefined,
+          date_from: effectiveFrom || undefined,
+          date_to: effectiveTo || undefined,
+          q: debouncedQ || undefined
+        }
+      });
+      setData(res.data);
+      if (!storeFilter && res.data.scoped_store) setStoreFilter(res.data.scoped_store);
+    } catch (e) {
+      if (!isSilent) setError(requestErrorMessage(e, "Could not load the fulfilment report."));
+    } finally {
+      if (!isSilent) setLoading(false);
+    }
+  }, [storeFilter, effectiveFrom, effectiveTo, debouncedQ]);
+
+  useEffect(() => {
+    fetchReport();
+  }, [fetchReport]);
+
+  const rows = data?.rows || [];
+  const totalUnits = rows.reduce((sum, row) => sum + (Number(row.actual_units) || 0), 0);
+  const storeCount = new Set(rows.map(row => row.store).filter(Boolean)).size;
+
+  const exportCsv = () => {
+    const headers = [
+      "Fulfilled At", "Request #", "Store", "Requested By", "SKU", "Barcode",
+      "Product", "Requested Qty", "Actual Qty", "Transfer Reference"
+    ];
+    const csvCell = value => `"${String(value ?? "").replaceAll('"', '""')}"`;
+    const values = rows.map(row => [
+      row.fulfilled_at ? new Date(row.fulfilled_at).toISOString() : "",
+      row.request_id,
+      row.store,
+      row.requested_by_name,
+      row.sku,
+      row.barcode,
+      row.style_name || row.product_name,
+      row.requested_qty,
+      row.actual_units,
+      row.transfer_ref
+    ]);
+    const blob = new Blob([
+      [headers, ...values].map(line => line.map(csvCell).join(",")).join("\n")
+    ], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `store-stock-fulfilments-${effectiveFrom || "all"}-to-${effectiveTo || "all"}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  if (!data && loading) return <div className="py-10"><Loading label="Loading fulfilment report..." /></div>;
+  if (error) return (
+    <div className="space-y-3">
+      <ErrorBox message={error} />
+      <button onClick={() => fetchReport()} className="btn-primary">Retry</button>
+    </div>
+  );
+
+  return (
+    <div className="space-y-4">
+      <div className="card p-3 flex flex-col md:flex-row md:flex-wrap gap-3">
+        {data?.can_manage && (
+          <div className="flex flex-col gap-1.5 w-full md:w-48 shrink-0">
+            <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Store</label>
+            <select
+              value={storeFilter}
+              onChange={e => setStoreFilter(e.target.value)}
+              className="input-pill w-full h-9"
+              data-testid="filter-report-store"
+            >
+              <option value="">All Stores</option>
+              {(data?.stores || []).map(store => <option key={store} value={store}>{store}</option>)}
+            </select>
+          </div>
+        )}
+
+        <div className="flex flex-col gap-1.5 flex-1 min-w-[200px]">
+          <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Search</label>
+          <div className="relative">
+            <MagnifyingGlass size={16} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
+            <input
+              type="text"
+              placeholder="Search store, requester, product, barcode..."
+              value={q}
+              onChange={e => setQ(e.target.value)}
+              className="input-pill w-full h-9 pl-8"
+              data-testid="input-report-search"
+            />
+            {q && <button onClick={() => setQ("")} className="absolute right-2 top-1/2 -translate-y-1/2"><XIcon size={14} className="text-muted-foreground hover:text-foreground" /></button>}
+          </div>
+        </div>
+
+        <div className="flex flex-col gap-1.5 w-full md:w-auto">
+          <label className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">Fulfilled Period</label>
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              value={dateRange?.days || "custom"}
+              onChange={e => {
+                if (e.target.value === "custom") {
+                  setDateRange(null);
+                  setCustomFrom(effectiveFrom);
+                  setCustomTo(effectiveTo);
+                } else {
+                  setDateRange(DATE_RANGES.find(range => range.days === Number(e.target.value)));
+                }
+              }}
+              className="input-pill h-9 w-full sm:w-auto"
+              data-testid="filter-report-date-preset"
+            >
+              {DATE_RANGES.map(range => <option key={range.days} value={range.days}>{range.label}</option>)}
+              <option value="custom">Custom Range</option>
+            </select>
+            {!dateRange && (
+              <div className="flex items-center gap-1 w-full sm:w-auto">
+                <input type="date" value={customFrom} onChange={e => setCustomFrom(e.target.value)} className="input-pill h-9 flex-1" data-testid="input-report-date-from" />
+                <span className="text-muted-foreground px-1 text-sm">to</span>
+                <input type="date" value={customTo} onChange={e => setCustomTo(e.target.value)} className="input-pill h-9 flex-1" data-testid="input-report-date-to" />
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="flex items-end">
+          <button
+            onClick={exportCsv}
+            disabled={!rows.length}
+            className="btn-ghost h-9 w-full md:w-auto flex items-center justify-center gap-2 disabled:opacity-50"
+            data-testid="button-export-fulfilment-report"
+          >
+            <DownloadSimple size={16} /> Export CSV
+          </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div className="card p-3"><div className="text-xs text-muted-foreground">Fulfilled lines</div><div className="text-xl font-bold">{fmtNum(rows.length)}</div></div>
+        <div className="card p-3"><div className="text-xs text-muted-foreground">Actual units transferred</div><div className="text-xl font-bold">{fmtNum(totalUnits)}</div></div>
+        <div className="card p-3"><div className="text-xs text-muted-foreground">Stores fulfilled</div><div className="text-xl font-bold">{fmtNum(storeCount)}</div></div>
+      </div>
+
+      {rows.length === 0 ? (
+        <Empty label="No fulfilled request lines found for these filters" />
+      ) : (
+        <>
+          <div className="card overflow-hidden hidden md:block">
+            <div className="overflow-x-auto">
+              <table className="data w-full text-sm">
+                <thead>
+                  <tr>
+                    <th>Fulfilled</th><th>Request</th><th>Store</th><th>Requested By</th>
+                    <th>Product</th><th>Barcode</th><th className="text-right">Requested</th>
+                    <th className="text-right">Actual</th><th>Transfer Ref</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map(row => (
+                    <tr key={row.line_id} data-testid={`fulfilment-report-row-${row.line_id}`}>
+                      <td className="whitespace-nowrap text-xs">{row.fulfilled_at ? new Date(row.fulfilled_at).toLocaleString() : "—"}</td>
+                      <td className="font-medium">#{row.request_id}</td>
+                      <td>{row.store}</td><td>{row.requested_by_name || "—"}</td>
+                      <td className="max-w-[220px] truncate" title={row.product_name}>{row.style_name || row.product_name || row.sku}</td>
+                      <td className="font-mono text-[11px] text-muted-foreground">{row.barcode || row.sku}</td>
+                      <td className="text-right">{fmtNum(row.requested_qty)}</td>
+                      <td className="text-right font-bold">{fmtNum(row.actual_units)}</td>
+                      <td className="text-xs text-muted-foreground">{row.transfer_ref || "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="md:hidden flex flex-col gap-3">
+            {rows.map(row => (
+              <div key={row.line_id} className="card p-3" data-testid={`fulfilment-report-card-${row.line_id}`}>
+                <div className="flex justify-between gap-3">
+                  <div>
+                    <div className="font-semibold">{row.style_name || row.product_name || row.sku}</div>
+                    <div className="font-mono text-[10px] text-muted-foreground mt-0.5">{row.barcode || row.sku}</div>
+                  </div>
+                  <div className="text-right"><div className="text-[10px] text-muted-foreground uppercase">Actual</div><div className="font-bold text-emerald-700">{fmtNum(row.actual_units)}</div></div>
+                </div>
+                <div className="mt-3 pt-2 border-t border-border grid grid-cols-2 gap-2 text-xs">
+                  <div><span className="text-muted-foreground">Store</span><div className="font-medium">{row.store}</div></div>
+                  <div><span className="text-muted-foreground">Request</span><div className="font-medium">#{row.request_id} · {fmtNum(row.requested_qty)} req</div></div>
+                  <div><span className="text-muted-foreground">Fulfilled</span><div>{row.fulfilled_at ? new Date(row.fulfilled_at).toLocaleString() : "—"}</div></div>
+                  <div><span className="text-muted-foreground">Transfer ref</span><div>{row.transfer_ref || "—"}</div></div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function RequestCard({ request, canManage, canRequest, filteredStatus, onLineAction }) {
   const requestStatus = String(request.status || "").toLowerCase();
   const isExpired = request.expires_at ? new Date(request.expires_at) < new Date() : false;
   
@@ -635,6 +925,9 @@ function RequestCard({ request, canManage, canRequest, onLineAction }) {
         </div>
         <div className="flex items-center gap-2 text-[11px]">
           <StatusPill status={requestStatus} />
+          {filteredStatus !== "all" && requestStatus !== filteredStatus && (
+            <span className="text-muted-foreground">Showing {filteredStatus} line{request.lines.length === 1 ? "" : "s"}</span>
+          )}
           {requestStatus === 'open' && request.expires_at && (
             <span className="flex items-center gap-1 text-amber-600 bg-amber-50 px-2 py-1 rounded">
               <Clock size={12} />
@@ -699,6 +992,7 @@ function StatusPill({ status }) {
     case 'fulfilled': return <span className="pill-green text-[10px]">Fulfilled</span>;
     case 'cancelled': return <span className="pill-red text-[10px]">Cancelled</span>;
     case 'expired': return <span className="pill-red text-[10px]">Expired</span>;
+    case 'mixed': return <span className="pill-neutral text-[10px] bg-violet-100 text-violet-800">Mixed</span>;
     default: return <span className="text-muted-foreground text-[10px] uppercase">{normalized || "unknown"}</span>;
   }
 }

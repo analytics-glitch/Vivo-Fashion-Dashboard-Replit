@@ -16469,6 +16469,11 @@ def _ssr_user(request, action="read"):
         raise HTTPException(status_code=403, detail="Your role is read-only for store stock requests.")
     if action == "manage" and role not in ("warehouse", "admin"):
         raise HTTPException(status_code=403, detail="Only warehouse or admin users can manage request picking.")
+    if action == "report" and role not in (
+        "store_manager", "warehouse", "admin", "retail", "leadership", "smt"
+    ):
+        raise HTTPException(status_code=403,
+                            detail="Your role cannot view the fulfilment report.")
     return u, role, home
 
 
@@ -16537,6 +16542,18 @@ def _ssr_capacity_units_sql(alias="l"):
             f"THEN COALESCE({alias}.actual_units,0) ELSE {alias}.quantity END)")
 
 
+def _ssr_line_status_filter(status, alias="l"):
+    """Return the bound line-level status predicate for the queue, if requested."""
+    normalized = (status or "").strip().upper()
+    if not normalized:
+        return None, []
+    allowed = {"OPEN", "PICKING", "FULFILLED", "CANCELLED", "EXPIRED"}
+    if normalized not in allowed:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="Invalid status.")
+    return f"{alias}.status=%s", [normalized]
+
+
 def _ssr_request_object(cur, request_id):
     cur.execute("""SELECT h.id,h.store,h.date_from,h.date_to,h.status,h.requested_by,h.requested_by_name,
                    h.idempotency_key,h.created_at,h.updated_at,
@@ -16565,6 +16582,11 @@ def _ssr_request_object(cur, request_id):
         history.setdefault(event.pop("line_id"), []).append(event)
     for line in h["lines"]:
         line["history"] = history.get(line["line_id"], [])
+        line["fulfilled_at"] = next(
+            (event["created_at"] for event in line["history"]
+             if event.get("action") == "fulfill"),
+            None,
+        )
     return h
 
 
@@ -16652,19 +16674,23 @@ async def store_stock_requests(request: Request, store: str = "", status: str = 
     _ensure_store_stock_request_tables()
     _, role, home = _ssr_user(request)
     scoped = home if role == "store_manager" else (store or "").strip()
-    allowed_status = {"OPEN", "PICKING", "FULFILLED", "CANCELLED", "EXPIRED", "MIXED"}
-    if status and status.upper() not in allowed_status:
-        from fastapi import HTTPException
-        raise HTTPException(status_code=400, detail="Invalid status.")
     with _users_tx() as cur:
         _ssr_expire(cur)
-        clauses, params = ["(%s='' OR h.store=%s)", "(%s='' OR h.status=%s)",
-                           """(%s='' OR h.store ILIKE '%%'||%s||'%%' OR l.sku ILIKE '%%'||%s||'%%'
-                               OR p.barcode ILIKE '%%'||%s||'%%' OR p.product_name ILIKE '%%'||%s||'%%'
-                               OR p.style_name ILIKE '%%'||%s||'%%' OR p.category ILIKE '%%'||%s||'%%'
-                               OR p.product_type ILIKE '%%'||%s||'%%' OR p.brand ILIKE '%%'||%s||'%%'
-                               OR p.size ILIKE '%%'||%s||'%%' OR p.color_print ILIKE '%%'||%s||'%%')"""], \
-                          [scoped, scoped, status.upper(), status.upper()] + [q] * 11
+        # Status is a line lifecycle state, not a header state: a request with
+        # several lines can legitimately be MIXED after a picker acts on one.
+        # Filtering h.status hid those valid matching lines from every status tab.
+        line_status_clause, line_status_params = _ssr_line_status_filter(status, "l")
+        clauses = ["(%s='' OR h.store=%s)"]
+        params = [scoped, scoped]
+        if line_status_clause:
+            clauses.append(line_status_clause)
+            params.extend(line_status_params)
+        clauses.append("""(%s='' OR h.store ILIKE '%%'||%s||'%%' OR l.sku ILIKE '%%'||%s||'%%'
+                           OR p.barcode ILIKE '%%'||%s||'%%' OR p.product_name ILIKE '%%'||%s||'%%'
+                           OR p.style_name ILIKE '%%'||%s||'%%' OR p.category ILIKE '%%'||%s||'%%'
+                           OR p.product_type ILIKE '%%'||%s||'%%' OR p.brand ILIKE '%%'||%s||'%%'
+                           OR p.size ILIKE '%%'||%s||'%%' OR p.color_print ILIKE '%%'||%s||'%%')""")
+        params.extend([q] * 11)
         cur.execute("""SELECT h.id,h.store,h.date_from,h.date_to,h.status,h.requested_by,h.requested_by_name,h.created_at,
                        h.updated_at,l.id line_id,l.sku,l.quantity,l.actual_units,l.transfer_ref,
                        l.status line_status,l.expires_at,p.barcode,p.product_name,p.style_name,p.category,
@@ -16698,12 +16724,77 @@ async def store_stock_requests(request: Request, store: str = "", status: str = 
         for header in grouped.values():
             for line in header["lines"]:
                 line["history"] = histories.get(line["line_id"], [])
-        cur.execute(f"""SELECT DISTINCT pos_location_name AS store FROM all_inventory
-                        WHERE pos_location_name NOT IN ({WAREHOUSE_LOCATIONS}) ORDER BY 1""")
+                line["fulfilled_at"] = next(
+                    (event["created_at"] for event in line["history"]
+                     if event.get("action") == "fulfill"),
+                    None,
+                )
+        # The store selector must come from the request ledger, not inventory.
+        # A store with only old/zero stock can still have an active request.
+        cur.execute("""SELECT DISTINCT store FROM store_stock_request
+                       WHERE (%s='' OR store=%s) ORDER BY store""", (scoped, scoped))
         stores = [r["store"] for r in cur.fetchall() if r.get("store")]
     return {"scoped_store": scoped or None, "can_request": role in ("store_manager","warehouse","admin"),
             "can_manage": role in ("warehouse","admin"), "stores": stores,
             "hold_hours": STORE_STOCK_REQUEST_HOLD_HOURS, "requests": list(grouped.values())}
+
+
+@app.get("/api/store-stock-requests/fulfilment-report")
+async def store_stock_request_fulfilment_report(request: Request, store: str = "",
+                                                 date_from: str = "", date_to: str = "",
+                                                 q: str = ""):
+    """Completed request-line audit for warehouse reconciliation and CSV export."""
+    from fastapi import HTTPException
+    _ensure_store_stock_request_tables()
+    _, role, home = _ssr_user(request, "report")
+    scoped = home if role == "store_manager" else (store or "").strip()
+    try:
+        df = date.fromisoformat(date_from) if date_from else None
+        dt = date.fromisoformat(date_to) if date_to else None
+    except ValueError:
+        raise HTTPException(status_code=400, detail="date_from and date_to must be ISO dates.")
+    if df and dt and dt < df:
+        raise HTTPException(status_code=400, detail="date_to must be on or after date_from.")
+    with _users_tx() as cur:
+        _ssr_expire(cur)
+        cur.execute("""WITH fulfilled_event AS (
+                         SELECT DISTINCT ON (line_id) line_id,created_at AS fulfilled_at
+                         FROM store_stock_request_history
+                         WHERE action='fulfill'
+                         ORDER BY line_id,created_at DESC,id DESC)
+                       SELECT h.id AS request_id,h.store,h.requested_by,h.requested_by_name,
+                              h.created_at AS requested_at,l.id AS line_id,l.sku,l.quantity AS requested_qty,
+                              l.actual_units,l.transfer_ref,fulfilled_event.fulfilled_at,
+                              p.barcode,p.product_name,p.style_name,p.category,p.product_type,p.brand,
+                              p.size,p.color_print
+                       FROM store_stock_request h
+                       JOIN store_stock_request_line l ON l.request_id=h.id
+                       JOIN fulfilled_event ON fulfilled_event.line_id=l.id
+                       LEFT JOIN all_products_clean p ON p.sku=l.sku
+                       WHERE l.status='FULFILLED'
+                         AND (%s='' OR h.store=%s)
+                         AND (%s::date IS NULL OR fulfilled_event.fulfilled_at::date >= %s::date)
+                         AND (%s::date IS NULL OR fulfilled_event.fulfilled_at::date <= %s::date)
+                         AND (%s='' OR h.store ILIKE '%%'||%s||'%%'
+                              OR h.requested_by_name ILIKE '%%'||%s||'%%'
+                              OR l.sku ILIKE '%%'||%s||'%%' OR p.barcode ILIKE '%%'||%s||'%%'
+                              OR p.product_name ILIKE '%%'||%s||'%%' OR p.style_name ILIKE '%%'||%s||'%%'
+                              OR p.category ILIKE '%%'||%s||'%%' OR p.product_type ILIKE '%%'||%s||'%%'
+                              OR p.brand ILIKE '%%'||%s||'%%' OR p.size ILIKE '%%'||%s||'%%'
+                              OR p.color_print ILIKE '%%'||%s||'%%')
+                       ORDER BY fulfilled_event.fulfilled_at DESC,l.id DESC""",
+                    [scoped, scoped, str(df) if df else None, str(df) if df else None,
+                     str(dt) if dt else None, str(dt) if dt else None] + [q] * 12)
+        rows = [dict(r) for r in cur.fetchall()]
+        cur.execute("""SELECT DISTINCT h.store
+                       FROM store_stock_request h
+                       JOIN store_stock_request_line l ON l.request_id=h.id
+                       WHERE l.status='FULFILLED' AND (%s='' OR h.store=%s)
+                       ORDER BY h.store""", (scoped, scoped))
+        stores = [r["store"] for r in cur.fetchall() if r.get("store")]
+    return {"scoped_store": scoped or None, "can_manage": role in ("warehouse", "admin"),
+            "stores": stores, "date_from": str(df) if df else None,
+            "date_to": str(dt) if dt else None, "rows": rows}
 
 
 @app.post("/api/store-stock-requests/requests")
@@ -16892,9 +16983,11 @@ async def update_store_stock_request_line(line_id: int, request: Request):
                            expires_at=CASE WHEN %s='FULFILLED'
                              THEN now()+make_interval(hours => %s) ELSE expires_at END,
                            updated_at=now()
-                       WHERE id=%s""",
+                        WHERE id=%s
+                        RETURNING actual_units,transfer_ref,updated_at""",
                     (target, actual, body.get("transfer_ref"), target,
                      STORE_STOCK_REQUEST_FULFILLED_HOLD_HOURS, line_id))
+        updated = dict(cur.fetchone() or {})
         cur.execute("""INSERT INTO store_stock_request_history
                        (line_id,action,from_status,to_status,actual_units,transfer_ref,acted_by)
                        VALUES (%s,%s,%s,%s,%s,%s,%s)""",
@@ -16902,7 +16995,8 @@ async def update_store_stock_request_line(line_id: int, request: Request):
                      _ssr_actor(user)[0]))
         header_status = _ssr_recompute_header_status(cur, row["request_id"])
     return {"ok": True, "idempotent": False, "line_id": line_id, "status": target,
-            "request_status": header_status, "actual_units": actual}
+            "request_status": header_status, "actual_units": updated.get("actual_units"),
+            "transfer_ref": updated.get("transfer_ref"), "updated_at": updated.get("updated_at")}
 
 
 def _ibt_proj_calibration():
