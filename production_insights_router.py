@@ -97,6 +97,26 @@ def _tx():
     return _API._users_tx()
 
 
+def _plan_scope_sql(actor, alias="p"):
+    """Return the workspace's fail-closed owner-or-active-assignee predicate."""
+    if actor["role"] != "production":
+        return "TRUE", []
+    if not actor.get("user_id"):
+        return "FALSE", []
+    return (
+        f"""({alias}.owner_user_id=%s OR EXISTS (
+              SELECT 1
+              FROM production_workspace_assignments scoped_assignment
+              JOIN production_workspace_operators scoped_operator
+                ON scoped_operator.id=scoped_assignment.operator_id
+             WHERE scoped_assignment.plan_version_id={alias}.id
+               AND scoped_operator.user_id=%s
+               AND scoped_operator.active
+            ))""",
+        [actor["user_id"], actor["user_id"]],
+    )
+
+
 def _day(value, fallback):
     try:
         return date.fromisoformat(str(value)[:10]) if value else fallback
@@ -417,7 +437,7 @@ LEFT JOIN downtime d ON d.plan_version_id=sp.id AND d.assignment_id=a.id
 LEFT JOIN quality_events q ON q.plan_version_id=sp.id AND q.assignment_id=a.id
 LEFT JOIN attendance at ON at.person_key=lower(trim(o.display_name))
 WHERE (%s <> 'production'
-       OR sp.owner_user_id=%s OR o.user_id=%s)
+       OR (%s <> '' AND (sp.owner_user_id=%s OR o.user_id=%s)))
 ORDER BY sp.factory_name, line_name, operator_name NULLS LAST, sp.planned_start
 """
 
@@ -428,7 +448,7 @@ def _productivity_rows(start, end, actor, factory_id="", line_id="", shift_id=""
         str(line_id or ""), str(line_id or ""),
         str(shift_id or ""), str(shift_id or ""),
         start, end, start, end, start, end, start, end,
-        actor["role"], actor["user_id"], actor["user_id"],
+        actor["role"], actor["user_id"], actor["user_id"], actor["user_id"],
     ]
     try:
         return _db(_PRODUCTIVITY_SQL, params, fetch=True)
@@ -723,11 +743,18 @@ ORDER BY p.planned_end, f.name, l.name, wi.style_number
 """
 
 
-def _recovery_candidates(start, end, factory_id="", line_id="", shift_id="", plan_status=""):
+def _recovery_candidates(start, end, factory_id="", line_id="", shift_id="", plan_status="",
+                         actor=None):
+    actor = actor or {"role": "", "user_id": ""}
+    plan_scope, scope_params = _plan_scope_sql(actor)
     params = [end, start, end, end, start, str(factory_id or ""), str(factory_id or ""),
               str(line_id or ""), str(line_id or ""), str(shift_id or ""), str(shift_id or ""),
-              str(plan_status or ""), str(plan_status or "")]
-    rows = _db(_RECOVERY_SQL, params, fetch=True)
+              str(plan_status or ""), str(plan_status or ""), *scope_params]
+    sql = _RECOVERY_SQL.replace(
+        "ORDER BY p.planned_end, f.name, l.name, wi.style_number",
+        f"  AND ({plan_scope})\nORDER BY p.planned_end, f.name, l.name, wi.style_number",
+    )
+    rows = _db(sql, params, fetch=True)
     # Every delivery-position signal is evaluated as of the selected end date.
     # The tracker balance view is live-only, so it is deliberately withheld
     # for historical/future views rather than misrepresented as history.
@@ -833,12 +860,10 @@ def _recovery(request, date_from=None, date_to=None, factory_id="", line_id="", 
     start = _day(date_from, end - timedelta(days=29))
     if start > end:
         return _error("date_from must be on or before date_to")
-    candidates = _recovery_candidates(start, end, factory_id, line_id, shift_id)
-    if actor["role"] == "production":
-        candidates = [
-            row for row in candidates
-            if str(row.get("owner_user_id") or "") == actor["user_id"]
-        ]
+    candidates = _recovery_candidates(
+        start, end, factory_id, line_id, shift_id, actor=actor,
+    )
+    plan_scope, scope_params = _plan_scope_sql(actor)
     actions = _db(
         """
         SELECT a.*, f.name AS factory_name, l.name AS line_name,
@@ -848,14 +873,14 @@ def _recovery(request, date_from=None, date_to=None, factory_id="", line_id="", 
         LEFT JOIN production_workspace_lines l ON l.id=a.line_id
         JOIN production_workspace_work_items wi ON wi.id=a.work_item_id
         JOIN production_workspace_plan_versions p ON p.id=a.plan_version_id
-        WHERE (%s <> 'production' OR a.owner_user_id=%s OR p.owner_user_id=%s)
+        WHERE """ + plan_scope + """
           AND (NULLIF(%s,'') IS NULL OR a.factory_id=NULLIF(%s,'')::bigint)
           AND (NULLIF(%s,'') IS NULL OR a.line_id=NULLIF(%s,'')::bigint)
           AND (NULLIF(%s,'') IS NULL OR p.shift_id=NULLIF(%s,'')::bigint)
         ORDER BY a.priority DESC, a.due_date NULLS LAST, a.id DESC
         """,
         [
-            actor["role"], actor["user_id"], actor["user_id"],
+            *scope_params,
             factory_id, factory_id, line_id, line_id, shift_id, shift_id,
         ],
         fetch=True,
@@ -909,6 +934,7 @@ def _action_create(request, body):
     due_date = _day(body.get("due_date"), None) if body.get("due_date") else None
     rationale = body.get("rationale") if isinstance(body.get("rationale"), list) else []
     snapshot = body.get("source_snapshot") if isinstance(body.get("source_snapshot"), dict) else {}
+    plan_scope, scope_params = _plan_scope_sql(actor)
     try:
         with _tx() as cur:
             cur.execute(
@@ -917,15 +943,14 @@ def _action_create(request, body):
                 FROM production_workspace_plan_versions p
                 JOIN production_workspace_work_items wi ON wi.id=p.work_item_id
                 WHERE p.id=%s AND p.work_item_id=%s AND p.status IN ('approved','frozen')
+                  AND (""" + plan_scope + """)
                 FOR SHARE
                 """,
-                (plan_id, work_item_id),
+                [plan_id, work_item_id, *scope_params],
             )
             plan = cur.fetchone()
             if not plan:
                 return _error("Recovery actions must link to an approved plan and work item.", 409)
-            if actor["role"] == "production" and plan.get("owner_user_id") != actor["user_id"]:
-                return _error("Production users can only create actions for their plan context.", 403)
             cur.execute(
                 """
                 INSERT INTO production_workspace_recovery_actions
@@ -974,6 +999,7 @@ def _action_update(action_id, request, body):
     if status not in ACTION_STATUSES:
         return _error("A valid recovery action status is required")
     due_date = _day(body.get("due_date"), None) if body.get("due_date") else None
+    plan_scope, scope_params = _plan_scope_sql(actor)
     try:
         with _tx() as cur:
             cur.execute(
@@ -981,18 +1007,13 @@ def _action_update(action_id, request, body):
                 SELECT a.*, p.owner_user_id AS plan_owner_user_id
                 FROM production_workspace_recovery_actions a
                 JOIN production_workspace_plan_versions p ON p.id=a.plan_version_id
-                WHERE a.id=%s FOR UPDATE
+                WHERE a.id=%s AND (""" + plan_scope + """) FOR UPDATE
                 """,
-                (action_id,),
+                [action_id, *scope_params],
             )
             before = cur.fetchone()
             if not before:
                 return _error("Recovery action not found", 404)
-            if actor["role"] == "production" and (
-                before.get("owner_user_id") != actor["user_id"]
-                and before.get("plan_owner_user_id") != actor["user_id"]
-            ):
-                return _error("This recovery action is outside your coaching context.", 403)
             if expected != int(before["version_token"]):
                 return _error(
                     "This recovery action changed since you opened it. Refresh and retry.",
@@ -1027,23 +1048,18 @@ def _action_audit(action_id, request):
     if denied:
         return denied
     actor = _actor(request)
+    plan_scope, scope_params = _plan_scope_sql(actor)
     scope = _db(
         """
         SELECT a.owner_user_id, p.owner_user_id AS plan_owner_user_id
         FROM production_workspace_recovery_actions a
         JOIN production_workspace_plan_versions p ON p.id=a.plan_version_id
-        WHERE a.id=%s
+        WHERE a.id=%s AND (""" + plan_scope + """)
         """,
-        [action_id], fetch=True,
+        [action_id, *scope_params], fetch=True,
     )
     if not scope:
         return _error("Recovery action not found", 404)
-    action = scope[0]
-    if actor["role"] == "production" and (
-        action.get("owner_user_id") != actor["user_id"]
-        and action.get("plan_owner_user_id") != actor["user_id"]
-    ):
-        return _error("This recovery action is outside your coaching context.", 403)
     rows = _db(
         """
         SELECT id, entity_type, entity_id, action, actor_user_id, actor_name,
@@ -1100,6 +1116,7 @@ def _command_plan_rows(start, end, scope):
     capacity inputs and execution rows directly would fan out quantities and
     create deceptively precise plan/actual or quality numbers.
     """
+    plan_scope, scope_params = _plan_scope_sql(scope["actor"])
     return _db(
         """
         SELECT p.id AS plan_version_id,p.status,p.planned_start,p.planned_end,p.planned_qty,
@@ -1158,18 +1175,7 @@ def _command_plan_rows(start, end, scope):
                 concat_ws(' ',wi.external_ref,wi.style_number,wi.production_order_ref,
                           f.name,l.name,
                           CASE WHEN %s THEN NULL ELSE p.owner_user_id END) ILIKE '%%' || %s || '%%')
-           AND (
-                %s <> 'production'
-                OR p.owner_user_id=%s
-                OR EXISTS (
-                    SELECT 1
-                    FROM production_workspace_assignments scoped_assignment
-                    JOIN production_workspace_operators scoped_operator
-                      ON scoped_operator.id=scoped_assignment.operator_id
-                   WHERE scoped_assignment.plan_version_id=p.id
-                     AND scoped_operator.user_id=%s
-                )
-           )
+           AND (""" + plan_scope + """)
          ORDER BY p.planned_end,f.name,l.name,wi.style_number
         """,
         [
@@ -1183,7 +1189,7 @@ def _command_plan_rows(start, end, scope):
             scope["plan_status"], scope["plan_status"],
             scope["stage"], scope["stage"],
             scope["search"], scope.get("privacy_context", False), scope["search"],
-            scope["actor"]["role"], scope["actor"]["user_id"], scope["actor"]["user_id"],
+            *scope_params,
         ],
         fetch=True,
     )
@@ -1347,17 +1353,8 @@ def _command_centre(request, date_from=None, date_to=None, stage="", factory_id=
     try:
         recovery = _recovery_candidates(
             start, end, scope["factory_id"], scope["line_id"],
-            scope["shift_id"], scope["plan_status"],
+            scope["shift_id"], scope["plan_status"], scope["actor"],
         )
-        if scope["actor"]["role"] == "production":
-            # Command Centre plan scope includes plans owned by the production
-            # user OR plans with an operator assignment for them. Apply that
-            # exact scope to recovery rather than leaking every commitment
-            # through this separate evidence source.
-            recovery = [
-                row for row in recovery
-                if row.get("plan_version_id") in planned_ids
-            ]
         if scope["delivery_risk"]:
             recovery = [r for r in recovery if r.get("priority_band") == scope["delivery_risk"]]
         if scope["owner_user_id"]:

@@ -368,6 +368,10 @@ def _plan_scope_sql(actor, alias="p"):
     """
     if actor["role"] != "production":
         return "TRUE", []
+    # A missing authenticated identity must never turn into a broad plan read.
+    # This also keeps every aggregate that embeds this predicate fail-closed.
+    if not actor.get("user_id"):
+        return "FALSE", []
     return (
         f"""({alias}.owner_user_id=%s OR EXISTS (
               SELECT 1
@@ -2787,6 +2791,7 @@ def _execution_worklist(request: Request, capture_date=None):
         return denied
     actor = _actor(request)
     day = _execution_date(capture_date) or date.today()
+    scope, scope_params = _plan_scope_sql(actor, "p")
     rows = _db(
         """
         SELECT p.id AS plan_version_id,p.version_no,p.status,p.planned_start,p.planned_end,
@@ -2816,18 +2821,10 @@ def _execution_worklist(request: Request, capture_date=None):
         ) outp ON TRUE
         WHERE p.status IN ('approved','frozen')
           AND %s BETWEEN p.planned_start AND p.planned_end
-          AND (
-            %s <> 'production'
-            OR p.owner_user_id=%s
-            OR EXISTS (
-              SELECT 1 FROM production_workspace_assignments ua
-              JOIN production_workspace_operators uo ON uo.id=ua.operator_id
-              WHERE ua.plan_version_id=p.id AND uo.user_id=%s AND uo.active
-            )
-          )
+          AND (""" + scope + """)
         ORDER BY p.planned_start,p.id,a.id
         """,
-        (day, day, actor["role"], actor["user_id"], actor["user_id"]), fetch=True,
+        [day, day, *scope_params], fetch=True,
     )
     return _privacy_safe_workspace_payload(request, {
         "schema_version": WORKSPACE_SCHEMA_VERSION,

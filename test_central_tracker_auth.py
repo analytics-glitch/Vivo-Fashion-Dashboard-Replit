@@ -223,6 +223,8 @@ class TestProductionAggregateScope(unittest.TestCase):
 
         with mock.patch.object(api_pg, "_user_for_session",
                                return_value=_fake_user("production")), \
+             mock.patch.object(api_pg, "_production_visible_order_refs",
+                               return_value=set()), \
              mock.patch.object(api_pg, "_ensure_style_tracker_tables"), \
              mock.patch.object(api_pg, "_users_exec", side_effect=db), \
              mock.patch.object(api_pg, "_production_order_visible", return_value=False) as visible:
@@ -232,6 +234,43 @@ class TestProductionAggregateScope(unittest.TestCase):
         self.assertEqual(response.json()["linked_orders"], [])
         visible.assert_called_once()
         self.assertEqual(visible.call_args.args[1], "UNASSIGNED-1")
+
+    def test_style_fulfillment_scopes_matrix_before_inventory_aggregation(self):
+        calls = []
+
+        def db(sql, params=None, **_kwargs):
+            calls.append((sql, params))
+            if "FROM style_tracker_styles" in sql:
+                return [{"id": 41, "style_name": "Scoped Style", "quantity": 10}]
+            if "FROM all_inventory i" in sql:
+                return [{
+                    "pos_location_name": "Cutting - Spreading",
+                    "colour": "Ruby", "size": "M", "units": 7,
+                }]
+            if "FROM production_orders" in sql:
+                return [{"order_ref": "OWNED-1", "order_qty": 7}]
+            self.fail(f"Unexpected query: {sql}")
+
+        with mock.patch.object(api_pg, "_user_for_session",
+                               return_value=_fake_user("production")), \
+             mock.patch.object(api_pg, "_production_visible_order_refs",
+                               return_value={"OWNED-1"}), \
+             mock.patch.object(api_pg, "_ensure_style_tracker_tables"), \
+             mock.patch.object(api_pg, "_users_exec", side_effect=db), \
+             mock.patch.object(api_pg, "_production_order_detail",
+                               return_value={"sku_balances": []}):
+            response = self._client().get(
+                "/api/style-tracker/styles/41/fulfillment", headers=_AUTH_HEADER)
+
+        self.assertEqual(response.status_code, 200, response.text)
+        inventory_query, inventory_params = next(
+            (sql, params) for sql, params in calls if "FROM all_inventory i" in sql
+        )
+        self.assertIn("production_order_variants scoped_variant", inventory_query)
+        self.assertEqual(inventory_params, ("Scoped Style", False, ["OWNED-1"]))
+        payload = response.json()
+        self.assertEqual(payload["stages"][0]["units"], 7)
+        self.assertEqual(payload["matrix"][0]["cutting_qty"], 7)
 
     def test_flow_uses_only_the_authenticated_users_order_refs(self):
         captured = []

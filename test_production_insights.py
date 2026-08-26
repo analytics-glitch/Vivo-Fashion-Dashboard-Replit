@@ -242,10 +242,36 @@ class ProductionInsightsContractTests(unittest.TestCase):
         self.assertEqual(scope["owner_user_id"], "")
 
     def test_command_plan_scope_includes_assigned_production_users(self):
-        source = inspect.getsource(insights._command_plan_rows)
+        source = inspect.getsource(insights._plan_scope_sql)
         self.assertIn("production_workspace_assignments scoped_assignment", source)
         self.assertIn("scoped_operator.user_id=%s", source)
-        self.assertIn("CASE WHEN %s THEN NULL ELSE p.owner_user_id END", source)
+        self.assertIn("scoped_operator.active", source)
+        self.assertIn("_plan_scope_sql", inspect.getsource(insights._command_plan_rows))
+
+    def test_recovery_scope_requires_an_active_assignment(self):
+        captured = {}
+        original_db = insights._db
+        try:
+            insights._db = lambda query, params, fetch=True: captured.update(
+                query=query, params=params, fetch=fetch
+            ) or []
+            insights._recovery_candidates(
+                date(2026, 8, 1), date(2026, 8, 25), actor={
+                    "role": "production", "user_id": "active-user",
+                },
+            )
+        finally:
+            insights._db = original_db
+        self.assertIn("scoped_operator.active", captured["query"])
+        self.assertEqual(captured["params"][-2:], ["active-user", "active-user"])
+
+    def test_recovery_action_paths_share_the_active_plan_scope(self):
+        for handler in (
+            insights._action_create, insights._action_update, insights._action_audit,
+        ):
+            with self.subTest(handler=handler.__name__):
+                source = inspect.getsource(handler)
+                self.assertIn("_plan_scope_sql", source)
 
     def test_command_wip_is_withheld_when_production_scope_cannot_be_verified(self):
         source = inspect.getsource(insights._command_centre)
@@ -298,8 +324,8 @@ class ProductionInsightsContractTests(unittest.TestCase):
     def test_recovery_is_cumulative_as_of_and_sensitive_routes_are_scoped(self):
         self.assertIn("WHERE capture_date <= %s", insights._RECOVERY_SQL)
         self.assertIn("current_wip_available", inspect.getsource(insights._recovery_candidates))
-        self.assertIn("outside your coaching context", inspect.getsource(insights._action_update))
-        self.assertIn("outside your coaching context", inspect.getsource(insights._action_audit))
+        self.assertIn("_plan_scope_sql", inspect.getsource(insights._action_update))
+        self.assertIn("_plan_scope_sql", inspect.getsource(insights._action_audit))
         self.assertIn("Redaction happens at the API boundary",
                       inspect.getsource(insights._productivity))
 

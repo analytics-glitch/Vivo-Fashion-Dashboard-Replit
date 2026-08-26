@@ -40547,6 +40547,11 @@ def style_tracker_fulfillment(style_id: int, request: Request):
     if not style:
         raise HTTPException(status_code=404, detail="Style not found")
     style_name = style[0]["style_name"]
+    # Resolve tracker scope before reading any raw inventory. A style can have
+    # several buying orders, so filtering linked-order cards afterwards would
+    # still expose another team's stage and fulfilment quantities.
+    allowed_refs = _production_visible_order_refs(request)
+    visible_refs = list(allowed_refs or [])
 
     # All production-stage locations we care about
     prod_locs = (
@@ -40564,10 +40569,18 @@ def style_tracker_fulfillment(style_id: int, request: Request):
         JOIN all_products_clean p ON i.sku = p.sku
         WHERE p.style_name = %s
           AND i.pos_location_name IN ({prod_locs})
+          AND (
+              %s OR EXISTS (
+                  SELECT 1
+                  FROM production_order_variants scoped_variant
+                  WHERE scoped_variant.order_ref = ANY(%s)
+                    AND scoped_variant.product_sku = i.sku
+              )
+          )
         GROUP BY 1, 2, 3
         HAVING COALESCE(SUM(GREATEST(i.available, 0)), 0) > 0
         """,
-        (style_name,), fetch=True) or []
+        (style_name, allowed_refs is None, visible_refs), fetch=True) or []
 
     def _loc_stage(loc):
         if loc == "Cutting - Spreading":      return "cutting"
@@ -40656,8 +40669,9 @@ def style_tracker_fulfillment(style_id: int, request: Request):
             "SELECT order_ref, COALESCE(order_qty, 0) AS order_qty "
             "FROM production_orders "
             "WHERE lower(COALESCE(style_name, '')) = lower(%s) "
+            "AND (%s OR order_ref = ANY(%s)) "
             "ORDER BY order_ref LIMIT 5",
-            (style_name,), fetch=True) or []
+            (style_name, allowed_refs is None, visible_refs), fetch=True) or []
         for po in prod_refs:
             # A production user may open a style card, but not use that card to
             # enumerate tracker orders outside their owned/active-assigned plans.

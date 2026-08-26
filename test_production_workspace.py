@@ -345,8 +345,16 @@ class ProductionWorkspaceFoundationTests(unittest.TestCase):
             workspace._execution_worklist(request_for("production"), "2099-01-01")
         query, params = calls[0]
         self.assertIn("p.owner_user_id=%s", query)
-        self.assertIn("uo.user_id=%s", query)
-        self.assertEqual(params[2], "production")
+        self.assertIn("scoped_operator.user_id=%s", query)
+        self.assertIn("scoped_operator.active", query)
+        self.assertEqual(params[-2:], ["user-1", "user-1"])
+
+    def test_missing_production_identity_fails_closed_for_plan_aggregates(self):
+        predicate, params = workspace._plan_scope_sql(
+            {"role": "production", "user_id": ""},
+        )
+        self.assertEqual(predicate, "FALSE")
+        self.assertEqual(params, [])
 
     def test_unassigned_production_user_cannot_read_plan_derived_bypasses(self):
         with patch.object(workspace, "_ensure_schema"), \
