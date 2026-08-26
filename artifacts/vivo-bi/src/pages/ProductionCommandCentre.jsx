@@ -14,7 +14,7 @@ const pct = (value) => value == null ? "Unavailable" : `${Number(value).toFixed(
 const title = (value) => String(value || "—").replace(/_/g, " ").replace(/\b\w/g, (m) => m.toUpperCase());
 
 function asEAT(value) {
-  if (!value) return "Not recorded";
+  if (!value) return "Timestamp unavailable";
   try {
     return new Intl.DateTimeFormat("en-GB", {
       timeZone: "Africa/Nairobi", day: "numeric", month: "short",
@@ -94,7 +94,9 @@ function Freshness({ sources }) {
               <span className="text-[11px] font-bold">{label}</span>
               <span className="text-[10px] font-bold capitalize">{item.state}</span>
             </div>
-            <div className="mt-1 text-[10.5px] opacity-90">{asEAT(item.as_of)} EAT</div>
+            <div className="mt-1 text-[10.5px] opacity-90">
+              {item.as_of ? `${asEAT(item.as_of)} EAT` : "Timestamp unavailable"}
+            </div>
             <div className="mt-0.5 text-[10px] opacity-80">{item.detail || item.refresh_status || "No refresh status"}</div>
           </div>
         );
@@ -234,7 +236,10 @@ export default function ProductionCommandCentre({
             subtitle="An honest East Africa stand-up view — verified tracker WIP, approved plans and validated execution evidence."
             testId="command-centre-title" />
           <div className="mt-1 text-[11px] text-muted">
-            As of {asEAT(data?.as_of)} EAT · {data?.scope?.snapshot_semantics || "Loading operational scope…"}
+            {data?.as_of
+              ? `As of ${asEAT(data.as_of)} EAT`
+              : "Combined timestamp unavailable — inspect each source below"}
+            {" · "}{data?.scope?.snapshot_semantics || "Loading operational scope…"}
           </div>
           <div className="mt-2 flex flex-wrap gap-2 text-[11px] font-semibold">
             <Link to={drillLink("/quality")} className="text-brand hover:underline">Quality</Link>

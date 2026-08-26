@@ -9,6 +9,12 @@ module.exports = defineConfig({
     baseURL: "http://localhost:80",
     headless: true,
     viewport: { width: 1280, height: 720 },
+    trace: "on",
+    // The Nix browser shim deliberately supplies Chromium only. Traces and
+    // screenshots retain actionable release evidence without requiring a
+    // separately-downloaded revisioned ffmpeg helper for optional video.
+    video: "off",
+    screenshot: "on",
   },
   projects: [
     {

@@ -1196,7 +1196,7 @@ def _command_public_rows(rows):
     identities. Do this at the response boundary so a new UI field cannot
     accidentally turn a redacted command response back into a personnel view.
     """
-    hidden = {"owner_user_id"}
+    hidden = {"owner_user_id", "operator_user_id", "operator_name", "created_by", "updated_by"}
     return [
         {key: value for key, value in dict(row).items() if key not in hidden}
         for row in rows
@@ -1246,6 +1246,22 @@ def _command_line_rows(plans, productivity, covered_plan_ids=None):
             and effort.get("metric_state") == "available"
         )
         row.update({
+            # This evidence is intentionally at the source-table grain.  The
+            # UI can pass a selected plan to Planning instead of silently
+            # opening an unconstrained workspace after a line-level click.
+            "source_rows": [
+                {
+                    "source": "production_workspace_plan_versions",
+                    "id": plan.get("plan_version_id"),
+                    "work_item_id": plan.get("work_item_id"),
+                    "coverage": {
+                        "approved_plan": plan.get("plan_fresh_at") is not None,
+                        "execution_capture": plan.get("output_fresh_at") is not None,
+                        "quality_and_downtime": plan.get("event_fresh_at") is not None,
+                    },
+                }
+                for plan in plans_for_line
+            ],
             "plan_count": len(plans_for_line),
             "owner_count": len({p.get("owner_user_id") for p in plans_for_line if p.get("owner_user_id")}),
             "target_qty": target,
@@ -1258,10 +1274,15 @@ def _command_line_rows(plans, productivity, covered_plan_ids=None):
             "load_pct": required / capacity * 100 if required is not None and capacity and capacity > 0 else None,
             "quality_total": quality_total,
             "efficiency_pct": effort.get("efficiency_pct") if efficiency_available else None,
-            "metric_state": "available" if actual is not None else "incomplete",
+            "metric_state": (
+                "available" if all(value is not None for value in
+                                   (target, actual, capacity, required, quality_total))
+                else "incomplete"
+            ),
             "unavailable_reason": (
-                None if actual is not None
-                else "One or more approved plans have no validated execution capture in this period."
+                None if all(value is not None for value in
+                            (target, actual, capacity, required, quality_total))
+                else "One or more approved plans are missing execution, capacity, or quality evidence in this period."
             ),
         })
         out.append(row)
@@ -1519,7 +1540,10 @@ def _command_centre(request, date_from=None, date_to=None, stage="", factory_id=
     response_recovery = _command_public_rows(recovery) if scope["privacy_context"] else recovery
     return {
         "schema_version": "1",
-        "as_of": datetime.now(ZoneInfo("Africa/Nairobi")).isoformat(),
+        # There is no single source-owned ingestion heartbeat for a compound
+        # Command Centre response.  Do not present request time as freshness.
+        "as_of": None,
+        "as_of_status": "timestamp_unavailable",
         "timezone": "Africa/Nairobi",
         "scope": {
             **{key: value for key, value in scope.items() if key != "actor"},

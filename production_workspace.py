@@ -47,6 +47,8 @@ VIEW_ROLES = {
     "admin", "production", "product_development", "quality",
     "fabric_quality_supervisor", "leadership", "smt",
 }
+QUALITY_ROLES = {"quality", "fabric_quality_supervisor"}
+PRODUCT_ROLES = {"product_development"}
 PLANNER_ROLES = {"admin", "production"}
 APPROVER_ROLES = {"admin", "leadership", "smt"}
 
@@ -355,6 +357,57 @@ def _plan_from_cur(cur, plan_id, lock=False):
         (plan_id,),
     )
     return cur.fetchone()
+
+
+def _plan_scope_sql(actor, alias="p"):
+    """SQL predicate for the operational owner-or-assignee boundary.
+
+    Read endpoints use this exact predicate before aggregation.  Post-filtering
+    a response would still leak totals, and caching a role-wide result would
+    leak another operator's plan through a copied URL.
+    """
+    if actor["role"] != "production":
+        return "TRUE", []
+    return (
+        f"""({alias}.owner_user_id=%s OR EXISTS (
+              SELECT 1
+              FROM production_workspace_assignments scoped_assignment
+              JOIN production_workspace_operators scoped_operator
+                ON scoped_operator.id=scoped_assignment.operator_id
+             WHERE scoped_assignment.plan_version_id={alias}.id
+               AND scoped_operator.user_id=%s
+               AND scoped_operator.active
+            ))""",
+        [actor["user_id"], actor["user_id"]],
+    )
+
+
+def _plan_is_visible(request, plan_id):
+    actor = _actor(request)
+    predicate, params = _plan_scope_sql(actor)
+    rows = _db(
+        f"SELECT 1 FROM production_workspace_plan_versions p "
+        f"WHERE p.id=%s AND {predicate}",
+        [plan_id, *params], fetch=True,
+    )
+    return bool(rows)
+
+
+def _privacy_safe_workspace_payload(request, value):
+    """Remove staff/owner identity from Quality and Product Development reads."""
+    if _actor(request)["role"] not in QUALITY_ROLES | PRODUCT_ROLES:
+        return value
+    hidden = {
+        "owner_user_id", "operator_user_id", "operator_id", "operator_name",
+        "operator_code", "created_by", "updated_by", "actor_user_id", "actor_name", "display_name",
+        "approved_by", "frozen_by", "changed_by", "submitted_by", "reopened_by",
+    }
+    if isinstance(value, dict):
+        return {key: _privacy_safe_workspace_payload(request, item)
+                for key, item in value.items() if key not in hidden}
+    if isinstance(value, list):
+        return [_privacy_safe_workspace_payload(request, item) for item in value]
+    return value
 
 
 def _plan_detail(plan_id):
@@ -746,11 +799,14 @@ def _plan_feasibility(plan_id: int, request: Request):
     denied = _require_role(request, VIEW_ROLES, "Production workspace viewing")
     if denied:
         return denied
+    if not _plan_is_visible(request, plan_id):
+        return _error(f"Plan {plan_id} not found", 404)
     with _tx() as cur:
         plan = _plan_from_cur(cur, plan_id)
         if not plan:
             return _error(f"Plan {plan_id} not found", 404)
-        return _jsonable(_plan_feasibility_detail(cur, plan))
+        return _privacy_safe_workspace_payload(
+            request, _jsonable(_plan_feasibility_detail(cur, plan)))
 
 
 def _workspace_root(request: Request):
@@ -805,7 +861,8 @@ def _catalogues(request: Request):
     result["tracker_stages"] = _rows(_db(
         "SELECT stage_key, stage_name, sort_order, allowed_next, is_terminal "
         "FROM production_stages ORDER BY sort_order", fetch=True))
-    return {"schema_version": WORKSPACE_SCHEMA_VERSION, "catalogues": result}
+    return _privacy_safe_workspace_payload(
+        request, {"schema_version": WORKSPACE_SCHEMA_VERSION, "catalogues": result})
 
 
 def _catalogue_create(resource, request: Request, body: dict):
@@ -1065,6 +1122,8 @@ def _work_items(request: Request):
     denied = _require_role(request, VIEW_ROLES, "Production workspace viewing")
     if denied:
         return denied
+    actor = _actor(request)
+    predicate, params = _plan_scope_sql(actor, "p")
     rows = _db(
         """
         SELECT wi.*, po.order_ref AS tracker_order_ref,
@@ -1076,11 +1135,16 @@ def _work_items(request: Request):
         LEFT JOIN production_orders po ON po.order_ref=wi.production_order_ref
         LEFT JOIN LATERAL (
             SELECT p.* FROM production_workspace_plan_versions p
-            WHERE p.work_item_id=wi.id ORDER BY p.version_no DESC LIMIT 1
+            WHERE p.work_item_id=wi.id AND """ + predicate + """
+            ORDER BY p.version_no DESC LIMIT 1
         ) latest ON TRUE
+        WHERE (%s <> 'production' OR EXISTS (
+            SELECT 1 FROM production_workspace_plan_versions p
+            WHERE p.work_item_id=wi.id AND """ + predicate + """))
         ORDER BY wi.updated_at DESC, wi.id DESC
-        """, fetch=True)
-    return {"schema_version": WORKSPACE_SCHEMA_VERSION, "work_items": _rows(rows)}
+        """, [*params, actor["role"], *params], fetch=True)
+    return _privacy_safe_workspace_payload(
+        request, {"schema_version": WORKSPACE_SCHEMA_VERSION, "work_items": _rows(rows)})
 
 
 def _work_item_create(request: Request, body: dict):
@@ -1193,6 +1257,8 @@ def _plans(request: Request):
     denied = _require_role(request, VIEW_ROLES, "Production workspace viewing")
     if denied:
         return denied
+    actor = _actor(request)
+    predicate, params = _plan_scope_sql(actor)
     rows = _db(
         """
         SELECT p.*, wi.external_ref, wi.style_number, wi.description,
@@ -1202,9 +1268,11 @@ def _plans(request: Request):
         JOIN production_workspace_work_items wi ON wi.id=p.work_item_id
         JOIN production_workspace_factories f ON f.id=p.factory_id
         LEFT JOIN production_workspace_lines l ON l.id=p.line_id
+        WHERE """ + predicate + """
         ORDER BY p.updated_at DESC, p.id DESC
-        """, fetch=True)
-    return {"schema_version": WORKSPACE_SCHEMA_VERSION, "plans": _rows(rows)}
+        """, params, fetch=True)
+    return _privacy_safe_workspace_payload(
+        request, {"schema_version": WORKSPACE_SCHEMA_VERSION, "plans": _rows(rows)})
 
 
 def _plan_get(plan_id: int, request: Request):
@@ -1212,7 +1280,11 @@ def _plan_get(plan_id: int, request: Request):
     denied = _require_role(request, VIEW_ROLES, "Production workspace viewing")
     if denied:
         return denied
-    return _plan_detail(plan_id) or _error(f"Plan {plan_id} not found", 404)
+    if not _plan_is_visible(request, plan_id):
+        return _error(f"Plan {plan_id} not found", 404)
+    detail = _plan_detail(plan_id)
+    return _privacy_safe_workspace_payload(request, detail) if detail else _error(
+        f"Plan {plan_id} not found", 404)
 
 
 def _plan_create(work_item_id: int, request: Request, body: dict):
@@ -2674,6 +2746,7 @@ def _execution_outputs(request: Request, capture_date=None, plan_version_id=None
     denied = _require_role(request, EXECUTION_CAPTURE_ROLES, "Production execution viewing")
     if denied:
         return denied
+    actor = _actor(request)
     clauses, params = [], []
     if capture_date and _execution_date(capture_date):
         clauses.append("o.capture_date=%s")
@@ -2681,13 +2754,17 @@ def _execution_outputs(request: Request, capture_date=None, plan_version_id=None
     if plan_version_id:
         clauses.append("o.plan_version_id=%s")
         params.append(plan_version_id)
-    where = " WHERE " + " AND ".join(clauses) if clauses else ""
+    scope, scope_params = _plan_scope_sql(actor, "p")
+    clauses.append(scope)
+    params.extend(scope_params)
+    where = " WHERE " + " AND ".join(clauses)
     rows = _db(
         f"""
         SELECT o.*,f.name AS factory_name,l.name AS line_name,sh.name AS shift_name,
                wi.external_ref,wi.style_number,po.product_name AS order_style_name,
                op.name AS operation_name
         FROM production_workspace_execution_output o
+        JOIN production_workspace_plan_versions p ON p.id=o.plan_version_id
         JOIN production_workspace_factories f ON f.id=o.factory_id
         LEFT JOIN production_workspace_lines l ON l.id=o.line_id
         LEFT JOIN production_workspace_shifts sh ON sh.id=o.shift_id
@@ -2700,7 +2777,7 @@ def _execution_outputs(request: Request, capture_date=None, plan_version_id=None
         """,
         params, fetch=True,
     )
-    return {"output": _rows(rows)}
+    return _privacy_safe_workspace_payload(request, {"output": _rows(rows)})
 
 
 def _execution_worklist(request: Request, capture_date=None):
@@ -2752,13 +2829,13 @@ def _execution_worklist(request: Request, capture_date=None):
         """,
         (day, day, actor["role"], actor["user_id"], actor["user_id"]), fetch=True,
     )
-    return {
+    return _privacy_safe_workspace_payload(request, {
         "schema_version": WORKSPACE_SCHEMA_VERSION,
         "capture_date": day.isoformat(),
         "state": "ready" if rows else "missing_plan",
         "message": None if rows else "No approved production assignment is scheduled for this date.",
         "worklist": _rows(rows),
-    }
+    })
 
 
 def _execution_events(request: Request, event_type=None, plan_version_id=None,
@@ -2767,6 +2844,7 @@ def _execution_events(request: Request, event_type=None, plan_version_id=None,
     denied = _require_role(request, EXECUTION_CAPTURE_ROLES, "Production execution viewing")
     if denied:
         return denied
+    actor = _actor(request)
     clauses, params = [], []
     if event_type:
         if event_type not in EXECUTION_EVENT_TYPES:
@@ -2779,13 +2857,17 @@ def _execution_events(request: Request, event_type=None, plan_version_id=None,
     if event_date and _execution_date(event_date):
         clauses.append("e.event_date=%s")
         params.append(_execution_date(event_date))
-    where = " WHERE " + " AND ".join(clauses) if clauses else ""
+    scope, scope_params = _plan_scope_sql(actor, "p")
+    clauses.append(scope)
+    params.extend(scope_params)
+    where = " WHERE " + " AND ".join(clauses)
     rows = _db(
         f"""
         SELECT e.*,f.name AS factory_name,l.name AS line_name,sh.name AS shift_name,
                wi.external_ref,wi.style_number,po.product_name AS order_style_name,
                op.name AS operation_name
         FROM production_workspace_execution_events e
+        JOIN production_workspace_plan_versions p ON p.id=e.plan_version_id
         JOIN production_workspace_factories f ON f.id=e.factory_id
         LEFT JOIN production_workspace_lines l ON l.id=e.line_id
         LEFT JOIN production_workspace_shifts sh ON sh.id=e.shift_id
@@ -2797,7 +2879,8 @@ def _execution_events(request: Request, event_type=None, plan_version_id=None,
         """,
         params, fetch=True,
     )
-    return {"events": _rows(rows), "event_type": event_type}
+    return _privacy_safe_workspace_payload(
+        request, {"events": _rows(rows), "event_type": event_type})
 
 
 def _execution_event_create(request: Request, body: dict):
@@ -3018,6 +3101,11 @@ def _execution_summary(request: Request, capture_date=None):
     if isinstance(worklist, JSONResponse):
         return worklist
     day = worklist["capture_date"]
+    plan_ids = sorted({row["plan_version_id"] for row in worklist.get("worklist", [])})
+    if not plan_ids:
+        return {"capture_date": day, "state": worklist["state"],
+                "summary": {"good_qty": 0, "reject_qty": 0, "rework_qty": 0,
+                            "output_entries": 0, "events": []}}
     rows = _db(
         """
         SELECT
@@ -3026,13 +3114,13 @@ def _execution_summary(request: Request, capture_date=None):
           COALESCE(SUM(rework_qty),0) AS rework_qty,
           COUNT(*) AS output_entries
         FROM production_workspace_execution_output
-        WHERE capture_date=%s
-        """, (day,), fetch=True,
+        WHERE capture_date=%s AND plan_version_id=ANY(%s)
+        """, (day, plan_ids), fetch=True,
     )
     counts = _db(
         "SELECT event_type,COUNT(*) AS count FROM production_workspace_execution_events "
-        "WHERE event_date=%s GROUP BY event_type ORDER BY event_type",
-        (day,), fetch=True,
+        "WHERE event_date=%s AND plan_version_id=ANY(%s) GROUP BY event_type ORDER BY event_type",
+        (day, plan_ids), fetch=True,
     )
     summary = dict(rows[0]) if rows else {}
     summary["events"] = _rows(counts)
@@ -3280,19 +3368,52 @@ def _execution_bulk_template(request: Request):
     }
 
 
+_AUDIT_PLAN_ENTITY_TABLES = {
+    "plan_version": ("production_workspace_plan_versions", "id", "id"),
+    "operation": ("production_workspace_operations", "id", "plan_version_id"),
+    "assignment": ("production_workspace_assignments", "id", "plan_version_id"),
+    "capacity_input": ("production_workspace_capacity_inputs", "id", "plan_version_id"),
+    "changeover": ("production_workspace_changeovers", "id", "plan_version_id"),
+    "execution_reference": ("production_workspace_execution_references", "id", "plan_version_id"),
+    "execution_output": ("production_workspace_execution_output", "id", "plan_version_id"),
+    "execution_event": ("production_workspace_execution_events", "id", "plan_version_id"),
+}
+
+
+def _audit_entity_is_visible(request, entity_type, entity_id):
+    """Resolve audit child rows to their plan before returning any timeline."""
+    if _actor(request)["role"] != "production":
+        return True
+    mapping = _AUDIT_PLAN_ENTITY_TABLES.get(entity_type)
+    if not mapping:
+        return False
+    table, id_column, plan_column = mapping
+    predicate, params = _plan_scope_sql(_actor(request), "p")
+    rows = _db(
+        f"SELECT 1 FROM {table} entity "
+        f"JOIN production_workspace_plan_versions p ON p.id=entity.{plan_column} "
+        f"WHERE entity.{id_column}=%s AND {predicate}",
+        [str(entity_id), *params], fetch=True,
+    )
+    return bool(rows)
+
+
 def _audit_timeline(entity_type: str, entity_id: str, request: Request):
     _ensure_schema()
     denied = _require_role(request, VIEW_ROLES, "Production workspace audit viewing")
     if denied:
         return denied
+    if not _audit_entity_is_visible(request, entity_type, entity_id):
+        return _error("Audit timeline not found", 404)
     rows = _db(
         "SELECT * FROM production_workspace_audit_events "
         "WHERE entity_type=%s AND entity_id=%s "
         "ORDER BY occurred_at DESC, id DESC",
         (entity_type, str(entity_id)), fetch=True,
     )
-    return {"entity_type": entity_type, "entity_id": str(entity_id),
-            "events": _rows(rows)}
+    return _privacy_safe_workspace_payload(
+        request, {"entity_type": entity_type, "entity_id": str(entity_id),
+                  "events": _rows(rows)})
 
 
 def _tracker_references(request: Request):
@@ -3300,12 +3421,19 @@ def _tracker_references(request: Request):
     denied = _require_role(request, VIEW_ROLES, "Production workspace viewing")
     if denied:
         return denied
-    return {
+    actor = _actor(request)
+    predicate, params = _plan_scope_sql(actor, "p")
+    return _privacy_safe_workspace_payload(request, {
         "orders": _rows(_db(
             "SELECT order_ref, style_number, product_name AS style_name, order_qty, "
             "NULL::text AS bo_state "
-            "FROM production_orders ORDER BY updated_at DESC NULLS LAST, order_ref",
-            fetch=True)),
+            "FROM production_orders po "
+            "WHERE (%s <> 'production' OR EXISTS ("
+            "SELECT 1 FROM production_workspace_work_items wi "
+            "JOIN production_workspace_plan_versions p ON p.work_item_id=wi.id "
+            "WHERE wi.production_order_ref=po.order_ref AND " + predicate + ")) "
+            "ORDER BY po.updated_at DESC NULLS LAST, po.order_ref",
+            [actor["role"], *params], fetch=True)),
         "stages": _rows(_db(
             "SELECT stage_key, stage_name, sort_order, allowed_next, is_terminal "
             "FROM production_stages ORDER BY sort_order", fetch=True)),
@@ -3313,7 +3441,7 @@ def _tracker_references(request: Request):
             "stage_movements_are_read_only_here": True,
             "quality_records_are_referenced_not_copied": True,
         },
-    }
+    })
 
 
 def _catalogue_create_endpoint(resource: str, request: Request,

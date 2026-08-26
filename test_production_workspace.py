@@ -302,6 +302,100 @@ class ProductionWorkspaceFoundationTests(unittest.TestCase):
         self.assertIsInstance(result, JSONResponse)
         self.assertEqual(result.status_code, 409)
 
+    def test_privacy_payload_removes_all_plan_and_revision_identity_fields(self):
+        payload = {
+            "plan": {"owner_user_id": "owner", "approved_by": "approver",
+                     "frozen_by": "freezer"},
+            "workflow_revisions": [{"changed_by": "reviewer"}],
+            "audit": [{"actor_user_id": "actor", "actor_name": "Actor"}],
+        }
+        safe = workspace._privacy_safe_workspace_payload(request_for("quality"), payload)
+        self.assertNotIn("owner_user_id", safe["plan"])
+        self.assertNotIn("approved_by", safe["plan"])
+        self.assertNotIn("frozen_by", safe["plan"])
+        self.assertNotIn("changed_by", safe["workflow_revisions"][0])
+        self.assertNotIn("actor_user_id", safe["audit"][0])
+        self.assertNotIn("actor_name", safe["audit"][0])
+
+    def test_quality_and_product_users_receive_redacted_execution_worklists(self):
+        row = {
+            "plan_version_id": 1, "style_number": "VIVO-1",
+            "operator_id": 9, "operator_name": "Staff Member",
+            "operator_code": "OP-9", "assignment_id": 3,
+        }
+        for role in ("quality", "product_development"):
+            with self.subTest(role=role), \
+                    patch.object(workspace, "_ensure_schema"), \
+                    patch.object(workspace, "_require_role", return_value=None), \
+                    patch.object(workspace, "_db", return_value=[row]):
+                result = workspace._execution_worklist(request_for(role), "2099-01-01")
+            worklist_row = result["worklist"][0]
+            self.assertNotIn("operator_id", worklist_row)
+            self.assertNotIn("operator_name", worklist_row)
+            self.assertNotIn("operator_code", worklist_row)
+
+    def test_production_worklist_uses_owner_or_assignee_scope(self):
+        calls = []
+        def fake_db(query, params=None, fetch=False):
+            calls.append((query, params))
+            return []
+        with patch.object(workspace, "_ensure_schema"), \
+                patch.object(workspace, "_require_role", return_value=None), \
+                patch.object(workspace, "_db", side_effect=fake_db):
+            workspace._execution_worklist(request_for("production"), "2099-01-01")
+        query, params = calls[0]
+        self.assertIn("p.owner_user_id=%s", query)
+        self.assertIn("uo.user_id=%s", query)
+        self.assertEqual(params[2], "production")
+
+    def test_unassigned_production_user_cannot_read_plan_derived_bypasses(self):
+        with patch.object(workspace, "_ensure_schema"), \
+                patch.object(workspace, "_require_role", return_value=None), \
+                patch.object(workspace, "_plan_is_visible", return_value=False), \
+                patch.object(workspace, "_audit_entity_is_visible", return_value=False):
+            feasibility = workspace._plan_feasibility(99, request_for("production"))
+            timeline = workspace._audit_timeline("plan_version", "99", request_for("production"))
+        self.assertIsInstance(feasibility, JSONResponse)
+        self.assertEqual(feasibility.status_code, 404)
+        self.assertIsInstance(timeline, JSONResponse)
+        self.assertEqual(timeline.status_code, 404)
+
+    def test_tracker_references_query_applies_plan_visibility_predicate(self):
+        calls = []
+        def fake_db(query, params=None, fetch=False):
+            calls.append((query, params))
+            return []
+        with patch.object(workspace, "_ensure_schema"), \
+                patch.object(workspace, "_require_role", return_value=None), \
+                patch.object(workspace, "_db", side_effect=fake_db):
+            result = workspace._tracker_references(request_for("production"))
+        self.assertEqual(result["orders"], [])
+        order_query, params = calls[0]
+        self.assertIn("production_workspace_plan_versions p", order_query)
+        self.assertIn("wi.production_order_ref=po.order_ref", order_query)
+        self.assertIn("p.owner_user_id=%s", order_query)
+        self.assertEqual(params[0], "production")
+
+    def test_work_item_latest_plan_cannot_leak_a_newer_inaccessible_revision(self):
+        calls = []
+        def fake_db(query, params=None, fetch=False):
+            calls.append((query, params))
+            # This is the only revision that an older visible plan may expose;
+            # the SQL, not a response-side filter, must reject a newer private one.
+            return [{"id": 71, "latest_plan_id": 3, "latest_plan_version": 1,
+                     "latest_plan_status": "draft", "latest_plan_token": 4}]
+        with patch.object(workspace, "_ensure_schema"), \
+                patch.object(workspace, "_require_role", return_value=None), \
+                patch.object(workspace, "_db", side_effect=fake_db):
+            result = workspace._work_items(request_for("production"))
+        self.assertEqual(result["work_items"][0]["latest_plan_id"], 3)
+        query, params = calls[0]
+        lateral = query.split("LEFT JOIN LATERAL", 1)[1].split(") latest ON TRUE", 1)[0]
+        self.assertIn("p.work_item_id=wi.id AND (p.owner_user_id=%s", lateral)
+        self.assertIn("scoped_operator.active", lateral)
+        # LATERAL predicate parameters precede the outer role and EXISTS scope.
+        self.assertEqual(params, ["user-1", "user-1", "production", "user-1", "user-1"])
+
 
 if __name__ == "__main__":
     unittest.main()

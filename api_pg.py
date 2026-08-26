@@ -2631,8 +2631,8 @@ def _start_cache_prewarmer():
                 ("ibt-suggestions", lambda: ibt_suggestions(
                     country=None, demand_days=28, limit=300,
                     low_pct=20, high_pct=150, use_clustering=True)),
-                ("production-flow",    lambda: production_flow()),
-                ("production-summary", lambda: production_summary()),
+                ("production-flow",    production_flow_unscoped),
+                ("production-summary", production_summary_unscoped),
                 ("retail-desk-overview", retail_desk_router._overview_snapshot),
                 # Merch Hub: warm the default (all-filters-unset) core universe
                 # so the first visitor after a deploy never pays the cold cost.
@@ -38164,6 +38164,77 @@ def _prod_derived_invalidate():
     _prod_derived_cache["rows"] = None
 
 
+def _production_actor(request):
+    """Return the only identity used to scope legacy tracker data.
+
+    The tracker predates the Workspace tables, so it must never trust an
+    order reference from a copied URL.  A production user may only see a
+    tracker order once it is linked to a plan they own or an assignment made
+    to their workspace operator account.  Wider operational roles retain
+    their approved role-wide view.
+    """
+    user = getattr(request.state, "user", None) or {}
+    return {
+        "role": str(user.get("role") or "").lower(),
+        "user_id": str(user.get("user_id") or user.get("id") or ""),
+        "display": user.get("name") or user.get("email") or "unknown",
+    }
+
+
+def _production_visible_order_refs(request, order_refs=None):
+    """Return allowed refs for a production user, or ``None`` for role-wide users.
+
+    This is deliberately evaluated per request rather than cached.  The
+    derived Odoo balance cache is global, while the visibility decision is
+    user-specific; caching the filtered result would create an identity leak.
+    """
+    actor = _production_actor(request)
+    if actor["role"] != "production":
+        return None
+    if not actor["user_id"]:
+        return set()
+    sql = """
+        SELECT DISTINCT wi.production_order_ref
+        FROM production_workspace_work_items wi
+        JOIN production_workspace_plan_versions p ON p.work_item_id=wi.id
+        LEFT JOIN production_workspace_assignments a ON a.plan_version_id=p.id
+        LEFT JOIN production_workspace_operators o ON o.id=a.operator_id
+        WHERE wi.production_order_ref IS NOT NULL
+           AND (p.owner_user_id=%s OR (o.user_id=%s AND o.active))
+    """
+    params = [actor["user_id"], actor["user_id"]]
+    if order_refs is not None:
+        refs = [str(ref) for ref in order_refs if ref]
+        if not refs:
+            return set()
+        sql += " AND wi.production_order_ref = ANY(%s)"
+        params.append(refs)
+    try:
+        rows = _users_exec(sql, params, fetch=True) or []
+    except Exception:
+        log.exception("Production tracker visibility lookup failed; denying scoped read")
+        return set()
+    return {row["production_order_ref"] for row in rows}
+
+
+def _production_order_visible(request, order_ref):
+    allowed = _production_visible_order_refs(request, [order_ref])
+    return allowed is None or order_ref in allowed
+
+
+def _production_redact_for_privacy(request, detail):
+    """Quality and Product Development can inspect production evidence, not staff."""
+    role = _production_actor(request)["role"]
+    if role not in {"quality", "fabric_quality_supervisor", "product_development"}:
+        return detail
+    detail = dict(detail)
+    detail["history"] = [
+        {key: value for key, value in row.items() if key not in {"moved_by", "owner_user_id"}}
+        for row in detail.get("history", [])
+    ]
+    return detail
+
+
 def _production_derived_balances():
     """Live derived WIP rows: one dict per (order_ref, stage, sku, sewing_line)
     with qty, size, colour, variant_name. 60s in-process cache (several board
@@ -38308,9 +38379,13 @@ def _prod_stage_buckets(order_ref, stage):
     return rows or []
 
 
-def _production_order_detail(order_ref):
+def _production_order_detail(order_ref, request=None):
     """One order: header, current per-stage balances, full movement history.
     Returns None when the order_ref is unknown so callers can 404."""
+    if request is not None and not _production_order_visible(request, order_ref):
+        # Deliberately indistinguishable from an unknown order.  This prevents
+        # copied direct URLs from becoming an order-existence side channel.
+        return None
     order_rows = _users_exec(
         "SELECT * FROM production_orders WHERE order_ref = %s",
         (order_ref,), fetch=True)
@@ -38421,13 +38496,14 @@ def _production_order_detail(order_ref):
                                      str(r.get("colour") or "~"),
                                      str(r.get("size") or "~"),
                                      str(r.get("sku") or "")))
-    return {"order": order_rows[0], "balances": balances, "history": history,
+    result = {"order": order_rows[0], "balances": balances, "history": history,
             "lines": lines, "variants": variants,
             "sku_balances": sku_balances, "stages": stages}
+    return _production_redact_for_privacy(request, result) if request is not None else result
 
 
 @app.get("/api/production/stages")
-def production_stages():
+def production_stages(request: Request):
     """Stage definitions with live order/unit counts — drives the board columns.
 
     The 'buying_order' stage is display-filtered to DRAFT BOs only (a planned
@@ -38435,6 +38511,7 @@ def production_stages():
     longer belongs in the Buying Orders column). The underlying ledger is NOT
     filtered, so moves out of buying_order (e.g. into Cutting) keep working
     for planned BOs."""
+    allowed_refs = _production_visible_order_refs(request)
     rows = _users_exec("""
         SELECT s.stage_key, s.stage_name, s.sort_order,
                s.is_terminal, s.allowed_next,
@@ -38451,12 +38528,15 @@ def production_stages():
                    ROUND(MAX(b.days_since_last_in)::numeric, 1) AS oldest_days_in_stage
             FROM v_stage_balances b
             JOIN production_orders po ON po.order_ref = b.order_ref
-            WHERE NOT (b.stage = 'buying_order'
+            WHERE (%s OR b.order_ref = ANY(%s))
+              AND NOT (b.stage = 'buying_order'
                        AND COALESCE(po.bo_state, '') <> 'draft')
             GROUP BY b.stage
         ) w ON w.stage = s.stage_key
-        ORDER BY s.sort_order""", fetch=True)
+        ORDER BY s.sort_order""", (allowed_refs is None, list(allowed_refs or [])), fetch=True)
     derived = _production_derived_balances()
+    if allowed_refs is not None:
+        derived = [row for row in derived if row["order_ref"] in allowed_refs]
     dstats = {}
     for r in derived:
         st = dstats.setdefault(r["stage"], {"units": 0.0, "orders": set()})
@@ -38476,8 +38556,9 @@ def production_stages():
 
 
 @app.get("/api/production/board")
-def production_board():
+def production_board(request: Request):
     """Every (order x stage) slice that currently holds units — the board cards."""
+    allowed_refs = _production_visible_order_refs(request)
     rows = _users_exec("""
         SELECT b.order_ref, b.stage, b.qty_here,
                ROUND(b.days_since_last_in::numeric, 1) AS days_in_stage,
@@ -38485,15 +38566,19 @@ def production_board():
         FROM v_stage_balances b
         JOIN production_orders po ON po.order_ref = b.order_ref
         JOIN production_stages s  ON s.stage_key  = b.stage
-        WHERE b.stage NOT IN ('waiting_sewing', 'sewing', 'finishing')
+        WHERE (%s OR b.order_ref = ANY(%s))
+          AND b.stage NOT IN ('waiting_sewing', 'sewing', 'finishing')
           AND NOT (b.stage = 'buying_order'
                    AND COALESCE(po.bo_state, '') <> 'draft')
-        ORDER BY s.sort_order, b.days_since_last_in DESC""", fetch=True)
+        ORDER BY s.sort_order, b.days_since_last_in DESC""",
+        (allowed_refs is None, list(allowed_refs or [])), fetch=True)
     for r in rows:
         r["live"] = False
         r["sewing_lines"] = []
     # Derived cards: live per-order slices at the Odoo pipeline locations.
     derived = _production_derived_balances()
+    if allowed_refs is not None:
+        derived = [row for row in derived if row["order_ref"] in allowed_refs]
     agg = {}
     for r in derived:
         k = (r["order_ref"], r["stage"])
@@ -38570,7 +38655,7 @@ def production_sync_status():
     }
 
 
-def _production_flow_stages():
+def _production_flow_stages(allowed_refs=None):
     """The stage flow: one row per stage with units, distinct orders & styles in
     it now, its % of all in-progress units, plus the stage's sort order and
     allowed transitions so the UI can draw the arrows. Returns (rows, total)."""
@@ -38582,7 +38667,8 @@ def _production_flow_stages():
                    COUNT(DISTINCT po.style_number) AS styles
             FROM v_stage_balances b
             JOIN production_orders po ON po.order_ref = b.order_ref
-            WHERE NOT (b.stage = 'buying_order'
+            WHERE (%s OR b.order_ref = ANY(%s))
+              AND NOT (b.stage = 'buying_order'
                        AND COALESCE(po.bo_state, '') <> 'draft')
             GROUP BY b.stage
         )
@@ -38592,9 +38678,12 @@ def _production_flow_stages():
                COALESCE(bal.styles, 0) AS styles
         FROM production_stages s
         LEFT JOIN bal ON bal.stage = s.stage_key
-        ORDER BY s.sort_order""", fetch=True)
+        ORDER BY s.sort_order""",
+        (allowed_refs is None, list(allowed_refs or [])), fetch=True)
     # Derived stages: replace ledger figures with live Odoo-stock ones.
     derived = _production_derived_balances()
+    if allowed_refs is not None:
+        derived = [row for row in derived if row["order_ref"] in allowed_refs]
     dstats = {}
     if derived:
         refs = sorted({r["order_ref"] for r in derived})
@@ -38639,13 +38728,26 @@ _PROD_SUMMARY_CK = "production:summary"
 _PROD_CACHE_TTL = 300  # 5 min; production data changes via sync (hourly)
 
 @app.get("/api/production/flow")
-def production_flow():
+def production_flow(request: Request):
     """Overall stage flow for the flow-chart visualization."""
-    cached, fresh = cache_get_swr(_PROD_FLOW_CK)
-    if cached is not None:
-        if not fresh:
-            swr_refresh(_PROD_FLOW_CK, production_flow, label="prod-flow")
-        return cached
+    allowed_refs = _production_visible_order_refs(request)
+    # A shared portfolio cache must never carry a production user's filtered
+    # view. Scoped reads are evaluated per request, like board/detail reads.
+    if allowed_refs is None:
+        cached, fresh = cache_get_swr(_PROD_FLOW_CK)
+        if cached is not None:
+            if not fresh:
+                swr_refresh(_PROD_FLOW_CK, lambda: production_flow_unscoped(), label="prod-flow")
+            return cached
+    rows, total = _production_flow_stages(allowed_refs)
+    result = {"stages": rows, "total_units": total}
+    if allowed_refs is None:
+        cache_set(_PROD_FLOW_CK, result, ttl=_PROD_CACHE_TTL)
+    return result
+
+
+def production_flow_unscoped():
+    """Prewarmer-safe cache entry point; never use it for request traffic."""
     rows, total = _production_flow_stages()
     result = {"stages": rows, "total_units": total}
     cache_set(_PROD_FLOW_CK, result, ttl=_PROD_CACHE_TTL)
@@ -38653,7 +38755,7 @@ def production_flow():
 
 
 @app.get("/api/production/expected-drops")
-def production_expected_drops():
+def production_expected_drops(request: Request):
     """Buying orders bucketed into weekly 'expected drop' windows by their Odoo
     expected_delivery_date — Overdue, the current week + the next 7 weeks, and a
     'Later' catch-all. Only orders that still have units to deliver (order_qty
@@ -38662,6 +38764,7 @@ def production_expected_drops():
     from datetime import datetime as _DT, timedelta as _TD
     from collections import defaultdict as _DD
 
+    allowed_refs = _production_visible_order_refs(request)
     rows = _users_exec("""
         WITH wh AS (
             SELECT order_ref, SUM(qty_here) AS wh_qty
@@ -38675,9 +38778,11 @@ def production_expected_drops():
                GREATEST(po.order_qty - COALESCE(wh.wh_qty, 0), 0) AS pending_qty
         FROM production_orders po
         LEFT JOIN wh ON wh.order_ref = po.order_ref
-        WHERE po.expected_delivery_date IS NOT NULL
+        WHERE (%s OR po.order_ref = ANY(%s))
+          AND po.expected_delivery_date IS NOT NULL
           AND (po.order_qty - COALESCE(wh.wh_qty, 0)) > 0
-        ORDER BY po.expected_delivery_date""", fetch=True)
+        ORDER BY po.expected_delivery_date""",
+        (allowed_refs is None, list(allowed_refs or [])), fetch=True)
 
     # East-Africa (UTC+3) "today" so the week strip aligns with the buyers' calendar.
     today = (_DT.utcnow() + _TD(hours=3)).date()
@@ -38735,31 +38840,36 @@ def production_expected_drops():
 
 
 @app.get("/api/production/summary")
-def production_summary():
+def production_summary(request: Request):
     """Portfolio-level roll-ups for the Production Report: totals plus
     breakdowns by lifecycle type (New / Replenishment / Re-order), production
     type, buying-order state, current WIP stage, and buyer. Plus a flat row per
     buying order (with its colour/size/variant counts and per-stage unit split)
     so the report can list every order and export it without N detail calls."""
-    cached, fresh = cache_get_swr(_PROD_SUMMARY_CK)
-    if cached is not None:
-        if not fresh:
-            swr_refresh(_PROD_SUMMARY_CK, production_summary, label="prod-summary")
-        return cached
+    allowed_refs = _production_visible_order_refs(request)
+    scope_params = (allowed_refs is None, list(allowed_refs or []))
+    if allowed_refs is None:
+        cached, fresh = cache_get_swr(_PROD_SUMMARY_CK)
+        if cached is not None:
+            if not fresh:
+                swr_refresh(_PROD_SUMMARY_CK, production_summary_unscoped, label="prod-summary")
+            return cached
     totals = _users_exec("""
         SELECT COUNT(*)                         AS orders,
                COALESCE(SUM(order_qty), 0)      AS units,
                COUNT(DISTINCT style_number)     AS styles
-        FROM production_orders""", fetch=True)
+        FROM production_orders po
+        WHERE (%s OR po.order_ref = ANY(%s))""", scope_params, fetch=True)
 
     def _grouped(col):
         return _users_exec(f"""
             SELECT COALESCE({col}, 'Unspecified') AS label,
                    COUNT(*)                       AS orders,
                    COALESCE(SUM(order_qty), 0)    AS units
-            FROM production_orders
+            FROM production_orders po
+            WHERE (%s OR po.order_ref = ANY(%s))
             GROUP BY 1
-            ORDER BY units DESC""", fetch=True)
+            ORDER BY units DESC""", scope_params, fetch=True)
 
     by_stage = _users_exec("""
         SELECT s.stage_key, s.stage_name, s.sort_order,
@@ -38772,20 +38882,22 @@ def production_summary():
                    SUM(b.qty_here) AS units_here
             FROM v_stage_balances b
             JOIN production_orders po ON po.order_ref = b.order_ref
-            WHERE NOT (b.stage = 'buying_order'
+            WHERE (%s OR b.order_ref = ANY(%s))
+              AND NOT (b.stage = 'buying_order'
                        AND COALESCE(po.bo_state, '') <> 'draft')
             GROUP BY b.stage
         ) w ON w.stage = s.stage_key
-        ORDER BY s.sort_order""", fetch=True)
+        ORDER BY s.sort_order""", scope_params, fetch=True)
 
     by_buyer = _users_exec("""
         SELECT COALESCE(buyer, 'Unspecified') AS label,
                COUNT(*)                       AS orders,
                COALESCE(SUM(order_qty), 0)    AS units
-        FROM production_orders
+        FROM production_orders po
+        WHERE (%s OR po.order_ref = ANY(%s))
         GROUP BY 1
         ORDER BY units DESC
-        LIMIT 30""", fetch=True)
+        LIMIT 30""", scope_params, fetch=True)
 
     # One row per buying order with colour/size/variant counts + per-stage units.
     # `sew` rolls up the distinct sewing line(s) every order's pieces ran on (any
@@ -38903,7 +39015,9 @@ def production_summary():
         LEFT JOIN sew              ON sew.order_ref = po.order_ref
         LEFT JOIN prod_attrs    pa ON pa.style_number = po.style_number
         LEFT JOIN bom_structure bs ON bs.style_number = po.style_number
-        ORDER BY po.date_ordered DESC NULLS LAST, po.order_ref DESC""", fetch=True)
+        WHERE (%s OR po.order_ref = ANY(%s))
+        ORDER BY po.date_ordered DESC NULLS LAST, po.order_ref DESC""",
+        scope_params, fetch=True)
 
     # Load now sitting in the Sewing stage, split by the line each piece ran on
     # (its most recent sewing line) — units + distinct orders/styles per line so
@@ -38923,6 +39037,7 @@ def production_summary():
                 LIMIT 1
             ) sl ON TRUE
             WHERE sb.stage = 'sewing'
+              AND (%s OR sb.order_ref = ANY(%s))
         )
         SELECT COALESCE(c.sewing_line, 'Unspecified') AS label,
                COUNT(DISTINCT c.order_ref)            AS orders,
@@ -38931,10 +39046,13 @@ def production_summary():
         FROM cur c
         LEFT JOIN production_orders po ON po.order_ref = c.order_ref
         GROUP BY 1
-        ORDER BY (COALESCE(c.sewing_line, 'Unspecified') = 'Unspecified'), label""", fetch=True)
+        ORDER BY (COALESCE(c.sewing_line, 'Unspecified') = 'Unspecified'), label""",
+        scope_params, fetch=True)
 
     # ---- Derived-stage overrides (live Odoo stock) ----
     derived = _production_derived_balances()
+    if allowed_refs is not None:
+        derived = [row for row in derived if row["order_ref"] in allowed_refs]
     styl = {o["order_ref"]: o["style_number"] for o in orders}
     dstage = {}
     dorder = {}           # order_ref -> {stage: qty}
@@ -38989,8 +39107,9 @@ def production_summary():
     # style_name → stripped style_number → prefix either way), then aggregate.
     import re as _re
     po_rows = _users_exec(
-        "SELECT style_number, style_name, order_qty FROM production_orders "
-        "WHERE order_qty > 0", fetch=True)
+        "SELECT style_number, style_name, order_qty FROM production_orders po "
+        "WHERE po.order_qty > 0 AND (%s OR po.order_ref = ANY(%s))",
+        scope_params, fetch=True)
     dim_rows = _users_exec("""
         SELECT DISTINCT ON (style_name) style_name, style_number,
                category, product_type,
@@ -39103,13 +39222,23 @@ def production_summary():
         "by_sewing_line": by_sewing_line,
         "orders": orders,
     }
-    cache_set(_PROD_SUMMARY_CK, result, ttl=_PROD_CACHE_TTL)
+    if allowed_refs is None:
+        cache_set(_PROD_SUMMARY_CK, result, ttl=_PROD_CACHE_TTL)
     return result
 
 
+def production_summary_unscoped():
+    """Prewarmer-safe cache entry point; request handlers always pass identity."""
+    # The middleware only reads request.identity for production role scoping;
+    # invoking the cache warmer uses the same unscoped calculation directly.
+    class _UnscopedRequest:
+        state = type("_State", (), {"user": {"role": "admin"}})()
+    return production_summary(_UnscopedRequest())
+
+
 @app.get("/api/production/orders/{order_ref}")
-def production_order(order_ref: str):
-    detail = _production_order_detail(order_ref)
+def production_order(order_ref: str, request: Request):
+    detail = _production_order_detail(order_ref, request)
     if detail is None:
         return JSONResponse({"detail": f"Order {order_ref} not found"}, status_code=404)
     return detail
@@ -39242,8 +39371,7 @@ async def production_move(request: Request):
 
     # Attribute the move to the signed-in user unless an explicit name is given.
     u = getattr(request.state, "user", None) or {}
-    moved_by = (body.get("moved_by") or "").strip() or (
-        u.get("name") or u.get("email") or "unknown")
+    moved_by = u.get("name") or u.get("email") or "unknown"
 
     with _users_tx() as cur:
         # Serialize concurrent moves on the SAME order so the availability check
@@ -39256,6 +39384,9 @@ async def production_move(request: Request):
             cur.connection.rollback()
             return JSONResponse(
                 {"detail": f"Unknown order: {order_ref}"}, status_code=404)
+        if not _production_order_visible(request, order_ref):
+            cur.connection.rollback()
+            return JSONResponse({"detail": "Order not found"}, status_code=404)
         cur.execute(
             "SELECT allowed_next FROM production_stages WHERE stage_key = %s",
             (from_stage,))
@@ -39337,7 +39468,7 @@ async def production_move(request: Request):
     # Ledger offsets feed the derived finishing figure — recompute on next read.
     _prod_derived_invalidate()
     # Return the order's fresh state so the UI can update in place.
-    return _production_order_detail(order_ref)
+    return _production_order_detail(order_ref, request)
 
 
 @app.post("/api/production/bulk-move")
@@ -39376,8 +39507,7 @@ async def production_bulk_move(request: Request):
             {"detail": "from_stage and to_stage are the same"}, status_code=400)
 
     u = getattr(request.state, "user", None) or {}
-    moved_by = (body.get("moved_by") or "").strip() or (
-        u.get("name") or u.get("email") or "unknown")
+    moved_by = u.get("name") or u.get("email") or "unknown"
 
     results = []
     moved_count = 0
@@ -39385,6 +39515,8 @@ async def production_bulk_move(request: Request):
     for order_ref in order_refs:
         try:
             with _users_tx() as cur:
+                if not _production_order_visible(request, order_ref):
+                    raise _MoveError("Order not found", 404)
                 qty = _advance_whole_order(
                     cur, order_ref, from_stage, to_stage, supplied_line, moved_by, note)
             results.append({"order_ref": order_ref, "ok": True, "qty": qty})
@@ -40405,7 +40537,7 @@ def style_tracker_warehouse_pct_endpoint(style_id: int):
 
 
 @app.get("/api/style-tracker/styles/{style_id}/fulfillment")
-def style_tracker_fulfillment(style_id: int):
+def style_tracker_fulfillment(style_id: int, request: Request):
     """Size/colour fulfillment drill-down for a style.
     Returns a stage journey and a colour × size matrix with fulfillment rates."""
     _ensure_style_tracker_tables()
@@ -40527,7 +40659,9 @@ def style_tracker_fulfillment(style_id: int):
             "ORDER BY order_ref LIMIT 5",
             (style_name,), fetch=True) or []
         for po in prod_refs:
-            detail = _production_order_detail(po["order_ref"])
+            # A production user may open a style card, but not use that card to
+            # enumerate tracker orders outside their owned/active-assigned plans.
+            detail = _production_order_detail(po["order_ref"], request)
             if not detail:
                 continue
             sku_balances = detail.get("sku_balances") or []

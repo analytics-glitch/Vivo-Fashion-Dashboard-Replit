@@ -17,6 +17,7 @@ import unittest
 from unittest import mock
 
 from starlette.testclient import TestClient
+from starlette.requests import Request
 
 import api_pg
 
@@ -162,6 +163,130 @@ class TestCentralTrackerAuthGate(unittest.TestCase):
             resp.status_code, 401,
             f"Expected 401 for unauthenticated request, got {resp.status_code}",
         )
+
+
+class TestProductionAggregateScope(unittest.TestCase):
+    """A production user must not bypass board/detail scope through roll-ups."""
+
+    def setUp(self):
+        with api_pg._CACHE_LOCK:
+            api_pg._cache.clear()
+
+    def _client(self):
+        return TestClient(api_pg.app, raise_server_exceptions=False)
+
+    @staticmethod
+    def _production_request():
+        return Request({
+            "type": "http", "method": "GET", "path": "/api/production/flow",
+            "headers": [], "state": {"user": _fake_user("production")},
+        })
+
+    def test_inactive_assignment_cannot_authorize_tracker_reads(self):
+        calls = []
+        def no_active_assignment(sql, params=None, **_kwargs):
+            calls.append((sql, params))
+            return []
+        request = self._production_request()
+        with mock.patch.object(api_pg, "_users_exec", side_effect=no_active_assignment):
+            visible = api_pg._production_visible_order_refs(request, ["LOCKED-1"])
+            detail = api_pg._production_order_detail("LOCKED-1", request)
+        self.assertEqual(visible, set())
+        self.assertIsNone(detail)
+        self.assertEqual(len(calls), 2)
+        self.assertIn("o.user_id=%s AND o.active", calls[0][0])
+        self.assertEqual(calls[0][1][-1], ["LOCKED-1"])
+
+    def test_inactive_assignment_cannot_execute_a_tracker_move(self):
+        with mock.patch.object(api_pg, "_user_for_session",
+                               return_value=_fake_user("production")), \
+             mock.patch.object(api_pg, "_production_order_visible", return_value=False), \
+             mock.patch.object(api_pg, "_advance_whole_order") as advance:
+            response = self._client().post(
+                "/api/production/bulk-move", headers=_AUTH_HEADER,
+                json={"order_ref": "LOCKED-1", "from_stage": "cutting", "to_stage": "sewing"},
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["failed_count"], 1)
+        self.assertEqual(response.json()["results"][0]["error"], "Order not found")
+        advance.assert_not_called()
+
+    def test_style_fulfillment_omits_unassigned_linked_tracker_orders(self):
+        def db(sql, params=None, **_kwargs):
+            if "FROM style_tracker_styles" in sql:
+                return [{"id": 41, "style_name": "Scoped Style", "quantity": 10}]
+            if "FROM all_inventory i" in sql:
+                return []
+            if "FROM production_orders" in sql:
+                return [{"order_ref": "UNASSIGNED-1", "order_qty": 10}]
+            self.fail(f"Unexpected query: {sql}")
+
+        with mock.patch.object(api_pg, "_user_for_session",
+                               return_value=_fake_user("production")), \
+             mock.patch.object(api_pg, "_ensure_style_tracker_tables"), \
+             mock.patch.object(api_pg, "_users_exec", side_effect=db), \
+             mock.patch.object(api_pg, "_production_order_visible", return_value=False) as visible:
+            response = self._client().get(
+                "/api/style-tracker/styles/41/fulfillment", headers=_AUTH_HEADER)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["linked_orders"], [])
+        visible.assert_called_once()
+        self.assertEqual(visible.call_args.args[1], "UNASSIGNED-1")
+
+    def test_flow_uses_only_the_authenticated_users_order_refs(self):
+        captured = []
+        with mock.patch.object(api_pg, "_user_for_session",
+                               return_value=_fake_user("production")), \
+             mock.patch.object(api_pg, "_production_visible_order_refs",
+                               return_value={"OWNED-1"}), \
+             mock.patch.object(api_pg, "_production_flow_stages",
+                               side_effect=lambda refs: (captured.append(refs) or ([], 0))):
+            response = self._client().get("/api/production/flow", headers=_AUTH_HEADER)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(captured, [{"OWNED-1"}])
+        self.assertEqual(response.json()["total_units"], 0)
+
+    def test_expected_drops_queries_only_authorized_order_refs(self):
+        calls = []
+        def db(sql, params=None, **_kwargs):
+            calls.append((sql, params))
+            return []
+        with mock.patch.object(api_pg, "_user_for_session",
+                               return_value=_fake_user("production")), \
+             mock.patch.object(api_pg, "_production_visible_order_refs",
+                               return_value={"OWNED-1"}), \
+             mock.patch.object(api_pg, "_users_exec", side_effect=db):
+            response = self._client().get("/api/production/expected-drops",
+                                          headers=_AUTH_HEADER)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][1], (False, ["OWNED-1"]))
+        self.assertIn("po.order_ref = ANY", calls[0][0])
+        self.assertEqual(response.json()["buckets"][0]["orders"], [])
+
+    def test_summary_and_export_apply_authorized_scope_before_aggregation(self):
+        calls = []
+        def db(sql, params=None, **_kwargs):
+            calls.append((sql, params))
+            return []
+        with mock.patch.object(api_pg, "_user_for_session",
+                               return_value=_fake_user("production")), \
+             mock.patch.object(api_pg, "_production_visible_order_refs",
+                               return_value={"OWNED-1"}), \
+             mock.patch.object(api_pg, "_users_exec", side_effect=db), \
+             mock.patch.object(api_pg, "_production_derived_balances", return_value=[]):
+            response = self._client().get("/api/production/summary", headers=_AUTH_HEADER)
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(payload["orders"], [])
+        scoped_queries = [
+            (sql, params) for sql, params in calls
+            if "production_orders po" in sql or "b.order_ref = ANY" in sql
+        ]
+        self.assertGreaterEqual(len(scoped_queries), 6)
+        for sql, params in scoped_queries:
+            self.assertIn("ANY(%s)", sql)
+            self.assertEqual(params, (False, ["OWNED-1"]))
 
 
 if __name__ == "__main__":
