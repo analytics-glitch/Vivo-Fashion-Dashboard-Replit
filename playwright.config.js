@@ -1,10 +1,21 @@
 // @ts-check
 const { defineConfig, devices } = require("@playwright/test");
+const path = require("path");
+
+const evidenceDir = process.env.VIVO_E2E_OUTPUT_DIR
+  || path.join(__dirname, "artifacts", "vivo-bi", "test-results", "manual-run");
 
 module.exports = defineConfig({
   testDir: "./e2e",
+  // Keep reviewable release evidence next to the Vivo BI artifact instead of
+  // relying on a status marker that carries no screenshots, traces, or logs.
+  outputDir: evidenceDir,
   timeout: 60_000,
   retries: 1,
+  reporter: [
+    ["list"],
+    ["json", { outputFile: path.join(evidenceDir, "release-proof-report.json") }],
+  ],
   use: {
     baseURL: "http://localhost:80",
     headless: true,

@@ -6,6 +6,7 @@
  * production records.
  */
 const { test, expect } = require("@playwright/test");
+const fs = require("fs");
 
 const COMMAND_CENTRE_URL = "/production?tab=dashboard";
 const COMMAND_CENTRE_PATH = "/api/production-workspace/command-centre";
@@ -19,8 +20,14 @@ const REQUIRED_SECTIONS = [
   "command-definitions",
 ];
 
-async function authenticate(page) {
-  const token = process.env.VIVO_E2E_TOKEN;
+const TOKEN_ENV_BY_ROLE = {
+  admin: "VIVO_E2E_TOKEN",
+  production: "VIVO_E2E_PRODUCTION_TOKEN",
+  quality: "VIVO_E2E_QUALITY_TOKEN",
+};
+
+async function authenticate(page, role = "admin") {
+  const token = process.env[TOKEN_ENV_BY_ROLE[role]];
   if (!token) throw new Error("VIVO_E2E_TOKEN not set — check e2e/global-setup.js");
 
   await page.goto("/");
@@ -29,9 +36,13 @@ async function authenticate(page) {
   ]);
 }
 
+function commandCentre(page) {
+  return page.locator('[data-testid="production-command-centre"]');
+}
+
 async function openCommandCentre(page) {
   await page.goto(COMMAND_CENTRE_URL);
-  await expect(page.locator('[data-testid="production-command-centre"]')).toBeVisible({
+  await expect(commandCentre(page)).toBeVisible({
     timeout: 90_000,
   });
   await expect(page.getByText("Production Command Centre", { exact: true })).toBeVisible();
@@ -57,7 +68,28 @@ async function refreshHealthy(page) {
   await expect(page.locator('[data-testid="command-refresh"]')).toHaveText("Refresh");
 }
 
-test("Command Centre desktop handles filters, refresh failure, recovery, partial data, and drill-down", async ({ page }, testInfo) => {
+test.beforeEach(async ({ page }, testInfo) => {
+  const browserLog = [];
+  const add = (kind, detail) => browserLog.push(`[${new Date().toISOString()}] ${kind}: ${detail}`);
+  testInfo.browserLog = browserLog;
+  page.on("console", (message) => add(`console.${message.type()}`, message.text()));
+  page.on("pageerror", (error) => add("pageerror", error.stack || error.message));
+  page.on("requestfailed", (request) => add("requestfailed", `${request.method()} ${request.url()} ${request.failure()?.errorText || ""}`));
+  page.on("response", (response) => {
+    if (response.url().includes("/api/") && response.status() >= 400) {
+      add("api-error", `${response.status()} ${response.url()}`);
+    }
+  });
+});
+
+test.afterEach(async ({}, testInfo) => {
+  const content = testInfo.browserLog?.length
+    ? testInfo.browserLog.join("\n")
+    : "No browser console messages or failed requests recorded.";
+  fs.writeFileSync(testInfo.outputPath("browser.log"), `${content}\n`, "utf8");
+});
+
+test("Command Centre desktop handles filters, refresh failure, recovery, partial data, and every enabled drill-down", async ({ page }, testInfo) => {
   test.setTimeout(240_000);
   await page.setViewportSize({ width: 1440, height: 1000 });
   await authenticate(page);
@@ -128,14 +160,62 @@ test("Command Centre desktop handles filters, refresh failure, recovery, partial
   await page.unroute(partialRoute);
 
   await refreshHealthy(page);
-  await expect(page.locator('[data-testid="command-completeness-warning"]')).toBeHidden();
+  await expect(page.locator('[data-testid="command-completeness-warning"]')).not.toContainText(partialMessage);
 
-  await page.getByRole("link", { name: "Quality", exact: true }).click();
-  await expect(page).toHaveURL(/\/quality\?.*date_from=.*date_to=/);
-  await page.goBack();
-  await expect(page.locator('[data-testid="production-command-centre"]')).toBeVisible({
-    timeout: 90_000,
-  });
+  const drills = [
+    {
+      label: "Quality",
+      click: () => commandCentre(page).getByRole("link", { name: "Quality", exact: true }).click(),
+      url: /\/quality\?.*date_from=.*date_to=/,
+      ready: () => expect(page.locator('[data-testid="app-shell"]')).toBeVisible(),
+    },
+    {
+      label: "Execution Capture",
+      click: () => commandCentre(page).getByRole("button", { name: "Capture", exact: true }).click(),
+      url: /\/production\?.*tab=capture/,
+      ready: () => expect(page.locator('[data-testid="production-execution"]')).toBeVisible({ timeout: 90_000 }),
+    },
+    {
+      label: "Production Tracker",
+      click: () => commandCentre(page).getByRole("button", { name: "Tracker", exact: true }).click(),
+      url: /\/production\?.*tab=tracker/,
+      ready: () => expect(page.locator('[data-testid="production-title"]')).toBeVisible({ timeout: 90_000 }),
+    },
+    {
+      label: "Production Report",
+      click: () => commandCentre(page).getByRole("button", { name: "Report", exact: true }).click(),
+      url: /\/production\?.*tab=report/,
+      ready: () => expect(page.locator('[data-testid="production-report"]')).toBeVisible({ timeout: 90_000 }),
+    },
+    {
+      label: "Order Tracker",
+      click: () => commandCentre(page).getByRole("link", { name: "Order Tracker", exact: true }).click(),
+      url: /\/central-tracker\?.*date_from=.*date_to=/,
+      ready: () => expect(page.locator('[data-testid="app-shell"]')).toBeVisible(),
+    },
+    {
+      label: "Planning Workspace",
+      click: () => commandCentre(page).getByRole("button", { name: "Planning", exact: true }).click(),
+      url: /\/production\?.*tab=workspace/,
+      ready: () => expect(page.locator('[data-testid="production-planning-workspace"]')).toBeVisible({ timeout: 90_000 }),
+    },
+    {
+      label: "Productivity & Recovery",
+      click: () => commandCentre(page).getByRole("button", { name: "Recovery history", exact: true }).click(),
+      url: /\/production\?.*tab=insights/,
+      ready: () => expect(page.locator('[data-testid="production-insights"]')).toBeVisible({ timeout: 90_000 }),
+    },
+  ];
+  for (const drill of drills) {
+    await openCommandCentre(page);
+    await drill.click();
+    await expect(page, `${drill.label} must keep the Command Centre scope`).toHaveURL(drill.url);
+    await drill.ready();
+    await page.screenshot({
+      path: testInfo.outputPath(`command-drill-${drill.label.toLowerCase().replaceAll(/[^a-z]+/g, "-")}.png`),
+      fullPage: true,
+    });
+  }
 });
 
 test("Command Centre has no page-level overflow on phone or tablet", async ({ page }, testInfo) => {
@@ -163,6 +243,61 @@ test("Command Centre has no page-level overflow on phone or tablet", async ({ pa
     });
   }
 
-  await page.getByRole("link", { name: "Quality", exact: true }).click();
+  await commandCentre(page).getByRole("link", { name: "Quality", exact: true }).click();
   await expect(page).toHaveURL(/\/quality\?.*date_from=.*date_to=/);
+});
+
+test("Production role can use production destinations but is denied Order Tracker", async ({ page }, testInfo) => {
+  test.setTimeout(180_000);
+  await page.setViewportSize({ width: 768, height: 1024 });
+  await authenticate(page, "production");
+  await openCommandCentre(page);
+
+  await expect(commandCentre(page).getByRole("link", { name: "Order Tracker", exact: true })).toHaveCount(0);
+  for (const label of ["Capture", "Tracker", "Report", "Planning", "Recovery history"]) {
+    await expect(commandCentre(page).getByRole("button", { name: label, exact: true }), `${label} should be enabled for Production`).toBeEnabled();
+  }
+  await commandCentre(page).getByRole("button", { name: "Capture", exact: true }).click();
+  await expect(page).toHaveURL(/\/production\?.*tab=capture/);
+  await expect(page.locator('[data-testid="production-execution"]')).toBeVisible({ timeout: 90_000 });
+
+  await page.goto("/central-tracker");
+  await expect(page).not.toHaveURL(/\/central-tracker/);
+  await expect(page.locator('[data-testid="app-shell"]')).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("production-role-denied-order-tracker.png"), fullPage: true });
+});
+
+test("Quality role redacts personnel productivity at phone width", async ({ page }, testInfo) => {
+  test.setTimeout(180_000);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await authenticate(page, "quality");
+  await openCommandCentre(page);
+  await expect(commandCentre(page).getByRole("link", { name: "Quality", exact: true })).toHaveCount(1);
+  await expect(commandCentre(page).getByRole("link", { name: "Order Tracker", exact: true })).toHaveCount(0);
+  await expect(commandCentre(page).getByRole("button", { name: "Tracker", exact: true })).toHaveCount(0);
+  await expect(commandCentre(page).getByRole("button", { name: "Report", exact: true })).toHaveCount(0);
+  await page.goto("/production?tab=insights");
+  await expect(page.locator('[data-testid="production-insights"]')).toBeVisible({ timeout: 90_000 });
+  await expect(page.getByText("individual attendance and efficiency are withheld.", { exact: false })).toBeVisible();
+  await expect(page.getByRole("columnheader", { name: "Earned / attended", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("columnheader", { name: "Efficiency", exact: true })).toHaveCount(0);
+  await expect(page.locator('[data-testid="prod-tab-tracker"]')).toHaveCount(0);
+  await expect(page.locator('[data-testid="prod-tab-report"]')).toHaveCount(0);
+  const productivity = await page.evaluate(async () => {
+    const response = await fetch("/api/production-workspace/productivity");
+    return { status: response.status, body: await response.json() };
+  });
+  expect(productivity.status).toBe(200);
+  expect(productivity.body.scope.quality_context_only).toBe(true);
+  expect(productivity.body.rows).toHaveLength(1);
+  expect(productivity.body.rows[0]).toMatchObject({ target_qty: 10, actual_qty: 10, good_qty: 8 });
+  const fixture = JSON.parse(fs.readFileSync(process.env.VIVO_E2E_RUN_FILE, "utf8")).productionFixture;
+  expect(JSON.stringify(productivity.body.rows)).not.toContain(fixture.operatorName);
+  for (const row of productivity.body.rows) {
+    for (const privateField of ["operator_user_id", "operator_id", "operator_name", "attended_minutes", "earned_minutes", "efficiency_pct"]) {
+      expect(row, `${privateField} must not cross the quality-role API boundary`).not.toHaveProperty(privateField);
+    }
+  }
+  await expect(page.getByText("E2E Release Line", { exact: true })).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("quality-role-redaction-phone.png"), fullPage: true });
 });

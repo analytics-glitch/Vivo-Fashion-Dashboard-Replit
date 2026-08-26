@@ -1985,9 +1985,11 @@ async def clerk_auth_gate(request: Request, call_next):
     # product development team to move buying-order quantities through the
     # manufacturing stages. Product development + leadership + admin only;
     # enforced here so hidden web nav can't be bypassed via direct API.
-    if path.startswith("/api/production") and user.get("role") not in (
+    if (path.startswith("/api/production")
+            and not path.startswith("/api/production-workspace")
+            and user.get("role") not in (
         "product_development", "production", "leadership", "smt", "admin"
-    ):
+    )):
         return JSONResponse({"detail": "Production tracker access requires a production, product development, leadership or admin role"}, status_code=403)
 
     # Product Development Flow (/api/pd/*) — the pre-production style kanban.

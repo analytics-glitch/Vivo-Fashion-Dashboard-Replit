@@ -7,6 +7,8 @@ import {
 } from "@phosphor-icons/react";
 import { api } from "@/lib/api";
 import { useFilters } from "@/lib/filters";
+import { useAuth } from "@/lib/auth";
+import { canAccessPage } from "@/lib/permissions";
 import { ErrorBox, Loading, SectionTitle } from "@/components/common";
 
 const n = (value) => Number(value || 0).toLocaleString(undefined, { maximumFractionDigits: 1 });
@@ -171,6 +173,7 @@ export default function ProductionCommandCentre({
   onOpenWorkspace, onOpenReport, onOpenCapture, onOpenTracker, onOpenInsights,
 }) {
   const { applied } = useFilters();
+  const { user } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
   const [data, setData] = useState(null);
@@ -233,6 +236,15 @@ export default function ProductionCommandCentre({
     });
     return `${pathname}?${search.toString()}`;
   };
+  const directDrills = [
+    canAccessPage(user, "quality") && <Link key="quality" to={drillLink("/quality")} className="text-brand hover:underline">Quality</Link>,
+    onOpenCapture && <button key="capture" type="button" onClick={tabAction(onOpenCapture)} className="text-brand hover:underline">Capture</button>,
+    onOpenTracker && <button key="tracker" type="button" onClick={tabAction(onOpenTracker)} className="text-brand hover:underline">Tracker</button>,
+    onOpenReport && <button key="report" type="button" onClick={tabAction(onOpenReport)} className="text-brand hover:underline">Report</button>,
+    canAccessPage(user, "central-tracker") && <Link key="order-tracker" to={drillLink("/central-tracker")} className="text-brand hover:underline">Order Tracker</Link>,
+    onOpenWorkspace && <button key="planning" type="button" onClick={() => openWorkspace(null)} className="text-brand hover:underline">Planning</button>,
+    onOpenInsights && <button key="insights" type="button" onClick={tabAction(onOpenInsights)} className="text-brand hover:underline">Recovery history</button>,
+  ].filter(Boolean);
   const metrics = data?.metrics || {};
   const planState = data?.sections?.plan_actual;
   const deliveryState = data?.sections?.delivery;
@@ -253,19 +265,12 @@ export default function ProductionCommandCentre({
             {" · "}{data?.scope?.snapshot_semantics || "Loading operational scope…"}
           </div>
           <div className="mt-2 flex flex-wrap gap-2 text-[11px] font-semibold">
-            <Link to={drillLink("/quality")} className="text-brand hover:underline">Quality</Link>
-            <span className="text-line">·</span>
-            <button type="button" onClick={tabAction(onOpenCapture)} disabled={!onOpenCapture} title={!onOpenCapture ? "Execution Capture is not available for your role." : undefined} className="text-brand hover:underline disabled:opacity-50">Capture</button>
-            <span className="text-line">·</span>
-            <button type="button" onClick={tabAction(onOpenTracker)} disabled={!onOpenTracker} title={!onOpenTracker ? "Production Tracker is not available for your role." : undefined} className="text-brand hover:underline disabled:opacity-50">Tracker</button>
-            <span className="text-line">·</span>
-            <button type="button" onClick={tabAction(onOpenReport)} disabled={!onOpenReport} title={!onOpenReport ? "Production Report is not available for your role." : undefined} className="text-brand hover:underline disabled:opacity-50">Report</button>
-            <span className="text-line">·</span>
-            <Link to={drillLink("/central-tracker")} className="text-brand hover:underline">Order Tracker</Link>
-            <span className="text-line">·</span>
-            <button type="button" onClick={onOpenWorkspace ? () => openWorkspace(null) : null} disabled={!onOpenWorkspace} title={!onOpenWorkspace ? "Planning is not available for your role." : undefined} className="text-brand hover:underline disabled:opacity-50">Planning</button>
-            <span className="text-line">·</span>
-            <button type="button" onClick={tabAction(onOpenInsights)} disabled={!onOpenInsights} title={!onOpenInsights ? "Recovery history is not available for your role." : undefined} className="text-brand hover:underline disabled:opacity-50">Recovery history</button>
+            {directDrills.map((drill, index) => (
+              <React.Fragment key={drill.key || index}>
+                {index > 0 && <span className="text-line">·</span>}
+                {drill}
+              </React.Fragment>
+            ))}
           </div>
         </div>
         <button type="button" onClick={() => load(true)} disabled={loading || refreshing}
