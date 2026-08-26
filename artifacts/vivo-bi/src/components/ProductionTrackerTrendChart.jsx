@@ -40,8 +40,13 @@ function useTrackerMetrics(metricGroup) {
   return { rows, loading, error };
 }
 
+const slugify = (value) => String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+
 function ChartShell({ eyebrow, title, subtitle, loading, error, empty, emptyNote, children }) {
-  return <section className="pw-panel p-4" data-testid={`pw-tracker-chart-${eyebrow ? eyebrow.toLowerCase().replace(/[^a-z0-9]+/g, "-") : "trend"}`}>
+  // Every chart shares the same eyebrow ("Production Tracker 2026 · Sheet
+  // feed"), so the testid must be keyed off the (unique) title, not the
+  // eyebrow, or every chart on a page collides on one selector.
+  return <section className="pw-panel p-4" data-testid={`pw-tracker-chart-${slugify(title) || "trend"}`}>
     <div className="pw-eyebrow">{eyebrow}</div>
     <div className="mt-1 font-bold" style={{ color: "var(--pw-navy)" }}>{title}</div>
     {subtitle && <div className="mt-1 text-xs" style={{ color: "var(--pw-text-muted)" }}>{subtitle}</div>}
@@ -96,6 +101,44 @@ function MonthlyOutputChart() {
       </LineChart>
     </ResponsiveContainer>
     {anyPartial && <div className="mt-2 text-[11px]" style={{ color: "var(--pw-text-muted)" }}>The current month's point reflects a partial period (month in progress) — treat it as directional, not a completed total.</div>}
+  </ChartShell>;
+}
+
+// ---------------------------------------------------------------------------
+// variant: fabric_mix — Woven vs Knit monthly units. August (and any other
+// month the sheet does not report) is a real gap, never plotted as zero.
+// The source sheet's "Wooven" typo is normalized to "Woven" server-side
+// (normalized_label); the raw source_label is kept in the data but never
+// shown to users.
+// ---------------------------------------------------------------------------
+function FabricMixChart() {
+  const { rows, loading, error } = useTrackerMetrics("fabric_mix");
+  const chartData = useMemo(() => {
+    const byMonth = {};
+    const ensure = (key) => (byMonth[key] ||= { period_key: key, label: MONTH_LABEL(key) });
+    rows.forEach((row) => { ensure(row.period_key)[row.dimension] = row.is_available ? row.value : null; });
+    return Object.values(byMonth).sort((a, b) => a.period_key.localeCompare(b.period_key));
+  }, [rows]);
+  const dimLabel = useMemo(() => {
+    const map = {};
+    rows.forEach((row) => { map[row.dimension] = row.normalized_label || row.dimension; });
+    return map;
+  }, [rows]);
+  return <ChartShell
+    eyebrow="Production Tracker 2026 · Sheet feed" title="Fabric mix — Woven vs Knit"
+    subtitle="Monthly units by fabric type from the governed Production Tracker sheet. A missing month (e.g. August) is a real gap in the line, never plotted as zero. The source sheet's 'Wooven' label is normalized to 'Woven' for display."
+    loading={loading} error={error} empty={!chartData.length}>
+    <ResponsiveContainer width="100%" height={220}>
+      <LineChart data={chartData} margin={{ top: 8, right: 14, left: 0, bottom: 0 }}>
+        <CartesianGrid strokeDasharray="3 3" stroke="var(--pw-border-light)" />
+        <XAxis dataKey="label" tick={{ fontSize: 10 }} stroke="var(--pw-text-muted)" />
+        <YAxis tick={{ fontSize: 10 }} stroke="var(--pw-text-muted)" />
+        <Tooltip formatter={(value) => (value == null ? "Unavailable" : value.toLocaleString())} contentStyle={{ fontSize: 12, borderRadius: 8 }} />
+        <Legend wrapperStyle={{ fontSize: 11 }} />
+        <Line type="monotone" dataKey="woven" name={dimLabel.woven || "Woven"} stroke="#0A192F" strokeWidth={2.5} dot={{ r: 3 }} connectNulls={false} isAnimationActive={false} />
+        <Line type="monotone" dataKey="knit" name={dimLabel.knit || "Knit"} stroke="#C5A059" strokeWidth={2} dot={{ r: 3 }} connectNulls={false} isAnimationActive={false} />
+      </LineChart>
+    </ResponsiveContainer>
   </ChartShell>;
 }
 
@@ -224,5 +267,6 @@ export default function ProductionTrackerTrendChart({ variant }) {
   if (variant === "annual_totals") return <AnnualTotalsChart />;
   if (variant === "process_productivity") return <ProcessProductivityChart />;
   if (variant === "quality_defects") return <DefectMetricsChart />;
+  if (variant === "fabric_mix") return <FabricMixChart />;
   return <MonthlyOutputChart />;
 }

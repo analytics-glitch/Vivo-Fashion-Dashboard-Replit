@@ -121,6 +121,7 @@ function ControlRoom({ scope, onNavigate }) {
           {!commitments.length ? <div className="pw-empty-module"><strong>No approved delivery commitments match this scope.</strong>There is nothing to schedule yet, rather than a zero-risk claim.</div> : <div className="pw-table-wrap mt-4"><table className="pw-table"><thead><tr><th>Commitment</th><th>Due</th><th>Line</th><th>Risk evidence</th></tr></thead><tbody>{commitments.slice(0, 8).map((row) => <tr key={row.plan_version_id}><td className="font-semibold">{row.style_number || row.external_ref || "Plan"}</td><td>{row.planned_end || "Due date unavailable"}</td><td>{row.factory_name || "Factory unavailable"} · {row.line_name || "Line unassigned"}</td><td>{(row.reasons || []).slice(0, 2).join(" ") || "Evidence unavailable"}</td></tr>)}</tbody></table></div>}
         </section>
         <div className="col-span-12"><ProductionTrackerTrendChart variant="monthly_output" /></div>
+        <div className="col-span-12"><ProductionTrackerTrendChart variant="fabric_mix" /></div>
       </div>
     </>}
   </div>;
