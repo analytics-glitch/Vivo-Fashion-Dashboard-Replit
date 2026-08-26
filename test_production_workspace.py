@@ -247,7 +247,9 @@ class ProductionWorkspaceFoundationTests(unittest.TestCase):
         self.assertIn("production_workspace_capacity_inputs", reopen_source)
         self.assertNotIn("version_token=version_token+1", reopen_source)
         self.assertIn("product_name AS style_name", tracker_source)
-        self.assertIn("NULL::text AS bo_state", tracker_source)
+        self.assertIn("production_workspace_work_items wi", tracker_source)
+        self.assertIn("LEFT JOIN LATERAL", tracker_source)
+        self.assertIn("_recovery_candidates", tracker_source)
         assignment_source = inspect.getsource(workspace._assignment_create)
         self.assertIn("plan_version_id=%s FOR UPDATE", assignment_source)
         self.assertIn("workspace_assignment_operation_mismatch", assignment_source)
@@ -258,6 +260,102 @@ class ProductionWorkspaceFoundationTests(unittest.TestCase):
         self.assertIn("_scope_relationship_error", capacity_source)
         self.assertIn("plan.get(\"line_id\")", assignment_source)
         self.assertIn("workspace_plan_context_locked", inspect.getsource(workspace._plan_update))
+
+    def test_factory_cadence_and_resource_schema_is_additive_and_auditable(self):
+        workspace.ensure_production_workspace_tables()
+        sql = workspace._API.schema_calls[-1]
+        self.assertIn("CREATE TABLE IF NOT EXISTS production_workspace_cadences", sql)
+        self.assertIn("CREATE TABLE IF NOT EXISTS production_workspace_cadence_actions", sql)
+        self.assertIn("CREATE TABLE IF NOT EXISTS production_workspace_team_members", sql)
+        self.assertIn("CREATE TABLE IF NOT EXISTS production_workspace_resources", sql)
+        self.assertIn("version_token   BIGINT NOT NULL DEFAULT 1", sql)
+        self.assertNotIn("TRUNCATE production_workspace_cadences", sql)
+        self.assertIn("uq_workspace_cadence_context", sql)
+        self.assertIn("COALESCE(shift_id, 0)", sql)
+        self.assertIn("production_workspace_cadence_scope_guard", sql)
+        self.assertIn("Cadence shift must belong to the cadence factory", sql)
+        self.assertIn("production_workspace_team_scope_guard", sql)
+        self.assertIn("Team member line must belong to the team member factory", sql)
+
+    def test_cadence_team_and_resource_routes_are_registered_with_mutation_handlers(self):
+        app = FastAPI()
+        workspace.register_production_workspace_routes(app, workspace._API)
+        routes = {route.path: route for route in app.routes if hasattr(route, "path")}
+        for path in (
+            "/api/production-workspace/cadences",
+            "/api/production-workspace/cadences/{cadence_id}/attendance",
+            "/api/production-workspace/cadences/{cadence_id}/actions",
+            "/api/production-workspace/cadence-actions/{action_id}",
+            "/api/production-workspace/team",
+            "/api/production-workspace/team/{member_id}",
+            "/api/production-workspace/resources",
+            "/api/production-workspace/resources/{resource_id}",
+        ):
+            self.assertIn(path, routes)
+        self.assertIn("body", routes["/api/production-workspace/cadences"].endpoint.__annotations__)
+        self.assertIn("expected_version", inspect.getsource(workspace._cadence_update))
+        self.assertIn("expected_version", inspect.getsource(workspace._resource_update))
+
+    def test_new_cadence_team_resource_identity_aliases_are_redacted_for_privacy_roles(self):
+        payload = {
+            "members": [{"user_id": "worker-1", "display_name": "Worker One"}],
+            "cadences": [{"attendance": [{"member_user_id": "worker-2", "display_name": "Worker Two"}],
+                          "actions": [{"owner_user_id": "lead-1", "owner_name": "Line Lead"}]}],
+            "resources": [{"owner_user_id": "owner-1", "owner_name": "Resource Owner"}],
+        }
+        safe = workspace._privacy_safe_workspace_payload(request_for("quality"), payload)
+        self.assertNotIn("user_id", safe["members"][0])
+        self.assertNotIn("display_name", safe["members"][0])
+        self.assertNotIn("member_user_id", safe["cadences"][0]["attendance"][0])
+        self.assertNotIn("owner_user_id", safe["cadences"][0]["actions"][0])
+        self.assertNotIn("owner_name", safe["resources"][0])
+
+    def test_team_and_attendance_mutations_enforce_versions_and_factory_scope(self):
+        team_update = inspect.getsource(workspace._team_update)
+        attendance = inspect.getsource(workspace._cadence_attendance)
+        resources = inspect.getsource(workspace._resources)
+        self.assertIn("before[\"version_token\"]", team_update)
+        self.assertIn("_factory_authorized", team_update)
+        self.assertIn("expected_version", attendance)
+        self.assertIn("version_token=version_token+1", attendance)
+        self.assertIn("_workspace_person_scope", resources)
+        self.assertIn("_context_relationship_valid", inspect.getsource(workspace._cadence_create))
+        self.assertIn("_context_relationship_valid", inspect.getsource(workspace._team_create))
+        self.assertIn("_context_relationship_valid", inspect.getsource(workspace._team_update))
+
+    def test_controlled_resource_source_rejects_unsafe_urls(self):
+        self.assertEqual(workspace._safe_resource_source_ref("https://intranet.example/sop.pdf"),
+                         ("https://intranet.example/sop.pdf", None))
+        for unsafe in ("javascript:alert(1)", "data:text/html,test", "//example.com/sop",
+                       "http://example.com/sop", "https://user:pass@example.com/sop"):
+            value, error = workspace._safe_resource_source_ref(unsafe)
+            self.assertIsNone(value, unsafe)
+            self.assertTrue(error, unsafe)
+        resource_create = inspect.getsource(workspace._resource_create)
+        resource_update = inspect.getsource(workspace._resource_update)
+        self.assertIn("_safe_resource_source_ref", resource_create)
+        self.assertIn("_safe_resource_source_ref", resource_update)
+
+    def test_tracker_scope_is_applied_before_delivery_risk_evidence_enrichment(self):
+        calls = []
+        def query(sql, params=None, fetch=False):
+            calls.append((sql, list(params or [])))
+            return []
+        with patch.object(workspace, "_ensure_schema"), \
+                patch.object(workspace, "_require_role", return_value=None), \
+                patch.object(workspace, "_db", side_effect=query):
+            payload = workspace._tracker_references(
+                request_for("admin"), date_from="2099-01-01", date_to="2099-01-31",
+                factory_id="44", line_id="7", shift_id="3", owner_user_id="owner-9",
+                plan_status="approved", stage="cutting", search="ST-100",
+            )
+        sql, params = calls[0]
+        self.assertIn("p.factory_id=%s::bigint", sql)
+        self.assertIn("p.owner_user_id=%s", sql)
+        self.assertIn("wi.stage_key=%s", sql)
+        self.assertIn("LEFT JOIN LATERAL", sql)
+        self.assertTrue({"44", "7", "3", "owner-9", "approved", "cutting", "ST-100"}.issubset(set(params)))
+        self.assertEqual(payload["scope_applied"]["factory_id"], "44")
 
     def test_plan_input_mutations_capture_the_plan_row_before_audit_queries(self):
         for handler in (
@@ -417,7 +515,8 @@ class ProductionWorkspaceFoundationTests(unittest.TestCase):
         self.assertIn("production_workspace_plan_versions p", order_query)
         self.assertIn("wi.production_order_ref=po.order_ref", order_query)
         self.assertIn("p.owner_user_id=%s", order_query)
-        self.assertEqual(params[0], "production")
+        self.assertEqual(params[0], "user-1")
+        self.assertEqual(params[1], "user-1")
 
     def test_work_item_latest_plan_cannot_leak_a_newer_inaccessible_revision(self):
         calls = []

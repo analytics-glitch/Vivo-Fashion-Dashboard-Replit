@@ -17,6 +17,7 @@ import threading
 import uuid
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
+from urllib.parse import urlsplit
 
 from fastapi import Body, Request
 from fastapi.responses import JSONResponse
@@ -462,6 +463,7 @@ def _privacy_safe_workspace_payload(request, value):
     hidden = {
         "owner_user_id", "operator_user_id", "operator_id", "operator_name",
         "operator_code", "created_by", "updated_by", "actor_user_id", "actor_name", "display_name",
+        "user_id", "member_user_id", "owner_name",
         "approved_by", "frozen_by", "changed_by", "submitted_by", "reopened_by",
     }
     if isinstance(value, dict):
@@ -3590,24 +3592,140 @@ def _audit_timeline(entity_type: str, entity_id: str, request: Request):
                   "events": _rows(rows)})
 
 
-def _tracker_references(request: Request):
+def _tracker_references(request: Request, date_from: str = None, date_to: str = None,
+                        stage: str = "", factory_id: str = "", line_id: str = "",
+                        shift_id: str = "", owner_user_id: str = "",
+                        plan_status: str = "", delivery_risk: str = "",
+                        search: str = ""):
     _ensure_schema()
     denied = _require_role(request, VIEW_ROLES, "Production workspace viewing")
     if denied:
         return denied
     actor = _actor(request)
-    predicate, params = _plan_scope_sql(actor, "p")
+    privacy = actor["role"] in QUALITY_ROLES | PRODUCT_ROLES
+    owner_user_id = "" if privacy else str(owner_user_id or "")
+    filters = []
+    query_params = []
+    has_scope = any(str(value or "").strip() for value in (
+        date_from, date_to, stage, factory_id, line_id, shift_id,
+        owner_user_id, plan_status, delivery_risk, search,
+    ))
+    if actor["role"] == "production":
+        predicate, predicate_params = _plan_scope_sql(actor, "p")
+        filters.append("p.id IS NOT NULL AND (" + predicate + ")")
+        query_params.extend(predicate_params)
+    elif has_scope:
+        filters.append("p.id IS NOT NULL")
+    if date_from:
+        filters.append("p.planned_start >= %s")
+        query_params.append(str(date_from))
+    if date_to:
+        filters.append("p.planned_end <= %s")
+        query_params.append(str(date_to))
+    for value, expression in (
+        (factory_id, "p.factory_id=%s::bigint"),
+        (line_id, "p.line_id=%s::bigint"),
+        (shift_id, "p.shift_id=%s::bigint"),
+        (owner_user_id, "p.owner_user_id=%s"),
+        (plan_status, "p.status=%s"),
+        (stage, "wi.stage_key=%s"),
+    ):
+        if value:
+            filters.append(expression)
+            query_params.append(str(value))
+    if search:
+        filters.append(
+            "concat_ws(' ',po.order_ref,po.style_number,po.product_name,"
+            "wi.external_ref,wi.style_number) ILIKE '%%' || %s || '%%'"
+        )
+        query_params.append(str(search))
+    where = " AND ".join(filters) if filters else "TRUE"
+    orders = _db(
+        """
+        SELECT DISTINCT po.order_ref, po.style_number,
+               po.product_name AS style_name, po.order_qty,
+               po.updated_at AS tracker_updated_at,
+               wi.id AS work_item_id, wi.stage_key AS workspace_stage,
+               NULL::text AS tracker_stage,
+               p.id AS plan_version_id, p.status AS plan_status,
+               p.factory_id, p.line_id, p.shift_id, p.owner_user_id,
+               p.planned_start, p.planned_end
+          FROM production_orders po
+          LEFT JOIN production_workspace_work_items wi
+            ON wi.production_order_ref=po.order_ref
+          LEFT JOIN LATERAL (
+              SELECT p.*
+                FROM production_workspace_plan_versions p
+               WHERE p.work_item_id=wi.id
+               ORDER BY p.version_no DESC
+               LIMIT 1
+          ) p ON TRUE
+         WHERE """ + where + """
+         ORDER BY po.updated_at DESC NULLS LAST, po.order_ref
+        """,
+        query_params, fetch=True,
+    )
+    order_rows = [dict(row) for row in orders]
+    # Risk is calculated by the same source-backed recovery engine used by the
+    # Command Centre.  It is deliberately applied after the scope query so a
+    # copied risk URL cannot broaden a production user's visible universe.
+    requested_risk = str(delivery_risk or "").strip().lower()
+    if requested_risk:
+        try:
+            from production_insights_router import _recovery_candidates
+            risk_start = _scope_day(date_from, date.today() - timedelta(days=29))
+            risk_end = _scope_day(date_to, date.today())
+            risk_rows = _recovery_candidates(
+                risk_start, risk_end, factory_id, line_id, shift_id,
+                plan_status, actor,
+            )
+            risk_by_order = {
+                str(row.get("production_order_ref")): row
+                for row in risk_rows
+                if row.get("production_order_ref")
+            }
+            order_rows = [
+                {**row, "delivery_risk": risk_by_order.get(
+                    str(row.get("order_ref")), {}
+                ).get("priority_band")}
+                for row in order_rows
+                if risk_by_order.get(str(row.get("order_ref")), {}).get("priority_band")
+                == requested_risk
+            ]
+        except Exception:
+            log.exception("Work Order delivery-risk filter failed")
+            return _error(
+                "Delivery-risk evidence is unavailable for this scope.", 503,
+                code="workspace_delivery_risk_unavailable",
+            )
+    else:
+        try:
+            from production_insights_router import _recovery_candidates
+            risk_start = _scope_day(date_from, date.today() - timedelta(days=29))
+            risk_end = _scope_day(date_to, date.today())
+            risk_rows = _recovery_candidates(
+                risk_start, risk_end, factory_id, line_id, shift_id,
+                plan_status, actor,
+            )
+            risk_by_order = {
+                str(row.get("production_order_ref")): row.get("priority_band")
+                for row in risk_rows if row.get("production_order_ref")
+            }
+            for row in order_rows:
+                row["delivery_risk"] = risk_by_order.get(str(row["order_ref"]))
+        except Exception:
+            # Risk is an optional enrichment for the unfiltered list. Do not
+            # turn a healthy tracker order list into a false empty state.
+            log.warning("Work Order delivery-risk enrichment unavailable", exc_info=True)
     return _privacy_safe_workspace_payload(request, {
-        "orders": _rows(_db(
-            "SELECT order_ref, style_number, product_name AS style_name, order_qty, "
-            "NULL::text AS bo_state "
-            "FROM production_orders po "
-            "WHERE (%s <> 'production' OR EXISTS ("
-            "SELECT 1 FROM production_workspace_work_items wi "
-            "JOIN production_workspace_plan_versions p ON p.work_item_id=wi.id "
-            "WHERE wi.production_order_ref=po.order_ref AND " + predicate + ")) "
-            "ORDER BY po.updated_at DESC NULLS LAST, po.order_ref",
-            [actor["role"], *params], fetch=True)),
+        "orders": _rows(order_rows),
+        "scope_applied": {
+            "date_from": str(date_from or ""), "date_to": str(date_to or ""),
+            "stage": str(stage or ""), "factory_id": str(factory_id or ""),
+            "line_id": str(line_id or ""), "shift_id": str(shift_id or ""),
+            "owner_user_id": owner_user_id, "plan_status": str(plan_status or ""),
+            "delivery_risk": requested_risk, "search": str(search or ""),
+        },
         "stages": _rows(_db(
             "SELECT stage_key, stage_name, sort_order, allowed_next, is_terminal "
             "FROM production_stages ORDER BY sort_order", fetch=True)),
@@ -3616,6 +3734,689 @@ def _tracker_references(request: Request):
             "quality_records_are_referenced_not_copied": True,
         },
     })
+
+
+TEAM_WRITE_ROLES = {"admin", "production"}
+RESOURCE_WRITE_ROLES = {"admin", "production"}
+CADENCE_WRITE_ROLES = {"admin", "production", "leadership", "smt"}
+CADENCE_ACTION_ROLES = {"admin", "production", "leadership", "smt"}
+
+
+def _json_array(value):
+    return value if isinstance(value, list) else []
+
+
+def _json_object(value):
+    return value if isinstance(value, dict) else {}
+
+
+def _scope_day(value, fallback):
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    try:
+        return date.fromisoformat(str(value)[:10]) if value else fallback
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _workspace_person_scope(actor, alias="m"):
+    if actor["role"] != "production":
+        return "TRUE", []
+    if not actor.get("user_id"):
+        return "FALSE", []
+    return f"""EXISTS (
+        SELECT 1 FROM production_workspace_team_members scoped_member
+         WHERE scoped_member.user_id=%s
+           AND scoped_member.active
+           AND (scoped_member.factory_id IS NULL OR scoped_member.factory_id={alias}.factory_id)
+    )""", [actor["user_id"]]
+
+
+def _factory_authorized(actor, factory_id, cur=None):
+    """Production roles can only create records in an assigned factory."""
+    if actor["role"] != "production":
+        return True
+    if not actor.get("user_id") or factory_id in (None, ""):
+        return False
+    query = (
+        "SELECT 1 FROM production_workspace_team_members "
+        "WHERE user_id=%s AND active AND (factory_id IS NULL OR factory_id=%s::bigint) "
+        "LIMIT 1"
+    )
+    if cur:
+        cur.execute(query, (actor["user_id"], factory_id))
+        return bool(cur.fetchone())
+    return bool(_db(query, (actor["user_id"], factory_id), fetch=True))
+
+
+def _context_relationship_valid(factory_id, shift_id=None, line_id=None, cur=None):
+    """Reject a shift or line that is owned by a different factory."""
+    if factory_id in (None, ""):
+        return line_id in (None, "") and shift_id in (None, "")
+    checks = (
+        ("production_workspace_shifts", shift_id, "Shift"),
+        ("production_workspace_lines", line_id, "Line"),
+    )
+    for table, record_id, label in checks:
+        if record_id in (None, ""):
+            continue
+        query = f"SELECT 1 FROM {table} WHERE id=%s AND factory_id=%s"
+        if cur:
+            cur.execute(query, (record_id, factory_id))
+            valid = bool(cur.fetchone())
+        else:
+            valid = bool(_db(query, (record_id, factory_id), fetch=True))
+        if not valid:
+            return False, f"{label} must belong to the selected factory."
+    return True, None
+
+
+def _safe_resource_source_ref(value):
+    """Accept only credential-free, absolute HTTPS resource references."""
+    if value in (None, ""):
+        return None, None
+    if not isinstance(value, str):
+        return None, "source_ref must be a URL."
+    candidate = value.strip()
+    if not candidate or any(ord(char) < 32 for char in candidate):
+        return None, "source_ref must be a safe HTTPS URL."
+    try:
+        parsed = urlsplit(candidate)
+    except ValueError:
+        return None, "source_ref must be a safe HTTPS URL."
+    if (parsed.scheme.lower() != "https" or not parsed.netloc or
+            parsed.username is not None or parsed.password is not None):
+        return None, "source_ref must be an absolute HTTPS URL without credentials."
+    return candidate, None
+
+
+def _cadence_visible(request, cadence_id, lock=False):
+    actor = _actor(request)
+    predicate, params = _workspace_person_scope(actor, "c")
+    rows = _db(
+        "SELECT c.id FROM production_workspace_cadences c "
+        "WHERE c.id=%s AND (" + predicate + ")" +
+        (" FOR UPDATE" if lock else ""),
+        [cadence_id, *params], fetch=True,
+    )
+    return bool(rows)
+
+
+def _cadence_payload(request, row, cur=None):
+    row = dict(row)
+    fetch = cur.fetchall if cur else lambda: _db(
+        "SELECT * FROM production_workspace_cadence_attendance "
+        "WHERE cadence_id=%s ORDER BY display_name", (row["id"],), fetch=True)
+    attendance = fetch()
+    if cur:
+        cur.execute(
+            "SELECT * FROM production_workspace_cadence_attendance "
+            "WHERE cadence_id=%s ORDER BY display_name", (row["id"],))
+        attendance = cur.fetchall()
+        cur.execute(
+            "SELECT * FROM production_workspace_cadence_actions "
+            "WHERE cadence_id=%s ORDER BY due_date NULLS LAST, id", (row["id"],))
+        actions = cur.fetchall()
+    else:
+        actions = _db(
+            "SELECT * FROM production_workspace_cadence_actions "
+            "WHERE cadence_id=%s ORDER BY due_date NULLS LAST, id",
+            (row["id"],), fetch=True)
+    row["attendance"] = _rows(attendance)
+    row["actions"] = _rows(actions)
+    return _privacy_safe_workspace_payload(request, row)
+
+
+def _cadences(request: Request, date_from: str = None, date_to: str = None,
+              factory_id: str = "", shift_id: str = "", cadence_type: str = ""):
+    _ensure_schema()
+    denied = _require_role(request, VIEW_ROLES, "Production cadence viewing")
+    if denied:
+        return denied
+    actor = _actor(request)
+    predicate, scope_params = _workspace_person_scope(actor, "c")
+    clauses = [predicate]
+    params = list(scope_params)
+    if date_from:
+        clauses.append("c.meeting_date >= %s")
+        params.append(str(date_from))
+    if date_to:
+        clauses.append("c.meeting_date <= %s")
+        params.append(str(date_to))
+    if factory_id:
+        clauses.append("c.factory_id=%s::bigint")
+        params.append(str(factory_id))
+    if shift_id:
+        clauses.append("c.shift_id=%s::bigint")
+        params.append(str(shift_id))
+    if cadence_type:
+        if cadence_type not in {"shift_huddle", "l10"}:
+            return _error("Invalid cadence type")
+        clauses.append("c.cadence_type=%s")
+        params.append(cadence_type)
+    rows = _db(
+        "SELECT c.*, f.name AS factory_name, sh.name AS shift_name "
+        "FROM production_workspace_cadences c "
+        "JOIN production_workspace_factories f ON f.id=c.factory_id "
+        "LEFT JOIN production_workspace_shifts sh ON sh.id=c.shift_id "
+        "WHERE " + " AND ".join(clauses) +
+        " ORDER BY c.meeting_date DESC, c.id DESC",
+        params, fetch=True)
+    return {"cadences": [_cadence_payload(request, row) for row in rows],
+            "scope_applied": {
+                "date_from": str(date_from or ""), "date_to": str(date_to or ""),
+                "factory_id": str(factory_id or ""), "shift_id": str(shift_id or ""),
+                "cadence_type": str(cadence_type or ""),
+            }}
+
+
+def _cadence_create(request: Request, body: dict = Body(...)):
+    _ensure_schema()
+    denied = _require_role(request, CADENCE_WRITE_ROLES, "Cadence changes")
+    if denied:
+        return denied
+    reason = _reason(body)
+    if not reason:
+        return _error("reason is required for every cadence change")
+    cadence_type = str(body.get("cadence_type") or "shift_huddle").strip().lower()
+    if cadence_type not in {"shift_huddle", "l10"}:
+        return _error("cadence_type must be shift_huddle or l10")
+    try:
+        factory_id = int(body.get("factory_id"))
+        meeting_date = date.fromisoformat(str(body.get("meeting_date"))[:10])
+    except (TypeError, ValueError):
+        return _error("factory_id and meeting_date are required")
+    shift_id = body.get("shift_id")
+    try:
+        shift_id = int(shift_id) if shift_id not in (None, "") else None
+    except (TypeError, ValueError):
+        return _error("shift_id must be numeric")
+    actor = _actor(request)
+    try:
+        with _tx() as cur:
+            if not _factory_authorized(actor, factory_id, cur):
+                return _error("You are not assigned to this factory.", 403)
+            context_ok, context_error = _context_relationship_valid(
+                factory_id, shift_id=shift_id, cur=cur)
+            if not context_ok:
+                return _error(context_error)
+            cur.execute(
+                """
+                INSERT INTO production_workspace_cadences
+                    (cadence_type,factory_id,shift_id,meeting_date,headline,
+                     priorities,scorecard,ids_items,status,created_by,updated_by)
+                VALUES (%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s::jsonb,%s,%s,%s)
+                RETURNING *
+                """,
+                (cadence_type, factory_id, shift_id, meeting_date,
+                 str(body.get("headline") or "").strip() or None,
+                 json.dumps(_jsonable(_json_array(body.get("priorities")))),
+                 json.dumps(_jsonable(_json_object(body.get("scorecard")))),
+                 json.dumps(_jsonable(_json_array(body.get("ids_items")))),
+                 str(body.get("status") or "open"), actor["user_id"], actor["user_id"]),
+            )
+            row = cur.fetchone()
+            audit = _audit(cur, "cadence", row["id"], "created", actor, reason,
+                           after=row, request_id=_request_id(request))
+        return _mutation_result(_cadence_payload(request, row), audit)
+    except Exception as exc:
+        if "duplicate" in str(exc).lower() or "unique" in str(exc).lower():
+            return _error("A cadence already exists for this factory, shift and date.", 409)
+        log.exception("Cadence create failed")
+        return _error("Could not create cadence", 500)
+
+
+def _cadence_update(cadence_id: int, request: Request, body: dict = Body(...)):
+    _ensure_schema()
+    denied = _require_role(request, CADENCE_WRITE_ROLES, "Cadence changes")
+    if denied:
+        return denied
+    reason = _reason(body)
+    if not reason:
+        return _error("reason is required for every cadence change")
+    try:
+        expected = int(body.get("expected_version"))
+    except (TypeError, ValueError):
+        expected = None
+    if expected is None:
+        return _error("expected_version is required")
+    actor = _actor(request)
+    try:
+        with _tx() as cur:
+            predicate, scope_params = _workspace_person_scope(actor, "c")
+            cur.execute(
+                "SELECT * FROM production_workspace_cadences c "
+                "WHERE c.id=%s AND (" + predicate + ") FOR UPDATE",
+                [cadence_id, *scope_params])
+            before = cur.fetchone()
+            if not before:
+                return _error("Cadence not found", 404)
+            if int(before["version_token"]) != expected:
+                return _version_error(expected, before["version_token"])
+            fields = {
+                "headline": str(body.get("headline") or "").strip() or None,
+                "priorities": json.dumps(_jsonable(_json_array(body.get("priorities", before["priorities"])))),
+                "scorecard": json.dumps(_jsonable(_json_object(body.get("scorecard", before["scorecard"])))),
+                "ids_items": json.dumps(_jsonable(_json_array(body.get("ids_items", before["ids_items"])))),
+                "status": str(body.get("status") or before["status"]),
+            }
+            cur.execute(
+                """
+                UPDATE production_workspace_cadences
+                   SET headline=%s, priorities=%s::jsonb, scorecard=%s::jsonb,
+                       ids_items=%s::jsonb, status=%s, version_token=version_token+1,
+                       updated_by=%s, updated_at=now()
+                 WHERE id=%s RETURNING *
+                """,
+                (*fields.values(), actor["user_id"], cadence_id))
+            after = cur.fetchone()
+            audit = _audit(cur, "cadence", cadence_id, "updated", actor, reason,
+                           before=before, after=after, request_id=_request_id(request))
+        return _mutation_result(_cadence_payload(request, after), audit)
+    except Exception:
+        log.exception("Cadence update failed")
+        return _error("Could not update cadence", 500)
+
+
+def _cadence_attendance(cadence_id: int, request: Request, body: dict = Body(...)):
+    _ensure_schema()
+    denied = _require_role(request, CADENCE_WRITE_ROLES, "Cadence attendance changes")
+    if denied:
+        return denied
+    reason = _reason(body)
+    member_user_id = str(body.get("member_user_id") or "").strip()
+    display_name = str(body.get("display_name") or "").strip()
+    state = str(body.get("attendance_state") or "present").lower()
+    try:
+        expected = int(body.get("expected_version", 0))
+    except (TypeError, ValueError):
+        expected = None
+    if (not reason or not member_user_id or not display_name or expected is None
+            or state not in {"present", "absent", "late", "excused"}):
+        return _error("member_user_id, display_name, attendance_state, expected_version and reason are required")
+    actor = _actor(request)
+    try:
+        with _tx() as cur:
+            predicate, scope_params = _workspace_person_scope(actor, "c")
+            cur.execute(
+                "SELECT c.* FROM production_workspace_cadences c WHERE c.id=%s "
+                "AND (" + predicate + ") FOR UPDATE",
+                [cadence_id, *scope_params])
+            cadence = cur.fetchone()
+            if not cadence:
+                return _error("Cadence not found", 404)
+            cur.execute(
+                "SELECT * FROM production_workspace_cadence_attendance "
+                "WHERE cadence_id=%s AND member_user_id=%s FOR UPDATE",
+                (cadence_id, member_user_id))
+            before = cur.fetchone()
+            if before and int(before["version_token"]) != expected:
+                return _version_error(expected, before["version_token"])
+            if not before and expected != 0:
+                return _version_error(expected, 0)
+            if before:
+                cur.execute(
+                    """
+                    UPDATE production_workspace_cadence_attendance
+                       SET display_name=%s, attendance_state=%s, note=%s,
+                           version_token=version_token+1, updated_by=%s, updated_at=now()
+                     WHERE id=%s RETURNING *
+                    """,
+                    (display_name, state, str(body.get("note") or "").strip() or None,
+                     actor["user_id"], before["id"]))
+            else:
+                cur.execute(
+                    """
+                    INSERT INTO production_workspace_cadence_attendance
+                        (cadence_id,member_user_id,display_name,attendance_state,note,created_by,updated_by)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING *
+                    """,
+                    (cadence_id, member_user_id, display_name, state,
+                     str(body.get("note") or "").strip() or None,
+                     actor["user_id"], actor["user_id"]))
+            row = cur.fetchone()
+            audit = _audit(cur, "cadence_attendance", row["id"], "upserted", actor,
+                           reason, before=before, after=row, request_id=_request_id(request))
+        return _mutation_result(row, audit)
+    except Exception:
+        log.exception("Cadence attendance save failed")
+        return _error("Could not save cadence attendance", 500)
+
+
+def _cadence_action_create(cadence_id: int, request: Request, body: dict = Body(...)):
+    _ensure_schema()
+    denied = _require_role(request, CADENCE_ACTION_ROLES, "Cadence action changes")
+    if denied:
+        return denied
+    reason = _reason(body)
+    title = str(body.get("title") or "").strip()
+    if not reason or not title:
+        return _error("title and reason are required")
+    actor = _actor(request)
+    try:
+        with _tx() as cur:
+            cur.execute("SELECT id FROM production_workspace_cadences WHERE id=%s FOR SHARE", (cadence_id,))
+            if not cur.fetchone() or not _cadence_visible(request, cadence_id):
+                return _error("Cadence not found", 404)
+            due_date = body.get("due_date")
+            due_date = date.fromisoformat(str(due_date)[:10]) if due_date else None
+            cur.execute(
+                """
+                INSERT INTO production_workspace_cadence_actions
+                    (cadence_id,title,owner_user_id,owner_name,due_date,status,notes,created_by,updated_by)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *
+                """,
+                (cadence_id, title, body.get("owner_user_id"), body.get("owner_name"),
+                 due_date, str(body.get("status") or "open"),
+                 str(body.get("notes") or "").strip() or None,
+                 actor["user_id"], actor["user_id"]))
+            row = cur.fetchone()
+            audit = _audit(cur, "cadence_action", row["id"], "created", actor, reason,
+                           after=row, request_id=_request_id(request))
+        return _mutation_result(row, audit)
+    except Exception:
+        log.exception("Cadence action create failed")
+        return _error("Could not create cadence action", 500)
+
+
+def _cadence_action_update(action_id: int, request: Request, body: dict = Body(...)):
+    _ensure_schema()
+    denied = _require_role(request, CADENCE_ACTION_ROLES, "Cadence action changes")
+    if denied:
+        return denied
+    reason = _reason(body)
+    try:
+        expected = int(body.get("expected_version"))
+    except (TypeError, ValueError):
+        expected = None
+    status = str(body.get("status") or "").lower()
+    if expected is None or not reason or status not in {"open", "in_progress", "blocked", "resolved", "closed"}:
+        return _error("expected_version, valid status and reason are required")
+    actor = _actor(request)
+    try:
+        with _tx() as cur:
+            predicate, scope_params = _workspace_person_scope(actor, "c")
+            cur.execute(
+                "SELECT a.* FROM production_workspace_cadence_actions a "
+                "JOIN production_workspace_cadences c ON c.id=a.cadence_id "
+                "WHERE a.id=%s AND (" + predicate + ") FOR UPDATE",
+                [action_id, *scope_params])
+            before = cur.fetchone()
+            if not before:
+                return _error("Cadence action not found", 404)
+            if int(before["version_token"]) != expected:
+                return _version_error(expected, before["version_token"])
+            cur.execute(
+                """
+                UPDATE production_workspace_cadence_actions
+                   SET status=%s, owner_user_id=COALESCE(%s,owner_user_id),
+                       owner_name=COALESCE(%s,owner_name), notes=COALESCE(%s,notes),
+                       version_token=version_token+1, updated_by=%s, updated_at=now()
+                 WHERE id=%s RETURNING *
+                """,
+                (status, body.get("owner_user_id"), body.get("owner_name"),
+                 body.get("notes"), actor["user_id"], action_id))
+            after = cur.fetchone()
+            audit = _audit(cur, "cadence_action", action_id, "updated", actor, reason,
+                           before=before, after=after, request_id=_request_id(request))
+        return _mutation_result(after, audit)
+    except Exception:
+        log.exception("Cadence action update failed")
+        return _error("Could not update cadence action", 500)
+
+
+def _team(request: Request, factory_id: str = "", line_id: str = ""):
+    _ensure_schema()
+    denied = _require_role(request, VIEW_ROLES, "Production team viewing")
+    if denied:
+        return denied
+    actor = _actor(request)
+    predicate, scope_params = _workspace_person_scope(actor, "m")
+    clauses = [predicate]
+    params = list(scope_params)
+    if factory_id:
+        clauses.append("(m.factory_id=%s::bigint OR m.factory_id IS NULL)")
+        params.append(str(factory_id))
+    if line_id:
+        clauses.append("(m.line_id=%s::bigint OR m.line_id IS NULL)")
+        params.append(str(line_id))
+    rows = _db(
+        "SELECT m.*, f.name AS factory_name, l.name AS line_name "
+        "FROM production_workspace_team_members m "
+        "LEFT JOIN production_workspace_factories f ON f.id=m.factory_id "
+        "LEFT JOIN production_workspace_lines l ON l.id=m.line_id "
+        "WHERE " + " AND ".join(clauses) +
+        " ORDER BY m.active DESC, m.role_key, m.display_name",
+        params, fetch=True)
+    return _privacy_safe_workspace_payload(request, {"members": _rows(rows)})
+
+
+def _team_create(request: Request, body: dict = Body(...)):
+    _ensure_schema()
+    denied = _require_role(request, TEAM_WRITE_ROLES, "Team changes")
+    if denied:
+        return denied
+    reason = _reason(body)
+    name = str(body.get("display_name") or "").strip()
+    role_key = str(body.get("role_key") or "").strip()
+    if not reason or not name or not role_key:
+        return _error("display_name, role_key and reason are required")
+    actor = _actor(request)
+    try:
+        with _tx() as cur:
+            if not _factory_authorized(actor, body.get("factory_id"), cur):
+                return _error("You are not assigned to this factory.", 403)
+            context_ok, context_error = _context_relationship_valid(
+                body.get("factory_id"), line_id=body.get("line_id"), cur=cur)
+            if not context_ok:
+                return _error(context_error)
+            cur.execute(
+                """
+                INSERT INTO production_workspace_team_members
+                    (user_id,display_name,role_key,responsibility,factory_id,line_id,
+                     escalation_path,active,created_by,updated_by)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *
+                """,
+                (body.get("user_id"), name, role_key, body.get("responsibility"),
+                 body.get("factory_id"), body.get("line_id"), body.get("escalation_path"),
+                 bool(body.get("active", True)), actor["user_id"], actor["user_id"]))
+            row = cur.fetchone()
+            audit = _audit(cur, "team_member", row["id"], "created", actor, reason,
+                           after=row, request_id=_request_id(request))
+        return _mutation_result(row, audit)
+    except Exception:
+        log.exception("Team member create failed")
+        return _error("Could not create team member", 500)
+
+
+def _team_update(member_id: int, request: Request, body: dict = Body(...)):
+    _ensure_schema()
+    denied = _require_role(request, TEAM_WRITE_ROLES, "Team changes")
+    if denied:
+        return denied
+    reason = _reason(body)
+    try:
+        expected = int(body.get("expected_version"))
+    except (TypeError, ValueError):
+        expected = None
+    if expected is None or not reason:
+        return _error("expected_version and reason are required")
+    actor = _actor(request)
+    try:
+        with _tx() as cur:
+            predicate, scope_params = _workspace_person_scope(actor, "m")
+            cur.execute(
+                "SELECT * FROM production_workspace_team_members m WHERE m.id=%s "
+                "AND (" + predicate + ") FOR UPDATE",
+                [member_id, *scope_params])
+            before = cur.fetchone()
+            if not before:
+                return _error("Team member not found", 404)
+            if int(before["version_token"]) != expected:
+                return _version_error(expected, before["version_token"])
+            factory_id = body.get("factory_id", before["factory_id"])
+            if not _factory_authorized(actor, factory_id, cur):
+                return _error("You are not assigned to this factory.", 403)
+            line_id = body.get("line_id", before["line_id"])
+            context_ok, context_error = _context_relationship_valid(
+                factory_id, line_id=line_id, cur=cur)
+            if not context_ok:
+                return _error(context_error)
+            cur.execute(
+                """
+                UPDATE production_workspace_team_members
+                   SET display_name=COALESCE(%s,display_name), role_key=COALESCE(%s,role_key),
+                       responsibility=COALESCE(%s,responsibility), factory_id=COALESCE(%s,factory_id),
+                       line_id=COALESCE(%s,line_id), escalation_path=COALESCE(%s,escalation_path),
+                       active=COALESCE(%s,active), version_token=version_token+1,
+                       updated_by=%s, updated_at=now()
+                 WHERE id=%s RETURNING *
+                """,
+                (body.get("display_name"), body.get("role_key"), body.get("responsibility"),
+                 body.get("factory_id"), body.get("line_id"), body.get("escalation_path"),
+                 body.get("active"), actor["user_id"], member_id))
+            after = cur.fetchone()
+            audit = _audit(cur, "team_member", member_id, "updated", actor, reason,
+                           before=before, after=after, request_id=_request_id(request))
+        return _mutation_result(after, audit)
+    except Exception:
+        log.exception("Team member update failed")
+        return _error("Could not update team member", 500)
+
+
+def _resources(request: Request, factory_id: str = "", resource_type: str = "", status: str = ""):
+    _ensure_schema()
+    denied = _require_role(request, VIEW_ROLES, "Production resource viewing")
+    if denied:
+        return denied
+    actor = _actor(request)
+    predicate, scope_params = _workspace_person_scope(actor, "r")
+    clauses = [predicate]
+    params = list(scope_params)
+    if factory_id:
+        clauses.append("(r.factory_id=%s::bigint OR r.factory_id IS NULL)")
+        params.append(str(factory_id))
+    if resource_type:
+        clauses.append("r.resource_type=%s")
+        params.append(str(resource_type))
+    if status:
+        clauses.append("r.status=%s")
+        params.append(str(status))
+    rows = _db(
+        "SELECT r.*, f.name AS factory_name "
+        "FROM production_workspace_resources r "
+        "LEFT JOIN production_workspace_factories f ON f.id=r.factory_id "
+        "WHERE " + " AND ".join(clauses) +
+        " ORDER BY r.status, r.review_date NULLS LAST, r.title",
+        params, fetch=True)
+    return _privacy_safe_workspace_payload(request, {"resources": _rows(rows)})
+
+
+def _resource_create(request: Request, body: dict = Body(...)):
+    _ensure_schema()
+    denied = _require_role(request, RESOURCE_WRITE_ROLES, "Resource changes")
+    if denied:
+        return denied
+    reason = _reason(body)
+    key = str(body.get("resource_key") or "").strip()
+    title_value = str(body.get("title") or "").strip()
+    resource_type = str(body.get("resource_type") or "").strip()
+    if not reason or not key or not title_value or not resource_type:
+        return _error("resource_key, title, resource_type and reason are required")
+    source_ref, source_error = _safe_resource_source_ref(body.get("source_ref"))
+    if source_error:
+        return _error(source_error)
+    actor = _actor(request)
+    try:
+        with _tx() as cur:
+            if not _factory_authorized(actor, body.get("factory_id"), cur):
+                return _error("You are not assigned to this factory.", 403)
+            cur.execute(
+                """
+                INSERT INTO production_workspace_resources
+                    (resource_key,title,resource_type,description,factory_id,owner_user_id,
+                     owner_name,status,effective_date,review_date,source_ref,provenance,
+                     created_by,updated_by)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s,%s)
+                RETURNING *
+                """,
+                (key, title_value, resource_type, body.get("description"),
+                 body.get("factory_id"), body.get("owner_user_id"), body.get("owner_name"),
+                 str(body.get("status") or "draft"),
+                 body.get("effective_date") or None, body.get("review_date") or None,
+                 source_ref, json.dumps(_jsonable(_json_object(body.get("provenance")))),
+                 actor["user_id"], actor["user_id"]))
+            row = cur.fetchone()
+            audit = _audit(cur, "resource", row["id"], "created", actor, reason,
+                           after=row, request_id=_request_id(request))
+        return _mutation_result(row, audit)
+    except Exception as exc:
+        if "duplicate" in str(exc).lower() or "unique" in str(exc).lower():
+            return _error("resource_key already exists", 409)
+        log.exception("Resource create failed")
+        return _error("Could not create resource", 500)
+
+
+def _resource_update(resource_id: int, request: Request, body: dict = Body(...)):
+    _ensure_schema()
+    denied = _require_role(request, RESOURCE_WRITE_ROLES, "Resource changes")
+    if denied:
+        return denied
+    reason = _reason(body)
+    try:
+        expected = int(body.get("expected_version"))
+    except (TypeError, ValueError):
+        expected = None
+    if expected is None or not reason:
+        return _error("expected_version and reason are required")
+    source_ref = None
+    if "source_ref" in body:
+        source_ref, source_error = _safe_resource_source_ref(body.get("source_ref"))
+        if source_error:
+            return _error(source_error)
+    actor = _actor(request)
+    try:
+        with _tx() as cur:
+            predicate, scope_params = _workspace_person_scope(actor, "r")
+            cur.execute(
+                "SELECT * FROM production_workspace_resources r WHERE r.id=%s "
+                "AND (" + predicate + ") FOR UPDATE",
+                [resource_id, *scope_params])
+            before = cur.fetchone()
+            if not before:
+                return _error("Resource not found", 404)
+            if int(before["version_token"]) != expected:
+                return _version_error(expected, before["version_token"])
+            factory_id = body.get("factory_id", before["factory_id"])
+            if not _factory_authorized(actor, factory_id, cur):
+                return _error("You are not assigned to this factory.", 403)
+            cur.execute(
+                """
+                UPDATE production_workspace_resources
+                   SET title=COALESCE(%s,title), description=COALESCE(%s,description),
+                       resource_type=COALESCE(%s,resource_type), factory_id=COALESCE(%s,factory_id),
+                       owner_user_id=COALESCE(%s,owner_user_id), owner_name=COALESCE(%s,owner_name),
+                       status=COALESCE(%s,status), effective_date=COALESCE(%s,effective_date),
+                       review_date=COALESCE(%s,review_date), source_ref=COALESCE(%s,source_ref),
+                       provenance=COALESCE(%s::jsonb,provenance), version_token=version_token+1,
+                       updated_by=%s, updated_at=now()
+                 WHERE id=%s RETURNING *
+                """,
+                (body.get("title"), body.get("description"), body.get("resource_type"),
+                 body.get("factory_id"), body.get("owner_user_id"), body.get("owner_name"),
+                 body.get("status"), body.get("effective_date"), body.get("review_date"),
+                 source_ref,
+                 json.dumps(_jsonable(_json_object(body["provenance"]))) if "provenance" in body else None,
+                 actor["user_id"], resource_id))
+            after = cur.fetchone()
+            audit = _audit(cur, "resource", resource_id, "updated", actor, reason,
+                           before=before, after=after, request_id=_request_id(request))
+        return _mutation_result(after, audit)
+    except Exception:
+        log.exception("Resource update failed")
+        return _error("Could not update resource", 500)
 
 
 def _catalogue_create_endpoint(resource: str, request: Request,
@@ -3913,6 +4714,25 @@ def register_production_workspace_routes(app, api_module):
         "/api/production-workspace/tracker-references",
         _tracker_references, methods=["GET"],
     )
+    app.add_api_route("/api/production-workspace/cadences", _cadences, methods=["GET"])
+    app.add_api_route("/api/production-workspace/cadences", _cadence_create, methods=["POST"])
+    app.add_api_route("/api/production-workspace/cadences/{cadence_id}",
+                      _cadence_update, methods=["PATCH"])
+    app.add_api_route("/api/production-workspace/cadences/{cadence_id}/attendance",
+                      _cadence_attendance, methods=["POST"])
+    app.add_api_route("/api/production-workspace/cadences/{cadence_id}/actions",
+                      _cadence_action_create, methods=["POST"])
+    app.add_api_route("/api/production-workspace/cadence-actions/{action_id}",
+                      _cadence_action_update, methods=["PATCH"])
+    app.add_api_route("/api/production-workspace/team", _team, methods=["GET"])
+    app.add_api_route("/api/production-workspace/team", _team_create, methods=["POST"])
+    app.add_api_route("/api/production-workspace/team/{member_id}",
+                      _team_update, methods=["PATCH"])
+    app.add_api_route("/api/production-workspace/resources", _resources, methods=["GET"])
+    app.add_api_route("/api/production-workspace/resources",
+                      _resource_create, methods=["POST"])
+    app.add_api_route("/api/production-workspace/resources/{resource_id}",
+                      _resource_update, methods=["PATCH"])
     app.add_api_route(
         "/api/production-workspace/bulk/{resource}/template",
         _bulk_template, methods=["GET"],

@@ -1113,3 +1113,171 @@ DROP TRIGGER IF EXISTS production_workspace_machine_factory_immutable
 CREATE TRIGGER production_workspace_machine_factory_immutable
     BEFORE UPDATE OF factory_id ON production_workspace_machines
     FOR EACH ROW EXECUTE FUNCTION production_workspace_factory_owner_immutable();
+
+-- ============================================================
+-- Governed factory cadence, people and resources
+-- ============================================================
+-- These tables are intentionally additive.  They hold operating context
+-- supplied by Vivo; they never manufacture output, attendance, quality or
+-- capacity facts from an empty source.
+CREATE TABLE IF NOT EXISTS production_workspace_cadences (
+    id              BIGSERIAL PRIMARY KEY,
+    cadence_type    TEXT NOT NULL CHECK (cadence_type IN ('shift_huddle','l10')),
+    factory_id      BIGINT NOT NULL REFERENCES production_workspace_factories(id) ON DELETE RESTRICT,
+    shift_id        BIGINT REFERENCES production_workspace_shifts(id) ON DELETE RESTRICT,
+    meeting_date    DATE NOT NULL,
+    headline        TEXT,
+    priorities      JSONB NOT NULL DEFAULT '[]'::jsonb,
+    scorecard       JSONB NOT NULL DEFAULT '{}'::jsonb,
+    ids_items       JSONB NOT NULL DEFAULT '[]'::jsonb,
+    status          TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','closed')),
+    version_token   BIGINT NOT NULL DEFAULT 1 CHECK (version_token > 0),
+    created_by      TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_by      TEXT,
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (cadence_type, factory_id, shift_id, meeting_date)
+);
+CREATE INDEX IF NOT EXISTS idx_workspace_cadence_date
+    ON production_workspace_cadences(factory_id, meeting_date DESC);
+-- NULL shift represents a factory-wide cadence.  PostgreSQL's ordinary
+-- UNIQUE constraint treats NULL values as distinct, so use a NULL-safe
+-- expression index to prevent duplicate factory-wide records.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_workspace_cadence_context
+    ON production_workspace_cadences
+        (cadence_type, factory_id, COALESCE(shift_id, 0), meeting_date);
+
+CREATE TABLE IF NOT EXISTS production_workspace_cadence_attendance (
+    id              BIGSERIAL PRIMARY KEY,
+    cadence_id      BIGINT NOT NULL REFERENCES production_workspace_cadences(id) ON DELETE CASCADE,
+    member_user_id  TEXT NOT NULL,
+    display_name    TEXT NOT NULL,
+    attendance_state TEXT NOT NULL DEFAULT 'present'
+                    CHECK (attendance_state IN ('present','absent','late','excused')),
+    note            TEXT,
+    version_token   BIGINT NOT NULL DEFAULT 1 CHECK (version_token > 0),
+    created_by      TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_by      TEXT,
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (cadence_id, member_user_id)
+);
+ALTER TABLE production_workspace_cadence_attendance
+    ADD COLUMN IF NOT EXISTS version_token BIGINT NOT NULL DEFAULT 1
+    CHECK (version_token > 0);
+ALTER TABLE production_workspace_cadence_attendance
+    ADD COLUMN IF NOT EXISTS updated_by TEXT;
+ALTER TABLE production_workspace_cadence_attendance
+    ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
+
+CREATE TABLE IF NOT EXISTS production_workspace_cadence_actions (
+    id              BIGSERIAL PRIMARY KEY,
+    cadence_id      BIGINT NOT NULL REFERENCES production_workspace_cadences(id) ON DELETE CASCADE,
+    title           TEXT NOT NULL,
+    owner_user_id   TEXT,
+    owner_name      TEXT,
+    due_date        DATE,
+    status          TEXT NOT NULL DEFAULT 'open'
+                    CHECK (status IN ('open','in_progress','blocked','resolved','closed')),
+    notes           TEXT,
+    version_token   BIGINT NOT NULL DEFAULT 1 CHECK (version_token > 0),
+    created_by      TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_by      TEXT,
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_workspace_cadence_actions
+    ON production_workspace_cadence_actions(cadence_id, status, due_date);
+
+CREATE TABLE IF NOT EXISTS production_workspace_team_members (
+    id              BIGSERIAL PRIMARY KEY,
+    user_id         TEXT,
+    display_name    TEXT NOT NULL,
+    role_key        TEXT NOT NULL,
+    responsibility  TEXT,
+    factory_id      BIGINT REFERENCES production_workspace_factories(id) ON DELETE RESTRICT,
+    line_id         BIGINT REFERENCES production_workspace_lines(id) ON DELETE RESTRICT,
+    escalation_path TEXT,
+    active          BOOLEAN NOT NULL DEFAULT TRUE,
+    version_token   BIGINT NOT NULL DEFAULT 1 CHECK (version_token > 0),
+    created_by      TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_by      TEXT,
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_workspace_team_scope
+    ON production_workspace_team_members(factory_id, line_id, active);
+
+CREATE TABLE IF NOT EXISTS production_workspace_resources (
+    id              BIGSERIAL PRIMARY KEY,
+    resource_key    TEXT NOT NULL UNIQUE,
+    title           TEXT NOT NULL,
+    resource_type   TEXT NOT NULL,
+    description     TEXT,
+    factory_id      BIGINT REFERENCES production_workspace_factories(id) ON DELETE RESTRICT,
+    owner_user_id   TEXT,
+    owner_name      TEXT,
+    status          TEXT NOT NULL DEFAULT 'draft'
+                    CHECK (status IN ('draft','approved','retired')),
+    effective_date  DATE,
+    review_date     DATE,
+    source_ref      TEXT,
+    provenance      JSONB NOT NULL DEFAULT '{}'::jsonb,
+    version_token   BIGINT NOT NULL DEFAULT 1 CHECK (version_token > 0),
+    created_by      TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_by      TEXT,
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_workspace_resources_scope
+    ON production_workspace_resources(factory_id, resource_type, status, review_date);
+
+-- Context records are only meaningful inside a single factory.  Enforce the
+-- relationship in the database as well as at the API boundary so imports or
+-- direct maintenance cannot create a misleading operating scope.
+CREATE OR REPLACE FUNCTION production_workspace_cadence_scope_guard()
+RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+    shift_factory BIGINT;
+BEGIN
+    IF NEW.shift_id IS NOT NULL THEN
+        SELECT factory_id INTO shift_factory
+        FROM production_workspace_shifts WHERE id=NEW.shift_id;
+        IF shift_factory IS NULL OR shift_factory <> NEW.factory_id THEN
+            RAISE EXCEPTION 'Cadence shift must belong to the cadence factory';
+        END IF;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS production_workspace_cadence_scope_guard
+    ON production_workspace_cadences;
+CREATE TRIGGER production_workspace_cadence_scope_guard
+    BEFORE INSERT OR UPDATE OF factory_id, shift_id
+    ON production_workspace_cadences
+    FOR EACH ROW EXECUTE FUNCTION production_workspace_cadence_scope_guard();
+
+CREATE OR REPLACE FUNCTION production_workspace_team_scope_guard()
+RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+    line_factory BIGINT;
+BEGIN
+    IF NEW.line_id IS NOT NULL THEN
+        IF NEW.factory_id IS NULL THEN
+            RAISE EXCEPTION 'Team member line assignment requires a factory';
+        END IF;
+        SELECT factory_id INTO line_factory
+        FROM production_workspace_lines WHERE id=NEW.line_id;
+        IF line_factory IS NULL OR line_factory <> NEW.factory_id THEN
+            RAISE EXCEPTION 'Team member line must belong to the team member factory';
+        END IF;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+DROP TRIGGER IF EXISTS production_workspace_team_scope_guard
+    ON production_workspace_team_members;
+CREATE TRIGGER production_workspace_team_scope_guard
+    BEFORE INSERT OR UPDATE OF factory_id, line_id
+    ON production_workspace_team_members
+    FOR EACH ROW EXECUTE FUNCTION production_workspace_team_scope_guard();
