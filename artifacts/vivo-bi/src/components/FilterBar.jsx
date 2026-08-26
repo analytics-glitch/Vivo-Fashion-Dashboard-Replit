@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { useFilters } from "@/lib/filters";
 import { api, datePresets, fmtDate } from "@/lib/api";
@@ -55,16 +55,22 @@ const PRESET_GROUPS = [
   },
 ];
 
+const MobileFiltersOpenContext = createContext(null);
+
 const DateRangeButton = ({ autoPairToday = false }) => {
   const f = useFilters();
-  const [open, setOpen] = useState(false);
+  const mobileFiltersOpen = useContext(MobileFiltersOpenContext);
+  const [desktopOpen, setDesktopOpen] = useState(false);
+  const [mobileOpen, setMobileOpen] = useState(false);
   const [draftRange, setDraftRange] = useState(null);
   const [draftFromInput, setDraftFromInput] = useState(f.dateFrom);
   const [draftToInput, setDraftToInput] = useState(f.dateTo);
+  const mobileTriggerRef = useRef(null);
 
-  // Sync drafts when popover opens.
+  // Sync drafts whenever either presentation opens. Keeping one draft state
+  // means switching between desktop and phone layouts cannot apply stale dates.
   useEffect(() => {
-    if (open) {
+    if (desktopOpen || mobileOpen) {
       setDraftRange({
         from: f.dateFrom ? new Date(f.dateFrom + "T00:00:00") : undefined,
         to: f.dateTo ? new Date(f.dateTo + "T00:00:00") : undefined,
@@ -72,7 +78,14 @@ const DateRangeButton = ({ autoPairToday = false }) => {
       setDraftFromInput(f.dateFrom);
       setDraftToInput(f.dateTo);
     }
-  }, [open, f.dateFrom, f.dateTo]);
+  }, [desktopOpen, mobileOpen, f.dateFrom, f.dateTo]);
+
+  // If the enclosing mobile Filters sheet closes from its close button,
+  // backdrop, or Escape, do not leave an expanded chooser behind for the next
+  // time the sheet opens.
+  useEffect(() => {
+    if (mobileFiltersOpen === false) setMobileOpen(false);
+  }, [mobileFiltersOpen]);
 
   const presets = datePresets();
   const activeLabel = useMemo(() => {
@@ -98,7 +111,9 @@ const DateRangeButton = ({ autoPairToday = false }) => {
     if (autoPairToday && key === "today") {
       f.setCompareMode("yesterday");
     }
-    setOpen(false);
+    setMobileOpen(false);
+    setDesktopOpen(false);
+    requestAnimationFrame(() => mobileTriggerRef.current?.focus());
   };
 
   const fmtCalInput = (d) => {
@@ -121,18 +136,46 @@ const DateRangeButton = ({ autoPairToday = false }) => {
       f.setDateTo(draftToInput);
       f.setPresetKey("custom");
     }
-    setOpen(false);
+    setMobileOpen(false);
+    setDesktopOpen(false);
+    requestAnimationFrame(() => mobileTriggerRef.current?.focus());
+  };
+
+  const closeMobile = () => {
+    setMobileOpen(false);
+    requestAnimationFrame(() => mobileTriggerRef.current?.focus());
+  };
+
+  const handleTriggerClick = (event) => {
+    // On phones the chooser is rendered inline in the Filters sheet. Prevent
+    // Radix from opening its portalled popover, which would create a second
+    // focus/scroll owner.
+    if (typeof window !== "undefined" && window.innerWidth < 768) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (mobileOpen) closeMobile();
+      else setMobileOpen(true);
+    }
   };
 
   const today = new Date();
   const lastMonth = new Date(today.getFullYear(), today.getMonth() - 1, 1);
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover
+      open={desktopOpen}
+      onOpenChange={(nextOpen) => {
+        if (typeof window === "undefined" || window.innerWidth >= 768) {
+          setDesktopOpen(nextOpen);
+        }
+      }}
+    >
       <PopoverTrigger asChild>
         <button
           type="button"
           data-testid="date-range-pill"
+          ref={mobileTriggerRef}
+          onClick={handleTriggerClick}
           className="inline-flex items-center gap-2 rounded-full border border-border bg-white pl-3 pr-2.5 py-1.5 text-[12.5px] font-medium text-foreground/85 hover:border-brand/40 hover:bg-brand-soft/30 transition-colors shadow-sm"
         >
           <CalendarBlank size={14} weight="bold" className="text-brand-deep" />
@@ -146,46 +189,9 @@ const DateRangeButton = ({ autoPairToday = false }) => {
         className="p-0 w-[640px] max-w-[95vw] border border-border bg-white rounded-xl shadow-2xl overflow-hidden"
         data-testid="date-range-panel"
       >
-        {/* Whole panel scrolls on mobile so the bottom Apply/Cancel and the
-            preset list stay reachable; on desktop we keep the dual-pane
-            layout where each side scrolls independently. */}
-        <div className="flex flex-col sm:flex-row max-h-[85vh] overflow-y-auto sm:overflow-visible">
-          {/* Mobile: wrap every preset into a width-safe grid so all choices
-              are visible and keyboard/touch reachable without relying on a
-              clipped nested horizontal scroll region. Desktop: vertical
-              preset list — hidden on mobile. */}
-          <div className="sm:hidden border-b border-border bg-[#fffaf3] px-2 py-2">
-            <div className="grid grid-cols-2 gap-1.5">
-              {PRESET_GROUPS.flatMap((g) => g.items).map(([k, lbl]) => (
-                <button
-                  key={k}
-                  type="button"
-                  data-testid={`preset-${k}-mobile`}
-                  onClick={() => choosePreset(k)}
-                  className={`min-w-0 min-h-9 px-2 py-1.5 rounded-lg text-[12px] font-medium transition-colors ${
-                    f.preset === k
-                      ? "bg-brand text-white"
-                      : "bg-white text-foreground/80 border border-border hover:border-brand/40"
-                  }`}
-                >
-                  {lbl}
-                </button>
-              ))}
-              <button
-                type="button"
-                data-testid="preset-custom-mobile"
-                onClick={() => choosePreset("custom")}
-                className={`min-w-0 min-h-9 px-2 py-1.5 rounded-lg text-[12px] font-medium transition-colors ${
-                  f.preset === "custom"
-                    ? "bg-brand text-white"
-                    : "bg-white text-foreground/80 border border-border"
-                }`}
-              >
-                Custom range
-              </button>
-            </div>
-          </div>
-          {/* Desktop preset list (hidden on mobile — replaced by horizontal pills above). */}
+        <div className="flex flex-col sm:flex-row">
+          {/* Desktop preset list remains in the two-pane popover. The mobile
+              list is rendered inline below the trigger instead. */}
           <div className="hidden sm:block sm:w-[200px] sm:border-r border-border bg-[#fffaf3] py-2 overflow-y-auto sm:max-h-none">
             {PRESET_GROUPS.map((group, gi) => (
               <div key={gi} className="py-1">
@@ -232,12 +238,9 @@ const DateRangeButton = ({ autoPairToday = false }) => {
             {/* WS8 T809 — the free-range from/to inputs were removed: they
                 duplicated the calendar below (two ways to set the same range).
                 Presets + calendar are now the single date control. */}
-            {/* Dual-month on desktop, single month on mobile (saves height
-                so the Apply/Cancel footer remains visible without scrolling
-                inside the popover). */}
             <Calendar
               mode="range"
-              numberOfMonths={typeof window !== "undefined" && window.innerWidth >= 640 ? 2 : 1}
+              numberOfMonths={2}
               selected={draftRange}
               defaultMonth={lastMonth}
               onSelect={(r) => {
@@ -253,7 +256,7 @@ const DateRangeButton = ({ autoPairToday = false }) => {
               <button
                 type="button"
                 data-testid="date-range-cancel"
-                onClick={() => setOpen(false)}
+                onClick={() => setDesktopOpen(false)}
                 className="px-3 py-1.5 rounded-lg text-[12.5px] font-medium text-foreground/70 hover:bg-panel"
               >
                 Cancel
@@ -270,6 +273,92 @@ const DateRangeButton = ({ autoPairToday = false }) => {
           </div>
         </div>
       </PopoverContent>
+      {/* Mobile chooser: inline inside the parent Filters sheet. It is
+          intentionally not a PopoverContent/Portal, so the sheet owns the
+          complete touch scroll from presets through the calendar footer. */}
+      {mobileOpen && (
+        <div
+          className="md:hidden mt-2 rounded-xl border border-border bg-white shadow-sm"
+          data-testid="date-range-mobile-panel"
+        >
+          <div className="border-b border-border bg-[#fffaf3] p-2.5">
+            {PRESET_GROUPS.map((group, gi) => (
+              <div key={gi} className="mb-2.5 last:mb-0">
+                {group.label && (
+                  <div className="px-1 pb-1.5 text-[10.5px] font-semibold uppercase tracking-wider text-muted">
+                    {group.label}
+                  </div>
+                )}
+                <div className="grid grid-cols-2 gap-1.5">
+                  {group.items.map(([k, lbl]) => (
+                    <button
+                      key={k}
+                      type="button"
+                      data-testid={`preset-${k}-mobile`}
+                      onClick={() => choosePreset(k)}
+                      className={`min-h-10 min-w-0 rounded-lg border px-2.5 py-2 text-left text-[12.5px] transition-colors ${
+                        f.preset === k
+                          ? "border-brand bg-brand text-white font-semibold"
+                          : "border-border bg-white text-foreground/80 hover:border-brand/40"
+                      }`}
+                    >
+                      {lbl}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+            <div className="px-1 pb-1.5 text-[10.5px] font-semibold uppercase tracking-wider text-muted">
+              Custom
+            </div>
+            <button
+              type="button"
+              data-testid="preset-custom-mobile"
+              onClick={() => choosePreset("custom")}
+              className={`min-h-10 w-full rounded-lg border px-2.5 py-2 text-left text-[12.5px] transition-colors ${
+                f.preset === "custom"
+                  ? "border-brand bg-brand text-white font-semibold"
+                  : "border-border bg-white text-foreground/80 hover:border-brand/40"
+              }`}
+            >
+              Custom range
+            </button>
+          </div>
+          <div className="p-3">
+            <Calendar
+              mode="range"
+              numberOfMonths={1}
+              selected={draftRange}
+              defaultMonth={lastMonth}
+              onSelect={(r) => {
+                setDraftRange(r);
+                if (r?.from) setDraftFromInput(isoOf(r.from));
+                if (r?.to) setDraftToInput(isoOf(r.to));
+              }}
+              disabled={{ after: today }}
+              className="p-0"
+            />
+            <div className="flex items-center justify-end gap-2 mt-3 pt-3 border-t border-border">
+              <button
+                type="button"
+                data-testid="date-range-cancel-mobile"
+                onClick={closeMobile}
+                className="min-h-10 px-3 rounded-lg text-[12.5px] font-medium text-foreground/70 hover:bg-panel"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                data-testid="date-range-apply-mobile"
+                onClick={apply}
+                className="min-h-10 px-4 rounded-lg text-[12.5px] font-semibold bg-brand text-white hover:bg-brand-deep transition-colors"
+              >
+                Apply
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </Popover>
   );
 };
@@ -485,8 +574,10 @@ const MobileFiltersSheet = ({ children }) => {
         className="rounded-t-2xl pt-4 max-h-[85vh] overflow-y-auto"
         data-testid="mobile-filters-sheet"
       >
-        <SheetTitle className="text-[15px] font-bold mb-3">Filters</SheetTitle>
-        <div className="space-y-3 pb-4">{children}</div>
+        <MobileFiltersOpenContext.Provider value={open}>
+          <SheetTitle className="text-[15px] font-bold mb-3">Filters</SheetTitle>
+          <div className="space-y-3 pb-4">{children}</div>
+        </MobileFiltersOpenContext.Provider>
       </SheetContent>
     </Sheet>
   );
