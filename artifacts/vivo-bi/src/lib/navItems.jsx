@@ -167,6 +167,7 @@ export const PRIMARY_NAV = [
       { pageId: "style-tracker",     label: "Style Launch Planner" },
     ],
   },
+  { to: "/production-workspace", label: "Production Workspace", icon: Factory, id: "production-workspace", group: "Operations & Production", desc: "Command Centre, planning, execution capture and productivity recovery" },
   { to: "/quality", label: "Quality", icon: Medal, id: "quality", group: "Operations & Production", desc: "Production quality dashboard — repairs, defect rates, complaints and washing trackers" },
   { to: "/central-tracker", label: "Order Tracker", icon: Table, id: "central-tracker", group: "Operations & Production", desc: "Buying order log from the Central Tracker sheet — Style No, Style Name, Order Qty and Order Date across all year tabs" },
 

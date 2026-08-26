@@ -1,12 +1,11 @@
 import React, { useEffect, useState, useCallback } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { useLocation } from "react-router-dom";
 import { api } from "@/lib/api";
 import { ProductionScopeNotice, readProductionScope } from "@/lib/productionScope";
 import { SectionTitle, Loading, ErrorBox } from "@/components/common";
 import ProductionOrderModal from "@/components/ProductionOrderModal";
 import { ArrowsClockwise, Factory, MagnifyingGlass, X, CloudCheck, Warning } from "@phosphor-icons/react";
-import { useAuth } from "@/lib/auth";
-import { canAccessPage } from "@/lib/permissions";
+import ProductionTabShell from "./ProductionTabShell";
 
 /**
  * Production Tracker — a kanban board of every buying order's work-in-progress
@@ -584,97 +583,13 @@ const PROD_TABS = [
   { id: "style-tracker", label: "Style Launch Planner", pageId: "style-tracker", el: StyleTrackerTab },
 ];
 
-const ProductionPipelinePage = () => {
-  const { user } = useAuth();
-  const navigate = useNavigate();
-  const visibleTabs = PROD_TABS.filter((t) => canAccessPage(user, t.pageId));
-  const initialTab = (() => {
-    const wanted = new URLSearchParams(window.location.search).get("tab");
-    return visibleTabs.some((t) => t.id === wanted) ? wanted : (visibleTabs[0]?.id || "tracker");
-  })();
-  const [tab, setTab] = useState(initialTab);
-  useEffect(() => {
-    const syncTab = () => {
-      const wanted = new URLSearchParams(window.location.search).get("tab");
-      if (visibleTabs.some((item) => item.id === wanted)) setTab(wanted);
-    };
-    window.addEventListener("popstate", syncTab);
-    return () => window.removeEventListener("popstate", syncTab);
-  }, [visibleTabs]);
-  const active = visibleTabs.find((t) => t.id === tab) || visibleTabs[0];
-  const ActiveEl = active?.el;
-  const selectTab = useCallback((nextTab, extra = {}) => {
-    const search = new URLSearchParams(window.location.search);
-    search.set("tab", nextTab);
-    Object.entries(extra).forEach(([key, value]) => {
-      if (value == null || value === "") return;
-      if (key === "date_from" || key === "date_to") search.set(key, String(value));
-      else search.set(key.startsWith("prod_") ? key : `prod_${key}`, String(value));
-    });
-    navigate({ pathname: window.location.pathname, search: `?${search.toString()}` });
-    setTab(nextTab);
-  }, [navigate]);
-  return (
-    <div className="space-y-4">
-      <div className="flex items-center gap-1.5 border-b border-border overflow-x-auto" data-testid="prod-tabs">
-        {visibleTabs.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            onClick={() => selectTab(t.id)}
-            data-testid={`prod-tab-${t.id}`}
-            className={
-              "px-3.5 py-2 text-[13px] font-medium border-b-2 -mb-px transition-colors whitespace-nowrap " +
-              (t.id === active?.id
-                ? "border-[#1a5c38] text-[#1a5c38]"
-                : "border-transparent text-muted hover:text-foreground")
-            }
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
-      {active?.id === "tracker" ? (
-        <Production />
-      ) : ActiveEl ? (
-        <React.Suspense fallback={<Loading label="Loading…" />}>
-          <ActiveEl
-            onOpenReport={
-              visibleTabs.some((t) => t.id === "report")
-                ? (context) => selectTab("report", context)
-                : null
-            }
-            onOpenWorkspace={
-              visibleTabs.some((t) => t.id === "workspace")
-                ? (plan, context = {}) => selectTab("workspace", {
-                  ...context,
-                  factory_id: plan?.factory_id,
-                  line_id: plan?.line_id,
-                  shift_id: plan?.shift_id,
-                  plan: plan?.plan_version_id,
-                })
-                : null
-            }
-            onOpenCapture={
-              visibleTabs.some((t) => t.id === "capture")
-                ? (context) => selectTab("capture", context)
-                : null
-            }
-            onOpenTracker={
-              visibleTabs.some((t) => t.id === "tracker")
-                ? (context) => selectTab("tracker", context)
-                : null
-            }
-            onOpenInsights={
-              visibleTabs.some((t) => t.id === "insights")
-                ? (context) => selectTab("insights", context)
-                : null
-            }
-          />
-        </React.Suspense>
-      ) : null}
-    </div>
-  );
-};
+const ProductionPipelinePage = () => (
+  <ProductionTabShell
+    tabs={PROD_TABS}
+    defaultTab={PROD_TABS[0].id}
+    legacyTabs={{}}
+    tracker={<Production />}
+  />
+);
 
 export default ProductionPipelinePage;

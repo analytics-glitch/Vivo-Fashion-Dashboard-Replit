@@ -34,6 +34,7 @@ const ExecutiveSummary = React.lazy(() => import("@/pages/ExecutiveSummary"));
 const Marketing = React.lazy(() => import("@/pages/Marketing"));
 const CustomReport = React.lazy(() => import("@/pages/CustomReport"));
 const Production = React.lazy(() => import("@/pages/Production"));
+const ProductionWorkspaceHub = React.lazy(() => import("@/pages/ProductionWorkspaceHub"));
 // The wallboard now lives as a tab inside the Production Pipeline hub; the old
 // standalone URL redirects there, carrying along any extra params (e.g. ?date=).
 const WallboardRedirect = () => {
@@ -285,6 +286,7 @@ function App() {
                 <Route path="/store-flow" element={<Navigate to="/retail?tab=stock-movement" replace />} />
                 <Route path="/ibt" element={<Navigate to="/retail?tab=ibt" replace />} />
                 <Route path="/production" element={<ProtectedShell anyOfPageIds={["production", "production-workspace", "production-report", "style-tracker"]}><Production /></ProtectedShell>} />
+                <Route path="/production-workspace" element={<ProtectedShell pageId="production-workspace"><ProductionWorkspaceHub /></ProtectedShell>} />
                 <Route path="/production-wallboard" element={<WallboardRedirect />} />
                 <Route path="/production-report" element={<Navigate to="/production?tab=report" replace />} />
                 <Route path="/quality" element={<ProtectedShell pageId="quality"><Quality /></ProtectedShell>} />
