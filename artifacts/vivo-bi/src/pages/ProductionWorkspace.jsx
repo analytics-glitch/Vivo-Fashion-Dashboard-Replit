@@ -19,7 +19,10 @@ const CATALOGUES = [
   ["skills", "Skills"],
   ["operation_definitions", "Operation / SAM definitions"],
   ["targets", "Approved targets"],
+  ["defect_codes", "Defect codes"],
+  ["downtime_reasons", "Downtime reason codes"],
 ];
+const BULK_CATALOGUES = [...CATALOGUES, ["operator_skills", "Operator skills"]];
 
 const MASTER_FIELDS = {
   factories: [["code", "Code"], ["name", "Name"], ["timezone", "Timezone"], ["active", "Active", "boolean"]],
@@ -32,6 +35,8 @@ const MASTER_FIELDS = {
   skills: [["skill_key", "Skill key"], ["name", "Name"], ["active", "Active", "boolean"]],
   operation_definitions: [["operation_code", "Operation code"], ["name", "Name"], ["default_sam_minutes", "Default SAM", "number"], ["capability_id", "Capability ID", "number"], ["active", "Active", "boolean"]],
   targets: [["factory_id", "Factory ID", "number"], ["line_id", "Line ID", "number"], ["target_date", "Date", "date"], ["target_qty", "Target units", "number"], ["status", "Status"]],
+  defect_codes: [["code", "Code"], ["name", "Name"], ["category", "Category"], ["active", "Active", "boolean"]],
+  downtime_reasons: [["code", "Code"], ["name", "Name"], ["category", "Category"], ["active", "Active", "boolean"]],
 };
 
 const blank = (resource) => Object.fromEntries(
@@ -299,7 +304,7 @@ function BulkTools({ reason, canPlan, onSaved }) {
   return <div className="card-white p-4 space-y-4">
     <div><div className="font-bold text-[#0f3d24]">Bulk templates</div><div className="text-xs text-muted">Preview every row first. Invalid files never write partial master data.</div></div>
     <div className="flex flex-wrap items-end gap-2">
-      <Field label="Template type" value={resource} onChange={(v) => { setResource(v); setPreview(null); }} options={CATALOGUES.map(([value, label]) => ({ value, label }))} />
+      <Field label="Template type" value={resource} onChange={(v) => { setResource(v); setPreview(null); }} options={BULK_CATALOGUES.map(([value, label]) => ({ value, label }))} />
       <button type="button" className="btn-ghost text-xs" onClick={download}><DownloadSimple size={14} className="inline mr-1" />Template CSV</button>
       {canPlan && <label className="btn-primary text-xs cursor-pointer"><FileArrowUp size={14} className="inline mr-1" />{busy ? "Checking…" : "Choose CSV"}<input ref={input} className="hidden" type="file" accept=".csv,text/csv" onChange={(e) => read(e.target.files?.[0])} /></label>}
     </div>
@@ -327,6 +332,10 @@ export default function ProductionWorkspace() {
   // URL. The workspace remains independently usable when it is absent.
   useEffect(() => {
     setSelectedPlanId(new URLSearchParams(location.search).get("prod_plan") || "");
+  }, [location.search]);
+  useEffect(() => {
+    const requested = new URLSearchParams(location.search).get("setup");
+    if (requested === "master" || requested === "bulk") setActive(requested);
   }, [location.search]);
 
   const refresh = useCallback(async () => {

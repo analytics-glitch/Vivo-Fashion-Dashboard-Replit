@@ -15,6 +15,37 @@ import production_workspace as workspace
 
 
 class ProductionExecutionCaptureTests(unittest.TestCase):
+    def test_controlled_taxonomy_requires_active_codes_and_returns_immutable_snapshots(self):
+        class CatalogueCursor:
+            def __init__(self, row):
+                self.row = row
+                self.query = ""
+
+            def execute(self, query, params):
+                self.query = query
+
+            def fetchone(self):
+                return self.row
+
+        active = CatalogueCursor({"id": 12, "code": "QC-01", "name": "Open seam"})
+        snapshot, error = workspace._execution_catalogue_snapshot(
+            active, "qc_defect", {"defect_code_id": "12"})
+        self.assertIsNone(error)
+        self.assertEqual(snapshot, {
+            "defect_code_id": 12,
+            "defect_code": "QC-01",
+            "defect_code_name": "Open seam",
+        })
+        self.assertIn("production_workspace_defect_codes", active.query)
+        self.assertIn("AND active", active.query)
+
+        inactive = CatalogueCursor(None)
+        snapshot, error = workspace._execution_catalogue_snapshot(
+            inactive, "downtime", {"downtime_reason_id": "404"})
+        self.assertIsNone(snapshot)
+        self.assertEqual(error.status_code, 409)
+        self.assertIn(b"inactive", error.body)
+
     def test_output_payload_reconciles_and_requires_a_retry_key(self):
         payload = workspace._execution_output_payload({
             "capture_kind": "hourly",
@@ -53,6 +84,9 @@ class ProductionExecutionCaptureTests(unittest.TestCase):
         self.assertIn("stage_movement_id are required for WIP", event_source)
         self.assertIn("This event key already belongs to different values", event_source)
         self.assertIn("existing[\"operation_id\"]", event_source)
+        self.assertIn("_execution_catalogue_snapshot", event_source)
+        self.assertIn("defect_code_id,defect_code,defect_code_name", event_source)
+        self.assertIn("downtime_reason_id,downtime_reason_code,downtime_reason_name", event_source)
         context_source = inspect.getsource(workspace._execution_context)
         self.assertIn("workspace_execution_operation_mismatch", context_source)
         self.assertIn("WHERE id=%s AND plan_version_id=%s", context_source)
@@ -101,6 +135,18 @@ class ProductionExecutionCaptureTests(unittest.TestCase):
         self.assertGreaterEqual(schema.count("line_id         BIGINT NULL REFERENCES production_workspace_lines"), 2)
         self.assertGreaterEqual(schema.count("shift_id        BIGINT NULL REFERENCES production_workspace_shifts"), 2)
         self.assertGreaterEqual(schema.count("operation_id    BIGINT NULL REFERENCES production_workspace_operations"), 2)
+        self.assertIn("defect_code_id  BIGINT REFERENCES production_workspace_defect_codes", schema)
+        self.assertIn("downtime_reason_id BIGINT REFERENCES production_workspace_downtime_reasons", schema)
+
+    def test_execution_ui_selects_controlled_codes_and_displays_saved_snapshots(self):
+        source = Path("artifacts/vivo-bi/src/pages/ProductionExecution.jsx").read_text()
+        quality_source = Path("artifacts/vivo-bi/src/pages/ProductionWorkspaceHub.jsx").read_text()
+        self.assertIn('label="Defect code"', source)
+        self.assertIn('label="Downtime reason"', source)
+        self.assertIn("defect_code_id: type ===", source)
+        self.assertIn("downtime_reason_id: type ===", source)
+        self.assertIn("e.defect_code || e.downtime_reason_code", source)
+        self.assertIn("item.defect_code_name || item.defect_code", quality_source)
 
 
 if __name__ == "__main__":

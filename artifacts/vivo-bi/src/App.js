@@ -174,6 +174,17 @@ const ProtectedShell = ({ children, adminOnly = false, pageId, anyOfPageIds }) =
   </ProtectedRoute>
 );
 
+// Production Workspace is intentionally a dedicated operating environment.
+// It keeps the same route-level protection as the BI app, but does not inherit
+// the sales-oriented global nav and filters inside its factory shell.
+const ProtectedProductionWorkspace = ({ children }) => (
+  <ProtectedRoute pageId="production-workspace">
+    <Suspense fallback={<div className="min-h-screen grid place-items-center"><Loading label="Loading Production Workspace…" /></div>}>
+      {children}
+    </Suspense>
+  </ProtectedRoute>
+);
+
 // The CRM is a SEPARATE app served by the proxy at /crm/ (not an in-SPA route).
 // Clicking the "CRM" nav item routes here, which does a real browser navigation
 // into that standalone app rather than rendering the old in-app CRM page.
@@ -286,7 +297,7 @@ function App() {
                 <Route path="/store-flow" element={<Navigate to="/retail?tab=stock-movement" replace />} />
                 <Route path="/ibt" element={<Navigate to="/retail?tab=ibt" replace />} />
                 <Route path="/production" element={<ProtectedShell anyOfPageIds={["production", "production-workspace", "production-report", "style-tracker"]}><Production /></ProtectedShell>} />
-                <Route path="/production-workspace" element={<ProtectedShell pageId="production-workspace"><ProductionWorkspaceHub /></ProtectedShell>} />
+                <Route path="/production-workspace/*" element={<ProtectedProductionWorkspace><ProductionWorkspaceHub /></ProtectedProductionWorkspace>} />
                 <Route path="/production-wallboard" element={<WallboardRedirect />} />
                 <Route path="/production-report" element={<Navigate to="/production?tab=report" replace />} />
                 <Route path="/quality" element={<ProtectedShell pageId="quality"><Quality /></ProtectedShell>} />

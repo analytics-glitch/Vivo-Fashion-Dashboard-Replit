@@ -48,6 +48,18 @@ function Field({ label, value, onChange, type = "text", placeholder, required })
   );
 }
 
+function SelectField({ label, value, onChange, options, required, emptyLabel }) {
+  return (
+    <label className="block min-w-0">
+      <span className="mb-1 block text-[11px] font-semibold text-muted">{label}{required ? " *" : ""}</span>
+      <select value={value ?? ""} onChange={(e) => onChange(e.target.value)} required={required} className="w-full rounded-md border border-line bg-white px-2.5 py-2 text-[12.5px] text-[#0f3d24] outline-none focus:ring-2 focus:ring-brand/25">
+        <option value="">{emptyLabel || `Select ${label}`}</option>
+        {options.map((item) => <option value={item.id} key={item.id}>{item.code} · {item.name}</option>)}
+      </select>
+    </label>
+  );
+}
+
 function ContextCard({ row, selected, onSelect }) {
   return (
     <button
@@ -156,7 +168,7 @@ function OutputForm({ context, date, onSaved }) {
   );
 }
 
-function EventForm({ context, date, onSaved }) {
+function EventForm({ context, date, catalogues, onSaved }) {
   const [type, setType] = useState("downtime");
   const [reason, setReason] = useState("");
   const [cause, setCause] = useState("");
@@ -168,6 +180,8 @@ function EventForm({ context, date, onSaved }) {
   const [fromStage, setFromStage] = useState("");
   const [toStage, setToStage] = useState("");
   const [movementId, setMovementId] = useState("");
+  const [defectCodeId, setDefectCodeId] = useState("");
+  const [downtimeReasonId, setDowntimeReasonId] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState(null);
   const [eventNonce, setEventNonce] = useState(() => (
@@ -178,8 +192,8 @@ function EventForm({ context, date, onSaved }) {
   const save = async (e) => {
     e.preventDefault();
     setMessage(null);
-    if (!reason.trim() || (type === "downtime" && (!cause.trim() || !action.trim())) || (type === "recovery" && !action.trim()) || (type === "wip" && !fromStage.trim() && !toStage.trim())) {
-      setMessage({ kind: "error", text: type === "downtime" ? "Reason, cause and action are required." : type === "recovery" ? "Reason and recovery action are required." : type === "wip" ? "Add the from or to stage for this WIP reference." : "Reason is required." });
+    if (!reason.trim() || (type === "downtime" && (!downtimeReasonId || !action.trim())) || (type === "qc_defect" && !defectCodeId) || (type === "recovery" && !action.trim()) || (type === "wip" && !fromStage.trim() && !toStage.trim())) {
+      setMessage({ kind: "error", text: type === "downtime" ? "Choose an active downtime reason, add a confirmation note and record the immediate action." : type === "qc_defect" ? "Choose an active defect code and add a confirmation note." : type === "recovery" ? "Reason and recovery action are required." : type === "wip" ? "Add the from or to stage for this WIP reference." : "Reason is required." });
       return;
     }
     setBusy(true);
@@ -192,6 +206,8 @@ function EventForm({ context, date, onSaved }) {
         event_date: date,
         event_key: key,
         reason, cause, action,
+        defect_code_id: type === "qc_defect" ? Number(defectCodeId) : undefined,
+        downtime_reason_id: type === "downtime" ? Number(downtimeReasonId) : undefined,
         quantity: quantity === "" ? undefined : Number(quantity),
         duration_minutes: duration === "" ? undefined : Number(duration),
         evidence_ref: evidence || undefined,
@@ -201,7 +217,7 @@ function EventForm({ context, date, onSaved }) {
         stage_movement_id: movementId === "" ? undefined : Number(movementId),
       });
       setMessage({ kind: "success", text: data?.idempotent ? "Already recorded — safe retry confirmed." : "Event saved to the execution timeline." });
-      setReason(""); setCause(""); setAction(""); setQuantity(""); setDuration(""); setEvidence(""); setNotes(""); setFromStage(""); setToStage(""); setMovementId("");
+      setReason(""); setCause(""); setAction(""); setQuantity(""); setDuration(""); setEvidence(""); setNotes(""); setFromStage(""); setToStage(""); setMovementId(""); setDefectCodeId(""); setDowntimeReasonId("");
       setEventNonce(typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`);
       onSaved?.();
     } catch (err) {
@@ -216,8 +232,10 @@ function EventForm({ context, date, onSaved }) {
       <div className="mb-3"><div className="font-bold text-[#0f3d24]">Record an operational cause</div><div className="text-[11px] text-muted">Each event stays linked to this plan, line, shift and order.</div></div>
       <div className="grid gap-3 sm:grid-cols-2">
         <label className="block sm:col-span-2"><span className="mb-1 block text-[11px] font-semibold text-muted">Event type</span><select value={type} onChange={(e) => setType(e.target.value)} className="w-full rounded-md border border-line bg-white px-2.5 py-2 text-[12.5px]">{EVENT_TYPES.map(([v, label]) => <option value={v} key={v}>{label}</option>)}</select></label>
-        <Field label="Reason" value={reason} onChange={setReason} placeholder="What happened?" required />
-        <Field label={type === "downtime" ? "Cause" : "Action / detail"} value={type === "downtime" ? cause : action} onChange={type === "downtime" ? setCause : setAction} placeholder={type === "recovery" ? "Owner's recovery action" : "Optional detail"} required={type === "downtime" || type === "recovery"} />
+        {type === "qc_defect" && <SelectField label="Defect code" value={defectCodeId} onChange={setDefectCodeId} options={(catalogues.defect_codes || []).filter((item) => item.active !== false)} required emptyLabel="Select an active defect code" />}
+        {type === "downtime" && <SelectField label="Downtime reason" value={downtimeReasonId} onChange={setDowntimeReasonId} options={(catalogues.downtime_reasons || []).filter((item) => item.active !== false)} required emptyLabel="Select an active downtime reason" />}
+        <Field label="Confirmation note" value={reason} onChange={setReason} placeholder="What happened?" required />
+        {type !== "downtime" && <Field label="Action / detail" value={action} onChange={setAction} placeholder={type === "recovery" ? "Owner's recovery action" : "Optional detail"} required={type === "recovery"} />}
         {type === "downtime" && <Field label="Immediate action" value={action} onChange={setAction} placeholder="What was done?" required />}
         {(type === "downtime" || type === "attendance") && <Field label="Minutes" type="number" value={duration} onChange={setDuration} />}
         {type === "qc_defect" && <Field label="Affected quantity" type="number" value={quantity} onChange={setQuantity} />}
@@ -317,11 +335,12 @@ export default function ProductionExecution() {
   const location = useLocation();
   const scope = useMemo(() => readProductionScope(location.search), [location.search]);
   const commandDate = scope.date_to;
-  const [date, setDate] = useState(() => commandDate || today);
+  const [date, setDate] = useState(() => commandDate || today());
   const [worklist, setWorklist] = useState(null);
   const [summary, setSummary] = useState(null);
   const [events, setEvents] = useState([]);
   const [output, setOutput] = useState([]);
+  const [catalogues, setCatalogues] = useState({});
   const [selected, setSelected] = useState(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -333,13 +352,14 @@ export default function ProductionExecution() {
     try {
       const params = { ...productionScopeParams(scope), capture_date: date };
       const opts = { params, ...(force ? { forceFresh: true } : {}) };
-      const [wl, sm, ev, out] = await Promise.all([
+      const [wl, sm, ev, out, catalogueRes] = await Promise.all([
         api.get("/production-workspace/execution/worklist", opts),
         api.get("/production-workspace/execution/summary", opts),
         api.get("/production-workspace/execution/events", { params: { ...params, event_date: date }, ...(force ? { forceFresh: true } : {}) }),
         api.get("/production-workspace/execution/output", opts),
+        api.get("/production-workspace/catalogues", { forceFresh: force }),
       ]);
-      setWorklist(wl.data); setSummary(sm.data); setEvents(ev.data?.events || []); setOutput(out.data?.output || []);
+      setWorklist(wl.data); setSummary(sm.data); setEvents(ev.data?.events || []); setOutput(out.data?.output || []); setCatalogues(catalogueRes.data?.catalogues || {});
       setSelected((current) => current && (wl.data?.worklist || []).some((r) => r.plan_version_id === current.plan_version_id && r.assignment_id === current.assignment_id) ? current : wl.data?.worklist?.[0] || null);
     } catch (err) {
       setError(err?.response?.data?.detail || err.message || "Could not load execution capture. Check your connection.");
@@ -375,10 +395,10 @@ export default function ProductionExecution() {
       {loading ? <div className="card-white p-8 text-center text-sm text-muted"><Clock size={20} className="mr-1 inline animate-pulse" />Loading approved assignments…</div> : error ? <Notice kind="error"><WarningCircle size={14} className="mr-1 inline" />{error} <button type="button" onClick={() => load(true)} className="ml-2 font-semibold underline">Retry</button></Notice> : worklist?.state === "missing_plan" ? <Notice kind="warning"><WarningCircle size={14} className="mr-1 inline" />No approved plan or authorized line assignment is available for {date}. Planning must approve and assign work before capture can begin.</Notice> : (
         <>
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-5"><div className="card-white p-3"><div className="eyebrow">Assignments</div><div className="mt-1 text-xl font-extrabold text-brand">{worklist.worklist.length}</div></div><div className="card-white p-3"><div className="eyebrow">Good pieces</div><div className="mt-1 text-xl font-extrabold text-emerald-700">{fmt(summary?.summary?.good_qty)}</div></div><div className="card-white p-3"><div className="eyebrow">Rejects</div><div className="mt-1 text-xl font-extrabold text-rose-700">{fmt(summary?.summary?.reject_qty)}</div></div><div className="card-white p-3"><div className="eyebrow">Rework</div><div className="mt-1 text-xl font-extrabold text-amber-700">{fmt(summary?.summary?.rework_qty)}</div></div><div className="card-white p-3"><div className="eyebrow">Open events</div><div className="mt-1 text-xl font-extrabold text-[#0f3d24]">{fmt(Object.values(eventCounts).reduce((a, v) => a + n(v), 0))}</div></div></div>
-          <div className="grid gap-4 xl:grid-cols-[minmax(240px,0.75fr)_minmax(420px,1.25fr)]"><div><div className="mb-2 text-[12px] font-bold text-[#0f3d24]">Approved worklist</div><div className="space-y-2">{worklist.worklist.map((row) => <ContextCard key={`${row.plan_version_id}-${row.assignment_id || "plan"}`} row={row} selected={selected?.plan_version_id === row.plan_version_id && selected?.assignment_id === row.assignment_id} onSelect={() => setSelected(row)} />)}</div></div><div className="space-y-4">{selected ? <><div className="rounded-lg border border-brand/20 bg-brand/5 px-3 py-2 text-[12px] text-[#0f3d24]"><strong>{selected.style_number || selected.external_ref}</strong> · {selected.factory_name} / {selected.line_name || "No line"} / {selected.shift_name || "No shift"} · {selected.operation_name || "Assignment"}<div className="mt-0.5 text-[10.5px] text-muted">Plan {selected.plan_version_id} · {selected.status} · stage balances remain owned by Odoo / Production Tracker</div></div><OutputForm context={selected} date={date} onSaved={() => load(true)} /><EventForm context={selected} date={date} onSaved={() => load(true)} /></> : <Notice kind="info">Choose an assignment to begin capture.</Notice>}</div></div>
+          <div className="grid gap-4 xl:grid-cols-[minmax(240px,0.75fr)_minmax(420px,1.25fr)]"><div><div className="mb-2 text-[12px] font-bold text-[#0f3d24]">Approved worklist</div><div className="space-y-2">{worklist.worklist.map((row) => <ContextCard key={`${row.plan_version_id}-${row.assignment_id || "plan"}`} row={row} selected={selected?.plan_version_id === row.plan_version_id && selected?.assignment_id === row.assignment_id} onSelect={() => setSelected(row)} />)}</div></div><div className="space-y-4">{selected ? <><div className="rounded-lg border border-brand/20 bg-brand/5 px-3 py-2 text-[12px] text-[#0f3d24]"><strong>{selected.style_number || selected.external_ref}</strong> · {selected.factory_name} / {selected.line_name || "No line"} / {selected.shift_name || "No shift"} · {selected.operation_name || "Assignment"}<div className="mt-0.5 text-[10.5px] text-muted">Plan {selected.plan_version_id} · {selected.status} · stage balances remain owned by Odoo / Production Tracker</div></div><OutputForm context={selected} date={date} onSaved={() => load(true)} /><EventForm context={selected} date={date} catalogues={catalogues} onSaved={() => load(true)} /></> : <Notice kind="info">Choose an assignment to begin capture.</Notice>}</div></div>
           <BulkCapture onSaved={() => load(true)} />
           <OutputTrail output={output} onSaved={() => load(true)} />
-          {events.length > 0 && <div className="card-white p-4"><div className="mb-2 font-bold text-[#0f3d24]">Today’s event trail</div><div className="overflow-x-auto"><table className="w-full min-w-[720px] text-left text-[11px]"><thead className="border-b border-line text-muted"><tr><th className="px-2 py-2">Type</th><th className="px-2 py-2">Context</th><th className="px-2 py-2">Reason</th><th className="px-2 py-2">Status</th><th className="px-2 py-2">Evidence</th><th className="px-2 py-2" /></tr></thead><tbody>{events.map((e) => <tr key={e.id} className="border-b border-line"><td className="px-2 py-2 font-semibold">{e.event_type.replace("_", " ")}</td><td className="px-2 py-2">{e.style_number || e.external_ref} · {e.line_name || "—"}</td><td className="px-2 py-2">{e.reason}</td><td className="px-2 py-2">{e.status}</td><td className="px-2 py-2">{e.evidence_ref || "—"}</td><td className="px-2 py-2">{!["resolved", "closed", "excused"].includes(e.status) && <button type="button" onClick={() => resolveEvent(e)} className="font-semibold text-brand underline">Resolve</button>}</td></tr>)}</tbody></table></div></div>}
+           {events.length > 0 && <div className="card-white p-4"><div className="mb-2 font-bold text-[#0f3d24]">Today’s event trail</div><div className="overflow-x-auto"><table className="w-full min-w-[720px] text-left text-[11px]"><thead className="border-b border-line text-muted"><tr><th className="px-2 py-2">Type</th><th className="px-2 py-2">Context</th><th className="px-2 py-2">Controlled code / note</th><th className="px-2 py-2">Status</th><th className="px-2 py-2">Evidence</th><th className="px-2 py-2" /></tr></thead><tbody>{events.map((e) => { const code = e.defect_code || e.downtime_reason_code; const label = e.defect_code_name || e.downtime_reason_name; return <tr key={e.id} className="border-b border-line"><td className="px-2 py-2 font-semibold">{e.event_type.replace("_", " ")}</td><td className="px-2 py-2">{e.style_number || e.external_ref} · {e.line_name || "—"}</td><td className="px-2 py-2">{code ? <><strong>{code} · {label}</strong><div className="text-muted">{e.reason}</div></> : <>{e.reason}<div className="text-muted">Historical event without a controlled code</div></>}</td><td className="px-2 py-2">{e.status}</td><td className="px-2 py-2">{e.evidence_ref || "—"}</td><td className="px-2 py-2">{!["resolved", "closed", "excused"].includes(e.status) && <button type="button" onClick={() => resolveEvent(e)} className="font-semibold text-brand underline">Resolve</button>}</td></tr>; })}</tbody></table></div></div>}
         </>
       )}
     </div>

@@ -63,6 +63,8 @@ _CATALOGUE_TABLES = {
     "skills": "production_workspace_skills",
     "operation_definitions": "production_workspace_operation_definitions",
     "targets": "production_workspace_targets",
+    "defect_codes": "production_workspace_defect_codes",
+    "downtime_reasons": "production_workspace_downtime_reasons",
 }
 _CATALOGUE_COLUMNS = {
     "factories": ("code", "name", "timezone", "active"),
@@ -75,6 +77,8 @@ _CATALOGUE_COLUMNS = {
     "skills": ("skill_key", "name", "active"),
     "operation_definitions": ("operation_code", "name", "default_sam_minutes", "capability_id", "active", "status"),
     "targets": ("factory_id", "line_id", "target_date", "target_qty", "status"),
+    "defect_codes": ("code", "name", "category", "active"),
+    "downtime_reasons": ("code", "name", "category", "active"),
 }
 _CATALOGUE_REQUIRED = {
     "factories": ("code", "name"),
@@ -87,6 +91,8 @@ _CATALOGUE_REQUIRED = {
     "skills": ("skill_key", "name"),
     "operation_definitions": ("operation_code", "name", "default_sam_minutes"),
     "targets": ("factory_id", "target_date", "target_qty"),
+    "defect_codes": ("code", "name"),
+    "downtime_reasons": ("code", "name"),
 }
 _MUTABLE_CATALOGUE_COLUMNS = {
     key: tuple(c for c in cols if c not in {"factory_id", "operator_code", "skill_key", "capability_key"})
@@ -2206,6 +2212,9 @@ _BULK_IDENTITIES = {
     "skills": ("skill_key",),
     "operation_definitions": ("operation_code",),
     "targets": ("factory_id", "line_id", "target_date"),
+    "defect_codes": ("code",),
+    "downtime_reasons": ("code",),
+    "operator_skills": ("operator_code", "skill_key"),
 }
 
 
@@ -2224,15 +2233,15 @@ def _bulk_validate(resource, request: Request, body: dict):
     denied = _require_role(request, PLANNER_ROLES, "Production workspace bulk planning")
     if denied:
         return denied
-    if resource not in _CATALOGUE_TABLES:
+    if resource not in _CATALOGUE_TABLES and resource != "operator_skills":
         return _error(f"Unknown template: {resource}", 404)
     rows = _bulk_rows(body)
     if not rows:
         return _error("Upload at least one data row to preview.", 400)
     if len(rows) > 2000:
         return _error("A single import is limited to 2,000 rows.", 400)
-    cols = _CATALOGUE_COLUMNS[resource]
-    required = _CATALOGUE_REQUIRED[resource]
+    cols = _CATALOGUE_COLUMNS.get(resource, ("operator_code", "skill_key", "skill_level"))
+    required = _CATALOGUE_REQUIRED.get(resource, ("operator_code", "skill_key"))
     identities = _BULK_IDENTITIES[resource]
     seen = set()
     results = []
@@ -2258,7 +2267,16 @@ def _bulk_validate(resource, request: Request, body: dict):
             if identity in seen:
                 errors.append("duplicate row identity in this file")
             seen.add(identity)
-            if not errors:
+            if resource == "operator_skills" and not errors:
+                cur.execute("SELECT id FROM production_workspace_operators WHERE operator_code=%s",
+                            (row["operator_code"],))
+                if not cur.fetchone():
+                    errors.append("operator_code does not match a maintained operator")
+                cur.execute("SELECT id FROM production_workspace_skills WHERE skill_key=%s",
+                            (row["skill_key"],))
+                if not cur.fetchone():
+                    errors.append("skill_key does not match a maintained skill")
+            elif not errors:
                 relationship_error = _catalogue_relationship_error(cur, resource, row)
                 if relationship_error:
                     errors.append(relationship_error)
@@ -2281,6 +2299,44 @@ def _bulk_import(resource: str, request: Request, body: dict):
     if not reason:
         return _error("reason is required before committing a bulk import", 400)
     actor = _actor(request)
+    if resource == "operator_skills":
+        written = []
+        try:
+            with _tx() as cur:
+                for result in preview["rows"]:
+                    values = result["values"]
+                    cur.execute(
+                        "SELECT id FROM production_workspace_operators WHERE operator_code=%s",
+                        (values["operator_code"],),
+                    )
+                    operator = cur.fetchone()
+                    cur.execute(
+                        "SELECT id FROM production_workspace_skills WHERE skill_key=%s",
+                        (values["skill_key"],),
+                    )
+                    skill = cur.fetchone()
+                    cur.execute(
+                        """
+                        INSERT INTO production_workspace_operator_skills
+                            (operator_id,skill_id,skill_level,verified_by)
+                        VALUES (%s,%s,%s,%s)
+                        ON CONFLICT (operator_id,skill_id) DO UPDATE
+                        SET skill_level=EXCLUDED.skill_level, verified_by=EXCLUDED.verified_by,
+                            verified_at=now()
+                        RETURNING operator_id,skill_id,skill_level,verified_at,verified_by
+                        """,
+                        (operator["id"], skill["id"], values.get("skill_level") or None,
+                         actor["user_id"]),
+                    )
+                    after = cur.fetchone()
+                    entity_id = f"{after['operator_id']}:{after['skill_id']}"
+                    _audit(cur, "operator_skill", entity_id, "bulk_upserted", actor, reason,
+                           after=after, request_id=_request_id(request))
+                    written.append(_jsonable(after))
+            return {"resource": resource, "committed": len(written), "records": written}
+        except Exception:
+            log.exception("operator skill bulk import failed")
+            return _error("The import was not committed. Correct the template and retry.", 500)
     table = _CATALOGUE_TABLES[resource]
     cols = list(_CATALOGUE_COLUMNS[resource])
     identities = _BULK_IDENTITIES[resource]
@@ -2339,13 +2395,15 @@ def _bulk_template(resource: str, request: Request):
     denied = _require_role(request, VIEW_ROLES, "Production workspace viewing")
     if denied:
         return denied
-    if resource not in _CATALOGUE_COLUMNS:
+    if resource not in _CATALOGUE_COLUMNS and resource != "operator_skills":
         return _error(f"Unknown template: {resource}", 404)
     return {
         "resource": resource,
-        "columns": list(_CATALOGUE_COLUMNS[resource]),
+        "columns": list(_CATALOGUE_COLUMNS.get(
+            resource, ("operator_code", "skill_key", "skill_level"))),
         "identity_columns": list(_BULK_IDENTITIES[resource]),
-        "required_columns": list(_CATALOGUE_REQUIRED[resource]),
+        "required_columns": list(_CATALOGUE_REQUIRED.get(
+            resource, ("operator_code", "skill_key"))),
     }
 
 
@@ -2951,6 +3009,45 @@ def _execution_events(request: Request, event_type=None, plan_version_id=None,
                   "scope_applied": command_scope})
 
 
+def _execution_catalogue_snapshot(cur, event_type, body):
+    """Require an active controlled taxonomy item and preserve its historical label."""
+    if event_type not in ("qc_defect", "downtime"):
+        return {}, None
+    is_defect = event_type == "qc_defect"
+    resource = "defect" if is_defect else "downtime reason"
+    table = ("production_workspace_defect_codes" if is_defect
+             else "production_workspace_downtime_reasons")
+    id_key = "defect_code_id" if is_defect else "downtime_reason_id"
+    raw_id = body.get(id_key)
+    try:
+        record_id = int(raw_id)
+    except (TypeError, ValueError):
+        return None, _error(f"Choose an active {resource} code before recording this event.", 400)
+    if record_id <= 0:
+        return None, _error(f"Choose an active {resource} code before recording this event.", 400)
+    cur.execute(
+        f"SELECT id,code,name FROM {table} WHERE id=%s AND active FOR SHARE",
+        (record_id,),
+    )
+    record = cur.fetchone()
+    if not record:
+        return None, _error(
+            f"The selected {resource} code is inactive or no longer exists. Refresh and choose an active code.",
+            409, code="workspace_execution_inactive_code",
+        )
+    if is_defect:
+        return {
+            "defect_code_id": record["id"],
+            "defect_code": record["code"],
+            "defect_code_name": record["name"],
+        }, None
+    return {
+        "downtime_reason_id": record["id"],
+        "downtime_reason_code": record["code"],
+        "downtime_reason_name": record["name"],
+    }, None
+
+
 def _execution_event_create(request: Request, body: dict):
     _ensure_schema()
     event_type = str(body.get("event_type") or "").strip().lower()
@@ -2964,10 +3061,8 @@ def _execution_event_create(request: Request, body: dict):
     event_key = str(body.get("event_key") or "").strip()
     if not reason or not event_key:
         return _error("event_key and reason are required for safe retry")
-    if event_type == "downtime" and (
-            not str(body.get("cause") or "").strip()
-            or not str(body.get("action") or "").strip()):
-        return _error("cause and action are required for downtime")
+    if event_type == "downtime" and not str(body.get("action") or "").strip():
+        return _error("an immediate action is required for downtime")
     if event_type == "recovery" and not str(body.get("action") or "").strip():
         return _error("action is required for recovery")
     if event_type == "wip" and (
@@ -2994,6 +3089,10 @@ def _execution_event_create(request: Request, body: dict):
             if failure:
                 return failure
             plan, assignment, work_item, event_date = context
+            taxonomy, taxonomy_failure = _execution_catalogue_snapshot(
+                cur, event_type, body)
+            if taxonomy_failure:
+                return taxonomy_failure
             if body.get("from_stage") and body.get("to_stage"):
                 cur.execute(
                     "SELECT allowed_next FROM production_stages WHERE stage_key=%s",
@@ -3046,6 +3145,8 @@ def _execution_event_create(request: Request, body: dict):
                     and (existing["reason"] or "") == reason
                     and (existing["cause"] or "") == (body.get("cause") or "")
                     and (existing["action"] or "") == (body.get("action") or "")
+                    and (existing.get("defect_code_id") or None) == (taxonomy.get("defect_code_id") if taxonomy else None)
+                    and (existing.get("downtime_reason_id") or None) == (taxonomy.get("downtime_reason_id") if taxonomy else None)
                     and (existing["owner_user_id"] or "") == effective_owner
                     and existing["status"] == (body.get("status") or "open").strip().lower()
                     and (existing["evidence_ref"] or "") == (body.get("evidence_ref") or "")
@@ -3067,10 +3168,12 @@ def _execution_event_create(request: Request, body: dict):
                     (plan_version_id,assignment_id,work_item_id,production_order_ref,
                      factory_id,line_id,shift_id,operation_id,event_type,event_date,
                      event_key,from_stage,to_stage,stage_movement_id,quantity,
-                     duration_minutes,reason,cause,action,owner_user_id,status,
+                     duration_minutes,defect_code_id,defect_code,defect_code_name,
+                     downtime_reason_id,downtime_reason_code,downtime_reason_name,
+                     reason,cause,action,owner_user_id,status,
                      evidence_ref,notes,created_by,updated_by)
                 VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
-                        %s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                 RETURNING *
                 """,
                 (
@@ -3078,7 +3181,10 @@ def _execution_event_create(request: Request, body: dict):
                     values["production_order_ref"], values["factory_id"], values["line_id"],
                     values["shift_id"], values["operation_id"], event_type, event_date,
                     event_key, body.get("from_stage"), body.get("to_stage"), movement_id,
-                    quantity, duration, reason, body.get("cause"), body.get("action"),
+                    quantity, duration,
+                    taxonomy.get("defect_code_id"), taxonomy.get("defect_code"), taxonomy.get("defect_code_name"),
+                    taxonomy.get("downtime_reason_id"), taxonomy.get("downtime_reason_code"), taxonomy.get("downtime_reason_name"),
+                    reason, body.get("cause"), body.get("action"),
                     body.get("owner_user_id") or actor["user_id"], status,
                     body.get("evidence_ref"), body.get("notes"), actor["user_id"],
                     actor["user_id"],

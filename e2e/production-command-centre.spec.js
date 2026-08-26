@@ -56,7 +56,7 @@ async function openCommandCentre(page) {
 
 async function openStandaloneWorkspace(page, tab = "") {
   await page.goto(`${STANDALONE_WORKSPACE_URL}${tab ? `?tab=${tab}` : ""}`);
-  await expect(page.locator('[data-testid="production-workspace-page"]')).toBeVisible({
+  await expect(page.locator('[data-testid="pw-shell"]')).toBeVisible({
     timeout: 90_000,
   });
 }
@@ -331,63 +331,59 @@ test("Command Centre has no page-level overflow on phone or tablet", async ({ pa
   await expect(page).toHaveURL(/\/quality\?.*date_from=.*date_to=/);
 });
 
-test("Standalone Production Workspace defaults to Command Centre and keeps pipeline links separate", async ({ page }, testInfo) => {
+test("Standalone Production Workspace uses factory modules, direct URLs and legacy tab mappings", async ({ page }, testInfo) => {
   test.setTimeout(240_000);
   await page.setViewportSize({ width: 1440, height: 900 });
   await authenticate(page);
   await openStandaloneWorkspace(page);
 
   await expect(page).toHaveURL(/\/production-workspace$/);
-  await expect(commandCentre(page)).toBeVisible({ timeout: 90_000 });
-  await expect(page.locator('[data-testid="prod-tab-dashboard"]')).toHaveAttribute("aria-current", "page");
-  await expect(page.locator('[data-testid="prod-tabs"] button')).toHaveText([
-    "Command Centre",
-    "Planning Workspace",
-    "Execution Capture",
-    "Productivity & Recovery",
+  await expect(page.locator('[data-testid="pw-workspace-home"]')).toBeVisible({ timeout: 90_000 });
+  await expect(page.locator('[data-testid="pw-scope-bar"]')).toContainText("Factory");
+  await expect(page.locator('[data-testid="pw-scope-bar"]')).toContainText("Delivery risk");
+  await expect(page.locator('[data-testid="pw-nav"] button')).toHaveText([
+    "Workspace",
+    "Production Plan",
+    "Line Board",
+    "Work Orders",
+    "Execution",
+    "Quality & Rework",
+    "Machines",
+    "Operator Productivity",
+    "Recovery Room",
+    "Shift Huddle / L10",
+    "Team",
+    "Resources",
+    "Setup & Settings",
   ]);
 
-  await page.locator('[data-testid="page-picker-btn"]').click();
-  const pageMenu = page.locator('[data-testid="page-picker-menu"]');
-  const operationalOrder = await pageMenu.locator("[data-nav-item]").evaluateAll((items) =>
-    items
-      .filter((item) => ["production", "production-workspace", "quality", "central-tracker"].includes(item.dataset.testid?.replace("nav-", "")))
-      .map((item) => item.dataset.testid),
-  );
-  expect(operationalOrder).toEqual([
-    "nav-production",
-    "nav-production-workspace",
-    "nav-quality",
-    "nav-central-tracker",
-  ]);
-  await expect(pageMenu.locator('[data-testid="nav-production-workspace"]')).toHaveAttribute("aria-current", "page");
-  await expect(pageMenu.locator('[data-testid="nav-production"]')).not.toHaveAttribute("aria-current", "page");
-  await page.locator('[data-testid="page-picker-btn"]').click();
-  await expect(pageMenu).toBeHidden();
-
-  await page.locator('[data-testid="prod-tab-workspace"]').click();
-  await expect(page).toHaveURL(/\/production-workspace\?.*tab=workspace/);
+  await page.locator('[data-testid="pw-nav-plan"]').click();
+  await expect(page).toHaveURL(/\/production-workspace\/plan/);
   await expect(page.locator('[data-testid="production-planning-workspace"]')).toBeVisible({ timeout: 90_000 });
-  await expect(page.locator('[data-testid="prod-tab-workspace"]')).toHaveAttribute("aria-current", "page");
 
   await openStandaloneWorkspace(page, "capture");
   await expect(page.locator('[data-testid="production-execution"]')).toBeVisible({ timeout: 90_000 });
-  await expect(page.locator('[data-testid="prod-tab-capture"]')).toHaveAttribute("aria-current", "page");
 
   await openStandaloneWorkspace(page, "insights");
   await expect(page.locator('[data-testid="production-insights"]')).toBeVisible({ timeout: 90_000 });
-  await expect(page.locator('[data-testid="prod-tab-insights"]')).toHaveAttribute("aria-current", "page");
+
+  await page.goto("/production-workspace/quality");
+  await expect(page.locator('[data-testid="pw-quality-rework"]')).toBeVisible({ timeout: 90_000 });
+  await page.goto("/production-workspace/settings");
+  await expect(page.locator('[data-testid="pw-settings"]')).toBeVisible({ timeout: 90_000 });
 
   await page.goto(COMMAND_CENTRE_URL);
   await expect(commandCentre(page)).toBeVisible({ timeout: 90_000 });
   await expect(page.locator('[data-testid="prod-tab-tracker"]')).toBeVisible();
+  await expect(page.locator('[data-testid="pw-shell"]')).toHaveCount(0);
+  await page.goto(STANDALONE_WORKSPACE_URL);
   await page.screenshot({ path: testInfo.outputPath("standalone-production-workspace-desktop.png"), fullPage: true });
 });
 
 test("Production Workspace fails closed without a session", async ({ page }) => {
   await page.goto(STANDALONE_WORKSPACE_URL);
   await expect(page).toHaveURL(/\/login/);
-  await expect(page.locator('[data-testid="production-workspace-page"]')).toHaveCount(0);
+  await expect(page.locator('[data-testid="pw-shell"]')).toHaveCount(0);
 });
 
 test("Production role can use production destinations but is denied Order Tracker", async ({ page }, testInfo) => {

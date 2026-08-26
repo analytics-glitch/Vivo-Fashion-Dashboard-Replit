@@ -1,38 +1,264 @@
-import React from "react";
-import { Factory } from "@phosphor-icons/react";
-import ProductionTabShell from "./ProductionTabShell";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
+import {
+  ArrowClockwise, ArrowSquareOut, CalendarBlank, CaretRight, CheckCircle,
+  ClockCounterClockwise, Factory, FileText, Flag, Package, Plus,
+  ShieldWarning, Stack, WarningCircle, Wrench,
+} from "@phosphor-icons/react";
+import { api } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
+import { productionScopeParams, readProductionScope } from "@/lib/productionScope";
+import ProductionWorkspaceShell from "@/components/ProductionWorkspaceShell";
 
-const ProductionCommandCentre = React.lazy(() => import("./ProductionCommandCentre"));
 const PlanningWorkspace = React.lazy(() => import("./ProductionWorkspace"));
 const ExecutionCapture = React.lazy(() => import("./ProductionExecution"));
 const ProductivityRecovery = React.lazy(() => import("./ProductionInsights"));
 
-const WORKSPACE_TABS = [
-  { id: "dashboard", label: "Command Centre", pageId: "production-workspace", el: ProductionCommandCentre },
-  { id: "workspace", label: "Planning Workspace", pageId: "production-workspace", el: PlanningWorkspace },
-  { id: "capture", label: "Execution Capture", pageId: "production-workspace", el: ExecutionCapture },
-  { id: "insights", label: "Productivity & Recovery", pageId: "production-workspace", el: ProductivityRecovery },
-];
+const MODULES = new Set([
+  "workspace", "plan", "line-board", "work-orders", "execution", "quality",
+  "machines", "productivity", "recovery", "huddle", "team", "resources", "settings",
+]);
+const LEGACY_TAB_MODULE = {
+  dashboard: "workspace", workspace: "plan", capture: "execution", insights: "recovery",
+};
+const today = () => new Date().toISOString().slice(0, 10);
+const number = (value) => value == null ? "Unavailable" : Number(value).toLocaleString(undefined, { maximumFractionDigits: 1 });
+const percent = (value) => value == null ? "Unavailable" : `${Number(value).toFixed(1)}%`;
+const text = (value) => String(value || "").replace(/_/g, " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
+
+function EmptyModule({ title, children, action }) {
+  return <div className="pw-panel">
+    <div className="pw-empty-module">
+      <strong>{title}</strong>
+      <div>{children}</div>
+      {action && <div className="mt-4">{action}</div>}
+    </div>
+  </div>;
+}
+
+function PageIntro({ eyebrow, title, subtitle, action }) {
+  return <div className="flex flex-wrap items-start justify-between gap-4">
+    <div className="min-w-0">
+      <div className="pw-eyebrow">{eyebrow}</div>
+      <h1 className="pw-heading mt-1">{title}</h1>
+      <p className="pw-subheading mt-2">{subtitle}</p>
+    </div>
+    {action}
+  </div>;
+}
+
+function ControlRoom({ scope, onNavigate }) {
+  const [data, setData] = useState(null);
+  const [recovery, setRecovery] = useState(null);
+  const [error, setError] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const load = useCallback(async () => {
+    setLoading(true); setError(null);
+    try {
+      const params = productionScopeParams(scope);
+      const [command, queue] = await Promise.all([
+        api.get("/production-workspace/command-centre", { params, forceFresh: true }),
+        api.get("/production-workspace/recovery", { params, forceFresh: true }),
+      ]);
+      setData(command.data); setRecovery(queue.data);
+    } catch (err) {
+      setError(err?.response?.data?.detail || "The control-room sources could not be loaded.");
+    } finally { setLoading(false); }
+  }, [scope]);
+  useEffect(() => { load(); }, [load]);
+  const metrics = data?.metrics || {};
+  const snapshots = [
+    ["Current WIP", number(metrics.wip_units), "Verified tracker stage balances"],
+    ["Today's plan", number(metrics.plan_qty), "Approved dated plan only"],
+    ["Actual good output", number(metrics.good_qty), "Validated execution capture"],
+    ["Line efficiency", percent(metrics.efficiency_pct), "Approved SAM + complete attendance"],
+    ["Defects & rework", metrics.reject_qty == null && metrics.rework_qty == null ? "Unavailable" : `${number(metrics.reject_qty)} / ${number(metrics.rework_qty)}`, "Rejects / rework capture"],
+    ["Downtime", metrics.downtime_minutes == null ? "Unavailable" : `${number(metrics.downtime_minutes)} min`, "Validated downtime events"],
+  ];
+  const commitments = data?.delivery_risk || [];
+  const owned = (recovery?.actions || []).filter((item) => !["resolved", "closed"].includes(item.status));
+  const freshness = Object.entries(data?.source_freshness || {});
+  return <div className="pw-page space-y-5" data-testid="pw-workspace-home">
+    <PageIntro
+      eyebrow="Factory control room"
+      title="Run today with clear evidence."
+      subtitle="The factory view is deliberately separate from commercial BI filters. Every blank below means a source or approved denominator is missing — it is never treated as zero."
+      action={<button className="pw-action" onClick={() => onNavigate("plan")} data-testid="pw-open-todays-plan"><CalendarBlank size={16} />Open today’s plan</button>}
+    />
+    {loading ? <div className="pw-panel p-8 text-center text-sm" style={{ color: "var(--pw-text-muted)" }}>Loading verified factory context…</div> : error ? <div className="pw-panel p-4 text-sm text-rose-800"><WarningCircle className="inline mr-2" />{error}<button className="ml-3 font-bold underline" onClick={load}>Retry</button></div> : <>
+      <section className="pw-panel pw-panel--dark p-4 sm:p-5">
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div><div className="pw-eyebrow">Today’s operational snapshot</div><div className="mt-1 text-sm text-white/70">{data?.as_of ? `Source snapshot as of ${new Date(data.as_of).toLocaleString("en-GB", { timeZone: "Africa/Nairobi" })} EAT` : "Source timestamp unavailable — inspect source health below."}</div></div>
+          {(data?.completeness?.state || "unknown") !== "complete" && <span className="pw-chip pw-chip--warning">Decision data {data?.completeness?.state || "incomplete"}</span>}
+        </div>
+        <div className="mt-5 grid grid-cols-2 gap-3 lg:grid-cols-3 xl:grid-cols-6">
+          {snapshots.map(([label, value, note]) => <div key={label} className="min-w-0"><div className="pw-metric-label">{label}</div><div className="pw-metric-value mt-1 truncate">{value}</div><div className="pw-metric-note mt-2">{note}</div></div>)}
+        </div>
+      </section>
+      <div className="pw-module-grid">
+        <section className="pw-panel col-span-12 xl:col-span-7">
+          <div className="flex items-center justify-between border-b p-4" style={{ borderColor: "var(--pw-border-light)" }}><div><div className="font-bold" style={{ color: "var(--pw-navy)" }}>Recent production activity</div><div className="mt-1 text-xs" style={{ color: "var(--pw-text-muted)" }}>Open recovery actions and delivery commitments in the selected factory scope.</div></div><button className="text-xs font-bold" style={{ color: "var(--pw-navy)" }} onClick={() => onNavigate("recovery")}>Recovery room <CaretRight className="inline" size={13} /></button></div>
+          {!owned.length && !commitments.length ? <div className="pw-empty-module"><strong>No verified operational activity is available yet.</strong>Approve plans and capture execution events to build the factory activity trail.</div> :
+            <div className="divide-y">{[...owned.slice(0, 3), ...commitments.slice(0, Math.max(0, 4 - owned.length))].map((row, index) => <div className="flex items-start justify-between gap-3 p-4" key={`${row.id || row.plan_version_id}-${index}`}><div className="min-w-0"><div className="text-sm font-bold" style={{ color: "var(--pw-navy)" }}>{row.title || row.style_number || row.external_ref || "Delivery commitment"}</div><div className="mt-1 text-xs" style={{ color: "var(--pw-text-muted)" }}>{row.rationale?.[0] || row.reasons?.[0] || "Evidence is awaiting a captured operational explanation."}</div></div><span className="pw-chip">{text(row.status || row.priority_band || "open")}</span></div>)}</div>}
+        </section>
+        <section className="pw-panel col-span-12 xl:col-span-5 p-4">
+          <div className="font-bold" style={{ color: "var(--pw-navy)" }}>Source freshness</div><div className="mt-1 text-xs" style={{ color: "var(--pw-text-muted)" }}>Every calculation keeps its own provenance.</div>
+          <div className="mt-4 space-y-2">{freshness.length ? freshness.map(([key, item]) => <div className="flex items-center justify-between gap-3 rounded-md border px-3 py-2" key={key} style={{ borderColor: "var(--pw-border)" }}><div><div className="text-xs font-bold" style={{ color: "var(--pw-navy)" }}>{text(key)}</div><div className="text-[11px]" style={{ color: "var(--pw-text-muted)" }}>{item.as_of || "Timestamp unavailable"}</div></div><span className={`pw-chip ${["fresh", "ready", "complete"].includes(item.state) ? "pw-chip--ok" : "pw-chip--warning"}`}>{item.state || "unknown"}</span></div>) : <div className="text-sm" style={{ color: "var(--pw-text-muted)" }}>No source freshness record is available.</div>}</div>
+        </section>
+        <section className="pw-panel col-span-12 p-4">
+          <div className="flex flex-wrap items-start justify-between gap-3"><div><div className="font-bold" style={{ color: "var(--pw-navy)" }}>Key dates & delivery commitments</div><div className="mt-1 text-xs" style={{ color: "var(--pw-text-muted)" }}>Only approved-plan commitments are listed here.</div></div><button className="pw-action pw-action--quiet" onClick={() => onNavigate("work-orders")}><Package size={15} />Open work orders</button></div>
+          {!commitments.length ? <div className="pw-empty-module"><strong>No approved delivery commitments match this scope.</strong>There is nothing to schedule yet, rather than a zero-risk claim.</div> : <div className="pw-table-wrap mt-4"><table className="pw-table"><thead><tr><th>Commitment</th><th>Due</th><th>Line</th><th>Risk evidence</th></tr></thead><tbody>{commitments.slice(0, 8).map((row) => <tr key={row.plan_version_id}><td className="font-semibold">{row.style_number || row.external_ref || "Plan"}</td><td>{row.planned_end || "Due date unavailable"}</td><td>{row.factory_name || "Factory unavailable"} · {row.line_name || "Line unassigned"}</td><td>{(row.reasons || []).slice(0, 2).join(" ") || "Evidence unavailable"}</td></tr>)}</tbody></table></div>}
+        </section>
+      </div>
+    </>}
+  </div>;
+}
+
+function LineBoard({ scope, onNavigate }) {
+  const [plans, setPlans] = useState([]); const [loading, setLoading] = useState(true);
+  useEffect(() => { let alive = true; setLoading(true); api.get("/production-workspace/plans", { params: productionScopeParams(scope), forceFresh: true }).then((res) => alive && setPlans(res.data?.plans || [])).catch(() => alive && setPlans([])).finally(() => alive && setLoading(false)); return () => { alive = false; }; }, [scope]);
+  const groups = useMemo(() => plans.reduce((out, plan) => { const key = `${plan.factory_name || "Unallocated factory"} · ${plan.line_name || "Unallocated line"}`; (out[key] ||= []).push(plan); return out; }, {}), [plans]);
+  return <div className="pw-page space-y-5" data-testid="pw-line-board"><PageIntro eyebrow="Day & week planning" title="Line board" subtitle="Read approved and draft line commitments together. Feasibility is only displayed when the approved capacity inputs are present." action={<button className="pw-action" onClick={() => onNavigate("plan")}><Plus size={16} />Create or review plan</button>} />
+    {loading ? <div className="pw-panel p-8 text-center text-sm" style={{ color: "var(--pw-text-muted)" }}>Loading dated line commitments…</div> : !plans.length ? <EmptyModule title="No plans are scheduled in this factory scope.">Create a draft only after factories, lines, shifts, approved targets, SAMs and readiness inputs are set up.</EmptyModule> :
+      <div className="space-y-4">{Object.entries(groups).map(([line, rows]) => <section className="pw-panel overflow-hidden" key={line}><div className="flex justify-between gap-3 border-b p-4" style={{ borderColor: "var(--pw-border-light)" }}><div><div className="font-bold" style={{ color: "var(--pw-navy)" }}>{line}</div><div className="mt-1 text-xs" style={{ color: "var(--pw-text-muted)" }}>{rows.length} planned commitment{rows.length === 1 ? "" : "s"} · inspect feasibility before approval.</div></div><span className="pw-chip">{rows.filter((row) => row.status === "approved" || row.status === "frozen").length} released</span></div><div className="grid gap-3 p-4 md:grid-cols-2 xl:grid-cols-3">{rows.map((plan) => <button type="button" onClick={() => onNavigate("plan")} className="rounded-lg border p-3 text-left transition hover:-translate-y-0.5 hover:shadow-sm" style={{ borderColor: "var(--pw-border)" }} key={plan.id}><div className="flex justify-between gap-2"><div className="min-w-0 truncate text-sm font-bold" style={{ color: "var(--pw-navy)" }}>{plan.style_number || plan.external_ref || "Work item"}</div><span className="pw-chip">{plan.status}</span></div><div className="mt-3 flex justify-between text-xs" style={{ color: "var(--pw-text-muted)" }}><span>{plan.planned_start} → {plan.planned_end}</span><span>{number(plan.planned_qty)} u</span></div><div className="mt-3"><div className="pw-progress"><span style={{ width: plan.load_pct == null ? "0%" : `${Math.min(100, Number(plan.load_pct))}%` }} /></div><div className="mt-1 text-[11px]" style={{ color: "var(--pw-text-muted)" }}>{plan.load_pct == null ? "Load unavailable — required / available minutes incomplete." : `${percent(plan.load_pct)} approved load`}</div></div></button>)}</div></section>)}</div>}
+  </div>;
+}
+
+function WorkOrders({ scope, onNavigate }) {
+  const [orders, setOrders] = useState([]); const [items, setItems] = useState([]); const [query, setQuery] = useState(scope.search || ""); const [loading, setLoading] = useState(true);
+  useEffect(() => { let alive = true; Promise.all([api.get("/production-workspace/tracker-references", { forceFresh: true }), api.get("/production-workspace/work-items", { forceFresh: true })]).then(([tracker, work]) => { if (alive) { setOrders(tracker.data?.orders || []); setItems(work.data?.work_items || []); } }).catch(() => alive && setOrders([])).finally(() => alive && setLoading(false)); return () => { alive = false; }; }, []);
+  useEffect(() => { setQuery(scope.search || ""); }, [scope.search]);
+  const q = query.trim().toLowerCase(); const rows = orders.filter((row) => !q || [row.order_ref, row.style_number, row.style_name].some((value) => String(value || "").toLowerCase().includes(q)));
+  const planned = new Set(items.map((item) => item.production_order_ref || item.external_ref));
+  return <div className="pw-page space-y-5" data-testid="pw-work-orders"><PageIntro eyebrow="Order to delivery queue" title="Work orders" subtitle="Tracker orders remain the external evidence source. Planning links them to governed production work without moving the legacy tracker." action={<button className="pw-action" onClick={() => onNavigate("plan")}><Plus size={16} />Link tracker order</button>} />
+    <div className="pw-panel p-3"><label className="sr-only" htmlFor="pw-work-order-search">Search work orders</label><input id="pw-work-order-search" className="w-full rounded-md border bg-white px-3 py-2 text-sm outline-none" style={{ borderColor: "var(--pw-border)" }} placeholder="Search order reference, style number or style…" value={query} onChange={(event) => setQuery(event.target.value)} /></div>
+    {loading ? <div className="pw-panel p-8 text-center text-sm" style={{ color: "var(--pw-text-muted)" }}>Loading tracker order references…</div> : !rows.length ? <EmptyModule title="No tracker orders match this search.">A missing row is not assumed closed or delivered. Refresh the Odoo-backed Production Pipeline for live stage movement.</EmptyModule> : <div className="pw-table-wrap"><table className="pw-table"><thead><tr><th>Order / style</th><th>Quantity</th><th>Current tracker stage</th><th>Planning state</th><th /></tr></thead><tbody>{rows.slice(0, 200).map((row) => <tr key={row.order_ref}><td><div className="font-bold">{row.order_ref}</div><div style={{ color: "var(--pw-text-muted)" }}>{row.style_number || row.style_name || "Style unavailable"}</div></td><td>{number(row.order_qty)}</td><td>{text(row.stage_key || "unavailable")}</td><td><span className={`pw-chip ${planned.has(row.order_ref) ? "pw-chip--ok" : ""}`}>{planned.has(row.order_ref) ? "Linked to workspace" : "Not planned"}</span></td><td><button className="font-bold text-xs" style={{ color: "var(--pw-navy)" }} onClick={() => onNavigate("plan")}>Open plan <ArrowSquareOut className="inline" size={12} /></button></td></tr>)}</tbody></table></div>}
+  </div>;
+}
+
+function QualityRework({ scope, onNavigate }) {
+  const [events, setEvents] = useState(null); const [error, setError] = useState(null); const [loading, setLoading] = useState(true);
+  useEffect(() => { let alive = true; setLoading(true); setError(null); api.get("/production-workspace/execution/events", { params: productionScopeParams(scope), forceFresh: true }).then((res) => alive && setEvents(res.data?.events || [])).catch((err) => { if (alive) { setEvents(null); setError(err?.response?.data?.detail || "Quality capture sources could not be loaded."); } }).finally(() => alive && setLoading(false)); return () => { alive = false; }; }, [scope]);
+  const defects = (events || []).filter((item) => item.event_type === "qc_defect"); const open = defects.filter((item) => !["resolved", "closed", "excused"].includes(item.status)); const hasCapture = defects.length > 0; const pareto = Object.entries(defects.reduce((acc, item) => { const key = item.defect_code_name || item.defect_code || item.cause || item.reason || "Unclassified"; acc[key] = (acc[key] || 0) + Number(item.quantity || 0); return acc; }, {})).sort((a, b) => b[1] - a[1]);
+  const unavailable = "Unavailable";
+  return <div className="pw-page space-y-5" data-testid="pw-quality-rework"><PageIntro eyebrow="Contain, correct, close" title="Quality & rework" subtitle="Defect and rework evidence stays tied to an approved assignment. Quality rate metrics stay unavailable until the backend supplies a verified inspection denominator." action={<button className="pw-action" onClick={() => onNavigate("execution")}><Plus size={16} />Capture quality event</button>} />
+    {loading ? <div className="pw-panel p-8 text-center text-sm" style={{ color: "var(--pw-text-muted)" }}>Loading authorized quality context…</div> : error ? <EmptyModule title="Quality capture is unavailable for this scope.">{error} No quality outcome is inferred.</EmptyModule> : <><div className="grid gap-3 sm:grid-cols-3"><div className="pw-panel p-4"><div className="pw-metric-label">DHU</div><div className="pw-metric-value mt-2">{unavailable}</div><div className="pw-metric-note mt-2">The current event ledger does not certify complete quality-capture coverage.</div></div><div className="pw-panel p-4"><div className="pw-metric-label">First-pass yield</div><div className="pw-metric-value mt-2">{unavailable}</div><div className="pw-metric-note mt-2">Requires a verified inspection denominator, not an absent defect row.</div></div><div className="pw-panel p-4"><div className="pw-metric-label">Open rework / containment</div><div className="pw-metric-value mt-2">{hasCapture ? open.length : unavailable}</div><div className="pw-metric-note mt-2">{hasCapture ? "Unresolved captured quality events in scope" : "No quality-capture event is recorded in this scope."}</div></div></div>
+      <div className="pw-module-grid"><section className="pw-panel col-span-12 lg:col-span-5 p-4"><div className="font-bold" style={{ color: "var(--pw-navy)" }}>Defect Pareto</div><div className="mt-1 text-xs" style={{ color: "var(--pw-text-muted)" }}>Captured causes only; it is not a complete factory-quality statement.</div>{!pareto.length ? <div className="pw-empty-module"><strong>No quality-capture event is recorded in this scope.</strong>That is not interpreted as zero defects or a complete inspection.</div> : <div className="mt-4 space-y-3">{pareto.map(([label, value]) => <div key={label}><div className="flex justify-between gap-3 text-xs"><span className="truncate font-bold">{label}</span><span>{number(value)}</span></div><div className="pw-progress mt-1"><span style={{ width: `${Math.max(4, value / pareto[0][1] * 100)}%` }} /></div></div>)}</div>}</section>
+      <section className="pw-panel col-span-12 lg:col-span-7"><div className="border-b p-4" style={{ borderColor: "var(--pw-border-light)" }}><div className="font-bold" style={{ color: "var(--pw-navy)" }}>Containment & corrective actions</div><div className="mt-1 text-xs" style={{ color: "var(--pw-text-muted)" }}>Owner, action, evidence and close-out remain in the audited execution timeline.</div></div>{!hasCapture ? <div className="pw-empty-module"><strong>No quality-capture event is recorded.</strong>This is not interpreted as zero defects or completed inspection.</div> : !open.length ? <div className="pw-empty-module"><strong>No captured quality event remains open.</strong>Inspection completeness is still not confirmed by this event ledger.</div> : <div className="pw-table-wrap m-4"><table className="pw-table"><thead><tr><th>Issue</th><th>Operation / line</th><th>Containment</th><th>Status</th></tr></thead><tbody>{open.map((item) => <tr key={item.id}><td><div className="font-bold">{item.defect_code_name || item.defect_code || item.reason}</div><div style={{ color: "var(--pw-text-muted)" }}>{item.defect_code ? `${item.defect_code} · ${item.reason}` : (item.cause || "Historical event without a controlled defect code")}</div></td><td>{item.operation_name || "Operation unavailable"}<div style={{ color: "var(--pw-text-muted)" }}>{item.line_name || "Line unavailable"}</div></td><td>{item.action || "Containment action not recorded"}</td><td><span className="pw-chip pw-chip--warning">{item.status}</span></td></tr>)}</tbody></table></div>}</section></div></>}
+  </div>;
+}
+
+function Machines({ catalogues, onNavigate }) {
+  const machines = catalogues?.machines || []; const capabilities = catalogues?.capabilities || [];
+  return <div className="pw-page space-y-5" data-testid="pw-machines"><PageIntro eyebrow="Capability & reliability" title="Machines" subtitle="This register reflects maintained production master data. Availability, maintenance and breakdown metrics stay unavailable until they are captured with verified evidence." action={<button className="pw-action" onClick={() => onNavigate("settings")}><Wrench size={16} />Maintain register</button>} />
+    {!machines.length ? <EmptyModule title="No machines are registered for the selected factory.">Start in Setup & Settings with the machine register and capabilities template. Do not infer availability from missing records.</EmptyModule> : <div className="pw-table-wrap"><table className="pw-table"><thead><tr><th>Machine</th><th>Factory / line</th><th>Capabilities</th><th>Availability</th><th>Maintenance</th></tr></thead><tbody>{machines.map((machine) => { const caps = capabilities.filter((cap) => String(cap.machine_id) === String(machine.id)); return <tr key={machine.id}><td><div className="font-bold">{machine.name}</div><div style={{ color: "var(--pw-text-muted)" }}>{machine.code}</div></td><td>{machine.factory_name || `Factory #${machine.factory_id}`}<div style={{ color: "var(--pw-text-muted)" }}>{machine.line_name || "Line unassigned"}</div></td><td>{caps.length ? caps.map((cap) => <span className="pw-chip mr-1" key={cap.id}>{cap.name || cap.capability_key}</span>) : "No capability recorded"}</td><td>Unavailable — no verified status feed</td><td>Unavailable — no maintenance schedule captured</td></tr>; })}</tbody></table></div>}
+  </div>;
+}
+
+function OperatorProductivity({ scope }) {
+  const [data, setData] = useState(null); const [loading, setLoading] = useState(true);
+  useEffect(() => { let alive = true; api.get("/production-workspace/productivity", { params: { ...productionScopeParams(scope), view: "line" }, forceFresh: true }).then((res) => alive && setData(res.data)).catch(() => alive && setData(null)).finally(() => alive && setLoading(false)); return () => { alive = false; }; }, [scope]);
+  const rows = data?.rows || [];
+  return <div className="pw-page space-y-5" data-testid="pw-productivity"><PageIntro eyebrow="Private coaching context" title="Operator productivity" subtitle="This is an assignment-scoped coaching view, never a default public ranking. Individual measures remain role-redacted by the server and stay unavailable where SAM, attendance or quality denominators are incomplete." />
+    {loading ? <div className="pw-panel p-8 text-center text-sm" style={{ color: "var(--pw-text-muted)" }}>Loading authorized productivity context…</div> : !rows.length ? <EmptyModule title="No complete productivity context matches this scope.">Approved SAM, attendance, approved assignments and good output are all required before productivity is calculated.</EmptyModule> : <div className="pw-table-wrap"><table className="pw-table"><thead><tr><th>Authorized context</th><th>Plan / actual</th><th>Earned / attendance</th><th>Efficiency</th><th>Quality context</th><th>Coaching need</th></tr></thead><tbody>{rows.map((row, index) => <tr key={`${row.assignment_id || row.line_id || index}`}><td><div className="font-bold">{row.line_name || row.factory_name || "Authorized assignment"}</div><div style={{ color: "var(--pw-text-muted)" }}>{row.plan_count || 0} approved assignments</div></td><td>{number(row.target_qty)} / {number(row.actual_qty)}</td><td>{number(row.earned_minutes)} / {number(row.attended_minutes)} min</td><td>{percent(row.efficiency_pct)}</td><td>{number(row.good_qty)} good · {number(row.reject_qty)} reject · {number(row.rework_qty)} rework</td><td>{row.metric_unavailable_reason || "Use supervisor context to coach and unblock."}</td></tr>)}</tbody></table></div>}
+  </div>;
+}
+
+function Huddle({ onNavigate }) {
+  return <div className="pw-page space-y-5" data-testid="pw-huddle"><PageIntro eyebrow="Daily cadence" title="Shift Huddle / L10" subtitle="A disciplined 15-minute production rhythm: read the scorecard, settle prior actions, surface headlines, work the most important issues, and record owned next steps." action={<Link className="pw-action" to="/l10"><CalendarBlank size={16} />Open L10 history</Link>} />
+    <div className="pw-module-grid"><section className="pw-panel col-span-12 lg:col-span-7 p-5"><div className="font-bold" style={{ color: "var(--pw-navy)" }}>Today’s shift huddle</div><ol className="mt-4 space-y-3 text-sm" style={{ color: "var(--pw-text-main)" }}>{["Read the current source freshness and decision-data gaps.", "Review plan, actual good output, WIP, quality and downtime only where verified.", "Close or re-own yesterday’s actions.", "Raise delivery risks and bottlenecks with evidence, not assumptions.", "Identify, discuss and solve the highest-leverage issue.", "Record a named owner and due time for each new action."].map((item, index) => <li className="flex gap-3" key={item}><span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-bold" style={{ background: "var(--pw-cream-dark)", color: "var(--pw-navy)" }}>{index + 1}</span><span>{item}</span></li>)}</ol></section><section className="pw-panel col-span-12 lg:col-span-5 p-5"><div className="font-bold" style={{ color: "var(--pw-navy)" }}>Weekly L10 pattern</div><div className="mt-2 text-sm" style={{ color: "var(--pw-text-muted)" }}>Production scorecard, priorities, prior actions, headlines, IDS, new owned actions and meeting history live in the existing protected L10 tracker.</div><button className="pw-action pw-action--quiet mt-5" onClick={() => onNavigate("recovery")}><Flag size={15} />Review recovery actions</button></section></div>
+  </div>;
+}
+
+function Team() {
+  const roles = [["Production lead", "Owns factory cadence, plan approval readiness and escalations."], ["Planner", "Builds feasible plans from approved master data, targets and readiness gates."], ["Line supervisor", "Captures approved assignment output, WIP, causes and shift sign-off."], ["Quality lead", "Investigates defects and rework using role-safe quality context."], ["Maintenance owner", "Maintains machine capability, reliability and repair accountability."]];
+  return <div className="pw-page space-y-5" data-testid="pw-team"><PageIntro eyebrow="Responsibilities & escalation" title="Team" subtitle="The operating model is ready before individual people are loaded. Add members and enforce their production access through Setup & Settings; personal performance remains private by role and assignment." />
+    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">{roles.map(([role, description]) => <article className="pw-panel p-4" key={role}><div className="pw-metric-label">{role}</div><p className="mt-3 text-sm" style={{ color: "var(--pw-text-main)" }}>{description}</p><div className="mt-4 text-xs" style={{ color: "var(--pw-text-muted)" }}>No member is assigned in this workspace shell until authorized team data is maintained.</div></article>)}</div>
+  </div>;
+}
+
+function Resources({ onNavigate }) {
+  const collections = [["SOPs & standard work", "Approved operating procedures and shift standard work."], ["Operation bulletins", "Controlled changes to methods, SAMs and line instructions."], ["Quality standards", "Defect definitions, containment guidance and close-out evidence."], ["Machine guides", "Capability, setup, maintenance and repair reference."], ["Templates", "Controlled CSV templates for master-data onboarding."]];
+  return <div className="pw-page space-y-5" data-testid="pw-resources"><PageIntro eyebrow="Knowledge centre" title="Resources" subtitle="A structured production reference point. The workspace only links controlled sources; it does not fabricate documents or claim an SOP is current without a source." action={<Link className="pw-action" to="/sops"><FileText size={16} />Open SOP library</Link>} />
+    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">{collections.map(([title, description]) => <article className="pw-panel p-4" key={title}><div className="font-bold" style={{ color: "var(--pw-navy)" }}>{title}</div><p className="mt-2 text-sm" style={{ color: "var(--pw-text-muted)" }}>{description}</p>{title === "Templates" ? <button className="mt-4 text-xs font-bold" style={{ color: "var(--pw-navy)" }} onClick={() => onNavigate("settings")}>Open setup templates <CaretRight className="inline" size={13} /></button> : <Link className="mt-4 inline-block text-xs font-bold" style={{ color: "var(--pw-navy)" }} to="/sops">View controlled library <CaretRight className="inline" size={13} /></Link>}</article>)}</div>
+  </div>;
+}
+
+function Setup({ catalogues, onNavigate }) {
+  const setup = [["Factories & lines", "factories"], ["Shifts & calendars", "shifts"], ["Machines & capabilities", "machines"], ["Operators & skills", "operators"], ["Approved operation / SAM definitions", "operation_definitions"], ["Approved daily targets", "targets"], ["Defect codes", "defect_codes"], ["Downtime reason codes", "downtime_reasons"]];
+  const complete = setup.filter(([, key]) => (catalogues?.[key] || []).length > 0).length;
+  return <div className="pw-page space-y-5" data-testid="pw-settings"><PageIntro eyebrow="Guided onboarding" title="Setup & settings" subtitle="Prepare the minimum trusted master data before a plan is approved. Imports preview and validate every row first; invalid files do not partially write production master data." action={<button className="pw-action" onClick={() => onNavigate("plan", { setup: "bulk" })}><Stack size={16} />Open controlled imports</button>} />
+    <section className="pw-panel p-5"><div className="flex flex-wrap items-end justify-between gap-3"><div><div className="font-bold" style={{ color: "var(--pw-navy)" }}>Factory readiness checklist</div><div className="mt-1 text-sm" style={{ color: "var(--pw-text-muted)" }}>{complete} of {setup.length} master-data sets are maintained in this environment.</div></div><span className="pw-chip">{Math.round(complete / setup.length * 100)}% setup coverage</span></div><div className="pw-progress mt-4"><span style={{ width: `${complete / setup.length * 100}%` }} /></div><div className="mt-5 grid gap-2 md:grid-cols-2">{setup.map(([label, key]) => <div className="flex items-center justify-between gap-3 rounded-md border px-3 py-3" key={key} style={{ borderColor: "var(--pw-border)" }}><div className="flex items-center gap-2 text-sm font-bold" style={{ color: "var(--pw-navy)" }}>{(catalogues?.[key] || []).length > 0 ? <CheckCircle size={17} weight="fill" color="#2f7a50" /> : <ClockCounterClockwise size={17} color="#a8791d" />}{label}</div><span className={`pw-chip ${(catalogues?.[key] || []).length > 0 ? "pw-chip--ok" : "pw-chip--warning"}`}>{(catalogues?.[key] || []).length > 0 ? "Maintained" : "Needs setup"}</span></div>)}</div></section>
+    <section className="pw-panel p-5"><div className="font-bold" style={{ color: "var(--pw-navy)" }}>Controlled CSV onboarding</div><p className="mt-1 text-sm" style={{ color: "var(--pw-text-muted)" }}>Download a template, preview every row, correct any error, then commit the full file with an audit reason. Existing plan setup provides the trusted import workflow for factory, line, shift/calendar, machine, capability, operator, skill, operation/SAM and target masters.</p><div className="mt-4 flex flex-wrap gap-2"><button className="pw-action pw-action--quiet" onClick={() => onNavigate("plan", { setup: "bulk" })}>Open bulk templates</button><button className="pw-action pw-action--quiet" onClick={() => onNavigate("plan", { setup: "master" })}>Open master data</button></div></section>
+  </div>;
+}
+
+function WorkspaceModule({ module, scope, catalogues, onNavigate }) {
+  const shared = { scope, catalogues, onNavigate };
+  if (module === "workspace") return <ControlRoom {...shared} />;
+  if (module === "plan") return <React.Suspense fallback={<div className="pw-page py-8 text-sm">Loading production plan…</div>}><PlanningWorkspace /></React.Suspense>;
+  if (module === "line-board") return <LineBoard {...shared} />;
+  if (module === "work-orders") return <WorkOrders {...shared} />;
+  if (module === "execution") return <React.Suspense fallback={<div className="pw-page py-8 text-sm">Loading execution capture…</div>}><ExecutionCapture /></React.Suspense>;
+  if (module === "quality") return <QualityRework {...shared} />;
+  if (module === "machines") return <Machines {...shared} />;
+  if (module === "productivity") return <OperatorProductivity {...shared} />;
+  if (module === "recovery") return <React.Suspense fallback={<div className="pw-page py-8 text-sm">Loading recovery room…</div>}><ProductivityRecovery /></React.Suspense>;
+  if (module === "huddle") return <Huddle {...shared} />;
+  if (module === "team") return <Team />;
+  if (module === "resources") return <Resources {...shared} />;
+  return <Setup {...shared} />;
+}
 
 export default function ProductionWorkspaceHub() {
-  return (
-    <div className="space-y-4" data-testid="production-workspace-page">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <Factory size={21} className="text-brand" aria-hidden="true" />
-            <h1 className="text-xl font-extrabold text-[#0f3d24]">Production Workspace</h1>
-          </div>
-          <p className="mt-1 text-[12px] text-muted">
-            Plan, capture and recover production work from one authorized operational workspace.
-          </p>
-        </div>
-      </div>
-      <ProductionTabShell
-        tabs={WORKSPACE_TABS}
-        defaultTab="dashboard"
-        legacyTabs={{ tracker: "production", report: "production-report" }}
-      />
-    </div>
-  );
+  const location = useLocation(); const navigate = useNavigate(); const { user } = useAuth();
+  const [root, setRoot] = useState(null); const [catalogues, setCatalogues] = useState({}); const [loading, setLoading] = useState(true);
+  const segment = location.pathname.replace(/^\/production-workspace\/?/, "").split("/")[0];
+  const oldTab = new URLSearchParams(location.search).get("tab");
+  const module = MODULES.has(segment) ? segment : (LEGACY_TAB_MODULE[oldTab] || "workspace");
+  const rawScope = useMemo(() => readProductionScope(location.search), [location.search]);
+  const scope = useMemo(() => ({ ...rawScope, date_from: rawScope.date_from || rawScope.date_to || today(), date_to: rawScope.date_to || rawScope.date_from || today() }), [rawScope]);
+  const refreshContext = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [rootRes, catalogueRes] = await Promise.all([api.get("/production-workspace", { forceFresh: true }), api.get("/production-workspace/catalogues", { forceFresh: true })]);
+      setRoot(rootRes.data); setCatalogues(catalogueRes.data?.catalogues || {});
+    } finally { setLoading(false); }
+  }, []);
+  useEffect(() => { refreshContext(); }, [refreshContext]);
+  useEffect(() => {
+    if (oldTab !== "tracker" && oldTab !== "report") return;
+    const search = new URLSearchParams(location.search); navigate({ pathname: "/production", search: `?${search.toString()}` }, { replace: true });
+  }, [location.search, navigate, oldTab]);
+  const go = useCallback((next, extra = {}) => {
+    const search = new URLSearchParams(location.search); search.delete("tab");
+    Object.entries(extra).forEach(([key, value]) => { if (value) search.set(key, String(value)); });
+    const pathname = next === "workspace" ? "/production-workspace" : `/production-workspace/${next}`;
+    navigate({ pathname, search: search.toString() ? `?${search}` : "" });
+  }, [location.search, navigate]);
+  const changeScope = useCallback((field, value) => {
+    const search = new URLSearchParams(location.search);
+    const fields = {
+      date: ["date_from", "date_to"], factory: ["prod_factory_id"], line: ["prod_line_id"],
+      shift: ["prod_shift_id"], stage: ["prod_stage"], planStatus: ["prod_plan_status"],
+      owner: ["prod_owner_user_id"], search: ["prod_search"],
+    };
+    (fields[field] || []).forEach((key) => value ? search.set(key, value) : search.delete(key));
+    navigate({ pathname: location.pathname, search: search.toString() ? `?${search}` : "" }, { replace: true });
+  }, [location.pathname, location.search, navigate]);
+  const scopeControl = {
+    date: { value: scope.date_to, options: [] },
+    factory: { value: scope.factory_id, options: [{ id: "", label: "All factories" }, ...(catalogues.factories || []).filter((item) => item.active !== false).map((item) => ({ id: item.id, label: `${item.code} · ${item.name}` }))] },
+    line: { value: scope.line_id, options: [{ id: "", label: "All lines" }, ...(catalogues.lines || []).filter((item) => item.active !== false && (!scope.factory_id || String(item.factory_id) === String(scope.factory_id))).map((item) => ({ id: item.id, label: `${item.code} · ${item.name}` }))] },
+    shift: { value: scope.shift_id, options: [{ id: "", label: "All shifts" }, ...(catalogues.shifts || []).filter((item) => item.active !== false && (!scope.factory_id || String(item.factory_id) === String(scope.factory_id))).map((item) => ({ id: item.id, label: `${item.code} · ${item.name}` }))] },
+    stage: { value: scope.stage, options: [{ id: "", label: "All stages" }, ...(catalogues.tracker_stages || []).map((item) => ({ id: item.stage_key, label: item.stage_name }))] },
+    planStatus: { value: scope.plan_status, options: [{ id: "", label: "All plan statuses" }, ...["draft", "submitted", "approved", "frozen", "reopened"].map((value) => ({ id: value, label: text(value) }))] },
+    deliveryRisk: { value: "", disabled: true, note: "Delivery-risk filtering needs governed backend support before it can be applied.", options: [{ id: "", label: "Unavailable" }] },
+    owner: { value: scope.owner_user_id, placeholder: "Owner ID" },
+    search: { value: scope.search, placeholder: "Order or style" },
+  };
+  if (oldTab === "tracker" || oldTab === "report") return <Navigate to={`/production?${new URLSearchParams(location.search).toString()}`} replace />;
+  return <ProductionWorkspaceShell activeModule={module} onNavigate={go} scope={scopeControl} onScopeChange={changeScope} onBackToBi={() => navigate("/production")} user={user} sourceStatus={{ label: "Workspace access", state: loading ? "loading" : root?.permissions?.can_view ? "ready" : "unknown", asOf: null }}>
+    <WorkspaceModule module={module} scope={scope} catalogues={catalogues} onNavigate={go} />
+  </ProductionWorkspaceShell>;
 }

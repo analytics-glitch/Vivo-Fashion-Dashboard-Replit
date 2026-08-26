@@ -266,6 +266,35 @@ CREATE TABLE IF NOT EXISTS production_workspace_skills (
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Controlled taxonomies used by quality and downtime capture. They are master
+-- data, not event records: changing a label is audited and never rewrites
+-- the reason text already recorded on an execution event.
+CREATE TABLE IF NOT EXISTS production_workspace_defect_codes (
+    id              BIGSERIAL PRIMARY KEY,
+    code            TEXT NOT NULL UNIQUE,
+    name            TEXT NOT NULL,
+    category        TEXT,
+    active          BOOLEAN NOT NULL DEFAULT TRUE,
+    version_token   BIGINT NOT NULL DEFAULT 1 CHECK (version_token > 0),
+    created_by      TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_by      TEXT,
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS production_workspace_downtime_reasons (
+    id              BIGSERIAL PRIMARY KEY,
+    code            TEXT NOT NULL UNIQUE,
+    name            TEXT NOT NULL,
+    category        TEXT,
+    active          BOOLEAN NOT NULL DEFAULT TRUE,
+    version_token   BIGINT NOT NULL DEFAULT 1 CHECK (version_token > 0),
+    created_by      TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_by      TEXT,
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- Reusable operation master data. Plan revisions copy the selected values into
 -- production_workspace_operations so a later SAM edit cannot rewrite history.
 CREATE TABLE IF NOT EXISTS production_workspace_operation_definitions (
@@ -592,6 +621,14 @@ CREATE TABLE IF NOT EXISTS production_workspace_execution_events (
     stage_movement_id BIGINT REFERENCES stage_movements(id) ON DELETE SET NULL,
     quantity        NUMERIC CHECK (quantity IS NULL OR quantity >= 0),
     duration_minutes NUMERIC CHECK (duration_minutes IS NULL OR duration_minutes >= 0),
+    -- Controlled taxonomy references are retained with immutable code/name
+    -- snapshots so a later master-data rename never rewrites event history.
+    defect_code_id  BIGINT REFERENCES production_workspace_defect_codes(id) ON DELETE RESTRICT,
+    defect_code     TEXT,
+    defect_code_name TEXT,
+    downtime_reason_id BIGINT REFERENCES production_workspace_downtime_reasons(id) ON DELETE RESTRICT,
+    downtime_reason_code TEXT,
+    downtime_reason_name TEXT,
     reason          TEXT,
     cause           TEXT,
     action          TEXT,
@@ -617,6 +654,13 @@ CREATE INDEX IF NOT EXISTS idx_workspace_execution_events_scope
     ON production_workspace_execution_events(plan_version_id, event_date, event_type);
 CREATE INDEX IF NOT EXISTS idx_workspace_execution_events_order
     ON production_workspace_execution_events(production_order_ref, created_at DESC);
+ALTER TABLE production_workspace_execution_events
+    ADD COLUMN IF NOT EXISTS defect_code_id BIGINT REFERENCES production_workspace_defect_codes(id) ON DELETE RESTRICT,
+    ADD COLUMN IF NOT EXISTS defect_code TEXT,
+    ADD COLUMN IF NOT EXISTS defect_code_name TEXT,
+    ADD COLUMN IF NOT EXISTS downtime_reason_id BIGINT REFERENCES production_workspace_downtime_reasons(id) ON DELETE RESTRICT,
+    ADD COLUMN IF NOT EXISTS downtime_reason_code TEXT,
+    ADD COLUMN IF NOT EXISTS downtime_reason_name TEXT;
 
 CREATE TABLE IF NOT EXISTS production_workspace_workflow_revisions (
     id              BIGSERIAL PRIMARY KEY,
