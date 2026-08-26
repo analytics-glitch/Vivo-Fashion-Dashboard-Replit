@@ -77,7 +77,7 @@ Standalone surfaces (workspace is at its artifact cap — the `/fabric` static-p
 - `/fabric` — fabric dashboard (`fabric_dashboard_live.html`, vanilla JS served by api_pg; XSS: always `esc()` interpolated text). Live-viewers presence via `POST /api/auth/heartbeat` + `GET /api/auth/active-viewers`. Reservation writes append best-effort audit rows to a Google Sheet (`FABRIC_LOG_SHEET_ID`, no-op when unset; sheet must be shared Editor with the connected account).
 - `/reconcile` — Odoo reconciliation cockpit (`recon_dashboard.html`, admin|leadership; role gate in `clerk_auth_gate` is the enforcement; `/reconcile` must be in api-server `artifact.toml` paths). Write-back to Odoo STAGING only, disabled until `ODOO_WRITE_*` secrets exist. See `.agents/memory/recon-standalone-page.md`.
 
-- `/loyalty-app` — served by `api_pg.py`; root embeds `loyalty.shopzetu.com` in a full-screen iframe (meta-refresh fallback). The vendored Fastify + Prisma PWA codebase has been removed; the path is retained in api-server `artifact.toml` so the proxy still handles it.
+- `/loyalty-app` — served only by `api_pg.py`; root embeds `loyalty.vivofashionbrands.com` in a full-screen iframe (meta-refresh fallback). The retired Loyalty PWA service has been removed so the API service is the sole route owner.
 
 Other artifacts:
 

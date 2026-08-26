@@ -18,6 +18,8 @@ Usage:
 
 import os
 import sys
+import pathlib
+import tomllib
 import urllib.request
 import urllib.error
 
@@ -26,6 +28,8 @@ BASE_URL   = f"{PROXY_BASE}/loyalty-app"
 SLASH_URL  = f"{PROXY_BASE}/loyalty-app/"
 HEALTH_URL = f"{PROXY_BASE}/loyalty-app/health"
 EXPECTED_HOST = "loyalty.vivofashionbrands.com"
+WORKSPACE = pathlib.Path(__file__).resolve().parent
+API_MANIFEST = WORKSPACE / "artifacts" / "api-server" / ".replit-artifact" / "artifact.toml"
 
 
 def fetch(url: str) -> tuple[int, str, dict]:
@@ -57,8 +61,33 @@ def fetch_no_redirect(url: str) -> tuple[int, str, dict]:
         return 0, str(exc), {}
 
 
+def verify_route_ownership() -> None:
+    """Fail before probing when more than one artifact owns this public path."""
+    owners = []
+    for manifest in (WORKSPACE / "artifacts").glob("*/.replit-artifact/artifact.toml"):
+        config = tomllib.loads(manifest.read_text(encoding="utf-8"))
+        for service in config.get("services", []):
+            if any(
+                path.rstrip("/") == "/loyalty-app"
+                or path.startswith("/loyalty-app/")
+                for path in service.get("paths", [])
+            ):
+                owners.append(manifest)
+    if owners != [API_MANIFEST]:
+        printed_owners = ", ".join(str(owner.relative_to(WORKSPACE)) for owner in owners)
+        print(
+            "FAIL: /loyalty-app must be owned only by the API service. "
+            f"Found: {printed_owners or '(none)'}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    print("  OK  /loyalty-app has exactly one owner: API Server")
+
+
 def main() -> None:
     print(f"Loyalty-app smoke test  (proxy: {PROXY_BASE})")
+    print()
+    verify_route_ownership()
     print()
 
     # ── Check 1: GET /loyalty-app → 301 to /loyalty-app/ ─────────────────────
