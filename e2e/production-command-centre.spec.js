@@ -91,7 +91,7 @@ test.afterEach(async ({}, testInfo) => {
 
 test("Command Centre desktop handles filters, refresh failure, recovery, partial data, and every enabled drill-down", async ({ page }, testInfo) => {
   test.setTimeout(240_000);
-  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.setViewportSize({ width: 1440, height: 768 });
   await authenticate(page);
   await openCommandCentre(page);
 
@@ -162,55 +162,95 @@ test("Command Centre desktop handles filters, refresh failure, recovery, partial
   await refreshHealthy(page);
   await expect(page.locator('[data-testid="command-completeness-warning"]')).not.toContainText(partialMessage);
 
+  const expectedScope = {
+    prod_plan_status: "approved",
+    prod_search: "e2e-production-proof",
+  };
+  await page.locator('select[aria-label="Plan status"]').selectOption("approved");
+  await expect(page).toHaveURL(/prod_plan_status=approved/);
+  await page.locator('input[aria-label="Search production scope"]').fill("e2e-production-proof");
+  await expect(page).toHaveURL(/prod_search=e2e-production-proof/);
+
   const drills = [
     {
       label: "Quality",
       click: () => commandCentre(page).getByRole("link", { name: "Quality", exact: true }).click(),
       url: /\/quality\?.*date_from=.*date_to=/,
       ready: () => expect(page.locator('[data-testid="app-shell"]')).toBeVisible(),
+      scopedApi: "/api/production-workspace/execution/events",
     },
     {
       label: "Execution Capture",
       click: () => commandCentre(page).getByRole("button", { name: "Capture", exact: true }).click(),
       url: /\/production\?.*tab=capture/,
       ready: () => expect(page.locator('[data-testid="production-execution"]')).toBeVisible({ timeout: 90_000 }),
+      scopedApi: "/api/production-workspace/execution",
     },
     {
       label: "Production Tracker",
       click: () => commandCentre(page).getByRole("button", { name: "Tracker", exact: true }).click(),
       url: /\/production\?.*tab=tracker/,
       ready: () => expect(page.locator('[data-testid="production-title"]')).toBeVisible({ timeout: 90_000 }),
+      unsupportedScope: true,
     },
     {
       label: "Production Report",
       click: () => commandCentre(page).getByRole("button", { name: "Report", exact: true }).click(),
       url: /\/production\?.*tab=report/,
       ready: () => expect(page.locator('[data-testid="production-report"]')).toBeVisible({ timeout: 90_000 }),
+      unsupportedScope: true,
     },
     {
       label: "Order Tracker",
       click: () => commandCentre(page).getByRole("link", { name: "Order Tracker", exact: true }).click(),
       url: /\/central-tracker\?.*date_from=.*date_to=/,
       ready: () => expect(page.locator('[data-testid="app-shell"]')).toBeVisible(),
+      unsupportedScope: true,
     },
     {
       label: "Planning Workspace",
       click: () => commandCentre(page).getByRole("button", { name: "Planning", exact: true }).click(),
       url: /\/production\?.*tab=workspace/,
       ready: () => expect(page.locator('[data-testid="production-planning-workspace"]')).toBeVisible({ timeout: 90_000 }),
+      scopedApi: "/api/production-workspace/plans",
     },
     {
       label: "Productivity & Recovery",
       click: () => commandCentre(page).getByRole("button", { name: "Recovery history", exact: true }).click(),
       url: /\/production\?.*tab=insights/,
       ready: () => expect(page.locator('[data-testid="production-insights"]')).toBeVisible({ timeout: 90_000 }),
+      scopedApi: "/api/production-workspace/productivity",
     },
   ];
+  await expect(commandCentre(page).getByRole("link", { name: "Quality", exact: true })).toHaveCount(1);
+  for (const label of ["Capture", "Tracker", "Report", "Planning", "Recovery history"]) {
+    await expect(commandCentre(page).getByRole("button", { name: label, exact: true }), `${label} must be enabled for admin`).toHaveCount(1);
+  }
   for (const drill of drills) {
     await openCommandCentre(page);
+    await page.locator('select[aria-label="Plan status"]').selectOption("approved");
+    await page.locator('input[aria-label="Search production scope"]').fill("e2e-production-proof");
+    const scopedRequest = drill.scopedApi
+      ? page.waitForRequest((request) => {
+        if (!request.url().includes(drill.scopedApi)) return false;
+        const requestUrl = new URL(request.url());
+        return requestUrl.searchParams.has("date_from")
+          && requestUrl.searchParams.has("date_to")
+          && requestUrl.searchParams.get("plan_status") === "approved"
+          && requestUrl.searchParams.get("search") === "e2e-production-proof";
+      }, { timeout: 90_000 })
+      : null;
     await drill.click();
-    await expect(page, `${drill.label} must keep the Command Centre scope`).toHaveURL(drill.url);
+    await expect(page, `${drill.label} must keep the Command Centre destination`).toHaveURL(drill.url);
+    const destination = new URL(page.url());
+    for (const [key, value] of Object.entries(expectedScope)) {
+      expect(destination.searchParams.get(key), `${drill.label} must preserve ${key}`).toBe(value);
+    }
     await drill.ready();
+    if (scopedRequest) await scopedRequest;
+    if (drill.unsupportedScope) {
+      await expect(page.locator('[data-testid="production-scope"]')).toHaveAttribute("data-scope-applied", "false");
+    }
     await page.screenshot({
       path: testInfo.outputPath(`command-drill-${drill.label.toLowerCase().replaceAll(/[^a-z]+/g, "-")}.png`),
       fullPage: true,

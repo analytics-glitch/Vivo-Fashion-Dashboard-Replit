@@ -1,0 +1,270 @@
+{
+  "config": {
+    "argv": [
+      "/nix/store/9cyx2v23dip6p9q98384k9v06c96qskb-nodejs-24.13.0/bin/node",
+      "/home/runner/workspace/node_modules/@playwright/test/cli.js",
+      "test",
+      "e2e/production-command-centre.spec.js"
+    ],
+    "configFile": "/home/runner/workspace/playwright.config.js",
+    "rootDir": "/home/runner/workspace/e2e",
+    "failOnFlakyTests": false,
+    "forbidOnly": false,
+    "fullyParallel": false,
+    "globalSetup": "/home/runner/workspace/e2e/global-setup.js",
+    "globalTeardown": "/home/runner/workspace/e2e/global-teardown.js",
+    "globalTimeout": 0,
+    "grep": {},
+    "grepInvert": null,
+    "maxFailures": 0,
+    "metadata": {
+      "actualWorkers": 1
+    },
+    "preserveOutput": "always",
+    "projects": [
+      {
+        "outputDir": "/home/runner/workspace/e2e/review/production-workspace-release-main-20260826T030000Z",
+        "repeatEach": 1,
+        "retries": 1,
+        "metadata": {
+          "actualWorkers": 1
+        },
+        "id": "chromium",
+        "name": "chromium",
+        "testDir": "/home/runner/workspace/e2e",
+        "testIgnore": [],
+        "testMatch": [
+          "**/*.@(spec|test).?(c|m)[jt]s?(x)"
+        ],
+        "timeout": 60000
+      }
+    ],
+    "quiet": false,
+    "reporter": [
+      [
+        "list",
+        null
+      ],
+      [
+        "json",
+        {
+          "outputFile": "/home/runner/workspace/e2e/review/production-workspace-release-main-20260826T030000Z/release-proof-report.json"
+        }
+      ]
+    ],
+    "reportSlowTests": {
+      "max": 5,
+      "threshold": 300000
+    },
+    "shard": null,
+    "tags": [],
+    "updateSnapshots": "missing",
+    "updateSourceMethod": "patch",
+    "version": "1.61.1",
+    "workers": 4,
+    "webServer": null
+  },
+  "suites": [
+    {
+      "title": "production-command-centre.spec.js",
+      "file": "production-command-centre.spec.js",
+      "column": 0,
+      "line": 0,
+      "specs": [
+        {
+          "title": "Command Centre desktop handles filters, refresh failure, recovery, partial data, and every enabled drill-down",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 240000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "chromium",
+              "projectName": "chromium",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 33604,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [
+                    {
+                      "text": "Skipping host requirements validation logic because `PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS` env variable is set.\n"
+                    }
+                  ],
+                  "retry": 0,
+                  "startTime": "2026-08-26T02:46:13.236Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "/home/runner/workspace/e2e/review/production-workspace-release-main-20260826T030000Z/production-command-centre--d62f5-nd-every-enabled-drill-down-chromium/test-finished-1.png"
+                    },
+                    {
+                      "name": "trace",
+                      "contentType": "application/zip",
+                      "path": "/home/runner/workspace/e2e/review/production-workspace-release-main-20260826T030000Z/production-command-centre--d62f5-nd-every-enabled-drill-down-chromium/trace.zip"
+                    }
+                  ]
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "961b70ab8dcc6f0eba22-11ca0f3797d8613a64c1",
+          "file": "production-command-centre.spec.js",
+          "line": 92,
+          "column": 1
+        },
+        {
+          "title": "Command Centre has no page-level overflow on phone or tablet",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 180000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "chromium",
+              "projectName": "chromium",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 7825,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-08-26T02:46:48.537Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "/home/runner/workspace/e2e/review/production-workspace-release-main-20260826T030000Z/production-command-centre--af973-overflow-on-phone-or-tablet-chromium/test-finished-1.png"
+                    },
+                    {
+                      "name": "trace",
+                      "contentType": "application/zip",
+                      "path": "/home/runner/workspace/e2e/review/production-workspace-release-main-20260826T030000Z/production-command-centre--af973-overflow-on-phone-or-tablet-chromium/trace.zip"
+                    }
+                  ]
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "961b70ab8dcc6f0eba22-ddd6296a65f92740538b",
+          "file": "production-command-centre.spec.js",
+          "line": 261,
+          "column": 1
+        },
+        {
+          "title": "Production role can use production destinations but is denied Order Tracker",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 180000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "chromium",
+              "projectName": "chromium",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 5993,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-08-26T02:46:56.541Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "/home/runner/workspace/e2e/review/production-workspace-release-main-20260826T030000Z/production-command-centre--0d370-but-is-denied-Order-Tracker-chromium/test-finished-1.png"
+                    },
+                    {
+                      "name": "trace",
+                      "contentType": "application/zip",
+                      "path": "/home/runner/workspace/e2e/review/production-workspace-release-main-20260826T030000Z/production-command-centre--0d370-but-is-denied-Order-Tracker-chromium/trace.zip"
+                    }
+                  ]
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "961b70ab8dcc6f0eba22-e7b5bb14049d07b63471",
+          "file": "production-command-centre.spec.js",
+          "line": 290,
+          "column": 1
+        },
+        {
+          "title": "Quality role redacts personnel productivity at phone width",
+          "ok": true,
+          "tags": [],
+          "tests": [
+            {
+              "timeout": 180000,
+              "annotations": [],
+              "expectedStatus": "passed",
+              "projectId": "chromium",
+              "projectName": "chromium",
+              "results": [
+                {
+                  "workerIndex": 0,
+                  "parallelIndex": 0,
+                  "status": "passed",
+                  "duration": 6049,
+                  "errors": [],
+                  "stdout": [],
+                  "stderr": [],
+                  "retry": 0,
+                  "startTime": "2026-08-26T02:47:02.624Z",
+                  "annotations": [],
+                  "attachments": [
+                    {
+                      "name": "screenshot",
+                      "contentType": "image/png",
+                      "path": "/home/runner/workspace/e2e/review/production-workspace-release-main-20260826T030000Z/production-command-centre--b4442-productivity-at-phone-width-chromium/test-finished-1.png"
+                    },
+                    {
+                      "name": "trace",
+                      "contentType": "application/zip",
+                      "path": "/home/runner/workspace/e2e/review/production-workspace-release-main-20260826T030000Z/production-command-centre--b4442-productivity-at-phone-width-chromium/trace.zip"
+                    }
+                  ]
+                }
+              ],
+              "status": "expected"
+            }
+          ],
+          "id": "961b70ab8dcc6f0eba22-172837686d945c82ff6f",
+          "file": "production-command-centre.spec.js",
+          "line": 310,
+          "column": 1
+        }
+      ]
+    }
+  ],
+  "errors": [],
+  "stats": {
+    "startTime": "2026-08-26T02:46:12.409Z",
+    "duration": 57765.444,
+    "expected": 4,
+    "skipped": 0,
+    "unexpected": 0,
+    "flaky": 0
+  }
+}

@@ -46,6 +46,7 @@ async function globalSetup() {
     operatorName: `E2E Private Operator ${runId}`,
     attendanceBranch: `E2E Release Proof ${runId}`,
     attendanceUserId: 900000000 + (parseInt(runId.slice(0, 7), 16) % 99999999),
+    ids: {},
   };
   // Persist ownership before touching the database. Teardown can then clean up
   // a partial setup rather than leaking a session/seed after a retry.
@@ -137,8 +138,21 @@ cur.execute("""INSERT INTO vivo_attendance
                VALUES (%s,%s,%s,CURRENT_DATE,8,true,now(),now())""",
             (fixture["attendanceUserId"], fixture["operatorName"], fixture["attendanceBranch"]))
 conn.commit()
+print(json.dumps({
+  "factory_id": factory_id,
+  "line_id": line_id,
+  "shift_id": shift_id,
+  "work_item_id": work_item_id,
+  "plan_id": plan_id,
+  "operator_id": operator_id,
+  "operation_id": operation_id,
+  "assignment_id": assignment_id,
+}))
 `;
-  runPython(createProductionFixture, { E2E_PRODUCTION_FIXTURE: JSON.stringify(productionFixture) });
+  const createdFixture = JSON.parse(runPython(createProductionFixture, {
+    E2E_PRODUCTION_FIXTURE: JSON.stringify(productionFixture),
+  }));
+  productionFixture.ids = createdFixture;
   // Some shared BI browser coverage needs L10 data. Use run-owned labels so
   // concurrent/retried release proof runs neither share nor delete each other.
   const seed = `

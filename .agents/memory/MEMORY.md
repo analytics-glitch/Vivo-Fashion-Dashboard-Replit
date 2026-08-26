@@ -151,6 +151,7 @@
 - [PD Flow stage persistence](pd-flow-stage-persistence.md) — Excel bootstrap snapshots may seed missing styles, but lifecycle state belongs to the append-only movement log.
 - [Production workspace revision integrity](production-workspace-revision-integrity.md) — frozen-plan inputs must be revision-scoped and cross-plan references guarded in both API and database.
 - [Production Workspace e2e fixtures](production-workspace-e2e-fixtures.md) — build plan inputs in draft, then approve; cleanup must reopen run-owned plans before removing inputs.
+- [Release-proof evidence hygiene](release-proof-evidence-hygiene.md) — browser traces can retain session tokens; sanitize and validate every retained proof bundle before review.
 - [Production workspace feasibility governance](production-workspace-feasibility-governance.md) — capacity, targets, SAMs, and readiness must be approved, dated, and auditable before a plan is feasible.
 - [Production assignment scope](production-assignment-scope.md) — production users see plan-backed facts only as owner or active assignee; scope source rows before aggregates and fail closed.
 - [Command Centre refresh failures](command-centre-refresh-errors.md) — retain last-known operational context, but visibly disclose every failed refresh.

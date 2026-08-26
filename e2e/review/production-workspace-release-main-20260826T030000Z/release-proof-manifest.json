@@ -1,0 +1,186 @@
+{
+  "cleanup": {
+    "evidence_sanitized": true,
+    "remaining": {
+      "assignments": 0,
+      "attendance": 0,
+      "execution_events": 0,
+      "execution_output": 0,
+      "factories": 0,
+      "lines": 0,
+      "meetings": 0,
+      "operations": 0,
+      "operators": 0,
+      "plan_versions": 0,
+      "ratings": 0,
+      "role_users": 0,
+      "sessions": 0,
+      "shifts": 0,
+      "work_items": 0
+    },
+    "run_state_removed": true
+  },
+  "direct_drills": [
+    "Quality",
+    "Capture",
+    "Tracker",
+    "Report",
+    "Order Tracker",
+    "Planning",
+    "Recovery history"
+  ],
+  "files": [
+    {
+      "bytes": 45,
+      "path": ".last-run.json",
+      "sha256": "91d1c43004802cd49950d78eb11c8fa7d05da8ffffe219a8b13b2f561bc00903"
+    },
+    {
+      "bytes": 1968,
+      "path": "production-command-centre--0d370-but-is-denied-Order-Tracker-chromium/browser.log",
+      "sha256": "6cc651c18792c3e870a73d0b354d599b50df7abbc1656632e00802718f1c1521"
+    },
+    {
+      "bytes": 56448,
+      "path": "production-command-centre--0d370-but-is-denied-Order-Tracker-chromium/production-role-denied-order-tracker.png",
+      "sha256": "34bc68c747d6d199d77fa15c763178bf262e4a98962b74a7569218f7f4f8499e"
+    },
+    {
+      "bytes": 56290,
+      "path": "production-command-centre--0d370-but-is-denied-Order-Tracker-chromium/test-finished-1.png",
+      "sha256": "eeae9a6785e9dc62190e456d45c443fd159b861cd37d25c0c501d5accbe730ef"
+    },
+    {
+      "bytes": 1185263,
+      "path": "production-command-centre--0d370-but-is-denied-Order-Tracker-chromium/trace.zip",
+      "sha256": "74f605653e48e5101f1124db5b49b4384a7b87085755f8e51592bea380580fef"
+    },
+    {
+      "bytes": 1676,
+      "path": "production-command-centre--af973-overflow-on-phone-or-tablet-chromium/browser.log",
+      "sha256": "5a97167ffdca90a96bcc8b5c153d9792763009fb3fce4cf5d35d43d795d976fc"
+    },
+    {
+      "bytes": 320585,
+      "path": "production-command-centre--af973-overflow-on-phone-or-tablet-chromium/command-centre-phone.png",
+      "sha256": "ce421d7bb6a52ac8b24e1d2129200fab7ad24bc5b9f4b33307c7bb91a3998a87"
+    },
+    {
+      "bytes": 351716,
+      "path": "production-command-centre--af973-overflow-on-phone-or-tablet-chromium/command-centre-tablet.png",
+      "sha256": "17565adc5f275180c312be6c27f0f458bfe57871055ce86dce0bc26119ab08ce"
+    },
+    {
+      "bytes": 154559,
+      "path": "production-command-centre--af973-overflow-on-phone-or-tablet-chromium/test-finished-1.png",
+      "sha256": "45ce6481a1cfa7e4c4862e5fb2d6635f64f960ee667ff969c92e10e0cbdc9d85"
+    },
+    {
+      "bytes": 2204561,
+      "path": "production-command-centre--af973-overflow-on-phone-or-tablet-chromium/trace.zip",
+      "sha256": "980aaf51176ab9f45bb8f2ad2dcf2556920f1f77f7352963f4973f798fac977f"
+    },
+    {
+      "bytes": 2068,
+      "path": "production-command-centre--b4442-productivity-at-phone-width-chromium/browser.log",
+      "sha256": "3802e9359c04532c9e6e9e488c1ca649ec3aa735eeccce2cbf7fdbb6a6ed6652"
+    },
+    {
+      "bytes": 162901,
+      "path": "production-command-centre--b4442-productivity-at-phone-width-chromium/quality-role-redaction-phone.png",
+      "sha256": "ebfbca0ffa59bbee8781891c522b638141d2a0160f2e5e4ae011c64c68480e2e"
+    },
+    {
+      "bytes": 75146,
+      "path": "production-command-centre--b4442-productivity-at-phone-width-chromium/test-finished-1.png",
+      "sha256": "100a2a7df7357a167220f1189c6ae20aae462d141bb6ea4cef17837c4ed652cc"
+    },
+    {
+      "bytes": 1026493,
+      "path": "production-command-centre--b4442-productivity-at-phone-width-chromium/trace.zip",
+      "sha256": "c60d120a3cb6f8296164cd9fd8075b515fe49b1dc27dbbf2741450ac9c40161c"
+    },
+    {
+      "bytes": 5257,
+      "path": "production-command-centre--d62f5-nd-every-enabled-drill-down-chromium/browser.log",
+      "sha256": "73ee19c9eeacf10d8a3b2453dd4b3d4d231f764a1b7feb1b3ee0489eb8a1d785"
+    },
+    {
+      "bytes": 346025,
+      "path": "production-command-centre--d62f5-nd-every-enabled-drill-down-chromium/command-centre-desktop-healthy.png",
+      "sha256": "160e79b7350948754aaadbd35c3665d2a898c1fad567546b711f0231babd5bfb"
+    },
+    {
+      "bytes": 344783,
+      "path": "production-command-centre--d62f5-nd-every-enabled-drill-down-chromium/command-centre-partial-data.png",
+      "sha256": "362f9ab5a627fb6a0f87508d2901c269a55472017a0f0a4b69dc03a3a741d908"
+    },
+    {
+      "bytes": 352629,
+      "path": "production-command-centre--d62f5-nd-every-enabled-drill-down-chromium/command-centre-refresh-error.png",
+      "sha256": "5fdacf5fb78988e572d70c77484493146390874a996114fd262f048414d891dd"
+    },
+    {
+      "bytes": 245658,
+      "path": "production-command-centre--d62f5-nd-every-enabled-drill-down-chromium/command-drill-execution-capture.png",
+      "sha256": "d8c0efd8f8147cd6170a35a5e6d20b72f9f908a2c2d6cb1356a18cc316cd92ab"
+    },
+    {
+      "bytes": 90436,
+      "path": "production-command-centre--d62f5-nd-every-enabled-drill-down-chromium/command-drill-order-tracker.png",
+      "sha256": "925b2727e4c063b8a881330536fce69fd7553a29ed9747d3672a13268f308947"
+    },
+    {
+      "bytes": 188764,
+      "path": "production-command-centre--d62f5-nd-every-enabled-drill-down-chromium/command-drill-planning-workspace.png",
+      "sha256": "ad56ea74ef7d71b0e9d19cb9e74fac224545bdbaf53608dd8b6185f50dc5b79d"
+    },
+    {
+      "bytes": 235351,
+      "path": "production-command-centre--d62f5-nd-every-enabled-drill-down-chromium/command-drill-production-report.png",
+      "sha256": "31a28b2ec53abc49fa602e8321a60e82a5c465c2250e1c8da71c5e2cd0dce2ef"
+    },
+    {
+      "bytes": 122808,
+      "path": "production-command-centre--d62f5-nd-every-enabled-drill-down-chromium/command-drill-production-tracker.png",
+      "sha256": "0240ba85d122c15d9b6111ae2492c180a4a9f285b190ce2a144d26df0a20bdc6"
+    },
+    {
+      "bytes": 217796,
+      "path": "production-command-centre--d62f5-nd-every-enabled-drill-down-chromium/command-drill-productivity-recovery.png",
+      "sha256": "add847fc4a7d545b5234f8116120049a231c609b2831d67f5f805410079e2c30"
+    },
+    {
+      "bytes": 147967,
+      "path": "production-command-centre--d62f5-nd-every-enabled-drill-down-chromium/command-drill-quality.png",
+      "sha256": "0600d995a772c14306da5433ec1510c1f8d7c84af15296edd4ebdb77e1700563"
+    },
+    {
+      "bytes": 158777,
+      "path": "production-command-centre--d62f5-nd-every-enabled-drill-down-chromium/test-finished-1.png",
+      "sha256": "94853ce499f9ebd6fcac809f032684b619113f793b31a8da5171bfe4c1c60232"
+    },
+    {
+      "bytes": 23544755,
+      "path": "production-command-centre--d62f5-nd-every-enabled-drill-down-chromium/trace.zip",
+      "sha256": "a1bf08ba81aa18ddc6bf2cf43b84e0ee126f23feaa70d5c0927022ea455c934c"
+    },
+    {
+      "bytes": 766,
+      "path": "production-release-cleanup.json",
+      "sha256": "07592c9113f6b0969ccbbe549f5d497c58ada8b23aa537ba7320b83cf7d9b65f"
+    },
+    {
+      "bytes": 9536,
+      "path": "release-proof-report.json",
+      "sha256": "88bd1d54c0740ec562449a285df0eea63f7cc1eabbd0618c013859506e552cb8"
+    }
+  ],
+  "flow_count": 4,
+  "suite": "Production Command Centre release proof",
+  "viewport_contract": {
+    "desktop": "1440x768",
+    "phone_width": 390,
+    "tablet_width": 768
+  }
+}
