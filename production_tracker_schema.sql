@@ -1296,3 +1296,98 @@ CREATE TRIGGER production_workspace_team_scope_guard
     BEFORE INSERT OR UPDATE OF factory_id, line_id
     ON production_workspace_team_members
     FOR EACH ROW EXECUTE FUNCTION production_workspace_team_scope_guard();
+
+-- ============================================================
+-- Production Tracker Sheet Feed (governed Google Sheets ingestion)
+-- ============================================================
+-- Reads the private "Production Tracker 2026" Google Sheet as a governed,
+-- read-only source of production-performance figures (output, transfer,
+-- knit/woven mix, process-productivity). The source sheet is NEVER written
+-- to by this feature. Every run flows fetch -> stage -> validate -> promote;
+-- promotion only happens inside one transaction after validation, so a
+-- failed or partial run leaves the previously published metrics untouched
+-- (last-known-good). Idempotent: promotion is an upsert keyed by
+-- (metric_group, dimension, period_type, period_key), never by run.
+
+CREATE TABLE IF NOT EXISTS production_tracker_sheet_sources (
+    id              BIGSERIAL PRIMARY KEY,
+    source_key      TEXT NOT NULL UNIQUE,
+    spreadsheet_id  TEXT NOT NULL,
+    tab_map         JSONB NOT NULL DEFAULT '{}'::jsonb,
+    enabled         BOOLEAN NOT NULL DEFAULT TRUE,
+    schedule_hint   TEXT NOT NULL DEFAULT 'daily',
+    version_token   BIGINT NOT NULL DEFAULT 1 CHECK (version_token > 0),
+    created_by      TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_by      TEXT,
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS production_tracker_sheet_sync_runs (
+    id                   BIGSERIAL PRIMARY KEY,
+    source_id            BIGINT NOT NULL REFERENCES production_tracker_sheet_sources(id) ON DELETE RESTRICT,
+    run_key              TEXT NOT NULL UNIQUE,
+    trigger_kind         TEXT NOT NULL CHECK (trigger_kind IN ('manual','scheduled','seed')),
+    triggered_by         TEXT,
+    started_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    finished_at          TIMESTAMPTZ,
+    status               TEXT NOT NULL DEFAULT 'running'
+                          CHECK (status IN ('running','ok','failed','connection_pending')),
+    row_count            INT,
+    warning_count        INT NOT NULL DEFAULT 0,
+    error_message        TEXT,
+    source_updated_label TEXT,
+    promoted             BOOLEAN NOT NULL DEFAULT FALSE
+);
+CREATE INDEX IF NOT EXISTS idx_tracker_sheet_runs_source
+    ON production_tracker_sheet_sync_runs(source_id, started_at DESC);
+
+CREATE TABLE IF NOT EXISTS production_tracker_sheet_staging_metrics (
+    id                BIGSERIAL PRIMARY KEY,
+    run_id            BIGINT NOT NULL REFERENCES production_tracker_sheet_sync_runs(id) ON DELETE CASCADE,
+    metric_group      TEXT NOT NULL,
+    dimension         TEXT NOT NULL DEFAULT '',
+    period_type       TEXT NOT NULL,
+    period_key        TEXT NOT NULL,
+    raw_label         TEXT,
+    raw_value_text    TEXT,
+    parsed_value      NUMERIC,
+    is_available      BOOLEAN NOT NULL DEFAULT TRUE,
+    is_partial_period BOOLEAN NOT NULL DEFAULT FALSE,
+    validation_status TEXT NOT NULL DEFAULT 'ok' CHECK (validation_status IN ('ok','quarantined')),
+    validation_reason TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_tracker_sheet_staging_run
+    ON production_tracker_sheet_staging_metrics(run_id);
+
+CREATE TABLE IF NOT EXISTS production_tracker_sheet_metrics (
+    id                BIGSERIAL PRIMARY KEY,
+    metric_group      TEXT NOT NULL,
+    dimension         TEXT NOT NULL DEFAULT '',
+    period_type       TEXT NOT NULL,
+    period_key        TEXT NOT NULL,
+    value             NUMERIC,
+    is_available      BOOLEAN NOT NULL DEFAULT TRUE,
+    is_partial_period BOOLEAN NOT NULL DEFAULT FALSE,
+    source_label      TEXT,
+    normalized_label  TEXT,
+    source_run_id     BIGINT REFERENCES production_tracker_sheet_sync_runs(id) ON DELETE SET NULL,
+    version_token     BIGINT NOT NULL DEFAULT 1 CHECK (version_token > 0),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (metric_group, dimension, period_type, period_key)
+);
+CREATE INDEX IF NOT EXISTS idx_tracker_sheet_metrics_lookup
+    ON production_tracker_sheet_metrics(metric_group, period_type);
+
+CREATE TABLE IF NOT EXISTS production_tracker_sheet_warnings (
+    id          BIGSERIAL PRIMARY KEY,
+    run_id      BIGINT REFERENCES production_tracker_sheet_sync_runs(id) ON DELETE CASCADE,
+    code        TEXT NOT NULL,
+    severity    TEXT NOT NULL DEFAULT 'warning' CHECK (severity IN ('info','warning','error')),
+    message     TEXT NOT NULL,
+    detail      JSONB NOT NULL DEFAULT '{}'::jsonb,
+    resolved    BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_tracker_sheet_warnings_run
+    ON production_tracker_sheet_warnings(run_id, resolved);

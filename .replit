@@ -44,6 +44,10 @@ args = "costing-pg-concurrency"
 task = "workflow.run"
 args = "community-referral-pg"
 
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "production-tracker-sheet-pg"
+
 [[workflows.workflow]]
 name = "Sync Watchdog"
 author = "agent"
@@ -86,7 +90,7 @@ isValidation = true
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "python -m unittest validation_agent.test_cross_surface validation_agent.test_governance validation_agent.test_learned_range test_ibt_nightly_reconcile validation_agent.test_ibt_calibration test_sync_loop_idempotency validation_agent.test_replen_calibration test_fabric_worker_loop test_production_intake_prune test_replen_item_history test_page_access_parity test_costing_signoff_rules test_costing_pdf_export test_sales_worker_loop test_sync_source_health test_preprod_costing_lines test_costing_multiplier_persistence test_costing_field_alignment test_merch_router_schema_smoke test_merch_buying_order_tab_access test_style_tier_seed test_community_style_quiz test_oauth_callback_redirect test_staff_login_cookie_session test_sublimation_costing test_vivo_edits_schedule test_style_tracker_warehouse_pct test_api_uptime test_preprod_accessories_backfill"
+args = "python -m unittest validation_agent.test_cross_surface validation_agent.test_governance validation_agent.test_learned_range test_ibt_nightly_reconcile validation_agent.test_ibt_calibration test_sync_loop_idempotency validation_agent.test_replen_calibration test_fabric_worker_loop test_production_intake_prune test_replen_item_history test_page_access_parity test_costing_signoff_rules test_costing_pdf_export test_sales_worker_loop test_sync_source_health test_preprod_costing_lines test_costing_multiplier_persistence test_costing_field_alignment test_merch_router_schema_smoke test_merch_buying_order_tab_access test_style_tier_seed test_community_style_quiz test_oauth_callback_redirect test_staff_login_cookie_session test_sublimation_costing test_vivo_edits_schedule test_style_tracker_warehouse_pct test_api_uptime test_preprod_accessories_backfill test_production_tracker_sheet"
 
 [[workflows.workflow]]
 name = "loyalty-smoke"
@@ -117,6 +121,17 @@ author = "agent"
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "python3 run_community_referral_pg_test.py"
+
+[workflows.workflow.metadata]
+isValidation = true
+
+[[workflows.workflow]]
+name = "production-tracker-sheet-pg"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python3 run_production_tracker_sheet_pg_test.py"
 
 [workflows.workflow.metadata]
 isValidation = true

@@ -193,6 +193,26 @@ def ensure_production_workspace_tables():
     except Exception:
         log.exception("Production workspace schema initialization failed")
         raise
+    _tracker_sheet_seed_if_needed()
+
+
+def _tracker_sheet_seed_if_needed():
+    """Fire-and-forget: launch the one-time Production Tracker Sheet baseline
+    seed as a background subprocess so a fresh/rebuilt database always shows
+    the confirmed baseline dataset without a manual step. The seed script is
+    itself idempotent (no-ops once a 'seed' run already exists), so calling
+    this on every boot is safe and never blocks the API port from opening."""
+    import subprocess
+    import sys
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+        subprocess.Popen(
+            [sys.executable, os.path.join(here, "production_tracker_sheet_sync.py"),
+             "--seed-baseline"],
+            cwd=here, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        log.exception("Failed to launch Production Tracker Sheet baseline seed")
 
 
 def _audit(cur, entity_type, entity_id, action, actor, reason,
@@ -4732,10 +4752,217 @@ def _audit_timeline_endpoint(entity_type: str, entity_id: str, request: Request)
     return _audit_timeline(entity_type, entity_id, request)
 
 
+# --------------------------------------------------------------------------- #
+# Production Tracker Sheet Feed (governed Google Sheets ingestion)            #
+# --------------------------------------------------------------------------- #
+SHEET_SOURCE_WRITE_ROLES = {"admin", "production"}
+_TRACKER_SHEET_SOURCE_KEY = "production_tracker_2026"
+_TRACKER_SHEET_METRIC_GROUPS = {
+    "annual_totals", "category_mix", "stitched_output", "transfer_output",
+    "fabric_mix", "process_productivity", "quality_defects",
+}
+
+
+def _tracker_sheet_source_row():
+    rows = _db("""
+        SELECT id, source_key, spreadsheet_id, tab_map, enabled, schedule_hint,
+               version_token, updated_by, updated_at
+          FROM production_tracker_sheet_sources WHERE source_key=%s
+    """, (_TRACKER_SHEET_SOURCE_KEY,), fetch=True)
+    return _rows(rows)[0] if rows else None
+
+
+def _tracker_sheet_latest_run(source_id):
+    rows = _db("""
+        SELECT id, run_key, trigger_kind, triggered_by, started_at, finished_at,
+               status, row_count, warning_count, error_message,
+               source_updated_label, promoted
+          FROM production_tracker_sheet_sync_runs
+         WHERE source_id=%s ORDER BY started_at DESC LIMIT 1
+    """, (source_id,), fetch=True)
+    return _rows(rows)[0] if rows else None
+
+
+def _tracker_sheet_get(request: Request):
+    _ensure_schema()
+    denied = _require_role(request, VIEW_ROLES, "Production tracker sheet status")
+    if denied:
+        return denied
+    source = _tracker_sheet_source_row()
+    if not source:
+        return {"configured": False, "can_edit": _actor(request)["role"] in SHEET_SOURCE_WRITE_ROLES}
+    latest_run = _tracker_sheet_latest_run(source["id"])
+    return {
+        "configured": True,
+        "spreadsheet_id": source["spreadsheet_id"],
+        "spreadsheet_url": f"https://docs.google.com/spreadsheets/d/{source['spreadsheet_id']}",
+        "tab_map": source["tab_map"],
+        "enabled": source["enabled"],
+        "schedule_hint": source["schedule_hint"],
+        "updated_by": source["updated_by"],
+        "updated_at": source["updated_at"],
+        "can_edit": _actor(request)["role"] in SHEET_SOURCE_WRITE_ROLES,
+        "latest_run": latest_run,
+        # Explicit machine-readable state for the Setup panel's banner: the most
+        # recent run's status IS the source's live connection state (never
+        # inferred/guessed) — 'connection_pending' means the sheet still needs
+        # to be shared with the connector's Google account.
+        "connection_state": (latest_run or {}).get("status") or "never_synced",
+    }
+
+
+def _tracker_sheet_update(request: Request, body: dict = Body(default={})):
+    _ensure_schema()
+    denied = _require_role(request, SHEET_SOURCE_WRITE_ROLES, "Production tracker sheet configuration changes")
+    if denied:
+        return denied
+    reason = _reason(body)
+    if not reason:
+        return _error("reason is required for every source configuration change")
+    source = _tracker_sheet_source_row()
+    if not source:
+        return _error("tracker sheet source is not initialized yet", 409)
+    actor = _actor(request)
+    updates = {}
+    if "enabled" in body:
+        updates["enabled"] = bool(body["enabled"])
+    if "tab_map" in body and isinstance(body["tab_map"], dict):
+        updates["tab_map"] = body["tab_map"]
+    if "spreadsheet_id" in body and str(body["spreadsheet_id"]).strip():
+        updates["spreadsheet_id"] = str(body["spreadsheet_id"]).strip()
+    if not updates:
+        return _error("no recognized fields to update (enabled, tab_map, spreadsheet_id)")
+    sets, params = [], []
+    for key, value in updates.items():
+        if key == "tab_map":
+            sets.append("tab_map = %s::jsonb")
+            params.append(json.dumps(value))
+        else:
+            sets.append(f"{key} = %s")
+            params.append(value)
+    sets.append("version_token = version_token + 1")
+    sets.append("updated_by = %s")
+    params.append(actor["name"])
+    sets.append("updated_at = now()")
+    params.append(source["id"])
+    with _tx() as cur:
+        cur.execute(f"""
+            UPDATE production_tracker_sheet_sources SET {", ".join(sets)}
+             WHERE id = %s RETURNING id
+        """, params)
+        if cur.fetchone() is None:
+            raise RuntimeError("tracker sheet source disappeared mid-update")
+        _audit(cur, "tracker_sheet_source", source["id"], "update", actor, reason,
+               before=source, after=updates)
+    return _tracker_sheet_get(request)
+
+
+def _tracker_sheet_sync_now(request: Request, body: dict = Body(default={})):
+    _ensure_schema()
+    denied = _require_role(request, SHEET_SOURCE_WRITE_ROLES, "Triggering a Production Tracker Sheet sync")
+    if denied:
+        return denied
+    reason = _reason(body)
+    if not reason:
+        return _error("reason is required to trigger a Production Tracker Sheet sync")
+    source = _tracker_sheet_source_row()
+    if not source:
+        return _error("tracker sheet source is not initialized yet", 409)
+    if not source["enabled"]:
+        return _error("the source is disabled; enable it before syncing", 409)
+    actor = _actor(request)
+    import subprocess
+    import sys
+    here = os.path.dirname(os.path.abspath(__file__))
+    try:
+        subprocess.Popen(
+            [sys.executable, os.path.join(here, "production_tracker_sheet_sync.py"),
+             "--manual", "--actor", actor.get("user_id") or actor.get("name") or "unknown"],
+            cwd=here, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except Exception as exc:
+        return _error(f"failed to launch sync: {exc}", 500)
+    with _tx() as cur:
+        _audit(cur, "tracker_sheet_source", source["id"], "sync_now", actor,
+               reason, before=None, after=None)
+    return {"ok": True, "message": "Sync started in the background; poll status for the result."}
+
+
+def _tracker_sheet_runs(request: Request, limit: int = 20):
+    _ensure_schema()
+    denied = _require_role(request, VIEW_ROLES, "Production tracker sheet sync history")
+    if denied:
+        return denied
+    source = _tracker_sheet_source_row()
+    if not source:
+        return {"runs": []}
+    rows = _db("""
+        SELECT id, run_key, trigger_kind, triggered_by, started_at, finished_at,
+               status, row_count, warning_count, error_message,
+               source_updated_label, promoted
+          FROM production_tracker_sheet_sync_runs
+         WHERE source_id=%s ORDER BY started_at DESC LIMIT %s
+    """, (source["id"], max(1, min(int(limit or 20), 100))), fetch=True)
+    return {"runs": _rows(rows)}
+
+
+def _tracker_sheet_warnings(request: Request, resolved: bool = False, limit: int = 50):
+    _ensure_schema()
+    denied = _require_role(request, VIEW_ROLES, "Production tracker sheet warnings")
+    if denied:
+        return denied
+    rows = _db("""
+        SELECT w.id, w.run_id, w.code, w.severity, w.message, w.detail,
+               w.resolved, w.created_at, r.trigger_kind, r.started_at AS run_started_at
+          FROM production_tracker_sheet_warnings w
+          LEFT JOIN production_tracker_sheet_sync_runs r ON r.id = w.run_id
+         WHERE w.resolved = %s
+         ORDER BY w.created_at DESC LIMIT %s
+    """, (bool(resolved), max(1, min(int(limit or 50), 200))), fetch=True)
+    return {"warnings": _rows(rows)}
+
+
+def _tracker_sheet_metrics(request: Request, metric_group: str, period_type: str = None,
+                            period_from: str = None, period_to: str = None):
+    _ensure_schema()
+    denied = _require_role(request, VIEW_ROLES, "Production tracker sheet metrics")
+    if denied:
+        return denied
+    if metric_group not in _TRACKER_SHEET_METRIC_GROUPS:
+        return _error(f"unknown metric_group; expected one of {sorted(_TRACKER_SHEET_METRIC_GROUPS)}")
+    clauses = ["metric_group = %s"]
+    params = [metric_group]
+    if period_type:
+        clauses.append("period_type = %s")
+        params.append(period_type)
+    if period_from:
+        clauses.append("period_key >= %s")
+        params.append(period_from)
+    if period_to:
+        clauses.append("period_key <= %s")
+        params.append(period_to)
+    rows = _db(f"""
+        SELECT metric_group, dimension, period_type, period_key, value,
+               is_available, is_partial_period, source_label, normalized_label,
+               updated_at
+          FROM production_tracker_sheet_metrics
+         WHERE {" AND ".join(clauses)}
+         ORDER BY dimension, period_key
+    """, params, fetch=True)
+    return {"metrics": _rows(rows)}
+
+
 def register_production_workspace_routes(app, api_module):
     """Register routes after the main API has defined its auth/db helpers."""
     global _API
     _API = api_module
+
+    app.add_api_route("/api/production-workspace/tracker-sheet", _tracker_sheet_get, methods=["GET"])
+    app.add_api_route("/api/production-workspace/tracker-sheet", _tracker_sheet_update, methods=["PUT"])
+    app.add_api_route("/api/production-workspace/tracker-sheet/sync-now", _tracker_sheet_sync_now, methods=["POST"])
+    app.add_api_route("/api/production-workspace/tracker-sheet/runs", _tracker_sheet_runs, methods=["GET"])
+    app.add_api_route("/api/production-workspace/tracker-sheet/warnings", _tracker_sheet_warnings, methods=["GET"])
+    app.add_api_route("/api/production-workspace/tracker-sheet/metrics", _tracker_sheet_metrics, methods=["GET"])
 
     app.add_api_route("/api/production-workspace", _workspace_root, methods=["GET"])
     app.add_api_route("/api/production-workspace/catalogues", _catalogues, methods=["GET"])

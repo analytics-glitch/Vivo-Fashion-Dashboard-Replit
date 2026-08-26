@@ -489,6 +489,11 @@ _LAST_FABRIC_CAT_TRACKER = None
 # Guards the production tracker (Odoo DPS buying & manufacturing orders) sync to
 # once per 30 minutes even though main() runs every 60s.
 _LAST_PRODUCTION_SYNC = None
+# Guards the Production Tracker Sheet feed (production_tracker_sheet_sync.py —
+# governed Google Sheets ingestion, Task #1607) to once per 24 hours: this is a
+# daily-class production-reporting cadence, not a wallboard-style poll. None on
+# boot so a fresh DB gets its first live-sheet attempt (or seed check) promptly.
+_LAST_TRACKER_SHEET_SYNC = None
 # Guards the MO fabric-consumption extract (extract_mo_fabric_consumption.py —
 # Done DPS manufacturing-order fabric usage feeding the "Avg metres per garment"
 # KPI) to once per 30 minutes even though main() runs every 60s. None on boot so
@@ -2885,6 +2890,36 @@ def main():
             log.info("✅ Production tracker sync complete")
         except Exception as e:
             log.error("Production tracker sync error: %s", e)
+
+    # Production Tracker Sheet feed — governed read-only Google Sheets ingestion
+    # of "Production Tracker 2026" (Task #1607). Daily-class cadence: this is
+    # production-reporting data (monthly output/transfer/mix/process figures),
+    # not a wallboard-style poll. The sync script is idempotent (upsert on
+    # metric/period, never on run) and self-claims via app_singleflight, so a
+    # concurrent manual "Sync now" from the API can never collide with this.
+    # It also creates its own tables on first run, so no table-existence guard
+    # is needed here (unlike the Odoo-backed syncs above, which depend on
+    # tables created elsewhere at boot).
+    global _LAST_TRACKER_SHEET_SYNC
+    tracker_sheet_due = (
+        _LAST_TRACKER_SHEET_SYNC is None
+        or (now_utc - _LAST_TRACKER_SHEET_SYNC).total_seconds() >= 86400
+    )
+    if tracker_sheet_due:
+        _LAST_TRACKER_SHEET_SYNC = now_utc
+        try:
+            import subprocess, sys
+
+            log.info("Running Production Tracker Sheet sync (scheduled)...")
+            subprocess.run(
+                [sys.executable, "/home/runner/workspace/production_tracker_sheet_sync.py",
+                 "--scheduled"],
+                check=True,
+                timeout=120,
+            )
+            log.info("✅ Production Tracker Sheet sync complete")
+        except Exception as e:
+            log.error("Production Tracker Sheet sync error: %s", e)
 
     # MO fabric-consumption extract — feeds the "Avg metres per garment" KPI on the
     # Fabric Overview (mo_fabric_consumption table). It reads Done DPS manufacturing

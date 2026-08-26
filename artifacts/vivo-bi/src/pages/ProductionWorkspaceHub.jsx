@@ -9,6 +9,8 @@ import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { productionScopeParams, readProductionScope } from "@/lib/productionScope";
 import ProductionWorkspaceShell from "@/components/ProductionWorkspaceShell";
+import ProductionTrackerSheetPanel from "@/components/ProductionTrackerSheetPanel";
+import ProductionTrackerTrendChart from "@/components/ProductionTrackerTrendChart";
 
 const PlanningWorkspace = React.lazy(() => import("./ProductionWorkspace"));
 const ExecutionCapture = React.lazy(() => import("./ProductionExecution"));
@@ -118,6 +120,7 @@ function ControlRoom({ scope, onNavigate }) {
           <div className="flex flex-wrap items-start justify-between gap-3"><div><div className="font-bold" style={{ color: "var(--pw-navy)" }}>Key dates & delivery commitments</div><div className="mt-1 text-xs" style={{ color: "var(--pw-text-muted)" }}>Only approved-plan commitments are listed here.</div></div><button className="pw-action pw-action--quiet" onClick={() => onNavigate("work-orders")}><Package size={15} />Open work orders</button></div>
           {!commitments.length ? <div className="pw-empty-module"><strong>No approved delivery commitments match this scope.</strong>There is nothing to schedule yet, rather than a zero-risk claim.</div> : <div className="pw-table-wrap mt-4"><table className="pw-table"><thead><tr><th>Commitment</th><th>Due</th><th>Line</th><th>Risk evidence</th></tr></thead><tbody>{commitments.slice(0, 8).map((row) => <tr key={row.plan_version_id}><td className="font-semibold">{row.style_number || row.external_ref || "Plan"}</td><td>{row.planned_end || "Due date unavailable"}</td><td>{row.factory_name || "Factory unavailable"} · {row.line_name || "Line unassigned"}</td><td>{(row.reasons || []).slice(0, 2).join(" ") || "Evidence unavailable"}</td></tr>)}</tbody></table></div>}
         </section>
+        <div className="col-span-12"><ProductionTrackerTrendChart variant="monthly_output" /></div>
       </div>
     </>}
   </div>;
@@ -182,6 +185,8 @@ function OperatorProductivity({ scope }) {
   const rows = data?.rows || [];
   return <div className="pw-page space-y-5" data-testid="pw-productivity"><PageIntro eyebrow="Private coaching context" title="Operator productivity" subtitle="This is an assignment-scoped coaching view, never a default public ranking. Individual measures remain role-redacted by the server and stay unavailable where SAM, attendance or quality denominators are incomplete." />
     {loading ? <div className="pw-panel p-8 text-center text-sm" style={{ color: "var(--pw-text-muted)" }}>Loading authorized productivity context…</div> : !rows.length ? <EmptyModule title="No complete productivity context matches this scope.">Approved SAM, attendance, approved assignments and good output are all required before productivity is calculated.</EmptyModule> : <div className="pw-table-wrap"><table className="pw-table"><thead><tr><th>Authorized context</th><th>Plan / actual</th><th>Earned / attendance</th><th>Efficiency</th><th>Quality context</th><th>Coaching need</th></tr></thead><tbody>{rows.map((row, index) => <tr key={`${row.assignment_id || row.line_id || index}`}><td><div className="font-bold">{row.line_name || row.factory_name || "Authorized assignment"}</div><div style={{ color: "var(--pw-text-muted)" }}>{row.plan_count || 0} approved assignments</div></td><td>{number(row.target_qty)} / {number(row.actual_qty)}</td><td>{number(row.earned_minutes)} / {number(row.attended_minutes)} min</td><td>{percent(row.efficiency_pct)}</td><td>{number(row.good_qty)} good · {number(row.reject_qty)} reject · {number(row.rework_qty)} rework</td><td>{row.metric_unavailable_reason || "Use supervisor context to coach and unblock."}</td></tr>)}</tbody></table></div>}
+    <ProductionTrackerTrendChart variant="process_productivity" />
+    <ProductionTrackerTrendChart variant="quality_defects" />
   </div>;
 }
 
@@ -363,12 +368,13 @@ function Resources({ scope, catalogues, user }) {
   </div>;
 }
 
-function Setup({ catalogues, onNavigate }) {
+function Setup({ catalogues, onNavigate, user }) {
   const setup = [["Factories & lines", "factories"], ["Shifts & calendars", "shifts"], ["Machines & capabilities", "machines"], ["Operators & skills", "operators"], ["Approved operation / SAM definitions", "operation_definitions"], ["Approved daily targets", "targets"], ["Defect codes", "defect_codes"], ["Downtime reason codes", "downtime_reasons"]];
   const complete = setup.filter(([, key]) => (catalogues?.[key] || []).length > 0).length;
   return <div className="pw-page space-y-5" data-testid="pw-settings"><PageIntro eyebrow="Guided onboarding" title="Setup & settings" subtitle="Prepare the minimum trusted master data before a plan is approved. Imports preview and validate every row first; invalid files do not partially write production master data." action={<button className="pw-action" onClick={() => onNavigate("plan", { setup: "bulk" })}><Stack size={16} />Open controlled imports</button>} />
     <section className="pw-panel p-5"><div className="flex flex-wrap items-end justify-between gap-3"><div><div className="font-bold" style={{ color: "var(--pw-navy)" }}>Factory readiness checklist</div><div className="mt-1 text-sm" style={{ color: "var(--pw-text-muted)" }}>{complete} of {setup.length} master-data sets are maintained in this environment.</div></div><span className="pw-chip">{Math.round(complete / setup.length * 100)}% setup coverage</span></div><div className="pw-progress mt-4"><span style={{ width: `${complete / setup.length * 100}%` }} /></div><div className="mt-5 grid gap-2 md:grid-cols-2">{setup.map(([label, key]) => <div className="flex items-center justify-between gap-3 rounded-md border px-3 py-3" key={key} style={{ borderColor: "var(--pw-border)" }}><div className="flex items-center gap-2 text-sm font-bold" style={{ color: "var(--pw-navy)" }}>{(catalogues?.[key] || []).length > 0 ? <CheckCircle size={17} weight="fill" color="#2f7a50" /> : <ClockCounterClockwise size={17} color="#a8791d" />}{label}</div><span className={`pw-chip ${(catalogues?.[key] || []).length > 0 ? "pw-chip--ok" : "pw-chip--warning"}`}>{(catalogues?.[key] || []).length > 0 ? "Maintained" : "Needs setup"}</span></div>)}</div></section>
     <section className="pw-panel p-5"><div className="font-bold" style={{ color: "var(--pw-navy)" }}>Controlled CSV onboarding</div><p className="mt-1 text-sm" style={{ color: "var(--pw-text-muted)" }}>Download a template, preview every row, correct any error, then commit the full file with an audit reason. Existing plan setup provides the trusted import workflow for factory, line, shift/calendar, machine, capability, operator, skill, operation/SAM and target masters.</p><div className="mt-4 flex flex-wrap gap-2"><button className="pw-action pw-action--quiet" onClick={() => onNavigate("plan", { setup: "bulk" })}>Open bulk templates</button><button className="pw-action pw-action--quiet" onClick={() => onNavigate("plan", { setup: "master" })}>Open master data</button></div></section>
+    <ProductionTrackerSheetPanel user={user} />
   </div>;
 }
 

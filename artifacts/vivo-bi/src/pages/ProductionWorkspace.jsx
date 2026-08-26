@@ -3,6 +3,7 @@ import { useLocation } from "react-router-dom";
 import { api } from "@/lib/api";
 import { ProductionScopeNotice, productionScopeParams, readProductionScope } from "@/lib/productionScope";
 import { ErrorBox, Loading, SectionTitle } from "@/components/common";
+import ProductionTrackerTrendChart from "@/components/ProductionTrackerTrendChart";
 import {
   ArrowsClockwise, CheckCircle, ClipboardText, DownloadSimple, Factory,
   FileArrowUp, FloppyDisk, LockKey, Plus, WarningCircle,
@@ -420,6 +421,7 @@ export default function ProductionWorkspace() {
     {active === "master" && <MasterEditor catalogues={data.catalogues} canPlan={canPlan} canApprove={canApprove} reason={reason} onSaved={onSaved} />}
     {active === "bulk" && <BulkTools reason={reason} canPlan={canPlan} onSaved={onSaved} />}
     {active === "plans" && <div className="space-y-4">
+      <ProductionTrackerTrendChart variant="annual_totals" />
       <div className="grid gap-4 xl:grid-cols-2"><WorkItemForm tracker={data.tracker} stages={data.catalogues.tracker_stages} workItems={data.workItems} canPlan={canPlan} reason={reason} onSaved={onSaved} /><PlanForm workItems={data.workItems} catalogues={data.catalogues} canPlan={canPlan} reason={reason} onSaved={onSaved} /></div>
       <div className="grid gap-4 xl:grid-cols-[340px_1fr]">
         <div className="card-white overflow-hidden"><div className="border-b border-line px-4 py-3"><div className="font-bold text-[#0f3d24]">Plan versions</div><div className="text-xs text-muted">Frozen versions stay unchanged; reopening creates the next revision.</div></div>
