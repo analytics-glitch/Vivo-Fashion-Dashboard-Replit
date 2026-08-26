@@ -157,3 +157,4 @@
 - [Vite startup listener transition](vivo-bi-vite-startup-transition.md) — an owned Vite boot naturally moves port 18659 from empty to one listener; verify the resulting marked chain, not that transition itself.
 - [Retiring routed artifacts](artifact-service-retirement.md) — remove obsolete services through validated, service-free manifests or their old route claims can create false outages.
 - [Release-proof fixed four-flow contract](release-proof-fixed-flow-contract.md) — run-production-release-proof.sh must --grep the exact 4 legacy titles (no anchors) or it breaks as the shared spec file grows.
+- [Project Reconnect one-off export](project-reconnect-oneoff-export.md) — private cohort constants never alias canonical churn ones; no wholesale/staff flag exists; late restricted-draw tests get starved by earlier unrestricted ones.

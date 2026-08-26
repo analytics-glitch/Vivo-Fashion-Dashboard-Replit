@@ -7,7 +7,7 @@ id = "3B4_FFSkEVBkAeYMFRJ2e"
 [[services]]
 localPort = 8080
 name = "API Server"
-paths = ["/api", "/fabric", "/quality", "/clienteling", "/reconcile", "/loyalty-app", "/tiktokecdOdOLGOstI9a9rEZzScUsE7H5MF9fz.txt", "/tiktokk6FXJJjsKxj6c7S5DGT00YAaX5CstwWr.txt"]
+paths = ["/api", "/fabric", "/quality", "/clienteling", "/reconcile", "/loyalty-app", "/reconnect", "/tiktokecdOdOLGOstI9a9rEZzScUsE7H5MF9fz.txt", "/tiktokk6FXJJjsKxj6c7S5DGT00YAaX5CstwWr.txt"]
 
 [services.env]
 PORT = "8080"

@@ -2243,6 +2243,14 @@ async def clerk_auth_gate(request: Request, call_next):
     if path.startswith("/api/recon") and user.get("role") not in ("admin", "leadership"):
         return JSONResponse({"detail": "Reconciliation access requires a leadership or admin role"}, status_code=403)
 
+    # Project Reconnect (/api/project-reconnect/*) is a bulk customer PII
+    # (phone/email) export for the churn micro-test programme — restricted to
+    # the Retail & CX role plus leadership oversight, same tier as CRM.
+    if path.startswith("/api/project-reconnect") and user.get("role") not in (
+        "admin", "leadership", "smt", "customer_service"
+    ):
+        return JSONResponse({"detail": "Project Reconnect access requires a customer service, leadership or admin role"}, status_code=403)
+
     # Quarterly target scorecard (/api/analytics/quarter-scorecard) exposes the
     # leadership revenue budget + per-store goals, so it is leadership + admin
     # only (matching the "quarter-scorecard" page in _LEADERSHIP_PAGES). Only the
@@ -40996,6 +41004,14 @@ def _init_growth_tables():
 # and targets the Odoo STAGING instance only (recon_engine.py).
 import recon_api
 recon_api.register_recon_routes(app)
+
+# Project Reconnect — churn micro-test cohort & test-allocation export
+# (/api/project-reconnect/*, standalone page at /reconnect). Read-only, no
+# DDL. Gated in clerk_auth_gate to customer_service/leadership/smt/admin —
+# it is a bulk PII (phone/email) export. Fully independent of the canonical
+# Customers-page churn thresholds; see project_reconnect.py's module docstring.
+import project_reconnect
+project_reconnect.register_project_reconnect_routes(app, _sys.modules[__name__])
 
 # Warehouse bins (barcode -> bin) mirrored from a daily-updated Google Sheet; the
 # Replenishment + IBT endpoints LEFT JOIN this by barcode. Idempotent table is
