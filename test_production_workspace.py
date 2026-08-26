@@ -518,6 +518,229 @@ class ProductionWorkspaceFoundationTests(unittest.TestCase):
         self.assertEqual(params[0], "user-1")
         self.assertEqual(params[1], "user-1")
 
+    def test_tracker_references_default_scope_never_excludes_unplanned_orders(self):
+        """Default intake_scope='all': a date/plan filter must not require p.id
+        IS NOT NULL. Unplanned rows are always eligible unless the caller
+        explicitly opts into intake_scope=planned."""
+        calls = []
+        def fake_db(query, params=None, fetch=False):
+            calls.append((query, params))
+            return []
+        with patch.object(workspace, "_ensure_schema"), \
+                patch.object(workspace, "_require_role", return_value=None), \
+                patch.object(workspace, "_db", side_effect=fake_db):
+            result = workspace._tracker_references(
+                request_for("admin"), date_from="2099-01-01", date_to="2099-01-31",
+                factory_id="44", plan_status="approved",
+            )
+        query, params = calls[0]
+        self.assertNotIn("p.id IS NOT NULL", query)
+        self.assertIn("p.id IS NULL OR", query)
+        self.assertIn("p.factory_id=%s::bigint", query)
+        self.assertIn("p.status=%s", query)
+        self.assertEqual(result["scope_applied"]["intake_scope"], "all")
+
+    def test_tracker_references_planned_only_scope_still_requires_a_plan(self):
+        calls = []
+        def fake_db(query, params=None, fetch=False):
+            calls.append((query, params))
+            return []
+        with patch.object(workspace, "_ensure_schema"), \
+                patch.object(workspace, "_require_role", return_value=None), \
+                patch.object(workspace, "_db", side_effect=fake_db):
+            result = workspace._tracker_references(
+                request_for("admin"), plan_status="approved", intake_scope="planned",
+            )
+        query, params = calls[0]
+        self.assertIn("p.id IS NOT NULL", query)
+        self.assertNotIn("p.id IS NULL OR", query)
+        self.assertEqual(result["scope_applied"]["intake_scope"], "planned")
+
+    def test_tracker_references_rejects_unknown_intake_scope(self):
+        with patch.object(workspace, "_ensure_schema"), \
+                patch.object(workspace, "_require_role", return_value=None):
+            result = workspace._tracker_references(request_for("admin"), intake_scope="bogus")
+        self.assertIsInstance(result, JSONResponse)
+        self.assertEqual(result.status_code, 400)
+
+    def test_tracker_references_production_role_sees_unplanned_orders_without_owner_match(self):
+        """A production actor's owner-or-assignee boundary still governs
+        planned rows, but an unplanned order has no owner to check against
+        and must remain visible in the default intake view."""
+        calls = []
+        def fake_db(query, params=None, fetch=False):
+            calls.append((query, params))
+            return []
+        with patch.object(workspace, "_ensure_schema"), \
+                patch.object(workspace, "_require_role", return_value=None), \
+                patch.object(workspace, "_db", side_effect=fake_db):
+            workspace._tracker_references(request_for("production"), plan_status="approved")
+        query, params = calls[0]
+        self.assertIn("p.id IS NULL OR ((p.owner_user_id=%s", query)
+        self.assertIn("p.id IS NULL OR (p.status=%s)", query)
+        self.assertEqual(params[0], "user-1")
+        self.assertEqual(params[1], "user-1")
+
+    def test_tracker_references_production_role_planned_only_keeps_owner_boundary(self):
+        calls = []
+        def fake_db(query, params=None, fetch=False):
+            calls.append((query, params))
+            return []
+        with patch.object(workspace, "_ensure_schema"), \
+                patch.object(workspace, "_require_role", return_value=None), \
+                patch.object(workspace, "_db", side_effect=fake_db):
+            workspace._tracker_references(request_for("production"), intake_scope="planned")
+        query, params = calls[0]
+        self.assertIn("p.id IS NOT NULL AND ((p.owner_user_id=%s", query)
+
+    def test_tracker_references_production_role_without_identity_still_fails_closed(self):
+        calls = []
+        def fake_db(query, params=None, fetch=False):
+            calls.append((query, params))
+            return []
+        request = Request({
+            "type": "http", "method": "GET", "path": "/api/production-workspace",
+            "headers": [], "state": {"user": {"user_id": "", "name": "No Id", "role": "production"}},
+        })
+        with patch.object(workspace, "_ensure_schema"), \
+                patch.object(workspace, "_require_role", return_value=None), \
+                patch.object(workspace, "_db", side_effect=fake_db):
+            workspace._tracker_references(request)
+        query, params = calls[0]
+        self.assertIn("FALSE", query)
+        self.assertNotIn("p.id IS NULL OR", query)
+
+    def test_l10_cadence_cannot_be_scoped_to_a_single_shift(self):
+        with patch.object(workspace, "_ensure_schema"), \
+                patch.object(workspace, "_require_role", return_value=None):
+            result = workspace._cadence_create(request_for("production"), {
+                "cadence_type": "l10", "factory_id": 1, "shift_id": 3,
+                "meeting_date": "2099-01-05", "reason": "weekly review",
+            })
+        self.assertIsInstance(result, JSONResponse)
+        self.assertEqual(result.status_code, 400)
+
+    def test_cadence_payload_attaches_prior_open_actions_only_for_l10(self):
+        class Cursor:
+            def __init__(self):
+                self.queries = []
+            def execute(self, query, params=None):
+                self.queries.append((" ".join(query.split()), params))
+            def fetchall(self):
+                if not self.queries:
+                    return []
+                last = self.queries[-1][0]
+                if "production_workspace_cadence_actions a" in last and "JOIN" in last:
+                    return [{"id": 5, "title": "Fix machine 3", "status": "open",
+                             "owner_name": "Lead", "due_date": None,
+                             "source_meeting_date": "2099-01-01", "source_cadence_id": 9}]
+                return []
+        row = {"id": 10, "cadence_type": "l10", "factory_id": 1, "meeting_date": "2099-01-08"}
+        cur = Cursor()
+        payload = workspace._cadence_payload(request_for("admin"), row, cur=cur)
+        self.assertIn("prior_open_actions", payload)
+        self.assertEqual(payload["prior_open_actions"][0]["title"], "Fix machine 3")
+
+        row2 = {"id": 11, "cadence_type": "shift_huddle", "factory_id": 1, "meeting_date": "2099-01-08"}
+        cur2 = Cursor()
+        payload2 = workspace._cadence_payload(request_for("admin"), row2, cur=cur2)
+        self.assertNotIn("prior_open_actions", payload2)
+
+    def test_cadence_action_carry_forward_requires_an_earlier_l10_in_the_same_factory(self):
+        class Cursor:
+            def __init__(self, source_cadence_type="l10", source_factory_id=1,
+                         source_meeting_date="2099-01-01", already_carried=False):
+                self.source_cadence_type = source_cadence_type
+                self.source_factory_id = source_factory_id
+                self.source_meeting_date = source_meeting_date
+                self.already_carried = already_carried
+                self.pending = None
+            def execute(self, query, params=None):
+                query = " ".join(query.split())
+                if query.startswith("SELECT * FROM production_workspace_cadences"):
+                    self.pending = {"id": 10, "cadence_type": "l10", "factory_id": 1,
+                                     "meeting_date": "2099-01-08"}
+                elif query.startswith("SELECT a.*, c.cadence_type"):
+                    self.pending = {
+                        "id": 5, "cadence_id": 9, "title": "Fix machine 3",
+                        "owner_user_id": "lead-1", "owner_name": "Lead",
+                        "source_cadence_type": self.source_cadence_type,
+                        "source_factory_id": self.source_factory_id,
+                        "source_meeting_date": self.source_meeting_date,
+                    }
+                elif query.startswith("SELECT id FROM production_workspace_cadence_actions "
+                                       "WHERE carried_forward_from"):
+                    self.pending = {"id": 99} if self.already_carried else None
+                elif query.startswith("INSERT INTO production_workspace_cadence_actions"):
+                    self.pending = {"id": 20, "carried_forward_from": params[7]}
+                elif query.startswith("INSERT INTO production_workspace_audit_events"):
+                    self.pending = {"id": 1}
+                else:
+                    raise AssertionError(f"Unexpected query: {query}")
+            def fetchone(self):
+                result, self.pending = self.pending, None
+                return result
+
+        # Valid carry-forward from an earlier L10 in the same factory succeeds.
+        with patch.object(workspace, "_ensure_schema"), \
+                patch.object(workspace, "_require_role", return_value=None), \
+                patch.object(workspace, "_cadence_visible", return_value=True), \
+                patch.object(workspace, "_tx", return_value=FakeTransaction(Cursor())):
+            result = workspace._cadence_action_create(10, request_for("production"), {
+                "carry_forward_from": 5, "reason": "carried into this week's L10",
+            })
+        self.assertNotIsInstance(result, JSONResponse)
+        self.assertEqual(result["record"]["carried_forward_from"], 5)
+
+        # A source action from a later or same-date L10 must be rejected.
+        with patch.object(workspace, "_ensure_schema"), \
+                patch.object(workspace, "_require_role", return_value=None), \
+                patch.object(workspace, "_cadence_visible", return_value=True), \
+                patch.object(workspace, "_tx",
+                             return_value=FakeTransaction(Cursor(source_meeting_date="2099-01-08"))):
+            result = workspace._cadence_action_create(10, request_for("production"), {
+                "carry_forward_from": 5, "reason": "carried into this week's L10",
+            })
+        self.assertIsInstance(result, JSONResponse)
+        self.assertEqual(result.status_code, 400)
+
+        # A source action from a different factory must be rejected.
+        with patch.object(workspace, "_ensure_schema"), \
+                patch.object(workspace, "_require_role", return_value=None), \
+                patch.object(workspace, "_cadence_visible", return_value=True), \
+                patch.object(workspace, "_tx",
+                             return_value=FakeTransaction(Cursor(source_factory_id=2))):
+            result = workspace._cadence_action_create(10, request_for("production"), {
+                "carry_forward_from": 5, "reason": "carried into this week's L10",
+            })
+        self.assertIsInstance(result, JSONResponse)
+        self.assertEqual(result.status_code, 400)
+
+        # A shift-huddle source action must be rejected even if dates line up.
+        with patch.object(workspace, "_ensure_schema"), \
+                patch.object(workspace, "_require_role", return_value=None), \
+                patch.object(workspace, "_cadence_visible", return_value=True), \
+                patch.object(workspace, "_tx",
+                             return_value=FakeTransaction(Cursor(source_cadence_type="shift_huddle"))):
+            result = workspace._cadence_action_create(10, request_for("production"), {
+                "carry_forward_from": 5, "reason": "carried into this week's L10",
+            })
+        self.assertIsInstance(result, JSONResponse)
+        self.assertEqual(result.status_code, 400)
+
+        # A source action already carried forward into a later L10 must be
+        # rejected with a conflict, not silently duplicated.
+        with patch.object(workspace, "_ensure_schema"), \
+                patch.object(workspace, "_require_role", return_value=None), \
+                patch.object(workspace, "_cadence_visible", return_value=True), \
+                patch.object(workspace, "_tx",
+                             return_value=FakeTransaction(Cursor(already_carried=True))):
+            result = workspace._cadence_action_create(10, request_for("production"), {
+                "carry_forward_from": 5, "reason": "carried into this week's L10",
+            })
+        self.assertIsInstance(result, JSONResponse)
+        self.assertEqual(result.status_code, 409)
+
     def test_work_item_latest_plan_cannot_leak_a_newer_inaccessible_revision(self):
         calls = []
         def fake_db(query, params=None, fetch=False):

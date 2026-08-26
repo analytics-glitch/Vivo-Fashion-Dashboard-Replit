@@ -1,0 +1,49 @@
+[2026-08-26T08:22:58.054Z] console.debug: [vite] connecting...
+[2026-08-26T08:22:58.154Z] console.debug: [vite] connected.
+[2026-08-26T08:22:59.279Z] console.info: %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-08-26T08:23:01.560Z] api-error: 401 http://localhost/api/auth/me?_t=1787732581530
+[2026-08-26T08:23:01.560Z] console.error: Failed to load resource: the server responded with a status of 401 (Unauthorized)
+[2026-08-26T08:23:01.577Z] api-error: 401 http://localhost/api/auth/me?_t=1787732581530
+[2026-08-26T08:23:01.577Z] console.error: Failed to load resource: the server responded with a status of 401 (Unauthorized)
+[2026-08-26T08:23:01.682Z] console.debug: [vite] connecting...
+[2026-08-26T08:23:01.697Z] console.debug: [vite] connected.
+[2026-08-26T08:23:01.955Z] console.info: %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-08-26T08:23:09.413Z] api-error: 503 http://localhost/api/production-workspace/command-centre?date_from=2026-08-26&date_to=2026-08-26&stage=&factory_id=&line_id=&shift_id=&owner_user_id=&plan_status=&delivery_risk=&search=&_t=1787732589401
+[2026-08-26T08:23:09.413Z] console.error: Failed to load resource: the server responded with a status of 503 (Service Unavailable)
+[2026-08-26T08:23:09.923Z] api-error: 503 http://localhost/api/production-workspace/command-centre?date_from=2026-08-26&date_to=2026-08-26&stage=&factory_id=&line_id=&shift_id=&owner_user_id=&plan_status=&delivery_risk=&search=&_t=1787732589916
+[2026-08-26T08:23:09.923Z] console.error: Failed to load resource: the server responded with a status of 503 (Service Unavailable)
+[2026-08-26T08:23:11.428Z] api-error: 503 http://localhost/api/production-workspace/command-centre?date_from=2026-08-26&date_to=2026-08-26&stage=&factory_id=&line_id=&shift_id=&owner_user_id=&plan_status=&delivery_risk=&search=&_t=1787732591423
+[2026-08-26T08:23:11.428Z] console.error: Failed to load resource: the server responded with a status of 503 (Service Unavailable)
+[2026-08-26T08:23:14.551Z] requestfailed: GET http://localhost/api/ibt/late-count?_t=1787732584418 net::ERR_ABORTED
+[2026-08-26T08:23:14.551Z] requestfailed: GET http://localhost/api/production-workspace/command-centre?date_from=2026-08-26&date_to=2026-08-26&stage=&factory_id=&line_id=&shift_id=&owner_user_id=&plan_status=approved&delivery_risk=&search=e2e-production-proof&_t=1787732594443 net::ERR_ABORTED
+[2026-08-26T08:23:14.663Z] console.debug: [vite] connecting...
+[2026-08-26T08:23:14.722Z] console.debug: [vite] connected.
+[2026-08-26T08:23:15.421Z] console.info: %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-08-26T08:23:19.098Z] requestfailed: GET http://localhost/api/quality/complaints?_t=1787732598794 net::ERR_ABORTED
+[2026-08-26T08:23:19.098Z] requestfailed: GET http://localhost/api/quality/washing?_t=1787732598794 net::ERR_ABORTED
+[2026-08-26T08:23:19.099Z] requestfailed: GET http://localhost/api/quality/overall-repairs?period=weekly&_t=1787732598794 net::ERR_ABORTED
+[2026-08-26T08:23:19.099Z] requestfailed: GET http://localhost/api/quality/complaints?_t=1787732598794 net::ERR_ABORTED
+[2026-08-26T08:23:19.099Z] requestfailed: GET http://localhost/api/quality/overall-repairs?period=weekly&_t=1787732598794 net::ERR_ABORTED
+[2026-08-26T08:23:19.099Z] requestfailed: GET http://localhost/api/quality/repairs?period=weekly&_t=1787732598794 net::ERR_ABORTED
+[2026-08-26T08:23:19.099Z] requestfailed: GET http://localhost/api/quality/repairs?period=weekly&_t=1787732598794 net::ERR_ABORTED
+[2026-08-26T08:23:19.099Z] requestfailed: GET http://localhost/api/quality/washing?_t=1787732598794 net::ERR_ABORTED
+[2026-08-26T08:23:19.122Z] console.debug: [vite] connecting...
+[2026-08-26T08:23:19.153Z] console.debug: [vite] connected.
+[2026-08-26T08:23:19.559Z] console.info: %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-08-26T08:23:23.512Z] console.debug: [vite] connecting...
+[2026-08-26T08:23:23.512Z] console.debug: [vite] connected.
+[2026-08-26T08:23:23.863Z] console.info: %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-08-26T08:23:26.750Z] console.debug: [vite] connecting...
+[2026-08-26T08:23:26.776Z] console.debug: [vite] connected.
+[2026-08-26T08:23:26.972Z] console.info: %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-08-26T08:23:30.716Z] console.debug: [vite] connecting...
+[2026-08-26T08:23:30.771Z] console.debug: [vite] connected.
+[2026-08-26T08:23:31.116Z] console.info: %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-08-26T08:23:33.847Z] requestfailed: GET http://localhost/api/central-tracker?_t=1787732613653 net::ERR_ABORTED
+[2026-08-26T08:23:33.847Z] requestfailed: GET http://localhost/api/central-tracker?_t=1787732613653 net::ERR_ABORTED
+[2026-08-26T08:23:33.869Z] console.debug: [vite] connecting...
+[2026-08-26T08:23:33.890Z] console.debug: [vite] connected.
+[2026-08-26T08:23:34.096Z] console.info: %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-08-26T08:23:37.782Z] console.debug: [vite] connecting...
+[2026-08-26T08:23:37.814Z] console.debug: [vite] connected.
+[2026-08-26T08:23:38.095Z] console.info: %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold

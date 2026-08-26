@@ -136,6 +136,10 @@ run_key = fixture.get("runKey")
 if run_key:
     delete("DELETE FROM production_workspace_execution_output WHERE capture_key=%s", (run_key,), "execution_output")
     delete("DELETE FROM production_workspace_execution_events WHERE event_key=%s", (run_key,), "execution_events")
+    delete("UPDATE production_workspace_work_items SET production_order_ref=NULL WHERE production_order_ref=%s",
+           (run_key + "-planned",), "work_item_order_ref_unlinked")
+    delete("DELETE FROM production_orders WHERE order_ref IN (%s,%s)",
+           (run_key + "-planned", run_key + "-unplanned"), "production_orders")
 
 plan_id = ids.get("plan_id")
 if plan_id:
@@ -166,6 +170,15 @@ if run_key:
     delete("DELETE FROM production_workspace_work_items WHERE external_ref=%s", (run_key,), "work_items")
 else:
     deleted["work_items"] = 0
+if fixture.get("factoryCode"):
+    # Cadences (and cascaded actions/attendance) reference the fixture
+    # factory with ON DELETE RESTRICT, so they must be removed before the
+    # factory row itself or the later factory DELETE fails outright.
+    delete("DELETE FROM production_workspace_cadences WHERE factory_id IN "
+           "(SELECT id FROM production_workspace_factories WHERE code=%s)",
+           (fixture["factoryCode"],), "cadences")
+else:
+    deleted["cadences"] = 0
 if fixture.get("shiftCode"):
     delete("DELETE FROM production_workspace_shifts WHERE code=%s", (fixture["shiftCode"],), "shifts")
     delete("DELETE FROM production_workspace_lines WHERE code=%s", (fixture["lineCode"],), "lines")

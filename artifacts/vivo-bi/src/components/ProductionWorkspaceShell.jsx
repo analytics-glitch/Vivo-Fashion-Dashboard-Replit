@@ -168,7 +168,7 @@ export default function ProductionWorkspaceShell({
           )}
         </div>
         
-        <nav className="pw-nav" aria-label="Production Modules">
+        <nav className="pw-nav" aria-label="Production Modules" data-testid="pw-nav">
           {NAV_ITEMS.map(item => {
             const Icon = item.icon;
             const isActive = activeModule === item.id;

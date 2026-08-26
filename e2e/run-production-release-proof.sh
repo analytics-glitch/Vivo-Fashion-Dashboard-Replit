@@ -19,8 +19,17 @@ fi
 export VIVO_E2E_RUN_ID="$run_id"
 export VIVO_E2E_OUTPUT_DIR="$review_dir"
 
+# This gate proves exactly the four release flows the validator's fixed
+# manifest expects (title order, screenshot set, and hashes are all locked
+# to that list). production-command-centre.spec.js has since grown further
+# coverage (standalone workspace, L10, Work Orders) for other features; those
+# run under the general `test:e2e` suite, not this narrow exact-commit gate.
+# No anchors: Playwright's --grep matches the full "file > project > title"
+# string, not the bare test title, so a leading ^ never matches.
+release_flow_grep='Command Centre desktop handles filters, refresh failure, recovery, partial data, and every enabled drill-down|Command Centre has no page-level overflow on phone or tablet|Production role can use production destinations but is denied Order Tracker|Quality role redacts personnel productivity at phone width'
+
 set +e
-bash e2e/run-playwright.sh e2e/production-command-centre.spec.js
+bash e2e/run-playwright.sh e2e/production-command-centre.spec.js --grep "$release_flow_grep"
 test_status=$?
 set -e
 

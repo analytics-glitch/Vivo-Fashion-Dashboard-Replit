@@ -1,0 +1,21 @@
+[2026-08-26T08:23:54.644Z] console.debug: [vite] connecting...
+[2026-08-26T08:23:54.668Z] console.debug: [vite] connected.
+[2026-08-26T08:23:54.964Z] console.info: %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-08-26T08:23:56.858Z] api-error: 401 http://localhost/api/auth/me?_t=1787732636834
+[2026-08-26T08:23:56.858Z] console.error: Failed to load resource: the server responded with a status of 401 (Unauthorized)
+[2026-08-26T08:23:56.859Z] api-error: 401 http://localhost/api/auth/me?_t=1787732636834
+[2026-08-26T08:23:56.859Z] console.error: Failed to load resource: the server responded with a status of 401 (Unauthorized)
+[2026-08-26T08:23:56.954Z] console.debug: [vite] connecting...
+[2026-08-26T08:23:56.958Z] console.debug: [vite] connected.
+[2026-08-26T08:23:57.159Z] console.info: %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-08-26T08:23:59.093Z] api-error: 403 http://localhost/api/admin/snapshot-freshness?_t=1787732639002
+[2026-08-26T08:23:59.093Z] console.error: Failed to load resource: the server responded with a status of 403 (Forbidden)
+[2026-08-26T08:24:00.135Z] requestfailed: GET http://localhost/api/sync-status?_t=1787732639002 net::ERR_ABORTED
+[2026-08-26T08:24:00.135Z] requestfailed: GET http://localhost/api/style-tracker/board?_t=1787732639002 net::ERR_ABORTED
+[2026-08-26T08:24:00.135Z] requestfailed: GET http://localhost/api/production-workspace/execution/worklist?date_from=2026-08-26&date_to=2026-08-26&capture_date=2026-08-26&_t=1787732639958 net::ERR_ABORTED
+[2026-08-26T08:24:00.135Z] requestfailed: GET http://localhost/api/production-workspace/catalogues?_t=1787732639958 net::ERR_ABORTED
+[2026-08-26T08:24:00.180Z] console.debug: [vite] connecting...
+[2026-08-26T08:24:00.216Z] console.debug: [vite] connected.
+[2026-08-26T08:24:00.396Z] console.info: %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-08-26T08:24:02.185Z] api-error: 403 http://localhost/api/admin/snapshot-freshness?_t=1787732642136
+[2026-08-26T08:24:02.185Z] console.error: Failed to load resource: the server responded with a status of 403 (Forbidden)

@@ -128,6 +128,12 @@ assignment_id = cur.fetchone()[0]
 cur.execute("""UPDATE production_workspace_plan_versions
                SET status='approved', approved_by='e2e-release-proof', approved_at=now()
                WHERE id=%s""", (plan_id,))
+cur.execute("INSERT INTO production_orders(order_ref,style_number,product_name,order_qty) VALUES (%s,%s,%s,%s)",
+            (fixture["runKey"] + "-planned", "E2E-REDaction", "E2E Planned Tracker Order", 10))
+cur.execute("UPDATE production_workspace_work_items SET production_order_ref=%s WHERE id=%s",
+            (fixture["runKey"] + "-planned", work_item_id))
+cur.execute("INSERT INTO production_orders(order_ref,style_number,product_name,order_qty) VALUES (%s,%s,%s,%s)",
+            (fixture["runKey"] + "-unplanned", "E2E-UNPLANNED", "E2E Unplanned Tracker Order", 5))
 cur.execute("""INSERT INTO production_workspace_execution_output
                (plan_version_id,assignment_id,work_item_id,factory_id,line_id,shift_id,operation_id,
                 capture_kind,capture_date,capture_key,planned_qty,good_qty,reject_qty,rework_qty,created_by)

@@ -19,6 +19,8 @@ from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from urllib.parse import urlsplit
 
+import psycopg2
+import psycopg2.errors
 from fastapi import Body, Request
 from fastapi.responses import JSONResponse
 
@@ -3596,7 +3598,7 @@ def _tracker_references(request: Request, date_from: str = None, date_to: str = 
                         stage: str = "", factory_id: str = "", line_id: str = "",
                         shift_id: str = "", owner_user_id: str = "",
                         plan_status: str = "", delivery_risk: str = "",
-                        search: str = ""):
+                        search: str = "", intake_scope: str = ""):
     _ensure_schema()
     denied = _require_role(request, VIEW_ROLES, "Production workspace viewing")
     if denied:
@@ -3604,35 +3606,61 @@ def _tracker_references(request: Request, date_from: str = None, date_to: str = 
     actor = _actor(request)
     privacy = actor["role"] in QUALITY_ROLES | PRODUCT_ROLES
     owner_user_id = "" if privacy else str(owner_user_id or "")
+    intake_scope = str(intake_scope or "all").strip().lower()
+    if intake_scope not in {"all", "planned"}:
+        return _error("intake_scope must be all or planned")
+    # "planned" is an explicit opt-in view of only plan-backed orders. The
+    # default "all" view is the authorized intake queue: every tracker order
+    # an authorized viewer may see, whether or not it has been assigned to a
+    # plan yet. A plan/date filter narrows the plan-backed rows it matches,
+    # but must never silently drop the still-unplanned rows alongside them.
+    plan_only = intake_scope == "planned"
     filters = []
     query_params = []
-    has_scope = any(str(value or "").strip() for value in (
-        date_from, date_to, stage, factory_id, line_id, shift_id,
-        owner_user_id, plan_status, delivery_risk, search,
-    ))
     if actor["role"] == "production":
         predicate, predicate_params = _plan_scope_sql(actor, "p")
-        filters.append("p.id IS NOT NULL AND (" + predicate + ")")
+        if not actor.get("user_id"):
+            # No authenticated identity to scope by: fail closed exactly as
+            # before, including for the otherwise-always-visible unplanned rows.
+            filters.append("FALSE")
+        elif plan_only:
+            filters.append("p.id IS NOT NULL AND (" + predicate + ")")
+        else:
+            # An unplanned order has no owner or assignee yet, so there is
+            # nothing to scope it against; only planned rows keep the
+            # owner-or-assignee boundary.
+            filters.append("(p.id IS NULL OR (" + predicate + "))")
         query_params.extend(predicate_params)
-    elif has_scope:
+    elif plan_only:
         filters.append("p.id IS NOT NULL")
+    plan_filters = []
+    plan_params = []
     if date_from:
-        filters.append("p.planned_start >= %s")
-        query_params.append(str(date_from))
+        plan_filters.append("p.planned_start >= %s")
+        plan_params.append(str(date_from))
     if date_to:
-        filters.append("p.planned_end <= %s")
-        query_params.append(str(date_to))
+        plan_filters.append("p.planned_end <= %s")
+        plan_params.append(str(date_to))
     for value, expression in (
         (factory_id, "p.factory_id=%s::bigint"),
         (line_id, "p.line_id=%s::bigint"),
         (shift_id, "p.shift_id=%s::bigint"),
         (owner_user_id, "p.owner_user_id=%s"),
         (plan_status, "p.status=%s"),
-        (stage, "wi.stage_key=%s"),
     ):
         if value:
-            filters.append(expression)
-            query_params.append(str(value))
+            plan_filters.append(expression)
+            plan_params.append(str(value))
+    if plan_filters:
+        combined = " AND ".join(plan_filters)
+        if plan_only:
+            filters.append(combined)
+        else:
+            filters.append("(p.id IS NULL OR (" + combined + "))")
+        query_params.extend(plan_params)
+    if stage:
+        filters.append("wi.stage_key=%s")
+        query_params.append(str(stage))
     if search:
         filters.append(
             "concat_ws(' ',po.order_ref,po.style_number,po.product_name,"
@@ -3725,6 +3753,7 @@ def _tracker_references(request: Request, date_from: str = None, date_to: str = 
             "line_id": str(line_id or ""), "shift_id": str(shift_id or ""),
             "owner_user_id": owner_user_id, "plan_status": str(plan_status or ""),
             "delivery_risk": requested_risk, "search": str(search or ""),
+            "intake_scope": intake_scope,
         },
         "stages": _rows(_db(
             "SELECT stage_key, stage_name, sort_order, allowed_next, is_terminal "
@@ -3866,6 +3895,24 @@ def _cadence_payload(request, row, cur=None):
             (row["id"],), fetch=True)
     row["attendance"] = _rows(attendance)
     row["actions"] = _rows(actions)
+    if row.get("cadence_type") == "l10":
+        prior_sql = (
+            "SELECT a.*, c.meeting_date AS source_meeting_date, c.id AS source_cadence_id "
+            "FROM production_workspace_cadence_actions a "
+            "JOIN production_workspace_cadences c ON c.id=a.cadence_id "
+            "WHERE c.factory_id=%s AND c.cadence_type='l10' AND c.meeting_date<%s "
+            "AND a.status NOT IN ('resolved','closed') "
+            "AND NOT EXISTS (SELECT 1 FROM production_workspace_cadence_actions carried "
+            "WHERE carried.cadence_id=%s AND carried.carried_forward_from=a.id) "
+            "ORDER BY c.meeting_date DESC, a.due_date NULLS LAST, a.id LIMIT 50"
+        )
+        prior_params = (row["factory_id"], row["meeting_date"], row["id"])
+        if cur:
+            cur.execute(prior_sql, prior_params)
+            prior = cur.fetchall()
+        else:
+            prior = _db(prior_sql, prior_params, fetch=True)
+        row["prior_open_actions"] = _rows(prior)
     return _privacy_safe_workspace_payload(request, row)
 
 
@@ -3933,6 +3980,8 @@ def _cadence_create(request: Request, body: dict = Body(...)):
         shift_id = int(shift_id) if shift_id not in (None, "") else None
     except (TypeError, ValueError):
         return _error("shift_id must be numeric")
+    if cadence_type == "l10" and shift_id is not None:
+        return _error("A weekly L10 is factory-wide and cannot be scoped to a single shift.")
     actor = _actor(request)
     try:
         with _tx() as cur:
@@ -4091,31 +4140,83 @@ def _cadence_action_create(cadence_id: int, request: Request, body: dict = Body(
     if denied:
         return denied
     reason = _reason(body)
-    title = str(body.get("title") or "").strip()
-    if not reason or not title:
-        return _error("title and reason are required")
     actor = _actor(request)
     try:
         with _tx() as cur:
-            cur.execute("SELECT id FROM production_workspace_cadences WHERE id=%s FOR SHARE", (cadence_id,))
-            if not cur.fetchone() or not _cadence_visible(request, cadence_id):
+            cur.execute(
+                "SELECT * FROM production_workspace_cadences WHERE id=%s FOR SHARE", (cadence_id,))
+            cadence = cur.fetchone()
+            if not cadence or not _cadence_visible(request, cadence_id):
                 return _error("Cadence not found", 404)
+            carry_from_id = body.get("carry_forward_from")
+            source_action = None
+            if carry_from_id not in (None, ""):
+                try:
+                    carry_from_id = int(carry_from_id)
+                except (TypeError, ValueError):
+                    return _error("carry_forward_from must be numeric")
+                if cadence["cadence_type"] != "l10":
+                    return _error("Only a weekly L10 can carry an action forward.")
+                # Lock the source action exclusively so two concurrent carry-
+                # forward requests against it serialize instead of racing;
+                # combined with the duplicate check below (re-evaluated after
+                # the lock is acquired) this makes "carried forward at most
+                # once" race-safe, not just checked-then-hoped.
+                cur.execute(
+                    "SELECT a.*, c.cadence_type AS source_cadence_type, "
+                    "c.factory_id AS source_factory_id, c.meeting_date AS source_meeting_date "
+                    "FROM production_workspace_cadence_actions a "
+                    "JOIN production_workspace_cadences c ON c.id=a.cadence_id "
+                    "WHERE a.id=%s AND a.cadence_id!=%s FOR UPDATE OF a",
+                    (carry_from_id, cadence_id))
+                source_action = cur.fetchone()
+                if (not source_action or not _cadence_visible(request, source_action["cadence_id"])
+                        or source_action["source_cadence_type"] != "l10"
+                        or source_action["source_factory_id"] != cadence["factory_id"]
+                        or source_action["source_meeting_date"] >= cadence["meeting_date"]):
+                    return _error("The action being carried forward must come from an earlier "
+                                  "L10 in the same factory.")
+                # Lock the source row so a concurrent carry-forward request
+                # can't race past this check; the unique index on
+                # carried_forward_from is the final authority, but this keeps
+                # the common case a clean 409 instead of a raw DB error.
+                cur.execute(
+                    "SELECT id FROM production_workspace_cadence_actions "
+                    "WHERE carried_forward_from=%s FOR UPDATE", (carry_from_id,))
+                if cur.fetchone():
+                    return _error(
+                        "This action has already been carried forward into a "
+                        "later L10.", 409)
+            title = str(body.get("title") or (source_action["title"] if source_action else "")).strip()
+            if not reason or not title:
+                return _error("title and reason are required")
+            owner_user_id = body.get("owner_user_id")
+            owner_name = body.get("owner_name")
+            if source_action and owner_user_id is None and owner_name is None:
+                owner_user_id = source_action["owner_user_id"]
+                owner_name = source_action["owner_name"]
             due_date = body.get("due_date")
             due_date = date.fromisoformat(str(due_date)[:10]) if due_date else None
             cur.execute(
                 """
                 INSERT INTO production_workspace_cadence_actions
-                    (cadence_id,title,owner_user_id,owner_name,due_date,status,notes,created_by,updated_by)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *
+                    (cadence_id,title,owner_user_id,owner_name,due_date,status,notes,
+                     carried_forward_from,created_by,updated_by)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *
                 """,
-                (cadence_id, title, body.get("owner_user_id"), body.get("owner_name"),
+                (cadence_id, title, owner_user_id, owner_name,
                  due_date, str(body.get("status") or "open"),
                  str(body.get("notes") or "").strip() or None,
+                 source_action["id"] if source_action else None,
                  actor["user_id"], actor["user_id"]))
             row = cur.fetchone()
-            audit = _audit(cur, "cadence_action", row["id"], "created", actor, reason,
+            audit = _audit(cur, "cadence_action",
+                           row["id"], "carried_forward" if source_action else "created", actor, reason,
                            after=row, request_id=_request_id(request))
         return _mutation_result(row, audit)
+    except psycopg2.errors.UniqueViolation:
+        return _error(
+            "This action has already been carried forward into a later L10.", 409)
     except Exception:
         log.exception("Cadence action create failed")
         return _error("Could not create cadence action", 500)

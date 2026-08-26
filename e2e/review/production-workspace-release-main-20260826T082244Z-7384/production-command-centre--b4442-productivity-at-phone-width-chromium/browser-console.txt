@@ -1,0 +1,20 @@
+[2026-08-26T08:24:02.783Z] console.debug: [vite] connecting...
+[2026-08-26T08:24:02.810Z] console.debug: [vite] connected.
+[2026-08-26T08:24:03.114Z] console.info: %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-08-26T08:24:04.968Z] api-error: 401 http://localhost/api/auth/me?_t=1787732644943
+[2026-08-26T08:24:04.969Z] console.error: Failed to load resource: the server responded with a status of 401 (Unauthorized)
+[2026-08-26T08:24:04.969Z] api-error: 401 http://localhost/api/auth/me?_t=1787732644943
+[2026-08-26T08:24:04.969Z] console.error: Failed to load resource: the server responded with a status of 401 (Unauthorized)
+[2026-08-26T08:24:05.004Z] requestfailed: GET http://localhost/favicon.png net::ERR_ABORTED
+[2026-08-26T08:24:05.054Z] console.debug: [vite] connecting...
+[2026-08-26T08:24:05.085Z] console.debug: [vite] connected.
+[2026-08-26T08:24:05.279Z] console.info: %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-08-26T08:24:07.196Z] api-error: 403 http://localhost/api/admin/snapshot-freshness?_t=1787732647132
+[2026-08-26T08:24:07.196Z] console.error: Failed to load resource: the server responded with a status of 403 (Forbidden)
+[2026-08-26T08:24:08.031Z] requestfailed: GET http://localhost/api/sync-status?_t=1787732647132 net::ERR_ABORTED
+[2026-08-26T08:24:08.031Z] requestfailed: GET http://localhost/api/style-tracker/board?_t=1787732647132 net::ERR_ABORTED
+[2026-08-26T08:24:08.049Z] console.debug: [vite] connecting...
+[2026-08-26T08:24:08.105Z] console.debug: [vite] connected.
+[2026-08-26T08:24:08.216Z] console.info: %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-08-26T08:24:10.060Z] api-error: 403 http://localhost/api/admin/snapshot-freshness?_t=1787732649974
+[2026-08-26T08:24:10.061Z] console.error: Failed to load resource: the server responded with a status of 403 (Forbidden)

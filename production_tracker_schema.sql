@@ -1188,6 +1188,21 @@ CREATE TABLE IF NOT EXISTS production_workspace_cadence_actions (
 );
 CREATE INDEX IF NOT EXISTS idx_workspace_cadence_actions
     ON production_workspace_cadence_actions(cadence_id, status, due_date);
+-- A weekly L10 reviews open actions carried over from an earlier L10.  This
+-- column records that provenance so "review previous actions" never has to
+-- guess which action a new row descends from, and so an action is never
+-- carried forward twice into the same meeting.
+ALTER TABLE production_workspace_cadence_actions
+    ADD COLUMN IF NOT EXISTS carried_forward_from BIGINT
+    REFERENCES production_workspace_cadence_actions(id) ON DELETE SET NULL;
+-- A prior non-unique index only sped up lookups; it did not stop a source
+-- action from being carried forward more than once (e.g. two concurrent
+-- POSTs). Enforce the "carried forward at most once" invariant at the
+-- database level with a real unique constraint.
+DROP INDEX IF EXISTS idx_workspace_cadence_actions_carry;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_workspace_cadence_actions_carry
+    ON production_workspace_cadence_actions(carried_forward_from)
+    WHERE carried_forward_from IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS production_workspace_team_members (
     id              BIGSERIAL PRIMARY KEY,

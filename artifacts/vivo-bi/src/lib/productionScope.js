@@ -1,6 +1,6 @@
 export const PRODUCTION_SCOPE_KEYS = [
   "stage", "factory_id", "line_id", "shift_id", "owner_user_id",
-  "plan_status", "delivery_risk", "search",
+  "plan_status", "delivery_risk", "search", "intake_scope",
 ];
 
 export function readProductionScope(search = "") {

@@ -133,15 +133,27 @@ function LineBoard({ scope, onNavigate }) {
   </div>;
 }
 
+const WORK_ORDERS_PAGE_SIZE = 200;
+
 function WorkOrders({ scope, onNavigate, onScopeChange }) {
-  const [orders, setOrders] = useState([]); const [items, setItems] = useState([]); const [query, setQuery] = useState(scope.search || ""); const [loading, setLoading] = useState(true); const [error, setError] = useState(null);
-  useEffect(() => { let alive = true; setLoading(true); setError(null); const params = productionScopeParams(scope); Promise.all([api.get("/production-workspace/tracker-references", { params, forceFresh: true }), api.get("/production-workspace/work-items", { params, forceFresh: true })]).then(([tracker, work]) => { if (alive) { setOrders(tracker.data?.orders || []); setItems(work.data?.work_items || []); } }).catch((err) => alive && setError(err?.response?.data?.detail || "Work Order evidence is unavailable for this scope.")).finally(() => alive && setLoading(false)); return () => { alive = false; }; }, [scope]);
+  const [orders, setOrders] = useState([]); const [items, setItems] = useState([]); const [query, setQuery] = useState(scope.search || ""); const [loading, setLoading] = useState(true); const [error, setError] = useState(null); const [visibleCount, setVisibleCount] = useState(WORK_ORDERS_PAGE_SIZE);
+  const plannedOnly = scope.intake_scope === "planned";
+  useEffect(() => { let alive = true; setLoading(true); setError(null); setVisibleCount(WORK_ORDERS_PAGE_SIZE); const params = productionScopeParams(scope); Promise.all([api.get("/production-workspace/tracker-references", { params, forceFresh: true }), api.get("/production-workspace/work-items", { params, forceFresh: true })]).then(([tracker, work]) => { if (alive) { setOrders(tracker.data?.orders || []); setItems(work.data?.work_items || []); } }).catch((err) => alive && setError(err?.response?.data?.detail || "Work Order evidence is unavailable for this scope.")).finally(() => alive && setLoading(false)); return () => { alive = false; }; }, [scope]);
   useEffect(() => { setQuery(scope.search || ""); }, [scope.search]);
   const rows = orders;
+  const unplannedCount = rows.filter((row) => !row.plan_version_id).length;
   const planned = new Set(items.map((item) => item.production_order_ref || item.external_ref));
-  return <div className="pw-page space-y-5" data-testid="pw-work-orders"><PageIntro eyebrow="Order to delivery queue" title="Work orders" subtitle="Tracker orders remain the external evidence source. Planning links them to governed production work without moving the legacy tracker." action={<button className="pw-action" onClick={() => onNavigate("plan")}><Plus size={16} />Link tracker order</button>} />
-    <div className="pw-panel p-3"><label className="sr-only" htmlFor="pw-work-order-search">Search work orders</label><input id="pw-work-order-search" className="w-full rounded-md border bg-white px-3 py-2 text-sm outline-none" style={{ borderColor: "var(--pw-border)" }} placeholder="Search order reference, style number or style…" value={query} onChange={(event) => { const value = event.target.value; setQuery(value); onScopeChange?.("search", value); }} /></div>
-    {loading ? <div className="pw-panel p-8 text-center text-sm" style={{ color: "var(--pw-text-muted)" }}>Loading tracker order references…</div> : error ? <EmptyModule title="Work Order evidence is unavailable for this scope.">{error} No order or delivery-risk conclusion is inferred.</EmptyModule> : !rows.length ? <EmptyModule title="No tracker orders match this governed scope.">A missing row is not assumed closed or delivered. Refresh the Odoo-backed Production Pipeline for live stage movement.</EmptyModule> : <div className="pw-table-wrap"><table className="pw-table"><thead><tr><th>Order / style</th><th>Quantity</th><th>Workspace stage</th><th>Delivery risk</th><th>Planning state</th><th /></tr></thead><tbody>{rows.slice(0, 200).map((row) => <tr key={row.order_ref}><td><div className="font-bold">{row.order_ref}</div><div style={{ color: "var(--pw-text-muted)" }}>{row.style_number || row.style_name || "Style unavailable"}</div></td><td>{number(row.order_qty)}</td><td>{text(row.workspace_stage || "unavailable")}</td><td>{row.delivery_risk ? <span className="pw-chip pw-chip--warning">{text(row.delivery_risk)}</span> : "Evidence unavailable"}</td><td><span className={`pw-chip ${planned.has(row.order_ref) ? "pw-chip--ok" : ""}`}>{planned.has(row.order_ref) ? "Linked to workspace" : "Not planned"}</span></td><td><button className="font-bold text-xs" style={{ color: "var(--pw-navy)" }} onClick={() => onNavigate("plan")}>Open plan <ArrowSquareOut className="inline" size={12} /></button></td></tr>)}</tbody></table></div>}
+  // Every authorized order must stay reachable — this only limits how many
+  // rows render at once for DOM performance, never the underlying dataset.
+  const visibleRows = rows.slice(0, visibleCount);
+  const remaining = rows.length - visibleRows.length;
+  return <div className="pw-page space-y-5" data-testid="pw-work-orders"><PageIntro eyebrow="Order to delivery queue" title="Work orders" subtitle="Every authorized tracker order stays in this intake queue, planned or not. A filter narrows what already has a plan — it never hides an order that simply hasn't been scheduled yet." action={<button className="pw-action" onClick={() => onNavigate("plan")}><Plus size={16} />Link tracker order</button>} />
+    <div className="pw-panel flex flex-wrap items-center gap-3 p-3"><label className="sr-only" htmlFor="pw-work-order-search">Search work orders</label><input id="pw-work-order-search" className="min-w-[240px] flex-1 rounded-md border bg-white px-3 py-2 text-sm outline-none" style={{ borderColor: "var(--pw-border)" }} placeholder="Search order reference, style number or style…" value={query} onChange={(event) => { const value = event.target.value; setQuery(value); onScopeChange?.("search", value); }} />
+      <label className="flex shrink-0 items-center gap-2 text-xs font-bold" style={{ color: "var(--pw-navy)" }} data-testid="pw-work-orders-planned-only"><input type="checkbox" checked={plannedOnly} onChange={(event) => onScopeChange?.("intakeScope", event.target.checked ? "planned" : "")} />Planned only</label>
+    </div>
+    {!loading && !error && !plannedOnly && unplannedCount > 0 && <div className="pw-panel p-3 text-xs" style={{ color: "var(--pw-text-muted)" }} data-testid="pw-work-orders-unplanned-note"><WarningCircle className="inline mr-1" size={13} />{unplannedCount} order{unplannedCount === 1 ? "" : "s"} in this scope has no plan yet — shown here so it stays actionable for planning. Check "Planned only" to hide it.</div>}
+    {loading ? <div className="pw-panel p-8 text-center text-sm" style={{ color: "var(--pw-text-muted)" }}>Loading tracker order references…</div> : error ? <EmptyModule title="Work Order evidence is unavailable for this scope.">{error} No order or delivery-risk conclusion is inferred.</EmptyModule> : !rows.length ? <EmptyModule title="No tracker orders match this governed scope.">A missing row is not assumed closed or delivered. Refresh the Odoo-backed Production Pipeline for live stage movement.</EmptyModule> : <><div className="pw-table-wrap"><table className="pw-table"><thead><tr><th>Order / style</th><th>Quantity</th><th>Workspace stage</th><th>Delivery risk</th><th>Planning state</th><th /></tr></thead><tbody>{visibleRows.map((row) => { const isPlanned = Boolean(row.plan_version_id); return <tr key={row.order_ref}><td><div className="font-bold">{row.order_ref}</div><div style={{ color: "var(--pw-text-muted)" }}>{row.style_number || row.style_name || "Style unavailable"}</div></td><td>{number(row.order_qty)}</td><td>{text(row.workspace_stage || "unavailable")}</td><td>{!isPlanned ? "Unavailable — not yet planned" : row.delivery_risk ? <span className="pw-chip pw-chip--warning">{text(row.delivery_risk)}</span> : "Evidence unavailable"}</td><td><span className={`pw-chip ${planned.has(row.order_ref) ? "pw-chip--ok" : ""}`}>{planned.has(row.order_ref) ? "Linked to workspace" : "Not planned"}</span></td><td><button className="font-bold text-xs" style={{ color: "var(--pw-navy)" }} onClick={() => onNavigate("plan")}>{isPlanned ? "Open plan" : "Plan this order"} <ArrowSquareOut className="inline" size={12} /></button></td></tr>; })}</tbody></table></div>
+    {remaining > 0 && <div className="flex justify-center"><button type="button" className="pw-action pw-action--quiet" data-testid="pw-work-orders-load-more" onClick={() => setVisibleCount((count) => count + WORK_ORDERS_PAGE_SIZE)}>Show {Math.min(remaining, WORK_ORDERS_PAGE_SIZE)} more order{Math.min(remaining, WORK_ORDERS_PAGE_SIZE) === 1 ? "" : "s"} ({remaining} not yet shown)</button></div>}</>}
   </div>;
 }
 
@@ -173,17 +185,157 @@ function OperatorProductivity({ scope }) {
   </div>;
 }
 
+const CADENCE_LABELS = { shift_huddle: "Shift huddle", l10: "Weekly L10" };
+const CADENCE_CADENCE_NOTE = { shift_huddle: "daily, per shift or factory-wide", l10: "weekly, factory-wide" };
+const ROCK_STATUS = ["on_track", "at_risk", "off_track", "done"];
+const ACTION_STATUS = ["open", "in_progress", "blocked", "resolved", "closed"];
+
+function ListField({ label, items, onChange, fields, addLabel = "Add row" }) {
+  const rows = items || [];
+  const update = (idx, key, value) => { const next = rows.slice(); next[idx] = { ...next[idx], [key]: value }; onChange(next); };
+  const add = () => onChange([...rows, {}]);
+  const remove = (idx) => onChange(rows.filter((_, i) => i !== idx));
+  return <div>
+    <div className="flex items-center justify-between"><strong className="text-xs font-bold uppercase tracking-wide" style={{ color: "var(--pw-text-muted)" }}>{label}</strong><button type="button" className="text-xs font-bold" style={{ color: "var(--pw-navy)" }} onClick={add}><Plus className="inline" size={12} /> {addLabel}</button></div>
+    {!rows.length ? <div className="mt-2 text-xs" style={{ color: "var(--pw-text-muted)" }}>None recorded yet.</div> : <div className="mt-2 space-y-2">{rows.map((item, idx) => <div className="flex flex-wrap items-center gap-2" key={idx}>
+      {fields.map((f) => f.type === "select"
+        ? <select key={f.key} className="rounded-md border px-2 py-1 text-xs" style={{ borderColor: "var(--pw-border)" }} value={item[f.key] || ""} onChange={(event) => update(idx, f.key, event.target.value)}><option value="">{f.label}</option>{f.options.map((option) => <option key={option} value={option}>{text(option)}</option>)}</select>
+        : <input key={f.key} className="rounded-md border px-2 py-1 text-xs" style={{ borderColor: "var(--pw-border)", minWidth: f.wide ? 180 : 100 }} placeholder={f.label} value={item[f.key] || ""} onChange={(event) => update(idx, f.key, event.target.value)} />)}
+      <button type="button" className="text-xs font-bold" style={{ color: "#a8321d" }} onClick={() => remove(idx)}>Remove</button>
+    </div>)}</div>}
+  </div>;
+}
+
+function CadenceSectionEditor({ title, items, fields, onSave, addLabel }) {
+  const [draft, setDraft] = useState(items || []);
+  const [reason, setReason] = useState("");
+  useEffect(() => { setDraft(items || []); }, [items]);
+  const dirty = JSON.stringify(draft) !== JSON.stringify(items || []);
+  return <form className="grid gap-2" onSubmit={(event) => { event.preventDefault(); if (!reason.trim()) return; onSave(draft, reason); setReason(""); }}>
+    <ListField label={title} items={draft} onChange={setDraft} fields={fields} addLabel={addLabel} />
+    {dirty && <div className="flex flex-wrap items-center gap-2"><input required placeholder="Audit reason" className="min-w-[160px] flex-1 rounded-md border px-2 py-1 text-xs" style={{ borderColor: "var(--pw-border)" }} value={reason} onChange={(event) => setReason(event.target.value)} /><button className="pw-action pw-action--quiet" type="submit">Save {title.toLowerCase()}</button></div>}
+  </form>;
+}
+
+function scorecardToRows(scorecard) {
+  if (Array.isArray(scorecard)) return scorecard;
+  if (scorecard && typeof scorecard === "object") {
+    return Object.entries(scorecard).map(([name, value]) => (
+      value && typeof value === "object" ? { name, ...value } : { name, actual: value }
+    ));
+  }
+  return [];
+}
+
+function CadenceCard({ cadence, mode, canManage, onSaveFields, onAddAction, onSaveAttendance }) {
+  const openActions = (cadence.actions || []).filter((action) => !["resolved", "closed"].includes(action.status));
+  const priorityFields = [{ key: "title", label: "Rock / priority", wide: true }, { key: "owner", label: "Owner" }, { key: "status", label: "Status", type: "select", options: ROCK_STATUS }];
+  const scorecardFields = [{ key: "name", label: "Measurable", wide: true }, { key: "target", label: "Goal" }, { key: "actual", label: "Actual" }];
+  const idsFields = [{ key: "issue", label: "Issue", wide: true }, { key: "owner", label: "Owner" }, { key: "status", label: "Status", type: "select", options: ["identified", "discussing", "solved"] }];
+  const priorOpen = cadence.prior_open_actions || [];
+  return <section className="pw-panel p-5" data-testid={`pw-cadence-card-${cadence.id}`}>
+    <div className="flex flex-wrap justify-between gap-3">
+      <div><div className="font-bold" style={{ color: "var(--pw-navy)" }}>{cadence.factory_name || "Factory"} · {cadence.meeting_date} · {CADENCE_LABELS[mode]}</div><div className="mt-1 text-sm" style={{ color: "var(--pw-text-muted)" }}>{cadence.headline || "No headline recorded."}</div></div>
+      <span className="pw-chip">{text(cadence.status)}</span>
+    </div>
+    <div className="mt-4 grid gap-3 md:grid-cols-3">
+      <div><div className="pw-metric-label">Priorities / Rocks</div><div className="mt-1 text-sm">{cadence.priorities?.length ? cadence.priorities.length : "Unavailable"}</div></div>
+      <div><div className="pw-metric-label">IDS items</div><div className="mt-1 text-sm">{cadence.ids_items?.length ? cadence.ids_items.length : "Unavailable"}</div></div>
+      <div><div className="pw-metric-label">Open actions</div><div className="mt-1 text-sm">{openActions.length}</div></div>
+    </div>
+    {mode === "l10" && <div className="mt-4 grid gap-4 lg:grid-cols-3">
+      {canManage
+        ? <CadenceSectionEditor title="Rocks / priorities" items={cadence.priorities} fields={priorityFields} addLabel="Add rock" onSave={(rows, reason) => onSaveFields({ priorities: rows }, reason)} />
+        : <div><strong className="text-xs font-bold uppercase tracking-wide" style={{ color: "var(--pw-text-muted)" }}>Rocks / priorities</strong>{!cadence.priorities?.length ? <div className="mt-2 text-xs" style={{ color: "var(--pw-text-muted)" }}>None recorded.</div> : <ul className="mt-2 space-y-1 text-sm">{cadence.priorities.map((item, idx) => <li key={idx}>{item.title || "Untitled"} · {text(item.status || "open")}</li>)}</ul>}</div>}
+      {canManage
+        ? <CadenceSectionEditor title="Scorecard" items={scorecardToRows(cadence.scorecard)} fields={scorecardFields} addLabel="Add measurable" onSave={(rows, reason) => onSaveFields({ scorecard: rows }, reason)} />
+        : <div><strong className="text-xs font-bold uppercase tracking-wide" style={{ color: "var(--pw-text-muted)" }}>Scorecard</strong>{!scorecardToRows(cadence.scorecard).length ? <div className="mt-2 text-xs" style={{ color: "var(--pw-text-muted)" }}>None recorded.</div> : <ul className="mt-2 space-y-1 text-sm">{scorecardToRows(cadence.scorecard).map((item, idx) => <li key={idx}>{item.name || "Measurable"}: {item.actual ?? "Unavailable"} (goal {item.target ?? "unavailable"})</li>)}</ul>}</div>}
+      {canManage
+        ? <CadenceSectionEditor title="IDS list" items={cadence.ids_items} fields={idsFields} addLabel="Add issue" onSave={(rows, reason) => onSaveFields({ ids_items: rows }, reason)} />
+        : <div><strong className="text-xs font-bold uppercase tracking-wide" style={{ color: "var(--pw-text-muted)" }}>IDS list</strong>{!cadence.ids_items?.length ? <div className="mt-2 text-xs" style={{ color: "var(--pw-text-muted)" }}>None recorded.</div> : <ul className="mt-2 space-y-1 text-sm">{cadence.ids_items.map((item, idx) => <li key={idx}>{item.issue || "Untitled"} · {text(item.status || "identified")}</li>)}</ul>}</div>}
+    </div>}
+    {mode === "l10" && <div className="mt-4" data-testid="pw-cadence-prior-actions">
+      <strong className="text-xs font-bold uppercase tracking-wide" style={{ color: "var(--pw-text-muted)" }}>Review of previous actions</strong>
+      {!priorOpen.length ? <div className="mt-2 text-xs" style={{ color: "var(--pw-text-muted)" }}>No still-open action from an earlier L10 is outstanding.</div> : <ul className="mt-2 space-y-2 text-sm">{priorOpen.map((action) => <li key={action.id} className="flex flex-wrap items-center justify-between gap-2 rounded-md border px-3 py-2" style={{ borderColor: "var(--pw-border)" }}><span>{action.title} · {text(action.status)} · owner {action.owner_name || "not recorded"} · from {action.source_meeting_date}</span>{canManage && <button type="button" className="pw-chip" onClick={() => { const reason = window.prompt("Audit reason for carrying this action forward"); if (!reason) return; const event = { preventDefault: () => {}, currentTarget: null }; onAddAction(event, action.id, { title: action.title, owner_name: action.owner_name, due_date: action.due_date, reason }); }}>Carry forward</button>}</li>)}</ul>}
+    </div>}
+    {canManage && <details className="mt-4 text-sm"><summary className="cursor-pointer font-bold">Maintain attendance and owned actions</summary><div className="mt-3 grid gap-3 lg:grid-cols-2">
+      <form onSubmit={(event) => onSaveAttendance(event)} className="grid gap-2"><strong>Attendance</strong><input required name="member_user_id" placeholder="Staff user ID" /><input required name="display_name" placeholder="Display name" /><select name="attendance_state"><option value="present">Present</option><option value="absent">Absent</option><option value="late">Late</option><option value="excused">Excused</option></select><input required name="reason" placeholder="Audit reason" /><button className="pw-action pw-action--quiet">Save attendance</button></form>
+      <form onSubmit={(event) => onAddAction(event)} className="grid gap-2"><strong>Owned action</strong><input required name="title" placeholder="Action" /><input name="owner_name" placeholder="Owner" /><input name="due_date" type="date" /><input required name="reason" placeholder="Audit reason" /><button className="pw-action pw-action--quiet">Add action</button></form>
+    </div></details>}
+    {openActions.length > 0 && <div className="mt-4 text-sm"><strong>Open actions</strong><ul className="mt-2 space-y-1">{openActions.slice(0, 8).map((action) => <li key={action.id}>{action.title} · {text(action.status)} · due {action.due_date || "not recorded"}{action.carried_forward_from ? " · carried forward" : ""}</li>)}</ul></div>}
+  </section>;
+}
+
 function Huddle({ scope, onNavigate, catalogues, user }) {
-  const [data, setData] = useState(null); const [error, setError] = useState(null); const [loading, setLoading] = useState(true); const [refresh, setRefresh] = useState(0); const [draft, setDraft] = useState({ factory_id: scope.factory_id || "", shift_id: scope.shift_id || "", meeting_date: scope.date_to, headline: "", reason: "" });
+  const [mode, setMode] = useState("shift_huddle");
+  const [data, setData] = useState(null); const [error, setError] = useState(null); const [loading, setLoading] = useState(true); const [refresh, setRefresh] = useState(0);
+  const buildDraft = useCallback(() => ({
+    factory_id: scope.factory_id || "", shift_id: mode === "l10" ? "" : (scope.shift_id || ""),
+    meeting_date: scope.date_to, headline: "", reason: "",
+  }), [scope, mode]);
+  const [draft, setDraft] = useState(buildDraft);
+  useEffect(() => { setDraft(buildDraft()); }, [buildDraft]);
   const canManage = ["admin", "production", "leadership", "smt"].includes(String(user?.role || "").toLowerCase());
-  useEffect(() => { let alive = true; setLoading(true); api.get("/production-workspace/cadences", { params: { date_from: scope.date_from, date_to: scope.date_to, factory_id: scope.factory_id, shift_id: scope.shift_id, cadence_type: "shift_huddle" }, forceFresh: true }).then((res) => alive && setData(res.data)).catch((err) => alive && setError(err?.response?.data?.detail || "Cadence records are unavailable.")).finally(() => alive && setLoading(false)); return () => { alive = false; }; }, [scope, refresh]);
-  const createHuddle = async (event) => { event.preventDefault(); try { await api.post("/production-workspace/cadences", { ...draft, cadence_type: "shift_huddle", shift_id: draft.shift_id || null }); setDraft({ factory_id: scope.factory_id || "", shift_id: scope.shift_id || "", meeting_date: scope.date_to, headline: "", reason: "" }); setRefresh((value) => value + 1); } catch (err) { setError(err?.response?.data?.detail || "Could not create shift huddle."); } };
-  const addAction = async (event, huddle) => { event.preventDefault(); const form = new FormData(event.currentTarget); try { await api.post(`/production-workspace/cadences/${huddle.id}/actions`, { title: form.get("title"), due_date: form.get("due_date") || null, owner_name: form.get("owner_name") || null, reason: form.get("reason") }); event.currentTarget.reset(); setRefresh((value) => value + 1); } catch (err) { setError(err?.response?.data?.detail || "Could not save owned action."); } };
-  const saveAttendance = async (event, huddle) => { event.preventDefault(); const form = new FormData(event.currentTarget); try { await api.post(`/production-workspace/cadences/${huddle.id}/attendance`, { member_user_id: form.get("member_user_id"), display_name: form.get("display_name"), attendance_state: form.get("attendance_state"), expected_version: 0, reason: form.get("reason") }); event.currentTarget.reset(); setRefresh((value) => value + 1); } catch (err) { setError(err?.response?.data?.detail || "Could not save attendance."); } };
-  const huddles = data?.cadences || [];
-  return <div className="pw-page space-y-5" data-testid="pw-huddle"><PageIntro eyebrow="Daily cadence" title="Shift huddle / L10" subtitle="Audited production cadence, source-backed scorecards, IDS and owned actions. Missing evidence stays visible as unavailable." action={<button className="pw-action pw-action--quiet" onClick={() => onNavigate("recovery")}><Flag size={15} />Review recovery actions</button>} />
-    {canManage && <form onSubmit={createHuddle} className="pw-panel grid gap-2 p-4 md:grid-cols-3"><strong className="md:col-span-3">Record a governed shift huddle</strong><select required value={draft.factory_id} onChange={(event) => setDraft({ ...draft, factory_id: event.target.value })}><option value="">Select factory</option>{(catalogues?.factories || []).filter((item) => item.active !== false).map((item) => <option key={item.id} value={item.id}>{item.code} · {item.name}</option>)}</select><select value={draft.shift_id} onChange={(event) => setDraft({ ...draft, shift_id: event.target.value })}><option value="">Factory-wide</option>{(catalogues?.shifts || []).filter((item) => !draft.factory_id || String(item.factory_id) === String(draft.factory_id)).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><input required type="date" value={draft.meeting_date} onChange={(event) => setDraft({ ...draft, meeting_date: event.target.value })} /><input className="md:col-span-2" placeholder="Headline (optional)" value={draft.headline} onChange={(event) => setDraft({ ...draft, headline: event.target.value })} /><input required placeholder="Audit reason" value={draft.reason} onChange={(event) => setDraft({ ...draft, reason: event.target.value })} /><button className="pw-action" type="submit">Record huddle</button></form>}
-    {loading ? <div className="pw-panel p-8 text-center text-sm">Loading authorized cadence records…</div> : error ? <EmptyModule title="Cadence records are unavailable.">{error}</EmptyModule> : !huddles.length ? <EmptyModule title="No shift huddle is recorded for this scope.">No meeting, attendance or action is inferred.</EmptyModule> : <div className="space-y-4">{huddles.map((huddle) => <section className="pw-panel p-5" key={huddle.id}><div className="flex flex-wrap justify-between gap-3"><div><div className="font-bold" style={{ color: "var(--pw-navy)" }}>{huddle.factory_name || "Factory"} · {huddle.meeting_date}</div><div className="mt-1 text-sm" style={{ color: "var(--pw-text-muted)" }}>{huddle.headline || "No headline recorded."}</div></div><span className="pw-chip">{text(huddle.status)}</span></div><div className="mt-4 grid gap-3 md:grid-cols-3"><div><div className="pw-metric-label">Priorities</div><div className="mt-1 text-sm">{huddle.priorities?.length ? huddle.priorities.length : "Unavailable"}</div></div><div><div className="pw-metric-label">IDS items</div><div className="mt-1 text-sm">{huddle.ids_items?.length ? huddle.ids_items.length : "Unavailable"}</div></div><div><div className="pw-metric-label">Open actions</div><div className="mt-1 text-sm">{(huddle.actions || []).filter((action) => !["resolved", "closed"].includes(action.status)).length}</div></div></div>{canManage && <details className="mt-4 text-sm"><summary className="cursor-pointer font-bold">Maintain attendance and owned actions</summary><div className="mt-3 grid gap-3 lg:grid-cols-2"><form onSubmit={(event) => saveAttendance(event, huddle)} className="grid gap-2"><strong>Attendance</strong><input required name="member_user_id" placeholder="Staff user ID" /><input required name="display_name" placeholder="Display name" /><select name="attendance_state"><option value="present">Present</option><option value="absent">Absent</option><option value="late">Late</option><option value="excused">Excused</option></select><input required name="reason" placeholder="Audit reason" /><button className="pw-action pw-action--quiet">Save attendance</button></form><form onSubmit={(event) => addAction(event, huddle)} className="grid gap-2"><strong>Owned action</strong><input required name="title" placeholder="Action" /><input name="owner_name" placeholder="Owner" /><input name="due_date" type="date" /><input required name="reason" placeholder="Audit reason" /><button className="pw-action pw-action--quiet">Add action</button></form></div></details>}{huddle.actions?.length > 0 && <div className="mt-4 text-sm"><strong>Owned actions</strong><ul className="mt-2 space-y-1">{huddle.actions.slice(0, 5).map((action) => <li key={action.id}>{action.title} · {text(action.status)} · due {action.due_date || "not recorded"}</li>)}</ul></div>}</section>)}</div>}
+  useEffect(() => {
+    let alive = true; setLoading(true); setError(null);
+    const params = { date_from: scope.date_from, date_to: scope.date_to, factory_id: scope.factory_id, cadence_type: mode };
+    if (mode === "shift_huddle") params.shift_id = scope.shift_id;
+    api.get("/production-workspace/cadences", { params, forceFresh: true })
+      .then((res) => alive && setData(res.data))
+      .catch((err) => alive && setError(err?.response?.data?.detail || "Cadence records are unavailable."))
+      .finally(() => alive && setLoading(false));
+    return () => { alive = false; };
+  }, [scope, mode, refresh]);
+  const createCadence = async (event) => {
+    event.preventDefault();
+    try {
+      await api.post("/production-workspace/cadences", { ...draft, cadence_type: mode, shift_id: mode === "l10" ? null : (draft.shift_id || null) });
+      setDraft(buildDraft()); setRefresh((value) => value + 1);
+    } catch (err) { setError(err?.response?.data?.detail || `Could not record the ${CADENCE_LABELS[mode].toLowerCase()}.`); }
+  };
+  const saveFields = async (cadence, patch, reason) => {
+    try { await api.patch(`/production-workspace/cadences/${cadence.id}`, { expected_version: cadence.version_token, reason, ...patch }); setRefresh((value) => value + 1); }
+    catch (err) { setError(err?.response?.data?.detail || "Could not save the cadence."); }
+  };
+  const addAction = async (event, cadence, carryForwardFromId, override) => {
+    event.preventDefault?.();
+    const form = event.currentTarget ? new FormData(event.currentTarget) : null;
+    const payload = override
+      ? { title: override.title, due_date: override.due_date || null, owner_name: override.owner_name || null, reason: override.reason, carry_forward_from: carryForwardFromId }
+      : { title: form.get("title"), due_date: form.get("due_date") || null, owner_name: form.get("owner_name") || null, reason: form.get("reason") };
+    try {
+      await api.post(`/production-workspace/cadences/${cadence.id}/actions`, payload);
+      event.currentTarget?.reset?.(); setRefresh((value) => value + 1);
+    } catch (err) { setError(err?.response?.data?.detail || "Could not save the owned action."); }
+  };
+  const saveAttendance = async (event, cadence) => {
+    event.preventDefault(); const form = new FormData(event.currentTarget);
+    try {
+      await api.post(`/production-workspace/cadences/${cadence.id}/attendance`, { member_user_id: form.get("member_user_id"), display_name: form.get("display_name"), attendance_state: form.get("attendance_state"), expected_version: 0, reason: form.get("reason") });
+      event.currentTarget.reset(); setRefresh((value) => value + 1);
+    } catch (err) { setError(err?.response?.data?.detail || "Could not save attendance."); }
+  };
+  const cadences = data?.cadences || [];
+  return <div className="pw-page space-y-5" data-testid="pw-huddle">
+    <PageIntro eyebrow="Daily & weekly cadence" title="Shift huddle & weekly L10" subtitle="Two distinct governed meetings — the daily shift huddle and the factory-wide weekly L10 — each with its own scorecard, priorities/rocks, IDS list, owned actions, attendance, history and audit trail." action={<button className="pw-action pw-action--quiet" onClick={() => onNavigate("recovery")}><Flag size={15} />Review recovery actions</button>} />
+    <div className="pw-panel flex flex-wrap gap-1 p-1" role="tablist" aria-label="Cadence type" data-testid="pw-cadence-mode-tabs">
+      {Object.entries(CADENCE_LABELS).map(([key, label]) => <button type="button" role="tab" aria-selected={mode === key} key={key} data-testid={`pw-cadence-mode-${key}`} className="flex-1 rounded-md px-3 py-2 text-sm font-bold transition" style={mode === key ? { background: "var(--pw-navy)", color: "#fff" } : { color: "var(--pw-navy)" }} onClick={() => setMode(key)}>{label} <span className="font-normal" style={{ opacity: 0.75 }}>· {CADENCE_CADENCE_NOTE[key]}</span></button>)}
+    </div>
+    {canManage && <form onSubmit={createCadence} className="pw-panel grid gap-2 p-4 md:grid-cols-3" data-testid={`pw-cadence-create-${mode}`}>
+      <strong className="md:col-span-3">Record a governed {CADENCE_LABELS[mode].toLowerCase()}</strong>
+      <select required value={draft.factory_id} onChange={(event) => setDraft({ ...draft, factory_id: event.target.value })}><option value="">Select factory</option>{(catalogues?.factories || []).filter((item) => item.active !== false).map((item) => <option key={item.id} value={item.id}>{item.code} · {item.name}</option>)}</select>
+      {mode === "shift_huddle"
+        ? <select value={draft.shift_id} onChange={(event) => setDraft({ ...draft, shift_id: event.target.value })}><option value="">Factory-wide</option>{(catalogues?.shifts || []).filter((item) => !draft.factory_id || String(item.factory_id) === String(draft.factory_id)).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select>
+        : <div className="flex items-center rounded-md border px-3 py-2 text-xs" style={{ borderColor: "var(--pw-border)", color: "var(--pw-text-muted)" }}>Factory-wide — a weekly L10 is never scoped to a single shift</div>}
+      <input required type="date" value={draft.meeting_date} onChange={(event) => setDraft({ ...draft, meeting_date: event.target.value })} />
+      <input className="md:col-span-2" placeholder="Headline (optional)" value={draft.headline} onChange={(event) => setDraft({ ...draft, headline: event.target.value })} />
+      <input required placeholder="Audit reason" value={draft.reason} onChange={(event) => setDraft({ ...draft, reason: event.target.value })} />
+      <button className="pw-action" type="submit">Record {mode === "l10" ? "L10" : "huddle"}</button>
+    </form>}
+    {loading ? <div className="pw-panel p-8 text-center text-sm">Loading authorized cadence records…</div> : error ? <EmptyModule title="Cadence records are unavailable.">{error}</EmptyModule> : !cadences.length ? <EmptyModule title={`No ${CADENCE_LABELS[mode].toLowerCase()} is recorded for this scope.`}>No meeting, attendance or action is inferred.</EmptyModule> : <div className="space-y-4">{cadences.map((cadence) => <CadenceCard key={cadence.id} cadence={cadence} mode={mode} canManage={canManage}
+      onSaveFields={(patch, reason) => saveFields(cadence, patch, reason)}
+      onAddAction={(event, carryForwardFromId, override) => addAction(event, cadence, carryForwardFromId, override)}
+      onSaveAttendance={(event) => saveAttendance(event, cadence)} />)}</div>}
   </div>;
 }
 
@@ -269,6 +421,7 @@ export default function ProductionWorkspaceHub() {
       date: ["date_from", "date_to"], factory: ["prod_factory_id"], line: ["prod_line_id"],
       shift: ["prod_shift_id"], stage: ["prod_stage"], planStatus: ["prod_plan_status"],
        owner: ["prod_owner_user_id"], search: ["prod_search"], deliveryRisk: ["prod_delivery_risk"],
+       intakeScope: ["prod_intake_scope"],
     };
     (fields[field] || []).forEach((key) => value ? search.set(key, value) : search.delete(key));
     navigate({ pathname: location.pathname, search: search.toString() ? `?${search}` : "" }, { replace: true });

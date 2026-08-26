@@ -1,0 +1,15 @@
+[2026-08-26T08:23:45.185Z] console.debug: [vite] connecting...
+[2026-08-26T08:23:45.207Z] console.debug: [vite] connected.
+[2026-08-26T08:23:45.592Z] console.info: %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-08-26T08:23:47.418Z] api-error: 401 http://localhost/api/auth/me?_t=1787732627390
+[2026-08-26T08:23:47.418Z] console.error: Failed to load resource: the server responded with a status of 401 (Unauthorized)
+[2026-08-26T08:23:47.418Z] api-error: 401 http://localhost/api/auth/me?_t=1787732627391
+[2026-08-26T08:23:47.418Z] console.error: Failed to load resource: the server responded with a status of 401 (Unauthorized)
+[2026-08-26T08:23:47.554Z] console.debug: [vite] connecting...
+[2026-08-26T08:23:47.586Z] console.debug: [vite] connected.
+[2026-08-26T08:23:47.877Z] console.info: %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-08-26T08:23:50.732Z] requestfailed: GET http://localhost/api/sync-status?_t=1787732629660 net::ERR_ABORTED
+[2026-08-26T08:23:50.732Z] requestfailed: GET http://localhost/api/style-tracker/board?_t=1787732629660 net::ERR_ABORTED
+[2026-08-26T08:23:50.796Z] console.debug: [vite] connecting...
+[2026-08-26T08:23:50.796Z] console.debug: [vite] connected.
+[2026-08-26T08:23:51.258Z] console.info: %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold

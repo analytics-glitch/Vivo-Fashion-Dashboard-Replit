@@ -440,3 +440,187 @@ test("Quality role redacts personnel productivity at phone width", async ({ page
   await expect(page.getByText("E2E Release Line", { exact: true })).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath("quality-role-redaction-phone.png"), fullPage: true });
 });
+
+test("Weekly L10 is a distinct governed cadence from the daily Shift Huddle", async ({ page }, testInfo) => {
+  test.setTimeout(180_000);
+  await authenticate(page);
+
+  for (const viewport of [
+    { name: "desktop", width: 1440, height: 900 },
+    { name: "phone", width: 390, height: 844 },
+  ]) {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    await page.goto(`${STANDALONE_WORKSPACE_URL}/huddle`);
+    await expect(page.locator('[data-testid="pw-huddle"]')).toBeVisible({ timeout: 90_000 });
+    await expect(page.locator('[data-testid="pw-cadence-mode-tabs"]')).toBeVisible();
+
+    // Default mode is the daily Shift Huddle: the shift selector is present.
+    await expect(page.locator('[data-testid="pw-cadence-create-shift_huddle"]')).toBeVisible();
+    const shiftHuddleForm = page.locator('[data-testid="pw-cadence-create-shift_huddle"]');
+    await expect(shiftHuddleForm.locator("select")).toHaveCount(2); // factory + shift selects
+
+    // Switching to the weekly L10 tab is a genuinely distinct mode: the shift
+    // selector disappears (an L10 is always factory-wide) and a "review
+    // previous actions" panel is unique to this cadence type. The underlying
+    // request must carry its own cadence_type, proving this is not the same
+    // request with a relabeled tab.
+    const l10Response = page.waitForResponse((response) =>
+      response.url().includes("/api/production-workspace/cadences")
+      && new URL(response.url()).searchParams.get("cadence_type") === "l10");
+    await page.locator('[data-testid="pw-cadence-mode-l10"]').click();
+    await l10Response;
+    await expect(page.locator('[data-testid="pw-cadence-create-l10"]')).toBeVisible();
+    const l10Form = page.locator('[data-testid="pw-cadence-create-l10"]');
+    await expect(l10Form.locator("select")).toHaveCount(1); // factory select only, no shift
+    await expect(page.locator('[data-testid="pw-cadence-mode-l10"]')).toHaveAttribute("aria-selected", "true");
+    await expect(page.locator('[data-testid="pw-cadence-mode-shift_huddle"]')).toHaveAttribute("aria-selected", "false");
+
+    // Switch back: the shift huddle request must also carry its own
+    // cadence_type.
+    const shiftResponse = page.waitForResponse((response) =>
+      response.url().includes("/api/production-workspace/cadences")
+      && new URL(response.url()).searchParams.get("cadence_type") === "shift_huddle");
+    await page.locator('[data-testid="pw-cadence-mode-shift_huddle"]').click();
+    await shiftResponse;
+    await page.screenshot({
+      path: testInfo.outputPath(`l10-cadence-tabs-${viewport.name}.png`),
+      fullPage: true,
+    });
+  }
+});
+
+test("Weekly L10 carry-forward requires an earlier L10, is isolated from Shift Huddle data, and blocks a duplicate carry-forward", async ({ page }) => {
+  test.setTimeout(120_000);
+  const fixture = JSON.parse(fs.readFileSync(process.env.VIVO_E2E_RUN_FILE, "utf8")).productionFixture;
+  const factoryId = fixture.ids.factory_id;
+  const shiftId = fixture.ids.shift_id;
+  await authenticate(page);
+  // Land on an authenticated page in this origin before issuing same-origin
+  // fetch() calls from the browser context.
+  await page.goto(STANDALONE_WORKSPACE_URL);
+
+  const call = (method, url, body) => page.evaluate(async ({ method, url, body }) => {
+    const response = await fetch(url, {
+      method,
+      headers: { "Content-Type": "application/json" },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    let json = null;
+    try { json = await response.json(); } catch (_e) { /* no body */ }
+    return { status: response.status, json };
+  }, { method, url, body });
+
+  // Three factory-wide weekly L10s, oldest to newest.
+  const l10Dates = ["2031-02-03", "2031-02-10", "2031-02-17"];
+  const l10s = [];
+  for (const meeting_date of l10Dates) {
+    const res = await call("POST", "/api/production-workspace/cadences", {
+      factory_id: factoryId, cadence_type: "l10", shift_id: null,
+      meeting_date, headline: "E2E L10 release proof", reason: "e2e release proof",
+    });
+    expect(res.status, JSON.stringify(res.json)).toBe(200);
+    // Proves the request truly created an L10, not a relabeled Shift Huddle.
+    expect(res.json.record.cadence_type).toBe("l10");
+    expect(res.json.record.shift_id).toBeNull();
+    l10s.push(res.json.record);
+  }
+  const [week1, week2, week3] = l10s;
+
+  // A Shift Huddle in the same factory and on the same date is entirely
+  // separate data, not a shared row under a different label.
+  const huddleRes = await call("POST", "/api/production-workspace/cadences", {
+    factory_id: factoryId, cadence_type: "shift_huddle", shift_id: shiftId,
+    meeting_date: l10Dates[0], headline: "E2E shift huddle release proof", reason: "e2e release proof",
+  });
+  expect(huddleRes.status, JSON.stringify(huddleRes.json)).toBe(200);
+  expect(huddleRes.json.record.cadence_type).toBe("shift_huddle");
+
+  const l10ListRes = await call(
+    "GET",
+    `/api/production-workspace/cadences?factory_id=${factoryId}&cadence_type=l10&date_from=${l10Dates[0]}&date_to=${l10Dates[2]}`,
+  );
+  expect(l10ListRes.status).toBe(200);
+  const listedIds = l10ListRes.json.cadences.map((c) => c.id);
+  expect(listedIds).toEqual(expect.arrayContaining([week1.id, week2.id, week3.id]));
+  expect(listedIds).not.toContain(huddleRes.json.record.id);
+  expect(l10ListRes.json.cadences.every((c) => c.cadence_type === "l10")).toBe(true);
+
+  // Seed an open owned action on the earliest L10.
+  const actionRes = await call("POST", `/api/production-workspace/cadences/${week1.id}/actions`, {
+    title: "E2E carry-forward check", reason: "e2e release proof seed action",
+  });
+  expect(actionRes.status, JSON.stringify(actionRes.json)).toBe(200);
+  const sourceActionId = actionRes.json.record.id;
+
+  // Week 2's "review of previous actions" must surface the still-open action
+  // from week 1 — this is the L10-only carry-forward review, not shared with
+  // Shift Huddle.
+  const week2Detail = await call(
+    "GET",
+    `/api/production-workspace/cadences?factory_id=${factoryId}&cadence_type=l10&date_from=${l10Dates[1]}&date_to=${l10Dates[1]}`,
+  );
+  const week2Payload = week2Detail.json.cadences.find((c) => c.id === week2.id);
+  expect(week2Payload.prior_open_actions.map((a) => a.id)).toContain(sourceActionId);
+
+  // Carrying the action forward into week 2 succeeds exactly once.
+  const carryRes = await call("POST", `/api/production-workspace/cadences/${week2.id}/actions`, {
+    carry_forward_from: sourceActionId, reason: "e2e release proof carry-forward",
+  });
+  expect(carryRes.status, JSON.stringify(carryRes.json)).toBe(200);
+  expect(carryRes.json.record.carried_forward_from).toBe(sourceActionId);
+
+  // A second attempt to carry the SAME source action forward — this time
+  // into week 3 — must be rejected with a conflict, not silently duplicated.
+  const duplicateCarryRes = await call("POST", `/api/production-workspace/cadences/${week3.id}/actions`, {
+    carry_forward_from: sourceActionId, reason: "e2e release proof duplicate attempt",
+  });
+  expect(duplicateCarryRes.status, JSON.stringify(duplicateCarryRes.json)).toBe(409);
+  expect(duplicateCarryRes.json.detail || "").toContain("already been carried forward");
+
+  // Exactly one descendant of the source action exists, in week 2 only.
+  const week2Actions = await call(
+    "GET",
+    `/api/production-workspace/cadences?factory_id=${factoryId}&cadence_type=l10&date_from=${l10Dates[1]}&date_to=${l10Dates[1]}`,
+  );
+  const week2Final = week2Actions.json.cadences.find((c) => c.id === week2.id);
+  const descendants = week2Final.actions.filter((a) => a.carried_forward_from === sourceActionId);
+  expect(descendants).toHaveLength(1);
+});
+
+test("Work Orders keeps unplanned tracker orders actionable and lets a viewer opt into planned-only", async ({ page }, testInfo) => {
+  test.setTimeout(180_000);
+  const fixture = JSON.parse(fs.readFileSync(process.env.VIVO_E2E_RUN_FILE, "utf8")).productionFixture;
+  await authenticate(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(`${STANDALONE_WORKSPACE_URL}/work-orders`);
+  await expect(page.locator('[data-testid="pw-work-orders"]')).toBeVisible({ timeout: 90_000 });
+
+  await page.locator("#pw-work-order-search").fill(fixture.runKey);
+  await expect(page).toHaveURL(new RegExp(`prod_search=${fixture.runKey}`));
+
+  const unplannedRow = page.locator("tr", { hasText: `${fixture.runKey}-unplanned` });
+  const plannedRow = page.locator("tr", { hasText: `${fixture.runKey}-planned` });
+  await expect(unplannedRow).toBeVisible({ timeout: 30_000 });
+  await expect(plannedRow).toBeVisible();
+  await expect(unplannedRow).toContainText("Unavailable — not yet planned");
+  await expect(unplannedRow).toContainText("Plan this order");
+  await expect(unplannedRow).toContainText("Not planned");
+  await expect(page.locator('[data-testid="pw-work-orders-unplanned-note"]')).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("work-orders-unplanned-visible.png"), fullPage: true });
+
+  // Opting into "Planned only" must hide the unplanned order without
+  // affecting the planned one, and must round-trip through the URL.
+  const plannedOnlyCheckbox = page.locator('[data-testid="pw-work-orders-planned-only"] input');
+  await plannedOnlyCheckbox.click();
+  await expect(page).toHaveURL(/prod_intake_scope=planned/);
+  await expect(plannedOnlyCheckbox).toBeChecked();
+  await expect(unplannedRow).toHaveCount(0, { timeout: 30_000 });
+  await expect(plannedRow).toBeVisible();
+  await expect(page.locator('[data-testid="pw-work-orders-unplanned-note"]')).toHaveCount(0);
+  await page.screenshot({ path: testInfo.outputPath("work-orders-planned-only.png"), fullPage: true });
+
+  await plannedOnlyCheckbox.click();
+  await expect(page).not.toHaveURL(/prod_intake_scope=planned/);
+  await expect(plannedOnlyCheckbox).not.toBeChecked();
+  await expect(unplannedRow).toBeVisible({ timeout: 30_000 });
+});
