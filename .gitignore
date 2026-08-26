@@ -54,6 +54,8 @@ Thumbs.db
 /test-results/
 /artifacts/vivo-bi/test-results/*
 e2e/.test-session-token
+.replit-artifact-vivo-bi-18659.lock
+.replit-artifact-vivo-bi-18659.owner.json
 
 # Agent prompt uploads are session artifacts, not application assets.
 /attached_assets/Pasted-Replit-Agent-Prompt-VFG-Retail-Dashboard-Customer-Recen_*.txt
