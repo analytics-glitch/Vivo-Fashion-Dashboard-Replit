@@ -258,8 +258,15 @@ export default function ProductionCommandCentre({
         </button>
       </div>
 
-      {loading && !data ? <Loading label="Loading production command centre…" /> : error ? <ErrorBox message={error} /> : (
+      {loading && !data ? <Loading label="Loading production command centre…" /> : (
         <>
+          {error && (
+            <div data-testid="command-error" className="rounded-lg border border-rose-300 bg-rose-50 px-3 py-2.5 text-[12px] text-rose-900">
+              <ErrorBox message={error} />
+            </div>
+          )}
+          {data && (
+            <>
           <Freshness sources={data?.source_freshness} />
           {data?.completeness?.state !== "complete" && (
             <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2.5 text-[12px] text-amber-900" data-testid="command-completeness-warning">
@@ -364,6 +371,8 @@ export default function ProductionCommandCentre({
               {Object.entries(data?.definitions || {}).map(([key, value]) => <div key={key} className="rounded-lg border border-line bg-panel/20 p-3"><div className="font-bold text-[#0f3d24] capitalize">{key.replace(/_/g, " ")}</div><div className="mt-1 text-muted leading-relaxed">{value}</div></div>)}
             </div>
           </Section>
+            </>
+          )}
         </>
       )}
     </div>
