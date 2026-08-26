@@ -155,10 +155,10 @@ export const PRIMARY_NAV = [
   {
     to: "/production", label: "Production Pipeline", icon: Factory, id: "production",
     anyOfPageIds: ["production", "production-workspace", "production-report", "style-tracker"],
-    group: "Operations & Production", desc: "Kanban tracker of buying orders through the manufacturing stages, plus the detailed production report and Style Launch Planner",
+    group: "Operations & Production", desc: "Command Centre, kanban tracker of buying orders through the manufacturing stages, plus the detailed production report and Style Launch Planner",
     subReports: [
       { pageId: "production",        label: "Overview & Tracker" },
-      { pageId: "production-workspace", label: "Workspace Foundation" },
+      { pageId: "production-workspace", label: "Command Centre, Planning & Capture" },
       { pageId: "production-report", label: "Production Report" },
       { pageId: "style-tracker",     label: "Style Launch Planner" },
     ],

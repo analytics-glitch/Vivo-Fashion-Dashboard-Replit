@@ -232,6 +232,32 @@ class ProductionInsightsContractTests(unittest.TestCase):
         self.assertIn("p.planned_start >= %s AND p.planned_end <= %s",
                       inspect.getsource(insights._command_plan_rows))
 
+    def test_command_scope_hides_owner_filter_for_non_personnel_roles(self):
+        request = SimpleNamespace(state=SimpleNamespace(user={
+            "user_id": "quality-user", "role": "quality",
+        }))
+        scope = insights._command_scope(request, owner_user_id="someone-else")
+        self.assertFalse(scope["owner_filter_allowed"])
+        self.assertTrue(scope["privacy_context"])
+        self.assertEqual(scope["owner_user_id"], "")
+
+    def test_command_plan_scope_includes_assigned_production_users(self):
+        source = inspect.getsource(insights._command_plan_rows)
+        self.assertIn("production_workspace_assignments scoped_assignment", source)
+        self.assertIn("scoped_operator.user_id=%s", source)
+        self.assertIn("CASE WHEN %s THEN NULL ELSE p.owner_user_id END", source)
+
+    def test_command_wip_is_withheld_when_production_scope_cannot_be_verified(self):
+        source = inspect.getsource(insights._command_centre)
+        self.assertIn('scope["actor"]["role"] == "production"', source)
+        self.assertIn("withheld from a production user's operational scope", source)
+
+    def test_command_public_rows_remove_owner_identity(self):
+        self.assertEqual(
+            insights._command_public_rows([{"owner_user_id": "private", "factory_name": "Factory"}]),
+            [{"factory_name": "Factory"}],
+        )
+
     def test_command_plan_query_binds_every_placeholder(self):
         captured = {}
         original_db = insights._db
@@ -264,6 +290,10 @@ class ProductionInsightsContractTests(unittest.TestCase):
         self.assertIn("p.status=NULLIF", captured["query"])
         self.assertEqual(captured["query"].count("%s"), len(captured["params"]))
         self.assertEqual(captured["params"][-4:], ["3", "3", "frozen", "frozen"])
+
+    def test_recovery_endpoint_accepts_shift_scope(self):
+        self.assertIn("shift_id", inspect.signature(insights._recovery_endpoint).parameters)
+        self.assertIn("shift_id", inspect.signature(insights._productivity_endpoint).parameters)
 
     def test_recovery_is_cumulative_as_of_and_sensitive_routes_are_scoped(self):
         self.assertIn("WHERE capture_date <= %s", insights._RECOVERY_SQL)

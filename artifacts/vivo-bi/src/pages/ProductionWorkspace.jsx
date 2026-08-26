@@ -360,7 +360,24 @@ export default function ProductionWorkspace() {
   const canApprove = Boolean(data?.root?.permissions?.can_approve);
   const plan = detail?.plan;
   const mutable = plan && ["draft", "reopened"].includes(plan.status) && canPlan;
-  const planOptions = useMemo(() => data?.plans || [], [data]);
+  const commandScope = useMemo(() => {
+    const params = new URLSearchParams(location.search);
+    return {
+      factoryId: params.get("prod_factory_id") || "",
+      lineId: params.get("prod_line_id") || "",
+      shiftId: params.get("prod_shift_id") || "",
+      dateFrom: params.get("date_from") || "",
+      dateTo: params.get("date_to") || "",
+    };
+  }, [location.search]);
+  const planOptions = useMemo(() => (data?.plans || []).filter((item) => {
+    if (commandScope.factoryId && String(item.factory_id) !== commandScope.factoryId) return false;
+    if (commandScope.lineId && String(item.line_id) !== commandScope.lineId) return false;
+    if (commandScope.shiftId && String(item.shift_id) !== commandScope.shiftId) return false;
+    if (commandScope.dateFrom && String(item.planned_start || "") < commandScope.dateFrom) return false;
+    if (commandScope.dateTo && String(item.planned_end || "") > commandScope.dateTo) return false;
+    return true;
+  }), [data, commandScope]);
 
   const mutatePlan = async (action, body = {}) => {
     if (!plan) return;
@@ -387,6 +404,7 @@ export default function ProductionWorkspace() {
   return <div className="space-y-4" data-testid="production-planning-workspace">
     <div className="flex flex-wrap items-start justify-between gap-3">
       <SectionTitle title="Production Planning Workspace" subtitle="Prepare feasible, readiness-controlled line plans without changing the live Odoo tracker." />
+      {(commandScope.factoryId || commandScope.lineId || commandScope.shiftId || commandScope.dateFrom || commandScope.dateTo) && <div className="mt-2 text-xs text-muted" data-testid="workspace-command-context">Showing plans in the Command Centre scope.</div>}
       <button type="button" className="btn-ghost text-xs" onClick={refresh}><ArrowsClockwise size={14} className="inline mr-1" />Refresh</button>
     </div>
     {error && <ErrorBox message={error} />}

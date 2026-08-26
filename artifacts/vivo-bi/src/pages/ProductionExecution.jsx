@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { useLocation } from "react-router-dom";
 import { api } from "@/lib/api";
 import {
   ArrowClockwise, CheckCircle, Clock, DownloadSimple, Factory,
@@ -312,7 +313,9 @@ function OutputTrail({ output, onSaved }) {
 }
 
 export default function ProductionExecution() {
-  const [date, setDate] = useState(today);
+  const location = useLocation();
+  const commandDate = new URLSearchParams(location.search).get("date_to");
+  const [date, setDate] = useState(() => commandDate || today);
   const [worklist, setWorklist] = useState(null);
   const [summary, setSummary] = useState(null);
   const [events, setEvents] = useState([]);
@@ -341,6 +344,10 @@ export default function ProductionExecution() {
   }, [date]);
 
   useEffect(() => { load(false); }, [load]);
+  useEffect(() => {
+    const requested = new URLSearchParams(location.search).get("date_to");
+    if (requested) setDate(requested);
+  }, [location.search]);
   const eventCounts = useMemo(() => Object.fromEntries((summary?.summary?.events || []).map((x) => [x.event_type, x.count])), [summary]);
   const resolveEvent = async (event) => {
     try {

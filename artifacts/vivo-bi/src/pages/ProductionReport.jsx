@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback, useMemo } from "react";
+import { useLocation } from "react-router-dom";
 import { api } from "@/lib/api";
 import { SectionTitle, Loading, ErrorBox, Empty } from "@/components/common";
 import ProductionOrderModal from "@/components/ProductionOrderModal";
@@ -436,6 +437,7 @@ function ReportBulkToolbar({ fromStages, flowStages, count, busy, msg, onMove, o
 }
 
 export default function ProductionReport() {
+  const location = useLocation();
   const [data, setData] = useState(null);
   const [flow, setFlow] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -454,6 +456,15 @@ export default function ProductionReport() {
   // Client-side column sorting for the two order tables (active + completed).
   const [activeSort, setActiveSort] = useState({ key: null, dir: "asc" });
   const [completedSort, setCompletedSort] = useState({ key: null, dir: "asc" });
+
+  // The legacy tracker report can apply its existing text/stage controls from
+  // Command Centre context. Factory/line/date context remains in the URL for
+  // the destination's shared filter bar and downstream links.
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    setQuery(params.get("prod_search") || "");
+    setStageFilter(params.get("prod_stage") || null);
+  }, [location.search]);
 
   const load = useCallback(async (force = false) => {
     if (force) setRefreshing(true);

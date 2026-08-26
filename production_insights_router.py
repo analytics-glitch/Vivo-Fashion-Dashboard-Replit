@@ -609,7 +609,7 @@ def _freshness(rows):
 
 
 def _productivity(request, date_from=None, date_to=None, view="worker",
-                  factory_id="", line_id=""):
+                  factory_id="", line_id="", shift_id=""):
     denied = _require(request, READ_ROLES, "Productivity viewing")
     if denied:
         return denied
@@ -620,7 +620,7 @@ def _productivity(request, date_from=None, date_to=None, view="worker",
         return _error("date_from must be on or before date_to")
     if view not in {"worker", "line", "factory"}:
         return _error("view must be worker, line or factory")
-    raw = _productivity_rows(start, end, actor, factory_id, line_id)
+    raw = _productivity_rows(start, end, actor, factory_id, line_id, shift_id)
     rows = [_metric_row(row) for row in raw]
     if view == "worker":
         data = _aggregate(rows, ("operator_id", "operator_name"), "operator_name", worker=True)
@@ -824,7 +824,7 @@ def _recovery_candidates(start, end, factory_id="", line_id="", shift_id="", pla
     return sorted(result, key=lambda r: (-r["priority_score"], r["planned_end"]))
 
 
-def _recovery(request, date_from=None, date_to=None, factory_id="", line_id=""):
+def _recovery(request, date_from=None, date_to=None, factory_id="", line_id="", shift_id=""):
     denied = _require(request, READ_ROLES, "Delivery recovery viewing")
     if denied:
         return denied
@@ -833,7 +833,7 @@ def _recovery(request, date_from=None, date_to=None, factory_id="", line_id=""):
     start = _day(date_from, end - timedelta(days=29))
     if start > end:
         return _error("date_from must be on or before date_to")
-    candidates = _recovery_candidates(start, end, factory_id, line_id)
+    candidates = _recovery_candidates(start, end, factory_id, line_id, shift_id)
     if actor["role"] == "production":
         candidates = [
             row for row in candidates
@@ -849,9 +849,15 @@ def _recovery(request, date_from=None, date_to=None, factory_id="", line_id=""):
         JOIN production_workspace_work_items wi ON wi.id=a.work_item_id
         JOIN production_workspace_plan_versions p ON p.id=a.plan_version_id
         WHERE (%s <> 'production' OR a.owner_user_id=%s OR p.owner_user_id=%s)
+          AND (NULLIF(%s,'') IS NULL OR a.factory_id=NULLIF(%s,'')::bigint)
+          AND (NULLIF(%s,'') IS NULL OR a.line_id=NULLIF(%s,'')::bigint)
+          AND (NULLIF(%s,'') IS NULL OR p.shift_id=NULLIF(%s,'')::bigint)
         ORDER BY a.priority DESC, a.due_date NULLS LAST, a.id DESC
         """,
-        [actor["role"], actor["user_id"], actor["user_id"]],
+        [
+            actor["role"], actor["user_id"], actor["user_id"],
+            factory_id, factory_id, line_id, line_id, shift_id, shift_id,
+        ],
         fetch=True,
     )
     return {
@@ -1061,16 +1067,26 @@ def _command_scope(request, *, stage="", factory_id="", line_id="", shift_id="",
     production tracker or workspace ledgers.
     """
     actor = _actor(request)
+    privacy_context = actor["role"] in QUALITY_ROLES | PRODUCT_ROLES
     return {
         "actor": actor,
         "stage": str(stage or "").strip(),
         "factory_id": str(factory_id or "").strip(),
         "line_id": str(line_id or "").strip(),
         "shift_id": str(shift_id or "").strip(),
-        "owner_user_id": str(owner_user_id or "").strip(),
+        # Quality and Product Development can investigate plan and quality
+        # evidence, but must not browse production staff identities. Ignore an
+        # owner query supplied in a copied URL instead of exposing a side
+        # channel through an owner-filtered response.
+        "owner_user_id": "" if privacy_context else str(owner_user_id or "").strip(),
         "plan_status": str(plan_status or "").strip().lower(),
         "delivery_risk": str(delivery_risk or "").strip().lower(),
         "search": str(search or "").strip(),
+        "owner_filter_allowed": not privacy_context,
+        "privacy_context": privacy_context,
+        "operational_scope": (
+            "owned_or_assigned" if actor["role"] == "production" else "role_wide"
+        ),
         "unsupported_sales_filters": [
             "country", "channel", "POS", "currency", "comparison period",
         ],
@@ -1140,8 +1156,20 @@ def _command_plan_rows(start, end, scope):
            AND (NULLIF(%s,'') IS NULL OR wi.stage_key=NULLIF(%s,''))
            AND (NULLIF(%s,'') IS NULL OR
                 concat_ws(' ',wi.external_ref,wi.style_number,wi.production_order_ref,
-                          f.name,l.name,p.owner_user_id) ILIKE '%%' || %s || '%%')
-           AND (%s <> 'production' OR p.owner_user_id=%s)
+                          f.name,l.name,
+                          CASE WHEN %s THEN NULL ELSE p.owner_user_id END) ILIKE '%%' || %s || '%%')
+           AND (
+                %s <> 'production'
+                OR p.owner_user_id=%s
+                OR EXISTS (
+                    SELECT 1
+                    FROM production_workspace_assignments scoped_assignment
+                    JOIN production_workspace_operators scoped_operator
+                      ON scoped_operator.id=scoped_assignment.operator_id
+                   WHERE scoped_assignment.plan_version_id=p.id
+                     AND scoped_operator.user_id=%s
+                )
+           )
          ORDER BY p.planned_end,f.name,l.name,wi.style_number
         """,
         [
@@ -1154,11 +1182,25 @@ def _command_plan_rows(start, end, scope):
             scope["owner_user_id"], scope["owner_user_id"],
             scope["plan_status"], scope["plan_status"],
             scope["stage"], scope["stage"],
-            scope["search"], scope["search"],
-            scope["actor"]["role"], scope["actor"]["user_id"],
+            scope["search"], scope.get("privacy_context", False), scope["search"],
+            scope["actor"]["role"], scope["actor"]["user_id"], scope["actor"]["user_id"],
         ],
         fetch=True,
     )
+
+
+def _command_public_rows(rows):
+    """Return the Command Centre's non-personal plan/quality context.
+
+    Quality and Product Development need operational evidence, not staff
+    identities. Do this at the response boundary so a new UI field cannot
+    accidentally turn a redacted command response back into a personnel view.
+    """
+    hidden = {"owner_user_id"}
+    return [
+        {key: value for key, value in dict(row).items() if key not in hidden}
+        for row in rows
+    ]
 
 
 def _command_line_rows(plans, productivity, covered_plan_ids=None):
@@ -1287,7 +1329,14 @@ def _command_centre(request, date_from=None, date_to=None, stage="", factory_id=
             scope["shift_id"], scope["plan_status"],
         )
         if scope["actor"]["role"] == "production":
-            recovery = [r for r in recovery if str(r.get("owner_user_id") or "") == scope["actor"]["user_id"]]
+            # Command Centre plan scope includes plans owned by the production
+            # user OR plans with an operator assignment for them. Apply that
+            # exact scope to recovery rather than leaking every commitment
+            # through this separate evidence source.
+            recovery = [
+                row for row in recovery
+                if row.get("plan_version_id") in planned_ids
+            ]
         if scope["delivery_risk"]:
             recovery = [r for r in recovery if r.get("priority_band") == scope["delivery_risk"]]
         if scope["owner_user_id"]:
@@ -1307,11 +1356,20 @@ def _command_centre(request, date_from=None, date_to=None, stage="", factory_id=
         sections["delivery"] = {"state": "error", "message": errors["delivery"]}
     # The tracker is deliberately global only.  There is no verified mapping
     # between legacy tracker balances and Workspace factory/line/shift keys.
-    tracker_is_scoped = any(scope[key] for key in ("factory_id", "line_id", "shift_id", "owner_user_id"))
+    tracker_is_scoped = (
+        scope["actor"]["role"] == "production"
+        or any(scope[key] for key in ("factory_id", "line_id", "shift_id", "owner_user_id"))
+    )
     if tracker_is_scoped:
+        wip_message = (
+            "Legacy tracker WIP has no approved owner or assignment mapping, so "
+            "it is withheld from a production user's operational scope."
+            if scope["actor"]["role"] == "production" else
+            "Legacy tracker WIP has no approved factory, line, shift, or owner mapping for this scope."
+        )
         sections["wip"] = {
             "state": "unavailable",
-            "message": "Legacy tracker WIP has no approved factory, line, shift, or owner mapping for this scope.",
+            "message": wip_message,
         }
     else:
         try:
@@ -1454,9 +1512,11 @@ def _command_centre(request, date_from=None, date_to=None, stage="", factory_id=
         "factories": sorted({(p.get("factory_id"), p.get("factory_name")) for p in plans if p.get("factory_id")}, key=lambda x: str(x[1])),
         "lines": sorted({(p.get("line_id"), p.get("line_name")) for p in plans if p.get("line_id")}, key=lambda x: str(x[1])),
         "shifts": sorted({(p.get("shift_id"), p.get("shift_name")) for p in plans if p.get("shift_id")}, key=lambda x: str(x[1])),
-        "owners": sorted({p.get("owner_user_id") for p in plans if p.get("owner_user_id")}),
+        "owners": [] if scope["privacy_context"] else sorted({p.get("owner_user_id") for p in plans if p.get("owner_user_id")}),
         "stages": sorted({(row.get("stage_key"), row.get("stage_name")) for row in stages if row.get("stage_key")}, key=lambda x: str(x[1])),
     }
+    response_plans = _command_public_rows(plans) if scope["privacy_context"] else plans
+    response_recovery = _command_public_rows(recovery) if scope["privacy_context"] else recovery
     return {
         "schema_version": "1",
         "as_of": datetime.now(ZoneInfo("Africa/Nairobi")).isoformat(),
@@ -1497,8 +1557,8 @@ def _command_centre(request, date_from=None, date_to=None, stage="", factory_id=
         },
         "stage_wip": _rows(wip_rows),
         "line_performance": _rows(line_rows),
-        "plan_vs_actual": _rows(plans),
-        "delivery_risk": _rows(recovery),
+        "plan_vs_actual": _rows(response_plans),
+        "delivery_risk": _rows(response_recovery),
         "filter_options": {
             key: [{"id": value[0], "label": value[1]} for value in values]
             if key != "owners" else [{"id": value, "label": value} for value in values]
@@ -1509,14 +1569,17 @@ def _command_centre(request, date_from=None, date_to=None, stage="", factory_id=
 
 def _productivity_endpoint(request: Request, date_from: str = None,
                            date_to: str = None, view: str = "worker",
-                           factory_id: str = "", line_id: str = ""):
-    return _productivity(request, date_from, date_to, view, factory_id, line_id)
+                           factory_id: str = "", line_id: str = "",
+                           shift_id: str = ""):
+    return _productivity(
+        request, date_from, date_to, view, factory_id, line_id, shift_id,
+    )
 
 
 def _recovery_endpoint(request: Request, date_from: str = None,
                        date_to: str = None, factory_id: str = "",
-                       line_id: str = ""):
-    return _recovery(request, date_from, date_to, factory_id, line_id)
+                       line_id: str = "", shift_id: str = ""):
+    return _recovery(request, date_from, date_to, factory_id, line_id, shift_id)
 
 
 def _command_centre_endpoint(

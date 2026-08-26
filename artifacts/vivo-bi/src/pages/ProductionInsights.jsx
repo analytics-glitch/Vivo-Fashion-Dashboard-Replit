@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { api, fmtNum } from "@/lib/api";
 import { Empty, ErrorBox, Loading, SectionTitle } from "@/components/common";
 import { useAuth } from "@/lib/auth";
@@ -209,8 +209,19 @@ function RecoveryQueue({ recovery, canWrite, onRefresh }) {
 
 export default function ProductionInsights() {
   const { user } = useAuth();
+  const location = useLocation();
   const [view, setView] = useState("worker");
-  const [filters, setFilters] = useState({ date_from: monthAgo, date_to: today });
+  const commandFilters = () => {
+    const params = new URLSearchParams(location.search);
+    return {
+      date_from: params.get("date_from") || monthAgo,
+      date_to: params.get("date_to") || today,
+      factory_id: params.get("prod_factory_id") || "",
+      line_id: params.get("prod_line_id") || "",
+      shift_id: params.get("prod_shift_id") || "",
+    };
+  };
+  const [filters, setFilters] = useState(commandFilters);
   const [productivity, setProductivity] = useState(null);
   const [recovery, setRecovery] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -232,6 +243,7 @@ export default function ProductionInsights() {
     } finally { setLoading(false); }
   }, [filters, view]);
   useEffect(() => { load(); }, [load]);
+  useEffect(() => { setFilters(commandFilters()); }, [location.search]);
   const rows = productivity?.rows || [];
   const summary = useMemo(() => ({
     available: rows.filter((row) => row.metric_state === "available").length,

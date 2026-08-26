@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { api } from "@/lib/api";
 import { SectionTitle, Loading, ErrorBox } from "@/components/common";
 import ProductionOrderModal from "@/components/ProductionOrderModal";
@@ -159,6 +159,7 @@ function ColumnBulkBar({ stageKey, allowed, count, busy, onMove, onClear }) {
 }
 
 function Production() {
+  const location = useLocation();
   const [stages, setStages] = useState([]);
   const [cards, setCards] = useState([]);
   const [syncStatus, setSyncStatus] = useState(null);
@@ -166,7 +167,8 @@ function Production() {
   const [error, setError] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
   const [openOrder, setOpenOrder] = useState(null);
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(() => new URLSearchParams(window.location.search).get("prod_search") || "");
+  const stageScope = new URLSearchParams(location.search).get("prod_stage") || "";
   // Multi-BO selection is scoped to a single stage column (from_stage must be
   // uniform for a bulk advance). Selecting a card in another stage resets it.
   const [selStage, setSelStage] = useState(null);
@@ -256,14 +258,19 @@ function Production() {
     }
   }, [load]);
 
+  useEffect(() => {
+    setQuery(new URLSearchParams(location.search).get("prod_search") || "");
+  }, [location.search]);
+
   const filteredCards = React.useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return cards;
     return cards.filter((c) =>
+      (!stageScope || c.stage === stageScope) &&
+      (!q ||
       [c.style_number, c.product_name, c.order_ref]
-        .some((v) => String(v || "").toLowerCase().includes(q))
+        .some((v) => String(v || "").toLowerCase().includes(q)))
     );
-  }, [cards, query]);
+  }, [cards, query, stageScope]);
 
   const cardsByStage = React.useMemo(() => {
     const map = {};
@@ -597,7 +604,9 @@ const ProductionPipelinePage = () => {
     const search = new URLSearchParams(window.location.search);
     search.set("tab", nextTab);
     Object.entries(extra).forEach(([key, value]) => {
-      if (value != null && value !== "") search.set(`prod_${key}`, String(value));
+      if (value == null || value === "") return;
+      if (key === "date_from" || key === "date_to") search.set(key, String(value));
+      else search.set(key.startsWith("prod_") ? key : `prod_${key}`, String(value));
     });
     navigate({ pathname: window.location.pathname, search: `?${search.toString()}` });
     setTab(nextTab);
@@ -629,17 +638,33 @@ const ProductionPipelinePage = () => {
           <ActiveEl
             onOpenReport={
               visibleTabs.some((t) => t.id === "report")
-                ? () => selectTab("report")
+                ? (context) => selectTab("report", context)
                 : null
             }
             onOpenWorkspace={
               visibleTabs.some((t) => t.id === "workspace")
-                ? (plan) => selectTab("workspace", {
+                ? (plan, context = {}) => selectTab("workspace", {
+                  ...context,
                   factory_id: plan?.factory_id,
                   line_id: plan?.line_id,
                   shift_id: plan?.shift_id,
                   plan: plan?.plan_version_id,
                 })
+                : null
+            }
+            onOpenCapture={
+              visibleTabs.some((t) => t.id === "capture")
+                ? (context) => selectTab("capture", context)
+                : null
+            }
+            onOpenTracker={
+              visibleTabs.some((t) => t.id === "tracker")
+                ? (context) => selectTab("tracker", context)
+                : null
+            }
+            onOpenInsights={
+              visibleTabs.some((t) => t.id === "insights")
+                ? (context) => selectTab("insights", context)
                 : null
             }
           />
