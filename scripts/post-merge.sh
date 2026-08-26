@@ -5,7 +5,8 @@ set -e
 # This setup script never starts a frontend process. Replit may restart the
 # managed artifact service after package installation; that service must enter
 # through scripts/start_vivo_bi_managed.py, which owns the port lock and
-# lifecycle record. Do not add pnpm/vite dev commands here.
+# lifecycle record. Its one-time legacy recovery is attestation-gated there;
+# do not add pnpm/vite dev commands or alternate recovery here.
 pnpm install --frozen-lockfile
 
 # NOTE: we intentionally do NOT run `drizzle-kit push` here.

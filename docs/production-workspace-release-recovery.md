@@ -3,6 +3,11 @@
 The managed Vivo BI artifact service is the only approved owner of port `18659`.
 It starts through a crash-safe lock wrapper that records the listener identity
 and only reclaims a demonstrably stale, prior managed owner from this workspace.
+As a one-time migration only, it can also replace the exact pre-guard artifact
+service after independently proving a stable single listener, the artifact
+directory and Vite command, Node executable, direct pnpm parent, process start
+identities, and the current artifact workflow registration. Missing, changed,
+ambiguous, or merely similar processes are never adopted or signalled.
 Do not run `pnpm --filter @workspace/vivo-bi run dev`, `vite`, the wrapper, or
 `vite --port 18659` from the root shell as a recovery shortcut. A second Vite
 process can serve an older build or prevent the managed service from binding.
@@ -20,9 +25,12 @@ process can serve an older build or prevent the managed service from binding.
 4. If it reports a proven stale managed owner, restart
    `artifacts/vivo-bi: web` through the managed workflow lifecycle. The wrapper
    serializes concurrent starts and may stop only that owner after a second
-   identity check. If it reports an orphan, unrelated, or unproven listener,
-   leave it untouched and escalate with the reported PID and process tree;
-   the wrapper deliberately fails closed rather than guessing.
+   identity check. A listener created before the guard can be migrated only once
+   when every legacy attestation fact still matches immediately before pidfd
+   signalling; the replacement is the normal marked wrapper-to-pnpm-to-Vite
+   chain. If it reports an orphan, unrelated, or unproven listener, leave it
+   untouched and escalate with the reported PID and process tree; the wrapper
+   deliberately fails closed rather than guessing.
 5. If the API check fails, restart **only** `artifacts/api-server: API Server`
    through the managed workflow lifecycle, wait for `/api/readyz`, and rerun
    the validator.

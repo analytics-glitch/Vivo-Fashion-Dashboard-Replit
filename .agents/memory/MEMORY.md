@@ -155,3 +155,4 @@
 - [Production workspace feasibility governance](production-workspace-feasibility-governance.md) — capacity, targets, SAMs, and readiness must be approved, dated, and auditable before a plan is feasible.
 - [Production assignment scope](production-assignment-scope.md) — production users see plan-backed facts only as owner or active assignee; scope source rows before aggregates and fail closed.
 - [Command Centre refresh failures](command-centre-refresh-errors.md) — retain last-known operational context, but visibly disclose every failed refresh.
+- [Vite startup listener transition](vivo-bi-vite-startup-transition.md) — an owned Vite boot naturally moves port 18659 from empty to one listener; verify the resulting marked chain, not that transition itself.
