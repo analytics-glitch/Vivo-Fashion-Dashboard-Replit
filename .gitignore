@@ -52,6 +52,7 @@ Thumbs.db
 # Playwright
 /playwright-report/
 /test-results/
+/artifacts/vivo-bi/test-results/*
 e2e/.test-session-token
 
 # Agent prompt uploads are session artifacts, not application assets.
