@@ -1,5 +1,7 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useLocation } from "react-router-dom";
 import { api } from "@/lib/api";
+import { ProductionScopeNotice, readProductionScope } from "@/lib/productionScope";
 
 // ── Central Tracker Orders Table ─────────────────────────────────────────────
 // Shows Style No / Style Name / Order Qty / Order Date from the Central Tracker
@@ -46,6 +48,8 @@ const SORT_COLS = {
 };
 
 export default function CentralTracker() {
+  const location = useLocation();
+  const commandScope = useMemo(() => readProductionScope(location.search), [location.search]);
   const [rows, setRows]       = useState([]);
   const [total, setTotal]     = useState(0);
   const [loadedAt, setLoadedAt] = useState(null);
@@ -130,6 +134,7 @@ export default function CentralTracker() {
 
   return (
     <div className="space-y-4">
+      <ProductionScopeNotice scope={commandScope} applied={false} unsupported={["date_from", "date_to", "stage", "factory_id", "line_id", "shift_id", "owner_user_id", "plan_status", "delivery_risk", "search"]} />
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>

@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useLocation } from "react-router-dom";
 import { api } from "@/lib/api";
+import { ProductionScopeNotice, productionScopeParams, readProductionScope } from "@/lib/productionScope";
 import {
   ArrowClockwise, CheckCircle, Clock, DownloadSimple, Factory,
   FileArrowUp, FloppyDisk, LinkSimple, WarningCircle,
@@ -314,7 +315,8 @@ function OutputTrail({ output, onSaved }) {
 
 export default function ProductionExecution() {
   const location = useLocation();
-  const commandDate = new URLSearchParams(location.search).get("date_to");
+  const scope = useMemo(() => readProductionScope(location.search), [location.search]);
+  const commandDate = scope.date_to;
   const [date, setDate] = useState(() => commandDate || today);
   const [worklist, setWorklist] = useState(null);
   const [summary, setSummary] = useState(null);
@@ -329,11 +331,12 @@ export default function ProductionExecution() {
     if (force) setRefreshing(true); else setLoading(true);
     setError(null);
     try {
-      const opts = { params: { capture_date: date }, ...(force ? { forceFresh: true } : {}) };
+      const params = { ...productionScopeParams(scope), capture_date: date };
+      const opts = { params, ...(force ? { forceFresh: true } : {}) };
       const [wl, sm, ev, out] = await Promise.all([
         api.get("/production-workspace/execution/worklist", opts),
         api.get("/production-workspace/execution/summary", opts),
-        api.get("/production-workspace/execution/events", { params: { event_date: date }, ...(force ? { forceFresh: true } : {}) }),
+        api.get("/production-workspace/execution/events", { params: { ...params, event_date: date }, ...(force ? { forceFresh: true } : {}) }),
         api.get("/production-workspace/execution/output", opts),
       ]);
       setWorklist(wl.data); setSummary(sm.data); setEvents(ev.data?.events || []); setOutput(out.data?.output || []);
@@ -341,7 +344,7 @@ export default function ProductionExecution() {
     } catch (err) {
       setError(err?.response?.data?.detail || err.message || "Could not load execution capture. Check your connection.");
     } finally { setLoading(false); setRefreshing(false); }
-  }, [date]);
+  }, [date, scope]);
 
   useEffect(() => { load(false); }, [load]);
   useEffect(() => {
@@ -367,6 +370,7 @@ export default function ProductionExecution() {
         <div><div className="flex items-center gap-2"><Factory size={20} className="text-brand" /><h1 className="text-xl font-extrabold text-[#0f3d24]">Production Execution Capture</h1></div><p className="mt-1 text-[12px] text-muted">Supervisor capture for approved plans — output, causes, quality and recovery.</p></div>
         <div className="flex flex-wrap items-center gap-2"><label className="text-[11px] font-semibold text-muted">Work date <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="ml-1 rounded-md border border-line px-2 py-2 text-[12px]" /></label><button type="button" onClick={() => load(true)} disabled={refreshing || loading} className="inline-flex min-h-[38px] items-center gap-1.5 rounded-md border border-brand/30 px-3 py-2 text-[12px] font-semibold text-brand disabled:opacity-50"><ArrowClockwise size={14} className={refreshing ? "animate-spin" : ""} />{refreshing ? "Refreshing…" : "Refresh"}</button></div>
       </div>
+       <ProductionScopeNotice scope={scope} unsupported={["date_from", "date_to", "delivery_risk"]} />
       <div className="flex flex-wrap gap-2"><a href="/production?tab=tracker" className="inline-flex items-center gap-1 rounded-full border border-line bg-white px-2.5 py-1 text-[11px] font-semibold text-[#0f3d24]"><LinkSimple size={12} />Production Tracker</a><a href="/production?tab=report" className="inline-flex items-center gap-1 rounded-full border border-line bg-white px-2.5 py-1 text-[11px] font-semibold text-[#0f3d24]"><LinkSimple size={12} />Production Report</a><a href="/quality" className="inline-flex items-center gap-1 rounded-full border border-line bg-white px-2.5 py-1 text-[11px] font-semibold text-[#0f3d24]"><LinkSimple size={12} />Quality & rework</a></div>
       {loading ? <div className="card-white p-8 text-center text-sm text-muted"><Clock size={20} className="mr-1 inline animate-pulse" />Loading approved assignments…</div> : error ? <Notice kind="error"><WarningCircle size={14} className="mr-1 inline" />{error} <button type="button" onClick={() => load(true)} className="ml-2 font-semibold underline">Retry</button></Notice> : worklist?.state === "missing_plan" ? <Notice kind="warning"><WarningCircle size={14} className="mr-1 inline" />No approved plan or authorized line assignment is available for {date}. Planning must approve and assign work before capture can begin.</Notice> : (
         <>

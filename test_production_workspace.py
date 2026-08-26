@@ -99,6 +99,41 @@ class FakeTransaction:
 
 
 class ProductionWorkspaceFoundationTests(unittest.TestCase):
+    def test_planning_payload_constrains_command_scope_before_returning_rows(self):
+        calls = []
+        def query(sql, params=None, fetch=False):
+            calls.append((sql, list(params or [])))
+            return []
+        with patch.object(workspace, "_ensure_schema"), patch.object(workspace, "_db", query):
+            payload = workspace._plans(
+                request_for("admin"), factory_id="44", line_id="7", shift_id="3",
+                owner_user_id="owner-9", plan_status="approved", stage="cutting",
+                search="ST-100", date_from="2099-01-01", date_to="2099-01-31",
+            )
+        sql, params = calls[-1]
+        self.assertIn("p.factory_id=%s::bigint", sql)
+        self.assertIn("wi.stage_key=%s", sql)
+        self.assertIn("concat_ws", sql)
+        self.assertTrue({"44", "7", "3", "owner-9", "approved", "cutting", "ST-100"}.issubset(set(params)))
+        self.assertEqual(payload["scope_applied"]["factory_id"], "44")
+
+    def test_capture_payload_constrains_scope_before_worklist_aggregation(self):
+        calls = []
+        def query(sql, params=None, fetch=False):
+            calls.append((sql, list(params or [])))
+            return []
+        with patch.object(workspace, "_ensure_schema"), patch.object(workspace, "_db", query):
+            payload = workspace._execution_worklist(
+                request_for("admin"), "2099-01-10", factory_id="44", line_id="7",
+                shift_id="3", owner_user_id="owner-9", plan_status="approved",
+                stage="cutting", search="ST-100",
+            )
+        sql, params = calls[-1]
+        self.assertIn("p.factory_id=%s::bigint", sql)
+        self.assertIn("p.owner_user_id=%s", sql)
+        self.assertIn("wi.stage_key=%s", sql)
+        self.assertTrue({"44", "7", "3", "owner-9", "approved", "cutting", "ST-100"}.issubset(set(params)))
+        self.assertEqual(payload["scope_applied"]["search"], "ST-100")
     def setUp(self):
         self.original_api = workspace._API
         self.original_ready = workspace._SCHEMA_READY

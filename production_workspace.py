@@ -386,6 +386,58 @@ def _plan_scope_sql(actor, alias="p"):
     )
 
 
+def _command_scope(request, *, date_from="", date_to="", stage="", factory_id="",
+                   line_id="", shift_id="", owner_user_id="", plan_status="",
+                   search=""):
+    """Normalize Command Centre filters before they reach plan-backed rows."""
+    actor = _actor(request)
+    privacy = actor["role"] in QUALITY_ROLES | PRODUCT_ROLES
+    return {
+        "date_from": str(date_from or ""),
+        "date_to": str(date_to or ""),
+        "stage": str(stage or ""),
+        "factory_id": str(factory_id or ""),
+        "line_id": str(line_id or ""),
+        "shift_id": str(shift_id or ""),
+        "owner_user_id": "" if privacy else str(owner_user_id or ""),
+        "plan_status": str(plan_status or "").lower(),
+        "search": str(search or ""),
+        "unsupported_filters": ["delivery_risk"],
+    }
+
+
+def _command_scope_sql(scope, *, plan_alias="p", work_item_alias="wi",
+                       include_plan_dates=True):
+    """Return a pre-aggregation predicate for every compatible Command filter."""
+    clauses, params = [], []
+    if include_plan_dates and scope["date_from"]:
+        clauses.append(f"{plan_alias}.planned_start >= %s")
+        params.append(scope["date_from"])
+    if include_plan_dates and scope["date_to"]:
+        clauses.append(f"{plan_alias}.planned_end <= %s")
+        params.append(scope["date_to"])
+    for key, column in (("factory_id", "factory_id"), ("line_id", "line_id"), ("shift_id", "shift_id")):
+        if scope[key]:
+            clauses.append(f"{plan_alias}.{column}=%s::bigint")
+            params.append(scope[key])
+    if scope["owner_user_id"]:
+        clauses.append(f"{plan_alias}.owner_user_id=%s")
+        params.append(scope["owner_user_id"])
+    if scope["plan_status"]:
+        clauses.append(f"{plan_alias}.status=%s")
+        params.append(scope["plan_status"])
+    if scope["stage"]:
+        clauses.append(f"{work_item_alias}.stage_key=%s")
+        params.append(scope["stage"])
+    if scope["search"]:
+        clauses.append(
+            f"concat_ws(' ',{work_item_alias}.external_ref,{work_item_alias}.style_number,"
+            f"{work_item_alias}.production_order_ref) ILIKE '%%' || %s || '%%'"
+        )
+        params.append(scope["search"])
+    return clauses, params
+
+
 def _plan_is_visible(request, plan_id):
     actor = _actor(request)
     predicate, params = _plan_scope_sql(actor)
@@ -1256,13 +1308,15 @@ def _work_item_update(work_item_id: int, request: Request, body: dict):
         return _error("Could not update the production work item", 500)
 
 
-def _plans(request: Request):
+def _plans(request: Request, **scope_args):
     _ensure_schema()
     denied = _require_role(request, VIEW_ROLES, "Production workspace viewing")
     if denied:
         return denied
     actor = _actor(request)
     predicate, params = _plan_scope_sql(actor)
+    command_scope = _command_scope(request, **scope_args)
+    command_clauses, command_params = _command_scope_sql(command_scope)
     rows = _db(
         """
         SELECT p.*, wi.external_ref, wi.style_number, wi.description,
@@ -1272,11 +1326,12 @@ def _plans(request: Request):
         JOIN production_workspace_work_items wi ON wi.id=p.work_item_id
         JOIN production_workspace_factories f ON f.id=p.factory_id
         LEFT JOIN production_workspace_lines l ON l.id=p.line_id
-        WHERE """ + predicate + """
+        WHERE """ + predicate + ((" AND " + " AND ".join(command_clauses)) if command_clauses else "") + """
         ORDER BY p.updated_at DESC, p.id DESC
-        """, params, fetch=True)
+        """, [*params, *command_params], fetch=True)
     return _privacy_safe_workspace_payload(
-        request, {"schema_version": WORKSPACE_SCHEMA_VERSION, "plans": _rows(rows)})
+        request, {"schema_version": WORKSPACE_SCHEMA_VERSION, "plans": _rows(rows),
+                  "scope_applied": command_scope})
 
 
 def _plan_get(plan_id: int, request: Request):
@@ -2745,7 +2800,7 @@ def _execution_output_update(output_id: int, request: Request, body: dict):
         return _error("Could not save the output correction", 500)
 
 
-def _execution_outputs(request: Request, capture_date=None, plan_version_id=None):
+def _execution_outputs(request: Request, capture_date=None, plan_version_id=None, **scope_args):
     _ensure_schema()
     denied = _require_role(request, EXECUTION_CAPTURE_ROLES, "Production execution viewing")
     if denied:
@@ -2759,8 +2814,13 @@ def _execution_outputs(request: Request, capture_date=None, plan_version_id=None
         clauses.append("o.plan_version_id=%s")
         params.append(plan_version_id)
     scope, scope_params = _plan_scope_sql(actor, "p")
+    command_scope = _command_scope(request, **scope_args)
+    command_clauses, command_params = _command_scope_sql(
+        command_scope, include_plan_dates=False)
     clauses.append(scope)
     params.extend(scope_params)
+    clauses.extend(command_clauses)
+    params.extend(command_params)
     where = " WHERE " + " AND ".join(clauses)
     rows = _db(
         f"""
@@ -2781,10 +2841,11 @@ def _execution_outputs(request: Request, capture_date=None, plan_version_id=None
         """,
         params, fetch=True,
     )
-    return _privacy_safe_workspace_payload(request, {"output": _rows(rows)})
+    return _privacy_safe_workspace_payload(request, {"output": _rows(rows),
+                  "scope_applied": command_scope})
 
 
-def _execution_worklist(request: Request, capture_date=None):
+def _execution_worklist(request: Request, capture_date=None, **scope_args):
     _ensure_schema()
     denied = _require_role(request, EXECUTION_CAPTURE_ROLES, "Production execution viewing")
     if denied:
@@ -2792,6 +2853,9 @@ def _execution_worklist(request: Request, capture_date=None):
     actor = _actor(request)
     day = _execution_date(capture_date) or date.today()
     scope, scope_params = _plan_scope_sql(actor, "p")
+    command_scope = _command_scope(request, **scope_args)
+    command_clauses, command_params = _command_scope_sql(
+        command_scope, include_plan_dates=False)
     rows = _db(
         """
         SELECT p.id AS plan_version_id,p.version_no,p.status,p.planned_start,p.planned_end,
@@ -2821,10 +2885,10 @@ def _execution_worklist(request: Request, capture_date=None):
         ) outp ON TRUE
         WHERE p.status IN ('approved','frozen')
           AND %s BETWEEN p.planned_start AND p.planned_end
-          AND (""" + scope + """)
+          AND (""" + scope + """)""" + (("\n          AND " + " AND ".join(command_clauses)) if command_clauses else "") + """
         ORDER BY p.planned_start,p.id,a.id
         """,
-        [day, day, *scope_params], fetch=True,
+        [day, day, *scope_params, *command_params], fetch=True,
     )
     return _privacy_safe_workspace_payload(request, {
         "schema_version": WORKSPACE_SCHEMA_VERSION,
@@ -2832,11 +2896,12 @@ def _execution_worklist(request: Request, capture_date=None):
         "state": "ready" if rows else "missing_plan",
         "message": None if rows else "No approved production assignment is scheduled for this date.",
         "worklist": _rows(rows),
+        "scope_applied": command_scope,
     })
 
 
 def _execution_events(request: Request, event_type=None, plan_version_id=None,
-                      event_date=None):
+                      event_date=None, **scope_args):
     _ensure_schema()
     denied = _require_role(request, EXECUTION_CAPTURE_ROLES, "Production execution viewing")
     if denied:
@@ -2855,8 +2920,13 @@ def _execution_events(request: Request, event_type=None, plan_version_id=None,
         clauses.append("e.event_date=%s")
         params.append(_execution_date(event_date))
     scope, scope_params = _plan_scope_sql(actor, "p")
+    command_scope = _command_scope(request, **scope_args)
+    command_clauses, command_params = _command_scope_sql(
+        command_scope, include_plan_dates=False)
     clauses.append(scope)
     params.extend(scope_params)
+    clauses.extend(command_clauses)
+    params.extend(command_params)
     where = " WHERE " + " AND ".join(clauses)
     rows = _db(
         f"""
@@ -2877,7 +2947,8 @@ def _execution_events(request: Request, event_type=None, plan_version_id=None,
         params, fetch=True,
     )
     return _privacy_safe_workspace_payload(
-        request, {"events": _rows(rows), "event_type": event_type})
+        request, {"events": _rows(rows), "event_type": event_type,
+                  "scope_applied": command_scope})
 
 
 def _execution_event_create(request: Request, body: dict):
@@ -3093,14 +3164,14 @@ def _execution_event_update(event_id: int, request: Request, body: dict):
         return _error("Could not update the execution event", 500)
 
 
-def _execution_summary(request: Request, capture_date=None):
-    worklist = _execution_worklist(request, capture_date)
+def _execution_summary(request: Request, capture_date=None, **scope_args):
+    worklist = _execution_worklist(request, capture_date, **scope_args)
     if isinstance(worklist, JSONResponse):
         return worklist
     day = worklist["capture_date"]
     plan_ids = sorted({row["plan_version_id"] for row in worklist.get("worklist", [])})
     if not plan_ids:
-        return {"capture_date": day, "state": worklist["state"],
+        return {"capture_date": day, "state": worklist["state"], "scope_applied": worklist["scope_applied"],
                 "summary": {"good_qty": 0, "reject_qty": 0, "rework_qty": 0,
                             "output_entries": 0, "events": []}}
     rows = _db(
@@ -3121,7 +3192,7 @@ def _execution_summary(request: Request, capture_date=None):
     )
     summary = dict(rows[0]) if rows else {}
     summary["events"] = _rows(counts)
-    return {"capture_date": day, "state": worklist["state"], "summary": _jsonable(summary)}
+    return {"capture_date": day, "state": worklist["state"], "scope_applied": worklist["scope_applied"], "summary": _jsonable(summary)}
 
 
 def _execution_bulk_rows(body):
@@ -3565,23 +3636,64 @@ def _execution_output_update_endpoint(output_id: int, request: Request,
     return _execution_output_update(output_id, request, body)
 
 
+def _execution_scope_args(date_from: str = None, date_to: str = None, stage: str = None,
+                          factory_id: str = None, line_id: str = None, shift_id: str = None,
+                          owner_user_id: str = None, plan_status: str = None,
+                          search: str = None):
+    return {"date_from": date_from, "date_to": date_to, "stage": stage,
+            "factory_id": factory_id, "line_id": line_id, "shift_id": shift_id,
+            "owner_user_id": owner_user_id, "plan_status": plan_status,
+            "search": search}
+
+
+def _plans_endpoint(request: Request, date_from: str = None, date_to: str = None,
+                    stage: str = None, factory_id: str = None, line_id: str = None,
+                    shift_id: str = None, owner_user_id: str = None,
+                    plan_status: str = None, search: str = None):
+    return _plans(request, **_execution_scope_args(
+        date_from, date_to, stage, factory_id, line_id, shift_id,
+        owner_user_id, plan_status, search))
+
+
 def _execution_outputs_endpoint(request: Request, capture_date: str = None,
-                                plan_version_id: int = None):
-    return _execution_outputs(request, capture_date, plan_version_id)
+                                plan_version_id: int = None, date_from: str = None,
+                                date_to: str = None, stage: str = None,
+                                factory_id: str = None, line_id: str = None,
+                                shift_id: str = None, owner_user_id: str = None,
+                                plan_status: str = None, search: str = None):
+    return _execution_outputs(request, capture_date, plan_version_id,
+                              **_execution_scope_args(date_from, date_to, stage, factory_id, line_id, shift_id, owner_user_id, plan_status, search))
 
 
-def _execution_worklist_endpoint(request: Request, capture_date: str = None):
-    return _execution_worklist(request, capture_date)
+def _execution_worklist_endpoint(request: Request, capture_date: str = None,
+                                 date_from: str = None, date_to: str = None,
+                                 stage: str = None, factory_id: str = None,
+                                 line_id: str = None, shift_id: str = None,
+                                 owner_user_id: str = None, plan_status: str = None,
+                                 search: str = None):
+    return _execution_worklist(request, capture_date,
+        **_execution_scope_args(date_from, date_to, stage, factory_id, line_id, shift_id, owner_user_id, plan_status, search))
 
 
-def _execution_summary_endpoint(request: Request, capture_date: str = None):
-    return _execution_summary(request, capture_date)
+def _execution_summary_endpoint(request: Request, capture_date: str = None,
+                                date_from: str = None, date_to: str = None,
+                                stage: str = None, factory_id: str = None,
+                                line_id: str = None, shift_id: str = None,
+                                owner_user_id: str = None, plan_status: str = None,
+                                search: str = None):
+    return _execution_summary(request, capture_date,
+        **_execution_scope_args(date_from, date_to, stage, factory_id, line_id, shift_id, owner_user_id, plan_status, search))
 
 
 def _execution_events_endpoint(request: Request, event_type: str = None,
                                plan_version_id: int = None,
-                               event_date: str = None):
-    return _execution_events(request, event_type, plan_version_id, event_date)
+                               event_date: str = None, date_from: str = None,
+                               date_to: str = None, stage: str = None,
+                               factory_id: str = None, line_id: str = None,
+                               shift_id: str = None, owner_user_id: str = None,
+                               plan_status: str = None, search: str = None):
+    return _execution_events(request, event_type, plan_version_id, event_date,
+        **_execution_scope_args(date_from, date_to, stage, factory_id, line_id, shift_id, owner_user_id, plan_status, search))
 
 
 def _execution_event_create_endpoint(request: Request,
@@ -3636,7 +3748,7 @@ def register_production_workspace_routes(app, api_module):
                       _work_item_create_endpoint, methods=["POST"])
     app.add_api_route("/api/production-workspace/work-items/{work_item_id}",
                       _work_item_update_endpoint, methods=["PATCH"])
-    app.add_api_route("/api/production-workspace/plans", _plans, methods=["GET"])
+    app.add_api_route("/api/production-workspace/plans", _plans_endpoint, methods=["GET"])
     app.add_api_route("/api/production-workspace/work-items/{work_item_id}/plans",
                       _plan_create_endpoint, methods=["POST"])
     app.add_api_route("/api/production-workspace/plans/{plan_id}",

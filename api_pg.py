@@ -38999,12 +38999,12 @@ def production_summary(request: Request):
                        THEN pa.fabric_structure
                    WHEN bs.fabric_structure IS NOT NULL THEN bs.fabric_structure
                    WHEN COALESCE(pa.product_type, '') ILIKE ANY(ARRAY[
-                       '%sweater%','%poncho%','%hoodie%','%sweatshirt%',
-                       '%t-shirt%','%tank top%','%legging%','%bodysuit%','%knit%'
+                       '%%sweater%%','%%poncho%%','%%hoodie%%','%%sweatshirt%%',
+                       '%%t-shirt%%','%%tank top%%','%%legging%%','%%bodysuit%%','%%knit%%'
                    ])
                    OR po.style_name ILIKE ANY(ARRAY[
-                       '%jersey%','% rib %','%ponte%','%spandex%','%lycra%',
-                       '% knit%','%fleece%'
+                       '%%jersey%%','%% rib %%','%%ponte%%','%%spandex%%','%%lycra%%',
+                       '%% knit%%','%%fleece%%'
                    ])
                    THEN 'Knit' ELSE 'Woven'
                END AS fabric_construction

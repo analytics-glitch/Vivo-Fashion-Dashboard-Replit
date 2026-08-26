@@ -1209,6 +1209,23 @@ def _command_public_rows(rows):
     ]
 
 
+def _command_row_provenance(row):
+    """Keep source, timestamp availability and completeness on every decision row."""
+    sources = []
+    for source, timestamp, required in (
+        ("approved_plan", row.get("plan_fresh_at"), True),
+        ("execution_capture", row.get("output_fresh_at") or row.get("last_output_date"), True),
+        ("quality_and_downtime", row.get("event_fresh_at") or row.get("last_event_date"), False),
+    ):
+        state = "complete" if timestamp else ("missing" if required else "unknown")
+        sources.append({"source": source, "as_of": timestamp, "state": state})
+    return {
+        "state": "complete" if all(item["state"] == "complete" for item in sources[:2])
+        else "partial",
+        "sources": sources,
+    }
+
+
 def _command_line_rows(plans, productivity, covered_plan_ids=None):
     """Produce one honest row per factory/line without shift misattribution."""
     covered_plan_ids = set(covered_plan_ids or [])
@@ -1290,6 +1307,29 @@ def _command_line_rows(plans, productivity, covered_plan_ids=None):
                             (target, actual, capacity, required, quality_total))
                 else "One or more approved plans are missing execution, capacity, or quality evidence in this period."
             ),
+            "provenance": {
+                "state": "complete" if all(
+                    plan.get("plan_fresh_at") and plan.get("output_fresh_at")
+                    for plan in plans_for_line
+                ) else "partial",
+                "sources": [
+                    {
+                        "source": "approved_plan",
+                        "as_of": max((p.get("plan_fresh_at") for p in plans_for_line if p.get("plan_fresh_at")), default=None),
+                        "state": "complete" if all(p.get("plan_fresh_at") for p in plans_for_line) else "missing",
+                    },
+                    {
+                        "source": "execution_capture",
+                        "as_of": max((p.get("output_fresh_at") for p in plans_for_line if p.get("output_fresh_at")), default=None),
+                        "state": "complete" if all(p.get("output_fresh_at") for p in plans_for_line) else "missing",
+                    },
+                    {
+                        "source": "quality_and_downtime",
+                        "as_of": max((p.get("event_fresh_at") for p in plans_for_line if p.get("event_fresh_at")), default=None),
+                        "state": "complete" if all(p.get("event_fresh_at") for p in plans_for_line) else "unknown",
+                    },
+                ],
+            },
         })
         out.append(row)
     return sorted(out, key=lambda r: (str(r["factory_name"]), str(r["line_name"]), str(r["shift_name"])))
@@ -1533,6 +1573,8 @@ def _command_centre(request, date_from=None, date_to=None, stage="", factory_id=
         "owners": [] if scope["privacy_context"] else sorted({p.get("owner_user_id") for p in plans if p.get("owner_user_id")}),
         "stages": sorted({(row.get("stage_key"), row.get("stage_name")) for row in stages if row.get("stage_key")}, key=lambda x: str(x[1])),
     }
+    plans = [{**plan, "provenance": _command_row_provenance(plan)} for plan in plans]
+    recovery = [{**row, "provenance": _command_row_provenance(row)} for row in recovery]
     response_plans = _command_public_rows(plans) if scope["privacy_context"] else plans
     response_recovery = _command_public_rows(recovery) if scope["privacy_context"] else recovery
     return {

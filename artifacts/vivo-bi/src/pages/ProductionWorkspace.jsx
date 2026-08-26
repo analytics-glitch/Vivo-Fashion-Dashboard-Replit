@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
 import { api } from "@/lib/api";
+import { ProductionScopeNotice, productionScopeParams, readProductionScope } from "@/lib/productionScope";
 import { ErrorBox, Loading, SectionTitle } from "@/components/common";
 import {
   ArrowsClockwise, CheckCircle, ClipboardText, DownloadSimple, Factory,
@@ -335,13 +336,13 @@ export default function ProductionWorkspace() {
         api.get("/production-workspace", { forceFresh: true }),
         api.get("/production-workspace/catalogues", { forceFresh: true }),
         api.get("/production-workspace/work-items", { forceFresh: true }),
-        api.get("/production-workspace/plans", { forceFresh: true }),
+        api.get("/production-workspace/plans", { params: productionScopeParams(readProductionScope(location.search)), forceFresh: true }),
         api.get("/production-workspace/tracker-references", { forceFresh: true }),
       ]);
       setData({ root: root.data, catalogues: catalogues.data.catalogues || {}, workItems: workItems.data.work_items || [], plans: plans.data.plans || [], tracker: tracker.data });
     } catch (err) { setError(err?.response?.data?.detail || "Could not load the production planning workspace."); }
     finally { setLoading(false); }
-  }, []);
+  }, [location.search]);
 
   const loadDetail = useCallback(async (planId) => {
     if (!planId) { setDetail(null); setFeasibility(null); return; }
@@ -361,14 +362,8 @@ export default function ProductionWorkspace() {
   const plan = detail?.plan;
   const mutable = plan && ["draft", "reopened"].includes(plan.status) && canPlan;
   const commandScope = useMemo(() => {
-    const params = new URLSearchParams(location.search);
-    return {
-      factoryId: params.get("prod_factory_id") || "",
-      lineId: params.get("prod_line_id") || "",
-      shiftId: params.get("prod_shift_id") || "",
-      dateFrom: params.get("date_from") || "",
-      dateTo: params.get("date_to") || "",
-    };
+    const scope = readProductionScope(location.search);
+    return { ...scope, factoryId: scope.factory_id, lineId: scope.line_id, shiftId: scope.shift_id, dateFrom: scope.date_from, dateTo: scope.date_to };
   }, [location.search]);
   const planOptions = useMemo(() => (data?.plans || []).filter((item) => {
     if (commandScope.factoryId && String(item.factory_id) !== commandScope.factoryId) return false;
@@ -404,6 +399,7 @@ export default function ProductionWorkspace() {
   return <div className="space-y-4" data-testid="production-planning-workspace">
     <div className="flex flex-wrap items-start justify-between gap-3">
       <SectionTitle title="Production Planning Workspace" subtitle="Prepare feasible, readiness-controlled line plans without changing the live Odoo tracker." />
+       <ProductionScopeNotice scope={commandScope} unsupported={["delivery_risk"]} />
       {(commandScope.factoryId || commandScope.lineId || commandScope.shiftId || commandScope.dateFrom || commandScope.dateTo) && <div className="mt-2 text-xs text-muted" data-testid="workspace-command-context">Showing plans in the Command Centre scope.</div>}
       <button type="button" className="btn-ghost text-xs" onClick={refresh}><ArrowsClockwise size={14} className="inline mr-1" />Refresh</button>
     </div>

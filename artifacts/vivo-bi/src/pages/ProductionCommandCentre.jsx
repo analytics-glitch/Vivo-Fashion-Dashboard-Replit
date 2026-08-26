@@ -12,7 +12,6 @@ import { ErrorBox, Loading, SectionTitle } from "@/components/common";
 const n = (value) => Number(value || 0).toLocaleString(undefined, { maximumFractionDigits: 1 });
 const pct = (value) => value == null ? "Unavailable" : `${Number(value).toFixed(1)}%`;
 const title = (value) => String(value || "—").replace(/_/g, " ").replace(/\b\w/g, (m) => m.toUpperCase());
-
 function asEAT(value) {
   if (!value) return "Timestamp unavailable";
   try {
@@ -103,6 +102,18 @@ function Freshness({ sources }) {
       })}
     </div>
   );
+}
+
+function RowProvenance({ provenance }) {
+  const items = provenance?.sources || [];
+  if (!items.length) return <span className="text-muted">Source timestamp unavailable</span>;
+  return <div className="space-y-1">
+    {items.map((item) => <div key={item.source} className="flex flex-wrap items-center gap-1.5">
+      <span className={`rounded border px-1.5 py-0.5 text-[9px] font-bold ${stateTone(item.state)}`}>{item.state || "unknown"}</span>
+      <span>{title(item.source)}</span>
+      <span className="text-[10px]">{item.as_of ? `${asEAT(item.as_of)} EAT` : "Timestamp unavailable"}</span>
+    </div>)}
+  </div>;
 }
 
 function ContextFilters({ data, query, onChange, onClear }) {
@@ -336,7 +347,7 @@ export default function ProductionCommandCentre({
                   <th className="px-4 py-2">Factory / line</th><th className="px-3 py-2 text-right">Plan</th><th className="px-3 py-2 text-right">Actual</th><th className="px-3 py-2 text-right">Load</th><th className="px-3 py-2 text-right">Quality</th><th className="px-3 py-2 text-right">Efficiency</th>
                 </tr></thead>
                 <tbody>{(data?.line_performance || []).map((row) => <tr key={`${row.factory_id}-${row.line_id}-${row.shift_id}`} className={onOpenWorkspace ? "border-t border-line hover:bg-panel/20 cursor-pointer" : "border-t border-line"} onClick={onOpenWorkspace ? () => openWorkspace(row) : undefined} title={!onOpenWorkspace ? "Planning is not available for your role." : "Open this line in Planning"}>
-                  <td className="px-4 py-2.5"><div className="font-semibold text-[#0f3d24]">{row.factory_name}</div><div className="text-muted">{row.line_name} · {row.shift_name} · {row.owner_count} owner{row.owner_count === 1 ? "" : "s"}</div></td>
+                  <td className="px-4 py-2.5"><div className="font-semibold text-[#0f3d24]">{row.factory_name}</div><div className="text-muted">{row.line_name} · {row.shift_name} · {row.owner_count} owner{row.owner_count === 1 ? "" : "s"}</div><div className="mt-1"><RowProvenance provenance={row.provenance} /></div></td>
                   <td className="px-3 py-2.5 text-right tabular-nums">{row.target_qty == null ? "Unavailable" : n(row.target_qty)}</td>
                   <td className="px-3 py-2.5 text-right tabular-nums">{row.actual_qty == null ? "Incomplete" : n(row.actual_qty)}</td>
                   <td className="px-3 py-2.5 text-right tabular-nums">{pct(row.load_pct)}</td>
@@ -359,7 +370,7 @@ export default function ProductionCommandCentre({
                     <td className="px-3 py-2.5"><div className={`inline-flex rounded-full border px-1.5 py-0.5 text-[10px] font-bold ${stateTone(row.priority_band === "urgent" ? "error" : row.priority_band === "watch" ? "partial" : "ready")}`}>{title(row.priority_band)}</div><div className="mt-1 text-muted">{row.planned_end} · {row.current_stage ? title(row.current_stage) : "Stage unavailable"}</div></td>
                     <td className="px-3 py-2.5 text-right tabular-nums">{row.remaining_qty == null ? "Needs capture" : n(row.remaining_qty)}</td>
                     <td className="px-3 py-2.5 text-right tabular-nums">{pct(row.load_pct)}</td>
-                    <td className="px-3 py-2.5 max-w-[350px] text-muted">{(row.reasons || []).slice(0, 2).join(" ")}</td>
+                    <td className="px-3 py-2.5 max-w-[350px] text-muted"><div>{(row.reasons || []).slice(0, 2).join(" ")}</div><div className="mt-1"><RowProvenance provenance={row.provenance} /></div></td>
                     <td className="px-4 py-2.5 text-right whitespace-nowrap">
                       {row.production_order_ref && <button type="button" onClick={tabAction(onOpenTracker, { search: row.production_order_ref })} disabled={!onOpenTracker} title={!onOpenTracker ? "Production Tracker is not available for your role." : undefined} className="text-brand font-semibold hover:underline mr-3 disabled:opacity-50">Order</button>}
                       <button type="button" onClick={onOpenWorkspace ? () => openWorkspace(row) : null} disabled={!onOpenWorkspace} title={!onOpenWorkspace ? "Planning is not available for your role." : undefined} className="inline-flex items-center gap-1 text-brand font-semibold hover:underline disabled:opacity-50">Plan <ArrowSquareOut size={12} /></button>

@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { api } from "@/lib/api";
+import { ProductionScopeNotice, readProductionScope } from "@/lib/productionScope";
 import { SectionTitle, Loading, ErrorBox } from "@/components/common";
 import ProductionOrderModal from "@/components/ProductionOrderModal";
 import { ArrowsClockwise, Factory, MagnifyingGlass, X, CloudCheck, Warning } from "@phosphor-icons/react";
@@ -160,6 +161,7 @@ function ColumnBulkBar({ stageKey, allowed, count, busy, onMove, onClear }) {
 
 function Production() {
   const location = useLocation();
+  const commandScope = React.useMemo(() => readProductionScope(location.search), [location.search]);
   const [stages, setStages] = useState([]);
   const [cards, setCards] = useState([]);
   const [syncStatus, setSyncStatus] = useState(null);
@@ -291,6 +293,7 @@ function Production() {
 
   return (
     <div className="space-y-4">
+      <ProductionScopeNotice scope={commandScope} applied={false} unsupported={["date_from", "date_to", "stage", "factory_id", "line_id", "shift_id", "owner_user_id", "plan_status", "delivery_risk", "search"]} />
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div className="min-w-0">
           <SectionTitle

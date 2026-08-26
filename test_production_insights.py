@@ -90,6 +90,25 @@ def command_productivity_row(timestamp, **overrides):
 
 
 class ProductionInsightsContractTests(unittest.TestCase):
+    def test_command_row_provenance_exposes_source_timestamp_and_completeness(self):
+        complete = insights._command_row_provenance({
+            "plan_fresh_at": "2026-08-26T09:00:00Z",
+            "output_fresh_at": "2026-08-26T10:00:00Z",
+            "event_fresh_at": "2026-08-26T11:00:00Z",
+        })
+        self.assertEqual(complete["state"], "complete")
+        self.assertEqual(complete["sources"][1]["source"], "execution_capture")
+        self.assertEqual(complete["sources"][1]["state"], "complete")
+        missing = insights._command_row_provenance({})
+        self.assertEqual(missing["state"], "partial")
+        self.assertEqual(missing["sources"][0]["state"], "missing")
+        self.assertIsNone(missing["sources"][0]["as_of"])
+
+    def test_production_report_literal_like_patterns_do_not_consume_scope_placeholders(self):
+        with open("api_pg.py", encoding="utf-8") as source_file:
+            source = source_file.read()
+        self.assertIn("'%%sweater%%'", source)
+        self.assertIn("'%%jersey%%'", source)
     def _command_response(self, *, plan_timestamp, recovery_error=False):
         """Run the aggregate endpoint against controlled source responses."""
         original = {

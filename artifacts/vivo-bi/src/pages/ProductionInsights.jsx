@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { api, fmtNum } from "@/lib/api";
+import { ProductionScopeNotice, productionScopeParams, readProductionScope } from "@/lib/productionScope";
 import { Empty, ErrorBox, Loading, SectionTitle } from "@/components/common";
 import { useAuth } from "@/lib/auth";
 import {
@@ -212,13 +213,11 @@ export default function ProductionInsights() {
   const location = useLocation();
   const [view, setView] = useState("worker");
   const commandFilters = () => {
-    const params = new URLSearchParams(location.search);
+    const scope = readProductionScope(location.search);
     return {
-      date_from: params.get("date_from") || monthAgo,
-      date_to: params.get("date_to") || today,
-      factory_id: params.get("prod_factory_id") || "",
-      line_id: params.get("prod_line_id") || "",
-      shift_id: params.get("prod_shift_id") || "",
+      ...scope,
+      date_from: scope.date_from || monthAgo,
+      date_to: scope.date_to || today,
     };
   };
   const [filters, setFilters] = useState(commandFilters);
@@ -232,7 +231,7 @@ export default function ProductionInsights() {
   const load = useCallback(async (force = false) => {
     setLoading(true); setError(null);
     try {
-      const config = { params: { ...filters, view }, ...(force ? { forceFresh: true } : {}) };
+      const config = { params: { ...productionScopeParams(filters), view }, ...(force ? { forceFresh: true } : {}) };
       const [metrics, queue] = await Promise.all([
         api.get("/production-workspace/productivity", config).then((r) => r.data),
         api.get("/production-workspace/recovery", { params: filters, ...(force ? { forceFresh: true } : {}) }).then((r) => r.data),
@@ -255,6 +254,7 @@ export default function ProductionInsights() {
   return (
     <main className="space-y-4" data-testid="production-insights">
       <SectionTitle title="Productivity & Recovery" subtitle="Contextual, private-by-scope operational insight. Missing attendance, output, SAM or quality inputs stay unavailable — never a zero or ranking." action={<button onClick={() => load(true)} className="inline-flex items-center gap-1 rounded border border-line px-2.5 py-1.5 text-xs font-semibold text-muted hover:bg-panel"><ArrowClockwise size={15} /> Refresh</button>} />
+      <ProductionScopeNotice scope={filters} applied={false} unsupported={["owner_user_id", "plan_status", "stage", "search", "delivery_risk"]} />
       {error && <ErrorBox message={error} />}
       <section className="card-white p-3">
         <div className="flex flex-wrap items-end gap-3">

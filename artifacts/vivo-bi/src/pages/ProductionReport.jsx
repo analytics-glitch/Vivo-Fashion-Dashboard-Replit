@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback, useMemo } from "react";
 import { useLocation } from "react-router-dom";
 import { api } from "@/lib/api";
+import { ProductionScopeNotice, readProductionScope } from "@/lib/productionScope";
 import { SectionTitle, Loading, ErrorBox, Empty } from "@/components/common";
 import ProductionOrderModal from "@/components/ProductionOrderModal";
 import {
@@ -438,6 +439,7 @@ function ReportBulkToolbar({ fromStages, flowStages, count, busy, msg, onMove, o
 
 export default function ProductionReport() {
   const location = useLocation();
+  const commandScope = useMemo(() => readProductionScope(location.search), [location.search]);
   const [data, setData] = useState(null);
   const [flow, setFlow] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -836,6 +838,7 @@ export default function ProductionReport() {
 
   return (
     <div className="space-y-5" data-testid="production-report">
+      <ProductionScopeNotice scope={commandScope} applied={false} unsupported={["date_from", "date_to", "stage", "factory_id", "line_id", "shift_id", "owner_user_id", "plan_status", "delivery_risk", "search"]} />
       <SectionTitle
         title="Production Report"
         subtitle="The line as a flow — where every buying order's units sit across the stages, and the colour/size detail behind each style."

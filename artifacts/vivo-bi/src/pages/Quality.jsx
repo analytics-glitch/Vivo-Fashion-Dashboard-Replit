@@ -1,5 +1,7 @@
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback, useMemo } from "react";
+import { useLocation } from "react-router-dom";
 import { api } from "@/lib/api";
+import { ProductionScopeNotice, productionScopeParams, readProductionScope } from "@/lib/productionScope";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import {
   Medal,
@@ -385,7 +387,7 @@ const Washing = () => {
 // experience as well as on the Production Capture tab. The source remains
 // clearly labelled so these observations are never confused with the Quality
 // sheet's historical aggregates above.
-const ExecutionQualityEvents = () => {
+const ExecutionQualityEvents = ({ scope }) => {
   const [events, setEvents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState(null);
@@ -393,13 +395,13 @@ const ExecutionQualityEvents = () => {
     setLoading(true); setErr(null);
     try {
       const { data } = await api.get("/production-workspace/execution/events", {
-        params: { event_type: "qc_defect" }, forceFresh: true,
+        params: { ...productionScopeParams(scope), event_type: "qc_defect" }, forceFresh: true,
       });
       setEvents(data?.events || []);
     } catch (e) {
       setErr(e?.response?.data?.detail || e.message || "Could not load captured defects.");
     } finally { setLoading(false); }
-  }, []);
+  }, [scope]);
   useEffect(() => { load(); }, [load]);
   return (
     <Section title="Supervisor-captured QC defects & rework" icon={Warning}
@@ -423,6 +425,8 @@ const ExecutionQualityEvents = () => {
 
 // ── Page root ─────────────────────────────────────────────────────────────────
 export default function Quality() {
+  const location = useLocation();
+  const scope = useMemo(() => readProductionScope(location.search), [location.search]);
   return (
     <div className="px-4 sm:px-6 py-6 space-y-6 max-w-7xl mx-auto">
       {/* Header */}
@@ -439,11 +443,13 @@ export default function Quality() {
           </div>
         </div>
       </div>
+      <ProductionScopeNotice scope={scope} unsupported={["date_from", "date_to", "delivery_risk"]} />
+      {Object.values(scope).some(Boolean) && <div className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900" data-testid="quality-legacy-scope-warning"><strong>Quality tracker sheet charts are global.</strong> They do not carry an authoritative plan, line, owner, or production-stage key; the scoped execution-defect table below does.</div>}
 
       {/* Sections */}
       <OverallRepairs />
       <RepairsByLine />
-      <ExecutionQualityEvents />
+      <ExecutionQualityEvents scope={scope} />
       <Complaints />
       <Washing />
     </div>
