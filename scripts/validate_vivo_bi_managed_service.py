@@ -1,50 +1,29 @@
 #!/usr/bin/env python3
-"""Fail-closed validation for the one managed Vivo BI preview owner."""
+"""Read-only, fail-closed audit for the managed Vivo BI preview owner."""
 
 from __future__ import annotations
 
 import json
-import re
-import subprocess
 import sys
 import urllib.error
 import urllib.request
-from pathlib import Path
 
-
-PORT = 18659
-WORKSPACE = Path("/home/runner/workspace")
-ARTIFACT_DIR = WORKSPACE / "artifacts" / "vivo-bi"
-
-
-def run(*command: str) -> str:
-    completed = subprocess.run(command, check=False, capture_output=True, text=True)
-    return completed.stdout
-
-
-def listener_pids() -> list[int]:
-    raw = run("lsof", "-nP", f"-iTCP:{PORT}", "-sTCP:LISTEN", "-t")
-    return sorted({int(pid) for pid in raw.split() if pid.isdigit()})
-
-
-def processes() -> dict[int, tuple[int, str]]:
-    rows: dict[int, tuple[int, str]] = {}
-    for line in run("ps", "-eo", "pid=,ppid=,args=").splitlines():
-        match = re.match(r"\s*(\d+)\s+(\d+)\s+(.*)", line)
-        if match:
-            rows[int(match.group(1))] = (int(match.group(2)), match.group(3))
-    return rows
-
-
-def ancestors(pid: int, rows: dict[int, tuple[int, str]]) -> list[str]:
-    chain: list[str] = []
-    seen: set[int] = set()
-    while pid in rows and pid not in seen:
-        seen.add(pid)
-        parent, args = rows[pid]
-        chain.append(args)
-        pid = parent
-    return chain
+try:  # Direct script execution is the normal recovery path.
+    from vivo_bi_managed_service import (
+        ARTIFACT_DIR,
+        PORT,
+        WORKSPACE,
+        inspect_listener,
+        stable_listener,
+    )
+except ModuleNotFoundError:
+    from scripts.vivo_bi_managed_service import (
+        ARTIFACT_DIR,
+        PORT,
+        WORKSPACE,
+        inspect_listener,
+        stable_listener,
+    )
 
 
 def require_endpoint(url: str, *, require_ready: bool = False) -> dict:
@@ -62,30 +41,51 @@ def require_endpoint(url: str, *, require_ready: bool = False) -> dict:
 def main() -> int:
     manifest = ARTIFACT_DIR / ".replit-artifact" / "artifact.toml"
     config = manifest.read_text(encoding="utf-8")
-    if 'localPort = 18659' not in config or 'run = "pnpm --filter @workspace/vivo-bi run dev"' not in config:
-        raise RuntimeError("Vivo BI artifact service no longer declares the required managed web owner")
-
-    pids = listener_pids()
-    if len(pids) != 1:
-        raise RuntimeError(f"expected exactly one listener on {PORT}, found {pids or 'none'}")
-    rows = processes()
-    pid = pids[0]
-    chain = ancestors(pid, rows)
-    if not chain or "vite" not in chain[0] or str(ARTIFACT_DIR) not in chain[0]:
-        raise RuntimeError(f"listener PID {pid} is not the Vivo BI Vite process")
-    if not any("pnpm --filter @workspace/vivo-bi run dev" in args for args in chain):
+    expected_run = 'run = "python3 ../../scripts/start_vivo_bi_managed.py"'
+    if f"localPort = {PORT}" not in config or expected_run not in config:
         raise RuntimeError(
-            f"listener PID {pid} has no managed Vivo BI workflow parent; treat it as an orphan and do not start another Vite process"
+            "Vivo BI artifact service no longer declares the guarded managed web owner"
         )
-
+    listener_pid, instability = stable_listener()
+    if instability:
+        raise RuntimeError(f"unstable port ownership: {instability}")
+    if listener_pid is None:
+        raise RuntimeError(f"expected exactly one listener on {PORT}, found none")
+    inspection = inspect_listener(listener_pid)
+    if not inspection["verified"]:
+        raise RuntimeError(
+            f"listener PID {listener_pid} failed managed-owner proof: "
+            + "; ".join(inspection["reasons"])
+        )
+    # A second stable read protects the report from a listener that disappeared
+    # between its identity inspection and API health checks.
+    stable_pid, instability = stable_listener()
+    if instability or stable_pid != listener_pid:
+        raise RuntimeError("listener changed during managed-service audit")
     liveness = require_endpoint("http://127.0.0.1:8080/api/healthz")
     readiness = require_endpoint("http://127.0.0.1:8080/api/readyz", require_ready=True)
     print(json.dumps({
         "ok": True,
-        "vivo_bi_listener_pid": pid,
-        "vivo_bi_listener_count": len(pids),
+        "workspace": str(WORKSPACE),
+        "vivo_bi_listener_pid": listener_pid,
+        "vivo_bi_listener_count": 1,
+        "listener": {
+            "args": inspection["args"],
+            "cwd": inspection["cwd"],
+            "executable": inspection["executable"],
+            "start_ticks": inspection["start_ticks"],
+            "environment": inspection["environment"],
+            "ancestry": inspection["ancestry"],
+            "owner": inspection["owner"],
+        },
         "api_liveness": liveness.get("status"),
         "api_ready": readiness.get("ready"),
+        "workflow_ready_recovery_evidence": {
+            "guarded_run_command": expected_run,
+            "stable_listener": True,
+            "managed_ancestry": True,
+            "owner_record_verified": True,
+        },
     }, sort_keys=True))
     return 0
 

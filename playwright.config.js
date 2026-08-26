@@ -25,7 +25,9 @@ module.exports = defineConfig({
     // screenshots retain actionable release evidence without requiring a
     // separately-downloaded revisioned ffmpeg helper for optional video.
     video: "off",
-    screenshot: "on",
+    // Each release flow writes named screenshots itself. Disabling the generic
+    // test-finished capture keeps the retained bundle's inventory exact.
+    screenshot: "off",
   },
   projects: [
     {

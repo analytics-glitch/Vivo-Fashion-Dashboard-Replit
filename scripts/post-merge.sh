@@ -2,6 +2,10 @@
 set -e
 
 # Install workspace dependencies (frozen to the committed lockfile).
+# This setup script never starts a frontend process. Replit may restart the
+# managed artifact service after package installation; that service must enter
+# through scripts/start_vivo_bi_managed.py, which owns the port lock and
+# lifecycle record. Do not add pnpm/vite dev commands here.
 pnpm install --frozen-lockfile
 
 # NOTE: we intentionally do NOT run `drizzle-kit push` here.

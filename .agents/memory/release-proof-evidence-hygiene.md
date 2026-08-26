@@ -8,3 +8,15 @@ Release proof directories are review artifacts, not ordinary ignored test output
 **Why:** Browser traces can capture cookie-backed requests even when the test code never writes a token to a report. A green test marker alone cannot prove evidence exists, fixture cleanup completed, or a review bundle is safe to commit.
 
 **How to apply:** For any retained authenticated browser proof, persist private run ownership until database cleanup and residue verification succeed, sanitize the output before deleting that private state, and use a validator that rejects missing evidence, live token patterns, or non-zero cleanup counts.
+
+Evidence must be considered safe only after redaction and an independent
+archive-aware scan; every retained artifact must be included in the final
+review inventory.
+
+**Why:** Browser traces serialize sensitive values in several representations,
+including structured header records, and a file visible locally may not be
+present in the committed bundle.
+
+**How to apply:** Sanitize and scan raw files plus archive contents for
+credentials and identifiers, then compare the final manifest with both disk
+and version-control inventory before certifying a release.

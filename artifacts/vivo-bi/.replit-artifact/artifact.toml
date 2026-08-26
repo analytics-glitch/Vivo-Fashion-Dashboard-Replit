@@ -15,7 +15,7 @@ paths = [ "/" ]
 localPort = 18659
 
 [services.development]
-run = "pnpm --filter @workspace/vivo-bi run dev"
+run = "python3 ../../scripts/start_vivo_bi_managed.py"
 
 [services.production]
 build = [ "pnpm", "--filter", "@workspace/vivo-bi", "run", "build" ]

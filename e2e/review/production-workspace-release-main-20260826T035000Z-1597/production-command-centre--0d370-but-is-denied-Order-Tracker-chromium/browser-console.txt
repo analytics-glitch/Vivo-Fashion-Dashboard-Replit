@@ -1,0 +1,18 @@
+[2026-08-26T03:26:49.306Z] console.debug: [vite] connecting...
+[2026-08-26T03:26:49.320Z] console.debug: [vite] connected.
+[2026-08-26T03:26:49.602Z] console.info: %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-08-26T03:26:51.377Z] api-error: 401 http://localhost/api/auth/me?_t=1787714811352
+[2026-08-26T03:26:51.377Z] console.error: Failed to load resource: the server responded with a status of 401 (Unauthorized)
+[2026-08-26T03:26:51.380Z] api-error: 401 http://localhost/api/auth/me?_t=1787714811352
+[2026-08-26T03:26:51.380Z] console.error: Failed to load resource: the server responded with a status of 401 (Unauthorized)
+[2026-08-26T03:26:51.408Z] requestfailed: GET http://localhost/src/pages/Login.jsx net::ERR_ABORTED
+[2026-08-26T03:26:51.460Z] console.debug: [vite] connecting...
+[2026-08-26T03:26:51.491Z] console.debug: [vite] connected.
+[2026-08-26T03:26:51.663Z] console.info: %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-08-26T03:26:53.503Z] api-error: 403 http://localhost/api/admin/snapshot-freshness?_t=1787714813383
+[2026-08-26T03:26:53.503Z] console.error: Failed to load resource: the server responded with a status of 403 (Forbidden)
+[2026-08-26T03:26:54.775Z] console.debug: [vite] connecting...
+[2026-08-26T03:26:54.778Z] console.debug: [vite] connected.
+[2026-08-26T03:26:54.884Z] console.info: %cDownload the React DevTools for a better development experience: https://react.dev/link/react-devtools font-weight:bold
+[2026-08-26T03:26:56.629Z] api-error: 403 http://localhost/api/admin/snapshot-freshness?_t=1787714816581
+[2026-08-26T03:26:56.629Z] console.error: Failed to load resource: the server responded with a status of 403 (Forbidden)

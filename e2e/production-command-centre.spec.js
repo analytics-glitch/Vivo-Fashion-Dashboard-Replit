@@ -68,6 +68,21 @@ async function refreshHealthy(page) {
   await expect(page.locator('[data-testid="command-refresh"]')).toHaveText("Refresh");
 }
 
+async function waitForRenderedCommandScope(page, expectedScope) {
+  await expect.poll(async () => {
+    const href = await commandCentre(page).getByRole("link", { name: "Quality", exact: true }).getAttribute("href");
+    const destination = new URL(href || "/", "http://localhost");
+    return Object.fromEntries(
+      Object.keys(expectedScope).map((key) => [`prod_${key}`, destination.searchParams.get(`prod_${key}`)]),
+    );
+  }, {
+    message: "Command Centre drill targets must reflect the rendered filter scope",
+    timeout: 20_000,
+  }).toEqual(Object.fromEntries(
+    Object.entries(expectedScope).map(([key, value]) => [`prod_${key}`, value || null]),
+  ));
+}
+
 test.beforeEach(async ({ page }, testInfo) => {
   const browserLog = [];
   const add = (kind, detail) => browserLog.push(`[${new Date().toISOString()}] ${kind}: ${detail}`);
@@ -86,7 +101,7 @@ test.afterEach(async ({}, testInfo) => {
   const content = testInfo.browserLog?.length
     ? testInfo.browserLog.join("\n")
     : "No browser console messages or failed requests recorded.";
-  fs.writeFileSync(testInfo.outputPath("browser.log"), `${content}\n`, "utf8");
+  fs.writeFileSync(testInfo.outputPath("browser-console.txt"), `${content}\n`, "utf8");
 });
 
 test("Command Centre desktop handles filters, refresh failure, recovery, partial data, and every enabled drill-down", async ({ page }, testInfo) => {
@@ -98,11 +113,17 @@ test("Command Centre desktop handles filters, refresh failure, recovery, partial
   await expect(page.locator('[data-testid="command-error"]')).toBeHidden();
   await page.screenshot({ path: testInfo.outputPath("command-centre-desktop-healthy.png"), fullPage: true });
 
+  const initialScope = {
+    plan_status: "approved",
+    search: "e2e-command-centre",
+  };
   await page.locator('select[aria-label="Plan status"]').selectOption("approved");
   await expect(page).toHaveURL(/prod_plan_status=approved/);
   await page.locator('input[aria-label="Search production scope"]').fill("e2e-command-centre");
   await expect(page).toHaveURL(/prod_search=e2e-command-centre/);
+  await waitForRenderedCommandScope(page, initialScope);
   await page.getByRole("button", { name: "Clear", exact: true }).click();
+  await waitForRenderedCommandScope(page, { plan_status: "", search: "" });
   await expect(page).toHaveURL(/\/production\?tab=dashboard$/);
 
   await refreshHealthy(page);
@@ -228,8 +249,15 @@ test("Command Centre desktop handles filters, refresh failure, recovery, partial
   }
   for (const drill of drills) {
     await openCommandCentre(page);
+    const drillScope = {
+      plan_status: "approved",
+      search: "e2e-production-proof",
+    };
     await page.locator('select[aria-label="Plan status"]').selectOption("approved");
+    await expect(page).toHaveURL(/prod_plan_status=approved/);
     await page.locator('input[aria-label="Search production scope"]').fill("e2e-production-proof");
+    await expect(page).toHaveURL(/prod_search=e2e-production-proof/);
+    await waitForRenderedCommandScope(page, drillScope);
     const scopedRequest = drill.scopedApi
       ? page.waitForRequest((request) => {
         if (!request.url().includes(drill.scopedApi)) return false;
@@ -242,10 +270,18 @@ test("Command Centre desktop handles filters, refresh failure, recovery, partial
       : null;
     await drill.click();
     await expect(page, `${drill.label} must keep the Command Centre destination`).toHaveURL(drill.url);
-    const destination = new URL(page.url());
-    for (const [key, value] of Object.entries(expectedScope)) {
-      expect(destination.searchParams.get(key), `${drill.label} must preserve ${key}`).toBe(value);
-    }
+    // Navigation sets the destination tab first and applies the inherited
+    // scope on the following render. Poll rather than sampling the URL between
+    // those two state updates, otherwise a correct transition is flaky.
+    await expect.poll(() => {
+      const destination = new URL(page.url());
+      return Object.fromEntries(
+        Object.keys(expectedScope).map((key) => [key, destination.searchParams.get(key)]),
+      );
+    }, {
+      message: `${drill.label} must preserve the Command Centre scope`,
+      timeout: 20_000,
+    }).toEqual(expectedScope);
     await drill.ready();
     if (scopedRequest) await scopedRequest;
     if (drill.unsupportedScope) {

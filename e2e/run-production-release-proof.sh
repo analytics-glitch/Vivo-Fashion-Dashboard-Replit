@@ -29,5 +29,19 @@ if [[ "$test_status" -ne 0 ]]; then
   exit "$test_status"
 fi
 
+# Playwright's internal status marker is runtime state, not review evidence.
+# The exact-contract validator rejects it rather than allowing a stale rerun to
+# look complete.
+rm -f "$review_dir/.last-run.json"
+
+# Build a manifest once from the run's exact disk inventory before staging it.
+# The final invocation below re-reads that manifest and fails closed if Git,
+# disk, hashes or sizes disagree.
+python3 e2e/validate-production-release-proof.py --build "$review_dir"
+
+# A release-proof bundle is only reviewable once its complete inventory is
+# explicitly tracked. Stage the fresh run before the independent validator
+# compares the disk, manifest and Git inventories.
+git add -- "$review_dir"
 python3 e2e/validate-production-release-proof.py "$review_dir"
 echo "Production Workspace release proof retained in $review_dir"

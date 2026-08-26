@@ -10,17 +10,36 @@ const CLEANUP_FILE = path.join(
 
 function sanitizeEvidence(outputDir, secrets) {
   const sanitizer = `
-import json, os, tempfile, zipfile
+import json, os, re, tempfile, zipfile
 from pathlib import Path
 
 root = Path(os.environ["E2E_EVIDENCE_DIR"])
 secrets = [value.encode("utf-8") for value in json.loads(os.environ["E2E_REDACTIONS"]) if value]
+patterns = (
+    re.compile(rb"(?i)(?:authorization|proxy-authorization|cookie|set-cookie)\\s*[:=]\\s*[^\\r\\n\\\"']+"),
+    re.compile(rb"(?i)\\bbearer\\s+[a-z0-9._~+\\/-]{12,}"),
+    re.compile(rb"(?i)(?:access_token|id_token|session_token|token)=([^&\\s\\\"']+)"),
+    re.compile(rb"https?://[^\\s\\\"']*googleusercontent\\.com/[^\\s\\\"']+"),
+    re.compile(rb"(?i)\\b[a-z0-9._%+\\-]+@[a-z0-9.\\-]+\\.[a-z]{2,}\\b"),
+)
+structured_header_patterns = (
+    re.compile(rb"(?is)(\\\"name\\\"\\s*:\\s*\\\"(?:cookie|set-cookie|authorization|proxy-authorization)\\\"\\s*,\\s*\\\"value\\\"\\s*:\\s*\\\")(?!\\[REDACTED\\])[^\\\"]*(\\\")"),
+    re.compile(rb"(?is)(\\\"value\\\"\\s*:\\s*\\\")(?!\\[REDACTED\\])[^\\\"]*(\\\"\\s*,\\s*\\\"name\\\"\\s*:\\s*\\\"(?:cookie|set-cookie|authorization|proxy-authorization)\\\")"),
+)
 
 def redact(data):
     for secret in secrets:
         data = data.replace(secret, b"[REDACTED]")
+    for pattern in patterns:
+        data = pattern.sub(b"[REDACTED]", data)
+    for pattern in structured_header_patterns:
+        data = pattern.sub(rb"\\1[REDACTED]\\2", data)
     return data
 
+def unsafe_count(data):
+    return sum(len(pattern.findall(data)) for pattern in patterns + structured_header_patterns)
+
+unsafe_matches = 0
 for path in root.rglob("*"):
     if not path.is_file() or path.name == "production-release-cleanup.json":
         continue
@@ -42,15 +61,26 @@ for path in root.rglob("*"):
         redacted = redact(data)
         if redacted != data:
             path.write_bytes(redacted)
+for path in root.rglob("*"):
+    if not path.is_file() or path.name == "production-release-cleanup.json":
+        continue
+    if path.suffix == ".zip":
+        with zipfile.ZipFile(path, "r") as archive:
+            unsafe_matches += sum(unsafe_count(archive.read(info)) for info in archive.infolist())
+    else:
+        unsafe_matches += unsafe_count(path.read_bytes())
+if unsafe_matches:
+    raise RuntimeError(f"unsafe retained evidence remained after sanitization: {unsafe_matches}")
+print(json.dumps({"unsafe_matches": unsafe_matches}))
 `;
-  execFileSync("python3", ["-c", sanitizer], {
+  return JSON.parse(execFileSync("python3", ["-c", sanitizer], {
     encoding: "utf8",
     env: {
       ...process.env,
       E2E_EVIDENCE_DIR: outputDir,
       E2E_REDACTIONS: JSON.stringify(secrets),
     },
-  });
+  }).trim());
 }
 
 async function globalTeardown() {
@@ -59,8 +89,13 @@ async function globalTeardown() {
   try {
     if (!runFile) throw new Error("missing invocation state path");
     state = JSON.parse(fs.readFileSync(runFile, "utf8"));
-  } catch {
-    state = { token: "", roleTokens: {}, roleUsers: [], labels: [], productionFixture: {} };
+  } catch (error) {
+    fs.mkdirSync(path.dirname(CLEANUP_FILE), { recursive: true });
+    fs.writeFileSync(CLEANUP_FILE, JSON.stringify({
+      ok: false,
+      error: `release-proof ownership state is unavailable: ${error.message}`,
+    }, null, 2), "utf8");
+    throw error;
   }
   const cleanup = `
 import json, os, psycopg2
@@ -209,7 +244,7 @@ print(json.dumps({"deleted": deleted, "remaining": remaining}, sort_keys=True))
         E2E_PRODUCTION_FIXTURE: JSON.stringify(state.productionFixture || {}),
       },
     }).trim();
-    sanitizeEvidence(outputDir, tokens);
+    const sanitizationScan = sanitizeEvidence(outputDir, tokens);
     if (runFile) {
       fs.unlinkSync(runFile);
     }
@@ -217,7 +252,9 @@ print(json.dumps({"deleted": deleted, "remaining": remaining}, sort_keys=True))
     fs.writeFileSync(CLEANUP_FILE, JSON.stringify({
       ok: true,
       ...JSON.parse(output),
-      evidence_sanitized: true,
+      suite_run_id: process.env.VIVO_E2E_RUN_ID || null,
+      evidence_sanitized: sanitizationScan.unsafe_matches === 0,
+      sanitization_scan: sanitizationScan,
       run_state_removed: !runFile || !fs.existsSync(runFile),
     }, null, 2), "utf8");
   } catch (error) {
