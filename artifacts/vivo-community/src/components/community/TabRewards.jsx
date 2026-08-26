@@ -155,26 +155,51 @@ export default function TabRewards({ member, onMemberUpdate, onOpenPage, onOpenS
             </div>
           ))}
         </div>
+      </div>
 
-        {/* Our gems — programme-level provenance of the tier names */}
-        <div data-testid="our-gems" className={`${cardCls} p-6 sm:p-8`}>
-          <h3 className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-2">Our Gems</h3>
-          <p className="text-[13px] text-muted-foreground leading-relaxed mb-6">
-            Every tier is a gemstone from East African soil — your journey moves through the treasures of our own region.
-          </p>
-          <div className="space-y-5">
-            <div className="flex items-start gap-4">
-              <TierBadge tier="Tsavorite" className="mt-0.5 shrink-0" />
-              <p className="text-[13px] text-foreground/80 leading-relaxed">The vivid green garnet discovered in Kenya's Tsavo — where everyone begins.</p>
-            </div>
-            <div className="flex items-start gap-4">
-              <TierBadge tier="Ruby" className="mt-0.5 shrink-0" />
-              <p className="text-[13px] text-foreground/80 leading-relaxed">Warm, deep red from East Africa's ruby heartlands.</p>
-            </div>
-            <div className="flex items-start gap-4">
-              <TierBadge tier="Tanzanite" className="mt-0.5 shrink-0" />
-              <p className="text-[13px] text-foreground/80 leading-relaxed">Found only at the foot of Kilimanjaro — rarer than diamond.</p>
-            </div>
+      {/* How to Earn sits directly below the programme story. */}
+      <div>
+        <h2 className="text-xl font-serif text-foreground mb-6">How to Earn</h2>
+        <div className="grid grid-cols-2 gap-3">
+          {earnWays.map(w => {
+            const className = "bg-secondary/50 rounded p-4 border border-border text-center flex flex-col items-center justify-center group transition-colors";
+            const content = <>
+              <div className="text-muted-foreground group-hover:text-primary-ink transition-colors mb-3">{w.icon}</div>
+              <div className="font-medium text-foreground text-[13px] mb-1">{w.title}</div>
+              <div className="text-[11px] uppercase tracking-wider text-muted-foreground">{w.pts}</div>
+            </>;
+            return w.onClick ? (
+              <button key={w.title} type="button" data-testid={`earn-way-${w.title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`} onClick={w.onClick} className={`${className} hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary`}>
+                {content}
+              </button>
+            ) : (
+              <div key={w.title} className={className}>{content}</div>
+            );
+          })}
+        </div>
+        <p className="text-[12px] text-muted-foreground leading-relaxed mt-4">
+          Reviews, photos, videos, fit notes, style posts and challenge entries are reviewed with love before they go live — each earns its points when it's published.
+        </p>
+      </div>
+
+      {/* Our gems — programme-level provenance of the tier names */}
+      <div data-testid="our-gems" className={`${cardCls} p-6 sm:p-8`}>
+        <h3 className="text-xs font-bold uppercase tracking-widest text-muted-foreground mb-2">Our Gems</h3>
+        <p className="text-[13px] text-muted-foreground leading-relaxed mb-6">
+          Every tier is a gemstone from East African soil — your journey moves through the treasures of our own region.
+        </p>
+        <div className="space-y-5">
+          <div className="flex items-start gap-4">
+            <TierBadge tier="Tsavorite" className="mt-0.5 shrink-0" />
+            <p className="text-[13px] text-foreground/80 leading-relaxed">The vivid green garnet discovered in Kenya's Tsavo — where everyone begins.</p>
+          </div>
+          <div className="flex items-start gap-4">
+            <TierBadge tier="Ruby" className="mt-0.5 shrink-0" />
+            <p className="text-[13px] text-foreground/80 leading-relaxed">Warm, deep red from East Africa's ruby heartlands.</p>
+          </div>
+          <div className="flex items-start gap-4">
+            <TierBadge tier="Tanzanite" className="mt-0.5 shrink-0" />
+            <p className="text-[13px] text-foreground/80 leading-relaxed">Found only at the foot of Kilimanjaro — rarer than diamond.</p>
           </div>
         </div>
       </div>
@@ -255,55 +280,27 @@ export default function TabRewards({ member, onMemberUpdate, onOpenPage, onOpenS
 
       {/* Weekly missions moved to the Account tab (WeeklyMissionsCard). */}
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-12">
-        {/* History */}
-        <div>
-          <h2 className="text-xl font-serif text-foreground mb-6">Points History</h2>
-          <div className={`${cardCls} overflow-hidden divide-y divide-border`}>
-            {transactions.map((t, i) => (
-              <div key={t.id} className="p-4 flex items-center justify-between hover:bg-secondary/30 transition-colors">
-                <div>
-                  <div className="font-medium text-foreground text-[14px]">{t.action}</div>
-                  <div className="text-[12px] text-muted-foreground mt-1">{t.date}</div>
-                </div>
-                <div className="text-right">
-                  <div className={`font-medium ${t.pts.startsWith('+') ? 'text-primary-ink' : 'text-destructive'}`}>{t.pts}</div>
-                  <div className={`text-[10px] uppercase font-bold tracking-widest mt-1 max-w-[150px] ml-auto ${t.status.includes('Pending') ? 'text-muted-foreground' : 'text-primary-ink'}`}>
-                    {t.status === "Pending" ? "Pending — awarded when published" : t.status}
-                  </div>
+      <div>
+        <h2 className="text-xl font-serif text-foreground mb-6">Points History</h2>
+        <div className={`${cardCls} overflow-hidden divide-y divide-border`}>
+          {transactions.map((t, i) => (
+            <div key={t.id} className="p-4 flex items-center justify-between hover:bg-secondary/30 transition-colors">
+              <div>
+                <div className="font-medium text-foreground text-[14px]">{t.action}</div>
+                <div className="text-[12px] text-muted-foreground mt-1">{t.date}</div>
+              </div>
+              <div className="text-right">
+                <div className={`font-medium ${t.pts.startsWith('+') ? 'text-primary-ink' : 'text-destructive'}`}>{t.pts}</div>
+                <div className={`text-[10px] uppercase font-bold tracking-widest mt-1 max-w-[150px] ml-auto ${t.status.includes('Pending') ? 'text-muted-foreground' : 'text-primary-ink'}`}>
+                  {t.status === "Pending" ? "Pending — awarded when published" : t.status}
                 </div>
               </div>
-            ))}
-          </div>
-          <p data-testid="pending-note" className="text-[12px] text-muted-foreground leading-relaxed mt-3">
-            Pending points land the moment your entry is published. If one doesn't go live, we'll let you know — you can tweak and reshare anytime.
-          </p>
+            </div>
+          ))}
         </div>
-
-        {/* How to Earn */}
-        <div>
-          <h2 className="text-xl font-serif text-foreground mb-6">How to Earn</h2>
-          <div className="grid grid-cols-2 gap-3">
-            {earnWays.map(w => {
-              const className = "bg-secondary/50 rounded p-4 border border-border text-center flex flex-col items-center justify-center group transition-colors";
-              const content = <>
-                <div className="text-muted-foreground group-hover:text-primary-ink transition-colors mb-3">{w.icon}</div>
-                <div className="font-medium text-foreground text-[13px] mb-1">{w.title}</div>
-                <div className="text-[11px] uppercase tracking-wider text-muted-foreground">{w.pts}</div>
-              </>;
-              return w.onClick ? (
-                <button key={w.title} type="button" data-testid={`earn-way-${w.title.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`} onClick={w.onClick} className={`${className} hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary`}>
-                  {content}
-                </button>
-              ) : (
-                <div key={w.title} className={className}>{content}</div>
-              );
-            })}
-          </div>
-          <p className="text-[12px] text-muted-foreground leading-relaxed mt-4">
-            Reviews, photos, videos, fit notes, style posts and challenge entries are reviewed with love before they go live — each earns its points when it's published.
-          </p>
-        </div>
+        <p data-testid="pending-note" className="text-[12px] text-muted-foreground leading-relaxed mt-3">
+          Pending points land the moment your entry is published. If one doesn't go live, we'll let you know — you can tweak and reshare anytime.
+        </p>
       </div>
 
       {/* Personalised-tank redemptions — live status from the studio */}
