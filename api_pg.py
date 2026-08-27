@@ -4360,6 +4360,12 @@ def _odoo_retired_styles():
         _RETIRED_SET_CACHE["at"] = now
     return _RETIRED_SET_CACHE["set"]
 
+# Non-product / housekeeping "style" names that sometimes carry a stray
+# status='Active' SKU row in Odoo (test data, catch-all sample buckets) —
+# excluded from the Tier 4 no-recognized-tier fallback even when Active,
+# confirmed by user 2026-08-27 after auditing the fallback bucket by hand.
+_TIER4_FALLBACK_EXCLUSIONS = {"zz test", "sample & sale items"}
+
 # Styles Odoo currently flags status='Active' on at least one SKU row. Used
 # ONLY to gate the _lifecycle_tier no-recognized-tier fallback (below): a style
 # with no Tier 1-3 value AND no live Active status is catalog debris (blank
@@ -4501,8 +4507,11 @@ def _lifecycle_tier(style_name, brand, age_weeks, reorder_count, months_active_1
     # the style status='Active' (a real, live style just not yet triaged into
     # a tier) — see _ODOO_TIER_MAP / _odoo_active_status_styles note. Anything
     # else (blank status, Archived, Partner Brand, Sample) is catalog debris
-    # that must not inflate Tier 4.
+    # that must not inflate Tier 4. Known non-product/test names are excluded
+    # even if Active (_TIER4_FALLBACK_EXCLUSIONS).
     norm = _norm_style(style_name)
+    if norm in _TIER4_FALLBACK_EXCLUSIONS:
+        return "Retired"
     return "Tier 4" if norm in _odoo_active_status_styles() else "Retired"
 
 
