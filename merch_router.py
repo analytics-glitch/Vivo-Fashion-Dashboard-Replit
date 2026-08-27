@@ -18,9 +18,12 @@ All endpoints:
   • honour filter params: brand, subcategory, tier, status, from_date, to_date, country
   • cache for 600 s (styles/summary/by-* aggregates)
 
-Lifecycle tier is computed from status + is_noos + production_orders reorder count —
-the same one-source model used in Product Analysis and Range Management — never from
-the potentially-absent all_products_clean.tier column.
+Lifecycle tier delegates entirely to api_pg._lifecycle_tier (see _compute_tier below)
+— the SAME single source of truth Range Management and Product Analysis use. There
+is no independent Merch Hub tier model and no override of any kind (2026-08-27 user
+rule: every report with Tier/Status must read from Odoo and match Range Management).
+A style with no live Odoo status at all is excluded from every Merch Hub report,
+never defaulted to Active/Tier 4/Archived.
 
 SQL correctness note: PostgreSQL rejects aggregate functions inside JOIN ON predicates.
 All queries pre-compute style_number per style_name in a dedicated CTE (style_nums),
@@ -197,32 +200,28 @@ _PROD_BASE = """
 """
 
 
-# ── Lifecycle tier — mirrors api_pg._lifecycle_tier logic ─────────────────────
+# ── Lifecycle tier — delegates to api_pg._lifecycle_tier ──────────────────────
+# 2026-08-27 user rule: every report with Tier/Status must read from Odoo and
+# match Range Management, with no other rule (including in Merchandising).
+# This used to be an independent reorder-cycle-count model (≥4 orders → Tier 2,
+# ≥1 → Tier 3); it now calls the SAME shared classifier Range Management and
+# Product Analysis use, so Merch Hub tiers can never disagree with them.
 
-def _compute_tier(is_noos, reorder_count, odoo_status=None):
-    """Compute the unified lifecycle tier from Odoo status + flags + reorder history.
+def _compute_tier(style_name, is_noos):
+    """Compute the unified lifecycle tier for one style — delegates entirely to
+    api_pg._lifecycle_tier (the single dashboard-wide source of truth).
 
-    Mirrors api_pg._lifecycle_tier exactly:
-      Retired  = Odoo status field says Retired (hard retirement, checked first)
-      Tier 1   = NOOS flag in Odoo (is_noos = TRUE)
-      Tier 2   = ≥4 production buying orders (proven, established style)
-      Tier 3   = ≥1 production buying orders (gaining traction)
-      Tier 4   = no reorders yet (brand new or not yet reordered)
+    Returns one of "Retired", "Tier 1".."Tier 4", "Archived", or None. A None
+    result means the style has no live Odoo status at all (catalogue debris —
+    blank status, no Odoo record, Sample, Partner Brand); callers MUST exclude
+    that style from Merch Hub entirely, matching Range Management — never
+    default it to Active/Tier 4/Archived.
 
-    `odoo_status` is the raw value from all_products_clean.status, compared
-    case-insensitively to 'retired'.  When None / blank, the style is treated
-    as Active (same as Product Analysis / Range Management).
+    age_weeks / reorder_count / months_active_12 are no longer part of the
+    classification (api_pg._lifecycle_tier ignores them); only style_name and
+    is_noos are needed.
     """
-    if odoo_status and str(odoo_status).strip().lower() == "retired":
-        return "Retired"
-    if is_noos:
-        return "Tier 1"
-    rc = reorder_count or 0
-    if rc >= 4:
-        return "Tier 2"
-    if rc >= 1:
-        return "Tier 3"
-    return "Tier 4"
+    return A._lifecycle_tier(style_name, None, None, None, None, is_noos=bool(is_noos))
 
 
 # ── Recommended action decision tree ──────────────────────────────────────────
@@ -589,13 +588,6 @@ first_sale AS (
     WHERE s.sale_kind IN ('sale','order')
     GROUP BY p2.style_name
 ),
-/* Manual tier/status overrides loaded from the import spreadsheet.
-   A row here wins over the computed _compute_tier() result. */
-tier_overrides AS (
-    SELECT style_number, tier AS ov_tier, status AS ov_status
-    FROM style_tier_overrides
-    WHERE style_number IS NOT NULL AND style_number <> ''
-)
 SELECT
     p.style_name,
     p.style_number,
@@ -630,9 +622,7 @@ SELECT
     COALESCE(sp.sales_value_period, 0.0) AS sales_value_period,
     COALESCE(sp.units_full_price_period, 0) AS units_full_price_period,
     COALESCE(sl.units_life,     0)   AS units_life,
-    COALESCE(sl.revenue_life,   0.0) AS revenue_life,
-    tov.ov_tier,
-    tov.ov_status
+    COALESCE(sl.revenue_life,   0.0) AS revenue_life
 FROM prod p
 LEFT JOIN stock          st  ON st.style_name   = p.style_name
 LEFT JOIN colour_stock   cs  ON cs.style_name   = p.style_name
@@ -640,7 +630,6 @@ LEFT JOIN sales_6m       s6  ON s6.style_name   = p.style_name
 LEFT JOIN sales_period   sp  ON sp.style_name   = p.style_name
 LEFT JOIN sales_life     sl  ON sl.style_name   = p.style_name
 LEFT JOIN first_sale     fs  ON fs.style_name   = p.style_name
-LEFT JOIN tier_overrides tov ON tov.style_number = p.style_number
 ORDER BY revenue_6m DESC NULLS LAST
 """
     raw = _db_exec(sql, params, fetch=True)
@@ -651,19 +640,13 @@ ORDER BY revenue_6m DESC NULLS LAST
     tier_filter = set(t.strip() for t in tier.split(",") if t.strip()) if tier else None
 
     for r in raw:
-        odoo_status   = r.get("status") or "active"
-        is_noos       = bool(r.get("is_noos"))
-        reorder_count = int(r.get("reorder_count") or 0)
-        # Manual override wins when present (loaded from style_tier_overrides).
-        ov_tier   = r.get("ov_tier")
-        ov_status = r.get("ov_status")
-        if ov_tier:
-            computed_tier = ov_tier
-            if ov_status:
-                odoo_status = ov_status
-        else:
-            # _compute_tier mirrors api_pg._lifecycle_tier: Retired beats NOOS beats reorders
-            computed_tier = _compute_tier(is_noos, reorder_count, odoo_status=odoo_status)
+        is_noos = bool(r.get("is_noos"))
+        # Delegates entirely to api_pg._lifecycle_tier — no override of any kind.
+        computed_tier = _compute_tier(r.get("style_name"), is_noos)
+        if computed_tier is None:
+            # No live Odoo status at all — excluded from Merch Hub entirely,
+            # matching Range Management.
+            continue
 
         # Apply tier filter in Python (never relies on DB column)
         if tier_filter and computed_tier not in tier_filter:
@@ -742,7 +725,7 @@ ORDER BY revenue_6m DESC NULLS LAST
              "colour":              r.get("colour") or "",
              "silhouette":          r.get("silhouette") or "",
             "tier":                computed_tier,
-            "odoo_status":         odoo_status,
+            "odoo_status":         r.get("status") or "Active",
             "launch_date":         str(r["launch_date"]) if r.get("launch_date") else None,
             "last_order_date":     str(r["last_order_date"]) if r.get("last_order_date") else None,
             "standard_cost_kes":   cost,
@@ -750,7 +733,7 @@ ORDER BY revenue_6m DESC NULLS LAST
              "cost_date":           str(r["cost_date"]) if r.get("cost_date") else None,
             "full_price":          float(r["full_price"]) if r.get("full_price") else None,
             "is_noos":             is_noos,
-            "reorder_count":       reorder_count,
+            "reorder_count":       int(r.get("reorder_count") or 0),
             "colour_count":        int(r.get("colour_count") or 0),
             "colours_in_stock":    int(r.get("colours_in_stock") or 0),
             "soh_stores":          soh_stores,
@@ -1162,11 +1145,6 @@ orders_6m_cte AS (
       AND {_BASE_FILTERS}
     GROUP BY p3.style_name
 ),
-tier_overrides AS (
-    SELECT style_number, tier AS ov_tier, status AS ov_status
-    FROM style_tier_overrides
-    WHERE style_number IS NOT NULL AND style_number <> ''
-)
 SELECT
     p.style_name,
     p.style_number,
@@ -1200,9 +1178,7 @@ SELECT
     COALESCE(r6.units_6m,      0)      AS units_period,
     COALESCE(r6.revenue_6m,    0.0)    AS revenue_period,
     COALESCE(rl.units_life,    0)      AS units_life,
-    COALESCE(rl.revenue_life,  0.0)    AS revenue_life,
-    tov.ov_tier,
-    tov.ov_status
+    COALESCE(rl.revenue_life,  0.0)    AS revenue_life
 FROM prod p
 LEFT JOIN stock          st  ON st.style_name   = p.style_name
 LEFT JOIN colour_stock   cs  ON cs.style_name   = p.style_name
@@ -1210,7 +1186,6 @@ LEFT JOIN rollup_6m      r6  ON r6.style_name   = p.style_name
 LEFT JOIN rollup_life    rl  ON rl.style_name   = p.style_name
 LEFT JOIN first_sale     fs  ON fs.style_name   = p.style_name
 LEFT JOIN orders_6m_cte o6m ON o6m.style_name  = p.style_name
-LEFT JOIN tier_overrides tov ON tov.style_number = p.style_number
 ORDER BY revenue_6m DESC NULLS LAST
 """
     else:
@@ -1394,11 +1369,6 @@ first_sale AS (
     WHERE s.sale_kind IN ('sale','order')
     GROUP BY p2.style_name
 ),
-tier_overrides AS (
-    SELECT style_number, tier AS ov_tier, status AS ov_status
-    FROM style_tier_overrides
-    WHERE style_number IS NOT NULL AND style_number <> ''
-)
 SELECT
     p.style_name,
     p.style_number,
@@ -1428,16 +1398,13 @@ SELECT
     COALESCE(s6.units_6m,    0)           AS units_period,
     COALESCE(s6.revenue_6m,  0.0)         AS revenue_period,
     COALESCE(sl.units_life,  0)           AS units_life,
-    COALESCE(sl.revenue_life, 0.0)        AS revenue_life,
-    tov.ov_tier,
-    tov.ov_status
+    COALESCE(sl.revenue_life, 0.0)        AS revenue_life
 FROM prod p
 LEFT JOIN stock          st  ON st.style_name   = p.style_name
 LEFT JOIN colour_stock   cs  ON cs.style_name   = p.style_name
 LEFT JOIN sales_6m       s6  ON s6.style_name   = p.style_name
 LEFT JOIN sales_life     sl  ON sl.style_name   = p.style_name
 LEFT JOIN first_sale     fs  ON fs.style_name   = p.style_name
-LEFT JOIN tier_overrides tov ON tov.style_number = p.style_number
 ORDER BY revenue_6m DESC NULLS LAST
 """
 
@@ -1732,19 +1699,13 @@ def _fetch_styles_fast_path(brand=None, subcategory=None, tier=None, status=None
         if subcat_set and (r.get("subcategory") or "") not in subcat_set:
             continue
 
-        # Tier + status derivation (same logic as _fetch_styles_sql)
-        odoo_status   = r.get("status") or "active"
-        is_noos       = bool(r.get("is_noos"))
-        reorder_count = int(r.get("reorder_count") or 0)
-        ov_tier   = r.get("ov_tier")
-        ov_status = r.get("ov_status")
-        if ov_tier:
-            computed_tier = ov_tier
-            if ov_status:
-                odoo_status = ov_status
-        else:
-            computed_tier = _compute_tier(is_noos, reorder_count,
-                                          odoo_status=odoo_status)
+        # Tier + status derivation (delegates entirely to api_pg._lifecycle_tier)
+        is_noos = bool(r.get("is_noos"))
+        computed_tier = _compute_tier(r.get("style_name"), is_noos)
+        if computed_tier is None:
+            # No live Odoo status at all — excluded from Merch Hub entirely,
+            # matching Range Management.
+            continue
 
         # Tier filter
         if tier_filter and computed_tier not in tier_filter:
@@ -1845,7 +1806,7 @@ def _fetch_styles_fast_path(brand=None, subcategory=None, tier=None, status=None
              "colour":              r.get("colour") or "",
              "silhouette":          r.get("silhouette") or "",
             "tier":                computed_tier,
-            "odoo_status":         odoo_status,
+            "odoo_status":         r.get("status") or "Active",
             "launch_date":         str(r["launch_date"]) if r.get("launch_date") else None,
             "last_order_date":     str(r["last_order_date"]) if r.get("last_order_date") else None,
             "standard_cost_kes":   cost,
@@ -1853,7 +1814,7 @@ def _fetch_styles_fast_path(brand=None, subcategory=None, tier=None, status=None
             "cost_date":           str(r["cost_date"]) if r.get("cost_date") else None,
             "full_price":          float(r["full_price"]) if r.get("full_price") else None,
             "is_noos":             is_noos,
-            "reorder_count":       reorder_count,
+            "reorder_count":       int(r.get("reorder_count") or 0),
             "colour_count":        int(r.get("colour_count") or 0),
             "colours_in_stock":    int(r.get("colours_in_stock") or 0),
             "soh_stores":          soh_stores,
@@ -3904,9 +3865,7 @@ weekly_sales AS (
 cumulative AS (
     SELECT
         ls.style_name,
-        ls.odoo_status,
         ls.is_noos,
-        ls.reorder_count,
         ls.launch_date::date                  AS launch_date,
         ws.week_start,
         EXTRACT(EPOCH FROM (ws.week_start - ls.launch_date::date)) / 604800
@@ -3922,32 +3881,29 @@ cumulative AS (
     LEFT JOIN stock_now sn ON sn.style_name = ls.style_name
 )
 SELECT
-    odoo_status,
+    style_name,
     is_noos,
-    reorder_count,
     FLOOR(weeks_since_launch)::int AS week_n,
-    AVG(
-        cumulative_units * 100.0
+    cumulative_units * 100.0
         / NULLIF(cumulative_units + COALESCE(current_stock, 0), 0)
-    )                              AS avg_cumulative_sor_pct
+                                   AS cumulative_sor_pct
 FROM cumulative
 WHERE weeks_since_launch BETWEEN 0 AND 51
-GROUP BY 1, 2, 3, 4
-ORDER BY 4
+ORDER BY week_n
 """
     params = {"two_years_ago": period_from, "today": period_to, **country_params}
     rows = _db_exec(sql, params, fetch=True)
 
-    # Compute tier in Python (mirrors _lifecycle_tier including Retired check)
+    # Compute tier in Python — delegates entirely to api_pg._lifecycle_tier per
+    # style (2026-08-27: no more reorder-count/odoo_status bucket approximation).
     agg = {}
     for r in rows:
-        t = _compute_tier(
-            bool(r["is_noos"]),
-            int(r["reorder_count"] or 0),
-            odoo_status=r.get("odoo_status"),
-        )
+        t = _compute_tier(r.get("style_name"), bool(r["is_noos"]))
+        if t is None:
+            # No live Odoo status at all — excluded, matching Range Management.
+            continue
         wk  = int(r["week_n"] or 0)
-        sor = float(r["avg_cumulative_sor_pct"]) if r.get("avg_cumulative_sor_pct") is not None else None
+        sor = float(r["cumulative_sor_pct"]) if r.get("cumulative_sor_pct") is not None else None
         if sor is None:
             continue
         agg.setdefault((t, wk), []).append(sor)
@@ -4356,11 +4312,6 @@ reorder_counts AS (
       OR (COALESCE(po.style_name, '') <> '' AND po.style_name = sn.style_name)
     GROUP BY sn.style_name
 ),
-tier_overrides AS (
-    SELECT style_number, tier AS ov_tier, status AS ov_status
-    FROM style_tier_overrides
-    WHERE style_number IS NOT NULL AND style_number <> ''
-),
 prod AS (
     SELECT
         p.style_name,
@@ -4379,16 +4330,12 @@ prod AS (
         END AS style_status
         ,
         BOOL_OR(COALESCE(p.is_noos, FALSE)) AS is_noos,
-        rc.reorder_count,
-        tov.ov_tier,
-        tov.ov_status
+        rc.reorder_count
     FROM all_products_clean p
     JOIN style_nums sn ON sn.style_name = p.style_name
     JOIN reorder_counts rc ON rc.style_name = p.style_name
-    LEFT JOIN tier_overrides tov ON tov.style_number = sn.style_number
     WHERE {_PROD_BASE}{extra_prod_where}
-    GROUP BY p.style_name, sn.style_number, rc.reorder_count,
-             tov.ov_tier, tov.ov_status
+    GROUP BY p.style_name, sn.style_number, rc.reorder_count
 ),
 /* Per-SKU master map: style + colour + cost. Mirrors the stock CTE's `m`
    subquery in _fetch_styles (all styled rows, NO third-party filter — the
@@ -4563,8 +4510,6 @@ SELECT
     p.style_status,
     p.is_noos,
     p.reorder_count,
-    p.ov_tier,
-    p.ov_status,
     g.colour,
     cl.colour_status,
     COALESCE(st.soh_stores, 0) + COALESCE(st.soh_warehouse, 0) AS stock_units,
@@ -4608,22 +4553,15 @@ LEFT JOIN rep_sku rs      ON rs.style_name = g.style_name AND rs.colour = g.colo
 
     for r in raw:
         # Keep the tree's tier scope identical to /api/merch/styles.  Tier is
-        # intentionally resolved in Python because manual overrides and the
-        # lifecycle helper are shared business rules, not stored SQL fields.
-        if tier_filter:
-            ov_tier = r.get("ov_tier")
-            effective_status = (
-                r.get("ov_status")
-                if ov_tier and r.get("ov_status")
-                else r.get("style_status")
-            )
-            row_tier = ov_tier or _compute_tier(
-                bool(r.get("is_noos")),
-                int(r.get("reorder_count") or 0),
-                odoo_status=effective_status,
-            )
-            if row_tier not in tier_filter:
-                continue
+        # intentionally resolved in Python because the lifecycle helper is a
+        # shared business rule, not a stored SQL field.
+        row_tier = _compute_tier(r.get("style_name"), bool(r.get("is_noos")))
+        if row_tier is None:
+            # No live Odoo status at all — excluded entirely, matching
+            # Range Management, regardless of whether a tier filter is set.
+            continue
+        if tier_filter and row_tier not in tier_filter:
+            continue
 
         su = int(r.get("stock_units") or 0)
         sv = float(r.get("stock_value") or 0)
@@ -5514,22 +5452,15 @@ fs AS (
       AND s.sale_kind IN ('sale','order')
     GROUP BY p2.style_number
 ),
-ov AS (
-    SELECT style_number, tier AS ov_tier
-    FROM style_tier_overrides
-    WHERE style_number IS NOT NULL AND style_number <> ''
-)
 SELECT m.style_number, m.style_name, m.is_noos, m.status,
        COALESCE(m.launch_date, fs.first_sale_date::text) AS launch_date,
-       rc.reorder_count, rc.last_order_date, ov.ov_tier
+       rc.reorder_count, rc.last_order_date
 FROM m
 LEFT JOIN rc ON rc.style_number = m.style_number
 LEFT JOIN fs ON fs.style_number = m.style_number
-LEFT JOIN ov ON ov.style_number = m.style_number
 """, {"styles": need_styles}, fetch=True) or []
         for a in attr_rows:
-            tier = a.get("ov_tier") or _compute_tier(
-                a.get("is_noos"), a.get("reorder_count"), a.get("status"))
+            tier = _compute_tier(a.get("style_name"), a.get("is_noos"))
             lod = a.get("last_order_date")
             last_order_days = None
             if lod:

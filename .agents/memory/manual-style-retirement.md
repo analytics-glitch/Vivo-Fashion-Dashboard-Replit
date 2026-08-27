@@ -1,44 +1,60 @@
 ---
-name: Style status source of truth (sheet overrides > Odoo base)
-description: style_tier_overrides (imported buying sheet) is the authoritative Active/Retired layer on RM + PA; Odoo status is only the base model. Precedence rules, the PA projection trap, and which endpoints still diverge.
+name: Style status source of truth (SUPERSEDED 2026-08-27 — overrides removed)
+description: HISTORICAL — style_tier_overrides used to be an authoritative override layer on top of Odoo status/tier. As of 2026-08-27 all overrides were removed dashboard-wide by explicit user instruction; Odoo (_lifecycle_tier) alone is now the source of truth everywhere. See range-tier-model.md for the current model.
 ---
 
-# Style Active/Retired: `style_tier_overrides` wins; Odoo status is the base
+# Overrides removed (2026-08-27) — read range-tier-model.md instead
+
+The user instructed: "In every report with Tier and Status, it MUST read
+from odoo and match Range Management. Remove any other rule, including in
+merchandising." Confirmed: "Yes, remove all overrides everywhere — proceed."
+
+As a result, everything below this line is **historical** and no longer
+reflects the running code — kept only so a future agent doesn't reintroduce
+the same override precedence by mistake:
+
+- The `style_tier_overrides` imported-buying-sheet table is no longer read by
+  Range Management, Product Analysis, or Merchandising Hub. Its DB table and
+  seed/ensure infra (`_ensure_style_tier_overrides_table`,
+  `_seed_style_tier_overrides`) are still physically present (low risk,
+  simply unconsumed) — do not treat their continued existence as evidence
+  the override layer is still active.
+- The in-memory `_RANGE_OVERRIDES` dict (manual Tier 1-4 promotion) in
+  `api_pg.py` was deleted entirely, including its Range Management
+  application block and the `/api/range-mgmt/overrides/bulk-promote`
+  endpoint (now returns HTTP 410) and the corresponding
+  `RangeManagement.jsx` promote UI (removed).
+- Merchandising Hub's own independent reorder-cycle `_compute_tier()` model
+  was replaced with a thin delegate to `api_pg._lifecycle_tier`.
+
+**Known consequence:** Product Analysis lost the ability for the buying-sheet
+override to un-retire a style or override its tier; Range Management lost the
+manual "promote to Tier 2" feature; Merchandising Hub's tier numbers shifted
+substantially (moved from reorder-count-based tiering to Odoo-tier-based, and
+now fully excludes ghost/no-status styles via the `None` sentinel — see
+range-tier-model.md).
+
+**Still true / unaffected by this change:** the endpoints noted as
+"divergent" below (SOR report, inventory-style-counts,
+warehouse-return-candidates) still use the Odoo-status-only base model they
+always did — they were never on the override layer to begin with, so nothing
+changed for them.
+
+---
+
+*(Original historical content preserved below for archaeology only — do not
+follow this precedence in new code.)*
 
 Since Aug 2026 the imported buying-sheet table `style_tier_overrides`
-(style_number → status Active/Retired/Archived + tier) is the SOURCE OF TRUTH
-for Active vs Retired on **Range Management AND Product Analysis** (PA powers
-the PA page, Store Detail cockpit, Style Cockpit, exec summary). Precedence,
-applied LAST after the base model, identical on both surfaces:
+(style_number → status Active/Retired/Archived + tier) was the SOURCE OF
+TRUTH for Active vs Retired on Range Management AND Product Analysis, applied
+LAST after the base Odoo-status model: Active+tier → sheet tier (could
+un-retire); Retired/Archived → Retired; not-on-sheet → Retired (only when the
+table was populated). This precedence is REMOVED as of 2026-08-27.
 
-- Active + tier → use the sheet tier (CAN un-retire an Odoo-retired style)
-- Retired / Archived → Retired
-- not on the sheet → Retired, but ONLY when the table is populated
-  (probe = any override row observed in the result set, same as RM)
-
-Business-wide PA "active" can read one or two BELOW RM's Active count: RM
-force-includes zero-stock sheet-Active styles (`OR tov.status='Active'` in its
-universe); PA's universe still requires stock or in-window sales.
-
-**Base model (fallback / legacy consumers):** Odoo product status
-(`all_products_clean.status`, hourly sync). Style-level rule: Retired iff ≥1
-SKU 'Retired' AND none 'Active' (Active wins mixed; NULL never retires) —
-`_ODOO_RETIRED_STYLES_SQL` / `_is_manually_retired`. The old manual list and
-"all Zoya retired" rules stay REMOVED.
-
-**Known divergent endpoints (still Odoo-base only):**
-`/api/analytics/sor-all-styles` (SOR report), `/api/inventory-style-counts`,
-`/api/analytics/warehouse-return-candidates`. If a user reports a style
-Active on one screen and Retired on another, check which layer that surface
-uses before touching data.
-
-**The PA projection trap:** `analytics_product_analysis` RE-PROJECTS raw SQL
-rows into explicit dicts before the style-grouping/classification loops. A new
-SQL output column that is not added to that projection dict silently vanishes
-downstream (the override layer no-ops and status falls back to the base model
-with NO error). When adding columns to the PA SQL, thread them through the
-projection too, then verify counts via the live endpoint, not just the SQL.
-
-**How to apply:** any NEW endpoint bucketing active-vs-retired must apply the
-override precedence above on top of the shared base predicate — never
-re-derive from `active`, sales recency, or brand.
+**The PA projection trap (still a real, general risk — not override-specific):**
+`analytics_product_analysis` re-projects raw SQL rows into explicit dicts
+before the style-grouping/classification loops. A new SQL output column that
+is not added to that projection dict silently vanishes downstream with no
+error. When adding columns to the PA SQL, thread them through the projection
+too, then verify counts via the live endpoint, not just the SQL.

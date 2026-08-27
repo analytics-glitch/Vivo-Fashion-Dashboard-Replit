@@ -4319,10 +4319,6 @@ def _alloc_update(run):
         "fulfilled_at = CASE WHEN %s='fulfilled' THEN now() ELSE fulfilled_at END "
         "WHERE id=%s",
         (json.dumps(run), run["status"], run["status"], run["id"]))
-# Range-management manual tier overrides, keyed by style_name -> {"tier", "reason"}.
-# Applied on top of the age-based auto-tier in /range-mgmt/classify.
-_RANGE_OVERRIDES = {}
-
 # Retired styles come from the Odoo product status field (x_vivo_attr_97 ->
 # all_products_clean.status, values 'Active'/'Retired'), maintained by the
 # merch team in Odoo. A style is Retired when at least one of its SKUs is
@@ -4644,21 +4640,33 @@ def _lifecycle_tier(style_name, brand, age_weeks, reorder_count, months_active_1
                              still marks the style status='Active' (a real,
                              live style simply not yet triaged into a tier).
       Archived             — a style with neither a recognized tier NOR a
-                             live Active status (blank/Archived/Partner
-                             Brand/Sample status) is catalog debris, not a
-                             live Tier 4 style and not a deliberately
-                             end-of-lifed style either — it lands in Archived
-                             instead (2026-08-27 fix: this previously swept
-                             ~2,500 non-live styles into Tier 4, then briefly
-                             into Retired, see _odoo_active_status_styles).
-                             Both Retired and Archived are sourced straight
-                             from Odoo's status field, never a synthesized
-                             bucket: Retired is the hard status='Retired'
-                             fact, Archived is everything else non-live.
+                             live Active status, but Odoo's own status field
+                             literally says 'Archived' on at least one SKU
+                             row (see _odoo_archived_status_styles). This is
+                             the ONLY way a style becomes Archived — it is
+                             never a synthesized catch-all.
+      None (excluded)      — the style has no recognized tier, no live
+                             Active status, and no literal Archived status
+                             either (blank status, no Odoo record at all,
+                             Sample, Partner Brand, etc.). This is catalog
+                             debris with no real Odoo lifecycle data — it is
+                             excluded from EVERY report that calls this
+                             function (Range Management, Product Analysis,
+                             Merchandising Hub), never silently bucketed as
+                             Archived or Tier 4 (2026-08-27 user rule: "every
+                             report with Tier and Status must read from Odoo
+                             and match Range Management" — this function is
+                             now the single shared source of truth for all
+                             three surfaces, with no per-surface override).
+
+    Callers MUST treat a None return as "exclude this style from Tier/Status
+    reporting entirely" — do not default it to Active, Tier 4, or Archived.
 
     The reorder_count and age_weeks parameters are retained for call-site
     compatibility and advisory overlays (_retirement_flag_reason,
-    _tier_transition_flags) but no longer drive tier classification.
+    _tier_transition_flags) but no longer drive tier classification. There
+    is no override of any kind (buying-sheet table, reorder-cycle heuristic,
+    or manual promote) — Odoo's own status/tier fields are the only input.
     """
     if _is_manually_retired(style_name):
         return "Retired"
@@ -4670,17 +4678,23 @@ def _lifecycle_tier(style_name, brand, age_weeks, reorder_count, months_active_1
     mapped_tier = _ODOO_TIER_MAP.get(odoo_tier)
     if mapped_tier:
         return mapped_tier
-    # No recognized tier value. Only default to Tier 4 when Odoo still marks
-    # the style status='Active' (a real, live style just not yet triaged into
-    # a tier) — see _ODOO_TIER_MAP / _odoo_active_status_styles note. Anything
-    # else (blank status, Archived, Partner Brand, Sample) is catalog debris
-    # that goes to Archived, not Retired — it was never deliberately retired
-    # from sale, it simply isn't a live, tiered style. Known non-product/test
-    # names are excluded even if Active (_TIER4_FALLBACK_EXCLUSIONS).
+    # No recognized tier value. Known non-product/test names are excluded
+    # outright regardless of any stray status they carry.
     norm = _norm_style(style_name)
     if norm in _TIER4_FALLBACK_EXCLUSIONS:
+        return None
+    # Only default to Tier 4 when Odoo still marks the style status='Active'
+    # (a real, live style just not yet triaged into a tier) — Active wins
+    # even over a literal Archived row on a mixed-status style.
+    if norm in _odoo_active_status_styles():
+        return "Tier 4"
+    # Not Active. Archived ONLY when Odoo's status field literally says so.
+    if norm in _odoo_archived_status_styles():
         return "Archived"
-    return "Tier 4" if norm in _odoo_active_status_styles() else "Archived"
+    # Neither Active nor Archived nor a recognized tier nor hard-Retired —
+    # no live Odoo status at all (blank, no record, Sample, Partner Brand).
+    # Excluded from every lifecycle report; not a synthesized Archived bucket.
+    return None
 
 
 def _retirement_flag_reason(age_weeks, *, lifetime_sor, last_sale_days, woc,
@@ -12387,11 +12401,6 @@ def analytics_product_analysis(
         ")"
     )
     from_join += " LEFT JOIN nos ON nos.style_name = p.style_name"
-    # Spreadsheet status/tier overrides — the SAME source of truth Range
-    # Management uses (style_tier_overrides, imported from the buying sheet),
-    # joined on the style's canonical style_number so PA's Active/Retired split
-    # can never disagree with the Range page.
-    from_join += " LEFT JOIN style_tier_overrides tov ON tov.style_number = p.style_number"
 
     # The sales CTE is the heavy lifetime full-scan. When the table is NOT exploded
     # by any product dim / POS, is not store-scoped, and uses the default 30-day
@@ -12570,7 +12579,6 @@ def analytics_product_analysis(
         " COALESCE(st.soh_stores,0) AS soh_stores," + pos_out + " sa.current_price,"
         " COALESCE(nos.months_active_12,0) AS months_active_12,"
         " COALESCE(p.is_noos, FALSE) AS is_noos,"
-        " tov.status AS override_status, tov.tier AS override_tier,"
         " p.standard_cost_kes,"
         " p.last_order_date"
         + from_join + activity_where
@@ -12673,11 +12681,6 @@ def analytics_product_analysis(
             "style_name": r["style_name"],
             "sku": r["rep_sku"],
             "style_number": r["style_number"],
-            # Spreadsheet override passthrough — consumed by the style-grain
-            # classification loop below (style_tier_overrides is the source of
-            # truth for Active/Retired, same as Range Management).
-            "override_status": r.get("override_status"),
-            "override_tier": r.get("override_tier"),
             "brand": r["brand"],
             "category": r["category"],
             "subcategory": r["subcategory"],
@@ -12751,12 +12754,8 @@ def analytics_product_analysis(
                  "units_life": 0, "units_6m": 0, "sales_life": 0, "months_active_12": 0,
                  "age_weeks": None, "full_price": None, "last_sale": None, "is_noos": False,
                  "brand": row["brand"], "category": row["category"], "subcategory": row["subcategory"],
-                 "style_number": row.get("style_number"),
-                 "override_status": None, "override_tier": None}
+                 "style_number": row.get("style_number")}
             styles[k] = g
-        if g["override_status"] is None and row.get("override_status") is not None:
-            g["override_status"] = row.get("override_status")
-            g["override_tier"] = row.get("override_tier")
         g["units"] += row["units_sold"]
         g["gross_units_period"] += row["gross_units_period"]
         g["full_price_units_period"] += row.get("full_price_units_period") or 0
@@ -12780,44 +12779,29 @@ def analytics_product_analysis(
         if row["last_sale"] is not None:
             g["last_sale"] = row["last_sale"] if g["last_sale"] is None else max(g["last_sale"], row["last_sale"])
 
-    # Active vs Retired + the displayed Tier: base classification comes from the
-    # UNIFIED _lifecycle_tier model, then the spreadsheet override table
-    # (style_tier_overrides — the same source of truth Range Management uses) is
-    # applied LAST and wins. Every style in the universe gets exactly one bucket,
-    # so Active [Tier 1..4] + Retired == Total. A manual tier override
-    # (_RANGE_OVERRIDES, Tier 1..4 only) re-buckets within the active range.
-    # "Actively selling" (units_vel > 0) is a separate overlay, NOT part of the
-    # Active/Retired partition.
+    # Active vs Retired + the displayed Tier: classification comes straight from
+    # the UNIFIED _lifecycle_tier model — no override of any kind (2026-08-27
+    # user rule: every Tier/Status report reads from Odoo and matches Range
+    # Management; the style_tier_overrides buying-sheet table and the
+    # _RANGE_OVERRIDES manual promote are no longer consulted anywhere).
+    # Every style in the universe gets exactly one bucket, so Active [Tier
+    # 1..4] + Retired == Total. A style with no live Odoo status at all
+    # (_lifecycle_tier returns None — catalogue debris/ghosts) is dropped from
+    # PA entirely, matching Range Management. "Actively selling" (units_vel >
+    # 0) is a separate overlay, NOT part of the Active/Retired partition.
     keep = set()
     status_by_style = {}
     selling_by_style = {}
     tier_by_style = {}
-    # Detect whether the spreadsheet override table is in use (same probe as
-    # Range Management: any style in this result set carrying an override row).
-    _tov_populated = any(g.get("override_status") is not None for g in styles.values())
     for k, g in styles.items():
         aw = g["age_weeks"]
         rc = reorder_counts.get(g.get("style_number") or "", 0)
         t = _lifecycle_tier(k, g["brand"], aw, rc, g.get("months_active_12", 0),
                             is_noos=g.get("is_noos", False))
-        if t not in ("Retired", "Archived"):
-            ov = _RANGE_OVERRIDES.get(k)
-            ov_tier = ov["tier"] if (ov and ov.get("tier") in
-                                     ("Tier 1", "Tier 2", "Tier 3", "Tier 4")) else None
-            if ov_tier:
-                t = ov_tier
-        # Spreadsheet override (style_tier_overrides) — applied LAST with the
-        # exact Range Management rules, so the two surfaces always agree:
-        #   Active + tier      → use the sheet tier (can un-retire a style)
-        #   Retired / Archived → force Retired
-        #   not on the sheet   → Retired (only when the table is populated)
-        _ovs = g.get("override_status")
-        if _ovs == "Active" and g.get("override_tier"):
-            t = g["override_tier"]
-        elif _ovs in ("Retired", "Archived"):
-            t = "Retired"
-        elif _ovs is None and _tov_populated:
-            t = "Retired"
+        if t is None:
+            # No live Odoo status at all — excluded from PA entirely, same as
+            # Range Management. Not counted in any bucket or total.
+            continue
         # Archived is folded into the Retired/Active binary here (PA only
         # tracks Active vs Retired counts; the per-row life_cycle word above
         # still shows "Archived" distinctly) so PA's totals don't shift.
@@ -25254,15 +25238,20 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
         else:
             age_band = "Tier 4"
 
-        # Range tier & status pick straight from Odoo (user rule, Aug 2026): the
-        # style_tier_overrides buying-sheet layer is NOT applied here — Range
-        # Management is the Odoo-source-of-truth surface. (Product Analysis
-        # still applies the sheet override; see manual-style-retirement notes.)
+        # Range tier & status pick straight from Odoo via the UNIFIED
+        # _lifecycle_tier model — no override of any kind (2026-08-27 user
+        # rule: every Tier/Status report reads from Odoo and matches Range
+        # Management; this now applies dashboard-wide, including Product
+        # Analysis and Merchandising Hub — the style_tier_overrides buying-
+        # sheet table is no longer consulted by any classifier).
         #   Retired = marked Retired in Odoo (all_products_clean.status).
-        #   Tier 1  = NOOS-consistent (sold in >= 11 of the last 12 months).
-        #   Tier 2  = matured (age >= 39wk) with a healthy reorder history (> 3 cycles).
-        #   Tier 3  = reordered at least once.
-        #   Tier 4  = everything else (newest / unproven).
+        #   Tier 1  = Odoo NOOS flag (is_noos).
+        #   Tier 2/3/4 = Odoo's own tier field (x_vivo_attr_99), or Tier 4 as
+        #             the live-but-untriaged fallback when Odoo has no tier
+        #             value but status='Active'.
+        #   Archived = Odoo status literally says 'Archived'.
+        #   None    = no live Odoo status at all (ghost/blank/Sample/Partner
+        #             Brand) — excluded from every lifecycle report.
         # Every live style carries a real Tier 1..4, so the per-tier counts add up to
         # the Active total. Retirement is a hard bucket (Odoo status only); on top of
         # it, an ADVISORY "flagged for retirement" overlay (_retirement_flag_reason)
@@ -25271,18 +25260,16 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
             r["style_name"], r["brand"], age_weeks, reorder_count, months_active_12,
             is_noos=is_noos)
 
+        # 2026-08-27 user rule: _lifecycle_tier() itself now returns None for
+        # catalogue debris with no live Odoo status at all (blank/no Odoo
+        # record "ghost" styles, Sample, Partner Brand) — they never counted
+        # as a synthesized Archived bucket. Dropped from Range Management
+        # entirely: don't count toward Total, don't appear in any bucket.
+        if life_tier is None:
+            continue
+
         is_retired = (life_tier == "Retired")
         is_archived = (life_tier == "Archived")
-
-        # 2026-08-27 user rule: Archived means Odoo Status='Archived' on this
-        # style specifically — not the broader "no recognized tier and not
-        # Active" catch-all _lifecycle_tier used to also sweep in (blank/no
-        # Odoo record "ghost" styles, Sample, Partner Brand). Those styles no
-        # longer have any live Odoo status at all, so per the user's explicit
-        # instruction they are dropped from Range Management entirely — they
-        # don't count toward Total and don't appear in any bucket.
-        if is_archived and _norm_style(r["style_name"]) not in _odoo_archived_status_styles():
-            continue
 
         if is_retired:
             status = "Retire"
@@ -25344,13 +25331,10 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
         }
 
         # --- Range tier classification (2026 Range Strategy / SOP): every style in
-        # the live range carries a real displayed Tier 1..4 (from _lifecycle_tier)
-        # so the per-tier counts add up to the Active total. ONLY hard/physical
-        # retirement (Odoo status) moves a style into `retired`. A manual tier
-        # override (_RANGE_OVERRIDES, Tier 1..4 only) re-buckets within the live
-        # range AND clears the retirement flag; `auto_tier` records the
-        # un-overridden tier so the frontend's "override · auto-tier was X" hint
-        # stays useful.
+        # the live range carries a real displayed Tier 1..4 (from _lifecycle_tier,
+        # straight from Odoo — no manual override of any kind, per the 2026-08-27
+        # user rule) so the per-tier counts add up to the Active total. ONLY
+        # hard/physical retirement (Odoo status) moves a style into `retired`.
         #
         # "Flagged for retirement" is an ADVISORY overlay (user rule, July 2026):
         # a still-trading style that fails its SOP age-stage performance gate
@@ -25378,16 +25362,7 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
             woc=woc, reorder_count=reorder_count,
             recent_sor=sor_6m, recent_units=units_6m)
 
-        ov = _RANGE_OVERRIDES.get(r["style_name"])
-        ov_tier = ov["tier"] if (ov and ov.get("tier") in
-                                  ("Tier 1", "Tier 2", "Tier 3", "Tier 4")) else None
-        if ov_tier:
-            row["tier"], row["auto_tier"], row["override_reason"] = ov_tier, effective_tier, ov.get("reason")
-            # A manual override is an explicit "keep in the range" decision — it
-            # clears the advisory retirement flag.
-            flag_reason = None
-        else:
-            row["tier"], row["auto_tier"], row["override_reason"] = effective_tier, effective_tier, None
+        row["tier"], row["auto_tier"], row["override_reason"] = effective_tier, effective_tier, None
         row["flagged_for_retirement"] = bool(flag_reason)
         row["flag_reason"] = flag_reason
         active.append(row)
@@ -25570,9 +25545,10 @@ def range_mgmt_store_tier_mix(country: str = Query(default=None), channel: str =
 def range_mgmt_tier_export(brand: str = Query(default=None)):
     """Export every style with its tier classification as a downloadable CSV.
 
-    Uses the identical _lifecycle_tier + _RANGE_OVERRIDES logic as the Range
-    Management classify view — active (Tier 1–4) and retired styles are both
-    included. No date-range filter is applied (tier is a catalogue property).
+    Uses the identical _lifecycle_tier logic as the Range Management classify
+    view (no override of any kind) — active (Tier 1–4) and retired styles are
+    both included. No date-range filter is applied (tier is a catalogue
+    property).
     Optional ``brand`` query param (exact, case-insensitive) mirrors the
     on-page brand filter so the download scope matches what the user sees.
 
@@ -30254,27 +30230,14 @@ async def notifications_read(event_id: str, request: Request):
 async def stub_marketing_weekly_report_send(request: Request): return {"ok": True}
 @app.post("/api/range-mgmt/overrides/bulk-promote")
 async def range_mgmt_overrides_bulk_promote(request: Request):
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
-    if isinstance(body, list):
-        items = body
-        tier = "Tier 2"
-        reason = "Bulk graduation to Tier 2"
-    else:
-        items = body.get("styles") or body.get("style_names") or []
-        tier = body.get("tier") or "Tier 2"
-        reason = body.get("reason") or "Manual graduation to %s" % tier
-    upserted = 0
-    for it in items:
-        name = it.get("style_name") if isinstance(it, dict) else it
-        if not name:
-            continue
-        _RANGE_OVERRIDES[name] = {"tier": (it.get("tier") if isinstance(it, dict) else None) or tier,
-                                  "reason": (it.get("reason") if isinstance(it, dict) else None) or reason}
-        upserted += 1
-    return {"ok": True, "upserted": upserted}
+    """Retired 2026-08-27: manual tier promotion is a rule the user asked
+    removed dashboard-wide — every Tier/Status report must read from Odoo
+    only, with no override of any kind. This endpoint is kept as an honest
+    no-op (rather than a 404) in case any stale client still calls it."""
+    return JSONResponse(
+        {"ok": False, "error": "Manual tier promotion has been removed — "
+                                "tiers are read from Odoo only."},
+        status_code=410)
 @app.post("/api/range-mgmt/marketing-actions")
 async def stub_range_mgmt_marketing_actions_post(request: Request): return {"ok": True}
 @app.patch("/api/range-mgmt/marketing-actions/{action_id}")

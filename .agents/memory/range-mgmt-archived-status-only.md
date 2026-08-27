@@ -28,6 +28,10 @@ which calls it directly) — after computing `is_archived = (life_tier ==
 skipped entirely (`continue`) before being added to any bucket — it doesn't
 count toward Total.
 
+**Still accurate as of 2026-08-27** after the dashboard-wide override removal
+(see `range-tier-model.md`) — this Archived-only post-filter is separate from
+the override system that was removed and was untouched by that change.
+
 **Deliberately scoped to Range Management only:** `_lifecycle_tier` itself was
 NOT changed, so Product Analysis (which folds "Archived" into its Retired
 binary and only uses the word for a per-row display label) is unaffected.

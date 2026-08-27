@@ -254,10 +254,10 @@ const RangeManagement = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  // Iter 89w-f — bulk-promote workflow state.  Declared up-top so the
-  // data-fetch useEffect below can react to `refreshToken` changes.
-  const [promoting, setPromoting] = useState(false);
-  const [refreshToken, setRefreshToken] = useState(0);
+  // refreshToken lets child sections (e.g. the weekly SOR heatmap) force a
+  // re-fetch after a filter change; manual tier promotion was removed
+  // 2026-08-27 (Tier/Status now reads from Odoo only, no override).
+  const [refreshToken] = useState(0);
 
   // Filters
   const [tierFilter, setTierFilter] = useState([]);
@@ -440,54 +440,6 @@ const RangeManagement = () => {
       };
     }).filter((b) => b.count > 0);
   }, [rows]);
-
-  const promoteAllCandidates = async () => {
-    if (!candidates.length) return;
-    const n = candidates.length;
-    const ok = window.confirm(
-      `Promote ${n} Tier 3 style${n === 1 ? "" : "s"} to Tier 2?\n\n` +
-      `This sets a manual override that survives across classifier runs. ` +
-      `You can revert any individual style later via the API.`,
-    );
-    if (!ok) return;
-    setPromoting(true);
-    try {
-      const r = await api.post("/range-mgmt/overrides/bulk-promote", {
-        style_names: candidates.map((c) => c.style_name),
-        override_tier: "Tier 2",
-        reason: "Bulk graduation from Range Mgmt UI",
-      });
-      setRefreshToken((x) => x + 1);
-      window.alert(`Promoted ${r.data?.upserted ?? n} styles to Tier 2.`);
-    } catch (e) {
-      window.alert("Bulk promote failed: " + (e?.response?.data?.detail || e.message));
-    } finally {
-      setPromoting(false);
-    }
-  };
-
-  // Iter 91v — Promote a single style row via the candidates table.
-  // Mirrors the bulk-promote API but for one style at a time so the
-  // user can graduate selectively (e.g., promote the top performer
-  // immediately, hold off on the bottom of the list).
-  const [promotingOne, setPromotingOne] = useState(null); // style_name during in-flight
-  const promoteOne = async (styleName) => {
-    const ok = window.confirm(`Promote "${styleName}" to Tier 2?`);
-    if (!ok) return;
-    setPromotingOne(styleName);
-    try {
-      await api.post("/range-mgmt/overrides/bulk-promote", {
-        style_names: [styleName],
-        override_tier: "Tier 2",
-        reason: "Individual promote from Range Mgmt UI",
-      });
-      setRefreshToken((x) => x + 1);
-    } catch (e) {
-      window.alert("Promote failed: " + (e?.response?.data?.detail || e.message));
-    } finally {
-      setPromotingOne(null);
-    }
-  };
 
   const brandOpts   = useMemo(() => [...new Set(rows.map((r) => r.brand).filter(Boolean))].sort(), [rows]);
   const subcatOpts  = useMemo(() => [...new Set(rows.map((r) => r.subcategory).filter(Boolean))].sort(), [rows]);
@@ -863,18 +815,6 @@ const RangeManagement = () => {
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
-                    onClick={promoteAllCandidates}
-                    disabled={promoting || !candidates.length}
-                    data-testid="grad-promote-all-btn"
-                    className="px-3 py-1 rounded-lg bg-sky-700 hover:bg-sky-800 text-white text-[11.5px] font-semibold disabled:opacity-50"
-                    title="Sets a manual tier-2 override for every candidate"
-                  >
-                    {promoting
-                      ? "Promoting…"
-                      : `Promote all ${fmtNum(candidates.length)} to Tier 2`}
-                  </button>
-                  <button
-                    type="button"
                     onClick={() => {
                       setTierFilter(["Tier 3"]);
                       document
@@ -925,17 +865,6 @@ const RangeManagement = () => {
                         <td className="p-2 text-right num">{c.reorder_count}</td>
                         <td className="p-2 text-right num">{fmtNum(c.current_stock)}</td>
                         <td className="p-2 text-right num">{c.last_sale_days == null ? "—" : `${c.last_sale_days}d`}</td>
-                        <td className="p-2 text-right">
-                          <button
-                            type="button"
-                            onClick={() => promoteOne(c.style_name)}
-                            disabled={promotingOne === c.style_name}
-                            className="px-2 py-0.5 rounded-md text-[10.5px] font-bold bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50"
-                            data-testid={`grad-promote-one-${i}`}
-                          >
-                            {promotingOne === c.style_name ? "…" : "Promote"}
-                          </button>
-                        </td>
                       </tr>
                     ))}
                   </tbody>

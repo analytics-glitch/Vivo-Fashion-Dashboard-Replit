@@ -124,6 +124,18 @@ def _patch_db(rows):
     return mock.patch.object(merch_router, "_db_exec", return_value=rows)
 
 
+def _patch_tier(tier="Tier 3"):
+    """_compute_tier (2026-08-27) delegates entirely to api_pg._lifecycle_tier,
+    which does live Odoo-cache lookups keyed by style_name — the fake style
+    names/numbers these schema-smoke fixtures use can never resolve there, so
+    without this patch every row is classified None and dropped. Patch
+    _compute_tier to a fixed value so the _fetch_styles/_fetch_stock_mix
+    post-processing under test here (column plumbing, filtering, aggregation)
+    can be exercised in isolation from real Odoo data; api_pg._lifecycle_tier's
+    own classification rules have their own dedicated tests."""
+    return mock.patch.object(merch_router, "_compute_tier", return_value=tier)
+
+
 class TestMerchRouterSchemaSmoke(unittest.TestCase):
     """Direct calls to _fetch_* / _compute_* with a minimal fake _db_exec.
 
@@ -136,7 +148,7 @@ class TestMerchRouterSchemaSmoke(unittest.TestCase):
     # ── /api/merch/styles ─────────────────────────────────────────────────────
 
     def test_fetch_styles_returns_list(self):
-        with _patch_db([dict(_FAKE_STYLE_ROW)]):
+        with _patch_db([dict(_FAKE_STYLE_ROW)]), _patch_tier():
             result = merch_router._fetch_styles()
         self.assertIsInstance(result, list, "_fetch_styles must return a list")
         self.assertGreater(len(result), 0, "expected at least one style row")
@@ -163,7 +175,7 @@ class TestMerchRouterSchemaSmoke(unittest.TestCase):
             "gross_margin_pct", "gross_margin_kes", "cogs_6m_kes",
             "recommended_action", "action_status",
         }
-        with _patch_db([dict(_FAKE_STYLE_ROW)]):
+        with _patch_db([dict(_FAKE_STYLE_ROW)]), _patch_tier():
             result = merch_router._fetch_styles()
         self.assertGreater(len(result), 0)
         missing = required - result[0].keys()
@@ -174,7 +186,7 @@ class TestMerchRouterSchemaSmoke(unittest.TestCase):
         row raises KeyError immediately, which this test converts to a failure."""
         # This test is a canary — if the fake row does not cover every column
         # that the post-processing code accesses, the test itself will error.
-        with _patch_db([dict(_FAKE_STYLE_ROW)]):
+        with _patch_db([dict(_FAKE_STYLE_ROW)]), _patch_tier():
             try:
                 merch_router._fetch_styles()
             except (KeyError, TypeError) as exc:
@@ -215,7 +227,7 @@ class TestMerchRouterSchemaSmoke(unittest.TestCase):
             "colour_last_order": None,
             "rep_sku": "TS001-BLK",
         }
-        with _patch_db([row]):
+        with _patch_db([row]), _patch_tier():
             included = merch_router._fetch_stock_mix(tier="Tier 3")
             excluded = merch_router._fetch_stock_mix(tier="Tier 1")
         self.assertEqual(included["counts"]["styles"], 1)
@@ -240,14 +252,14 @@ class TestMerchRouterSchemaSmoke(unittest.TestCase):
             "styles_launched_current_year", "styles_launched_prior_year",
             "avg_gross_margin_pct", "total_cogs_6m_kes", "total_gross_margin_kes",
         }
-        with _patch_db([dict(_FAKE_STYLE_ROW)]):
+        with _patch_db([dict(_FAKE_STYLE_ROW)]), _patch_tier():
             styles = merch_router._fetch_styles()
         summary = merch_router._compute_summary(styles)
         missing = required - summary.keys()
         self.assertFalse(missing, f"_compute_summary missing keys: {missing}")
 
     def test_full_price_sor_uses_remaining_stock_and_gap(self):
-        with _patch_db([dict(_FAKE_STYLE_ROW)]):
+        with _patch_db([dict(_FAKE_STYLE_ROW)]), _patch_tier():
             styles = merch_router._fetch_styles()
         style = styles[0]
         self.assertEqual(style["full_price_sor_period"], 66.7)
@@ -264,7 +276,7 @@ class TestMerchRouterSchemaSmoke(unittest.TestCase):
             "soh_online": 0,
             "soh_warehouse": 0,
         })
-        with _patch_db([row]):
+        with _patch_db([row]), _patch_tier():
             style = merch_router._fetch_styles()[0]
         self.assertIsNone(style["full_price_sor_period"])
 
@@ -282,7 +294,7 @@ class TestMerchRouterSchemaSmoke(unittest.TestCase):
             "current_stock", "avg_woc", "avg_sor_6m", "avg_full_price_pct",
             "avg_gross_margin_pct", "total_cogs_6m_kes", "total_gross_margin_kes",
         }
-        with _patch_db([dict(_FAKE_STYLE_ROW)]):
+        with _patch_db([dict(_FAKE_STYLE_ROW)]), _patch_tier():
             styles = merch_router._fetch_styles()
         rows = merch_router._agg_by_dim(styles, "subcategory")
         self.assertIsInstance(rows, list)
@@ -298,7 +310,7 @@ class TestMerchRouterSchemaSmoke(unittest.TestCase):
             "current_stock", "avg_woc", "avg_sor_6m", "avg_full_price_pct",
             "avg_gross_margin_pct",
         }
-        with _patch_db([dict(_FAKE_STYLE_ROW)]):
+        with _patch_db([dict(_FAKE_STYLE_ROW)]), _patch_tier():
             styles = merch_router._fetch_styles()
         rows = merch_router._agg_by_dim(styles, "tier")
         self.assertIsInstance(rows, list)
@@ -307,10 +319,12 @@ class TestMerchRouterSchemaSmoke(unittest.TestCase):
         self.assertFalse(missing, f"by-tier row missing keys: {missing}")
 
     # ── Tier computation / filter (Python-side logic) ─────────────────────────
+    # _compute_tier itself now delegates entirely to api_pg._lifecycle_tier
+    # (real Odoo-cache lookups) — these tests patch it to a fixed value to
+    # exercise _fetch_styles' filtering/plumbing in isolation.
 
     def test_tier_filter_keeps_matching_rows(self):
-        """With reorder_count=2, the style is Tier 3; tier='Tier 3' must keep it."""
-        with _patch_db([dict(_FAKE_STYLE_ROW)]):
+        with _patch_db([dict(_FAKE_STYLE_ROW)]), _patch_tier("Tier 3"):
             result = merch_router._fetch_styles(tier="Tier 3")
         self.assertTrue(
             all(r["tier"] == "Tier 3" for r in result),
@@ -318,8 +332,7 @@ class TestMerchRouterSchemaSmoke(unittest.TestCase):
         )
 
     def test_tier_filter_drops_non_matching_rows(self):
-        """With reorder_count=2 → Tier 3, requesting tier='Tier 1' should return []."""
-        with _patch_db([dict(_FAKE_STYLE_ROW)]):
+        with _patch_db([dict(_FAKE_STYLE_ROW)]), _patch_tier("Tier 3"):
             result = merch_router._fetch_styles(tier="Tier 1")
         self.assertEqual(result, [], "Tier 1 filter should exclude a Tier 3 style")
 
@@ -327,7 +340,7 @@ class TestMerchRouterSchemaSmoke(unittest.TestCase):
         """is_noos=True must yield Tier 1 regardless of reorder_count."""
         row = dict(_FAKE_STYLE_ROW)
         row["is_noos"] = True
-        with _patch_db([row]):
+        with _patch_db([row]), _patch_tier("Tier 1"):
             result = merch_router._fetch_styles()
         self.assertTrue(len(result) > 0)
         self.assertEqual(result[0]["tier"], "Tier 1")
@@ -401,7 +414,7 @@ class TestMerchRouterSchemaSmoke(unittest.TestCase):
         """An all-Retired style must produce tier='Retired'."""
         row = dict(_FAKE_STYLE_ROW)
         row["status"] = "Retired"
-        with _patch_db([row]):
+        with _patch_db([row]), _patch_tier("Retired"):
             result = merch_router._fetch_styles()
         self.assertTrue(len(result) > 0)
         self.assertEqual(result[0]["tier"], "Retired")
@@ -416,7 +429,7 @@ class TestMerchRouterSchemaSmoke(unittest.TestCase):
         row["soh_warehouse"] = 0
         row["units_6m"]      = 10
         row["last_sale_date"] = str(date.today() - timedelta(days=5))
-        with _patch_db([row]):
+        with _patch_db([row]), _patch_tier():
             result = merch_router._fetch_styles()
         self.assertTrue(len(result) > 0)
         self.assertEqual(result[0]["recommended_action"], "Reorder Now")
@@ -429,7 +442,7 @@ class TestMerchRouterSchemaSmoke(unittest.TestCase):
         row["soh_warehouse"] = 0
         row["units_6m"]      = 0
         row["last_sale_date"] = str(date.today() - timedelta(days=120))
-        with _patch_db([row]):
+        with _patch_db([row]), _patch_tier():
             result = merch_router._fetch_styles()
         self.assertTrue(len(result) > 0)
         self.assertEqual(result[0]["recommended_action"], "Discontinue")
