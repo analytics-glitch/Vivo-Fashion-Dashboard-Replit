@@ -4465,8 +4465,12 @@ _ODOO_STATUS_TIER_GAP_SQL = """
         BOOL_OR(apc.status = 'Retired') AS has_retired,
         STRING_AGG(DISTINCT NULLIF(TRIM(apc.status), ''), ', ') AS statuses_seen,
         BOOL_OR(NULLIF(TRIM(apc.tier), '') IS NOT NULL AND apc.tier <> 'N/A') AS has_any_tier,
-        STRING_AGG(DISTINCT NULLIF(TRIM(apc.tier), ''), ', ') AS tiers_seen
+        STRING_AGG(DISTINCT NULLIF(TRIM(apc.tier), ''), ', ') AS tiers_seen,
+        BOOL_OR(rop.style_number IS NOT NULL) AS in_odoo_now
     FROM all_products_clean apc
+    LEFT JOIN (SELECT DISTINCT style_number FROM raw_odoo_products
+               WHERE style_number IS NOT NULL) rop
+           ON rop.style_number = apc.style_number
     WHERE apc.style_name IS NOT NULL AND apc.style_name <> ''
       AND COALESCE(apc.brand, '') NOT ILIKE '%third party%'
     GROUP BY apc.style_name
@@ -4489,6 +4493,7 @@ def _odoo_status_tier_gaps():
         if not (missing_status or missing_tier):
             continue
         is_noos = bool(r.get("is_noos"))
+        in_odoo_now = bool(r.get("in_odoo_now"))
         current_bucket = _lifecycle_tier(
             r["style_name"], r.get("brand"), None, 0, 0, is_noos=is_noos)
         skus = [s for s in (r.get("skus") or []) if s]
@@ -4501,6 +4506,18 @@ def _odoo_status_tier_gaps():
             "skus": skus,
             "missing_status": missing_status,
             "missing_tier": missing_tier,
+            "in_odoo_now": in_odoo_now,
+            # Not every "missing status" style is a data-entry gap on an
+            # existing Odoo record — most are styles that no longer have ANY
+            # product record in Odoo at all (deleted/discontinued upstream),
+            # kept alive here only because all_products_clean falls back to
+            # historical all_sales rows so past reporting doesn't disappear.
+            # Those can't be "fixed" in Odoo since there's nothing there to
+            # edit; only in_odoo_now=True rows are real Odoo data-entry gaps.
+            "reason": ("Missing in Odoo" if not in_odoo_now else
+                       (("Status" if missing_status else "") +
+                        (" & " if (missing_status and missing_tier) else "") +
+                        ("Tier" if missing_tier else "") + " blank in Odoo")),
             "missing_field": ("Status" if missing_status else "") + \
                 (" & " if (missing_status and missing_tier) else "") + \
                 ("Tier" if missing_tier else ""),
@@ -25518,6 +25535,12 @@ def range_mgmt_missing_odoo_data_summary():
         "total_flagged": len(gaps),
         "missing_status": sum(1 for g in gaps if g["missing_status"]),
         "missing_tier": sum(1 for g in gaps if g["missing_tier"]),
+        # Most flagged styles no longer have ANY product record in Odoo at
+        # all (deleted/discontinued upstream) — these can't be fixed by
+        # editing Odoo, there's nothing there. Only "in_odoo" rows are real
+        # Odoo data-entry gaps (status/tier blank on an existing record).
+        "not_in_odoo": sum(1 for g in gaps if not g["in_odoo_now"]),
+        "in_odoo_but_blank": sum(1 for g in gaps if g["in_odoo_now"]),
     }
 
 
@@ -25532,8 +25555,8 @@ def range_mgmt_export_missing_odoo_data():
     from openpyxl import Workbook
     gaps = _odoo_status_tier_gaps()
     cols = ["Style Number", "Style Name", "Brand", "Subcategory", "SKU Count",
-            "Sample SKUs", "Missing", "Odoo Statuses Seen", "Odoo Tiers Seen",
-            "Current Dashboard Bucket"]
+            "Sample SKUs", "In Odoo Now?", "Reason", "Odoo Statuses Seen",
+            "Odoo Tiers Seen", "Current Dashboard Bucket"]
     wb = Workbook()
     ws = wb.active
     ws.title = "Missing Status or Tier"
@@ -25546,7 +25569,8 @@ def range_mgmt_export_missing_odoo_data():
             g.get("subcategory") or "",
             g.get("n_skus") or 0,
             ", ".join((g.get("skus") or [])[:5]),
-            g.get("missing_field") or "",
+            "Yes" if g.get("in_odoo_now") else "No — not in Odoo",
+            g.get("reason") or g.get("missing_field") or "",
             g.get("statuses_seen") or "",
             g.get("tiers_seen") or "",
             g.get("current_dashboard_bucket") or "",

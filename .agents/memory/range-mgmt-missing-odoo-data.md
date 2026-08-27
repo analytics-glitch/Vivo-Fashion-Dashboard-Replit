@@ -34,3 +34,18 @@ two stay comparable without sharing implementation.
 **How to apply:** any future "why is Odoo data missing/wrong on this
 dashboard" request should reuse this missing-vs-non-live distinction rather
 than treating a non-live status as a data quality bug.
+
+**Correction (2026-08-27, user report "can't find these in Odoo"):** measured
+against live Odoo via XML-RPC, ALL 1,740 flagged styles turned out to have
+ZERO product record in Odoo at all (not archived — genuinely absent, verified
+both by direct Odoo API search and by an empty `raw_odoo_products` join).
+Root cause: `transform_all_products_clean.py` has a "Sales-only SKUs" insert
+path that keeps historical `all_sales` SKUs visible in `all_products_clean`
+even after their Odoo product record is fully deleted, so past reporting
+doesn't vanish when a style is discontinued/removed upstream. That fallback
+is why these ghosts kept surfacing as "missing status" — there was nothing
+to "fix" in Odoo since no record exists there to edit. Fixed by adding an
+`in_odoo_now` flag (LEFT JOIN against `raw_odoo_products` by style_number) to
+`_odoo_status_tier_gaps()` so the export distinguishes real Odoo data-entry
+gaps (record exists, status/tier blank) from sales-only ghosts (no record at
+all) — see `all-products-clean-sales-only-fallback.md`.

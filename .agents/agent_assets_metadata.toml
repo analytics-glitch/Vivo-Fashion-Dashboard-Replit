@@ -192,3 +192,10 @@ uri = "file://exports/Missing_Odoo_Status_Tier_2026-08-27.xlsx"
 type = "table"
 title = "Missing Odoo Status/Tier — 1,740 styles"
 description = "Finished-product styles where Odoo's own Status field is unset (44% of the catalogue). Includes style number, brand, subcategory, SKU samples, and which dashboard bucket each currently falls into."
+
+[[outputs]]
+id = "TgUVwiF7K6hX4nzBfitJq"
+uri = "file://exports/Missing_Odoo_Status_Tier_2026-08-27_v2.xlsx"
+type = "table"
+title = "Corrected: styles not found in Odoo (1,740)"
+description = "All 1,740 flagged styles have zero product record in Odoo right now — they're historical/sold styles kept alive on the dashboard only via past sales data. New 'In Odoo Now?' and 'Reason' columns make this explicit."
