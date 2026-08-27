@@ -607,6 +607,23 @@ const RangeManagement = () => {
           </button>
           <button
             type="button"
+            onClick={() => {
+              const a = document.createElement("a");
+              a.href = "/api/range-mgmt/export/archived-in-odoo";
+              a.download = "Odoo_Archived_Status_Styles.xlsx";
+              document.body.appendChild(a);
+              a.click();
+              document.body.removeChild(a);
+            }}
+            data-testid="range-archived-odoo-export-btn"
+            className="btn-secondary flex items-center gap-1.5"
+            title="Styles where Odoo's own Status field is set to Archived, with their Tier value shown alongside"
+          >
+            <DownloadSimple size={14} weight="bold" />
+            Archived Styles (Odoo)
+          </button>
+          <button
+            type="button"
             onClick={exportCsv}
             disabled={!filtered.length}
             data-testid="range-csv-btn"

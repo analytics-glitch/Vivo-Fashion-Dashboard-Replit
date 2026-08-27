@@ -4476,6 +4476,56 @@ _ODOO_STATUS_TIER_GAP_SQL = """
     GROUP BY apc.style_name
 """
 
+_ODOO_ARCHIVED_STATUS_SQL = """
+    SELECT rop.style_number,
+        mode() WITHIN GROUP (ORDER BY rop.name) AS style_name,
+        MAX(rop.brand) AS brand,
+        MAX(rop.sub_category) AS subcategory,
+        COUNT(*) AS n_skus,
+        COUNT(*) FILTER (WHERE rop.status = 'Archived') AS archived_skus,
+        STRING_AGG(DISTINCT NULLIF(TRIM(rop.tier), ''), ', ')
+            FILTER (WHERE rop.status = 'Archived') AS archived_tiers_seen,
+        STRING_AGG(DISTINCT NULLIF(TRIM(rop.tier), ''), ', ') AS all_tiers_seen,
+        STRING_AGG(DISTINCT NULLIF(TRIM(rop.status), ''), ', ') AS all_statuses_seen,
+        ARRAY_AGG(DISTINCT rop.default_code ORDER BY rop.default_code) AS skus
+    FROM raw_odoo_products rop
+    WHERE rop.style_number ~ '^[A-Za-z][0-9]{6,8}$'
+    GROUP BY rop.style_number
+    HAVING COUNT(*) FILTER (WHERE rop.status = 'Archived') > 0
+"""
+
+def _odoo_archived_styles_with_tiers():
+    """Every Odoo style with at least one SKU carrying status='Archived'
+    (the literal Odoo Status field, per the 2026-08-27 user request), listing
+    the Tier value(s) Odoo has on those same Archived-status rows so the team
+    can see status and tier side by side per style. Sourced directly from
+    raw_odoo_products (the live Odoo sync) — every row here is a REAL,
+    currently-existing Odoo record, unlike the sales-only "ghost" styles
+    surfaced by _odoo_status_tier_gaps()."""
+    rows = run_query(_ODOO_ARCHIVED_STATUS_SQL, ttl=_ODOO_STYLE_TIER_TTL) or []
+    out = []
+    for r in rows:
+        is_noos = False  # archived-status styles are never NOOS; keep call-site simple
+        current_bucket = _lifecycle_tier(
+            r["style_name"], r.get("brand"), None, 0, 0, is_noos=is_noos)
+        skus = [s for s in (r.get("skus") or []) if s]
+        out.append({
+            "style_number": r["style_number"],
+            "style_name": r.get("style_name"),
+            "brand": r.get("brand"),
+            "subcategory": r.get("subcategory"),
+            "n_skus": int(r.get("n_skus") or 0),
+            "archived_skus": int(r.get("archived_skus") or 0),
+            "skus": skus,
+            "archived_tiers_seen": r.get("archived_tiers_seen") or "(blank)",
+            "all_tiers_seen": r.get("all_tiers_seen") or "(blank)",
+            "all_statuses_seen": r.get("all_statuses_seen") or "(blank)",
+            "current_dashboard_bucket": "Retired" if current_bucket == "Retire" else current_bucket,
+        })
+    out.sort(key=lambda x: (x.get("brand") or "", x.get("style_number") or ""))
+    return out
+
+
 def _odoo_status_tier_gaps():
     """Styles missing an Odoo status entirely, or Active styles missing a
     recognized Odoo tier. Each row also carries the bucket the dashboard
@@ -25577,6 +25627,48 @@ def range_mgmt_export_missing_odoo_data():
         ])
     return _xlsx_response(
         wb, f"Missing_Odoo_Status_Tier_{date.today().isoformat()}.xlsx")
+
+
+@app.get("/api/range-mgmt/archived-in-odoo")
+def range_mgmt_archived_in_odoo_summary():
+    """Counts only — see the Excel export below for the per-style list."""
+    styles = _odoo_archived_styles_with_tiers()
+    return {"total_styles": len(styles)}
+
+
+@app.get("/api/range-mgmt/export/archived-in-odoo")
+def range_mgmt_export_archived_in_odoo():
+    """Excel export: every style with at least one SKU where Odoo's own
+    Status field (x_vivo_attr_97) is literally 'Archived' right now, with the
+    Tier value (x_vivo_attr_99) Odoo has on those same rows shown alongside
+    it. Unlike the missing-status export, every row here IS a real, currently
+    existing Odoo record (sourced from raw_odoo_products directly, the live
+    Odoo sync) — 2026-08-27 user request."""
+    from openpyxl import Workbook
+    styles = _odoo_archived_styles_with_tiers()
+    cols = ["Style Number", "Style Name", "Brand", "Subcategory", "Total SKUs",
+            "Archived SKUs", "Tier on Archived SKUs", "All Tiers Seen",
+            "All Statuses Seen", "Sample SKUs", "Current Dashboard Bucket"]
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Status = Archived in Odoo"
+    _xlsx_header(ws, cols)
+    for s in styles:
+        ws.append([
+            s.get("style_number") or "",
+            s.get("style_name") or "",
+            s.get("brand") or "",
+            s.get("subcategory") or "",
+            s.get("n_skus") or 0,
+            s.get("archived_skus") or 0,
+            s.get("archived_tiers_seen") or "",
+            s.get("all_tiers_seen") or "",
+            s.get("all_statuses_seen") or "",
+            ", ".join((s.get("skus") or [])[:5]),
+            s.get("current_dashboard_bucket") or "",
+        ])
+    return _xlsx_response(
+        wb, f"Odoo_Archived_Status_Styles_{date.today().isoformat()}.xlsx")
 
 
 @app.get("/api/analytics/store-overstock")
