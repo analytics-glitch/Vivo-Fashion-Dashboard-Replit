@@ -42,6 +42,20 @@ YYYY-MM of sale_date over trailing 365d), computed in each endpoint's SQL.
 **Every in-scope style gets exactly one bucket**, so the banner math holds:
 Active [Tier 1..4] + Retired == Total; sum(Tier 1..4 counts) == Active.
 
+**Tier 4 catch-all must be status-gated (2026-08-27 fix).** The Odoo `tier`
+field's fallback (no recognized Tier 1-3 string) used to default unconditionally
+to Tier 4. But `all_products_clean.status` has values beyond 'Active'/'Retired'
+— 'Archived', 'Partner Brand', 'Sample', or blank — that Odoo uses to mean "not
+in the live range" without ever setting status='Retired'. Since
+`_is_manually_retired` only checks `status='Retired'`, those styles weren't
+excluded, and blindly defaulting them to Tier 4 inflated it ~20x (2642 vs a
+genuine ~130-230 target). Fix: the no-recognized-tier fallback now only lands in
+Tier 4 when `_odoo_active_status_styles()` (BOOL_OR(status='Active')) is true;
+otherwise it returns "Retired". Explicit Tier 1-3 (and explicit Tier 4/"New")
+values are matched before this fallback and are unaffected — don't conflate a
+"my tier count looks wrong" report with the explicit-tier data itself, which is
+usually fine; check the catch-all default population by status first.
+
 # Spreadsheet override layer (Aug 2026) — `style_tier_overrides` WINS
 
 The imported buying-sheet table (style_number → status + tier) is applied LAST

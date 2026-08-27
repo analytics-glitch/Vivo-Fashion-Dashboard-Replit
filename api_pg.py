@@ -4360,6 +4360,28 @@ def _odoo_retired_styles():
         _RETIRED_SET_CACHE["at"] = now
     return _RETIRED_SET_CACHE["set"]
 
+# Styles Odoo currently flags status='Active' on at least one SKU row. Used
+# ONLY to gate the _lifecycle_tier no-recognized-tier fallback (below): a style
+# with no Tier 1-3 value AND no live Active status is catalog debris (blank
+# status, 'Archived', 'Partner Brand', 'Sample') that must not be counted as a
+# live Tier 4 style — see _lifecycle_tier note (2026-08-27 Tier 4 fix).
+_ODOO_ACTIVE_STYLES_SQL = (
+    "SELECT style_name FROM all_products_clean "
+    "WHERE COALESCE(style_name,'') <> '' "
+    "GROUP BY style_name HAVING BOOL_OR(status = 'Active')"
+)
+_ACTIVE_STATUS_SET_CACHE = {"at": 0.0, "set": frozenset()}
+
+def _odoo_active_status_styles():
+    """Normalized set of style names Odoo marks status='Active' (cached briefly)."""
+    now = time.time()
+    if now - _ACTIVE_STATUS_SET_CACHE["at"] > _RETIRED_SET_TTL:
+        rows = run_query(_ODOO_ACTIVE_STYLES_SQL, ttl=_RETIRED_SET_TTL) or []
+        _ACTIVE_STATUS_SET_CACHE["set"] = frozenset(
+            _norm_style(r["style_name"]) for r in rows)
+        _ACTIVE_STATUS_SET_CACHE["at"] = now
+    return _ACTIVE_STATUS_SET_CACHE["set"]
+
 # Rec types that the shared Transfer Tracking report + assign endpoints accept.
 _TRANSFER_REC_TYPES = {"replenish", "warehouse_return"}
 
@@ -4449,10 +4471,17 @@ def _lifecycle_tier(style_name, brand, age_weeks, reorder_count, months_active_1
                              synced from noos_styles). Strictly Odoo-sourced.
       Tier 2 / Core Performer  — Odoo tier = Tier 2 / Core Performer.
       Tier 3 / Recent Performer — Odoo tier = Tier 3 / Recent Performer.
-      Tier 4 / New         — Odoo tier = Tier 4 / New, or no Odoo tier set at
-                             all (N/A, Sample, Archived, blank) — every active
-                             style must land in a real Tier 1..4 bucket so the
-                             per-tier counts always sum to the Active total.
+      Tier 4 / New         — Odoo tier = Tier 4 / New, OR no Odoo tier set at
+                             all (N/A, Sample, Archived, blank) while Odoo
+                             still marks the style status='Active' (a real,
+                             live style simply not yet triaged into a tier).
+                             A style with neither a recognized tier NOR a live
+                             Active status (blank/Archived/Partner
+                             Brand/Sample status) is catalog debris, not a
+                             live Tier 4 style — it falls to Retired instead
+                             (2026-08-27 fix: this previously swept ~2,500
+                             non-live styles into Tier 4, see
+                             _odoo_active_status_styles).
 
     The reorder_count and age_weeks parameters are retained for call-site
     compatibility and advisory overlays (_retirement_flag_reason,
@@ -4463,11 +4492,18 @@ def _lifecycle_tier(style_name, brand, age_weeks, reorder_count, months_active_1
     # Tier 1 — NOOS: Odoo is_noos flag (synced from noos_styles via all_products_clean)
     if is_noos:
         return "Tier 1"
-    # Tier 2–4: from Odoo x_vivo_attr_99 (all_products_clean.tier). Anything
-    # unrecognized (no tier set, N/A, Sample, Archived) defaults to Tier 4
-    # rather than a separate "Untiered" bucket — see _ODOO_TIER_MAP note.
+    # Tier 2–4: from Odoo x_vivo_attr_99 (all_products_clean.tier).
     odoo_tier = _odoo_style_tiers().get(_norm_style(style_name))
-    return _ODOO_TIER_MAP.get(odoo_tier, "Tier 4")
+    mapped_tier = _ODOO_TIER_MAP.get(odoo_tier)
+    if mapped_tier:
+        return mapped_tier
+    # No recognized tier value. Only default to Tier 4 when Odoo still marks
+    # the style status='Active' (a real, live style just not yet triaged into
+    # a tier) — see _ODOO_TIER_MAP / _odoo_active_status_styles note. Anything
+    # else (blank status, Archived, Partner Brand, Sample) is catalog debris
+    # that must not inflate Tier 4.
+    norm = _norm_style(style_name)
+    return "Tier 4" if norm in _odoo_active_status_styles() else "Retired"
 
 
 def _retirement_flag_reason(age_weeks, *, lifetime_sor, last_sale_days, woc,
