@@ -22778,9 +22778,11 @@ def analytics_replenish_gaps(
                 GROUP BY i.pos_location_name, i.sku
             ),
             wh_soh AS (
+                -- Warehouse quantity is the dispatchable Finished Goods Production
+                -- location ONLY (user-mandated) — see note in _compute_replenishment_sor.
                 SELECT i.sku, SUM(i.available) AS soh_wh
                 FROM all_inventory i
-                WHERE i.pos_location_name = 'Warehouse Finished Goods'
+                WHERE i.pos_location_name = """ + WH_DISPATCH_LOCATION + """
                 GROUP BY i.sku
             )
             SELECT sold.pos_location, sold.sku, COALESCE(NULLIF(p.product_name, ''), sold.product_name) AS product_name, sold.units_sold, sold.last_sale,
@@ -22823,9 +22825,11 @@ def analytics_replenish_gaps(
                 GROUP BY i.sku
             ),
             wh_soh AS (
+                -- Warehouse quantity is the dispatchable Finished Goods Production
+                -- location ONLY (user-mandated) — see note in _compute_replenishment_sor.
                 SELECT i.sku, SUM(i.available) AS soh_wh
                 FROM all_inventory i
-                WHERE i.pos_location_name = 'Warehouse Finished Goods'
+                WHERE i.pos_location_name = """ + WH_DISPATCH_LOCATION + """
                 GROUP BY i.sku
             )
             SELECT sold.sku, COALESCE(NULLIF(p.product_name, ''), sold.product_name) AS product_name, sold.units_sold, sold.last_sale,
@@ -23393,9 +23397,16 @@ def _compute_replenishment_sor(weeks=REPLEN_DEMAND_WEEKS_DEFAULT, limit=400):
             GROUP BY i.pos_location_name, i.sku
         ),
         wh_soh AS (
+            -- Warehouse quantity is the dispatchable Finished Goods Production
+            -- location ONLY (user-mandated). Other WAREHOUSE_LOCATIONS entries
+            -- (Sew/Stock/A-E, Production, Holding Warehouse Finished Goods,
+            -- Fabric Trimming, etc.) are WIP/pipeline, not stock ready to ship —
+            -- counting them here previously caused items still in production to
+            -- be recommended (and flagged deploy_now) with zero real ship-ready
+            -- stock.
             SELECT i.sku, SUM(i.available) AS soh_wh
             FROM all_inventory i
-            WHERE i.pos_location_name IN (""" + WAREHOUSE_LOCATIONS + """)
+            WHERE i.pos_location_name = """ + WH_DISPATCH_LOCATION + """
             GROUP BY i.sku
         )
         SELECT sold.pos_location_name AS pos_location, sold.country,
@@ -23862,9 +23873,11 @@ def _compute_replenishment_report_rows(date_from=None, date_to=None, limit=400):
             GROUP BY i.pos_location_name, i.sku
         ),
         wh_soh AS (
+            -- Warehouse quantity is the dispatchable Finished Goods Production
+            -- location ONLY (user-mandated) — see note in _compute_replenishment_sor.
             SELECT i.sku, SUM(i.available) AS soh_wh
             FROM all_inventory i
-            WHERE i.pos_location_name IN (""" + WAREHOUSE_LOCATIONS + """)
+            WHERE i.pos_location_name = """ + WH_DISPATCH_LOCATION + """
             GROUP BY i.sku
         )
         SELECT sold.pos_location_name AS pos_location, sold.country,
@@ -32636,9 +32649,11 @@ def _replen_export_rows(country, channel):
             GROUP BY 1, 2
         ),
         wh_soh AS (
+            -- Warehouse quantity is the dispatchable Finished Goods Production
+            -- location ONLY (user-mandated) — see note in _compute_replenishment_sor.
             SELECT i.sku, SUM(i.available) AS soh_wh
             FROM all_inventory i
-            WHERE i.pos_location_name IN ({WAREHOUSE_LOCATIONS})
+            WHERE i.pos_location_name = {WH_DISPATCH_LOCATION}
             GROUP BY 1
         )
         SELECT sold.pos_location_name AS store, sold.country, COALESCE(NULLIF(p.product_name, ''), sold.product_name) AS product_name,
