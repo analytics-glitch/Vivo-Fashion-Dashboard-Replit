@@ -35,7 +35,7 @@ FIELDS=[
 ]
 
 print("searching ALL products (not just FG)...")
-ids=ex('product.template','search',[[]])   # ALL templates so we catch dupes across categories
+ids=ex('product.template','search',[])   # ALL templates so we catch dupes across categories
 print(str(len(ids))+" products")
 
 rows=[]; B=500
