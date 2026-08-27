@@ -4369,10 +4369,20 @@ def _is_manually_retired(style_name):
 
 # ── Odoo tier cache ──────────────────────────────────────────────────────────
 # Reads x_vivo_attr_99 (stored as all_products_clean.tier by the Odoo sync).
-# Values in the data: NOOS, Core Performer, Recent Performer, New, Retired, N/A.
-# Two known typo variants (Perfomer) are mapped defensively.
-# No fallback rules — a style with no Odoo tier becomes "Untiered".
+# Live data actually stores the tier as "Tier 1".."Tier 4" directly (verified
+# 2026-08-27), plus "Retired"/"N/A"/"Sample"/"Archived"/blank for styles with
+# no real tier assignment. The older descriptive labels (NOOS, Core Performer,
+# Recent Performer, New) are kept mapped too in case the Odoo sync ever reverts
+# to them, but they were NOT what live data used — that mismatch is why every
+# style previously fell through to "Untiered" and the Tier 1-4 boxes read 0.
+# Anything with no recognizable tier value falls back to Tier 4 (newest/
+# least-classified bucket) so every active style still carries a real Tier 1..4
+# and the per-tier counts always add up to the Active total.
 _ODOO_TIER_MAP = {
+    "Tier 1":           "Tier 1",
+    "Tier 2":           "Tier 2",
+    "Tier 3":           "Tier 3",
+    "Tier 4":           "Tier 4",
     "NOOS":             "Tier 1",
     "Core Performer":   "Tier 2",
     "Core Perfomer":    "Tier 2",   # typo variant in live data
@@ -4437,10 +4447,12 @@ def _lifecycle_tier(style_name, brand, age_weeks, reorder_count, months_active_1
                              (see _odoo_retired_styles / _is_manually_retired).
       Tier 1 / NOOS        — Odoo tier = NOOS (also confirmed by is_noos flag,
                              synced from noos_styles). Strictly Odoo-sourced.
-      Tier 2 / Core Performer  — Odoo tier = Core Performer.
-      Tier 3 / Recent Performer — Odoo tier = Recent Performer.
-      Tier 4 / New         — Odoo tier = New.
-      Untiered             — No Odoo tier set (N/A or blank in Odoo).
+      Tier 2 / Core Performer  — Odoo tier = Tier 2 / Core Performer.
+      Tier 3 / Recent Performer — Odoo tier = Tier 3 / Recent Performer.
+      Tier 4 / New         — Odoo tier = Tier 4 / New, or no Odoo tier set at
+                             all (N/A, Sample, Archived, blank) — every active
+                             style must land in a real Tier 1..4 bucket so the
+                             per-tier counts always sum to the Active total.
 
     The reorder_count and age_weeks parameters are retained for call-site
     compatibility and advisory overlays (_retirement_flag_reason,
@@ -4451,9 +4463,11 @@ def _lifecycle_tier(style_name, brand, age_weeks, reorder_count, months_active_1
     # Tier 1 — NOOS: Odoo is_noos flag (synced from noos_styles via all_products_clean)
     if is_noos:
         return "Tier 1"
-    # Tier 2–4 / Untiered: from Odoo x_vivo_attr_99 (all_products_clean.tier)
+    # Tier 2–4: from Odoo x_vivo_attr_99 (all_products_clean.tier). Anything
+    # unrecognized (no tier set, N/A, Sample, Archived) defaults to Tier 4
+    # rather than a separate "Untiered" bucket — see _ODOO_TIER_MAP note.
     odoo_tier = _odoo_style_tiers().get(_norm_style(style_name))
-    return _ODOO_TIER_MAP.get(odoo_tier, "Untiered")
+    return _ODOO_TIER_MAP.get(odoo_tier, "Tier 4")
 
 
 def _retirement_flag_reason(age_weeks, *, lifetime_sor, last_sale_days, woc,
@@ -24944,10 +24958,7 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
         LEFT JOIN sales sa USING (style_name)
         LEFT JOIN stock st USING (style_name)
         LEFT JOIN nos USING (style_name)
-        WHERE (
-            COALESCE(st.soh_stores, 0) > 0 OR COALESCE(st.soh_warehouse, 0) > 0
-        )
-          AND COALESCE(p.brand, '') NOT ILIKE '%third party%'
+        WHERE COALESCE(p.brand, '') NOT ILIKE '%third party%'
     """, ttl=HEAVY_DASH_TTL)
     # One Style Number → One Style Name: collapse rows that share the same
     # style_number (e.g. mid-season Odoo renames) before computing tiers.
