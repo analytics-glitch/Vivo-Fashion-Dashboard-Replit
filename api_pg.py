@@ -24939,17 +24939,13 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
             COALESCE(st.soh_stores, 0) AS soh_stores, COALESCE(st.soh_warehouse, 0) AS soh_warehouse,
             COALESCE(st.soh_pipeline, 0) AS soh_pipeline,
             COALESCE(nos.months_active_12, 0) AS months_active_12,
-            COALESCE(p.is_noos, FALSE) AS is_noos,
-            tov.tier   AS override_tier,
-            tov.status AS override_status
+            COALESCE(p.is_noos, FALSE) AS is_noos
         FROM prod p
         LEFT JOIN sales sa USING (style_name)
         LEFT JOIN stock st USING (style_name)
         LEFT JOIN nos USING (style_name)
-        LEFT JOIN style_tier_overrides tov ON tov.style_number = p.style_number
         WHERE (
             COALESCE(st.soh_stores, 0) > 0 OR COALESCE(st.soh_warehouse, 0) > 0
-            OR tov.status = 'Active'
         )
           AND COALESCE(p.brand, '') NOT ILIKE '%third party%'
     """, ttl=HEAVY_DASH_TTL)
@@ -24968,11 +24964,6 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
     )
     today = date.today()
     reorder_counts = _real_reorder_counts()  # style_number → real order count
-
-    # Detect whether the override table is in use by checking if any row in the
-    # result has a non-NULL override_status (the SQL LEFT JOIN sets it NULL when
-    # the style has no entry in style_tier_overrides).
-    _overrides_populated = any(r.get("override_status") is not None for r in raw)
 
     active, retired, pipeline, candidates = [], [], [], []
     for r in raw:
@@ -25022,8 +25013,10 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
         else:
             age_band = "Tier 4"
 
-        # Range tier = the UNIFIED lifecycle model (_lifecycle_tier), shared verbatim
-        # with the Product Analysis page so the two surfaces never disagree:
+        # Range tier & status pick straight from Odoo (user rule, Aug 2026): the
+        # style_tier_overrides buying-sheet layer is NOT applied here — Range
+        # Management is the Odoo-source-of-truth surface. (Product Analysis
+        # still applies the sheet override; see manual-style-retirement notes.)
         #   Retired = marked Retired in Odoo (all_products_clean.status).
         #   Tier 1  = NOOS-consistent (sold in >= 11 of the last 12 months).
         #   Tier 2  = matured (age >= 39wk) with a healthy reorder history (> 3 cycles).
@@ -25036,21 +25029,6 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
         life_tier = _lifecycle_tier(
             r["style_name"], r["brand"], age_weeks, reorder_count, months_active_12,
             is_noos=is_noos)
-
-        # Apply spreadsheet tier override joined directly from style_tier_overrides.
-        # override_status = NULL  → style not on the sheet.
-        # Active  → use the spreadsheet tier (Tier 1–4).
-        # Retired / Archived → force into the retired bucket.
-        # No override when table is populated → treat as Archived (upload is
-        # the source of truth; the SQL already excluded zero-stock non-active styles).
-        override_status = r.get("override_status")
-        override_tier   = r.get("override_tier")
-        if override_status == "Active" and override_tier:
-            life_tier = override_tier        # Tier 1 / 2 / 3 / 4
-        elif override_status in ("Retired", "Archived"):
-            life_tier = "Retired"
-        elif override_status is None and _overrides_populated:
-            life_tier = "Retired"            # not on sheet → Archived
 
         is_retired = (life_tier == "Retired")
 
