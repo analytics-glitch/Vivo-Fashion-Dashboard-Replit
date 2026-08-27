@@ -170,7 +170,10 @@ const VivoRangeManagement = ({ channelsOverride } = {}) => {
     // report's Active/Retired totals reconcile with the page banner (Active + Retired
     // == Total) and never contradict it.
     const active = (data.rows || []).filter((r) => TIERS.includes(r.tier));
-    const retired = [...(data.retired_rows || [])];
+    // Archived styles (split out from the old Retire catch-all, 2026-08-27)
+    // are folded into this legacy report's "Retired" side so its Active/
+    // Retired/Total counts keep reconciling with the page banner.
+    const retired = [...(data.retired_rows || []), ...(data.archived_rows || [])];
     const all = [...active, ...retired];
 
     // Brand × tier matrix

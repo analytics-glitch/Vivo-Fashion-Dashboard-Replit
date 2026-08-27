@@ -4481,13 +4481,18 @@ def _lifecycle_tier(style_name, brand, age_weeks, reorder_count, months_active_1
                              all (N/A, Sample, Archived, blank) while Odoo
                              still marks the style status='Active' (a real,
                              live style simply not yet triaged into a tier).
-                             A style with neither a recognized tier NOR a live
-                             Active status (blank/Archived/Partner
+      Archived             — a style with neither a recognized tier NOR a
+                             live Active status (blank/Archived/Partner
                              Brand/Sample status) is catalog debris, not a
-                             live Tier 4 style — it falls to Retired instead
-                             (2026-08-27 fix: this previously swept ~2,500
-                             non-live styles into Tier 4, see
-                             _odoo_active_status_styles).
+                             live Tier 4 style and not a deliberately
+                             end-of-lifed style either — it lands in Archived
+                             instead (2026-08-27 fix: this previously swept
+                             ~2,500 non-live styles into Tier 4, then briefly
+                             into Retired, see _odoo_active_status_styles).
+                             Both Retired and Archived are sourced straight
+                             from Odoo's status field, never a synthesized
+                             bucket: Retired is the hard status='Retired'
+                             fact, Archived is everything else non-live.
 
     The reorder_count and age_weeks parameters are retained for call-site
     compatibility and advisory overlays (_retirement_flag_reason,
@@ -4507,12 +4512,13 @@ def _lifecycle_tier(style_name, brand, age_weeks, reorder_count, months_active_1
     # the style status='Active' (a real, live style just not yet triaged into
     # a tier) — see _ODOO_TIER_MAP / _odoo_active_status_styles note. Anything
     # else (blank status, Archived, Partner Brand, Sample) is catalog debris
-    # that must not inflate Tier 4. Known non-product/test names are excluded
-    # even if Active (_TIER4_FALLBACK_EXCLUSIONS).
+    # that goes to Archived, not Retired — it was never deliberately retired
+    # from sale, it simply isn't a live, tiered style. Known non-product/test
+    # names are excluded even if Active (_TIER4_FALLBACK_EXCLUSIONS).
     norm = _norm_style(style_name)
     if norm in _TIER4_FALLBACK_EXCLUSIONS:
-        return "Retired"
-    return "Tier 4" if norm in _odoo_active_status_styles() else "Retired"
+        return "Archived"
+    return "Tier 4" if norm in _odoo_active_status_styles() else "Archived"
 
 
 def _retirement_flag_reason(age_weeks, *, lifetime_sor, last_sale_days, woc,
@@ -12438,6 +12444,7 @@ def analytics_product_analysis(
             "Tier 3": "Recent Performer",
             "Tier 4": "New / Test",
             "Retired": "Retired",
+            "Archived": "Archived",
         }.get(tier, "New / Test")
 
     rows = []
@@ -12631,7 +12638,7 @@ def analytics_product_analysis(
         rc = reorder_counts.get(g.get("style_number") or "", 0)
         t = _lifecycle_tier(k, g["brand"], aw, rc, g.get("months_active_12", 0),
                             is_noos=g.get("is_noos", False))
-        if t != "Retired":
+        if t not in ("Retired", "Archived"):
             ov = _RANGE_OVERRIDES.get(k)
             ov_tier = ov["tier"] if (ov and ov.get("tier") in
                                      ("Tier 1", "Tier 2", "Tier 3", "Tier 4")) else None
@@ -12649,7 +12656,10 @@ def analytics_product_analysis(
             t = "Retired"
         elif _ovs is None and _tov_populated:
             t = "Retired"
-        retired = (t == "Retired")
+        # Archived is folded into the Retired/Active binary here (PA only
+        # tracks Active vs Retired counts; the per-row life_cycle word above
+        # still shows "Archived" distinctly) so PA's totals don't shift.
+        retired = (t in ("Retired", "Archived"))
         status_by_style[k] = "Retired" if retired else "Active"
         tier_by_style[k] = t
         g["tier"] = t
@@ -25034,7 +25044,7 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
     today = date.today()
     reorder_counts = _real_reorder_counts()  # style_number → real order count
 
-    active, retired, pipeline, candidates = [], [], [], []
+    active, retired, archived, pipeline, candidates = [], [], [], [], []
     for r in raw:
         units_life = int(r["units_life"] or 0)
         sales_life = float(r["sales_life"] or 0)
@@ -25100,10 +25110,14 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
             is_noos=is_noos)
 
         is_retired = (life_tier == "Retired")
+        is_archived = (life_tier == "Archived")
 
         if is_retired:
             status = "Retire"
             action = "Mark down to outlet and clear remaining stock per the SOP 4-week gap rule."
+        elif is_archived:
+            status = "Archived"
+            action = "Not a live, tiered style in Odoo (blank/Sample/Partner Brand status or similar) — clear any remaining stock via Warehouse Returns."
         elif (age_band in ("Tier 3", "Tier 4") and age_weeks is not None
                 and age_weeks >= 12 and (sor_life is None or sor_life < 25)):
             status = "Overdue"
@@ -25180,6 +25194,13 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
             retired.append(row)
             continue
 
+        if is_archived:
+            row["tier"] = row["auto_tier"] = "Archived"
+            row["flagged_for_retirement"] = False
+            row["flag_reason"] = None
+            archived.append(row)
+            continue
+
         flag_reason = _retirement_flag_reason(
             age_weeks, lifetime_sor=sor_life, last_sale_days=last_sale_days,
             woc=woc, reorder_count=reorder_count,
@@ -25229,11 +25250,12 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
     active_tier_total = len(active)
     flagged_count = sum(1 for row in active if row.get("flagged_for_retirement"))
 
-    total_count = len(active) + len(retired)
+    total_count = len(active) + len(retired) + len(archived)
     tier_summary = {
-        "Total": _tier_summary_block(active + retired, total_count),
+        "Total": _tier_summary_block(active + retired + archived, total_count),
         "Active": _tier_summary_block(active, total_count),
         "Retired": _tier_summary_block(retired, total_count),
+        "Archived": _tier_summary_block(archived, total_count),
     }
     for t in ("Tier 1", "Tier 2", "Tier 3", "Tier 4"):
         tier_summary[t] = _tier_summary_block(
@@ -25254,6 +25276,11 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
         # this equals len(active) and the sum of the per-tier counts. Flagged styles
         # are PART of this total and surfaced separately via flagged_for_retirement.
         "total_active_styles": active_tier_total,
+        # Hard-retired (Odoo status='Retired') vs Archived (not Active, not
+        # Retired, no recognized Odoo tier — blank/Sample/Partner Brand/
+        # Archived status) are both sourced from Odoo and never overlap.
+        "total_retired_styles": len(retired),
+        "total_archived_styles": len(archived),
         # "Flagged for retirement" pill = active styles the classifier flags for the
         # markdown rail (failed an SOP gate but kept in the live range).
         "flagged_for_retirement": flagged_count,
@@ -25314,6 +25341,7 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
     return {
         "rows": active,
         "retired_rows": retired,
+        "archived_rows": archived,
         "summary": summary,
         "retirement_pipeline": pipeline,
         "recent_movements": [],
@@ -25335,6 +25363,8 @@ def range_mgmt_store_tier_mix(country: str = Query(default=None), channel: str =
         tier_by_style[row["style_name"]] = row.get("tier") or "Tier 4"
     for row in classify.get("retired_rows", []):
         tier_by_style[row["style_name"]] = "Retire"
+    for row in classify.get("archived_rows", []):
+        tier_by_style[row["style_name"]] = "Archived"
     icf, ichf = _style_filters(country, channel, "i")
     stock = run_query("""
         SELECT i.pos_location_name AS store, MAX(i.country) AS country,
@@ -25360,7 +25390,7 @@ def range_mgmt_store_tier_mix(country: str = Query(default=None), channel: str =
         e["styles"] += 1
         e["units"] += int(r["units"] or 0)
     rows = sorted(agg.values(), key=lambda e: (e["store"], e["tier"]))
-    tiers = ["Tier 1", "Tier 2", "Tier 3", "Tier 4", "Retire"]
+    tiers = ["Tier 1", "Tier 2", "Tier 3", "Tier 4", "Retire", "Archived"]
     return {"rows": rows, "tiers": tiers}
 
 
@@ -25380,7 +25410,8 @@ def range_mgmt_tier_export(brand: str = Query(default=None)):
     import io as _io
 
     classify = range_mgmt_classify()
-    all_rows = classify.get("rows", []) + classify.get("retired_rows", [])
+    all_rows = (classify.get("rows", []) + classify.get("retired_rows", [])
+                + classify.get("archived_rows", []))
 
     if brand:
         brand_lower = brand.strip().lower()
@@ -25672,7 +25703,7 @@ def analytics_store_overstock(country: str = Query(default=None), channel: str =
     # ── 7. Stock mix (reuse range_mgmt_store_tier_mix) ────────────────────────
     tier_data = range_mgmt_store_tier_mix(country=country or None, channel=None)
     _TL = {"Tier 1": "NOOS", "Tier 2": "Core", "Tier 3": "Recent Performer",
-           "Tier 4": "New Styles", "Retire": "Retired"}
+           "Tier 4": "New Styles", "Retire": "Retired", "Archived": "Archived"}
     raw_mix: dict = {}
     for r in (tier_data.get("rows") or []):
         s_nm = r.get("store") or ""
@@ -25684,7 +25715,10 @@ def analytics_store_overstock(country: str = Query(default=None), channel: str =
         tot = sum(raw.values()) or 1
         out = {lbl: raw.get(tier, 0) for tier, lbl in _TL.items()}
         nc  = raw.get("Tier 1", 0) + raw.get("Tier 2", 0)
-        dead = raw.get("Retire", 0)
+        # "Dead" stock = Retired + Archived — both are non-live, no-longer-
+        # tiered stock; kept combined here so this metric's definition doesn't
+        # shift now that Archived is split out of the old Retire bucket.
+        dead = raw.get("Retire", 0) + raw.get("Archived", 0)
         tv  = sum(raw.values())
         out["noos_pct"] = round(nc   * 100.0 / tot, 1) if tv else None
         out["dead_pct"] = round(dead * 100.0 / tot, 1) if tv else None

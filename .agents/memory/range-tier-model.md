@@ -50,11 +50,36 @@ in the live range" without ever setting status='Retired'. Since
 `_is_manually_retired` only checks `status='Retired'`, those styles weren't
 excluded, and blindly defaulting them to Tier 4 inflated it ~20x (2642 vs a
 genuine ~130-230 target). Fix: the no-recognized-tier fallback now only lands in
-Tier 4 when `_odoo_active_status_styles()` (BOOL_OR(status='Active')) is true;
-otherwise it returns "Retired". Explicit Tier 1-3 (and explicit Tier 4/"New")
-values are matched before this fallback and are unaffected — don't conflate a
-"my tier count looks wrong" report with the explicit-tier data itself, which is
-usually fine; check the catch-all default population by status first.
+Tier 4 when `_odoo_active_status_styles()` (BOOL_OR(status='Active')) is true.
+Explicit Tier 1-3 (and explicit Tier 4/"New") values are matched before this
+fallback and are unaffected — don't conflate a "my tier count looks wrong"
+report with the explicit-tier data itself, which is usually fine; check the
+catch-all default population by status first.
+
+**Retired vs Archived are two separate hard Odoo-status buckets (2026-08-27,
+same-day follow-up).** The fallback above briefly landed non-Active/no-tier
+styles in "Retired" (see above), which conflated real discontinuations with
+catalog debris — user asked to split them. Final shape: `_lifecycle_tier`
+returns "Retired" ONLY for `status='Retired'` (via `_is_manually_retired` /
+`_odoo_retired_styles`, unchanged); everything else with no recognized tier AND
+no live Active status (blank/Archived/Partner Brand/Sample) now returns
+"Archived" instead. At style-name grain (not SKU/product grain) this Archived
+bucket is large — roughly 2-3x the Retired count on this catalog — because one
+style_name can span many Odoo product rows and most of the non-tiered catalog
+debris sits there, not in explicit status='Retired'. A big Archived number is
+expected, not a bug; sanity-check by calling `range_mgmt_classify(country=None,
+channel=None)` directly (plain function call, bypassing FastAPI's `Query()`
+default marker) and confirming `active+retired+archived == total` and per-tier
+counts sum to `active`.
+`_TIER4_FALLBACK_EXCLUSIONS` (ZZ TEST, Sample & Sale Items) resolve to
+"Archived" too, not "Retired". Every consumer of `_lifecycle_tier` /
+`range_mgmt_classify` output that special-cased "Retired" needed a matching
+Archived branch or its totals silently drop or double-count: Range Management's
+summary banner + drill-down + tier_export + store_tier_mix + the dead-stock %
+calc, and Product Analysis (which folds Archived into its existing binary
+Retired bucket by design — PA has no separate Archived card). Grep every
+`retired_rows` / `"Retired"` literal near `_lifecycle_tier` output before
+calling a related change done.
 
 # Spreadsheet override layer (Aug 2026) — `style_tier_overrides` WINS
 

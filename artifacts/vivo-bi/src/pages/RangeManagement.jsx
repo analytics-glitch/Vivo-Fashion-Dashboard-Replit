@@ -23,6 +23,7 @@ const TIER_STYLES = {
   "Tier 3": { bg: "#dbeafe", text: "#1e40af", label: "Tier 3 · Recent Performer" },
   "Tier 4": { bg: "#f1f5f9", text: "#334155", label: "Tier 4 · New Styles" },
   "Retire": { bg: "#fee2e2", text: "#991b1b", label: "Retire" },
+  "Archived": { bg: "#e2e8f0", text: "#475569", label: "Archived" },
 };
 
 const RAG = {
@@ -36,6 +37,7 @@ const STATUS_TONES = {
   "At Risk":  { bg: "bg-amber-50",    text: "text-amber-700" },
   "Overdue":  { bg: "bg-rose-50",     text: "text-rose-700" },
   "Retire":   { bg: "bg-rose-100",    text: "text-rose-800" },
+  "Archived": { bg: "bg-slate-100",   text: "text-slate-700" },
 };
 
 const TIER_SHORT = {
@@ -43,6 +45,7 @@ const TIER_SHORT = {
   "Tier 2": "Tier 2 · Core",
   "Tier 3": "Tier 3 · Recent Performer",
   "Tier 4": "Tier 4 · New Styles",
+  "Archived": "Archived",
 };
 
 const TierPill = ({ tier }) => {
@@ -191,7 +194,7 @@ const TierKpiCard = ({ tier, count, pctStyles, revenueLifetime, unitsLifetime, a
   const tone = RAG[rag] || RAG.amber;
   const t = customTone || TIER_STYLES[tier] || TIER_STYLES["Tier 4"];
   const [lo, hi] = target || [0, 0];
-  const isRetired = tier === "Retired";
+  const isRetired = tier === "Retired" || tier === "Archived";
   const isAgg = tier === "Total" || tier === "Active" || isRetired;
   return (
     <button
@@ -643,7 +646,7 @@ const RangeManagement = () => {
                 </div>
               </div>
             </div>
-            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3" data-testid="tier-kpi-row">
+            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3" data-testid="tier-kpi-row">
               {/* Iter 91v — Total + Active aggregate cards (left) */}
               <TierKpiCard
                 key="Total"
@@ -704,6 +707,20 @@ const RangeManagement = () => {
                 tone={{ bg: "#fecaca", text: "#7f1d1d", label: "Retired" }}
                 testId="tier-card-Retired"
                 onClick={() => setDrillTier("Retired")}
+              />
+              <TierKpiCard
+                key="Archived"
+                tier="Archived"
+                count={summary.tier_summary?.Archived?.count ?? 0}
+                pctStyles={summary.tier_summary?.Archived?.pct_styles}
+                availableUnits={summary.tier_summary?.Archived?.stock_available}
+                revenueLifetime={summary.tier_summary?.Archived?.revenue_lifetime}
+                unitsLifetime={summary.tier_summary?.Archived?.units_lifetime}
+                sorPct={summary.tier_summary?.Archived?.sor_lifetime_pct}
+                tone={{ bg: "#e2e8f0", text: "#334155", label: "Archived" }}
+                title="Not a live, tiered style in Odoo — blank/Sample/Partner Brand/Archived catalog status. Sourced from Odoo the same way Retired is, kept as a separate bucket from hard-retired (status='Retired') styles."
+                testId="tier-card-Archived"
+                onClick={() => setDrillTier("Archived")}
               />
             </div>
             {/* Iter 89w-f — data-ceiling footer note */}
@@ -1485,24 +1502,26 @@ const RangeManagement = () => {
              })()}
           </div>
 
-          {/* Retired styles still holding stock — the money trapped in
-              end-of-life range. Derived from the classify payload's
-              retired_rows (no extra fetch). */}
+          {/* Retired/Archived styles still holding stock — the money trapped
+              in end-of-life range. Derived from the classify payload's
+              retired_rows + archived_rows (no extra fetch); a Status column
+              distinguishes hard-retired from archived catalog debris. */}
           <div className="card-white p-4 sm:p-5">
             <SectionTitle
-              title="Retired styles still holding stock"
-              subtitle="Physically-retired styles with units left — split by stores / warehouse / pipeline. Clear via Markdown & Clearance or Warehouse Returns."
+              title="Retired & Archived styles still holding stock"
+              subtitle="Physically-retired or archived (blank/Sample/Partner Brand Odoo status) styles with units left — split by stores / warehouse / pipeline. Clear via Markdown & Clearance or Warehouse Returns."
               testId="retired-with-stock-section"
             />
             {(() => {
-              const rws = (data?.retired_rows || []).filter((r) => (r.current_stock || 0) > 0);
-              if (!rws.length) return <Empty label="No retired styles are holding stock — the end-of-life range is clean." />;
+              const rws = [...(data?.retired_rows || []), ...(data?.archived_rows || [])]
+                .filter((r) => (r.current_stock || 0) > 0);
+              if (!rws.length) return <Empty label="No retired or archived styles are holding stock — the end-of-life range is clean." />;
               return (
                 <SortableTable
                   testId="retired-with-stock-table"
                   pageSize={25}
                   initialSort={{ key: "current_stock", dir: "desc" }}
-                  exportName="retired-styles-with-stock.csv"
+                  exportName="retired-archived-styles-with-stock.csv"
                   columns={[
                     { key: "style_name", label: "Style", align: "left",
                       render: (r) => (
@@ -1511,6 +1530,8 @@ const RangeManagement = () => {
                           <div className="text-muted text-[10.5px]">{r.brand} · {r.subcategory}</div>
                         </div>
                       ) },
+                    { key: "tier", label: "Status", align: "left",
+                      render: (r) => (r.tier === "Archived" ? "Archived" : "Retired") },
                     { key: "current_stock", label: "Stock", numeric: true, render: (r) => fmtNum(r.current_stock) },
                     { key: "soh_stores", label: "Stores", numeric: true, render: (r) => fmtNum(r.soh_stores) },
                     { key: "soh_warehouse", label: "Warehouse", numeric: true, render: (r) => fmtNum(r.soh_warehouse) },
@@ -1535,11 +1556,13 @@ const RangeManagement = () => {
           rows={
             drillTier === "Retired"
               ? (data?.retired_rows || [])
-              : drillTier === "Active"
-                ? (data?.rows || [])
-                : drillTier === "Total"
-                  ? ([...(data?.rows || []), ...(data?.retired_rows || [])])
-                  : (data?.rows || []).filter((r) => r.tier === drillTier)
+              : drillTier === "Archived"
+                ? (data?.archived_rows || [])
+                : drillTier === "Active"
+                  ? (data?.rows || [])
+                  : drillTier === "Total"
+                    ? ([...(data?.rows || []), ...(data?.retired_rows || []), ...(data?.archived_rows || [])])
+                    : (data?.rows || []).filter((r) => r.tier === drillTier)
           }
           onClose={() => setDrillTier(null)}
         />
