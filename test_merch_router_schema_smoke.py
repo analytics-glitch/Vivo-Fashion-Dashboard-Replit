@@ -567,8 +567,11 @@ class LifecycleSplitKpiTests(unittest.TestCase):
         ]
         s = merch_router._compute_summary(rows)
         self.assertEqual(s["active_revenue_period"], 150)  # revenue stays exhaustive
-        self.assertEqual(s["active_styles_count"], 1)      # card count = in-stock only
-        self.assertEqual(s["active_styles_all_count"], 2)  # avg denominator = ALL active
+        # 2026-08-27 user rule: Active Styles matches Range Management exactly
+        # (every Tier 1-4 style, stock or no stock) — no separate in-stock-only
+        # card count anymore, so both fields read the same ALL-active total.
+        self.assertEqual(s["active_styles_count"], 2)
+        self.assertEqual(s["active_styles_all_count"], 2)
 
     def test_active_styles_all_count_deduped_by_style_number(self):
         rows = [
@@ -650,7 +653,10 @@ class OverviewKpiBucketParityTests(unittest.TestCase):
             _style(style_number="SN-1", tier="Tier 1", style_name="renamed twin",
                    colour_count=2, colours_in_stock=2),                        # dedup → counts once
             _style(style_number="SN-2", tier="Tier 2", style_name="Style B",
-                   current_stock=0, soh_stores=0, colours_in_stock=5),         # stockless active → excluded
+                   current_stock=0, soh_stores=0, soh_warehouse=0,
+                   colours_in_stock=0),   # stockless active → still counts as a style (matches
+                                          # RM's Active total), but a style with zero total stock
+                                          # can't have any in-stock colourway, so it contributes 0
             _style(style_number="SN-3", tier="Retired", style_name="Style C",
                    current_stock=0, soh_stores=0),                             # stockless retired → still counts
             _style(style_number="SN-4", tier="Archived", style_name="Style D"),
@@ -687,7 +693,9 @@ class OverviewKpiBucketParityTests(unittest.TestCase):
         colour_rows = [
             _c("Style A", "Red"), _c("Style A", "Blue"),            # SN-1 kept twin → 2
             _c("renamed twin", "Red"), _c("renamed twin", "Blue"),  # deduped twin → dropped
-            _c("Style B", "Green"),                                 # stockless parent → dropped
+            # Style B (SN-2) is a zero-total-stock Active style: it's now a
+            # counted style (matches RM), but a style with no stock anywhere
+            # has no in-stock colourway to report, so it has no colour rows.
             _c("Style C", "Black"),                                 # retired parent → dropped
             _c("Style E", "White"),                                 # → 1
         ]

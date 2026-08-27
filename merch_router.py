@@ -1913,12 +1913,6 @@ def _has_stock(s):
     return (s.get("current_stock") or 0) > 0
 
 
-def _has_any_stock(s):
-    """Stores-or-warehouse stock — the Active-universe gate _compute_summary
-    uses (mirrors RM; can differ from current_stock for warehouse-only rows)."""
-    return (s.get("soh_stores") or 0) > 0 or (s.get("soh_warehouse") or 0) > 0
-
-
 def _is_archived_tier(s):
     return (s.get("tier") or "Tier 4") == "Archived"
 
@@ -1972,10 +1966,20 @@ _KPI_BUCKETS = {
     # ── Overview-tab KPI cards ───────────────────────────────────────────────
     # Preds mirror _compute_summary's counting EXACTLY — enforced by
     # OverviewKpiBucketParityTests in test_merch_router_schema_smoke.py.
+    #
+    # 2026-08-27 user rule: every Tier/Status report reads straight from Odoo
+    # and matches Range Management exactly, with no other rule layered on top
+    # — this applies dashboard-wide, including Merchandising Hub. Active
+    # Style Lines previously required physical stock (has_any_stock) on top
+    # of the Tier 1-4 gate, which is NOT how Range Management counts Active
+    # (RM's Active total is every Tier 1-4 style, stock or no stock) — that
+    # extra gate silently dropped 39 zero-stock Active styles from the card
+    # (411 vs RM's 411). Retired/Archived never had this stock gate, so the
+    # asymmetry was the mismatch. Removed here for parity.
     "active_styles": {
         "label": "Active Style Lines",
         "dedup": True,
-        "pred":  lambda s: _is_active_tier(s) and _has_any_stock(s),
+        "pred":  _is_active_tier,
     },
     "retired_styles": {
         "label": "Retired Style Lines",
@@ -1990,13 +1994,16 @@ _KPI_BUCKETS = {
     "active_colours": {
         "label": "Active Colour Styles",
         "dedup": True,
-        "pred":  lambda s: _is_active_tier(s) and _has_any_stock(s),
+        "pred":  _is_active_tier,
         # COLOUR-grain file: the export endpoint branches to
         # _active_colour_rows (one row per in-stock colourway of these
         # deduped Active styles), so the file's row count equals the card's
         # DERIVED colourway count — the same colours_in_stock figure
         # _compute_summary sums. This bucket still defines the PARENT-style
-        # membership the branch expands.
+        # membership the branch expands. A zero-stock Active parent simply
+        # contributes zero colourways (colours_in_stock is itself a stock
+        # count), so dropping the stock gate here only affects parity with
+        # active_styles/RM, never the actual colour tally.
     },
     "warehouse_units": {
         "label": "Warehouse Units",
@@ -2339,7 +2346,6 @@ def _compute_summary(styles, full_price_metrics=None):
         warehouse_stock += s.get("soh_warehouse") or 0
 
         tier        = s.get("tier") or "Tier 4"
-        has_stock   = (s.get("soh_stores") or 0) > 0 or (s.get("soh_warehouse") or 0) > 0
         current_stk = s.get("current_stock") or 0
         snum        = (s.get("style_number") or "").strip()
         dedup_key   = snum if snum else s.get("style_name", "")
@@ -2365,8 +2371,12 @@ def _compute_summary(styles, full_price_metrics=None):
                 sor_period_active_vals.append(s["sor_period"])
             if s.get("full_price_sor_period") is not None:
                 full_price_sor_period_active_vals.append(s["full_price_sor_period"])
-            # Active styles: only count those with physical stock (mirrors RM universe)
-            if has_stock and dedup_key not in _seen_active_keys:
+            # 2026-08-27 user rule: Active Styles counts every Tier 1-4 style,
+            # stock or no stock — matching Range Management's Active total
+            # exactly (RM never gates its Active count on physical stock).
+            # Zero-stock styles simply contribute 0 to the stock/colour sums
+            # below, so the card total now equals active_styles_all_count.
+            if dedup_key not in _seen_active_keys:
                 _seen_active_keys.add(dedup_key)
                 active_styles           += 1
                 # Colour styles use DERIVED status: count only this style's

@@ -94,6 +94,21 @@ it's Archived or excluded (`None`) per the rules above.
   the test process — they must mock `merch_router._compute_tier` directly
   (fixed return value) rather than relying on fake rows classifying for real.
 
+**Second manual-rule leak found post-refactor (2026-08-27): a hidden stock
+gate, not the tier model itself.** After the override removal above, Merch
+Hub's "Active Styles" KPI still read 372 vs Range Management's 411 for the
+same data. Root cause was NOT tier/override logic — `_KPI_BUCKETS["active_styles"]`
+and `_compute_summary()`'s active-tier accumulation additionally required
+`_has_any_stock` (current stock > 0) on top of the tier gate; Retired/Archived
+buckets never had this extra condition. Range Management counts every
+Tier 1-4 style regardless of current stock. Fix: drop the stock condition so
+Active-styles counting matches RM's tier-only rule everywhere in Merch Hub
+(colours bucket too). Lesson: after removing one kind of extra rule
+(overrides), audit sibling KPI buckets for a *different* extra rule (stock
+gates, date gates, etc.) layered on top of the same tier check — they fail
+the same "no other rule" contract silently and only show up as a raw count
+mismatch, not an error.
+
 # Walk-in / brand pseudo-account exclusion (customer counts)
 
 Customer-universe endpoints exclude pseudo-accounts whose name matches
