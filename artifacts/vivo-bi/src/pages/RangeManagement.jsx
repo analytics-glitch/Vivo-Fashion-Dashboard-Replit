@@ -590,6 +590,23 @@ const RangeManagement = () => {
           </button>
           <button
             type="button"
+            onClick={() => {
+              const a = document.createElement("a");
+              a.href = "/api/range-mgmt/export/missing-odoo-data";
+              a.download = "Missing_Odoo_Status_Tier.xlsx";
+              document.body.appendChild(a);
+              a.click();
+              document.body.removeChild(a);
+            }}
+            data-testid="range-missing-odoo-export-btn"
+            className="btn-secondary flex items-center gap-1.5"
+            title="Finished-product styles where Odoo's own Status or Tier field is unset — hand this to the team to complete in Odoo"
+          >
+            <DownloadSimple size={14} weight="bold" />
+            Missing Status/Tier in Odoo
+          </button>
+          <button
+            type="button"
             onClick={exportCsv}
             disabled={!filtered.length}
             data-testid="range-csv-btn"

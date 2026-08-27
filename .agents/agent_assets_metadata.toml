@@ -185,3 +185,10 @@ mtime_ms = 1787148390991
 storage_uri = "gcs://replit-rams-assets-kirk/rams/assets/repl:a2104183-e22b-4aee-99f6-fc604d080eee/1d3cc05d-1a94-418c-86f9-a4cd9c21d45c/01dc2eae-6ede-4e5c-ae63-e88ef3487ff3"
 storage_version_token = "1787148452162858"
 content_type = "text/markdown"
+
+[[outputs]]
+id = "GZ18uQuALzFEEfG5aqs1m"
+uri = "file://exports/Missing_Odoo_Status_Tier_2026-08-27.xlsx"
+type = "table"
+title = "Missing Odoo Status/Tier — 1,740 styles"
+description = "Finished-product styles where Odoo's own Status field is unset (44% of the catalogue). Includes style number, brand, subcategory, SKU samples, and which dashboard bucket each currently falls into."

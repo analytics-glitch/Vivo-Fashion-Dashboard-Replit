@@ -4441,6 +4441,76 @@ def _odoo_style_tiers():
         _ODOO_STYLE_TIER_CACHE["at"] = now
     return _ODOO_STYLE_TIER_CACHE["map"]
 
+# ── Odoo status/tier completeness audit (2026-08-27) ─────────────────────────
+# The user rule is "every finished product in Odoo carries a real status and
+# tier — use those directly, and flag whatever is missing so it can be fixed
+# in Odoo." A style is "missing status" when NONE of its SKU rows carry any
+# status value at all (as opposed to an explicit non-live value like Archived/
+# Partner Brand/Sample, which IS real Odoo data and is not a gap). A style is
+# "missing tier" when Odoo marks it status='Active' (a live style) but no SKU
+# row carries a recognized tier value — i.e. exactly the condition that makes
+# _lifecycle_tier fall back to Tier 4. Scoped to the identical style universe
+# range_mgmt_classify uses (non-blank style_name, non-third-party brand) so
+# counts reconcile with the dashboard.
+_ODOO_STATUS_TIER_GAP_SQL = """
+    SELECT apc.style_name,
+        mode() WITHIN GROUP (ORDER BY apc.style_number) AS style_number,
+        MAX(apc.brand) AS brand,
+        MAX(apc.product_type) AS subcategory,
+        COUNT(*) AS n_skus,
+        ARRAY_AGG(DISTINCT apc.sku ORDER BY apc.sku) AS skus,
+        BOOL_OR(apc.is_noos) AS is_noos,
+        BOOL_OR(NULLIF(TRIM(apc.status), '') IS NOT NULL) AS has_any_status,
+        BOOL_OR(apc.status = 'Active') AS has_active,
+        BOOL_OR(apc.status = 'Retired') AS has_retired,
+        STRING_AGG(DISTINCT NULLIF(TRIM(apc.status), ''), ', ') AS statuses_seen,
+        BOOL_OR(NULLIF(TRIM(apc.tier), '') IS NOT NULL AND apc.tier <> 'N/A') AS has_any_tier,
+        STRING_AGG(DISTINCT NULLIF(TRIM(apc.tier), ''), ', ') AS tiers_seen
+    FROM all_products_clean apc
+    WHERE apc.style_name IS NOT NULL AND apc.style_name <> ''
+      AND COALESCE(apc.brand, '') NOT ILIKE '%third party%'
+    GROUP BY apc.style_name
+"""
+
+def _odoo_status_tier_gaps():
+    """Styles missing an Odoo status entirely, or Active styles missing a
+    recognized Odoo tier. Each row also carries the bucket the dashboard
+    currently assigns it (via the real _lifecycle_tier logic) so the export
+    doubles as an explanation of where each gap style lands today."""
+    rows = run_query(_ODOO_STATUS_TIER_GAP_SQL, ttl=_ODOO_STYLE_TIER_TTL) or []
+    out = []
+    for r in rows:
+        has_any_status = bool(r.get("has_any_status"))
+        has_active = bool(r.get("has_active"))
+        has_retired = bool(r.get("has_retired"))
+        has_any_tier = bool(r.get("has_any_tier"))
+        missing_status = not has_any_status
+        missing_tier = has_active and not has_retired and not has_any_tier
+        if not (missing_status or missing_tier):
+            continue
+        is_noos = bool(r.get("is_noos"))
+        current_bucket = _lifecycle_tier(
+            r["style_name"], r.get("brand"), None, 0, 0, is_noos=is_noos)
+        skus = [s for s in (r.get("skus") or []) if s]
+        out.append({
+            "style_name": r["style_name"],
+            "style_number": r.get("style_number"),
+            "brand": r.get("brand"),
+            "subcategory": r.get("subcategory"),
+            "n_skus": int(r.get("n_skus") or 0),
+            "skus": skus,
+            "missing_status": missing_status,
+            "missing_tier": missing_tier,
+            "missing_field": ("Status" if missing_status else "") + \
+                (" & " if (missing_status and missing_tier) else "") + \
+                ("Tier" if missing_tier else ""),
+            "statuses_seen": r.get("statuses_seen") or "(none)",
+            "tiers_seen": r.get("tiers_seen") or "(none)",
+            "current_dashboard_bucket": "Retired" if current_bucket == "Retire" else current_bucket,
+        })
+    out.sort(key=lambda x: (x.get("brand") or "", x.get("style_name") or ""))
+    return out
+
 # ── Real reorder counts from central_tracker_orders ──────────────────────────
 # Replaces the ≈12-week age proxy (age_weeks // 12).
 # Display/analytics only — tier classification comes exclusively from Odoo.
@@ -25437,6 +25507,52 @@ def range_mgmt_tier_export(brand: str = Query(default=None)):
         media_type="text/csv",
         headers={"Content-Disposition": 'attachment; filename="style_tiers.csv"'},
     )
+
+
+@app.get("/api/range-mgmt/missing-odoo-data")
+def range_mgmt_missing_odoo_data_summary():
+    """Counts only (for a dashboard badge/banner) — see the Excel export below
+    for the actionable per-style list."""
+    gaps = _odoo_status_tier_gaps()
+    return {
+        "total_flagged": len(gaps),
+        "missing_status": sum(1 for g in gaps if g["missing_status"]),
+        "missing_tier": sum(1 for g in gaps if g["missing_tier"]),
+    }
+
+
+@app.get("/api/range-mgmt/export/missing-odoo-data")
+def range_mgmt_export_missing_odoo_data():
+    """Excel export: every finished-product style where Odoo's own status or
+    tier field (x_vivo_attr_97 / x_vivo_attr_99) is genuinely unset — not an
+    explicit non-live value like Archived/Partner Brand/Sample, which is real
+    Odoo data, but a true gap. Hand this to the merch/ops team so they can fill
+    in Status and Tier directly in Odoo; the dashboard already uses those
+    fields as-is once set (see _lifecycle_tier)."""
+    from openpyxl import Workbook
+    gaps = _odoo_status_tier_gaps()
+    cols = ["Style Number", "Style Name", "Brand", "Subcategory", "SKU Count",
+            "Sample SKUs", "Missing", "Odoo Statuses Seen", "Odoo Tiers Seen",
+            "Current Dashboard Bucket"]
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Missing Status or Tier"
+    _xlsx_header(ws, cols)
+    for g in gaps:
+        ws.append([
+            g.get("style_number") or "",
+            g.get("style_name") or "",
+            g.get("brand") or "",
+            g.get("subcategory") or "",
+            g.get("n_skus") or 0,
+            ", ".join((g.get("skus") or [])[:5]),
+            g.get("missing_field") or "",
+            g.get("statuses_seen") or "",
+            g.get("tiers_seen") or "",
+            g.get("current_dashboard_bucket") or "",
+        ])
+    return _xlsx_response(
+        wb, f"Missing_Odoo_Status_Tier_{date.today().isoformat()}.xlsx")
 
 
 @app.get("/api/analytics/store-overstock")
