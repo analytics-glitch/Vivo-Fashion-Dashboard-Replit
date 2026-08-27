@@ -587,7 +587,7 @@ first_sale AS (
         AND COALESCE(p2.brand,'') NOT ILIKE '%%third party%%'
     WHERE s.sale_kind IN ('sale','order')
     GROUP BY p2.style_name
-),
+)
 SELECT
     p.style_name,
     p.style_number,
@@ -1144,7 +1144,7 @@ orders_6m_cte AS (
       {pos_sales_clause}
       AND {_BASE_FILTERS}
     GROUP BY p3.style_name
-),
+)
 SELECT
     p.style_name,
     p.style_number,
@@ -1368,7 +1368,7 @@ first_sale AS (
         AND COALESCE(p2.brand,'') NOT ILIKE '%%third party%%'
     WHERE s.sale_kind IN ('sale','order')
     GROUP BY p2.style_name
-),
+)
 SELECT
     p.style_name,
     p.style_number,
