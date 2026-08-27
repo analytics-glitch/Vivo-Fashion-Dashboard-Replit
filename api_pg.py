@@ -4388,6 +4388,31 @@ def _odoo_active_status_styles():
         _ACTIVE_STATUS_SET_CACHE["at"] = now
     return _ACTIVE_STATUS_SET_CACHE["set"]
 
+# Styles Odoo currently flags status='Archived' on at least one SKU row — the
+# literal Odoo Status field, not the dashboard's former catch-all "Archived"
+# bucket (which used to also sweep in blank-status/no-Odoo-record "ghost"
+# styles, Sample, and Partner Brand). 2026-08-27 user rule: Range Management's
+# Archived bucket must mean Status=Archived in Odoo specifically, and styles
+# that are neither Active nor Archived nor a recognized tier nor hard-Retired
+# (i.e. no longer have any live Odoo status at all) should not appear in Range
+# Management anywhere — see range_mgmt_tier_summary's exclusion filter.
+_ODOO_ARCHIVED_STYLES_SQL = (
+    "SELECT style_name FROM all_products_clean "
+    "WHERE COALESCE(style_name,'') <> '' "
+    "GROUP BY style_name HAVING BOOL_OR(status = 'Archived')"
+)
+_ARCHIVED_STATUS_SET_CACHE = {"at": 0.0, "set": frozenset()}
+
+def _odoo_archived_status_styles():
+    """Normalized set of style names Odoo marks status='Archived' (cached briefly)."""
+    now = time.time()
+    if now - _ARCHIVED_STATUS_SET_CACHE["at"] > _RETIRED_SET_TTL:
+        rows = run_query(_ODOO_ARCHIVED_STYLES_SQL, ttl=_RETIRED_SET_TTL) or []
+        _ARCHIVED_STATUS_SET_CACHE["set"] = frozenset(
+            _norm_style(r["style_name"]) for r in rows)
+        _ARCHIVED_STATUS_SET_CACHE["at"] = now
+    return _ARCHIVED_STATUS_SET_CACHE["set"]
+
 # Rec types that the shared Transfer Tracking report + assign endpoints accept.
 _TRANSFER_REC_TYPES = {"replenish", "warehouse_return"}
 
@@ -25249,12 +25274,22 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
         is_retired = (life_tier == "Retired")
         is_archived = (life_tier == "Archived")
 
+        # 2026-08-27 user rule: Archived means Odoo Status='Archived' on this
+        # style specifically — not the broader "no recognized tier and not
+        # Active" catch-all _lifecycle_tier used to also sweep in (blank/no
+        # Odoo record "ghost" styles, Sample, Partner Brand). Those styles no
+        # longer have any live Odoo status at all, so per the user's explicit
+        # instruction they are dropped from Range Management entirely — they
+        # don't count toward Total and don't appear in any bucket.
+        if is_archived and _norm_style(r["style_name"]) not in _odoo_archived_status_styles():
+            continue
+
         if is_retired:
             status = "Retire"
             action = "Mark down to outlet and clear remaining stock per the SOP 4-week gap rule."
         elif is_archived:
             status = "Archived"
-            action = "Not a live, tiered style in Odoo (blank/Sample/Partner Brand status or similar) — clear any remaining stock via Warehouse Returns."
+            action = "Status=Archived in Odoo — clear any remaining stock via Warehouse Returns."
         elif (age_band in ("Tier 3", "Tier 4") and age_weeks is not None
                 and age_weeks >= 12 and (sor_life is None or sor_life < 25)):
             status = "Overdue"

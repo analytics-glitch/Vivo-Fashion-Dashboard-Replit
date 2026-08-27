@@ -752,7 +752,7 @@ const RangeManagement = () => {
                 unitsLifetime={summary.tier_summary?.Archived?.units_lifetime}
                 sorPct={summary.tier_summary?.Archived?.sor_lifetime_pct}
                 tone={{ bg: "#e2e8f0", text: "#334155", label: "Archived" }}
-                title="Not a live, tiered style in Odoo — blank/Sample/Partner Brand/Archived catalog status. Sourced from Odoo the same way Retired is, kept as a separate bucket from hard-retired (status='Retired') styles."
+                title="Odoo's own Status field is set to Archived for this style. Sourced from Odoo the same way Retired is, kept as a separate bucket from hard-retired (status='Retired') styles. Styles with no live Odoo status at all (blank/no record/Sample/Partner Brand) are excluded from Range Management entirely."
                 testId="tier-card-Archived"
                 onClick={() => setDrillTier("Archived")}
               />
@@ -1543,7 +1543,7 @@ const RangeManagement = () => {
           <div className="card-white p-4 sm:p-5">
             <SectionTitle
               title="Retired & Archived styles still holding stock"
-              subtitle="Physically-retired or archived (blank/Sample/Partner Brand Odoo status) styles with units left — split by stores / warehouse / pipeline. Clear via Markdown & Clearance or Warehouse Returns."
+              subtitle="Physically-retired or archived (Odoo Status=Archived) styles with units left — split by stores / warehouse / pipeline. Clear via Markdown & Clearance or Warehouse Returns."
               testId="retired-with-stock-section"
             />
             {(() => {
