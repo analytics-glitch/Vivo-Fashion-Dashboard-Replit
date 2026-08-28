@@ -27485,21 +27485,45 @@ def _log_activity(request, method, path, detail, status_code=200):
 
 
 # ── SOP document library ──────────────────────────────────────────────────────
-# Each department keeps its Standard Operating Procedure documents in its own
-# folder. Every signed-in active user can browse/view/download; uploading and
-# deleting is restricted server-side to admins plus users holding an explicit
-# per-department grant (managed by admins). Files live as bytes in Postgres so
-# production keeps its own library in its own DB (no dev→prod migration needed).
+# Four controlled stages contain the same department folders. Every active user
+# can submit into / read stages 01 and 03; stages 02 and 04 are restricted to
+# admins plus the two named workflow reviewers. Files live as bytes in Postgres
+# so production keeps its own library in its own DB.
+SOP_STAGES = [
+    {"id": 1, "slug": "submission", "name": "01. SOP Submission"},
+    {"id": 2, "slug": "under-review", "name": "02. SOPs Under Review"},
+    {"id": 3, "slug": "approved", "name": "03. Approved SOPs (Master Repository)"},
+    {"id": 4, "slug": "obsolete", "name": "04. Obsolete SOPs"},
+]
+_SOP_STAGE_IDS = {stage["id"] for stage in SOP_STAGES}
 SOP_DEPARTMENTS = [
-    {"slug": "brand-marketing-ecommerce", "name": "Brand, Marketing & E-Commerce"},
-    {"slug": "finance-operations", "name": "Finance & Operations"},
-    {"slug": "hr-admin", "name": "HR & Admin"},
-    {"slug": "product-development", "name": "Product Development"},
-    {"slug": "production", "name": "Production"},
-    {"slug": "retail-cx", "name": "Retail & Customer Experience"},
-    {"slug": "warehouse", "name": "Warehouse"},
+    {"slug": "finance", "name": "Finance"},
+    {"slug": "human-resources", "name": "Human Resources"},
+    {"slug": "ict", "name": "ICT"},
+    {"slug": "maintenance", "name": "Maintenance"},
+    {"slug": "marketing", "name": "Marketing"},
+    {"slug": "operations", "name": "Operations"},
+    {"slug": "printing-embroidery", "name": "Printing & Embroidery"},
+    {"slug": "procurement", "name": "Procurement"},
+    {"slug": "quality-assurance", "name": "Quality Assurance"},
+    {"slug": "retail-operations", "name": "Retail Operations"},
+    {"slug": "warehouse-logistics", "name": "Warehouse & Logistics"},
 ]
 _SOP_DEPT_SLUGS = {d["slug"] for d in SOP_DEPARTMENTS}
+_SOP_FULL_REVIEWER_EMAILS = {
+    "stephen@vivofashiongroup.com",
+    "franckie@vivofashiongroup.com",
+}
+_SOP_APPROVER_EMAILS = {"stephen@vivofashiongroup.com"}
+_SOP_LEGACY_DEPARTMENT_MAP = {
+    "brand-marketing-ecommerce": "marketing",
+    "finance-operations": "finance",
+    "hr-admin": "human-resources",
+    "product-development": "quality-assurance",
+    "production": "operations",
+    "retail-cx": "retail-operations",
+    "warehouse": "warehouse-logistics",
+}
 _SOP_MAX_BYTES = 20 * 1024 * 1024  # 20 MB per file — generous for SOP docs
 # Document + image formats only; anything executable/archive is refused.
 _SOP_ALLOWED_EXTS = {
@@ -27520,8 +27544,25 @@ def _ensure_sop_tables():
             uploaded_by   TEXT,
             uploaded_by_email TEXT,
             uploaded_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-            UNIQUE (department, filename)
+            stage         SMALLINT NOT NULL DEFAULT 3,
+            reviewed_by_email TEXT,
+            reviewed_at   TIMESTAMPTZ,
+            approved_by_email TEXT,
+            approved_at   TIMESTAMPTZ,
+            obsoleted_by_email TEXT,
+            obsoleted_at  TIMESTAMPTZ
         )""")
+    _users_exec("ALTER TABLE sop_files ADD COLUMN IF NOT EXISTS stage SMALLINT NOT NULL DEFAULT 3")
+    _users_exec("ALTER TABLE sop_files ADD COLUMN IF NOT EXISTS reviewed_by_email TEXT")
+    _users_exec("ALTER TABLE sop_files ADD COLUMN IF NOT EXISTS reviewed_at TIMESTAMPTZ")
+    _users_exec("ALTER TABLE sop_files ADD COLUMN IF NOT EXISTS approved_by_email TEXT")
+    _users_exec("ALTER TABLE sop_files ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ")
+    _users_exec("ALTER TABLE sop_files ADD COLUMN IF NOT EXISTS obsoleted_by_email TEXT")
+    _users_exec("ALTER TABLE sop_files ADD COLUMN IF NOT EXISTS obsoleted_at TIMESTAMPTZ")
+    _users_exec("ALTER TABLE sop_files DROP CONSTRAINT IF EXISTS sop_files_department_filename_key")
+    _users_exec(
+        "CREATE UNIQUE INDEX IF NOT EXISTS sop_files_stage_department_filename_uidx "
+        "ON sop_files (stage, department, filename)")
     _users_exec("""
         CREATE TABLE IF NOT EXISTS sop_upload_grants (
             user_id     TEXT NOT NULL,
@@ -27530,6 +27571,28 @@ def _ensure_sop_tables():
             granted_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
             PRIMARY KEY (user_id, department)
         )""")
+    _users_exec("""
+        CREATE TABLE IF NOT EXISTS sop_stage_events (
+            id            BIGSERIAL PRIMARY KEY,
+            file_id       INTEGER NOT NULL REFERENCES sop_files(id) ON DELETE CASCADE,
+            from_stage    SMALLINT NOT NULL,
+            to_stage      SMALLINT NOT NULL,
+            acted_by_email TEXT,
+            acted_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+        )""")
+    for old_slug, new_slug in _SOP_LEGACY_DEPARTMENT_MAP.items():
+        _users_exec(
+            "UPDATE sop_files SET department=%s, stage=3 WHERE department=%s",
+            (new_slug, old_slug))
+        _users_exec(
+            "UPDATE sop_upload_grants SET department=%s WHERE department=%s "
+            "AND NOT EXISTS (SELECT 1 FROM sop_upload_grants existing "
+            "WHERE existing.user_id=sop_upload_grants.user_id "
+            "AND existing.department=%s)",
+            (new_slug, old_slug, new_slug))
+        _users_exec(
+            "DELETE FROM sop_upload_grants WHERE department=%s",
+            (old_slug,))
 
 
 @_deferred_startup
@@ -27614,8 +27677,32 @@ def _sop_user_grants(user_id):
         return set()
 
 
+def _sop_email(user):
+    return ((user or {}).get("email") or "").strip().lower()
+
+
+def _sop_is_admin(user):
+    return ((user or {}).get("role") or "").strip().lower() == "admin"
+
+
+def _sop_is_full_reviewer(user):
+    return _sop_is_admin(user) or _sop_email(user) in _SOP_FULL_REVIEWER_EMAILS
+
+
+def _sop_can_access_stage(user, stage):
+    return stage in (1, 3) or _sop_is_full_reviewer(user)
+
+
+def _sop_can_review(user):
+    return _sop_is_full_reviewer(user)
+
+
+def _sop_can_approve(user):
+    return _sop_is_admin(user) or _sop_email(user) in _SOP_APPROVER_EMAILS
+
+
 def _sop_can_upload(user, department):
-    if (user or {}).get("role") == "admin":
+    if _sop_is_admin(user):
         return True
     return department in _sop_user_grants((user or {}).get("user_id") or "")
 
@@ -27627,58 +27714,93 @@ def _sop_safe_filename(name):
     return base[:200]
 
 
-@app.get("/api/sops/departments")
-def sops_departments(request: Request):
-    """Folder grid: every department with its file count + whether the caller
-    may upload into it. Readable by any signed-in active user."""
+@app.get("/api/sops/stages")
+def sops_stages(request: Request):
     _ensure_sop_tables()
     user = getattr(request.state, "user", None) or {}
-    counts = {}
-    try:
-        for r in _users_exec(
-                "SELECT department, COUNT(*) AS n FROM sop_files GROUP BY department",
-                fetch=True) or []:
-            counts[r["department"]] = int(r["n"])
-    except Exception:
-        pass
-    is_admin = user.get("role") == "admin"
-    grants = set() if is_admin else _sop_user_grants(user.get("user_id") or "")
+    counts = {
+        int(r["stage"]): int(r["n"])
+        for r in (_users_exec(
+            "SELECT stage, COUNT(*) AS n FROM sop_files GROUP BY stage",
+            fetch=True) or [])
+    }
     return [{
-        "slug": d["slug"], "name": d["name"],
-        "file_count": counts.get(d["slug"], 0),
-        "can_upload": is_admin or d["slug"] in grants,
-    } for d in SOP_DEPARTMENTS]
+        **stage,
+        "file_count": counts.get(stage["id"], 0),
+        "department_count": len(SOP_DEPARTMENTS),
+    } for stage in SOP_STAGES if _sop_can_access_stage(user, stage["id"])]
+
+
+@app.get("/api/sops/departments")
+def sops_departments(request: Request, stage: int = Query(...)):
+    if stage not in _SOP_STAGE_IDS:
+        raise HTTPException(status_code=400, detail="Unknown SOP stage")
+    user = getattr(request.state, "user", None) or {}
+    if not _sop_can_access_stage(user, stage):
+        raise HTTPException(status_code=403, detail="You don't have access to this SOP stage")
+    _ensure_sop_tables()
+    counts = {
+        r["department"]: int(r["n"])
+        for r in (_users_exec(
+            "SELECT department, COUNT(*) AS n FROM sop_files "
+            "WHERE stage=%s GROUP BY department",
+            (stage,), fetch=True) or [])
+    }
+    return [{
+        "slug": department["slug"],
+        "name": department["name"],
+        "file_count": counts.get(department["slug"], 0),
+        "can_upload": stage == 1 and _sop_can_upload(user, department["slug"]),
+    } for department in SOP_DEPARTMENTS]
 
 
 @app.get("/api/sops/files")
-def sops_files(request: Request, department: str = Query(...)):
+def sops_files(request: Request, stage: int = Query(...),
+               department: str = Query(...)):
+    if stage not in _SOP_STAGE_IDS:
+        raise HTTPException(status_code=400, detail="Unknown SOP stage")
     if department not in _SOP_DEPT_SLUGS:
         raise HTTPException(status_code=400, detail="Unknown department")
-    _ensure_sop_tables()
     user = getattr(request.state, "user", None) or {}
+    if not _sop_can_access_stage(user, stage):
+        raise HTTPException(status_code=403, detail="You don't have access to this SOP stage")
+    _ensure_sop_tables()
     rows = _users_exec(
-        "SELECT id, department, filename, content_type, size_bytes, "
-        "uploaded_by, uploaded_by_email, uploaded_at "
-        "FROM sop_files WHERE department=%s ORDER BY lower(filename)",
-        (department,), fetch=True) or []
+        "SELECT id, stage, department, filename, content_type, size_bytes, "
+        "uploaded_by, uploaded_by_email, uploaded_at, reviewed_by_email, "
+        "reviewed_at, approved_by_email, approved_at, obsoleted_by_email, "
+        "obsoleted_at "
+        "FROM sop_files WHERE stage=%s AND department=%s ORDER BY lower(filename)",
+        (stage, department), fetch=True) or []
     for r in rows:
-        ua = r.get("uploaded_at")
-        if ua is not None:
-            r["uploaded_at"] = ua.isoformat()
-    return {"department": department,
-            "can_upload": _sop_can_upload(user, department),
-            "files": rows}
+        for key in ("uploaded_at", "reviewed_at", "approved_at", "obsoleted_at"):
+            if r.get(key) is not None:
+                r[key] = r[key].isoformat()
+    return {
+        "stage": stage,
+        "department": department,
+        "can_upload": stage == 1 and _sop_can_upload(user, department),
+        "can_delete": _sop_is_admin(user) or (
+            stage == 1 and _sop_can_upload(user, department)),
+        "can_review": stage == 1 and _sop_can_review(user),
+        "can_approve": stage == 2 and _sop_can_approve(user),
+        "can_obsolete": stage == 3 and _sop_is_full_reviewer(user),
+        "files": rows,
+    }
 
 
 @app.get("/api/sops/files/{file_id}/download")
 def sops_download(file_id: int, request: Request, inline: int = Query(0)):
     _ensure_sop_tables()
     rows = _users_exec(
-        "SELECT filename, content_type, data FROM sop_files WHERE id=%s",
+        "SELECT stage, filename, content_type, data FROM sop_files WHERE id=%s",
         (file_id,), fetch=True)
     if not rows:
         raise HTTPException(status_code=404, detail="File not found")
     row = rows[0]
+    user = getattr(request.state, "user", None) or {}
+    if not _sop_can_access_stage(user, int(row["stage"])):
+        raise HTTPException(status_code=403, detail="You don't have access to this SOP stage")
     data = bytes(row["data"])
     fname = row["filename"] or f"sop-{file_id}"
     # RFC 5987 filename* for non-ASCII names, with an ASCII fallback.
@@ -27723,23 +27845,27 @@ async def sops_upload(request: Request,
         raise HTTPException(
             status_code=413,
             detail=f"File too large — the limit is {_SOP_MAX_BYTES // (1024 * 1024)} MB")
-    # Upsert on (department, filename): uploading the same name REPLACES the
-    # document, which is the natural "new revision" flow for SOPs.
+    # Submissions always enter stage 01. Re-uploading the same filename replaces
+    # only the stage-01 copy; reviewed/approved copies are never overwritten.
     existing = _users_exec(
-        "SELECT id FROM sop_files WHERE department=%s AND filename=%s",
+        "SELECT id FROM sop_files WHERE stage=1 AND department=%s AND filename=%s",
         (department, fname), fetch=True)
     rows = _users_exec("""
-        INSERT INTO sop_files (department, filename, content_type, size_bytes,
+        INSERT INTO sop_files (stage, department, filename, content_type, size_bytes,
                                data, uploaded_by, uploaded_by_email)
-        VALUES (%s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (department, filename) DO UPDATE SET
+        VALUES (1, %s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (stage, department, filename) DO UPDATE SET
             content_type = EXCLUDED.content_type,
             size_bytes   = EXCLUDED.size_bytes,
             data         = EXCLUDED.data,
             uploaded_by  = EXCLUDED.uploaded_by,
             uploaded_by_email = EXCLUDED.uploaded_by_email,
-            uploaded_at  = now()
-        RETURNING id, filename, size_bytes
+            uploaded_at  = now(),
+            reviewed_by_email = NULL,
+            reviewed_at = NULL,
+            approved_by_email = NULL,
+            approved_at = NULL
+        RETURNING id, stage, filename, size_bytes
     """, (department, fname, file.content_type or "application/octet-stream",
           len(data), psycopg2.Binary(data),
           user.get("name") or user.get("email"), user.get("email")),
@@ -27747,7 +27873,7 @@ async def sops_upload(request: Request,
     action = "replace" if existing else "upload"
     _log_activity(
         request, "POST", "/api/sops/upload",
-        f"SOP {action}: {fname} · department={department} "
+        f"SOP {action}: {fname} · stage=1 · department={department} "
         f"· {len(data):,} bytes")
     return {"ok": True, "file": rows[0] if rows else None}
 
@@ -27756,21 +27882,167 @@ async def sops_upload(request: Request,
 def sops_delete(file_id: int, request: Request):
     _ensure_sop_tables()
     rows = _users_exec(
-        "SELECT department, filename FROM sop_files WHERE id=%s",
+        "SELECT stage, department, filename FROM sop_files WHERE id=%s",
         (file_id,), fetch=True)
     if not rows:
         raise HTTPException(status_code=404, detail="File not found")
     user = getattr(request.state, "user", None) or {}
-    if not _sop_can_upload(user, rows[0]["department"]):
+    stage = int(rows[0]["stage"])
+    is_admin = _sop_is_admin(user)
+    if not is_admin and not (
+            stage == 1 and _sop_can_upload(user, rows[0]["department"])):
         raise HTTPException(
             status_code=403,
-            detail="You don't have delete rights for this department")
-    _users_exec("DELETE FROM sop_files WHERE id=%s", (file_id,))
+            detail="You don't have delete rights for this SOP")
+    if is_admin:
+        deleted = _users_exec(
+            "DELETE FROM sop_files WHERE id=%s "
+            "RETURNING stage, department, filename",
+            (file_id,), fetch=True) or []
+    else:
+        # Bind the authorization decision to the delete itself. If a reviewer
+        # moves the file after the pre-read, a submitter must not be able to
+        # delete it from the protected review stage.
+        deleted = _users_exec(
+            "DELETE FROM sop_files "
+            "WHERE id=%s AND stage=1 AND department=%s "
+            "RETURNING stage, department, filename",
+            (file_id, rows[0]["department"]), fetch=True) or []
+    if not deleted:
+        raise HTTPException(
+            status_code=409,
+            detail="This SOP changed stage before it could be deleted")
+    deleted_row = deleted[0]
     _log_activity(
         request, "DELETE", f"/api/sops/files/{file_id}",
-        f"SOP delete: {rows[0]['filename']} "
+        f"SOP delete: {deleted_row['filename']} "
+        f"· stage={deleted_row['stage']} "
+        f"· department={deleted_row['department']}")
+    return {"ok": True, "deleted": deleted_row["filename"]}
+
+
+@app.post("/api/sops/files/{file_id}/review")
+def sops_review(file_id: int, request: Request):
+    user = getattr(request.state, "user", None) or {}
+    if not _sop_can_review(user):
+        raise HTTPException(status_code=403, detail="SOP review access is restricted")
+    _ensure_sop_tables()
+    email = _sop_email(user)
+    try:
+        rows = _users_exec("""
+            WITH moved AS (
+                UPDATE sop_files
+                SET stage=2, reviewed_by_email=%s, reviewed_at=now()
+                WHERE id=%s AND stage=1
+                RETURNING id, filename, department, stage, reviewed_at
+            ), event AS (
+                INSERT INTO sop_stage_events
+                    (file_id, from_stage, to_stage, acted_by_email)
+                SELECT id, 1, 2, %s FROM moved
+                RETURNING file_id
+            )
+            SELECT moved.* FROM moved JOIN event ON event.file_id=moved.id
+        """, (email, file_id, email), fetch=True) or []
+    except psycopg2.errors.UniqueViolation:
+        raise HTTPException(
+            status_code=409,
+            detail="A file with this name already exists in SOPs Under Review")
+    if not rows:
+        exists = _users_exec(
+            "SELECT stage FROM sop_files WHERE id=%s", (file_id,), fetch=True) or []
+        if not exists:
+            raise HTTPException(status_code=404, detail="File not found")
+        raise HTTPException(
+            status_code=409,
+            detail="This SOP is no longer in the Submission stage")
+    _log_activity(
+        request, "POST", f"/api/sops/files/{file_id}/review",
+        f"SOP reviewed: {rows[0]['filename']} · stage=1→2 "
         f"· department={rows[0]['department']}")
-    return {"ok": True, "deleted": rows[0]["filename"]}
+    return {"ok": True, "file": rows[0]}
+
+
+@app.post("/api/sops/files/{file_id}/approve")
+def sops_approve(file_id: int, request: Request):
+    user = getattr(request.state, "user", None) or {}
+    if not _sop_can_approve(user):
+        raise HTTPException(status_code=403, detail="SOP approval access is restricted")
+    _ensure_sop_tables()
+    email = _sop_email(user)
+    try:
+        rows = _users_exec("""
+            WITH moved AS (
+                UPDATE sop_files
+                SET stage=3, approved_by_email=%s, approved_at=now()
+                WHERE id=%s AND stage=2
+                RETURNING id, filename, department, stage, approved_at
+            ), event AS (
+                INSERT INTO sop_stage_events
+                    (file_id, from_stage, to_stage, acted_by_email)
+                SELECT id, 2, 3, %s FROM moved
+                RETURNING file_id
+            )
+            SELECT moved.* FROM moved JOIN event ON event.file_id=moved.id
+        """, (email, file_id, email), fetch=True) or []
+    except psycopg2.errors.UniqueViolation:
+        raise HTTPException(
+            status_code=409,
+            detail="A file with this name already exists in the Approved repository")
+    if not rows:
+        exists = _users_exec(
+            "SELECT stage FROM sop_files WHERE id=%s", (file_id,), fetch=True) or []
+        if not exists:
+            raise HTTPException(status_code=404, detail="File not found")
+        raise HTTPException(
+            status_code=409,
+            detail="This SOP is no longer Under Review")
+    _log_activity(
+        request, "POST", f"/api/sops/files/{file_id}/approve",
+        f"SOP approved: {rows[0]['filename']} · stage=2→3 "
+        f"· department={rows[0]['department']}")
+    return {"ok": True, "file": rows[0]}
+
+
+@app.post("/api/sops/files/{file_id}/obsolete")
+def sops_obsolete(file_id: int, request: Request):
+    user = getattr(request.state, "user", None) or {}
+    if not _sop_is_full_reviewer(user):
+        raise HTTPException(
+            status_code=403, detail="SOP retirement access is restricted")
+    _ensure_sop_tables()
+    email = _sop_email(user)
+    try:
+        rows = _users_exec("""
+            WITH moved AS (
+                UPDATE sop_files
+                SET stage=4, obsoleted_by_email=%s, obsoleted_at=now()
+                WHERE id=%s AND stage=3
+                RETURNING id, filename, department, stage, obsoleted_at
+            ), event AS (
+                INSERT INTO sop_stage_events
+                    (file_id, from_stage, to_stage, acted_by_email)
+                SELECT id, 3, 4, %s FROM moved
+                RETURNING file_id
+            )
+            SELECT moved.* FROM moved JOIN event ON event.file_id=moved.id
+        """, (email, file_id, email), fetch=True) or []
+    except psycopg2.errors.UniqueViolation:
+        raise HTTPException(
+            status_code=409,
+            detail="A file with this name already exists in Obsolete SOPs")
+    if not rows:
+        exists = _users_exec(
+            "SELECT stage FROM sop_files WHERE id=%s", (file_id,), fetch=True) or []
+        if not exists:
+            raise HTTPException(status_code=404, detail="File not found")
+        raise HTTPException(
+            status_code=409,
+            detail="This SOP is no longer in the Approved repository")
+    _log_activity(
+        request, "POST", f"/api/sops/files/{file_id}/obsolete",
+        f"SOP marked obsolete: {rows[0]['filename']} · stage=3→4 "
+        f"· department={rows[0]['department']}")
+    return {"ok": True, "file": rows[0]}
 
 
 # Admin management of per-user upload grants. The /api/admin prefix is already

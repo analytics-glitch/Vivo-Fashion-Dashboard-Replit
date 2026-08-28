@@ -17,18 +17,19 @@ import {
   Trash,
   ArrowLeft,
   ShieldCheck,
+  CheckCircle,
+  ArrowRight,
+  Archive,
   X,
 } from "@phosphor-icons/react";
 
 /**
  * SOPs — the company's Standard Operating Procedure library.
  *
- * Every signed-in active user can browse the seven department folders and
- * view/download documents. Uploading + deleting inside a folder is allowed
- * only for admins and for users an admin has explicitly granted that
- * department (server-enforced via /api/sops/*; the `can_upload` flags here
- * only drive which buttons render). Admins also get a "Manage upload access"
- * panel on this page backed by /api/admin/sop-grants.
+ * Every signed-in active user can access Submission and the Approved master
+ * repository. Admins plus the named reviewers also see Under Review and
+ * Obsolete. Upload grants, stage visibility, review and approval are all
+ * enforced by /api/sops/*; the flags here only drive which controls render.
  */
 
 const fmtSize = (n) => {
@@ -79,7 +80,7 @@ const fetchBlobUrl = async (fileId, inline) => {
   return URL.createObjectURL(r.data);
 };
 
-const SOPs = () => {
+const LegacySOPs = () => {
   const { user } = useAuth();
   const isAdmin = (user?.role || "").toLowerCase() === "admin";
 
@@ -381,6 +382,414 @@ const FolderView = ({ dept, onBack, onChanged }) => {
           </div>
         )}
       </div>
+    </div>
+  );
+};
+
+const WorkflowStageGrid = ({ stages, onOpen }) => (
+  <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+    {stages.map((stage) => (
+      <button
+        key={stage.id}
+        type="button"
+        onClick={() => onOpen(stage)}
+        data-testid={`sop-stage-${stage.slug}`}
+        className="group text-left rounded-xl border bg-card p-5 hover:border-primary/50 hover:shadow-sm transition-all"
+      >
+        <div className="flex items-start justify-between gap-3">
+          <FolderSimple size={36} weight="duotone" className="text-amber-500 group-hover:hidden" />
+          <FolderOpen size={36} weight="duotone" className="text-amber-500 hidden group-hover:block" />
+          <span className="text-[10px] uppercase tracking-wide font-medium rounded-full px-2 py-0.5 bg-slate-50 text-slate-600 border">
+            {stage.department_count} departments
+          </span>
+        </div>
+        <div className="mt-3 font-semibold leading-snug min-h-[2.5rem]">{stage.name}</div>
+        <div className="text-xs text-muted-foreground mt-1">
+          {stage.file_count === 1 ? "1 document" : `${stage.file_count} documents`}
+        </div>
+      </button>
+    ))}
+  </div>
+);
+
+const WorkflowDepartmentGrid = ({ stage, departments, onOpen, onBack }) => (
+  <div className="space-y-4">
+    <div className="flex flex-wrap items-center gap-3">
+      <button
+        type="button"
+        onClick={onBack}
+        data-testid="sop-stage-back"
+        className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
+      >
+        <ArrowLeft size={16} /> All workflow folders
+      </button>
+      <div className="flex items-center gap-2 font-semibold">
+        <FolderOpen size={20} weight="duotone" className="text-amber-500" />
+        {stage.name}
+      </div>
+    </div>
+    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+      {departments.map((department) => (
+        <button
+          key={department.slug}
+          type="button"
+          onClick={() => onOpen(department)}
+          data-testid={`sop-department-${department.slug}`}
+          className="group text-left rounded-xl border bg-card p-5 hover:border-primary/50 hover:shadow-sm transition-all"
+        >
+          <div className="flex items-start justify-between gap-3">
+            <FolderSimple size={34} weight="duotone" className="text-amber-500 group-hover:hidden" />
+            <FolderOpen size={34} weight="duotone" className="text-amber-500 hidden group-hover:block" />
+            {department.can_upload && (
+              <span className="text-[10px] uppercase tracking-wide font-medium rounded-full px-2 py-0.5 bg-emerald-50 text-emerald-700 border border-emerald-200">
+                Submit
+              </span>
+            )}
+          </div>
+          <div className="mt-3 font-medium leading-snug">{department.name}</div>
+          <div className="text-xs text-muted-foreground mt-1">
+            {department.file_count === 1 ? "1 document" : `${department.file_count} documents`}
+          </div>
+        </button>
+      ))}
+    </div>
+  </div>
+);
+
+const WorkflowFolderView = ({ stage, dept, onBack, onChanged }) => {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState(null);
+  const [busyId, setBusyId] = useState(null);
+  const [uploading, setUploading] = useState(false);
+  const [notice, setNotice] = useState(null);
+  const fileInput = useRef(null);
+
+  const load = useCallback(() => {
+    api.get(`/sops/files?stage=${stage.id}&department=${encodeURIComponent(dept.slug)}`, { forceFresh: true })
+      .then((r) => { setData(r.data); setError(null); })
+      .catch((e) => setError(e?.response?.data?.detail || e.message));
+  }, [stage.id, dept.slug]);
+
+  useEffect(() => { setData(null); load(); }, [load]);
+
+  const flash = (msg, isError = false) => {
+    setNotice({ msg, isError });
+    setTimeout(() => setNotice(null), 4000);
+  };
+
+  const refresh = () => {
+    load();
+    onChanged?.();
+  };
+
+  const onUpload = async (ev) => {
+    const file = ev.target.files?.[0];
+    ev.target.value = "";
+    if (!file) return;
+    if (file.size > MAX_MB * 1024 * 1024) {
+      flash(`"${file.name}" is larger than the ${MAX_MB} MB limit.`, true);
+      return;
+    }
+    const existing = (data?.files || []).some(
+      (item) => item.filename.toLowerCase() === file.name.toLowerCase());
+    if (existing && !window.confirm(
+      `"${file.name}" already exists in this submission folder. Replace it?`)) return;
+    setUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append("department", dept.slug);
+      fd.append("file", file);
+      await api.post("/sops/upload", fd, { headers: { "Content-Type": "multipart/form-data" } });
+      flash(existing ? `Replaced "${file.name}".` : `Submitted "${file.name}".`);
+      refresh();
+    } catch (e) {
+      flash(e?.response?.data?.detail || e.message || "Submission failed", true);
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const onView = async (file) => {
+    setBusyId(file.id);
+    try {
+      const url = await fetchBlobUrl(file.id, true);
+      window.open(url, "_blank", "noopener");
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (e) {
+      flash(e?.response?.data?.detail || "Could not open the file", true);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const onDownload = async (file) => {
+    setBusyId(file.id);
+    try {
+      const url = await fetchBlobUrl(file.id, false);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = file.filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (e) {
+      flash(e?.response?.data?.detail || "Download failed", true);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const onDelete = async (file) => {
+    if (!window.confirm(`Delete "${file.filename}"? This cannot be undone.`)) return;
+    setBusyId(file.id);
+    try {
+      await api.delete(`/sops/files/${file.id}`);
+      flash(`Deleted "${file.filename}".`);
+      refresh();
+    } catch (e) {
+      flash(e?.response?.data?.detail || "Delete failed", true);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const transition = async (file, action) => {
+    setBusyId(file.id);
+    try {
+      await api.post(`/sops/files/${file.id}/${action}`);
+      flash(action === "review"
+        ? `Marked "${file.filename}" as Reviewed and moved it to SOPs Under Review.`
+        : action === "approve"
+          ? `Approved "${file.filename}" and moved it to the Master Repository.`
+          : `Marked "${file.filename}" as Obsolete and moved it to Obsolete SOPs.`);
+      refresh();
+    } catch (e) {
+      flash(e?.response?.data?.detail || `${action === "review" ? "Review" : "Approval"} failed`, true);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  return (
+    <div className="rounded-xl border bg-card">
+      <div className="flex flex-wrap items-center gap-3 p-4 border-b">
+        <button
+          type="button"
+          onClick={onBack}
+          data-testid="sop-department-back"
+          className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
+        >
+          <ArrowLeft size={16} /> {stage.name}
+        </button>
+        <div className="flex items-center gap-2 font-medium">
+          <FolderOpen size={20} weight="duotone" className="text-amber-500" />
+          {dept.name}
+        </div>
+        <div className="ml-auto">
+          {data?.can_upload && (
+            <>
+              <input ref={fileInput} type="file" accept={ACCEPT} className="hidden" onChange={onUpload} />
+              <button
+                type="button"
+                disabled={uploading}
+                onClick={() => fileInput.current?.click()}
+                data-testid="sop-upload-btn"
+                className="inline-flex items-center gap-1.5 rounded-lg bg-primary text-primary-foreground text-sm px-3 py-1.5 hover:opacity-90 disabled:opacity-50"
+              >
+                <UploadSimple size={16} />
+                {uploading ? "Submitting…" : "Submit SOP"}
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+
+      {notice && (
+        <div className={`mx-4 mt-3 rounded-lg border px-3 py-2 text-sm ${notice.isError
+          ? "border-red-200 bg-red-50 text-red-700"
+          : "border-emerald-200 bg-emerald-50 text-emerald-700"}`}>
+          {notice.msg}
+        </div>
+      )}
+
+      <div className="p-4">
+        {error && <ErrorBox message={error} />}
+        {!data && !error && <Loading label="Loading documents…" />}
+        {data && data.files.length === 0 && <Empty label="No documents in this folder yet." />}
+        {data && data.files.length > 0 && (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-xs uppercase tracking-wide text-muted-foreground border-b">
+                  <th className="py-2 pr-3 font-medium">Document</th>
+                  <th className="py-2 pr-3 font-medium">Size</th>
+                  <th className="py-2 pr-3 font-medium">Uploaded</th>
+                  <th className="py-2 pr-3 font-medium">By</th>
+                  <th className="py-2 font-medium text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.files.map((file) => (
+                  <tr key={file.id} className="border-b last:border-0 hover:bg-muted/40" data-testid={`sop-file-${file.id}`}>
+                    <td className="py-2.5 pr-3">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <FileTypeIcon filename={file.filename} />
+                        <span className="truncate max-w-[360px]" title={file.filename}>{file.filename}</span>
+                      </div>
+                    </td>
+                    <td className="py-2.5 pr-3 whitespace-nowrap text-muted-foreground">{fmtSize(file.size_bytes)}</td>
+                    <td className="py-2.5 pr-3 whitespace-nowrap text-muted-foreground">{fmtDate(file.uploaded_at)}</td>
+                    <td className="py-2.5 pr-3 whitespace-nowrap text-muted-foreground truncate max-w-[180px]" title={file.uploaded_by_email || ""}>
+                      {file.uploaded_by || file.uploaded_by_email || "—"}
+                    </td>
+                    <td className="py-2.5">
+                      <div className="flex items-center justify-end gap-1">
+                        {data.can_review && (
+                          <button
+                            type="button"
+                            disabled={busyId === file.id}
+                            onClick={() => transition(file, "review")}
+                            data-testid={`sop-review-${file.id}`}
+                            className="inline-flex items-center gap-1 rounded-md px-2 py-1.5 text-xs font-medium bg-blue-50 text-blue-700 hover:bg-blue-100 disabled:opacity-50"
+                          >
+                            <ArrowRight size={15} /> Reviewed
+                          </button>
+                        )}
+                        {data.can_approve && (
+                          <button
+                            type="button"
+                            disabled={busyId === file.id}
+                            onClick={() => transition(file, "approve")}
+                            data-testid={`sop-approve-${file.id}`}
+                            className="inline-flex items-center gap-1 rounded-md px-2 py-1.5 text-xs font-medium bg-emerald-50 text-emerald-700 hover:bg-emerald-100 disabled:opacity-50"
+                          >
+                            <CheckCircle size={15} /> Approve
+                          </button>
+                        )}
+                        {data.can_obsolete && (
+                          <button
+                            type="button"
+                            disabled={busyId === file.id}
+                            onClick={() => {
+                              if (window.confirm(
+                                `Mark "${file.filename}" as obsolete? It will leave the Approved master repository.`
+                              )) transition(file, "obsolete");
+                            }}
+                            data-testid={`sop-obsolete-${file.id}`}
+                            className="inline-flex items-center gap-1 rounded-md px-2 py-1.5 text-xs font-medium bg-amber-50 text-amber-800 hover:bg-amber-100 disabled:opacity-50"
+                          >
+                            <Archive size={15} /> Mark Obsolete
+                          </button>
+                        )}
+                        {VIEWABLE_EXTS.has(extOf(file.filename)) && (
+                          <button type="button" title="View" disabled={busyId === file.id}
+                            onClick={() => onView(file)}
+                            className="rounded-md p-1.5 hover:bg-muted text-muted-foreground hover:text-foreground disabled:opacity-50"
+                            data-testid={`sop-view-${file.id}`}>
+                            <Eye size={17} />
+                          </button>
+                        )}
+                        <button type="button" title="Download" disabled={busyId === file.id}
+                          onClick={() => onDownload(file)}
+                          className="rounded-md p-1.5 hover:bg-muted text-muted-foreground hover:text-foreground disabled:opacity-50"
+                          data-testid={`sop-download-${file.id}`}>
+                          <DownloadSimple size={17} />
+                        </button>
+                        {data.can_delete && (
+                          <button type="button" title="Delete" disabled={busyId === file.id}
+                            onClick={() => onDelete(file)}
+                            className="rounded-md p-1.5 hover:bg-red-50 text-muted-foreground hover:text-red-600 disabled:opacity-50"
+                            data-testid={`sop-delete-${file.id}`}>
+                            <Trash size={17} />
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+const SOPs = () => {
+  const { user } = useAuth();
+  const isAdmin = (user?.role || "").toLowerCase() === "admin";
+  const [stages, setStages] = useState(null);
+  const [stageError, setStageError] = useState(null);
+  const [selectedStage, setSelectedStage] = useState(null);
+  const [departments, setDepartments] = useState(null);
+  const [departmentError, setDepartmentError] = useState(null);
+  const [selectedDepartment, setSelectedDepartment] = useState(null);
+  const [adminDepartments, setAdminDepartments] = useState([]);
+
+  const loadStages = useCallback(() => {
+    api.get("/sops/stages", { forceFresh: true })
+      .then((r) => { setStages(r.data || []); setStageError(null); })
+      .catch((e) => setStageError(e?.response?.data?.detail || e.message));
+  }, []);
+
+  const loadDepartments = useCallback(() => {
+    if (!selectedStage) return;
+    api.get(`/sops/departments?stage=${selectedStage.id}`, { forceFresh: true })
+      .then((r) => { setDepartments(r.data || []); setDepartmentError(null); })
+      .catch((e) => setDepartmentError(e?.response?.data?.detail || e.message));
+  }, [selectedStage]);
+
+  useEffect(() => { loadStages(); }, [loadStages]);
+  useEffect(() => {
+    setDepartments(null);
+    setSelectedDepartment(null);
+    if (selectedStage) loadDepartments();
+  }, [selectedStage, loadDepartments]);
+  useEffect(() => {
+    if (!isAdmin) return;
+    api.get("/sops/departments?stage=1", { forceFresh: true })
+      .then((r) => setAdminDepartments(r.data || []))
+      .catch(() => setAdminDepartments([]));
+  }, [isAdmin]);
+
+  return (
+    <div className="space-y-6" data-testid="sops-page">
+      <div>
+        <h1 className="text-2xl font-semibold tracking-tight">Standard Operating Procedures</h1>
+        <p className="text-sm text-muted-foreground mt-1">
+          Submit SOPs for review or browse the approved master repository by department.
+        </p>
+      </div>
+
+      {stageError && <ErrorBox message={stageError} />}
+      {!stages && !stageError && <Loading label="Loading SOP workflow…" />}
+      {stages && !selectedStage && <WorkflowStageGrid stages={stages} onOpen={setSelectedStage} />}
+
+      {selectedStage && departmentError && <ErrorBox message={departmentError} />}
+      {selectedStage && !departments && !departmentError && <Loading label="Loading department folders…" />}
+      {selectedStage && departments && !selectedDepartment && (
+        <WorkflowDepartmentGrid
+          stage={selectedStage}
+          departments={departments}
+          onOpen={setSelectedDepartment}
+          onBack={() => setSelectedStage(null)}
+        />
+      )}
+      {selectedStage && selectedDepartment && (
+        <WorkflowFolderView
+          stage={selectedStage}
+          dept={selectedDepartment}
+          onBack={() => { setSelectedDepartment(null); loadDepartments(); }}
+          onChanged={() => { loadStages(); loadDepartments(); }}
+        />
+      )}
+
+      {isAdmin && adminDepartments.length > 0 && (
+        <AdminGrantsPanel departments={adminDepartments} onChanged={loadStages} />
+      )}
+      {isAdmin && <FabricFieldGrantsPanel />}
     </div>
   );
 };
