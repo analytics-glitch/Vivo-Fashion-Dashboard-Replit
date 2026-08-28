@@ -27,7 +27,6 @@ TRANSITIONS = {
     "collected": set(),
     "cancelled": set(),
 }
-STAFF_ROLES = {"admin", "leadership", "smt", "operations", "customer_service", "store_manager"}
 MAX_PHOTO = 8 * 1024 * 1024
 ALLOWED_IMAGES = {"image/jpeg": "JPEG", "image/png": "PNG", "image/webp": "WEBP"}
 POLICY_KEY = "garment_alterations_policy"
@@ -130,11 +129,19 @@ def _staff(request, admin=False):
     role = str(user.get("role") or "").lower()
     if admin and role != "admin":
         raise HTTPException(403, "Administrator access required")
+    pages = user.get("allowed_pages")
+    if pages is None and A is not None:
+        pages = A._effective_pages_for_role(role)
+        effective = {"allowed_pages": pages, "extra_pages": user.get("extra_pages") or []}
+        A._apply_extra_pages(effective)
+        pages = effective["allowed_pages"]
+    if "atelier" not in (pages or []):
+        raise HTTPException(403, "Atelier page access required")
     if role == "admin":
         return user
     uid = str(user.get("user_id") or user.get("id") or "")
     rows = _db("SELECT active FROM atelier_staff WHERE user_id=%s", (uid,)) or []
-    if role not in STAFF_ROLES or not rows or not rows[0]["active"]:
+    if not rows or not rows[0]["active"]:
         raise HTTPException(403, "Atelier staff access required")
     return user
 
@@ -872,14 +879,14 @@ def register_atelier_routes(app, api_module=None):
 
     @app.get("/api/atelier/admin/staff")
     def staff_admin_list(request: Request):
-        """All active roles that can be granted Atelier access, including state."""
+        """All active users who can be granted Atelier access, including state."""
         _staff(request, admin=True)
         rows = _db("""SELECT u.user_id,u.name,u.email,u.role,
                       COALESCE(s.active,FALSE) AS atelier_enabled
                       FROM app_users u LEFT JOIN atelier_staff s ON s.user_id=u.user_id
-                      WHERE u.status='active' AND u.role = ANY(%s)
+                       WHERE u.status='active'
                       ORDER BY u.name NULLS LAST,u.email""",
-                   (list(STAFF_ROLES),)) or []
+                   ()) or []
         return {"staff": [_row(r) for r in rows]}
 
     @app.get("/api/atelier/admin/branches")

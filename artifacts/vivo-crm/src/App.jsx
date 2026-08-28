@@ -36,10 +36,6 @@ import LoyaltyAppPreview from "@/pages/LoyaltyAppPreview";
 import DataRequests from "@/pages/DataRequests";
 import Settings from "@/pages/Settings";
 import { CohortsPage, OperationsPage } from "@/pages/InsightsPages";
-import AtelierDashboard from "@/pages/AtelierDashboard";
-import AtelierJobDetail from "@/pages/AtelierJobDetail";
-import AtelierReports from "@/pages/AtelierReports";
-import AtelierSettings from "@/pages/AtelierSettings";
 
 function ProtectedRoutes() {
   const { user, loading } = useAuth();
@@ -76,10 +72,6 @@ function ProtectedRoutes() {
         <Route path="/manager" element={user.role === "manager" ? <ManagerDashboard /> : <Navigate to="/dashboard" replace />} />
         <Route path="/templates" element={user.role === "manager" ? <Templates /> : <Navigate to="/dashboard" replace />} />
         <Route path="/audit" element={user.role === "manager" ? <AuditLog /> : <Navigate to="/dashboard" replace />} />
-        <Route path="/atelier" element={user.atelier_enabled || user.atelier_admin ? <AtelierDashboard /> : <Navigate to="/dashboard" replace />} />
-        <Route path="/atelier/jobs/:id" element={user.atelier_enabled || user.atelier_admin ? <AtelierJobDetail /> : <Navigate to="/dashboard" replace />} />
-        <Route path="/atelier/reports" element={user.atelier_enabled || user.atelier_admin ? <AtelierReports /> : <Navigate to="/dashboard" replace />} />
-        <Route path="/atelier/settings" element={user.atelier_admin ? <AtelierSettings /> : <Navigate to="/dashboard" replace />} />
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Route>
     </Routes>

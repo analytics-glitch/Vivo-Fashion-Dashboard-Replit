@@ -971,11 +971,11 @@ _VIEWER_PAGES = ["overview", "exec-summary", "locations", "footfall", "trend-ana
 # arrivals into merch-lifecycle. Retired ids live on only as
 # _LEGACY_PAGE_ALIASES entries so stored group grants keep working.
 _MERCH_PAGES = ["merchandising", "merch-overview", "merch-sales", "merch-inventory", "merch-lifecycle", "merch-deepdive", "merch-store", "merch-attribute-performance", "merch-online"]
-_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "quarter-scorecard", "product-analysis", "range-mgmt", "size-health", "inventory", "warehouse-returns", "excess-inventory", "rebalancing", "store-flow", "marketing", "social", "crm", "order-explorer", "data-quality", "custom-report", "exports", "hr", "production", "production-workspace", "production-report", "style-tracker", "pd-flow", "product-workspace", "partner-brands", "finance", "margin", "l10", "rota", "growth", "retail-desk", "day-review", "product-desk", "workforce-desk", "customer-desk", "marketing-desk", "supply-chain-desk", "production-desk", "the-chair", "quality", "store-profiling", "store-feedback", "central-tracker", "community-app"] + _MERCH_PAGES)
+_LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "quarter-scorecard", "product-analysis", "range-mgmt", "size-health", "inventory", "warehouse-returns", "excess-inventory", "rebalancing", "store-flow", "marketing", "social", "crm", "order-explorer", "data-quality", "custom-report", "exports", "hr", "production", "production-workspace", "production-report", "style-tracker", "pd-flow", "product-workspace", "partner-brands", "finance", "margin", "l10", "rota", "growth", "retail-desk", "day-review", "product-desk", "workforce-desk", "customer-desk", "marketing-desk", "supply-chain-desk", "production-desk", "the-chair", "quality", "store-profiling", "store-feedback", "central-tracker", "community-app", "atelier"] + _MERCH_PAGES)
 
 DEFAULT_ROLE_PAGES = {
     "product_development": ["product-analysis", "range-mgmt", "catalogue", "gallery", "inventory", "size-health", "data-quality", "fabric", "exports", "production", "production-workspace", "production-report", "style-tracker", "pd-flow", "product-workspace", "partner-brands", "sops", "central-tracker"] + _MERCH_PAGES,
-    "retail": ["store-flow", "overview", "exec-summary", "locations", "footfall", "store-profiling", "trend-analysis", "customers", "product-analysis", "gallery", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "exports", "partner-brands", "sops", "ask", "store-feedback", "store-stock-requests"],
+    "retail": ["store-flow", "overview", "exec-summary", "locations", "footfall", "store-profiling", "trend-analysis", "customers", "product-analysis", "gallery", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "exports", "partner-brands", "sops", "ask", "store-feedback", "store-stock-requests", "atelier"],
     "warehouse": ["store-flow", "inventory", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "re-order", "allocations", "data-quality", "exports", "sops", "store-stock-requests"],
     "store_manager": ["overview", "store-flow", "locations", "footfall", "store-profiling", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "sops", "store-feedback", "store-stock-requests"],
     "leadership": _LEADERSHIP_PAGES + ["store-stock-requests"],
@@ -992,7 +992,7 @@ DEFAULT_ROLE_PAGES = {
     "fabric_quality_supervisor": ["fabric", "quality", "production-workspace", "sops"],
     # Quality department — production quality trackers (repairs, complaints, washing).
     "quality": ["quality", "production-workspace", "sops"],
-    "customer_service": ["customers", "customer-details", "crm", "order-explorer", "footfall", "sops", "store-feedback"],
+    "customer_service": ["customers", "customer-details", "crm", "order-explorer", "footfall", "sops", "store-feedback", "atelier"],
     "marketing": ["marketing", "social", "crm", "order-explorer", "customers", "customer-details", "product-analysis", "footfall", "trend-analysis", "sops", "ask", "store-feedback", "community-app"],
     "hr": ["hr", "sops", "rota"],
     # Employee self-service (Google auto-approved sign-ups): NO BI pages at all.
@@ -1696,6 +1696,7 @@ def _user_dict(row):
             user["pos_location_name"] = derived
     user["allowed_pages"] = _effective_pages_for_role(user.get("role"))
     _apply_extra_pages(user)
+    _apply_atelier_entitlement(user)
     return user
 
 
@@ -4154,6 +4155,30 @@ def _apply_crm_admin_grants(u):
         if p not in pages:
             pages.append(p)
     u["allowed_pages"] = pages
+    return u
+
+
+def _apply_atelier_entitlement(u):
+    """Align Atelier identity flags and page access with its staff opt-in.
+
+    Group defaults/overrides decide whether the page is grantable, while the
+    Atelier staff table is an additional mandatory entitlement.  Never add the
+    page here: doing so would bypass a group override (or personal-page policy).
+    """
+    role = str(u.get("role") or "").lower()
+    is_admin = role == "admin"
+    try:
+        enabled = is_admin or atelier.atelier_user_enabled(
+            str(u.get("user_id") or u.get("id") or ""), role)
+    except Exception:
+        enabled = is_admin
+    u["atelier_enabled"] = bool(enabled)
+    u["atelier_admin"] = is_admin
+    if not enabled:
+        u["allowed_pages"] = [
+            page for page in (u.get("allowed_pages") or [])
+            if page != "atelier"
+        ]
     return u
 
 
@@ -9963,17 +9988,8 @@ def auth_me(request: Request):
         u["allowed_pages"] = _effective_pages_for_role(u.get("role"))
         _apply_extra_pages(u)
         _apply_crm_admin_grants(u)
+        _apply_atelier_entitlement(u)
         user_id = str(u.get("user_id") or "")
-        # Atelier is an explicit opt-in staff entitlement (admins are always
-        # enabled).  The helper is safe before its deferred schema exists, so
-        # /auth/me remains available during a fresh deployment.
-        try:
-            u["atelier_enabled"] = atelier.atelier_user_enabled(
-                user_id, u.get("role"))
-            u["atelier_admin"] = str(u.get("role") or "").lower() == "admin"
-        except Exception:
-            u["atelier_enabled"] = False
-            u["atelier_admin"] = False
         if user_id:
             try:
                 grants = _users_exec(
@@ -10148,6 +10164,7 @@ def auth_me_status(request: Request):
         u["allowed_pages"] = _effective_pages_for_role(u.get("role"))
         _apply_extra_pages(u)
         _apply_crm_admin_grants(u)
+        _apply_atelier_entitlement(u)
     return {"status": u.get("status", "active"), "role": u.get("role"), "user": u}
 
 
@@ -10253,6 +10270,7 @@ async def auth_login(request: Request):
     user["allowed_pages"] = _effective_pages_for_role(user.get("role"))
     _apply_extra_pages(user)
     _apply_crm_admin_grants(user)
+    _apply_atelier_entitlement(user)
     # In preview/dev environments skip the 2FA challenge entirely so developers
     # can sign in without an enrolled authenticator app. In production the full
     # challenge flow runs as normal.
@@ -10463,6 +10481,7 @@ async def auth_2fa_verify(request: Request):
     user["allowed_pages"] = _effective_pages_for_role(user.get("role"))
     _apply_extra_pages(user)
     _apply_crm_admin_grants(user)
+    _apply_atelier_entitlement(user)
     session = _create_session(user_id)
     resp = JSONResponse({
         "token": session,

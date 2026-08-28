@@ -1,5 +1,6 @@
 import pathlib
 import unittest
+from unittest import mock
 
 import atelier
 
@@ -121,6 +122,144 @@ class AtelierContractTests(unittest.TestCase):
     def test_all_sql_placeholders_are_parameter_style(self):
         self.assertNotIn(".format(", self.source)
         self.assertNotIn("customer_id='", self.source)
+
+
+class AtelierPageAccessTests(unittest.TestCase):
+    def test_catalog_and_default_roles(self):
+        import api_pg
+
+        self.assertIn("atelier", api_pg.ALL_PAGE_IDS)
+        default_roles = {
+            role for role, pages in api_pg.DEFAULT_ROLE_PAGES.items()
+            if "atelier" in pages
+        }
+        self.assertEqual(
+            default_roles,
+            {"leadership", "smt", "customer_service", "retail"},
+        )
+
+    def test_effective_page_requires_staff_entitlement(self):
+        import api_pg
+
+        denied = {
+            "user_id": "not-enabled",
+            "role": "leadership",
+            "allowed_pages": api_pg._default_pages_for_role("leadership"),
+        }
+        with mock.patch.object(
+            api_pg.atelier, "atelier_user_enabled", return_value=False
+        ):
+            api_pg._apply_atelier_entitlement(denied)
+        self.assertFalse(denied["atelier_enabled"])
+        self.assertNotIn("atelier", denied["allowed_pages"])
+
+        enabled = {
+            "user_id": "enabled",
+            "role": "leadership",
+            "allowed_pages": api_pg._default_pages_for_role("leadership"),
+        }
+        with mock.patch.object(
+            api_pg.atelier, "atelier_user_enabled", return_value=True
+        ):
+            api_pg._apply_atelier_entitlement(enabled)
+        self.assertTrue(enabled["atelier_enabled"])
+        self.assertIn("atelier", enabled["allowed_pages"])
+
+        admin = {"user_id": "admin", "role": "admin", "allowed_pages": ["atelier"]}
+        with mock.patch.object(
+            api_pg.atelier,
+            "atelier_user_enabled",
+            side_effect=RuntimeError("schema unavailable"),
+        ):
+            api_pg._apply_atelier_entitlement(admin)
+        self.assertTrue(admin["atelier_enabled"])
+        self.assertTrue(admin["atelier_admin"])
+        self.assertIn("atelier", admin["allowed_pages"])
+
+    def test_group_override_remains_an_independent_requirement(self):
+        import api_pg
+
+        with mock.patch.object(
+            api_pg, "_role_page_overrides", return_value={"leadership": []}
+        ):
+            pages = api_pg._effective_pages_for_role("leadership")
+        user = {"user_id": "enabled", "role": "leadership", "allowed_pages": pages}
+        with mock.patch.object(
+            api_pg.atelier, "atelier_user_enabled", return_value=True
+        ):
+            api_pg._apply_atelier_entitlement(user)
+        self.assertNotIn("atelier", user["allowed_pages"])
+
+        with mock.patch.object(
+            api_pg, "_role_page_overrides", return_value={"warehouse": ["atelier"]}
+        ):
+            pages = api_pg._effective_pages_for_role("warehouse")
+        user = {"user_id": "enabled", "role": "warehouse", "allowed_pages": pages}
+        with mock.patch.object(
+            api_pg.atelier, "atelier_user_enabled", return_value=True
+        ):
+            api_pg._apply_atelier_entitlement(user)
+        self.assertIn("atelier", user["allowed_pages"])
+
+    def test_bi_guard_and_crm_relocation_contract(self):
+        permissions = pathlib.Path(
+            "artifacts/vivo-bi/src/lib/permissions.js"
+        ).read_text(encoding="utf-8")
+        hidden_guard = "hidden.includes(pageId)"
+        atelier_guard = 'pageId === "atelier" && !user.atelier_enabled'
+        self.assertIn(atelier_guard, permissions)
+        self.assertLess(permissions.index(hidden_guard), permissions.index(atelier_guard))
+
+        bi_app = pathlib.Path("artifacts/vivo-bi/src/App.js").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('path="/atelier/*"', bi_app)
+        self.assertNotIn('path="/atelier/jobs/:id"', bi_app)
+
+        for crm_path in (
+            "artifacts/vivo-crm/src/App.jsx",
+            "artifacts/vivo-crm/src/components/AppShell.jsx",
+        ):
+            crm_source = pathlib.Path(crm_path).read_text(encoding="utf-8")
+            self.assertNotIn('path="/atelier', crm_source)
+            self.assertNotIn('to: "/atelier', crm_source)
+            self.assertNotIn("@/pages/Atelier", crm_source)
+
+    def test_api_guard_composes_page_grant_and_staff_entitlement(self):
+        denied_request = mock.Mock()
+        denied_request.state.user = {
+            "user_id": "staff-without-page",
+            "role": "leadership",
+            "status": "active",
+            "allowed_pages": [],
+        }
+        with self.assertRaisesRegex(Exception, "Atelier page access required"):
+            atelier._staff(denied_request)
+
+        allowed_request = mock.Mock()
+        allowed_request.state.user = {
+            "user_id": "staff-with-page",
+            "role": "warehouse",
+            "status": "active",
+            "allowed_pages": ["atelier"],
+        }
+        with mock.patch.object(
+            atelier, "_db", return_value=[{"active": True}]
+        ):
+            self.assertEqual(
+                atelier._staff(allowed_request)["user_id"],
+                "staff-with-page",
+            )
+
+    def test_bi_does_not_cache_shared_atelier_reads(self):
+        api_source = pathlib.Path("artifacts/vivo-bi/src/lib/api.js").read_text(
+            encoding="utf-8"
+        )
+        no_cache = api_source[
+            api_source.index("const NO_CACHE_PATHS = ["):
+            api_source.index("];", api_source.index("const NO_CACHE_PATHS = ["))
+        ]
+        self.assertIn('"/atelier/"', no_cache)
 
 
 if __name__ == "__main__":

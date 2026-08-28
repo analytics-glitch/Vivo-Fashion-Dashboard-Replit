@@ -67,6 +67,7 @@ const StoreFeedback = React.lazy(() => import("@/pages/StoreFeedback"));
 const MerchandisingHub = React.lazy(() => import("@/pages/MerchandisingHub"));
 const CentralTracker = React.lazy(() => import("@/pages/CentralTracker"));
 const CommunityApp = React.lazy(() => import("@/pages/CommunityApp"));
+const Atelier = React.lazy(() => import("@/pages/Atelier"));
 const Login = React.lazy(() => import("@/pages/Login"));
 const AuthCallback = React.lazy(() => import("@/pages/AuthCallback"));
 
@@ -277,6 +278,7 @@ function App() {
                 <Route path="/margin" element={<ProtectedShell pageId="margin"><Margin /></ProtectedShell>} />
                 <Route path="/crm" element={<ExternalRedirect to="/crm/" />} />
                 <Route path="/social" element={<ExternalRedirect to="/crm/inbox" />} />
+                <Route path="/atelier/*" element={<ProtectedShell pageId="atelier"><Atelier /></ProtectedShell>} />
                 <Route path="/exports" element={<ProtectedShell pageId="exports"><Exports /></ProtectedShell>} />
                 <Route path="/order-explorer" element={<ProtectedShell pageId="order-explorer"><OrderExplorer /></ProtectedShell>} />
                 <Route path="/customers" element={<ProtectedShell anyOfPageIds={["customers", "customer-details", "crm"]}><CustomersHub /></ProtectedShell>} />

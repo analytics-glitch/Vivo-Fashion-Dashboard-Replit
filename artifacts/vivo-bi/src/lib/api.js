@@ -78,6 +78,10 @@ const NO_CACHE_PATHS = [
   "/auth/2fa/verify",
   "/auth/logout",
   "/auth/google/callback",
+  // Atelier is a shared live operations workspace. Board, job, report, and
+  // settings reads must reflect another staff member's latest action rather
+  // than the dashboard's normal five-minute BI cache.
+  "/atelier/",
 ];
 const _shouldSkipCache = (url) =>
   NO_CACHE_PATHS.some((p) => url.includes(p));
