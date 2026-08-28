@@ -7,7 +7,6 @@ import {
   ChevronDown,
   CircleAlert,
   CircleCheck,
-  Clock3,
   Copy,
   Download,
   Filter,
@@ -21,7 +20,6 @@ import {
   ThumbsDown,
   ThumbsUp,
   Trash2,
-  UsersRound,
   X,
 } from "lucide-react";
 
@@ -112,6 +110,10 @@ const teamOptions = [
   "The Oasis Mall", "Vivo Kisumu", "Vivo Signature Mall", "Safari Sarit & Zoya", "Vivo MSA Digo Road",
   "Vivo Kileleshwa", "Vivo T-Mall", "Vivo Greenspan", "Vivo Meru", "Online Team", "Marketing Team",
   "Customer Service", "Other",
+];
+const departmentOptions = [
+  "Retail", "E-commerce", "CEX", "Production",
+  "QC", "Studio", "Warehouse", "Other",
 ];
 const feedbackImageTypes = ["image/jpeg", "image/png", "image/heic", "image/heif"];
 const feedbackImageExtensions: Record<string, string> = { jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", heic: "image/heic", heif: "image/heif" };
@@ -459,16 +461,13 @@ export function PublicFeedbackPage() {
     </header>
     <div className="public-feedback-layout">
       <section className="public-feedback-intro">
-        <span className="feedback-kicker">{isPulse ? `Style Pulse · ${pulseMode}` : "A note from the floor"}</span>
-        <h1>{isPulse ? pulseMode === "investigate" ? "Help us understand this style" : "Tell us what's working" : "Help shape the next collection."}</h1>
-        <p>{isPulse ? pulseMode === "investigate" ? "This style isn't moving as expected. We'd love your on-the-ground perspective." : "This style is flying. Help us understand why so we can do it again." : "A clear style, colourway, and observation gives the product team something useful to act on."}</p>
+        <h1>{isPulse ? pulseMode === "investigate" ? "Help us understand this style" : "Tell us what's working" : "Product Feedback"}</h1>
         {isPulse && <div className="feedback-pulse-hero" data-testid="feedback-pulse-hero">
           {targetStyleQuery.isLoading ? <div className="feedback-pulse-hero-loading" /> : style?.image ? <img src={style.image} alt="" /> : <div className="feedback-pulse-hero-placeholder"><ImageIcon size={28} /></div>}
           <div><span>Focused input on</span><strong>{style?.name || targetStyleNumber}</strong><small>{style?.code || targetStyleNumber}</small></div>
         </div>}
-        <div className="public-feedback-proof"><span><UsersRound size={16} /> Retail, marketing, online and service teams</span><span><Clock3 size={16} /> About two minutes</span></div>
       </section>
-      <section className="public-feedback-card" aria-labelledby="feedback-form-title">
+      <section className="public-feedback-card" aria-label="Product feedback form">
         {submitted ? <div className="feedback-success">
           <div className="feedback-success-mark"><CircleCheck size={28} /></div>
           <span className="feedback-kicker">Received by the product room</span>
@@ -476,18 +475,18 @@ export function PublicFeedbackPage() {
           <p>Your feedback has been submitted and the product team will review it.</p>
           <button className="feedback-button dark" type="button" onClick={reset} data-testid="button-submit-another-feedback">Submit another <ArrowRight size={16} /></button>
         </div> : <form onSubmit={(event: FormEvent) => { event.preventDefault(); if (canSubmit) submit.mutate(); }} className="public-feedback-form">
-          <div className="feedback-form-heading"><div><span className="feedback-kicker">Customer observation</span><h2 id="feedback-form-title">Leave a useful note.</h2></div><span className="feedback-required">* Required</span></div>
+          <div className="feedback-form-heading"><span className="feedback-required">* Required</span></div>
 
           <section className="feedback-step feedback-step-who" aria-labelledby="feedback-step-who">
-            <div className="feedback-step-heading"><span className="feedback-step-number">01</span><div><span className="feedback-step-kicker">Step 1</span><h3 id="feedback-step-who">Who are you?</h3></div></div>
+            <div className="feedback-step-heading"><h3 id="feedback-step-who">Who are you?</h3></div>
             <div className="feedback-form-grid">
-              <Field label="Your name"><input required value={form.submitterName} onChange={(event) => setForm((current) => ({ ...current, submitterName: event.target.value }))} placeholder="Your name" autoComplete="name" data-testid="input-feedback-name" /></Field>
-              <Field label="Your store / team"><input required list="feedback-team-options" value={form.submitterTeam} onChange={(event) => setForm((current) => ({ ...current, submitterTeam: event.target.value }))} placeholder="Store or team" autoComplete="organization" data-testid="input-feedback-team" /><datalist id="feedback-team-options">{teamOptions.map((team) => <option key={team} value={team} />)}</datalist></Field>
+              <div className="feedback-field"><input required value={form.submitterName} onChange={(event) => setForm((current) => ({ ...current, submitterName: event.target.value }))} placeholder="Your name" autoComplete="name" aria-label="Your name" data-testid="input-feedback-name" /></div>
+              <Field label="Department"><select required value={form.submitterTeam} onChange={(event) => setForm((current) => ({ ...current, submitterTeam: event.target.value }))} data-testid="select-feedback-department"><option value="">Select your department…</option>{departmentOptions.map((department) => <option key={department} value={department}>{department}</option>)}</select></Field>
             </div>
           </section>
 
           <section className="feedback-step feedback-step-style" aria-labelledby="feedback-step-style">
-            <div className="feedback-step-heading"><span className="feedback-step-number">02</span><div><span className="feedback-step-kicker">Step 2 · Most important</span><h3 id="feedback-step-style">Which style?</h3></div></div>
+            <div className="feedback-step-heading"><h3 id="feedback-step-style">Which style?</h3></div>
             {isPulse ? <div className="feedback-pulse-locked-style"><span>Style Pulse is focused on</span><strong>{style?.name || (targetStyleQuery.isLoading ? "Loading style…" : targetStyleNumber)}</strong><small>{style?.code || targetStyleNumber}{style?.status ? ` · ${style.status}` : ""}</small></div> : <Field label="Search the style catalogue" hint="Search by style number or name. Active and retired styles are included."><FeedbackStyleSearch value={styleSearch} selected={style} onChange={setStyleSearch} onSelect={(selected) => { setStyle(selected); setForm((current) => ({ ...current, colourway: generalColourway })); }} /></Field>}
             {isPulse && targetStyleQuery.isError && <div className="feedback-form-error"><CircleAlert size={16} /> We couldn't find that style in the catalogue.</div>}
             {style && <div className={`feedback-style-confirmation ${style.image ? "" : "no-image"}`} data-testid="feedback-style-confirmation">
@@ -498,13 +497,13 @@ export function PublicFeedbackPage() {
           </section>
 
           {style && <section className="feedback-step feedback-step-colourway" aria-labelledby="feedback-step-colourway">
-            <div className="feedback-step-heading"><span className="feedback-step-number">03</span><div><span className="feedback-step-kicker">Step 3</span><h3 id="feedback-step-colourway">Which colourway?</h3></div></div>
+            <div className="feedback-step-heading"><h3 id="feedback-step-colourway">Which colourway?</h3></div>
             <Field label="Colourway"><select value={form.colourway} onChange={(event) => setForm((current) => ({ ...current, colourway: event.target.value }))} data-testid="select-feedback-colourway" disabled={colourways.isLoading}><option value={generalColourway}>{generalColourway}</option>{colourwayOptions.filter((value) => value !== generalColourway).map((value) => <option key={value} value={value}>{value}</option>)}</select></Field>
             {colourways.isLoading && <p className="feedback-loading-note">Loading available colourways…</p>}
           </section>}
 
           <section className="feedback-step feedback-step-issue" aria-labelledby="feedback-step-issue">
-            <div className="feedback-step-heading"><span className="feedback-step-number">04</span><div><span className="feedback-step-kicker">Step 4</span><h3 id="feedback-step-issue">{isPulse ? pulseMode === "investigate" ? "What’s getting in the way?" : "What’s working well?" : "What’s the issue?"}</h3></div></div>
+            <div className="feedback-step-heading"><h3 id="feedback-step-issue">{isPulse ? pulseMode === "investigate" ? "What’s getting in the way?" : "What’s working well?" : "What’s the issue?"}</h3></div>
             <fieldset className="feedback-issue-fieldset">
               <legend>Choose all that apply</legend>
               <div className={`feedback-type-picker ${typesOpen ? "open" : ""}`}>
@@ -518,12 +517,12 @@ export function PublicFeedbackPage() {
           </section>
 
           <section className="feedback-step feedback-step-more" aria-labelledby="feedback-step-more">
-            <div className="feedback-step-heading"><span className="feedback-step-number">05</span><div><span className="feedback-step-kicker">Step 5</span><h3 id="feedback-step-more">Tell us more</h3></div></div>
+            <div className="feedback-step-heading"><h3 id="feedback-step-more">Tell us more</h3></div>
             <Field label={isPulse ? "What are customers saying?" : "Your observation"}><textarea required minLength={8} rows={6} value={form.commentText} onChange={(event) => setForm((current) => ({ ...current, commentText: event.target.value }))} placeholder={isPulse ? pulseMode === "investigate" ? "What are customers saying when they put it back?" : "What are customers saying when they buy it?" : "Customer quotes, specific fit issues, sizing observations..."} data-testid="textarea-feedback-comment" /></Field>
           </section>
 
           <section className="feedback-step feedback-step-images" aria-labelledby="feedback-step-images">
-            <div className="feedback-step-heading"><span className="feedback-step-number">06</span><div><span className="feedback-step-kicker">Optional</span><h3 id="feedback-step-images">Add photos</h3></div></div>
+            <div className="feedback-step-heading"><span className="feedback-step-kicker">Optional</span><h3 id="feedback-step-images">Add photos</h3></div>
             <p className="feedback-image-help">Attach up to 4 JPEG, PNG, HEIC, or HEIF images (8 MB each) to show fit, quality, styling, or production details.</p>
             <input ref={imageInputRef} className="feedback-image-input" type="file" accept=".jpg,.jpeg,.png,.heic,.heif,image/jpeg,image/png,image/heic,image/heif" multiple onChange={(event) => chooseImages(event.target.files)} data-testid="input-feedback-images" />
             <button className="feedback-image-picker" type="button" onClick={() => imageInputRef.current?.click()} disabled={submit.isPending || images.length >= feedbackImageMaxFiles} data-testid="button-add-feedback-images"><ImagePlus size={16} /> Add photos <span>{images.length}/{feedbackImageMaxFiles}</span></button>
@@ -536,9 +535,9 @@ export function PublicFeedbackPage() {
           </section>
 
           {submit.isError && <div className="feedback-form-error"><CircleAlert size={16} /> {submit.error instanceof Error ? submit.error.message : "We couldn't send that note. Please try again."}</div>}
-          {!canSubmit && <p className="feedback-inline-hint">Complete your name, store / team, style, issue type, and observation to submit.</p>}
+          {!canSubmit && <p className="feedback-inline-hint">Complete your name, department, style, issue type, and observation to submit.</p>}
           <div className="feedback-submit-step">
-            <div className="feedback-step-heading"><span className="feedback-step-number">07</span><div><span className="feedback-step-kicker">Step 7</span><h3>Submit</h3></div></div>
+            <div className="feedback-step-heading"><h3>Submit</h3></div>
             <button className="feedback-button dark feedback-submit" type="submit" disabled={submit.isPending || !canSubmit || !imagesReady} data-testid="button-submit-feedback">{submit.isPending ? "Sending to the room…" : "Submit feedback"} <ArrowRight size={16} /></button>
           </div>
           <p className="feedback-privacy"><ShieldCheck size={14} /> Shared with the Vivo product team for product decisions.</p>
