@@ -14,6 +14,7 @@
     "test:assortment": "tsx --test src/lib/assortmentPlanFilters.test.ts",
     "test:catalogue-sort": "tsx --test src/lib/catalogueSort.test.ts",
     "test:plm-grouping": "tsx --test src/lib/plmGrouping.test.ts",
+    "test:product-taxonomy": "tsx --test src/lib/productTaxonomy.test.ts",
     "test:feedback": "tsx --test server/feedback-policy.test.ts"
   },
   "devDependencies": {

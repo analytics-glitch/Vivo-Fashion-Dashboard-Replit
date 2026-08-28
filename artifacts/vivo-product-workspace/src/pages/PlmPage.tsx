@@ -66,6 +66,7 @@ import {
   stageIndex,
 } from '../lib/plmGrouping';
 import type { GroupBy } from '../lib/plmGrouping';
+import { FISCAL_WEEKS_2026, MERCHANDISING_CATEGORIES, subcategoriesForCategory } from '../lib/productTaxonomy';
 
 const LAUNCH_ROUTES = ['DTC', 'Wholesale', 'Marketplace', 'Omnichannel'] as const;
 const STYLE_CLASSIFICATIONS = ['Core', 'Fashion', 'Seasonal', 'Test'] as const;
@@ -266,10 +267,11 @@ function NamePicker({ label, value, options, onChange, testId }: { label: string
 }
 
 function NewStyleModal({ styles, onClose, onCreated }: { styles: WorkspaceStyle[]; onClose: () => void; onCreated: (id: number) => void }) {
-  const meta = useGetWorkspacePlmMeta({ query: { queryKey: getGetWorkspacePlmMetaQueryKey() } });
   const create = useCreateWorkspaceStyle();
   const [form, setForm] = useState({ styleNumber: '', name: '', brand: 'Vivo', category: '', subCategory: '', theme: '', orderType: 'New', tier: '2', launchRoute: '', styleClassification: '', rangeTier: '', designer: '', patternMaker: '', targetDate: '' });
   const update = (key: keyof typeof form, value: string) => setForm((current) => ({ ...current, [key]: value }));
+  const updateCategory = (category: string) => setForm((current) => ({ ...current, category, subCategory: '' }));
+  const subcategories = subcategoriesForCategory(form.category);
   const peopleOptions = useMemo(() => {
     const namesFor = (values: Array<string | null | undefined>) => {
       const seen = new Set<string>();
@@ -280,24 +282,66 @@ function NewStyleModal({ styles, onClose, onCreated }: { styles: WorkspaceStyle[
         return true;
       });
     };
-    return {
-      designer: namesFor(styles.flatMap((style) => [
-        style.designer,
-        style.styleTeam?.design?.name,
-        !style.designer ? style.owner : undefined,
-      ])),
-      patternMaker: namesFor(styles.flatMap((style) => [
-        style.patternMaker,
-        style.styleTeam?.pattern?.name,
-      ])),
-    };
+    const combinedPeople = namesFor(styles.flatMap((style) => [
+      style.designer,
+      style.patternMaker,
+      style.styleTeam?.design?.name,
+      style.styleTeam?.pattern?.name,
+      style.owner,
+    ]));
+    return { designer: combinedPeople, patternMaker: combinedPeople };
   }, [styles]);
   const submit = (event: FormEvent) => {
     event.preventDefault();
     if (!form.name.trim() || !form.category.trim() || !form.targetDate) return;
     create.mutate({ data: { ...form, name: form.name.trim(), category: form.category.trim(), brand: form.brand as StyleCreate['brand'], orderType: form.orderType as StyleCreate['orderType'], tier: form.tier as StyleCreate['tier'], launchRoute: (form.launchRoute || null) as StyleCreate['launchRoute'], styleClassification: (form.styleClassification || null) as StyleCreate['styleClassification'], rangeTier: (form.rangeTier || null) as StyleCreate['rangeTier'], targetDate: form.targetDate } }, { onSuccess: (created) => onCreated(created.id) });
   };
-  return <div className="plm-modal-backdrop" onClick={onClose}><div className="plm-modal" onClick={(event) => event.stopPropagation()}><header className="plm-modal-head"><div><span className="plm-kicker">PLM / New record</span><h2>Start a style</h2><p>Capture the brief before the first handoff.</p></div><button className="plm-close" type="button" onClick={onClose} aria-label="Close new style modal" data-testid="button-close-new-style"><X size={18} /></button></header><form onSubmit={submit}><div className="plm-form-grid"><Field label="Style number" hint="Optional internal reference"><input value={form.styleNumber} onChange={(event) => update('styleNumber', event.target.value)} placeholder="e.g. V26-041" data-testid="input-new-style-number" /></Field><Field label="Style name"><input required value={form.name} onChange={(event) => update('name', event.target.value)} placeholder="e.g. Sanaa wrap shirt" data-testid="input-new-style-name" /></Field><Field label="Brand"><select value={form.brand} onChange={(event) => update('brand', event.target.value)} data-testid="select-new-style-brand"><option>Vivo</option><option>Safari by Vivo</option></select></Field><Field label="Category"><select required value={form.category} onChange={(event) => update('category', event.target.value)} data-testid="select-new-style-category"><option value="">Select category</option>{(meta.data?.categories || []).map((category) => <option key={category}>{category}</option>)}<option value="Other">Other</option></select></Field><Field label="Sub-category"><input value={form.subCategory} onChange={(event) => update('subCategory', event.target.value)} placeholder="Optional" data-testid="input-new-style-subcategory" /></Field><Field label="Theme"><input value={form.theme} onChange={(event) => update('theme', event.target.value)} placeholder="e.g. Quiet utility" data-testid="input-new-style-theme" /></Field><Field label="Launch route"><select value={form.launchRoute} onChange={(event) => update('launchRoute', event.target.value)} data-testid="select-new-style-launch-route"><option value="">Not set</option>{LAUNCH_ROUTES.map((value) => <option key={value}>{value}</option>)}</select></Field><Field label="Style classification"><select value={form.styleClassification} onChange={(event) => update('styleClassification', event.target.value)} data-testid="select-new-style-classification"><option value="">Not set</option>{STYLE_CLASSIFICATIONS.map((value) => <option key={value}>{value}</option>)}</select></Field><Field label="Range tier"><select value={form.rangeTier} onChange={(event) => update('rangeTier', event.target.value)} data-testid="select-new-style-range-tier"><option value="">Not set</option>{RANGE_TIERS.map((value) => <option key={value}>{value}</option>)}</select></Field><div className="plm-field"><span>Designer</span><NamePicker label="Designer" value={form.designer} options={peopleOptions.designer} onChange={(value) => update('designer', value)} testId="select-new-style-designer" /></div><div className="plm-field"><span>Pattern maker</span><NamePicker label="Pattern maker" value={form.patternMaker} options={peopleOptions.patternMaker} onChange={(value) => update('patternMaker', value)} testId="select-new-style-pattern-maker" /></div><Field label="Order type"><select value={form.orderType} onChange={(event) => update('orderType', event.target.value)} data-testid="select-new-style-order-type"><option>New</option><option>Repeat</option></select></Field><Field label="Tier"><select value={form.tier} onChange={(event) => update('tier', event.target.value)} data-testid="select-new-style-tier"><option value="1">Tier 1</option><option value="2">Tier 2</option><option value="3">Tier 3</option><option value="4">Tier 4</option></select></Field><Field label="Target date"><input required type="date" value={form.targetDate} onChange={(event) => update('targetDate', event.target.value)} data-testid="input-new-style-target-date" /></Field></div>{create.isError && <div className="plm-form-error"><CircleAlert size={15} /> This style could not be created. Check the fields and try again.</div>}<footer className="plm-modal-actions"><button type="button" className="plm-button quiet" onClick={onClose} data-testid="button-cancel-new-style">Cancel</button><button type="submit" className="plm-button primary" disabled={create.isPending} data-testid="button-create-new-style"><Plus size={15} />{create.isPending ? 'Creating…' : 'Create style'}</button></footer></form></div></div>;
+  return <div className="plm-modal-backdrop" onClick={onClose}>
+    <div className="plm-modal" onClick={(event) => event.stopPropagation()}>
+      <header className="plm-modal-head">
+        <div><span className="plm-kicker">PLM / New record</span><h2>Start a style</h2><p>Capture the brief before the first handoff.</p></div>
+        <button className="plm-close" type="button" onClick={onClose} aria-label="Close new style modal" data-testid="button-close-new-style"><X size={18} /></button>
+      </header>
+      <form onSubmit={submit}>
+        <div className="plm-form-grid">
+          <Field label="Style number" hint="Optional internal reference"><input value={form.styleNumber} onChange={(event) => update('styleNumber', event.target.value)} placeholder="e.g. V26-041" data-testid="input-new-style-number" /></Field>
+          <Field label="Style name"><input required value={form.name} onChange={(event) => update('name', event.target.value)} placeholder="e.g. Sanaa wrap shirt" data-testid="input-new-style-name" /></Field>
+          <Field label="Brand"><select value={form.brand} onChange={(event) => update('brand', event.target.value)} data-testid="select-new-style-brand"><option>Vivo</option><option>Safari by Vivo</option></select></Field>
+          <Field label="Category">
+            <select required value={form.category} onChange={(event) => updateCategory(event.target.value)} data-testid="select-new-style-category">
+              <option value="">Select category</option>
+              {MERCHANDISING_CATEGORIES.map((category) => <option key={category} value={category}>{category}</option>)}
+            </select>
+          </Field>
+          <Field label="Sub-category">
+            <select value={form.subCategory} onChange={(event) => update('subCategory', event.target.value)} disabled={!form.category} data-testid="select-new-style-subcategory">
+              <option value="">{form.category ? 'Select sub-category' : 'Choose a category first'}</option>
+              {subcategories.map((subcategory) => <option key={subcategory} value={subcategory}>{subcategory}</option>)}
+            </select>
+          </Field>
+          <Field label="Theme"><input value={form.theme} onChange={(event) => update('theme', event.target.value)} placeholder="e.g. Quiet utility" data-testid="input-new-style-theme" /></Field>
+          <Field label="Launch route"><select value={form.launchRoute} onChange={(event) => update('launchRoute', event.target.value)} data-testid="select-new-style-launch-route"><option value="">Not set</option>{LAUNCH_ROUTES.map((value) => <option key={value}>{value}</option>)}</select></Field>
+          <Field label="Style classification"><select value={form.styleClassification} onChange={(event) => update('styleClassification', event.target.value)} data-testid="select-new-style-classification"><option value="">Not set</option>{STYLE_CLASSIFICATIONS.map((value) => <option key={value}>{value}</option>)}</select></Field>
+          <Field label="Range tier"><select value={form.rangeTier} onChange={(event) => update('rangeTier', event.target.value)} data-testid="select-new-style-range-tier"><option value="">Not set</option>{RANGE_TIERS.map((value) => <option key={value}>{value}</option>)}</select></Field>
+          <div className="plm-field"><span>Designer</span><NamePicker label="Designer" value={form.designer} options={peopleOptions.designer} onChange={(value) => update('designer', value)} testId="select-new-style-designer" /></div>
+          <div className="plm-field"><span>Pattern maker</span><NamePicker label="Pattern maker" value={form.patternMaker} options={peopleOptions.patternMaker} onChange={(value) => update('patternMaker', value)} testId="select-new-style-pattern-maker" /></div>
+          <Field label="Order type"><select value={form.orderType} onChange={(event) => update('orderType', event.target.value)} data-testid="select-new-style-order-type"><option>New</option><option>Repeat</option></select></Field>
+          <Field label="Tier"><select value={form.tier} onChange={(event) => update('tier', event.target.value)} data-testid="select-new-style-tier"><option value="1">Tier 1</option><option value="2">Tier 2</option><option value="3">Tier 3</option><option value="4">Tier 4</option></select></Field>
+          <Field label="Target Launch">
+            <select required value={form.targetDate} onChange={(event) => update('targetDate', event.target.value)} data-testid="select-new-style-target-launch">
+              <option value="">Select target launch week</option>
+              {FISCAL_WEEKS_2026.map((week) => <option key={week.value} value={week.value}>{week.label}</option>)}
+            </select>
+          </Field>
+        </div>
+        {create.isError && <div className="plm-form-error"><CircleAlert size={15} /> This style could not be created. Check the fields and try again.</div>}
+        <footer className="plm-modal-actions">
+          <button type="button" className="plm-button quiet" onClick={onClose} data-testid="button-cancel-new-style">Cancel</button>
+          <button type="submit" className="plm-button primary" disabled={create.isPending} data-testid="button-create-new-style"><Plus size={15} />{create.isPending ? 'Creating…' : 'Create style'}</button>
+        </footer>
+      </form>
+    </div>
+  </div>;
 }
 
 function StylePulseModal({ style, onClose }: { style: WorkspaceStyle; onClose: () => void }) {
