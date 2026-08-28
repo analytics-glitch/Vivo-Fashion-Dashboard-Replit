@@ -11,7 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
-import { ArrowLeft, MessageCircle, Plus, Trash2, BookImage, Phone, Mail, MapPin, Calendar, ShieldCheck, Save, Smartphone, AtSign, X, Sparkles, AlertTriangle, Wand2, RefreshCw, ChevronRight } from "lucide-react";
+import { ArrowLeft, MessageCircle, Plus, Trash2, BookImage, Phone, Mail, MapPin, Calendar, ShieldCheck, Save, Smartphone, AtSign, X, Sparkles, AlertTriangle, Wand2, RefreshCw, ChevronRight, Scissors } from "lucide-react";
 import { RfmBadge } from "@/components/RfmBadge";
 import { LoyaltyBadge } from "@/components/LoyaltyBadge";
 import { LoyaltyCard } from "@/components/LoyaltyCard";
@@ -52,6 +52,8 @@ export default function CustomerProfile() {
   const [assignOpen, setAssignOpen] = useState(false);
   const [forgetOpen, setForgetOpen] = useState(false);
   const [forgetConfirm, setForgetConfirm] = useState("");
+  const [atelierJobs, setAtelierJobs] = useState([]);
+  const [atelierMeasurements, setAtelierMeasurements] = useState([]);
 
   // dialog states
   const [noteOpen, setNoteOpen] = useState(false);
@@ -81,7 +83,7 @@ export default function CustomerProfile() {
   const reload = async () => {
     setLoading(true);
     try {
-      const [p, n, t, m, pr, c, tpl, social, wl, cr, tl, asg, us, mom] = await Promise.all([
+      const [p, n, t, m, pr, c, tpl, social, wl, cr, tl, asg, us, mom, at_hist] = await Promise.all([
         api.get(`/bi/customer/${id}`),
         api.get(`/notes`, { params: { customer_id: id } }),
         api.get(`/tasks`, { params: { customer_id: id } }),
@@ -96,6 +98,7 @@ export default function CustomerProfile() {
         api.get(`/customers/${id}/assignment`).catch(() => ({ data: {} })),
         api.get(`/users`).catch(() => ({ data: [] })),
         api.get(`/customers/${id}/moments`).catch(() => ({ data: [] })),
+        api.get(`/atelier/customers/${id}/history`).catch(() => ({ data: { jobs: [], measurements: [] } })),
       ]);
       setProfile(p.data?.profile);
       setProducts(p.data?.products || []);
@@ -125,6 +128,8 @@ export default function CustomerProfile() {
       setTimeline(tl.data?.events || []);
       setAssignment(asg.data || {});
       setUsers(us.data || []);
+      setAtelierJobs(at_hist.data?.jobs || []);
+      setAtelierMeasurements(at_hist.data?.measurements || []);
     } finally {
       setLoading(false);
     }
@@ -422,6 +427,7 @@ export default function CustomerProfile() {
             ["social", "Social", "profile-tab-social"],
             ["lookalikes", "Look-alikes", "profile-tab-lookalikes"],
             ["consent", "Consent", "profile-tab-consent"],
+            ["atelier", "Atelier", "profile-tab-atelier"],
           ].map(([v, l, t]) => (
             <TabsTrigger key={v} value={v} data-testid={t}>{l}</TabsTrigger>
           ))}
@@ -1120,6 +1126,67 @@ export default function CustomerProfile() {
               </Button>
             </Card>
           )}
+        </TabsContent>
+
+        <TabsContent value="atelier" className="mt-6 space-y-6">
+          <Card className="vivo-card p-6 rounded-sm border-l-4 border-l-[var(--vivo-navy)]">
+            <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+              <div>
+                <h3 className="font-display text-lg">Alteration History</h3>
+                <p className="text-xs text-[var(--vivo-muted)] mt-1">Previous jobs for this customer.</p>
+              </div>
+              <div className="flex items-center gap-2">
+                {profile?.phone && (
+                  <Button variant="outline" className="h-9 rounded-sm border-[var(--vivo-gold)] text-[var(--vivo-gold-700)]" onClick={() => window.open(`/app/?quiz=1`, '_blank')} title="Style DNA (Does not block Atelier service)">
+                    <Sparkles className="mr-2 h-3.5 w-3.5" /> Style DNA
+                  </Button>
+                )}
+                <Button onClick={() => navigate(`/atelier?new_job_phone=${encodeURIComponent(profile.phone || '')}`)} variant="outline" className="h-9 rounded-sm">
+                  <Scissors className="mr-2 h-4 w-4" /> New Job
+                </Button>
+              </div>
+            </div>
+
+            {atelierJobs.length === 0 ? (
+              <div className="p-6 text-center border border-dashed border-[var(--vivo-border)] rounded-sm text-sm text-[var(--vivo-muted)] mb-6">
+                No alteration jobs recorded.
+              </div>
+            ) : (
+              <div className="divide-y divide-[var(--vivo-border)] border border-[var(--vivo-border)] rounded-sm mb-6">
+                {atelierJobs.map((job) => (
+                  <div key={job.id} className="p-4 flex items-center justify-between hover:bg-[var(--vivo-bg-soft)] transition">
+                    <div>
+                      <Link to={`/atelier/jobs/${job.id}`} className="font-medium text-[var(--vivo-navy)] hover:underline flex items-center gap-2">
+                        {job.claim_number} <ChevronRight className="h-3 w-3" />
+                      </Link>
+                      <div className="text-xs text-[var(--vivo-muted)] mt-1">
+                        {job.product_name || job.garment_type}
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <Badge variant="secondary" className="rounded-sm text-[10px] uppercase">{job.status}</Badge>
+                      <div className="text-[11px] text-[var(--vivo-muted)] mt-1">{formatDate(job.created_at)}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {atelierMeasurements.length > 0 && (
+              <div className="border-t border-[var(--vivo-border)] pt-4 mt-6">
+                <h4 className="text-sm font-semibold text-[var(--vivo-navy)] mb-3">Recorded Measurements</h4>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  {atelierMeasurements.map((m) => (
+                    <div key={m.id} className="bg-[var(--vivo-bg-soft)] p-3 rounded-sm border border-[var(--vivo-border)]">
+                      <div className="text-[10px] uppercase text-[var(--vivo-muted)] mb-1">{m.name}</div>
+                      <div className="font-medium">{m.value} {m.unit}</div>
+                      {m.note && <div className="text-xs text-[var(--vivo-muted)] mt-1 truncate" title={m.note}>{m.note}</div>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </Card>
         </TabsContent>
       </Tabs>
 

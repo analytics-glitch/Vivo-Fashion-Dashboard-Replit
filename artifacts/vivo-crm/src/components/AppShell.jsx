@@ -34,6 +34,7 @@ import {
   FileBarChart,
   Sparkles,
   Image,
+  Scissors,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { PoweredFooter, ChangelogButton } from "@/components/Polish";
@@ -50,6 +51,7 @@ const NAV = [
   { to: "/service", label: "Service", icon: LifeBuoy, testid: "nav-service", group: "floor" },
   { to: "/team-queue", label: "Team queue", icon: ListChecks, testid: "nav-team-queue", manager: true, group: "floor" },
   { to: "/lookbooks", label: "Lookbooks", icon: BookImage, testid: "nav-lookbooks", group: "floor" },
+  { to: "/atelier", label: "Atelier", icon: Scissors, testid: "nav-atelier", atelier: true, group: "floor" },
   // Act 2 — The relationship
   { to: "/loyalty", label: "Loyalty", icon: Award, testid: "nav-loyalty", manager: true, group: "relationship" },
   // Act 3 — Strategic lens (manager analytics)
@@ -60,6 +62,7 @@ const NAV = [
   { to: "/csat", label: "CSAT", icon: SmilePlus, testid: "nav-csat", manager: true, group: "analytics" },
   { to: "/survey-results", label: "Survey", icon: ClipboardList, testid: "nav-survey-results", manager: true, group: "analytics" },
   { to: "/reports", label: "Reports", icon: FileBarChart, testid: "nav-reports", manager: true, group: "analytics" },
+  { to: "/atelier/reports", label: "Atelier Reports", icon: FileBarChart, testid: "nav-atelier-reports", atelier: true, group: "analytics" },
   // Act 4 — Team & admin
   { to: "/training", label: "Training", icon: GraduationCap, testid: "nav-training", manager: true, group: "admin" },
   { to: "/templates", label: "Templates", icon: MessageSquare, testid: "nav-templates", manager: true, group: "admin" },
@@ -67,6 +70,7 @@ const NAV = [
   { to: "/data-requests", label: "Requests", icon: AlertOctagon, testid: "nav-data-requests", manager: true, group: "admin" },
   { to: "/data-quality", label: "Quality", icon: Database, testid: "nav-data-quality", manager: true, group: "admin" },
   { to: "/settings", label: "Settings", icon: Settings, testid: "nav-settings", manager: true, group: "admin" },
+  { to: "/atelier/settings", label: "Atelier Settings", icon: Settings, testid: "nav-atelier-settings", atelier: true, group: "admin" },
 ];
 
 export default function AppShell() {
@@ -141,7 +145,12 @@ export default function AppShell() {
   }
 
   const isManager = user.role === "manager";
-  const items = NAV.filter((n) => !n.manager || isManager);
+  const items = NAV.filter((n) => {
+    if (n.manager && !isManager) return false;
+    if (n.to === "/atelier/settings" && !user.atelier_admin) return false;
+    if (n.atelier && n.to !== "/atelier/settings" && !user.atelier_enabled && !user.atelier_admin) return false;
+    return true;
+  });
 
   const overdueCount = notifs.filter((n) => {
     if (!n.due_date) return false;

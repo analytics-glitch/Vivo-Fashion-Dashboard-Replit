@@ -1,0 +1,227 @@
+VIVO FASHION GROUP
+In-Store Garment Alterations Service
+
+1.  PURPOSE
+
+This policy outlines the standards, scope, pricing, and procedures governing in-store garment alteration services at selected Vivo retail outlets. The Junction store is the initial pilot location for this service.
+
+Objectives
+Enhance customer experience through improved garment fit
+Support sales conversion and increase basket value
+Ensure operational control, quality, and consistency
+
+2.  SERVICE OVERVIEW
+
+Vivo offers professional in-store garment alteration services for customers who have purchased Vivo garments. This service is:
+
+A paid service, with defined exceptions (see Section 3.3)
+Delivered within a controlled and defined scope
+Designed to support retail sales — not to operate as a full tailoring service
+
+3.  PRICING STRUCTURE (To be defined / or discarded)
+
+3.1  Standard Pricing
+
+SERVICE | FEE (KSh)
+Hemming (pants, skirts, dresses) | KSh 300
+Sleeve shortening | KSh 400
+Waist adjustment (minor) | KSh 500
+Tapering (basic fit adjustment) | KSh 400
+Minor repairs (buttons, seams) | KSh 200
+
+3.2  Express Service — Same-Day Hemming
+Available for simple hemming only
+Surcharge: additional KSh 200
+Cut-off time: 2:00 PM — subject to capacity and store traffic
+May be suspended during weekends and high-traffic periods
+
+3.3  Free Service Threshold
+Standard alterations are free for purchases above KSh [CONFIRM THRESHOLD]
+Applies to standard alterations only — Express service remains chargeable
+Free-service uptake must be tracked separately in POS and reviewed monthly
+
+3.4  Payment Terms
+Full payment must be collected before work begins
+All services must be processed through POS with an itemised receipt
+The receipt must reference the alteration tag number for every job
+
+4.  SCOPE OF SERVICE
+
+4.1  Included Services
+Hemming (pants, skirts, dresses)
+Sleeve shortening
+Minor waist adjustments
+Basic size adjustments (within one size limit)
+Light tapering for fit improvement
+Minor repairs: button reattachment (done manually in-store), simple seam repairs, and basic zip fixes
+
+4.2  Excluded Services
+Major resizing beyond one size
+Full garment reconstruction or redesign
+Structural alterations (e.g. shoulders, full lining adjustments)
+Complex fabric work (e.g. heavy embellishments, delicate materials beyond capability)
+Repair of heavily damaged garments
+Alterations on non-Vivo garments — see eligibility note below
+
+Where a replacement component (zip, button, thread colour) is not available in-store, the tailor must raise a materials request to the production unit before confirming the job with the customer. The turnaround extends to 48 hours in these cases. Requests must follow the formal requisition process — verbal requests to the factory are not acceptable.
+
+Garments purchased on the day at Junction: eligible for both paid and free-threshold service.
+Vivo garments purchased previously: eligible for paid alterations only — customer must present proof of purchase (receipt or order record).
+Garments with no verifiable Vivo origin: must be declined. Do not accept on the customer's verbal assurance alone.
+
+5.  SERVICE LEVELS (SLAS)
+
+5.1  Standard Turnaround
+All alterations to be completed within 24 hours (next-day collection, excluding weekends), where all required thread and materials are in stock at the store. Where materials must be sourced from the production unit, the turnaround extends to 48 hours. The tailor must confirm material availability at the point of intake and communicate the applicable timeline to the customer before payment is taken.
+
+5.2  Same-Day Hemming
+Limited to simple hemming only
+Cut-off time: 2:00 PM
+Subject to capacity and store traffic
+
+5.3  Peak Period Adjustments
+During weekends, promotions, and high-traffic periods: same-day service may be suspended
+Turnaround may extend to 48 hours during peak periods
+
+5.4  Capacity Management
+Maximum 8–12 garments per day per tailor
+Maximum 2 alterations per garment
+Once capacity is reached, new requests must be deferred to the next available slot — do not over-commit
+
+6.  STANDARD OPERATING PROCEDURE (SOP)
+
+All alteration jobs must follow these steps in sequence. No step may be skipped.
+
+STEP 1 / RequestAssessment | ▸  Confirm request falls within approved scope (Section 4.1) / ▸  Escalate unclear or out-of-scope requests to Store Manager
+STEP 2 / Measurement& Marking | ▸  Take accurate measurements / ▸  Clearly mark the garment / ▸  Confirm the expected outcome with the customer verbally
+STEP 3 / Job Logging& Tagging | ▸  Record job in the Alterations Log: customer details, garment description, alteration required, promised collection date / ▸  Attach a matching physical tag to the garment — no untagged garments in the queue
+STEP 4 / CustomerAgreement& Payment | ▸  Complete the Customer Agreement Form — document the alteration and agreed expected outcome / ▸  Confirm collection timeline with the customer / ▸  Collect payment before work begins — process through POS / ▸  MANDATORY: The Customer Agreement Form must be signed/acknowledged before any work commences. Verbal-only agreements are not accepted.
+STEP 5 / Execution | ▸  Complete alterations to defined quality standards / ▸  Adhere strictly to the documented instructions — do not deviate without customer consent
+STEP 6 / QualityCheck | ▸  Inspect for accuracy against the Customer Agreement Form / ▸  Check for clean finish with neatly trimmed threads / ▸  Press all altered areas before storage / ▸  Confirm no garment damage
+STEP 7 / Collection& Handover | ▸  Customer to try on the garment where possible / ▸  Confirm satisfaction before releasing the garment / ▸  Package in a Vivo-branded bag — this is the standard for all completed alterations
+
+Where the customer did not clearly specify the expected outcome at intake and no written Customer Agreement Form was completed, Vivo is not obligated to provide free rework. This is why completion of the Customer Agreement Form (Step 4 of the SOP) is a mandatory pre-condition for all alteration work.
+
+7.  CUSTOMER AGREEMENT & SERVICE CONDITIONS
+
+All alterations must be agreed and documented before work begins
+Changes after commencement may incur additional charges
+Perfect fit is not guaranteed where garment construction limitations exist
+Vivo reserves the right to decline requests outside the defined scope
+
+8.  REWORK, REFUND & LIABILITY
+
+8.1  Rework
+Incorrect alterations will be corrected at no additional cost, where Vivo is at fault. "Incorrect" is defined as: the alteration was not executed in accordance with what was documented on the Customer Agreement Form signed at intake.
+
+8.2  Customer-Initiated Changes
+Any changes requested after completion will be treated as a new service and charged accordingly.
+
+8.3  Refunds
+No refunds once work is completed, except in verified quality failures attributable to Vivo.
+
+8.4  Liability
+Vivo will take reasonable care in handling all customer garments
+Any damage must be reported to the Store Manager immediately upon discovery
+The Store Manager will assess and escalate as required
+Vivo's maximum liability for garment damage caused during an alteration is capped at the original retail purchase price of the affected garment, evidenced by receipt
+Resolution options: repair, replacement, or compensation up to the liability cap
+Compensation above the cap requires escalation to and approval from the Head of Retail
+Cash refunds of the alteration fee are considered only where Vivo is demonstrably at fault and the garment cannot be repaired or replaced to the customer's reasonable satisfaction
+
+9.  ROLES & RESPONSIBILITIES
+
+TAILOR
+• Execute alterations accurately, on time, and to defined quality standards
+• Complete the Customer Agreement Form and job log for every job — no exceptions
+• Confirm material availability at intake and escalate shortages to the Store Manager immediately
+• Complete the weekly handover log before the end of each rotation week
+• Press and package all completed garments in Vivo-branded bags before storage
+• Manage the work queue and flag capacity constraints proactively
+
+STORE MANAGER
+• Oversee service delivery, quality, and workflow daily
+• Enforce pricing, scope, SLAs, and the Customer Agreement Form requirement
+• Approve exceptions where necessary and handle escalations and disputes
+• Review the alterations log daily and follow up on uncollected garments within 48 hours
+• Submit weekly thread and materials replenishment requests to the production unit by Wednesday
+• Manage the weekly tailor rotation, including absence cover
+• Track paid versus free-service revenue weekly and report to Retail leadership
+
+SALES TEAM
+• Clearly communicate the service scope and pricing — do not over-promise
+• Direct customers to the tailor for all scope and timeline questions
+• Do not initiate alteration agreements verbally — all jobs must be formally logged
+• Apply the garment eligibility criteria accurately and consistently
+
+PRODUCTION UNIT
+• Supply materials requests submitted by Wednesday for delivery by Friday each week
+• Ensure seconded tailors are available as per the rotation schedule
+• Provide an absence replacement by 8:00 AM where a scheduled tailor cannot attend
+• Monitor the impact of secondments on Sample Making output and escalate if capacity is affected
+
+10.  DO'S & DON'TS
+
+✓  DO | ✗  DON'T
+Follow the defined scope at all times | Accept work outside defined scope
+Complete the Customer Agreement Form for every job | Begin work without a signed Customer Agreement Form
+Log every job — no verbal agreements | Promise timelines without checking capacity
+Set clear and realistic customer expectations | Rush work at the expense of quality
+Confirm material availability before committing a timeline | Accept garments with no verifiable Vivo origin
+Prioritise quality over speed | Process payments outside the POS system
+Escalate when in doubt | Accept non-Vivo garments without proof of purchase
+Press and Vivo-bag all completed garments | Communicate scope promises the Store Manager has not approved
+
+11.  RISK & CONTROL MEASURES
+
+CONTROL | DETAIL
+Garment tagging & tracking | All garments must be tagged at intake and tracked through to collection. No untagged garment may enter the work queue.
+Customer Agreement Form | Mandatory for every job. Must be completed and acknowledged before work begins. Filed and held for a minimum of 3 months.
+Daily log review | Store Manager reviews the Alterations Log daily. Uncollected garments to be followed up within 48 hours.
+Materials replenishment | Thread and materials inventory checked weekly. Replenishment requests submitted by Wednesday, delivered by Friday. Store Manager is accountable.
+Weekly handover log | Outgoing tailor completes handover log (jobs completed, pending, awaiting collection, materials needed, open issues) at end of each rotation. Incoming tailor countersigns on first morning.
+Garment packaging standard | All completed garments to be pressed and folded. Handed to customers in Vivo-branded bags. Applied consistently — no exceptions.
+Revenue tracking | Paid and free-service revenue tracked separately in POS. Reported weekly. Free-service volume >30% of total triggers a threshold eligibility review.
+POS setup | Alteration service code must be configured and tested at least 5 working days before go-live. IT/Systems must confirm receipt referencing prior to launch.
+Damage & disputes | Any garment damage or dispute reported to Store Manager immediately. Liability capped at original purchase price. Escalation to Head of Retail for amounts above cap.
+Secure storage | All customer garments to be stored securely in a designated, locked area when not being worked on.
+
+12.  POLICY COMPLIANCE
+
+Failure to adhere to this policy may result in:
+
+Customer dissatisfaction and reputational damage to the Vivo brand
+Financial loss due to damaged garments or disputed services
+Operational disruption to the store and production unit
+Disciplinary action where individual conduct is at fault
+
+13.  GUIDING PRINCIPLE
+
+The alteration service exists to support sales, improve garment fit, and enhance the customer experience.
+It is not a full tailoring service and must be managed within defined operational limits at all times.
+
+14.  APPENDIX
+
+Alterations Log Template on drive
+Garment Tag Template 
+Customer Agreement Form
+Customer Slip Template
+Pricing Guide (for store display) — [To be designed]
+Materials Requisition Form
+Weekly Handover Log Template
+
+15.  TAILOR APPOINTMENT & ROTATIONAL TIMELINE
+
+The Junction store will initially be served by a rotational secondment from the Sample Making team within Vivo's production unit. Four tailors will rotate on a weekly basis — one tailor per week — across the first four weeks of operation. Each seconded tailor will receive a transport allowance. At the end of Week 4, a permanent tailor will be appointed to be based full-time at the Junction store, drawing on the performance data from the rotation to inform the selection. Months 2 and 3 focus on embedding the permanent tailor and evaluating readiness for expansion.
+
+PHASE | ACTIONS & MILESTONES
+WEEKS 1–4 / Rotation & Setup | ▸  Identify and confirm 4 Sample Making tailors for the rotation pool — obtain HR & production approval / ▸  Define and communicate transport allowance rate, payment method, and claim process / ▸  Equip the Junction tailoring area: sewing machine, thread inventory (full Vivo colour palette), hand tools, pressing iron, tagged garment storage / ▸  Brief all 4 tailors on this policy, SOP, scope, customer interaction standards, and escalation routes / ▸  Publish the weekly rotation schedule (Tailor A: Wk 1 → Tailor B: Wk 2 → Tailor C: Wk 3 → Tailor D: Wk 4) / ▸  Activate the Alterations Log, garment tag system, Customer Agreement Forms, and POS service code before Day 1 / ▸  IT/Systems to confirm POS service code setup and receipt referencing at least 5 working days before launch
+END OF WEEK 4 / Permanent Appointment | ▸  Compile the rotation performance summary: demand volume, alteration types, quality observations, handover issues, customer feedback / ▸  Select and confirm the permanent Junction tailor — preferred candidate from the rotation pool based on demonstrated performance / ▸  Communicate the appointment to the tailor, production unit, and Junction store management / ▸  Permanent tailor must be in place and operating from the start of Month 2 / ▸  Brief the permanent tailor formally: roles, responsibilities, escalation contacts, and performance expectations
+MONTH 2 / Onboarding & Steady State | ▸  Permanent tailor operates full-time at Junction from Week 5 / ▸  Store Manager conducts weekly 1:1 check-ins for first 4 weeks post-appointment / ▸  Maintain daily logs; compile fortnightly summary report (jobs, SLA compliance, rework rate, customer feedback) / ▸  Finalise and activate the weekly materials replenishment cycle (Weds request → Fri delivery) / ▸  Assess production unit capacity impact and confirm secondment is not reducing Sample Making output / ▸  End of Month 2 check-in: Store Manager, permanent tailor, and production lead review operating model
+MONTH 3 / Performance Review & Expansion | ▸  Compile the full 3-month performance report: jobs processed, revenue, free-service uptake, demand by day, rework rate, CSAT / ▸  Conduct permanent tailor performance review against quality, throughput, and CSAT benchmarks / ▸  Assess whether weekend/peak demand warrants ad-hoc supplementary cover from the Sample Making pool / ▸  Present performance report and expansion recommendation to Retail and Production leadership by end of Week 12 / ▸  Document lessons learned from the Junction pilot for use in any future store rollout
+
+Transport Allowance — Terms
+
+A daily transport allowance will be paid for every day a seconded tailor reports to the Junction store. The rate must be agreed and signed off by HR and Finance before the pilot commences.
+Allowances are paid weekly via payroll or petty cash per company policy. Tailors must sign the daily attendance register at Junction for the allowance to be processed.
+Absence must be reported to the Store Manager by 8:00 AM. The production unit is responsible for providing a replacement from the rotation pool where possible.

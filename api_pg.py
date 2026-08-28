@@ -9962,6 +9962,16 @@ def auth_me(request: Request):
         _apply_extra_pages(u)
         _apply_crm_admin_grants(u)
         user_id = str(u.get("user_id") or "")
+        # Atelier is an explicit opt-in staff entitlement (admins are always
+        # enabled).  The helper is safe before its deferred schema exists, so
+        # /auth/me remains available during a fresh deployment.
+        try:
+            u["atelier_enabled"] = atelier.atelier_user_enabled(
+                user_id, u.get("role"))
+            u["atelier_admin"] = str(u.get("role") or "").lower() == "admin"
+        except Exception:
+            u["atelier_enabled"] = False
+            u["atelier_admin"] = False
         if user_id:
             try:
                 grants = _users_exec(
@@ -41522,6 +41532,19 @@ import production_desk_router
 production_desk_router.register_production_desk_routes(app, _sys.modules[__name__])
 import chair_router
 chair_router.register_chair_routes(app, _sys.modules[__name__])
+
+# Junction Mall Atelier workflow. Registered before the SPA catch-all so its
+# GET routes are not swallowed by StaticFiles.
+import atelier
+atelier.register_atelier_routes(app, _sys.modules[__name__])
+
+
+@_deferred_startup
+def _init_atelier_tables():
+    try:
+        atelier.ensure_atelier_tables()
+    except Exception as e:
+        log.error("Atelier table init failed: %s", e)
 
 # Day in Review (/api/day-review/report) — deterministic daily trading-day
 # decomposition vs the same-weekday norm. Gated in clerk_auth_gate to

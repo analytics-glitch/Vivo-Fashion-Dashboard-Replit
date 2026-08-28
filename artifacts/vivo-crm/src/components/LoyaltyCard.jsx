@@ -35,6 +35,7 @@ export function LoyaltyCard({ customerId, customerName }) {
   if (!data) return null;
 
   const { tier, spend_12mo_kes, progress, retention, anniversary, voucher, tailoring, styling, benefits } = data;
+  const normalizedTier = String(tier || "bronze").toLowerCase();
 
   const issueVoucher = async () => {
     setBusy(true);
@@ -107,7 +108,7 @@ export function LoyaltyCard({ customerId, customerName }) {
       )}
 
       {/* Retention */}
-      {tier !== "bronze" && (
+      {normalizedTier !== "bronze" && retention && (
         <div className="text-xs text-[var(--vivo-muted)]" data-testid="loyalty-retention">
           Retention: need {fmtKES(retention.required_kes)} / yr ·{" "}
           {retention.met ? (
