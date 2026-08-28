@@ -192,6 +192,47 @@ class SopWorkflowRulesTests(unittest.TestCase):
         self.assertNotIn("onclick", cleaned)
         self.assertNotIn("<script", cleaned)
 
+    @patch.object(api_pg, "_ensure_sop_tables")
+    @patch.object(api_pg, "_users_exec")
+    def test_editor_replaces_legacy_placeholder_with_original_docx(
+        self, users_exec, ensure
+    ):
+        users_exec.return_value = [{
+            "id": 7,
+            "stage": 2,
+            "department": "finance",
+            "filename": "Odoo_Remediation_Plan.docx",
+            "data": self._docx_bytes(),
+            "content_type": (
+                "application/vnd.openxmlformats-officedocument."
+                "wordprocessingml.document"
+            ),
+            "original_filename": "Odoo_Remediation_Plan.docx",
+            "original_data": self._docx_bytes(),
+            "original_content_type": (
+                "application/vnd.openxmlformats-officedocument."
+                "wordprocessingml.document"
+            ),
+            "editor_html": (
+                "<h1>Odoo_Remediation_Plan.docx</h1>"
+                "<p>This SOP is ready for editing in the dashboard. "
+                "The original uploaded file is retained for traceability.</p>"
+            ),
+            "editor_revision": 0,
+            "edited_by_email": None,
+            "edited_at": None,
+        }]
+        result = api_pg.sops_editor(
+            7,
+            _request({
+                "role": "retail",
+                "email": "franckie@vivofashiongroup.com",
+            }),
+        )
+        self.assertIn("<h1>Store Opening</h1>", result["html"])
+        self.assertNotIn("ready for editing", result["html"])
+        self.assertIn("original_filename", users_exec.call_args.args[0])
+
     def test_docx_contents_are_imported_into_editable_html(self):
         imported = api_pg._sop_initial_editor_html(
             "Store Opening.docx",

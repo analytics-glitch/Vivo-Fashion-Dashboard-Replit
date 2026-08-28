@@ -27736,14 +27736,15 @@ def _sop_validate_docx_fidelity(document):
             "Simplify it or save a review-safe copy before uploading.")
 
 
-def _sop_docx_to_html(raw):
+def _sop_docx_to_html(raw, *, validate=True):
     import io
     from docx import Document
     from docx.table import Table
     from docx.text.paragraph import Paragraph
 
     document = Document(io.BytesIO(raw))
-    _sop_validate_docx_fidelity(document)
+    if validate:
+        _sop_validate_docx_fidelity(document)
     parts = []
     for child in document.element.body.iterchildren():
         if child.tag.endswith("}p"):
@@ -28690,7 +28691,9 @@ def sops_editor(file_id: int, request: Request):
     _ensure_sop_tables()
     rows = _users_exec(
         "SELECT id, stage, department, filename, data, content_type, "
-        "editor_html, editor_revision, edited_by_email, edited_at "
+        "original_filename, original_data, original_content_type, "
+        "editor_html, editor_revision, "
+        "edited_by_email, edited_at "
         "FROM sop_files WHERE id=%s",
         (file_id,), fetch=True) or []
     if not rows:
@@ -28701,6 +28704,30 @@ def sops_editor(file_id: int, request: Request):
         raise HTTPException(status_code=403, detail="You don't have edit rights for this SOP")
     editor_html = row.get("editor_html") or _sop_initial_editor_html(
         row["filename"], row.get("data"), row.get("content_type"))
+    # Older records were seeded with a generic editor placeholder. Prefer the
+    # retained original Word source so opening Edit SOP shows the actual
+    # document instead of a successful-but-useless placeholder response.
+    placeholder = (
+        "This SOP is ready for editing in the dashboard. "
+        "The original uploaded file is retained for traceability."
+    )
+    import_warning = None
+    if placeholder in editor_html:
+        source_name = row.get("original_filename") or row.get("filename")
+        source_data = row.get("original_data")
+        if source_name and source_data:
+            try:
+                if str(source_name).lower().endswith(".docx"):
+                    editor_html = _sop_docx_to_html(
+                        bytes(source_data), validate=False)
+                    import_warning = (
+                        "This older SOP was imported from its original Word "
+                        "file. Simplify any unsupported formatting before approval.")
+                else:
+                    editor_html = _sop_initial_editor_html(
+                        source_name, source_data, row.get("original_content_type"))
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
     edited_at = row.get("edited_at")
     return {
         "id": row["id"],
@@ -28711,6 +28738,7 @@ def sops_editor(file_id: int, request: Request):
         "revision": int(row.get("editor_revision") or 0),
         "edited_by_email": row.get("edited_by_email"),
         "edited_at": edited_at.isoformat() if edited_at else None,
+        "warning": import_warning,
     }
 
 

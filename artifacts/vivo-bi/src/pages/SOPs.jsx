@@ -563,6 +563,11 @@ const SopEditorModal = ({ file, onClose, onSaved }) => {
         <div className="flex-1 overflow-auto p-4 sm:p-6 bg-slate-50/70">
           {!doc && !error && <Loading label="Opening SOP editor…" />}
           {error && <ErrorBox message={error} />}
+          {doc?.warning && (
+            <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 text-amber-800 px-3 py-2 text-sm">
+              {doc.warning}
+            </div>
+          )}
           {notice && <div className="mb-3 rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-700 px-3 py-2 text-sm">{notice}</div>}
           {doc && (
             <div
