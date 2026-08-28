@@ -1812,7 +1812,7 @@ a { color: inherit; text-decoration: none; }
 .feedback-search-input input:focus { box-shadow: none; }
 .feedback-search-input button { display: grid; place-items: center; width: 27px; height: 27px; border: 0; color: #7c7880; background: transparent; cursor: pointer; }
 .feedback-style-description { margin-top: 8px; }
-.feedback-search-results { position: absolute; z-index: 5; top: calc(100% + 5px); right: 0; left: 0; overflow: hidden; border: 1px solid #d8cdbb; background: #fffdfa; box-shadow: 0 12px 28px rgba(36,32,25,.12); }
+.feedback-search-results { position: static; z-index: 5; margin-top: 5px; overflow: hidden; border: 1px solid #d8cdbb; background: #fffdfa; box-shadow: 0 12px 28px rgba(36,32,25,.12); }
 .feedback-search-loading { padding: 14px; color: #89837a; font: 11px var(--app-font-sans); }
 .feedback-style-option { display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px 12px; border: 0; border-bottom: 1px solid #eee8de; color: #17243b; background: transparent; text-align: left; cursor: pointer; }
 .feedback-style-option:hover { background: #f7f0e4; }
