@@ -1,16 +1,24 @@
 ---
 name: Colour-style status is derived
-description: Product rule for colour-style (style × colour) lifecycle status — derived, never stored; how Active Colour Styles must be counted on any surface.
+description: Colour-style lifecycle is derived from that colourway's own Odoo rows; sibling statuses must never bleed across colourways.
 ---
 
-# Colour-style status is derived — no stored status field
+# Colour-style status uses only that colourway's Odoo rows
 
-**Rule:** a colourway (style × colour) is **Active** iff BOTH:
-1. its parent style is Active (computed tier ∈ Tier 1–4), AND
-2. that specific colour has inventory (stores + sellable-warehouse SOH > 0, same scoping as the style-level stock basis).
+**Rule:** derive lifecycle independently at `(style, colour)` grain from the
+Odoo status values on that colourway's own SKU rows. Precedence is Active,
+then Retired, then Archived, then no status. Sibling colourways never
+participate.
 
-Everything else is treated as retired: a zero-stock colourway under an Active style is "retired", and a style Retired/Archived at STYLE level cascades — ALL its colourways are retired regardless of their stock. An Active style can legitimately have some or even zero Active colourways.
+The Active Colour Styles KPI/export includes a colourway only when its own
+derived status is Active and its scoped stores + sellable-warehouse SOH is
+positive. Stock does not define lifecycle status; it only gates this KPI.
 
-**Why:** user decision (Aug 2026, Merch Overview card rework). There is deliberately NO colour-level status column — the two options considered were "derive from parent status + inventory" vs "add a stored status field with rules"; derive won because the stated rules are fully determined by existing data, so a stored field would only be a cache to keep in sync. If manual per-colour overrides are ever needed, add the field then.
+**Why:** Odoo can retire/archive one colourway while a sibling keeps the parent
+style Active. Parent status + stock incorrectly counted that retired colourway
+as Active.
 
-**How to apply:** any surface counting "active colour styles" must count in-stock colourways of Active-tier styles only (product-master colour via SKU join, never all_inventory's colour column), not COUNT(DISTINCT color_print) over the product master. Reference implementation: merch summary's per-style in-stock-colourway count summed inside the Active-tier deduped branch.
+**How to apply:** aggregate status flags from `all_products_clean` at
+`(style_name, color_print)` before joining inventory. Keep parent STYLE status
+as its separate all-colour roll-up (Active > Retired > Archived). Use
+product-master colour via SKU, never the inventory colour column.

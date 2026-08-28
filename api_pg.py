@@ -4424,9 +4424,8 @@ def _is_manually_retired(style_name):
 # Recent Performer, New) are kept mapped too in case the Odoo sync ever reverts
 # to them, but they were NOT what live data used — that mismatch is why every
 # style previously fell through to "Untiered" and the Tier 1-4 boxes read 0.
-# Anything with no recognizable tier value falls back to Tier 4 (newest/
-# least-classified bucket) so every active style still carries a real Tier 1..4
-# and the per-tier counts always add up to the Active total.
+# Active styles with no recognizable tier value stay Active but are returned as
+# Untiered so they remain visible without contaminating the Tier 4 count.
 _ODOO_TIER_MAP = {
     "Tier 1":           "Tier 1",
     "Tier 2":           "Tier 2",
@@ -4440,10 +4439,12 @@ _ODOO_TIER_MAP = {
     "New":              "Tier 4",
     "Retired":          "Retired",  # belt-and-suspenders; status check fires first
 }
+_UNTIERED_ACTIVE = "Untiered"
 _ODOO_STYLE_TIER_SQL = (
     "SELECT style_name, MAX(tier) AS tier "
     "FROM all_products_clean "
     "WHERE COALESCE(style_name,'') <> '' "
+    "  AND status = 'Active' "
     "  AND COALESCE(tier,'') NOT IN ('','N/A') "
     "GROUP BY style_name"
 )
@@ -4469,8 +4470,8 @@ def _odoo_style_tiers():
 # status value at all (as opposed to an explicit non-live value like Archived/
 # Partner Brand/Sample, which IS real Odoo data and is not a gap). A style is
 # "missing tier" when Odoo marks it status='Active' (a live style) but no SKU
-# row carries a recognized tier value — i.e. exactly the condition that makes
-# _lifecycle_tier fall back to Tier 4. Scoped to the identical style universe
+# row carries a recognized tier value — exactly the condition that makes
+# _lifecycle_tier return Untiered. Scoped to the identical style universe
 # range_mgmt_classify uses (non-blank style_name, non-third-party brand) so
 # counts reconcile with the dashboard.
 _ODOO_STATUS_TIER_GAP_SQL = """
@@ -4623,6 +4624,24 @@ def _real_reorder_counts():
         _REORDER_COUNT_CACHE["at"] = now
     return _REORDER_COUNT_CACHE["map"]
 
+def _lifecycle_status_from_flags(*, has_active=False, has_retired=False,
+                                 has_archived=False):
+    """Resolve an Odoo lifecycle status at any aggregation grain.
+
+    Active wins over Retired, and Retired wins over Archived.  Callers may use
+    this for a parent style (all colourways) or for one style + colour group;
+    the precedence is identical, while the rows supplying the flags determine
+    the classification grain.
+    """
+    if has_active:
+        return "Active"
+    if has_retired:
+        return "Retired"
+    if has_archived:
+        return "Archived"
+    return None
+
+
 def _lifecycle_tier(style_name, brand, age_weeks, reorder_count, months_active_12,
                     *, is_noos=False):
     """Unified, dashboard-wide style lifecycle tier — Product Analysis and Range
@@ -4635,10 +4654,11 @@ def _lifecycle_tier(style_name, brand, age_weeks, reorder_count, months_active_1
                              synced from noos_styles). Strictly Odoo-sourced.
       Tier 2 / Core Performer  — Odoo tier = Tier 2 / Core Performer.
       Tier 3 / Recent Performer — Odoo tier = Tier 3 / Recent Performer.
-      Tier 4 / New         — Odoo tier = Tier 4 / New, OR no Odoo tier set at
-                             all (N/A, Sample, Archived, blank) while Odoo
-                             still marks the style status='Active' (a real,
-                             live style simply not yet triaged into a tier).
+       Tier 4 / New         — Odoo tier = Tier 4 / New.
+       Untiered             — Odoo status marks the style Active, but its tier
+                              is blank or not recognized. It remains Active for
+                              lifecycle counts but is excluded from Tier 1–4
+                              breakdowns until Odoo is corrected.
       Archived             — a style with neither a recognized tier NOR a
                              live Active status, but Odoo's own status field
                              literally says 'Archived' on at least one SKU
@@ -4668,33 +4688,38 @@ def _lifecycle_tier(style_name, brand, age_weeks, reorder_count, months_active_1
     is no override of any kind (buying-sheet table, reorder-cycle heuristic,
     or manual promote) — Odoo's own status/tier fields are the only input.
     """
-    if _is_manually_retired(style_name):
-        return "Retired"
-    # Tier 1 — NOOS: Odoo is_noos flag (synced from noos_styles via all_products_clean)
-    if is_noos:
-        return "Tier 1"
-    # Tier 2–4: from Odoo x_vivo_attr_99 (all_products_clean.tier).
-    odoo_tier = _odoo_style_tiers().get(_norm_style(style_name))
-    mapped_tier = _ODOO_TIER_MAP.get(odoo_tier)
-    if mapped_tier:
-        return mapped_tier
-    # No recognized tier value. Known non-product/test names are excluded
-    # outright regardless of any stray status they carry.
     norm = _norm_style(style_name)
     if norm in _TIER4_FALLBACK_EXCLUSIONS:
         return None
-    # Only default to Tier 4 when Odoo still marks the style status='Active'
-    # (a real, live style just not yet triaged into a tier) — Active wins
-    # even over a literal Archived row on a mixed-status style.
-    if norm in _odoo_active_status_styles():
-        return "Tier 4"
-    # Not Active. Archived ONLY when Odoo's status field literally says so.
-    if norm in _odoo_archived_status_styles():
+
+    lifecycle_status = _lifecycle_status_from_flags(
+        has_active=norm in _odoo_active_status_styles(),
+        has_retired=norm in _odoo_retired_styles(),
+        has_archived=norm in _odoo_archived_status_styles(),
+    )
+    if lifecycle_status == "Retired":
+        return "Retired"
+    if lifecycle_status == "Archived":
         return "Archived"
-    # Neither Active nor Archived nor a recognized tier nor hard-Retired —
-    # no live Odoo status at all (blank, no record, Sample, Partner Brand).
-    # Excluded from every lifecycle report; not a synthesized Archived bucket.
-    return None
+    if lifecycle_status != "Active":
+        # Neither Active nor Archived nor hard-Retired —
+        # no live Odoo status at all (blank, no record, Sample, Partner Brand).
+        return None
+
+    # Tier assignment is evaluated only after Odoo has established that the
+    # parent style is Active. This prevents a stale tier value on an Archived
+    # row from making the style active.
+    if is_noos:
+        return "Tier 1"
+    odoo_tier = _odoo_style_tiers().get(norm)
+    mapped_tier = _ODOO_TIER_MAP.get(odoo_tier)
+    if mapped_tier in ("Tier 1", "Tier 2", "Tier 3", "Tier 4"):
+        return mapped_tier
+
+    # Active with a blank/unrecognized tier remains Active but is deliberately
+    # not forced into Tier 4. Merchandising exposes this cleanup queue through
+    # untiered_active_count.
+    return _UNTIERED_ACTIVE
 
 
 def _retirement_flag_reason(age_weeks, *, lifetime_sor, last_sale_days, woc,
@@ -25246,14 +25271,14 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
         # sheet table is no longer consulted by any classifier).
         #   Retired = marked Retired in Odoo (all_products_clean.status).
         #   Tier 1  = Odoo NOOS flag (is_noos).
-        #   Tier 2/3/4 = Odoo's own tier field (x_vivo_attr_99), or Tier 4 as
-        #             the live-but-untriaged fallback when Odoo has no tier
-        #             value but status='Active'.
+        #   Tier 2/3/4 = Odoo's own tier field (x_vivo_attr_99).
+        #   Untiered = status='Active' with a blank/unrecognized Odoo tier;
+        #              remains Active but is excluded from Tier 1-4 counts.
         #   Archived = Odoo status literally says 'Archived'.
         #   None    = no live Odoo status at all (ghost/blank/Sample/Partner
         #             Brand) — excluded from every lifecycle report.
-        # Every live style carries a real Tier 1..4, so the per-tier counts add up to
-        # the Active total. Retirement is a hard bucket (Odoo status only); on top of
+        # Tier 1-4 counts deliberately exclude Untiered active styles. Retirement
+        # is a hard bucket (Odoo status only); on top of
         # it, an ADVISORY "flagged for retirement" overlay (_retirement_flag_reason)
         # marks still-trading styles that fail their SOP age-stage gate, with a reason.
         life_tier = _lifecycle_tier(
@@ -25331,7 +25356,7 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
         }
 
         # --- Range tier classification (2026 Range Strategy / SOP): every style in
-        # the live range carries a real displayed Tier 1..4 (from _lifecycle_tier,
+        # the live range carries its Odoo tier or Untiered (from _lifecycle_tier,
         # straight from Odoo — no manual override of any kind, per the 2026-08-27
         # user rule) so the per-tier counts add up to the Active total. ONLY
         # hard/physical retirement (Odoo status) moves a style into `retired`.
@@ -25390,10 +25415,8 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
     for row in active:
         tier_counts[row["tier"]] = tier_counts.get(row["tier"], 0) + 1
 
-    # Every active style now carries a real Tier 1..4 (flagged-for-retirement styles
-    # are reclassified into their age band rather than a "Retire" tier), so the Active
-    # range total == len(active) == the sum of the per-tier counts. Flagged styles
-    # stay PART of Active and are surfaced separately via `flagged_for_retirement`.
+    # Untiered styles remain part of Active but are intentionally absent from
+    # the Tier 1-4 breakdown until their Odoo tier is corrected.
     active_tier_total = len(active)
     flagged_count = sum(1 for row in active if row.get("flagged_for_retirement"))
 
@@ -25419,9 +25442,8 @@ def range_mgmt_classify(country: str = Query(default=None), channel: str = Query
         rag[t] = _rag(tier_counts.get(t, 0), *_RANGE_TARGETS[t])
 
     summary = {
-        # Active range number = every live style (all carry a real Tier 1..4), so
-        # this equals len(active) and the sum of the per-tier counts. Flagged styles
-        # are PART of this total and surfaced separately via flagged_for_retirement.
+        # Active range number includes Untiered live styles. Tier 1-4 detail can
+        # therefore sum below this total until Odoo cleanup is complete.
         "total_active_styles": active_tier_total,
         # Hard-retired (Odoo status='Retired') vs Archived (not Active, not
         # Retired, no recognized Odoo tier — blank/Sample/Partner Brand/

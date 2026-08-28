@@ -459,20 +459,16 @@ stock AS (
     ) m ON m.sku = i.sku{country_inv_where}
     GROUP BY COALESCE(m.style_name, i.style_name)
 ),
-/* Per-colour stock — feeds Active Colour Styles (DERIVED status; there is no
-   stored colour-level status field). A colourway is "in stock" when its
-   stores + warehouse SOH (same location/country/POS scoping as the stock CTE
-   above) is > 0. Colour comes from the product master via SKU (never
-   all_inventory's colour column). Zero-stock colourways are treated as
-   retired; colourways of Retired/Archived styles are excluded downstream —
-   _compute_summary only sums colours_in_stock inside the Active-tier branch,
-   so style-level retirement automatically cascades to every colourway. */
+/* Per-colour stock — feeds Active Colour Styles. A colourway counts only when
+   its OWN Odoo rows include status Active and its scoped stores + warehouse
+   SOH is positive. Sibling colourways never influence this status flag. */
 colour_stock AS (
     SELECT style_name, COUNT(*) AS colours_in_stock
     FROM (
         SELECT
             cm.style_name,
             cm.colour,
+            BOOL_OR(cm.has_active_status) AS has_active_status,
             COALESCE(SUM(i.available) FILTER (
                 WHERE i.pos_location_name NOT IN ({_WAREHOUSE_LOCATIONS})
                 {pos_store_clause}
@@ -481,7 +477,8 @@ colour_stock AS (
         JOIN (
             SELECT sku,
                 mode() WITHIN GROUP (ORDER BY style_name)  AS style_name,
-                mode() WITHIN GROUP (ORDER BY color_print) AS colour
+                mode() WITHIN GROUP (ORDER BY color_print) AS colour,
+                BOOL_OR(status = 'Active')                 AS has_active_status
             FROM all_products_clean
             WHERE style_name IS NOT NULL
               AND COALESCE(color_print,'') <> ''
@@ -489,7 +486,7 @@ colour_stock AS (
         ) cm ON cm.sku = i.sku{country_inv_where}
         GROUP BY cm.style_name, cm.colour
     ) c
-    WHERE c.colour_soh > 0
+    WHERE c.colour_soh > 0 AND c.has_active_status
     GROUP BY style_name
 ),
 /* Modal full price per SKU — computed ONCE here and hash-joined into
@@ -1029,6 +1026,7 @@ colour_stock AS (
         SELECT
             cm.style_name,
             cm.colour,
+            BOOL_OR(cm.has_active_status) AS has_active_status,
             COALESCE(SUM(i.available) FILTER (
                 WHERE i.pos_location_name NOT IN ({_WAREHOUSE_LOCATIONS})
                 {pos_store_clause}
@@ -1037,7 +1035,8 @@ colour_stock AS (
         JOIN (
             SELECT sku,
                 mode() WITHIN GROUP (ORDER BY style_name)  AS style_name,
-                mode() WITHIN GROUP (ORDER BY color_print) AS colour
+                mode() WITHIN GROUP (ORDER BY color_print) AS colour,
+                BOOL_OR(status = 'Active')                 AS has_active_status
             FROM all_products_clean
             WHERE style_name IS NOT NULL
               AND COALESCE(color_print,'') <> ''
@@ -1045,7 +1044,7 @@ colour_stock AS (
         ) cm ON cm.sku = i.sku{country_inv_where}
         GROUP BY cm.style_name, cm.colour
     ) c
-    WHERE c.colour_soh > 0
+    WHERE c.colour_soh > 0 AND c.has_active_status
     GROUP BY style_name
 ),
 /*
@@ -1290,6 +1289,7 @@ colour_stock AS (
         SELECT
             cm.style_name,
             cm.colour,
+            BOOL_OR(cm.has_active_status) AS has_active_status,
             COALESCE(SUM(i.available) FILTER (
                 WHERE i.pos_location_name NOT IN ({_WAREHOUSE_LOCATIONS})
                 {pos_store_clause}
@@ -1298,7 +1298,8 @@ colour_stock AS (
         JOIN (
             SELECT sku,
                 mode() WITHIN GROUP (ORDER BY style_name)  AS style_name,
-                mode() WITHIN GROUP (ORDER BY color_print) AS colour
+                mode() WITHIN GROUP (ORDER BY color_print) AS colour,
+                BOOL_OR(status = 'Active')                 AS has_active_status
             FROM all_products_clean
             WHERE style_name IS NOT NULL
               AND COALESCE(color_print,'') <> ''
@@ -1306,7 +1307,7 @@ colour_stock AS (
         ) cm ON cm.sku = i.sku{country_inv_where}
         GROUP BY cm.style_name, cm.colour
     ) c
-    WHERE c.colour_soh > 0
+    WHERE c.colour_soh > 0 AND c.has_active_status
     GROUP BY style_name
 ),
 sku_mode_price AS (
@@ -1892,6 +1893,8 @@ def _fetch_styles(brand=None, subcategory=None, tier=None, status=None,
 # and the CSV export endpoint reuses them, so card counts and export rows can
 # never diverge.
 _ACTIVE_TIERS = ("Tier 1", "Tier 2", "Tier 3", "Tier 4")
+_UNTIERED_ACTIVE = "Untiered"
+_ACTIVE_LIFECYCLE_BUCKETS = _ACTIVE_TIERS + (_UNTIERED_ACTIVE,)
 
 
 def _kpi_dedup_key(s):
@@ -1901,12 +1904,13 @@ def _kpi_dedup_key(s):
     return snum if snum else s.get("style_name", "")
 
 
-def _is_active_tier(s):
-    return (s.get("tier") or "Tier 4") in _ACTIVE_TIERS
+def _is_active_lifecycle(s):
+    """True for every Odoo-Active style, including one awaiting tier review."""
+    return s.get("tier") in _ACTIVE_LIFECYCLE_BUCKETS
 
 
 def _is_retired_tier(s):
-    return (s.get("tier") or "Tier 4") == "Retired"
+    return s.get("tier") == "Retired"
 
 
 def _has_stock(s):
@@ -1914,7 +1918,7 @@ def _has_stock(s):
 
 
 def _is_archived_tier(s):
-    return (s.get("tier") or "Tier 4") == "Archived"
+    return s.get("tier") == "Archived"
 
 
 def _row_period_value(s, kind):
@@ -1940,19 +1944,19 @@ _KPI_BUCKETS = {
     "woc_gt20": {
         "label": "Styles WOC over 20",
         "dedup": True,
-        "pred":  lambda s: (_is_active_tier(s) and _has_stock(s)
+        "pred":  lambda s: (_is_active_lifecycle(s) and _has_stock(s)
                             and s.get("woc") is not None and s["woc"] > 20),
     },
     "woc_lt3": {
         "label": "Styles WOC under 3",
         "dedup": True,
-        "pred":  lambda s: (_is_active_tier(s) and _has_stock(s)
+        "pred":  lambda s: (_is_active_lifecycle(s) and _has_stock(s)
                             and s.get("woc") is not None and s["woc"] < 3),
     },
     "no_sale_7d": {
         "label": "Active No Sale 7d plus",
         "dedup": True,
-        "pred":  lambda s: (_is_active_tier(s) and _has_stock(s)
+        "pred":  lambda s: (_is_active_lifecycle(s) and _has_stock(s)
                             and s.get("last_sale_days") is not None
                             and s["last_sale_days"] >= 7),
     },
@@ -1979,7 +1983,7 @@ _KPI_BUCKETS = {
     "active_styles": {
         "label": "Active Style Lines",
         "dedup": True,
-        "pred":  _is_active_tier,
+        "pred":  _is_active_lifecycle,
     },
     "retired_styles": {
         "label": "Retired Style Lines",
@@ -1994,7 +1998,7 @@ _KPI_BUCKETS = {
     "active_colours": {
         "label": "Active Colour Styles",
         "dedup": True,
-        "pred":  _is_active_tier,
+        "pred":  _is_active_lifecycle,
         # COLOUR-grain file: the export endpoint branches to
         # _active_colour_rows (one row per in-stock colourway of these
         # deduped Active styles), so the file's row count equals the card's
@@ -2019,7 +2023,7 @@ _KPI_BUCKETS = {
         # Active-tier gate matches _compute_summary's status counting (Aug
         # 2026: health statuses count ACTIVE styles only — Retired/Archived
         # rows are excluded from the card and therefore from its file).
-        "pred":  lambda s: _is_active_tier(s) and s.get("action_status") == "on_track",
+        "pred":  lambda s: _is_active_lifecycle(s) and s.get("action_status") == "on_track",
     },
     "revenue_period": {
         "label": "Revenue Period",
@@ -2120,7 +2124,10 @@ def _active_colour_rows(styles, colour_rows):
     today = date.today()
     out = []
     for s in _kpi_bucket_rows(styles, "active_colours"):
-        cols = by_style.get(s.get("style_name")) or []
+        cols = [
+            c for c in (by_style.get(s.get("style_name")) or [])
+            if c.get("colour_status") == "Active"
+        ]
         cols = sorted(cols, key=lambda c: (-(float(c.get("revenue_6m") or 0)),
                                            str(c.get("colour") or "")))
         tidies = [_tidy_colour_label(c.get("colour")) for c in cols]
@@ -2160,6 +2167,7 @@ def _active_colour_rows(styles, colour_rows):
                 # per-colour figures
                 "colour":         c.get("colour"),   # RAW key — never merged
                 "colour_label":   label,
+                "colour_status":  c.get("colour_status"),
                 "soh":            soh,
                 "soh_stores":     soh_stores,
                 "soh_warehouse":  soh_wh,
@@ -2241,6 +2249,23 @@ cm AS (
       AND COALESCE(color_print,'') <> ''
     GROUP BY sku
 ),
+/* Odoo lifecycle at colour grain. Status precedence is the same as the shared
+   parent-style classifier, but only rows for this style + colour participate. */
+colour_lifecycle AS (
+    SELECT
+        style_name,
+        color_print AS colour,
+        CASE
+            WHEN BOOL_OR(status = 'Active') THEN 'Active'
+            WHEN BOOL_OR(status = 'Retired') THEN 'Retired'
+            WHEN BOOL_OR(status = 'Archived') THEN 'Archived'
+            ELSE NULL
+        END AS colour_status
+    FROM all_products_clean
+    WHERE style_name IS NOT NULL
+      AND COALESCE(color_print,'') <> ''
+    GROUP BY style_name, color_print
+),
 /* Stock at (style, colour) grain — same rowset, location exclusions and
    country/POS scoping as colour_stock; pre-aggregated on its own. */
 stock AS (
@@ -2279,10 +2304,13 @@ SELECT
     st.colour,
     st.soh_stores,
     st.soh_warehouse,
+    cl.colour_status,
     COALESCE(s6.units_6m, 0)     AS units_6m,
     COALESCE(s6.revenue_6m, 0.0) AS revenue_6m,
     s6.last_sale_date
 FROM stock st
+JOIN colour_lifecycle cl
+  ON cl.style_name = st.style_name AND cl.colour = st.colour
 LEFT JOIN sales_6m s6
        ON s6.style_name = st.style_name AND s6.colour = st.colour
 WHERE st.soh_stores + st.soh_warehouse > 0
@@ -2305,6 +2333,7 @@ def _compute_summary(styles, full_price_metrics=None):
     woc_vals = []; fp_vals = []; sor_vals = []; gm_pct_vals = []
     total_cogs = 0.0; total_gm = 0.0
     active_styles = 0; active_colour_styles = 0; active_stock_units = 0
+    untiered_active_count = 0
     retired_styles = 0; retired_stock_units = 0
     archived_styles = 0; archived_stock_units = 0
     warehouse_stock = 0
@@ -2334,6 +2363,7 @@ def _compute_summary(styles, full_price_metrics=None):
     # Dedup counts by style_number — mirrors Range Management's
     # _dedup_raw_by_style_number(). Falls back to style_name when blank.
     _seen_active_keys:   set = set()
+    _seen_untiered_keys: set = set()
     _seen_retired_keys:  set = set()
     _seen_archived_keys: set = set()
 
@@ -2345,12 +2375,12 @@ def _compute_summary(styles, full_price_metrics=None):
         units_period    += s.get("units_period") or 0
         warehouse_stock += s.get("soh_warehouse") or 0
 
-        tier        = s.get("tier") or "Tier 4"
+        tier        = s.get("tier")
         current_stk = s.get("current_stock") or 0
         snum        = (s.get("style_number") or "").strip()
         dedup_key   = snum if snum else s.get("style_name", "")
 
-        if tier in ("Tier 1", "Tier 2", "Tier 3", "Tier 4"):
+        if tier in _ACTIVE_LIFECYCLE_BUCKETS:
             # Health statuses count ACTIVE styles only (Aug 2026): Retired /
             # Archived styles aren't actionable, and thousands of dead retired
             # styles were drowning the risk cards (all reading "overdue").
@@ -2367,6 +2397,9 @@ def _compute_summary(styles, full_price_metrics=None):
             active_full_price_units_period += s.get("units_full_price_period") or 0
             active_units_6m       += s.get("units_6m") or 0
             _seen_active_all_keys.add(dedup_key)
+            if tier == _UNTIERED_ACTIVE and dedup_key not in _seen_untiered_keys:
+                _seen_untiered_keys.add(dedup_key)
+                untiered_active_count += 1
             if s.get("sor_period") is not None:
                 sor_period_active_vals.append(s["sor_period"])
             if s.get("full_price_sor_period") is not None:
@@ -2459,6 +2492,7 @@ def _compute_summary(styles, full_price_metrics=None):
     summary = {
         "total_styles":                 len(styles),
         "active_styles_count":          active_styles,
+        "untiered_active_count":        untiered_active_count,
         "active_colour_styles_count":   active_colour_styles,
         "active_stock_units":           active_stock_units,
         "retired_styles_count":         retired_styles,
@@ -2636,7 +2670,8 @@ def _fetch_full_price_sell_through(
 
 def _empty_summary():
     return {k: None for k in [
-        "total_styles", "active_styles_count", "active_colour_styles_count",
+        "total_styles", "active_styles_count", "untiered_active_count",
+        "active_colour_styles_count",
         "active_stock_units", "retired_styles_count", "retired_stock_units",
         "archived_styles_count", "archived_stock_units",
         "warehouse_stock_units",

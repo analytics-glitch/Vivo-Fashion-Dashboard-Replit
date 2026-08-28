@@ -54,16 +54,17 @@ now), evaluated top-down, sourced exclusively from Odoo:**
 - Tier 1 (NOOS) / Tier 2 / Tier 3 / Tier 4 — read directly from Odoo's own
   tier field (`x_vivo_attr_99` → `all_products_clean.tier`) and the `is_noos`
   flag. No reorder-count heuristics, no age/recency proxies.
+- `Untiered` — Odoo status is Active but the tier on Active rows is blank or
+  unrecognized. It stays in Active-style totals and health metrics, but is
+  excluded from Tier 1-4 counts and exposed as a cleanup count in Merch.
 
-**Every in-scope style gets exactly one bucket** (styles with `None` are
-excluded from the universe entirely, not counted anywhere), so the banner
-math holds: Active [Tier 1..4] + Retired + Archived == Total (of styles with
-a live Odoo status).
+**Every in-scope style gets exactly one lifecycle bucket** (styles with `None`
+are excluded). Active = Tier 1..4 + Untiered, so Tier 1..4 can sum below the
+Active total while Odoo tier cleanup is outstanding.
 
-**Tier 4 catch-all must be status-gated (2026-08-27 fix, still true).** A
-no-recognized-tier style only lands in Tier 4 when
-`_odoo_active_status_styles()` (BOOL_OR(status='Active')) is true; otherwise
-it's Archived or excluded (`None`) per the rules above.
+**There is no Tier 4 catch-all.** A no-recognized-tier style lands in
+`Untiered` only when the parent style status roll-up is Active; otherwise it
+is Retired, Archived, or excluded (`None`) according to Odoo status.
 
 # Where it's used (all consistent, no divergence, verified 2026-08-27)
 

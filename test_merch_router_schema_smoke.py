@@ -239,7 +239,7 @@ class TestMerchRouterSchemaSmoke(unittest.TestCase):
         """_compute_summary must return all keys the /api/merch/summary client reads."""
         required = {
             "total_styles", "on_track_count", "at_risk_count", "overdue_count",
-            "active_total_styles",
+            "active_total_styles", "untiered_active_count",
             "total_stock_units", "revenue_6m", "units_6m", "weekly_velocity",
             "avg_woc", "avg_full_price_pct", "avg_sor_6m",
             "full_price_units_period", "discounted_units_period",
@@ -629,12 +629,26 @@ class LifecycleSplitKpiTests(unittest.TestCase):
         s = merch_router._compute_summary(rows)
         self.assertEqual(s["active_colour_styles_count"], 2)
 
+    def test_untiered_active_style_remains_active_and_is_flagged_for_review(self):
+        rows = [
+            _style(style_number="SN-1", tier="Untiered"),
+            _style(style_number="SN-2", tier="Tier 4"),
+            _style(style_number="SN-3", tier="Retired"),
+        ]
+        s = merch_router._compute_summary(rows)
+        self.assertEqual(s["active_styles_count"], 2)
+        self.assertEqual(s["untiered_active_count"], 1)
+        self.assertEqual(
+            len(merch_router._kpi_bucket_rows(rows, "active_styles")), 2
+        )
+
     def test_empty_summary_has_lifecycle_split_keys(self):
         s = merch_router._compute_summary([])
         for k in ("active_warehouse_stock_units", "retired_warehouse_stock_units",
                   "active_revenue_period", "retired_revenue_period",
                   "active_units_period", "active_units_6m", "active_weekly_velocity",
-                  "active_styles_all_count", "avg_sor_period_active"):
+                  "active_styles_all_count", "untiered_active_count",
+                  "avg_sor_period_active"):
             self.assertIn(k, s)
             self.assertIsNone(s[k])
 
@@ -688,10 +702,11 @@ class OverviewKpiBucketParityTests(unittest.TestCase):
         def _c(style, colour):
             return {"style_name": style, "colour": colour, "soh_stores": 1,
                     "soh_warehouse": 0, "units_6m": 0, "revenue_6m": 0.0,
-                    "last_sale_date": None}
+                    "last_sale_date": None, "colour_status": "Active"}
 
         colour_rows = [
             _c("Style A", "Red"), _c("Style A", "Blue"),            # SN-1 kept twin → 2
+            {**_c("Style A", "Retired Red"), "colour_status": "Retired"},
             _c("renamed twin", "Red"), _c("renamed twin", "Blue"),  # deduped twin → dropped
             # Style B (SN-2) is a zero-total-stock Active style: it's now a
             # counted style (matches RM), but a style with no stock anywhere
@@ -1095,6 +1110,7 @@ _FAKE_COLOUR_ROW = {
     # must match exactly what the _fetch_colour_rows SQL SELECTs
     "style_name":     "Test Style A",
     "colour":         "Mustard / 0819102 / F",
+    "colour_status":  "Active",
     "soh_stores":     4,
     "soh_warehouse":  2,
     "units_6m":       13,
@@ -1383,7 +1399,8 @@ class ActiveColourGrainCsvTests(unittest.TestCase):
             rows = merch_router._fetch_colour_rows()
         self.assertIsInstance(rows, list)
         self.assertEqual(len(rows), 1)
-        for k in ("style_name", "colour", "soh_stores", "soh_warehouse",
+        for k in ("style_name", "colour", "colour_status",
+                  "soh_stores", "soh_warehouse",
                   "units_6m", "revenue_6m", "last_sale_date"):
             self.assertIn(k, rows[0])
 
@@ -1434,6 +1451,17 @@ class ActiveColourGrainCsvTests(unittest.TestCase):
                 _colour(style_name="Style A", colour="High", revenue_6m=200.0)]
         out = merch_router._active_colour_rows([style], cols)
         self.assertEqual([r["colour"] for r in out], ["High", "Low"])
+
+    def test_retired_colourway_is_excluded_under_active_parent(self):
+        style = _style(tier="Tier 2")
+        cols = [
+            _colour(style_name="Style A", colour="Active Red",
+                    colour_status="Active"),
+            _colour(style_name="Style A", colour="Retired Blue",
+                    colour_status="Retired"),
+        ]
+        out = merch_router._active_colour_rows([style], cols)
+        self.assertEqual([r["colour"] for r in out], ["Active Red"])
 
     def test_unknown_or_excluded_parent_styles_emit_nothing(self):
         styles = [_style(style_number="SN-1"),                      # Active, in bucket
