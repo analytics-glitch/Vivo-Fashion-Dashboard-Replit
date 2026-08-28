@@ -69,7 +69,7 @@ const FileTypeIcon = ({ filename, size = 22 }) => {
 };
 
 const VIEWABLE_EXTS = new Set(["pdf", "png", "jpg", "jpeg", "gif", "webp"]);
-const ACCEPT = ".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.png,.jpg,.jpeg,.gif,.webp";
+const ACCEPT = ".docx";
 const MAX_MB = 20;
 
 // Fetch a file as an authed blob (Bearer header via the axios interceptor)
@@ -188,6 +188,10 @@ const FolderView = ({ dept, onBack, onChanged }) => {
     const file = ev.target.files?.[0];
     ev.target.value = "";
     if (!file) return;
+    if (extOf(file.name) !== "docx") {
+      flash("Only modern Word documents (.docx) can be uploaded.", true);
+      return;
+    }
     if (file.size > MAX_MB * 1024 * 1024) {
       flash(`"${file.name}" is larger than the ${MAX_MB} MB limit.`, true);
       return;
@@ -570,7 +574,7 @@ const SopEditorModal = ({ file, onClose, onSaved }) => {
               aria-label="SOP document content"
               onInput={() => setDirty(true)}
               data-testid="sop-editor-content"
-              className="mx-auto min-h-[54vh] max-w-3xl bg-white border rounded-md shadow-sm px-8 sm:px-12 py-10 text-[15px] leading-7 outline-none focus:ring-2 focus:ring-primary/20 [&_h1]:text-3xl [&_h1]:font-bold [&_h1]:mb-5 [&_h2]:text-2xl [&_h2]:font-semibold [&_h2]:mb-4 [&_h3]:text-xl [&_h3]:font-semibold [&_p]:mb-3 [&_ul]:list-disc [&_ul]:pl-6 [&_ol]:list-decimal [&_ol]:pl-6"
+              className="mx-auto min-h-[54vh] max-w-3xl bg-white border rounded-md shadow-sm px-8 sm:px-12 py-10 text-[15px] leading-7 outline-none focus:ring-2 focus:ring-primary/20 [&_h1]:text-3xl [&_h1]:font-bold [&_h1]:mb-5 [&_h2]:text-2xl [&_h2]:font-semibold [&_h2]:mb-4 [&_h3]:text-xl [&_h3]:font-semibold [&_p]:mb-3 [&_ul]:list-disc [&_ul]:pl-6 [&_ol]:list-decimal [&_ol]:pl-6 [&_table]:w-full [&_table]:border-collapse [&_table]:mb-4 [&_th]:border [&_th]:border-slate-300 [&_th]:bg-slate-100 [&_th]:px-3 [&_th]:py-2 [&_th]:text-left [&_td]:border [&_td]:border-slate-300 [&_td]:px-3 [&_td]:py-2"
             />
           )}
         </div>
@@ -651,6 +655,10 @@ const WorkflowFolderView = ({ stage, dept, onBack, onChanged }) => {
     const file = ev.target.files?.[0];
     ev.target.value = "";
     if (!file) return;
+    if (extOf(file.name) !== "docx") {
+      flash("Only modern Word documents (.docx) can be uploaded.", true);
+      return;
+    }
     if (file.size > MAX_MB * 1024 * 1024) {
       flash(`"${file.name}" is larger than the ${MAX_MB} MB limit.`, true);
       return;
@@ -715,7 +723,7 @@ const WorkflowFolderView = ({ stage, dept, onBack, onChanged }) => {
       const url = URL.createObjectURL(r.data);
       const a = document.createElement("a");
       a.href = url;
-      a.download = file.filename;
+      a.download = file.original_filename || file.filename;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -746,7 +754,7 @@ const WorkflowFolderView = ({ stage, dept, onBack, onChanged }) => {
     try {
       await api.post(`/sops/files/${file.id}/${action}`);
       flash(action === "review"
-        ? `Marked "${file.filename}" as Reviewed and moved it to SOPs Under Review.`
+        ? `Moved "${file.filename}" to SOPs Under Review.`
         : action === "approve"
           ? `Approved "${file.filename}" and moved it to the Master Repository.`
           : `Marked "${file.filename}" as Obsolete and moved it to Obsolete SOPs.`);
@@ -785,7 +793,7 @@ const WorkflowFolderView = ({ stage, dept, onBack, onChanged }) => {
                 className="inline-flex items-center gap-1.5 rounded-lg bg-primary text-primary-foreground text-sm px-3 py-1.5 hover:opacity-90 disabled:opacity-50"
               >
                 <UploadSimple size={16} />
-                {uploading ? "Submitting…" : "Submit SOP"}
+                {uploading ? "Submitting…" : "Submit Word SOP"}
               </button>
             </>
           )}
@@ -863,7 +871,7 @@ const WorkflowFolderView = ({ stage, dept, onBack, onChanged }) => {
                             data-testid={`sop-review-${file.id}`}
                             className="inline-flex items-center gap-1 rounded-md px-2 py-1.5 text-xs font-medium bg-blue-50 text-blue-700 hover:bg-blue-100 disabled:opacity-50"
                           >
-                            <ArrowRight size={15} /> Reviewed
+                            <ArrowRight size={15} /> Move to review
                           </button>
                         )}
                         {data.can_obsolete && (
@@ -977,7 +985,7 @@ const SOPs = () => {
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Standard Operating Procedures</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Submit SOPs for review or browse the approved master repository by department.
+          Submit Word SOPs for review or browse approved PDFs in the master repository by department.
         </p>
       </div>
 

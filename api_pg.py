@@ -27541,14 +27541,12 @@ _SOP_LEGACY_DEPARTMENT_MAP = {
 }
 _SOP_MAX_BYTES = 20 * 1024 * 1024  # 20 MB per file — generous for SOP docs
 _SOP_MAX_EDITOR_BYTES = 1 * 1024 * 1024
-# Document + image formats only; anything executable/archive is refused.
-_SOP_ALLOWED_EXTS = {
-    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
-    ".png", ".jpg", ".jpeg", ".gif", ".webp",
-}
+# SOP intake is Word-only; approved current representations become PDFs.
+_SOP_ALLOWED_EXTS = {".docx"}
 _SOP_EDITOR_TAGS = {
     "p", "br", "div", "span", "strong", "b", "em", "i", "u", "s",
     "h1", "h2", "h3", "ul", "ol", "li", "blockquote", "pre", "code",
+    "table", "tbody", "thead", "tr", "td", "th",
 }
 
 
@@ -27593,33 +27591,500 @@ def _sop_sanitize_html(value):
     return "".join(parser.parts).strip()
 
 
-def _sop_initial_editor_html(filename, data=None, content_type=None):
-    """Create a safe editable representation for every accepted upload type."""
-    name = _html.escape(str(filename or "SOP"), quote=False)
-    raw = bytes(data or b"")
-    ctype = str(content_type or "").lower()
-    text = ""
-    if ctype.startswith("text/") or filename.lower().endswith((".txt", ".csv")):
-        text = raw.decode("utf-8", errors="replace").strip()
-    elif filename.lower().endswith(".pdf"):
-        try:
-            from pypdf import PdfReader
-            import io
-            text = "\n\n".join(
-                page.extract_text() or "" for page in PdfReader(io.BytesIO(raw)).pages
-            ).strip()
-        except Exception:
-            text = ""
-    if text:
-        return "".join(
-            f"<p>{_html.escape(line, quote=False)}</p>"
-            for line in text.splitlines()
+def _sop_docx_run_html(run):
+    text = _html.escape(run.text or "", quote=False).replace("\n", "<br>")
+    if not text:
+        return ""
+    if run.underline:
+        text = f"<u>{text}</u>"
+    if run.italic:
+        text = f"<em>{text}</em>"
+    if run.bold:
+        text = f"<strong>{text}</strong>"
+    return text
+
+
+def _sop_docx_paragraph_html(paragraph):
+    content = "".join(_sop_docx_run_html(run) for run in paragraph.runs)
+    if not content:
+        content = _html.escape(paragraph.text or "", quote=False)
+    style = (getattr(paragraph.style, "name", "") or "").lower()
+    if style.startswith("title") or style.startswith("heading 1"):
+        return f"<h1>{content}</h1>"
+    if style.startswith("heading 2"):
+        return f"<h2>{content}</h2>"
+    if style.startswith("heading"):
+        return f"<h3>{content}</h3>"
+    num_pr = getattr(getattr(paragraph._p, "pPr", None), "numPr", None)
+    if num_pr is not None or "list" in style:
+        ordered = "number" in style
+        tag = "ol" if ordered else "ul"
+        return f"<{tag}><li>{content}</li></{tag}>"
+    return f"<p>{content or '<br>'}</p>"
+
+
+def _sop_docx_table_html(table):
+    rows = []
+    for row_index, row in enumerate(table.rows):
+        cell_tag = "th" if row_index == 0 else "td"
+        cells = []
+        for cell in row.cells:
+            content = "".join(
+                _sop_docx_paragraph_html(paragraph)
+                for paragraph in cell.paragraphs
+            ) or "<p><br></p>"
+            cells.append(f"<{cell_tag}>{content}</{cell_tag}>")
+        rows.append(f"<tr>{''.join(cells)}</tr>")
+    return f"<table><tbody>{''.join(rows)}</tbody></table>"
+
+
+def _sop_validate_docx_fidelity(document):
+    """Reject Word constructs the editor and approved PDF cannot preserve."""
+    unsupported = set()
+    root = document.element
+    checks = {
+        "images or embedded objects": ".//w:drawing | .//w:pict | .//w:object",
+        "hyperlinks": ".//w:hyperlink",
+        "fields": ".//w:fldSimple | .//w:instrText",
+        "manual page breaks": ".//w:br[@w:type='page'] | .//w:lastRenderedPageBreak",
+        "merged table cells": ".//w:gridSpan | .//w:vMerge",
+    }
+    for label, expression in checks.items():
+        if root.xpath(expression):
+            unsupported.add(label)
+    unsupported_parts = {
+        "/word/comments.xml": "comments",
+        "/word/footnotes.xml": "footnotes",
+        "/word/endnotes.xml": "endnotes",
+    }
+    for part in document.part.package.parts:
+        label = unsupported_parts.get(str(part.partname))
+        if label:
+            unsupported.add(label)
+
+    areas = []
+    for section in document.sections:
+        areas.extend([
+            section.header, section.first_page_header, section.even_page_header,
+            section.footer, section.first_page_footer, section.even_page_footer,
+        ])
+    for area in areas:
+        has_text = any((paragraph.text or "").strip() for paragraph in area.paragraphs)
+        has_objects = bool(area.tables or area._element.xpath(
+            ".//w:drawing | .//w:pict | .//w:object | .//w:hyperlink"))
+        if has_text or has_objects:
+            unsupported.add("headers or footers")
+            break
+
+    for table in document.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                if cell.tables:
+                    unsupported.add("nested tables")
+
+    paragraphs = list(document.paragraphs)
+    for table in document.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                paragraphs.extend(cell.paragraphs)
+    allowed_styles = ("normal", "title", "heading", "list")
+    for paragraph in paragraphs:
+        style = (getattr(paragraph.style, "name", "") or "").lower()
+        if style and not style.startswith(allowed_styles):
+            unsupported.add(f'paragraph style "{style}"')
+        num_pr = getattr(getattr(paragraph._p, "pPr", None), "numPr", None)
+        ilvl = getattr(getattr(num_pr, "ilvl", None), "val", 0) if num_pr is not None else 0
+        if (ilvl or 0) > 0 or (
+            style.startswith("list") and re.search(r"\b([2-9]\d*)$", style)
+        ):
+            unsupported.add("multilevel lists")
+        if paragraph.alignment not in (None, 0):
+            unsupported.add("paragraph alignment")
+        for run in paragraph.runs:
+            font = run.font
+            if (
+                font.strike or font.double_strike or font.superscript
+                or font.subscript or font.all_caps or font.small_caps
+                or font.size is not None or font.name is not None
+                or font.color.rgb is not None or font.highlight_color is not None
+            ):
+                unsupported.add("advanced text formatting")
+
+    if unsupported:
+        raise ValueError(
+            "This Word document contains content the SOP editor cannot "
+            f"faithfully preserve ({', '.join(sorted(unsupported))}). "
+            "Simplify it or save a review-safe copy before uploading.")
+
+
+def _sop_docx_to_html(raw):
+    import io
+    from docx import Document
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+
+    document = Document(io.BytesIO(raw))
+    _sop_validate_docx_fidelity(document)
+    parts = []
+    for child in document.element.body.iterchildren():
+        if child.tag.endswith("}p"):
+            parts.append(_sop_docx_paragraph_html(Paragraph(child, document)))
+        elif child.tag.endswith("}tbl"):
+            parts.append(_sop_docx_table_html(Table(child, document)))
+    joined = "".join(parts)
+    # python-docx exposes each list paragraph independently. Coalesce adjacent
+    # list blocks so numbering and bullet grouping survive into the editor/PDF.
+    joined = joined.replace("</ol><ol>", "").replace("</ul><ul>", "")
+    html = _sop_sanitize_html(joined)
+    if not re.sub(r"<[^>]+>", "", html).strip():
+        raise ValueError("The Word document does not contain readable text")
+    return html
+
+
+def _sop_doc_to_html(raw):
+    import subprocess
+    import tempfile
+
+    if not raw.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"):
+        raise ValueError("This is not a valid legacy Word document")
+    with tempfile.NamedTemporaryFile(suffix=".doc") as source:
+        source.write(raw)
+        source.flush()
+        result = subprocess.run(
+            ["antiword", source.name],
+            capture_output=True,
+            timeout=30,
+            check=False,
         )
-    return (
-        f"<h1>{name}</h1>"
-        "<p>This SOP is ready for editing in the dashboard. "
-        "The original uploaded file is retained for traceability.</p>"
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", errors="replace").strip()
+        raise ValueError(detail or "The legacy Word document could not be read")
+    text = result.stdout.decode("utf-8", errors="replace").strip()
+    if not text:
+        raise ValueError("The Word document does not contain readable text")
+    return "".join(
+        f"<p>{_html.escape(line, quote=False) or '<br>'}</p>"
+        for line in text.splitlines()
     )
+
+
+def _sop_initial_editor_html(filename, data=None, content_type=None):
+    """Convert a genuine Word upload into the safe rich-text editor model."""
+    raw = bytes(data or b"")
+    lower_name = str(filename or "").lower()
+    if lower_name.endswith(".docx"):
+        if not raw.startswith(b"PK"):
+            raise ValueError("This is not a valid .docx Word document")
+        return _sop_docx_to_html(raw)
+    raise ValueError("Only modern Word documents (.docx) can be uploaded")
+
+
+def _sop_validate_approval_source(row):
+    source_name = row.get("original_filename") or row.get("filename") or ""
+    source_data = row.get("original_data")
+    if not source_name.lower().endswith(".docx") or source_data is None:
+        raise ValueError(
+            "The original review-safe .docx source is unavailable. "
+            "Upload a modern Word copy before approval.")
+    _sop_docx_to_html(bytes(source_data))
+
+
+class _SopPdfTextParser(HTMLParser):
+    """Convert safe editor HTML into ordered paragraph and table blocks."""
+
+    _BLOCKS = {"p", "div", "h1", "h2", "h3", "li", "blockquote", "pre", "td", "th"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.blocks = []
+        self.tag = "p"
+        self.parts = []
+        self.inline = []
+        self.table_rows = None
+        self.table_row = None
+        self.table_cell = None
+        self.table_cell_tag = None
+        self.list_stack = []
+
+    def _flush(self):
+        text = "".join(self.parts).strip()
+        if text:
+            self.blocks.append((self.tag, text))
+        self.parts = []
+        self.inline = []
+
+    def handle_starttag(self, tag, attrs):
+        tag = tag.lower()
+        if tag == "table":
+            self._flush()
+            self.table_rows = []
+            return
+        if self.table_rows is not None:
+            if tag == "tr":
+                self.table_row = []
+            elif tag in {"td", "th"}:
+                self.table_cell = []
+                self.table_cell_tag = tag
+            elif tag == "br" and self.table_cell is not None:
+                self.table_cell.append("<br/>")
+            elif tag in {"p", "div"} and self.table_cell:
+                self.table_cell.append("<br/>")
+            elif tag in {"strong", "b", "em", "i", "u"} and self.table_cell is not None:
+                mapped = {"strong": "b", "b": "b", "em": "i", "i": "i", "u": "u"}[tag]
+                self.table_cell.append(f"<{mapped}>")
+                self.inline.append(mapped)
+            return
+        if tag in {"ol", "ul"}:
+            self._flush()
+            self.list_stack.append({"tag": tag, "counter": 0})
+            return
+        if tag in self._BLOCKS:
+            self._flush()
+            self.tag = tag
+            if tag == "li":
+                depth_prefix = "&nbsp;" * (4 * max(0, len(self.list_stack) - 1))
+                if self.list_stack and self.list_stack[-1]["tag"] == "ol":
+                    self.list_stack[-1]["counter"] += 1
+                    marker = f"{self.list_stack[-1]['counter']}. "
+                else:
+                    marker = "• "
+                self.parts.append(depth_prefix + marker)
+        elif tag == "br":
+            self.parts.append("<br/>")
+        elif tag in {"strong", "b", "em", "i", "u"}:
+            mapped = {"strong": "b", "b": "b", "em": "i", "i": "i", "u": "u"}[tag]
+            self.parts.append(f"<{mapped}>")
+            self.inline.append(mapped)
+
+    def handle_endtag(self, tag):
+        tag = tag.lower()
+        if self.table_rows is not None:
+            if tag in {"strong", "b", "em", "i", "u"} and self.inline:
+                if self.table_cell is not None:
+                    self.table_cell.append(f"</{self.inline.pop()}>")
+            elif tag in {"td", "th"}:
+                if self.table_row is not None:
+                    text = "".join(self.table_cell or []).strip()
+                    self.table_row.append((self.table_cell_tag or "td", text or " "))
+                self.table_cell = None
+                self.table_cell_tag = None
+                self.inline = []
+            elif tag == "tr":
+                if self.table_row is not None:
+                    self.table_rows.append(self.table_row)
+                self.table_row = None
+            elif tag == "table":
+                if self.table_rows:
+                    self.blocks.append(("table", self.table_rows))
+                self.table_rows = None
+                self.table_row = None
+                self.table_cell = None
+                self.table_cell_tag = None
+                self.inline = []
+            return
+        if tag in {"ol", "ul"}:
+            self._flush()
+            if self.list_stack:
+                self.list_stack.pop()
+            return
+        if tag in self._BLOCKS:
+            self._flush()
+            self.tag = "p"
+        elif tag in {"strong", "b", "em", "i", "u"} and self.inline:
+            self.parts.append(f"</{self.inline.pop()}>")
+
+    def handle_data(self, data):
+        escaped = _html.escape(data, quote=False)
+        if self.table_rows is not None and self.table_cell is not None:
+            self.table_cell.append(escaped)
+        elif self.table_rows is None:
+            self.parts.append(escaped)
+
+    def finish(self):
+        self._flush()
+        return self.blocks
+
+
+def _sop_html_to_pdf(editor_html):
+    import io
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_CENTER
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+    from reportlab.lib.units import mm
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+    from reportlab.pdfbase.ttfonts import TTFont
+    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
+    safe_html = _sop_sanitize_html(editor_html)
+    parser = _SopPdfTextParser()
+    parser.feed(safe_html)
+    blocks = parser.finish()
+    if not blocks:
+        raise ValueError("Add some SOP content before approving")
+
+    font_dir = "/usr/share/fonts/truetype/dejavu"
+    font_files = {
+        "SopUnicode": "DejaVuSans.ttf",
+        "SopUnicode-Bold": "DejaVuSans-Bold.ttf",
+        "SopUnicode-Italic": "DejaVuSans.ttf",
+        "SopUnicode-BoldItalic": "DejaVuSans-Bold.ttf",
+    }
+    for font_name, filename in font_files.items():
+        if font_name not in pdfmetrics.getRegisteredFontNames():
+            font_path = os.path.join(font_dir, filename)
+            if not os.path.isfile(font_path):
+                raise RuntimeError(
+                    "The Unicode PDF font is unavailable; approval cannot continue")
+            pdfmetrics.registerFont(TTFont(font_name, font_path))
+    pdfmetrics.registerFontFamily(
+        "SopUnicode",
+        normal="SopUnicode",
+        bold="SopUnicode-Bold",
+        italic="SopUnicode-Italic",
+        boldItalic="SopUnicode-BoldItalic",
+    )
+    if "STSong-Light" not in pdfmetrics.getRegisteredFontNames():
+        pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
+
+    def is_cjk(point):
+        return (
+            0x2E80 <= point <= 0x2EFF
+            or 0x3000 <= point <= 0x303F
+            or 0x3040 <= point <= 0x30FF
+            or 0x3400 <= point <= 0x4DBF
+            or 0x4E00 <= point <= 0x9FFF
+            or 0xAC00 <= point <= 0xD7AF
+        )
+
+    dejavu_glyphs = pdfmetrics.getFont("SopUnicode").face.charWidths
+    unsupported = []
+    content_strings = []
+    for tag, content in blocks:
+        if tag == "table":
+            content_strings.extend(text for row in content for _, text in row)
+        else:
+            content_strings.append(content)
+    for text in content_strings:
+        for char in re.sub(r"<[^>]+>", "", text):
+            point = ord(char)
+            category = unicodedata.category(char)
+            needs_complex_shaping = (
+                unicodedata.bidirectional(char) in {"R", "AL", "AN"}
+                or 0x0900 <= point <= 0x109F
+            )
+            supported = (
+                char in "\n\r\t"
+                or category == "Zs"
+                or is_cjk(point)
+                or (
+                    point <= 0xFFFF
+                    and not needs_complex_shaping
+                    and not category.startswith(("C", "M"))
+                    and point in dejavu_glyphs
+                )
+            )
+            if not supported:
+                name = unicodedata.name(char, f"U+{point:04X}")
+                unsupported.append(name)
+    if unsupported:
+        examples = ", ".join(sorted(set(unsupported))[:4])
+        raise ValueError(
+            "This SOP contains characters that the approved PDF renderer "
+            f"cannot safely preserve ({examples}). "
+            "Replace those characters before approval.")
+
+    def pdf_markup(text):
+        # DejaVu embeds broad Unicode coverage. Use ReportLab's CJK CID font
+        # for East Asian ranges that DejaVu Sans does not contain.
+        return re.sub(
+            r"([\u2e80-\u2eff\u3000-\u303f\u3040-\u30ff"
+            r"\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]+)",
+            r'<font name="STSong-Light">\1</font>',
+            text,
+        )
+
+    styles = getSampleStyleSheet()
+    styles.add(ParagraphStyle(
+        name="SopTitle", parent=styles["Title"], fontName="SopUnicode-Bold",
+        fontSize=20, leading=25, alignment=TA_CENTER, spaceAfter=12,
+    ))
+    styles.add(ParagraphStyle(
+        name="SopHeading2", parent=styles["Heading2"], fontName="SopUnicode-Bold",
+        fontSize=15, leading=19, spaceBefore=8, spaceAfter=6,
+    ))
+    styles.add(ParagraphStyle(
+        name="SopHeading3", parent=styles["Heading3"], fontName="SopUnicode-Bold",
+        fontSize=12, leading=16, spaceBefore=6, spaceAfter=4,
+    ))
+    styles.add(ParagraphStyle(
+        name="SopBody", parent=styles["BodyText"], fontName="SopUnicode",
+        fontSize=10.5, leading=15, spaceAfter=6,
+    ))
+    output = io.BytesIO()
+    document = SimpleDocTemplate(
+        output, pagesize=A4,
+        rightMargin=18 * mm, leftMargin=18 * mm,
+        topMargin=18 * mm, bottomMargin=18 * mm,
+        title="Approved Standard Operating Procedure",
+        author="Vivo Fashion Group",
+    )
+    story = []
+    for tag, content in blocks:
+        if tag == "table":
+            rows = content
+            column_count = max((len(row) for row in rows), default=0)
+            if not column_count:
+                continue
+            table_data = []
+            for row in rows:
+                cells = [
+                    Paragraph(pdf_markup(text), styles["SopBody"])
+                    for _, text in row
+                ]
+                cells.extend(
+                    Paragraph(" ", styles["SopBody"])
+                    for _ in range(column_count - len(cells))
+                )
+                table_data.append(cells)
+            has_header = bool(rows and any(kind == "th" for kind, _ in rows[0]))
+            table = Table(
+                table_data,
+                colWidths=[170 * mm / column_count] * column_count,
+                repeatRows=1 if has_header else 0,
+                hAlign="LEFT",
+            )
+            commands = [
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#94A3B8")),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+                ("TOPPADDING", (0, 0), (-1, -1), 5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ]
+            if has_header:
+                commands.extend([
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#E2E8F0")),
+                    ("FONTNAME", (0, 0), (-1, 0), "SopUnicode-Bold"),
+                ])
+            table.setStyle(TableStyle(commands))
+            story.extend([table, Spacer(1, 3 * mm)])
+            continue
+        text = content
+        style = (
+            styles["SopTitle"] if tag == "h1"
+            else styles["SopHeading2"] if tag == "h2"
+            else styles["SopHeading3"] if tag == "h3"
+            else styles["SopBody"]
+        )
+        story.append(Paragraph(pdf_markup(text), style))
+    document.build(story)
+    return output.getvalue()
+
+
+def _sop_pdf_filename(filename):
+    return os.path.splitext(str(filename or "SOP"))[0] + ".pdf"
 
 
 def _ensure_sop_tables():
@@ -27642,6 +28107,7 @@ def _ensure_sop_tables():
             obsoleted_by_email TEXT,
             obsoleted_at  TIMESTAMPTZ,
             original_data BYTEA,
+            original_filename TEXT,
             original_content_type TEXT,
             original_size_bytes BIGINT,
             editor_html TEXT,
@@ -27657,6 +28123,7 @@ def _ensure_sop_tables():
     _users_exec("ALTER TABLE sop_files ADD COLUMN IF NOT EXISTS obsoleted_by_email TEXT")
     _users_exec("ALTER TABLE sop_files ADD COLUMN IF NOT EXISTS obsoleted_at TIMESTAMPTZ")
     _users_exec("ALTER TABLE sop_files ADD COLUMN IF NOT EXISTS original_data BYTEA")
+    _users_exec("ALTER TABLE sop_files ADD COLUMN IF NOT EXISTS original_filename TEXT")
     _users_exec("ALTER TABLE sop_files ADD COLUMN IF NOT EXISTS original_content_type TEXT")
     _users_exec("ALTER TABLE sop_files ADD COLUMN IF NOT EXISTS original_size_bytes BIGINT")
     _users_exec("ALTER TABLE sop_files ADD COLUMN IF NOT EXISTS editor_html TEXT")
@@ -27913,6 +28380,7 @@ def sops_files(request: Request, stage: int = Query(...),
         "uploaded_by, uploaded_by_email, uploaded_at, reviewed_by_email, "
         "reviewed_at, approved_by_email, approved_at, obsoleted_by_email, "
         "obsoleted_at, editor_revision, edited_by_email, edited_at, "
+        "original_filename, "
         "(original_data IS NOT NULL) AS has_original "
         "FROM sop_files WHERE stage=%s AND department=%s ORDER BY lower(filename)",
         (stage, department), fetch=True) or []
@@ -27974,7 +28442,7 @@ def sops_download_original(file_id: int, request: Request):
     if not _sop_is_full_reviewer(user):
         raise HTTPException(status_code=403, detail="Original-file access is restricted")
     rows = _users_exec(
-        "SELECT stage, filename, original_data, original_content_type "
+        "SELECT stage, filename, original_filename, original_data, original_content_type "
         "FROM sop_files WHERE id=%s",
         (file_id,), fetch=True) or []
     if not rows:
@@ -27984,7 +28452,7 @@ def sops_download_original(file_id: int, request: Request):
         raise HTTPException(status_code=403, detail="You cannot access this workflow stage")
     if row.get("original_data") is None:
         raise HTTPException(status_code=404, detail="No original upload is stored for this SOP")
-    fname = row["filename"] or f"sop-{file_id}"
+    fname = row.get("original_filename") or row["filename"] or f"sop-{file_id}"
     ascii_name = fname.encode("ascii", "replace").decode("ascii").replace('"', "")
     headers = {
         "Content-Disposition": (
@@ -28019,8 +28487,7 @@ async def sops_upload(request: Request,
     if ext not in _SOP_ALLOWED_EXTS:
         raise HTTPException(
             status_code=400,
-            detail="Unsupported file type — allowed: PDF, Word, Excel, "
-                   "PowerPoint and images")
+            detail="Only modern Word documents (.docx) can be uploaded")
     data = await file.read()
     if not data:
         raise HTTPException(status_code=400, detail="File is empty")
@@ -28028,13 +28495,18 @@ async def sops_upload(request: Request,
         raise HTTPException(
             status_code=413,
             detail=f"File too large — the limit is {_SOP_MAX_BYTES // (1024 * 1024)} MB")
+    try:
+        editor_html = _sop_initial_editor_html(fname, data, file.content_type)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Could not read this Word document: {exc}")
     # Submissions always enter stage 01. Re-uploading the same filename replaces
     # only the stage-01 copy; reviewed/approved copies are never overwritten.
     existing = _users_exec(
         "SELECT id FROM sop_files WHERE stage=1 AND department=%s "
         "AND lower(filename)=lower(%s)",
         (department, fname), fetch=True)
-    editor_html = _sop_initial_editor_html(fname, data, file.content_type)
     content_type = file.content_type or "application/octet-stream"
     actor = user.get("name") or user.get("email")
     rows = _users_exec("""
@@ -28054,7 +28526,7 @@ async def sops_upload(request: Request,
         ), updated AS (
             UPDATE sop_files sf SET
                 content_type=%s, size_bytes=%s, data=%s,
-                original_data=%s, original_content_type=%s,
+                original_data=%s, original_filename=%s, original_content_type=%s,
                 original_size_bytes=%s, editor_html=%s, editor_revision=0,
                 edited_by_email=NULL, edited_at=NULL,
                 uploaded_by=%s, uploaded_by_email=%s, uploaded_at=now(),
@@ -28069,10 +28541,10 @@ async def sops_upload(request: Request,
             INSERT INTO sop_files (
                 stage, department, filename, content_type, size_bytes, data,
                 uploaded_by, uploaded_by_email, original_data,
-                original_content_type, original_size_bytes, editor_html,
+                original_filename, original_content_type, original_size_bytes, editor_html,
                 editor_revision
             )
-            SELECT 1, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0
+            SELECT 1, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0
             WHERE NOT EXISTS (SELECT 1 FROM existing)
             RETURNING id, stage, filename, size_bytes
         )
@@ -28081,10 +28553,10 @@ async def sops_upload(request: Request,
         f"sop-upload:{department}:{fname.lower()}",
         department, fname,
         content_type, len(data), psycopg2.Binary(data),
-        psycopg2.Binary(data), content_type, len(data), editor_html,
+        psycopg2.Binary(data), fname, content_type, len(data), editor_html,
         actor, user.get("email"),
         department, fname, content_type, len(data), psycopg2.Binary(data),
-        actor, user.get("email"), psycopg2.Binary(data), content_type,
+        actor, user.get("email"), psycopg2.Binary(data), fname, content_type,
         len(data), editor_html,
     ), fetch=True)
     action = "replace" if existing else "upload"
@@ -28243,7 +28715,8 @@ def sops_editor_update(file_id: int, request: Request, payload: dict = Body(...)
         raise HTTPException(status_code=400, detail="A valid editor revision is required")
     transition = str(payload.get("transition") or "save")
     current = _users_exec(
-        "SELECT stage, department, filename FROM sop_files WHERE id=%s",
+        "SELECT stage, department, filename, original_filename, original_data "
+        "FROM sop_files WHERE id=%s",
         (file_id,), fetch=True) or []
     if not current:
         raise HTTPException(status_code=404, detail="File not found")
@@ -28285,15 +28758,28 @@ def sops_editor_update(file_id: int, request: Request, payload: dict = Body(...)
             """, (editor_html, email, psycopg2.Binary(encoded), len(encoded),
                   file_id, current_stage, revision, email), fetch=True) or []
         else:
+            output_data = encoded
+            output_content_type = "text/html; charset=utf-8"
+            output_filename = current[0]["filename"]
+            if transition == "approve":
+                try:
+                    _sop_validate_approval_source(current[0])
+                    output_data = _sop_html_to_pdf(editor_html)
+                except ValueError as exc:
+                    raise HTTPException(status_code=400, detail=str(exc))
+                output_content_type = "application/pdf"
+                output_filename = _sop_pdf_filename(current[0]["filename"])
             rows = _users_exec("""
                 WITH moved AS (
                     UPDATE sop_files
-                    SET stage=%s, editor_html=%s, editor_revision=editor_revision+1,
+                    SET stage=%s, filename=%s, editor_html=%s,
+                        editor_revision=editor_revision+1,
                         edited_by_email=%s, edited_at=now(),
                         original_data=COALESCE(original_data, data),
+                        original_filename=COALESCE(original_filename, filename),
                         original_content_type=COALESCE(original_content_type, content_type),
                         original_size_bytes=COALESCE(original_size_bytes, size_bytes),
-                        data=%s, content_type='text/html; charset=utf-8',
+                        data=%s, content_type=%s,
                         size_bytes=%s
                     WHERE id=%s AND stage=%s AND editor_revision=%s
                     RETURNING id, stage, filename, department, editor_revision,
@@ -28316,8 +28802,9 @@ def sops_editor_update(file_id: int, request: Request, payload: dict = Body(...)
                 FROM moved
                 JOIN event ON event.file_id=moved.id
                 JOIN revision_event ON revision_event.file_id=moved.id
-            """, (target_stage, editor_html, email, psycopg2.Binary(encoded),
-                  len(encoded), file_id, current_stage, revision,
+            """, (target_stage, output_filename, editor_html, email,
+                  psycopg2.Binary(output_data), output_content_type,
+                  len(output_data), file_id, current_stage, revision,
                   from_stage, target_stage, email,
                   email, transition, from_stage, target_stage), fetch=True) or []
     except psycopg2.errors.UniqueViolation:
@@ -28356,13 +28843,36 @@ def sops_approve(file_id: int, request: Request):
         raise HTTPException(status_code=403, detail="SOP approval access is restricted")
     _ensure_sop_tables()
     email = _sop_email(user)
+    source = _users_exec(
+        "SELECT stage, filename, editor_html, editor_revision, "
+        "original_filename, original_data "
+        "FROM sop_files WHERE id=%s",
+        (file_id,), fetch=True) or []
+    if not source:
+        raise HTTPException(status_code=404, detail="File not found")
+    if int(source[0]["stage"]) != 5:
+        raise HTTPException(
+            status_code=409, detail="This SOP is no longer Awaiting Approval")
+    try:
+        _sop_validate_approval_source(source[0])
+        pdf_data = _sop_html_to_pdf(source[0].get("editor_html") or "")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    pdf_filename = _sop_pdf_filename(source[0]["filename"])
+    source_revision = int(source[0].get("editor_revision") or 0)
     try:
         rows = _users_exec("""
             WITH moved AS (
                 UPDATE sop_files
-                SET stage=3, approved_by_email=%s, approved_at=now(),
+                SET stage=3, filename=%s, content_type='application/pdf',
+                    data=%s, size_bytes=%s,
+                    original_data=COALESCE(original_data, data),
+                    original_filename=COALESCE(original_filename, filename),
+                    original_content_type=COALESCE(original_content_type, content_type),
+                    original_size_bytes=COALESCE(original_size_bytes, size_bytes),
+                    approved_by_email=%s, approved_at=now(),
                     editor_revision=editor_revision+1
-                WHERE id=%s AND stage=5
+                WHERE id=%s AND stage=5 AND editor_revision=%s
                 RETURNING id, filename, department, stage, approved_at,
                           editor_revision, editor_html
             ), event AS (
@@ -28384,7 +28894,8 @@ def sops_approve(file_id: int, request: Request):
             FROM moved
             JOIN event ON event.file_id=moved.id
             JOIN revision_event ON revision_event.file_id=moved.id
-        """, (email, file_id, email, email), fetch=True) or []
+        """, (pdf_filename, psycopg2.Binary(pdf_data), len(pdf_data),
+              email, file_id, source_revision, email, email), fetch=True) or []
     except psycopg2.errors.UniqueViolation:
         raise HTTPException(
             status_code=409,
