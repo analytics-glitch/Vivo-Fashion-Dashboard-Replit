@@ -1,0 +1,33 @@
+# Vivo Junction Atelier Workspace — Blueprint
+
+Full page (audit findings, schema, KPIs, styled): https://claude.ai/code/artifact/a699aeb7-b895-4ca4-b9b7-a02384660d8e
+
+Source data: `2026 Vivo Junction Instore Tailoring & Adjustments Log 1.xlsx` (82 job rows, 10 Jun–22 Aug 2026; Requisitions tab unused).
+
+## Scope decisions made in discussion (2026-08-28)
+
+- **Architecture**: build as a new module *inside* the existing Vivo Replit project (which already hosts the customer database, BI dashboard, and customer community app/Style DNA) — not a separate connected app. Customer creation goes through a controlled service layer, never raw writes from atelier screens, to protect the shared customer table from atelier-level bugs. Always search by normalized phone before creating a customer, to avoid duplicates in the master record.
+- **Charging**: service is free today, may become chargeable later. One `charge_amount` field on `jobs`, default 0, covers this — no separate is_chargeable flag needed.
+- **Customer linking**: tightly coupled — jobs write into the *actual* shared customers table (same project/database), not a copy. New customers created at the atelier counter become real, project-wide customer records.
+- **Measurements**: tailors record customer measurements and fit preferences; these live on the **shared customer profile** (new `customer_measurements` table, versioned/history, not overwritten) — visible beyond just the atelier.
+- **Photo capture**: yes — a quick garment-condition photo at intake (`intake_photo_url`, `condition_notes` on `jobs`), for damage-dispute protection.
+- **Staff visibility**: all tailors see all jobs (a customer may return when a different tailor is on shift) — no per-tailor restriction. Admin-only restriction is for staff management, alteration-type/branch config, and full financial reporting.
+- **Tailor entry**: dropdown of existing staff with an inline "add new" option — no separate admin step needed to log a job with a new tailor.
+- **UI tone**: deliberately plain — short labels, minimal steps, no jargon, usable by any staff member regardless of tech background.
+- **Style DNA**: lives in the customer community app, understood to sit centrally in the data warehouse and be accessible from multiple front-ends. URL to be shared and reviewed before deciding exact integration (link-out vs. pulling specific fields) — placeholder + TODO in the prompt for now.
+- **Community app membership**: not yet decided as mandatory vs. optional at atelier intake. Recommended default: optional (offered as the natural way to save details, doesn't block service if declined) — flagged as an open question in the prompt, pending review of the community app URL.
+- **Terms & Conditions / SLA**: user will provide a draft policy for Claude to help refine; a `policies` table is scaffolded in the schema but the legal/policy content itself is intentionally left for the user's draft, not invented.
+- **Materials/Requisitions tracking**: left out of the build for now (old sheet's tab was unused for ~2.5 months) — flagged as a possible future addition, not decided either way yet.
+
+## Open items still pending from the user
+
+1. Style DNA URL — for review once shared.
+2. Customer community app URL — for review once shared, and to settle the mandatory-vs-optional membership question.
+3. Draft Terms & Conditions / SLA text — to be shared and refined together.
+4. Confirmation that "build inside the existing Replit project" is the right framing, once the above URLs are seen.
+5. Which tailor-name spelling to standardize on (source data has "Maxmilla"/"Maximilla"/"maximillia"/"Maxi" for one person), and the full current staff list.
+6. Final call on materials/requisitions tracking (rebuild vs. drop).
+
+## Finalized Replit agent prompt
+
+The full text is in the artifact above (with a copy button) and was also sent directly in chat on 2026-08-28. It instructs the agent to extend the existing Replit project (not build a new one), lays out the schema (customers, customer_measurements, branches, staff, garments, alteration_types, jobs, status_history, policies), the six core screens, KPIs, validation rules, historical-data migration/cleanup rules (with the two confirmed date-entry errors and the tailor-name spelling fragmentation called out), non-functional requirements, and the five open questions above.

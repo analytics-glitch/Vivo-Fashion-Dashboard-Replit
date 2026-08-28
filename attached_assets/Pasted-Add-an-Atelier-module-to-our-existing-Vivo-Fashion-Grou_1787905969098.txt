@@ -1,0 +1,77 @@
+Add an Atelier module to our existing Vivo Fashion Group Replit project - the same project that already runs our customer database, the BI dashboard, and the customer community app (which includes a "Style DNA" feature). This is NOT a new, separate app - it should be built inside this project, reusing its existing database, customer table, and auth/login rather than standing up a second disconnected system. It replaces a manual Google Sheet currently used to track in-store tailoring and garment-adjustment jobs at our Junction store.
+
+CONTEXT
+- The atelier service is free to customers today but may become chargeable later, so every job carries a charge field from day one - it just sits at zero until pricing launches.
+- Start by looking at how the existing project's customer table, auth, and any staff/employee table are structured, and reuse them. Do not create a second, parallel customer table.
+- New customers should be created through whatever the project's existing safe path for that already is (a shared service/function, not the atelier screens running their own INSERT directly against the customer table) - if no such controlled path exists yet, build one and route all customer creation through it, from the atelier and anywhere else that creates customers. Before creating a new customer, always search first by normalized phone number to avoid creating duplicates of someone already in the database.
+- Measurements and size/fit preferences that tailors record should be saved to the shared customer profile (see customer_measurements below), not kept private to the atelier - other parts of the project may use this too.
+- The customer community app already has a "Style DNA" feature; I'll share its URL for you to review before deciding exactly how it connects here. For now, add a Style DNA section to the customer's profile that can hold either a link out to it or specific fields, and leave a clear TODO marking that the final shape depends on what Style DNA actually contains.
+- I'm providing a cleaned description of our current Google Sheet data below, from auditing about 2.5 months of real records, including the errors found in it. Build a one-time migration script that imports that history using the rules under "Migration and cleanup" - don't assume the source data is clean.
+- Keep the interface plain and simple throughout: short labels, no jargon, no unnecessary or repeated words, minimal steps per screen. Everyone on staff should be able to learn it without training, regardless of their background with software.
+
+DATA MODEL
+Use the project's existing customers table (add fields only if missing): customer_id (pk), full_name, phone (text, normalized to one format e.g. "07XXXXXXXX", unique index - this is the match key), email (nullable), created_at.
+
+customer_measurements (new, shared on the customer profile - not atelier-only): measurement_id (pk), customer_id (fk), bust_chest / waist / hips / inseam / shoulder / sleeve_length (numeric, nullable, cm - extend this list if tailors ask for more), fit_preference_notes (text, nullable, plain language), recorded_by (fk to staff), recorded_at (timestamp). Never overwrite - each visit adds a new row, so measurement history is kept and the customer profile shows the most recent.
+
+branches: branch_id (pk), name, address (nullable). Seed one row, "The Junction" - keep this table even with one branch so a second store never needs a schema change.
+
+staff: staff_id (pk), full_name (unique), role, active (boolean), date_joined (nullable). If the project already has a staff/employee table, extend that instead of creating a new one. All tailors should be able to see and work every job, not just their own - a customer may return when a different tailor is on shift.
+
+garments: sku (pk, text - always text, never numeric), description, category (nullable), colour (nullable). Look this up from the POS/inventory system where possible instead of retyping it.
+
+alteration_types: alteration_type_id (pk), name, default_turnaround_hours (nullable). Seed name with: Hem / Length Adjustment, Waist Take-in, Waist Let-out, Zipper Repair or Replacement, Sleeve Adjustment, General Take-in/Let-out, Button / Fastening Repair, Other.
+
+jobs: job_id (pk), job_number (text, unique, auto-generated human-readable ticket code like VJ-2026-00147, printable on a customer receipt), customer_id (fk), branch_id (fk), sku (fk, nullable), item_description (fallback free text when there's no sku match), qty (integer, default 1 - one row is always exactly one garment, never bundle multiple garments into one row), service_type (enum: Same day, Scheduled), alteration_type_id (fk), alteration_detail (free text), staff_id (fk), status (enum: Received, In Progress, Ready for Pickup, Collected, Cancelled), charge_amount (numeric, default 0 - the one field for any charge linked to the service, stays 0 until pricing launches), date_in (timestamp, required), promised_date (timestamp), date_ready (timestamp, nullable), collected_at (timestamp, nullable), intake_photo_url (text, nullable - a quick photo of the garment's condition at drop-off, for damage disputes), condition_notes (text, nullable), redo_flag (boolean, default false), redo_reason (text, nullable), complaint_flag (boolean, default false), complaint_notes (text, nullable), created_by (text), notes (text, nullable).
+
+status_history: id (pk), job_id (fk), status, changed_at (timestamp), changed_by. Insert a row here automatically every time jobs.status changes, so turnaround and time-in-stage can be measured accurately instead of relying on one overwritten field.
+
+policies: policy_id (pk), title, body (text), updated_at. Holds our terms of service / SLA content (turnaround expectations, liability for damage, unclaimed-item rules) as simple editable entries, shown to customers and staff. I'll provide a first draft of this text separately for you to lay out - don't invent the legal content yourself.
+
+materials_requisitions: leave this out for now - our old "Requisitions" tab was never actually used, and I haven't decided whether to rebuild it. Flag it as a possible future addition rather than building it.
+
+SCREENS / WORKFLOWS
+1. New Job intake - for tailors/front-of-house on a tablet or phone in-store. Search the customer by phone number first (search-as-you-type); if found, show them and their latest measurements; if not found, create them inline through the controlled customer-creation path described above - the new customer should then exist project-wide, not just in the atelier. Offer to update or add measurements at this point, saved to customer_measurements. Add one or more garment lines, each with a SKU lookup (fallback to free text), a quick photo of the garment's condition, alteration type, and detail. Tailor is chosen from a dropdown of existing staff, with a simple "add new" option right there if someone isn't listed yet - no separate admin step required to log a job. Require customer, phone, at least one garment line, alteration type, staff member, and date in. Auto-generate job_number and show/print a simple claim ticket.
+2. Job board - a Kanban view grouped by status (Received / In Progress / Ready for Pickup / Collected), visible to every tailor regardless of who took the job in. Moving a card updates status and logs it to status_history.
+3. Job detail/edit page - full record, editable, shows the status timeline, with fields to flag a redo or complaint and a reason.
+4. Customer profile - extend the project's existing customer profile page (don't build a separate one) with an "Alterations" section showing that customer's ongoing and past jobs, and a measurements/preferences panel sourced from customer_measurements. Add the Style DNA section described in Context.
+5. Admin - manage staff (add/deactivate), alteration types, branches, and the policies content.
+6. Analytics/reporting view - build the KPIs below, wired into however the existing BI dashboard already reads data in this project (shared tables/views, not a separate export).
+
+KPIs TO SURFACE
+Volume: jobs and garments per day/week/month, split Same day vs Scheduled.
+Turnaround: average and median time from date_in to collected_at, % completed by promised_date, and a live count of jobs not yet Collected (work-in-progress backlog).
+Financial (inactive until pricing goes live, but built and ready): total revenue, average job value, revenue by alteration type / staff / branch, read directly off charge_amount.
+Staff: jobs completed per staff member per period, average turnaround per staff member - computed from the staff_id foreign key, not a typed name.
+Quality: redo rate, complaint rate.
+Customer: unique customers served, repeat-customer rate, top customers by frequency.
+Data health: % of jobs missing a phone number, sku, or collected_at, shown as its own tile so data-entry gaps stay visible going forward.
+
+VALIDATION RULES
+- Phone number required and normalized to one format before saving; always search for an existing match before creating a new customer.
+- Status can only follow the enum above; enforce it in the schema, not just the UI.
+- job_number is generated by the system, never typed by hand.
+- One garment per job row - a customer bringing in 3 items creates 3 linked job rows from one intake session, not one row with qty = 3.
+- Tailor is selected from the staff list (with quick-add), never freely typed elsewhere in the flow.
+
+MIGRATION AND CLEANUP (for importing the historical Google Sheet)
+- Normalize phone numbers to one format; treat the literal text "missing" and "-" as null, not as data.
+- Collapse tailor name spelling variants ("Maxmilla", "Maximilla", "maximillia", "Maxi") into one staff record - I'll confirm which spelling is correct before you run the import.
+- Split any row where qty > 1 into multiple job rows, one per garment.
+- Flag rows with impossible dates (Date Out earlier than Date In, or a date far outside the log's real range) for manual review instead of importing them as-is - two such rows exist in the source data (dated 2025 instead of 2026), plus one row with a date cell Excel itself couldn't parse.
+- Leave charge_amount at 0 for all historical rows, since the service was free throughout the period being imported.
+- There is no historical measurement, photo, or policy data to migrate - those start fresh.
+
+NON-FUNCTIONAL REQUIREMENTS
+- Must work well on a tablet or phone at the in-store intake counter, not just desktop.
+- Keep the whole interface plain and simple - short labels, minimal steps, no jargon, usable by any staff member regardless of technical background.
+- Role-based access: any tailor/front-of-house staff can create and update jobs and see all of them; only admins manage staff, alteration types, branches, policy content, and full financial reporting once pricing is live.
+- Every status change is logged (who, when) for accountability.
+- Structure customer and job tables so a second branch can be added later without a schema change (branch_id is already on both).
+
+OPEN QUESTIONS - CONFIRM WITH ME BEFORE FINALIZING THESE PARTS
+- The Style DNA feature's actual data and URL, so its connection to the customer profile can be finalized (I'll share the URL for review).
+- The community app's URL, and whether joining it should be a required or optional step during atelier intake - my current thinking is optional-by-default (offered as the natural way to save the customer's details, but a job can still be logged if they decline), not a hard requirement. Confirm before building this as a blocking step.
+- The terms of service / SLA text for the policies table - I'll provide a first draft for you to lay out, don't draft the legal content yourself.
+- Which tailor-name spelling is correct to standardize on, and the full current staff list.
+- Whether the project already has a staff/employee table to extend, or whether a new one is needed.
