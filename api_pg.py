@@ -3,10 +3,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 import calendar
 import contextlib
+import html as _html
 import logging
 from collections import deque
 from datetime import date, timedelta, datetime, timezone
 from decimal import Decimal, ROUND_HALF_UP
+from html.parser import HTMLParser
 from dq_cross_compare import cross_surface_compare
 from odoo_locations import ODOO_LOCATION_MAP
 import sync_source_health as _src_health
@@ -27495,15 +27497,18 @@ def _log_activity(request, method, path, detail, status_code=200):
 
 
 # ── SOP document library ──────────────────────────────────────────────────────
-# Four controlled stages contain the same department folders. Every active user
-# can submit into / read stages 01 and 03; stages 02 and 04 are restricted to
-# admins plus the two named workflow reviewers. Files live as bytes in Postgres
+# Five controlled stages contain the same department folders. Every active user
+# can submit into / read stages 01 and 04; stages 02, 03 and 05 are restricted
+# to admins plus the two named workflow reviewers. Files live as bytes in Postgres
 # so production keeps its own library in its own DB.
 SOP_STAGES = [
     {"id": 1, "slug": "submission", "name": "01. SOP Submission"},
     {"id": 2, "slug": "under-review", "name": "02. SOPs Under Review"},
-    {"id": 3, "slug": "approved", "name": "03. Approved SOPs (Master Repository)"},
-    {"id": 4, "slug": "obsolete", "name": "04. Obsolete SOPs"},
+    # IDs 3 and 4 retain their old meanings so existing rows and audit events
+    # remain valid. Awaiting Approval uses a new stable ID 5.
+    {"id": 5, "slug": "awaiting-approval", "name": "03. Awaiting Approval"},
+    {"id": 3, "slug": "approved", "name": "04. Approved SOPs (Master Repository)"},
+    {"id": 4, "slug": "obsolete", "name": "05. Obsolete SOPs"},
 ]
 _SOP_STAGE_IDS = {stage["id"] for stage in SOP_STAGES}
 SOP_DEPARTMENTS = [
@@ -27535,11 +27540,86 @@ _SOP_LEGACY_DEPARTMENT_MAP = {
     "warehouse": "warehouse-logistics",
 }
 _SOP_MAX_BYTES = 20 * 1024 * 1024  # 20 MB per file — generous for SOP docs
+_SOP_MAX_EDITOR_BYTES = 1 * 1024 * 1024
 # Document + image formats only; anything executable/archive is refused.
 _SOP_ALLOWED_EXTS = {
     ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
     ".png", ".jpg", ".jpeg", ".gif", ".webp",
 }
+_SOP_EDITOR_TAGS = {
+    "p", "br", "div", "span", "strong", "b", "em", "i", "u", "s",
+    "h1", "h2", "h3", "ul", "ol", "li", "blockquote", "pre", "code",
+}
+
+
+class _SopHtmlSanitizer(HTMLParser):
+    """Small allow-list sanitizer for the dashboard's contenteditable editor."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts = []
+
+    def handle_starttag(self, tag, attrs):
+        tag = tag.lower()
+        if tag not in _SOP_EDITOR_TAGS:
+            return
+        if tag == "br":
+            self.parts.append("<br>")
+            return
+        self.parts.append(f"<{tag}>")
+
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+
+    def handle_endtag(self, tag):
+        tag = tag.lower()
+        if tag in _SOP_EDITOR_TAGS and tag != "br":
+            self.parts.append(f"</{tag}>")
+
+    def handle_data(self, data):
+        self.parts.append(_html.escape(data, quote=False))
+
+    def handle_entityref(self, name):
+        self.parts.append(_html.escape(f"&{name};", quote=False))
+
+    def handle_charref(self, name):
+        self.parts.append(_html.escape(f"&#{name};", quote=False))
+
+
+def _sop_sanitize_html(value):
+    parser = _SopHtmlSanitizer()
+    parser.feed(str(value or ""))
+    parser.close()
+    return "".join(parser.parts).strip()
+
+
+def _sop_initial_editor_html(filename, data=None, content_type=None):
+    """Create a safe editable representation for every accepted upload type."""
+    name = _html.escape(str(filename or "SOP"), quote=False)
+    raw = bytes(data or b"")
+    ctype = str(content_type or "").lower()
+    text = ""
+    if ctype.startswith("text/") or filename.lower().endswith((".txt", ".csv")):
+        text = raw.decode("utf-8", errors="replace").strip()
+    elif filename.lower().endswith(".pdf"):
+        try:
+            from pypdf import PdfReader
+            import io
+            text = "\n\n".join(
+                page.extract_text() or "" for page in PdfReader(io.BytesIO(raw)).pages
+            ).strip()
+        except Exception:
+            text = ""
+    if text:
+        return "".join(
+            f"<p>{_html.escape(line, quote=False)}</p>"
+            for line in text.splitlines()
+        )
+    return (
+        f"<h1>{name}</h1>"
+        "<p>This SOP is ready for editing in the dashboard. "
+        "The original uploaded file is retained for traceability.</p>"
+    )
 
 
 def _ensure_sop_tables():
@@ -27560,7 +27640,14 @@ def _ensure_sop_tables():
             approved_by_email TEXT,
             approved_at   TIMESTAMPTZ,
             obsoleted_by_email TEXT,
-            obsoleted_at  TIMESTAMPTZ
+            obsoleted_at  TIMESTAMPTZ,
+            original_data BYTEA,
+            original_content_type TEXT,
+            original_size_bytes BIGINT,
+            editor_html TEXT,
+            editor_revision INTEGER NOT NULL DEFAULT 0,
+            edited_by_email TEXT,
+            edited_at TIMESTAMPTZ
         )""")
     _users_exec("ALTER TABLE sop_files ADD COLUMN IF NOT EXISTS stage SMALLINT NOT NULL DEFAULT 3")
     _users_exec("ALTER TABLE sop_files ADD COLUMN IF NOT EXISTS reviewed_by_email TEXT")
@@ -27569,6 +27656,13 @@ def _ensure_sop_tables():
     _users_exec("ALTER TABLE sop_files ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ")
     _users_exec("ALTER TABLE sop_files ADD COLUMN IF NOT EXISTS obsoleted_by_email TEXT")
     _users_exec("ALTER TABLE sop_files ADD COLUMN IF NOT EXISTS obsoleted_at TIMESTAMPTZ")
+    _users_exec("ALTER TABLE sop_files ADD COLUMN IF NOT EXISTS original_data BYTEA")
+    _users_exec("ALTER TABLE sop_files ADD COLUMN IF NOT EXISTS original_content_type TEXT")
+    _users_exec("ALTER TABLE sop_files ADD COLUMN IF NOT EXISTS original_size_bytes BIGINT")
+    _users_exec("ALTER TABLE sop_files ADD COLUMN IF NOT EXISTS editor_html TEXT")
+    _users_exec("ALTER TABLE sop_files ADD COLUMN IF NOT EXISTS editor_revision INTEGER NOT NULL DEFAULT 0")
+    _users_exec("ALTER TABLE sop_files ADD COLUMN IF NOT EXISTS edited_by_email TEXT")
+    _users_exec("ALTER TABLE sop_files ADD COLUMN IF NOT EXISTS edited_at TIMESTAMPTZ")
     _users_exec("ALTER TABLE sop_files DROP CONSTRAINT IF EXISTS sop_files_department_filename_key")
     _users_exec(
         "CREATE UNIQUE INDEX IF NOT EXISTS sop_files_stage_department_filename_uidx "
@@ -27590,6 +27684,22 @@ def _ensure_sop_tables():
             acted_by_email TEXT,
             acted_at      TIMESTAMPTZ NOT NULL DEFAULT now()
         )""")
+    _users_exec("""
+        CREATE TABLE IF NOT EXISTS sop_file_revisions (
+            id              BIGSERIAL PRIMARY KEY,
+            file_id         INTEGER NOT NULL REFERENCES sop_files(id) ON DELETE CASCADE,
+            revision        INTEGER NOT NULL,
+            editor_html     TEXT NOT NULL,
+            acted_by_email  TEXT NOT NULL,
+            action          TEXT NOT NULL,
+            from_stage      SMALLINT NOT NULL,
+            to_stage        SMALLINT NOT NULL,
+            created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+            UNIQUE (file_id, revision)
+        )""")
+    _users_exec(
+        "CREATE INDEX IF NOT EXISTS idx_sop_file_revisions_file "
+        "ON sop_file_revisions(file_id, revision DESC)")
     for old_slug, new_slug in _SOP_LEGACY_DEPARTMENT_MAP.items():
         _users_exec(
             "UPDATE sop_files SET department=%s, stage=3 WHERE department=%s",
@@ -27717,6 +27827,29 @@ def _sop_can_upload(user, department):
     return department in _sop_user_grants((user or {}).get("user_id") or "")
 
 
+def _sop_can_edit_stage(user, stage):
+    stage = int(stage)
+    if stage == 2:
+        return _sop_is_full_reviewer(user)
+    if stage == 5:
+        return _sop_can_approve(user)
+    return False
+
+
+def _sop_editor_transition(user, stage, transition):
+    if transition == "save":
+        return int(stage), None
+    if transition == "awaiting_approval":
+        if int(stage) != 2 or not _sop_is_full_reviewer(user):
+            raise HTTPException(status_code=403, detail="You cannot send this SOP to Awaiting Approval")
+        return 5, 2
+    if transition == "approve":
+        if int(stage) != 5 or not _sop_can_approve(user):
+            raise HTTPException(status_code=403, detail="You cannot approve this SOP")
+        return 3, 5
+    raise HTTPException(status_code=400, detail="Unknown editor action")
+
+
 def _sop_safe_filename(name):
     # Basename only, strip path separators + control chars, bound length.
     base = os.path.basename((name or "").replace("\\", "/")).strip()
@@ -27779,11 +27912,12 @@ def sops_files(request: Request, stage: int = Query(...),
         "SELECT id, stage, department, filename, content_type, size_bytes, "
         "uploaded_by, uploaded_by_email, uploaded_at, reviewed_by_email, "
         "reviewed_at, approved_by_email, approved_at, obsoleted_by_email, "
-        "obsoleted_at "
+        "obsoleted_at, editor_revision, edited_by_email, edited_at, "
+        "(original_data IS NOT NULL) AS has_original "
         "FROM sop_files WHERE stage=%s AND department=%s ORDER BY lower(filename)",
         (stage, department), fetch=True) or []
     for r in rows:
-        for key in ("uploaded_at", "reviewed_at", "approved_at", "obsoleted_at"):
+        for key in ("uploaded_at", "reviewed_at", "approved_at", "obsoleted_at", "edited_at"):
             if r.get(key) is not None:
                 r[key] = r[key].isoformat()
     return {
@@ -27793,8 +27927,11 @@ def sops_files(request: Request, stage: int = Query(...),
         "can_delete": _sop_is_admin(user) or (
             stage == 1 and _sop_can_upload(user, department)),
         "can_review": stage == 1 and _sop_can_review(user),
-        "can_approve": stage == 2 and _sop_can_approve(user),
+        "can_edit": _sop_can_edit_stage(user, stage),
+        "can_send_approval": stage == 2 and _sop_is_full_reviewer(user),
+        "can_approve": stage == 5 and _sop_can_approve(user),
         "can_obsolete": stage == 3 and _sop_is_full_reviewer(user),
+        "can_download_original": _sop_is_full_reviewer(user),
         "files": rows,
     }
 
@@ -27813,6 +27950,8 @@ def sops_download(file_id: int, request: Request, inline: int = Query(0)):
         raise HTTPException(status_code=403, detail="You don't have access to this SOP stage")
     data = bytes(row["data"])
     fname = row["filename"] or f"sop-{file_id}"
+    if str(row.get("content_type") or "").lower().startswith("text/html"):
+        fname = os.path.splitext(fname)[0] + ".html"
     # RFC 5987 filename* for non-ASCII names, with an ASCII fallback.
     ascii_name = fname.encode("ascii", "replace").decode("ascii").replace('"', "")
     disp = "inline" if inline else "attachment"
@@ -27825,6 +27964,40 @@ def sops_download(file_id: int, request: Request, inline: int = Query(0)):
     return Response(content=data,
                     media_type=row["content_type"] or "application/octet-stream",
                     headers=headers)
+
+
+@app.get("/api/sops/files/{file_id}/original")
+def sops_download_original(file_id: int, request: Request):
+    """Download the immutable source upload for workflow reviewers."""
+    _ensure_sop_tables()
+    user = getattr(request.state, "user", None) or {}
+    if not _sop_is_full_reviewer(user):
+        raise HTTPException(status_code=403, detail="Original-file access is restricted")
+    rows = _users_exec(
+        "SELECT stage, filename, original_data, original_content_type "
+        "FROM sop_files WHERE id=%s",
+        (file_id,), fetch=True) or []
+    if not rows:
+        raise HTTPException(status_code=404, detail="File not found")
+    row = rows[0]
+    if not _sop_can_access_stage(user, int(row["stage"])):
+        raise HTTPException(status_code=403, detail="You cannot access this workflow stage")
+    if row.get("original_data") is None:
+        raise HTTPException(status_code=404, detail="No original upload is stored for this SOP")
+    fname = row["filename"] or f"sop-{file_id}"
+    ascii_name = fname.encode("ascii", "replace").decode("ascii").replace('"', "")
+    headers = {
+        "Content-Disposition": (
+            f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(fname)}"),
+        "Cache-Control": "private, no-store",
+    }
+    _log_activity(
+        request, "GET", f"/api/sops/files/{file_id}/original",
+        f"SOP original downloaded: {fname} · stage={row['stage']}")
+    return Response(
+        content=bytes(row["original_data"]),
+        media_type=row.get("original_content_type") or "application/octet-stream",
+        headers=headers)
 
 
 @app.post("/api/sops/upload")
@@ -27858,28 +28031,62 @@ async def sops_upload(request: Request,
     # Submissions always enter stage 01. Re-uploading the same filename replaces
     # only the stage-01 copy; reviewed/approved copies are never overwritten.
     existing = _users_exec(
-        "SELECT id FROM sop_files WHERE stage=1 AND department=%s AND filename=%s",
+        "SELECT id FROM sop_files WHERE stage=1 AND department=%s "
+        "AND lower(filename)=lower(%s)",
         (department, fname), fetch=True)
+    editor_html = _sop_initial_editor_html(fname, data, file.content_type)
+    content_type = file.content_type or "application/octet-stream"
+    actor = user.get("name") or user.get("email")
     rows = _users_exec("""
-        INSERT INTO sop_files (stage, department, filename, content_type, size_bytes,
-                               data, uploaded_by, uploaded_by_email)
-        VALUES (1, %s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (stage, department, filename) DO UPDATE SET
-            content_type = EXCLUDED.content_type,
-            size_bytes   = EXCLUDED.size_bytes,
-            data         = EXCLUDED.data,
-            uploaded_by  = EXCLUDED.uploaded_by,
-            uploaded_by_email = EXCLUDED.uploaded_by_email,
-            uploaded_at  = now(),
-            reviewed_by_email = NULL,
-            reviewed_at = NULL,
-            approved_by_email = NULL,
-            approved_at = NULL
-        RETURNING id, stage, filename, size_bytes
-    """, (department, fname, file.content_type or "application/octet-stream",
-          len(data), psycopg2.Binary(data),
-          user.get("name") or user.get("email"), user.get("email")),
-        fetch=True)
+        WITH locked AS (
+            SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))
+        ), existing AS (
+            SELECT sf.id
+            FROM sop_files sf, locked
+            WHERE sf.stage=1 AND sf.department=%s
+              AND lower(sf.filename)=lower(%s)
+            FOR UPDATE OF sf
+        ), cleared_revisions AS (
+            DELETE FROM sop_file_revisions r
+            USING existing e
+            WHERE r.file_id=e.id
+            RETURNING r.file_id
+        ), updated AS (
+            UPDATE sop_files sf SET
+                content_type=%s, size_bytes=%s, data=%s,
+                original_data=%s, original_content_type=%s,
+                original_size_bytes=%s, editor_html=%s, editor_revision=0,
+                edited_by_email=NULL, edited_at=NULL,
+                uploaded_by=%s, uploaded_by_email=%s, uploaded_at=now(),
+                reviewed_by_email=NULL, reviewed_at=NULL,
+                approved_by_email=NULL, approved_at=NULL,
+                obsoleted_by_email=NULL, obsoleted_at=NULL
+            FROM existing e,
+                 (SELECT count(*) AS cleared FROM cleared_revisions) cleanup
+            WHERE sf.id=e.id
+            RETURNING sf.id, sf.stage, sf.filename, sf.size_bytes
+        ), inserted AS (
+            INSERT INTO sop_files (
+                stage, department, filename, content_type, size_bytes, data,
+                uploaded_by, uploaded_by_email, original_data,
+                original_content_type, original_size_bytes, editor_html,
+                editor_revision
+            )
+            SELECT 1, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0
+            WHERE NOT EXISTS (SELECT 1 FROM existing)
+            RETURNING id, stage, filename, size_bytes
+        )
+        SELECT * FROM updated UNION ALL SELECT * FROM inserted
+    """, (
+        f"sop-upload:{department}:{fname.lower()}",
+        department, fname,
+        content_type, len(data), psycopg2.Binary(data),
+        psycopg2.Binary(data), content_type, len(data), editor_html,
+        actor, user.get("email"),
+        department, fname, content_type, len(data), psycopg2.Binary(data),
+        actor, user.get("email"), psycopg2.Binary(data), content_type,
+        len(data), editor_html,
+    ), fetch=True)
     action = "replace" if existing else "upload"
     _log_activity(
         request, "POST", "/api/sops/upload",
@@ -27942,17 +28149,31 @@ def sops_review(file_id: int, request: Request):
         rows = _users_exec("""
             WITH moved AS (
                 UPDATE sop_files
-                SET stage=2, reviewed_by_email=%s, reviewed_at=now()
+                SET stage=2, reviewed_by_email=%s, reviewed_at=now(),
+                    editor_revision=editor_revision+1
                 WHERE id=%s AND stage=1
-                RETURNING id, filename, department, stage, reviewed_at
+                RETURNING id, filename, department, stage, reviewed_at,
+                          editor_revision, editor_html
             ), event AS (
                 INSERT INTO sop_stage_events
                     (file_id, from_stage, to_stage, acted_by_email)
                 SELECT id, 1, 2, %s FROM moved
                 RETURNING file_id
+            ), revision_event AS (
+                INSERT INTO sop_file_revisions
+                    (file_id, revision, editor_html, acted_by_email,
+                     action, from_stage, to_stage)
+                SELECT id, editor_revision, COALESCE(editor_html, ''), %s,
+                       'review', 1, 2
+                FROM moved
+                RETURNING file_id
             )
-            SELECT moved.* FROM moved JOIN event ON event.file_id=moved.id
-        """, (email, file_id, email), fetch=True) or []
+            SELECT moved.id, moved.filename, moved.department, moved.stage,
+                   moved.reviewed_at
+            FROM moved
+            JOIN event ON event.file_id=moved.id
+            JOIN revision_event ON revision_event.file_id=moved.id
+        """, (email, file_id, email, email), fetch=True) or []
     except psycopg2.errors.UniqueViolation:
         raise HTTPException(
             status_code=409,
@@ -27972,6 +28193,162 @@ def sops_review(file_id: int, request: Request):
     return {"ok": True, "file": rows[0]}
 
 
+@app.get("/api/sops/files/{file_id}/editor")
+def sops_editor(file_id: int, request: Request):
+    """Return the sanitized rich-text representation for a workflow editor."""
+    _ensure_sop_tables()
+    rows = _users_exec(
+        "SELECT id, stage, department, filename, data, content_type, "
+        "editor_html, editor_revision, edited_by_email, edited_at "
+        "FROM sop_files WHERE id=%s",
+        (file_id,), fetch=True) or []
+    if not rows:
+        raise HTTPException(status_code=404, detail="File not found")
+    row = rows[0]
+    user = getattr(request.state, "user", None) or {}
+    if not _sop_can_edit_stage(user, int(row["stage"])):
+        raise HTTPException(status_code=403, detail="You don't have edit rights for this SOP")
+    editor_html = row.get("editor_html") or _sop_initial_editor_html(
+        row["filename"], row.get("data"), row.get("content_type"))
+    edited_at = row.get("edited_at")
+    return {
+        "id": row["id"],
+        "stage": int(row["stage"]),
+        "department": row["department"],
+        "filename": row["filename"],
+        "html": _sop_sanitize_html(editor_html),
+        "revision": int(row.get("editor_revision") or 0),
+        "edited_by_email": row.get("edited_by_email"),
+        "edited_at": edited_at.isoformat() if edited_at else None,
+    }
+
+
+@app.put("/api/sops/files/{file_id}/editor")
+def sops_editor_update(file_id: int, request: Request, payload: dict = Body(...)):
+    """Save rich text, optionally moving it to Awaiting Approval or Approved."""
+    _ensure_sop_tables()
+    user = getattr(request.state, "user", None) or {}
+    raw_html = payload.get("html")
+    editor_html = _sop_sanitize_html(raw_html)
+    if not editor_html:
+        raise HTTPException(status_code=400, detail="Add some SOP content before saving")
+    encoded = editor_html.encode("utf-8")
+    if len(encoded) > _SOP_MAX_EDITOR_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Edited SOP content is too large — the limit is {_SOP_MAX_EDITOR_BYTES // (1024 * 1024)} MB")
+    try:
+        revision = int(payload.get("revision"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="A valid editor revision is required")
+    transition = str(payload.get("transition") or "save")
+    current = _users_exec(
+        "SELECT stage, department, filename FROM sop_files WHERE id=%s",
+        (file_id,), fetch=True) or []
+    if not current:
+        raise HTTPException(status_code=404, detail="File not found")
+    current_stage = int(current[0]["stage"])
+    if not _sop_can_edit_stage(user, current_stage):
+        raise HTTPException(status_code=403, detail="You don't have edit rights for this SOP")
+    target_stage, from_stage = _sop_editor_transition(
+        user, current_stage, transition)
+    email = _sop_email(user)
+    try:
+        if from_stage is None:
+            rows = _users_exec("""
+                WITH changed AS (
+                    UPDATE sop_files
+                    SET editor_html=%s, editor_revision=editor_revision+1,
+                        edited_by_email=%s, edited_at=now(),
+                        original_data=COALESCE(original_data, data),
+                        original_content_type=COALESCE(original_content_type, content_type),
+                        original_size_bytes=COALESCE(original_size_bytes, size_bytes),
+                        data=%s, content_type='text/html; charset=utf-8',
+                        size_bytes=%s
+                    WHERE id=%s AND stage=%s AND editor_revision=%s
+                    RETURNING id, stage, filename, department, editor_revision,
+                              editor_html, edited_by_email, edited_at
+                ), revision_event AS (
+                    INSERT INTO sop_file_revisions
+                        (file_id, revision, editor_html, acted_by_email,
+                         action, from_stage, to_stage)
+                    SELECT id, editor_revision, editor_html, %s,
+                           'save', stage, stage
+                    FROM changed
+                    RETURNING file_id
+                )
+                SELECT changed.id, changed.stage, changed.filename,
+                       changed.department, changed.editor_revision,
+                       changed.edited_by_email, changed.edited_at
+                FROM changed
+                JOIN revision_event ON revision_event.file_id=changed.id
+            """, (editor_html, email, psycopg2.Binary(encoded), len(encoded),
+                  file_id, current_stage, revision, email), fetch=True) or []
+        else:
+            rows = _users_exec("""
+                WITH moved AS (
+                    UPDATE sop_files
+                    SET stage=%s, editor_html=%s, editor_revision=editor_revision+1,
+                        edited_by_email=%s, edited_at=now(),
+                        original_data=COALESCE(original_data, data),
+                        original_content_type=COALESCE(original_content_type, content_type),
+                        original_size_bytes=COALESCE(original_size_bytes, size_bytes),
+                        data=%s, content_type='text/html; charset=utf-8',
+                        size_bytes=%s
+                    WHERE id=%s AND stage=%s AND editor_revision=%s
+                    RETURNING id, stage, filename, department, editor_revision,
+                              editor_html, edited_by_email, edited_at
+                ), event AS (
+                    INSERT INTO sop_stage_events
+                        (file_id, from_stage, to_stage, acted_by_email)
+                    SELECT id, %s, %s, %s FROM moved
+                    RETURNING file_id
+                ), revision_event AS (
+                    INSERT INTO sop_file_revisions
+                        (file_id, revision, editor_html, acted_by_email,
+                         action, from_stage, to_stage)
+                    SELECT id, editor_revision, editor_html, %s, %s, %s, %s
+                    FROM moved
+                    RETURNING file_id
+                )
+                SELECT moved.id, moved.stage, moved.filename, moved.department,
+                       moved.editor_revision, moved.edited_by_email, moved.edited_at
+                FROM moved
+                JOIN event ON event.file_id=moved.id
+                JOIN revision_event ON revision_event.file_id=moved.id
+            """, (target_stage, editor_html, email, psycopg2.Binary(encoded),
+                  len(encoded), file_id, current_stage, revision,
+                  from_stage, target_stage, email,
+                  email, transition, from_stage, target_stage), fetch=True) or []
+    except psycopg2.errors.UniqueViolation:
+        raise HTTPException(
+            status_code=409,
+            detail="A document with this name already exists in the destination folder")
+    if not rows:
+        latest = _users_exec(
+            "SELECT stage, editor_revision FROM sop_files WHERE id=%s",
+            (file_id,), fetch=True) or []
+        if not latest:
+            raise HTTPException(status_code=404, detail="File not found")
+        raise HTTPException(
+            status_code=409,
+            detail="This SOP changed before it could be saved. Reload it and try again.")
+    row = rows[0]
+    if row.get("edited_at") is not None:
+        row["edited_at"] = row["edited_at"].isoformat()
+    action_label = {
+        "save": "saved",
+        "awaiting_approval": "sent to Awaiting Approval",
+        "approve": "approved",
+    }[transition]
+    _log_activity(
+        request, "PUT", f"/api/sops/files/{file_id}/editor",
+        f"SOP {action_label}: {row['filename']} · stage={current_stage}"
+        f"{'→' + str(target_stage) if from_stage is not None else ''} "
+        f"· department={row['department']}")
+    return {"ok": True, "file": row}
+
+
 @app.post("/api/sops/files/{file_id}/approve")
 def sops_approve(file_id: int, request: Request):
     user = getattr(request.state, "user", None) or {}
@@ -27983,17 +28360,31 @@ def sops_approve(file_id: int, request: Request):
         rows = _users_exec("""
             WITH moved AS (
                 UPDATE sop_files
-                SET stage=3, approved_by_email=%s, approved_at=now()
-                WHERE id=%s AND stage=2
-                RETURNING id, filename, department, stage, approved_at
+                SET stage=3, approved_by_email=%s, approved_at=now(),
+                    editor_revision=editor_revision+1
+                WHERE id=%s AND stage=5
+                RETURNING id, filename, department, stage, approved_at,
+                          editor_revision, editor_html
             ), event AS (
                 INSERT INTO sop_stage_events
                     (file_id, from_stage, to_stage, acted_by_email)
-                SELECT id, 2, 3, %s FROM moved
+                SELECT id, 5, 3, %s FROM moved
+                RETURNING file_id
+            ), revision_event AS (
+                INSERT INTO sop_file_revisions
+                    (file_id, revision, editor_html, acted_by_email,
+                     action, from_stage, to_stage)
+                SELECT id, editor_revision, COALESCE(editor_html, ''), %s,
+                       'approve', 5, 3
+                FROM moved
                 RETURNING file_id
             )
-            SELECT moved.* FROM moved JOIN event ON event.file_id=moved.id
-        """, (email, file_id, email), fetch=True) or []
+            SELECT moved.id, moved.filename, moved.department, moved.stage,
+                   moved.approved_at
+            FROM moved
+            JOIN event ON event.file_id=moved.id
+            JOIN revision_event ON revision_event.file_id=moved.id
+        """, (email, file_id, email, email), fetch=True) or []
     except psycopg2.errors.UniqueViolation:
         raise HTTPException(
             status_code=409,
@@ -28005,10 +28396,10 @@ def sops_approve(file_id: int, request: Request):
             raise HTTPException(status_code=404, detail="File not found")
         raise HTTPException(
             status_code=409,
-            detail="This SOP is no longer Under Review")
+            detail="This SOP is no longer Awaiting Approval")
     _log_activity(
         request, "POST", f"/api/sops/files/{file_id}/approve",
-        f"SOP approved: {rows[0]['filename']} · stage=2→3 "
+        f"SOP approved: {rows[0]['filename']} · stage=5→3 "
         f"· department={rows[0]['department']}")
     return {"ok": True, "file": rows[0]}
 
@@ -28025,17 +28416,31 @@ def sops_obsolete(file_id: int, request: Request):
         rows = _users_exec("""
             WITH moved AS (
                 UPDATE sop_files
-                SET stage=4, obsoleted_by_email=%s, obsoleted_at=now()
+                SET stage=4, obsoleted_by_email=%s, obsoleted_at=now(),
+                    editor_revision=editor_revision+1
                 WHERE id=%s AND stage=3
-                RETURNING id, filename, department, stage, obsoleted_at
+                RETURNING id, filename, department, stage, obsoleted_at,
+                          editor_revision, editor_html
             ), event AS (
                 INSERT INTO sop_stage_events
                     (file_id, from_stage, to_stage, acted_by_email)
                 SELECT id, 3, 4, %s FROM moved
                 RETURNING file_id
+            ), revision_event AS (
+                INSERT INTO sop_file_revisions
+                    (file_id, revision, editor_html, acted_by_email,
+                     action, from_stage, to_stage)
+                SELECT id, editor_revision, COALESCE(editor_html, ''), %s,
+                       'obsolete', 3, 4
+                FROM moved
+                RETURNING file_id
             )
-            SELECT moved.* FROM moved JOIN event ON event.file_id=moved.id
-        """, (email, file_id, email), fetch=True) or []
+            SELECT moved.id, moved.filename, moved.department, moved.stage,
+                   moved.obsoleted_at
+            FROM moved
+            JOIN event ON event.file_id=moved.id
+            JOIN revision_event ON revision_event.file_id=moved.id
+        """, (email, file_id, email, email), fetch=True) or []
     except psycopg2.errors.UniqueViolation:
         raise HTTPException(
             status_code=409,

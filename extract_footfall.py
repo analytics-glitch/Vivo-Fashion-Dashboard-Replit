@@ -15,7 +15,7 @@ FOOTFALLCAM_PASSWORD = os.environ["FOOTFALLCAM_PASSWORD"]
 AUTH_URL             = "https://v9.footfallcam.com"
 CUBE_URL             = "https://cube.footfallcam.com/API/v1"
 
-# Map FootfallCam site names → Vivo POS location names
+# Map FootfallCam site names → Vivo POS location names.
 SITE_LOCATION_MAP = {
     # Kenya
     "Sarit Centre":         "Vivo Sarit",

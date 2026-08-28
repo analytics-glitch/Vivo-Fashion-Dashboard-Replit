@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { Loading, ErrorBox, Empty } from "@/components/common";
@@ -20,6 +21,8 @@ import {
   CheckCircle,
   ArrowRight,
   Archive,
+  PencilSimple,
+  FloppyDisk,
   X,
 } from "@phosphor-icons/react";
 
@@ -27,8 +30,8 @@ import {
  * SOPs — the company's Standard Operating Procedure library.
  *
  * Every signed-in active user can access Submission and the Approved master
- * repository. Admins plus the named reviewers also see Under Review and
- * Obsolete. Upload grants, stage visibility, review and approval are all
+ * repository. Admins plus the named reviewers also see Under Review, Awaiting
+ * Approval and Obsolete. Upload grants, stage visibility, editing and approval are all
  * enforced by /api/sops/*; the flags here only drive which controls render.
  */
 
@@ -387,7 +390,7 @@ const FolderView = ({ dept, onBack, onChanged }) => {
 };
 
 const WorkflowStageGrid = ({ stages, onOpen }) => (
-  <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+  <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-4">
     {stages.map((stage) => (
       <button
         key={stage.id}
@@ -456,12 +459,174 @@ const WorkflowDepartmentGrid = ({ stage, departments, onOpen, onBack }) => (
   </div>
 );
 
+const SopEditorModal = ({ file, onClose, onSaved }) => {
+  const [doc, setDoc] = useState(null);
+  const [error, setError] = useState(null);
+  const [notice, setNotice] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const editorRef = useRef(null);
+
+  useEffect(() => {
+    let active = true;
+    api.get(`/sops/files/${file.id}/editor`, { forceFresh: true })
+      .then((r) => {
+        if (!active) return;
+        setDoc(r.data);
+        setError(null);
+      })
+      .catch((e) => {
+        if (active) setError(e?.response?.data?.detail || e.message);
+      });
+    return () => { active = false; };
+  }, [file.id]);
+
+  useEffect(() => {
+    if (doc && editorRef.current) editorRef.current.innerHTML = doc.html || "";
+  }, [doc?.id]);
+
+  const close = () => {
+    if (dirty && !window.confirm("Discard your unsaved SOP changes?")) return;
+    onClose();
+  };
+
+  const format = (command, value) => {
+    editorRef.current?.focus();
+    document.execCommand(command, false, value);
+    setDirty(true);
+  };
+
+  const save = async (transition) => {
+    setSaving(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const r = await api.put(`/sops/files/${file.id}/editor`, {
+        html: editorRef.current?.innerHTML || "",
+        revision: doc.revision,
+        transition,
+      });
+      if (transition === "save") {
+        setDoc((current) => ({
+          ...current,
+          revision: r.data.file.editor_revision,
+          edited_at: r.data.file.edited_at,
+        }));
+        setDirty(false);
+        setNotice("Changes saved.");
+        onSaved?.(false);
+      } else {
+        onSaved?.(true);
+        onClose();
+      }
+    } catch (e) {
+      setError(e?.response?.data?.detail || e.message || "Could not save the SOP");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const modal = (
+    <div className="fixed inset-0 z-[100] bg-slate-950/55 p-3 sm:p-6 flex items-center justify-center" data-testid="sop-editor-modal">
+      <div className="w-full max-w-5xl max-h-[94vh] rounded-2xl bg-background border shadow-2xl flex flex-col overflow-hidden">
+        <div className="flex items-start gap-3 border-b px-4 sm:px-6 py-4">
+          <div className="rounded-lg bg-blue-50 p-2 text-blue-700">
+            <PencilSimple size={22} weight="duotone" />
+          </div>
+          <div className="min-w-0">
+            <h2 className="font-semibold truncate">{file.filename}</h2>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              {doc?.stage === 2
+                ? "Review, edit and send this SOP to Awaiting Approval."
+                : "Make final edits before approving this SOP."}
+            </p>
+          </div>
+          <button type="button" onClick={close} className="ml-auto rounded-lg p-2 hover:bg-muted" aria-label="Close SOP editor">
+            <X size={20} />
+          </button>
+        </div>
+
+        <div className="border-b px-4 sm:px-6 py-2 flex flex-wrap gap-1 bg-muted/30" aria-label="Formatting controls">
+          <button type="button" onClick={() => format("bold")} className="rounded px-2.5 py-1 text-sm font-bold hover:bg-background border">B</button>
+          <button type="button" onClick={() => format("italic")} className="rounded px-2.5 py-1 text-sm italic hover:bg-background border">I</button>
+          <button type="button" onClick={() => format("underline")} className="rounded px-2.5 py-1 text-sm underline hover:bg-background border">U</button>
+          <button type="button" onClick={() => format("formatBlock", "h2")} className="rounded px-2.5 py-1 text-sm hover:bg-background border">Heading</button>
+          <button type="button" onClick={() => format("formatBlock", "p")} className="rounded px-2.5 py-1 text-sm hover:bg-background border">Paragraph</button>
+          <button type="button" onClick={() => format("insertUnorderedList")} className="rounded px-2.5 py-1 text-sm hover:bg-background border">Bullets</button>
+          <button type="button" onClick={() => format("insertOrderedList")} className="rounded px-2.5 py-1 text-sm hover:bg-background border">Numbered</button>
+        </div>
+
+        <div className="flex-1 overflow-auto p-4 sm:p-6 bg-slate-50/70">
+          {!doc && !error && <Loading label="Opening SOP editor…" />}
+          {error && <ErrorBox message={error} />}
+          {notice && <div className="mb-3 rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-700 px-3 py-2 text-sm">{notice}</div>}
+          {doc && (
+            <div
+              ref={editorRef}
+              contentEditable
+              suppressContentEditableWarning
+              role="textbox"
+              aria-multiline="true"
+              aria-label="SOP document content"
+              onInput={() => setDirty(true)}
+              data-testid="sop-editor-content"
+              className="mx-auto min-h-[54vh] max-w-3xl bg-white border rounded-md shadow-sm px-8 sm:px-12 py-10 text-[15px] leading-7 outline-none focus:ring-2 focus:ring-primary/20 [&_h1]:text-3xl [&_h1]:font-bold [&_h1]:mb-5 [&_h2]:text-2xl [&_h2]:font-semibold [&_h2]:mb-4 [&_h3]:text-xl [&_h3]:font-semibold [&_p]:mb-3 [&_ul]:list-disc [&_ul]:pl-6 [&_ol]:list-decimal [&_ol]:pl-6"
+            />
+          )}
+        </div>
+
+        <div className="border-t px-4 sm:px-6 py-4 flex flex-wrap items-center gap-2 bg-background">
+          <div className="text-xs text-muted-foreground mr-auto">
+            {doc?.edited_at ? `Last saved ${fmtDate(doc.edited_at)}` : "Original upload retained for traceability"}
+          </div>
+          <button type="button" onClick={close} disabled={saving} className="rounded-lg border px-3 py-2 text-sm hover:bg-muted disabled:opacity-50">
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => save("save")}
+            disabled={!doc || saving}
+            data-testid="sop-editor-save"
+            className="inline-flex items-center gap-1.5 rounded-lg border px-3 py-2 text-sm font-medium hover:bg-muted disabled:opacity-50"
+          >
+            <FloppyDisk size={16} /> Save changes
+          </button>
+          {doc?.stage === 2 && (
+            <button
+              type="button"
+              onClick={() => save("awaiting_approval")}
+              disabled={saving}
+              data-testid="sop-editor-send-approval"
+              className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 text-white px-3 py-2 text-sm font-medium hover:bg-blue-700 disabled:opacity-50"
+            >
+              <ArrowRight size={16} /> Save &amp; send to Awaiting Approval
+            </button>
+          )}
+          {doc?.stage === 5 && (
+            <button
+              type="button"
+              onClick={() => save("approve")}
+              disabled={saving}
+              data-testid="sop-editor-approve"
+              className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 text-white px-3 py-2 text-sm font-medium hover:bg-emerald-700 disabled:opacity-50"
+            >
+              <CheckCircle size={16} /> Save &amp; approve
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+  return createPortal(modal, document.body);
+};
+
 const WorkflowFolderView = ({ stage, dept, onBack, onChanged }) => {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [busyId, setBusyId] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [notice, setNotice] = useState(null);
+  const [editingFile, setEditingFile] = useState(null);
   const fileInput = useRef(null);
 
   const load = useCallback(() => {
@@ -535,6 +700,28 @@ const WorkflowFolderView = ({ stage, dept, onBack, onChanged }) => {
       setTimeout(() => URL.revokeObjectURL(url), 60_000);
     } catch (e) {
       flash(e?.response?.data?.detail || "Download failed", true);
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const onDownloadOriginal = async (file) => {
+    setBusyId(file.id);
+    try {
+      const r = await api.get(`/sops/files/${file.id}/original`, {
+        responseType: "blob",
+        forceFresh: true,
+      });
+      const url = URL.createObjectURL(r.data);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = file.filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (e) {
+      flash(e?.response?.data?.detail || "Original download failed", true);
     } finally {
       setBusyId(null);
     }
@@ -635,7 +822,19 @@ const WorkflowFolderView = ({ stage, dept, onBack, onChanged }) => {
                     <td className="py-2.5 pr-3">
                       <div className="flex items-center gap-2 min-w-0">
                         <FileTypeIcon filename={file.filename} />
-                        <span className="truncate max-w-[360px]" title={file.filename}>{file.filename}</span>
+                        {data.can_edit ? (
+                          <button
+                            type="button"
+                            onClick={() => setEditingFile(file)}
+                            className="truncate max-w-[360px] text-left font-medium text-blue-700 hover:underline"
+                            title={`Edit ${file.filename}`}
+                            data-testid={`sop-edit-name-${file.id}`}
+                          >
+                            {file.filename}
+                          </button>
+                        ) : (
+                          <span className="truncate max-w-[360px]" title={file.filename}>{file.filename}</span>
+                        )}
                       </div>
                     </td>
                     <td className="py-2.5 pr-3 whitespace-nowrap text-muted-foreground">{fmtSize(file.size_bytes)}</td>
@@ -645,6 +844,17 @@ const WorkflowFolderView = ({ stage, dept, onBack, onChanged }) => {
                     </td>
                     <td className="py-2.5">
                       <div className="flex items-center justify-end gap-1">
+                        {data.can_edit && (
+                          <button
+                            type="button"
+                            disabled={busyId === file.id}
+                            onClick={() => setEditingFile(file)}
+                            data-testid={`sop-edit-${file.id}`}
+                            className="inline-flex items-center gap-1 rounded-md px-2 py-1.5 text-xs font-medium bg-violet-50 text-violet-700 hover:bg-violet-100 disabled:opacity-50"
+                          >
+                            <PencilSimple size={15} /> Edit SOP
+                          </button>
+                        )}
                         {data.can_review && (
                           <button
                             type="button"
@@ -654,17 +864,6 @@ const WorkflowFolderView = ({ stage, dept, onBack, onChanged }) => {
                             className="inline-flex items-center gap-1 rounded-md px-2 py-1.5 text-xs font-medium bg-blue-50 text-blue-700 hover:bg-blue-100 disabled:opacity-50"
                           >
                             <ArrowRight size={15} /> Reviewed
-                          </button>
-                        )}
-                        {data.can_approve && (
-                          <button
-                            type="button"
-                            disabled={busyId === file.id}
-                            onClick={() => transition(file, "approve")}
-                            data-testid={`sop-approve-${file.id}`}
-                            className="inline-flex items-center gap-1 rounded-md px-2 py-1.5 text-xs font-medium bg-emerald-50 text-emerald-700 hover:bg-emerald-100 disabled:opacity-50"
-                          >
-                            <CheckCircle size={15} /> Approve
                           </button>
                         )}
                         {data.can_obsolete && (
@@ -696,6 +895,18 @@ const WorkflowFolderView = ({ stage, dept, onBack, onChanged }) => {
                           data-testid={`sop-download-${file.id}`}>
                           <DownloadSimple size={17} />
                         </button>
+                        {data.can_download_original && file.has_original && (
+                          <button
+                            type="button"
+                            title="Download original upload"
+                            disabled={busyId === file.id}
+                            onClick={() => onDownloadOriginal(file)}
+                            className="rounded-md px-2 py-1.5 hover:bg-muted text-xs font-medium text-muted-foreground hover:text-foreground disabled:opacity-50"
+                            data-testid={`sop-original-${file.id}`}
+                          >
+                            Original
+                          </button>
+                        )}
                         {data.can_delete && (
                           <button type="button" title="Delete" disabled={busyId === file.id}
                             onClick={() => onDelete(file)}
@@ -713,6 +924,13 @@ const WorkflowFolderView = ({ stage, dept, onBack, onChanged }) => {
           </div>
         )}
       </div>
+      {editingFile && (
+        <SopEditorModal
+          file={editingFile}
+          onClose={() => setEditingFile(null)}
+          onSaved={() => refresh()}
+        />
+      )}
     </div>
   );
 };

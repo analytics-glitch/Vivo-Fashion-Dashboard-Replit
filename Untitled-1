@@ -1,0 +1,9 @@
+
+# Docker Compose
+docker compose logs --tail=200 -f odoo
+
+# Docker container
+docker logs --tail=200 -f odoo
+
+# Systemd service
+sudo journalctl -u odoo -n 200 -f
