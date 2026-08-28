@@ -27672,13 +27672,29 @@ def _sop_validate_docx_fidelity(document):
         if root.xpath(expression):
             unsupported.add(label)
     unsupported_parts = {
-        "/word/comments.xml": "comments",
-        "/word/footnotes.xml": "footnotes",
-        "/word/endnotes.xml": "endnotes",
+        "/word/comments.xml": (
+            "comments",
+            r"<w:comment(?:\s|>)",
+        ),
+        "/word/footnotes.xml": (
+            "footnotes",
+            r'<w:footnote\b(?=[^>]*\bw:id="(?!-1|0)")',
+        ),
+        "/word/endnotes.xml": (
+            "endnotes",
+            r'<w:endnote\b(?=[^>]*\bw:id="(?!-1|0)")',
+        ),
     }
     for part in document.part.package.parts:
-        label = unsupported_parts.get(str(part.partname))
-        if label:
+        part_rule = unsupported_parts.get(str(part.partname))
+        if part_rule:
+            label, content_pattern = part_rule
+            part_xml = bytes(part.blob).decode("utf-8", errors="ignore")
+            # Word commonly includes empty comments parts and the mandatory
+            # separator footnote/endnote records (-1 and 0). Those templates
+            # contain no document content and must not make a normal DOCX fail.
+            if not re.search(content_pattern, part_xml):
+                continue
             unsupported.add(label)
 
     areas = []
@@ -27724,8 +27740,7 @@ def _sop_validate_docx_fidelity(document):
             if (
                 font.strike or font.double_strike or font.superscript
                 or font.subscript or font.all_caps or font.small_caps
-                or font.size is not None or font.name is not None
-                or font.color.rgb is not None or font.highlight_color is not None
+                or font.highlight_color is not None
             ):
                 unsupported.add("advanced text formatting")
 

@@ -20,3 +20,9 @@ Approved master copies must preserve the meaning and structure of the reviewed c
 **Why:** A technically valid PDF can still corrupt text or flatten tables into ambiguous lines, making the master document differ materially from what reviewers approved.
 
 **How to apply:** Keep fidelity checks shared by every approval route, test semantic layout as well as text presence, and leave the SOP revision and stage unchanged when rendering is unsafe.
+
+DOCX fidelity checks must inspect note content, not merely package-part presence; Word may include empty comments parts and separator-only footnote/endnote parts. Ordinary font face, size, and colour metadata may be normalized by the editor.
+
+**Why:** Treating template-only OOXML parts or routine font metadata as unsupported content falsely rejects otherwise readable modern Word SOPs.
+
+**How to apply:** Reject comments and notes only when their XML contains real user records (excluding footnote/endnote IDs -1 and 0), while retaining strict rejection for content the editor would actually lose.

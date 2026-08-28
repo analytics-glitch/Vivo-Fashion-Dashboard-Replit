@@ -247,6 +247,26 @@ class SopWorkflowRulesTests(unittest.TestCase):
         self.assertIn("<td><p>Unlock doors</p></td>", imported)
         self.assertNotIn("ready for editing", imported)
 
+    def test_empty_word_note_parts_and_font_metadata_are_not_rejected(self):
+        from docx import Document
+        from docx.shared import Pt, RGBColor
+
+        document = Document()
+        paragraph = document.add_paragraph()
+        run = paragraph.add_run("Normal styled procedure")
+        run.font.name = "Arial"
+        run.font.size = Pt(11)
+        run.font.color.rgb = RGBColor(31, 41, 55)
+        output = io.BytesIO()
+        document.save(output)
+
+        imported = api_pg._sop_initial_editor_html(
+            "Styled procedure.docx",
+            output.getvalue(),
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+        self.assertIn("Normal styled procedure", imported)
+
     def test_approved_pdf_contains_the_final_editor_text(self):
         pdf = api_pg._sop_html_to_pdf(
             "<h1>Store Opening</h1><p>Final approved procedure — café 中文</p>"
