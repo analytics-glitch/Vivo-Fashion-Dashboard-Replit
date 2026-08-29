@@ -1885,7 +1885,7 @@ a { color: inherit; text-decoration: none; }
 .feedback-step-more .feedback-field > span { color: #1A1A2E; }
 .feedback-step-images { display: grid; gap: 11px; }
 .feedback-step-images .feedback-step-heading { margin-bottom: 1px; }
-.feedback-image-help { max-width: 500px; margin: 0; color: #7d817f; font-size: 11px; line-height: 1.55; }
+.feedback-image-help { width: 100%; max-width: none; margin: 0; color: #7d817f; font-size: 11px; line-height: 1.55; }
 .feedback-image-input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 .feedback-image-picker { display: inline-flex; align-items: center; justify-content: center; gap: 7px; width: fit-content; min-height: 38px; padding: 0 11px; border: 1px dashed #cdbb95; color: #745d37; background: #fffaf1; cursor: pointer; font: 10px var(--app-font-mono); }
 .feedback-image-picker:hover { border-color: #a48652; background: #fcf3e4; }
@@ -1926,8 +1926,9 @@ a { color: inherit; text-decoration: none; }
 .feedback-urgency small { color: #99938b; font: 10px var(--app-font-sans); line-height: 1.35; }
 .feedback-urgency.selected { border-color: #b8924e; background: #f7edda; }
 .feedback-urgency.selected b { color: #69502a; }
-.feedback-form-error, .feedback-inline-hint { display: flex; align-items: center; gap: 7px; margin: 14px 0 0; color: #9b554c; font: 11px var(--app-font-sans); }
-.feedback-inline-hint { color: #9a6c32; }
+.feedback-form-error { display: flex; align-items: center; gap: 7px; margin: 14px 0 0; color: #9b554c; font: 11px var(--app-font-sans); }
+.feedback-validation-target input, .feedback-validation-target select, .feedback-validation-target textarea, .feedback-validation-target .feedback-search-input, .feedback-validation-target .feedback-type-trigger, .feedback-validation-target .feedback-pulse-locked-style { border-color: #b36b5f; box-shadow: 0 0 0 3px rgba(179,107,95,.12); }
+.feedback-validation-message { align-items: flex-start; }
 .feedback-button { display: inline-flex; align-items: center; justify-content: center; gap: 9px; min-height: 45px; padding: 0 17px; border: 1px solid transparent; cursor: pointer; font: 11px var(--app-font-mono); letter-spacing: .03em; }
 .feedback-button.dark { color: #fff; background: #1A1A2E; }
 .feedback-button.dark:hover { background: #253653; }

@@ -240,8 +240,8 @@ export function useStyleFeedback(styleId: number) {
   });
 }
 
-function Field({ label, children, hint }: { label: string; children: ReactNode; hint?: string }) {
-  return <label className="feedback-field"><span>{label}</span>{children}{hint && <small>{hint}</small>}</label>;
+function Field({ label, children, hint, className = "" }: { label: string; children: ReactNode; hint?: string; className?: string }) {
+  return <label className={`feedback-field ${className}`.trim()}><span>{label}</span>{children}{hint && <small>{hint}</small>}</label>;
 }
 
 function FeedbackStyleSearch({
@@ -307,7 +307,13 @@ export function PublicFeedbackPage() {
   const [submitted, setSubmitted] = useState(false);
   const [images, setImages] = useState<PendingFeedbackImage[]>([]);
   const [imageError, setImageError] = useState("");
+  const [validationMessage, setValidationMessage] = useState("");
+  const [validationField, setValidationField] = useState<"name" | "department" | "style" | "issue" | "feedback" | null>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
+  const nameInputRef = useRef<HTMLInputElement>(null);
+  const departmentInputRef = useRef<HTMLSelectElement>(null);
+  const styleSectionRef = useRef<HTMLElement>(null);
+  const commentInputRef = useRef<HTMLTextAreaElement>(null);
   const typePickerRef = useRef<HTMLDivElement>(null);
   const typeTriggerRef = useRef<HTMLButtonElement>(null);
   const imagesRef = useRef<PendingFeedbackImage[]>([]);
@@ -368,13 +374,6 @@ export function PublicFeedbackPage() {
     const matched = colourways.data.find((value) => value.toLowerCase() === targetColourway.toLowerCase());
     setForm((current) => ({ ...current, colourway: matched || generalColourway }));
   }, [colourways.data, generalColourway, isPulse, targetColourway]);
-  const canSubmit = Boolean(
-    form.submitterName.trim()
-      && form.submitterTeam.trim()
-      && style?.code
-      && form.feedbackTypes.length
-      && form.commentText.trim().length >= 8,
-  );
   const imagesReady = images.every((image) => image.state !== "uploading");
   const updateImage = (id: string, patch: Partial<PendingFeedbackImage>) => setImages((current) => current.map((image) => image.id === id ? { ...image, ...patch } : image));
   const uploadImage = async (image: PendingFeedbackImage) => {
@@ -428,6 +427,36 @@ export function PublicFeedbackPage() {
     setTypesOpen(false);
     typeTriggerRef.current?.focus();
   };
+  const validateRequiredFields = () => {
+    const missing: Array<{ key: NonNullable<typeof validationField>; label: string }> = [];
+    if (!form.submitterName.trim()) missing.push({ key: "name", label: "Name" });
+    if (!form.submitterTeam.trim()) missing.push({ key: "department", label: "Department" });
+    if (!style?.code) missing.push({ key: "style", label: "Style" });
+    if (!form.feedbackTypes.length) missing.push({ key: "issue", label: "Issue type(s)" });
+    if (form.commentText.trim().length < 8) missing.push({ key: "feedback", label: "Observation / feedback" });
+    if (!missing.length) {
+      setValidationMessage("");
+      setValidationField(null);
+      return true;
+    }
+    const firstMissing = missing[0];
+    setValidationField(firstMissing.key);
+    setValidationMessage(`Please complete the following required field${missing.length === 1 ? "" : "s"}: ${missing.map((field) => field.label).join(", ")}.`);
+    window.requestAnimationFrame(() => {
+      const target = firstMissing.key === "name"
+        ? nameInputRef.current
+        : firstMissing.key === "department"
+          ? departmentInputRef.current
+          : firstMissing.key === "style"
+            ? document.querySelector<HTMLInputElement>('[data-testid="input-feedback-style-search"]') || styleSectionRef.current
+            : firstMissing.key === "issue"
+              ? typeTriggerRef.current
+              : commentInputRef.current;
+      target?.scrollIntoView({ behavior: "smooth", block: "center" });
+      if (target instanceof HTMLElement) target.focus({ preventScroll: true });
+    });
+    return false;
+  };
   const reset = () => {
     setSubmitted(false);
     if (!isPulse) {
@@ -438,6 +467,8 @@ export function PublicFeedbackPage() {
     images.forEach((image) => { if (image.previewUrl) URL.revokeObjectURL(image.previewUrl); });
     setImages([]);
     setImageError("");
+    setValidationMessage("");
+    setValidationField(null);
     setForm({ submitterName: "", submitterTeam: "", colourway: isPulse ? targetColourway : generalColourway, feedbackTypes: [], commentText: "" });
   };
   const chooseImages = (files: FileList | null) => {
@@ -491,18 +522,19 @@ export function PublicFeedbackPage() {
           <h2>Thank you!</h2>
           <p>Your feedback has been submitted and the product team will review it.</p>
           <button className="feedback-button dark" type="button" onClick={reset} data-testid="button-submit-another-feedback">Submit another <ArrowRight size={16} /></button>
-        </div> : <form onSubmit={(event: FormEvent) => { event.preventDefault(); if (canSubmit) submit.mutate(); }} className="public-feedback-form">
+        </div> : <form noValidate onSubmit={(event: FormEvent) => { event.preventDefault(); if (validateRequiredFields() && imagesReady) submit.mutate(); }} className="public-feedback-form">
           <div className="feedback-form-heading"><div><h2 id="feedback-form-title">Style Feedback Form</h2></div><span className="feedback-required">* Required</span></div>
+           {validationMessage && <div className="feedback-form-error feedback-validation-message" role="alert" aria-live="polite" data-testid="feedback-validation-error"><CircleAlert size={16} /> {validationMessage}</div>}
 
           <section className="feedback-step feedback-step-who" aria-labelledby="feedback-step-who">
             <div className="feedback-step-heading"><span className="feedback-step-number">1</span><div><h3 id="feedback-step-who">Who are you?</h3></div></div>
             <div className="feedback-form-grid">
-              <div className="feedback-field"><input required value={form.submitterName} onChange={(event) => setForm((current) => ({ ...current, submitterName: event.target.value }))} placeholder="Your name" autoComplete="name" aria-label="Your name" data-testid="input-feedback-name" /></div>
-              <Field label="Department"><select required value={form.submitterTeam} onChange={(event) => setForm((current) => ({ ...current, submitterTeam: event.target.value }))} data-testid="select-feedback-department"><option value="">Select your department…</option>{departmentOptions.map((department) => <option key={department} value={department}>{department}</option>)}</select></Field>
+              <div className={`feedback-field ${validationField === "name" ? "feedback-validation-target" : ""}`}><input ref={nameInputRef} required value={form.submitterName} onChange={(event) => setForm((current) => ({ ...current, submitterName: event.target.value }))} placeholder="Your name" autoComplete="name" aria-label="Your name" aria-invalid={validationField === "name"} data-testid="input-feedback-name" /></div>
+              <Field label="Department" className={validationField === "department" ? "feedback-validation-target" : ""}><select ref={departmentInputRef} required value={form.submitterTeam} onChange={(event) => setForm((current) => ({ ...current, submitterTeam: event.target.value }))} aria-invalid={validationField === "department"} data-testid="select-feedback-department"><option value="">Select your department…</option>{departmentOptions.map((department) => <option key={department} value={department}>{department}</option>)}</select></Field>
             </div>
           </section>
 
-          <section className="feedback-step feedback-step-style" aria-labelledby="feedback-step-style">
+          <section ref={styleSectionRef} tabIndex={-1} className={`feedback-step feedback-step-style ${validationField === "style" ? "feedback-validation-target" : ""}`} aria-labelledby="feedback-step-style">
             <div className="feedback-step-heading"><span className="feedback-step-number">2</span><div><h3 id="feedback-step-style">Which style?</h3></div></div>
             {isPulse ? <div className="feedback-pulse-locked-style"><span>Style Pulse is focused on</span><strong>{style?.name || (targetStyleQuery.isLoading ? "Loading style…" : targetStyleNumber)}</strong><small>{style?.code || targetStyleNumber}{style?.status ? ` · ${style.status}` : ""}</small></div> : <Field label="Search the style catalogue"><FeedbackStyleSearch value={styleSearch} selected={style} onChange={setStyleSearch} onSelect={(selected) => { setStyle(selected); setForm((current) => ({ ...current, colourway: generalColourway })); }} /></Field>}
             {isPulse && targetStyleQuery.isError && <div className="feedback-form-error"><CircleAlert size={16} /> We couldn't find that style in the catalogue.</div>}
@@ -519,12 +551,12 @@ export function PublicFeedbackPage() {
             {colourways.isLoading && <p className="feedback-loading-note">Loading available colourways…</p>}
           </section>}
 
-          <section className="feedback-step feedback-step-issue" aria-labelledby="feedback-step-issue">
+          <section className={`feedback-step feedback-step-issue ${validationField === "issue" ? "feedback-validation-target" : ""}`} aria-labelledby="feedback-step-issue">
             <div className="feedback-step-heading"><span className="feedback-step-number">3</span><div><h3 id="feedback-step-issue">{isPulse ? pulseMode === "investigate" ? "What’s getting in the way?" : "What’s working well?" : "What's the issue?"}</h3></div></div>
             <fieldset className="feedback-issue-fieldset">
               <legend>Choose all that apply</legend>
                <div ref={typePickerRef} className={`feedback-type-picker ${typesOpen ? "open" : ""}`}>
-                 <button ref={typeTriggerRef} type="button" className="feedback-type-trigger" onClick={() => setTypesOpen((open) => !open)} aria-expanded={typesOpen} aria-controls="feedback-type-options"><span>{form.feedbackTypes.length ? `${form.feedbackTypes.length} selected · ${form.feedbackTypes.slice(0, 2).join(", ")}${form.feedbackTypes.length > 2 ? "…" : ""}` : isPulse ? pulseMode === "investigate" ? "Select the barriers you’re hearing" : "Select the reasons customers love it" : "Select one or more issue types"}</span><ChevronDown size={16} /></button>
+                 <button ref={typeTriggerRef} type="button" className="feedback-type-trigger" onClick={() => setTypesOpen((open) => !open)} aria-expanded={typesOpen} aria-invalid={validationField === "issue"} aria-controls="feedback-type-options"><span>{form.feedbackTypes.length ? `${form.feedbackTypes.length} selected · ${form.feedbackTypes.slice(0, 2).join(", ")}${form.feedbackTypes.length > 2 ? "…" : ""}` : isPulse ? pulseMode === "investigate" ? "Select the barriers you’re hearing" : "Select the reasons customers love it" : "Select one or more issue types"}</span><ChevronDown size={16} /></button>
                   {typesOpen && <div className="feedback-type-options" id="feedback-type-options" role="group" aria-label="Feedback issue types">{pulseTypes.map((type) => {
                    const hint = !isPulse ? feedbackTypeOptions.find((option) => option.label === type)?.hint : undefined;
                    return <label key={type} className={`feedback-type-option ${form.feedbackTypes.includes(type) ? "selected" : ""}`}><input type="checkbox" checked={form.feedbackTypes.includes(type)} onChange={() => toggleType(type)} data-testid={`checkbox-feedback-type-${type.toLowerCase().replaceAll(" ", "-")}`} /><span className="feedback-type-copy"><strong>{type}</strong>{hint && <small>{hint}</small>}</span>{form.feedbackTypes.includes(type) && <Check size={15} />}</label>;
@@ -533,11 +565,11 @@ export function PublicFeedbackPage() {
             </fieldset>
           </section>
 
-          <section className="feedback-step feedback-step-more" aria-labelledby="feedback-step-more">
+          <section className={`feedback-step feedback-step-more ${validationField === "feedback" ? "feedback-validation-target" : ""}`} aria-labelledby="feedback-step-more">
             <div className="feedback-step-heading"><span className="feedback-step-number">4</span><div><h3 id="feedback-step-more">Tell us more</h3></div></div>
             <div className="feedback-field">
               {isPulse && <span>What are customers saying?</span>}
-              <textarea required minLength={8} rows={6} value={form.commentText} onChange={(event) => setForm((current) => ({ ...current, commentText: event.target.value }))} placeholder={isPulse ? pulseMode === "investigate" ? "What are customers saying when they put it back?" : "What are customers saying when they buy it?" : "Share your specific feedback here."} aria-label={isPulse ? "What are customers saying?" : "Your feedback"} data-testid="textarea-feedback-comment" />
+              <textarea ref={commentInputRef} required minLength={8} rows={6} value={form.commentText} onChange={(event) => setForm((current) => ({ ...current, commentText: event.target.value }))} placeholder={isPulse ? pulseMode === "investigate" ? "What are customers saying when they put it back?" : "What are customers saying when they buy it?" : "Share your specific feedback here."} aria-label={isPulse ? "What are customers saying?" : "Your feedback"} aria-invalid={validationField === "feedback"} data-testid="textarea-feedback-comment" />
             </div>
           </section>
 
@@ -555,10 +587,9 @@ export function PublicFeedbackPage() {
           </section>
 
           {submit.isError && <div className="feedback-form-error"><CircleAlert size={16} /> {submit.error instanceof Error ? submit.error.message : "We couldn't send that note. Please try again."}</div>}
-          {!canSubmit && <p className="feedback-inline-hint">Complete your name, department, style, issue type, and observation to submit.</p>}
           <div className="feedback-submit-step">
             <div className="feedback-step-heading"><span className="feedback-step-number">6</span><div><h3>Submit</h3></div></div>
-            <button className="feedback-button dark feedback-submit" type="submit" disabled={submit.isPending || !canSubmit || !imagesReady} data-testid="button-submit-feedback">{submit.isPending ? "Sending to the room…" : "Submit feedback"} <ArrowRight size={16} /></button>
+            <button className="feedback-button dark feedback-submit" type="submit" disabled={submit.isPending || !imagesReady} data-testid="button-submit-feedback">{submit.isPending ? "Sending to the room…" : "Submit feedback"} <ArrowRight size={16} /></button>
           </div>
           <p className="feedback-privacy"><ShieldCheck size={14} /> Shared with the Vivo product team for product decisions.</p>
         </form>}
