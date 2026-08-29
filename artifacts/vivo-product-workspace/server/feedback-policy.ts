@@ -4,6 +4,10 @@ export const FEEDBACK_IMAGE_MAX_BYTES = 8 * 1024 * 1024;
 export const FEEDBACK_IMAGE_UPLOAD_TTL_SECONDS = 15 * 60;
 export const FEEDBACK_IMAGE_UPLOAD_RATE_WINDOW_MS = 10 * 60 * 1000;
 export const FEEDBACK_IMAGE_UPLOAD_RATE_LIMIT = 20;
+export const FEEDBACK_CUSTOMER_SEARCH_MIN_LENGTH = 2;
+export const FEEDBACK_CUSTOMER_SEARCH_LIMIT = 8;
+export const FEEDBACK_CUSTOMER_SEARCH_RATE_WINDOW_MS = 10 * 60 * 1000;
+export const FEEDBACK_CUSTOMER_SEARCH_RATE_LIMIT = 30;
 
 const FEEDBACK_IMAGE_TYPES = {
   "image/jpeg": ["jpg", "jpeg"],
@@ -62,4 +66,16 @@ export function feedbackImageTokens(value: unknown) {
     tokens: Array.from(new Set(valid)),
     valid: values.length === valid.length && valid.length <= FEEDBACK_IMAGE_MAX_FILES && new Set(valid).size === valid.length,
   };
+}
+
+export function feedbackCustomerOrigin(value: unknown) {
+  return value === true || String(value ?? "").trim().toLowerCase() === "true";
+}
+
+export function normalizeFeedbackCustomerName(value: unknown) {
+  return String(value ?? "").trim().replace(/\s+/g, " ").slice(0, 200);
+}
+
+export function normalizeFeedbackCustomerId(value: unknown) {
+  return String(value ?? "").trim().slice(0, 120);
 }

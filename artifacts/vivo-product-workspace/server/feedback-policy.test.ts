@@ -2,9 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   FEEDBACK_IMAGE_MAX_BYTES,
+  FEEDBACK_CUSTOMER_SEARCH_LIMIT,
+  FEEDBACK_CUSTOMER_SEARCH_MIN_LENGTH,
   FEEDBACK_QUARTER_START_SQL,
   detectFeedbackImageContentType,
+  feedbackCustomerOrigin,
   feedbackImageTokens,
+  normalizeFeedbackCustomerId,
+  normalizeFeedbackCustomerName,
   validateFeedbackImageMeta,
   validateFeedbackImageUpload,
 } from "./feedback-policy.js";
@@ -34,4 +39,14 @@ test("feedback image signatures and association tokens reject mismatches", () =>
   assert.deepEqual(feedbackImageTokens([token]), { tokens: [token], valid: true });
   assert.equal(feedbackImageTokens([token, token]).valid, false);
   assert.equal(feedbackImageTokens(["not-a-token"]).valid, false);
+});
+
+test("customer feedback metadata is normalized without exposing broader CRM fields", () => {
+  assert.equal(FEEDBACK_CUSTOMER_SEARCH_MIN_LENGTH, 2);
+  assert.equal(FEEDBACK_CUSTOMER_SEARCH_LIMIT, 8);
+  assert.equal(feedbackCustomerOrigin(true), true);
+  assert.equal(feedbackCustomerOrigin("TRUE"), true);
+  assert.equal(feedbackCustomerOrigin("false"), false);
+  assert.equal(normalizeFeedbackCustomerName("  Amina   Njeri  "), "Amina Njeri");
+  assert.equal(normalizeFeedbackCustomerId(` ${"a".repeat(130)} `).length, 120);
 });

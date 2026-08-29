@@ -17,10 +17,17 @@ import {
   FEEDBACK_IMAGE_UPLOAD_RATE_LIMIT,
   FEEDBACK_IMAGE_UPLOAD_RATE_WINDOW_MS,
   FEEDBACK_IMAGE_UPLOAD_TTL_SECONDS,
+  FEEDBACK_CUSTOMER_SEARCH_LIMIT,
+  FEEDBACK_CUSTOMER_SEARCH_MIN_LENGTH,
+  FEEDBACK_CUSTOMER_SEARCH_RATE_LIMIT,
+  FEEDBACK_CUSTOMER_SEARCH_RATE_WINDOW_MS,
   FEEDBACK_QUARTER_START_SQL,
   detectFeedbackImageContentType,
   feedbackImageExtension,
+  feedbackCustomerOrigin,
   feedbackImageTokens,
+  normalizeFeedbackCustomerId,
+  normalizeFeedbackCustomerName,
   validateFeedbackImageMeta,
   validateFeedbackImageUpload,
   type FeedbackImageContentType,
@@ -1542,6 +1549,10 @@ async function ensureSchema() {
       comment_text TEXT NOT NULL,
       pulse_id BIGINT REFERENCES ${schema}.style_feedback_pulses(id) ON DELETE SET NULL,
       pulse_mode TEXT CHECK (pulse_mode IN ('investigate','champion')),
+      customer_origin BOOLEAN NOT NULL DEFAULT FALSE,
+      customer_id TEXT,
+      customer_name TEXT,
+      store_name TEXT,
       reviewed BOOLEAN NOT NULL DEFAULT FALSE,
       reviewed_by INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL,
       reviewed_at TIMESTAMPTZ,
@@ -1563,6 +1574,10 @@ async function ensureSchema() {
     ALTER TABLE ${schema}.style_feedback ADD COLUMN IF NOT EXISTS colourway TEXT NOT NULL DEFAULT 'All colourways / General';
     ALTER TABLE ${schema}.style_feedback ADD COLUMN IF NOT EXISTS pulse_id BIGINT REFERENCES ${schema}.style_feedback_pulses(id) ON DELETE SET NULL;
     ALTER TABLE ${schema}.style_feedback ADD COLUMN IF NOT EXISTS pulse_mode TEXT;
+    ALTER TABLE ${schema}.style_feedback ADD COLUMN IF NOT EXISTS customer_origin BOOLEAN NOT NULL DEFAULT FALSE;
+    ALTER TABLE ${schema}.style_feedback ADD COLUMN IF NOT EXISTS customer_id TEXT;
+    ALTER TABLE ${schema}.style_feedback ADD COLUMN IF NOT EXISTS customer_name TEXT;
+    ALTER TABLE ${schema}.style_feedback ADD COLUMN IF NOT EXISTS store_name TEXT;
     ALTER TABLE ${schema}.style_feedback_images ADD COLUMN IF NOT EXISTS uploaded_at TIMESTAMPTZ;
     DO $$ BEGIN
       ALTER TABLE ${schema}.style_feedback ADD CONSTRAINT style_feedback_pulse_mode_check CHECK (pulse_mode IS NULL OR pulse_mode IN ('investigate','champion'));
@@ -2190,6 +2205,7 @@ async function signedStorageUrl(objectPath: string, method: "GET" | "PUT" | "DEL
 }
 
 const feedbackUploadAttempts = new Map<string, number[]>();
+const feedbackCustomerSearchAttempts = new Map<string, number[]>();
 
 function feedbackUploadRateKey(req: Request) {
   const peer = req.socket.remoteAddress || "unknown";
@@ -2218,6 +2234,27 @@ function allowFeedbackUpload(req: Request, bucket: "handshake" | "transfer", lim
 
 function allowFeedbackUploadHandshake(req: Request) {
   return allowFeedbackUpload(req, "handshake", FEEDBACK_IMAGE_UPLOAD_RATE_LIMIT);
+}
+
+function allowFeedbackCustomerSearch(req: Request) {
+  const now = Date.now();
+  const key = feedbackUploadRateKey(req);
+  const recent = (feedbackCustomerSearchAttempts.get(key) ?? [])
+    .filter((timestamp) => now - timestamp < FEEDBACK_CUSTOMER_SEARCH_RATE_WINDOW_MS);
+  if (recent.length >= FEEDBACK_CUSTOMER_SEARCH_RATE_LIMIT) {
+    feedbackCustomerSearchAttempts.set(key, recent);
+    return false;
+  }
+  recent.push(now);
+  feedbackCustomerSearchAttempts.set(key, recent);
+  if (feedbackCustomerSearchAttempts.size > 1000) {
+    for (const [candidate, timestamps] of feedbackCustomerSearchAttempts) {
+      if (!timestamps.length || now - timestamps[timestamps.length - 1] > FEEDBACK_CUSTOMER_SEARCH_RATE_WINDOW_MS) {
+        feedbackCustomerSearchAttempts.delete(candidate);
+      }
+    }
+  }
+  return true;
 }
 
 async function deleteFeedbackObject(objectPath: string) {
@@ -2794,6 +2831,10 @@ function feedbackPayload(row: Record<string, unknown>) {
     styleNameFreetext: String(row.styleNameFreetext ?? ""),
     pulseId: row.pulseId == null ? null : Number(row.pulseId),
     pulseMode: row.pulseMode == null ? null : String(row.pulseMode) as PulseMode,
+    customerOrigin: Boolean(row.customerOrigin),
+    customerId: row.customerId == null ? null : String(row.customerId),
+    customerName: String(row.customerName ?? ""),
+    storeName: row.storeName == null ? null : String(row.storeName),
     feedbackTypes: Array.isArray(row.feedbackTypes) ? row.feedbackTypes.map(String) : [],
     sentiment: String(row.sentiment ?? "mixed") as FeedbackSentiment,
     urgency: String(row.urgency ?? "note") as FeedbackUrgency,
@@ -2975,6 +3016,74 @@ async function feedbackColourways(styleNumber: string) {
   return result.rows.map((row) => String(row.colourway));
 }
 
+async function feedbackCustomerSearch(q: string) {
+  const result = await pool.query<{ customerId: string; name: string }>(
+    `WITH customer_names AS (
+       SELECT customer_id::text AS "customerId",
+         MAX(NULLIF(TRIM(CONCAT_WS(' ', first_name, last_name)),'')) AS name,
+         BOOL_OR(COALESCE(email,'') ~* '@(vivofashiongroup|vivoactivewear|fashiongroup|shopzetu|vivowoman)\\.|^anonymous-[0-9]+@example\\.com') AS pseudo_email
+       FROM public.all_customers
+       WHERE customer_id IS NOT NULL AND BTRIM(customer_id::text) <> ''
+       GROUP BY customer_id
+     )
+     SELECT "customerId",name
+     FROM customer_names
+     WHERE name IS NOT NULL
+       AND NOT pseudo_email
+       AND name !~* '(walk[ -]?in|vivo|safari|zoya|anonymous customer|cbd digo)'
+       AND name ILIKE $1
+     ORDER BY LOWER(name),"customerId"
+     LIMIT $2`,
+    [`%${q}%`, FEEDBACK_CUSTOMER_SEARCH_LIMIT],
+  );
+  return result.rows.map((row) => ({ id: String(row.customerId), name: String(row.name) }));
+}
+
+async function feedbackCustomerById(customerId: string) {
+  const result = await pool.query<{ customerId: string; name: string }>(
+    `WITH customer_name AS (
+       SELECT customer_id::text AS "customerId",
+         MAX(NULLIF(TRIM(CONCAT_WS(' ', first_name, last_name)),'')) AS name,
+         BOOL_OR(COALESCE(email,'') ~* '@(vivofashiongroup|vivoactivewear|fashiongroup|shopzetu|vivowoman)\\.|^anonymous-[0-9]+@example\\.com') AS pseudo_email
+       FROM public.all_customers
+       WHERE customer_id::text=$1
+       GROUP BY customer_id
+     )
+     SELECT "customerId",name
+     FROM customer_name
+     WHERE name IS NOT NULL
+       AND NOT pseudo_email
+       AND name !~* '(walk[ -]?in|vivo|safari|zoya|anonymous customer|cbd digo)'
+     LIMIT 1`,
+    [customerId],
+  );
+  const row = result.rows[0];
+  return row ? { id: String(row.customerId), name: String(row.name) } : null;
+}
+
+async function feedbackPhysicalStores() {
+  const result = await pool.query<{ store: string }>(
+    `SELECT DISTINCT BTRIM(location_name) AS store
+       FROM public.pos_locations
+      WHERE active=TRUE
+        AND NULLIF(BTRIM(location_name),'') IS NOT NULL
+        AND location_name NOT ILIKE '%online%'
+        AND location_name NOT ILIKE '%warehouse%'
+        AND location_name NOT ILIKE '%holding%'
+        AND location_name NOT ILIKE '%location%'
+        AND location_name NOT ILIKE '%manual%'
+        AND location_name NOT ILIKE '%mockup%'
+        AND location_name NOT ILIKE '%purchase%'
+        AND location_name NOT ILIKE '%bags%'
+        AND location_name NOT ILIKE '%third%'
+        AND location_name NOT ILIKE '%popup%'
+        AND location_name NOT ILIKE '%defect%'
+        AND location_name <> 'Buying and Merchandise'
+      ORDER BY store`,
+  );
+  return result.rows.map((row) => String(row.store)).filter(Boolean);
+}
+
 router.get("/feedback/styles/search", async (req, res, next) => {
   try {
     const q = String(req.query.q ?? "").trim();
@@ -2983,6 +3092,34 @@ router.get("/feedback/styles/search", async (req, res, next) => {
       return;
     }
     res.json(await feedbackStyleSearch(q));
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get("/feedback/customers/search", async (req, res, next) => {
+  try {
+    const q = normalizeFeedbackCustomerName(req.query.q).slice(0, 80);
+    if (q.length < FEEDBACK_CUSTOMER_SEARCH_MIN_LENGTH) {
+      res.json([]);
+      return;
+    }
+    if (!allowFeedbackCustomerSearch(req)) {
+      res.setHeader("Retry-After", String(Math.ceil(FEEDBACK_CUSTOMER_SEARCH_RATE_WINDOW_MS / 1000)));
+      res.status(429).json({ error: "Too many customer searches. Please wait a few minutes and try again." });
+      return;
+    }
+    res.setHeader("Cache-Control", "private, max-age=60");
+    res.json(await feedbackCustomerSearch(q));
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get("/feedback/stores", async (_req, res, next) => {
+  try {
+    res.setHeader("Cache-Control", "public, max-age=3600");
+    res.json(await feedbackPhysicalStores());
   } catch (error) {
     next(error);
   }
@@ -3032,6 +3169,10 @@ router.post("/feedback/public", async (req, res, next) => {
     const requestedStyleName = String(req.body?.styleName ?? "").trim();
     const requestedStyleNumber = String(req.body?.styleNumber ?? "").trim();
     const requestedColourway = String(req.body?.colourway ?? "").trim() || "All colourways / General";
+    const customerOrigin = feedbackCustomerOrigin(req.body?.customerOrigin);
+    let customerId = customerOrigin ? normalizeFeedbackCustomerId(req.body?.customerId) : "";
+    let customerName = customerOrigin ? normalizeFeedbackCustomerName(req.body?.customerName) : "";
+    let storeName = submitterTeam === "Retail" ? String(req.body?.storeName ?? "").trim().replace(/\s+/g, " ").slice(0, 200) : "";
     const pulseModeValue = String(req.body?.pulseMode ?? "").trim();
     const pulseMode = PULSE_MODES.includes(pulseModeValue as PulseMode) ? pulseModeValue as PulseMode : null;
     const pulseCampaignId = Number(req.body?.pulseCampaignId);
@@ -3052,6 +3193,28 @@ router.post("/feedback/public", async (req, res, next) => {
     if (!submitterName || !submitterTeam || !requestedStyleNumber || !feedbackTypes.length || !FEEDBACK_SENTIMENTS.includes(sentiment) || !FEEDBACK_URGENCIES.includes(urgency) || commentText.length < 8) {
       res.status(400).json({ error: "Name, team, style, at least one issue type and a useful comment are required" });
       return;
+    }
+    if (submitterTeam === "Retail") {
+      if (!storeName) {
+        res.status(400).json({ error: "Please select the store where you work" });
+        return;
+      }
+      const stores = await feedbackPhysicalStores();
+      const matchedStore = stores.find((store) => store.toLowerCase() === storeName.toLowerCase());
+      if (!matchedStore) {
+        res.status(400).json({ error: "Please select a physical store from the list" });
+        return;
+      }
+      storeName = matchedStore;
+    }
+    if (customerId) {
+      const customer = await feedbackCustomerById(customerId);
+      if (customer) {
+        customerId = customer.id;
+        customerName = customer.name;
+      } else {
+        customerId = "";
+      }
     }
     const catalogueStyle = await pool.query<{ styleName: string; styleNumber: string }>(
       `SELECT MAX(apc.style_name) AS "styleName", MAX(apc.style_number) AS "styleNumber"
@@ -3132,14 +3295,16 @@ router.post("/feedback/public", async (req, res, next) => {
       await client.query("BEGIN");
       result = await client.query(
       `INSERT INTO ${schema}.style_feedback
-        (submitter_name,submitter_team,style_id,style_number,colourway,style_name_freetext,feedback_types,sentiment,urgency,comment_text,pulse_id,pulse_mode)
-       VALUES ($1,$2,$3,$4,$5,$6,$7::text[],$8,$9,$10,$11,$12)
+        (submitter_name,submitter_team,style_id,style_number,colourway,style_name_freetext,feedback_types,sentiment,urgency,comment_text,pulse_id,pulse_mode,customer_origin,customer_id,customer_name,store_name)
+       VALUES ($1,$2,$3,$4,$5,$6,$7::text[],$8,$9,$10,$11,$12,$13,$14,$15,$16)
        RETURNING id,submitter_name AS "submitterName",submitter_team AS "submitterTeam",
         style_id AS "styleId",style_number AS "styleNumber",colourway,
         style_name_freetext AS "styleNameFreetext",feedback_types AS "feedbackTypes",
-        sentiment,urgency,comment_text AS "commentText",pulse_id AS "pulseId",pulse_mode AS "pulseMode",reviewed,reviewed_by AS "reviewedBy",
+         sentiment,urgency,comment_text AS "commentText",pulse_id AS "pulseId",pulse_mode AS "pulseMode",
+         customer_origin AS "customerOrigin",customer_id AS "customerId",customer_name AS "customerName",store_name AS "storeName",
+         reviewed,reviewed_by AS "reviewedBy",
         reviewed_at AS "reviewedAt",created_at AS "createdAt"`,
-        [submitterName, submitterTeam, styleId, styleNumber, requestedColourway, styleName, feedbackTypes, sentiment, urgency, commentText, resolvedPulseId, pulseMode],
+        [submitterName, submitterTeam, styleId, styleNumber, requestedColourway, styleName, feedbackTypes, sentiment, urgency, commentText, resolvedPulseId, pulseMode, customerOrigin, customerId || null, customerName || null, storeName || null],
       );
       if (requestedImageTokens.length) {
         const attached = await client.query(
@@ -4254,6 +4419,8 @@ router.get("/feedback", async (req: AuthRequest, res, next) => {
          f.style_id AS "styleId",COALESCE(NULLIF(TRIM(s.name),''),NULLIF(TRIM(f.style_name_freetext),''),'Unassigned style') AS "styleName",
          COALESCE(s.code,f.style_number) AS "styleNumber",s.image AS "styleImage",f.colourway,
          f.style_name_freetext AS "styleNameFreetext",
+          f.customer_origin AS "customerOrigin",f.customer_id AS "customerId",
+          f.customer_name AS "customerName",f.store_name AS "storeName",
          (SELECT COALESCE(jsonb_agg(jsonb_build_object(
              'id',i.id,'filename',i.original_name,'contentType',i.content_type,'sizeBytes',i.byte_size
            ) ORDER BY i.id),'[]'::jsonb)
@@ -4366,7 +4533,9 @@ router.patch("/feedback/:id/review", requireAdmin, async (req: AuthRequest, res,
        RETURNING id,submitter_name AS "submitterName",submitter_team AS "submitterTeam",
          style_id AS "styleId",style_number AS "styleNumber",colourway,
          style_name_freetext AS "styleNameFreetext",feedback_types AS "feedbackTypes",
-        sentiment,urgency,comment_text AS "commentText",reviewed,reviewed_by AS "reviewedBy",
+         sentiment,urgency,comment_text AS "commentText",
+         customer_origin AS "customerOrigin",customer_id AS "customerId",customer_name AS "customerName",store_name AS "storeName",
+         reviewed,reviewed_by AS "reviewedBy",
         reviewed_at AS "reviewedAt",created_at AS "createdAt"`,
       [reviewed, reviewed ? req.workspaceUser?.id ?? null : null, Number(req.params.id)],
     );

@@ -44,6 +44,10 @@ export type FeedbackSubmission = {
   styleNameFreetext: string;
   pulseId: number | null;
   pulseMode: "investigate" | "champion" | null;
+  customerOrigin: boolean;
+  customerId: string | null;
+  customerName: string;
+  storeName: string | null;
   feedbackTypes: string[];
   sentiment: "positive" | "mixed" | "negative";
   urgency: "note" | "discuss" | "urgent";
@@ -61,6 +65,11 @@ export type FeedbackStyleResult = {
   code: string;
   image?: string | null;
   status?: string | null;
+};
+
+type FeedbackCustomerResult = {
+  id: string;
+  name: string;
 };
 
 type FeedbackAnalytics = {
@@ -192,6 +201,22 @@ function styleResultsFrom(value: unknown): FeedbackStyleResult[] {
   return [];
 }
 
+function customerResultsFrom(value: unknown): FeedbackCustomerResult[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    if (!entry || typeof entry !== "object") return [];
+    const record = entry as Record<string, unknown>;
+    const id = String(record.id ?? "").trim();
+    const name = String(record.name ?? "").trim();
+    return id && name ? [{ id, name }] : [];
+  });
+}
+
+function storeResultsFrom(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return Array.from(new Set(value.map(String).map((store) => store.trim()).filter(Boolean))).sort((a, b) => a.localeCompare(b));
+}
+
 function displayDate(value: unknown) {
   if (!value) return "No date";
   const parsed = new Date(String(value));
@@ -285,6 +310,51 @@ function FeedbackStyleSearch({
   </div>;
 }
 
+function FeedbackCustomerSearch({
+  value,
+  selected,
+  onChange,
+  onSelect,
+  inputRef,
+}: {
+  value: string;
+  selected: FeedbackCustomerResult | null;
+  onChange: (value: string) => void;
+  onSelect: (customer: FeedbackCustomerResult | null) => void;
+  inputRef: React.RefObject<HTMLInputElement | null>;
+}) {
+  const results = useQuery<FeedbackCustomerResult[]>({
+    queryKey: ["feedback", "customer-search", value],
+    enabled: value.trim().length > 1 && !selected,
+    staleTime: 60 * 1000,
+    queryFn: async () => customerResultsFrom(await request<unknown>(`/api/workspace/feedback/customers/search?q=${encodeURIComponent(value.trim())}`)),
+  });
+  const showResults = !selected && value.trim().length > 1;
+  return <div className="feedback-style-search feedback-customer-search">
+    <div className={`feedback-search-input ${selected ? "has-selection" : ""}`}>
+      <Search size={16} />
+      <input
+        ref={inputRef}
+        value={selected ? selected.name : value}
+        onChange={(event) => { onSelect(null); onChange(event.target.value); }}
+        placeholder="Search by customer name"
+        aria-label="Customer name"
+        autoComplete="off"
+        data-testid="input-feedback-customer"
+      />
+      {selected && <button type="button" onClick={() => { onSelect(null); onChange(""); }} aria-label="Clear selected customer" data-testid="button-clear-feedback-customer"><X size={15} /></button>}
+    </div>
+    {showResults && <div className="feedback-search-results" role="listbox" aria-label="Customer search results">
+      {results.isLoading && <div className="feedback-search-loading">Searching customer names…</div>}
+      {!results.isLoading && results.data?.length ? results.data.map((customer) => <button type="button" key={customer.id} role="option" className="feedback-customer-option" onClick={() => onSelect(customer)} data-testid={`option-feedback-customer-${customer.id}`}>
+        <span>{customer.name}</span><ArrowRight size={14} />
+      </button>) : null}
+      {!results.isLoading && !results.data?.length && <div className="feedback-search-loading">No matching name found. You can still submit the name you typed.</div>}
+      {results.isError && <div className="feedback-search-loading">Customer suggestions are unavailable. You can still type a name.</div>}
+    </div>}
+  </div>;
+}
+
 export function PublicFeedbackPage() {
   const generalColourway = "All colourways / General";
   const pulseParams = useMemo(() => new URLSearchParams(window.location.search), []);
@@ -297,6 +367,10 @@ export function PublicFeedbackPage() {
   const [form, setForm] = useState({
     submitterName: "",
     submitterTeam: "",
+    customerOrigin: false,
+    customerId: null as string | null,
+    customerName: "",
+    storeName: "",
     colourway: targetColourway,
     feedbackTypes: [] as string[],
     commentText: "",
@@ -308,10 +382,12 @@ export function PublicFeedbackPage() {
   const [images, setImages] = useState<PendingFeedbackImage[]>([]);
   const [imageError, setImageError] = useState("");
   const [validationMessage, setValidationMessage] = useState("");
-  const [validationField, setValidationField] = useState<"name" | "department" | "style" | "issue" | "feedback" | null>(null);
+  const [validationField, setValidationField] = useState<"name" | "department" | "store" | "style" | "issue" | "feedback" | null>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const nameInputRef = useRef<HTMLInputElement>(null);
   const departmentInputRef = useRef<HTMLSelectElement>(null);
+  const customerInputRef = useRef<HTMLInputElement>(null);
+  const storeInputRef = useRef<HTMLSelectElement>(null);
   const styleSectionRef = useRef<HTMLElement>(null);
   const commentInputRef = useRef<HTMLTextAreaElement>(null);
   const typePickerRef = useRef<HTMLDivElement>(null);
@@ -369,6 +445,12 @@ export function PublicFeedbackPage() {
     },
   });
   const colourwayOptions = Array.from(new Set([generalColourway, targetColourway, ...(colourways.data || [])]));
+  const stores = useQuery<string[]>({
+    queryKey: ["feedback", "physical-stores"],
+    enabled: form.submitterTeam === "Retail",
+    staleTime: 60 * 60 * 1000,
+    queryFn: async () => storeResultsFrom(await request<unknown>("/api/workspace/feedback/stores")),
+  });
   useEffect(() => {
     if (!isPulse || targetColourway === generalColourway || !colourways.data?.length) return;
     const matched = colourways.data.find((value) => value.toLowerCase() === targetColourway.toLowerCase());
@@ -401,6 +483,10 @@ export function PublicFeedbackPage() {
         body: JSON.stringify({
           submitterName: form.submitterName.trim(),
           submitterTeam: form.submitterTeam.trim(),
+          customerOrigin: form.customerOrigin,
+          customerId: form.customerOrigin ? form.customerId : null,
+          customerName: form.customerOrigin ? form.customerName.trim() : "",
+          storeName: form.submitterTeam === "Retail" ? form.storeName : "",
           styleId: style?.id ?? null,
           styleName: style?.name || "",
           styleNumber: style?.code || "",
@@ -431,6 +517,7 @@ export function PublicFeedbackPage() {
     const missing: Array<{ key: NonNullable<typeof validationField>; label: string }> = [];
     if (!form.submitterName.trim()) missing.push({ key: "name", label: "Name" });
     if (!form.submitterTeam.trim()) missing.push({ key: "department", label: "Department" });
+    if (form.submitterTeam === "Retail" && !form.storeName.trim()) missing.push({ key: "store", label: "Store" });
     if (!style?.code) missing.push({ key: "style", label: "Style" });
     if (!form.feedbackTypes.length) missing.push({ key: "issue", label: "Issue type(s)" });
     if (form.commentText.trim().length < 8) missing.push({ key: "feedback", label: "Observation / feedback" });
@@ -447,11 +534,13 @@ export function PublicFeedbackPage() {
         ? nameInputRef.current
         : firstMissing.key === "department"
           ? departmentInputRef.current
-          : firstMissing.key === "style"
-            ? document.querySelector<HTMLInputElement>('[data-testid="input-feedback-style-search"]') || styleSectionRef.current
-            : firstMissing.key === "issue"
-              ? typeTriggerRef.current
-              : commentInputRef.current;
+          : firstMissing.key === "store"
+            ? storeInputRef.current
+            : firstMissing.key === "style"
+              ? document.querySelector<HTMLInputElement>('[data-testid="input-feedback-style-search"]') || styleSectionRef.current
+              : firstMissing.key === "issue"
+                ? typeTriggerRef.current
+                : commentInputRef.current;
       target?.scrollIntoView({ behavior: "smooth", block: "center" });
       if (target instanceof HTMLElement) target.focus({ preventScroll: true });
     });
@@ -469,7 +558,7 @@ export function PublicFeedbackPage() {
     setImageError("");
     setValidationMessage("");
     setValidationField(null);
-    setForm({ submitterName: "", submitterTeam: "", colourway: isPulse ? targetColourway : generalColourway, feedbackTypes: [], commentText: "" });
+    setForm({ submitterName: "", submitterTeam: "", customerOrigin: false, customerId: null, customerName: "", storeName: "", colourway: isPulse ? targetColourway : generalColourway, feedbackTypes: [], commentText: "" });
   };
   const chooseImages = (files: FileList | null) => {
     if (!files || submit.isPending) return;
@@ -530,8 +619,11 @@ export function PublicFeedbackPage() {
             <div className="feedback-step-heading"><span className="feedback-step-number">1</span><div><h3 id="feedback-step-who">Who are you? <span className="feedback-required-mark" aria-hidden="true">*</span></h3></div></div>
             <div className="feedback-form-grid">
               <div className={`feedback-field ${validationField === "name" ? "feedback-validation-target" : ""}`.trim()}><input ref={nameInputRef} required aria-required="true" value={form.submitterName} onChange={(event) => setForm((current) => ({ ...current, submitterName: event.target.value }))} placeholder="Your name" autoComplete="name" aria-label="Your name" aria-invalid={validationField === "name"} data-testid="input-feedback-name" /></div>
-              <div className={`feedback-field ${validationField === "department" ? "feedback-validation-target" : ""}`.trim()}><select ref={departmentInputRef} required aria-required="true" value={form.submitterTeam} onChange={(event) => setForm((current) => ({ ...current, submitterTeam: event.target.value }))} aria-label="Department" aria-invalid={validationField === "department"} data-testid="select-feedback-department"><option value="">Select your department…</option>{departmentOptions.map((department) => <option key={department} value={department}>{department}</option>)}</select></div>
+              <div className={`feedback-field ${validationField === "department" ? "feedback-validation-target" : ""}`.trim()}><select ref={departmentInputRef} required aria-required="true" value={form.submitterTeam} onChange={(event) => setForm((current) => ({ ...current, submitterTeam: event.target.value, storeName: event.target.value === "Retail" ? current.storeName : "" }))} aria-label="Department" aria-invalid={validationField === "department"} data-testid="select-feedback-department"><option value="">Select your department…</option>{departmentOptions.map((department) => <option key={department} value={department}>{department}</option>)}</select></div>
             </div>
+            <label className="feedback-customer-origin"><input type="checkbox" checked={form.customerOrigin} onChange={(event) => setForm((current) => ({ ...current, customerOrigin: event.target.checked, customerId: event.target.checked ? current.customerId : null, customerName: event.target.checked ? current.customerName : "" }))} data-testid="checkbox-feedback-customer-origin" /><span><strong>This feedback is from a customer</strong><small>Optional — add the customer’s name if it will help the product team understand the context.</small></span></label>
+            {form.customerOrigin && <div className="feedback-conditional-field"><Field label="Customer name" hint="Only customer names are searched. If there is no match, leave the name you typed."><FeedbackCustomerSearch value={form.customerName} selected={form.customerId ? { id: form.customerId, name: form.customerName } : null} onChange={(customerName) => setForm((current) => ({ ...current, customerId: null, customerName }))} onSelect={(customer) => setForm((current) => ({ ...current, customerId: customer?.id ?? null, customerName: customer?.name ?? "" }))} inputRef={customerInputRef} /></Field></div>}
+            {form.submitterTeam === "Retail" && <div className={`feedback-conditional-field ${validationField === "store" ? "feedback-validation-target" : ""}`.trim()}><Field label="Which store do you work at?"><select ref={storeInputRef} required aria-required="true" value={form.storeName} onChange={(event) => setForm((current) => ({ ...current, storeName: event.target.value }))} aria-invalid={validationField === "store"} data-testid="select-feedback-store" disabled={stores.isLoading}><option value="">{stores.isLoading ? "Loading physical stores…" : "Select your store…"}</option>{(stores.data || []).map((store) => <option key={store} value={store}>{store}</option>)}</select></Field>{stores.isError && <div className="feedback-form-error"><CircleAlert size={16} /> Store options are unavailable. Please try again.</div>}</div>}
           </section>
 
           <section ref={styleSectionRef} tabIndex={-1} className={`feedback-step feedback-step-style ${validationField === "style" ? "feedback-validation-target" : ""}`} aria-labelledby="feedback-step-style">
@@ -642,6 +734,10 @@ function FeedbackRow({ item, onReview, reviewing, canReview }: { item: FeedbackS
       <p className={!expanded && isLong ? "feedback-comment-truncated" : ""}>{item.commentText}</p>
       {isLong && <button className="feedback-comment-toggle" type="button" onClick={() => setExpanded((value) => !value)}>{expanded ? "Show less" : "Read full comment"}</button>}
       <div className="feedback-row-meta"><span className="feedback-avatar">{initials(item.submitterName)}</span><span>{item.submitterName || "Vivo team"} · {item.submitterTeam || "Team"}</span><span className="feedback-dot">·</span><span>{displayDate(item.createdAt)} {shortTime(item.createdAt)}</span>{item.reviewed && <span className="reviewed-label"><Check size={12} /> Reviewed</span>}</div>
+      {(item.customerOrigin || item.storeName) && <div className="feedback-context-row">
+        {item.customerOrigin && <span className="customer"><MessageCircle size={12} /> Customer feedback{item.customerName ? ` · ${item.customerName}` : ""}</span>}
+        {item.storeName && <span><Filter size={12} /> {item.storeName}</span>}
+      </div>}
       <div className="feedback-tag-row">{(item.feedbackTypes || []).map((type) => <span key={type}>{type}</span>)}</div>
       {!!item.imageAttachments?.length && <section className="feedback-attachments" aria-label={`Images attached to feedback ${item.id}`}><span>Photos</span><div>{item.imageAttachments.map((attachment) => <FeedbackAttachmentPreview key={attachment.id} attachment={attachment} />)}</div></section>}
     </div>
@@ -704,6 +800,8 @@ export function WorkspaceFeedbackPage() {
   const [search, setSearch] = useState("");
   const [dateRange, setDateRange] = useState<"all" | "week" | "month">("all");
   const [teamFilter, setTeamFilter] = useState("all");
+  const [storeFilter, setStoreFilter] = useState("all");
+  const [customerOriginFilter, setCustomerOriginFilter] = useState<"all" | "customer" | "team">("all");
   const [typeFilter, setTypeFilter] = useState("all");
   const [sentimentFilter, setSentimentFilter] = useState<"all" | FeedbackSubmission["sentiment"]>("all");
   const [styleSearch, setStyleSearch] = useState("");
@@ -711,7 +809,10 @@ export function WorkspaceFeedbackPage() {
   const [urgency, setUrgency] = useState<"all" | "urgent" | "discuss">("all");
   const [reviewingId, setReviewingId] = useState<number | string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [copyError, setCopyError] = useState("");
   const submissions = useMemo(() => submissionsFrom(analytics.data), [analytics.data]);
+  const storeOptions = useMemo(() => Array.from(new Set(submissions.map((item) => item.storeName).filter((store): store is string => Boolean(store)))).sort((a, b) => a.localeCompare(b)), [submissions]);
+  const teamFilterOptions = useMemo(() => Array.from(new Set([...departmentOptions, ...teamOptions, ...submissions.map((item) => item.submitterTeam).filter(Boolean)])).sort((a, b) => a.localeCompare(b)), [submissions]);
   const review = useMutation({
     mutationFn: (id: number | string) => request<FeedbackSubmission>(`/api/workspace/feedback/${id}/review`, { method: "PATCH", body: JSON.stringify({ reviewed: true }) }),
     onMutate: (id) => setReviewingId(id),
@@ -730,39 +831,93 @@ export function WorkspaceFeedbackPage() {
     const styleNeedle = styleSearch.trim().toLowerCase();
     const createdAt = new Date(item.createdAt).getTime();
     const cutoff = dateRange === "week" ? Date.now() - 7 * 24 * 60 * 60 * 1000 : dateRange === "month" ? Date.now() - 30 * 24 * 60 * 60 * 1000 : 0;
-    return (!needle || `${item.styleName} ${item.styleNumber || ""} ${item.commentText} ${item.submitterName}`.toLowerCase().includes(needle))
+    return (!needle || `${item.styleName} ${item.styleNumber || ""} ${item.commentText} ${item.submitterName} ${item.customerName || ""} ${item.storeName || ""}`.toLowerCase().includes(needle))
       && (!styleNeedle || `${item.styleName} ${item.styleNumber || ""} ${item.styleNameFreetext}`.toLowerCase().includes(styleNeedle))
       && (!cutoff || (Number.isFinite(createdAt) && createdAt >= cutoff))
       && (teamFilter === "all" || item.submitterTeam === teamFilter)
+      && (storeFilter === "all" || item.storeName === storeFilter)
+      && (customerOriginFilter === "all" || (customerOriginFilter === "customer" ? item.customerOrigin : !item.customerOrigin))
       && (typeFilter === "all" || item.feedbackTypes.includes(typeFilter))
       && (sentimentFilter === "all" || item.sentiment === sentimentFilter)
       && (status === "all" || (status === "open" ? !item.reviewed : item.reviewed))
       && (urgency === "all" || item.urgency === urgency);
-  }), [submissions, search, dateRange, teamFilter, typeFilter, sentimentFilter, styleSearch, status, urgency]);
+  }), [submissions, search, dateRange, teamFilter, storeFilter, customerOriginFilter, typeFilter, sentimentFilter, styleSearch, status, urgency]);
   const openCount = submissions.filter((item) => !item.reviewed).length;
   const stats = analytics.data?.stats;
   const summaries = useMemo(() => styleSummaryFrom(filtered), [filtered]);
   const isAdmin = analytics.data?.viewer?.role === "Admin";
-  const clearFilters = () => { setSearch(""); setStyleSearch(""); setDateRange("all"); setTeamFilter("all"); setTypeFilter("all"); setSentimentFilter("all"); setStatus("all"); setUrgency("all"); };
+  const clearFilters = () => { setSearch(""); setStyleSearch(""); setDateRange("all"); setTeamFilter("all"); setStoreFilter("all"); setCustomerOriginFilter("all"); setTypeFilter("all"); setSentimentFilter("all"); setStatus("all"); setUrgency("all"); };
   const copyLink = async () => {
+    const link = `${window.location.origin}/feedback/`;
+    setCopied(false);
+    setCopyError("");
     try {
-      await navigator.clipboard.writeText(`${window.location.origin}/feedback`);
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(link);
+      } else {
+        throw new Error("Clipboard API unavailable");
+      }
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1800);
     } catch {
-      setCopied(false);
+      try {
+        const textarea = document.createElement("textarea");
+        const selection = document.getSelection();
+        const selectedRanges = selection ? Array.from({ length: selection.rangeCount }, (_, index) => selection.getRangeAt(index).cloneRange()) : [];
+        textarea.value = link;
+        textarea.setAttribute("readonly", "");
+        textarea.setAttribute("aria-hidden", "true");
+        textarea.style.position = "fixed";
+        textarea.style.top = "-9999px";
+        textarea.style.left = "-9999px";
+        textarea.style.opacity = "0";
+        textarea.style.pointerEvents = "none";
+        document.body.appendChild(textarea);
+        let fallbackCopied = false;
+        try {
+          textarea.focus();
+          textarea.select();
+          textarea.setSelectionRange(0, textarea.value.length);
+          fallbackCopied = typeof document.execCommand === "function" && document.execCommand("copy");
+        } finally {
+          textarea.remove();
+          if (selection) {
+            selection.removeAllRanges();
+            selectedRanges.forEach((range) => selection.addRange(range));
+          }
+        }
+        if (!fallbackCopied) throw new Error("Copy command was rejected");
+        setCopied(true);
+        window.setTimeout(() => setCopied(false), 1800);
+      } catch {
+        setCopyError("We couldn’t copy the link. Please copy it from the address bar.");
+      }
     }
   };
   if (analytics.isLoading) return <section className="page feedback-workspace-page"><div className="feedback-loading-heading" /><div className="feedback-loading-metrics"><span /><span /><span /><span /></div><div className="feedback-loading-panel" /></section>;
   if (analytics.isError) return <section className="page"><div className="empty-state error-state"><CircleAlert size={22} /><h3>Feedback inbox is unavailable</h3><p>{analytics.error instanceof Error ? analytics.error.message : "The workspace service did not respond."}</p><button className="button button-dark" onClick={() => analytics.refetch()} data-testid="button-retry-feedback">Try again</button></div></section>;
   return <section className="page feedback-workspace-page">
-     <div className="feedback-workspace-heading"><div><h1>Feedback Inbox</h1></div><div className="feedback-heading-actions"><button className="button button-quiet" type="button" onClick={copyLink} data-testid="button-copy-feedback-link"><span>{copied ? "Copied" : "Copy feedback link"}</span><ArrowRight size={15} /></button><div className="feedback-heading-mark"><MessageCircle size={21} /><span>Live inbox</span></div></div></div>
+     <div className="feedback-workspace-heading"><div><h1>Feedback Inbox</h1></div><div className="feedback-heading-actions"><button className="button button-quiet" type="button" onClick={copyLink} data-testid="button-copy-feedback-link"><span>{copied ? "Copied!" : "Copy feedback link"}</span><ArrowRight size={15} /></button><div className="feedback-heading-mark"><MessageCircle size={21} /><span>Live inbox</span></div>{(copied || copyError) && <span className={`feedback-copy-status ${copyError ? "error" : "success"}`} role="status" aria-live="polite">{copyError || "Feedback link copied to your clipboard."}</span>}</div></div>
      <div className="feedback-metrics"><Metric label="Submissions this quarter" value={String(stats?.totalSubmissionsThisQuarter ?? 0)} note="All teams · quarter to date" /><Metric label="Most flagged style" value={stats?.mostFlaggedStyleThisQuarter || "—"} note="This quarter" accent="gold" /><Metric label="Common feedback type" value={stats?.mostCommonFeedbackTypeThisQuarter || "—"} note="This quarter" accent="green" /><Metric label="Negative sentiment" value={`${stats?.negativePercentThisQuarter ?? 0}%`} note="This quarter" accent={(stats?.negativePercentThisQuarter ?? 0) >= 20 ? "coral" : "gold"} /></div>
       <div className="feedback-view-tabs" role="tablist"><button className={view === "inbox" ? "active" : ""} onClick={() => setView("inbox")} role="tab" aria-selected={view === "inbox"} data-testid="tab-feedback-inbox"><MessageCircle size={15} /> Inbox <span>{openCount}</span></button><button className={view === "styles" ? "active" : ""} onClick={() => setView("styles")} role="tab" aria-selected={view === "styles"} data-testid="tab-feedback-by-style"><Filter size={15} /> By style <span>{summaries.length}</span></button><button className={view === "pulses" ? "active" : ""} onClick={() => setView("pulses")} role="tab" aria-selected={view === "pulses"} data-testid="tab-feedback-style-pulses"><Share2 size={15} /> Style Pulses <span>{analytics.data?.stylePulses?.length ?? 0}</span></button></div>
      {view === "inbox" ? <div className="feedback-inbox-panel">
-        <div className="feedback-toolbar"><label className="feedback-toolbar-search"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search feedback" aria-label="Search feedback" data-testid="input-search-feedback" />{search && <button onClick={() => setSearch("")} aria-label="Clear feedback search" data-testid="button-clear-feedback-search"><X size={14} /></button>}</label><div className="feedback-filter-group"><label><span>Date</span><select value={dateRange} onChange={(event) => setDateRange(event.target.value as typeof dateRange)} data-testid="select-feedback-date"><option value="all">All dates</option><option value="week">This week</option><option value="month">Last 30 days</option></select><ChevronDown size={13} /></label><label><span>Store / team</span><select value={teamFilter} onChange={(event) => setTeamFilter(event.target.value)} data-testid="select-feedback-team-filter"><option value="all">All stores and teams</option>{teamOptions.map((team) => <option key={team}>{team}</option>)}</select><ChevronDown size={13} /></label><label><span>Type</span><select value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)} data-testid="select-feedback-type-filter"><option value="all">All types</option>{feedbackTypes.map((type) => <option key={type}>{type}</option>)}</select><ChevronDown size={13} /></label><label><span>Sentiment</span><select value={sentimentFilter} onChange={(event) => setSentimentFilter(event.target.value as typeof sentimentFilter)} data-testid="select-feedback-sentiment-filter"><option value="all">All sentiment</option><option value="positive">Positive</option><option value="mixed">Mixed</option><option value="negative">Negative</option></select><ChevronDown size={13} /></label><label><span>Style</span><input value={styleSearch} onChange={(event) => setStyleSearch(event.target.value)} placeholder="Style or number" aria-label="Filter by style" data-testid="input-filter-feedback-style" /></label><label><span>Status</span><select value={status} onChange={(event) => setStatus(event.target.value as typeof status)} data-testid="select-feedback-status"><option value="all">All feedback</option><option value="open">Open</option><option value="reviewed">Reviewed</option></select><ChevronDown size={13} /></label><label><span>Priority</span><select value={urgency} onChange={(event) => setUrgency(event.target.value as typeof urgency)} data-testid="select-feedback-urgency"><option value="all">All priorities</option><option value="urgent">Needs attention</option><option value="discuss">Discuss soon</option></select><ChevronDown size={13} /></label><button className="button button-quiet" type="button" onClick={clearFilters} data-testid="button-clear-feedback-filters">Clear</button></div></div>
+        <div className="feedback-toolbar">
+          <label className="feedback-toolbar-search"><Search size={16} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search feedback" aria-label="Search feedback" data-testid="input-search-feedback" />{search && <button onClick={() => setSearch("")} aria-label="Clear feedback search" data-testid="button-clear-feedback-search"><X size={14} /></button>}</label>
+          <div className="feedback-filter-group">
+            <label><span>Date</span><select value={dateRange} onChange={(event) => setDateRange(event.target.value as typeof dateRange)} data-testid="select-feedback-date"><option value="all">All dates</option><option value="week">This week</option><option value="month">Last 30 days</option></select><ChevronDown size={13} /></label>
+            <label><span>Department / team</span><select value={teamFilter} onChange={(event) => setTeamFilter(event.target.value)} data-testid="select-feedback-team-filter"><option value="all">All departments and teams</option>{teamFilterOptions.map((team) => <option key={team}>{team}</option>)}</select><ChevronDown size={13} /></label>
+            <label><span>Store</span><select value={storeFilter} onChange={(event) => setStoreFilter(event.target.value)} data-testid="select-feedback-store-filter"><option value="all">All stores</option>{storeOptions.map((store) => <option key={store}>{store}</option>)}</select><ChevronDown size={13} /></label>
+            <label><span>Source</span><select value={customerOriginFilter} onChange={(event) => setCustomerOriginFilter(event.target.value as typeof customerOriginFilter)} data-testid="select-feedback-customer-origin-filter"><option value="all">All sources</option><option value="customer">From customers</option><option value="team">From team</option></select><ChevronDown size={13} /></label>
+            <label><span>Type</span><select value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)} data-testid="select-feedback-type-filter"><option value="all">All types</option>{feedbackTypes.map((type) => <option key={type}>{type}</option>)}</select><ChevronDown size={13} /></label>
+            <label><span>Sentiment</span><select value={sentimentFilter} onChange={(event) => setSentimentFilter(event.target.value as typeof sentimentFilter)} data-testid="select-feedback-sentiment-filter"><option value="all">All sentiment</option><option value="positive">Positive</option><option value="mixed">Mixed</option><option value="negative">Negative</option></select><ChevronDown size={13} /></label>
+            <label><span>Style</span><input value={styleSearch} onChange={(event) => setStyleSearch(event.target.value)} placeholder="Style or number" aria-label="Filter by style" data-testid="input-filter-feedback-style" /></label>
+            <label><span>Status</span><select value={status} onChange={(event) => setStatus(event.target.value as typeof status)} data-testid="select-feedback-status"><option value="all">All feedback</option><option value="open">Open</option><option value="reviewed">Reviewed</option></select><ChevronDown size={13} /></label>
+            <label><span>Priority</span><select value={urgency} onChange={(event) => setUrgency(event.target.value as typeof urgency)} data-testid="select-feedback-urgency"><option value="all">All priorities</option><option value="urgent">Needs attention</option><option value="discuss">Discuss soon</option></select><ChevronDown size={13} /></label>
+            <button className="button button-quiet" type="button" onClick={clearFilters} data-testid="button-clear-feedback-filters">Clear</button>
+          </div>
+        </div>
        <div className="feedback-inbox-head"><h2>{filtered.length} {filtered.length === 1 ? "submission" : "submissions"}</h2></div>
-        {filtered.length ? <div className="feedback-row-list">{filtered.map((item) => <FeedbackRow key={item.id} item={item} onReview={(entry) => review.mutate(entry.id)} reviewing={reviewingId === item.id} canReview={isAdmin} />)}</div> : <div className="feedback-empty"><div><MessageCircle size={20} /></div><h3>{submissions.length ? "Nothing matches" : "No feedback yet"}</h3><p>{submissions.length ? "Clear a filter or try another search." : "Submitted product feedback will appear here."}</p>{(search || styleSearch || dateRange !== "all" || teamFilter !== "all" || typeFilter !== "all" || sentimentFilter !== "all" || status !== "all" || urgency !== "all") && <button className="button button-quiet" onClick={clearFilters} data-testid="button-clear-feedback-filters-empty">Clear filters</button>}</div>}
+         {filtered.length ? <div className="feedback-row-list">{filtered.map((item) => <FeedbackRow key={item.id} item={item} onReview={(entry) => review.mutate(entry.id)} reviewing={reviewingId === item.id} canReview={isAdmin} />)}</div> : <div className="feedback-empty"><div><MessageCircle size={20} /></div><h3>{submissions.length ? "Nothing matches" : "No feedback yet"}</h3><p>{submissions.length ? "Clear a filter or try another search." : "Submitted product feedback will appear here."}</p>{(search || styleSearch || dateRange !== "all" || teamFilter !== "all" || storeFilter !== "all" || customerOriginFilter !== "all" || typeFilter !== "all" || sentimentFilter !== "all" || status !== "all" || urgency !== "all") && <button className="button button-quiet" onClick={clearFilters} data-testid="button-clear-feedback-filters-empty">Clear filters</button>}</div>}
        </div> : view === "styles" ? <div className="feedback-style-view"><div className="feedback-by-style-intro"><div><h2>Feedback by style</h2></div><p>See which styles receive the most feedback.</p></div>{summaries.length ? <div className="feedback-style-summary-list">{summaries.map((summary, index) => <article className="feedback-style-summary" key={`${summary.styleId}-${summary.code}-${summary.name}`} role="button" tabIndex={0} onClick={() => { setView("inbox"); setStyleSearch(summary.code || summary.name); }} onKeyDown={(event) => { if (event.key === "Enter") { setView("inbox"); setStyleSearch(summary.code || summary.name); } }} data-testid={`card-feedback-style-${summary.styleId || summary.code || summary.name}`}><div className="feedback-summary-index">{String(index + 1).padStart(2, "0")}</div><div className="feedback-summary-thumb">{summary.styleImage ? <img src={summary.styleImage} alt="" /> : <PaletteFallback />}</div><div className="feedback-summary-copy"><strong>{summary.name}</strong><span>{summary.code || "Style not linked"}</span><div className="feedback-sentiment-bar" aria-label={`${summary.positive} positive, ${summary.mixed} mixed, ${summary.negative} negative`}><i className="positive" style={{ width: `${summary.count ? (summary.positive / summary.count) * 100 : 0}%` }} /><i className="mixed" style={{ width: `${summary.count ? (summary.mixed / summary.count) * 100 : 0}%` }} /><i className="negative" style={{ width: `${summary.count ? (summary.negative / summary.count) * 100 : 0}%` }} /></div><div className="feedback-summary-type-pills">{Object.entries(summary.feedbackTypes || {}).sort(([, a], [, b]) => b - a).slice(0, 3).map(([type]) => <span key={type}>{type}</span>)}</div><p>{summary.latestComment}</p></div><div className="feedback-summary-count"><b>{summary.count}</b><span>{summary.count === 1 ? "submission" : "submissions"}</span><small>{summary.urgent ? `${summary.urgent} urgent` : "No urgent notes"}</small></div><ArrowRight size={16} /></article>)}</div> : <div className="feedback-empty"><div><Filter size={20} /></div><h3>No style feedback yet</h3><p>Feedback linked to a style will appear here.</p></div>}</div> : <StylePulsesView pulses={analytics.data?.stylePulses || []} />}
   </section>;
 }
