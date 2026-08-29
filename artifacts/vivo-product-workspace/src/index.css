@@ -1873,7 +1873,7 @@ a { color: inherit; text-decoration: none; }
 .feedback-type-trigger svg { flex: 0 0 auto; color: #9a7c4e; transition: transform .2s; }
 .feedback-type-picker.open .feedback-type-trigger { border-color: #C9A96E; box-shadow: 0 0 0 3px rgba(201,169,110,.12); }
 .feedback-type-picker.open .feedback-type-trigger svg { transform: rotate(180deg); }
-.feedback-type-options { position: absolute; z-index: 6; top: calc(100% + 5px); right: 0; left: 0; display: grid; gap: 1px; padding: 6px; border: 1px solid #d8cdbb; background: #fff; box-shadow: 0 12px 28px rgba(26,26,46,.12); }
+.feedback-type-options { position: static; display: grid; gap: 1px; margin-top: 6px; padding: 6px; border: 1px solid #d8cdbb; background: #fff; box-shadow: 0 12px 28px rgba(26,26,46,.12); }
 .feedback-type-option { display: flex; align-items: center; gap: 9px; min-height: 35px; padding: 6px 8px; color: #5d6370; cursor: pointer; font: 12px var(--app-font-sans); }
 .feedback-type-option:hover, .feedback-type-option.selected { color: #1A1A2E; background: #fbf5e8; }
 .feedback-type-option input { width: 15px; height: 15px; accent-color: #1A1A2E; }
