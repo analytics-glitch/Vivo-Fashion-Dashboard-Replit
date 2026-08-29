@@ -527,15 +527,15 @@ export function PublicFeedbackPage() {
            {validationMessage && <div className="feedback-form-error feedback-validation-message" role="alert" aria-live="polite" data-testid="feedback-validation-error"><CircleAlert size={16} /> {validationMessage}</div>}
 
           <section className="feedback-step feedback-step-who" aria-labelledby="feedback-step-who">
-            <div className="feedback-step-heading"><span className="feedback-step-number">1</span><div><h3 id="feedback-step-who">Who are you?</h3></div></div>
+            <div className="feedback-step-heading"><span className="feedback-step-number">1</span><div><h3 id="feedback-step-who">Who are you? <span className="feedback-required-mark" aria-hidden="true">*</span></h3></div></div>
             <div className="feedback-form-grid">
-              <div className={`feedback-field ${validationField === "name" ? "feedback-validation-target" : ""}`}><input ref={nameInputRef} required value={form.submitterName} onChange={(event) => setForm((current) => ({ ...current, submitterName: event.target.value }))} placeholder="Your name" autoComplete="name" aria-label="Your name" aria-invalid={validationField === "name"} data-testid="input-feedback-name" /></div>
-              <Field label="Department" className={validationField === "department" ? "feedback-validation-target" : ""}><select ref={departmentInputRef} required value={form.submitterTeam} onChange={(event) => setForm((current) => ({ ...current, submitterTeam: event.target.value }))} aria-invalid={validationField === "department"} data-testid="select-feedback-department"><option value="">Select your department…</option>{departmentOptions.map((department) => <option key={department} value={department}>{department}</option>)}</select></Field>
+              <div className={`feedback-field ${validationField === "name" ? "feedback-validation-target" : ""}`.trim()}><input ref={nameInputRef} required aria-required="true" value={form.submitterName} onChange={(event) => setForm((current) => ({ ...current, submitterName: event.target.value }))} placeholder="Your name" autoComplete="name" aria-label="Your name" aria-invalid={validationField === "name"} data-testid="input-feedback-name" /></div>
+              <div className={`feedback-field ${validationField === "department" ? "feedback-validation-target" : ""}`.trim()}><select ref={departmentInputRef} required aria-required="true" value={form.submitterTeam} onChange={(event) => setForm((current) => ({ ...current, submitterTeam: event.target.value }))} aria-label="Department" aria-invalid={validationField === "department"} data-testid="select-feedback-department"><option value="">Select your department…</option>{departmentOptions.map((department) => <option key={department} value={department}>{department}</option>)}</select></div>
             </div>
           </section>
 
           <section ref={styleSectionRef} tabIndex={-1} className={`feedback-step feedback-step-style ${validationField === "style" ? "feedback-validation-target" : ""}`} aria-labelledby="feedback-step-style">
-            <div className="feedback-step-heading"><span className="feedback-step-number">2</span><div><h3 id="feedback-step-style">Which style?</h3></div></div>
+            <div className="feedback-step-heading"><span className="feedback-step-number">2</span><div><h3 id="feedback-step-style">Which style? <span className="feedback-required-mark" aria-hidden="true">*</span></h3></div></div>
             {isPulse ? <div className="feedback-pulse-locked-style"><span>Style Pulse is focused on</span><strong>{style?.name || (targetStyleQuery.isLoading ? "Loading style…" : targetStyleNumber)}</strong><small>{style?.code || targetStyleNumber}{style?.status ? ` · ${style.status}` : ""}</small></div> : <Field label="Search the style catalogue"><FeedbackStyleSearch value={styleSearch} selected={style} onChange={setStyleSearch} onSelect={(selected) => { setStyle(selected); setForm((current) => ({ ...current, colourway: generalColourway })); }} /></Field>}
             {isPulse && targetStyleQuery.isError && <div className="feedback-form-error"><CircleAlert size={16} /> We couldn't find that style in the catalogue.</div>}
             {style && <div className={`feedback-style-confirmation ${style.image ? "" : "no-image"}`} data-testid="feedback-style-confirmation">
@@ -552,7 +552,7 @@ export function PublicFeedbackPage() {
           </section>}
 
           <section className={`feedback-step feedback-step-issue ${validationField === "issue" ? "feedback-validation-target" : ""}`} aria-labelledby="feedback-step-issue">
-            <div className="feedback-step-heading"><span className="feedback-step-number">3</span><div><h3 id="feedback-step-issue">{isPulse ? pulseMode === "investigate" ? "What’s getting in the way?" : "What’s working well?" : "What's the issue?"}</h3></div></div>
+            <div className="feedback-step-heading"><span className="feedback-step-number">3</span><div><h3 id="feedback-step-issue">{isPulse ? pulseMode === "investigate" ? "What’s getting in the way?" : "What’s working well?" : "What's the issue?"} <span className="feedback-required-mark" aria-hidden="true">*</span></h3></div></div>
             <fieldset className="feedback-issue-fieldset">
               <legend>Choose all that apply</legend>
                <div ref={typePickerRef} className={`feedback-type-picker ${typesOpen ? "open" : ""}`}>
@@ -566,7 +566,7 @@ export function PublicFeedbackPage() {
           </section>
 
           <section className={`feedback-step feedback-step-more ${validationField === "feedback" ? "feedback-validation-target" : ""}`} aria-labelledby="feedback-step-more">
-            <div className="feedback-step-heading"><span className="feedback-step-number">4</span><div><h3 id="feedback-step-more">Tell us more</h3></div></div>
+            <div className="feedback-step-heading"><span className="feedback-step-number">4</span><div><h3 id="feedback-step-more">Tell us more <span className="feedback-required-mark" aria-hidden="true">*</span></h3></div></div>
             <div className="feedback-field">
               {isPulse && <span>What are customers saying?</span>}
               <textarea ref={commentInputRef} required minLength={8} rows={6} value={form.commentText} onChange={(event) => setForm((current) => ({ ...current, commentText: event.target.value }))} placeholder={isPulse ? pulseMode === "investigate" ? "What are customers saying when they put it back?" : "What are customers saying when they buy it?" : "Share your specific feedback here."} aria-label={isPulse ? "What are customers saying?" : "Your feedback"} aria-invalid={validationField === "feedback"} data-testid="textarea-feedback-comment" />
@@ -574,7 +574,7 @@ export function PublicFeedbackPage() {
           </section>
 
           <section className="feedback-step feedback-step-images" aria-labelledby="feedback-step-images">
-            <div className="feedback-step-heading"><span className="feedback-step-number">5</span><div><span className="feedback-step-kicker">Optional</span><h3 id="feedback-step-images">Add photos</h3></div></div>
+            <div className="feedback-step-heading"><span className="feedback-step-number">5</span><div><h3 id="feedback-step-images">Add photos <span className="feedback-step-kicker feedback-step-optional">Optional</span></h3></div></div>
             <p className="feedback-image-help">Attach up to 4 JPEG, PNG, HEIC, or HEIF images (8 MB each) to show fit, quality, styling, or production details.</p>
             <input ref={imageInputRef} className="feedback-image-input" type="file" accept=".jpg,.jpeg,.png,.heic,.heif,image/jpeg,image/png,image/heic,image/heif" multiple onChange={(event) => chooseImages(event.target.files)} data-testid="input-feedback-images" />
             <button className="feedback-image-picker" type="button" onClick={() => imageInputRef.current?.click()} disabled={submit.isPending || images.length >= feedbackImageMaxFiles} data-testid="button-add-feedback-images"><ImagePlus size={16} /> Add photos <span>{images.length}/{feedbackImageMaxFiles}</span></button>

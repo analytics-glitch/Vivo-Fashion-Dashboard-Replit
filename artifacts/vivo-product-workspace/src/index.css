@@ -1850,7 +1850,9 @@ a { color: inherit; text-decoration: none; }
 .feedback-step-number { display: grid; place-items: center; width: 28px; height: 28px; color: #1A1A2E; border: 1px solid #C9A96E; font: 10px var(--app-font-mono); }
 .feedback-step-heading > div { display: grid; gap: 4px; }
 .feedback-step-kicker { color: #C9A96E; font: 9px var(--app-font-mono); letter-spacing: .12em; text-transform: uppercase; }
+.feedback-step-optional { display: inline-block; margin-left: 8px; vertical-align: middle; }
 .feedback-step-heading h3 { margin: 0; color: #1A1A2E; font: 500 25px/1.05 var(--app-font-serif); letter-spacing: -.035em; text-transform: none; }
+.feedback-required-mark { color: #b36b5f; font: 600 .78em/1 var(--app-font-sans); }
 .feedback-step-style { margin-top: 31px; }
 .feedback-step-style .feedback-field > span { color: #1A1A2E; font-size: 10px; }
 .feedback-step-style .feedback-field small { max-width: 440px; }
@@ -1933,7 +1935,7 @@ a { color: inherit; text-decoration: none; }
 .feedback-button.dark { color: #fff; background: #1A1A2E; }
 .feedback-button.dark:hover { background: #253653; }
 .feedback-button:disabled { cursor: wait; opacity: .6; }
-.feedback-submit { width: 100%; margin-top: 21px; }
+.feedback-submit { width: 100%; margin-top: 21px; font-size: 14px; font-weight: 600; }
 .feedback-privacy { display: flex; align-items: center; justify-content: center; gap: 6px; margin: 14px 0 0; color: #9d978e; font: 10px var(--app-font-sans); text-align: center; }
 .feedback-privacy svg { color: #6c9274; }
 .feedback-success { display: grid; justify-items: start; min-height: 470px; align-content: center; }
