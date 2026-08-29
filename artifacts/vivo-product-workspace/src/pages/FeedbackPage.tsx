@@ -323,20 +323,32 @@ function FeedbackCustomerSearch({
   onSelect: (customer: FeedbackCustomerResult | null) => void;
   inputRef: React.RefObject<HTMLInputElement | null>;
 }) {
+  const searchRef = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
   const results = useQuery<FeedbackCustomerResult[]>({
     queryKey: ["feedback", "customer-search", value],
-    enabled: value.trim().length > 1 && !selected,
+    enabled: open && value.trim().length > 1 && !selected,
     staleTime: 60 * 1000,
-    queryFn: async () => customerResultsFrom(await request<unknown>(`/api/workspace/feedback/customers/search?q=${encodeURIComponent(value.trim())}`)),
+    queryFn: async () => customerResultsFrom(await request<unknown>(`/api/workspace/feedback/customer-lookup?q=${encodeURIComponent(value.trim())}`)),
   });
-  const showResults = !selected && value.trim().length > 1;
-  return <div className="feedback-style-search feedback-customer-search">
+  useEffect(() => {
+    const handlePointerDown = (event: PointerEvent) => {
+      if (searchRef.current && !searchRef.current.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => document.removeEventListener("pointerdown", handlePointerDown);
+  }, []);
+  const showResults = open && !selected && value.trim().length > 1;
+  return <div ref={searchRef} className="feedback-style-search feedback-customer-search">
     <div className={`feedback-search-input ${selected ? "has-selection" : ""}`}>
       <Search size={16} />
       <input
         ref={inputRef}
         value={selected ? selected.name : value}
-        onChange={(event) => { onSelect(null); onChange(event.target.value); }}
+        onFocus={() => setOpen(true)}
+        onClick={() => setOpen(true)}
+        onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); setOpen(false); } }}
+        onChange={(event) => { setOpen(true); onSelect(null); onChange(event.target.value); }}
         placeholder="Search by customer name"
         aria-label="Customer name"
         autoComplete="off"
@@ -346,11 +358,24 @@ function FeedbackCustomerSearch({
     </div>
     {showResults && <div className="feedback-search-results" role="listbox" aria-label="Customer search results">
       {results.isLoading && <div className="feedback-search-loading">Searching customer names…</div>}
-      {!results.isLoading && results.data?.length ? results.data.map((customer) => <button type="button" key={customer.id} role="option" className="feedback-customer-option" onClick={() => onSelect(customer)} data-testid={`option-feedback-customer-${customer.id}`}>
+      {!results.isLoading && results.isError && <div className="feedback-search-loading">Customer suggestions are unavailable. You can still type a name.</div>}
+      {!results.isLoading && !results.isError && results.data?.length ? results.data.map((customer) => <button type="button" key={customer.id} role="option" className="feedback-customer-option" onClick={() => { setOpen(false); onSelect(customer); }} data-testid={`option-feedback-customer-${customer.id}`}>
         <span>{customer.name}</span><ArrowRight size={14} />
       </button>) : null}
-      {!results.isLoading && !results.data?.length && <div className="feedback-search-loading">No matching name found. You can still submit the name you typed.</div>}
-      {results.isError && <div className="feedback-search-loading">Customer suggestions are unavailable. You can still type a name.</div>}
+      {!results.isLoading && !results.isError && !results.data?.length && <div className="feedback-search-loading">No matching name found. You can still submit the name you typed.</div>}
+      <button
+        type="button"
+        className="feedback-search-done"
+        onPointerDown={(event) => event.preventDefault()}
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          setOpen(false);
+        }}
+        data-testid="button-close-feedback-customer"
+      >
+        Done
+      </button>
     </div>}
   </div>;
 }

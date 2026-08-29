@@ -3032,9 +3032,14 @@ async function feedbackCustomerSearch(q: string) {
        AND NOT pseudo_email
        AND name !~* '(walk[ -]?in|vivo|safari|zoya|anonymous customer|cbd digo)'
        AND name ILIKE $1
-     ORDER BY LOWER(name),"customerId"
-     LIMIT $2`,
-    [`%${q}%`, FEEDBACK_CUSTOMER_SEARCH_LIMIT],
+     ORDER BY CASE
+         WHEN LOWER(name)=LOWER($2) THEN 0
+         WHEN LOWER(name) LIKE LOWER($2)||'%' THEN 1
+         ELSE 2
+       END,
+       LOWER(name),"customerId"
+     LIMIT $3`,
+    [`%${q}%`, q, FEEDBACK_CUSTOMER_SEARCH_LIMIT],
   );
   return result.rows.map((row) => ({ id: String(row.customerId), name: String(row.name) }));
 }
@@ -3097,7 +3102,7 @@ router.get("/feedback/styles/search", async (req, res, next) => {
   }
 });
 
-router.get("/feedback/customers/search", async (req, res, next) => {
+const handleFeedbackCustomerSearch = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const q = normalizeFeedbackCustomerName(req.query.q).slice(0, 80);
     if (q.length < FEEDBACK_CUSTOMER_SEARCH_MIN_LENGTH) {
@@ -3114,7 +3119,11 @@ router.get("/feedback/customers/search", async (req, res, next) => {
   } catch (error) {
     next(error);
   }
-});
+};
+
+router.get("/feedback/customers/search", handleFeedbackCustomerSearch);
+// Keep the original public contract working for older feedback-form bundles.
+router.get("/feedback/customer-lookup", handleFeedbackCustomerSearch);
 
 router.get("/feedback/stores", async (_req, res, next) => {
   try {

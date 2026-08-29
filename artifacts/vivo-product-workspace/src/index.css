@@ -1828,6 +1828,8 @@ a { color: inherit; text-decoration: none; }
 .feedback-customer-option:hover, .feedback-customer-option:focus-visible { background: #f7f0e4; }
 .feedback-customer-option span { overflow: hidden; font: 600 12px/1.35 var(--app-font-sans); text-overflow: ellipsis; white-space: nowrap; }
 .feedback-customer-option svg { flex: 0 0 auto; color: #b39154; }
+.feedback-search-done { justify-self: end; min-height: 32px; margin: 5px 6px 0; padding: 0 12px; border: 1px solid #c9a96e; color: #5f4a2d; background: #fffaf1; cursor: pointer; font: 10px var(--app-font-mono); text-transform: uppercase; }
+.feedback-search-done:hover { background: #fbf1dd; }
 .feedback-form-section { margin: 25px 0 0; padding: 0; border: 0; }
 .feedback-form > .feedback-field { margin-top: 24px; }
 .feedback-field { display: grid; gap: 8px; min-width: 0; color: #6c717c; font: 10px var(--app-font-mono); letter-spacing: .06em; text-transform: uppercase; }
