@@ -308,10 +308,30 @@ export function PublicFeedbackPage() {
   const [images, setImages] = useState<PendingFeedbackImage[]>([]);
   const [imageError, setImageError] = useState("");
   const imageInputRef = useRef<HTMLInputElement>(null);
+  const typePickerRef = useRef<HTMLDivElement>(null);
+  const typeTriggerRef = useRef<HTMLButtonElement>(null);
   const imagesRef = useRef<PendingFeedbackImage[]>([]);
   useEffect(() => {
     imagesRef.current = images;
   }, [images]);
+  useEffect(() => {
+    if (!typesOpen) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!typePickerRef.current?.contains(event.target as Node)) setTypesOpen(false);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      setTypesOpen(false);
+      typeTriggerRef.current?.focus();
+    };
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [typesOpen]);
   useEffect(() => () => {
     imagesRef.current.forEach((image) => { if (image.previewUrl) URL.revokeObjectURL(image.previewUrl); });
   }, []);
@@ -404,6 +424,10 @@ export function PublicFeedbackPage() {
       ? current.feedbackTypes.filter((item) => item !== type)
       : [...current.feedbackTypes, type],
   }));
+  const closeTypes = () => {
+    setTypesOpen(false);
+    typeTriggerRef.current?.focus();
+  };
   const reset = () => {
     setSubmitted(false);
     if (!isPulse) {
@@ -499,12 +523,12 @@ export function PublicFeedbackPage() {
             <div className="feedback-step-heading"><span className="feedback-step-number">3</span><div><h3 id="feedback-step-issue">{isPulse ? pulseMode === "investigate" ? "What’s getting in the way?" : "What’s working well?" : "What's the issue?"}</h3></div></div>
             <fieldset className="feedback-issue-fieldset">
               <legend>Choose all that apply</legend>
-              <div className={`feedback-type-picker ${typesOpen ? "open" : ""}`}>
-                <button type="button" className="feedback-type-trigger" onClick={() => setTypesOpen((open) => !open)} aria-expanded={typesOpen} aria-controls="feedback-type-options"><span>{form.feedbackTypes.length ? `${form.feedbackTypes.length} selected · ${form.feedbackTypes.slice(0, 2).join(", ")}${form.feedbackTypes.length > 2 ? "…" : ""}` : isPulse ? pulseMode === "investigate" ? "Select the barriers you’re hearing" : "Select the reasons customers love it" : "Select one or more issue types"}</span><ChevronDown size={16} /></button>
-                 {typesOpen && <div className="feedback-type-options" id="feedback-type-options" role="group" aria-label="Feedback issue types">{pulseTypes.map((type) => {
+               <div ref={typePickerRef} className={`feedback-type-picker ${typesOpen ? "open" : ""}`}>
+                 <button ref={typeTriggerRef} type="button" className="feedback-type-trigger" onClick={() => setTypesOpen((open) => !open)} aria-expanded={typesOpen} aria-controls="feedback-type-options"><span>{form.feedbackTypes.length ? `${form.feedbackTypes.length} selected · ${form.feedbackTypes.slice(0, 2).join(", ")}${form.feedbackTypes.length > 2 ? "…" : ""}` : isPulse ? pulseMode === "investigate" ? "Select the barriers you’re hearing" : "Select the reasons customers love it" : "Select one or more issue types"}</span><ChevronDown size={16} /></button>
+                  {typesOpen && <div className="feedback-type-options" id="feedback-type-options" role="group" aria-label="Feedback issue types">{pulseTypes.map((type) => {
                    const hint = !isPulse ? feedbackTypeOptions.find((option) => option.label === type)?.hint : undefined;
                    return <label key={type} className={`feedback-type-option ${form.feedbackTypes.includes(type) ? "selected" : ""}`}><input type="checkbox" checked={form.feedbackTypes.includes(type)} onChange={() => toggleType(type)} data-testid={`checkbox-feedback-type-${type.toLowerCase().replaceAll(" ", "-")}`} /><span className="feedback-type-copy"><strong>{type}</strong>{hint && <small>{hint}</small>}</span>{form.feedbackTypes.includes(type) && <Check size={15} />}</label>;
-                 })}</div>}
+                  })}<button type="button" className="feedback-type-done" onClick={closeTypes} data-testid="button-close-feedback-types">Done</button></div>}
               </div>
             </fieldset>
           </section>

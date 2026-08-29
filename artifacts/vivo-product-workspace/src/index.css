@@ -1880,6 +1880,8 @@ a { color: inherit; text-decoration: none; }
 .feedback-type-option .feedback-type-copy strong { color: inherit; font: inherit; letter-spacing: 0; text-transform: none; }
 .feedback-type-option .feedback-type-copy small { color: #978f84; font: 10px/1.3 var(--app-font-sans); letter-spacing: 0; }
 .feedback-type-option svg { color: #66846f; }
+.feedback-type-done { justify-self: end; min-height: 32px; margin-top: 5px; padding: 0 12px; border: 1px solid #c9a96e; color: #5f4a2d; background: #fffaf1; cursor: pointer; font: 10px var(--app-font-mono); text-transform: uppercase; }
+.feedback-type-done:hover { background: #fbf1dd; }
 .feedback-step-more .feedback-field > span { color: #1A1A2E; }
 .feedback-step-images { display: grid; gap: 11px; }
 .feedback-step-images .feedback-step-heading { margin-bottom: 1px; }
