@@ -460,7 +460,6 @@ export function PublicFeedbackPage() {
       <div className="public-feedback-header-meta"><ShieldCheck size={14} /> Internal product feedback</div>
     </header>
     <div className="public-feedback-layout">
-      <section className="public-feedback-intro" aria-hidden="true" />
       <section className="public-feedback-card" aria-labelledby="feedback-form-title">
         {submitted ? <div className="feedback-success">
           <div className="feedback-success-mark"><CircleCheck size={28} /></div>
