@@ -17,13 +17,13 @@ export default function Atelier() {
   const isSettingsActive = location.pathname.startsWith("/atelier/settings");
 
   return (
-    <div className="flex flex-col gap-6 h-full w-full fade-in">
+    <div className="atelier-shell flex flex-col gap-6 min-h-[calc(100vh-var(--app-navbar-h)-3rem)] w-full fade-in">
       <div className="flex items-center gap-3">
         <div className="h-10 w-10 rounded-lg bg-[var(--accent)] text-white flex items-center justify-center shadow-md">
           <Scissors className="h-5 w-5" />
         </div>
         <div>
-          <h1 className="text-2xl font-bold text-[var(--text)] tracking-tight">Atelier</h1>
+          <h1 className="atelier-title text-3xl font-bold text-[var(--text)] tracking-tight">Atelier</h1>
           <p className="text-xs font-medium text-[var(--muted)] uppercase tracking-wider">Junction Operations</p>
         </div>
       </div>

@@ -23,6 +23,25 @@ const STATUS_TRANSITIONS = {
   cancelled: [],
 };
 
+const STATUS_LABELS = {
+  intake: "Received",
+  fitting: "Fitting",
+  in_progress: "In Progress",
+  quality_check: "Quality Check",
+  ready: "Ready for Pickup",
+  collected: "Collected",
+  cancelled: "Cancelled",
+};
+
+const statusLabel = (status) => STATUS_LABELS[status] || String(status || "").replaceAll("_", " ").replace(/\b\w/g, c => c.toUpperCase());
+
+const statusClass = (status) => {
+  if (status === "ready" || status === "collected") return "border-[#3F6B4A] text-[#31563b] bg-[#e7f0e8]";
+  if (status === "cancelled") return "border-[#A5392F] text-[#8b2e27] bg-[#f7e7e3]";
+  if (status === "intake" || status === "fitting") return "border-[#A97A24] text-[#7d5918] bg-[#f6ecd4]";
+  return "border-[#A04F2E] text-[#834026] bg-[#f4e7df]";
+};
+
 export default function AtelierJobDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -172,15 +191,11 @@ export default function AtelierJobDetail() {
       <div className="flex items-start justify-between mb-6 no-print flex-wrap gap-4">
         <div>
           <div className="flex items-center gap-3 mb-2">
-            <h1 className="text-3xl font-bold tracking-tight text-[var(--text)]">
+            <h1 className="text-4xl font-bold tracking-tight text-[var(--text)]">
               Claim #{job.claim_number}
             </h1>
-              <Badge variant="outline" className={`rounded-sm text-xs font-bold uppercase tracking-wide
-              ${job.status === 'intake' ? 'border-[var(--amber)] text-[var(--amber)] bg-[#fef3c7]' : ''}
-              ${job.status === 'ready' ? 'border-[var(--accent-strong)] text-[var(--accent-strong)] bg-[#dcfce7]' : ''}
-              ${job.status === 'in_progress' ? 'border-blue-500 text-blue-700 bg-blue-50' : ''}
-            `}>
-              {job.status.replace("_", " ")}
+              <Badge variant="outline" className={`rounded-full px-3 py-1 text-[11px] font-bold tracking-wide ${statusClass(job.status)}`}>
+              {statusLabel(job.status)}
             </Badge>
           </div>
           <p className="text-sm text-[var(--muted)]">
@@ -194,15 +209,15 @@ export default function AtelierJobDetail() {
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Main Details */}
-        <div className="lg:col-span-2 space-y-6">
-          <Card className="card p-6 rounded-xl print-area shadow-sm relative overflow-hidden border-t-[var(--accent)] border-t-4">
+        <div className="order-2 lg:order-1 lg:col-span-2 space-y-6">
+          <Card className="card p-6 rounded-xl print-area shadow-sm relative overflow-hidden">
             <div className="hidden print:block text-center mb-6 border-b border-dashed border-gray-300 pb-6">
               <h2 className="text-2xl tracking-tight font-bold">VIVO ATELIER</h2>
               <div className="text-sm mt-1">Junction Mall</div>
               <div className="text-4xl tabular-nums font-bold mt-4 tracking-tighter">
                 #{job.claim_number}
               </div>
-              <div className="text-xs uppercase mt-2 font-bold tracking-wider">{job.status}</div>
+               <div className="text-xs mt-2 font-bold tracking-wider">{statusLabel(job.status)}</div>
             </div>
 
             <h3 className="text-lg font-bold mb-4 text-[var(--text)] flex items-center gap-2">
@@ -305,7 +320,7 @@ export default function AtelierJobDetail() {
                   {history.map((event, i) => (
                     <div key={i} className="relative">
                       <div className="absolute -left-[30px] bg-[var(--bg)] border-2 border-[var(--accent)] h-3 w-3 rounded-full top-1"></div>
-                      <div className="text-sm font-medium text-[var(--text)]">Status changed to {event.to_status.replace("_", " ")}</div>
+                      <div className="text-sm font-medium text-[var(--text)]">Status changed to {statusLabel(event.to_status)}</div>
                       {event.note && (
                         <div className="text-sm mt-1 text-[var(--muted)] whitespace-pre-wrap bg-[var(--panel)] p-3 rounded-xl border border-[var(--border)] italic">
                           "{event.note}"
@@ -323,9 +338,13 @@ export default function AtelierJobDetail() {
         </div>
 
         {/* Action Sidebar */}
-        <div className="space-y-6 no-print">
-          <Card className="card p-5 rounded-xl bg-[var(--panel)] border-t-[var(--amber)] border-t-4">
-            <h3 className="text-lg font-bold mb-4 text-[var(--text)]">Update Status</h3>
+        <div className="order-1 lg:order-2 space-y-6 no-print">
+          <Card className="card p-6 rounded-xl border-2 border-[var(--accent)] shadow-[0_16px_40px_rgba(160,79,46,0.14)] lg:sticky lg:top-[calc(var(--app-navbar-h)+1rem)]">
+            <div className="mb-5">
+              <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-[var(--accent)]">Primary Action</div>
+              <h3 className="text-2xl font-bold mt-1 text-[var(--text)]">Update Status</h3>
+              <p className="text-xs text-[var(--muted)] mt-1">Move this claim forward and keep the customer record current.</p>
+            </div>
             <div className="space-y-4">
               <div>
                 <Label className="text-xs mb-1 block">Status</Label>
@@ -334,9 +353,9 @@ export default function AtelierJobDetail() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value={job.status}>{job.status.replace("_", " ")} (Current)</SelectItem>
+                    <SelectItem value={job.status}>{statusLabel(job.status)} (Current)</SelectItem>
                     {STATUS_TRANSITIONS[job.status]?.map(status => (
-                      <SelectItem key={status} value={status}>{status.replace("_", " ")}</SelectItem>
+                      <SelectItem key={status} value={status}>{statusLabel(status)}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>

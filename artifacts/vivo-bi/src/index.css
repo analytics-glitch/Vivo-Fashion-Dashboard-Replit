@@ -1,4 +1,4 @@
-@import url("https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&family=Playfair+Display:wght@600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap");
 
 @tailwind base;
 @tailwind components;
@@ -54,6 +54,50 @@ body {
 }
 
 @layer components {
+    .atelier-shell {
+        --bg: #e6e0d2;
+        --panel: #f1ecdf;
+        --card: #faf7f0;
+        --border: #d5cbbc;
+        --border-strong: #b9aa97;
+        --text: #2a2119;
+        --text-sub: #594c40;
+        --muted: #74675b;
+        --accent: #a04f2e;
+        --accent-strong: #3f6b4a;
+        --accent-deep: #7e3b23;
+        --danger: #a5392f;
+        --amber: #a97a24;
+        color: var(--text);
+        font-family: "DM Sans", sans-serif;
+        background: var(--bg);
+        border: 1px solid #d5cbbc;
+        border-radius: 18px;
+        padding: clamp(1rem, 2vw, 1.75rem);
+        box-shadow: 0 18px 50px rgba(42, 33, 25, 0.08);
+    }
+    .atelier-shell h1,
+    .atelier-shell h2,
+    .atelier-shell h3,
+    .atelier-shell .atelier-title {
+        font-family: "Playfair Display", serif;
+    }
+    .atelier-shell .card,
+    .atelier-shell .card-white {
+        background: var(--card);
+        border-color: var(--border);
+        box-shadow: 0 4px 16px rgba(42, 33, 25, 0.05);
+    }
+    .atelier-shell .input-pill {
+        background: #fffdf8;
+    }
+    .atelier-shell .btn-primary {
+        background: var(--accent);
+        border-color: var(--accent);
+    }
+    .atelier-shell .btn-primary:hover {
+        background: var(--accent-deep);
+    }
     .card {
         background: #ffedd5;
         border: 1px solid var(--border);

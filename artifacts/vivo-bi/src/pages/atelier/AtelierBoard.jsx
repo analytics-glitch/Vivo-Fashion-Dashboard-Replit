@@ -12,6 +12,25 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogD
 import { toast } from "sonner";
 import { Search, Plus, Scissors, Filter, ChevronRight, User, AlertCircle } from "lucide-react";
 
+const STATUS_LABELS = {
+  intake: "Received",
+  fitting: "Fitting",
+  in_progress: "In Progress",
+  quality_check: "Quality Check",
+  ready: "Ready for Pickup",
+  collected: "Collected",
+  cancelled: "Cancelled",
+};
+
+const statusLabel = (status) => STATUS_LABELS[status] || String(status || "").replaceAll("_", " ").replace(/\b\w/g, c => c.toUpperCase());
+
+const statusClass = (status) => {
+  if (status === "ready" || status === "collected") return "border-[#3F6B4A] text-[#31563b] bg-[#e7f0e8]";
+  if (status === "cancelled") return "border-[#A5392F] text-[#8b2e27] bg-[#f7e7e3]";
+  if (status === "intake" || status === "fitting") return "border-[#A97A24] text-[#7d5918] bg-[#f6ecd4]";
+  return "border-[#A04F2E] text-[#834026] bg-[#f4e7df]";
+};
+
 export default function AtelierBoard() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -331,11 +350,11 @@ export default function AtelierBoard() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All Statuses</SelectItem>
-              <SelectItem value="intake">Intake</SelectItem>
+              <SelectItem value="intake">Received</SelectItem>
               <SelectItem value="fitting">Fitting</SelectItem>
               <SelectItem value="in_progress">In Progress</SelectItem>
               <SelectItem value="quality_check">Quality Check</SelectItem>
-              <SelectItem value="ready">Ready</SelectItem>
+              <SelectItem value="ready">Ready for Pickup</SelectItem>
               <SelectItem value="collected">Collected</SelectItem>
               <SelectItem value="cancelled">Cancelled</SelectItem>
             </SelectContent>
@@ -397,12 +416,8 @@ export default function AtelierBoard() {
                           <div className="text-xs text-[var(--muted)] line-clamp-1 mt-0.5">{job.alteration_notes}</div>
                         </td>
                         <td>
-                          <Badge variant="outline" className={`rounded-sm text-[10px] font-bold uppercase tracking-wide
-                            ${job.status === 'intake' ? 'border-[var(--amber)] text-[var(--amber)] bg-[#fef3c7]' : ''}
-                            ${job.status === 'ready' ? 'border-[var(--accent-strong)] text-[var(--accent-strong)] bg-[#dcfce7]' : ''}
-                            ${job.status === 'in_progress' ? 'border-blue-500 text-blue-700 bg-blue-50' : ''}
-                          `}>
-                            {job.status.replace("_", " ")}
+                          <Badge variant="outline" className={`rounded-full px-2.5 py-1 text-[10px] font-bold tracking-wide ${statusClass(job.status)}`}>
+                            {statusLabel(job.status)}
                           </Badge>
                         </td>
                         <td className="whitespace-nowrap">
@@ -428,12 +443,8 @@ export default function AtelierBoard() {
                   <div key={job.id} onClick={() => navigate(`/atelier/jobs/${job.id}`)} className="p-4 active:bg-[var(--panel)] transition-colors cursor-pointer space-y-3">
                     <div className="flex items-center justify-between">
                       <div className="tabular-nums font-bold text-[var(--text)]">{job.claim_number}</div>
-                      <Badge variant="outline" className={`rounded-sm text-[10px] font-bold uppercase tracking-wide
-                        ${job.status === 'intake' ? 'border-[var(--amber)] text-[var(--amber)] bg-[#fef3c7]' : ''}
-                        ${job.status === 'ready' ? 'border-[var(--accent-strong)] text-[var(--accent-strong)] bg-[#dcfce7]' : ''}
-                        ${job.status === 'in_progress' ? 'border-blue-500 text-blue-700 bg-blue-50' : ''}
-                      `}>
-                        {job.status.replace("_", " ")}
+                      <Badge variant="outline" className={`rounded-full px-2.5 py-1 text-[10px] font-bold tracking-wide ${statusClass(job.status)}`}>
+                        {statusLabel(job.status)}
                       </Badge>
                     </div>
                     

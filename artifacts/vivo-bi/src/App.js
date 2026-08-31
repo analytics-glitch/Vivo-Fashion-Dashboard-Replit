@@ -132,6 +132,8 @@ const RootLanding = () => {
 const Shell = ({ children }) => {
   const navRef = useRef(null);
   const { user } = useAuth();
+  const location = useLocation();
+  const isFocusedRecord = /^\/atelier\/jobs\/[^/]+\/?$/.test(location.pathname);
   // Iter 89w-g — fire presence heartbeats while a tab is open so
   // admins can see live "who's using the system" on Activity Logs.
   useHeartbeat(Boolean(user));
@@ -155,8 +157,8 @@ const Shell = ({ children }) => {
   return (
     <div className="min-h-screen bg-background text-foreground" data-testid="app-shell">
       <div ref={navRef} className="sticky top-0 z-40">
-        <TopNav />
-        <FilterBar />
+        <TopNav quietMode={isFocusedRecord} />
+        {!isFocusedRecord && <FilterBar />}
       </div>
       <main className="px-3 sm:px-5 lg:px-10 pt-4 pb-6 max-w-[1600px] mx-auto w-full">
         <Suspense fallback={<div className="py-10"><Loading label="Loading…" /></div>}>
@@ -164,7 +166,7 @@ const Shell = ({ children }) => {
         </Suspense>
       </main>
       <ChatWidget />
-      <GlobalSearch />
+      {!isFocusedRecord && <GlobalSearch />}
     </div>
   );
 };

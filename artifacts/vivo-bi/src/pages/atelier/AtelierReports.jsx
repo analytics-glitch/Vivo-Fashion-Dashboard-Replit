@@ -6,6 +6,18 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useAuth } from "@/lib/auth";
 
+const STATUS_LABELS = {
+  intake: "Received",
+  fitting: "Fitting",
+  in_progress: "In Progress",
+  quality_check: "Quality Check",
+  ready: "Ready for Pickup",
+  collected: "Collected",
+  cancelled: "Cancelled",
+};
+
+const statusLabel = (status) => STATUS_LABELS[status] || String(status || "").replaceAll("_", " ").replace(/\b\w/g, c => c.toUpperCase());
+
 export default function AtelierReports() {
   const { user } = useAuth();
   
@@ -159,9 +171,9 @@ export default function AtelierReports() {
 
           {/* Financials (Admin Only) */}
           {financials && (
-            <Card className="card p-6 rounded-xl border-l-4 border-l-[var(--amber)] bg-[var(--panel)]">
+            <Card className="card p-6 rounded-xl border-l-4 border-l-[var(--accent)] bg-[var(--panel)]">
               <h3 className="text-lg font-bold mb-4 text-[var(--text)] flex items-center gap-2">
-                <ShieldCheck className="h-5 w-5 text-[var(--amber)]" /> Financial Overview (Admin)
+                <ShieldCheck className="h-5 w-5 text-[var(--accent)]" /> Financial Overview (Admin)
               </h3>
               <div className="grid grid-cols-3 gap-6">
                 <div>
@@ -188,7 +200,7 @@ export default function AtelierReports() {
               <div className="divide-y divide-[var(--border)]">
                 {(report.backlog?.by_status || []).map((s, i) => (
                   <div key={i} className="flex justify-between items-center py-3">
-                    <div className="font-semibold text-sm text-[var(--text)] capitalize">{s.status.replace("_", " ")}</div>
+                    <div className="font-semibold text-sm text-[var(--text)]">{statusLabel(s.status)}</div>
                     <div className="tabular-nums text-sm text-[var(--muted)] font-medium">{s.jobs} jobs</div>
                   </div>
                 ))}

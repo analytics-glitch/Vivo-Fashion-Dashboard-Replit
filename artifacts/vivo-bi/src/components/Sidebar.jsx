@@ -440,7 +440,7 @@ const UserMenu = ({ onResetTabOrder, hasCustomTabOrder }) => {
   );
 };
 
-const TopNav = () => {
+const TopNav = ({ quietMode = false }) => {
   const { lastUpdated, refresh, dateFrom, dateTo, countries, channels } = useFilters();
   const prefetchFilters = React.useMemo(
     () => ({ dateFrom, dateTo, countries, channels }),
@@ -575,40 +575,47 @@ const TopNav = () => {
       </div>
 
       <div className="flex items-center gap-1.5 sm:gap-2 text-[11.5px] text-muted shrink-0">
-        <span className="hidden xl:inline" data-testid="last-updated">
-          Updated {relativeTime(lastUpdated)}
-        </span>
-        <button
-          type="button"
-          onClick={() => {
-            // Dispatch the same keyboard shortcut the palette listens for.
-            const evt = new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true });
-            window.dispatchEvent(evt);
-          }}
-          className="hidden md:inline-flex items-center gap-1.5 text-[11px] text-muted hover:text-brand px-2 py-1 rounded-md border border-border hover:border-brand transition-colors"
-          data-testid="open-global-search"
-          title="Open global search (⌘K)"
-        >
-          <span className="hidden lg:inline">Search</span>
-          <kbd className="bg-panel px-1 py-0.5 rounded text-[10px] border border-border">⌘K</kbd>
-        </button>
-        <button
-          type="button"
-          onClick={refresh}
-          data-testid="refresh-data-btn"
-          className="p-1.5 rounded-lg hover:bg-panel text-foreground/70 hover:text-brand transition-colors"
-          title="Refresh data from API"
-        >
-          <ArrowClockwise size={15} weight="bold" />
-        </button>
-        <span className="hidden md:contents"><LiveViewers /></span>
+        {!quietMode && (
+          <>
+            <span className="hidden xl:inline" data-testid="last-updated">
+              Updated {relativeTime(lastUpdated)}
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                const evt = new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true });
+                window.dispatchEvent(evt);
+              }}
+              className="hidden md:inline-flex items-center gap-1.5 text-[11px] text-muted hover:text-brand px-2 py-1 rounded-md border border-border hover:border-brand transition-colors"
+              data-testid="open-global-search"
+              title="Open global search (⌘K)"
+            >
+              <span className="hidden lg:inline">Search</span>
+              <kbd className="bg-panel px-1 py-0.5 rounded text-[10px] border border-border">⌘K</kbd>
+            </button>
+            <button
+              type="button"
+              onClick={refresh}
+              data-testid="refresh-data-btn"
+              className="p-1.5 rounded-lg hover:bg-panel text-foreground/70 hover:text-brand transition-colors"
+              title="Refresh data from API"
+            >
+              <ArrowClockwise size={15} weight="bold" />
+            </button>
+            <span className="hidden md:contents"><LiveViewers /></span>
+          </>
+        )}
         <NotificationBell />
-        <BackendUrlWarningPill />
-        <UpstreamHealthPill />
-        <SyncStatusPill />
-        <ReconciliationStatusPill />
-        <DataQualityStatusPill />
-        <span className="hidden md:contents"><CacheStatsPill /></span>
+        {!quietMode && (
+          <>
+            <BackendUrlWarningPill />
+            <UpstreamHealthPill />
+            <SyncStatusPill />
+            <ReconciliationStatusPill />
+            <DataQualityStatusPill />
+            <span className="hidden md:contents"><CacheStatsPill /></span>
+          </>
+        )}
         <UserMenu onResetTabOrder={resetTabOrder} hasCustomTabOrder={hasCustomTabOrder} />
       </div>
       </div>

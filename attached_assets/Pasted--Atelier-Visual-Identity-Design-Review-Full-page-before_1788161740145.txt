@@ -1,0 +1,37 @@
+# Atelier Visual Identity — Design Review
+
+Full page (before/after, palette swatches, restyled mockup): https://claude.ai/code/artifact/b038abd1-97f1-4c16-ba7b-e2f2c1c065a4
+
+Reviewed live: `atelier/jobs/1` on the Replit dev preview (captured 29 Aug 2026), against the Product Workspace reference (vivofashionbrands.com/product-workspace).
+
+## Direction confirmed with the user
+
+Not a re-skin of Product Workspace — Atelier (and the future Customer Experience Workspace) should have its own color identity, explicitly not navy/gold. Typography, however, should match Product Workspace's own fonts (confirmed via computed styles on the live site).
+
+## Findings on the current build
+
+- Green and orange are both used as if each were "the" brand color (tab underline, card borders, badges, buttons, chat bubble) — no color is reserved for identity vs. status vs. decoration.
+- The BI dashboard's global filter bar (Today/Previous month, KES currency, Country/Cluster/POS, Retail-Online, Share view) is present on a single-claim detail page, where none of it applies.
+- Enterprise BI chrome (Sync/Recon/DQ/Cache status pills, "1 viewing", ⌘K search) is on an operational counter tool, not just an analytics dashboard.
+- Status vocabulary disagrees within the same screen: badge reads "INTAKE" (caps), dropdown reads "intake (Current)" (lowercase) — neither matches the schema's actual status names (Received, In Progress, Ready for Pickup, Collected, Cancelled).
+- The two panels ("Job Details" read-only, "Update Status" the actual task) carry equal visual weight — the action panel should be visually primary.
+- Free-typed test data ("Test REcord") shows the same lack-of-formatting risk flagged in the original spreadsheet audit.
+
+## Proposed system
+
+**Color** (distinct from Product Workspace):
+- **Clay** `#A04F2E` (dark mode `#D98A5E`) — single identity accent, grounded in Vivo's own wordmark color but a deeper/muted slice of it, distinct from Product Workspace's amber-gold.
+- **Ink** `#2A2119` / **Paper** `#E6E0D2` / **Surface** `#FAF7F0` — warm neutrals, not navy, not the generic pale-cream default.
+- Status colors reserved and never reused decoratively: Attention (amber) `#A97A24`, Complete (sage) `#3F6B4A`, Overdue (brick) `#A5392F`.
+
+**Type** (intentionally matched to Product Workspace, confirmed via the live site's computed styles):
+- **Playfair Display** (weight 600/700) — headlines and card/panel titles, same as Product Workspace's "Good morning, team." and section headers.
+- **DM Sans** (weight 400–700) — everything else: body, labels, nav, buttons, badges, numbers, claim codes (tabular figures).
+- Product Workspace's own gold (`rgb(201,169,110)` ≈ `#C9A96E`) is left alone, not reused in Atelier.
+
+## To fold into the next Replit prompt update
+
+1. Apply the clay/ink/paper color system to Atelier now (and treat it as the base for the future Customer Experience Workspace); reuse Product Workspace's existing Playfair Display + DM Sans font setup rather than introducing new type.
+2. Strip the global BI filter bar and system-status pills from single-record screens (claim detail, customer profile); keep aggregate filters only on Reports-type views.
+3. Standardize status labels to the schema's own wording, Title Case, everywhere (badge and dropdown must agree).
+4. Give the action panel (e.g. Update Status) visually primary weight vs. read-only reference panels beside it.
