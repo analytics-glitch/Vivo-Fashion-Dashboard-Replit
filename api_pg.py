@@ -17871,15 +17871,18 @@ def _ibt_store_sku_velocity(date_from, date_to, country):
     return out
 
 
-def _ibt_warehouse_avail(country):
-    """{sku: available_units} in the central warehouse(s). Used by the
+def _ibt_warehouse_avail(country, inventory_version=None):
+    """{sku: available_units} in dispatch-ready Warehouse Finished Goods. Used by the
     warehouse-deploy-first waterfall so IBT only fires on the residual demand
-    Replenishment won't already satisfy from the warehouse."""
+    Replenishment won't already satisfy from the warehouse. Production and
+    holding locations are pipeline, never dispatchable stock."""
     c_inv = ("AND i.country = '" + _sql_str(country) + "'") if country else ""
-    q = f"""
+    inventory_version = inventory_version or _inventory_version()
+    snapshot_comment = str(inventory_version).replace("*/", "")
+    q = f"""/* all_inventory_snapshot:{snapshot_comment} */
       SELECT i.sku AS sku, SUM(i.available)::numeric AS av
       FROM all_inventory i
-      WHERE i.pos_location_name IN ({WAREHOUSE_LOCATIONS})
+      WHERE i.pos_location_name = 'Warehouse Finished Goods'
         AND COALESCE(i.sku,'') <> '' {c_inv}
       GROUP BY 1 HAVING SUM(i.available) > 0
     """
@@ -17940,6 +17943,7 @@ def _ibt_global_solve(date_from, date_to, country, low, high,
     minimum-transfer gate is applied per bundle. The canonical SOR formula is
     never used or changed here."""
     _warehouse_bins_refresh()
+    inventory_version = _inventory_version()
     edges = run_query(_ibt_edge_sql(date_from, date_to, country, low, high,
                                     use_clustering=use_clustering)) or []
     # Code-level hard-retirement list (Zoya brand already excluded in SQL): a
@@ -17949,7 +17953,8 @@ def _ibt_global_solve(date_from, date_to, country, low, high,
     # ── Phase 2 inputs: per-cell velocity, corridor lead-time, warehouse pool ──
     velmap = _ibt_store_sku_velocity(date_from, date_to, country)
     lt_map = _ibt_leadtime_map()
-    wh_pool = _ibt_warehouse_avail(country)  # {sku: warehouse on-hand} (mutated)
+    wh_pool = _ibt_warehouse_avail(
+        country, inventory_version)  # {sku: warehouse on-hand} (mutated)
 
     def _vel(store, sku):
         v = velmap.get((store, sku))
@@ -18255,6 +18260,7 @@ def _ibt_global_solve(date_from, date_to, country, low, high,
     return {
         "as_of": date.today().isoformat(),
         "run_id": date.today().isoformat(),
+        "inventory_version": inventory_version,
         "as_of_eat": fresh["as_of_eat"],
         "freshness": fresh,
         "calibration": calib,
@@ -18309,17 +18315,23 @@ def ibt_sku_breakdown(
     from_store:    str = Query(...),
     to_store:      str = Query(...),
     units_to_move: int = Query(default=0),
+    inventory_version: str = Query(default=None),
 ):
     _warehouse_bins_refresh()
     st = _sql_str(style_name)
     fs = _sql_str(from_store)
     ts = _sql_str(to_store)
+    # Always resolve the snapshot server-side rather than trusting the optional
+    # client value.  The client sends its parent recommendation's version only
+    # to make its own HTTP/cache key snapshot-aware.
+    current_inventory_version = _inventory_version()
+    snapshot_comment = str(current_inventory_version).replace("*/", "")
     # Phase 2 A5 — size-run integrity guard. Every size the donor still stocks
     # keeps at least 1 unit on the shelf, so a transfer can never zero out a size
     # and break the donor's size run (qty is capped at from_available - 1). A SKU
     # whose only available unit would otherwise move (and the destination is not
     # already covered) is held back and flagged size_run_protected = true.
-    q = f"""
+    q = f"""/* all_inventory_snapshot:{snapshot_comment} */
     WITH skus AS (
       SELECT DISTINCT p.sku, p.color_print AS color, p.size, p.barcode
       FROM all_products_clean p WHERE p.style_name = '{st}'
@@ -18366,6 +18378,7 @@ def ibt_sku_breakdown(
     return {
         "from_store": from_store,
         "to_store": to_store,
+        "inventory_version": current_inventory_version,
         "from_total": sum(r["from_available"] for r in skus),
         "to_total": sum(r["to_available"] for r in skus),
         "suggested_total": sum(r["suggested_qty"] for r in skus),
@@ -18384,6 +18397,8 @@ def ibt_warehouse_to_store(
     today = date.today()
     date_to = date_to or today.isoformat()
     date_from = date_from or (today - timedelta(days=30)).isoformat()
+    inventory_version = _inventory_version()
+    snapshot_comment = str(inventory_version).replace("*/", "")
     lim = max(1, min(int(limit), 1000))
     c_sales = ("AND s.country = '" + _sql_str(country) + "'") if country else ""
     c_inv = ("AND i.country = '" + _sql_str(country) + "'") if country else ""
@@ -18420,7 +18435,7 @@ def ibt_warehouse_to_store(
         AND COALESCE(p.style_name,'') <> '' {c_sales}
       GROUP BY 1, 2 HAVING SUM(s.net_quantity) >= 3
     )"""
-    q = f"""
+    q = f"""/* all_inventory_snapshot:{snapshot_comment} */
     WITH {sv_cte},
     si AS (
       SELECT p.style_name AS style, i.pos_location_name AS store,
@@ -18517,6 +18532,7 @@ def ibt_warehouse_to_store(
     store_map = _replen_store_owner_map()
     for r in (rows or []):
         r["owner"] = store_map.get(r.get("to_store")) or "—"
+        r["inventory_version"] = inventory_version
     return rows
 
 

@@ -32,9 +32,23 @@ import { useTableSort, SortableTh } from "@/lib/useTableSort";
  */
 const _isWh = (flow) => flow === "warehouse_to_store";
 
-// In-memory cache of SKU breakdowns keyed by (style|from|to|qty) so
-// switching filters / re-sorting doesn't refetch the same fan-out.
+// Store-to-store keeps its historical (style|from|to|qty) cache key. Warehouse
+// rows add the inventory snapshot because availability can change while the
+// style/store/quantity tuple stays identical.
 const _skuCache = new Map();
+
+const _skuCacheKey = (suggestion, flow) => {
+  const fromStore = _isWh(flow)
+    ? "Warehouse Finished Goods"
+    : suggestion.from_store;
+  const units = _isWh(flow)
+    ? suggestion.suggested_qty
+    : suggestion.units_to_move;
+  const base = `${suggestion.style_name}||${fromStore}||${suggestion.to_store}||${units}`;
+  return _isWh(flow)
+    ? `${base}||inventory:${suggestion.inventory_version || "uncached"}`
+    : base;
+};
 
 const useFlatRows = (suggestions, flow) => {
   const [skuByKey, setSkuByKey] = useState(() => new Map());
@@ -51,15 +65,20 @@ const useFlatRows = (suggestions, flow) => {
     setLoading(true);
     setProgress(0);
 
-    const next = new Map(skuByKey);
+    // Warehouse picks are live dispatch instructions: remove the old snapshot
+    // immediately rather than showing it while replacement fan-out is loading.
+    // Store-to-store retains its existing transition/cache behaviour.
+    const next = _isWh(flow) ? new Map() : new Map(skuByKey);
+    if (_isWh(flow)) setSkuByKey(new Map());
     let done = 0;
     const total = suggestions.length;
 
     const fetchOne = async (s) => {
       const fromStore = _isWh(flow) ? "Warehouse Finished Goods" : s.from_store;
       const units = _isWh(flow) ? s.suggested_qty : s.units_to_move;
-      const cacheKey = `${s.style_name}||${fromStore}||${s.to_store}||${units}`;
-      if (_skuCache.has(cacheKey)) {
+      const cacheKey = _skuCacheKey(s, flow);
+      const cacheable = !_isWh(flow) || Boolean(s.inventory_version);
+      if (cacheable && _skuCache.has(cacheKey)) {
         next.set(cacheKey, _skuCache.get(cacheKey));
         return;
       }
@@ -70,6 +89,9 @@ const useFlatRows = (suggestions, flow) => {
             from_store: fromStore,
             to_store: s.to_store,
             units_to_move: units,
+            ...(_isWh(flow) && s.inventory_version
+              ? { inventory_version: s.inventory_version }
+              : {}),
           },
           timeout: 60000,
         });
@@ -85,12 +107,14 @@ const useFlatRows = (suggestions, flow) => {
         //    every SKU the donor actually holds so those columns are populated;
         //    the Suggested column still carries the conservative per-SKU qty.
         const skus = (data?.skus || []).filter((x) =>
-          _isWh(flow) ? x.suggested_qty > 0 : (x.from_available ?? 0) > 0
+          _isWh(flow)
+            ? (x.from_available ?? 0) > 0 && (x.suggested_qty ?? 0) > 0
+            : (x.from_available ?? 0) > 0
         );
-        _skuCache.set(cacheKey, skus);
+        if (cacheable) _skuCache.set(cacheKey, skus);
         next.set(cacheKey, skus);
       } catch {
-        _skuCache.set(cacheKey, []);
+        if (cacheable) _skuCache.set(cacheKey, []);
         next.set(cacheKey, []);
       }
     };
@@ -143,9 +167,13 @@ export default function IBTFlatTable({
     for (const s of visibleSuggestions) {
       const fromStore = _isWh(flow) ? "Warehouse Finished Goods" : s.from_store;
       const units = _isWh(flow) ? s.suggested_qty : s.units_to_move;
-      const cacheKey = `${s.style_name}||${fromStore}||${s.to_store}||${units}`;
+      const cacheKey = _skuCacheKey(s, flow);
       const skus = skuByKey.get(cacheKey) || [];
       if (skus.length === 0) {
+        // A warehouse parent suggestion is not itself a dispatchable SKU. If
+        // its fresh breakdown fails or has no actionable rows, show no pick
+        // rather than a stale/placeholder transfer instruction.
+        if (_isWh(flow)) continue;
         // Render a stub row even when SKU breakdown not yet ready, so
         // the table doesn't appear empty during the fan-out.
         out.push({

@@ -157,6 +157,10 @@ const IBT = () => {
           use_clustering: useClustering,
         },
         timeout: 180000,
+        // Inventory drives both warehouse coverage and donor eligibility.
+        // A page/data refresh must hit the live snapshot rather than reusing
+        // the generic five-minute dashboard response cache.
+        forceFresh: true,
       })
       .then(({ data }) => {
         if (cancelled) return;

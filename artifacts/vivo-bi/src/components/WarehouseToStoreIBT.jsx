@@ -42,6 +42,9 @@ const WarehouseToStoreIBT = ({ dateFrom, dateTo, countries = [], onMarkDone, com
       .get("/analytics/ibt-warehouse-to-store", {
         params: { date_from: dateFrom, date_to: dateTo, country, limit: 300 },
         timeout: 240000,
+        // Warehouse availability is operational, not a five-minute BI cache:
+        // each list refresh must obtain the current inventory snapshot stamp.
+        forceFresh: true,
       })
       .then(({ data }) => { if (!cancelled) setRows(data || []); })
       .catch((e) => !cancelled && setError(e?.response?.data?.detail || e.message))
