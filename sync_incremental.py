@@ -287,9 +287,7 @@ def record_source_success(conn, source, now=None):
         now = now or datetime.now(timezone.utc)
         # Flip state FIRST: rate-limit correctness beats a best-effort row.
         st["failing"] = False
-        dur_min = int(
-            round((now - st["first_failed_at"]).total_seconds() / 60.0)
-        )
+        dur_min = int(round((now - st["first_failed_at"]).total_seconds() / 60.0))
         notes = (
             f"{source} pull recovered after {st['fail_count']} failure(s) "
             f"over ~{dur_min} min"
@@ -346,29 +344,44 @@ RWANDA_LOCATIONS = {
 }
 
 SITE_LOCATION_MAP = {
+    # Kenya — keys are EXACTLY what FootfallCam's API sends (SiteName)
+    "Sarit Centre": "Vivo Sarit",
+    "VFGJUNCTION": "Vivo Junction",
     "Vivo Junction": "Vivo Junction",
-    "Vivo Sarit Centre": "Vivo Sarit",
-    "Vivo Village Market": "Vivo Village Market",
-    "Vivo Westgate": "Vivo T- Mall",
-    "Vivo Garden City": "Vivo Garden City",
-    "Vivo Two Rivers": "Vivo Two Rivers",
-    "Vivo Galleria": "Vivo Galleria",
-    "Vivo Hub Karen": "Vivo Hub",
-    "Vivo Greenspan": "Vivo Greenspan",
-    "Vivo Capital Centre": "Vivo Capital Centre",
-    "Vivo Yaya": "Vivo Yaya",
-    "Vivo Mama Ngina": "Vivo Mama Ngina St",
-    "Vivo TRM": "Vivo TRM",
-    "Vivo Kisumu": "Vivo Kisumu",
-    "Vivo Nakuru": "Vivo Nakuru",
-    "Vivo Meru": "Vivo Meru",
-    "Vivo Eldoret": "Vivo Eldoret",
-    "Vivo Mombasa Digo": "Vivo MSA Digo Road",
-    "Vivo City Mall": "Vivo City Mall",
-    "Vivo Signature": "Vivo Signature Mall",
-    "Vivo Runda": "Vivo Runda",
-    "Vivo Kileleshwa": "Vivo Kileleshwa",
+    "VIVO Mama Ngina": "Vivo Mama Ngina St",
+    "Yaya Centre": "Vivo Yaya",
+    "VivoVillageMKT": "Vivo Village Market",
+    "VIVO Capital": "Vivo Capital Centre",
     "Vivo Imaara": "Vivo Imaara",
+    "VIVO Mombasa": "Vivo City Mall",
+    "VFGELDORET": "Vivo Eldoret",
+    "VIVO Galleria": "Vivo Galleria",
+    "VFGGALLERIAMALL": "Vivo Galleria",
+    "VIVO Gardencity": "Vivo Garden City",
+    "The Hub": "Vivo Hub",
+    "VFGTHEHUB": "Vivo Hub",
+    "VivoKisumu": "Vivo Kisumu",
+    "VIVO MERU": "Vivo Meru",
+    "Vivo MoiAV": "Vivo Moi Avenue",
+    "Shop Zetu_MoiAv": "Vivo Moi Avenue",
+    "Vivo_MSA_DigoRD": "Vivo MSA Digo Road",
+    "VIVO Westside": "Vivo Nakuru",
+    "Vivo Runda Mall": "Vivo Runda",
+    "VFGSIGNATURE": "Vivo Signature Mall",
+    "Vivo Greenspan": "Vivo Greenspan",
+    "Vivo TRM": "Vivo TRM",
+    "Two Rivers": "Vivo Two Rivers",
+    "VIVO T-Mall": "Vivo T- Mall",
+    "VFG T-MALL": "Vivo T- Mall",
+    "KILELESHWA": "Vivo Kileleshwa",
+    "Safari Sarit": "Safari Sarit",
+    "Zoya Sarit": "Zoya Sarit",
+    # Uganda
+    " Oasis mall": "The Oasis Mall",
+    "Acacia Mall": "Vivo Acacia",
+    # Rwanda
+    "Vivo Kigali ": "Vivo Kigali Heights",
+    " Kigali M-peace": "Vivo M-peace Plaza",
 }
 
 # Canonical config_name → pos_location_name map now lives in the env-free
@@ -463,7 +476,9 @@ FABRIC_WORKER_TICK_SEC = int(os.environ.get("FABRIC_WORKER_TICK_SEC", "20"))
 import threading as _threading
 
 _SALES_SYNC_LOCK = _threading.Lock()
-SALES_WORKER_ENABLED = os.environ.get("SALES_WORKER_ENABLED", "1").strip().lower() not in (
+SALES_WORKER_ENABLED = os.environ.get(
+    "SALES_WORKER_ENABLED", "1"
+).strip().lower() not in (
     "0",
     "false",
     "no",
@@ -476,7 +491,9 @@ SALES_WORKER_WINDOW_MIN = int(os.environ.get("SALES_WORKER_WINDOW_MIN", "30"))
 # Shop Zetu rides ShopifyQL via a subprocess whose default window is ~4 days
 # (DELETE+INSERT per day) — heavier than the in-process pulls, so it runs on a
 # slower cadence inside the worker.
-SALES_WORKER_SZ_INTERVAL_SEC = int(os.environ.get("SALES_WORKER_SZ_INTERVAL_SEC", "300"))
+SALES_WORKER_SZ_INTERVAL_SEC = int(
+    os.environ.get("SALES_WORKER_SZ_INTERVAL_SEC", "300")
+)
 SALES_WORKER_SZ_TIMEOUT_SEC = int(os.environ.get("SALES_WORKER_SZ_TIMEOUT_SEC", "300"))
 _LAST_SALES_WORKER_SZ = None
 
@@ -569,6 +586,8 @@ def _validation_gate(last_run, now_utc):
     if last_run is None:
         return False, now_utc - timedelta(minutes=30)
     return (now_utc - last_run).total_seconds() >= 3600, last_run
+
+
 # Guards the X (Twitter) CRM inbox sync to once per hour even though main() runs
 # every 60s. The sync is idempotent + cursor-resumed, so hourly keeps the inbox
 # fresh without hammering X's rate-limited API tiers. None on boot so a fresh
@@ -2268,9 +2287,7 @@ def sales_worker_loop(stop_event=None):
                             conn.commit()
                             record_source_success(conn, store["store_id"])
                         except Exception as e:
-                            log.error(
-                                "Sales worker %s error: %s", store["store_id"], e
-                            )
+                            log.error("Sales worker %s error: %s", store["store_id"], e)
                             conn.rollback()
                             record_source_failure(conn, store["store_id"], e)
 
@@ -2501,7 +2518,10 @@ def main():
             import subprocess, sys
 
             subprocess.run(
-                [sys.executable, "/home/runner/workspace/extract_shopzetu_shopifyql.py"],
+                [
+                    sys.executable,
+                    "/home/runner/workspace/extract_shopzetu_shopifyql.py",
+                ],
                 check=True,
                 timeout=900,
             )
@@ -2705,7 +2725,8 @@ def main():
     # _validation_gate for the 2026-08-13 healthcheck-outage rationale.
     global _LAST_VALIDATION_RUN
     validation_due, _LAST_VALIDATION_RUN = _validation_gate(
-        _LAST_VALIDATION_RUN, now_utc)
+        _LAST_VALIDATION_RUN, now_utc
+    )
     if validation_due:
         # Stamp up front so a transient failure waits an hour before retrying.
         _LAST_VALIDATION_RUN = now_utc
@@ -2912,8 +2933,11 @@ def main():
 
             log.info("Running Production Tracker Sheet sync (scheduled)...")
             subprocess.run(
-                [sys.executable, "/home/runner/workspace/production_tracker_sheet_sync.py",
-                 "--scheduled"],
+                [
+                    sys.executable,
+                    "/home/runner/workspace/production_tracker_sheet_sync.py",
+                    "--scheduled",
+                ],
                 check=True,
                 timeout=120,
             )
