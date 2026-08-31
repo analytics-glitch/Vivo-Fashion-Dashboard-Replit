@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/lib/auth";
 import { canAccessPage } from "@/lib/permissions";
 import { Loading } from "@/components/common";
@@ -18,10 +19,13 @@ const CUST_TABS = [
   { id: "details", label: "Customer Details", pageId: "customer-details", el: CustomerDetailsTab },
   { id: "crm", label: "CRM", pageId: "crm", external: "/crm/" },
   { id: "crm-desk", label: "CRM Desk", pageId: "crm", external: "https://crm.vivofashionbrands.com" },
+  { id: "customer-app", label: "Customer App", pageId: "community-app", to: "/community-app" },
+  { id: "atelier", label: "Atelier", pageId: "atelier", to: "/atelier" },
 ];
 
 const CustomersHubPage = () => {
   const { user } = useAuth();
+  const navigate = useNavigate();
   const visibleTabs = CUST_TABS.filter((t) => canAccessPage(user, t.pageId));
   const initialTab = (() => {
     const wanted = new URLSearchParams(window.location.search).get("tab");
@@ -40,6 +44,7 @@ const CustomersHubPage = () => {
             type="button"
             onClick={() => {
               if (t.external) window.open(t.external, '_blank', 'noopener,noreferrer');
+              else if (t.to) navigate(t.to);
               else setTab(t.id);
             }}
             data-testid={`cust-tab-${t.id}`}

@@ -8,4 +8,4 @@ The Odoo incoming-transfers extract only fetches a rolling ~7-day window, so a T
 
 **Why:** period-based transfer metrics are only as old as the retained rows; the source window is short.
 
-**How to apply:** any change to `extract_odoo_transfers.py` loading, or any new consumer of `stock_transfers`, must preserve this. Surfaces should expose the earliest done day (`transfer_history_from`) and warn when the selected range predates it. `date_done` is UTC — shift +3h for the EAT business day.
+**How to apply:** any change to `extract_odoo_transfers.py` loading, or any new consumer of `stock_transfers`, must preserve this. Surfaces should expose the earliest done day (`transfer_history_from`) and warn when the selected range predates it. Completed transfers belong to the EAT business day from `date_done + 3h`; use `scheduled_date + 3h` only while a transfer is still open.

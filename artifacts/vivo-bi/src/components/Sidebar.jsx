@@ -138,9 +138,12 @@ const PagePicker = ({
   React.useEffect(() => { setOpen(false); }, [location.pathname]);
 
   const isActiveTab = React.useCallback(
-    (t) => (t.to === "/"
-      ? location.pathname === "/"
-      : location.pathname === t.to || location.pathname.startsWith(`${t.to.replace(/\/$/, "")}/`)),
+    (t) => {
+      const paths = [t.to, ...(t.matchPaths || [])];
+      return paths.some((path) => (path === "/"
+        ? location.pathname === "/"
+        : location.pathname === path || location.pathname.startsWith(`${path.replace(/\/$/, "")}/`)));
+    },
     [location.pathname],
   );
   const activeTab = React.useMemo(() => items.find(isActiveTab), [items, isActiveTab]);

@@ -37,7 +37,6 @@ import {
   Kanban,
   Medal,
   ChatCenteredText,
-  Scissors,
 } from "@phosphor-icons/react";
 
 /**
@@ -140,17 +139,19 @@ export const PRIMARY_NAV = [
   // Customer pages & marketing
   {
     to: "/customers", label: "Customers", icon: Users, id: "customers",
-    anyOfPageIds: ["customers", "customer-details", "crm"],
-    group: "Customers & Marketing", desc: "Customers hub — analytics, single-customer lookup and the CRM",
+    anyOfPageIds: ["customers", "customer-details", "crm", "community-app", "atelier"],
+    matchPaths: ["/community-app", "/atelier"],
+    group: "Customers & Marketing", desc: "Customers hub — analytics, customer lookup, CRM, Customer App and Atelier",
     subReports: [
       { pageId: "customers",        label: "Customer Analytics" },
       { pageId: "customer-details", label: "Customer Details" },
       { pageId: "crm",              label: "CRM" },
+      { pageId: "community-app",    label: "Customer App" },
+      { pageId: "atelier",          label: "Atelier" },
     ],
   },
   { to: "/order-explorer", label: "Order Explorer", icon: AddressBook, id: "order-explorer", group: "Customers & Marketing", desc: "Drill between customers and products — start from a customer to see every order and product they bought, or start from a product to see every identified customer who bought it" },
   { to: "/marketing", label: "Marketing", icon: Megaphone, id: "marketing", group: "Customers & Marketing", desc: "Campaign and channel marketing performance" },
-  { to: "/community-app", label: "Community App (live)", icon: UsersThree, id: "community-app", group: "Customers & Marketing", desc: "Opens the live customer-facing Vivo Community app at /app/ — feed, shop, rewards, account and help (the old mockup page now redirects there)" },
 
   // OPERATIONAL pages — actions that move, return or make stock.
   {
@@ -171,7 +172,6 @@ export const PRIMARY_NAV = [
   { to: "/production-workspace", label: "Production Workspace", icon: Factory, id: "production-workspace", group: "Operations & Production", desc: "Command Centre, planning, execution capture and productivity recovery" },
   { to: "/quality", label: "Quality", icon: Medal, id: "quality", group: "Operations & Production", desc: "Production quality dashboard — repairs, defect rates, complaints and washing trackers" },
   { to: "/central-tracker", label: "Order Tracker", icon: Table, id: "central-tracker", group: "Operations & Production", desc: "Buying order log from the Central Tracker sheet — Style No, Style Name, Order Qty and Order Date across all year tabs" },
-  { to: "/atelier", label: "Atelier", icon: Scissors, id: "atelier", group: "Operations & Production", desc: "Alterations intake, job tracking and customer measurements" },
 
   // Catalogues & others
   { to: "/ask", label: "Ask the Dashboard", icon: Sparkle, id: "ask", group: "Tools", desc: "Ask questions about today's sales, footfall, and performance — answered from live business data by AI" },

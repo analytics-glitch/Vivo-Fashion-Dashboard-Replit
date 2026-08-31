@@ -3344,6 +3344,15 @@ _WAREHOUSE_ORIGIN_FILTER = (
     "AND t.sku NOT LIKE 'VB001%%'"
 )
 
+# Store Flow must place completed transfers on the day stock actually moved,
+# not the earlier planning date. Odoo timestamps are UTC, so convert both
+# actual and fallback scheduled timestamps to the EAT business day.
+_STORE_FLOW_TRANSFER_DAY = (
+    "CASE WHEN t.state = 'done' AND t.date_done IS NOT NULL "
+    "THEN (t.date_done + interval '3 hours')::date "
+    "ELSE (t.scheduled_date + interval '3 hours')::date END"
+)
+
 WAREHOUSE_LOCATIONS = (
     "'Warehouse Finished Goods','Warehouse Receiving','In Transit',"
     "'Holding Warehouse Finished Goods','Finished Goods Production','Production',"
@@ -15219,10 +15228,10 @@ def analytics_store_flow(
     _EXCLUDED_POS = "'MarKT/Stock','Retired Stock'"
 
     ctry_t = " AND t.to_country IN (" + csv_to_sql(country) + ")" if country else ""
-    # Units Transferred = warehouse→store pickings dispatched in the period,
-    # counted the moment they leave the warehouse (scheduled_date), regardless
-    # of whether the store has validated receipt yet.  For done pickings use
-    # qty_done (actual); for ready/assigned use qty_planned (confirmed dispatch).
+    # Units Transferred = warehouse→store pickings in the period. Completed
+    # pickings use their actual EAT completion day; open pickings fall back to
+    # their scheduled EAT day. For done pickings use qty_done (actual); for
+    # ready/assigned use qty_planned (confirmed dispatch).
     # Units Incoming = open pickings with no date filter (all in-transit stock).
     transfers = run_query("""
         SELECT t.to_store_name AS pos_location,
@@ -15230,7 +15239,7 @@ def analytics_store_flow(
                COALESCE(SUM(
                    CASE WHEN t.state = 'done' THEN t.qty_done ELSE t.qty_planned END
                ) FILTER (
-                   WHERE t.scheduled_date::date
+                    WHERE """ + _STORE_FLOW_TRANSFER_DAY + """
                          BETWEEN '""" + date_from + """' AND '""" + date_to + """'), 0) AS units_transferred,
                COALESCE(SUM(t.qty_planned) FILTER (
                    WHERE t.state != 'done'), 0) AS units_incoming
@@ -15265,12 +15274,12 @@ def analytics_store_flow(
         _slot(r["pos_location"], r.get("country"))["units_sold"] = int(r["units_sold"] or 0)
     # Units Returned = store→WHREC pickings completed in the period.
     # For store_to_warehouse transfers, to_store_name holds the originating
-    # retail store (the one making the return); scheduled_date is the date used.
+    # retail store (the one making the return); completed returns use date_done.
     returns = run_query("""
         SELECT t.to_store_name AS pos_location,
                MAX(t.to_country) AS country,
                COALESCE(SUM(t.qty_done) FILTER (
-                   WHERE t.scheduled_date::date
+                    WHERE """ + _STORE_FLOW_TRANSFER_DAY + """
                          BETWEEN '""" + date_from + """' AND '""" + date_to + """'
                      AND t.state = 'done'), 0) AS units_returned
         FROM stock_transfers t
@@ -15323,10 +15332,10 @@ def analytics_store_flow(
     # selected period so the UI can show a Mon–Sun column view.
     daily_xfr = run_query("""
         SELECT t.to_store_name AS pos_location,
-               EXTRACT(ISODOW FROM t.scheduled_date::date)::int AS dow,
+               EXTRACT(ISODOW FROM """ + _STORE_FLOW_TRANSFER_DAY + """)::int AS dow,
                SUM(CASE WHEN t.state = 'done' THEN t.qty_done ELSE t.qty_planned END) AS units
         FROM stock_transfers t
-        WHERE t.scheduled_date::date
+        WHERE """ + _STORE_FLOW_TRANSFER_DAY + """
               BETWEEN '""" + date_from + """' AND '""" + date_to + """'
           AND t.to_store_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
           AND """ + _WAREHOUSE_ORIGIN_FILTER + """
@@ -15406,7 +15415,7 @@ def analytics_store_flow(
         "stores": len(rows),
     }
     cov = run_query("""
-        SELECT MIN(scheduled_date::date)::text AS first_done
+        SELECT MIN((date_done + interval '3 hours')::date)::text AS first_done
         FROM stock_transfers
         WHERE state = 'done'
           AND from_location_name IN ('HWHFN/Stock','FGPRD/Stock','WHFIN/Stock','WHREC/Stock')
@@ -15429,11 +15438,11 @@ def analytics_store_flow_day_transfers(
     country:   str = Query(default=None),
 ):
     """Drill-down for a daily transfer cell on the Store Flow page: the
-    warehouse→store transfer line items whose scheduled_date falls on the
-    given ISO weekday (1=Mon…7=Sun) within the selected range — the exact
-    same filter the daily_transfers aggregation uses, so the drill-down
-    total always matches the clicked cell.  pos_location omitted = all
-    filtered stores (the daily totals row)."""
+    warehouse→store transfer line items whose actual completion day (or
+    scheduled day while still open) falls on the given ISO weekday
+    (1=Mon…7=Sun) within the selected range — the exact same filter the
+    daily_transfers aggregation uses, so the drill-down total always matches
+    the clicked cell. pos_location omitted = all filtered stores."""
     try:
         date.fromisoformat(date_from); date.fromisoformat(date_to)
     except ValueError:
@@ -15450,7 +15459,7 @@ def analytics_store_flow_day_transfers(
                p.category,
                p.product_type AS sub_category,
                t.to_store_name AS pos_location,
-               t.scheduled_date::date::text AS transfer_date,
+                (""" + _STORE_FLOW_TRANSFER_DAY + """)::text AS transfer_date,
                SUM(CASE WHEN t.state = 'done' THEN t.qty_done ELSE t.qty_planned END)::int AS quantity
         FROM stock_transfers t
         LEFT JOIN LATERAL (
@@ -15460,9 +15469,9 @@ def analytics_store_flow_day_transfers(
             ORDER BY (active IS TRUE) DESC, barcode
             LIMIT 1
         ) p ON TRUE
-        WHERE t.scheduled_date::date
+        WHERE """ + _STORE_FLOW_TRANSFER_DAY + """
               BETWEEN '""" + date_from + """' AND '""" + date_to + """'
-          AND EXTRACT(ISODOW FROM t.scheduled_date::date)::int = """ + str(int(dow)) + """
+          AND EXTRACT(ISODOW FROM """ + _STORE_FLOW_TRANSFER_DAY + """)::int = """ + str(int(dow)) + """
           AND t.to_store_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
           AND t.to_store_name NOT IN ('MarKT/Stock','Retired Stock')
           AND """ + _WAREHOUSE_ORIGIN_FILTER + """
