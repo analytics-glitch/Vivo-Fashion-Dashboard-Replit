@@ -39399,6 +39399,21 @@ async def loyalty_redeem(request: Request):
 # automatically. Endpoints are served under the same gated /api as everything
 # else (role gate in clerk_auth_gate: product_development / leadership / admin).
 
+# The production tracker follows the garment workflow only.  Printing orders
+# can still remain in Odoo and in the source tables for audit/history, but they
+# must not contribute to tracker cards, roll-ups, or pipeline totals.  Keep this
+# predicate centralised because the board, report, and overview use different
+# SQL queries and the derived-stage path also needs the same scope.
+def _production_apparel_where(alias="po"):
+    return f"""(
+        LEFT(UPPER(BTRIM(COALESCE({alias}.style_number, ''))), 1)
+            IN ('S', 'V', 'Z')
+        OR LEFT(UPPER(BTRIM(COALESCE({alias}.style_name, ''))), 4) = 'VIVO'
+        OR LEFT(UPPER(BTRIM(COALESCE({alias}.style_name, ''))), 6) = 'SAFARI'
+        OR LEFT(UPPER(BTRIM(COALESCE({alias}.style_name, ''))), 4) = 'ZOYA'
+    )"""
+
+
 def _ensure_production_tables():
     """Idempotent DDL for the production tracker. Creates the stage reference
     (seeding the canonical stage list + allowed transitions), the order header,
@@ -39848,26 +39863,35 @@ def _production_derived_balances():
     if (_prod_derived_cache["rows"] is not None
             and _time.time() - _prod_derived_cache["ts"] < 60):
         return _prod_derived_cache["rows"]
-    inv = _users_exec("""
-        SELECT sku,
+    inv = _users_exec(f"""
+        SELECT i.sku,
                CASE WHEN pos_location_name = 'Fabric Trimming' THEN 'waiting_sewing'
                     WHEN pos_location_name LIKE 'Sew/Stock/%%' THEN 'sewing'
                     ELSE 'finishing' END AS stage,
                CASE WHEN pos_location_name LIKE 'Sew/Stock/%%'
                     THEN UPPER(RIGHT(pos_location_name, 1)) END AS sewing_line,
                SUM(GREATEST(COALESCE(available, 0), 0)) AS qty
-        FROM all_inventory
-        WHERE pos_location_name = 'Fabric Trimming'
+        FROM all_inventory i
+        WHERE (
+              pos_location_name = 'Fabric Trimming'
            OR pos_location_name LIKE 'Sew/Stock/%%'
            OR pos_location_name = 'Finished Goods Production'
+        )
+          AND EXISTS (
+              SELECT 1
+              FROM all_products_clean apparel_product
+              WHERE apparel_product.sku = i.sku
+                AND {_production_apparel_where("apparel_product")}
+          )
         GROUP BY 1, 2, 3
         HAVING SUM(GREATEST(COALESCE(available, 0), 0)) > 0""", fetch=True)
-    variants = _users_exec("""
+    variants = _users_exec(f"""
         SELECT v.order_ref, v.product_sku AS sku, v.size, v.colour,
                v.variant_name, COALESCE(v.qty, 0) AS qty, po.date_ordered
         FROM production_order_variants v
         JOIN production_orders po ON po.order_ref = v.order_ref
-        WHERE v.product_sku IS NOT NULL AND v.product_sku <> ''""", fetch=True)
+        WHERE v.product_sku IS NOT NULL AND v.product_sku <> ''
+          AND {_production_apparel_where("po")}""", fetch=True)
     offsets = _users_exec("""
         SELECT order_ref, sku, SUM(qty_here) AS qty
         FROM v_stage_sku_balances
@@ -40117,7 +40141,7 @@ def production_stages(request: Request):
     filtered, so moves out of buying_order (e.g. into Cutting) keep working
     for planned BOs."""
     allowed_refs = _production_visible_order_refs(request)
-    rows = _users_exec("""
+    rows = _users_exec(f"""
         SELECT s.stage_key, s.stage_name, s.sort_order,
                s.is_terminal, s.allowed_next,
                COALESCE(w.orders_here, 0)         AS orders_here,
@@ -40131,9 +40155,10 @@ def production_stages(request: Request):
                    SUM(b.qty_here) AS units_here,
                    ROUND(AVG(b.days_since_last_in)::numeric, 1) AS avg_days_in_stage,
                    ROUND(MAX(b.days_since_last_in)::numeric, 1) AS oldest_days_in_stage
-            FROM v_stage_balances b
+        FROM v_stage_balances b
             JOIN production_orders po ON po.order_ref = b.order_ref
-            WHERE (%s OR b.order_ref = ANY(%s))
+             WHERE (%s OR b.order_ref = ANY(%s))
+               AND {_production_apparel_where("po")}
               AND NOT (b.stage = 'buying_order'
                        AND COALESCE(po.bo_state, '') <> 'draft')
             GROUP BY b.stage
@@ -40164,14 +40189,15 @@ def production_stages(request: Request):
 def production_board(request: Request):
     """Every (order x stage) slice that currently holds units — the board cards."""
     allowed_refs = _production_visible_order_refs(request)
-    rows = _users_exec("""
+    rows = _users_exec(f"""
         SELECT b.order_ref, b.stage, b.qty_here,
                ROUND(b.days_since_last_in::numeric, 1) AS days_in_stage,
                po.style_number, po.product_name, po.order_qty, po.date_ordered
         FROM v_stage_balances b
         JOIN production_orders po ON po.order_ref = b.order_ref
         JOIN production_stages s  ON s.stage_key  = b.stage
-        WHERE (%s OR b.order_ref = ANY(%s))
+         WHERE (%s OR b.order_ref = ANY(%s))
+           AND {_production_apparel_where("po")}
           AND b.stage NOT IN ('waiting_sewing', 'sewing', 'finishing')
           AND NOT (b.stage = 'buying_order'
                    AND COALESCE(po.bo_state, '') <> 'draft')
@@ -40264,7 +40290,7 @@ def _production_flow_stages(allowed_refs=None):
     """The stage flow: one row per stage with units, distinct orders & styles in
     it now, its % of all in-progress units, plus the stage's sort order and
     allowed transitions so the UI can draw the arrows. Returns (rows, total)."""
-    rows = _users_exec("""
+    rows = _users_exec(f"""
         WITH bal AS (
             SELECT b.stage,
                    SUM(b.qty_here)               AS units,
@@ -40272,7 +40298,8 @@ def _production_flow_stages(allowed_refs=None):
                    COUNT(DISTINCT po.style_number) AS styles
             FROM v_stage_balances b
             JOIN production_orders po ON po.order_ref = b.order_ref
-            WHERE (%s OR b.order_ref = ANY(%s))
+             WHERE (%s OR b.order_ref = ANY(%s))
+               AND {_production_apparel_where("po")}
               AND NOT (b.stage = 'buying_order'
                        AND COALESCE(po.bo_state, '') <> 'draft')
             GROUP BY b.stage
@@ -40370,7 +40397,7 @@ def production_expected_drops(request: Request):
     from collections import defaultdict as _DD
 
     allowed_refs = _production_visible_order_refs(request)
-    rows = _users_exec("""
+    rows = _users_exec(f"""
         WITH wh AS (
             SELECT order_ref, SUM(qty_here) AS wh_qty
             FROM v_stage_balances
@@ -40381,9 +40408,10 @@ def production_expected_drops(request: Request):
                po.order_qty, po.expected_delivery_date, po.lifecycle_type,
                COALESCE(wh.wh_qty, 0) AS warehouse_qty,
                GREATEST(po.order_qty - COALESCE(wh.wh_qty, 0), 0) AS pending_qty
-        FROM production_orders po
+         FROM production_orders po
         LEFT JOIN wh ON wh.order_ref = po.order_ref
         WHERE (%s OR po.order_ref = ANY(%s))
+           AND {_production_apparel_where("po")}
           AND po.expected_delivery_date IS NOT NULL
           AND (po.order_qty - COALESCE(wh.wh_qty, 0)) > 0
         ORDER BY po.expected_delivery_date""",
@@ -40459,12 +40487,13 @@ def production_summary(request: Request):
             if not fresh:
                 swr_refresh(_PROD_SUMMARY_CK, production_summary_unscoped, label="prod-summary")
             return cached
-    totals = _users_exec("""
+    totals = _users_exec(f"""
         SELECT COUNT(*)                         AS orders,
                COALESCE(SUM(order_qty), 0)      AS units,
                COUNT(DISTINCT style_number)     AS styles
         FROM production_orders po
-        WHERE (%s OR po.order_ref = ANY(%s))""", scope_params, fetch=True)
+        WHERE (%s OR po.order_ref = ANY(%s))
+          AND {_production_apparel_where("po")}""", scope_params, fetch=True)
 
     def _grouped(col):
         return _users_exec(f"""
@@ -40473,10 +40502,11 @@ def production_summary(request: Request):
                    COALESCE(SUM(order_qty), 0)    AS units
             FROM production_orders po
             WHERE (%s OR po.order_ref = ANY(%s))
+              AND {_production_apparel_where("po")}
             GROUP BY 1
             ORDER BY units DESC""", scope_params, fetch=True)
 
-    by_stage = _users_exec("""
+    by_stage = _users_exec(f"""
         SELECT s.stage_key, s.stage_name, s.sort_order,
                COALESCE(w.orders_here, 0) AS orders,
                COALESCE(w.units_here, 0)  AS units
@@ -40487,19 +40517,21 @@ def production_summary(request: Request):
                    SUM(b.qty_here) AS units_here
             FROM v_stage_balances b
             JOIN production_orders po ON po.order_ref = b.order_ref
-            WHERE (%s OR b.order_ref = ANY(%s))
+             WHERE (%s OR b.order_ref = ANY(%s))
+               AND {_production_apparel_where("po")}
               AND NOT (b.stage = 'buying_order'
                        AND COALESCE(po.bo_state, '') <> 'draft')
             GROUP BY b.stage
         ) w ON w.stage = s.stage_key
         ORDER BY s.sort_order""", scope_params, fetch=True)
 
-    by_buyer = _users_exec("""
+    by_buyer = _users_exec(f"""
         SELECT COALESCE(buyer, 'Unspecified') AS label,
                COUNT(*)                       AS orders,
                COALESCE(SUM(order_qty), 0)    AS units
         FROM production_orders po
-        WHERE (%s OR po.order_ref = ANY(%s))
+         WHERE (%s OR po.order_ref = ANY(%s))
+           AND {_production_apparel_where("po")}
         GROUP BY 1
         ORDER BY units DESC
         LIMIT 30""", scope_params, fetch=True)
@@ -40508,7 +40540,7 @@ def production_summary(request: Request):
     # `sew` rolls up the distinct sewing line(s) every order's pieces ran on (any
     # move INTO sewing carrying a line), so the report can show which line(s) an
     # order is in / has passed through and filter the table by line.
-    orders = _users_exec("""
+    orders = _users_exec(f"""
         WITH line_rollup AS (
             SELECT order_ref,
                    COUNT(DISTINCT colour) AS colours,
@@ -40620,14 +40652,15 @@ def production_summary(request: Request):
         LEFT JOIN sew              ON sew.order_ref = po.order_ref
         LEFT JOIN prod_attrs    pa ON pa.style_number = po.style_number
         LEFT JOIN bom_structure bs ON bs.style_number = po.style_number
-        WHERE (%s OR po.order_ref = ANY(%s))
+         WHERE (%s OR po.order_ref = ANY(%s))
+           AND {_production_apparel_where("po")}
         ORDER BY po.date_ordered DESC NULLS LAST, po.order_ref DESC""",
         scope_params, fetch=True)
 
     # Load now sitting in the Sewing stage, split by the line each piece ran on
     # (its most recent sewing line) — units + distinct orders/styles per line so
     # supervisors can see how work is balanced across lines A–E.
-    by_sewing_line = _users_exec("""
+    by_sewing_line = _users_exec(f"""
         WITH cur AS (
             SELECT sb.order_ref, sb.sku, sb.size, sb.qty_here, sl.sewing_line
             FROM v_stage_sku_balances sb
@@ -40641,7 +40674,7 @@ def production_summary(request: Request):
                 ORDER BY moved_at DESC, id DESC
                 LIMIT 1
             ) sl ON TRUE
-            WHERE sb.stage = 'sewing'
+             WHERE sb.stage = 'sewing'
               AND (%s OR sb.order_ref = ANY(%s))
         )
         SELECT COALESCE(c.sewing_line, 'Unspecified') AS label,
@@ -40649,7 +40682,8 @@ def production_summary(request: Request):
                COALESCE(SUM(c.qty_here), 0)           AS units,
                COUNT(DISTINCT po.style_number)        AS styles
         FROM cur c
-        LEFT JOIN production_orders po ON po.order_ref = c.order_ref
+        JOIN production_orders po ON po.order_ref = c.order_ref
+        WHERE {_production_apparel_where("po")}
         GROUP BY 1
         ORDER BY (COALESCE(c.sewing_line, 'Unspecified') = 'Unspecified'), label""",
         scope_params, fetch=True)
@@ -40713,7 +40747,8 @@ def production_summary(request: Request):
     import re as _re
     po_rows = _users_exec(
         "SELECT style_number, style_name, order_qty FROM production_orders po "
-        "WHERE po.order_qty > 0 AND (%s OR po.order_ref = ANY(%s))",
+        f"WHERE po.order_qty > 0 AND (%s OR po.order_ref = ANY(%s)) "
+        f"AND {_production_apparel_where('po')}",
         scope_params, fetch=True)
     dim_rows = _users_exec("""
         SELECT DISTINCT ON (style_name) style_name, style_number,
