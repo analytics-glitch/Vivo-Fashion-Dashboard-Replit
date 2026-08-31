@@ -2169,6 +2169,11 @@ def _initials(name):
     return ini or "V"
 
 
+def _member_barcode(member_id):
+    """Stable, non-PII Code 128 value for the signed-in member's account card."""
+    return f"JH{int(member_id):08d}"
+
+
 def _earned_bonus_points(cur, member_id):
     """Extra lifetime points from community_points_events (quiz bonus etc.) —
     folded into BOTH lifetime formulas (/me and the event tier gates) so the
@@ -2568,6 +2573,7 @@ def _member_payload(cur, m):
 
     payload = {
         "id": m["id"],
+        "member_barcode": _member_barcode(m["id"]),
         "name": m["full_name"],
         "initials": _initials(m["full_name"]),
         "phone_masked": _mask_phone(m["phone"]),

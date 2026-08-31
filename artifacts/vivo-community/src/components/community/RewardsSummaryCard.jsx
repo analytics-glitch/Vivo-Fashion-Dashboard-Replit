@@ -1,6 +1,7 @@
 import React from 'react';
 import { TierBadge, JohariWordmark, Avatar, cardCls } from "./ui";
 import { AtSign, MapPin } from "lucide-react";
+import MemberBarcode from "./MemberBarcode";
 
 // Johari rewards summary — the dark editorial band with tier badge, greeting,
 // available balance, voucher nudge and the tier-progress bar. Lives at the
@@ -133,6 +134,7 @@ export function AccountSummaryCard({ member, publishedPosts = 0 }) {
       <div className="relative z-10 pt-6">
         <div data-testid="johari-wordmark" className="text-[12px] text-background/70 mb-5"><JohariWordmark withVivo /></div>
         <BalanceContent member={member} />
+        <MemberBarcode value={m.member_barcode} />
       </div>
 
       {/* Account stats */}

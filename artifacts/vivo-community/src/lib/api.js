@@ -15,6 +15,17 @@ export function setToken(t) {
     if (t) localStorage.setItem(TOKEN_KEY, t);
     else localStorage.removeItem(TOKEN_KEY);
   } catch { /* private mode */ }
+  // The installed Johari shell mirrors the opaque member token into the
+  // platform secure store. The browser still uses localStorage, so this is
+  // additive and does not change the hosted web experience.
+  try {
+    if (window.ReactNativeWebView) {
+      window.ReactNativeWebView.postMessage(JSON.stringify({
+        type: t ? "auth-token" : "signed-out",
+        token: t || "",
+      }));
+    }
+  } catch { /* bridge unavailable or private browser */ }
 }
 
 async function req(path, { method = "GET", body, auth = false } = {}) {

@@ -1,0 +1,24 @@
+kind = "mobile"
+previewPath = "/community-mobile/"
+title = "Vivo Johari"
+description = "The native Vivo Johari Community app for members: browse style, shop the collection, join community moments, manage rewards, and create private virtual try-ons."
+version = "1.0.0"
+id = "artifacts/vivo-community-mobile"
+router = "expo-domain"
+
+[[services]]
+name = "expo"
+ensurePreviewReachable = "/status"
+paths = [ "/community-mobile/" ]
+localPort = 20214
+
+[services.development]
+run = "pnpm --filter @workspace/vivo-community-mobile run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/vivo-community-mobile", "run", "build" ]
+run = [ "pnpm", "--filter", "@workspace/vivo-community-mobile", "run", "serve" ]
+
+[services.env]
+PORT = "20214"
+BASE_PATH = "/community-mobile/"

@@ -137,6 +137,7 @@
 - ['Online' pseudo-country](online-pseudo-country.md) — Shop Zetu online rows sit under country='Online' in sales AND inventory; Kenya filters must fold it in on both sides of any ratio.
 - [Merch full-price sell-through](merch-full-price-sell-through.md) — strict selected-period zero-discount unit ratio, excluding returns and distinct from avg full-price %.
 - [Community composer hand-off](community-composer-handoff.md) — Home CTAs pass a one-time look/question intent into Community, then consume it after opening the existing composer.
+- [Community native credential bridge](community-native-credential-bridge.md) — store builds hard-lock the trusted /app origin; never let release env vars redirect a SecureStore token bridge.
 - [Style Tracker % Recv](style-tracker-warehouse-pct.md) — receipts-first shared batch calc feeds board/endpoint/gate; names-first match grain; dated styles never fall back to stock.
 - [Disposable PostgreSQL tests](disposable-postgres-tests.md) — concurrency tests must run on a local throwaway cluster via TEST_DATABASE_URL, never DATABASE_URL.
 - [PD Flow stage persistence](pd-flow-stage-persistence.md) — Excel bootstrap snapshots may seed missing styles, but lifecycle state belongs to the append-only movement log.
