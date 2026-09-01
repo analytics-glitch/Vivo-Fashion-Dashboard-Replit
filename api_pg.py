@@ -10994,24 +10994,27 @@ def analytics_active_pos(
     # dropdown should list stores that *currently* trade, regardless of the view.
     date_from = str(date.today() - timedelta(days=max(1, n_days)))
     date_to   = str(date.today())
-    where = build_filters(date_from, date_to, country,
-        extra="s.sale_kind IN ('sale','order') "
-              "AND s.pos_location_name NOT IN (" + WAREHOUSE_LOCATIONS + ") "
-              "AND LOWER(s.pos_location_name) NOT LIKE '%online%' "
-              "AND LOWER(s.pos_location_name) NOT LIKE '%third-party%' "
-              "AND LOWER(s.pos_location_name) NOT LIKE '%third party%' "
-              # Holding locations (e.g. 'The Oasis Mall Holding Location') are
-              # stock-staging points, not selling stores — keep them out of the
-              # Trend/FilterBar store selectors.
-              "AND LOWER(s.pos_location_name) NOT LIKE '%holding location%'")
+    country_pred = ""
+    if country:
+        country_pred = " AND pl.country IN (" + csv_to_sql(country) + ")"
+    # Start from the small canonical store table, then use the
+    # pos_location_name + sale_date index for each known store. The old
+    # all_sales DISTINCT scan could take minutes while the database was busy,
+    # even though the selector only needs the handful of active store names.
     return run_query("""
-        SELECT s.pos_location_name AS channel, s.country,
+        SELECT pl.location_name AS channel, pl.country,
             COUNT(DISTINCT s.order_id) AS orders,
             COALESCE(ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)), 0), 0) AS total_sales,
             COALESCE(SUM(s.ordered_item_quantity), 0) AS units_sold
-        FROM all_sales s
-        WHERE """ + where + """
-        GROUP BY s.pos_location_name, s.country
+        FROM pos_locations pl
+        JOIN all_sales s
+          ON s.pos_location_name = pl.location_name
+         AND s.sale_date >= '""" + date_from + """'
+         AND s.sale_date <= '""" + date_to + """'
+         AND s.sale_kind IN ('sale','order')
+        WHERE pl.active IS TRUE
+          AND pl.store_type = 'store'""" + country_pred + """
+        GROUP BY pl.location_name, pl.country
         HAVING SUM(s.ordered_item_quantity) >= 1
         ORDER BY total_sales DESC
     """, ttl=600)
@@ -45780,7 +45783,7 @@ def store_profile_network_summary():
 
 @app.get("/api/store-profile/locations")
 def store_profile_locations():
-    """Physical retail store names, deduplicated from all_sales."""
+    """Physical retail store names from the canonical metadata table."""
     ck = "store_profile:locations"
     cv, cf = cache_get_swr(ck)
     if cv is not None:
@@ -45788,24 +45791,10 @@ def store_profile_locations():
             swr_refresh(ck, store_profile_locations, label="sp_locations")
         return cv
     rows = run_query(
-        f"SELECT DISTINCT s.pos_location_name AS store, MAX(s.country) AS country "
-        f"FROM all_sales s "
-        f"WHERE s.pos_location_name NOT IN ({WAREHOUSE_LOCATIONS}) "
-        f"  AND s.pos_location_name NOT ILIKE '%%online%%' "
-        f"  AND s.pos_location_name NOT ILIKE '%%location%%' "
-        f"  AND s.pos_location_name NOT ILIKE '%%holding%%' "
-        f"  AND s.pos_location_name NOT ILIKE '%%warehouse%%' "
-        f"  AND s.pos_location_name NOT ILIKE '%%manual%%' "
-        f"  AND s.pos_location_name NOT ILIKE '%%mockup%%' "
-        f"  AND s.pos_location_name NOT ILIKE '%%purchase%%' "
-        f"  AND s.pos_location_name NOT ILIKE '%%bags%%' "
-        f"  AND s.pos_location_name NOT ILIKE '%%third%%' "
-        f"  AND s.pos_location_name NOT ILIKE '%%popup%%' "
-        f"  AND s.pos_location_name NOT ILIKE '%%defect%%' "
-        f"  AND s.pos_location_name NOT IN ('Buying and Merchandise') "
-        f"  AND s.sale_kind IN ('sale','order') "
-        f"  AND {BASE_FILTERS} "
-        f"GROUP BY 1 ORDER BY 1",
+        "SELECT location_name AS store, country "
+        "FROM pos_locations "
+        "WHERE active IS TRUE AND store_type = 'store' "
+        "ORDER BY country, location_name",
         ttl=3600,
     )
     result = {"stores": [{"store": r["store"], "country": r["country"]} for r in (rows or [])]}
