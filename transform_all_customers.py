@@ -163,11 +163,9 @@ def main():
             FROM all_sales s
             WHERE s.customer_id IS NOT NULL
               AND s.sale_kind IN ('sale','order')
-              AND s.store_id   = 'vivofashiongroup'
             GROUP BY s.customer_id
         ) agg
         WHERE ac.customer_id = agg.customer_id
-          AND ac.store_id    = 'vivofashiongroup'
     """)
     log.info("Updated %d Odoo customer stat rows", cur.rowcount)
 
