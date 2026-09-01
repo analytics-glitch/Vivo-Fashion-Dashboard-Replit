@@ -23,10 +23,13 @@ in tearDown.
 import unittest
 import uuid
 import time
+from pathlib import Path
+from unittest import mock
 
 from fastapi.testclient import TestClient
 
 import api_pg
+import fabric_router
 
 
 class CookieOnlySessionTests(unittest.TestCase):
@@ -129,6 +132,55 @@ class CookieOnlySessionTests(unittest.TestCase):
         fresh = TestClient(api_pg.app)
         r = fresh.get("/api/auth/me")
         self.assertGreaterEqual(r.status_code, 401)
+
+    def test_fabric_costing_gate_uses_cookie_identity_and_keeps_allowlist(self):
+        """A stale browser Bearer cannot override the signed-in web identity."""
+        class FakeConn:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        def resolved_user(token):
+            users = {
+                "allowlisted-cookie": {
+                    "user_id": "local:costing", "email": "costing@vivofashiongroup.com",
+                    "name": "Costing", "role": "analyst", "status": "active",
+                },
+                "outsider-cookie": {
+                    "user_id": "local:outsider", "email": "outsider@example.com",
+                    "name": "Outsider", "role": "analyst", "status": "active",
+                },
+            }
+            return users.get(token)
+
+        patches = (
+            mock.patch.object(api_pg, "_user_for_session", resolved_user),
+            mock.patch.object(fabric_router, "_get_conn", FakeConn),
+            mock.patch.object(fabric_router, "_ensure_costing_tables", lambda conn: None),
+            mock.patch.object(fabric_router, "q", lambda *args, **kwargs: [{"n": 0}]),
+        )
+        with patches[0], patches[1], patches[2], patches[3]:
+            allowed = TestClient(api_pg.app, base_url="https://testserver")
+            allowed.cookies.set("session_token", "allowlisted-cookie")
+            r = allowed.get("/api/fabric/costing/access")
+            self.assertEqual(r.status_code, 200, r.text)
+            self.assertTrue(r.json()["allowed"])
+            self.assertEqual(r.json()["email"], "costing@vivofashiongroup.com")
+
+            denied = TestClient(api_pg.app, base_url="https://testserver")
+            denied.cookies.set("session_token", "outsider-cookie")
+            r = denied.get("/api/fabric/costing/access")
+            self.assertEqual(r.status_code, 403, r.text)
+
+    def test_standalone_fabric_page_never_reads_or_sends_legacy_bearer(self):
+        """Pin cookie-only auth across helpers, mutations, exports, and streams."""
+        source = Path("fabric_dashboard_live.html").read_text(encoding="utf-8")
+        self.assertNotIn("vivo_token", source)
+        self.assertNotRegex(source, r"Authorization\s*['\"]?\s*[:=]")
+        self.assertNotRegex(source, r"Bearer\s*[+'\"]")
+        self.assertIn("credentials:'include'", source)
 
 
 if __name__ == "__main__":

@@ -2353,12 +2353,8 @@ function donut(slices){
   return `<div class="donut-wrap"><svg viewBox="0 0 120 120" width="120" height="120" aria-hidden="true">${segs}<text x="60" y="64" text-anchor="middle" font-size="11" font-weight="800" fill="var(--text)">${center}</text></svg><div class="donut-legend">${legend}</div></div>`;
 }
 
-function vivoTok(){ try{ return localStorage.getItem('vivo_token'); }catch(e){ return null; } }
 function vivoAuthHeaders(extra){
-  const h=Object.assign({},extra||{});
-  const t=vivoTok();
-  if(t) h['Authorization']='Bearer '+t;
-  return h;
+  return Object.assign({},extra||{});
 }
 async function apiFetch(path,opts={}){
   const {headers:extraHeaders,...restOpts}=opts;
@@ -2734,7 +2730,8 @@ function qcDefYdsSave(cell,rollId,lengthYards,newVal){
   cell.title='Click to edit defective yards';
   fetch('/api/fabric/receiving/roll/'+encodeURIComponent(rollId)+'/defective-yards',{
     method:'PATCH',
-    headers:{'Content-Type':'application/json','Authorization':'Bearer '+(localStorage.getItem('vivo_token')||'')},
+    credentials:'include',
+    headers:{'Content-Type':'application/json'},
     body:JSON.stringify({defective_yards:numVal}),
   }).then(res=>res.json().then(j=>({ok:res.ok,status:res.status,j}))).then(({ok,status,j})=>{
     if(!ok){
@@ -12248,7 +12245,7 @@ async function init(){
 }
 
 // ── Live viewers presence ───────────────────────────────────────────────────
-// Pings POST /api/auth/heartbeat (Bearer token, like the chat calls) on a short
+// Pings POST /api/auth/heartbeat with the current staff session cookie on a short
 // interval to stamp this session as active, and polls GET /api/auth/active-viewers
 // to render a small "N viewing now" pill with an expandable list of names + roles.
 // Pinging + polling pause when the tab is hidden so an idle viewer drops off the
@@ -12259,7 +12256,6 @@ async function init(){
   const POLL_MS = 8000;    // re-poll the viewer list this often
   let pingTimer=null, pollTimer=null, popOpen=false, started=false;
 
-  function tok(){ try{ return localStorage.getItem('vivo_token'); }catch(e){ return null; } }
   function roleLabel(r){ return String(r||'').replace(/_/g,' '); }
   function initials(name){
     const parts=String(name||'').trim().split(/\s+/).filter(Boolean);
@@ -12270,9 +12266,7 @@ async function init(){
 
   async function ping(){
     if(document.hidden) return;
-    const t=tok();
     const headers={'Content-Type':'application/json'};
-    if(t) headers['Authorization']='Bearer '+t;
     try{
       await fetch('/api/auth/heartbeat',{
         method:'POST', credentials:'include', headers:headers,
@@ -12283,9 +12277,7 @@ async function init(){
 
   async function poll(){
     if(document.hidden) return;
-    const t=tok();
     const headers={};
-    if(t) headers['Authorization']='Bearer '+t;
     try{
       const r=await fetch('/api/auth/active-viewers?page=fabric',{credentials:'include',headers:headers});
       if(!r.ok) return;
@@ -12809,8 +12801,6 @@ init();
     messages[messages.length-1]=fn(messages[messages.length-1]);
   }
 
-  function authToken(){ try{ return localStorage.getItem("vivo_token"); }catch(e){ return null; } }
-
   // Build + download the rows behind an assistant answer as CSV, reusing the
   // dashboard's shared CSV/Blob writer (mixDownloadCsv).
   function downloadAnswerCsv(m){
@@ -12905,9 +12895,7 @@ init();
 
   // Streaming (SSE) path.
   function sendStream(msg,atts){
-    var token=authToken();
     var headers={ "Content-Type":"application/json" };
-    if(token) headers["Authorization"]="Bearer "+token;
     return fetch("/api/fabric/chat/stream",{
       method:"POST", credentials:"include", headers:headers,
       body:JSON.stringify({ message:msg, session_id:sessionId, context:ctx(), attachments:(atts&&atts.length?atts:undefined) })
@@ -12947,9 +12935,7 @@ init();
 
   // Non-streaming fallback.
   function sendBlocking(msg,atts){
-    var token=authToken();
     var headers={ "Content-Type":"application/json" };
-    if(token) headers["Authorization"]="Bearer "+token;
     return fetch("/api/fabric/chat",{
       method:"POST", credentials:"include", headers:headers,
       body:JSON.stringify({ message:msg, session_id:sessionId, context:ctx(), attachments:(atts&&atts.length?atts:undefined) })
