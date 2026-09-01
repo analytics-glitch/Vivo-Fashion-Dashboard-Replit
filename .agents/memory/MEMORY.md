@@ -27,6 +27,7 @@
 - [all_products_clean sales-only ghosts](all-products-clean-sales-only-fallback.md) — ~47% of styles can have zero Odoo record at all (deleted upstream, kept for sales history); never lump them into an Odoo-status bucket.
 - Expo tooling: [icon fonts](expo-vector-icon-font-preload.md) spread Feather.font into useFonts; [cold-cache port](expo-cold-cache-port.md) warm Metro then restart; [Metro ENOENT](metro-watches-repo-cache-crash.md) blockList .cache/.git/.local.
 - [Metro image-size compatibility](metro-image-size-compatibility.md) — Metro 0.83.x needs patched image-size 1.2.1 for file-path assets; a global 2.0.2 override breaks Expo bundling.
+- [Expo CLI resolution under pnpm](expo-cli-pnpm-resolution.md) — `pnpm exec expo` uses Expo's nested CLI, not a directly pinned @expo/cli; invoke the pinned CLI path and expose Babel preset at root.
 - [Worklets Babel peers in pnpm](worklets-babel-peers-pnpm.md) — react-native-worklets 0.5.x resolves Babel helpers from the workspace root; declare types, generator, and traverse there.
 - Loyalty: [member card](loyalty-member-card.md) earn idempotency = partial-unique + ON CONFLICT, member token sha256, PIN throttled; [birthday](loyalty-birthday-first-purchase.md) = first_order_date anniversary; [tiers](loyalty-tier-rules.md) x1–x4, lazy 12mo expiry, crm_config.
 - CRM: [complaint ladder](crm-complaint-escalation.md) Gold/VIP jump to head_of_cx, lazy SLA sweep, idempotent resolve-notify; [authz](crm-authz-server-gate.md) analyst+ gate lives in middleware — client hiding is UX only.
