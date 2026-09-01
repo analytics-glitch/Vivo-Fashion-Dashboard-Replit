@@ -86,30 +86,30 @@ const RANGE_PLAN_SEASON_SEEDS = [
 ] as const;
 const SEPTEMBER_2026_MONTHLY_ROW_SEEDS = [
   ["Bottoms", "Full Length Pants", 13, 400, 4788, 1398],
-  ["Bottoms", "Jumpsuits & Playsuits", 2, 400, 6669, 1869],
+  ["Bottoms", "Jumpsuits and Playsuits", 2, 400, 6669, 1869],
   ["Bottoms", "Leggings", 1, 400, 2501, null],
-  ["Bottoms", "Culottes & Capri Pants", 0, 400, 2375, null],
-  ["Bottoms", "Shorts & Skorts", 0, 400, 2714, null],
+  ["Bottoms", "Culottes and Capri Pants", 0, 400, 2375, null],
+  ["Bottoms", "Shorts and Skorts", 0, 400, 2714, null],
   ["Dresses", "Knee Length Dresses", 8, 400, 5801, 1594],
   ["Dresses", "Maxi Dresses", 12, 440, 6877, 1830],
-  ["Dresses", "Midi & Capri Dresses", 2, 400, 5932, null],
-  ["Dresses", "Short & Mini Dresses", 1, 400, 4900, 1448],
+  ["Dresses", "Midi and Capri Dresses", 2, 400, 5932, null],
+  ["Dresses", "Short and Mini Dresses", 1, 400, 4900, 1448],
   ["Dresses", "Kaftan Dresses", 2, 400, 5500, 1435],
-  ["Outerwear", "Sweaters & Ponchos", 3, 400, 5077, null],
-  ["Outerwear", "Waterfalls & Kimonos", 6, 400, 4214, 1096],
-  ["Outerwear", "Jackets & Coats", 4, 440, 5332, 1411],
-  ["Outerwear", "Hoodies & Sweatshirts", 2, 400, 3705, null],
+  ["Outerwear", "Sweaters and Ponchos", 3, 400, 5077, null],
+  ["Outerwear", "Waterfalls and Kimonos", 6, 400, 4214, 1096],
+  ["Outerwear", "Jackets and Coats", 4, 440, 5332, 1411],
+  ["Outerwear", "Hoodies and Sweatshirts", 2, 400, 3705, null],
   ["Skirts", "Knee Length Skirts", 0, 400, 2900, null],
   ["Skirts", "Maxi Skirts", 1, 400, 4900, 1212],
-  ["Skirts", "Midi & Capri Skirts", 0, 400, 5203, null],
-  ["Skirts", "Short & Mini Skirts", 0, 400, 2934, null],
+  ["Skirts", "Midi and Capri Skirts", 0, 400, 5203, null],
+  ["Skirts", "Short and Mini Skirts", 0, 400, 2934, null],
   ["Tops", "Fitted Tops", 6, 440, 3360, 731],
-  ["Tops", "Loose & Oversized Tops", 8, 450, 4351, 1384],
-  ["Tops", "T-shirts & Tank Tops", 2, 400, 2104, 464],
+  ["Tops", "Loose and Oversized Tops", 8, 450, 4351, 1384],
+  ["Tops", "T-shirts and Tank Tops", 2, 400, 2104, 464],
   ["Tops", "Relaxed Tops", 3, 400, 3593, 1032],
   ["Tops", "Kaftan Tops", 0, 400, null, null],
   ["Tops", "Bodysuits", 1, 470, 2500, 564],
-  ["Tops", "Midriff & Crop Tops", 0, 400, 2524, null],
+  ["Tops", "Midriff and Crop Tops", 0, 400, 2524, null],
 ] as const;
 const WORKSPACE_BRANDS = ["Vivo", "Safari by Vivo", "Zoya"] as const;
 const ALLOWED_BRANDS_SQL = WORKSPACE_BRANDS.map((brand) => `'${brand}'`).join(",");
@@ -982,6 +982,10 @@ async function ensureRangePlanData() {
   const monthlyMigrationApplied = Boolean((await pool.query(
     `SELECT 1 FROM ${schema}.range_plan_seed_migrations WHERE migration_key='monthly-category-matrix-v1'`,
   )).rows[0]);
+  await pool.query(
+    `ALTER TABLE ${schema}.range_plan_seasons
+     ALTER COLUMN cogs_budget_pct SET DEFAULT 32`,
+  );
   for (const seasonSeed of RANGE_PLAN_SEASON_SEEDS) {
     const seasonResult = await pool.query<{ id: number }>(
       `INSERT INTO ${schema}.range_plan_seasons
@@ -1110,6 +1114,33 @@ async function ensureRangePlanData() {
   } finally {
     client.release();
   }
+  const labelClient = await pool.connect();
+  try {
+    await labelClient.query("BEGIN");
+    const labelClaim = await labelClient.query(
+      `INSERT INTO ${schema}.range_plan_seed_migrations (migration_key)
+       VALUES ('monthly-category-labels-v1')
+       ON CONFLICT DO NOTHING
+       RETURNING migration_key`,
+    );
+    if (labelClaim.rows[0]) {
+      await labelClient.query(
+        `UPDATE ${schema}.range_plan_rows r
+         SET sub_category=REPLACE(r.sub_category, ' & ', ' and ')
+         FROM ${schema}.range_plan_seasons s
+         WHERE s.id=r.season_id
+           AND s.season_name='September 2026'
+           AND s.season_year=2026
+           AND r.sub_category LIKE '% & %'`,
+      );
+    }
+    await labelClient.query("COMMIT");
+  } catch (error) {
+    await labelClient.query("ROLLBACK");
+    throw error;
+  } finally {
+    labelClient.release();
+  }
 }
 
 async function isDatabaseReachable() {
@@ -1228,7 +1259,7 @@ async function ensureRecentWorkspaceMigrations() {
         season_name TEXT NOT NULL,
         season_year INTEGER NOT NULL,
         revenue_target_kes NUMERIC NOT NULL DEFAULT 0,
-        cogs_budget_pct NUMERIC NOT NULL DEFAULT 0,
+        cogs_budget_pct NUMERIC NOT NULL DEFAULT 32,
         factory_capacity_units INTEGER NOT NULL DEFAULT 0,
         status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','archived')),
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -1724,7 +1755,7 @@ async function ensureSchema() {
       season_name TEXT NOT NULL,
       season_year INTEGER NOT NULL,
       revenue_target_kes NUMERIC NOT NULL DEFAULT 0,
-      cogs_budget_pct NUMERIC NOT NULL DEFAULT 0,
+      cogs_budget_pct NUMERIC NOT NULL DEFAULT 32,
       factory_capacity_units INTEGER NOT NULL DEFAULT 0,
       status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','archived')),
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
