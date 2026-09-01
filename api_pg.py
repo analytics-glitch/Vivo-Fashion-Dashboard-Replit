@@ -2616,6 +2616,7 @@ def _start_cache_prewarmer():
                 ("kpis-mtd", lambda: get_kpis(
                     date_from=str(date.today().replace(day=1)),
                     date_to=str(date.today()), country=None, channel=None)),
+                ("store-profile-network-summary", store_profile_network_summary),
             ]
             opportunistic_targets = [
                 ("weeks-of-cover", lambda: analytics_weeks_of_cover(
@@ -45636,10 +45637,8 @@ _SP_ALL_INV_PRED = (
 )
 
 
-@app.get("/api/store-profile/network-summary")
-def store_profile_network_summary():
+def _build_store_profile_network_summary(today):
     """Cross-store bucket summary — one SQL pass, classifies every store into issue buckets."""
-    today = date.today()
     cur_mstart = today.replace(day=1)
     days_done = today.day
     days_in_m = calendar.monthrange(today.year, today.month)[1]
@@ -45667,7 +45666,7 @@ def store_profile_network_summary():
                 / NULLIF(SUM(s.ordered_item_quantity) FILTER (WHERE s.sale_kind IN ('sale','order')), 0)
             , 1) AS return_rate
         FROM all_sales s
-        WHERE s.sale_date::date >= '{cur_mstart}' AND s.sale_date::date <= '{today}'
+        WHERE s.sale_date >= '{cur_mstart}' AND s.sale_date <= '{today}'
           AND s.sale_kind IN ('sale','order','return')
           AND {BASE_FILTERS}
           AND {_PHYSICAL_STORE_PRED}
@@ -45681,7 +45680,7 @@ def store_profile_network_summary():
         SELECT s.pos_location_name AS store,
                SUM(s.ordered_item_quantity) / 4.0 AS weekly_units
         FROM all_sales s
-        WHERE s.sale_date::date >= '{l4w_start}' AND s.sale_date::date <= '{today}'
+        WHERE s.sale_date >= '{l4w_start}' AND s.sale_date <= '{today}'
           AND s.sale_kind IN ('sale','order') AND {BASE_FILTERS}
           AND {_PHYSICAL_STORE_PRED}
         GROUP BY s.pos_location_name
@@ -45764,6 +45763,20 @@ def store_profile_network_summary():
         "buckets": buckets,
         "stores": stores_out,
     }
+
+
+@app.get("/api/store-profile/network-summary")
+def store_profile_network_summary():
+    """Serve the cross-store scorecard as one coalesced, stale-safe snapshot."""
+    today = date.today()
+    key = f"store-profile:network-summary:v2:{today.isoformat()}"
+    return _cached_dashboard_snapshot(
+        key,
+        str(today),
+        lambda: _build_store_profile_network_summary(today),
+        "store_profile_network_summary",
+    )
+
 
 @app.get("/api/store-profile/locations")
 def store_profile_locations():

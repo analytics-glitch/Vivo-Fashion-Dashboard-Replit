@@ -705,10 +705,37 @@ const FilterBar = () => {
   };
 
   useEffect(() => {
+    let cancelled = false;
+    const mergeLocations = (incoming) => {
+      if (cancelled || !incoming?.length) return;
+      setLocations((current) => {
+        const merged = new Map(current.map((row) => [row.channel, row]));
+        incoming.forEach((row) => {
+          if (row?.channel) merged.set(row.channel, row);
+        });
+        return Array.from(merged.values());
+      });
+    };
+
+    // Populate the selector from the small store metadata table first. The
+    // analytics-backed active-POS request can be delayed when sales queries are
+    // busy, but that must never leave the global POS control unusable.
+    api
+      .get("/locations")
+      .then((r) => mergeLocations(
+        (r.data || [])
+          .filter((row) => row.active !== false && row.store_type === "store")
+          .map((row) => ({ channel: row.location_name, country: row.country }))
+      ))
+      .catch(() => {});
+
+    // Enrich/confirm the list from recent trading activity when available.
     api
       .get("/analytics/active-pos")
-      .then((r) => setLocations(r.data || []))
-      .catch(() => setLocations([]));
+      .then((r) => mergeLocations(r.data || []))
+      .catch(() => {});
+
+    return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {
