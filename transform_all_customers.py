@@ -9,6 +9,23 @@ log = logging.getLogger(__name__)
 
 DATABASE_URL = os.environ['DATABASE_URL']
 
+import re
+
+def norm_email(e):
+    e = (e or '').strip().lower()
+    return e or None
+
+def norm_phone(*vals):
+    # digits only, keep last 9 (Kenyan mobile significant digits); '' if none
+    for v in vals:
+        d = re.sub(r'[^0-9]', '', v or '')
+        if len(d) >= 9:
+            return d[-9:]
+    return None
+
+def norm_name(n):
+    return re.sub(r'\s+', ' ', (n or '').strip()) or None
+    
 def main():
     conn = psycopg2.connect(DATABASE_URL)
     cur  = conn.cursor()
