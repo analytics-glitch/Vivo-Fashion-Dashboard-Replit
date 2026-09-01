@@ -78,8 +78,7 @@ const PLM_STYLE_CLASSIFICATIONS = ["Core", "Fashion", "Seasonal", "Test"] as con
 const PLM_RANGE_TIERS = ["Tier 1", "Tier 2", "Tier 3", "Tier 4"] as const;
 const PLM_SEASONS = ["Q3 2026", "Q4 2026"] as const;
 const RANGE_PLAN_SEASON_SEEDS = [
-  { seasonName: "Q3 2026", revenueTarget: 360000000, factoryCapacityUnits: 96000, cadence: "quarterly" as const },
-  { seasonName: "Q4 2026", revenueTarget: 362500000, factoryCapacityUnits: 96000, cadence: "quarterly" as const },
+  { seasonName: "Q4 2026", revenueTarget: 360000000, factoryCapacityUnits: 96000, cadence: "quarterly" as const, otbMonths: ["2026-10-01", "2026-11-01", "2026-12-01"] as const },
   { seasonName: "September 2026", revenueTarget: 30000000, factoryCapacityUnits: 32000, cadence: "monthly" as const, otbMonth: "2026-09-01" },
   { seasonName: "October 2026", revenueTarget: 30000000, factoryCapacityUnits: 32000, cadence: "monthly" as const, otbMonth: "2026-10-01" },
   { seasonName: "November 2026", revenueTarget: 30000000, factoryCapacityUnits: 32000, cadence: "monthly" as const, otbMonth: "2026-11-01" },
@@ -942,14 +941,18 @@ async function ensureWorkspaceResources() {
 }
 
 async function ensureRangePlanData() {
+  // Q3 was a placeholder-only plan. Remove it as a unit so its ON DELETE
+  // CASCADE rows go with it, while the monthly plans remain independent rows.
+  await pool.query(
+    `DELETE FROM ${schema}.range_plan_seasons WHERE season_name='Q3 2026' AND season_year=2026`,
+  );
   for (const seasonSeed of RANGE_PLAN_SEASON_SEEDS) {
     const seasonResult = await pool.query<{ id: number }>(
       `INSERT INTO ${schema}.range_plan_seasons
         (season_name,season_year,revenue_target_kes,cogs_budget_pct,factory_capacity_units,status)
        VALUES ($1,2026,$2,42,$3,'active')
        ON CONFLICT (season_name,season_year) DO UPDATE
-          SET season_name=EXCLUDED.season_name,
-              factory_capacity_units=EXCLUDED.factory_capacity_units
+          SET factory_capacity_units=EXCLUDED.factory_capacity_units
        RETURNING id`,
       [seasonSeed.seasonName, seasonSeed.revenueTarget, seasonSeed.factoryCapacityUnits],
     );
@@ -977,6 +980,23 @@ async function ensureRangePlanData() {
          WHERE season_id=$1 AND month_year<>$2`,
         [seasonId, seasonSeed.otbMonth],
       );
+    } else {
+      const q4Months = seasonSeed.otbMonths;
+      const monthlyRevenue = Math.round(seasonSeed.revenueTarget / q4Months.length);
+      for (const monthYear of q4Months) {
+        await pool.query(
+          `INSERT INTO ${schema}.range_plan_otb
+            (season_id,month_year,revenue_target,planned_units,new_styles_count,notes)
+           VALUES ($1,$2,$3,NULL,NULL,'')
+           ON CONFLICT (season_id,month_year) DO NOTHING`,
+          [seasonId, monthYear, monthlyRevenue],
+        );
+      }
+      await pool.query(
+        `DELETE FROM ${schema}.range_plan_otb
+         WHERE season_id=$1 AND month_year <> ALL($2::date[])`,
+        [seasonId, q4Months],
+      );
     }
   }
   await pool.query(
@@ -985,7 +1005,7 @@ async function ensureRangePlanData() {
      WHERE tier IN ('NOOS','Core','Recent')
        AND season_id IN (
          SELECT id FROM ${schema}.range_plan_seasons
-         WHERE season_name IN ('Q3 2026','Q4 2026')
+         WHERE season_name='Q4 2026'
        )
        AND aos_units=350`,
   );
@@ -3400,9 +3420,10 @@ function rangePlanSeasonPayload(row: Record<string, unknown>) {
   };
 }
 
-function rangePlanMonthForSeason(seasonName: string): string | null {
+function rangePlanOtbMonthsForSeason(seasonName: string): string[] {
   const season = RANGE_PLAN_SEASON_SEEDS.find((candidate) => candidate.seasonName === seasonName);
-  return season?.cadence === "monthly" ? season.otbMonth : null;
+  if (!season) return [];
+  return season.cadence === "monthly" ? [season.otbMonth] : [...season.otbMonths];
 }
 
 function rangePlanRowPayload(row: Record<string, unknown>) {
@@ -3707,21 +3728,20 @@ router.get("/range-plan", async (req, res, next) => {
          factory_capacity_units AS "factoryCapacityUnits",status
        FROM ${schema}.range_plan_seasons
        ORDER BY CASE season_name
-          WHEN 'Q3 2026' THEN 1
-          WHEN 'Q4 2026' THEN 2
-          WHEN 'September 2026' THEN 3
-          WHEN 'October 2026' THEN 4
-          WHEN 'November 2026' THEN 5
-          WHEN 'December 2026' THEN 6
+          WHEN 'Q4 2026' THEN 1
+          WHEN 'September 2026' THEN 2
+          WHEN 'October 2026' THEN 3
+          WHEN 'November 2026' THEN 4
+          WHEN 'December 2026' THEN 5
           ELSE 99
         END,
         CASE WHEN status='active' THEN 0 ELSE 1 END,
         season_year DESC, id DESC`,
     );
     const seasons = seasonsResult.rows.map(rangePlanSeasonPayload);
-    const quarter = PLM_SEASONS.includes(String(req.query.quarter ?? "") as (typeof PLM_SEASONS)[number])
+    const quarter = String(req.query.quarter ?? "") === "Q4 2026"
       ? String(req.query.quarter)
-      : "Q3 2026";
+      : "Q4 2026";
     const requestedSeasonId = Number(req.query.seasonId);
     const season = (Number.isInteger(requestedSeasonId) && requestedSeasonId > 0
       ? seasons.find((candidate) => candidate.id === requestedSeasonId)
@@ -3731,11 +3751,7 @@ router.get("/range-plan", async (req, res, next) => {
       res.json({ seasons: [], season: null, rows: [], otb: [], averageCostKes: 850, health: await rangePlanHealth() });
       return;
     }
-    const [q3Assortment, q4Assortment] = await Promise.all([
-      assortmentPlanData("Q3 2026"),
-      assortmentPlanData("Q4 2026"),
-    ]);
-    const selectedAssortment = quarter === "Q4 2026" ? q4Assortment : q3Assortment;
+    const selectedAssortment = await assortmentPlanData("Q4 2026");
      const rowsResult = await pool.query(
        `WITH style_asp AS (
           SELECT subcategory,AVG(price)::numeric AS asp
@@ -3754,20 +3770,20 @@ router.get("/range-plan", async (req, res, next) => {
         ORDER BY CASE r.tier::text WHEN 'NOOS' THEN 1 WHEN 'Core' THEN 2 WHEN 'Recent' THEN 3 ELSE 4 END, r.id`,
       [season.id],
     );
-    const planMonth = rangePlanMonthForSeason(season.seasonName);
+    const fixedOtbMonths = rangePlanOtbMonthsForSeason(season.seasonName);
     const otbResult = await pool.query(
       `WITH months AS (
          SELECT month_year
          FROM ${schema}.range_plan_otb
          WHERE season_id=$1
-           AND ($2::boolean IS FALSE OR month_year=$3::date)
+           AND (cardinality($2::date[]) = 0 OR month_year=ANY($2::date[]))
          UNION
          SELECT generate_series(
            date_trunc('month', CURRENT_DATE)::date,
            (date_trunc('month', CURRENT_DATE) + INTERVAL '5 months')::date,
            INTERVAL '1 month'
          )::date AS month_year
-         WHERE $2::boolean IS FALSE
+         WHERE cardinality($2::date[]) = 0
        )
        SELECT o.id,m.month_year::text AS "monthYear",o.revenue_target AS "revenueTarget",
          o.planned_units AS "plannedUnits",o.new_styles_count AS "newStylesCount",o.notes
@@ -3775,7 +3791,7 @@ router.get("/range-plan", async (req, res, next) => {
        LEFT JOIN ${schema}.range_plan_otb o
          ON o.season_id=$1 AND o.month_year=m.month_year
        ORDER BY m.month_year`,
-      [season.id, planMonth !== null, planMonth],
+      [season.id, fixedOtbMonths],
     );
      const rangeRows = rowsResult.rows.map(rangePlanRowPayload);
      const potentialFpRevenue = rangeRows
@@ -3794,8 +3810,7 @@ router.get("/range-plan", async (req, res, next) => {
        carryOverStyles: selectedAssortment.carryOverStyles,
        newStyles: selectedAssortment.newStyles,
       quarterStyles: {
-        "Q3 2026": q3Assortment.styles,
-        "Q4 2026": q4Assortment.styles,
+        "Q4 2026": selectedAssortment.styles,
       },
       assortmentSummary: {
         total: selectedAssortment.total,
@@ -3805,18 +3820,17 @@ router.get("/range-plan", async (req, res, next) => {
          filterOptions: selectedAssortment.filterOptions,
       },
       quarterSummaries: {
-         "Q3 2026": { total: q3Assortment.total, counts: q3Assortment.counts },
-         "Q4 2026": { total: q4Assortment.total, counts: q4Assortment.counts },
+         "Q4 2026": { total: selectedAssortment.total, counts: selectedAssortment.counts },
       },
         assortmentFilterOptions: {
           tier: [...ASSORTMENT_TIER_FILTERS],
           status: ["Active", "Retired"],
-         category: [...new Set([...q3Assortment.filterOptions.category, ...q4Assortment.filterOptions.category])].sort(),
-         subCategory: [...new Set([...q3Assortment.filterOptions.subCategory, ...q4Assortment.filterOptions.subCategory])].sort(),
-         fabricCategory: [...new Set([...q3Assortment.filterOptions.fabricCategory, ...q4Assortment.filterOptions.fabricCategory])].sort(),
-         brand: [...new Set([...q3Assortment.filterOptions.brand, ...q4Assortment.filterOptions.brand])].sort(),
-         primaryColour: [...new Set([...q3Assortment.filterOptions.primaryColour, ...q4Assortment.filterOptions.primaryColour])].sort(),
-         edit: [...new Set([...q3Assortment.filterOptions.edit, ...q4Assortment.filterOptions.edit])].sort(),
+         category: selectedAssortment.filterOptions.category,
+         subCategory: selectedAssortment.filterOptions.subCategory,
+         fabricCategory: selectedAssortment.filterOptions.fabricCategory,
+         brand: selectedAssortment.filterOptions.brand,
+         primaryColour: selectedAssortment.filterOptions.primaryColour,
+         edit: selectedAssortment.filterOptions.edit,
        },
     });
   } catch (error) {
@@ -4248,9 +4262,9 @@ router.put("/range-plan/seasons/:seasonId/otb", async (req, res, next) => {
       res.status(404).json({ error: "Planning season not found" });
       return;
     }
-    const allowedMonth = rangePlanMonthForSeason(seasonResult.rows[0].seasonName);
-    if (allowedMonth !== null && monthYear !== allowedMonth) {
-      res.status(400).json({ error: "Monthly plans only accept their configured OTB month" });
+    const allowedMonths = rangePlanOtbMonthsForSeason(seasonResult.rows[0].seasonName);
+    if (allowedMonths.length > 0 && !allowedMonths.includes(monthYear)) {
+      res.status(400).json({ error: "This plan only accepts OTB values for its configured months" });
       return;
     }
     const result = await pool.query(
