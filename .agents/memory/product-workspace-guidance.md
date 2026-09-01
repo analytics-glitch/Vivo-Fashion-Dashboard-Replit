@@ -9,7 +9,8 @@ description: Durable cross-cutting rules for the standalone Product Workspace.
 - Every style surface must server-scope to Vivo, Safari by Vivo, Safari, and Zoya. Development and assortment views each use their appropriate authoritative source rather than mixing product domains.
 - Date of birth is Settings-admin-only: public team/birthday payloads must never include it.
 - Embedded HTTPS previews require Secure/SameSite=None cookies; public feedback stores a canonical style number and colourway.
+- Once a Range Plan matrix replacement migration is marked complete, gate incompatible legacy row seeders before they insert. Keep later startup seeding non-destructive for editable plan assumptions and rows.
 
-**Why:** The workspace shares users, product data, and deployment infrastructure with the BI environment, so accidental cross-brand data, private profile leakage, or a startup-time database wait is especially disruptive.
+**Why:** The workspace shares users, product data, and deployment infrastructure with the BI environment, so accidental cross-brand data, private profile leakage, or a startup-time database wait is especially disruptive. A migrated monthly matrix was once joined by retired template rows because the old generic seed ran before checking the completed-migration marker.
 
-**How to apply:** When extending Product Workspace, retain the server-side brand/privacy gates and keep startup/preview behavior resilient before adding new page features.
+**How to apply:** When extending Product Workspace, retain the server-side brand/privacy gates and keep startup/preview behavior resilient before adding new page features. For Range Plan seed-shape changes, use a transactional one-time marker, gate old seeders before insertion, and verify row counts after a second restart.

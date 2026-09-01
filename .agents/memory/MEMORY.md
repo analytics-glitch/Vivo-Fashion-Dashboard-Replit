@@ -132,7 +132,7 @@
 - [Artifact service environments](artifact-service-environments.md) — preserve managed-service env blocks and give every production route exactly one runnable owner.
 - [Production Node server bundling](artifact-production-node-bundling.md) — artifact runtime may omit workspace node_modules; bundle service dependencies during the production build.
 - [OpenAPI codegen compatibility](openapi-codegen-compatibility.md) — checked-in Orval 8.9.1 currently fails resolving this repo's OpenAPI input; restore generated outputs and patch the contract/types manually if needed.
-- [Product Workspace guidance](product-workspace-guidance.md) — shared rules for L10, resources, resilient startup, brand scope, profile privacy, preview auth, and public feedback.
+- [Product Workspace guidance](product-workspace-guidance.md) — shared rules for L10, resources, resilient startup and seed migrations, brand scope, profile privacy, preview auth, and public feedback.
 - [Community guest mode](community-guest-mode.md) — guest fence must cover deep-linkable URL-state overlays (?event=, member ?page= ids) and every member-write control, not just tabs.
 - [Merch empty-universe poison + deep-dive crash](merch-core-empty-poison.md) — never cache an empty style universe (raise in compute fn); "search crash" reports may be selected-style render bugs, assert error boundary absent.
 - [Merch store size analysis](merch-store-size-analysis.md) — compare a selected store's size SOR/SOH against weighted network size benchmarks, not average store percentages.

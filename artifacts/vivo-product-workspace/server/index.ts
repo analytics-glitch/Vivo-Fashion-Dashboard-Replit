@@ -79,10 +79,37 @@ const PLM_RANGE_TIERS = ["Tier 1", "Tier 2", "Tier 3", "Tier 4"] as const;
 const PLM_SEASONS = ["Q3 2026", "Q4 2026"] as const;
 const RANGE_PLAN_SEASON_SEEDS = [
   { seasonName: "Q4 2026", revenueTarget: 360000000, factoryCapacityUnits: 96000, cadence: "quarterly" as const, otbMonths: ["2026-10-01", "2026-11-01", "2026-12-01"] as const },
-  { seasonName: "September 2026", revenueTarget: 30000000, factoryCapacityUnits: 32000, cadence: "monthly" as const, otbMonth: "2026-09-01" },
+  { seasonName: "September 2026", revenueTarget: 30000000, factoryCapacityUnits: 28000, cadence: "monthly" as const, otbMonth: "2026-09-01" },
   { seasonName: "October 2026", revenueTarget: 30000000, factoryCapacityUnits: 32000, cadence: "monthly" as const, otbMonth: "2026-10-01" },
   { seasonName: "November 2026", revenueTarget: 30000000, factoryCapacityUnits: 32000, cadence: "monthly" as const, otbMonth: "2026-11-01" },
   { seasonName: "December 2026", revenueTarget: 30000000, factoryCapacityUnits: 32000, cadence: "monthly" as const, otbMonth: "2026-12-01" },
+] as const;
+const SEPTEMBER_2026_MONTHLY_ROW_SEEDS = [
+  ["Bottoms", "Full Length Pants", 13, 400, 4788, 1398],
+  ["Bottoms", "Jumpsuits & Playsuits", 2, 400, 6669, 1869],
+  ["Bottoms", "Leggings", 1, 400, 2501, null],
+  ["Bottoms", "Culottes & Capri Pants", 0, 400, 2375, null],
+  ["Bottoms", "Shorts & Skorts", 0, 400, 2714, null],
+  ["Dresses", "Knee Length Dresses", 8, 400, 5801, 1594],
+  ["Dresses", "Maxi Dresses", 12, 440, 6877, 1830],
+  ["Dresses", "Midi & Capri Dresses", 2, 400, 5932, null],
+  ["Dresses", "Short & Mini Dresses", 1, 400, 4900, 1448],
+  ["Dresses", "Kaftan Dresses", 2, 400, 5500, 1435],
+  ["Outerwear", "Sweaters & Ponchos", 3, 400, 5077, null],
+  ["Outerwear", "Waterfalls & Kimonos", 6, 400, 4214, 1096],
+  ["Outerwear", "Jackets & Coats", 4, 440, 5332, 1411],
+  ["Outerwear", "Hoodies & Sweatshirts", 2, 400, 3705, null],
+  ["Skirts", "Knee Length Skirts", 0, 400, 2900, null],
+  ["Skirts", "Maxi Skirts", 1, 400, 4900, 1212],
+  ["Skirts", "Midi & Capri Skirts", 0, 400, 5203, null],
+  ["Skirts", "Short & Mini Skirts", 0, 400, 2934, null],
+  ["Tops", "Fitted Tops", 6, 440, 3360, 731],
+  ["Tops", "Loose & Oversized Tops", 8, 450, 4351, 1384],
+  ["Tops", "T-shirts & Tank Tops", 2, 400, 2104, 464],
+  ["Tops", "Relaxed Tops", 3, 400, 3593, 1032],
+  ["Tops", "Kaftan Tops", 0, 400, null, null],
+  ["Tops", "Bodysuits", 1, 470, 2500, 564],
+  ["Tops", "Midriff & Crop Tops", 0, 400, 2524, null],
 ] as const;
 const WORKSPACE_BRANDS = ["Vivo", "Safari by Vivo", "Zoya"] as const;
 const ALLOWED_BRANDS_SQL = WORKSPACE_BRANDS.map((brand) => `'${brand}'`).join(",");
@@ -946,26 +973,39 @@ async function ensureRangePlanData() {
   await pool.query(
     `DELETE FROM ${schema}.range_plan_seasons WHERE season_name='Q3 2026' AND season_year=2026`,
   );
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS ${schema}.range_plan_seed_migrations (
+      migration_key TEXT PRIMARY KEY,
+      applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  const monthlyMigrationApplied = Boolean((await pool.query(
+    `SELECT 1 FROM ${schema}.range_plan_seed_migrations WHERE migration_key='monthly-category-matrix-v1'`,
+  )).rows[0]);
   for (const seasonSeed of RANGE_PLAN_SEASON_SEEDS) {
     const seasonResult = await pool.query<{ id: number }>(
       `INSERT INTO ${schema}.range_plan_seasons
         (season_name,season_year,revenue_target_kes,cogs_budget_pct,factory_capacity_units,status)
-       VALUES ($1,2026,$2,42,$3,'active')
-       ON CONFLICT (season_name,season_year) DO UPDATE
-          SET factory_capacity_units=EXCLUDED.factory_capacity_units
+       VALUES ($1,2026,$2,32,$3,'active')
+       ON CONFLICT (season_name,season_year) DO NOTHING
        RETURNING id`,
       [seasonSeed.seasonName, seasonSeed.revenueTarget, seasonSeed.factoryCapacityUnits],
     );
-    const seasonId = seasonResult.rows[0]?.id;
+    const seasonId = seasonResult.rows[0]?.id ?? (await pool.query<{ id: number }>(
+      `SELECT id FROM ${schema}.range_plan_seasons WHERE season_name=$1 AND season_year=2026`,
+      [seasonSeed.seasonName],
+    )).rows[0]?.id;
     if (!seasonId) continue;
-    for (const [subCategory, tier, target, minimum, maximum] of RANGE_PLAN_ROW_SEEDS) {
-      await pool.query(
-        `INSERT INTO ${schema}.range_plan_rows
-          (season_id,sub_category,tier,style_count_target,style_count_min,style_count_max,aos_units)
-         VALUES ($1,$2,$3::${schema}.range_plan_tier,$4,$5,$6,$7)
-         ON CONFLICT (season_id,sub_category) DO NOTHING`,
-        [seasonId, subCategory, tier, target, minimum, maximum, rangePlanAosDefault(String(tier))],
-      );
+    if (seasonSeed.cadence === "quarterly" || !monthlyMigrationApplied) {
+      for (const [subCategory, tier, target, minimum, maximum] of RANGE_PLAN_ROW_SEEDS) {
+        await pool.query(
+          `INSERT INTO ${schema}.range_plan_rows
+            (season_id,sub_category,tier,style_count_target,style_count_min,style_count_max,aos_units)
+           VALUES ($1,$2,$3::${schema}.range_plan_tier,$4,$5,$6,$7)
+           ON CONFLICT (season_id,sub_category) DO NOTHING`,
+          [seasonId, subCategory, tier, target, minimum, maximum, rangePlanAosDefault(String(tier))],
+        );
+      }
     }
     if (seasonSeed.cadence === "monthly") {
       await pool.query(
@@ -1009,6 +1049,67 @@ async function ensureRangePlanData() {
        )
        AND aos_units=350`,
   );
+  await pool.query(
+    `DELETE FROM ${schema}.range_plan_rows r
+     USING ${schema}.range_plan_seasons s
+     WHERE s.id=r.season_id
+       AND s.season_name='September 2026'
+       AND s.season_year=2026
+       AND r.product_category IS NULL`,
+  );
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const claim = await client.query(
+      `INSERT INTO ${schema}.range_plan_seed_migrations (migration_key)
+       VALUES ('monthly-category-matrix-v1')
+       ON CONFLICT DO NOTHING
+       RETURNING migration_key`,
+    );
+    if (claim.rows[0]) {
+      await client.query(
+        `UPDATE ${schema}.range_plan_seasons
+         SET cogs_budget_pct=32,
+             factory_capacity_units=CASE WHEN season_name='September 2026' THEN 28000 ELSE factory_capacity_units END
+         WHERE season_year=2026`,
+      );
+      await client.query(
+        `UPDATE ${schema}.range_plan_rows r
+         SET product_category=CASE
+           WHEN r.sub_category ILIKE '%dress%' THEN 'Dresses'
+           WHEN r.sub_category ILIKE '%skirt%' THEN 'Skirts'
+           WHEN r.sub_category ILIKE ANY(ARRAY['%top%','%knit%']) THEN 'Tops'
+           WHEN r.sub_category ILIKE ANY(ARRAY['%jacket%','%blazer%','%hoodie%','%sweater%','%poncho%','%kimono%']) THEN 'Outerwear'
+           ELSE 'Bottoms'
+         END
+         FROM ${schema}.range_plan_seasons s
+         WHERE s.id=r.season_id AND s.season_year=2026 AND s.season_name NOT LIKE 'Q%'`,
+      );
+      const september = await client.query<{ id: number }>(
+        `SELECT id FROM ${schema}.range_plan_seasons
+         WHERE season_name='September 2026' AND season_year=2026`,
+      );
+      if (september.rows[0]) {
+        await client.query(`DELETE FROM ${schema}.range_plan_rows WHERE season_id=$1`, [september.rows[0].id]);
+        for (const [productCategory, subCategory, plannedStyles, averageOrderSize, sellingPrice, expectedUnitCost] of SEPTEMBER_2026_MONTHLY_ROW_SEEDS) {
+          await client.query(
+            `INSERT INTO ${schema}.range_plan_rows
+              (season_id,product_category,sub_category,tier,style_count_target,style_count_min,
+               style_count_max,aos_units,opening_stock_units,units_sold_last_month,
+               expected_unit_cost,selling_price)
+             VALUES ($1,$2,$3,'Core'::${schema}.range_plan_tier,$4,0,0,$5,0,0,$6,$7)`,
+            [september.rows[0].id, productCategory, subCategory, plannedStyles, averageOrderSize, expectedUnitCost, sellingPrice],
+          );
+        }
+      }
+    }
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 async function isDatabaseReachable() {
@@ -1139,11 +1240,16 @@ async function ensureRecentWorkspaceMigrations() {
         id SERIAL PRIMARY KEY,
         season_id INTEGER NOT NULL REFERENCES ${schema}.range_plan_seasons(id) ON DELETE CASCADE,
         sub_category TEXT NOT NULL,
+        product_category TEXT,
         tier ${schema}.range_plan_tier NOT NULL,
         style_count_target INTEGER NOT NULL DEFAULT 0,
         style_count_min INTEGER NOT NULL DEFAULT 0,
         style_count_max INTEGER NOT NULL DEFAULT 0,
         aos_units INTEGER NOT NULL DEFAULT 350,
+        opening_stock_units INTEGER,
+        units_sold_last_month INTEGER,
+        expected_unit_cost NUMERIC,
+        selling_price NUMERIC,
         total_units_implied INTEGER GENERATED ALWAYS AS (style_count_target * aos_units) STORED,
         notes TEXT NOT NULL DEFAULT '',
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -1628,11 +1734,16 @@ async function ensureSchema() {
       id SERIAL PRIMARY KEY,
       season_id INTEGER NOT NULL REFERENCES ${schema}.range_plan_seasons(id) ON DELETE CASCADE,
       sub_category TEXT NOT NULL,
+      product_category TEXT,
       tier ${schema}.range_plan_tier NOT NULL,
       style_count_target INTEGER NOT NULL DEFAULT 0,
       style_count_min INTEGER NOT NULL DEFAULT 0,
       style_count_max INTEGER NOT NULL DEFAULT 0,
       aos_units INTEGER NOT NULL DEFAULT 350,
+      opening_stock_units INTEGER,
+      units_sold_last_month INTEGER,
+      expected_unit_cost NUMERIC,
+      selling_price NUMERIC,
       total_units_implied INTEGER GENERATED ALWAYS AS (style_count_target * aos_units) STORED,
       notes TEXT NOT NULL DEFAULT '',
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -1880,6 +1991,11 @@ async function ensureSchema() {
     ALTER TABLE ${schema}.cost_estimates ADD COLUMN IF NOT EXISTS cogs_ratio NUMERIC NOT NULL DEFAULT 0;
     ALTER TABLE ${schema}.cost_estimates ADD COLUMN IF NOT EXISTS set_sample_cost NUMERIC NOT NULL DEFAULT 0;
     ALTER TABLE ${schema}.cost_estimates ADD COLUMN IF NOT EXISTS variance NUMERIC NOT NULL DEFAULT 0;
+    ALTER TABLE ${schema}.range_plan_rows ADD COLUMN IF NOT EXISTS product_category TEXT;
+    ALTER TABLE ${schema}.range_plan_rows ADD COLUMN IF NOT EXISTS opening_stock_units INTEGER;
+    ALTER TABLE ${schema}.range_plan_rows ADD COLUMN IF NOT EXISTS units_sold_last_month INTEGER;
+    ALTER TABLE ${schema}.range_plan_rows ADD COLUMN IF NOT EXISTS expected_unit_cost NUMERIC;
+    ALTER TABLE ${schema}.range_plan_rows ADD COLUMN IF NOT EXISTS selling_price NUMERIC;
     ALTER TABLE ${schema}.pom_qc ALTER COLUMN point DROP NOT NULL;
     ALTER TABLE ${schema}.styles ADD COLUMN IF NOT EXISTS style_number TEXT;
     ALTER TABLE ${schema}.styles ADD COLUMN IF NOT EXISTS notes TEXT NOT NULL DEFAULT '';
@@ -3427,20 +3543,29 @@ function rangePlanOtbMonthsForSeason(seasonName: string): string[] {
 }
 
 function rangePlanRowPayload(row: Record<string, unknown>) {
-  const asp = Number(row.asp ?? 0);
+  const optionalNumber = (value: unknown) => value === null || value === undefined || value === "" ? null : Number(value);
+  const sellingPrice = optionalNumber(row.sellingPrice);
+  const asp = optionalNumber(row.asp);
+  const expectedUnitCost = optionalNumber(row.expectedUnitCost);
   const totalUnitsImplied = Number(row.totalUnitsImplied ?? 0);
+  const effectivePrice = row.productCategory == null ? asp : sellingPrice;
   return {
     id: Number(row.id),
     seasonId: Number(row.seasonId),
     subCategory: String(row.subCategory ?? ""),
+    productCategory: row.productCategory == null ? null : String(row.productCategory),
     tier: String(row.tier ?? "Core"),
     styleCountTarget: Number(row.styleCountTarget ?? 0),
     styleCountMin: Number(row.styleCountMin ?? 0),
     styleCountMax: Number(row.styleCountMax ?? 0),
     aosUnits: Number(row.aosUnits ?? 350),
     totalUnitsImplied,
-    asp: Number.isFinite(asp) ? asp : 0,
-    potentialFpRevenue: Number.isFinite(asp) ? totalUnitsImplied * asp : 0,
+    openingStockUnits: optionalNumber(row.openingStockUnits),
+    unitsSoldLastMonth: optionalNumber(row.unitsSoldLastMonth),
+    expectedUnitCost,
+    sellingPrice,
+    asp: effectivePrice,
+    potentialFpRevenue: effectivePrice === null ? 0 : totalUnitsImplied * effectivePrice,
     notes: String(row.notes ?? ""),
   };
 }
@@ -3760,10 +3885,17 @@ router.get("/range-plan", async (req, res, next) => {
             AND price IS NOT NULL AND price > 0
           GROUP BY subcategory
         )
-        SELECT r.id,r.season_id AS "seasonId",r.sub_category AS "subCategory",r.tier::text,
+       SELECT r.id,r.season_id AS "seasonId",r.sub_category AS "subCategory",
+        r.product_category AS "productCategory",r.tier::text,
          style_count_target AS "styleCountTarget",style_count_min AS "styleCountMin",
           style_count_max AS "styleCountMax",r.aos_units AS "aosUnits",
-          r.total_units_implied AS "totalUnitsImplied",COALESCE(a.asp,0) AS asp,r.notes
+          r.total_units_implied AS "totalUnitsImplied",
+          r.opening_stock_units AS "openingStockUnits",
+          r.units_sold_last_month AS "unitsSoldLastMonth",
+          r.expected_unit_cost AS "expectedUnitCost",
+          r.selling_price AS "sellingPrice",
+          CASE WHEN r.selling_price IS NULL THEN a.asp ELSE r.selling_price END AS asp,
+          r.notes
         FROM ${schema}.range_plan_rows r
         LEFT JOIN style_asp a ON LOWER(TRIM(a.subcategory))=LOWER(TRIM(r.sub_category))
         WHERE r.season_id=$1
@@ -3876,19 +4008,24 @@ router.put("/range-plan/seasons/:seasonId", async (req, res, next) => {
     const seasonId = Number(req.params.seasonId);
     const revenueTargetKes = req.body?.revenueTargetKes === undefined ? null : Number(req.body.revenueTargetKes);
     const cogsBudgetPct = req.body?.cogsBudgetPct === undefined ? null : Number(req.body.cogsBudgetPct);
-    if (!Number.isInteger(seasonId) || seasonId <= 0 || (revenueTargetKes !== null && (!Number.isFinite(revenueTargetKes) || revenueTargetKes < 0)) || (cogsBudgetPct !== null && (!Number.isFinite(cogsBudgetPct) || cogsBudgetPct < 0 || cogsBudgetPct > 100))) {
+    const factoryCapacityUnits = req.body?.factoryCapacityUnits === undefined ? null : Number(req.body.factoryCapacityUnits);
+    if (!Number.isInteger(seasonId) || seasonId <= 0 ||
+      (revenueTargetKes !== null && (!Number.isFinite(revenueTargetKes) || revenueTargetKes < 0)) ||
+      (cogsBudgetPct !== null && (!Number.isFinite(cogsBudgetPct) || cogsBudgetPct < 0 || cogsBudgetPct > 100)) ||
+      (factoryCapacityUnits !== null && (!Number.isInteger(factoryCapacityUnits) || factoryCapacityUnits < 0))) {
       res.status(400).json({ error: "Invalid season assumptions" });
       return;
     }
     const result = await pool.query(
       `UPDATE ${schema}.range_plan_seasons
        SET revenue_target_kes=COALESCE($2,revenue_target_kes),
-           cogs_budget_pct=COALESCE($3,cogs_budget_pct)
+           cogs_budget_pct=COALESCE($3,cogs_budget_pct),
+           factory_capacity_units=COALESCE($4,factory_capacity_units)
        WHERE id=$1
        RETURNING id,season_name AS "seasonName",season_year AS "seasonYear",
          revenue_target_kes AS "revenueTargetKes",cogs_budget_pct AS "cogsBudgetPct",
          factory_capacity_units AS "factoryCapacityUnits",status`,
-      [seasonId, revenueTargetKes, cogsBudgetPct],
+      [seasonId, revenueTargetKes, cogsBudgetPct, factoryCapacityUnits],
     );
     if (!result.rows[0]) {
       res.status(404).json({ error: "Planning season not found" });
@@ -3987,7 +4124,9 @@ router.put("/range-plan/rows/:id", async (req, res, next) => {
   try {
     const rowId = Number(req.params.id);
     const existing = await pool.query(
-      `SELECT style_count_target AS "styleCountTarget",aos_units AS "aosUnits",notes
+      `SELECT style_count_target AS "styleCountTarget",aos_units AS "aosUnits",
+        opening_stock_units AS "openingStockUnits",units_sold_last_month AS "unitsSoldLastMonth",
+        expected_unit_cost AS "expectedUnitCost",selling_price AS "sellingPrice",notes
        FROM ${schema}.range_plan_rows WHERE id=$1`,
       [rowId],
     );
@@ -4001,20 +4140,41 @@ router.put("/range-plan/rows/:id", async (req, res, next) => {
     const aosUnits = req.body?.aosUnits === undefined
       ? Number(existing.rows[0].aosUnits)
       : Number(req.body.aosUnits);
+    const optionalNumber = (bodyKey: string, existingKey: string) => {
+      if (req.body?.[bodyKey] === undefined) {
+        const current = existing.rows[0][existingKey];
+        return current === null || current === undefined ? null : Number(current);
+      }
+      return req.body[bodyKey] === null || req.body[bodyKey] === "" ? null : Number(req.body[bodyKey]);
+    };
+    const openingStockUnits = optionalNumber("openingStockUnits", "openingStockUnits");
+    const unitsSoldLastMonth = optionalNumber("unitsSoldLastMonth", "unitsSoldLastMonth");
+    const expectedUnitCost = optionalNumber("expectedUnitCost", "expectedUnitCost");
+    const sellingPrice = optionalNumber("sellingPrice", "sellingPrice");
     const notes = req.body?.notes === undefined ? String(existing.rows[0].notes ?? "") : String(req.body.notes);
-    if (!Number.isInteger(styleCountTarget) || styleCountTarget < 0 || !Number.isInteger(aosUnits) || aosUnits < 0 || notes.length > 2000) {
-      res.status(400).json({ error: "Style target and AOS must be non-negative whole numbers; notes must be 2,000 characters or fewer" });
+    const validOptionalWholeNumber = (value: number | null) => value === null || (Number.isInteger(value) && value >= 0);
+    const validOptionalNumber = (value: number | null) => value === null || (Number.isFinite(value) && value >= 0);
+    if (!Number.isInteger(styleCountTarget) || styleCountTarget < 0 ||
+      !Number.isInteger(aosUnits) || aosUnits < 0 ||
+      !validOptionalWholeNumber(openingStockUnits) || !validOptionalWholeNumber(unitsSoldLastMonth) ||
+      !validOptionalNumber(expectedUnitCost) || !validOptionalNumber(sellingPrice) ||
+      notes.length > 2000) {
+      res.status(400).json({ error: "Range plan inputs must be non-negative numbers; notes must be 2,000 characters or fewer" });
       return;
     }
     const result = await pool.query(
       `UPDATE ${schema}.range_plan_rows
-       SET style_count_target=$1,aos_units=$2,notes=$3
-       WHERE id=$4
-       RETURNING id,season_id AS "seasonId",sub_category AS "subCategory",tier::text,
+       SET style_count_target=$1,aos_units=$2,opening_stock_units=$3,units_sold_last_month=$4,
+           expected_unit_cost=$5,selling_price=$6,notes=$7
+       WHERE id=$8
+       RETURNING id,season_id AS "seasonId",sub_category AS "subCategory",
+         product_category AS "productCategory",tier::text,
          style_count_target AS "styleCountTarget",style_count_min AS "styleCountMin",
          style_count_max AS "styleCountMax",aos_units AS "aosUnits",
-         total_units_implied AS "totalUnitsImplied",notes`,
-      [styleCountTarget, aosUnits, notes, rowId],
+         total_units_implied AS "totalUnitsImplied",
+         opening_stock_units AS "openingStockUnits",units_sold_last_month AS "unitsSoldLastMonth",
+         expected_unit_cost AS "expectedUnitCost",selling_price AS "sellingPrice",notes`,
+      [styleCountTarget, aosUnits, openingStockUnits, unitsSoldLastMonth, expectedUnitCost, sellingPrice, notes, rowId],
     );
     res.json(rangePlanRowPayload(result.rows[0]));
   } catch (error) {
