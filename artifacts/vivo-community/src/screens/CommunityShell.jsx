@@ -21,6 +21,7 @@ import { FabulasStoryView } from "@/components/community/FabulasStory";
 import ContactView from "@/components/community/ContactView";
 import TryOnView from "@/components/community/TryOnView";
 import MyDataView from "@/components/community/MyDataView";
+import MySizeView from "@/components/community/MySizeView";
 import { StylePrefsView } from "@/components/community/StyledForYou";
 import { VivoEditsAllView, VivoEditDetail, VivoEditsHome } from "@/components/community/VivoEdits";
 import StoreLocatorView from "@/components/community/StoreLocatorView";
@@ -42,7 +43,7 @@ const TABS = [
 
 // Static help & legal pages routed via the ?page= param. News articles ride
 // the same param as "news-{id}", validated against the NEWS list.
-const PAGES = ["faq", "contact", "terms", "privacy", "guidelines", "tryon", "mydata", "help", "givingback", "styleprefs", "stores", "delivery", "returns", "edits", "refer", "missions"];
+const PAGES = ["faq", "contact", "terms", "privacy", "guidelines", "tryon", "mydata", "mysize", "help", "givingback", "styleprefs", "stores", "delivery", "returns", "edits", "refer", "missions"];
 // Campaign articles ride ?page=article-{slug} — server-validated (404 UI on
 // unknown slugs), guest-readable like news pages (composer is member-gated).
 const isArticlePageId = (v) => /^article-[a-z0-9-]+$/.test(v || "");
@@ -514,7 +515,7 @@ function ShellInner() {
             via URL state (?page= / ?event=) that carry member-authenticated
             writes: try-on, survey, my-data, contact and event RSVP. Browsing
             surfaces (products, cart, wishlist, news, legal, help) stay open. */}
-        {!member && (quizOpen || eventId || ["tryon", "mydata", "contact", "styleprefs", "refer", "missions"].includes(page)) ? (
+        {!member && (quizOpen || eventId || ["tryon", "mydata", "mysize", "contact", "styleprefs", "refer", "missions"].includes(page)) ? (
           <GuestGate
             title={quizOpen ? "Your Style Quiz is for members" : eventId ? "Events are for members" : "This is a member space"}
             body={quizOpen
@@ -539,6 +540,8 @@ function ShellInner() {
             <ReturnsInfoView onBack={closePage} />
           ) : page === "mydata" ? (
             <MyDataView onBack={closePage} onOpenPage={openPage} />
+          ) : page === "mysize" ? (
+            <MySizeView member={member} onBack={closePage} onMemberUpdate={updateMember} />
           ) : page === "contact" ? (
             <ContactView onBack={closePage} member={member} />
           ) : page === "help" ? (
@@ -561,7 +564,7 @@ function ShellInner() {
         ) : wlOpen ? (
           <WishlistView onBack={closeWishlist} onShop={() => goTab("shop")} onOpenProduct={openProduct} />
         ) : productSku ? (
-          <ProductDetail sku={productSku} onBack={closeProduct} onOpenProduct={openProduct} onTryOn={openTryOn} onOpenPage={openPage} />
+          <ProductDetail sku={productSku} member={member} onBack={closeProduct} onOpenProduct={openProduct} onTryOn={openTryOn} onOpenPage={openPage} />
         ) : eventId ? (
           <EventDetail eventId={eventId} onBack={closeEventDetail} onOpenPage={openPage} />
         ) : editId ? (

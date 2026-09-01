@@ -194,8 +194,13 @@ function Gallery({ images, name, wish, onWish }) {
 /* ------------------------------------------------------------------ */
 
 const SIZE_CHART = [
-  ["XS", 82, 64, 90], ["S", 86, 68, 94], ["M", 92, 74, 100], ["L", 98, 80, 106],
-  ["1X", 106, 88, 114], ["2X", 114, 96, 122], ["3X", 122, 104, 130], ["4X", 130, 112, 138],
+  ["XS", "4–6", "0–2", "33–34", "25–26", "37–38"],
+  ["S", "8–10", "4–6", "35–36", "27–28", "39–40"],
+  ["M", "12–14", "8–10", "37–38", "29–30", "41–42"],
+  ["L", "16–18", "12–14", "39–41", "31–33", "43–45"],
+  ["1X", "20", "16", "40–44", "34–36", "46–48"],
+  ["2X", "22", "18", "45–47", "37–39", "49–51"],
+  ["3X", "24", "20", "48–50", "40–42", "52–54"],
 ];
 
 function SizeGuide({ onClose }) {
@@ -243,7 +248,7 @@ function SizeGuide({ onClose }) {
         <div className="flex items-start justify-between mb-6">
           <div>
             <h3 className="font-serif text-2xl text-foreground mb-1">Size Guide</h3>
-            <p className="text-muted-foreground text-[13px]">Body measurements in centimetres</p>
+            <p className="text-muted-foreground text-[13px]">Body measurements in inches</p>
           </div>
           <button
             ref={closeRef}
@@ -255,19 +260,24 @@ function SizeGuide({ onClose }) {
             <X size={18} />
           </button>
         </div>
-        <table className="w-full text-[14px] border-collapse">
+        <div className="-mx-1 overflow-x-auto">
+        <table className="w-full min-w-[430px] text-[13px] border-collapse">
           <thead>
             <tr className="text-left text-[11px] uppercase tracking-wider text-muted-foreground border-b border-border">
               <th className="py-2.5 pr-3 font-semibold">Size</th>
+              <th className="py-2.5 pr-3 font-semibold">UK</th>
+              <th className="py-2.5 pr-3 font-semibold">US</th>
               <th className="py-2.5 pr-3 font-semibold">Bust</th>
               <th className="py-2.5 pr-3 font-semibold">Waist</th>
-              <th className="py-2.5 font-semibold">Hip</th>
+              <th className="py-2.5 font-semibold">Hips</th>
             </tr>
           </thead>
           <tbody>
-            {SIZE_CHART.map(([sz, b, w, h]) => (
+            {SIZE_CHART.map(([sz, uk, us, b, w, h]) => (
               <tr key={sz} className="border-b border-border/60">
                 <td className="py-2.5 pr-3 font-medium text-foreground">{sz}</td>
+                <td className="py-2.5 pr-3 text-foreground/80">{uk}</td>
+                <td className="py-2.5 pr-3 text-foreground/80">{us}</td>
                 <td className="py-2.5 pr-3 text-foreground/80">{b}</td>
                 <td className="py-2.5 pr-3 text-foreground/80">{w}</td>
                 <td className="py-2.5 text-foreground/80">{h}</td>
@@ -275,6 +285,7 @@ function SizeGuide({ onClose }) {
             ))}
           </tbody>
         </table>
+        </div>
         <p className="text-muted-foreground text-[13px] leading-relaxed mt-5">
           Between sizes? Our stylists suggest sizing up for a relaxed drape, or
           check the community fit notes on each piece.
@@ -538,7 +549,7 @@ function NotifyMeModal({ sizes, preSize, alertedSkus, onConfirm, onCancel, onClo
 /* PDP                                                                 */
 /* ------------------------------------------------------------------ */
 
-export default function ProductDetail({ sku, onBack, onOpenProduct, onTryOn, onOpenPage }) {
+export default function ProductDetail({ sku, member, onBack, onOpenProduct, onTryOn, onOpenPage }) {
   const { add } = useCart();
   const { has, toggle } = useWishlist();
   const [detail, setDetail] = useState(null);
@@ -675,6 +686,8 @@ export default function ProductDetail({ sku, onBack, onOpenProduct, onTryOn, onO
   const curCw = colorways.find((c) => c.color === detail.color);
   const colorLabel = curCw?.label || detail.color;
   const fit = fitFor(detail.sku);
+  const sizeProfile = member?.size_profile || null;
+  const recommendedSize = sizeProfile?.recommended_size || "";
   const descBits = [];
   const kind = (detail.subcategory || detail.category || "piece").toLowerCase();
   descBits.push(`A ${kind}${detail.color ? ` in ${detail.color.toLowerCase()}` : ""}`);
@@ -769,6 +782,61 @@ export default function ProductDetail({ sku, onBack, onOpenProduct, onTryOn, onO
             ref={sizeRef}
             className={`rounded transition-shadow duration-300 ${hintOn ? "ring-2 ring-primary/70 ring-offset-4 ring-offset-background" : ""}`}
           >
+            {sizeProfile ? (
+              <div
+                data-testid="my-size-recommendation"
+                className="mb-4 rounded border border-primary/40 bg-primary/5 p-4"
+              >
+                <div className="flex items-start gap-3">
+                  <span className="mt-0.5 w-8 h-8 rounded-full bg-primary/10 text-primary-ink flex items-center justify-center shrink-0">
+                    <Ruler size={16} strokeWidth={1.5} />
+                  </span>
+                  <div className="min-w-0 flex-grow">
+                    <div className="text-[10px] font-bold uppercase tracking-widest text-primary-ink mb-1">
+                      My Size recommendation
+                    </div>
+                    <div className="font-serif text-lg text-foreground">
+                      Recommended: {recommendedSize}
+                    </div>
+                    <p className="text-[12px] text-muted-foreground mt-0.5">
+                      Based on your saved {sizeProfile.method === "measurements" ? "measurements" : `${sizeProfile.known_size_system} size`}.
+                    </p>
+                    {sizeProfile.size_up && (
+                      <p data-testid="my-size-size-up-note" className="text-[12px] font-medium text-primary-ink mt-2">
+                        true to size may vary — consider sizing up
+                      </p>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    data-testid="my-size-update-link"
+                    onClick={() => onOpenPage?.("mysize")}
+                    className="text-[11px] font-semibold text-muted-foreground hover:text-foreground underline underline-offset-4 decoration-border rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                  >
+                    Update
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button
+                type="button"
+                data-testid="my-size-setup-link"
+                onClick={() => onOpenPage?.("mysize")}
+                className="w-full mb-4 rounded border border-border bg-secondary/40 p-4 text-left hover:border-primary/50 transition-colors group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+              >
+                <span className="flex items-center gap-3">
+                  <span className="w-8 h-8 rounded-full bg-background border border-border text-primary-ink flex items-center justify-center shrink-0">
+                    <Ruler size={16} strokeWidth={1.5} />
+                  </span>
+                  <span className="flex-grow min-w-0">
+                    <span className="block text-[13px] font-semibold text-foreground">Get your size recommendation</span>
+                    <span className="block text-[12px] text-muted-foreground mt-0.5">Set up My Size once for future pieces.</span>
+                  </span>
+                  <span className="text-primary-ink text-lg" aria-hidden="true">›</span>
+                </span>
+              </button>
+            )}
+
             <div className="flex items-center justify-between mb-3">
               <span className="text-[12px] font-bold uppercase tracking-wider text-foreground">
                 Size{selSize ? ` — ${displaySize(selSize.size)}` : ""}
@@ -786,11 +854,14 @@ export default function ProductDetail({ sku, onBack, onOpenProduct, onTryOn, onO
                 const sel = selSize?.sku === s.sku;
                 const dead = !s.in_stock;
                 const alerted = alertedSkus.has(s.sku);
+                const recommended = !selSize && recommendedSize &&
+                  String(s.size || "").trim().toUpperCase() === recommendedSize;
                 return (
                   <button
                     key={s.sku}
                     data-testid={`size-option-${s.size}`}
                     aria-pressed={sel}
+                    data-recommended={recommended ? "true" : undefined}
                     aria-label={dead
                       ? `${displaySize(s.size)} — sold out${alerted ? ", alert set" : ", tap to get notified"}`
                       : displaySize(s.size)}
@@ -800,10 +871,17 @@ export default function ProductDetail({ sku, onBack, onOpenProduct, onTryOn, onO
                         ? "border-border/60 bg-secondary/40 text-muted-foreground/50 line-through cursor-pointer hover:border-primary/50"
                         : sel
                           ? "border-foreground bg-foreground text-background"
+                          : recommended
+                            ? "border-primary bg-primary/5 text-primary-ink ring-1 ring-primary/30"
                           : "border-border bg-background text-foreground hover:border-foreground"
                     }`}
                   >
                     {displaySize(s.size)}
+                    {recommended && (
+                      <span className="absolute -top-2 left-1/2 -translate-x-1/2 bg-primary text-primary-foreground text-[8px] uppercase tracking-wider px-1.5 py-0.5 rounded-sm no-underline">
+                        My Size
+                      </span>
+                    )}
                     {dead && alerted && (
                       <span
                         aria-hidden="true"

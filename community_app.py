@@ -27,6 +27,7 @@ import hashlib
 import logging
 import os
 import json
+import math
 import re
 import secrets
 import smtplib
@@ -64,6 +65,18 @@ SESSION_TTL_SEC = 60 * 24 * 3600   # 60 days
 
 WELCOME_BONUS_PTS = 200
 KES_PER_POINT = 100            # matches the "1 pt per 100 KES" earn rule
+MY_SIZE_POINTS = 15            # the existing Fit Notes earn amount
+# This is the customer-facing Vivo size chart. Keep the seven rows and the
+# inch ranges in lockstep with the My Size screen and the size-guide modal.
+MY_SIZE_ROWS = (
+    {"size": "XS", "uk": "4-6", "us": "0-2", "bust": (33, 34), "waist": (25, 26), "hips": (37, 38)},
+    {"size": "S", "uk": "8-10", "us": "4-6", "bust": (35, 36), "waist": (27, 28), "hips": (39, 40)},
+    {"size": "M", "uk": "12-14", "us": "8-10", "bust": (37, 38), "waist": (29, 30), "hips": (41, 42)},
+    {"size": "L", "uk": "16-18", "us": "12-14", "bust": (39, 41), "waist": (31, 33), "hips": (43, 45)},
+    {"size": "1X", "uk": "20", "us": "16", "bust": (40, 44), "waist": (34, 36), "hips": (46, 48)},
+    {"size": "2X", "uk": "22", "us": "18", "bust": (45, 47), "waist": (37, 39), "hips": (49, 51)},
+    {"size": "3X", "uk": "24", "us": "20", "bust": (48, 50), "waist": (40, 42), "hips": (52, 54)},
+)
 # Vivo Johari gemstone ladder ("johari" is Swahili for jewel) — the Aug 2026
 # rebrand of Bronze/Silver/Gold; lifetime-point thresholds are unchanged.
 TIER_LADDER = [("Tsavorite", 0), ("Ruby", 500), ("Tanzanite", 1000)]
@@ -980,6 +993,32 @@ def _ensure_tables():
             feedback TEXT NOT NULL DEFAULT '',
             completed_at TIMESTAMPTZ,
             updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+        -- Private size profile used for member-only recommendations. The
+        -- recommendation is persisted so every product page can use the same
+        -- server-owned result; raw measurements never appear on community
+        -- surfaces.
+        CREATE TABLE IF NOT EXISTS community_member_size_profiles (
+            member_id INT PRIMARY KEY REFERENCES community_members(id) ON DELETE CASCADE,
+            method TEXT NOT NULL CHECK (method IN ('measurements', 'known')),
+            bust_in NUMERIC,
+            waist_in NUMERIC,
+            hips_in NUMERIC,
+            known_size_system TEXT,
+            known_size TEXT,
+            recommended_size TEXT NOT NULL,
+            size_up BOOLEAN NOT NULL DEFAULT FALSE,
+            completed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            CHECK (
+                (method = 'measurements'
+                 AND bust_in IS NOT NULL AND waist_in IS NOT NULL AND hips_in IS NOT NULL
+                 AND known_size_system IS NULL AND known_size IS NULL)
+                OR
+                (method = 'known'
+                 AND bust_in IS NULL AND waist_in IS NULL AND hips_in IS NULL
+                 AND known_size_system IS NOT NULL AND known_size IS NOT NULL)
+            )
         );
         CREATE INDEX IF NOT EXISTS community_redemptions_member_idx
             ON community_redemptions (member_id, created_at DESC);
@@ -2472,6 +2511,99 @@ def _month_year(val):
         return None
 
 
+def _size_profile_payload(row):
+    if not row:
+        return None
+    def _num(v):
+        return float(v) if v is not None else None
+    updated = row.get("updated_at")
+    return {
+        "method": row.get("method"),
+        "bust_in": _num(row.get("bust_in")),
+        "waist_in": _num(row.get("waist_in")),
+        "hips_in": _num(row.get("hips_in")),
+        "known_size_system": row.get("known_size_system"),
+        "known_size": row.get("known_size"),
+        "recommended_size": row.get("recommended_size"),
+        "size_up": bool(row.get("size_up")),
+        "updated_at": updated.isoformat() if hasattr(updated, "isoformat") else updated,
+    }
+
+
+def _clean_size_measurement(value, label):
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail=f"{label} must be a number in inches")
+    if not math.isfinite(number) or number < 20 or number > 80:
+        raise HTTPException(status_code=400, detail=f"{label} must be between 20 and 80 inches")
+    return round(number, 2)
+
+
+def _normalise_size_range(value):
+    return re.sub(r"\s+", "", str(value or "").replace("–", "-").replace("—", "-"))
+
+
+def _recommend_size_from_measurements(bust, waist, hips):
+    values = {"bust": bust, "waist": waist, "hips": hips}
+    row_indexes = []
+    for key, value in values.items():
+        matches = [
+            i for i, row in enumerate(MY_SIZE_ROWS)
+            if row[key][0] <= value <= row[key][1]
+        ]
+        if matches:
+            row_indexes.append(matches[0])
+            continue
+        # Measurements outside the table still get the nearest chart row,
+        # rather than a blank recommendation or an invented size.
+        def distance(row):
+            lo, hi = row[key]
+            return 0 if lo <= value <= hi else min(abs(value - lo), abs(value - hi))
+        row_indexes.append(min(range(len(MY_SIZE_ROWS)), key=lambda i: (distance(MY_SIZE_ROWS[i]), i)))
+    largest = max(row_indexes)
+    return MY_SIZE_ROWS[largest]["size"], len(set(row_indexes)) > 1
+
+
+def _recommend_size_from_known(system, value):
+    system = str(system or "").strip().upper()
+    value = _normalise_size_range(value)
+    if system not in ("UK", "US"):
+        raise HTTPException(status_code=400, detail="Choose a UK or US size")
+    for row in MY_SIZE_ROWS:
+        if _normalise_size_range(row[system.lower()]) == value:
+            return row["size"]
+    raise HTTPException(status_code=400, detail="Choose a size from the Vivo size guide")
+
+
+def _clean_size_profile(payload):
+    method = str((payload or {}).get("method") or "measurements").strip().lower()
+    if method == "measurements":
+        bust = _clean_size_measurement((payload or {}).get("bust_in"), "Bust")
+        waist = _clean_size_measurement((payload or {}).get("waist_in"), "Waist")
+        hips = _clean_size_measurement((payload or {}).get("hips_in"), "Hips")
+        if any(v is None for v in (bust, waist, hips)):
+            raise HTTPException(status_code=400, detail="Enter bust, waist and hips to get your recommendation")
+        recommended, size_up = _recommend_size_from_measurements(bust, waist, hips)
+        return {
+            "method": "measurements", "bust_in": bust, "waist_in": waist, "hips_in": hips,
+            "known_size_system": None, "known_size": None,
+            "recommended_size": recommended, "size_up": size_up,
+        }
+    if method == "known":
+        system = str((payload or {}).get("known_size_system") or "").strip().upper()
+        known = str((payload or {}).get("known_size") or "").strip()
+        recommended = _recommend_size_from_known(system, known)
+        return {
+            "method": "known", "bust_in": None, "waist_in": None, "hips_in": None,
+            "known_size_system": system, "known_size": known,
+            "recommended_size": recommended, "size_up": False,
+        }
+    raise HTTPException(status_code=400, detail="Choose measurements or a known size")
+
+
 def _member_payload(cur, m):
     """Build the /me payload: member row + live purchase-derived stats."""
     cached = _me_cache.get(m["id"])
@@ -2568,6 +2700,14 @@ def _member_payload(cur, m):
     _qrow = cur.fetchone() or {}
     quiz_completed = bool(_qrow.get("completed_at"))
     style_dna = (_qrow.get("dna") or None) if quiz_completed else None
+    cur.execute(
+        """SELECT method, bust_in, waist_in, hips_in, known_size_system,
+                  known_size, recommended_size, size_up, updated_at
+             FROM community_member_size_profiles
+            WHERE member_id = %s""",
+        (m["id"],),
+    )
+    size_profile = _size_profile_payload(cur.fetchone())
     available = max(points - spent, 0)
     tier, next_tier = _tier_for(points)
 
@@ -2592,6 +2732,7 @@ def _member_payload(cur, m):
         "recent_orders": recent,
         "quiz_completed": quiz_completed,
         "style_dna": style_dna,
+        "size_profile": size_profile,
         "demo_sms": not _sms_configured(),
     }
     _me_cache[m["id"]] = (time.time(), payload)
@@ -3567,6 +3708,57 @@ def register_community_routes(app, api_pg_module):
                 # cache with pre-commit data after our eviction.
                 _me_cache.pop(m["id"], None)
                 return {"member": payload_out}
+
+    @app.put("/api/community/me/size-profile")
+    def community_update_size_profile(request: Request, payload: dict = Body(...)):
+        """Save the member's private fit inputs and award the Fit Notes bonus
+        exactly once when the profile is first completed."""
+        _ensure_tables()
+        _throttle(request, "size-profile", [("ip", 30, 600), ("global", 2000, 3600)])
+        cleaned = _clean_size_profile(payload or {})
+        with _db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                m = _require_member(cur, request)
+                cur.execute(
+                    """INSERT INTO community_member_size_profiles
+                           (member_id, method, bust_in, waist_in, hips_in,
+                            known_size_system, known_size, recommended_size, size_up)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                       ON CONFLICT (member_id) DO UPDATE SET
+                           method = EXCLUDED.method,
+                           bust_in = EXCLUDED.bust_in,
+                           waist_in = EXCLUDED.waist_in,
+                           hips_in = EXCLUDED.hips_in,
+                           known_size_system = EXCLUDED.known_size_system,
+                           known_size = EXCLUDED.known_size,
+                           recommended_size = EXCLUDED.recommended_size,
+                           size_up = EXCLUDED.size_up,
+                           updated_at = now()
+                       RETURNING *""",
+                    (
+                        m["id"], cleaned["method"], cleaned["bust_in"], cleaned["waist_in"],
+                        cleaned["hips_in"], cleaned["known_size_system"], cleaned["known_size"],
+                        cleaned["recommended_size"], cleaned["size_up"],
+                    ),
+                )
+                profile = _size_profile_payload(cur.fetchone())
+                cur.execute(
+                    """INSERT INTO community_points_events (member_id, kind, points)
+                       VALUES (%s, 'fit_notes_profile', %s)
+                       ON CONFLICT (member_id, kind) DO NOTHING
+                       RETURNING id""",
+                    (m["id"], MY_SIZE_POINTS),
+                )
+                awarded = cur.fetchone() is not None
+                conn.commit()
+                _me_cache.pop(m["id"], None)
+                member = _member_payload(cur, m)
+                return {
+                    "profile": profile,
+                    "points_awarded": awarded,
+                    "points_awarded_value": MY_SIZE_POINTS if awarded else 0,
+                    "member": member,
+                }
 
     # ---------- live catalogue ----------
 
@@ -8167,6 +8359,12 @@ def register_community_routes(app, api_pg_module):
                          FROM community_journey_profile WHERE member_id = %s""", (mid,))
                 journey = cur.fetchone()
                 cur.execute(
+                    """SELECT method, bust_in, waist_in, hips_in, known_size_system,
+                              known_size, recommended_size, size_up, updated_at
+                         FROM community_member_size_profiles
+                        WHERE member_id = %s""", (mid,))
+                size_profile = _size_profile_payload(cur.fetchone())
+                cur.execute(
                     """SELECT c.id, c.body, c.created_at, a.title, a.slug
                          FROM community_article_comments c
                          JOIN community_articles a ON a.id = c.article_id
@@ -8187,6 +8385,7 @@ def register_community_routes(app, api_pg_module):
             "style_quiz": dict(quiz) if quiz else None,
             "surveys": surveys,
             "journey": dict(journey) if journey else None,
+            "size_profile": size_profile,
             "article_comments": article_comments,
             "requests": reqs,
         }

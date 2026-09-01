@@ -90,6 +90,7 @@ export const api = {
   logout: () => req("/auth/logout", { method: "POST", auth: true }),
   usernameCheck: (u) => req("/auth/username-check?u=" + encodeURIComponent(u), { auth: true }),
   updateSettings: (payload) => req("/me/settings", { method: "PUT", body: payload, auth: true }),
+  sizeProfileSave: (payload) => req("/me/size-profile", { method: "PUT", body: payload, auth: true }),
   products: (opts = {}) => {
     // personalize needs the Bearer token so the server can find her Style DNA;
     // without it (or without a finished quiz) the server just returns the

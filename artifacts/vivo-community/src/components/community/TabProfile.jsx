@@ -256,6 +256,30 @@ export default function TabProfile({ member, onSignOut, onMemberUpdate, onOpenWi
       </div>
       {/* Size + Style DNA strip on the cream ground */}
       <div className="mb-10 pt-6 px-1 sm:px-0 flex flex-col items-center md:items-start">
+            <button
+              type="button"
+              data-testid="profile-my-size"
+              onClick={() => onOpenPage?.("mysize")}
+              className={`${cardCls} w-full mb-6 p-5 flex items-center gap-4 text-left hover:border-primary/50 hover:bg-secondary/30 transition-colors group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary`}
+            >
+              <span className="w-11 h-11 rounded-full bg-primary/10 border border-primary/20 flex items-center justify-center text-primary-ink shrink-0">
+                <Ruler size={19} strokeWidth={1.5} />
+              </span>
+              <span className="flex-grow min-w-0">
+                <span className="block text-[10px] font-bold uppercase tracking-widest text-primary-ink mb-1">My Size</span>
+                <span className="block font-serif text-lg text-foreground">
+                  {m.size_profile?.recommended_size
+                    ? `Your recommendation is ${m.size_profile.recommended_size}`
+                    : "Find your Vivo size"}
+                </span>
+                <span className="block text-[12px] text-muted-foreground mt-0.5">
+                  {m.size_profile
+                    ? "Saved for product recommendations — update it anytime."
+                    : "Add measurements or a known UK or US size once, then see guidance while you shop."}
+                </span>
+              </span>
+              <ChevronRight size={18} className="text-muted-foreground group-hover:text-primary-ink group-hover:translate-x-0.5 transition-all shrink-0" />
+            </button>
 
             {stats.preferred_size && (
               <div className="inline-flex items-center gap-1.5 bg-secondary text-foreground text-xs font-medium px-3 py-1.5 rounded border border-border mb-6">
