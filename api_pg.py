@@ -3366,10 +3366,11 @@ WAREHOUSE_LOCATIONS = (
 )
 # SOH 3-way split definition (user-mandated):
 #   soh_warehouse = 'Warehouse Finished Goods' ONLY (physical warehouse shelf stock).
-#   soh_pipeline  = IN WAREHOUSE_LOCATIONS AND != 'Finished Goods Production'
-#                   (in-transit, holding, WIP, raw materials, Sew/Stock, etc.).
+#   soh_pipeline  = every other WAREHOUSE_LOCATIONS entry
+#                   (including Finished Goods Production, in-transit, holding,
+#                   WIP, raw materials, Sew/Stock, etc.).
 #   soh_stores    = NOT IN WAREHOUSE_LOCATIONS (retail stores).
-WH_DISPATCH_LOCATION = "'Finished Goods Production'"
+WH_DISPATCH_LOCATION = "'Warehouse Finished Goods'"
 # Kept for reference only; superseded by WH_DISPATCH_LOCATION in SOH logic.
 PIPELINE_LOCATIONS = (
     "'Fabric Trimming','Finished Goods Production',"
@@ -22716,6 +22717,88 @@ def _cap_replenish_to_warehouse(rows, *, need_key, out_key,
     return rows
 
 
+def _allocate_replen_distribution_availability(open_lines, warehouse_by_sku):
+    """Allocate today's dispatch-ready warehouse pool over frozen open lines.
+
+    Frozen quantities remain immutable history. ``pickable_units`` is the live,
+    deterministic cap (oldest batch/line first) that prevents several store
+    assignments from all claiming the same current Warehouse Finished Goods
+    units.
+    """
+    remaining = {
+        sku: max(0, int(qty or 0))
+        for sku, qty in (warehouse_by_sku or {}).items()
+    }
+    allocated = {}
+    for ln in sorted(open_lines or [], key=lambda r: (
+            str(r.get("created_at") or ""), int(r.get("line_id") or 0))):
+        line_id = ln.get("line_id")
+        sku = ln.get("sku")
+        need = max(0, int(ln.get("suggested_units") or 0))
+        available = remaining.get(sku, 0) if sku else 0
+        pickable = min(need, available)
+        allocated[line_id] = pickable
+        if sku:
+            remaining[sku] = max(0, available - pickable)
+    return allocated
+
+
+def _replen_distribution_live_state():
+    """Return live warehouse availability and outstanding frozen commitments.
+
+    Reads bypass ``run_query`` so a batch refresh always reflects the current
+    inventory snapshot. A done action only closes a frozen line when it happened
+    at/after that batch was created, matching the distribution endpoint's
+    existing recurring-line semantics.
+    """
+    _ensure_replen_distribution_tables()
+    inventory_version = _inventory_version()
+    wh_rows = _users_exec(
+        "SELECT sku, COALESCE(SUM(available),0)::int AS soh_wh "
+        "FROM all_inventory WHERE pos_location_name = " + WH_DISPATCH_LOCATION + " "
+        "AND sku IS NOT NULL AND sku <> '' GROUP BY sku",
+        fetch=True) or []
+    warehouse_by_sku = {
+        r["sku"]: max(0, int(r.get("soh_wh") or 0)) for r in wh_rows
+    }
+    open_lines = _users_exec(
+        "SELECT l.id AS line_id, l.distribution_id, d.created_at, "
+        "l.pos_location, l.sku, l.barcode, l.suggested_units "
+        "FROM replen_distribution_line l "
+        "JOIN replen_distribution d ON d.id=l.distribution_id "
+        "WHERE NOT EXISTS ("
+        " SELECT 1 FROM recommendation_actions a "
+        " WHERE a.rec_type='replenish' AND a.status='done' "
+        "   AND a.acted_at >= d.created_at "
+        "   AND ("
+        "     (l.sku IS NOT NULL AND a.rec_key=l.pos_location||'|sku|'||l.sku)"
+        "     OR (l.barcode IS NOT NULL AND a.rec_key=l.pos_location||'|barcode|'||l.barcode)"
+        "   )"
+        ") ORDER BY d.created_at, l.id",
+        fetch=True) or []
+    open_keys = {
+        (r.get("pos_location"), r.get("sku"))
+        for r in open_lines if r.get("pos_location") and r.get("sku")
+    }
+    committed_by_sku = {}
+    for r in open_lines:
+        sku = r.get("sku")
+        if sku:
+            committed_by_sku[sku] = (
+                committed_by_sku.get(sku, 0)
+                + max(0, int(r.get("suggested_units") or 0))
+            )
+    return {
+        "inventory_version": inventory_version,
+        "warehouse_by_sku": warehouse_by_sku,
+        "open_lines": open_lines,
+        "open_keys": open_keys,
+        "committed_by_sku": committed_by_sku,
+        "pickable_by_line": _allocate_replen_distribution_availability(
+            open_lines, warehouse_by_sku),
+    }
+
+
 def _largest_remainder(weights, total):
     """Apportion ``total`` integer units across keys proportional to their weight
     using the largest-remainder (Hamilton) method. Returns {key: units}. Caps are
@@ -22923,7 +23006,7 @@ def analytics_replenish_by_item(
         wh_soh AS (
             SELECT i.sku, SUM(i.available) AS soh_wh
             FROM all_inventory i
-            WHERE i.pos_location_name = 'Finished Goods Production'
+            WHERE i.pos_location_name = """ + WH_DISPATCH_LOCATION + """
               AND i.sku IN """ + item_skus + """
             GROUP BY 1
         )
@@ -22952,7 +23035,7 @@ def analytics_replenish_by_item(
     wh_rows = run_query("""
         SELECT COALESCE(SUM(i.available), 0) AS soh_wh
         FROM all_inventory i
-        WHERE i.pos_location_name = 'Finished Goods Production'
+        WHERE i.pos_location_name = """ + WH_DISPATCH_LOCATION + """
           AND i.sku IN """ + item_skus + """
     """)
     wh_soh = int((wh_rows[0]["soh_wh"] if wh_rows else 0) or 0)
@@ -23064,8 +23147,7 @@ def analytics_replenish_gaps(
                 GROUP BY i.pos_location_name, i.sku
             ),
             wh_soh AS (
-                -- Warehouse quantity is the dispatchable Finished Goods Production
-                -- location ONLY (user-mandated) — see note in _compute_replenishment_sor.
+                -- Warehouse Finished Goods only; production/pipeline is not pickable.
                 SELECT i.sku, SUM(i.available) AS soh_wh
                 FROM all_inventory i
                 WHERE i.pos_location_name = """ + WH_DISPATCH_LOCATION + """
@@ -23111,8 +23193,7 @@ def analytics_replenish_gaps(
                 GROUP BY i.sku
             ),
             wh_soh AS (
-                -- Warehouse quantity is the dispatchable Finished Goods Production
-                -- location ONLY (user-mandated) — see note in _compute_replenishment_sor.
+                -- Warehouse Finished Goods only; production/pipeline is not pickable.
                 SELECT i.sku, SUM(i.available) AS soh_wh
                 FROM all_inventory i
                 WHERE i.pos_location_name = """ + WH_DISPATCH_LOCATION + """
@@ -23622,6 +23703,11 @@ def _compute_replenishment_sor(weeks=REPLEN_DEMAND_WEEKS_DEFAULT, limit=400):
     # (_ewma_weekly) — NOT a flat units/lookback average — so we pull u28/u56 over
     # a FIXED trailing window regardless of the proven-demand lookback (4/8/12w).
     vel_days = max(days, 56)
+    dist_state = _replen_distribution_live_state()
+    inventory_version = dist_state["inventory_version"]
+    snapshot_comment = str(inventory_version).replace("*/", "")
+    open_keys = dist_state["open_keys"]
+    committed_by_sku = dist_state["committed_by_sku"]
 
     # Proven-demand candidate universe: store-SKUs that sold here in the window,
     # with snapshots of current shelf qty (this store) and the shared warehouse
@@ -23630,6 +23716,7 @@ def _compute_replenishment_sor(weeks=REPLEN_DEMAND_WEEKS_DEFAULT, limit=400):
     # universe gate (HAVING) is still the lookback window; u28/u56 ride along for
     # the recency-weighted velocity + censored-demand correction.
     rows = run_query("""
+        /* all_inventory_snapshot:""" + snapshot_comment + """ */
         WITH sold AS (
             SELECT s.pos_location_name, s.variant_sku,
                 MAX(s.country) AS country,
@@ -23683,13 +23770,8 @@ def _compute_replenishment_sor(weeks=REPLEN_DEMAND_WEEKS_DEFAULT, limit=400):
             GROUP BY i.pos_location_name, i.sku
         ),
         wh_soh AS (
-            -- Warehouse quantity is the dispatchable Finished Goods Production
-            -- location ONLY (user-mandated). Other WAREHOUSE_LOCATIONS entries
-            -- (Sew/Stock/A-E, Production, Holding Warehouse Finished Goods,
-            -- Fabric Trimming, etc.) are WIP/pipeline, not stock ready to ship —
-            -- counting them here previously caused items still in production to
-            -- be recommended (and flagged deploy_now) with zero real ship-ready
-            -- stock.
+            -- Dispatch-ready shelf stock only. Finished Goods Production and
+            -- every other WIP/pipeline location are intentionally excluded.
             SELECT i.sku, SUM(i.available) AS soh_wh
             FROM all_inventory i
             WHERE i.pos_location_name = """ + WH_DISPATCH_LOCATION + """
@@ -23800,6 +23882,12 @@ def _compute_replenishment_sor(weeks=REPLEN_DEMAND_WEEKS_DEFAULT, limit=400):
         style = r.get("style_name") or ""
         pos = r.get("pos_location")
         sku = r.get("sku")
+        if (pos, sku) in open_keys:
+            # This store-SKU already lives in an outstanding frozen work order.
+            continue
+        soh_wh_total = int(r["soh_wh"] or 0)
+        soh_wh_committed = int(committed_by_sku.get(sku, 0) or 0)
+        soh_wh = max(0, soh_wh_total - soh_wh_committed)
         is_online = (pos == ONLINE_SHOP_ZETU)
         # Recency-weighted weekly velocity (shared dashboard EWMA), not a flat
         # units/lookback average.
@@ -23892,6 +23980,8 @@ def _compute_replenishment_sor(weeks=REPLEN_DEMAND_WEEKS_DEFAULT, limit=400):
             "sku": sku, "bin": r.get("bin") or "",
             "color_print": r.get("color_print") or "",
             "units_sold": units_sold, "soh_store": soh_store, "soh_wh": soh_wh,
+            "soh_wh_total": soh_wh_total,
+            "soh_wh_committed": soh_wh_committed,
             "velocity": round(vpw, 2), "velocity_observed": round(own_vpw, 2),
             "sku_class": sku_class,
             "floor": floor, "target": target, "woc": round(woc, 1),
@@ -24060,6 +24150,7 @@ def _compute_replenishment_sor(weeks=REPLEN_DEMAND_WEEKS_DEFAULT, limit=400):
 
     return {
         "as_of": _replen_eat_today().isoformat() + " 06:00 EAT",
+        "inventory_version": inventory_version,
         "business_date": _replen_eat_today().isoformat(),
         "demand_weeks": weeks,
         "ruleset_version": REPLEN_RULESET_VERSION,
@@ -24130,7 +24221,13 @@ def _compute_replenishment_report_rows(date_from=None, date_to=None, limit=400):
         date_to = str(date.today())
         date_from = str(date.today() - timedelta(days=30))
     _warehouse_bins_refresh()
+    dist_state = _replen_distribution_live_state()
+    inventory_version = dist_state["inventory_version"]
+    snapshot_comment = str(inventory_version).replace("*/", "")
+    open_keys = dist_state["open_keys"]
+    committed_by_sku = dist_state["committed_by_sku"]
     rows = run_query("""
+        /* all_inventory_snapshot:""" + snapshot_comment + """ */
         WITH sold AS (
             SELECT s.pos_location_name, s.variant_sku,
                 MAX(s.country) AS country,
@@ -24159,8 +24256,7 @@ def _compute_replenishment_report_rows(date_from=None, date_to=None, limit=400):
             GROUP BY i.pos_location_name, i.sku
         ),
         wh_soh AS (
-            -- Warehouse quantity is the dispatchable Finished Goods Production
-            -- location ONLY (user-mandated) — see note in _compute_replenishment_sor.
+            -- Warehouse Finished Goods only; production/pipeline is not pickable.
             SELECT i.sku, SUM(i.available) AS soh_wh
             FROM all_inventory i
             WHERE i.pos_location_name = """ + WH_DISPATCH_LOCATION + """
@@ -24187,7 +24283,12 @@ def _compute_replenishment_report_rows(date_from=None, date_to=None, limit=400):
     for r in rows:
         units_sold = int(r["units_sold"] or 0)
         soh_store = int(r["soh_store"] or 0)
-        soh_wh = int(r["soh_wh"] or 0)
+        sku = r.get("sku")
+        if (r.get("pos_location"), sku) in open_keys:
+            continue
+        soh_wh_total = int(r["soh_wh"] or 0)
+        soh_wh_committed = int(committed_by_sku.get(sku, 0) or 0)
+        soh_wh = max(0, soh_wh_total - soh_wh_committed)
         # Per-store need, with a hard per-line ceiling applied first; the finite
         # warehouse pool is then allocated across stores (top sellers first) by
         # _cap_replenish_to_warehouse below so the SKU's total suggested never
@@ -24208,9 +24309,11 @@ def _compute_replenishment_report_rows(date_from=None, date_to=None, limit=400):
             "country": r.get("country"),
             "pos_location": r.get("pos_location"), "product_name": r.get("product_name"),
             "size": r.get("size") or "", "barcode": r.get("barcode") or "",
-            "sku": r.get("sku"), "bin": r.get("bin") or "",
+            "sku": sku, "bin": r.get("bin") or "",
             "color_print": r.get("color_print") or "", "print_plain": r.get("print_plain") or "",
             "units_sold": units_sold, "soh_store": soh_store, "soh_wh": soh_wh,
+            "soh_wh_total": soh_wh_total,
+            "soh_wh_committed": soh_wh_committed,
             "replenish": replenish, "replenished": bool(mark.get("replenished", False)),
             "actual_units_replenished": int(mark.get("actual_units_replenished", 0)),
             "transfer_ref": mark.get("transfer_ref") or "",
@@ -24319,7 +24422,8 @@ def analytics_replenishment_sor(
     from datetime import datetime as _dt
     weeks_key = int(weeks) if int(weeks) in REPLEN_DEMAND_WEEKS_ALLOWED else REPLEN_DEMAND_WEEKS_DEFAULT
     biz_date = (_dt.utcnow() + timedelta(hours=3)).date().isoformat()  # EAT (UTC+3)
-    ck = f"replen_sor:{weeks_key}:{int(limit)}:{biz_date}"
+    inventory_version = _inventory_version()
+    ck = f"replen_sor:{inventory_version}:{weeks_key}:{int(limit)}:{biz_date}"
     if not nocache:
         cached, fresh = cache_get_swr(ck)
         if cached is not None:
@@ -33838,6 +33942,15 @@ async def replenishment_distribute(request: Request):
         weeks = None
     note = (body.get("note") or "").strip()[:500] or None
     _ensure_replen_distribution_tables()
+    dist_state = _replen_distribution_live_state()
+    remaining_by_sku = {
+        sku: max(
+            0,
+            int(qty or 0)
+            - int(dist_state["committed_by_sku"].get(sku, 0) or 0),
+        )
+        for sku, qty in dist_state["warehouse_by_sku"].items()
+    }
 
     seen = set()
     clean = []
@@ -33857,6 +33970,14 @@ async def replenishment_distribute(request: Request):
             units = int(ln.get("suggested_units") or 0)
         except (TypeError, ValueError):
             units = 0
+        if sku:
+            units = min(max(0, units), remaining_by_sku.get(sku, 0))
+            remaining_by_sku[sku] = max(
+                0, remaining_by_sku.get(sku, 0) - units)
+        else:
+            units = 0
+        if units <= 0:
+            continue
         clean.append({
             "pos_location": pos,
             "sku": sku or None,
@@ -33866,10 +33987,12 @@ async def replenishment_distribute(request: Request):
             "size": (ln.get("size") or "").strip() or None,
             "color_print": (ln.get("color_print") or "").strip() or None,
             "owner": (ln.get("owner") or "").strip() or None,
-            "suggested_units": max(0, units),
+            "suggested_units": units,
         })
     if not clean:
-        raise HTTPException(status_code=400, detail="No valid lines to distribute.")
+        raise HTTPException(
+            status_code=409,
+            detail="No submitted lines still have dispatch-ready Warehouse Finished Goods stock.")
 
     created_by = (user or {}).get("name") or (user or {}).get("email")
     total_units = sum(c["suggested_units"] for c in clean)
@@ -33910,18 +34033,23 @@ def replenishment_distributions(request: Request, limit: int = Query(default=20)
     is_manager = _can_manage_roster(user)
     _ensure_replen_distribution_tables()
     _warehouse_bins_refresh()
+    dist_state = _replen_distribution_live_state()
+    inventory_version = dist_state["inventory_version"]
     batches = _users_exec(
         "SELECT id, created_at, created_by, weeks, line_count, total_units, note "
         "FROM replen_distribution ORDER BY created_at DESC LIMIT %s",
         (limit,), fetch=True) or []
     if not batches:
-        return {"batches": [], "open_keys": []}
+        return {
+            "batches": [], "open_keys": [],
+            "inventory_version": inventory_version,
+        }
     ids = [b["id"] for b in batches]
     # Resolve the warehouse bin per line at READ time (LEFT JOIN on barcode) so
     # existing batches — frozen before bins were stored — also show a bin. The
     # pickers use the bin to physically locate stock, so it must be on the sheet.
     lines = _users_exec(
-        "SELECT l.distribution_id, l.pos_location, l.sku, l.barcode, l.style_name, "
+        "SELECT l.id AS line_id, l.distribution_id, l.pos_location, l.sku, l.barcode, l.style_name, "
         "       l.product_name, l.size, l.color_print, l.owner, l.suggested_units, "
         "       COALESCE(NULLIF(wb.bin, ''), '') AS bin "
         "FROM replen_distribution_line l "
@@ -33962,21 +34090,39 @@ def replenishment_distributions(request: Request, limit: int = Query(default=20)
     for ln in lines:
         lines_by_batch.setdefault(ln["distribution_id"], []).append(ln)
 
-    open_keys = set()
+    open_keys = {
+        pos + "|" + sku
+        for pos, sku in dist_state["open_keys"]
+        if pos and sku
+    }
     out_batches = []
     for b in batches:
         created_at = b["created_at"]
         blines = []
         by_owner = {}
         done_count = done_units = out_count = out_units = 0
+        unavailable_count = unavailable_units = 0
         for ln in lines_by_batch.get(b["id"], []):
             a = _done_for(ln, created_at)
             units = int(ln["suggested_units"] or 0)
+            current_wh = int(
+                dist_state["warehouse_by_sku"].get(ln.get("sku"), 0) or 0)
+            pickable_units = (
+                units if a is not None
+                else int(dist_state["pickable_by_line"].get(
+                    ln.get("line_id"), 0) or 0)
+            )
+            if a is not None:
+                availability_state = "completed"
+            elif pickable_units <= 0:
+                availability_state = "unavailable"
+            elif pickable_units < units:
+                availability_state = "partially_available"
+            else:
+                availability_state = "available"
             # open_keys tracks EVERY outstanding distributed item (owner-agnostic)
             # so the live list can drop it — compute it before the per-picker
             # owner filter below.
-            if a is None and ln.get("sku"):
-                open_keys.add(ln["pos_location"] + "|" + ln["sku"])
             # Pickers see ONLY their own lines; managers (admin + the two named
             # operators) see every owner's lines.
             if not is_manager and not _replen_owner_matches_user(ln.get("owner"), user):
@@ -33984,7 +34130,8 @@ def replenishment_distributions(request: Request, limit: int = Query(default=20)
             owner = ln.get("owner") or "Unassigned"
             ob = by_owner.setdefault(owner, {
                 "owner": owner, "total": 0, "done": 0, "outstanding": 0,
-                "units": 0, "done_units": 0})
+                "unavailable": 0, "units": 0, "done_units": 0,
+                "outstanding_units": 0, "unavailable_units": 0})
             ob["total"] += 1
             ob["units"] += units
             if a is not None:
@@ -33994,9 +34141,16 @@ def replenishment_distributions(request: Request, limit: int = Query(default=20)
                 ob["done"] += 1
                 ob["done_units"] += du
             else:
-                out_count += 1
-                out_units += units
-                ob["outstanding"] += 1
+                if pickable_units > 0:
+                    out_count += 1
+                    out_units += pickable_units
+                    ob["outstanding"] += 1
+                    ob["outstanding_units"] += pickable_units
+                else:
+                    unavailable_count += 1
+                    unavailable_units += units
+                    ob["unavailable"] += 1
+                    ob["unavailable_units"] += units
             blines.append({
                 "pos_location": ln["pos_location"],
                 "sku": ln.get("sku"),
@@ -34008,6 +34162,9 @@ def replenishment_distributions(request: Request, limit: int = Query(default=20)
                 "bin": ln.get("bin") or "",
                 "owner": ln.get("owner"),
                 "suggested_units": units,
+                "pickable_units": pickable_units,
+                "soh_wh": current_wh,
+                "availability_state": availability_state,
                 "done": a is not None,
                 "done_units": int(a.get("actual_units") or 0) if a else None,
                 "done_by": a.get("acted_by") if a else None,
@@ -34029,10 +34186,16 @@ def replenishment_distributions(request: Request, limit: int = Query(default=20)
             "outstanding_count": out_count,
             "done_units": done_units,
             "outstanding_units": out_units,
+            "unavailable_count": unavailable_count,
+            "unavailable_units": unavailable_units,
             "by_owner": sorted(by_owner.values(), key=lambda x: x["owner"].lower()),
             "lines": blines,
         })
-    return {"batches": out_batches, "open_keys": sorted(open_keys)}
+    return {
+        "batches": out_batches,
+        "open_keys": sorted(open_keys),
+        "inventory_version": inventory_version,
+    }
 
 
 @app.delete("/api/replenishment/distributions/{dist_id}")
@@ -34269,8 +34432,7 @@ def _replen_export_rows(country, channel):
             GROUP BY 1, 2
         ),
         wh_soh AS (
-            -- Warehouse quantity is the dispatchable Finished Goods Production
-            -- location ONLY (user-mandated) — see note in _compute_replenishment_sor.
+            -- Warehouse Finished Goods only; production/pipeline is not pickable.
             SELECT i.sku, SUM(i.available) AS soh_wh
             FROM all_inventory i
             WHERE i.pos_location_name = {WH_DISPATCH_LOCATION}

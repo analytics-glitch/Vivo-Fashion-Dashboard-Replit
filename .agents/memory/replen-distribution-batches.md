@@ -6,12 +6,14 @@ description: How "Save & distribute" freezes the SOR pick list into dated batche
 "Save & distribute" on the Replenishments page snapshots the current OPEN pick list into a dated server-saved batch (`replen_distribution` + `replen_distribution_line`). The live SOR top list then drops those items and refills with new ones until the next distribute.
 
 **Rules (must hold for the feature to stay coherent):**
+- Dispatch-ready replenishment stock means Warehouse Finished Goods only. Finished Goods Production and every other pipeline location are never pickable.
+- Frozen assignments remain immutable history, but every read allocates the current Warehouse Finished Goods pool across outstanding lines oldest-first. Show the live pickable quantity separately, block zero-stock lines, and reserve outstanding commitments from new recommendations.
 - The live list excludes any `pos|sku` returned in the GET endpoint's `open_keys` (the set still Outstanding in ANY batch). A distributed item lives in its batch, not the live list, until it is picked.
 - Per-line Done/Outstanding is DERIVED, not stored: a line is Done when a `recommendation_actions` row (rec_type='replenish', status='done', twin `pos|sku|…` or `pos|barcode|…` rec_key) exists with `acted_at >= batch.created_at`. A stale done from before the batch does NOT count — so re-distributing a recurring item correctly starts it Outstanding again until re-picked.
 - The per-day picker scorecard reuses the same batch data: Done counts only lines whose `done_day_eat` (= `acted_at AT TIME ZONE 'Africa/Nairobi'`) matches the selected day; Outstanding is every not-yet-done line across all open batches (day-independent).
 - Marking a batch line done writes the SAME twin sku+barcode ledger rows as the live Mark-done flow, so the Completed audit + Transfer Tracking reconcile identically (see replen-done-twin-rows).
 
-**Why:** there is no separate "picked" status column — the recommendation_actions ledger is the single source of truth, and the batch is just an immutable snapshot of what was handed out on a date.
+**Why:** frozen quantities document what was handed out, not what can still be physically dispatched. Revalidating against one shared live pool prevents pipeline stock or the same warehouse units from being promised to several stores. There is no separate "picked" status column — the recommendation_actions ledger is the single source of truth.
 
 **How to apply:** the WRITE distribution endpoints (`POST /api/replenishment/distribute`, `DELETE .../distributions/{id}`) are roster-manager-gated (`_can_manage_roster` = admin + the two named operators). `GET .../distributions` is open to ANY authenticated user, but a NON-manager (a picker) gets it FILTERED to only their own lines — gating GET fully to managers hid the batch from pickers (they fell back to the live 400-row SOR list = "seeing a different thing / the 400"), and showing ALL owners' lines to every picker was too much.
 

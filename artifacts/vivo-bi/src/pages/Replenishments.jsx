@@ -147,7 +147,7 @@ const Replenishments = () => {
   useEffect(() => {
     if (!isAdmin) { setLoading(false); return; }
     loadSor();
-  }, [loadSor, isAdmin]);
+  }, [loadSor, isAdmin, applied.dataVersion]);
 
   // Reconciliation tile (also records the rolling projection-calibration sample).
   useEffect(() => {
@@ -185,7 +185,7 @@ const Replenishments = () => {
       setDistLoading(false);
     }
   }, []);
-  useEffect(() => { loadDistributions(); }, [loadDistributions]);
+  useEffect(() => { loadDistributions(); }, [loadDistributions, applied.dataVersion]);
 
   // Predictive stockout alerts (styles dropping below 2 weeks of cover).
   useEffect(() => {
@@ -453,10 +453,15 @@ const Replenishments = () => {
     const k = `${line.pos_location}|${line.sku || ""}|${line.barcode || ""}`;
     setBatchSavingKey(k);
     try {
-      let au = Number(line.suggested_units || 0);
+      const pickable = Number(line.pickable_units || 0);
+      if (line.availability_state === "unavailable" || pickable <= 0) {
+        toast.error("This line has no dispatch-ready warehouse stock.");
+        return;
+      }
+      let au = pickable;
       if (actualUnits != null && actualUnits !== "") {
         const n = Number(actualUnits);
-        au = Number.isFinite(n) ? Math.max(0, Math.round(n)) : au;
+        au = Number.isFinite(n) ? Math.min(pickable, Math.max(0, Math.round(n))) : au;
       }
       const actions = [];
       if (line.sku) actions.push({ rec_type: "replenish", rec_key: `${line.pos_location}|sku|${line.sku}`, status: "done", actual_units: au });
@@ -520,7 +525,7 @@ const Replenishments = () => {
           }
         } else {
           e.outstanding += 1;
-          e.outstandingUnits += Number(ln.suggested_units || 0);
+          e.outstandingUnits += Number(ln.pickable_units || 0);
         }
         if (allocatedInRange) {
           e.allocUnitsDay += Number(ln.suggested_units || 0);
@@ -986,8 +991,8 @@ const Replenishments = () => {
           <SectionTitle
             title={<span className="inline-flex items-center gap-2 text-[14px]"><Truck size={16} weight="duotone" className="text-brand-deep" /> Distributed batches {!isAdmin && <span className="text-[11px] font-semibold text-emerald-800 bg-emerald-100 border border-emerald-200 px-2 py-0.5 rounded-full">Your pick list</span>}</span>}
             subtitle={isAdmin
-              ? "The FROZEN work order. Each “Save & distribute” snapshots the live pick list above into a dated batch handed to the pickers — it does NOT change as new sales arrive (unlike the live list). Items stay here until picked (units done vs outstanding)."
-              : "This is your work order — physically pull each item and mark it done. It stays fixed and won’t reshuffle as new sales come in, so you can refresh anytime without losing your place."}
+              ? "The historical assignment stays frozen, while current Warehouse Finished Goods availability is rechecked on every refresh. Unavailable lines remain visible for audit but cannot be picked."
+              : "This is your work order. Current Warehouse Finished Goods availability is rechecked on every refresh; unavailable lines stay visible but are blocked until stock is dispatch-ready."}
             action={
               <button type="button" onClick={loadDistributions} className="inline-flex items-center gap-1 text-[11.5px] font-semibold text-brand-deep border border-border hover:bg-panel px-2.5 py-1.5 rounded-md" data-testid="replen-distributions-refresh">
                 <ArrowCounterClockwise size={12} weight="bold" /> Refresh
@@ -1119,7 +1124,7 @@ const Replenishments = () => {
                 </thead>
                 <tbody>
                   {(scorecard.pickers || []).map((p, i) => (
-                    <tr key={p.user_id} className={`border-t border-border/50 ${i % 2 === 0 ? "bg-white" : "bg-panel/30"}`} data-testid={`replen-scorecard-row-${i}`}>
+                    <tr key={p.user_id || `${p.user_name || "picker"}-${i}`} className={`border-t border-border/50 ${i % 2 === 0 ? "bg-white" : "bg-panel/30"}`} data-testid={`replen-scorecard-row-${i}`}>
                       <td className="px-3 py-2 whitespace-nowrap">
                         <span className="inline-flex items-center bg-emerald-100 text-emerald-900 text-[11px] font-bold px-2 py-0.5 rounded-full">{p.user_name}</span>
                         <span className="ml-2 text-[11px] text-muted">{(p.stores || []).length} store{(p.stores || []).length === 1 ? "" : "s"}</span>
@@ -1199,8 +1204,8 @@ const Replenishments = () => {
                       return t > 0 ? (a / t) * 100 : null;
                     },
                     soh_after: (r) => r.soh_after == null ? null : Number(r.soh_after),
-                  }).map((r) => (
-                    <tr key={r.key} className="border-t border-border/50 hover:bg-panel/30">
+                  }).map((r, i) => (
+                    <tr key={r.key || `${r.completed_at || ""}|${r.pos_location || ""}|${r.sku || r.barcode || ""}|${i}`} className="border-t border-border/50 hover:bg-panel/30">
                       <td className="px-3 py-2 text-[11px] tabular-nums">{r.completed_at ? r.completed_at.replace("T", " ").slice(0, 16) : "—"}</td>
                       <td className="px-3 py-2 whitespace-nowrap">
                         <span className="inline-flex items-center bg-emerald-100 text-emerald-900 text-[11px] font-bold px-2 py-0.5 rounded-full">{r.owner || r.completed_by_name || "—"}</span>
@@ -1257,6 +1262,9 @@ const BatchCard = ({ batch, onMarkDone, onDelete, savingKey, canDelete = true })
         <div className="ml-auto flex flex-wrap items-center gap-2">
           <span className="inline-flex items-center gap-1 bg-emerald-100 text-emerald-900 text-[11px] font-bold px-2 py-0.5 rounded-full">{fmtNum(batch.done_units)} units done</span>
           <span className="inline-flex items-center gap-1 bg-amber-100 text-amber-900 text-[11px] font-bold px-2 py-0.5 rounded-full">{fmtNum(batch.outstanding_units)} units outstanding</span>
+          {(batch.unavailable_count || 0) > 0 && (
+            <span className="inline-flex items-center gap-1 bg-rose-100 text-rose-900 text-[11px] font-bold px-2 py-0.5 rounded-full">{fmtNum(batch.unavailable_count)} unavailable</span>
+          )}
           <span className="text-[11px] text-muted tabular-nums">{fmtNum(batch.total_units)} units · {pct}%</span>
           {canDelete && (
             <button type="button" onClick={() => onDelete(batch.id)} className="inline-flex items-center gap-1 text-[11px] font-semibold text-rose-700 border border-rose-200 hover:bg-rose-50 px-2 py-1 rounded-md" title="Remove this batch" data-testid={`replen-batch-delete-${batch.id}`}>
@@ -1271,7 +1279,8 @@ const BatchCard = ({ batch, onMarkDone, onDelete, savingKey, canDelete = true })
             <span key={o.owner} className="inline-flex items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-[11px]">
               <span className="font-bold text-[#0f3d24]">{o.owner}</span>
               <span className="text-emerald-700 font-semibold">{fmtNum(o.done_units)} units done</span>
-              <span className="text-amber-700 font-semibold">{fmtNum(Math.max(0, (o.units || 0) - (o.done_units || 0)))} units left</span>
+              <span className="text-amber-700 font-semibold">{fmtNum(o.outstanding_units || 0)} units pickable</span>
+              {(o.unavailable || 0) > 0 && <span className="text-rose-700 font-semibold">{fmtNum(o.unavailable)} unavailable</span>}
             </span>
           ))}
         </div>
@@ -1290,6 +1299,7 @@ const BatchCard = ({ batch, onMarkDone, onDelete, savingKey, canDelete = true })
                 <th className="px-3 py-2 font-semibold whitespace-nowrap">Bin</th>
                 <th className="px-3 py-2 font-semibold whitespace-nowrap">Barcode</th>
                 <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">To pick</th>
+                <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">WH now</th>
                 <th className="px-3 py-2 font-semibold text-right whitespace-nowrap">Picked</th>
                 <th className="px-3 py-2 font-semibold whitespace-nowrap"></th>
               </tr>
@@ -1302,7 +1312,11 @@ const BatchCard = ({ batch, onMarkDone, onDelete, savingKey, canDelete = true })
                     <td className="px-3 py-2 whitespace-nowrap">
                       {ln.done
                         ? <span className="inline-flex items-center gap-1 bg-emerald-100 text-emerald-900 text-[10px] font-bold px-2 py-0.5 rounded-full"><CheckCircle size={11} weight="fill" /> Done</span>
-                        : <span className="inline-flex items-center gap-1 bg-amber-100 text-amber-900 text-[10px] font-bold px-2 py-0.5 rounded-full">Outstanding</span>}
+                        : ln.availability_state === "unavailable"
+                          ? <span className="inline-flex items-center gap-1 bg-rose-100 text-rose-900 text-[10px] font-bold px-2 py-0.5 rounded-full"><Prohibit size={11} weight="bold" /> Unavailable</span>
+                          : ln.availability_state === "partially_available"
+                            ? <span className="inline-flex items-center gap-1 bg-amber-100 text-amber-900 text-[10px] font-bold px-2 py-0.5 rounded-full">Partially available</span>
+                            : <span className="inline-flex items-center gap-1 bg-amber-100 text-amber-900 text-[10px] font-bold px-2 py-0.5 rounded-full">Outstanding</span>}
                     </td>
                     <td className="px-3 py-2 whitespace-nowrap">{ln.owner || <span className="text-muted">—</span>}</td>
                     <td className="px-3 py-2 whitespace-nowrap font-semibold">{ln.pos_location}</td>
@@ -1315,7 +1329,14 @@ const BatchCard = ({ batch, onMarkDone, onDelete, savingKey, canDelete = true })
                         : <span className="text-muted">—</span>}
                     </td>
                     <td className="px-3 py-2 whitespace-nowrap font-mono text-[11px]">{ln.barcode || ln.sku || "—"}</td>
-                    <td className="px-3 py-2 text-right tabular-nums">{fmtNum(ln.suggested_units)}</td>
+                    <td className="px-3 py-2 text-right tabular-nums">
+                      {ln.done ? fmtNum(ln.suggested_units) : (
+                        <span title={`Originally assigned: ${fmtNum(ln.suggested_units)} units`}>
+                          {fmtNum(ln.pickable_units)}{Number(ln.pickable_units) !== Number(ln.suggested_units) && <span className="ml-1 text-[10px] text-muted">of {fmtNum(ln.suggested_units)}</span>}
+                        </span>
+                      )}
+                    </td>
+                    <td className={`px-3 py-2 text-right tabular-nums font-semibold ${!ln.done && Number(ln.soh_wh || 0) <= 0 ? "text-rose-700" : ""}`}>{fmtNum(ln.soh_wh || 0)}</td>
                     <td className="px-3 py-2 text-right tabular-nums">
                       {ln.done
                         ? <span className="font-bold text-emerald-800">{fmtNum(ln.done_units)}</span>
@@ -1325,16 +1346,18 @@ const BatchCard = ({ batch, onMarkDone, onDelete, savingKey, canDelete = true })
                             min={0}
                             inputMode="numeric"
                             value={picked[k] ?? ""}
-                            placeholder={String(ln.suggested_units ?? 0)}
+                            placeholder={String(ln.pickable_units ?? 0)}
                             onChange={(e) => setPicked((p) => ({ ...p, [k]: e.target.value }))}
-                            className="w-16 text-right tabular-nums border border-border rounded px-1.5 py-0.5 text-[12px]"
+                            disabled={ln.availability_state === "unavailable"}
+                            max={Number(ln.pickable_units || 0)}
+                            className="w-16 text-right tabular-nums border border-border rounded px-1.5 py-0.5 text-[12px] disabled:bg-slate-100 disabled:text-slate-400"
                             data-testid={`replen-batch-picked-${batch.id}-${i}`}
                           />
                         )}
                     </td>
                     <td className="px-3 py-2 whitespace-nowrap">
                       {!ln.done && (
-                        <button type="button" onClick={() => onMarkDone(ln, picked[k])} disabled={savingKey === k} className="inline-flex items-center gap-1 text-[11px] font-bold text-white bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 px-2.5 py-1 rounded-md" data-testid={`replen-batch-markdone-${batch.id}-${i}`}>
+                        <button type="button" onClick={() => onMarkDone(ln, picked[k])} disabled={savingKey === k || ln.availability_state === "unavailable"} className="inline-flex items-center gap-1 text-[11px] font-bold text-white bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 px-2.5 py-1 rounded-md" data-testid={`replen-batch-markdone-${batch.id}-${i}`} title={ln.availability_state === "unavailable" ? "No dispatch-ready Warehouse Finished Goods stock is available." : "Mark this warehouse pick done"}>
                           <CheckCircle size={12} weight="fill" /> {savingKey === k ? "Saving…" : "Mark done"}
                         </button>
                       )}
