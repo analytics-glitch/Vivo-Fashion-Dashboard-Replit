@@ -173,6 +173,15 @@ importers:
 
   .:
     devDependencies:
+      '@babel/generator':
+        specifier: ^7.29.7
+        version: 7.29.7
+      '@babel/traverse':
+        specifier: ^7.29.7
+        version: 7.29.7
+      '@babel/types':
+        specifier: ^7.29.7
+        version: 7.29.7
       '@playwright/test':
         specifier: ^1.61.1
         version: 1.61.1
@@ -1071,6 +1080,9 @@ importers:
       '@babel/core':
         specifier: ^7.25.2
         version: 7.29.0
+      '@babel/types':
+        specifier: ^7.29.7
+        version: 7.29.7
       '@expo-google-fonts/inter':
         specifier: ^0.4.0
         version: 0.4.2
