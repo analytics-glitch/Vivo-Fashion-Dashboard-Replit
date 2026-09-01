@@ -3,29 +3,32 @@ import psycopg2
 from psycopg2.extras import execute_values
 from datetime import datetime, timezone
 import logging
+import re
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
 DATABASE_URL = os.environ['DATABASE_URL']
 
-import re
-
 def norm_email(e):
     e = (e or '').strip().lower()
     return e or None
 
-def norm_phone(*vals):
-    # digits only, keep last 9 (Kenyan mobile significant digits); '' if none
+COUNTRY_DIAL = {'Kenya': '254', 'Uganda': '256', 'Rwanda': '250', 'Online': '254'}
+
+def norm_phone(country, *vals):
+    # digits only -> last 9 significant -> prefix country dial code => globally unique
     for v in vals:
         d = re.sub(r'[^0-9]', '', v or '')
         if len(d) >= 9:
-            return d[-9:]
+            sig = d[-9:]
+            dial = COUNTRY_DIAL.get(country, '254')
+            return dial + sig      # e.g. 254722700387
     return None
 
 def norm_name(n):
     return re.sub(r'\s+', ' ', (n or '').strip()) or None
-    
+
 def main():
     conn = psycopg2.connect(DATABASE_URL)
     cur  = conn.cursor()
@@ -96,22 +99,22 @@ def main():
         avg_kes   = round(total_kes / orders_count, 2) if orders_count else 0
 
         rows.append((
-            str(cid),           # customer_id
-            store_id,           # store_id
-            first_name,         # first_name
-            last_name,          # last_name
-            email,              # email
-            phone,              # phone
-            city,               # city
-            country,            # country
-            customer_type,      # customer_type
-            orders_count or 0,  # total_orders
-            total_kes,          # total_spend_kes
-            avg_kes,            # avg_order_value_kes
+            str(cid),                        # customer_id
+            store_id,                        # store_id
+            norm_name(first_name),           # first_name  (normalised)
+            norm_name(last_name),            # last_name   (normalised)
+            norm_email(email),               # email       (lowercased+trimmed)
+            norm_phone(country, phone),      # phone       (country-prefixed, globally unique)
+            city,                            # city
+            country,                         # country
+            customer_type,                   # customer_type
+            orders_count or 0,               # total_orders
+            total_kes,                       # total_spend_kes
+            avg_kes,                         # avg_order_value_kes
             created_at[:10] if created_at else None,  # first_order_date
             updated_at[:10] if updated_at else None,  # last_order_date
-            None,               # preferred_size
-            now,                # last_synced
+            None,                            # preferred_size
+            now,                             # last_synced
         ))
 
     # Insert Odoo customers keyed by their Odoo partner_id.
@@ -124,16 +127,22 @@ def main():
          street, city, state_name, country_name, store_id) = r
 
         country = country_name or 'Kenya'
-        parts   = (name or '').split(' ', 1)
-        first   = parts[0] if parts else None
-        last    = parts[1] if len(parts) > 1 else None
 
-        # Always insert under the Odoo ID (what all_sales uses for POS orders)
+        # Keep the FULL name (do NOT split on first space — that mangles
+        # multi-word names like "Marthe Wanjiru Kamau"). Store the whole
+        # normalised name in first_name; leave last_name blank so matching
+        # uses the complete name.
+        full = norm_name(name)
+        first = full
+        last  = None
+
         rows.append((
             str(oid),
             store_id or 'vivofashiongroup',
-            first, last, email,
-            phone or mobile,
+            first,                           # first_name (full normalised name)
+            last,                            # last_name
+            norm_email(email),               # email (normalised)
+            norm_phone(country, phone, mobile),  # phone (country-prefixed; falls back to mobile)
             city, country,
             'New', 0, 0.0, 0.0,
             None, None, None, now,
@@ -155,10 +164,10 @@ def main():
             last_synced = EXCLUDED.last_synced
     """, rows, page_size=1000)
 
-    # ── Backfill order stats for Odoo-keyed customers from all_sales ───────────
-    # Shopify customers already have accurate stats from raw_shopify_customers.
-    # Odoo rows were inserted with 0/NULL stats; compute them from all_sales now.
-    log.info("Backfilling order stats for Odoo customers from all_sales...")
+    # ── Backfill order stats from all_sales (authoritative revenue source) ─────
+    # Recompute for ALL customers across their FULL cross-store history.
+    # (Removed the store_id='vivofashiongroup' filters — Step 2 fix.)
+    log.info("Backfilling order stats from all_sales...")
     cur.execute("""
         UPDATE all_customers ac
         SET
@@ -179,12 +188,13 @@ def main():
                 MAX(s.sale_date)              AS last_date
             FROM all_sales s
             WHERE s.customer_id IS NOT NULL
+              AND s.customer_id NOT IN ('', 'None', 'null')
               AND s.sale_kind IN ('sale','order')
             GROUP BY s.customer_id
         ) agg
         WHERE ac.customer_id = agg.customer_id
     """)
-    log.info("Updated %d Odoo customer stat rows", cur.rowcount)
+    log.info("Updated %d customer stat rows", cur.rowcount)
 
     conn.commit()
 
