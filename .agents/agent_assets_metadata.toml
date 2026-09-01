@@ -109,10 +109,11 @@ logical_id = "a9f8d49f-151e-4a95-86d1-5b3ba2331346"
 [[outputs]]
 id = "7_-Yt3KuCVxG1Qi11b_Vp"
 uri = "file://.local/exports/customer-data-architecture.html"
-type = "unspecified"
+type = "text"
 title = "Customer Data Architecture"
 description = "Full visual reference — where customer data lives, how it flows, and key constraints. Open in browser then Ctrl+P → Save as PDF."
 logical_id = "7bedb5ba-9c38-4301-9299-d28818f372ff"
+content_type = "text/html"
 
 [[outputs]]
 id = "Ml1FoNDaOvuMl-gpROt69"
@@ -192,6 +193,7 @@ uri = "file://exports/Missing_Odoo_Status_Tier_2026-08-27.xlsx"
 type = "table"
 title = "Missing Odoo Status/Tier — 1,740 styles"
 description = "Finished-product styles where Odoo's own Status field is unset (44% of the catalogue). Includes style number, brand, subcategory, SKU samples, and which dashboard bucket each currently falls into."
+logical_id = "a3670192-6f45-4c9e-af16-93f41f34daf5"
 
 [[outputs]]
 id = "TgUVwiF7K6hX4nzBfitJq"
@@ -199,6 +201,7 @@ uri = "file://exports/Missing_Odoo_Status_Tier_2026-08-27_v2.xlsx"
 type = "table"
 title = "Corrected: styles not found in Odoo (1,740)"
 description = "All 1,740 flagged styles have zero product record in Odoo right now — they're historical/sold styles kept alive on the dashboard only via past sales data. New 'In Odoo Now?' and 'Reason' columns make this explicit."
+logical_id = "3e0e97ad-3e80-43ab-bacb-ddbced2a3e33"
 
 [[outputs]]
 id = "OgEbcYWFo82uh08WygzXA"
@@ -206,3 +209,60 @@ uri = "file://exports/Odoo_Archived_Status_Styles_2026-08-27.xlsx"
 type = "table"
 title = "Styles with Odoo Status = Archived (726 styles, with Tier)"
 description = "Every style with at least one SKU whose Odoo Status field is literally 'Archived', with the Tier value(s) Odoo has on those rows shown alongside. All 726 are real, currently-existing Odoo records."
+logical_id = "2b2d8387-f89c-4c6f-918d-10c8468e14b9"
+
+[[outputs]]
+id = "vsOMcRULCdc8JSVvP2yVS"
+uri = "file://.canvas/assets/johari-profile-current.svg"
+type = "image"
+title = "Vivo Johari · Profile · Current"
+description = "Current Profile reference based on the existing Community app structure."
+logical_id = "19cad16b-4e09-48e4-813d-5e3152122625"
+content_hash = "sha256:3c5914eacf1adb8dce7a695e080a1602544f6a421bedc055ba457957f9fd1457"
+size = 3504
+mtime_ms = 1788247464361
+storage_uri = "gcs://replit-rams-assets-kirk/rams/assets/repl:a2104183-e22b-4aee-99f6-fc604d080eee/19cad16b-4e09-48e4-813d-5e3152122625/aba35283-9139-457f-bea8-fc623e30fc9c"
+storage_version_token = "1788247492662331"
+content_type = "image/svg+xml"
+
+[[outputs]]
+id = "MeTqZU_nrh_Vd4iXTkHHq"
+uri = "file://.canvas/assets/johari-profile-proposed.svg"
+type = "image"
+title = "Vivo Johari · Profile · My Size Proposed"
+description = "Proposed Profile addition: a My Size entry point alongside existing member tools."
+logical_id = "0d93f634-8b38-4c37-8c33-6ad79d64cfff"
+content_hash = "sha256:4cc5acfb23deee4d943cdd7a3ae476a34208b70d33568f8eac83320b1d958d16"
+size = 3291
+mtime_ms = 1788247464521
+storage_uri = "gcs://replit-rams-assets-kirk/rams/assets/repl:a2104183-e22b-4aee-99f6-fc604d080eee/0d93f634-8b38-4c37-8c33-6ad79d64cfff/b5992716-334a-4ecd-8292-d6a611ed67c4"
+storage_version_token = "1788247493312057"
+content_type = "image/svg+xml"
+
+[[outputs]]
+id = "MNX4sm-R4fFs-KOTfK4rV"
+uri = "file://.canvas/assets/johari-product-current.svg"
+type = "image"
+title = "Vivo Johari · Product Detail · Current"
+description = "Current Product Detail reference with the existing size selector and guide link."
+logical_id = "34802f80-4855-4931-b593-692476cddf4b"
+content_hash = "sha256:3fdac1cda7e409f8c9eb4d2e1152c7a11d2cf22e9359bc7a8b49af612ad3b55c"
+size = 2538
+mtime_ms = 1788247464670
+storage_uri = "gcs://replit-rams-assets-kirk/rams/assets/repl:a2104183-e22b-4aee-99f6-fc604d080eee/34802f80-4855-4931-b593-692476cddf4b/44767c5c-193a-493d-b357-0e70d40f86c9"
+storage_version_token = "1788247493990080"
+content_type = "image/svg+xml"
+
+[[outputs]]
+id = "0WIYwCB3DjnejNow0MDQ5"
+uri = "file://.canvas/assets/johari-product-proposed.svg"
+type = "image"
+title = "Vivo Johari · Product Detail · My Size Proposed"
+description = "Proposed Product Detail addition: saved recommendation, highlighted size, and update link."
+logical_id = "1bec1ebc-7b67-40b8-80a9-29bfcd70bd71"
+content_hash = "sha256:2085dee6c2c0ee846a95049025c635f9f3cb06eededa0a8799c690f5ed036234"
+size = 3268
+mtime_ms = 1788247464806
+storage_uri = "gcs://replit-rams-assets-kirk/rams/assets/repl:a2104183-e22b-4aee-99f6-fc604d080eee/1bec1ebc-7b67-40b8-80a9-29bfcd70bd71/d2bbc007-5fe3-4820-bcfe-d3863a198281"
+storage_version_token = "1788247494646767"
+content_type = "image/svg+xml"

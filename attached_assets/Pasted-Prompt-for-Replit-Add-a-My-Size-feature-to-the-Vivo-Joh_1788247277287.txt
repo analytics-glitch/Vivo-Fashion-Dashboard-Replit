@@ -1,0 +1,41 @@
+Prompt for Replit:
+
+"Add a 'My Size' feature to the Vivo Johari app that lets customers save their measurements once and get a size suggestion when browsing products.
+
+Where it lives:
+
+Add a 'My Size' section to the user's profile/settings page, where they can enter and update their measurements at any time.
+If a user hasn't set up their size yet and visits a product page, show a prompt like 'Get your size recommendation' that links to this same setup flow.
+
+Size input:
+
+Let the user enter bust, waist, and hip measurements in inches. Show the same measurement guidance Vivo already uses on its size chart:
+Bust: measure around the fullest part of your bust/chest
+Waist: measure around the smallest part of your waist (above your bellybutton)
+Hips: measure around the widest part of your hip (around your bottom)
+Optionally let the user just pick a known UK or US size instead, if they don't want to measure.
+Save this to the user's profile so they only need to enter it once.
+
+Size chart (use exactly this data for the suggestion logic):
+
+Size	UK	US	Bust (in)	Waist (in)	Hips (in)
+XS	4-6	0-2	33-34	25-26	37-38
+S	8-10	4-6	35-36	27-28	39-40
+M	12-14	8-10	37-38	29-30	41-42
+L	16-18	12-14	39-41	31-33	43-45
+1X	20	16	40-44	34-36	46-48
+2X	22	18	45-47	37-39	49-51
+3X	24	20	48-50	40-42	52-54
+Match the user's entered measurements against this table to determine their recommended size. If a user's three measurements fall across two different size rows (e.g. waist suggests M but hips suggest L), default to the larger of the two and flag it as 'true to size may vary — consider sizing up' rather than guessing silently.
+
+Size suggestion on products:
+
+On each product page, if the user has a saved size profile, show a suggested size (e.g. 'Recommended: M, based on your saved measurements') near the size selector, pre-highlighting that option without forcing the selection.
+If no size profile is set, show the standard size chart as normal (matching the table above), with a link to set up 'My Size' for future recommendations.
+
+Tie-in to existing app structure:
+
+This connects to the existing 'Fit Notes' earning category in 'How to Earn' — once a user completes their size profile, count that as their first Fit Notes contribution and award the associated points.
+Keep all existing screens, navigation, and earning mechanics unchanged otherwise — this is an additive feature.
+
+Show me the specific screens/components you're adding or changing, and a before/after preview, before applying anything.
