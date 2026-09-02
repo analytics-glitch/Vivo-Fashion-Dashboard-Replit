@@ -147,3 +147,5 @@
 - [Products Plan stock basis](products-plan-stock-basis.md) — opening stock is Stores + Warehouse Finished Goods; WOC uses 4.28 weeks and stock-to-sales variance is stock share minus unit share.
 - [Range Plan mix and tier separation](range-plan-mix-tier-separation.md) — quarterly and monthly plans share one category matrix; tier health counts styles only and never changes unit or revenue totals.
 - [Style Development tracker imports](style-development-tracker-imports.md) — Q3 batch imports use a dedicated tracker model; preserve exact status/source text and explicit style-number quality flags.
+- [Style Development stage history](style-development-stage-history.md) — stages derive from append-only events; blockers overlay rather than replace stage, and target-week edits retain old/new values.
+- [Style Development operating model](style-development-operating-model.md) — live fabric readiness, working-day interval evidence, exact exit reasons, and dynamic pattern capacity govern the tracker.

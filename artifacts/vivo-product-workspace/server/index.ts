@@ -226,6 +226,62 @@ const STYLE_DEVELOPMENT_TRACKER_BATCH_FOUR_SEEDS = [
   ["V0826030", "Vivo Dolman Sweater in Rib", "NEW", "Approved For S/S", "Tops", "Sweaters & Ponchos", null, ""],
   ["V0526042", "Vivo Knit Tank Top (Ken Knit)", "NEW", "Set Sampling", "Outerwear", "T-shirts & Tank Tops", null, "Acrylic"],
 ] as const;
+const STYLE_DEVELOPMENT_STAGES = [
+  "Adopted",
+  "Pattern",
+  "Sample",
+  "Sample Review",
+  "CAD and Set Sample",
+  "Set Sample Review",
+  "Ready to Order",
+  "Ordered",
+] as const;
+type StyleDevelopmentStage = (typeof STYLE_DEVELOPMENT_STAGES)[number];
+const STYLE_DEVELOPMENT_STAGE_STANDARD_DAYS: Record<StyleDevelopmentStage, number | null> = {
+  Adopted: 3,
+  Pattern: 5,
+  Sample: 5,
+  "Sample Review": 2,
+  "CAD and Set Sample": 5,
+  "Set Sample Review": 2,
+  "Ready to Order": 2,
+  Ordered: null,
+};
+const STYLE_DEVELOPMENT_EVENT_TYPES = [
+  "adopted",
+  "baseline",
+  "pattern_started",
+  "pattern_done",
+  "pattern_amendment_started",
+  "pattern_amendment_done",
+  "tech_pack_started",
+  "tech_pack_done",
+  "sample_started",
+  "sample_received",
+  "resample_started",
+  "resample_received",
+  "review_started",
+  "rereview_started",
+  "rereview_done",
+  "sample_approved",
+  "sample_rejected",
+  "cad_transfer_started",
+  "cad_transfer_done",
+  "cad_grading_started",
+  "cad_grading_done",
+  "set_sample_order_started",
+  "set_sample_order_created",
+  "set_sample_production_started",
+  "set_sample_production_done",
+  "set_sample_review_started",
+  "set_sample_approved",
+  "set_sample_rejected",
+  "order_processing_started",
+  "order_processing_done",
+  "order_approved",
+  "order_rejected",
+] as const;
+type StyleDevelopmentEventType = (typeof STYLE_DEVELOPMENT_EVENT_TYPES)[number];
 const WORKSPACE_BRANDS = ["Vivo", "Safari by Vivo", "Zoya"] as const;
 const ALLOWED_BRANDS_SQL = WORKSPACE_BRANDS.map((brand) => `'${brand}'`).join(",");
 const allowedBrand = (alias: string) => `${alias}.brand IN (${ALLOWED_BRANDS_SQL})`;
@@ -1096,9 +1152,40 @@ async function ensureStyleDevelopmentTrackerData() {
     ALTER TABLE ${schema}.style_development_tracker
       ADD COLUMN IF NOT EXISTS sample_approval_date TEXT,
       ADD COLUMN IF NOT EXISTS data_quality_flags TEXT[] NOT NULL DEFAULT '{}',
+      ADD COLUMN IF NOT EXISTS brand TEXT NOT NULL DEFAULT '',
+      ADD COLUMN IF NOT EXISTS pattern_maker TEXT NOT NULL DEFAULT '',
+      ADD COLUMN IF NOT EXISTS adoption_date DATE,
+      ADD COLUMN IF NOT EXISTS target_launch_week TEXT,
+      ADD COLUMN IF NOT EXISTS blocked BOOLEAN NOT NULL DEFAULT FALSE,
+      ADD COLUMN IF NOT EXISTS blocker_reason TEXT NOT NULL DEFAULT '',
+       ADD COLUMN IF NOT EXISTS sample_fabric_product_id INTEGER,
+       ADD COLUMN IF NOT EXISTS season TEXT NOT NULL DEFAULT '',
+       ADD COLUMN IF NOT EXISTS intended_selling_price_kes NUMERIC,
+       ADD COLUMN IF NOT EXISTS indicative_cogs_kes NUMERIC,
+       ADD COLUMN IF NOT EXISTS exit_status TEXT NOT NULL DEFAULT 'active' CHECK (exit_status IN ('active','on_hold','cancelled')),
+       ADD COLUMN IF NOT EXISTS exit_reason TEXT,
+       ADD COLUMN IF NOT EXISTS exited_at TIMESTAMPTZ,
+       ADD COLUMN IF NOT EXISTS exit_stage TEXT,
+      ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       ALTER COLUMN target_order_week DROP NOT NULL;
     CREATE INDEX IF NOT EXISTS style_development_tracker_week_idx
       ON ${schema}.style_development_tracker (target_order_week, status);
+    CREATE TABLE IF NOT EXISTS ${schema}.style_development_history (
+      id BIGSERIAL PRIMARY KEY,
+      tracker_style_id INTEGER NOT NULL REFERENCES ${schema}.style_development_tracker(id) ON DELETE CASCADE,
+      entry_type TEXT NOT NULL,
+      event_type TEXT,
+      outcome TEXT,
+      note TEXT NOT NULL DEFAULT '',
+      reason TEXT NOT NULL DEFAULT '',
+      old_value TEXT,
+      new_value TEXT,
+      occurred_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      recorded_by INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL
+    );
+    CREATE INDEX IF NOT EXISTS style_development_history_style_idx
+      ON ${schema}.style_development_history (tracker_style_id, occurred_at DESC, id DESC);
   `);
   const client = await pool.connect();
   try {
@@ -1224,6 +1311,29 @@ async function ensureStyleDevelopmentTrackerData() {
         );
       }
     }
+    await client.query(
+      `UPDATE ${schema}.style_development_tracker
+          SET brand=CASE WHEN style_number LIKE 'S%' THEN 'Safari by Vivo' ELSE 'Vivo' END,
+              adoption_date=COALESCE(adoption_date, created_at::date)
+        WHERE brand='' OR adoption_date IS NULL`,
+    );
+    await client.query(
+      `INSERT INTO ${schema}.style_development_history
+        (tracker_style_id,entry_type,event_type,outcome,note,occurred_at)
+       SELECT t.id,'system','imported_stage',
+         CASE
+           WHEN LOWER(t.status)='pattern' THEN 'Pattern'
+           WHEN LOWER(t.status)='sample review' THEN 'Sample Review'
+           WHEN LOWER(t.status) IN ('approved for s/s','set sampling') THEN 'CAD and Set Sample'
+           ELSE 'Adopted'
+         END,
+         'Initial stage derived from the imported tracker status',t.created_at
+       FROM ${schema}.style_development_tracker t
+       WHERE NOT EXISTS (
+         SELECT 1 FROM ${schema}.style_development_history h
+          WHERE h.tracker_style_id=t.id AND h.event_type='imported_stage'
+       )`,
+    );
     await client.query("COMMIT");
   } catch (error) {
     await client.query("ROLLBACK");
@@ -4172,37 +4282,635 @@ router.post("/feedback/public", async (req, res, next) => {
 
 router.use(requireUser);
 
+function styleDevelopmentEventStage(entry: Record<string, unknown>): StyleDevelopmentStage | null {
+  const eventType = String(entry.eventType ?? "");
+  if (eventType === "imported_stage") {
+    const stage = String(entry.outcome ?? "");
+    return STYLE_DEVELOPMENT_STAGES.includes(stage as StyleDevelopmentStage) ? stage as StyleDevelopmentStage : "Adopted";
+  }
+  if (eventType === "pattern_started") return "Pattern";
+  if (eventType === "pattern_done" || eventType === "tech_pack_done") return "Sample";
+  if (eventType === "sample_started" || eventType === "sample_received") return "Sample";
+  if (eventType === "review_started") return "Sample Review";
+  if (eventType === "sample_approved") return "CAD and Set Sample";
+  if (eventType === "sample_rejected") return "Sample";
+  if (eventType === "cad_transfer_started" || eventType === "cad_grading_started" || eventType === "set_sample_order_started" || eventType === "set_sample_production_started") return "CAD and Set Sample";
+  if (eventType === "set_sample_review_started") return "Set Sample Review";
+  if (eventType === "set_sample_approved" || eventType === "order_processing_started") return "Ready to Order";
+  if (eventType === "order_processing_done" || eventType === "order_approved") return "Ordered";
+  if (eventType === "set_sample_rejected") return "CAD and Set Sample";
+  return null;
+}
+
+function workingDaysSince(value: unknown) {
+  const start = new Date(String(value ?? ""));
+  if (Number.isNaN(start.getTime())) return 0;
+  const cursor = new Date(start);
+  const end = new Date();
+  cursor.setHours(0, 0, 0, 0);
+  end.setHours(0, 0, 0, 0);
+  let count = 0;
+  while (cursor < end) {
+    cursor.setDate(cursor.getDate() + 1);
+    const day = cursor.getDay();
+    if (day !== 0 && day !== 6) count += 1;
+  }
+  return count;
+}
+
+function workingDaysBetween(startValue: unknown, endValue: unknown) {
+  const start = new Date(String(startValue ?? ""));
+  const end = new Date(String(endValue ?? ""));
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) return 0;
+  start.setHours(0, 0, 0, 0);
+  end.setHours(0, 0, 0, 0);
+  let count = 0;
+  while (start < end) {
+    start.setDate(start.getDate() + 1);
+    if (start.getDay() !== 0 && start.getDay() !== 6) count += 1;
+  }
+  return count;
+}
+
+const STYLE_INTERVALS = [
+  ["pattern", "pattern_started", "pattern_done", 2],
+  ["techPack", "tech_pack_started", "tech_pack_done", 1],
+  ["sample", "sample_started", "sample_received", 3],
+  ["review", "review_started", "sample_approved", 2],
+  ["cadTransfer", "cad_transfer_started", "cad_transfer_done", 2],
+  ["cadGrading", "cad_grading_started", "cad_grading_done", 3],
+  ["setSampleOrder", "set_sample_order_started", "set_sample_order_created", 3],
+  ["setSampleProduction", "set_sample_production_started", "set_sample_production_done", 3],
+  ["setSampleReview", "set_sample_review_started", "set_sample_approved", 2],
+  ["orderProcessing", "order_processing_started", "order_processing_done", 2],
+  ["patternAmendment", "pattern_amendment_started", "pattern_amendment_done", 1],
+  ["resample", "resample_started", "resample_received", 1],
+  ["rereview", "rereview_started", "rereview_done", 2],
+] as const;
+
+function eventAt(history: Array<Record<string, unknown>>, eventType: string, after?: unknown) {
+  const afterTime = after ? new Date(String(after)).getTime() : -Infinity;
+  return history.find((entry) => entry.eventType === eventType && new Date(String(entry.occurredAt)).getTime() >= afterTime)?.occurredAt ?? null;
+}
+
+function styleDevelopmentPayload(row: Record<string, unknown>, history: Array<Record<string, unknown>>) {
+  let stage: StyleDevelopmentStage = "Adopted";
+  let stageRank = 0;
+  let stageStartedAt: unknown = row.createdAt;
+  for (const entry of history) {
+    const candidate = styleDevelopmentEventStage(entry);
+    if (!candidate) continue;
+    const rank = STYLE_DEVELOPMENT_STAGES.indexOf(candidate);
+    if (rank > stageRank || rank === stageRank && new Date(String(entry.occurredAt)).getTime() >= new Date(String(stageStartedAt)).getTime()) {
+      stage = candidate;
+      stageRank = rank;
+      stageStartedAt = entry.occurredAt;
+    }
+  }
+  const workingDaysAtStage = workingDaysSince(stageStartedAt);
+  const standardDays = STYLE_DEVELOPMENT_STAGE_STANDARD_DAYS[stage];
+  const sampleRejections = history.filter((entry) => entry.eventType === "sample_rejected").length;
+  const setSampleRejections = history.filter((entry) => entry.eventType === "set_sample_rejected").length;
+  const hasOrderApproval = history.some((entry) => entry.eventType === "order_approved");
+  const waitingDecision = stage === "Sample Review"
+    ? "sample"
+    : stage === "Set Sample Review"
+      ? "set_sample"
+      : stage === "Ready to Order" && !hasOrderApproval
+        ? "order"
+        : null;
+  const adoptedAt = eventAt(history, "adopted") ?? eventAt(history, "baseline") ?? row.adoptionDate ?? row.createdAt;
+  const completed = (type: string) => eventAt(history, type);
+  const latest = (...dates: unknown[]) => dates.filter(Boolean).sort((a, b) => new Date(String(b)).getTime() - new Date(String(a)).getTime())[0] ?? adoptedAt;
+  // Prerequisites are intentionally explicit: CAD grading and set-order are
+  // parallel after transfer, and production waits for both branches.
+  const prerequisiteFor: Record<string, unknown> = {
+    pattern: adoptedAt, techPack: completed("pattern_done") ?? adoptedAt,
+    sample: completed("tech_pack_done") ?? completed("pattern_done") ?? adoptedAt,
+    review: completed("sample_received") ?? adoptedAt,
+    cadTransfer: completed("sample_approved") ?? adoptedAt,
+    cadGrading: completed("cad_transfer_done") ?? adoptedAt,
+    setSampleOrder: completed("cad_transfer_done") ?? adoptedAt,
+    setSampleProduction: latest(completed("cad_grading_done"), completed("set_sample_order_created")),
+    setSampleReview: completed("set_sample_production_done") ?? adoptedAt,
+    orderProcessing: completed("set_sample_approved") ?? adoptedAt,
+    patternAmendment: completed("sample_rejected") ?? adoptedAt,
+    resample: completed("pattern_amendment_done") ?? completed("sample_rejected") ?? adoptedAt,
+    rereview: completed("resample_received") ?? completed("sample_rejected") ?? adoptedAt,
+  };
+  const intervalMetrics = STYLE_INTERVALS.map(([key, startedType, doneType, standard]) => {
+    const startedAt = eventAt(history, startedType);
+    const completedAt = eventAt(history, doneType, startedAt ?? undefined);
+    const prerequisite = prerequisiteFor[key] ?? adoptedAt;
+    const metric = {
+      key, standard, startedAt, completedAt,
+      queueWorkingDays: startedAt ? workingDaysBetween(prerequisite, startedAt) : null,
+      workWorkingDays: startedAt ? workingDaysBetween(startedAt, completedAt ?? new Date()) : null,
+      totalWorkingDays: startedAt ? workingDaysBetween(prerequisite, completedAt ?? new Date()) : null,
+    };
+    return metric;
+  });
+  const reworkRounds = history.filter((entry) => entry.eventType === "sample_rejected").map((entry) => {
+    const rejectedAt = entry.occurredAt;
+    const amendmentDone = eventAt(history, "pattern_amendment_done", rejectedAt);
+    const resampleDone = eventAt(history, "resample_received", amendmentDone ?? rejectedAt);
+    const reviewDone = eventAt(history, "rereview_done", resampleDone ?? rejectedAt);
+    return { rejectedAt, standard: 4, totalWorkingDays: workingDaysBetween(rejectedAt, reviewDone ?? new Date()) };
+  });
+  const orderDoneAt = eventAt(history, "order_processing_done") ?? eventAt(history, "order_approved");
+  const actualElapsedWorkingDays = workingDaysBetween(adoptedAt, orderDoneAt ?? new Date());
+  const indicativeCogsKes = row.indicativeCogsKes === null || row.indicativeCogsKes === undefined ? null : Number(row.indicativeCogsKes);
+  const intendedSellingPriceKes = row.intendedSellingPriceKes === null || row.intendedSellingPriceKes === undefined ? null : Number(row.intendedSellingPriceKes);
+  const cogsPct = indicativeCogsKes !== null && intendedSellingPriceKes && intendedSellingPriceKes > 0
+    ? (indicativeCogsKes / (intendedSellingPriceKes / 1.16)) * 100 : null;
+  const fabricMetres = row.fabricMetres === null || row.fabricMetres === undefined ? 0 : Number(row.fabricMetres);
+  const missing: string[] = [];
+  if (!row.sampleFabricProductId || fabricMetres <= 0) missing.push("sample fabric in stock");
+  if (!String(row.season ?? "").trim()) missing.push("season");
+  if (indicativeCogsKes === null) missing.push("indicative COGS");
+  if (!intendedSellingPriceKes || intendedSellingPriceKes <= 0) missing.push("intended price");
+  const warnings = cogsPct !== null && cogsPct > 32 ? ["COGS exceeds 32% of net selling price"] : [];
+  const adoptionReadiness = { ready: missing.length === 0 && warnings.length === 0, missing, warnings };
+  return {
+    id: Number(row.id),
+    styleNumber: row.styleNumber ?? null,
+    originalStyleNumber: row.originalStyleNumber ?? null,
+    styleNumberStatus: row.styleNumberStatus,
+    styleName: row.styleName,
+    type: row.type,
+    tier: row.tier,
+    status: row.status,
+    category: row.category,
+    subCategory: row.subCategory,
+    originalSubCategory: row.originalSubCategory,
+    brand: row.brand,
+    fabric: row.fabric,
+    patternMaker: row.patternMaker,
+    adoptionDate: row.adoptionDate ? String(row.adoptionDate).slice(0, 10) : null,
+    targetOrderWeek: row.targetOrderWeek ?? null,
+    targetLaunchWeek: row.targetLaunchWeek ?? null,
+    sampleApprovalDate: row.sampleApprovalDate ?? null,
+    dataQualityFlags: row.dataQualityFlags ?? [],
+    blocked: Boolean(row.blocked),
+    blockerReason: row.blockerReason ?? "",
+    sampleFabricProductId: row.sampleFabricProductId === null ? null : Number(row.sampleFabricProductId),
+    sampleFabricName: row.sampleFabricName ?? null,
+    sampleFabricColour: row.sampleFabricColour ?? null,
+    sampleFabricCostPerMetre: row.sampleFabricCostPerMetre ?? null,
+    sampleFabricOtherColours: row.sampleFabricOtherColours ?? [],
+    categoryMetresPerGarment: row.categoryMetresPerGarment ?? null,
+    sampleFabricMetres: fabricMetres,
+    season: row.season ?? "",
+    intendedSellingPriceKes,
+    indicativeCogsKes,
+    cogsPct,
+    indicativeCogsPct: cogsPct,
+    adoptionReadiness,
+    exitStatus: row.exitStatus ?? "active",
+    exitReason: row.exitReason ?? null,
+    exitedAt: row.exitedAt ?? null,
+    exitStage: row.exitStage ?? null,
+    stage,
+    stageStartedAt,
+    workingDaysAtStage,
+    standardDays,
+    overStandard: standardDays !== null && workingDaysAtStage > standardDays,
+    sampleRounds: Math.max(1, sampleRejections + 1),
+    setSampleRounds: Math.max(1, setSampleRejections + 1),
+    sampleRejections,
+    setSampleRejections,
+    rejectedMoreThanOnce: sampleRejections > 1 || setSampleRejections > 1,
+    waitingDecision,
+    intervalMetrics,
+    reworkRounds,
+    totalStandardWorkingDays: 13,
+    standardEndToEndDays: 13,
+    targetWeeks: "4-5",
+    targetWeeksLabel: "4–5 weeks",
+    actualElapsedWorkingDays,
+    historyCount: history.length,
+    imageUrl: row.styleNumber ? `/api/workspace/garment-images/workspace/${encodeURIComponent(String(row.styleNumber))}` : null,
+  };
+}
+
+async function loadStyleDevelopmentTracker(styleId?: number) {
+  const params: unknown[] = [];
+  const where = styleId ? "WHERE t.id=$1" : "";
+  if (styleId) params.push(styleId);
+  const result = await pool.query(
+    `SELECT t.id,t.style_number AS "styleNumber",t.original_style_number AS "originalStyleNumber",
+      t.style_number_status AS "styleNumberStatus",t.style_name AS "styleName",
+      t.style_type AS type,t.tier,t.status,t.category,t.sub_category AS "subCategory",
+      t.original_sub_category AS "originalSubCategory",t.target_order_week AS "targetOrderWeek",t.fabric,
+      t.sample_approval_date AS "sampleApprovalDate",t.data_quality_flags AS "dataQualityFlags",
+      t.brand,t.pattern_maker AS "patternMaker",t.adoption_date AS "adoptionDate",
+      t.target_launch_week AS "targetLaunchWeek",t.blocked,t.blocker_reason AS "blockerReason",
+       t.sample_fabric_product_id AS "sampleFabricProductId",t.season,
+       t.intended_selling_price_kes AS "intendedSellingPriceKes",t.indicative_cogs_kes AS "indicativeCogsKes",
+       t.exit_status AS "exitStatus",t.exit_reason AS "exitReason",t.exited_at AS "exitedAt",t.exit_stage AS "exitStage",
+      t.created_at AS "createdAt",t.updated_at AS "updatedAt"
+     FROM ${schema}.style_development_tracker t
+     ${where}
+     ORDER BY t.style_name`,
+    params,
+  );
+  if (!result.rows.length) return [];
+  const ids = result.rows.map((row) => Number(row.id));
+  const historyResult = await pool.query(
+    `SELECT h.id,h.tracker_style_id AS "trackerStyleId",h.entry_type AS "entryType",
+      h.event_type AS "eventType",h.outcome,h.note,h.reason,h.old_value AS "oldValue",
+      h.new_value AS "newValue",h.occurred_at AS "occurredAt",h.recorded_at AS "recordedAt",
+      COALESCE(u.name,'System') AS "recordedBy"
+     FROM ${schema}.style_development_history h
+     LEFT JOIN ${schema}.users u ON u.id=h.recorded_by
+     WHERE h.tracker_style_id=ANY($1::int[])
+     ORDER BY h.occurred_at ASC,h.id ASC`,
+    [ids],
+  );
+  const byStyle = new Map<number, Array<Record<string, unknown>>>();
+  for (const entry of historyResult.rows) {
+    const id = Number(entry.trackerStyleId);
+    byStyle.set(id, [...(byStyle.get(id) ?? []), entry]);
+  }
+  // This is the Fabric BI source of truth: completed MOs, joined through the
+  // finished SKU product master (not a style-name match), with kg converted by
+  // the live component kg/metre value.  Keep it local so tracker COGS cannot
+  // drift behind a separately deployed BI endpoint.
+  const consumption = await pool.query(
+    `WITH product_category AS (
+       SELECT DISTINCT ON (sku) sku,category FROM public.all_products_clean
+        WHERE category IS NOT NULL AND BTRIM(category)<>'' ORDER BY sku,category
+     ), fallback AS (
+       SELECT AVG(kg_per_mtr_eff) AS kpm FROM public.raw_fabric_products WHERE kg_per_mtr_eff>0
+     )
+     , per_mo AS (
+       SELECT c.odoo_mo_id,COALESCE(pc.category,'Uncategorised') AS category,
+         MAX(c.produced_qty) AS produced_qty,
+         SUM(CASE WHEN lower(coalesce(c.uom,'')) IN ('m','metre','meter','mtr','metres','meters','metre(s)') THEN c.consumed_qty
+                WHEN lower(coalesce(c.uom,''))='g' THEN c.consumed_qty / 1000.0 / COALESCE(NULLIF(p.kg_per_mtr_eff,0),fallback.kpm)
+                 ELSE c.consumed_qty / COALESCE(NULLIF(p.kg_per_mtr_eff,0),fallback.kpm) END) AS metres
+      FROM public.mo_fabric_consumption c
+      LEFT JOIN public.raw_fabric_products p ON p.id=c.component_id
+      LEFT JOIN product_category pc ON pc.sku=c.finished_sku CROSS JOIN fallback
+     WHERE c.done_date>=CURRENT_DATE-INTERVAL '90 days' AND c.is_main_fabric
+      GROUP BY c.odoo_mo_id,COALESCE(pc.category,'Uncategorised')
+     )
+     SELECT category,SUM(metres)/NULLIF(SUM(produced_qty),0) AS metres_per_garment
+     FROM per_mo WHERE produced_qty>0 GROUP BY category`,
+  );
+  const metresByCategory = new Map(consumption.rows.map((item) => [String(item.category).toLowerCase(), Number(item.metres_per_garment)]));
+  const fabricIds = result.rows.map((item) => item.sampleFabricProductId).filter(Boolean);
+  const selectedFabrics = fabricIds.length ? await pool.query(
+    `SELECT p.id,p.name,p.fabric_color,COALESCE(SUM(i.available / NULLIF(p.kg_per_mtr_eff,0)),0) AS metres,
+       COALESCE(SUM(i.total_value)/NULLIF(SUM(i.quantity),0)*p.kg_per_mtr_eff,p.standard_price*p.kg_per_mtr_eff,0) AS cost_per_metre
+      FROM public.raw_fabric_products p
+        LEFT JOIN public.raw_fabric_inventory i ON i.product_id=p.id AND i.location_name='RMAT/Stock' AND i.available>0
+       WHERE p.id=ANY($1::int[]) GROUP BY p.id,p.name,p.fabric_color,p.kg_per_mtr_eff,p.standard_price`,
+    [fabricIds],
+  ) : { rows: [] as Array<Record<string, unknown>> };
+  const fabricById = new Map(selectedFabrics.rows.map((item) => [Number(item.id), item]));
+  return result.rows.map((row) => {
+    const selected = fabricById.get(Number(row.sampleFabricProductId));
+    const mpg = metresByCategory.get(String(row.category ?? "").toLowerCase());
+    const cost = selected ? Number(selected.cost_per_metre) : null;
+    row.sampleFabricName = selected?.name ?? null;
+    row.sampleFabricColour = selected?.fabric_color ?? null;
+    row.sampleFabricCostPerMetre = cost;
+    row.sampleFabricOtherColours = [];
+    row.categoryMetresPerGarment = mpg ?? null;
+    row.fabricMetres = selected?.metres ?? 0;
+    row.indicativeCogsKes = cost !== null && mpg && mpg > 0 ? cost * mpg : row.indicativeCogsKes;
+    return {
+    ...styleDevelopmentPayload(row, byStyle.get(Number(row.id)) ?? []),
+    history: styleId ? (byStyle.get(Number(row.id)) ?? []).slice().reverse() : undefined,
+    };
+  });
+}
+
 router.get("/style-development-tracker", async (_req, res, next) => {
   try {
-    const result = await pool.query(
-      `SELECT id,style_number AS "styleNumber",original_style_number AS "originalStyleNumber",
-        style_number_status AS "styleNumberStatus",style_name AS "styleName",
-        style_type AS type,tier,status,category,sub_category AS "subCategory",
-        original_sub_category AS "originalSubCategory",target_order_week AS "targetOrderWeek",fabric,
-        sample_approval_date AS "sampleApprovalDate",data_quality_flags AS "dataQualityFlags"
-       FROM ${schema}.style_development_tracker
-       ORDER BY CASE WHEN target_order_week ~ '^WK ?[0-9]+$'
-                     THEN REGEXP_REPLACE(target_order_week,'[^0-9]','','g')::int
-                     ELSE NULL END NULLS LAST,
-                status,style_name`,
-    );
-    const summaries = await pool.query(
-      `SELECT target_order_week AS "targetOrderWeek",COUNT(*)::int AS "styleCount",
-        COUNT(*) FILTER (WHERE style_type='NEW')::int AS "newCount"
-       FROM ${schema}.style_development_tracker
-       GROUP BY target_order_week
-       ORDER BY CASE WHEN target_order_week ~ '^WK ?[0-9]+$'
-                     THEN REGEXP_REPLACE(target_order_week,'[^0-9]','','g')::int
-                     ELSE NULL END NULLS LAST`,
-    );
+    const items = await loadStyleDevelopmentTracker();
+    const unique = (key: string) => Array.from(new Set(items.map((item) => String((item as Record<string, unknown>)[key] ?? "")).filter(Boolean))).sort();
     res.json({
-      items: result.rows,
-      summaries: summaries.rows,
-       weeks: summaries.rows.map((row) => row.targetOrderWeek).filter(Boolean),
-      statuses: Array.from(new Set(result.rows.map((row) => row.status))).sort(),
+      items,
+      stages: STYLE_DEVELOPMENT_STAGES,
+      stageStandards: STYLE_DEVELOPMENT_STAGE_STANDARD_DAYS,
+      facets: {
+        targetOrderWeek: unique("targetOrderWeek"),
+        subCategory: unique("subCategory"),
+        category: unique("category"),
+        brand: unique("brand"),
+        type: unique("type"),
+        tier: unique("tier"),
+        patternMaker: unique("patternMaker"),
+        status: unique("status"),
+      },
     });
   } catch (error) {
     next(error);
+  }
+});
+
+router.get("/style-development-tracker/fabric-options", async (_req, res, next) => {
+  try {
+    // Name is deliberately tested before the source colour, matching Fabric BI's
+    // canonical name/fabric_color fallback.  The regex is longest-first for
+    // compound colours such as Dark Olive Green.
+    const result = await pool.query(
+      `WITH live AS (
+         SELECT p.id,p.name,p.fabric_color,p.kg_per_mtr_eff,p.standard_price,
+           COALESCE(SUM(i.available) FILTER (WHERE i.location_name='RMAT/Stock' AND i.available>0),0) AS kg,
+            COALESCE(SUM(i.total_value) FILTER (WHERE i.location_name='RMAT/Stock' AND i.quantity>0),0) AS value,
+            COALESCE(SUM(i.quantity) FILTER (WHERE i.location_name='RMAT/Stock' AND i.quantity>0),0) AS valued_kg
+          FROM public.raw_fabric_products p LEFT JOIN public.raw_fabric_inventory i ON i.product_id=p.id
+         WHERE p.category='Fabric' AND p.kg_per_mtr_eff>0 GROUP BY p.id,p.name,p.fabric_color,p.kg_per_mtr_eff,p.standard_price
+       ), resolved AS (
+         SELECT *, COALESCE(
+           (regexp_match(lower(name),'(dark olive green|olive green|navy blue|dark blue|light blue|denim blue|army green|dark green|light green|dark brown|light brown|dark grey|light grey|dusty pink|burnt orange|off white|baby blue|black|white|cream|beige|brown|green|blue|red|pink|yellow|orange|purple|grey|gold|silver)'))[1],
+           (regexp_match(lower(coalesce(fabric_color,'')),'(dark olive green|olive green|navy blue|dark blue|light blue|denim blue|army green|dark green|light green|dark brown|light brown|dark grey|light grey|dusty pink|burnt orange|off white|baby blue|black|white|cream|beige|brown|green|blue|red|pink|yellow|orange|purple|grey|gold|silver)'))[1],
+           'Unspecified') AS colour
+         FROM live
+       )
+       SELECT id,name,initcap(colour) AS colour,
+         trim(regexp_replace(lower(name),'(dark olive green|olive green|navy blue|dark blue|light blue|denim blue|army green|dark green|light green|dark brown|light brown|dark grey|light grey|dusty pink|burnt orange|off white|baby blue|black|white|cream|beige|brown|green|blue|red|pink|yellow|orange|purple|grey|gold|silver)',' ','gi')) AS fabric_base_name,
+         kg/kg_per_mtr_eff AS metres,
+          COALESCE(value/NULLIF(valued_kg,0)*kg_per_mtr_eff,standard_price*kg_per_mtr_eff) AS cost_per_metre
+       FROM resolved ORDER BY name LIMIT 1000`,
+    );
+    const groups = new Map<string, { fabricBaseName: string; variants: Array<Record<string, unknown>>; metres: number }>();
+    for (const row of result.rows) {
+      const base = String(row.fabric_base_name).replace(/\s+/g, " ").trim() || String(row.name);
+      const group = groups.get(base) ?? { fabricBaseName: base, variants: [], metres: 0 };
+      const metres = Number(row.metres ?? 0);
+      group.metres += metres;
+      group.variants.push({ productId: Number(row.id), productName: row.name, colour: row.colour, metres, costPerMetre: Number(row.cost_per_metre ?? 0) });
+      groups.set(base, group);
+    }
+    const fabrics = [...groups.values()].map((group) => ({
+      fabricName: group.fabricBaseName, totalMetres: group.metres,
+      colours: group.variants.map((v) => ({ productId: v.productId, productName: v.productName, colour: v.colour, metres: v.metres, costPerMetre: v.costPerMetre })),
+    }));
+    res.json({ fabrics, groups: [...groups.values()].map((group) => ({ ...group, variants: group.variants.map((v) => ({ ...v, otherColourMetres: group.metres - Number(v.metres) })) })) });
+  } catch (error) { next(error); }
+});
+
+router.get("/style-development-tracker/reporting", async (_req, res, next) => {
+  try {
+    const items = await loadStyleDevelopmentTracker();
+    const percentile = (values: number[], p: number) => values.length ? values.slice().sort((a, b) => a - b)[Math.ceil(values.length * p) - 1] : null;
+    const intervals = STYLE_INTERVALS.map(([key,,, standard]) => {
+      const observations = items.map((item) => ((item as Record<string, unknown>).intervalMetrics as Array<Record<string, unknown>>).find((m) => m.key === key))
+        .filter((m): m is Record<string, unknown> => Boolean(m?.completedAt));
+      const numeric = (field: string) => observations.map((m) => m[field]).filter((v): v is number => typeof v === "number" && Number.isFinite(v));
+      const work = numeric("workWorkingDays"), queue = numeric("queueWorkingDays"), total = numeric("totalWorkingDays");
+      return { key, standard, count: observations.length, workMedian: percentile(work, .5), workP80: percentile(work, .8),
+        queueMedian: percentile(queue, .5), queueP80: percentile(queue, .8), totalMedian: percentile(total, .5), totalP80: percentile(total, .8),
+        totalDaysConsumed: total.reduce((sum, value) => sum + value, 0) };
+    });
+    const whereTimeGoing = intervals.slice().sort((a, b) => b.totalDaysConsumed - a.totalDaysConsumed);
+    const assumptionsWrong = intervals.map((item) => ({ ...item, difference: item.workMedian === null ? null : item.workMedian - item.standard }))
+      .sort((a, b) => Math.abs(b.difference ?? -Infinity) - Math.abs(a.difference ?? -Infinity));
+    const active = items.filter((item) => (item as Record<string, unknown>).exitStatus === "active");
+    const readyToStart = active.filter((item) => String((item as Record<string, unknown>).stage) === "Adopted" && ((item as Record<string, unknown>).adoptionReadiness as { ready: boolean }).ready);
+    const activePatternWork = active.filter((item) => {
+      const value = item as Record<string, unknown>;
+      const events = value.intervalMetrics as Array<Record<string, unknown>>;
+      return value.stage === "Pattern" || (value.stage === "CAD and Set Sample" && !events.find((e) => e.key === "cadTransfer")?.completedAt);
+    });
+    const queue = [...readyToStart, ...activePatternWork];
+    const cutoff = Date.now() - 28 * 86400000;
+    const adoptedPerWeek = items.filter((item) => {
+      const date = new Date(String((item as Record<string, unknown>).adoptionDate ?? "")).getTime();
+      return Number.isFinite(date) && date >= cutoff;
+    }).length / 4;
+    const cancellations = items.filter((item) => (item as Record<string, unknown>).exitStatus === "cancelled").reduce((out: Record<string, number>, item) => {
+      const r = String((item as Record<string, unknown>).exitReason ?? "unspecified"); out[r] = (out[r] ?? 0) + 1; return out;
+    }, {});
+    const cancellationsByStage = items.filter((item) => (item as Record<string, unknown>).exitStatus === "cancelled").reduce((out: Record<string, number>, item) => {
+      const stage = String((item as Record<string, unknown>).stage ?? "Adopted"); out[stage] = (out[stage] ?? 0) + 1; return out;
+    }, {});
+    res.json({ intervals, totalDays: 13, whereTimeGoing, assumptionsWrong, cancellationsByReason: cancellations,
+      cancellationsByStage,
+      capacity: { makers: 3.5, daysPerPattern: 2, weeklyCapacity: 8.75, monthlyCapacity: 38, queueDepth: queue.length, readyToStart: readyToStart.length, activePatternWork: activePatternWork.length, weeksCover: queue.length / 8.75, patternsPerMaker: queue.length / 3.5, byPatternMaker: Object.entries(activePatternWork.reduce((out: Record<string, number>, item) => { const maker = String((item as Record<string, unknown>).patternMaker || "Unassigned"); out[maker] = (out[maker] ?? 0) + 1; return out; }, {})).map(([patternMaker, load]) => ({ patternMaker, load })), adoptedPerWeek, targetAdoptionsPerWeek: 10, monthlyGap: 38 - adoptedPerWeek * 4 } });
+  } catch (error) { next(error); }
+});
+
+router.get("/style-development-tracker/:id", async (req, res, next) => {
+  try {
+    const items = await loadStyleDevelopmentTracker(Number(req.params.id));
+    if (!items[0]) {
+      res.status(404).json({ error: "Tracker style not found" });
+      return;
+    }
+    res.json(items[0]);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.patch("/style-development-tracker/:id", async (req: AuthRequest, res, next) => {
+  const client = await pool.connect();
+  try {
+    const styleId = Number(req.params.id);
+    await client.query("BEGIN");
+    const current = await client.query(`SELECT * FROM ${schema}.style_development_tracker WHERE id=$1 FOR UPDATE`, [styleId]);
+    if (!current.rows[0]) {
+      await client.query("ROLLBACK");
+      res.status(404).json({ error: "Tracker style not found" });
+      return;
+    }
+    const fieldMap: Record<string, string> = {
+      styleNumber: "style_number",
+      styleName: "style_name",
+      type: "style_type",
+      tier: "tier",
+      status: "status",
+      category: "category",
+      subCategory: "sub_category",
+      brand: "brand",
+      fabric: "fabric",
+      patternMaker: "pattern_maker",
+      adoptionDate: "adoption_date",
+      targetOrderWeek: "target_order_week",
+      targetLaunchWeek: "target_launch_week",
+      blocked: "blocked",
+      blockerReason: "blocker_reason",
+      sampleFabricProductId: "sample_fabric_product_id",
+      season: "season",
+      intendedSellingPriceKes: "intended_selling_price_kes",
+      exitStatus: "exit_status",
+      exitReason: "exit_reason",
+      reason: "exit_reason",
+    };
+    const assignments: string[] = [];
+    const values: unknown[] = [];
+    const changes: Array<{ key: string; oldValue: unknown; newValue: unknown }> = [];
+    for (const [key, column] of Object.entries(fieldMap)) {
+      if (req.body?.[key] === undefined) continue;
+      let value: unknown = req.body[key];
+      if (key === "blocked") value = Boolean(value);
+      else if (key === "sampleFabricProductId") {
+        value = value === null || value === "" ? null : Number(value);
+        const fabricId = value === null ? null : Number(value);
+        if (fabricId !== null && (!Number.isInteger(fabricId) || fabricId <= 0)) throw new Error("Sample fabric must be a valid fabric product id");
+      } else if (key === "intendedSellingPriceKes") {
+        value = value === null || value === "" ? null : Number(value);
+        const sellingPrice = value === null ? null : Number(value);
+        if (sellingPrice !== null && (!Number.isFinite(sellingPrice) || sellingPrice < 0)) throw new Error("Intended selling price must be a non-negative number");
+      }
+      else if (key === "exitReason" || key === "reason") value = value ? String(value).trim() : null;
+      else if (key === "adoptionDate" || key === "targetOrderWeek" || key === "targetLaunchWeek") value = value ? String(value).trim() : null;
+      else value = String(value ?? "").trim();
+      const oldValue = current.rows[0][column];
+      if (String(oldValue ?? "") === String(value ?? "")) continue;
+      if (key === "type" && !["NEW", "RR"].includes(String(value))) throw new Error("Type must be NEW or RR");
+      if (key === "tier" && !["Tier 3", "Tier 4"].includes(String(value))) throw new Error("Tier must be Tier 3 or Tier 4");
+       if (key === "exitStatus" && !["active", "on_hold", "cancelled"].includes(String(value))) throw new Error("Exit status must be active, on_hold, or cancelled");
+      values.push(value);
+      assignments.push(`${column}=$${values.length}`);
+      changes.push({ key, oldValue, newValue: value });
+    }
+    const proposedExitStatus = changes.find((change) => change.key === "exitStatus")?.newValue ?? current.rows[0].exit_status;
+    const selectedFabricId = changes.find((change) => change.key === "sampleFabricProductId")?.newValue;
+    if (selectedFabricId !== undefined && selectedFabricId !== null) {
+      const fabric = await client.query(
+        `SELECT id FROM public.raw_fabric_products WHERE id=$1 AND category='Fabric' AND kg_per_mtr_eff>0`,
+        [selectedFabricId],
+      );
+      if (!fabric.rows[0]) throw new Error("Sample fabric must be a current Fabric product with a valid kg per metre");
+    }
+    const proposedExitReason = changes.find((change) => change.key === "exitReason" || change.key === "reason")?.newValue ?? current.rows[0].exit_reason;
+    const exitReasons = ["pattern will not work", "wrong for the season", "no fabric in stock", "margin too high"];
+    if (proposedExitStatus !== "active" && !exitReasons.includes(String(proposedExitReason))) {
+      throw new Error("On hold or cancelled styles require one exact exit reason");
+    }
+    if (proposedExitStatus === "active" && current.rows[0].exit_status !== "active") {
+      const reasonAssignment = assignments.findIndex((assignment) => assignment.startsWith("exit_reason="));
+      if (reasonAssignment >= 0) {
+        values[reasonAssignment] = null;
+      } else {
+        values.push(null); assignments.push(`exit_reason=$${values.length}`);
+      }
+      values.push(null); assignments.push(`exited_at=$${values.length}`);
+      values.push(null); assignments.push(`exit_stage=$${values.length}`);
+    } else if (proposedExitStatus !== "active" && changes.some((change) => change.key === "exitStatus")) {
+      const currentPayload = (await loadStyleDevelopmentTracker(styleId))[0] as Record<string, unknown> | undefined;
+      values.push(new Date().toISOString()); assignments.push(`exited_at=$${values.length}`);
+      values.push(currentPayload?.stage ?? "Adopted"); assignments.push(`exit_stage=$${values.length}`);
+    }
+    if (!assignments.length) {
+      await client.query("ROLLBACK");
+      res.status(400).json({ error: "No changed fields supplied" });
+      return;
+    }
+    values.push(styleId);
+    await client.query(`UPDATE ${schema}.style_development_tracker SET ${assignments.join(",")},updated_at=NOW() WHERE id=$${values.length}`, values);
+    for (const change of changes) {
+      await client.query(
+        `INSERT INTO ${schema}.style_development_history
+          (tracker_style_id,entry_type,note,old_value,new_value,recorded_by)
+         VALUES ($1,$2,$3,$4,$5,$6)`,
+        [
+          styleId,
+           change.key === "targetOrderWeek" ? "target_week_changed" : change.key === "exitStatus" || change.key === "exitReason" || change.key === "reason" ? "exit_changed" : change.key === "blocked" || change.key === "blockerReason" ? "blocker_changed" : "master_data_changed",
+           change.key === "exitStatus" ? `Exit recorded at ${current.rows[0].status}` : `${change.key} updated`,
+          change.oldValue === null ? null : String(change.oldValue),
+          change.newValue === null ? null : String(change.newValue),
+          req.workspaceUser?.id ?? null,
+        ],
+      );
+    }
+    await client.query("COMMIT");
+    res.json((await loadStyleDevelopmentTracker(styleId))[0]);
+  } catch (error) {
+    await client.query("ROLLBACK");
+    res.status(400).json({ error: error instanceof Error ? error.message : "Style could not be updated" });
+  } finally {
+    client.release();
+  }
+});
+
+router.post("/style-development-tracker/:id/notes", async (req: AuthRequest, res, next) => {
+  try {
+    const note = String(req.body?.note ?? "").trim();
+    if (!note) {
+      res.status(400).json({ error: "A note is required" });
+      return;
+    }
+    const result = await pool.query(
+      `INSERT INTO ${schema}.style_development_history
+        (tracker_style_id,entry_type,note,recorded_by)
+       SELECT id,'note',$2,$3 FROM ${schema}.style_development_tracker WHERE id=$1
+       RETURNING id`,
+      [Number(req.params.id), note, req.workspaceUser?.id ?? null],
+    );
+    if (!result.rows[0]) {
+      res.status(404).json({ error: "Tracker style not found" });
+      return;
+    }
+    res.status(201).json((await loadStyleDevelopmentTracker(Number(req.params.id)))[0]);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post("/style-development-tracker/:id/events", async (req: AuthRequest, res, next) => {
+  const client = await pool.connect();
+  try {
+    const eventType = String(req.body?.eventType ?? "") as StyleDevelopmentEventType;
+    if (!STYLE_DEVELOPMENT_EVENT_TYPES.includes(eventType)) {
+      res.status(400).json({ error: "Unsupported development event" });
+      return;
+    }
+    const reason = String(req.body?.reason ?? "").trim();
+    if (eventType.endsWith("_rejected") && !reason) {
+      res.status(400).json({ error: "A rejection reason is required" });
+      return;
+    }
+    const occurredAt = req.body?.occurredAt ? new Date(String(req.body.occurredAt)) : new Date();
+    if (Number.isNaN(occurredAt.getTime())) {
+      res.status(400).json({ error: "The event date is invalid" });
+      return;
+    }
+    await client.query("BEGIN");
+    const styleId = Number(req.params.id);
+    if (eventType === "pattern_started") {
+      const current = (await loadStyleDevelopmentTracker(styleId))[0] as Record<string, unknown> | undefined;
+      const overrideReason = String(req.body?.overrideReason ?? "").trim();
+      if (!current) {
+        await client.query("ROLLBACK"); res.status(404).json({ error: "Tracker style not found" }); return;
+      }
+      if (!(current.adoptionReadiness as { ready: boolean }).ready && !overrideReason) {
+        await client.query("ROLLBACK"); res.status(400).json({ error: "An override reason is required when adoption readiness is not met" }); return;
+      }
+      if (!(current.adoptionReadiness as { ready: boolean }).ready) {
+        await client.query(
+          `INSERT INTO ${schema}.style_development_history (tracker_style_id,entry_type,event_type,note,reason,recorded_by)
+           VALUES ($1,'update','pattern_started_override','Pattern started before adoption readiness was met',$2,$3)`,
+          [styleId, overrideReason, req.workspaceUser?.id ?? null],
+        );
+      }
+    }
+    const outcome = eventType.endsWith("_approved") ? "approved" : eventType.endsWith("_rejected") ? "rejected" : "completed";
+    const result = await client.query(
+      `INSERT INTO ${schema}.style_development_history
+        (tracker_style_id,entry_type,event_type,outcome,reason,occurred_at,recorded_by)
+       SELECT id,'event',$2,$3,$4,$5,$6 FROM ${schema}.style_development_tracker WHERE id=$1
+       RETURNING id`,
+       [styleId, eventType, outcome, reason, occurredAt.toISOString(), req.workspaceUser?.id ?? null],
+    );
+    if (!result.rows[0]) {
+      await client.query("ROLLBACK");
+      res.status(404).json({ error: "Tracker style not found" });
+      return;
+    }
+    await client.query("COMMIT");
+    res.status(201).json((await loadStyleDevelopmentTracker(Number(req.params.id)))[0]);
+  } catch (error) {
+    await client.query("ROLLBACK");
+    next(error);
+  } finally {
+    client.release();
   }
 });
 
