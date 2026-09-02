@@ -17,7 +17,6 @@ import SORNewStylesReport from "@/components/SORNewStylesReport";
 import SorAllStyles from "@/components/SorAllStyles";
 import NewStylesSalesCurve from "@/components/NewStylesSalesCurve";
 import CategoryCountryMatrix from "@/components/CategoryCountryMatrix";
-import ProductsPlan from "@/components/ProductsPlan";
 import DateWindowSelector from "@/components/DateWindowSelector";
 import { useThumbnails } from "@/lib/useThumbnails";
 import {
@@ -52,7 +51,7 @@ const Products = () => {
   // page respond to. Replaces the hidden 30d-locked toggle. Scoped
   // to the Catalog sub-tab's tables only (other sub-tabs — L-10,
   // SOR All Styles, New Styles Curve, Category × Country, Products
-  // Plan — have their own date logic). KPI cards continue to read
+          // report tabs — have their own date logic). KPI cards continue to read
   // the global filter bar via `useKpis` for cross-page consistency.
   //
   // Task #217 (Jun 2026) — the Window now also drives the four headline
@@ -439,16 +438,6 @@ const Products = () => {
         >
           Country Matrix
         </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={tab === "products-plan"}
-          onClick={() => setTab("products-plan")}
-          className={`px-4 py-2 text-[12.5px] font-medium border-l border-border ${tab === "products-plan" ? "bg-brand text-white" : "bg-white hover:bg-panel"}`}
-          data-testid="subtab-products-plan"
-        >
-          Products Plan
-        </button>
       </div>
 
       {tab === "l10" && <SorNewStylesL10 brand={brandCsv} styleStatus={styleStatus} />}
@@ -456,8 +445,6 @@ const Products = () => {
       {tab === "all-styles" && <SorAllStyles brand={brandCsv} styleStatus={styleStatus} />}
       {tab === "sales-curve" && <NewStylesSalesCurve />}
       {tab === "matrix" && <CategoryCountryMatrix />}
-      {tab === "products-plan" && <ProductsPlan />}
-
       {tab === "catalog" && (<>
 
       {(loading || kpisLoading) && <Loading />}

@@ -26817,34 +26817,52 @@ def analytics_products_plan(
     country:   str = Query(default=None),
     channel:   str = Query(default=None),
 ):
-    # Sub-category composition: sales, SOR, qty + SOH split (stores vs W/H),
-    # each alongside its share of the corresponding group total.
+    # Sub-category composition. "Opening stock" is the current sellable
+    # snapshot: retail/online stores + dispatch-ready Warehouse Finished Goods.
+    # Production, receiving, holding and in-transit locations are excluded.
+    # Sales and inventory are aggregated separately before the final join so a
+    # many-row inventory snapshot can never multiply sales.
     where = build_filters(date_from, date_to, country, channel,
         extra="s.sale_kind IN ('sale','order') AND s.ordered_item_quantity > 0 "
-              "AND p.product_type IN (" + MERCH_SUBCATEGORIES_SQL + ")")
+              "AND p.subcategory IN (" + MERCH_SUBCATEGORIES_SQL + ")")
     inv_country = (" AND i.country IN (" + csv_to_sql(country) + ")") if country else ""
+    inv_channel = (" AND i.pos_location_name IN (" + csv_to_sql(channel) + ")") if channel else ""
     rows = run_query(
         """
-        WITH sales AS (
-            SELECT p.category, p.product_type AS subcategory,
+        WITH product_dim AS (
+            SELECT sku, MAX(category) AS category, MAX(product_type) AS subcategory
+            FROM all_products_clean
+            WHERE sku IS NOT NULL AND sku <> ''
+            GROUP BY sku
+        ),
+        sales AS (
+            SELECT p.category, p.subcategory,
                 SUM(s.ordered_item_quantity) AS qty_sold,
                 ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric))) AS total_sales
             FROM all_sales s
-            JOIN all_products_clean p ON s.variant_sku = p.sku
+            JOIN product_dim p ON s.variant_sku = p.sku
             WHERE """ + where + """
-            GROUP BY p.category, p.product_type
+            GROUP BY p.category, p.subcategory
         ),
-        stock AS (
-            SELECT p.category, p.product_type AS subcategory,
-                SUM(i.available) FILTER (WHERE i.pos_location_name NOT IN (""" + PIPELINE_LOCATIONS + """)) AS total_soh,
+        inventory_by_sku AS (
+            SELECT i.sku,
                 SUM(i.available) FILTER (WHERE i.pos_location_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)) AS stores_soh,
-                SUM(i.available) FILTER (WHERE i.pos_location_name IN (""" + WAREHOUSE_LOCATIONS + """)
-                                           AND i.pos_location_name NOT IN (""" + PIPELINE_LOCATIONS + """)) AS wh_soh,
+                SUM(i.available) FILTER (WHERE i.pos_location_name = 'Warehouse Finished Goods') AS wh_soh,
                 SUM(i.available) FILTER (WHERE i.pos_location_name IN (""" + PIPELINE_LOCATIONS + """)) AS pipeline_soh
             FROM all_inventory i
-            JOIN all_products_clean p ON i.sku = p.sku
-            WHERE p.product_type IN (""" + MERCH_SUBCATEGORIES_SQL + """)""" + inv_country + """
-            GROUP BY p.category, p.product_type
+            WHERE 1=1""" + inv_country + inv_channel + """
+            GROUP BY i.sku
+        ),
+        stock AS (
+            SELECT p.category, p.subcategory,
+                SUM(COALESCE(i.stores_soh, 0) + COALESCE(i.wh_soh, 0)) AS total_soh,
+                SUM(COALESCE(i.stores_soh, 0)) AS stores_soh,
+                SUM(COALESCE(i.wh_soh, 0)) AS wh_soh,
+                SUM(COALESCE(i.pipeline_soh, 0)) AS pipeline_soh
+            FROM inventory_by_sku i
+            JOIN product_dim p ON i.sku = p.sku
+            WHERE p.subcategory IN (""" + MERCH_SUBCATEGORIES_SQL + """)
+            GROUP BY p.category, p.subcategory
         )
         SELECT COALESCE(s.category, st.category) AS category,
             COALESCE(s.subcategory, st.subcategory) AS subcategory,
@@ -26885,6 +26903,12 @@ def analytics_products_plan(
             "wh_soh": int(wh),
             "pct_wh_soh": round(wh / tot_wh * 100, 1) if tot_wh else 0.0,
             "pipeline_soh": int(float(r["pipeline_soh"] or 0)),
+            "opening_woc": round(soh / (qty / 4.28), 1) if qty > 0 else None,
+            "stock_to_sales_ratio": round(
+                (soh / tot_soh * 100 if tot_soh else 0.0)
+                - (qty / tot_qty * 100 if tot_qty else 0.0),
+                1,
+            ),
         })
     out.sort(key=lambda x: -x["qty_sold"])
     return out

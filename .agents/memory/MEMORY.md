@@ -157,3 +157,4 @@
 - [Project Reconnect one-off export](project-reconnect-oneoff-export.md) — private cohort constants never alias canonical churn ones; no wholesale/staff flag exists; late restricted-draw tests get starved by earlier unrestricted ones.
 - [Embedded operations access and freshness](embedded-operations-access-freshness.md) — combine page grants with explicit staff rosters; never let shared live work inherit BI caches.
 - [Atelier visual identity](atelier-visual-identity.md) — Atelier uses clay and warm neutrals with Playfair/DM Sans; keep status colors semantic and single-record screens free of BI chrome.
+- [Products Plan stock basis](products-plan-stock-basis.md) — opening stock is Stores + Warehouse Finished Goods; WOC uses 4.28 weeks and stock-to-sales variance is stock share minus unit share.
