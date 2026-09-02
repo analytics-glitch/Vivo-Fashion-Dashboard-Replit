@@ -91,7 +91,7 @@ const PLM_RANGE_TIERS = ["Tier 1", "Tier 2", "Tier 3", "Tier 4"] as const;
 const PLM_SEASONS = ["Q3 2026", "Q4 2026"] as const;
 const RANGE_PLAN_SEASON_SEEDS = [
   { seasonName: "Q4 2026", revenueTarget: 450000000, factoryCapacityUnits: 90000, cadence: "quarterly" as const, otbMonths: ["2026-10-01", "2026-11-01", "2026-12-01"] as const },
-  { seasonName: "September 2026", revenueTarget: 30000000, factoryCapacityUnits: 28000, cadence: "monthly" as const, otbMonth: "2026-09-01" },
+  { seasonName: "September 2026", revenueTarget: 30000000, factoryCapacityUnits: 25000, cadence: "monthly" as const, otbMonth: "2026-09-01" },
   { seasonName: "October 2026", revenueTarget: 30000000, factoryCapacityUnits: 30000, cadence: "monthly" as const, otbMonth: "2026-10-01" },
   { seasonName: "November 2026", revenueTarget: 30000000, factoryCapacityUnits: 30000, cadence: "monthly" as const, otbMonth: "2026-11-01" },
   { seasonName: "December 2026", revenueTarget: 30000000, factoryCapacityUnits: 30000, cadence: "monthly" as const, otbMonth: "2026-12-01" },
@@ -103,25 +103,81 @@ const SEPTEMBER_2026_MONTHLY_ROW_SEEDS = [
   ["Bottoms", "Culottes & Capri Pants", 0, 400, 2375, null, 1],
   ["Bottoms", "Shorts & Skorts", 0, 400, 2714, null, 53],
   ["Dresses", "Knee Length Dresses", 8, 400, 5801, 1594, 3576],
-  ["Dresses", "Maxi Dresses", 12, 440, 6877, 1830, 3087],
+  ["Dresses", "Maxi Dresses", 12, 400, 6877, 1830, 3087],
   ["Dresses", "Midi & Capri Dresses", 2, 400, 5932, null, 495],
   ["Dresses", "Short & Mini Dresses", 1, 400, 4900, 1448, 192],
   ["Dresses", "Kaftan Dresses", 2, 400, 5500, 1435, 491],
   ["Outerwear", "Sweaters & Ponchos", 3, 400, 5077, null, 1913],
   ["Outerwear", "Waterfalls & Kimonos", 6, 400, 4214, 1096, 1517],
-  ["Outerwear", "Jackets & Coats", 4, 440, 5332, 1411, 379],
+  ["Outerwear", "Jackets & Coats", 4, 400, 5332, 1411, 379],
   ["Outerwear", "Hoodies & Sweatshirts", 2, 400, 3705, null, 314],
   ["Skirts", "Knee Length Skirts", 0, 400, 2900, null, 209],
   ["Skirts", "Maxi Skirts", 1, 400, 4900, 1212, 142],
   ["Skirts", "Midi & Capri Skirts", 0, 400, 5203, null, 192],
   ["Skirts", "Short & Mini Skirts", 0, 400, 2934, null, 11],
-  ["Tops", "Fitted Tops", 6, 440, 3360, 731, 2015],
-  ["Tops", "Loose & Oversized Tops", 8, 450, 4351, 1384, 1666],
+  ["Tops", "Fitted Tops", 6, 400, 3360, 731, 2015],
+  ["Tops", "Loose & Oversized Tops", 8, 400, 4351, 1384, 1666],
   ["Tops", "T-shirts & Tank Tops", 2, 400, 2104, 464, 1424],
   ["Tops", "Relaxed Tops", 3, 400, 3593, 1032, 1678],
   ["Tops", "Kaftan Tops", 0, 400, null, null, 228],
-  ["Tops", "Bodysuits", 1, 470, 2500, 564, 429],
+  ["Tops", "Bodysuits", 1, 400, 2500, 564, 429],
   ["Tops", "Midriff & Crop Tops", 0, 400, 2524, null, 120],
+] as const;
+const STYLE_DEVELOPMENT_TRACKER_SEEDS = [
+  ["MISSING", "Vivo Tie Kimono in Crepe", "RR", "Approved for S/S", "Tops", "Waterfalls & Kimonos", "WK36", ""] ,
+  ["S0626058", "Safari by Vivo Wide Bubble Sleeve Top in Cotton", "NEW", "CAD Processing Order", "Tops", "Loose & Oversized Tops", "WK36", "YIYI N272"],
+  ["V0526095", "Vivo Ustawi Easy Fit Shirt in Crepe (R)", "NEW", "CAD Processing Order", "Tops", "Loose Tops", "WK36", "Showme 18206"],
+  ["MISSING", "Vivo Mistari 3/4 Sleeve Kaftan Dress in Twill", "NEW", "Pattern", "Dresses", "Kaftan Dresses", "WK36", "YIHAO 57 2345"],
+  ["V0826023", "Vivo Pleated Wide Leg Pants in Crepe", "NEW", "Set Sampling", "Bottoms", "Full Length Pants", "WK36", "YIHAO 681112"],
+  ["V0826005", "Vivo Side Pleat Top in Jersey", "NEW", "Set Sampling", "Tops", "Fitted Tops", "WK36", "REEYON LY470A"],
+  ["S0526098", "Safari by Vivo Off Shoulder Tiered Maxi Dress in Cotton", "NEW", "Set Sampling Fitting", "Dresses", "Capri & Midi Dresses", "WK36", "YIYI N272"],
+  ["S0826011", "Safari by Vivo Off-Shoulder Maxi Dress in Cotton", "RR", "Approved for S/S", "Dresses", "Maxi Dresses", "WK37", "Minglei 810"],
+  ["V0826010", "Vivo Back Pleat Coat Dress in Cotton Denim Twill", "NEW", "Approved for S/S", "Dresses", "Knee Length Dresses", "WK37", "SHUNYUAN H407"],
+  ["S0626071", "Safari by Vivo Nimali Top in Kitenge", "RR", "Approved for S/S", "Tops", "Loose & Oversized Tops", "WK37", "ANNINGTEX Kitenge"],
+  ["S0226012", "Safari By Vivo Barrel Pants in Cotton", "NEW", "Approved for S/S", "Bottoms", "Full Length Pants", "WK37", "YIYI Y760"],
+  ["V0726023", "Vivo Dua Long Sleeve Shirt in Textured Satin (Refresh)", "RR", "CAD Processing SS", "Tops", "Fitted Tops", "WK37", "YIWAN 8083"],
+  ["S0626064", "Safari by Vivo Contrast Stitch Top in Linen Blend", "NEW", "Sample Review", "Tops", "Loose & Oversized Tops", "WK37", "Xuegui 2317"],
+  ["V0326041", "Vivo Dropped Waist Maxi Dress in Cotton", "RR", "Sample Review", "Dresses", "Maxi Dresses", "WK37", "YIYI N272"],
+  ["V0726016", "Vivo Long Sleeve Bodysuit in Rayon", "NEW", "Sampling", "Tops", "Bodysuits", "WK37", "REEYON LY001"],
+  ["V0526056", "Vivo Drop Shoulder Knee Length Dress in Crepe", "NEW", "Approved for S/S", "Dresses", "Capri & Midi Dresses", "WK37", ""],
+  ["V0826056", "Vivo Gathered Neck Jacket ETSY", "NEW", "Sampling", "Outerwear", "Jackets & Coats", "WK37", "HUAMING 2018"],
+  ["V0726034", "Vivo Wastani Shirred Sleeve Shirt Dress in Crepe", "NEW", "Sampling", "Dresses", "Knee Length Dresses", "WK37", "HUAYI B865"],
+  ["V0826024", "Vivo Tanda Cowl Sweater in Jersey", "NEW", "Sampling", "Outerwear", "Sweaters & Ponchos", "WK37", ""],
+  ["V0926001", "Vivo Round Neck Maxi Kaftan in Satin", "RR", "Sampling", "Dresses", "Kaftan Dresses", "WK37", "Huaming 2018D"],
+  ["V0926002", "Vivo Essi Front Slit Maxi Top in Textured Satin", "RR", "Sampling", "Tops", "Loose & Oversized Tops", "WK37", "Yiwan 8083"],
+  ["V0626079", "Safari by Vivo Panelled Oversized Short Sleeve Top in Linen", "NEW", "Set Sampling", "Tops", "Loose & Oversized Tops", "WK37", "Linen"],
+  ["V0526099", "Vivo Flounce Maxi Dress In Kitenge (R)", "NEW", "Set Sampling", "Dresses", "Maxi Dresses", "WK37", "Kitenge"],
+  ["V0526085", "Vivo Cape Top in Stretch Rib", "NEW", "Set Sampling", "Outerwear", "Sweaters & Ponchos", "WK37", "GAOHENG H1031"],
+  ["V0426011", "Vivo Relaxed Shirt Dress in Crepe", "NEW", "Transfer to CAD", "Dresses", "Short & Mini Dresses", "WK37", "Showme 18206"],
+  ["S0726009", "Safari By Vivo Panelled Barrel Pants in Linen Blend", "NEW", "Transfer to CAD", "Bottoms", "Full Length Pants", "WK37", "AMDHIR Light Linen Blend"],
+  ["S0526028", "Safari by Vivo Coat in Kitenge", "NEW", "Transfer to CAD", "Outerwear", "Jackets & Coats", "WK37", "ANNINGTEX Kitenge"],
+  ["V0626082", "Safari by Vivo Short Sleeved Top in Cotton", "NEW", "Transfer to CAD", "Tops", "Loose & Oversized Tops", "WK37", "YIYI N272"],
+  ["V0626077", "Vivo Drawstring Wide Pants in Crepe", "NEW", "Waiting for Fabric", "Bottoms", "Full Length Pants", "WK37", "EQ 1441"],
+] as const;
+const STYLE_DEVELOPMENT_TRACKER_PART_TWO_SEEDS = [
+  ["V0826007", "Vivo Sleeveless Waterfall in Crepe", "NEW", "Approved for S/S", "Outerwear", "Waterfalls & Kimonos", "WK38", "Showme 18206", null],
+  ["V0826055", "Vivo Straight Leg Pants in Stretch Rib", "NEW", "Pattern", "Bottoms", "Full Length Pants", "WK38", "GAOHENG H1031", null],
+  ["S0726044", "Safari by Vivo Oversized Jacket in Twill", "NEW", "Pattern", "Outerwear", "Jackets & Coats", "WK38", "WAN HEXIN Kata Tiao Dark Green", null],
+  ["MISSING", "Safari by Vivo Turn-up Sleeve Knee Length Dress in Cotton", "NEW", "Pattern", "Dresses", "Knee Length Dresses", "WK38", "SHUNYUAN H179", null],
+  ["S0826014", "Safari by Vivo Sleeveless Front Zip Jumpsuit in Cotton", "NEW", "Pattern", "Bottoms", "Jumpsuits & Playsuits", "WK38", "SHUNYUAN 1728", null],
+  ["V0423018", "Vivo Wastani Shirred Sleeve Easy Fit Shirt", "RR", "Pattern", "Tops", "Relaxed", "WK38", "HUAYI B865", null],
+  ["V0626012", "Vivo Drop Shoulder Jumpsuit in Denim", "NEW", "Sample Review", "Bottoms", "Jumpsuits & Playsuits", "WK38", "Hua Yi F-005", null],
+  ["V0526026", "Vivo Extra Wide Leg Pants in Denim", "NEW", "Sampling", "Bottoms", "Full Length Pants", "WK38", "HONG YU F8953", null],
+  ["V0626050", "Vivo Sleeveless Tent Jacket in Crepe", "NEW", "Sampling", "Outerwear", "Jackets & Coats", "WK38", "YAT TAJ HONG CA13550", null],
+  ["MISSING", "Vivo Ustawi Drop Shoulder Midi Tie Dress in Crepe", "NEW", "Sampling", "Dresses", "Capri & Midi Dresses", "WK38", "Guiguan 8205", null],
+  ["V0626032", "Vivo Button Up Pintuck in Satin", "NEW", "Sampling", "Tops", "Loose Tops", "WK38", "Eastleigh Medium Satin", null],
+  ["V0526055", "Vivo Ustawi Bubble Sleeve Maxi Tie Dress in Crepe", "NEW", "Sampling", "Dresses", "Maxi Dresses", "WK38", "Showme 18208", null],
+  ["V0626048", "Vivo Sleeveless Pleat Neck Jacket in Crepe", "NEW", "Set Sampling", "Outerwear", "Jackets & Coats", "WK38", "YIHAO 681112", null],
+  ["V0626081", "Vivo Shirred Sleeve Top in Cotton", "NEW", "Set Sampling", "Tops", "Relaxed", "WK38", "YIYI N273", null],
+  ["V0826006", "Vivo Wide Leg Pants in Crepe", "NEW", "Set Sampling", "Bottoms", "Full Length Pants", "WK38", "Showme 18206", "2026-11-08"],
+  ["V0826008", "Vivo Sleeveless Front Pleat Maxi Dress in Dobby", "NEW", "Waiting for Fabric", "Dresses", "Maxi Dresses", "WK38", "YIQI 1130", null],
+  ["V0626033", "Vivo High Low Top in Satin", "NEW", "Approved for S/S", "Tops", "Loose Tops", "WK39", "Hua Ming 2018/100D", null],
+  ["V0826004", "Vivo Bubble Gathered Midi Dress in Cotton Blend", "NEW", "Pattern", "Dresses", "Capri & Midi Dresses", "WK39", "XUEGUI Y022", null],
+  ["V0826028", "Vivo Wide Leg Pants in Ponte", "NEW", "Pattern", "Bottoms", "Full Length Pants", "WK39", "BAO DELI", null],
+  ["V0726032", "Vivo Raglan Sleeve Sweatshirt in Ponte (ETSY)", "NEW", "Pattern", "Outerwear", "Hoodies & Sweatshirts", "WK39", "GAO SHANG 6034", null],
+  ["V0826038", "Vivo Pullover in Fleece (ETSY)", "NEW", "Pattern", "Outerwear", "Hoodies & Sweatshirts", "WK39", "Maziwa Fleece", null],
+  ["V0526047", "Vivo Long Sleeved Tie Blazer in Ponte", "RR", "Pattern", "Outerwear", "Jackets & Coats", "WK39", "Shunyuan 18A-46", null],
+  ["V0626072", "Vivo Asymetrical Sleeveless Coat in Twill", "NEW", "Pattern", "Outerwear", "Jackets & Coats", "WK39", "YIWAN 8075", null],
 ] as const;
 const WORKSPACE_BRANDS = ["Vivo", "Safari by Vivo", "Zoya"] as const;
 const ALLOWED_BRANDS_SQL = WORKSPACE_BRANDS.map((brand) => `'${brand}'`).join(",");
@@ -964,6 +1020,129 @@ async function ensureWorkspaceResources() {
   }
 }
 
+async function ensureStyleDevelopmentTrackerData() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS ${schema}.style_development_tracker_imports (
+      import_key TEXT PRIMARY KEY,
+      imported_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE TABLE IF NOT EXISTS ${schema}.style_development_tracker (
+      id SERIAL PRIMARY KEY,
+      style_number TEXT,
+      original_style_number TEXT,
+      style_number_status TEXT NOT NULL CHECK (style_number_status IN ('needs_number','malformed','confirmed')),
+      style_name TEXT NOT NULL,
+      style_type TEXT NOT NULL CHECK (style_type IN ('NEW','RR')),
+      tier TEXT NOT NULL CHECK (tier IN ('Tier 3','Tier 4')),
+      status TEXT NOT NULL,
+      category TEXT NOT NULL,
+      sub_category TEXT NOT NULL,
+      original_sub_category TEXT NOT NULL,
+      target_order_week TEXT NOT NULL,
+      fabric TEXT NOT NULL DEFAULT '',
+      sample_approval_date TEXT,
+      data_quality_flags TEXT[] NOT NULL DEFAULT '{}',
+      import_batch TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (import_batch, style_name, target_order_week)
+    );
+    ALTER TABLE ${schema}.style_development_tracker
+      ADD COLUMN IF NOT EXISTS sample_approval_date TEXT,
+      ADD COLUMN IF NOT EXISTS data_quality_flags TEXT[] NOT NULL DEFAULT '{}';
+    CREATE INDEX IF NOT EXISTS style_development_tracker_week_idx
+      ON ${schema}.style_development_tracker (target_order_week, status);
+  `);
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const claim = await client.query(
+      `INSERT INTO ${schema}.style_development_tracker_imports (import_key)
+       VALUES ('q3-2026-weeks-36-37-v1')
+       ON CONFLICT DO NOTHING
+       RETURNING import_key`,
+    );
+    if (claim.rows[0]) {
+      await client.query(`DELETE FROM ${schema}.style_development_tracker`);
+      const normalizedSubCategories: Record<string, string> = {
+        "Capri & Midi Dresses": "Midi & Capri Dresses",
+        "Loose Tops": "Loose & Oversized Tops",
+        "Relaxed": "Relaxed Tops",
+        "Maxi Skirt": "Maxi Skirts",
+      };
+      for (const [rawStyleNumber, styleName, styleType, status, category, originalSubCategory, targetOrderWeek, fabric] of STYLE_DEVELOPMENT_TRACKER_SEEDS) {
+        const needsNumber = rawStyleNumber === "MISSING";
+        const malformed = rawStyleNumber === "S0526028";
+        await client.query(
+          `INSERT INTO ${schema}.style_development_tracker
+            (style_number,original_style_number,style_number_status,style_name,style_type,tier,status,
+            category,sub_category,original_sub_category,target_order_week,fabric,sample_approval_date,data_quality_flags,import_batch)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NULL,'{}','q3-2026-weeks-36-37')`,
+          [
+            needsNumber ? null : rawStyleNumber,
+            needsNumber ? null : malformed ? "S526028" : rawStyleNumber,
+            needsNumber ? "needs_number" : malformed ? "malformed" : "confirmed",
+            styleName,
+            styleType,
+            styleType === "NEW" ? "Tier 4" : "Tier 3",
+            status,
+            category,
+            normalizedSubCategories[originalSubCategory] ?? originalSubCategory,
+            originalSubCategory,
+            targetOrderWeek,
+            fabric,
+          ],
+        );
+      }
+    }
+    const partTwoClaim = await client.query(
+      `INSERT INTO ${schema}.style_development_tracker_imports (import_key)
+       VALUES ('q3-2026-weeks-38-39-v1')
+       ON CONFLICT DO NOTHING
+       RETURNING import_key`,
+    );
+    if (partTwoClaim.rows[0]) {
+      const normalizedSubCategories: Record<string, string> = {
+        "Capri & Midi Dresses": "Midi & Capri Dresses",
+        "Loose Tops": "Loose & Oversized Tops",
+        "Relaxed": "Relaxed Tops",
+        "Maxi Skirt": "Maxi Skirts",
+      };
+      for (const [rawStyleNumber, styleName, styleType, status, category, originalSubCategory, targetOrderWeek, fabric, sampleApprovalDate] of STYLE_DEVELOPMENT_TRACKER_PART_TWO_SEEDS) {
+        const needsNumber = rawStyleNumber === "MISSING";
+        const malformed = rawStyleNumber === "S0826014";
+        await client.query(
+          `INSERT INTO ${schema}.style_development_tracker
+            (style_number,original_style_number,style_number_status,style_name,style_type,tier,status,
+             category,sub_category,original_sub_category,target_order_week,fabric,sample_approval_date,data_quality_flags,import_batch)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'q3-2026-weeks-38-39')`,
+          [
+            needsNumber ? null : rawStyleNumber,
+            needsNumber ? null : malformed ? "S08260014" : rawStyleNumber,
+            needsNumber ? "needs_number" : malformed ? "malformed" : "confirmed",
+            styleName,
+            styleType,
+            styleType === "NEW" ? "Tier 4" : "Tier 3",
+            status,
+            category,
+            normalizedSubCategories[originalSubCategory] ?? originalSubCategory,
+            originalSubCategory,
+            targetOrderWeek,
+            fabric,
+            sampleApprovalDate,
+            sampleApprovalDate ? ["sample_approval_date_needs_check"] : [],
+          ],
+        );
+      }
+    }
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 async function ensureRangePlanData() {
   // Q3 was a placeholder-only plan. Remove it as a unit so its ON DELETE
   // CASCADE rows go with it, while the monthly plans remain independent rows.
@@ -976,6 +1155,28 @@ async function ensureRangePlanData() {
       applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+  const normalizedAosClient = await pool.connect();
+  try {
+    await normalizedAosClient.query("BEGIN");
+    const claim = await normalizedAosClient.query(
+      `INSERT INTO ${schema}.range_plan_seed_migrations (migration_key)
+       VALUES ('reorder-replenishment-aos-400-v1')
+       ON CONFLICT DO NOTHING
+       RETURNING migration_key`,
+    );
+    if (claim.rows[0]) {
+      await normalizedAosClient.query(
+        `UPDATE ${schema}.range_plan_rows SET aos_units=$1`,
+        [rangePlanAosDefault()],
+      );
+    }
+    await normalizedAosClient.query("COMMIT");
+  } catch (error) {
+    await normalizedAosClient.query("ROLLBACK");
+    throw error;
+  } finally {
+    normalizedAosClient.release();
+  }
   await pool.query(
     `ALTER TABLE ${schema}.range_plan_seasons
      ALTER COLUMN cogs_budget_pct SET DEFAULT 32`,
@@ -1048,7 +1249,7 @@ async function ensureRangePlanData() {
       await client.query(
         `UPDATE ${schema}.range_plan_seasons
          SET cogs_budget_pct=32,
-             factory_capacity_units=CASE WHEN season_name='September 2026' THEN 28000 ELSE factory_capacity_units END
+             factory_capacity_units=CASE WHEN season_name='September 2026' THEN 25000 ELSE factory_capacity_units END
          WHERE season_year=2026`,
       );
       await client.query(
@@ -1129,7 +1330,7 @@ async function ensureRangePlanData() {
         `UPDATE ${schema}.range_plan_seasons
          SET cogs_budget_pct=32,
              status=CASE WHEN season_name='Q4 2026' THEN 'active' ELSE status END,
-             factory_capacity_units=CASE WHEN season_name='September 2026' THEN 28000 ELSE factory_capacity_units END
+             factory_capacity_units=CASE WHEN season_name='September 2026' THEN 25000 ELSE factory_capacity_units END
          WHERE season_year=2026`,
       );
       await septemberFixClient.query(
@@ -1225,6 +1426,21 @@ async function ensureRangePlanData() {
   } finally {
     unifiedTaxonomyClient.release();
   }
+  await pool.query(
+    `UPDATE ${schema}.range_plan_seasons
+        SET factory_capacity_units=25000
+      WHERE season_name='September 2026' AND season_year=2026`,
+  );
+  await pool.query(
+    `UPDATE ${schema}.range_plan_rows
+        SET reorder_style_count=style_count_target
+      WHERE new_style_count=0 AND reorder_style_count=0 AND replenishment_style_count=0`,
+  );
+  await pool.query(
+    `UPDATE ${schema}.range_plan_rows
+        SET reorder_units=total_units_implied
+      WHERE new_units=0 AND reorder_units=0 AND replenishment_units=0`,
+  );
 }
 
 async function isDatabaseReachable() {
@@ -1266,6 +1482,29 @@ async function runBestEffortMigration(label: string, text: string) {
 
 async function ensureRecentWorkspaceMigrations() {
   const migrations: Array<[string, string]> = [
+    ["range plan newness and commitment columns", `
+      ALTER TABLE ${schema}.range_plan_seasons ADD COLUMN IF NOT EXISTS newness_floor_pct NUMERIC NOT NULL DEFAULT 40;
+      ALTER TABLE ${schema}.range_plan_rows ADD COLUMN IF NOT EXISTS product_category TEXT;
+      ALTER TABLE ${schema}.range_plan_rows ADD COLUMN IF NOT EXISTS opening_stock_units INTEGER;
+      ALTER TABLE ${schema}.range_plan_rows ADD COLUMN IF NOT EXISTS units_sold_last_month INTEGER;
+      ALTER TABLE ${schema}.range_plan_rows ADD COLUMN IF NOT EXISTS expected_unit_cost NUMERIC;
+      ALTER TABLE ${schema}.range_plan_rows ADD COLUMN IF NOT EXISTS selling_price NUMERIC;
+      ALTER TABLE ${schema}.range_plan_rows ADD COLUMN IF NOT EXISTS new_style_count INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE ${schema}.range_plan_rows ADD COLUMN IF NOT EXISTS new_style_aos_units INTEGER NOT NULL DEFAULT 300;
+      ALTER TABLE ${schema}.range_plan_rows ADD COLUMN IF NOT EXISTS reorder_style_count INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE ${schema}.range_plan_rows ADD COLUMN IF NOT EXISTS replenishment_style_count INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE ${schema}.range_plan_rows ADD COLUMN IF NOT EXISTS new_units INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE ${schema}.range_plan_rows ADD COLUMN IF NOT EXISTS reorder_units INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE ${schema}.range_plan_rows ADD COLUMN IF NOT EXISTS replenishment_units INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE ${schema}.range_plan_rows ADD COLUMN IF NOT EXISTS planned_units_calculated INTEGER GENERATED ALWAYS AS
+        (new_style_count * new_style_aos_units + (reorder_style_count + replenishment_style_count) * aos_units) STORED;
+      UPDATE ${schema}.range_plan_seasons SET factory_capacity_units=25000
+       WHERE season_name='September 2026' AND season_year=2026;
+      UPDATE ${schema}.range_plan_rows SET reorder_style_count=style_count_target
+       WHERE new_style_count=0 AND reorder_style_count=0 AND replenishment_style_count=0;
+      UPDATE ${schema}.range_plan_rows SET reorder_units=total_units_implied
+       WHERE new_units=0 AND reorder_units=0 AND replenishment_units=0;
+    `],
     ["workspace brand rename", `
       UPDATE public.all_products_clean
          SET brand='Safari by Vivo'
@@ -1345,6 +1584,7 @@ async function ensureRecentWorkspaceMigrations() {
         revenue_target_kes NUMERIC NOT NULL DEFAULT 0,
         cogs_budget_pct NUMERIC NOT NULL DEFAULT 32,
         factory_capacity_units INTEGER NOT NULL DEFAULT 0,
+        newness_floor_pct NUMERIC NOT NULL DEFAULT 40,
         status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','archived')),
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         UNIQUE (season_name, season_year)
@@ -1358,14 +1598,23 @@ async function ensureRecentWorkspaceMigrations() {
         product_category TEXT,
         tier ${schema}.range_plan_tier NOT NULL,
         style_count_target INTEGER NOT NULL DEFAULT 0,
+        new_style_count INTEGER NOT NULL DEFAULT 0,
+        reorder_style_count INTEGER NOT NULL DEFAULT 0,
+        replenishment_style_count INTEGER NOT NULL DEFAULT 0,
         style_count_min INTEGER NOT NULL DEFAULT 0,
         style_count_max INTEGER NOT NULL DEFAULT 0,
         ${RANGE_PLAN_AOS_COLUMN_SQL},
+        new_style_aos_units INTEGER NOT NULL DEFAULT 300,
         opening_stock_units INTEGER,
         units_sold_last_month INTEGER,
         expected_unit_cost NUMERIC,
         selling_price NUMERIC,
         total_units_implied INTEGER GENERATED ALWAYS AS (style_count_target * aos_units) STORED,
+        planned_units_calculated INTEGER GENERATED ALWAYS AS
+          (new_style_count * new_style_aos_units + (reorder_style_count + replenishment_style_count) * aos_units) STORED,
+        new_units INTEGER NOT NULL DEFAULT 0,
+        reorder_units INTEGER NOT NULL DEFAULT 0,
+        replenishment_units INTEGER NOT NULL DEFAULT 0,
         notes TEXT NOT NULL DEFAULT '',
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         UNIQUE (season_id, sub_category)
@@ -1872,11 +2121,14 @@ async function ensureSchema() {
       style_count_min INTEGER NOT NULL DEFAULT 0,
       style_count_max INTEGER NOT NULL DEFAULT 0,
       ${RANGE_PLAN_AOS_COLUMN_SQL},
+      new_style_aos_units INTEGER NOT NULL DEFAULT 300,
       opening_stock_units INTEGER,
       units_sold_last_month INTEGER,
       expected_unit_cost NUMERIC,
       selling_price NUMERIC,
       total_units_implied INTEGER GENERATED ALWAYS AS (style_count_target * aos_units) STORED,
+      planned_units_calculated INTEGER GENERATED ALWAYS AS
+        (new_style_count * new_style_aos_units + (reorder_style_count + replenishment_style_count) * aos_units) STORED,
       notes TEXT NOT NULL DEFAULT '',
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       UNIQUE (season_id, sub_category)
@@ -1907,6 +2159,26 @@ async function ensureSchema() {
     CREATE INDEX IF NOT EXISTS garment_images_style_key_idx ON ${schema}.garment_images (style_key);
     CREATE INDEX IF NOT EXISTS range_plan_rows_season_idx ON ${schema}.range_plan_rows (season_id, tier, id);
     CREATE INDEX IF NOT EXISTS range_plan_otb_season_month_idx ON ${schema}.range_plan_otb (season_id, month_year);
+    CREATE TABLE IF NOT EXISTS ${schema}.style_development_tracker (
+      id SERIAL PRIMARY KEY,
+      style_number TEXT,
+      original_style_number TEXT,
+      style_number_status TEXT NOT NULL CHECK (style_number_status IN ('needs_number','malformed','confirmed')),
+      style_name TEXT NOT NULL,
+      style_type TEXT NOT NULL CHECK (style_type IN ('NEW','RR')),
+      tier TEXT NOT NULL CHECK (tier IN ('Tier 3','Tier 4')),
+      status TEXT NOT NULL,
+      category TEXT NOT NULL,
+      sub_category TEXT NOT NULL,
+      original_sub_category TEXT NOT NULL,
+      target_order_week TEXT NOT NULL,
+      fabric TEXT NOT NULL DEFAULT '',
+      import_batch TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (import_batch, style_name, target_order_week)
+    );
+    CREATE INDEX IF NOT EXISTS style_development_tracker_week_idx
+      ON ${schema}.style_development_tracker (target_order_week, status);
     CREATE TABLE IF NOT EXISTS ${schema}.l10_meetings (
       id SERIAL PRIMARY KEY,
       week_label TEXT NOT NULL UNIQUE,
@@ -2128,6 +2400,22 @@ async function ensureSchema() {
     ALTER TABLE ${schema}.range_plan_rows ADD COLUMN IF NOT EXISTS units_sold_last_month INTEGER;
     ALTER TABLE ${schema}.range_plan_rows ADD COLUMN IF NOT EXISTS expected_unit_cost NUMERIC;
     ALTER TABLE ${schema}.range_plan_rows ADD COLUMN IF NOT EXISTS selling_price NUMERIC;
+    ALTER TABLE ${schema}.range_plan_seasons ADD COLUMN IF NOT EXISTS newness_floor_pct NUMERIC NOT NULL DEFAULT 40;
+    ALTER TABLE ${schema}.range_plan_rows ADD COLUMN IF NOT EXISTS new_style_count INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE ${schema}.range_plan_rows ADD COLUMN IF NOT EXISTS new_style_aos_units INTEGER NOT NULL DEFAULT 300;
+    ALTER TABLE ${schema}.range_plan_rows ADD COLUMN IF NOT EXISTS reorder_style_count INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE ${schema}.range_plan_rows ADD COLUMN IF NOT EXISTS replenishment_style_count INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE ${schema}.range_plan_rows ADD COLUMN IF NOT EXISTS new_units INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE ${schema}.range_plan_rows ADD COLUMN IF NOT EXISTS reorder_units INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE ${schema}.range_plan_rows ADD COLUMN IF NOT EXISTS replenishment_units INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE ${schema}.range_plan_rows ADD COLUMN IF NOT EXISTS planned_units_calculated INTEGER GENERATED ALWAYS AS
+        (new_style_count * new_style_aos_units + (reorder_style_count + replenishment_style_count) * aos_units) STORED;
+    UPDATE ${schema}.range_plan_rows
+       SET reorder_style_count=style_count_target
+     WHERE new_style_count=0 AND reorder_style_count=0 AND replenishment_style_count=0;
+    UPDATE ${schema}.range_plan_rows
+       SET reorder_units=total_units_implied
+     WHERE new_units=0 AND reorder_units=0 AND replenishment_units=0;
     ALTER TABLE ${schema}.pom_qc ALTER COLUMN point DROP NOT NULL;
     ALTER TABLE ${schema}.styles ADD COLUMN IF NOT EXISTS style_number TEXT;
     ALTER TABLE ${schema}.styles ADD COLUMN IF NOT EXISTS notes TEXT NOT NULL DEFAULT '';
@@ -2181,6 +2469,7 @@ async function ensureSchema() {
   await ensureL10Data();
   await ensureWorkspaceResources();
   await ensureRangePlanData();
+  await ensureStyleDevelopmentTrackerData();
 
   for (const fabric of fabrics) {
     await pool.query(
@@ -3793,6 +4082,35 @@ router.post("/feedback/public", async (req, res, next) => {
 
 router.use(requireUser);
 
+router.get("/style-development-tracker", async (_req, res, next) => {
+  try {
+    const result = await pool.query(
+      `SELECT id,style_number AS "styleNumber",original_style_number AS "originalStyleNumber",
+        style_number_status AS "styleNumberStatus",style_name AS "styleName",
+        style_type AS type,tier,status,category,sub_category AS "subCategory",
+        original_sub_category AS "originalSubCategory",target_order_week AS "targetOrderWeek",fabric,
+        sample_approval_date AS "sampleApprovalDate",data_quality_flags AS "dataQualityFlags"
+       FROM ${schema}.style_development_tracker
+       ORDER BY REGEXP_REPLACE(target_order_week,'[^0-9]','','g')::int,status,style_name`,
+    );
+    const summaries = await pool.query(
+      `SELECT target_order_week AS "targetOrderWeek",COUNT(*)::int AS "styleCount",
+        COUNT(*) FILTER (WHERE style_type='NEW')::int AS "newCount"
+       FROM ${schema}.style_development_tracker
+       GROUP BY target_order_week
+       ORDER BY REGEXP_REPLACE(target_order_week,'[^0-9]','','g')::int`,
+    );
+    res.json({
+      items: result.rows,
+      summaries: summaries.rows,
+      weeks: summaries.rows.map((row) => row.targetOrderWeek),
+      statuses: Array.from(new Set(result.rows.map((row) => row.status))).sort(),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.post("/feedback/pulses", async (req: AuthRequest, res, next) => {
   try {
     const styleNumber = String(req.body?.styleNumber ?? "").trim();
@@ -3845,6 +4163,7 @@ function rangePlanSeasonPayload(row: Record<string, unknown>) {
     revenueTargetKes: Number(row.revenueTargetKes ?? 0),
     cogsBudgetPct: Number(row.cogsBudgetPct ?? 0),
     factoryCapacityUnits: Number(row.factoryCapacityUnits ?? 0),
+    newnessFloorPct: Number(row.newnessFloorPct ?? 40),
     status: String(row.status ?? "active"),
     cadence: seasonName.startsWith("Q") ? "quarterly" : "monthly",
   };
@@ -3861,7 +4180,15 @@ function rangePlanRowPayload(row: Record<string, unknown>) {
   const sellingPrice = optionalNumber(row.sellingPrice);
   const asp = optionalNumber(row.asp);
   const expectedUnitCost = optionalNumber(row.expectedUnitCost);
-  const totalUnitsImplied = Number(row.totalUnitsImplied ?? 0);
+  const newStyleCount = Number(row.newStyleCount ?? 0);
+  const reorderStyleCount = Number(row.reorderStyleCount ?? 0);
+  const replenishmentStyleCount = Number(row.replenishmentStyleCount ?? 0);
+  const aosUnits = Number(row.aosUnits ?? rangePlanAosDefault());
+  const newStyleAosUnits = Number(row.newStyleAosUnits ?? 300);
+  const newUnits = newStyleCount * newStyleAosUnits;
+  const reorderUnits = reorderStyleCount * aosUnits;
+  const replenishmentUnits = replenishmentStyleCount * aosUnits;
+  const totalUnitsImplied = Number(row.plannedUnitsCalculated ?? (newUnits + reorderUnits + replenishmentUnits));
   const effectivePrice = sellingPrice ?? asp;
   return {
     id: Number(row.id),
@@ -3870,10 +4197,19 @@ function rangePlanRowPayload(row: Record<string, unknown>) {
     productCategory: row.productCategory == null ? null : String(row.productCategory),
     tier: String(row.tier ?? "Core"),
     styleCountTarget: Number(row.styleCountTarget ?? 0),
+    newStyleCount,
+    reorderStyleCount,
+    replenishmentStyleCount,
     styleCountMin: Number(row.styleCountMin ?? 0),
     styleCountMax: Number(row.styleCountMax ?? 0),
-    aosUnits: Number(row.aosUnits ?? rangePlanAosDefault()),
+    aosUnits,
+    newStyleAosUnits,
     totalUnitsImplied,
+    newUnits,
+    reorderUnits,
+    replenishmentUnits,
+    committedStyles: Number(row.committedStyles ?? 0),
+    committedUnits: Number(row.committedUnits ?? 0),
     openingStockUnits: optionalNumber(row.openingStockUnits),
     unitsSoldLastMonth: optionalNumber(row.unitsSoldLastMonth),
     expectedUnitCost,
@@ -4164,7 +4500,7 @@ router.get("/range-plan", async (req, res, next) => {
     const seasonsResult = await pool.query(
       `SELECT id,season_name AS "seasonName",season_year AS "seasonYear",
          revenue_target_kes AS "revenueTargetKes",cogs_budget_pct AS "cogsBudgetPct",
-         factory_capacity_units AS "factoryCapacityUnits",status
+         factory_capacity_units AS "factoryCapacityUnits",newness_floor_pct AS "newnessFloorPct",status
        FROM ${schema}.range_plan_seasons
        ORDER BY CASE season_name
           WHEN 'Q4 2026' THEN 1
@@ -4191,19 +4527,56 @@ router.get("/range-plan", async (req, res, next) => {
       return;
     }
     const selectedAssortment = await assortmentPlanData("Q4 2026");
+    const orderWindow = season.seasonName === "Q4 2026"
+      ? ["2026-10-01", "2027-01-01"]
+      : season.seasonName === "September 2026"
+        ? ["2026-09-01", "2026-10-01"]
+        : season.seasonName === "October 2026"
+          ? ["2026-10-01", "2026-11-01"]
+          : season.seasonName === "November 2026"
+            ? ["2026-11-01", "2026-12-01"]
+            : season.seasonName === "December 2026"
+              ? ["2026-12-01", "2027-01-01"]
+              : ["1900-01-01", "1900-01-01"];
      const rowsResult = await pool.query(
        `WITH style_asp AS (
           SELECT subcategory,AVG(price)::numeric AS asp
           FROM rollup_rm_prod
           WHERE ${allowedBrand("rollup_rm_prod")}
             AND price IS NOT NULL AND price > 0
-          GROUP BY subcategory
-        )
+           GROUP BY subcategory
+         ),
+         style_dim AS (
+           SELECT LOWER(BTRIM(COALESCE(NULLIF(style_number,''),NULLIF(sku,'')))) AS style_key,
+             MAX(COALESCE(NULLIF(BTRIM(product_type),''),NULLIF(BTRIM(category),''),'Uncategorised')) AS sub_category
+           FROM public.all_products_clean p
+           WHERE ${allowedBrand("p")}
+           GROUP BY LOWER(BTRIM(COALESCE(NULLIF(style_number,''),NULLIF(sku,''))))
+         ),
+         committed AS (
+           SELECT d.sub_category,
+             COUNT(DISTINCT LOWER(BTRIM(COALESCE(NULLIF(o.style_number,''),NULLIF(o.product_sku,'')))))::int AS committed_styles,
+             COALESCE(SUM(o.order_qty),0)::numeric AS committed_units
+           FROM public.production_orders o
+           LEFT JOIN style_dim d
+             ON d.style_key=LOWER(BTRIM(COALESCE(NULLIF(o.style_number,''),NULLIF(o.product_sku,''))))
+           WHERE o.date_ordered >= $2::date AND o.date_ordered < $3::date
+           GROUP BY d.sub_category
+         )
        SELECT r.id,r.season_id AS "seasonId",r.sub_category AS "subCategory",
         r.product_category AS "productCategory",r.tier::text,
-         style_count_target AS "styleCountTarget",style_count_min AS "styleCountMin",
+          style_count_target AS "styleCountTarget",
+          r.new_style_count AS "newStyleCount",r.reorder_style_count AS "reorderStyleCount",
+          r.replenishment_style_count AS "replenishmentStyleCount",
+          style_count_min AS "styleCountMin",
           style_count_max AS "styleCountMax",r.aos_units AS "aosUnits",
-          r.total_units_implied AS "totalUnitsImplied",
+           r.new_style_aos_units AS "newStyleAosUnits",
+           r.planned_units_calculated AS "plannedUnitsCalculated",
+           r.total_units_implied AS "totalUnitsImplied",
+           r.new_units AS "newUnits",r.reorder_units AS "reorderUnits",
+           r.replenishment_units AS "replenishmentUnits",
+           COALESCE(c.committed_styles,0) AS "committedStyles",
+           COALESCE(c.committed_units,0) AS "committedUnits",
           r.opening_stock_units AS "openingStockUnits",
           r.units_sold_last_month AS "unitsSoldLastMonth",
           r.expected_unit_cost AS "expectedUnitCost",
@@ -4212,11 +4585,12 @@ router.get("/range-plan", async (req, res, next) => {
           r.notes
         FROM ${schema}.range_plan_rows r
         LEFT JOIN style_asp a ON LOWER(TRIM(a.subcategory))=LOWER(TRIM(r.sub_category))
+         LEFT JOIN committed c ON LOWER(TRIM(c.sub_category))=LOWER(TRIM(r.sub_category))
         WHERE r.season_id=$1
         ORDER BY CASE r.product_category
           WHEN 'Bottoms' THEN 1 WHEN 'Dresses' THEN 2 WHEN 'Outerwear' THEN 3
           WHEN 'Skirts' THEN 4 WHEN 'Tops' THEN 5 ELSE 99 END, r.id`,
-      [season.id],
+       [season.id, orderWindow[0], orderWindow[1]],
     );
     const fixedOtbMonths = rangePlanOtbMonthsForSeason(season.seasonName);
     const otbResult = await pool.query(
@@ -4251,8 +4625,8 @@ router.get("/range-plan", async (req, res, next) => {
               WHEN 'November 2026' THEN '2026-11-01'
               WHEN 'December 2026' THEN '2026-12-01'
             END AS "monthYear",
-            COALESCE(SUM(r.total_units_implied),0)::int AS "plannedUnits",
-            COALESCE(SUM(r.total_units_implied * COALESCE(r.selling_price,0)),0)::numeric AS "grossRevenuePotential"
+             COALESCE(SUM(r.planned_units_calculated),0)::int AS "plannedUnits",
+             COALESCE(SUM(r.planned_units_calculated * COALESCE(r.selling_price,0)),0)::numeric AS "grossRevenuePotential"
           FROM ${schema}.range_plan_seasons s
           LEFT JOIN ${schema}.range_plan_rows r ON r.season_id=s.id
           WHERE s.season_year=2026
@@ -4350,9 +4724,11 @@ router.put("/range-plan/seasons/:seasonId", async (req, res, next) => {
     const revenueTargetKes = req.body?.revenueTargetKes === undefined ? null : Number(req.body.revenueTargetKes);
     const cogsBudgetPct = req.body?.cogsBudgetPct === undefined ? null : Number(req.body.cogsBudgetPct);
     const factoryCapacityUnits = req.body?.factoryCapacityUnits === undefined ? null : Number(req.body.factoryCapacityUnits);
+    const newnessFloorPct = req.body?.newnessFloorPct === undefined ? null : Number(req.body.newnessFloorPct);
     if (!Number.isInteger(seasonId) || seasonId <= 0 ||
       (revenueTargetKes !== null && (!Number.isFinite(revenueTargetKes) || revenueTargetKes < 0)) ||
       (cogsBudgetPct !== null && (!Number.isFinite(cogsBudgetPct) || cogsBudgetPct < 0 || cogsBudgetPct > 100)) ||
+      (newnessFloorPct !== null && (!Number.isFinite(newnessFloorPct) || newnessFloorPct < 0 || newnessFloorPct > 100)) ||
       (factoryCapacityUnits !== null && (!Number.isInteger(factoryCapacityUnits) || factoryCapacityUnits < 0))) {
       res.status(400).json({ error: "Invalid season assumptions" });
       return;
@@ -4361,12 +4737,13 @@ router.put("/range-plan/seasons/:seasonId", async (req, res, next) => {
       `UPDATE ${schema}.range_plan_seasons
        SET revenue_target_kes=COALESCE($2,revenue_target_kes),
            cogs_budget_pct=COALESCE($3,cogs_budget_pct),
-           factory_capacity_units=COALESCE($4,factory_capacity_units)
+            factory_capacity_units=COALESCE($4,factory_capacity_units),
+            newness_floor_pct=COALESCE($5,newness_floor_pct)
        WHERE id=$1
        RETURNING id,season_name AS "seasonName",season_year AS "seasonYear",
          revenue_target_kes AS "revenueTargetKes",cogs_budget_pct AS "cogsBudgetPct",
-         factory_capacity_units AS "factoryCapacityUnits",status`,
-      [seasonId, revenueTargetKes, cogsBudgetPct, factoryCapacityUnits],
+          factory_capacity_units AS "factoryCapacityUnits",newness_floor_pct AS "newnessFloorPct",status`,
+      [seasonId, revenueTargetKes, cogsBudgetPct, factoryCapacityUnits, newnessFloorPct],
     );
     if (!result.rows[0]) {
       res.status(404).json({ error: "Planning season not found" });
@@ -4466,6 +4843,10 @@ router.put("/range-plan/rows/:id", async (req, res, next) => {
     const rowId = Number(req.params.id);
     const existing = await pool.query(
       `SELECT style_count_target AS "styleCountTarget",aos_units AS "aosUnits",
+        new_style_aos_units AS "newStyleAosUnits",
+        new_style_count AS "newStyleCount",reorder_style_count AS "reorderStyleCount",
+        replenishment_style_count AS "replenishmentStyleCount",
+        new_units AS "newUnits",reorder_units AS "reorderUnits",replenishment_units AS "replenishmentUnits",
         opening_stock_units AS "openingStockUnits",units_sold_last_month AS "unitsSoldLastMonth",
         expected_unit_cost AS "expectedUnitCost",selling_price AS "sellingPrice",notes
        FROM ${schema}.range_plan_rows WHERE id=$1`,
@@ -4481,6 +4862,9 @@ router.put("/range-plan/rows/:id", async (req, res, next) => {
     const aosUnits = req.body?.aosUnits === undefined
       ? Number(existing.rows[0].aosUnits)
       : Number(req.body.aosUnits);
+    const newStyleAosUnits = req.body?.newStyleAosUnits === undefined
+      ? Number(existing.rows[0].newStyleAosUnits)
+      : Number(req.body.newStyleAosUnits);
     const optionalNumber = (bodyKey: string, existingKey: string) => {
       if (req.body?.[bodyKey] === undefined) {
         const current = existing.rows[0][existingKey];
@@ -4493,10 +4877,21 @@ router.put("/range-plan/rows/:id", async (req, res, next) => {
     const expectedUnitCost = optionalNumber("expectedUnitCost", "expectedUnitCost");
     const sellingPrice = optionalNumber("sellingPrice", "sellingPrice");
     const notes = req.body?.notes === undefined ? String(existing.rows[0].notes ?? "") : String(req.body.notes);
+    const lifecycleWholeNumber = (bodyKey: string, existingKey: string) =>
+      req.body?.[bodyKey] === undefined ? Number(existing.rows[0][existingKey] ?? 0) : Number(req.body[bodyKey]);
+    const newStyleCount = lifecycleWholeNumber("newStyleCount", "newStyleCount");
+    const reorderStyleCount = lifecycleWholeNumber("reorderStyleCount", "reorderStyleCount");
+    const replenishmentStyleCount = lifecycleWholeNumber("replenishmentStyleCount", "replenishmentStyleCount");
+    const newUnits = lifecycleWholeNumber("newUnits", "newUnits");
+    const reorderUnits = lifecycleWholeNumber("reorderUnits", "reorderUnits");
+    const replenishmentUnits = lifecycleWholeNumber("replenishmentUnits", "replenishmentUnits");
     const validOptionalWholeNumber = (value: number | null) => value === null || (Number.isInteger(value) && value >= 0);
     const validOptionalNumber = (value: number | null) => value === null || (Number.isFinite(value) && value >= 0);
     if (!Number.isInteger(styleCountTarget) || styleCountTarget < 0 ||
       !Number.isInteger(aosUnits) || aosUnits < 0 ||
+      !Number.isInteger(newStyleAosUnits) || newStyleAosUnits < 0 ||
+      ![newStyleCount,reorderStyleCount,replenishmentStyleCount,newUnits,reorderUnits,replenishmentUnits]
+        .every((value) => Number.isInteger(value) && value >= 0) ||
       !validOptionalWholeNumber(openingStockUnits) || !validOptionalWholeNumber(unitsSoldLastMonth) ||
       !validOptionalNumber(expectedUnitCost) || !validOptionalNumber(sellingPrice) ||
       notes.length > 2000) {
@@ -4506,16 +4901,25 @@ router.put("/range-plan/rows/:id", async (req, res, next) => {
     const result = await pool.query(
       `UPDATE ${schema}.range_plan_rows
        SET style_count_target=$1,aos_units=$2,opening_stock_units=$3,units_sold_last_month=$4,
-           expected_unit_cost=$5,selling_price=$6,notes=$7
-       WHERE id=$8
+           expected_unit_cost=$5,selling_price=$6,notes=$7,
+           new_style_count=$8,reorder_style_count=$9,replenishment_style_count=$10,
+           new_units=$11,reorder_units=$12,replenishment_units=$13,new_style_aos_units=$14
+       WHERE id=$15
        RETURNING id,season_id AS "seasonId",sub_category AS "subCategory",
          product_category AS "productCategory",tier::text,
-         style_count_target AS "styleCountTarget",style_count_min AS "styleCountMin",
+         style_count_target AS "styleCountTarget",
+         new_style_count AS "newStyleCount",reorder_style_count AS "reorderStyleCount",
+         replenishment_style_count AS "replenishmentStyleCount",style_count_min AS "styleCountMin",
          style_count_max AS "styleCountMax",aos_units AS "aosUnits",
-         total_units_implied AS "totalUnitsImplied",
+         new_style_aos_units AS "newStyleAosUnits",
+         planned_units_calculated AS "plannedUnitsCalculated",
+         total_units_implied AS "totalUnitsImplied",new_units AS "newUnits",
+         reorder_units AS "reorderUnits",replenishment_units AS "replenishmentUnits",
          opening_stock_units AS "openingStockUnits",units_sold_last_month AS "unitsSoldLastMonth",
          expected_unit_cost AS "expectedUnitCost",selling_price AS "sellingPrice",notes`,
-      [styleCountTarget, aosUnits, openingStockUnits, unitsSoldLastMonth, expectedUnitCost, sellingPrice, notes, rowId],
+      [styleCountTarget, aosUnits, openingStockUnits, unitsSoldLastMonth, expectedUnitCost, sellingPrice, notes,
+       newStyleCount, reorderStyleCount, replenishmentStyleCount, newUnits, reorderUnits, replenishmentUnits,
+       newStyleAosUnits, rowId],
     );
     res.json(rangePlanRowPayload(result.rows[0]));
   } catch (error) {
@@ -8089,6 +8493,7 @@ httpServer.listen(port, "0.0.0.0", () => {
     .catch(async (error) => {
       console.error("Unable to initialise workspace database", error);
       await ensureRecentWorkspaceMigrations();
+      await ensureStyleDevelopmentTrackerData();
       schemaReady = await isDatabaseReachable();
       console.warn(`Vivo workspace starting in ${schemaReady ? "degraded" : "unavailable"} database mode`);
     });

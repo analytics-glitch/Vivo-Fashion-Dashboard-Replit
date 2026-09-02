@@ -26,7 +26,9 @@ test("all Range Plan insertion paths use the zero-argument helper", async () => 
 
   assert.ok(helperCalls.length >= 3);
   assert.ok(helperCalls.every((match) => match[1] === ""));
-  assert.match(serverSource, /aosUnits: Number\(row\.aosUnits \?\? rangePlanAosDefault\(\)\)/);
+  assert.match(serverSource, /const aosUnits = Number\(row\.aosUnits \?\? rangePlanAosDefault\(\)\)/);
+  assert.match(serverSource, /const newStyleAosUnits = Number\(row\.newStyleAosUnits \?\? 300\)/);
+  assert.match(serverSource, /newStyleCount \* newStyleAosUnits/);
   assert.equal((serverSource.match(/\$\{RANGE_PLAN_AOS_COLUMN_SQL\}/g) ?? []).length, 2);
   assert.match(serverSource, /rangePlanAosDefaultMigrationSql\(schema\)/);
 });

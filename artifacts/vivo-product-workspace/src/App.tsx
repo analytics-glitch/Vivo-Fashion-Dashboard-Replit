@@ -18,7 +18,7 @@ import {
 import type { WorkspaceBoard, WorkspaceDashboardSnapshot, WorkspacePlan, WorkspacePlanIndexItem, WorkspaceStyle, WorkspaceColorway } from '@workspace/api-client-react';
 import { ErrorBoundary } from '@/components/error-boundary';
 import NotFound from '@/pages/not-found';
-import PlmPage from '@/pages/PlmPage';
+import StyleDevelopmentTrackerPage from '@/pages/StyleDevelopmentTrackerPage';
 import SettingsPage from '@/pages/SettingsPage';
 import ShowcasePage from '@/pages/ShowcasePage';
 import FullCataloguePage from '@/pages/FullCataloguePage';
@@ -38,7 +38,7 @@ const nav = [
   { href: '/product-workspace/', label: 'Workspace', icon: LayoutDashboard },
   { href: '/product-workspace/plan', label: 'Assortment plan', icon: CalendarDays },
   { href: '/product-workspace/rocks', label: 'Rocks', icon: Columns3 },
-  { href: '/product-workspace/plm', label: 'Style development', icon: Package },
+  { href: '/product-workspace/style-development', label: 'Style development', icon: Package },
   { href: '/product-workspace/feedback', label: 'Style feedback', icon: MessageCircle },
   { href: '/product-workspace/showcase', label: 'Showcase', icon: GalleryHorizontalEnd },
   { href: '/product-workspace/styles', label: 'Style catalogue', icon: BookOpen },
@@ -594,7 +594,7 @@ function PulseAwareFeedbackRoute() {
   const isPulse = new URLSearchParams(window.location.search).has('style') && ['investigate', 'champion'].includes(new URLSearchParams(window.location.search).get('mode') || '');
   return isPulse ? <PublicFeedbackPage /> : <FeedbackPage />;
 }
-function Router() { const [location] = useLocation(); return <ErrorBoundary resetKey={location}><Switch><Route path="/feedback" component={PublicFeedbackPage} /><Route path="/feedback/" component={PublicFeedbackPage} /><Route path="/product-workspace/login" component={Login} /><Route path="/product-workspace/" component={Dashboard} /><Route path="/product-workspace/plan" component={AssortmentPlanPage} /><Route path="/product-workspace/rocks" component={BoardPage} /><Route path="/product-workspace/board" component={BoardPage} /><Route path="/product-workspace/plm" component={PlmPage} /><Route path="/product-workspace/feedback" component={PulseAwareFeedbackRoute} /><Route path="/product-workspace/settings" component={SettingsPage} /><Route path="/product-workspace/team" component={TeamDirectoryPage} /><Route path="/product-workspace/l10" component={L10Page} /><Route path="/product-workspace/range-plan" component={RangePlanPage} /><Route path="/product-workspace/showcase" component={ShowcasePage} /><Route path="/product-workspace/showcase/:id" component={ShowcasePage} /><Route path="/product-workspace/styles" component={StylesPage} /><Route path="/product-workspace/styles/:id" component={StylesPage} /><Route path="/product-workspace/resources" component={ResourcesPage} /><Route path="/product-workspace/resources/:id" component={ResourcesPage} /><Route component={NotFound} /></Switch></ErrorBoundary>; }
+function Router() { const [location] = useLocation(); return <ErrorBoundary resetKey={location}><Switch><Route path="/feedback" component={PublicFeedbackPage} /><Route path="/feedback/" component={PublicFeedbackPage} /><Route path="/product-workspace/login" component={Login} /><Route path="/product-workspace/" component={Dashboard} /><Route path="/product-workspace/plan" component={AssortmentPlanPage} /><Route path="/product-workspace/rocks" component={BoardPage} /><Route path="/product-workspace/board" component={BoardPage} /><Route path="/product-workspace/style-development" component={StyleDevelopmentTrackerPage} /><Route path="/product-workspace/plm" component={StyleDevelopmentTrackerPage} /><Route path="/product-workspace/feedback" component={PulseAwareFeedbackRoute} /><Route path="/product-workspace/settings" component={SettingsPage} /><Route path="/product-workspace/team" component={TeamDirectoryPage} /><Route path="/product-workspace/l10" component={L10Page} /><Route path="/product-workspace/range-plan" component={RangePlanPage} /><Route path="/product-workspace/showcase" component={ShowcasePage} /><Route path="/product-workspace/showcase/:id" component={ShowcasePage} /><Route path="/product-workspace/styles" component={StylesPage} /><Route path="/product-workspace/styles/:id" component={StylesPage} /><Route path="/product-workspace/resources" component={ResourcesPage} /><Route path="/product-workspace/resources/:id" component={ResourcesPage} /><Route component={NotFound} /></Switch></ErrorBoundary>; }
 function AppEntry() { const [location] = useLocation(); const publicFeedback = location === '/feedback' || location === '/feedback/'; const publicPulse = location === '/product-workspace/feedback' && new URLSearchParams(window.location.search).has('style') && ['investigate', 'champion'].includes(new URLSearchParams(window.location.search).get('mode') || ''); return publicFeedback || publicPulse ? <Router /> : <Shell><Router /></Shell>; }
 function App() { return <QueryClientProvider client={queryClient}><WouterRouter><AppEntry /></WouterRouter></QueryClientProvider>; }
 export default App;

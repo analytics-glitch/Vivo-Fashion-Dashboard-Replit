@@ -12,7 +12,9 @@ Run order:
 8. extract_shopify_customers.py— All Shopify customers (incremental)
 9. transform_all_sales.py      — Build all_sales from raw tables
 10. transform_all_customers.py — Build all_customers from raw tables
-11. transform_all_products_clean.py — Build all_products_clean
+11. build_customer_identity.py — Resolve source records to person_id (dedup map)
+12. build_customer_people.py — Build clean one-row-per-person master
+13. transform_all_products_clean.py — Build all_products_clean
 
 Usage:
     python sync_all.py           # run everything

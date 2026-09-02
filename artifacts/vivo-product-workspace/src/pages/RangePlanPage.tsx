@@ -26,6 +26,7 @@ type RangePlanSeason = {
   revenueTargetKes: number;
   cogsBudgetPct: number;
   factoryCapacityUnits: number;
+  newnessFloorPct: number;
   status: string;
   cadence: 'quarterly' | 'monthly';
 };
@@ -36,10 +37,19 @@ type RangePlanRow = {
   productCategory: string | null;
   tier: string;
   styleCountTarget: number;
+  newStyleCount: number;
+  reorderStyleCount: number;
+  replenishmentStyleCount: number;
   styleCountMin: number;
   styleCountMax: number;
   aosUnits: number;
+  newStyleAosUnits: number;
   totalUnitsImplied: number;
+  newUnits: number;
+  reorderUnits: number;
+  replenishmentUnits: number;
+  committedStyles: number;
+  committedUnits: number;
   openingStockUnits: number | null;
   unitsSoldLastMonth: number | null;
   expectedUnitCost: number | null;
@@ -176,13 +186,14 @@ function RangePlanPage() {
   const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<'matrix' | 'otb' | 'health'>('matrix');
   const [selectedSeasonId, setSelectedSeasonId] = useState<number | undefined>();
+  const [tierFilter, setTierFilter] = useState('All tiers');
   const rangePlan = useQuery({
     queryKey: ['workspace', 'range-plan', selectedSeasonId],
     queryFn: () => getRangePlan(selectedSeasonId),
     staleTime: 60_000,
   });
   const updateSeason = useMutation({
-    mutationFn: async ({ id, data }: { id: number; data: { revenueTargetKes?: number; cogsBudgetPct?: number; factoryCapacityUnits?: number } }) => {
+    mutationFn: async ({ id, data }: { id: number; data: { revenueTargetKes?: number; cogsBudgetPct?: number; factoryCapacityUnits?: number; newnessFloorPct?: number } }) => {
       const response = await fetch(`/api/workspace/range-plan/seasons/${id}`, {
         method: 'PUT',
         credentials: 'include',
@@ -224,26 +235,45 @@ function RangePlanPage() {
   const payload = rangePlan.data;
   const season = payload?.season;
   const rows = payload?.rows ?? [];
+  const visibleRows = useMemo(() => rows.map((row) => {
+    if (tierFilter === 'All tiers') return { ...row, styleCountTarget: row.newStyleCount + row.reorderStyleCount + row.replenishmentStyleCount };
+    if (tierFilter === 'New/Test') {
+      return { ...row, styleCountTarget: row.newStyleCount, totalUnitsImplied: row.newUnits, potentialFpRevenue: row.newUnits * Number(row.sellingPrice ?? 0) };
+    }
+    if (row.tier !== tierFilter) return { ...row, styleCountTarget: 0, totalUnitsImplied: 0, potentialFpRevenue: 0 };
+    const carryStyleCount = row.reorderStyleCount + row.replenishmentStyleCount;
+    const carryUnits = row.reorderUnits + row.replenishmentUnits;
+    return { ...row, newStyleCount: 0, styleCountTarget: carryStyleCount, totalUnitsImplied: carryUnits, potentialFpRevenue: carryUnits * Number(row.sellingPrice ?? 0) };
+  }).filter((row) => tierFilter === 'All tiers' || row.styleCountTarget > 0 || row.totalUnitsImplied > 0), [rows, tierFilter]);
   const quarterlyPlans = (payload?.seasons ?? []).filter((candidate) => candidate.cadence === 'quarterly');
   const monthlyPlans = (payload?.seasons ?? []).filter((candidate) => candidate.cadence === 'monthly');
   const totals = useMemo(() => {
-    const totalStyles = rows.reduce((sum, row) => sum + row.styleCountTarget, 0);
-    const totalUnits = rows.reduce((sum, row) => sum + row.totalUnitsImplied, 0);
-    const costedRows = rows.filter((row) => row.expectedUnitCost !== null && row.sellingPrice !== null && row.sellingPrice > 0);
+    const totalStyles = visibleRows.reduce((sum, row) => sum + row.styleCountTarget, 0);
+    const totalUnits = visibleRows.reduce((sum, row) => sum + row.totalUnitsImplied, 0);
+    const newStyles = visibleRows.reduce((sum, row) => sum + row.newStyleCount, 0);
+    const newUnits = visibleRows.reduce((sum, row) => sum + row.newUnits, 0);
+    const allNewStyles = rows.reduce((sum, row) => sum + row.newStyleCount, 0);
+    const effectiveNewAos = allNewStyles > 0
+      ? rows.reduce((sum, row) => sum + row.newStyleCount * row.newStyleAosUnits, 0) / allNewStyles
+      : rows.length ? rows.reduce((sum, row) => sum + row.newStyleAosUnits, 0) / rows.length : 300;
+    const costedRows = visibleRows.filter((row) => row.expectedUnitCost !== null && row.sellingPrice !== null && row.sellingPrice > 0);
     const estimatedCogs = costedRows.reduce((sum, row) => sum + row.totalUnitsImplied * Number(row.expectedUnitCost), 0);
-    const potentialFpRevenue = rows.reduce((sum, row) => sum + row.potentialFpRevenue, 0);
+    const potentialFpRevenue = visibleRows.reduce((sum, row) => sum + row.potentialFpRevenue, 0);
     const costedNetRevenue = costedRows.reduce((sum, row) => sum + row.totalUnitsImplied * (Number(row.sellingPrice) / 1.16), 0);
     const cogsPct = costedNetRevenue > 0 ? (estimatedCogs / costedNetRevenue) * 100 : 0;
     const capacityPct = season?.factoryCapacityUnits ? (totalUnits / season.factoryCapacityUnits) * 100 : 0;
-    return { totalStyles, totalUnits, estimatedCogs, cogsPct, capacityPct, potentialFpRevenue, costedRowCount: costedRows.length };
-  }, [rows, season]);
+    const newnessPct = totalUnits > 0 ? newUnits / totalUnits * 100 : 0;
+    const requiredNewUnits = (season?.factoryCapacityUnits ?? 0) * ((season?.newnessFloorPct ?? 0) / 100);
+    const impliedNewStyles = effectiveNewAos > 0 ? Math.round(requiredNewUnits / effectiveNewAos) : 0;
+    return { totalStyles, totalUnits, newStyles, newUnits, newnessPct, effectiveNewAos, requiredNewUnits, impliedNewStyles, estimatedCogs, cogsPct, capacityPct, potentialFpRevenue, costedRowCount: costedRows.length };
+  }, [visibleRows, rows, season]);
 
-  const saveRow = (row: RangePlanRow, field: 'styleCountTarget' | 'aosUnits' | 'openingStockUnits' | 'unitsSoldLastMonth' | 'expectedUnitCost' | 'sellingPrice' | 'notes', value: string) => {
+  const saveRow = (row: RangePlanRow, field: 'styleCountTarget' | 'newStyleCount' | 'reorderStyleCount' | 'replenishmentStyleCount' | 'newStyleAosUnits' | 'aosUnits' | 'openingStockUnits' | 'unitsSoldLastMonth' | 'expectedUnitCost' | 'sellingPrice' | 'notes', value: string) => {
     const optional = field === 'openingStockUnits' || field === 'unitsSoldLastMonth' || field === 'expectedUnitCost' || field === 'sellingPrice';
     const parsed = optional && value.trim() === '' ? null : Math.max(0, Number(value || 0));
     updateRow.mutate({ id: row.id, data: { [field]: field === 'notes' ? value : parsed } });
   };
-  const saveSeason = (field: 'revenueTargetKes' | 'cogsBudgetPct' | 'factoryCapacityUnits', value: string) => {
+  const saveSeason = (field: 'revenueTargetKes' | 'cogsBudgetPct' | 'factoryCapacityUnits' | 'newnessFloorPct', value: string) => {
     if (!season) return;
     const numeric = Math.max(0, Number(value || 0));
     updateSeason.mutate({ id: season.id, data: { [field]: numeric } });
@@ -263,13 +293,13 @@ function RangePlanPage() {
   };
   const exportCsv = () => {
     if (!season) return;
-     const header = ['Product Category', 'Sub-Category', 'Opening Stock Units', 'Units Sold Last Month', 'Weeks of Cover', 'Planned Styles', 'Average Order Size', 'Total Units', 'Share of Units', 'Expected Unit Cost', 'Average Selling Price', 'Gross Revenue Potential', 'Input COGS %', 'Unit Floor', 'Unit Ceiling'];
-     const lines = rows.map((row) => {
+     const header = ['Product Category', 'Sub-Category', 'Opening Stock Units', 'Units Sold Last Month', 'Weeks of Cover', 'Planned Styles', 'New Styles', 'Reorder Styles', 'Replenishment Styles', 'New Style AOS', 'Reorder / Replenishment AOS', 'New Units', 'Reorder Units', 'Replenishment Units', 'Total Units', 'Share of Units', 'Expected Unit Cost', 'Average Selling Price', 'Gross Revenue Potential', 'Input COGS %'];
+     const lines = visibleRows.map((row) => {
         const weeksOfCover = row.openingStockUnits !== null && row.unitsSoldLastMonth !== null && row.unitsSoldLastMonth > 0
           ? row.openingStockUnits / (row.unitsSoldLastMonth / 4.33)
           : null;
        const inputCogs = row.expectedUnitCost !== null && row.sellingPrice ? row.expectedUnitCost / (row.sellingPrice / 1.16) * 100 : null;
-        const values = [row.productCategory, row.subCategory, row.openingStockUnits, row.unitsSoldLastMonth, weeksOfCover, row.styleCountTarget, row.aosUnits, row.totalUnitsImplied, totals.totalUnits ? row.totalUnitsImplied / totals.totalUnits : 0, row.expectedUnitCost, row.sellingPrice, row.potentialFpRevenue, inputCogs, row.totalUnitsImplied * 0.9, row.totalUnitsImplied * 1.1];
+         const values = [row.productCategory, row.subCategory, row.openingStockUnits, row.unitsSoldLastMonth, weeksOfCover, row.styleCountTarget, row.newStyleCount, row.reorderStyleCount, row.replenishmentStyleCount, row.newStyleAosUnits, row.aosUnits, row.newUnits, row.reorderUnits, row.replenishmentUnits, row.totalUnitsImplied, totals.totalUnits ? row.totalUnitsImplied / totals.totalUnits : 0, row.expectedUnitCost, row.sellingPrice, row.potentialFpRevenue, inputCogs];
        return values.map((value) => `"${String(value ?? '').replaceAll('"', '""')}"`).join(',');
      });
     const blob = new Blob([[header.join(','), ...lines].join('\n')], { type: 'text/csv;charset=utf-8' });
@@ -315,6 +345,7 @@ function RangePlanPage() {
             <label>Revenue target <InlineCell value={season.revenueTargetKes} displayValue={kesMillions(season.revenueTargetKes)} kind="number" ariaLabel="Revenue target" onSave={(value) => saveSeason('revenueTargetKes', value)} /></label>
             <label>COGS ceiling <InlineCell value={season.cogsBudgetPct} displayValue={`${season.cogsBudgetPct}%`} kind="number" ariaLabel="COGS ceiling percentage" onSave={(value) => saveSeason('cogsBudgetPct', value)} /></label>
              <label>Factory capacity <InlineCell value={season.factoryCapacityUnits} displayValue={`${numberFormat(season.factoryCapacityUnits)} units`} kind="number" ariaLabel="Factory capacity units" onSave={(value) => saveSeason('factoryCapacityUnits', value)} /></label>
+             <label>Newness floor <InlineCell value={season.newnessFloorPct} displayValue={`${season.newnessFloorPct}%`} kind="number" ariaLabel="Newness floor percentage" onSave={(value) => saveSeason('newnessFloorPct', value)} /></label>
           </div>
         </div>
       </div>
@@ -327,12 +358,21 @@ function RangePlanPage() {
 
       {activeTab === 'matrix' && (
         <>
-          <div className="range-stat-grid">
+          <div className="range-filter-bar">
+            <label htmlFor="range-tier-filter">Tier view</label>
+            <select id="range-tier-filter" value={tierFilter} onChange={(event) => setTierFilter(event.target.value)}>
+              <option>All tiers</option><option value="NOOS">Tier 1 · NOOS</option><option value="Core">Tier 2 · Core Performers</option><option value="Recent">Tier 3 · Recent Performers</option><option value="New/Test">Tier 4 · New and Test</option>
+            </select>
+            <span>All headline figures and matrix shares recalculate for this view.</span>
+          </div>
+          <div className="range-stat-grid range-stat-grid-seven">
             <StatTile label="Total styles planned" value={numberFormat(totals.totalStyles)} detail="Across all product categories" icon={<Target size={16} />} />
             <StatTile label="Total units implied" value={numberFormat(totals.totalUnits)} detail={`${totals.capacityPct.toFixed(0)}% of ${numberFormat(season.factoryCapacityUnits)} factory capacity`} tone={capacityTone} icon={totals.capacityPct > 100 ? <TrendingUp size={16} /> : <TrendingDown size={16} />} />
             <StatTile label="Estimated COGS" value={kesMillions(totals.estimatedCogs)} detail={`${totals.costedRowCount} costed rows`} icon={<TrendingDown size={16} />} />
             <StatTile label="Gross revenue potential" value={kesMillions(totals.potentialFpRevenue)} detail="Total units × selling price" tone="success" icon={<TrendingUp size={16} />} />
             <StatTile label="COGS vs budget" value={totals.costedRowCount ? `${totals.cogsPct.toFixed(1)}%` : '—'} detail={`Blended across ${totals.costedRowCount} costed rows · ${season.cogsBudgetPct}% ceiling`} tone={cogsTone} icon={<Save size={16} />} />
+            <StatTile label="New units" value={numberFormat(totals.newUnits)} detail={`${numberFormat(totals.newStyles)} Tier 4 styles × ${numberFormat(totals.effectiveNewAos)} average units`} icon={<Target size={16} />} />
+            <StatTile label="Newness" value={totals.totalUnits ? `${totals.newnessPct.toFixed(1)}%` : '—'} detail={`${numberFormat(totals.requiredNewUnits)} units floor · ≈${numberFormat(totals.impliedNewStyles)} new styles required`} tone={totals.newnessPct >= season.newnessFloorPct ? 'success' : 'danger'} icon={<Target size={16} />} />
           </div>
           <div className="range-section-toolbar">
             <div><span className="range-eyebrow">Mix matrix</span><h2>Plan by product category</h2><p>Click a gold value to edit. Changes save when you leave the cell.</p></div>
@@ -341,46 +381,59 @@ function RangePlanPage() {
           <div className="range-matrix-card">
             <div className="range-table-scroll">
               <table className="range-table range-monthly-table">
-                <thead><tr><th>Sub-Category</th><th>Opening Stock</th><th>Sold Last Month</th><th>Weeks of Cover</th><th>Planned Styles</th><th>Average Order Size</th><th>Total Units</th><th>Share of Units</th><th>Expected Unit Cost</th><th>Average Selling Price</th><th>Gross Revenue Potential</th><th>Input COGS</th><th>Unit Floor</th><th>Unit Ceiling</th></tr></thead>
+                <thead><tr><th>Sub-Category</th><th>Opening Stock</th><th>WOC</th><th>Planned Styles</th><th>New Styles <small>Tier 4</small></th><th>Reorder Styles</th><th>Replen Styles</th><th>New AOS</th><th>Reorder / Replen AOS</th><th>Total Units</th><th>New Units</th><th>Reorder Units</th><th>Replen Units</th><th>Share</th><th>Styles Ordered</th><th>Style Variance</th><th>Units Ordered</th><th>Balance to Order</th><th>Ceiling</th><th>Unit Cost</th><th>Selling Price</th><th>Gross Revenue</th><th>Input COGS</th></tr></thead>
                 <tbody>
                   {monthlyCategoryOrder.map((category) => {
-                    const categoryRows = rows.filter((row) => row.productCategory === category);
+                    const categoryRows = visibleRows.filter((row) => row.productCategory === category);
                     if (!categoryRows.length) return null;
                     const categoryStyles = categoryRows.reduce((sum, row) => sum + row.styleCountTarget, 0);
                     const categoryUnits = categoryRows.reduce((sum, row) => sum + row.totalUnitsImplied, 0);
                     return (
                       <Fragment key={category}>
-                        <tr className="range-tier-heading range-category-heading"><td colSpan={14}><strong>{category}</strong><span>{categoryRows.length} sub-categories</span></td></tr>
+                        <tr className="range-tier-heading range-category-heading"><td colSpan={23}><strong>{category}</strong><span>{categoryRows.length} sub-categories</span></td></tr>
                         {categoryRows.map((row) => {
                           const weeksOfCover = row.openingStockUnits !== null && row.unitsSoldLastMonth !== null && row.unitsSoldLastMonth > 0
                             ? row.openingStockUnits / (row.unitsSoldLastMonth / 4.33)
                             : null;
                           const shareOfUnits = totals.totalUnits ? row.totalUnitsImplied / totals.totalUnits * 100 : 0;
                           const inputCogs = row.expectedUnitCost !== null && row.sellingPrice ? row.expectedUnitCost / (row.sellingPrice / 1.16) * 100 : null;
+                          const styleVariance = row.committedStyles - row.styleCountTarget;
+                          const unitBalance = row.totalUnitsImplied - row.committedUnits;
+                          const unitCeiling = Math.round(row.totalUnitsImplied * 1.1);
+                          const ceilingBreached = row.committedUnits > unitCeiling;
                           return (
-                            <tr key={row.id} className={inputCogs !== null && inputCogs > season.cogsBudgetPct ? 'range-cogs-over' : ''}>
+                            <tr key={row.id} className={`${inputCogs !== null && inputCogs > season.cogsBudgetPct ? 'range-cogs-over ' : ''}${ceilingBreached ? 'range-ceiling-breach' : ''}`}>
                               <td><strong>{row.subCategory}</strong></td>
                               <td><InlineCell value={row.openingStockUnits} displayValue={row.openingStockUnits === null ? '' : numberFormat(row.openingStockUnits)} kind="number" ariaLabel={`${row.subCategory} opening stock units`} onSave={(value) => saveRow(row, 'openingStockUnits', value)} /></td>
-                              <td><InlineCell value={row.unitsSoldLastMonth} kind="number" ariaLabel={`${row.subCategory} units sold last month`} onSave={(value) => saveRow(row, 'unitsSoldLastMonth', value)} /></td>
                               <td className="range-readonly">{weeksOfCover === null ? '—' : `${weeksOfCover.toFixed(1)} wks`}</td>
-                              <td><InlineCell value={row.styleCountTarget} kind="number" ariaLabel={`${row.subCategory} planned styles`} onSave={(value) => saveRow(row, 'styleCountTarget', value)} /></td>
-                              <td><InlineCell value={row.aosUnits} kind="number" ariaLabel={`${row.subCategory} average order size`} onSave={(value) => saveRow(row, 'aosUnits', value)} /></td>
+                              <td className="range-total-cell">{numberFormat(row.styleCountTarget)}</td>
+                              <td><InlineCell value={row.newStyleCount} kind="number" ariaLabel={`${row.subCategory} new styles`} onSave={(value) => saveRow(row, 'newStyleCount', value)} /></td>
+                              <td><InlineCell value={row.reorderStyleCount} kind="number" ariaLabel={`${row.subCategory} reorder styles`} onSave={(value) => saveRow(row, 'reorderStyleCount', value)} /></td>
+                              <td><InlineCell value={row.replenishmentStyleCount} kind="number" ariaLabel={`${row.subCategory} replenishment styles`} onSave={(value) => saveRow(row, 'replenishmentStyleCount', value)} /></td>
+                              <td><InlineCell value={row.newStyleAosUnits} kind="number" ariaLabel={`${row.subCategory} new style average order size`} onSave={(value) => saveRow(row, 'newStyleAosUnits', value)} /></td>
+                              <td><InlineCell value={row.aosUnits} kind="number" ariaLabel={`${row.subCategory} reorder and replenishment average order size`} onSave={(value) => saveRow(row, 'aosUnits', value)} /></td>
                               <td className="range-total-cell">{numberFormat(row.totalUnitsImplied)}</td>
+                              <td className="range-readonly">{numberFormat(row.newUnits)}</td>
+                              <td className="range-readonly">{numberFormat(row.reorderUnits)}</td>
+                              <td className="range-readonly">{numberFormat(row.replenishmentUnits)}</td>
                               <td className="range-readonly">{shareOfUnits.toFixed(1)}%</td>
+                              <td className="range-progress-cell">{numberFormat(row.committedStyles)}</td>
+                              <td className={styleVariance > 0 ? 'range-negative-variance' : 'range-readonly'}>{styleVariance > 0 ? '+' : ''}{numberFormat(styleVariance)}</td>
+                              <td className="range-progress-cell">{numberFormat(row.committedUnits)}</td>
+                              <td className={unitBalance < 0 ? 'range-negative-variance' : 'range-readonly'}>{numberFormat(unitBalance)}</td>
+                              <td className={ceilingBreached ? 'range-breach-alert' : 'range-readonly'}>{ceilingBreached ? `BREACH +${numberFormat(row.committedUnits - unitCeiling)}` : numberFormat(unitCeiling)}</td>
                               <td><InlineCell value={row.expectedUnitCost} displayValue={kes(row.expectedUnitCost)} kind="number" ariaLabel={`${row.subCategory} expected unit cost`} onSave={(value) => saveRow(row, 'expectedUnitCost', value)} /></td>
                               <td><InlineCell value={row.sellingPrice} displayValue={kes(row.sellingPrice)} kind="number" ariaLabel={`${row.subCategory} average selling price`} onSave={(value) => saveRow(row, 'sellingPrice', value)} /></td>
                               <td className="range-total-cell">{row.sellingPrice === null ? '—' : kes(row.potentialFpRevenue)}</td>
                               <td className={inputCogs !== null && inputCogs > season.cogsBudgetPct ? 'range-cogs-alert' : 'range-readonly'}>{inputCogs === null ? '—' : `${inputCogs.toFixed(1)}%`}</td>
-                              <td className="range-readonly">{numberFormat(Math.round(row.totalUnitsImplied * 0.9))}</td>
-                              <td className="range-readonly">{numberFormat(Math.round(row.totalUnitsImplied * 1.1))}</td>
                             </tr>
                           );
                         })}
-                        <tr className="range-subtotal"><td>Subtotal · {category}</td><td colSpan={3} /><td>{numberFormat(categoryStyles)}</td><td /><td>{numberFormat(categoryUnits)}</td><td>{totals.totalUnits ? `${(categoryUnits / totals.totalUnits * 100).toFixed(1)}%` : '—'}</td><td colSpan={6} /></tr>
+                        <tr className="range-subtotal"><td>Subtotal · {category}</td><td colSpan={2} /><td>{numberFormat(categoryStyles)}</td><td colSpan={5} /><td>{numberFormat(categoryUnits)}</td><td colSpan={3} /><td>{totals.totalUnits ? `${(categoryUnits / totals.totalUnits * 100).toFixed(1)}%` : '—'}</td><td colSpan={10} /></tr>
                       </Fragment>
                     );
                   })}
-                  <tr className="range-grand-total"><td>Grand total</td><td colSpan={3} /><td>{numberFormat(totals.totalStyles)}</td><td /><td>{numberFormat(totals.totalUnits)}</td><td>{totals.totalUnits ? '100.0%' : '—'}</td><td colSpan={2} /><td>{kes(totals.potentialFpRevenue)}</td><td>{totals.costedRowCount && totals.totalUnits ? `${totals.cogsPct.toFixed(1)}%` : '—'}</td><td colSpan={2} /></tr>
+                  <tr className="range-grand-total"><td>Grand total</td><td colSpan={2} /><td>{numberFormat(totals.totalStyles)}</td><td>{numberFormat(totals.newStyles)}</td><td colSpan={4} /><td>{numberFormat(totals.totalUnits)}</td><td>{numberFormat(totals.newUnits)}</td><td colSpan={2} /><td>{totals.totalUnits ? '100.0%' : '—'}</td><td colSpan={7} /><td>{kes(totals.potentialFpRevenue)}</td><td>{totals.costedRowCount && totals.totalUnits ? `${totals.cogsPct.toFixed(1)}%` : '—'}</td></tr>
                 </tbody>
               </table>
             </div>
