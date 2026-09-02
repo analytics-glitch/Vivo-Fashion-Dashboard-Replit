@@ -165,7 +165,8 @@ _INSERT_SQL = """
         stock_on_hand, stock_available, active, product_id, ever_sold,
         status, tier, is_noos, fabric_structure,
         plain_print, source_country, source_city, fabric_category, fabric_subcategory,
-        fabric_width, gsm, supplier_fabric_code, noos_fabric, fiber_content
+        fabric_width, gsm, supplier_fabric_code, noos_fabric, fiber_content,
+        fabric_product_id, fabric_barcode
     ) VALUES %s
     ON CONFLICT (sku) DO UPDATE SET
         product_name    = EXCLUDED.product_name,
@@ -187,6 +188,8 @@ _INSERT_SQL = """
         supplier_fabric_code = EXCLUDED.supplier_fabric_code,
         noos_fabric = EXCLUDED.noos_fabric,
         fiber_content = EXCLUDED.fiber_content,
+        fabric_product_id = EXCLUDED.fabric_product_id,
+        fabric_barcode = EXCLUDED.fabric_barcode,
         active          = EXCLUDED.active
 """
 
@@ -199,7 +202,8 @@ _INSERT_SQL_NOOP = """
         stock_on_hand, stock_available, active, product_id, ever_sold,
         status, tier, is_noos, fabric_structure,
         plain_print, source_country, source_city, fabric_category, fabric_subcategory,
-        fabric_width, gsm, supplier_fabric_code, noos_fabric, fiber_content
+        fabric_width, gsm, supplier_fabric_code, noos_fabric, fiber_content,
+        fabric_product_id, fabric_barcode
     ) VALUES %s
     ON CONFLICT (sku) DO NOTHING
 """
@@ -229,7 +233,9 @@ def main():
         ADD COLUMN IF NOT EXISTS standard_cost_kes NUMERIC DEFAULT NULL,
         ADD COLUMN IF NOT EXISTS standard_cost_date DATE DEFAULT NULL,
         ADD COLUMN IF NOT EXISTS last_order_date DATE DEFAULT NULL,
-        ADD COLUMN IF NOT EXISTS range_tier TEXT DEFAULT NULL
+        ADD COLUMN IF NOT EXISTS range_tier TEXT DEFAULT NULL,
+        ADD COLUMN IF NOT EXISTS fabric_product_id BIGINT DEFAULT NULL,
+        ADD COLUMN IF NOT EXISTS fabric_barcode TEXT DEFAULT NULL
     """)
     conn.commit()
     log.info("Schema: standard costs, last order date and range tier columns ensured")
@@ -308,6 +314,7 @@ def main():
                 plain_print, source_country, source_city,
                 fabric_category, fabric_subcategory, fabric_width, gsm,
                 supplier_fabric_code, noos_fabric, fiber_content,
+                fabric_product_id, fabric_barcode,
                 write_date
             FROM raw_odoo_products
             WHERE default_code IS NOT NULL
@@ -326,6 +333,7 @@ def main():
              plain_print, source_country, source_city,
              fabric_category, fabric_subcategory, fabric_width, gsm,
              supplier_fabric_code, noos_fabric, fiber_content,
+              fabric_product_id, fabric_barcode,
              write_date) = p
 
             if sku in seen_skus:
@@ -403,6 +411,7 @@ def main():
                 fabric_category or None, fabric_subcategory or None,
                 fabric_width or None, gsm or None,
                 supplier_fabric_code or None, noos_fabric or None, fiber_content or None,
+                fabric_product_id, fabric_barcode or None,
             ))
             total_odoo += 1
 
@@ -452,7 +461,8 @@ def main():
             None, None, True,
             None, None,  # status, tier
             False,  # is_noos
-            None, None, None, None, None, None, None, None, None, None, None,  # fabric fields
+            None, None, None, None, None, None, None, None, None, None, None,
+            None, None,  # fabric fields + exact fabric reference
         ))
         seen_skus.add(sku)
         sales_only += 1
@@ -502,7 +512,8 @@ def main():
             None, None, s is not None,
             None, None,  # status, tier
             False,  # is_noos
-            None, None, None, None, None, None, None, None, None, None, None,  # fabric fields
+            None, None, None, None, None, None, None, None, None, None, None,
+            None, None,  # fabric fields + exact fabric reference
         ))
 
         if len(inv_insert) >= _BATCH:

@@ -150,14 +150,27 @@ export default function MerchInventory() {
   // inside the table) because changing it must refetch server-filtered totals,
   // categories, styles and colours — a client-only hide leaves parents wrong.
   const [showRetiredStockMix, setShowRetiredStockMix] = useState(false);
+  const [stockMixRangeDays, setStockMixRangeDays] = useState(90);
   const { summary, styles, byBrand, bySubcategory, byTier, loading, error } =
     useMerchData(["summary", "styles", "by-brand", "by-subcategory", "by-tier"], localSubcat);
   // Fetched separately so the (heavier) drill-down tree never blocks the KPI
   // band + charts; the section renders its own skeleton / error state.
+  const stockMixPeriod = useMemo(() => {
+    const to = new Date();
+    const from = new Date(to);
+    from.setDate(from.getDate() - stockMixRangeDays + 1);
+    return {
+      from_date: from.toISOString().slice(0, 10),
+      to_date: to.toISOString().slice(0, 10),
+    };
+  }, [stockMixRangeDays]);
   const mixState = useMerchData(
     ["stock-mix"],
     localSubcat,
-    { include_retired: showRetiredStockMix },
+    {
+      include_retired: showRetiredStockMix,
+      ...stockMixPeriod,
+    },
   );
   // Exact params useMerchData sends (incl. tab-local subcategory override) —
   // reused by the KPI CSV downloads so the file matches the on-card scope.
@@ -793,6 +806,8 @@ export default function MerchInventory() {
         error={mixState.error}
         showRetired={showRetiredStockMix}
         onShowRetiredChange={setShowRetiredStockMix}
+        rangeDays={stockMixRangeDays}
+        onRangeDaysChange={setStockMixRangeDays}
       />
 
       {/* ── Top stock + Avg WOC by Subcat ──

@@ -23,6 +23,7 @@ Other fixed choices:
 - Style deep links use `?tab=merch-inventory&style=<exact style_number>&expanded=true`; the inventory client searches by style code, opens the ancestor path, scrolls to the style row, and reveals colourways.
 - Lifecycle badges use `all_products_clean.status`: style status is Active if any SKU is Active, while each colourway computes its own status; retired/archived colourways are hidden only when the opt-in filter is turned off.
 - The Stock Mix table's dedicated SOR is selected-period `units_period ÷ (units_period + stock_units)` at every node; calculate from aggregated numerator/denominator, never average child percentages.
+- Fabric context is colourway-only: use the exact Odoo fabric-product reference, then RMAT/Stock `available ÷ kg_per_mtr_eff`. Never sum barcode or metres into parent rows because fabrics can be shared.
 
 **Why:** SOR must reconcile from Total through Category, Subcategory, Style, and Colourway while remaining comparable to the selected-period Units Sold column.
 

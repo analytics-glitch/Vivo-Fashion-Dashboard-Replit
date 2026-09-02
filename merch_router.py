@@ -205,12 +205,22 @@ _PIPELINE_BO_STATES = (
 
 def _sellable_store_pred(alias):
     return f"""(
+        {_sellable_retail_store_pred(alias)}
+        OR {_sellable_online_pred(alias)}
+    )"""
+
+
+def _sellable_retail_store_pred(alias):
+    return f"""(
         {alias}.pos_location_name = 'The Oasis Mall'
-        OR {alias}.pos_location_name = 'Online - Shop Zetu'
         OR {alias}.pos_location_name LIKE 'Vivo %%'
         OR {alias}.pos_location_name LIKE 'Zoya %%'
         OR {alias}.pos_location_name LIKE 'Safari %%'
     )"""
+
+
+def _sellable_online_pred(alias):
+    return f"({alias}.pos_location_name = 'Online - Shop Zetu')"
 
 
 _VAT_DIV = "(CASE WHEN s.country IN ('Uganda','Rwanda') THEN 1.18 ELSE 1.16 END)"
@@ -4362,7 +4372,8 @@ def _fetch_stock_mix(brand=None, subcategory=None, tier=None, from_date=None, to
     # This prevents a newly introduced Odoo WIP/QC/raw-material location from
     # silently becoming a retail store. When a POS filter is active, warehouse
     # stock does not belong to that store and is forced to zero.
-    stores_pred = f"{_sellable_store_pred('i')}{pos_store_clause}"
+    stores_pred = f"{_sellable_retail_store_pred('i')}{pos_store_clause}"
+    online_pred = f"{_sellable_online_pred('i')}{pos_store_clause}"
     wh_pred = (
         "FALSE" if pos_has_filter
         else f"i.pos_location_name = '{_SELLABLE_WAREHOUSE_LOCATION}'"
@@ -4430,6 +4441,11 @@ msku AS (
         mode() WITHIN GROUP (ORDER BY style_name)   AS style_name,
         mode() WITHIN GROUP (ORDER BY color_print)  AS colour,
         mode() WITHIN GROUP (ORDER BY cost)         AS cost,
+        mode() WITHIN GROUP (ORDER BY price) FILTER (WHERE price > 0) AS full_price,
+        mode() WITHIN GROUP (ORDER BY fabric_product_id)
+            FILTER (WHERE fabric_product_id IS NOT NULL) AS fabric_product_id,
+        mode() WITHIN GROUP (ORDER BY fabric_barcode)
+            FILTER (WHERE NULLIF(BTRIM(fabric_barcode), '') IS NOT NULL) AS fabric_barcode,
         mode() WITHIN GROUP (
             ORDER BY COALESCE(NULLIF(BTRIM(status), ''), 'Active')
         ) AS sku_status,
@@ -4483,6 +4499,37 @@ colour_lifecycle AS (
     WHERE COALESCE(colour, '') <> ''
     GROUP BY style_name, colour
 ),
+/* Exact Odoo fabric reference for each finished-goods colourway. This is
+   descriptive colourway metadata, never a roll-up measure. */
+colour_fabric AS (
+    SELECT
+        style_name,
+        COALESCE(colour, '') AS colour,
+        mode() WITHIN GROUP (ORDER BY fabric_product_id)
+            FILTER (WHERE fabric_product_id IS NOT NULL) AS fabric_product_id,
+        mode() WITHIN GROUP (ORDER BY fabric_barcode)
+            FILTER (WHERE NULLIF(BTRIM(fabric_barcode), '') IS NOT NULL) AS fabric_barcode
+    FROM msku
+    GROUP BY 1, 2
+),
+/* Same current available-metres basis as Fabric BI:
+   RMAT/Stock available kg ÷ the effective kg-per-metre conversion. */
+fabric_stock AS (
+    SELECT
+        p.id AS fabric_product_id,
+        NULLIF(BTRIM(p.barcode), '') AS fabric_barcode,
+        ROUND(COALESCE(SUM(
+            CASE
+                WHEN i.location_name = 'RMAT/Stock' AND p.kg_per_mtr_eff > 0
+                THEN i.available / p.kg_per_mtr_eff
+                ELSE 0
+            END
+        ), 0)::numeric, 1) AS available_metres
+    FROM raw_fabric_products p
+    LEFT JOIN raw_fabric_inventory i ON i.product_id = p.id
+    WHERE p.category = 'Fabric'
+    GROUP BY p.id, p.barcode
+),
 /* Stock at (style, colour) grain — pre-aggregated on its own (never join
    inventory to sales then SUM). Same row scope + filters as the KPI's stock
    CTE; stock value = available × per-SKU cost over the SAME rows. */
@@ -4491,11 +4538,12 @@ stock AS (
         COALESCE(NULLIF(i.style_name, ''), m.style_name) AS style_name,
         COALESCE(m.colour, '')                AS colour,
         COALESCE(SUM(i.available) FILTER (WHERE {stores_pred}), 0) AS soh_stores,
+        COALESCE(SUM(i.available) FILTER (WHERE {online_pred}), 0) AS soh_online,
         {soh_warehouse_expr} AS soh_warehouse,
         COALESCE(SUM(i.available * COALESCE(m.cost, 0)) FILTER (
-            WHERE ({stores_pred}) OR {wh_pred}), 0)                AS stock_value,
+            WHERE ({stores_pred}) OR ({online_pred}) OR {wh_pred}), 0) AS stock_value,
         COUNT(DISTINCT i.sku) FILTER (
-            WHERE (({stores_pred}) OR {wh_pred})
+            WHERE (({stores_pred}) OR ({online_pred}) OR {wh_pred})
               AND i.available > 0)                                 AS skus_in_stock
     FROM inventory_source i
     LEFT JOIN msku m ON m.sku = i.sku
@@ -4512,6 +4560,16 @@ sales_period AS (
         COALESCE(SUM(s.ordered_item_quantity) FILTER (
             WHERE s.sale_kind IN ('sale','order')), 0)             AS units_period,
         COALESCE(SUM({_NET_SALES_EXPR}), 0)                        AS revenue_period,
+        COALESCE(SUM(
+            CASE WHEN s.sale_kind IN ('sale','order')
+                 THEN s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric
+                 ELSE 0 END
+        ), 0)                                                       AS achieved_sales_gross,
+        COALESCE(SUM(
+            CASE WHEN s.sale_kind IN ('sale','order') AND m.full_price > 0
+                 THEN s.ordered_item_quantity * m.full_price
+                 ELSE 0 END
+        ), 0)                                                       AS full_price_value,
         COUNT(DISTINCT s.variant_sku) FILTER (
             WHERE s.sale_kind IN ('sale','order'))                 AS skus_sold
     FROM all_sales s
@@ -4536,6 +4594,23 @@ sales_6m AS (
         AND m.style_name <> '' AND NOT m.is_third_party
     WHERE s.sale_date BETWEEN %(six_mo_ago)s AND %(today)s
         AND {_BASE_FILTERS}
+        {country_clause}
+        {pos_sales_clause}
+    GROUP BY 1, 2
+),
+/* All-time last sale at style×colour grain. It intentionally ignores the
+   selected period: range buttons change performance metrics, not recency. */
+last_sales AS (
+    SELECT
+        m.style_name,
+        COALESCE(m.colour, '') AS colour,
+        MAX(s.sale_date::date) FILTER (
+            WHERE s.sale_kind IN ('sale','order')
+        ) AS last_sale_date
+    FROM all_sales s
+    JOIN msku m ON m.sku = s.variant_sku
+        AND m.style_name <> '' AND NOT m.is_third_party
+    WHERE {_BASE_FILTERS}
         {country_clause}
         {pos_sales_clause}
     GROUP BY 1, 2
@@ -4619,13 +4694,25 @@ SELECT
     p.reorder_count,
     g.colour,
     cl.colour_status,
-    COALESCE(st.soh_stores, 0) + COALESCE(st.soh_warehouse, 0) AS stock_units,
+    COALESCE(fs.fabric_barcode, cf.fabric_barcode) AS fabric_barcode,
+    CASE WHEN fs.fabric_product_id IS NOT NULL
+         THEN fs.available_metres
+         ELSE NULL
+    END AS fabric_stock_metres,
+    COALESCE(st.soh_stores, 0) AS soh_stores,
+    COALESCE(st.soh_online, 0) AS soh_online,
+    COALESCE(st.soh_warehouse, 0) AS soh_warehouse,
+    COALESCE(st.soh_stores, 0) + COALESCE(st.soh_online, 0)
+        + COALESCE(st.soh_warehouse, 0) AS stock_units,
     COALESCE(st.stock_value, 0)    AS stock_value,
     COALESCE(st.skus_in_stock, 0)  AS skus_in_stock,
     COALESCE(sp.units_period, 0)   AS units_period,
     COALESCE(sp.revenue_period, 0) AS revenue_period,
+    COALESCE(sp.achieved_sales_gross, 0) AS achieved_sales_gross,
+    COALESCE(sp.full_price_value, 0) AS full_price_value,
     COALESCE(sp.skus_sold, 0)      AS skus_sold,
     COALESCE(s6.units_6m, 0)       AS units_6m,
+    ls.last_sale_date::text        AS last_sale_date,
     so.last_order_date::text       AS style_last_order,
     co.last_order_date::text       AS colour_last_order,
     rs.sku                         AS rep_sku
@@ -4634,11 +4721,15 @@ JOIN prod p               ON p.style_name  = g.style_name
 LEFT JOIN stock st        ON st.style_name = g.style_name AND st.colour = g.colour
 LEFT JOIN sales_period sp ON sp.style_name = g.style_name AND sp.colour = g.colour
 LEFT JOIN sales_6m s6     ON s6.style_name = g.style_name AND s6.colour = g.colour
+LEFT JOIN last_sales ls   ON ls.style_name = g.style_name AND ls.colour = g.colour
 LEFT JOIN style_orders so ON so.style_name = g.style_name
 LEFT JOIN colour_orders co ON co.style_name = g.style_name
                           AND co.ncol = LOWER(BTRIM(g.colour))
 LEFT JOIN colour_lifecycle cl ON cl.style_name = g.style_name
                               AND cl.colour = g.colour
+LEFT JOIN colour_fabric cf ON cf.style_name = g.style_name
+                           AND cf.colour = g.colour
+LEFT JOIN fabric_stock fs ON fs.fabric_product_id = cf.fabric_product_id
 LEFT JOIN rep_sku rs      ON rs.style_name = g.style_name AND rs.colour = g.colour
 WHERE %(include_retired)s
    OR (
@@ -4724,7 +4815,9 @@ WHERE %(include_retired)s
 
     # ── Assemble the nested tree ──────────────────────────────────────────────
     cats = {}
-    tot_su = 0; tot_sv = 0.0; tot_up = 0; tot_rp = 0.0; tot_pipe = 0
+    tot_su = 0; tot_stores = 0; tot_online = 0; tot_wh = 0
+    tot_sv = 0.0; tot_up = 0; tot_rp = 0.0; tot_achieved = 0.0
+    tot_full_price = 0.0; tot_pipe = 0
     tot_pipe_states = {state: 0 for state in _PIPELINE_BO_STATES}
 
     def _pipeline_map(value):
@@ -4739,8 +4832,10 @@ WHERE %(include_retired)s
     def _bucket(store, name, child_key):
         node = store.get(name)
         if node is None:
-            node = {"name": name, "stock_units": 0, "stock_value": 0.0,
+            node = {"name": name, "stock_units": 0, "soh_stores": 0,
+                    "soh_online": 0, "soh_warehouse": 0, "stock_value": 0.0,
                     "units_period": 0, "revenue_period": 0.0, "_u6": 0,
+                    "_achieved_sales_gross": 0.0, "_full_price_value": 0.0,
                     "pipeline_units": 0,
                     "pipeline_by_state": {state: 0 for state in _PIPELINE_BO_STATES},
                     child_key: {}}
@@ -4762,16 +4857,23 @@ WHERE %(include_retired)s
             continue
 
         su = int(r.get("stock_units") or 0)
+        ss = int(r.get("soh_stores") or 0)
+        so = int(r.get("soh_online") or 0)
+        sw = int(r.get("soh_warehouse") or 0)
         sv = float(r.get("stock_value") or 0)
         up = int(r.get("units_period") or 0)
         rp = float(r.get("revenue_period") or 0)
+        achieved = float(r.get("achieved_sales_gross") or 0)
+        full_price_value = float(r.get("full_price_value") or 0)
         u6 = int(r.get("units_6m") or 0)
         cat_name = r.get("category") or "Uncategorised"
         sub_name = r.get("subcategory") or "Uncategorised"
         sty_name = r.get("style_name")
         col_name = r.get("colour") or "Unspecified"
 
-        tot_su += su; tot_sv += sv; tot_up += up; tot_rp += rp
+        tot_su += su; tot_stores += ss; tot_online += so; tot_wh += sw
+        tot_sv += sv; tot_up += up; tot_rp += rp
+        tot_achieved += achieved; tot_full_price += full_price_value
 
         c  = _bucket(cats, cat_name, "subcategories")
         sb = _bucket(c["subcategories"], sub_name, "styles")
@@ -4781,7 +4883,7 @@ WHERE %(include_retired)s
             style_pipe_states = _pipeline_map(r.get("pipeline_by_state"))
             st["style_number"] = r.get("style_number")
             st["status"] = r.get("style_status") or "Active"
-            st["tier"] = row_tier
+            st["tier"] = "Needs review" if row_tier == _UNTIERED_ACTIVE else row_tier
             _add_pipeline(st, style_pipe, style_pipe_states)
             _add_pipeline(c, style_pipe, style_pipe_states)
             _add_pipeline(sb, style_pipe, style_pipe_states)
@@ -4790,6 +4892,7 @@ WHERE %(include_retired)s
                 tot_pipe_states[state] += qty
             # Most recent production/buying order for the style (nullable).
             st["last_order_date"] = r.get("style_last_order")
+            st["last_sale_date"] = r.get("last_sale_date")
         # The SKU-derived colour dates out-cover the textual style match
         # (blank/mismatched PO style numbers), so roll them up: a style must
         # never show a dash while one of its own colours shows a date.
@@ -4797,23 +4900,43 @@ WHERE %(include_retired)s
         _clo = r.get("colour_last_order")
         if _clo and (not st.get("last_order_date") or _clo > st["last_order_date"]):
             st["last_order_date"] = _clo
+        _sale = r.get("last_sale_date")
+        if _sale and (not st.get("last_sale_date") or _sale > st["last_sale_date"]):
+            st["last_sale_date"] = _sale
         col = st["colours"].get(col_name)
         if col is None:
-            col = {"name": col_name, "stock_units": 0, "stock_value": 0.0,
+            col = {"name": col_name, "stock_units": 0, "soh_stores": 0,
+                   "soh_online": 0, "soh_warehouse": 0, "stock_value": 0.0,
                    "units_period": 0, "revenue_period": 0.0, "_u6": 0,
+                   "_achieved_sales_gross": 0.0, "_full_price_value": 0.0,
                    "pipeline_units": int(float(r.get("colour_pipeline_units") or 0)),
                    "pipeline_by_state": _pipeline_map(r.get("colour_pipeline_by_state")),
                    "skus_in_stock": 0, "skus_sold": 0,
                     "status": r.get("colour_status") or "Active",
+                    "tier": "Needs review" if row_tier == _UNTIERED_ACTIVE else row_tier,
+                    "last_sale_date": r.get("last_sale_date"),
+                    # Colourway-only fabric context. Never add either value to
+                    # style/subcategory/category/total buckets: the same fabric
+                    # may be referenced by many colourways.
+                    "fabric_barcode": r.get("fabric_barcode") or None,
+                    "fabric_stock_metres": (
+                        round(float(r["fabric_stock_metres"]), 1)
+                        if r.get("fabric_stock_metres") is not None else None
+                    ),
                    # Colour-grain ordering context + image key (nullable).
                    "last_order_date": r.get("colour_last_order"),
                    "rep_sku": r.get("rep_sku")}
             st["colours"][col_name] = col
         for node in (c, sb, st, col):
             node["stock_units"]    += su
+            node["soh_stores"]     += ss
+            node["soh_online"]     += so
+            node["soh_warehouse"]  += sw
             node["stock_value"]    += sv
             node["units_period"]   += up
             node["revenue_period"] += rp
+            node["_achieved_sales_gross"] += achieved
+            node["_full_price_value"] += full_price_value
             node["_u6"]            += u6
         col["skus_in_stock"] += int(r.get("skus_in_stock") or 0)
         col["skus_sold"]     += int(r.get("skus_sold") or 0)
@@ -4832,9 +4955,23 @@ WHERE %(include_retired)s
 
     def _finish(node):
         u6 = node.pop("_u6", 0)
+        achieved = node.pop("_achieved_sales_gross", 0)
+        full_price_value = node.pop("_full_price_value", 0)
         node["stock_value"] = round(node["stock_value"])
         node["revenue_period"] = round(node["revenue_period"])
+        node["full_price_pct"] = (
+            round(achieved * 100.0 / full_price_value, 1)
+            if node["units_period"] > 0 and full_price_value > 0 else None
+        )
         node["woc"] = round(node["stock_units"] / (u6 / 26.0), 1) if u6 > 0 else None
+        if node.get("last_sale_date"):
+            try:
+                node["last_sale_days"] = (today - date.fromisoformat(
+                    str(node["last_sale_date"])[:10])).days
+            except (TypeError, ValueError):
+                node["last_sale_days"] = None
+        else:
+            node["last_sale_days"] = None
 
     def _sorted(nodes):
         return sorted(nodes, key=lambda x: (-x["stock_units"], -x["units_period"], x["name"]))
@@ -4872,11 +5009,18 @@ WHERE %(include_retired)s
         "categories": _sorted(cat_list),
         "totals": {
             "stock_units":    tot_su,
+            "soh_stores":     tot_stores,
+            "soh_online":     tot_online,
+            "soh_warehouse":  tot_wh,
             "stock_value":    round(tot_sv),
             "pipeline_units": tot_pipe,
             "pipeline_by_state": tot_pipe_states,
             "units_period":   tot_up,
             "revenue_period": round(tot_rp),
+            "full_price_pct": (
+                round(tot_achieved * 100.0 / tot_full_price, 1)
+                if tot_up > 0 and tot_full_price > 0 else None
+            ),
         },
         "period": {"from": period_from, "to": period_to},
         "counts": counts,
@@ -6450,13 +6594,13 @@ def register_merch_routes(app, api_pg_module):
         to_date:      Optional[str] = Query(None),
         country:      Optional[str] = Query(None),
         pos_location: Optional[str] = Query(None),
-        include_retired: bool = Query(True),
+        include_retired: bool = Query(False),
     ):
         """Category → Sub Category → Style → Colour stock-mix drill-down tree
         (the fabric Stock Mix pattern for finished goods). Plain `def` on
         purpose: the cache-miss query is heavy, and a sync route runs in
         Starlette's threadpool instead of blocking the event loop."""
-        key = f"merch_stock_mix|{brand}|{subcategory}|{tier}|{from_date}|{to_date}|{country}|{pos_location}|{include_retired}"
+        key = f"merch_stock_mix_v2|{brand}|{subcategory}|{tier}|{from_date}|{to_date}|{country}|{pos_location}|{include_retired}"
         result = _cached(key, _TTL, lambda: _fetch_stock_mix(
             brand=brand, subcategory=subcategory,
             tier=tier,

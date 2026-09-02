@@ -71,6 +71,7 @@ def main():
         "x_vivo_attr_43",   # Supplier Fabric Code
         "x_vivo_attr_45",   # NOOS Fabric
         "x_vivo_attr_46",   # Fiber Content %
+        "x_studio_fabric_ref", # Exact fabric product used by this colourway
         "x_vivo_collection",
         "x_vivo_color",
         "x_vivo_categories",
@@ -90,6 +91,12 @@ def main():
 
     conn = psycopg2.connect(DATABASE_URL)
     cur = conn.cursor()
+    cur.execute("""
+        ALTER TABLE raw_odoo_products
+        ADD COLUMN IF NOT EXISTS fabric_product_id BIGINT,
+        ADD COLUMN IF NOT EXISTS fabric_barcode TEXT
+    """)
+    conn.commit()
     cur.execute("TRUNCATE raw_odoo_products")
 
     while True:
@@ -128,6 +135,24 @@ def main():
                 tmpl_tier_map[tr["id"]]   = get_m2o_name(tr.get("x_vivo_attr_99"))
                 tmpl_status_map[tr["id"]] = get_m2o_name(tr.get("x_vivo_attr_97"))
         # ─────────────────────────────────────────────────────────────────────
+        fabric_ids = {
+            r["x_studio_fabric_ref"][0]
+            for r in records
+            if isinstance(r.get("x_studio_fabric_ref"), list)
+            and r["x_studio_fabric_ref"]
+        }
+        fabric_barcode_map = {}
+        if fabric_ids:
+            fabric_records = models.execute_kw(
+                ODOO_DB, uid, ODOO_PASSWORD,
+                "product.product", "read",
+                [list(fabric_ids)],
+                {"fields": ["id", "barcode"]}
+            )
+            fabric_barcode_map = {
+                fr["id"]: (str(fr["barcode"]) if fr.get("barcode") else None)
+                for fr in fabric_records
+            }
 
         rows = []
         for r in records:
@@ -143,6 +168,10 @@ def main():
             pp_status = get_m2o_name(r.get("x_vivo_attr_97"))
             tier   = pp_tier   or (tmpl_tier_map.get(tmpl_id)   if tmpl_id else None)
             status = pp_status or (tmpl_status_map.get(tmpl_id) if tmpl_id else None)
+            fabric_ref = r.get("x_studio_fabric_ref")
+            fabric_product_id = (
+                fabric_ref[0] if isinstance(fabric_ref, list) and fabric_ref else None
+            )
 
             # Strip Odoo's creation-time default "New" (opt 60012) from styles
             # that were never deliberately tiered.  Every new product template
@@ -186,6 +215,8 @@ def main():
                 get_m2o_name(r.get("x_vivo_attr_43")),  # supplier_fabric_code
                 get_m2o_name(r.get("x_vivo_attr_45")),  # noos_fabric
                 get_m2o_name(r.get("x_vivo_attr_46")),  # fiber_content
+                fabric_product_id,
+                fabric_barcode_map.get(fabric_product_id),
                 bool(r.get("active")),
                 r.get("write_date"),
                 now,
@@ -200,7 +231,8 @@ def main():
                 category, gender, season, status, tier,
                 fabric_structure, plain_print, source_country, source_city,
                 fabric_category, fabric_subcategory, fabric_width, gsm,
-                supplier_fabric_code, noos_fabric, fiber_content, active,
+                supplier_fabric_code, noos_fabric, fiber_content,
+                fabric_product_id, fabric_barcode, active,
                 write_date, _synced_at
             ) VALUES %s
             ON CONFLICT (id) DO UPDATE SET
@@ -220,6 +252,8 @@ def main():
                 supplier_fabric_code = EXCLUDED.supplier_fabric_code,
                 noos_fabric = EXCLUDED.noos_fabric,
                 fiber_content = EXCLUDED.fiber_content,
+                fabric_product_id = EXCLUDED.fabric_product_id,
+                fabric_barcode = EXCLUDED.fabric_barcode,
                 active = EXCLUDED.active,
                 write_date = EXCLUDED.write_date,
                 _synced_at = EXCLUDED._synced_at

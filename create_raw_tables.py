@@ -33,6 +33,7 @@ tables = [
         fabric_category TEXT, fabric_subcategory TEXT,
         fabric_width TEXT, gsm TEXT,
         supplier_fabric_code TEXT, noos_fabric TEXT, fiber_content TEXT,
+        fabric_product_id BIGINT, fabric_barcode TEXT,
         write_date TEXT, _synced_at TIMESTAMP
     )""",
     """CREATE TABLE IF NOT EXISTS raw_odoo_customers (

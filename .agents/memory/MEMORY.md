@@ -126,6 +126,7 @@
 - [Merch store size analysis](merch-store-size-analysis.md) — compare a selected store's size SOR/SOH against weighted network size benchmarks, not average store percentages.
 - ['Online' pseudo-country](online-pseudo-country.md) — Shop Zetu online rows sit under country='Online' in sales AND inventory; Kenya filters must fold it in on both sides of any ratio.
 - [Merch full-price sell-through](merch-full-price-sell-through.md) — strict selected-period zero-discount unit ratio, excluding returns and distinct from avg full-price %.
+- [Stock Mix price attainment](stock-mix-price-attainment.md) — % Full Price is VAT-inclusive achieved selling value ÷ weighted full retail value; do not reuse the zero-discount unit KPI.
 - [Style Tracker % Recv](style-tracker-warehouse-pct.md) — receipts-first shared batch calc feeds board/endpoint/gate; names-first match grain; dated styles never fall back to stock.
 - [Disposable PostgreSQL tests](disposable-postgres-tests.md) — concurrency tests must run on a local throwaway cluster via TEST_DATABASE_URL, never DATABASE_URL.
 - [PD Flow stage persistence](pd-flow-stage-persistence.md) — Excel bootstrap snapshots may seed missing styles, but lifecycle state belongs to the append-only movement log.

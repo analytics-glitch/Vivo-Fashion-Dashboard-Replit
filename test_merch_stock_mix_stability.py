@@ -23,10 +23,18 @@ def _row(style, colour, stock, *, tier_pipeline=0, colour_pipeline=0):
         "style_status": "Active",
         "colour": colour,
         "colour_status": "Active",
+        "fabric_barcode": "FAB-001" if colour == "Black" else None,
+        "fabric_stock_metres": 125.5 if colour == "Black" else None,
+        "soh_stores": stock,
+        "soh_online": 0,
+        "soh_warehouse": 0,
         "stock_units": stock,
         "stock_value": stock * 1000,
         "units_period": 10,
         "revenue_period": 10000,
+        "achieved_sales_gross": 11600,
+        "full_price_value": 14500,
+        "last_sale_date": "2026-08-28",
         "units_6m": 26,
         "pipeline_units": tier_pipeline,
         "pipeline_by_state": {
@@ -96,7 +104,21 @@ class MerchStockMixStabilityTest(unittest.TestCase):
         )
 
         self.assertEqual(25, first["totals"]["stock_units"])
+        self.assertEqual(25, first["totals"]["soh_stores"])
+        self.assertEqual(0, first["totals"]["soh_online"])
+        self.assertEqual(0, first["totals"]["soh_warehouse"])
         self.assertEqual(125, first["totals"]["pipeline_units"])
+        self.assertEqual(80.0, first["totals"]["full_price_pct"])
+        first_style = first["categories"][0]["subcategories"][0]["styles"][0]
+        self.assertEqual("Tier 1", first_style["tier"])
+        self.assertTrue(all(c["tier"] == first_style["tier"] for c in first_style["colours"]))
+        self.assertNotIn("fabric_stock_metres", first_style)
+        black = next(c for c in first_style["colours"] if c["name"] == "Black")
+        blue = next(c for c in first_style["colours"] if c["name"] == "Blue")
+        self.assertEqual("FAB-001", black["fabric_barcode"])
+        self.assertEqual(125.5, black["fabric_stock_metres"])
+        self.assertIsNone(blue["fabric_barcode"])
+        self.assertIsNone(blue["fabric_stock_metres"])
         self.assertEqual(first["totals"], second["totals"])
         self.assertEqual(first["categories"], second["categories"])
 
@@ -104,6 +126,9 @@ class MerchStockMixStabilityTest(unittest.TestCase):
         self.assertIn("inventory_source AS", sql)
         self.assertIn("Warehouse Finished Goods", sql)
         self.assertIn("p.style_status = 'Active'", sql)
+        self.assertIn("fabric_stock AS", sql)
+        self.assertIn("i.available / p.kg_per_mtr_eff", sql)
+        self.assertIn("i.location_name = 'RMAT/Stock'", sql)
 
     @patch("merch_router._db_exec")
     def test_tier_filters_change_stock_mix_totals(self, db_exec):

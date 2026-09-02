@@ -42,7 +42,7 @@
  */
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { AlertTriangle, ChevronRight, Download, Info, Search, X } from "lucide-react";
+import { AlertTriangle, ArrowDown, ArrowUp, ChevronRight, Download, Info, Search, X } from "lucide-react";
 import { ErrorBox } from "@/components/common";
 import { fmtNum, fmtKESM, wocColor } from "./MerchHelpers";
 import ProductImage from "@/components/ProductImage";
@@ -56,6 +56,9 @@ const MAX_ROWS = 600;
 const FX = {
   stock:    "Sellable SOH = stock available to sell now in Vivo, Zoya, Safari and Oasis retail stores, Online - Shop Zetu, plus Warehouse Finished Goods. Finished Goods Production, WIP, receiving, transit, raw materials, samples, QC/defects, holding/retired and unknown locations are excluded.",
   pipeline: "Pipeline = committed units on open Odoo Buying Orders that have not yet become sellable finished goods. Broken down by Draft, BOM Pending, Ready, Partially Planned and Fully Planned. Pipeline is never added to SOH, WOC or SOR.",
+  stores:   "Retail-store SOH in the shared sellable allowlist: Vivo, Zoya, Safari and The Oasis Mall. Online and warehouse are shown separately.",
+  online:   "Online SOH at Online - Shop Zetu.",
+  warehouse:"Warehouse SOH at Warehouse Finished Goods only.",
   value:    "Stock Value = stock units × unit cost (KES, at cost).",
   sold:     "Units Sold = gross units sold in the selected period (returns not netted).",
   revenue:  "Total Revenue = net sales in the selected period (after discounts & returns, ex-VAT) — same basis as the hub's revenue figures.",
@@ -66,6 +69,10 @@ const FX = {
   woc:      "Weeks of Cover = stock ÷ weekly run-rate (trailing 6 months ÷ 26) — independent of the selected period, matching the tab's WOC.",
   lastOrd:  "Last Ordered = date of the most recent production/buying order for this style (style rows) or this exact colourway (colour rows). Dash = no order on record; category rows don't aggregate order dates.",
   skus:     "SKUs (stock / sold) = distinct SKUs (sizes) of this colour with stock on hand / sold in the period.",
+  fullPrice:"% Full Price = achieved VAT-inclusive selling value ÷ the full retail value of units sold. Aggregates are weighted by units sold; dash means nothing sold or no valid full retail price.",
+  lastSale: "Days Since Last Sale = calendar days since the most recent recorded sale for the style or colourway. Dash means no sale on record.",
+  fabricBarcode: "Exact Odoo fabric-product barcode recorded against this colourway. N/A means the historical colourway has no exact fabric mapping.",
+  fabricSoh: "Current available metres for the referenced fabric in RMAT/Stock, using the same available ÷ kg-per-metre source as Fabric BI. Colourway only; never rolled up.",
 };
 
 const PIPELINE_STATES = [
@@ -87,6 +94,46 @@ const PipelineCell = ({ node, className = "" }) => {
           {nonZero.map(([key, label]) => `${label} ${fmtNum(states[key])}`).join(" · ")}
         </div>
       ) : null}
+    </td>
+  );
+};
+
+const TierBadge = ({ tier }) => {
+  if (!tier) return <span className="text-slate-300">—</span>;
+  const review = tier === "Needs review";
+  return (
+    <span className={`inline-flex whitespace-nowrap rounded-full px-1.5 py-0.5 text-[9px] font-semibold ${
+      review ? "bg-amber-100 text-amber-800" : "bg-slate-100 text-slate-600"
+    }`}>
+      {tier}
+    </span>
+  );
+};
+
+const FullPriceCell = ({ node, className = "" }) => (
+  <td className={`text-right px-2 py-1.5 tabular-nums ${className}`} title={FX.fullPrice}>
+    {node?.full_price_pct == null
+      ? <span className="text-slate-300">—</span>
+      : <span>{Number(node.full_price_pct).toFixed(1)}%</span>}
+  </td>
+);
+
+const RecencyCell = ({ node, level, className = "" }) => {
+  const days = level >= 2 ? node?.last_sale_days : null;
+  const stock = Number(node?.stock_units) || 0;
+  const stale = stock > 0 && Number.isFinite(Number(days)) && Number(days) >= 90;
+  const veryStale = stale && Number(days) >= 180;
+  return (
+    <td className={`text-right px-2 py-1.5 tabular-nums ${className}`} title={FX.lastSale}>
+      {days == null ? <span className="text-slate-300">—</span> : (
+        <span className={`inline-flex rounded-full px-1.5 py-0.5 font-semibold ${
+          veryStale ? "bg-rose-100 text-rose-700"
+            : stale ? "bg-amber-100 text-amber-800"
+              : "text-slate-600"
+        }`}>
+          {fmtNum(days)}
+        </span>
+      )}
     </td>
   );
 };
@@ -196,10 +243,13 @@ const LEVEL_ROW_CLS = [
 
 const CSV_HEADERS = [
   "Level", "Category", "Sub Category", "Style", "Style Number", "Colour",
-  "Sellable SOH Units", "Pipeline Units", "Pipeline Draft", "Pipeline BOM Pending",
+  "Tier", "Fabric Barcode", "Fabric SOH Metres",
+  "Stores SOH", "Online SOH", "Warehouse SOH", "Sellable SOH Units",
+  "WIP Units", "Pipeline Draft", "Pipeline BOM Pending",
   "Pipeline Ready", "Pipeline Partially Planned", "Pipeline Fully Planned",
-  "Stock Value KES", "Units Sold", "Revenue KES",
-  "% of SOH", "% of Units Sold / SOR", "Gap pp", "WOC", "Last Ordered",
+  "Stock Value KES", "Units Sold", "Revenue KES", "% Full Price",
+  "% of SOH", "% of Units Sold", "SOR", "Gap pp", "WOC",
+  "Days Since Last Sale", "Last Sale Date", "Last Ordered",
   "SKUs in Stock", "SKUs Sold",
 ];
 
@@ -239,12 +289,15 @@ export default function MerchStockMix({
   error,
   showRetired = false,
   onShowRetiredChange,
+  rangeDays = 90,
+  onRangeDaysChange,
 }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const [open, setOpen] = useState({});
   const [query, setQuery] = useState("");
   const [detail, setDetail] = useState(null);
   const [highlightedStyle, setHighlightedStyle] = useState("");
+  const [sort, setSort] = useState({ key: "stock_units", direction: "desc" });
   const rowRefs = useRef(new Map());
   const requestedStyle = searchParams.get("style") || "";
   const shouldFocusStyle = Boolean(
@@ -256,6 +309,46 @@ export default function MerchStockMix({
   const totals = data?.totals || {};
   const totSu  = Number(totals.stock_units) || 0;
   const totUp  = Number(totals.units_period) || 0;
+  const pctOf = (v, tot) => (tot > 0 ? (Number(v) / tot) * 100 : 0);
+  const sortValue = (node, level, key) => {
+    if (key === "name") return node?.name || "";
+    if (key === "tier") return level >= 2 ? node?.tier || "" : "";
+    if (key === "pct_stock") return pctOf(node?.stock_units, totSu);
+    if (key === "pct_units") return pctOf(node?.units_period, totUp);
+    if (key === "sor") return sorOf(node);
+    if (key === "gap") return pctOf(node?.stock_units, totSu) - pctOf(node?.units_period, totUp);
+    if (key === "last_order_date") return level >= 2 ? node?.last_order_date || "" : "";
+    if (key === "last_sale_days") return level >= 2 ? node?.last_sale_days : null;
+    return node?.[key];
+  };
+  const sortedCats = useMemo(() => {
+    const compare = (a, b, level) => {
+      const av = sortValue(a, level, sort.key);
+      const bv = sortValue(b, level, sort.key);
+      const aBlank = av == null || av === "";
+      const bBlank = bv == null || bv === "";
+      if (aBlank !== bBlank) return aBlank ? 1 : -1;
+      let result;
+      if (typeof av === "string" || typeof bv === "string") {
+        result = String(av).localeCompare(String(bv), undefined, { numeric: true });
+      } else {
+        result = Number(av || 0) - Number(bv || 0);
+      }
+      if (result === 0) result = String(a?.name || "").localeCompare(String(b?.name || ""));
+      return sort.direction === "asc" ? result : -result;
+    };
+    const sortLevel = (nodes, level) => (nodes || [])
+      .map((node) => {
+        const childKey = CHILD_KEYS[level];
+        return childKey
+          ? { ...node, [childKey]: sortLevel(node[childKey], level + 1) }
+          : node;
+      })
+      .sort((a, b) => compare(a, b, level));
+    return sortLevel(cats, 0);
+  // pctOf and sortValue are pure helpers over the listed dependencies.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cats, sort, totSu, totUp]);
   const styleTarget = useMemo(
     () => findStyleTarget(cats, requestedStyle),
     [cats, requestedStyle]
@@ -273,7 +366,7 @@ export default function MerchStockMix({
       const kids = ck ? node[ck] || [] : [];
       const visibleKids = kids;
       const nextCtx = level === 2
-        ? { name: node.name, number: node.style_number, status: lifecycleStatus(node.status) }
+        ? { name: node.name, number: node.style_number, status: lifecycleStatus(node.status), tier: node.tier }
         : styleCtx;
         const searchable = [
           node.name,
@@ -298,9 +391,9 @@ export default function MerchStockMix({
       }
       return { rowList, branchMatch: selfMatch || descMatch };
     };
-    for (const c of cats) out.push(...walk(c, 0, c.name, false, null).rowList);
+    for (const c of sortedCats) out.push(...walk(c, 0, c.name, false, null).rowList);
     return out;
-  }, [cats, q, open]);
+  }, [sortedCats, q, open]);
 
   // A deep link is also a real table filter: this keeps the selected style
   // visible even when it would otherwise fall below the 600-row safety cap.
@@ -327,7 +420,7 @@ export default function MerchStockMix({
   // Colour-only column stays hidden until colour rows are actually on screen
   // (a style drilled open, or a search surfacing colours) — fabric behaviour.
   const showSkus = shown.some((r) => r.level === 3);
-  const nCols = 12 + (showSkus ? 1 : 0);
+  const nCols = 20 + (showSkus ? 1 : 0);
 
   const toggle = (path) => setOpen((o) => ({ ...o, [path]: !o[path] }));
 
@@ -363,7 +456,32 @@ export default function MerchStockMix({
     });
   };
 
-  const pctOf = (v, tot) => (tot > 0 ? (Number(v) / tot) * 100 : 0);
+  const toggleSort = (key) => setSort((current) => ({
+    key,
+    direction: current.key === key && current.direction === "desc" ? "asc" : "desc",
+  }));
+  const SortHead = ({ sortKey, children, title, align = "right", sticky = false }) => {
+    const active = sort.key === sortKey;
+    return (
+      <th className={`${align === "left" ? "text-left" : "text-right"} font-semibold px-2 py-2 ${
+        sticky ? "sticky left-0 z-30 bg-white min-w-[310px]" : ""
+      }`} title={title}>
+        <button
+          type="button"
+          onClick={() => toggleSort(sortKey)}
+          className={`inline-flex w-full items-center gap-1 ${align === "left" ? "justify-start" : "justify-end"} ${
+            active ? "text-slate-700" : ""
+          }`}
+          aria-label={`Sort by ${children}`}
+        >
+          {children}
+          {active ? (sort.direction === "asc"
+            ? <ArrowUp className="h-3 w-3" />
+            : <ArrowDown className="h-3 w-3" />) : null}
+        </button>
+      </th>
+    );
+  };
 
   // ── Full-tree CSV export ──────────────────────────────────────────────────
   // Flattens the ENTIRE loaded tree — every node at every level, regardless
@@ -382,6 +500,12 @@ export default function MerchStockMix({
         level === 2 ? node.name : level > 2 ? ctx.style : "",
         level === 2 ? node.style_number || "" : level > 2 ? ctx.styleNumber : "",
         level === 3 ? node.name : "",
+        level >= 2 ? node.tier || "" : "",
+        level === 3 ? node.fabric_barcode || "N/A" : "",
+        level === 3 && node.fabric_stock_metres != null ? node.fabric_stock_metres : "",
+        Math.round(Number(node.soh_stores) || 0),
+        Math.round(Number(node.soh_online) || 0),
+        Math.round(Number(node.soh_warehouse) || 0),
         Math.round(Number(node.stock_units) || 0),
         Math.round(Number(node.pipeline_units) || 0),
         ...PIPELINE_STATES.map(([key]) =>
@@ -390,10 +514,14 @@ export default function MerchStockMix({
         Math.round(Number(node.stock_value) || 0),
         Math.round(Number(node.units_period) || 0),
         Math.round(Number(node.revenue_period) || 0),
+        node.full_price_pct == null ? "" : Number(node.full_price_pct).toFixed(1),
         pctS.toFixed(1),
-        level >= 2 ? (sor == null ? "" : sor.toFixed(1)) : pctU.toFixed(1),
+        pctU.toFixed(1),
+        sor == null ? "" : sor.toFixed(1),
         (pctS - pctU).toFixed(1),
         node.woc == null ? "" : node.woc,
+        level >= 2 && node.last_sale_days != null ? node.last_sale_days : "",
+        level >= 2 ? node.last_sale_date || "" : "",
         level >= 2 ? node.last_order_date || "" : "",
         level === 3 ? (node.skus_in_stock ?? "") : "",
         level === 3 ? (node.skus_sold ?? "") : "",
@@ -408,9 +536,9 @@ export default function MerchStockMix({
         });
       }
     };
-    for (const c of cats) walk(c, 0, { category: "", sub: "", style: "", styleNumber: "" });
+    for (const c of sortedCats) walk(c, 0, { category: "", sub: "", style: "", styleNumber: "" });
     return out;
-  }, [cats, totSu, totUp]);
+  }, [sortedCats, totSu, totUp]);
 
   const downloadCsv = () => {
     if (!csvRows.length) return;
@@ -461,12 +589,28 @@ export default function MerchStockMix({
             Stock Mix — where stock sits vs where sales happen
           </div>
           <div className="text-[10px] text-slate-400 mt-0.5">
-            Shares vs grand total on category rows · SOR on style & colour rows · click to drill
+            Active styles and colourways only by default · sellable stock excludes WIP · click to drill
             Category → Sub Category → Style → Colour · right-click a colour (or tap its photo) for the product card
             {data?.period ? ` · units sold ${data.period.from} → ${data.period.to}` : ""}
           </div>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
+          <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-0.5" aria-label="Stock Mix date range">
+            {[30, 90, 365].map((days) => (
+              <button
+                key={days}
+                type="button"
+                onClick={() => onRangeDaysChange?.(days)}
+                data-testid={`mix-range-${days}`}
+                className={`rounded-md px-2.5 py-1 text-[10px] font-semibold ${
+                  rangeDays === days ? "bg-[#1a5c38] text-white shadow-sm" : "text-slate-500 hover:bg-white"
+                }`}
+                aria-pressed={rangeDays === days}
+              >
+                {days} days
+              </button>
+            ))}
+          </div>
           <button
             onClick={downloadCsv}
             disabled={!csvRows.length}
@@ -522,20 +666,25 @@ export default function MerchStockMix({
         <ErrorBox message={error} />
       ) : (
         <div className="overflow-auto max-h-[600px] rounded-lg border border-slate-100">
-          <table className="w-full min-w-[1080px] text-[11.5px] border-collapse">
+          <table className="w-full min-w-[2120px] text-[11.5px] border-collapse">
             <thead className="sticky top-0 z-10 bg-white shadow-[0_1px_0_#e2e8f0]">
               <tr className="text-[10px] uppercase tracking-wide text-slate-400">
-                <th className="text-left font-semibold px-2 py-2">
-                  Category / Sub / Style / Colour
-                </th>
-                <th className="text-right font-semibold px-2 py-2" title={FX.stock}>Sellable SOH</th>
-                <th className="text-right font-semibold px-2 py-2" title={FX.pipeline}>Pipeline</th>
-                <th className="text-right font-semibold px-2 py-2" title={FX.value}>Stock Value</th>
-                <th className="text-right font-semibold px-2 py-2" title={FX.sold}>Units Sold</th>
-                <th className="text-right font-semibold px-2 py-2" title={FX.revenue}>Total Revenue</th>
-                <th className="text-right font-semibold px-2 py-2" title={FX.pctStock}>% of SOH</th>
-                <th className="text-right font-semibold px-2 py-2" title={FX.pctSales}>% of Units Sold</th>
-                <th className="text-right font-semibold px-2 py-2" title={FX.sor}>
+                <SortHead sortKey="name" align="left" sticky>Category / Sub / Style / Colour</SortHead>
+                <SortHead sortKey="tier">Tier</SortHead>
+                <SortHead sortKey="fabric_barcode" title={FX.fabricBarcode}>Fabric Barcode</SortHead>
+                <SortHead sortKey="fabric_stock_metres" title={FX.fabricSoh}>Fabric SOH (m)</SortHead>
+                <SortHead sortKey="soh_stores" title={FX.stores}>Stores</SortHead>
+                <SortHead sortKey="soh_online" title={FX.online}>Online</SortHead>
+                <SortHead sortKey="soh_warehouse" title={FX.warehouse}>Warehouse</SortHead>
+                <SortHead sortKey="stock_units" title={FX.stock}>Sellable Total</SortHead>
+                <SortHead sortKey="pipeline_units" title={FX.pipeline}>WIP</SortHead>
+                <SortHead sortKey="stock_value" title={FX.value}>Stock Value</SortHead>
+                <SortHead sortKey="units_period" title={FX.sold}>Units Sold</SortHead>
+                <SortHead sortKey="revenue_period" title={FX.revenue}>Total Revenue</SortHead>
+                <SortHead sortKey="full_price_pct" title={FX.fullPrice}>% Full Price</SortHead>
+                <SortHead sortKey="pct_stock" title={FX.pctStock}>% of SOH</SortHead>
+                <SortHead sortKey="pct_units" title={FX.pctSales}>% of Units Sold</SortHead>
+                <SortHead sortKey="sor" title={FX.sor}>
                   <span className="inline-flex items-center justify-end gap-1">
                     SOR
                     <Info
@@ -544,12 +693,13 @@ export default function MerchStockMix({
                       title={FX.sor}
                     />
                   </span>
-                </th>
-                <th className="text-right font-semibold px-2 py-2" title={FX.gap}>Gap (pp)</th>
-                <th className="text-right font-semibold px-2 py-2" title={FX.woc}>WOC</th>
-                <th className="text-right font-semibold px-2 py-2" title={FX.lastOrd}>Last Ordered</th>
+                </SortHead>
+                <SortHead sortKey="gap" title={FX.gap}>Gap (pp)</SortHead>
+                <SortHead sortKey="woc" title={FX.woc}>WOC</SortHead>
+                <SortHead sortKey="last_sale_days" title={FX.lastSale}>Days Since Sale</SortHead>
+                <SortHead sortKey="last_order_date" title={FX.lastOrd}>Last Ordered</SortHead>
                 {showSkus && (
-                  <th className="text-right font-semibold px-2 py-2" title={FX.skus}>SKUs</th>
+                  <SortHead sortKey="skus_in_stock" title={FX.skus}>SKUs</SortHead>
                 )}
               </tr>
               {shown.length > 0 && (
@@ -557,7 +707,13 @@ export default function MerchStockMix({
                   className="bg-slate-50 font-bold text-slate-800 shadow-[0_1px_0_#cbd5e1]"
                   data-testid="mix-total-row"
                 >
-                  <td className="px-2 py-2">Total</td>
+                  <td className="sticky left-0 z-20 bg-slate-50 px-2 py-2">Total</td>
+                  <td className="text-right px-2 py-2 text-slate-300 font-normal">—</td>
+                  <td className="text-right px-2 py-2 text-slate-300 font-normal">—</td>
+                  <td className="text-right px-2 py-2 text-slate-300 font-normal">—</td>
+                  <td className="text-right px-2 py-2 tabular-nums">{fmtNum(totals.soh_stores)}</td>
+                  <td className="text-right px-2 py-2 tabular-nums">{fmtNum(totals.soh_online)}</td>
+                  <td className="text-right px-2 py-2 tabular-nums">{fmtNum(totals.soh_warehouse)}</td>
                   <td className="text-right px-2 py-2 tabular-nums" data-testid="mix-total-stock">
                     {fmtNum(totals.stock_units)}
                   </td>
@@ -565,11 +721,13 @@ export default function MerchStockMix({
                   <td className="text-right px-2 py-2 tabular-nums">{fmtKESM(totals.stock_value)}</td>
                   <td className="text-right px-2 py-2 tabular-nums">{fmtNum(totals.units_period)}</td>
                   <td className="text-right px-2 py-2 tabular-nums">{fmtKESM(totals.revenue_period)}</td>
+                  <FullPriceCell node={totals} className="py-2" />
                   <td className="text-right px-2 py-2 tabular-nums">100.0%</td>
                   <td className="text-right px-2 py-2 tabular-nums">100.0%</td>
                   <SorCell node={totals} className="py-2" />
                   <td className="text-right px-2 py-2 text-slate-300 font-normal" title="Gap nets to 0 across all categories.">—</td>
                   <td className="text-right px-2 py-2 text-slate-300 font-normal" title="Cover is a ratio — no meaningful grand total.">—</td>
+                  <td className="text-right px-2 py-2 text-slate-300 font-normal">—</td>
                   <td className="text-right px-2 py-2 text-slate-300 font-normal" title="Order dates don't aggregate.">—</td>
                   {showSkus && <td className="px-2 py-2" />}
                 </tr>
@@ -609,7 +767,9 @@ export default function MerchStockMix({
                       r.expandable ? "cursor-pointer hover:bg-slate-50" : ""
                      } ${highlightedStyle === String(n.style_number || "") ? "mix-style-highlight" : ""}`}
                   >
-                    <td className="px-2 py-1.5">
+                    <td className={`sticky left-0 z-[5] px-2 py-1.5 ${
+                      r.level === 0 ? "bg-slate-50" : "bg-white"
+                    }`}>
                       <div
                         className="flex items-center gap-1"
                         style={{ paddingLeft: r.level * 18 }}
@@ -673,11 +833,35 @@ export default function MerchStockMix({
                         ) : null}
                       </div>
                     </td>
+                    <td className="text-right px-2 py-1.5">
+                      {r.level >= 2
+                        ? <TierBadge tier={n.tier || r.styleCtx?.tier} />
+                        : <span className="text-slate-300">—</span>}
+                    </td>
+                    <td className="text-right px-2 py-1.5 tabular-nums" title={FX.fabricBarcode}>
+                      {r.level === 3 ? (
+                        <span className={n.fabric_barcode ? "text-slate-600" : "font-semibold text-amber-700"}>
+                          {n.fabric_barcode || "N/A"}
+                        </span>
+                      ) : <span className="text-slate-300">—</span>}
+                    </td>
+                    <td className="text-right px-2 py-1.5 tabular-nums" title={FX.fabricSoh}>
+                      {r.level === 3 && n.fabric_barcode && n.fabric_stock_metres != null
+                        ? `${Number(n.fabric_stock_metres).toLocaleString("en-US", {
+                            minimumFractionDigits: 1,
+                            maximumFractionDigits: 1,
+                          })} m`
+                        : <span className="text-slate-300">—</span>}
+                    </td>
+                    <td className="text-right px-2 py-1.5 tabular-nums">{fmtNum(n.soh_stores)}</td>
+                    <td className="text-right px-2 py-1.5 tabular-nums">{fmtNum(n.soh_online)}</td>
+                    <td className="text-right px-2 py-1.5 tabular-nums">{fmtNum(n.soh_warehouse)}</td>
                     <td className="text-right px-2 py-1.5 tabular-nums">{fmtNum(n.stock_units)}</td>
                     <PipelineCell node={n} />
                     <td className="text-right px-2 py-1.5 tabular-nums">{fmtKESM(n.stock_value)}</td>
                     <td className="text-right px-2 py-1.5 tabular-nums">{fmtNum(n.units_period)}</td>
                     <td className="text-right px-2 py-1.5 tabular-nums">{fmtKESM(n.revenue_period)}</td>
+                    <FullPriceCell node={n} />
                     <td className="text-right px-2 py-1.5 tabular-nums">{pctS.toFixed(1)}%</td>
                     <td className="text-right px-2 py-1.5 tabular-nums">
                       {`${pctU.toFixed(1)}%`}
@@ -693,6 +877,7 @@ export default function MerchStockMix({
                         </span>
                       )}
                     </td>
+                    <RecencyCell node={n} level={r.level} />
                     <td className="text-right px-2 py-1.5 tabular-nums whitespace-nowrap">
                       {r.level >= 2 && n.last_order_date ? (
                         <span className="text-slate-500">{fmtDate(n.last_order_date)}</span>
