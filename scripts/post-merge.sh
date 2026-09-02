@@ -8,6 +8,7 @@ set -e
 # lifecycle record. Its one-time legacy recovery is attestation-gated there;
 # do not add pnpm/vite dev commands or alternate recovery here.
 pnpm install --frozen-lockfile
+bash scripts/install_sop_pdf_dependencies.sh
 
 # NOTE: we intentionally do NOT run `drizzle-kit push` here.
 # This Postgres database is owned by the Python backend (api_pg.py), which

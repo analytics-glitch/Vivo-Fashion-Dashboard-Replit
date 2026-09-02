@@ -18,7 +18,7 @@ run = "python3 /home/runner/workspace/run_api.py"
 [services.production]
 
 [services.production.build]
-args = ["python3", "--version"]
+args = ["bash", "/home/runner/workspace/scripts/install_sop_pdf_dependencies.sh"]
 
 # Production runs the self-healing supervisor (watchdog), which spawns and keeps
 # alive both uvicorn (the API on PORT) and the incremental sync loop. Requires a

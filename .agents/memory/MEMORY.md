@@ -119,8 +119,7 @@
 - [Staff 2FA flow](staff-2fa-flow.md) — password/Google/native auth share a short-lived challenge before normal session creation; existing sessions survive reset.
 - [Sublimation costing canon](sublimation-costing-canon.md) — BOM op time = settable STANDARD throughput (default 60, actual = variance only); server recomputes saves; reprint on printing lines only; rate constants FE+BE lockstep.
 - [Manufacturing live search](manufacturing-search-contract.md) — target only confirmed/progress DPS MOs; OR text search, aggregate status filter, and separate Odoo/stock freshness.
-- [Artifact service environments](artifact-service-environments.md) — preserve managed-service env blocks and give every production route exactly one runnable owner.
-- [Production Node server bundling](artifact-production-node-bundling.md) — artifact runtime may omit workspace node_modules; bundle service dependencies during the production build.
+- [Artifact service runtime](artifact-service-runtime.md) — preserve service env/route ownership and bundle runtime dependencies that production may omit.
 - [OpenAPI codegen compatibility](openapi-codegen-compatibility.md) — checked-in Orval 8.9.1 currently fails resolving this repo's OpenAPI input; restore generated outputs and patch the contract/types manually if needed.
 - [Product Workspace guidance](product-workspace-guidance.md) — shared rules for L10, resources, resilient startup and seed migrations, brand scope, profile privacy, preview auth, and public feedback.
 - [Merch empty-universe poison + deep-dive crash](merch-core-empty-poison.md) — never cache an empty style universe (raise in compute fn); "search crash" reports may be selected-style render bugs, assert error boundary absent.

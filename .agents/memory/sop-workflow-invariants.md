@@ -26,3 +26,9 @@ DOCX fidelity checks must inspect note content, not merely package-part presence
 **Why:** Treating template-only OOXML parts or routine font metadata as unsupported content falsely rejects otherwise readable modern Word SOPs.
 
 **How to apply:** Reject comments and notes only when their XML contains real user records (excluding footnote/endnote IDs -1 and 0), while retaining strict rejection for content the editor would actually lose.
+
+Approved PDFs use a shaping-capable HTML renderer with repository-packaged fonts. The same renderer and glyph preflight must serve every approval route.
+
+**Why:** OS fonts differ between development and published images, while non-shaping PDF libraries corrupt bidirectional text, contextual forms, and combining marks even when every Unicode codepoint exists in a font.
+
+**How to apply:** Pin the shaping runtime, package the font files and production install step, validate glyph coverage before rendering, and test logical round trips plus visual RTL order and shaping-table/font embedding.

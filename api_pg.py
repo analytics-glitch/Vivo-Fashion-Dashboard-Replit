@@ -2349,6 +2349,8 @@ def _check_report_libraries():
         "openpyxl": "Excel exports (fabric register, replenishments, reports)",
         "reportlab": "PDF downloads (fabric receiving PDF)",
         "pypdf": "PDF merge/processing",
+        "weasyprint": "shaping-safe approved SOP PDFs",
+        "fontTools": "approved SOP font coverage validation",
     }
     missing = []
     for mod, used_for in optional_libs.items():
@@ -27730,6 +27732,19 @@ _SOP_MAX_BYTES = 20 * 1024 * 1024  # 20 MB per file — generous for SOP docs
 _SOP_MAX_EDITOR_BYTES = 1 * 1024 * 1024
 # SOP intake is Word-only; approved current representations become PDFs.
 _SOP_ALLOWED_EXTS = {".docx"}
+_SOP_FONT_DIR = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "assets", "sop-fonts")
+_SOP_PDF_FONTS = (
+    ("SopNoto", "NotoSans-Regular.ttf", "normal", 400),
+    ("SopNoto", "NotoSans-Bold.ttf", "normal", 700),
+    ("SopArabic", "NotoSansArabic-Regular.ttf", "normal", 400),
+    ("SopHebrew", "NotoSansHebrew-Regular.ttf", "normal", 400),
+    ("SopDevanagari", "NotoSansDevanagari-Regular.ttf", "normal", 400),
+    ("SopThai", "NotoSansThai-Regular.ttf", "normal", 400),
+    ("SopCJK", "NotoSansCJKsc-Regular.otf", "normal", 400),
+    ("SopEmoji", "NotoColorEmoji.ttf", "normal", 400),
+)
+_SOP_FONT_CODEPOINTS = None
 _SOP_EDITOR_TAGS = {
     "p", "br", "div", "span", "strong", "b", "em", "i", "u", "s",
     "h1", "h2", "h3", "ul", "ol", "li", "blockquote", "pre", "code",
@@ -27992,205 +28007,55 @@ def _sop_validate_approval_source(row):
     _sop_docx_to_html(bytes(source_data))
 
 
-class _SopPdfTextParser(HTMLParser):
-    """Convert safe editor HTML into ordered paragraph and table blocks."""
-
-    _BLOCKS = {"p", "div", "h1", "h2", "h3", "li", "blockquote", "pre", "td", "th"}
-
-    def __init__(self):
-        super().__init__(convert_charrefs=True)
-        self.blocks = []
-        self.tag = "p"
-        self.parts = []
-        self.inline = []
-        self.table_rows = None
-        self.table_row = None
-        self.table_cell = None
-        self.table_cell_tag = None
-        self.list_stack = []
-
-    def _flush(self):
-        text = "".join(self.parts).strip()
-        if text:
-            self.blocks.append((self.tag, text))
-        self.parts = []
-        self.inline = []
-
-    def handle_starttag(self, tag, attrs):
-        tag = tag.lower()
-        if tag == "table":
-            self._flush()
-            self.table_rows = []
-            return
-        if self.table_rows is not None:
-            if tag == "tr":
-                self.table_row = []
-            elif tag in {"td", "th"}:
-                self.table_cell = []
-                self.table_cell_tag = tag
-            elif tag == "br" and self.table_cell is not None:
-                self.table_cell.append("<br/>")
-            elif tag in {"p", "div"} and self.table_cell:
-                self.table_cell.append("<br/>")
-            elif tag in {"strong", "b", "em", "i", "u"} and self.table_cell is not None:
-                mapped = {"strong": "b", "b": "b", "em": "i", "i": "i", "u": "u"}[tag]
-                self.table_cell.append(f"<{mapped}>")
-                self.inline.append(mapped)
-            return
-        if tag in {"ol", "ul"}:
-            self._flush()
-            self.list_stack.append({"tag": tag, "counter": 0})
-            return
-        if tag in self._BLOCKS:
-            self._flush()
-            self.tag = tag
-            if tag == "li":
-                depth_prefix = "&nbsp;" * (4 * max(0, len(self.list_stack) - 1))
-                if self.list_stack and self.list_stack[-1]["tag"] == "ol":
-                    self.list_stack[-1]["counter"] += 1
-                    marker = f"{self.list_stack[-1]['counter']}. "
-                else:
-                    marker = "• "
-                self.parts.append(depth_prefix + marker)
-        elif tag == "br":
-            self.parts.append("<br/>")
-        elif tag in {"strong", "b", "em", "i", "u"}:
-            mapped = {"strong": "b", "b": "b", "em": "i", "i": "i", "u": "u"}[tag]
-            self.parts.append(f"<{mapped}>")
-            self.inline.append(mapped)
-
-    def handle_endtag(self, tag):
-        tag = tag.lower()
-        if self.table_rows is not None:
-            if tag in {"strong", "b", "em", "i", "u"} and self.inline:
-                if self.table_cell is not None:
-                    self.table_cell.append(f"</{self.inline.pop()}>")
-            elif tag in {"td", "th"}:
-                if self.table_row is not None:
-                    text = "".join(self.table_cell or []).strip()
-                    self.table_row.append((self.table_cell_tag or "td", text or " "))
-                self.table_cell = None
-                self.table_cell_tag = None
-                self.inline = []
-            elif tag == "tr":
-                if self.table_row is not None:
-                    self.table_rows.append(self.table_row)
-                self.table_row = None
-            elif tag == "table":
-                if self.table_rows:
-                    self.blocks.append(("table", self.table_rows))
-                self.table_rows = None
-                self.table_row = None
-                self.table_cell = None
-                self.table_cell_tag = None
-                self.inline = []
-            return
-        if tag in {"ol", "ul"}:
-            self._flush()
-            if self.list_stack:
-                self.list_stack.pop()
-            return
-        if tag in self._BLOCKS:
-            self._flush()
-            self.tag = "p"
-        elif tag in {"strong", "b", "em", "i", "u"} and self.inline:
-            self.parts.append(f"</{self.inline.pop()}>")
-
-    def handle_data(self, data):
-        escaped = _html.escape(data, quote=False)
-        if self.table_rows is not None and self.table_cell is not None:
-            self.table_cell.append(escaped)
-        elif self.table_rows is None:
-            self.parts.append(escaped)
-
-    def finish(self):
-        self._flush()
-        return self.blocks
+def _sop_font_codepoints():
+    """Return the union of glyphs packaged for approved SOP documents."""
+    global _SOP_FONT_CODEPOINTS
+    if _SOP_FONT_CODEPOINTS is not None:
+        return _SOP_FONT_CODEPOINTS
+    try:
+        from fontTools.ttLib import TTFont
+    except Exception as exc:
+        raise RuntimeError(
+            "The SOP font validator is unavailable; approval cannot continue") from exc
+    codepoints = set()
+    for _family, filename, _style, _weight in _SOP_PDF_FONTS:
+        path = os.path.join(_SOP_FONT_DIR, filename)
+        if not os.path.isfile(path):
+            raise RuntimeError(
+                f"The packaged SOP font {filename} is unavailable; "
+                "approval cannot continue")
+        font = TTFont(path, lazy=True)
+        try:
+            for table in font["cmap"].tables:
+                if table.isUnicode():
+                    codepoints.update(table.cmap)
+        finally:
+            font.close()
+    _SOP_FONT_CODEPOINTS = frozenset(codepoints)
+    return _SOP_FONT_CODEPOINTS
 
 
-def _sop_html_to_pdf(editor_html):
-    import io
-    from reportlab.lib import colors
-    from reportlab.lib.enums import TA_CENTER
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-    from reportlab.lib.units import mm
-    from reportlab.pdfbase import pdfmetrics
-    from reportlab.pdfbase.cidfonts import UnicodeCIDFont
-    from reportlab.pdfbase.ttfonts import TTFont
-    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
-
-    safe_html = _sop_sanitize_html(editor_html)
-    parser = _SopPdfTextParser()
-    parser.feed(safe_html)
-    blocks = parser.finish()
-    if not blocks:
+def _sop_validate_pdf_glyphs(safe_html):
+    plain_text = _html.unescape(re.sub(r"<[^>]+>", "", safe_html))
+    if not plain_text.strip():
         raise ValueError("Add some SOP content before approving")
-
-    font_dir = "/usr/share/fonts/truetype/dejavu"
-    font_files = {
-        "SopUnicode": "DejaVuSans.ttf",
-        "SopUnicode-Bold": "DejaVuSans-Bold.ttf",
-        "SopUnicode-Italic": "DejaVuSans.ttf",
-        "SopUnicode-BoldItalic": "DejaVuSans-Bold.ttf",
+    supported = _sop_font_codepoints()
+    # These controls affect shaping/direction but intentionally have no glyph.
+    invisible_controls = {
+        0x200C, 0x200D, 0x200E, 0x200F, 0x202A, 0x202B, 0x202C,
+        0x202D, 0x202E, 0x2066, 0x2067, 0x2068, 0x2069, 0xFE0E, 0xFE0F,
     }
-    for font_name, filename in font_files.items():
-        if font_name not in pdfmetrics.getRegisteredFontNames():
-            font_path = os.path.join(font_dir, filename)
-            if not os.path.isfile(font_path):
-                raise RuntimeError(
-                    "The Unicode PDF font is unavailable; approval cannot continue")
-            pdfmetrics.registerFont(TTFont(font_name, font_path))
-    pdfmetrics.registerFontFamily(
-        "SopUnicode",
-        normal="SopUnicode",
-        bold="SopUnicode-Bold",
-        italic="SopUnicode-Italic",
-        boldItalic="SopUnicode-BoldItalic",
-    )
-    if "STSong-Light" not in pdfmetrics.getRegisteredFontNames():
-        pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
-
-    def is_cjk(point):
-        return (
-            0x2E80 <= point <= 0x2EFF
-            or 0x3000 <= point <= 0x303F
-            or 0x3040 <= point <= 0x30FF
-            or 0x3400 <= point <= 0x4DBF
-            or 0x4E00 <= point <= 0x9FFF
-            or 0xAC00 <= point <= 0xD7AF
-        )
-
-    dejavu_glyphs = pdfmetrics.getFont("SopUnicode").face.charWidths
     unsupported = []
-    content_strings = []
-    for tag, content in blocks:
-        if tag == "table":
-            content_strings.extend(text for row in content for _, text in row)
-        else:
-            content_strings.append(content)
-    for text in content_strings:
-        for char in re.sub(r"<[^>]+>", "", text):
-            point = ord(char)
-            category = unicodedata.category(char)
-            needs_complex_shaping = (
-                unicodedata.bidirectional(char) in {"R", "AL", "AN"}
-                or 0x0900 <= point <= 0x109F
-            )
-            supported = (
-                char in "\n\r\t"
-                or category == "Zs"
-                or is_cjk(point)
-                or (
-                    point <= 0xFFFF
-                    and not needs_complex_shaping
-                    and not category.startswith(("C", "M"))
-                    and point in dejavu_glyphs
-                )
-            )
-            if not supported:
-                name = unicodedata.name(char, f"U+{point:04X}")
-                unsupported.append(name)
+    for char in plain_text:
+        point = ord(char)
+        if (
+            char in "\n\r\t"
+            or unicodedata.category(char) == "Zs"
+            or point in invisible_controls
+            or point in supported
+        ):
+            continue
+        unsupported.append(unicodedata.name(char, f"U+{point:04X}"))
     if unsupported:
         examples = ", ".join(sorted(set(unsupported))[:4])
         raise ValueError(
@@ -28198,92 +28063,92 @@ def _sop_html_to_pdf(editor_html):
             f"cannot safely preserve ({examples}). "
             "Replace those characters before approval.")
 
-    def pdf_markup(text):
-        # DejaVu embeds broad Unicode coverage. Use ReportLab's CJK CID font
-        # for East Asian ranges that DejaVu Sans does not contain.
-        return re.sub(
-            r"([\u2e80-\u2eff\u3000-\u303f\u3040-\u30ff"
-            r"\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]+)",
-            r'<font name="STSong-Light">\1</font>',
-            text,
-        )
 
-    styles = getSampleStyleSheet()
-    styles.add(ParagraphStyle(
-        name="SopTitle", parent=styles["Title"], fontName="SopUnicode-Bold",
-        fontSize=20, leading=25, alignment=TA_CENTER, spaceAfter=12,
-    ))
-    styles.add(ParagraphStyle(
-        name="SopHeading2", parent=styles["Heading2"], fontName="SopUnicode-Bold",
-        fontSize=15, leading=19, spaceBefore=8, spaceAfter=6,
-    ))
-    styles.add(ParagraphStyle(
-        name="SopHeading3", parent=styles["Heading3"], fontName="SopUnicode-Bold",
-        fontSize=12, leading=16, spaceBefore=6, spaceAfter=4,
-    ))
-    styles.add(ParagraphStyle(
-        name="SopBody", parent=styles["BodyText"], fontName="SopUnicode",
-        fontSize=10.5, leading=15, spaceAfter=6,
-    ))
-    output = io.BytesIO()
-    document = SimpleDocTemplate(
-        output, pagesize=A4,
-        rightMargin=18 * mm, leftMargin=18 * mm,
-        topMargin=18 * mm, bottomMargin=18 * mm,
-        title="Approved Standard Operating Procedure",
-        author="Vivo Fashion Group",
+def _sop_html_to_pdf(editor_html):
+    """Render safe editor HTML with Pango/HarfBuzz shaping and bundled fonts."""
+    from pathlib import Path
+    from weasyprint import HTML
+
+    safe_html = _sop_sanitize_html(editor_html)
+    _sop_validate_pdf_glyphs(safe_html)
+    font_faces = "\n".join(
+        "@font-face {"
+        f"font-family: '{family}'; src: url('{filename}'); "
+        f"font-style: {style}; font-weight: {weight};"
+        "}"
+        for family, filename, style, weight in _SOP_PDF_FONTS
     )
-    story = []
-    for tag, content in blocks:
-        if tag == "table":
-            rows = content
-            column_count = max((len(row) for row in rows), default=0)
-            if not column_count:
-                continue
-            table_data = []
-            for row in rows:
-                cells = [
-                    Paragraph(pdf_markup(text), styles["SopBody"])
-                    for _, text in row
-                ]
-                cells.extend(
-                    Paragraph(" ", styles["SopBody"])
-                    for _ in range(column_count - len(cells))
-                )
-                table_data.append(cells)
-            has_header = bool(rows and any(kind == "th" for kind, _ in rows[0]))
-            table = Table(
-                table_data,
-                colWidths=[170 * mm / column_count] * column_count,
-                repeatRows=1 if has_header else 0,
-                hAlign="LEFT",
-            )
-            commands = [
-                ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#94A3B8")),
-                ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ("LEFTPADDING", (0, 0), (-1, -1), 6),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-                ("TOPPADDING", (0, 0), (-1, -1), 5),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-            ]
-            if has_header:
-                commands.extend([
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#E2E8F0")),
-                    ("FONTNAME", (0, 0), (-1, 0), "SopUnicode-Bold"),
-                ])
-            table.setStyle(TableStyle(commands))
-            story.extend([table, Spacer(1, 3 * mm)])
-            continue
-        text = content
-        style = (
-            styles["SopTitle"] if tag == "h1"
-            else styles["SopHeading2"] if tag == "h2"
-            else styles["SopHeading3"] if tag == "h3"
-            else styles["SopBody"]
-        )
-        story.append(Paragraph(pdf_markup(text), style))
-    document.build(story)
-    return output.getvalue()
+    families = ", ".join(
+        f"'{family}'" for family in dict.fromkeys(
+            family for family, _filename, _style, _weight in _SOP_PDF_FONTS)
+    )
+    document = f"""<!doctype html>
+<html><head><meta charset="utf-8"><style>
+{font_faces}
+@page {{
+  size: A4;
+  margin: 18mm;
+  @bottom-center {{
+    content: counter(page);
+    color: #64748b;
+    font: 8pt 'SopNoto';
+  }}
+}}
+html {{ font-size: 10.5pt; }}
+body {{
+  margin: 0;
+  color: #0f172a;
+  font-family: {families};
+  line-height: 1.45;
+}}
+h1, h2, h3, p, div, li, blockquote, pre, td, th {{
+  unicode-bidi: plaintext;
+  text-align: start;
+}}
+h1 {{ margin: 0 0 12pt; font-size: 20pt; line-height: 1.25; text-align: center; }}
+h2 {{ margin: 8pt 0 6pt; font-size: 15pt; line-height: 1.3; }}
+h3 {{ margin: 6pt 0 4pt; font-size: 12pt; line-height: 1.3; }}
+p, div, blockquote, pre {{ margin: 0 0 6pt; }}
+ol, ul {{ margin: 0 0 6pt; padding-inline-start: 22pt; }}
+li {{ margin: 0 0 2pt; }}
+blockquote {{ border-inline-start: 3pt solid #cbd5e1; padding-inline-start: 8pt; }}
+pre, code {{ white-space: pre-wrap; font-family: {families}; }}
+table {{
+  width: 100%;
+  margin: 0 0 9pt;
+  border-collapse: collapse;
+  table-layout: fixed;
+}}
+thead {{ display: table-header-group; }}
+th, td {{
+  border: 0.5pt solid #94a3b8;
+  padding: 5pt 6pt;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}}
+th {{ background: #e2e8f0; font-weight: 700; }}
+</style><title>Approved Standard Operating Procedure</title></head>
+<body>{safe_html}</body></html>"""
+    base_url = Path(_SOP_FONT_DIR).resolve().as_uri() + "/"
+    pdf = HTML(string=document, base_url=base_url).write_pdf()
+    if not pdf.startswith(b"%PDF"):
+        raise RuntimeError("The approved SOP renderer did not produce a PDF")
+    return pdf
+
+
+def _sop_render_approval_pdf(row, editor_html):
+    """Shared fail-before-SQL renderer for every SOP approval route."""
+    try:
+        _sop_validate_approval_source(row)
+        return _sop_html_to_pdf(editor_html)
+    except ValueError:
+        raise
+    except Exception as exc:
+        log.exception("Approved SOP PDF rendering failed")
+        raise ValueError(
+            "The approved PDF could not be rendered safely. "
+            "The SOP was not approved; try again or contact an administrator."
+        ) from exc
 
 
 def _sop_pdf_filename(filename):
@@ -28993,8 +28858,8 @@ def sops_editor_update(file_id: int, request: Request, payload: dict = Body(...)
             output_filename = current[0]["filename"]
             if transition == "approve":
                 try:
-                    _sop_validate_approval_source(current[0])
-                    output_data = _sop_html_to_pdf(editor_html)
+                    output_data = _sop_render_approval_pdf(
+                        current[0], editor_html)
                 except ValueError as exc:
                     raise HTTPException(status_code=400, detail=str(exc))
                 output_content_type = "application/pdf"
@@ -29084,8 +28949,8 @@ def sops_approve(file_id: int, request: Request):
         raise HTTPException(
             status_code=409, detail="This SOP is no longer Awaiting Approval")
     try:
-        _sop_validate_approval_source(source[0])
-        pdf_data = _sop_html_to_pdf(source[0].get("editor_html") or "")
+        pdf_data = _sop_render_approval_pdf(
+            source[0], source[0].get("editor_html") or "")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     pdf_filename = _sop_pdf_filename(source[0]["filename"])

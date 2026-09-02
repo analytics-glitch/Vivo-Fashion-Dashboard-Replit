@@ -1,5 +1,8 @@
 import asyncio
 import io
+import os
+import re
+import unicodedata
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -283,6 +286,150 @@ class SopWorkflowRulesTests(unittest.TestCase):
         self.assertIn("中文", text)
         self.assertIn("Check the alarm", text)
 
+    def test_approved_pdf_round_trips_shaped_multilingual_text_and_emoji(self):
+        samples = (
+            "Latin café",
+            "مرحبا بالعالم",
+            "שלום עולם",
+            "हिन्दी भाषा",
+            "ไทย ภาษาไทย",
+            "中文 日本語 한국어",
+            "Staff greeting 😀",
+        )
+        for sample in samples:
+            with self.subTest(sample=sample):
+                pdf = api_pg._sop_html_to_pdf(f"<p>{sample}</p>")
+                text = unicodedata.normalize(
+                    "NFC",
+                    "\n".join(
+                        page.extract_text() or ""
+                        for page in PdfReader(io.BytesIO(pdf)).pages
+                    ),
+                )
+                self.assertIn(unicodedata.normalize("NFC", sample), text)
+
+        combining_pdf = api_pg._sop_html_to_pdf("<p>Combining: e\u0301</p>")
+        combining_text = unicodedata.normalize(
+            "NFC",
+            "\n".join(
+                page.extract_text() or ""
+                for page in PdfReader(io.BytesIO(combining_pdf)).pages
+            ),
+        )
+        self.assertIn("Combining: é", combining_text)
+
+        combined_pdf = api_pg._sop_html_to_pdf(
+            "".join(f"<p>{sample}</p>" for sample in samples))
+        reader = PdfReader(io.BytesIO(combined_pdf))
+        embedded_fonts = set()
+        embedded_font_files = set()
+        for page in reader.pages:
+            fonts = page["/Resources"]["/Font"].get_object()
+            for font_ref in fonts.values():
+                font = font_ref.get_object()
+                base_font = str(font.get("/BaseFont", ""))
+                embedded_fonts.add(base_font)
+                descendants = font.get("/DescendantFonts")
+                if not descendants:
+                    continue
+                descendant = descendants[0].get_object()
+                descriptor = descendant["/FontDescriptor"].get_object()
+                if any(key in descriptor
+                       for key in ("/FontFile", "/FontFile2", "/FontFile3")):
+                    embedded_font_files.add(
+                        str(descriptor.get("/FontFamily", "")))
+        for family in (
+            "SopNoto", "SopArabic", "SopHebrew", "SopDevanagari",
+            "SopThai", "SopCJK", "SopEmoji",
+        ):
+            with self.subTest(family=family):
+                self.assertTrue(
+                    any(family in font for font in embedded_fonts),
+                    f"{family} was not embedded in the approved PDF",
+                )
+                self.assertIn(
+                    family,
+                    embedded_font_files,
+                    f"{family} has no embedded FontFile stream",
+                )
+
+    def test_approved_pdf_contains_shaped_complex_script_glyph_runs(self):
+        def first_text_array(text):
+            pdf = api_pg._sop_html_to_pdf(f"<p>{text}</p>")
+            content = PdfReader(io.BytesIO(pdf)).pages[0].get_contents(
+            ).get_data()
+            match = re.search(rb"\[(.*?)\]\s*TJ", content, re.DOTALL)
+            self.assertIsNotNone(match)
+            return match.group(1)
+
+        def glyph_codes(text_array):
+            return [
+                value for value in re.findall(rb"<([0-9a-fA-F]*)>",
+                                               text_array) if value
+            ]
+
+        arabic_shaped = glyph_codes(first_text_array("سلام"))
+        arabic_unjoined = glyph_codes(first_text_array("س\u200cل\u200cا\u200cم"))
+        self.assertEqual(len(arabic_shaped), 4)
+        self.assertEqual(len(arabic_unjoined), 4)
+        self.assertNotEqual(
+            arabic_shaped,
+            arabic_unjoined,
+            "Arabic contextual forms were not substituted",
+        )
+
+        devanagari_conjunct = glyph_codes(first_text_array("क्ष"))
+        devanagari_broken = glyph_codes(first_text_array("क्\u200cष"))
+        self.assertEqual(
+            len(devanagari_conjunct),
+            1,
+            "Devanagari conjunct was not shaped into a single glyph",
+        )
+        self.assertGreaterEqual(len(devanagari_broken), 3)
+
+        thai_mark_run = first_text_array("ป่")
+        positioning = [
+            float(value)
+            for value in re.findall(rb">(-?\d+(?:\.\d+)?)<", thai_mark_run)
+        ]
+        self.assertTrue(
+            any(abs(value) > 0.01 for value in positioning),
+            "Thai combining mark had no shaped positioning adjustment",
+        )
+
+    def test_approved_pdf_fonts_are_packaged_with_the_application(self):
+        from fontTools.ttLib import TTFont
+
+        for _family, filename, _style, _weight in api_pg._SOP_PDF_FONTS:
+            with self.subTest(filename=filename):
+                path = os.path.join(api_pg._SOP_FONT_DIR, filename)
+                self.assertTrue(os.path.isfile(path), path)
+                self.assertGreater(os.path.getsize(path), 1000)
+                font = TTFont(path, lazy=True)
+                try:
+                    if filename in {
+                        "NotoSansArabic-Regular.ttf",
+                        "NotoSansDevanagari-Regular.ttf",
+                        "NotoSansThai-Regular.ttf",
+                    }:
+                        self.assertIn("GSUB", font)
+                        self.assertIn("GPOS", font)
+                finally:
+                    font.close()
+
+    def test_approved_pdf_uses_visual_rtl_order_for_arabic_and_hebrew(self):
+        for text in ("مرحبا بالعالم", "שלום עולם"):
+            with self.subTest(text=text):
+                pdf = api_pg._sop_html_to_pdf(f"<p>{text}</p>")
+                layout = PdfReader(io.BytesIO(pdf)).pages[0].extract_text(
+                    extraction_mode="layout")
+                first_content_line = next(
+                    line.strip() for line in layout.splitlines() if line.strip())
+                # Layout extraction walks glyphs left-to-right. A correctly
+                # bidi-laid-out RTL line therefore appears in reverse logical
+                # codepoint order here.
+                self.assertEqual(first_content_line, text[::-1])
+
     def test_approved_pdf_preserves_table_rows_and_columns(self):
         pdf = api_pg._sop_html_to_pdf(
             "<h1>Opening Roles</h1>"
@@ -320,33 +467,27 @@ class SopWorkflowRulesTests(unittest.TestCase):
         )
         pdf = api_pg._sop_html_to_pdf(imported)
         text = "\n".join(
-            page.extract_text() or ""
+            page.extract_text(extraction_mode="layout") or ""
             for page in PdfReader(io.BytesIO(pdf)).pages
         )
         self.assertIn("1. Lock the stock room", text)
         self.assertIn("2. Set the alarm", text)
         self.assertNotIn("• Lock the stock room", text)
 
-    def test_approval_rejects_scripts_the_pdf_cannot_preserve(self):
+    def test_approval_rejects_an_unavailable_glyph_without_silent_loss(self):
         with self.assertRaises(ValueError) as raised:
-            api_pg._sop_html_to_pdf(
-                "<h1>Procedure</h1><p>تعليمات فتح المتجر</p>"
-            )
+            api_pg._sop_html_to_pdf("<p>Unavailable \U0010ffff</p>")
         self.assertIn("cannot safely preserve", str(raised.exception))
-        self.assertIn("ARABIC", str(raised.exception))
-
-    def test_approval_rejects_unsupported_symbols_without_silent_loss(self):
-        for text in ("Staff greeting 😀", "Marked a\u20dd"):
-            with self.subTest(text=text):
-                with self.assertRaises(ValueError) as raised:
-                    api_pg._sop_html_to_pdf(f"<p>{text}</p>")
-                self.assertIn("cannot safely preserve", str(raised.exception))
+        self.assertIn("U+10FFFF", str(raised.exception))
 
     @patch.object(api_pg, "_log_activity")
     @patch.object(api_pg, "_ensure_sop_tables")
     @patch.object(api_pg, "_users_exec")
-    def test_editor_approval_returns_400_before_update_for_unsupported_text(
-        self, users_exec, ensure, log_activity
+    @patch.object(
+        api_pg, "_sop_html_to_pdf",
+        side_effect=RuntimeError("renderer unavailable"))
+    def test_editor_approval_returns_400_before_update_when_rendering_fails(
+        self, render_pdf, users_exec, ensure, log_activity
     ):
         users_exec.return_value = [{
             "stage": 5,
@@ -363,13 +504,44 @@ class SopWorkflowRulesTests(unittest.TestCase):
                     "email": "stephen@vivofashiongroup.com",
                 }),
                 {
-                    "html": "<h1>Policy 😀</h1>",
+                    "html": "<h1>Policy</h1>",
                     "revision": 4,
                     "transition": "approve",
                 },
             )
         self.assertEqual(raised.exception.status_code, 400)
-        self.assertIn("cannot safely preserve", raised.exception.detail)
+        self.assertIn("could not be rendered safely", raised.exception.detail)
+        self.assertEqual(users_exec.call_count, 1)
+        self.assertTrue(users_exec.call_args.args[0].startswith("SELECT stage"))
+        log_activity.assert_not_called()
+
+    @patch.object(api_pg, "_log_activity")
+    @patch.object(api_pg, "_ensure_sop_tables")
+    @patch.object(api_pg, "_users_exec")
+    @patch.object(
+        api_pg, "_sop_html_to_pdf",
+        side_effect=RuntimeError("renderer unavailable"))
+    def test_direct_approval_returns_400_before_update_when_rendering_fails(
+        self, render_pdf, users_exec, ensure, log_activity
+    ):
+        users_exec.return_value = [{
+            "stage": 5,
+            "filename": "Policy.docx",
+            "editor_html": "<h1>Policy</h1>",
+            "editor_revision": 4,
+            "original_filename": "Policy.docx",
+            "original_data": self._docx_bytes(),
+        }]
+        with self.assertRaises(HTTPException) as raised:
+            api_pg.sops_approve(
+                31,
+                _request({
+                    "role": "leadership",
+                    "email": "stephen@vivofashiongroup.com",
+                }),
+            )
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertIn("could not be rendered safely", raised.exception.detail)
         self.assertEqual(users_exec.call_count, 1)
         self.assertTrue(users_exec.call_args.args[0].startswith("SELECT stage"))
         log_activity.assert_not_called()
