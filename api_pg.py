@@ -3004,12 +3004,16 @@ def ff_store_master_predicate(canon_expr=None):
     return expr + " IN (SELECT pos_location_name FROM all_sales GROUP BY pos_location_name)"
 
 PRODUCT_SUBCATS = [
-    "Knee Length Dresses","Full Length Pants","Fitted Tops","Loose Tops",
-    "Maxi Dresses","Waterfalls & Kimonos","Sweaters & Ponchos","Midi & Capri Dresses",
-    "T-shirts & Tank Tops","Bodysuits","Jackets & Coats","Leggings",
-    "Shorts & Skorts","Knee Length Skirts","Jumpsuits & Playsuits","Midriff & Crop Tops",
-    "Maxi Skirts","Short & Mini Dresses","Culottes & Capri Pants",
-    "Hoodies & Sweatshirts","Two-Piece Sets","Scarves","Accessories",
+    "Full Length Pants", "Jumpsuits & Playsuits", "Leggings",
+    "Culottes & Capri Pants", "Shorts & Skorts",
+    "Knee Length Dresses", "Maxi Dresses", "Midi & Capri Dresses",
+    "Short & Mini Dresses", "Kaftan Dresses",
+    "Sweaters & Ponchos", "Waterfalls & Kimonos", "Jackets & Coats",
+    "Hoodies & Sweatshirts",
+    "Knee Length Skirts", "Maxi Skirts", "Midi & Capri Skirts",
+    "Short & Mini Skirts",
+    "Fitted Tops", "Loose & Oversized Tops", "T-shirts & Tank Tops",
+    "Relaxed Tops", "Kaftan Tops", "Bodysuits", "Midriff & Crop Tops",
 ]
 
 # Lead-time reorder policy (Phase 1 audit A2). A style is "at risk" when its
@@ -3393,12 +3397,12 @@ PIPELINE_LOCATIONS = (
 MERCH_SUBCATEGORIES = (
     "Culottes & Capri Pants", "Full Length Pants", "Jumpsuits & Playsuits",
     "Leggings", "Shorts & Skorts", "Knee Length Dresses", "Maxi Dresses",
-    "Midi & Capri Dresses", "Short & Mini Dresses", "Men's Bottoms", "Men's Tops",
+    "Midi & Capri Dresses", "Short & Mini Dresses", "Kaftan Dresses",
     "Hoodies & Sweatshirts", "Jackets & Coats", "Sweaters & Ponchos",
     "Waterfalls & Kimonos", "Knee Length Skirts", "Maxi Skirts",
     "Midi & Capri Skirts", "Short & Mini Skirts", "Bodysuits", "Fitted Tops",
-    "Loose Tops", "Midriff & Crop Tops", "T-shirts & Tank Tops", "Pants & Top Set",
-    "Pants & Waterfall Set", "Skirts & Top Set",
+    "Loose & Oversized Tops", "Midriff & Crop Tops", "T-shirts & Tank Tops",
+    "Relaxed Tops", "Kaftan Tops",
 )
 MERCH_SUBCATEGORIES_SQL = "'" + "','".join(
     s.replace("'", "''") for s in MERCH_SUBCATEGORIES
@@ -3417,16 +3421,16 @@ SUBCATEGORY_TO_CATEGORY = {
     "Shorts & Skorts": "Bottoms",
     "Knee Length Dresses": "Dresses", "Maxi Dresses": "Dresses",
     "Midi & Capri Dresses": "Dresses", "Short & Mini Dresses": "Dresses",
-    "Men's Bottoms": "Mens", "Men's Tops": "Mens",
+    "Kaftan Dresses": "Dresses",
     "Hoodies & Sweatshirts": "Outerwear", "Jackets & Coats": "Outerwear",
     "Sweaters & Ponchos": "Outerwear", "Waterfalls & Kimonos": "Outerwear",
     "Sample & Sale Items": "Sale",
     "Knee Length Skirts": "Skirts", "Maxi Skirts": "Skirts",
     "Midi & Capri Skirts": "Skirts", "Short & Mini Skirts": "Skirts",
-    "Bodysuits": "Tops", "Fitted Tops": "Tops", "Loose Tops": "Tops",
-    "Midriff & Crop Tops": "Tops", "T-shirts & Tank Tops": "Tops",
-    "Pants & Top Set": "Two-Piece Sets", "Pants & Waterfall Set": "Two-Piece Sets",
-    "Skirts & Top Set": "Two-Piece Sets",
+    "Bodysuits": "Tops", "Fitted Tops": "Tops",
+    "Loose & Oversized Tops": "Tops", "Midriff & Crop Tops": "Tops",
+    "T-shirts & Tank Tops": "Tops", "Relaxed Tops": "Tops",
+    "Kaftan Tops": "Tops",
 }
 
 

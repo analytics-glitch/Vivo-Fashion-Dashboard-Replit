@@ -74,13 +74,13 @@ const PD_ASSIGNEES = [
 const PD_STYLE_DELETE_EMAIL = "marynyambura@vivofashiongroup.com";
 const CATEGORY_SUBCATS = {
   ACCESSORIES:  ["Bangles & Bracelets","Belts","Body Mists & Fragrances","Earrings","Necklaces","Rings","Scarves","Shopping Bags"],
-  BOTTOMS:      ["Culottes & Capri Pants","Full Length Pants","Jumpsuits & Playsuits","Leggings","Shorts & Skorts"],
-  DRESSES:      ["Knee Length Dresses","Maxi Dresses","Midi & Capri Dresses","Short & Mini Dresses"],
+  BOTTOMS:      ["Full Length Pants","Jumpsuits & Playsuits","Leggings","Culottes & Capri Pants","Shorts & Skorts"],
+  DRESSES:      ["Knee Length Dresses","Maxi Dresses","Midi & Capri Dresses","Short & Mini Dresses","Kaftan Dresses"],
   MENS:         ["Men's Bottoms","Men's Tops"],
   OUTERWEAR:    ["Hoodies & Sweatshirts","Jackets & Coats","Sweaters & Ponchos","Waterfalls & Kimonos"],
   SALE:         ["Sample & Sale Items"],
   SKIRTS:       ["Knee Length Skirts","Maxi Skirts","Midi & Capri Skirts","Short & Mini Skirts"],
-  TOPS:         ["Bodysuits","Fitted Tops","Loose Tops","Midriff & Crop Tops","T-shirts & Tank Tops"],
+  TOPS:         ["Fitted Tops","Loose & Oversized Tops","T-shirts & Tank Tops","Relaxed Tops","Kaftan Tops","Bodysuits","Midriff & Crop Tops"],
 };
 
 // ── Add style dialog ─────────────────────────────────────────────────────────

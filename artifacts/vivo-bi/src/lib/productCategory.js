@@ -1,7 +1,8 @@
 /**
  * Single source of truth for product subcategory → category mapping.
  *
- * Taxonomy provided by Vivo merchandising team on 2026-04-24; must stay in
+ * Taxonomy provided by Vivo merchandising team in the current Odoo taxonomy;
+ * must stay in
  * lock-step with the `SUBCATEGORY_TO_CATEGORY` dict in /app/backend/server.py.
  * If the merchandising team adds a new subcategory, update BOTH this file
  * and the backend dict.
@@ -34,9 +35,7 @@ export const SUBCATEGORY_TO_CATEGORY = {
   "Maxi Dresses": "Dresses",
   "Midi & Capri Dresses": "Dresses",
   "Short & Mini Dresses": "Dresses",
-  // Mens
-  "Men's Bottoms": "Mens",
-  "Men's Tops": "Mens",
+  "Kaftan Dresses": "Dresses",
   // Outerwear
   "Hoodies & Sweatshirts": "Outerwear",
   "Jackets & Coats": "Outerwear",
@@ -52,13 +51,11 @@ export const SUBCATEGORY_TO_CATEGORY = {
   // Tops
   "Bodysuits": "Tops",
   "Fitted Tops": "Tops",
-  "Loose Tops": "Tops",
+  "Loose & Oversized Tops": "Tops",
   "Midriff & Crop Tops": "Tops",
   "T-shirts & Tank Tops": "Tops",
-  // Two-Piece Sets
-  "Pants & Top Set": "Two-Piece Sets",
-  "Pants & Waterfall Set": "Two-Piece Sets",
-  "Skirts & Top Set": "Two-Piece Sets",
+  "Relaxed Tops": "Tops",
+  "Kaftan Tops": "Tops",
 };
 
 // High-level category buckets that are considered non-merchandise.

@@ -108,23 +108,13 @@
 - [Merch rollup fast-path](merch-rollup-fastpath.md) — rollup_merch_style_day + incr_sales(loaded_at>wm) UNION = always-current; status filter must fall back to original SQL (changes prod CTE before GROUP BY).
 - [Colour-style status is derived](colour-style-status-derived.md) — classify each style×colour from its own Odoo rows; Active Colour KPI then requires that colourway to have stock.
 - [Colourway key noise](colourway-key-noise.md) — color_print keys carry "X - X / code / size" noise; clean+noisy twins coexist per style as distinct rows; tidy display only, raw keys stay, collision ⇒ raw label.
-- Community app: [public API](community-public-api.md) /api/community/* self-auth prefix (staff gate bypassed), rate-limit keys include the window; [smoke](community-smoke-db-mint.md) DB-mint members+sessions (skips OTP throttle), clean via SQL; [events](community-events-waitlist.md) seed_taken baseline, waitlist/promotion inside the event FOR UPDATE lock, my_rsvp is an object; [branding](johari-branding.md) Tsavorite/Ruby/Tanzanite on LIFETIME pts — 3 separate tier systems, never cross-rename.
-- Community 2: [Style Quiz](community-style-quiz.md) whitelist→server DNA canon, +50 once via UNIQUE(member,kind) folded into BOTH lifetime sites, personalized /products bypasses the shared cache; [Contact Us](community-contact-us.md) member submit on the bypass, staff triage under /api/crm/* to inherit both gates; community_app cursors must be explicit RealDictCursor.
-- [Virtual Try-On](community-tryon.md) — TRYON_WEEK_LIMITS tier ladder (None=unlimited, 0=excluded) served live by allowance API; FOR UPDATE weekly cap (Mon EAT, failed free); Bearer-blob imgs; demo fallback.
-- [One-shot storage hand-offs](strictmode-sessionstorage-handoff.md) — sessionStorage hand-offs are tap-only: URL/goto navigation never sets them (e2e must tap the real entry); module-scope stash for double-mount safety.
-- [Gemini image REST quirks](gemini-image-tryon.md) — role:"user" required or 400; response part key is camelCase inlineData (request is snake_case); flash-image ~9s/gen ~1MB PNG.
-- [Community DPA consent](community-dpa-consent.md) — consent recorded only when asked (absence ≠ declined), append-only history, withdrawn on delete/replace; open-request dedupe = partial unique; _ensure_tables DDL is ONE string — splice, never append.
-- [Community survey waves](community-survey.md) — wave row carries questions JSONB (new round = INSERT), points kind survey_<wave_key>, server dismiss ladder, aggregate-only CRM summary; _tier_for returns a tuple.
-- [Community Shop filters](community-shop-filters.md) — quiz re-rank only under default sort, cache pristine-only, colour buckets + bands server-side, count_only parity.
-- [Community feed posts](community-feed-posts.md) — per-key seed upsert, NO points for likes/comments, thread-length count self-heal, pan-y swipe + scroll restore on mobile overlays.
-- [Community winner model](community-winner-model.md) — votes→staff-only shortlist→team pick; +200 follows the pick (idempotent, displacing); members see ribbons, never tallies.
-- [Community home structure](community-home-structure.md) — fixed community-first section order; shopping promos/try-on live on Shop, don't re-add to home; feed preview max-4, question featured separately.
-- [Vivo Edits](community-vivo-edits.md) — creator edits mirror ONE feed post (hidden, not deleted); schedules need the lazy reconcile on reads; edit images public only once published.
-- [Community Find a Store](community-find-a-store.md) — secondary-only placement (Help & Support), static directory with PLACEHOLDER phones/hours/policy copy, tap-only geolocation.
-- [Community Styled for You](community-styled-for-you.md) — opted_in and use_activity are separate FALSE-default consents; cadence-seeded rotation, server-owned labels; page id in PAGES + guest fence.
-- [Campaign articles](community-campaign-articles.md) — hero CTA blog + comments mirror feed-comment machinery; +5 once per article via ledger kind; blocklist + My Data/delete contract.
-- [Community entry/redemption pipeline](community-entry-pipeline.md) — points ONLY on CRM publish (questions never), redemption PUT ladder ⊋ member labels, vivo-crm build needs BASE_PATH=/crm/.
-- [Community referrals](community-referrals.md) — links use a canonical public origin; award referrers once from post-sync purchase reconciliation, never from member reads.
+- Community core: [API](community-public-api.md), [events](community-events-waitlist.md), [branding](johari-branding.md), [guest mode](community-guest-mode.md) — self-auth, locking, tiers, fences.
+- Community data: [quiz](community-style-quiz.md), [DPA](community-dpa-consent.md), [surveys](community-survey.md), [contact](community-contact-us.md) — canonical inputs, consent, idempotency.
+- Community content: [feed](community-feed-posts.md), [winners](community-winner-model.md), [home](community-home-structure.md), [Edits](community-vivo-edits.md) — visibility and mirroring rules.
+- Community commerce: [Shop](community-shop-filters.md), [try-on](community-tryon.md), [Styled](community-styled-for-you.md), [referrals](community-referrals.md) — consent, caps, attribution.
+- Community campaigns: [articles](community-campaign-articles.md), [redemption](community-entry-pipeline.md) — points only at canonical milestones; keep privacy and role gates.
+- Community navigation: [handoffs](strictmode-sessionstorage-handoff.md), [stores](community-find-a-store.md), [composer](community-composer-handoff.md) — tap-only state and secondary placement.
+- Community native AI: [credential bridge](community-native-credential-bridge.md), [Gemini image](gemini-image-tryon.md) — fixed trusted origin and exact REST payload casing.
 - [vivo-bi cookie-only web auth](vivo-bi-cookie-only-auth.md) — staff SPA uses only the httpOnly session cookie (no vivo_token/Bearer); login has account+IP lockout; e2e auth via addCookies.
 - [Staff 2FA flow](staff-2fa-flow.md) — password/Google/native auth share a short-lived challenge before normal session creation; existing sessions survive reset.
 - [Sublimation costing canon](sublimation-costing-canon.md) — BOM op time = settable STANDARD throughput (default 60, actual = variance only); server recomputes saves; reprint on printing lines only; rate constants FE+BE lockstep.
@@ -133,13 +123,10 @@
 - [Production Node server bundling](artifact-production-node-bundling.md) — artifact runtime may omit workspace node_modules; bundle service dependencies during the production build.
 - [OpenAPI codegen compatibility](openapi-codegen-compatibility.md) — checked-in Orval 8.9.1 currently fails resolving this repo's OpenAPI input; restore generated outputs and patch the contract/types manually if needed.
 - [Product Workspace guidance](product-workspace-guidance.md) — shared rules for L10, resources, resilient startup and seed migrations, brand scope, profile privacy, preview auth, and public feedback.
-- [Community guest mode](community-guest-mode.md) — guest fence must cover deep-linkable URL-state overlays (?event=, member ?page= ids) and every member-write control, not just tabs.
 - [Merch empty-universe poison + deep-dive crash](merch-core-empty-poison.md) — never cache an empty style universe (raise in compute fn); "search crash" reports may be selected-style render bugs, assert error boundary absent.
 - [Merch store size analysis](merch-store-size-analysis.md) — compare a selected store's size SOR/SOH against weighted network size benchmarks, not average store percentages.
 - ['Online' pseudo-country](online-pseudo-country.md) — Shop Zetu online rows sit under country='Online' in sales AND inventory; Kenya filters must fold it in on both sides of any ratio.
 - [Merch full-price sell-through](merch-full-price-sell-through.md) — strict selected-period zero-discount unit ratio, excluding returns and distinct from avg full-price %.
-- [Community composer hand-off](community-composer-handoff.md) — Home CTAs pass a one-time look/question intent into Community, then consume it after opening the existing composer.
-- [Community native credential bridge](community-native-credential-bridge.md) — store builds hard-lock the trusted /app origin; never let release env vars redirect a SecureStore token bridge.
 - [Style Tracker % Recv](style-tracker-warehouse-pct.md) — receipts-first shared batch calc feeds board/endpoint/gate; names-first match grain; dated styles never fall back to stock.
 - [Disposable PostgreSQL tests](disposable-postgres-tests.md) — concurrency tests must run on a local throwaway cluster via TEST_DATABASE_URL, never DATABASE_URL.
 - [PD Flow stage persistence](pd-flow-stage-persistence.md) — Excel bootstrap snapshots may seed missing styles, but lifecycle state belongs to the append-only movement log.
