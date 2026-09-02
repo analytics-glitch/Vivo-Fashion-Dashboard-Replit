@@ -21,7 +21,8 @@ This is the production entrypoint for the api-server service on a Reserved VM
 (deploymentTarget = "vm"). Autoscale cannot keep a background loop alive.
 
 Env:
-  DATABASE_URL          required
+  VIVO_DATABASE_URL     preferred external Vivo database URL
+  DATABASE_URL          fallback for legacy/dev environments
   PORT                  API port (default 8080)
   WATCHDOG_MANAGE_API   "0" => supervise the sync only (dev: the API already
                         runs as its own workflow). Default "1" => manage both.
@@ -59,6 +60,12 @@ from datetime import datetime, timezone
 import psycopg2
 
 from port_guard import free_port
+
+# Prefer the explicitly named external Vivo database. The assignment also
+# propagates the selected URL to every API/sync subprocess supervised here,
+# while leaving Replit free to manage its reserved DATABASE_URL secret.
+if os.environ.get("VIVO_DATABASE_URL"):
+    os.environ["DATABASE_URL"] = os.environ["VIVO_DATABASE_URL"]
 
 logging.basicConfig(
     level=logging.INFO,

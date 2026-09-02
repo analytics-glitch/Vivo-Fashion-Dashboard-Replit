@@ -13,6 +13,13 @@ the same guard before spawning it.
 
 import os
 
+# Replit reserves DATABASE_URL for its managed Dev/Prod database workflow.
+# Vivo's operational database may remain external under VIVO_DATABASE_URL;
+# mirror it into DATABASE_URL before importing the application so legacy
+# modules continue to share one connection setting.
+if os.environ.get("VIVO_DATABASE_URL"):
+    os.environ["DATABASE_URL"] = os.environ["VIVO_DATABASE_URL"]
+
 import uvicorn
 
 from port_guard import free_port

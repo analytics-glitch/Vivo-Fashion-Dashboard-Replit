@@ -1,15 +1,17 @@
 import { defineConfig } from "drizzle-kit";
 import path from "path";
 
-if (!process.env.DATABASE_URL) {
-  throw new Error("DATABASE_URL, ensure the database is provisioned");
+const databaseUrl = process.env.VIVO_DATABASE_URL ?? process.env.DATABASE_URL;
+
+if (!databaseUrl) {
+  throw new Error("VIVO_DATABASE_URL or DATABASE_URL must be set");
 }
 
 export default defineConfig({
   schema: path.join(__dirname, "./src/schema/index.ts"),
   dialect: "postgresql",
   dbCredentials: {
-    url: process.env.DATABASE_URL,
+    url: databaseUrl,
   },
   // This database is shared with Python-managed ETL/app tables (all_sales,
   // footfall, app_users, crm_*, etc.) that are NOT defined in this Drizzle

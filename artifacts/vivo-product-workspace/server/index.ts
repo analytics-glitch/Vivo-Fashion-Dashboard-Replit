@@ -34,8 +34,12 @@ import {
 } from "./feedback-policy.js";
 
 const { Pool } = pg;
+const databaseUrl = process.env.VIVO_DATABASE_URL ?? process.env.DATABASE_URL;
+if (!databaseUrl) {
+  throw new Error("VIVO_DATABASE_URL or DATABASE_URL must be set");
+}
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
+  connectionString: databaseUrl,
   connectionTimeoutMillis: 3000,
 });
 

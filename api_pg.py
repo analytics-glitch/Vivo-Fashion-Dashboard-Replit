@@ -1,3 +1,11 @@
+import os
+
+# Keep the operational Vivo database separate from Replit's reserved
+# DATABASE_URL.  Mirroring early preserves compatibility with modules imported
+# below that still consume DATABASE_URL directly.
+if os.environ.get("VIVO_DATABASE_URL"):
+    os.environ["DATABASE_URL"] = os.environ["VIVO_DATABASE_URL"]
+
 from fastapi import FastAPI, Query, Request, Body, HTTPException, UploadFile, File, Form, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
@@ -14,7 +22,6 @@ from odoo_locations import ODOO_LOCATION_MAP
 import sync_source_health as _src_health
 import psycopg2
 import psycopg2.extras
-import os
 import json
 import time
 import hashlib
