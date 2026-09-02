@@ -139,16 +139,20 @@ export const PRIMARY_NAV = [
   // Customer pages & marketing
   {
     to: "/customers", label: "Customers", icon: Users, id: "customers",
-    anyOfPageIds: ["customers", "customer-details", "crm", "community-app", "atelier"],
+    anyOfPageIds: ["customers", "customer-details", "crm", "atelier"],
     matchPaths: ["/community-app", "/atelier"],
-    group: "Customers & Marketing", desc: "Customers hub — analytics, customer lookup, CRM, Customer App and Atelier",
+    group: "Customers & Marketing", desc: "Customers hub — analytics, customer lookup, CRM and Atelier",
     subReports: [
       { pageId: "customers",        label: "Customer Analytics" },
       { pageId: "customer-details", label: "Customer Details" },
       { pageId: "crm",              label: "CRM" },
-      { pageId: "community-app",    label: "Customer App" },
       { pageId: "atelier",          label: "Atelier" },
     ],
+  },
+  {
+    to: "/app/", label: "Community App", icon: Storefront, id: "community-app",
+    external: true, group: "Customers & Marketing",
+    desc: "Live Vivo Community customer app (opens full-page)",
   },
   { to: "/order-explorer", label: "Order Explorer", icon: AddressBook, id: "order-explorer", group: "Customers & Marketing", desc: "Drill between customers and products — start from a customer to see every order and product they bought, or start from a product to see every identified customer who bought it" },
   { to: "/marketing", label: "Marketing", icon: Megaphone, id: "marketing", group: "Customers & Marketing", desc: "Campaign and channel marketing performance" },

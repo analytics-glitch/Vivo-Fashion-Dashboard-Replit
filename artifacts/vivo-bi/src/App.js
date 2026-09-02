@@ -283,10 +283,10 @@ function App() {
                 <Route path="/atelier/*" element={<ProtectedShell pageId="atelier"><Atelier /></ProtectedShell>} />
                 <Route path="/exports" element={<ProtectedShell pageId="exports"><Exports /></ProtectedShell>} />
                 <Route path="/order-explorer" element={<ProtectedShell pageId="order-explorer"><OrderExplorer /></ProtectedShell>} />
-                <Route path="/customers" element={<ProtectedShell anyOfPageIds={["customers", "customer-details", "crm", "community-app", "atelier"]}><CustomersHub /></ProtectedShell>} />
+                <Route path="/customers" element={<ProtectedShell anyOfPageIds={["customers", "customer-details", "crm", "atelier"]}><CustomersHub /></ProtectedShell>} />
                 <Route path="/customer-details" element={<Navigate to="/customers?tab=details" replace />} />
                 <Route path="/marketing" element={<ProtectedShell pageId="marketing"><Marketing /></ProtectedShell>} />
-                {/* Interactive prototype of the member-facing Vivo Community App (mock data only). */}
+                {/* Legacy BI route retained as a protected redirect to the live member-facing app. */}
                 <Route path="/community-app" element={<ProtectedShell pageId="community-app"><CommunityApp /></ProtectedShell>} />
                 <Route path="/custom-report" element={<ProtectedShell pageId="custom-report"><CustomReport /></ProtectedShell>} />
                 <Route path="/range-mgmt" element={<Navigate to="/product-analysis?tab=range" replace />} />

@@ -19,7 +19,9 @@ const CUST_TABS = [
   { id: "details", label: "Customer Details", pageId: "customer-details", el: CustomerDetailsTab },
   { id: "crm", label: "CRM", pageId: "crm", external: "/crm/" },
   { id: "crm-desk", label: "CRM Desk", pageId: "crm", external: "https://crm.vivofashionbrands.com" },
-  { id: "customer-app", label: "Customer App", pageId: "community-app", to: "/community-app" },
+  // Keep the customer-facing shortcut in this hub, but use the same standalone
+  // destination as the top-level Pages entry rather than the retired BI route.
+  { id: "customer-app", label: "Community App", pageId: "community-app", to: "/app/", external: true },
   { id: "atelier", label: "Atelier", pageId: "atelier", to: "/atelier" },
 ];
 
@@ -43,7 +45,8 @@ const CustomersHubPage = () => {
             key={t.id}
             type="button"
             onClick={() => {
-              if (t.external) window.open(t.external, '_blank', 'noopener,noreferrer');
+              if (t.external === true) window.location.assign(t.to);
+              else if (t.external) window.open(t.external, '_blank', 'noopener,noreferrer');
               else if (t.to) navigate(t.to);
               else setTab(t.id);
             }}
