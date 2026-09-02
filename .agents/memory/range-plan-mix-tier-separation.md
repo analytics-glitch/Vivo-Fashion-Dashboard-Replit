@@ -26,3 +26,9 @@ Monthly order tracking has two mutually exclusive states: Ordered is live Odoo b
 **Why:** A weekly plan precedes Odoo creation by several days, while one style can have multiple Odoo orders. Treating order rows as styles or dropping unmatched taxonomy rows understates progress and units.
 
 **How to apply:** Move a commitment to Ordered automatically as soon as its Odoo order appears. Project month-end as ordered units + provisional units + remaining new styles at 300 units + remaining repeat/replenishment styles at 400. Flag projected units above 110% of plan; only flag under-order pacing below elapsed-month expectation after a 15-point grace band.
+
+Weekly Order Plan lines must be created only by selecting a confirmed Style Development record or a Style Catalogue record. Source-owned identity, taxonomy, brand, fabric, colourway options, and target week are immutable snapshots; only quantity, selected colourways, order type, and order stage belong to the week.
+
+**Why:** Re-keying style names, numbers, and taxonomy caused missing and conflicting identifiers and made weekly orders impossible to reconcile reliably to the monthly plan.
+
+**How to apply:** Never add free-text style creation to the weekly plan. Missing styles must be created and numbered in Style Development first. Draft weeks do not count as commitments; confirming locks the week and feeds monthly committed totals until a matching non-cancelled Odoo order moves the style to Ordered. Generate line numbers under a locked week row as `W<week><three-digit sequence>`.

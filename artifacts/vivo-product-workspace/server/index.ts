@@ -2516,6 +2516,48 @@ async function ensureSchema() {
       notes TEXT NOT NULL DEFAULT '',
       UNIQUE (season_id, month_year)
     );
+    CREATE TABLE IF NOT EXISTS ${schema}.weekly_order_plans (
+      id SERIAL PRIMARY KEY,
+      iso_year INTEGER NOT NULL,
+      iso_week INTEGER NOT NULL CHECK (iso_week BETWEEN 1 AND 53),
+      status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','confirmed')),
+      confirmed_at TIMESTAMPTZ,
+      confirmed_by INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (iso_year, iso_week)
+    );
+    CREATE TABLE IF NOT EXISTS ${schema}.weekly_order_plan_lines (
+      id SERIAL PRIMARY KEY,
+      plan_id INTEGER NOT NULL REFERENCES ${schema}.weekly_order_plans(id) ON DELETE CASCADE,
+      sequence_no INTEGER NOT NULL,
+      order_number TEXT NOT NULL UNIQUE,
+      source TEXT NOT NULL CHECK (source IN ('development','catalogue')),
+      source_id TEXT NOT NULL,
+      style_number TEXT NOT NULL,
+      style_name TEXT NOT NULL,
+      style_type TEXT,
+      tier TEXT,
+      category TEXT,
+      sub_category TEXT,
+      brand TEXT,
+      fabric TEXT,
+      fabric_product_id BIGINT,
+      target_order_week TEXT,
+      image_url TEXT,
+      available_colourways TEXT[] NOT NULL DEFAULT '{}',
+      selected_colourways TEXT[] NOT NULL DEFAULT '{}',
+      estimated_quantity INTEGER NOT NULL CHECK (estimated_quantity > 0),
+      order_type TEXT NOT NULL CHECK (order_type IN ('New','Re-order','Replenishment','Range Refreshed')),
+      order_stage TEXT NOT NULL CHECK (order_stage IN ('CAD Marker Making','Buying Requisition','Buying Production Order','Production Sample')),
+      created_by INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (plan_id, source, source_id),
+      UNIQUE (plan_id, sequence_no)
+    );
+    CREATE INDEX IF NOT EXISTS weekly_order_plan_lines_plan_idx
+      ON ${schema}.weekly_order_plan_lines (plan_id, sub_category, fabric);
     CREATE TABLE IF NOT EXISTS ${schema}.garment_images (
       id SERIAL PRIMARY KEY,
       source TEXT NOT NULL CHECK (source IN ('catalogue','plm')),
@@ -5586,8 +5628,8 @@ router.get("/range-plan", async (req, res, next) => {
            WHERE sub_category IS NOT NULL
            GROUP BY sub_category
          ),
-         commitment_base AS (
-           SELECT s.id,s.style_name,s.quantity,s.order_type,
+          legacy_commitment_base AS (
+            SELECT s.id::text AS id,s.style_name,s.quantity,s.order_type,
              LOWER(BTRIM(s.style_name)) AS style_name_key,
              dn.style_key,dn.sub_category
            FROM public.style_tracker_styles s
@@ -5598,6 +5640,14 @@ router.get("/range-plan", async (req, res, next) => {
            WHERE NOT s.archived
              AND NOT EXISTS (
                SELECT 1
+               FROM ${schema}.weekly_order_plan_lines wl
+               JOIN ${schema}.weekly_order_plans wp ON wp.id=wl.plan_id AND wp.status='confirmed'
+               JOIN public.planning_calendar wc ON wc.year=wp.iso_year AND wc.week_no=wp.iso_week
+                 AND wc.end_date >= $2::date AND wc.end_date < $3::date
+               WHERE LOWER(BTRIM(wl.style_name))=LOWER(BTRIM(s.style_name))
+             )
+             AND NOT EXISTS (
+               SELECT 1
                FROM public.production_orders o
                WHERE LOWER(COALESCE(o.bo_state,'')) NOT IN ('cancel','cancelled','canceled')
                  AND (
@@ -5606,14 +5656,35 @@ router.get("/range-plan", async (req, res, next) => {
                  )
              )
          ),
-         committed AS (
-           SELECT sub_category,
-             COUNT(DISTINCT COALESCE(style_key,style_name_key))::int AS committed_styles,
-             COUNT(DISTINCT COALESCE(style_key,style_name_key)) FILTER (WHERE LOWER(COALESCE(order_type,''))='new')::int AS committed_new_styles,
-             COALESCE(SUM(quantity),0)::numeric AS committed_units
-           FROM commitment_base
-           WHERE sub_category IS NOT NULL
-           GROUP BY sub_category
+          workspace_commitment_base AS (
+            SELECT l.id::text AS id,l.style_name,l.estimated_quantity AS quantity,l.order_type,
+              LOWER(BTRIM(l.style_name)) AS style_name_key,
+              LOWER(BTRIM(l.style_number)) AS style_key,l.sub_category
+            FROM ${schema}.weekly_order_plan_lines l
+            JOIN ${schema}.weekly_order_plans w ON w.id=l.plan_id AND w.status='confirmed'
+            JOIN public.planning_calendar cal
+              ON cal.year=w.iso_year AND cal.week_no=w.iso_week
+             AND cal.end_date >= $2::date AND cal.end_date < $3::date
+            WHERE NOT EXISTS (
+              SELECT 1 FROM public.production_orders o
+              WHERE LOWER(COALESCE(o.bo_state,'')) NOT IN ('cancel','cancelled','canceled')
+                AND (LOWER(BTRIM(COALESCE(NULLIF(o.style_number,''),NULLIF(o.product_sku,''))))=LOWER(BTRIM(l.style_number))
+                  OR LOWER(BTRIM(COALESCE(o.style_name,'')))=LOWER(BTRIM(l.style_name)))
+            )
+          ),
+          commitment_base AS (
+            SELECT * FROM legacy_commitment_base
+            UNION ALL
+            SELECT * FROM workspace_commitment_base
+          ),
+          committed AS (
+            SELECT sub_category,
+              COUNT(DISTINCT COALESCE(style_key,style_name_key))::int AS committed_styles,
+              COUNT(DISTINCT COALESCE(style_key,style_name_key)) FILTER (WHERE LOWER(COALESCE(order_type,''))='new')::int AS committed_new_styles,
+              COALESCE(SUM(quantity),0)::numeric AS committed_units
+            FROM commitment_base
+            WHERE sub_category IS NOT NULL
+            GROUP BY sub_category
           ),
           pipeline_new AS (
             SELECT sub_category,COUNT(*)::int AS available_new_styles
@@ -9615,6 +9686,336 @@ router.get("/catalogue-products", async (req, res, next) => {
   } catch (error) {
     next(error);
   }
+});
+
+const weeklyPlanPayload = (row: Record<string, unknown>) => ({
+  id: Number(row.id),
+  isoYear: Number(row.isoYear),
+  isoWeek: Number(row.isoWeek),
+  status: row.status,
+  confirmedAt: row.confirmedAt ?? null,
+});
+
+async function ensureWeek36Plan() {
+  const existing = await pool.query(`SELECT id FROM ${schema}.weekly_order_plans WHERE iso_year=2026 AND iso_week=36`);
+  if (existing.rows.length) return;
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const plan = await client.query(
+      `INSERT INTO ${schema}.weekly_order_plans (iso_year,iso_week)
+       VALUES (2026,36) ON CONFLICT (iso_year,iso_week) DO UPDATE SET updated_at=NOW() RETURNING id`,
+    );
+    const candidates = await client.query(
+      `SELECT id,style_number,style_name,style_type,tier,category,sub_category,brand,
+         COALESCE(NULLIF(fabric,''),'Fabric pending') AS fabric,sample_fabric_product_id,target_order_week
+       FROM ${schema}.style_development_tracker
+       WHERE style_number_status='confirmed' AND NULLIF(BTRIM(style_number),'') IS NOT NULL
+         AND exit_status='active'
+         AND NULLIF(SUBSTRING(UPPER(COALESCE(target_order_week,'')) FROM '([0-9]{1,2})$'),'')::int=36
+       ORDER BY style_name LIMIT 6`,
+    );
+    let sequence = 0;
+    for (const style of candidates.rows) {
+      sequence += 1;
+      await client.query(
+        `INSERT INTO ${schema}.weekly_order_plan_lines
+          (plan_id,sequence_no,order_number,source,source_id,style_number,style_name,style_type,tier,
+           category,sub_category,brand,fabric,fabric_product_id,target_order_week,image_url,
+           estimated_quantity,order_type,order_stage)
+         VALUES ($1,$2,$3,'development',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,300,$16,'CAD Marker Making')
+         ON CONFLICT (plan_id,source,source_id) DO NOTHING`,
+        [plan.rows[0].id, sequence, `W36${String(sequence).padStart(3, "0")}`, String(style.id),
+          style.style_number, style.style_name, style.style_type, style.tier, style.category, style.sub_category,
+          style.brand, style.fabric, style.sample_fabric_product_id, style.target_order_week,
+          `/api/workspace/garment-images/workspace/${encodeURIComponent(String(style.style_number))}`,
+          style.style_type === "RR" ? "Range Refreshed" : "New"],
+      );
+    }
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+router.get("/weekly-order-plan/sources", async (req, res, next) => {
+  try {
+    const search = String(req.query.search ?? "").trim();
+    const source = String(req.query.source ?? "development");
+    const pattern = `%${search.replace(/[%_]/g, "\\$&")}%`;
+    if (source === "development") {
+      const result = await pool.query(
+        `SELECT t.id::text AS "sourceId",'development'::text AS source,t.style_number AS "styleNumber",
+          t.style_name AS "styleName",t.style_type AS "styleType",t.tier,t.category,
+          t.sub_category AS "subCategory",t.brand,
+          COALESCE(NULLIF(fp.name,''),NULLIF(t.fabric,''),'Fabric pending') AS fabric,
+          t.sample_fabric_product_id AS "fabricProductId",t.target_order_week AS "targetOrderWeek",
+          ARRAY[]::text[] AS colourways,
+          CASE WHEN gi.id IS NOT NULL THEN '/api/workspace/garment-images/plm/' || encode(LOWER(BTRIM(t.style_number))::bytea,'escape') END AS "imageUrl",
+          COALESCE(SUM(fi.available / NULLIF(fp.kg_per_mtr_eff,0)) FILTER (WHERE fi.location_name='RMAT/Stock' AND fi.available>0),0)::float AS "availableMetres"
+         FROM ${schema}.style_development_tracker t
+         LEFT JOIN public.raw_fabric_products fp ON fp.id=t.sample_fabric_product_id
+         LEFT JOIN public.raw_fabric_inventory fi ON fi.product_id=fp.id
+         LEFT JOIN ${schema}.garment_images gi ON gi.source='plm' AND gi.style_key=LOWER(BTRIM(t.style_number))
+         WHERE t.exit_status='active' AND t.style_number_status='confirmed' AND NULLIF(BTRIM(t.style_number),'') IS NOT NULL
+           AND ($1='' OR t.style_number ILIKE $2 ESCAPE '\\' OR t.style_name ILIKE $2 ESCAPE '\\'
+             OR t.fabric ILIKE $2 ESCAPE '\\' OR fp.name ILIKE $2 ESCAPE '\\')
+         GROUP BY t.id,fp.name,gi.id
+         ORDER BY CASE WHEN t.target_order_week ILIKE 'WK 36' OR t.target_order_week ILIKE 'WK36' THEN 0 ELSE 1 END,t.style_name
+         LIMIT 30`,
+        [search, pattern],
+      );
+      res.json({ items: result.rows });
+      return;
+    }
+    const result = await pool.query(
+      `WITH styles AS (
+         SELECT COALESCE(NULLIF(BTRIM(a.style_number),''),NULLIF(BTRIM(a.sku),'')) AS style_number,
+           MAX(NULLIF(BTRIM(a.style_name),'')) AS style_name,MAX(NULLIF(BTRIM(a.tier),'')) AS tier,
+           MAX(NULLIF(BTRIM(a.category),'')) AS category,
+           MAX(COALESCE(NULLIF(BTRIM(a.product_type),''),NULLIF(BTRIM(a.category),''))) AS sub_category,
+           MAX(NULLIF(BTRIM(a.brand),'')) AS brand,
+           MAX(COALESCE(NULLIF(BTRIM(fp.name),''),NULLIF(BTRIM(a.fabric_category),''),NULLIF(BTRIM(a.fabric_structure),''),'Fabric pending')) AS fabric,
+           MAX(a.fabric_product_id) AS fabric_product_id,
+           ARRAY_AGG(DISTINCT NULLIF(BTRIM(a.color_print),'')) FILTER (WHERE NULLIF(BTRIM(a.color_print),'') IS NOT NULL) AS colourways
+         FROM public.all_products_clean a
+         LEFT JOIN public.raw_fabric_products fp ON fp.id=a.fabric_product_id
+         WHERE ${allowedBrand("a")} AND LOWER(COALESCE(a.status,'')) IN ('active','retired')
+         GROUP BY COALESCE(NULLIF(BTRIM(a.style_number),''),NULLIF(BTRIM(a.sku),''))
+       )
+       SELECT s.style_number AS "sourceId",'catalogue'::text AS source,s.style_number AS "styleNumber",
+         s.style_name AS "styleName",NULL::text AS "styleType",s.tier,s.category,s.sub_category AS "subCategory",
+         s.brand,s.fabric,s.fabric_product_id AS "fabricProductId",NULL::text AS "targetOrderWeek",
+         COALESCE(s.colourways,'{}') AS colourways,
+         CASE WHEN gi.id IS NOT NULL THEN '/api/workspace/garment-images/catalogue/' || encode(LOWER(BTRIM(s.style_number))::bytea,'escape') END AS "imageUrl",
+         COALESCE(fm.metres,0)::float AS "availableMetres"
+       FROM styles s
+       LEFT JOIN ${schema}.garment_images gi ON gi.source='catalogue' AND gi.style_key=LOWER(BTRIM(s.style_number))
+       LEFT JOIN LATERAL (
+         SELECT SUM(i.available / NULLIF(p.kg_per_mtr_eff,0)) AS metres
+         FROM public.raw_fabric_products p LEFT JOIN public.raw_fabric_inventory i
+           ON i.product_id=p.id AND i.location_name='RMAT/Stock' AND i.available>0
+         WHERE p.id=s.fabric_product_id
+       ) fm ON TRUE
+       WHERE $1='' OR s.style_number ILIKE $2 ESCAPE '\\' OR s.style_name ILIKE $2 ESCAPE '\\' OR s.fabric ILIKE $2 ESCAPE '\\'
+       ORDER BY s.style_name LIMIT 30`,
+      [search, pattern],
+    );
+    res.json({ items: result.rows });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get("/weekly-order-plan", async (req, res, next) => {
+  try {
+    await ensureWeek36Plan();
+    const isoYear = Number(req.query.year ?? 2026);
+    const isoWeek = Number(req.query.week ?? 36);
+    const planResult = await pool.query(
+      `SELECT id,iso_year AS "isoYear",iso_week AS "isoWeek",status,confirmed_at AS "confirmedAt"
+       FROM ${schema}.weekly_order_plans WHERE iso_year=$1 AND iso_week=$2`,
+      [isoYear, isoWeek],
+    );
+    if (!planResult.rows.length) {
+      res.json({ plan: null, lines: [], summary: null, fabricSummary: [], subcategories: [] });
+      return;
+    }
+    const plan = planResult.rows[0];
+    const lines = await pool.query(
+      `SELECT l.*,l.order_number AS "orderNumber",l.style_number AS "styleNumber",l.style_name AS "styleName",l.style_type AS "styleType",
+        l.sub_category AS "subCategory",l.fabric_product_id AS "fabricProductId",
+        l.target_order_week AS "targetOrderWeek",
+        CASE WHEN gi.id IS NOT NULL THEN '/api/workspace/garment-images/' ||
+          CASE WHEN l.source='development' THEN 'plm' ELSE 'catalogue' END || '/' ||
+          encode(LOWER(BTRIM(l.style_number))::bytea,'escape') END AS "imageUrl",
+        l.available_colourways AS "availableColourways",l.selected_colourways AS "selectedColourways",
+        l.estimated_quantity AS "estimatedQuantity",l.order_type AS "orderType",l.order_stage AS "orderStage",
+        COALESCE(fm.metres,0)::float AS "availableMetres"
+       FROM ${schema}.weekly_order_plan_lines l
+       LEFT JOIN ${schema}.garment_images gi ON gi.source=CASE WHEN l.source='development' THEN 'plm' ELSE 'catalogue' END
+         AND gi.style_key=LOWER(BTRIM(l.style_number))
+       LEFT JOIN LATERAL (
+         SELECT SUM(i.available / NULLIF(p.kg_per_mtr_eff,0)) AS metres
+         FROM public.raw_fabric_products p LEFT JOIN public.raw_fabric_inventory i
+           ON i.product_id=p.id AND i.location_name='RMAT/Stock' AND i.available>0
+         WHERE p.id=l.fabric_product_id
+       ) fm ON TRUE
+       WHERE l.plan_id=$1 ORDER BY l.sequence_no`,
+      [plan.id],
+    );
+    const summary = lines.rows.reduce((acc, line) => {
+      const units = Number(line.estimatedQuantity);
+      acc.units += units;
+      acc.styles += 1;
+      if (line.orderType === "New") acc.newUnits += units;
+      return acc;
+    }, { units: 0, styles: 0, newUnits: 0 });
+    const fabricSummary = Array.from(lines.rows.reduce((map, line) => {
+      const key = String(line.fabric || "Fabric pending");
+      const current = map.get(key) ?? { fabric: key, units: 0, styles: 0, availableMetres: Number(line.availableMetres || 0) };
+      current.units += Number(line.estimatedQuantity);
+      current.styles += 1;
+      map.set(key, current);
+      return map;
+    }, new Map<string, { fabric: string; units: number; styles: number; availableMetres: number }>()).values());
+    const subcategories = await pool.query(
+      `WITH week_date AS (SELECT to_date($1::text || lpad($2::text,2,'0'),'IYYYIW') + 3 AS d),
+       month_plan AS (
+         SELECT r.sub_category,r.planned_units_calculated AS planned_units
+         FROM ${schema}.range_plan_rows r JOIN ${schema}.range_plan_seasons s ON s.id=r.season_id,week_date w
+         WHERE LOWER(s.season_name)=LOWER(to_char(w.d,'FMMonth YYYY'))
+       ), committed AS (
+         SELECT l.sub_category,SUM(l.estimated_quantity)::int AS units
+         FROM ${schema}.weekly_order_plan_lines l JOIN ${schema}.weekly_order_plans p ON p.id=l.plan_id
+         WHERE p.status='confirmed' AND to_date(p.iso_year::text || lpad(p.iso_week::text,2,'0'),'IYYYIW') + 3 >= date_trunc('month',(SELECT d FROM week_date))
+           AND to_date(p.iso_year::text || lpad(p.iso_week::text,2,'0'),'IYYYIW') + 3 < date_trunc('month',(SELECT d FROM week_date)) + interval '1 month'
+         GROUP BY l.sub_category
+       ), current_week AS (
+         SELECT sub_category,SUM(estimated_quantity)::int AS units FROM ${schema}.weekly_order_plan_lines WHERE plan_id=$3 GROUP BY sub_category
+       )
+       SELECT m.sub_category AS "subCategory",m.planned_units AS "plannedUnits",COALESCE(c.units,0) AS "committedUnits",
+         COALESCE(w.units,0) AS "thisWeekUnits",m.planned_units-COALESCE(c.units,0) AS "remainingUnits",
+         COALESCE(w.units,0) > m.planned_units-COALESCE(c.units,0) AS "ceilingBreached"
+       FROM month_plan m LEFT JOIN committed c ON LOWER(c.sub_category)=LOWER(m.sub_category)
+       LEFT JOIN current_week w ON LOWER(w.sub_category)=LOWER(m.sub_category)
+       WHERE w.units IS NOT NULL ORDER BY m.sub_category`,
+      [isoYear, isoWeek, plan.id],
+    );
+    res.json({
+      plan: weeklyPlanPayload(plan), lines: lines.rows,
+      summary: { ...summary, newnessPct: summary.units ? 100 * summary.newUnits / summary.units : 0, newnessFloorPct: 40 },
+      fabricSummary, subcategories: subcategories.rows,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post("/weekly-order-plan/lines", async (req: AuthRequest, res, next) => {
+  const client = await pool.connect();
+  try {
+    const body = req.body ?? {};
+    const isoYear = Number(body.isoYear);
+    const isoWeek = Number(body.isoWeek);
+    const quantity = Number(body.estimatedQuantity);
+    const validTypes = ["New", "Re-order", "Replenishment", "Range Refreshed"];
+    const validStages = ["CAD Marker Making", "Buying Requisition", "Buying Production Order", "Production Sample"];
+    if (!Number.isInteger(isoYear) || !Number.isInteger(isoWeek) || isoWeek < 1 || isoWeek > 53 || !Number.isInteger(quantity) || quantity <= 0) {
+      res.status(400).json({ error: "A valid week and estimated quantity are required" }); return;
+    }
+    if (!validTypes.includes(body.orderType) || !validStages.includes(body.orderStage)) {
+      res.status(400).json({ error: "A valid order type and stage are required" }); return;
+    }
+    await client.query("BEGIN");
+    const plan = await client.query(
+      `INSERT INTO ${schema}.weekly_order_plans (iso_year,iso_week) VALUES ($1,$2)
+       ON CONFLICT (iso_year,iso_week) DO UPDATE SET updated_at=NOW()
+       RETURNING id,status`,
+      [isoYear, isoWeek],
+    );
+    if (plan.rows[0].status !== "draft") throw Object.assign(new Error("Confirmed weeks cannot be edited"), { status: 409 });
+    await client.query(`SELECT id FROM ${schema}.weekly_order_plans WHERE id=$1 FOR UPDATE`, [plan.rows[0].id]);
+    const source = body.source === "catalogue" ? "catalogue" : "development";
+    const sourceResult = source === "development"
+      ? await client.query(
+        `SELECT id::text AS source_id,style_number,style_name,style_type,tier,category,sub_category,brand,
+          COALESCE(NULLIF(fp.name,''),NULLIF(t.fabric,''),'Fabric pending') AS fabric,
+          sample_fabric_product_id AS fabric_product_id,target_order_week,
+          ARRAY[]::text[] AS colourways
+         FROM ${schema}.style_development_tracker t LEFT JOIN public.raw_fabric_products fp ON fp.id=t.sample_fabric_product_id
+         WHERE t.id=$1 AND t.style_number_status='confirmed' AND NULLIF(BTRIM(t.style_number),'') IS NOT NULL`,
+        [Number(body.sourceId)],
+      )
+      : await client.query(
+        `SELECT $1::text AS source_id,MAX(NULLIF(BTRIM(style_number),'')) AS style_number,
+          MAX(NULLIF(BTRIM(style_name),'')) AS style_name,NULL::text AS style_type,MAX(tier) AS tier,
+          MAX(category) AS category,MAX(COALESCE(NULLIF(BTRIM(product_type),''),NULLIF(BTRIM(category),''))) AS sub_category,
+          MAX(brand) AS brand,MAX(COALESCE(NULLIF(BTRIM(fabric_category),''),NULLIF(BTRIM(fabric_structure),''),'Fabric pending')) AS fabric,
+          MAX(fabric_product_id) AS fabric_product_id,NULL::text AS target_order_week,
+          ARRAY_AGG(DISTINCT NULLIF(BTRIM(color_print),'')) FILTER (WHERE NULLIF(BTRIM(color_print),'') IS NOT NULL) AS colourways
+         FROM public.all_products_clean WHERE COALESCE(NULLIF(BTRIM(style_number),''),NULLIF(BTRIM(sku),''))=$1`,
+        [String(body.sourceId)],
+      );
+    const style = sourceResult.rows[0];
+    if (!style?.style_number || !style?.style_name) {
+      await client.query("ROLLBACK"); res.status(404).json({ error: "The source style no longer exists" }); return;
+    }
+    const seqResult = await client.query(`SELECT COALESCE(MAX(sequence_no),0)+1 AS seq FROM ${schema}.weekly_order_plan_lines WHERE plan_id=$1`, [plan.rows[0].id]);
+    const sequence = Number(seqResult.rows[0].seq);
+    const selected = Array.isArray(body.selectedColourways)
+      ? body.selectedColourways.map(String).filter((value: string) => (style.colourways ?? []).includes(value))
+      : [];
+    const inserted = await client.query(
+      `INSERT INTO ${schema}.weekly_order_plan_lines
+       (plan_id,sequence_no,order_number,source,source_id,style_number,style_name,style_type,tier,category,sub_category,
+        brand,fabric,fabric_product_id,target_order_week,image_url,available_colourways,selected_colourways,
+        estimated_quantity,order_type,order_stage,created_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) RETURNING id`,
+      [plan.rows[0].id, sequence, `W${isoWeek}${String(sequence).padStart(3, "0")}`, source, style.source_id,
+        style.style_number, style.style_name, style.style_type, style.tier, style.category, style.sub_category, style.brand,
+        style.fabric, style.fabric_product_id, style.target_order_week,
+        `/api/workspace/garment-images/${source === "development" ? "workspace" : "catalogue"}/${encodeURIComponent(style.style_number)}`,
+        style.colourways ?? [], selected, quantity, body.orderType, body.orderStage, req.workspaceUser?.id ?? null],
+    );
+    await client.query("COMMIT");
+    res.status(201).json({ id: inserted.rows[0].id });
+  } catch (error: any) {
+    await client.query("ROLLBACK");
+    if (error?.code === "23505") { res.status(409).json({ error: "This style is already in the week" }); return; }
+    if (error?.status) { res.status(error.status).json({ error: error.message }); return; }
+    next(error);
+  } finally {
+    client.release();
+  }
+});
+
+router.patch("/weekly-order-plan/lines/:id", async (req, res, next) => {
+  try {
+    const quantity = Number(req.body?.estimatedQuantity);
+    const stages = ["CAD Marker Making", "Buying Requisition", "Buying Production Order", "Production Sample"];
+    const types = ["New", "Re-order", "Replenishment", "Range Refreshed"];
+    if (!Number.isInteger(quantity) || quantity <= 0 || !stages.includes(req.body?.orderStage) || !types.includes(req.body?.orderType)) {
+      res.status(400).json({ error: "Quantity, order type and stage are required" }); return;
+    }
+    const result = await pool.query(
+      `UPDATE ${schema}.weekly_order_plan_lines l SET estimated_quantity=$1,selected_colourways=$2,
+         order_type=$3,order_stage=$4,updated_at=NOW()
+       FROM ${schema}.weekly_order_plans p WHERE l.id=$5 AND p.id=l.plan_id AND p.status='draft' RETURNING l.id`,
+      [quantity, Array.isArray(req.body.selectedColourways) ? req.body.selectedColourways.map(String) : [],
+        req.body.orderType, req.body.orderStage, Number(req.params.id)],
+    );
+    if (!result.rows.length) { res.status(409).json({ error: "Confirmed weeks cannot be edited" }); return; }
+    res.json({ ok: true });
+  } catch (error) { next(error); }
+});
+
+router.delete("/weekly-order-plan/lines/:id", async (req, res, next) => {
+  try {
+    const result = await pool.query(
+      `DELETE FROM ${schema}.weekly_order_plan_lines l USING ${schema}.weekly_order_plans p
+       WHERE l.id=$1 AND p.id=l.plan_id AND p.status='draft' RETURNING l.id`,
+      [Number(req.params.id)],
+    );
+    if (!result.rows.length) { res.status(409).json({ error: "Confirmed weeks cannot be edited" }); return; }
+    res.json({ ok: true });
+  } catch (error) { next(error); }
+});
+
+router.post("/weekly-order-plan/confirm", async (req: AuthRequest, res, next) => {
+  try {
+    const result = await pool.query(
+      `UPDATE ${schema}.weekly_order_plans SET status='confirmed',confirmed_at=NOW(),confirmed_by=$1,updated_at=NOW()
+       WHERE iso_year=$2 AND iso_week=$3 AND status='draft'
+       RETURNING id`,
+      [req.workspaceUser?.id ?? null, Number(req.body?.isoYear), Number(req.body?.isoWeek)],
+    );
+    if (!result.rows.length) { res.status(409).json({ error: "Week is already confirmed or does not exist" }); return; }
+    res.json({ ok: true });
+  } catch (error) { next(error); }
 });
 
 app.get("/api/l10/scorecard/live", requireUser, liveScorecardHandler);
