@@ -22,3 +22,17 @@ index f2bfafef3723cb423b110304815e56e3f97f81e0..6caa59d182613f1f98ee9b034c1e76f2
              result.images.push(imageSize);
          }
          return result;
+diff --git a/dist/types/jxl.js b/dist/types/jxl.js
+--- a/dist/types/jxl.js
++++ b/dist/types/jxl.js
+@@ -23,7 +23,9 @@ function extractPartialStreams(input) {
+         if (!jxlpBox)
+             break;
+         partialStreams.push(input.slice(jxlpBox.offset + 12, jxlpBox.offset + jxlpBox.size));
+-        offset = jxlpBox.offset + jxlpBox.size;
++        // A zero-sized jxlp box would otherwise be found forever.
++        // Advance past at least the ISO BMFF box header.
++        offset = jxlpBox.offset + (jxlpBox.size > 0 ? jxlpBox.size : 8);
+     }
+     return partialStreams;
+ }
