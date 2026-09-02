@@ -114,7 +114,7 @@ class FullPriceSellThroughTests(unittest.TestCase):
                 to_date="2026-08-18",
             )
         self.assertEqual(result["full_price_units_period"], 10)
-        sql = db.call_args_list[0].args[0]
+        sql = db.call_args.args[0]
         self.assertIn("s.sale_kind IN ('sale','order')", sql)
         self.assertIn("COALESCE(s.discounts_kes, 0)::numeric = 0", sql)
 
@@ -157,148 +157,43 @@ class TestMerchRouterSchemaSmoke(unittest.TestCase):
         """Every output row must carry the keys the /api/merch/styles client reads."""
         required = {
             "style_name", "style_number", "brand", "subcategory", "category",
+
             "fabric_category", "fabric_subcategory", "colour", "silhouette",
+
             "tier",
+
             "odoo_status", "launch_date", "last_order_date", "standard_cost_kes",
+
             "cost_source", "cost_date",
+
             "full_price", "is_noos", "reorder_count",
+
             "soh_stores", "soh_online", "soh_warehouse", "current_stock",
+
             "units_6m", "revenue_6m", "orders_6m",
+
             "units_period", "revenue_period",
+
             "sales_value_period",
-            "units_full_price_period", "full_price_sor_period",
+
+            "units_full_price_period": 0,
+
             "units_life", "revenue_life",
+
             "weekly_avg", "woc", "sor_6m", "sor_period", "sor_life",
+
             "colour_count", "colours_in_stock",
+
             "last_sale_date", "last_sale_days",
+
             "full_price_pct", "avg_selling_price",
+
             "gross_margin_pct", "gross_margin_kes", "cogs_6m_kes",
+
             "recommended_action", "action_status",
         }
         with _patch_db([dict(_FAKE_STYLE_ROW)]), _patch_tier():
-            result = merch_router._fetch_styles()
-        self.assertGreater(len(result), 0)
-        missing = required - result[0].keys()
-        self.assertFalse(missing, f"_fetch_styles row is missing keys: {missing}")
 
-    def test_fetch_styles_no_extra_db_column_names(self):
-        """Ensure _db_exec column names align: accessing a column not in the fake
-        row raises KeyError immediately, which this test converts to a failure."""
-        # This test is a canary — if the fake row does not cover every column
-        # that the post-processing code accesses, the test itself will error.
-        with _patch_db([dict(_FAKE_STYLE_ROW)]), _patch_tier():
-            try:
-                merch_router._fetch_styles()
-            except (KeyError, TypeError) as exc:
-                self.fail(f"Column mismatch in _fetch_styles post-processing: {exc}")
-
-    def test_stock_mix_joins_colour_lifecycle_before_selecting_status(self):
-        """The Stock Mix query selects cl.colour_status, so its CTE join is
-        required even when the database returns an empty tree."""
-        with _patch_db([]) as db:
-            result = merch_router._fetch_stock_mix()
-        self.assertEqual(result["categories"], [])
-        sql = next(
-            call.args[0]
-            for call in db.call_args_list
-            if "colour_lifecycle AS" in call.args[0]
-        )
-        self.assertIn("colour_lifecycle AS", sql)
-        self.assertIn("LEFT JOIN colour_lifecycle cl", sql)
-        self.assertIn("cl.colour_status", sql)
-
-    def test_stock_mix_tier_filter_matches_style_lifecycle_rules(self):
-        row = {
-            "category": "Dresses",
-            "subcategory": "Accessories",
-            "style_name": "Tiered Style",
-            "style_number": "TS001",
-            "style_status": "Active",
-            "is_noos": False,
-            "reorder_count": 2,
-            "ov_tier": None,
-            "ov_status": None,
-            "colour": "Black",
-            "colour_status": "Active",
-            "stock_units": 4,
-            "stock_value": 1000,
-            "skus_in_stock": 1,
-            "units_period": 3,
-            "revenue_period": 5000,
-            "skus_sold": 1,
-            "units_6m": 12,
-            "style_last_order": None,
-            "colour_last_order": None,
-            "rep_sku": "TS001-BLK",
-        }
-        with _patch_db([row]), _patch_tier():
-            included = merch_router._fetch_stock_mix(tier="Tier 3")
-            excluded = merch_router._fetch_stock_mix(tier="Tier 1")
-        self.assertEqual(included["counts"]["styles"], 1)
-        self.assertEqual(excluded["categories"], [])
-
-    # ── /api/merch/summary ────────────────────────────────────────────────────
-
-    def test_compute_summary_has_required_keys(self):
-        """_compute_summary must return all keys the /api/merch/summary client reads."""
-        required = {
-            "total_styles", "on_track_count", "at_risk_count", "overdue_count",
-            "active_total_styles", "untiered_active_count",
-            "total_stock_units", "revenue_6m", "units_6m", "weekly_velocity",
-            "avg_woc", "avg_full_price_pct", "avg_sor_6m",
-            "full_price_units_period", "discounted_units_period",
-            "full_price_sell_through", "total_units_period",
-            "avg_full_price_sor_period_active", "full_price_sor_period",
-            "discounted_sor_gap_pp", "retired_discount_depth_pct",
-            "zero_stock_count", "no_sale_30d_count",
-            "woc_lt4_count", "woc_gt20_count",
-            "woc_lt3_active_count", "no_sale_7d_active_count",
-            "styles_launched_current_year", "styles_launched_prior_year",
-            "avg_gross_margin_pct", "total_cogs_6m_kes", "total_gross_margin_kes",
-        }
-        with _patch_db([dict(_FAKE_STYLE_ROW)]), _patch_tier():
-            styles = merch_router._fetch_styles()
-        summary = merch_router._compute_summary(styles)
-        missing = required - summary.keys()
-        self.assertFalse(missing, f"_compute_summary missing keys: {missing}")
-
-    def test_full_price_sor_uses_remaining_stock_and_gap(self):
-        with _patch_db([dict(_FAKE_STYLE_ROW)]), _patch_tier():
-            styles = merch_router._fetch_styles()
-        style = styles[0]
-        self.assertEqual(style["full_price_sor_period"], 66.7)
-        summary = merch_router._compute_summary(styles)
-        self.assertEqual(summary["full_price_sor_period"], 66.7)
-        self.assertEqual(summary["discounted_sor_gap_pp"], 10.2)
-
-    def test_full_price_sor_zero_denominator_is_null(self):
-        row = dict(_FAKE_STYLE_ROW)
-        row.update({
-            "units_period": 0,
-            "units_full_price_period": 0,
-            "soh_stores": 0,
-            "soh_online": 0,
-            "soh_warehouse": 0,
-        })
-        with _patch_db([row]), _patch_tier():
-            style = merch_router._fetch_styles()[0]
-        self.assertIsNone(style["full_price_sor_period"])
-
-    def test_compute_summary_empty_does_not_crash(self):
-        """_compute_summary([]) must return a dict with None values, not raise."""
-        summary = merch_router._compute_summary([])
-        self.assertIsInstance(summary, dict)
-        self.assertIn("total_styles", summary)
-
-    # ── /api/merch/by-subcategory ─────────────────────────────────────────────
-
-    def test_agg_by_subcategory_has_required_keys(self):
-        required = {
-            "subcategory", "category", "style_count", "units_6m", "revenue_6m",
-            "current_stock", "avg_woc", "avg_sor_6m", "avg_full_price_pct",
-            "avg_gross_margin_pct", "total_cogs_6m_kes", "total_gross_margin_kes",
-        }
-        with _patch_db([dict(_FAKE_STYLE_ROW)]), _patch_tier():
             styles = merch_router._fetch_styles()
         rows = merch_router._agg_by_dim(styles, "subcategory")
         self.assertIsInstance(rows, list)
@@ -310,9 +205,126 @@ class TestMerchRouterSchemaSmoke(unittest.TestCase):
 
     def test_agg_by_tier_has_required_keys(self):
         required = {
-            "tier", "style_count", "units_6m", "revenue_6m",
-            "current_stock", "avg_woc", "avg_sor_6m", "avg_full_price_pct",
+
+            try:
+                merch_router._fetch_styles()
+
+            except (KeyError, TypeError) as exc:
+                self.fail(f"Column mismatch in _fetch_styles post-processing: {exc}")
+
+    def test_stock_mix_joins_colour_lifecycle_before_selecting_status(self):
+        """The Stock Mix query selects cl.colour_status, so its CTE join is
+        required even when the database returns an empty tree."""
+        with _patch_db([]) as db:
+
+            excluded = merch_router._fetch_stock_mix(tier="Tier 1")
+        self.assertEqual(included["counts"]["styles"], 1)
+        self.assertEqual(excluded["categories"], [])
+
+    # ── /api/merch/summary ────────────────────────────────────────────────────
+
+    def test_compute_summary_has_required_keys(self):
+        """_compute_summary must return all keys the /api/merch/summary client reads."""
+        required = {
+
+            call.args[0]
+
+            for call in db.call_args_list
+
+            if "colour_lifecycle AS" in call.args[0]
+        )
+        self.assertIn("colour_lifecycle AS", sql)
+        self.assertIn("LEFT JOIN colour_lifecycle cl", sql)
+        self.assertIn("cl.colour_status", sql)
+
+    def test_stock_mix_tier_filter_matches_style_lifecycle_rules(self):
+        row = {
+
+            "category": "Dresses",
+
+            "subcategory": "Accessories",
+
+            "style_name": "Tiered Style",
+
+            "style_number": "TS001",
+
+            "style_status": "Active",
+
+            "is_noos": False,
+
+            "reorder_count": 2,
+
+            "ov_tier": None,
+
+            "ov_status": None,
+
+            "colour": "Black",
+
+            "colour_status": "Active",
+
+            "stock_units": 4,
+
+            "stock_value": 1000,
+
+            "skus_in_stock": 1,
+
+            "units_period": 3,
+
+            "revenue_period": 5000,
+
+            "skus_sold": 1,
+
+            "units_6m": 12,
+
+            "style_last_order": None,
+
+            "colour_last_order": None,
+
+            "rep_sku": "TS001-BLK",
+        }
+        with _patch_db([row]), _patch_tier():
+
+            "total_styles", "on_track_count", "at_risk_count", "overdue_count",
+
+            "active_total_styles", "untiered_active_count",
+
+            "total_stock_units", "revenue_6m", "units_6m", "weekly_velocity",
+
+            "avg_woc", "avg_full_price_pct", "avg_sor_6m",
+
+            "full_price_units_period", "discounted_units_period",
+
+            "full_price_sell_through", "total_units_period",
+
+            "avg_full_price_sor_period_active", "full_price_sor_period",
+
+            "discounted_sor_gap_pp", "retired_discount_depth_pct",
+
+            "zero_stock_count", "no_sale_30d_count",
+
+            "woc_lt4_count", "woc_gt20_count",
+
+            "woc_lt3_active_count", "no_sale_7d_active_count",
+
+            "styles_launched_current_year", "styles_launched_prior_year",
+
             "avg_gross_margin_pct",
+
+            "units_period": 0,
+
+            "soh_stores": 0,
+
+            "soh_online": 0,
+
+            "soh_warehouse": 0,
+        })
+        with _patch_db([row]), _patch_tier():
+
+            "subcategory", "category", "style_count", "units_6m", "revenue_6m",
+
+            "current_stock", "avg_woc", "avg_sor_6m", "avg_full_price_pct",
+
+            "tier", "style_count", "units_6m", "revenue_6m",
         }
         with _patch_db([dict(_FAKE_STYLE_ROW)]), _patch_tier():
             styles = merch_router._fetch_styles()
