@@ -30,6 +30,8 @@ export type FeedbackImageAttachment = {
   sizeBytes: number;
   viewUrl: string;
   downloadUrl: string;
+  previewUrl: string | null;
+  previewStatus: "native" | "pending" | "generating" | "ready" | "failed";
 };
 
 export type FeedbackSubmission = {
@@ -716,19 +718,22 @@ export function PublicFeedbackPage() {
   </main>;
 }
 
-function Metric({ label, value, note, accent }: { label: string; value: string; note: string; accent?: string }) {
-  return <div className={`feedback-metric ${accent || ""}`}><span>{label}</span><strong data-testid={`metric-feedback-${label.toLowerCase().replaceAll(" ", "-")}`}>{value}</strong><small>{note}</small></div>;
+function Metric({ label, value, note, accent, textual = false }: { label: string; value: string; note: string; accent?: string; textual?: boolean }) {
+  return <div className={`feedback-metric ${accent || ""} ${textual ? "textual" : ""}`}><span>{label}</span><strong title={textual ? value : undefined} data-testid={`metric-feedback-${label.toLowerCase().replaceAll(" ", "-")}`}>{value}</strong><small>{note}</small></div>;
 }
 
 function FeedbackAttachmentPreview({ attachment }: { attachment: FeedbackImageAttachment }) {
-  const supportsPreview = attachment.contentType === "image/jpeg" || attachment.contentType === "image/png";
+  const previewUrl = attachment.contentType === "image/jpeg" || attachment.contentType === "image/png"
+    ? attachment.viewUrl
+    : attachment.previewUrl;
+  const supportsPreview = Boolean(previewUrl);
   const [objectUrl, setObjectUrl] = useState<string | null>(null);
   const [unavailable, setUnavailable] = useState(false);
   useEffect(() => {
     if (!supportsPreview) return undefined;
     let cancelled = false;
     let currentUrl = "";
-    void fetch(attachment.viewUrl, { credentials: "include" })
+    void fetch(previewUrl!, { credentials: "include" })
       .then(async (response) => {
         if (!response.ok) throw new Error("Could not load image");
         currentUrl = URL.createObjectURL(await response.blob());
@@ -740,11 +745,20 @@ function FeedbackAttachmentPreview({ attachment }: { attachment: FeedbackImageAt
       cancelled = true;
       if (currentUrl) URL.revokeObjectURL(currentUrl);
     };
-  }, [attachment.viewUrl, supportsPreview]);
+  }, [previewUrl, supportsPreview]);
+  const fallbackLabel = unavailable
+    ? "Preview unavailable"
+    : attachment.previewStatus === "failed"
+      ? "Preview unavailable"
+      : attachment.previewStatus === "pending" || attachment.previewStatus === "generating"
+        ? "Preview processing"
+        : supportsPreview
+          ? "Loading preview"
+          : "HEIC / HEIF image";
   return <article className="feedback-attachment" data-testid={`feedback-image-${attachment.id}`}>
     {supportsPreview && objectUrl && !unavailable
-      ? <a href={objectUrl} target="_blank" rel="noreferrer" className="feedback-attachment-image" title={`Open ${attachment.filename} at full size`}><img src={objectUrl} alt={`Feedback attachment: ${attachment.filename}`} /></a>
-      : <a href={attachment.downloadUrl} className="feedback-attachment-fallback" download><ImageIcon size={18} /><span>{supportsPreview ? "Image unavailable" : "HEIC / HEIF image"}</span></a>}
+      ? <a href={objectUrl} target="_blank" rel="noreferrer" className="feedback-attachment-image" title={`Open preview for ${attachment.filename}`}><img src={objectUrl} alt={`Feedback attachment: ${attachment.filename}`} /></a>
+      : <a href={attachment.downloadUrl} className="feedback-attachment-fallback" download><ImageIcon size={18} /><span>{fallbackLabel}</span></a>}
     <div><strong>{attachment.filename}</strong><small>{attachment.contentType.replace("image/", "").toUpperCase()} · {imageSizeLabel(attachment.sizeBytes)}</small><a href={attachment.downloadUrl} download><Download size={12} /> Download</a></div>
   </article>;
 }
@@ -923,7 +937,7 @@ export function WorkspaceFeedbackPage() {
   if (analytics.isError) return <section className="page"><div className="empty-state error-state"><CircleAlert size={22} /><h3>Feedback inbox is unavailable</h3><p>{analytics.error instanceof Error ? analytics.error.message : "The workspace service did not respond."}</p><button className="button button-dark" onClick={() => analytics.refetch()} data-testid="button-retry-feedback">Try again</button></div></section>;
   return <section className="page feedback-workspace-page">
      <div className="feedback-workspace-heading"><div><h1>Feedback Inbox</h1></div><div className="feedback-heading-actions"><button className="button button-quiet" type="button" onClick={copyLink} data-testid="button-copy-feedback-link"><span>{copied ? "Copied!" : "Copy feedback link"}</span><ArrowRight size={15} /></button><div className="feedback-heading-mark"><MessageCircle size={21} /><span>Live inbox</span></div>{(copied || copyError) && <span className={`feedback-copy-status ${copyError ? "error" : "success"}`} role="status" aria-live="polite">{copyError || "Feedback link copied to your clipboard."}</span>}</div></div>
-     <div className="feedback-metrics"><Metric label="Submissions this quarter" value={String(stats?.totalSubmissionsThisQuarter ?? 0)} note="All teams · quarter to date" /><Metric label="Most flagged style" value={stats?.mostFlaggedStyleThisQuarter || "—"} note="This quarter" accent="gold" /><Metric label="Common feedback type" value={stats?.mostCommonFeedbackTypeThisQuarter || "—"} note="This quarter" accent="green" /><Metric label="Negative sentiment" value={`${stats?.negativePercentThisQuarter ?? 0}%`} note="This quarter" accent={(stats?.negativePercentThisQuarter ?? 0) >= 20 ? "coral" : "gold"} /></div>
+     <div className="feedback-metrics"><Metric label="Submissions this quarter" value={String(stats?.totalSubmissionsThisQuarter ?? 0)} note="All teams · quarter to date" /><Metric label="Most flagged style" value={stats?.mostFlaggedStyleThisQuarter || "—"} note="This quarter" accent="gold" textual /><Metric label="Common feedback type" value={stats?.mostCommonFeedbackTypeThisQuarter || "—"} note="This quarter" accent="green" textual /><Metric label="Negative sentiment" value={`${stats?.negativePercentThisQuarter ?? 0}%`} note="This quarter" accent={(stats?.negativePercentThisQuarter ?? 0) >= 20 ? "coral" : "gold"} /></div>
       <div className="feedback-view-tabs" role="tablist"><button className={view === "inbox" ? "active" : ""} onClick={() => setView("inbox")} role="tab" aria-selected={view === "inbox"} data-testid="tab-feedback-inbox"><MessageCircle size={15} /> Inbox <span>{openCount}</span></button><button className={view === "styles" ? "active" : ""} onClick={() => setView("styles")} role="tab" aria-selected={view === "styles"} data-testid="tab-feedback-by-style"><Filter size={15} /> By style <span>{summaries.length}</span></button><button className={view === "pulses" ? "active" : ""} onClick={() => setView("pulses")} role="tab" aria-selected={view === "pulses"} data-testid="tab-feedback-style-pulses"><Share2 size={15} /> Style Pulses <span>{analytics.data?.stylePulses?.length ?? 0}</span></button></div>
      {view === "inbox" ? <div className="feedback-inbox-panel">
         <div className="feedback-toolbar">

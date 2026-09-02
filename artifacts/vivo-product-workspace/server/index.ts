@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { spawn } from "node:child_process";
 import http from "node:http";
 import { Readable } from "node:stream";
 import express, {
@@ -23,6 +24,7 @@ import {
   FEEDBACK_CUSTOMER_SEARCH_RATE_WINDOW_MS,
   FEEDBACK_QUARTER_START_SQL,
   detectFeedbackImageContentType,
+  feedbackImagePreviewUrl,
   feedbackImageExtension,
   feedbackCustomerOrigin,
   feedbackImageTokens,
@@ -31,6 +33,7 @@ import {
   validateFeedbackImageMeta,
   validateFeedbackImageUpload,
   type FeedbackImageContentType,
+  type FeedbackPreviewStatus,
 } from "./feedback-policy.js";
 
 const { Pool } = pg;
@@ -1799,6 +1802,11 @@ async function ensureSchema() {
       original_name TEXT NOT NULL,
       content_type TEXT NOT NULL CHECK (content_type IN ('image/jpeg','image/png','image/heic','image/heif')),
       byte_size INTEGER NOT NULL CHECK (byte_size > 0),
+      preview_object_path TEXT,
+      preview_status TEXT NOT NULL DEFAULT 'pending' CHECK (preview_status IN ('pending','generating','ready','failed')),
+      preview_byte_size INTEGER,
+      preview_error TEXT,
+      preview_generated_at TIMESTAMPTZ,
       uploaded_at TIMESTAMPTZ,
       expires_at TIMESTAMPTZ NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -1812,6 +1820,16 @@ async function ensureSchema() {
     ALTER TABLE ${schema}.style_feedback ADD COLUMN IF NOT EXISTS customer_name TEXT;
     ALTER TABLE ${schema}.style_feedback ADD COLUMN IF NOT EXISTS store_name TEXT;
     ALTER TABLE ${schema}.style_feedback_images ADD COLUMN IF NOT EXISTS uploaded_at TIMESTAMPTZ;
+    ALTER TABLE ${schema}.style_feedback_images ADD COLUMN IF NOT EXISTS preview_object_path TEXT;
+    ALTER TABLE ${schema}.style_feedback_images ADD COLUMN IF NOT EXISTS preview_status TEXT NOT NULL DEFAULT 'pending';
+    ALTER TABLE ${schema}.style_feedback_images ADD COLUMN IF NOT EXISTS preview_byte_size INTEGER;
+    ALTER TABLE ${schema}.style_feedback_images ADD COLUMN IF NOT EXISTS preview_error TEXT;
+    ALTER TABLE ${schema}.style_feedback_images ADD COLUMN IF NOT EXISTS preview_generated_at TIMESTAMPTZ;
+    DO $$ BEGIN
+      ALTER TABLE ${schema}.style_feedback_images ADD CONSTRAINT style_feedback_images_preview_status_check
+        CHECK (preview_status IN ('pending','generating','ready','failed'));
+    EXCEPTION WHEN duplicate_object THEN NULL;
+    END $$;
     DO $$ BEGIN
       ALTER TABLE ${schema}.style_feedback ADD CONSTRAINT style_feedback_pulse_mode_check CHECK (pulse_mode IS NULL OR pulse_mode IN ('investigate','champion'));
     EXCEPTION WHEN duplicate_object THEN NULL;
@@ -1821,6 +1839,8 @@ async function ensureSchema() {
     CREATE INDEX IF NOT EXISTS style_feedback_pulse_idx ON ${schema}.style_feedback (pulse_id);
     CREATE INDEX IF NOT EXISTS style_feedback_images_feedback_idx ON ${schema}.style_feedback_images (feedback_id);
     CREATE INDEX IF NOT EXISTS style_feedback_images_expiry_idx ON ${schema}.style_feedback_images (expires_at) WHERE feedback_id IS NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS style_feedback_images_preview_path_idx
+      ON ${schema}.style_feedback_images (preview_object_path) WHERE preview_object_path IS NOT NULL;
     DO $$ BEGIN
       CREATE TYPE ${schema}.range_plan_tier AS ENUM ('NOOS','Core','Recent','New/Test');
     EXCEPTION
@@ -2565,6 +2585,184 @@ async function readFeedbackImageAtMost(response: globalThis.Response) {
   return bytes;
 }
 
+type FeedbackPreviewResult = {
+  status: FeedbackPreviewStatus;
+  objectPath: string | null;
+};
+
+const feedbackPreviewFlights = new Map<number, Promise<FeedbackPreviewResult>>();
+
+function normalizedFeedbackPreviewStatus(value: unknown): FeedbackPreviewStatus {
+  const status = String(value ?? "pending");
+  return status === "generating" || status === "ready" || status === "failed" ? status : "pending";
+}
+
+async function convertFeedbackHeicToJpeg(bytes: Uint8Array) {
+  return await new Promise<Uint8Array>((resolve, reject) => {
+    const process = spawn("magick", [
+      "-",
+      "-auto-orient",
+      "-thumbnail",
+      "1280x1280>",
+      "-strip",
+      "-quality",
+      "82",
+      "jpeg:-",
+    ], { stdio: ["pipe", "pipe", "pipe"] });
+    const output: Buffer[] = [];
+    const errors: Buffer[] = [];
+    let settled = false;
+    const timeout = setTimeout(() => {
+      process.kill("SIGKILL");
+      finish(new Error("HEIC preview conversion timed out"));
+    }, 30_000);
+    const finish = (error: Error | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (error) {
+        reject(error);
+        return;
+      }
+      const result = Buffer.concat(output);
+      if (!result.length || result.length > FEEDBACK_IMAGE_MAX_BYTES) {
+        reject(new Error("HEIC preview conversion returned an invalid image"));
+        return;
+      }
+      resolve(new Uint8Array(result));
+    };
+    process.stdout.on("data", (chunk: Buffer) => output.push(chunk));
+    process.stderr.on("data", (chunk: Buffer) => errors.push(chunk));
+    process.once("error", (error) => finish(error));
+    process.once("close", (code) => {
+      if (code !== 0) {
+        const detail = Buffer.concat(errors).toString("utf8").trim().slice(0, 240);
+        finish(new Error(detail || `HEIC preview conversion exited with code ${code ?? "unknown"}`));
+      } else {
+        finish(null);
+      }
+    });
+    process.stdin.end(Buffer.from(bytes));
+  });
+}
+
+async function ensureFeedbackImagePreview(imageId: number): Promise<FeedbackPreviewResult> {
+  const existingFlight = feedbackPreviewFlights.get(imageId);
+  if (existingFlight) return existingFlight;
+
+  const flight = (async (): Promise<FeedbackPreviewResult> => {
+    const current = await pool.query<{ status: string; objectPath: string | null }>(
+      `SELECT preview_status AS status,preview_object_path AS "objectPath"
+         FROM ${schema}.style_feedback_images
+        WHERE id=$1 AND feedback_id IS NOT NULL
+          AND content_type IN ('image/heic','image/heif')`,
+      [imageId],
+    );
+    const existing = current.rows[0];
+    if (!existing) return { status: "failed", objectPath: null };
+    const existingStatus = normalizedFeedbackPreviewStatus(existing.status);
+    if (existingStatus === "ready" && existing.objectPath) {
+      return { status: "ready", objectPath: existing.objectPath };
+    }
+    if (existingStatus !== "pending") {
+      return { status: existingStatus, objectPath: null };
+    }
+
+    const claim = await pool.query<{ objectPath: string }>(
+      `UPDATE ${schema}.style_feedback_images
+          SET preview_status='generating',preview_error=NULL
+        WHERE id=$1 AND feedback_id IS NOT NULL
+          AND content_type IN ('image/heic','image/heif')
+          AND preview_status='pending'
+        RETURNING object_path AS "objectPath"`,
+      [imageId],
+    );
+    if (!claim.rows[0]) {
+      const claimed = await pool.query<{ status: string; objectPath: string | null }>(
+        `SELECT preview_status AS status,preview_object_path AS "objectPath"
+           FROM ${schema}.style_feedback_images WHERE id=$1`,
+        [imageId],
+      );
+      const status = normalizedFeedbackPreviewStatus(claimed.rows[0]?.status);
+      return { status, objectPath: status === "ready" ? claimed.rows[0]?.objectPath ?? null : null };
+    }
+
+    try {
+      const original = await pool.query<{ objectPath: string }>(
+        `SELECT object_path AS "objectPath" FROM ${schema}.style_feedback_images WHERE id=$1`,
+        [imageId],
+      );
+      const source = original.rows[0];
+      if (!source) throw new Error("Original feedback image not found");
+      const response = await fetch(await signedStorageUrl(source.objectPath, "GET", 300), {
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (!response.ok) throw new Error(`Unable to read original feedback image (${response.status})`);
+      const sourceBytes = await readFeedbackImageAtMost(response);
+      const previewBytes = await convertFeedbackHeicToJpeg(sourceBytes);
+      const previewObjectPath = `/objects/style-feedback-previews/${imageId}.jpg`;
+      const stored = await fetch(await signedStorageUrl(previewObjectPath, "PUT", 180), {
+        method: "PUT",
+        headers: { "Content-Type": "image/jpeg", "Content-Length": String(previewBytes.length) },
+        body: previewBytes,
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (!stored.ok) throw new Error(`Unable to store HEIC preview (${stored.status})`);
+      await pool.query(
+        `UPDATE ${schema}.style_feedback_images
+            SET preview_object_path=$1,preview_status='ready',preview_byte_size=$2,
+                preview_error=NULL,preview_generated_at=NOW()
+          WHERE id=$3 AND feedback_id IS NOT NULL`,
+        [previewObjectPath, previewBytes.length, imageId],
+      );
+      return { status: "ready", objectPath: previewObjectPath };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown HEIC preview conversion error";
+      await pool.query(
+        `UPDATE ${schema}.style_feedback_images
+            SET preview_status='failed',preview_error=$1,preview_generated_at=NOW()
+          WHERE id=$2 AND feedback_id IS NOT NULL`,
+        [message.slice(0, 500), imageId],
+      ).catch(() => undefined);
+      console.warn("Unable to generate feedback HEIC preview", { imageId, error: message });
+      return { status: "failed", objectPath: null };
+    }
+  })();
+
+  feedbackPreviewFlights.set(imageId, flight);
+  try {
+    return await flight;
+  } finally {
+    if (feedbackPreviewFlights.get(imageId) === flight) feedbackPreviewFlights.delete(imageId);
+  }
+}
+
+async function prepareFeedbackPreviewMetadata(rows: Array<Record<string, unknown>>) {
+  const attachments = rows.flatMap((row) => Array.isArray(row.imageAttachments) ? row.imageAttachments : [])
+    .map((attachment) => attachment as Record<string, unknown>)
+    .filter((attachment) => {
+      const type = String(attachment.contentType ?? "").toLowerCase();
+      return type === "image/heic" || type === "image/heif";
+    });
+  const ids = [...new Set(attachments.map((attachment) => Number(attachment.id)).filter((id) => Number.isInteger(id) && id > 0))].slice(0, FEEDBACK_IMAGE_MAX_FILES);
+  let nextIndex = 0;
+  const results: Array<readonly [number, FeedbackPreviewResult]> = [];
+  const worker = async () => {
+    while (nextIndex < ids.length) {
+      const id = ids[nextIndex++];
+      results.push([id, await ensureFeedbackImagePreview(id)] as const);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(2, ids.length) }, () => worker()));
+  const byId = new Map(results);
+  for (const attachment of attachments) {
+    const result = byId.get(Number(attachment.id));
+    if (!result) continue;
+    attachment.previewStatus = result.status;
+    attachment.previewObjectPath = result.objectPath;
+  }
+}
+
 const GARMENT_IMAGE_TYPES = {
   "image/jpeg": { extensions: ["jpg", "jpeg"], magic: (bytes: Uint8Array) => bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff },
   "image/png": { extensions: ["png"], magic: (bytes: Uint8Array) => bytes.length >= 8 && [137, 80, 78, 71, 13, 10, 26, 10].every((value, index) => bytes[index] === value) },
@@ -3088,13 +3286,17 @@ function feedbackPayload(row: Record<string, unknown>) {
     createdAt: row.createdAt ?? null,
     imageAttachments: rawAttachments.map((attachment) => {
       const item = attachment as Record<string, unknown>;
+      const contentType = String(item.contentType ?? "application/octet-stream");
+      const previewStatus = normalizedFeedbackPreviewStatus(item.previewStatus);
       return {
         id: Number(item.id),
         filename: String(item.filename ?? "feedback-image"),
-        contentType: String(item.contentType ?? "application/octet-stream"),
+        contentType,
         sizeBytes: Number(item.sizeBytes ?? 0),
         viewUrl: `/api/workspace/feedback/images/${Number(item.id)}`,
         downloadUrl: `/api/workspace/feedback/images/${Number(item.id)}?download=1`,
+        previewUrl: feedbackImagePreviewUrl(item.id, contentType, previewStatus),
+        previewStatus: contentType === "image/heic" || contentType === "image/heif" ? previewStatus : "native",
       };
     }),
   };
@@ -4739,7 +4941,8 @@ router.get("/feedback", async (req: AuthRequest, res, next) => {
           f.customer_origin AS "customerOrigin",f.customer_id AS "customerId",
           f.customer_name AS "customerName",f.store_name AS "storeName",
          (SELECT COALESCE(jsonb_agg(jsonb_build_object(
-             'id',i.id,'filename',i.original_name,'contentType',i.content_type,'sizeBytes',i.byte_size
+              'id',i.id,'filename',i.original_name,'contentType',i.content_type,'sizeBytes',i.byte_size,
+              'previewStatus',i.preview_status,'previewObjectPath',i.preview_object_path
            ) ORDER BY i.id),'[]'::jsonb)
             FROM ${schema}.style_feedback_images i WHERE i.feedback_id=f.id) AS "imageAttachments",
         f.feedback_types AS "feedbackTypes",f.sentiment,f.urgency,f.comment_text AS "commentText",
@@ -4751,6 +4954,7 @@ router.get("/feedback", async (req: AuthRequest, res, next) => {
        LIMIT 1000`,
       values,
     );
+     await prepareFeedbackPreviewMetadata(result.rows);
     const quarterly = await pool.query(
       `WITH base AS (
         SELECT f.*,COALESCE(NULLIF(TRIM(s.name),''),NULLIF(TRIM(f.style_name_freetext),''),'Unassigned style') AS style_name
@@ -4801,6 +5005,40 @@ router.get("/feedback", async (req: AuthRequest, res, next) => {
         responseCount: Number(row.responseCount ?? 0),
       })),
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get("/feedback/images/:id/preview", async (req, res, next) => {
+  try {
+    const imageId = Number(req.params.id);
+    if (!Number.isInteger(imageId) || imageId < 1) {
+      res.status(404).json({ error: "Preview not found" });
+      return;
+    }
+    const image = await pool.query<{ objectPath: string; originalName: string }>(
+      `SELECT preview_object_path AS "objectPath",original_name AS "originalName"
+         FROM ${schema}.style_feedback_images
+        WHERE id=$1 AND feedback_id IS NOT NULL
+          AND preview_status='ready' AND preview_object_path IS NOT NULL`,
+      [imageId],
+    );
+    const row = image.rows[0];
+    if (!row) {
+      res.status(404).json({ error: "Preview not found" });
+      return;
+    }
+    const object = await fetch(await signedStorageUrl(row.objectPath, "GET", 300), { signal: AbortSignal.timeout(30_000) });
+    if (!object.ok || !object.body) {
+      res.status(404).json({ error: "Preview not found" });
+      return;
+    }
+    const safeStem = row.originalName.replace(/\.[^.]+$/, "").replace(/["\\\r\n]/g, "_") || "feedback-image";
+    res.setHeader("Content-Type", "image/jpeg");
+    res.setHeader("Content-Disposition", `inline; filename="${safeStem}-preview.jpg"`);
+    res.setHeader("Cache-Control", "private, max-age=86400");
+    Readable.fromWeb(object.body as ReadableStream<Uint8Array>).pipe(res);
   } catch (error) {
     next(error);
   }

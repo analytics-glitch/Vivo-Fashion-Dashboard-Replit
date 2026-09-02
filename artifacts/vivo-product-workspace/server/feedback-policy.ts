@@ -8,6 +8,8 @@ export const FEEDBACK_CUSTOMER_SEARCH_MIN_LENGTH = 2;
 export const FEEDBACK_CUSTOMER_SEARCH_LIMIT = 8;
 export const FEEDBACK_CUSTOMER_SEARCH_RATE_WINDOW_MS = 10 * 60 * 1000;
 export const FEEDBACK_CUSTOMER_SEARCH_RATE_LIMIT = 30;
+export const FEEDBACK_PREVIEW_STATUSES = ["pending", "generating", "ready", "failed"] as const;
+export type FeedbackPreviewStatus = (typeof FEEDBACK_PREVIEW_STATUSES)[number];
 
 const FEEDBACK_IMAGE_TYPES = {
   "image/jpeg": ["jpg", "jpeg"],
@@ -17,6 +19,16 @@ const FEEDBACK_IMAGE_TYPES = {
 } as const;
 
 export type FeedbackImageContentType = keyof typeof FEEDBACK_IMAGE_TYPES;
+
+export function feedbackImagePreviewUrl(imageId: unknown, contentType: unknown, status: unknown) {
+  const id = Number(imageId);
+  const normalizedType = String(contentType ?? "").trim().toLowerCase();
+  return Number.isInteger(id) && id > 0 &&
+    (normalizedType === "image/heic" || normalizedType === "image/heif") &&
+    status === "ready"
+    ? `/api/workspace/feedback/images/${id}/preview`
+    : null;
+}
 
 export function feedbackImageExtension(name: unknown) {
   const value = String(name ?? "").trim().toLowerCase();

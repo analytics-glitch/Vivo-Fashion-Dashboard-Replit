@@ -6,6 +6,7 @@ import {
   FEEDBACK_CUSTOMER_SEARCH_MIN_LENGTH,
   FEEDBACK_QUARTER_START_SQL,
   detectFeedbackImageContentType,
+  feedbackImagePreviewUrl,
   feedbackCustomerOrigin,
   feedbackImageTokens,
   normalizeFeedbackCustomerId,
@@ -39,6 +40,13 @@ test("feedback image signatures and association tokens reject mismatches", () =>
   assert.deepEqual(feedbackImageTokens([token]), { tokens: [token], valid: true });
   assert.equal(feedbackImageTokens([token, token]).valid, false);
   assert.equal(feedbackImageTokens(["not-a-token"]).valid, false);
+});
+
+test("HEIC preview metadata is only exposed after a cached preview is ready", () => {
+  assert.equal(feedbackImagePreviewUrl(42, "image/heic", "ready"), "/api/workspace/feedback/images/42/preview");
+  assert.equal(feedbackImagePreviewUrl(42, "image/heif", "pending"), null);
+  assert.equal(feedbackImagePreviewUrl(42, "image/jpeg", "ready"), null);
+  assert.equal(feedbackImagePreviewUrl("not-an-id", "image/heic", "ready"), null);
 });
 
 test("customer feedback metadata is normalized without exposing broader CRM fields", () => {
