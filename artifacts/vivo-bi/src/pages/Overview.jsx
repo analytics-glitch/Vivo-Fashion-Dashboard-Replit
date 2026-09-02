@@ -1392,7 +1392,7 @@ const Overview = () => {
 
       {!kpisLoading && !error && kpis && (
         <>
-          <div className="grid grid-cols-2 xl:grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 xl:grid-cols-5 gap-3">
             <KPICard testId="kpi-total-sales" accent label="Total Sales" value={kfmt(kpis.total_sales)} valueFull={fmtKESLong(kpis.total_sales)} icon={CurrencyCircleDollar}
               formula="How much money came in this period (before subtracting returns)."
               delta={delta("total_sales")} deltaLabel={compareLbl} deltaMuted={deltaMuted} deltaMutedNote={deltaMutedNote} prevValue={prev("total_sales", kfmt)} showDelta={compareMode !== "none"}
@@ -1407,6 +1407,17 @@ const Overview = () => {
               delta={delta("total_orders")} deltaLabel={compareLbl} deltaMuted={deltaMuted} deltaMutedNote={deltaMutedNote} prevValue={prev("total_orders", fmtNum)} showDelta={compareMode !== "none"}
               action={{ label: "Order-level export", to: "/exports" }}
               prefetch={pf("/exports")} />
+            <KPICard testId="kpi-purchase-frequency" label="Purchase Frequency"
+              value={kpis.purchase_frequency == null ? "\u2014" : Number(kpis.purchase_frequency).toFixed(2)}
+              valueFull={kpis.purchase_frequency == null ? "\u2014" : `${Number(kpis.purchase_frequency).toFixed(2)} orders per customer`}
+              sub="Eligible orders ÷ identified customers"
+              icon={UsersThree}
+              formula="Average distinct orders per identified customer in the selected period. Walk-in, unidentified, placeholder and brand pseudo-account transactions are excluded. Uses the same customer universe and filters as Customers → Avg Orders / Customer."
+              delta={delta("purchase_frequency")} deltaLabel={compareLbl} deltaMuted={deltaMuted} deltaMutedNote={deltaMutedNote}
+              prevValue={prev("purchase_frequency", (v) => Number(v).toFixed(2))}
+              showDelta={compareMode !== "none"}
+              action={{ label: "Customer detail", to: "/customers" }}
+              prefetch={pf("/customers")} />
             <KPICard testId="kpi-units" label="Total Units Sold" value={fmtNum(kpis.total_units)} valueFull={fmtNum(kpis.total_units)} icon={Package}
               formula="How many individual Vivo merchandise items left the shelves (excludes Accessories, Sale, Other & Third-Party Brands — canonical definition C)."
               delta={delta("total_units")} deltaLabel={compareLbl} deltaMuted={deltaMuted} deltaMutedNote={deltaMutedNote} prevValue={prev("total_units", fmtNum)} showDelta={compareMode !== "none"}

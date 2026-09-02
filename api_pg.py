@@ -6652,6 +6652,7 @@ def get_kpis(
 
     def _build():
         where = build_filters(date_from, date_to, country, channel)
+        identified_scope = _identified_customer_scope_sql("s")
         rows = run_query("""
         SELECT
             ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric ELSE 0 END) - SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.discounts_kes::numeric ELSE 0 END) - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END), 0) AS total_sales,
@@ -6669,6 +6670,13 @@ def get_kpis(
             -- units and made the per-country Σ drift from this headline by the
             -- return volume (recon "country units sum eq kpis" failure).
             SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) AS total_units,
+             COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') AND """ + identified_scope + """ THEN s.order_id END) AS purchase_frequency_orders,
+             COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') AND """ + identified_scope + """ THEN s.customer_id END) AS purchase_frequency_customers,
+             ROUND(
+                 COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') AND """ + identified_scope + """ THEN s.order_id END)::numeric
+                 / NULLIF(COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') AND """ + identified_scope + """ THEN s.customer_id END), 0),
+                 2
+             ) AS purchase_frequency,
             ROUND((SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN (s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric) ELSE 0 END) - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END)) / NULLIF(COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END), 0), 0) AS avg_basket_size,
             ROUND((SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN (s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric) ELSE 0 END) - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END)) / NULLIF(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END), 0), 0) AS avg_selling_price,
             ROUND(SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END)
@@ -7587,6 +7595,21 @@ _WALKIN_PSEUDO_COND = (
     " OR COALESCE(email,'') ~* '" + _PSEUDO_EMAIL_REGEX + "')"
 )
 
+def _identified_customer_scope_sql(alias: str = "s") -> str:
+    """SQL predicate for the Customers identified-customer universe.
+
+    Keep this shared by customer-level aggregates and Overview's
+    purchase-frequency numerator/denominator so filters and identity rules
+    cannot drift between surfaces.
+    """
+    return (
+        alias + ".customer_id IS NOT NULL"
+        " AND " + alias + ".customer_id NOT IN ('None','null','')"
+        " AND LOWER(COALESCE(" + alias + ".customer_type,''))"
+        " IN ('new','returning','registered')"
+        " AND " + _not_walkin_pseudo_sql(alias)
+    )
+
 def _not_walkin_pseudo_sql(alias: str = "s") -> str:
     """SQL fragment excluding walk-in / placeholder / brand pseudo-accounts
     (name matches _WALKIN_NAME_REGEX) from a customer-level surface. The SAME
@@ -7680,9 +7703,7 @@ def get_customers(
             FROM all_sales s
             WHERE s.sale_date BETWEEN '""" + date_from + """' AND '""" + date_to + """'
             AND s.sale_kind IN ('sale','order')
-            AND s.customer_id IS NOT NULL
-            AND s.customer_id NOT IN ('None','null','')
-            AND s.customer_id NOT IN (SELECT customer_id FROM excluded)
+            AND """ + _identified_customer_scope_sql("s") + """
             AND """ + BASE_FILTERS + " " + country_filter + " " + channel_filter + """
             GROUP BY s.customer_id
         ),
@@ -7724,8 +7745,7 @@ def get_customers(
             LEFT JOIN first_purchase fp ON fp.customer_id = s.customer_id
             WHERE s.sale_date BETWEEN '""" + date_from + """' AND '""" + date_to + """'
             AND s.sale_kind = 'order'
-            AND LOWER(s.customer_type) IN ('new','returning','registered')
-            AND s.customer_id NOT IN (SELECT customer_id FROM excluded)
+            AND """ + _identified_customer_scope_sql("s") + """
             AND """ + BASE_FILTERS + " " + country_filter + " " + channel_filter + """
         ),
         first_time_reg AS (
@@ -9007,11 +9027,10 @@ def get_customer_frequency(
     country:   str = Query(default=None),
     channel:   str = Query(default=None),
 ):
-    # customer_type filter aligns this endpoint's identified universe with
-    # /api/customers (which gates on 'new'/'returning'/'registered'), so the
-    # frequency-bucket customer counts reconcile with the headline total_customers.
+    # Shared identified-customer scope keeps this distribution aligned with
+    # /api/customers and the Overview purchase-frequency KPI.
     where = build_filters(date_from, date_to, country, channel,
-        extra="s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL AND s.customer_id NOT IN ('None','null','') AND LOWER(s.customer_type) IN ('new','returning','registered') AND " + _not_walkin_pseudo_sql())
+        extra="s.sale_kind IN ('sale','order') AND " + _identified_customer_scope_sql("s"))
     return run_query("""
         WITH order_counts AS (
             SELECT customer_id, COUNT(DISTINCT order_id) AS order_count
