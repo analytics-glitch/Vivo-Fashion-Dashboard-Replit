@@ -59,3 +59,6 @@ e2e/.test-session-token
 
 # Agent prompt uploads are session artifacts, not application assets.
 /attached_assets/Pasted-Replit-Agent-Prompt-VFG-Retail-Dashboard-Customer-Recen_*.txt
+
+# Local customer identity exports contain PII and must never be committed.
+/identity_map_export.csv
