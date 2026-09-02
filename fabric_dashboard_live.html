@@ -1541,6 +1541,16 @@ table.data td.cell-exp,table.data td.cell-exp *{max-width:none !important;white-
        <tbody id="sub-lib-body"><tr><td colspan="15" class="loading">Loading…</td></tr></tbody>
       </table>
      </div>
+     <div id="sub-lib-pagination" class="no-print" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:12px 16px 16px;">
+      <span id="sub-lib-range" class="muted">Loading saved costings…</span>
+      <div style="display:flex;align-items:center;gap:8px;">
+       <button class="btn" id="sub-lib-prev" type="button">Previous</button>
+       <label class="muted" for="sub-lib-page">Page</label>
+       <select id="sub-lib-page" aria-label="Costing library page"></select>
+       <span id="sub-lib-pages" class="muted"></span>
+       <button class="btn" id="sub-lib-next" type="button">Next</button>
+      </div>
+     </div>
     </div>
    </section>
 
@@ -9207,7 +9217,8 @@ const SUBLIM_MACHINE_RATE={
 // The actual rate (metres ÷ machine time) appears as a variance readout only.
 const SUBLIM_STD_THROUGHPUT=60;
 let subPickedFabric=null, subSearchRows=[], subLibRows=[], subCalc=null, subSelectedId=null,
-  subCanEdit=false, subEditingId=null;
+  subCanEdit=false, subEditingId=null, subLibPage=1, subLibPageSize=25,
+  subLibTotal=0, subLibTotalPages=1;
 let subPsTimer, subBound=false;
 const subFmt=(n,d)=>(n==null||!isFinite(n))?'—':Number(n).toLocaleString(undefined,{minimumFractionDigits:d==null?2:d,maximumFractionDigits:d==null?2:d});
 function subNum(id){const v=parseFloat(document.getElementById(id).value);return isFinite(v)?v:0;}
@@ -9445,24 +9456,52 @@ async function saveSublimation(){
       :'Saved new costing #'+saved.id+'.';
     msg.style.color='#166534';msg.textContent=editingId?'Updated saved costing ✓':'Saved to library ✓';
     setTimeout(()=>{if(msg.textContent.includes('saved costing')||msg.textContent==='Saved to library ✓')msg.textContent='';},4000);
-    loadSublimationLibrary();
+    loadSublimationLibrary(editingId?subLibPage:1);
   }catch(e){msg.style.color='#991b1b';msg.textContent=e.message==='auth'?'Your session has expired — sign in again.':('Could not save: '+e.message);}
   finally{btn.disabled=false;if(subEditingId===editingId)btn.textContent=old;}
 }
-async function loadSublimationLibrary(){
+async function loadSublimationLibrary(page=subLibPage){
+  const body=document.getElementById('sub-lib-body');
+  if(body)body.innerHTML='<tr><td colspan="15" class="loading">Loading…</td></tr>';
   try{
-    const d=await apiFetch('/api/fabric/sublimation/costings');
+    const d=await apiFetch('/api/fabric/sublimation/costings?page='+encodeURIComponent(page)+'&page_size='+subLibPageSize);
     subLibRows=d.items||[];
     subCanEdit=!!d.can_edit;
-    if(subSelectedId!=null&&!subLibRows.some(x=>String(x.id)===String(subSelectedId)))subSelectedId=null;
+    subLibPage=Number(d.page)||1;
+    subLibPageSize=Number(d.page_size)||25;
+    subLibTotal=Number(d.total)||0;
+    subLibTotalPages=Number(d.total_pages)||1;
+    if(subSelectedId!=null&&!subLibRows.some(x=>String(x.id)===String(subSelectedId))){
+      subSelectedId=null;
+      subCloseDetail();
+    }
     renderSubLibrary();
-  }catch(e){rowErr('sub-lib-body',15,e);}
+  }catch(e){
+    rowErr('sub-lib-body',15,e);
+    const range=document.getElementById('sub-lib-range');
+    if(range)range.textContent='Could not load saved costings.';
+    const prev=document.getElementById('sub-lib-prev'),next=document.getElementById('sub-lib-next');
+    if(prev)prev.disabled=true;
+    if(next)next.disabled=true;
+  }
 }
 function renderSubLibrary(){
   const body=document.getElementById('sub-lib-body');
   const selected=subLibRows.find(x=>String(x.id)===String(subSelectedId));
   const selNote=document.getElementById('sub-lib-selection');
   if(selNote)selNote.textContent=selected?('Selected costing #'+selected.id):'No costing selected';
+  const range=document.getElementById('sub-lib-range');
+  const first=subLibTotal?((subLibPage-1)*subLibPageSize+1):0;
+  const last=Math.min(subLibPage*subLibPageSize,subLibTotal);
+  if(range)range.textContent=subLibTotal?('Showing '+first+'–'+last+' of '+subLibTotal+' saved costings'):'0 saved costings';
+  const pageSelect=document.getElementById('sub-lib-page');
+  if(pageSelect)pageSelect.innerHTML=Array.from({length:subLibTotalPages},(_,i)=>`<option value="${i+1}" ${i+1===subLibPage?'selected':''}>${i+1}</option>`).join('');
+  const pages=document.getElementById('sub-lib-pages');
+  if(pages)pages.textContent='of '+subLibTotalPages;
+  const prev=document.getElementById('sub-lib-prev'),next=document.getElementById('sub-lib-next');
+  if(prev)prev.disabled=subLibPage<=1;
+  if(next)next.disabled=subLibPage>=subLibTotalPages;
+  if(pageSelect)pageSelect.disabled=subLibTotalPages<=1;
   if(!subLibRows.length){body.innerHTML='<tr><td colspan="15" class="muted" style="padding:1rem;">No saved costings yet — fill in the calculator and press "Save to library".</td></tr>';return;}
   body.innerHTML=subLibRows.map(r=>`<tr>
     <td class="no-print" style="text-align:center;"><input type="checkbox" aria-label="Select costing #${esc(r.id)}" data-subselect="${r.id}" ${String(r.id)===String(subSelectedId)?'checked':''}></td>
@@ -9624,7 +9663,7 @@ async function subDeleteRow(id){
     const r=await fetch('/api/fabric/sublimation/costings/'+encodeURIComponent(id),{method:'DELETE',credentials:'include',headers:vivoAuthHeaders()});
     if(!r.ok)throw new Error('http '+r.status);
     if(String(subSelectedId)===String(id)){subSelectedId=null;subCloseDetail();}
-    loadSublimationLibrary();
+    loadSublimationLibrary(subLibPage);
   }catch(e){alert('Could not delete.');}
 }
 function renderSubRatePanel(d){
@@ -9692,6 +9731,9 @@ async function loadSublimation(){
       else if(ed)subEditRow(ed.dataset.subedit);
       else if(d)subDeleteRow(d.dataset.subdel);
     });
+    document.getElementById('sub-lib-prev').addEventListener('click',()=>loadSublimationLibrary(subLibPage-1));
+    document.getElementById('sub-lib-next').addEventListener('click',()=>loadSublimationLibrary(subLibPage+1));
+    document.getElementById('sub-lib-page').addEventListener('change',e=>loadSublimationLibrary(Number(e.target.value)));
     const detailModal=document.getElementById('sub-detail-modal');
     if(detailModal)detailModal.addEventListener('click',e=>{if(e.target===detailModal)subCloseDetail();});
     document.addEventListener('keydown',e=>{if(e.key==='Escape')subCloseDetail();});

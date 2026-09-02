@@ -170,6 +170,56 @@ class SavedCostIntegrity(unittest.TestCase):
         self.assertEqual(ctx.exception.status_code, 400)
 
 
+class SavedCostLibraryPagination(unittest.TestCase):
+    """The full library remains reachable in stable newest-first pages."""
+
+    def _list(self, page=1, page_size=25, total=57):
+        calls = []
+
+        def fake_q(_conn, sql, params=()):
+            compact = " ".join(sql.split())
+            calls.append((compact, params))
+            if "COUNT(*)" in compact:
+                return [{"total": total}]
+            offset = params[1]
+            return [{"id": total - offset - i, "saved_at": "2026-08-01"}
+                    for i in range(min(params[0], max(0, total - offset)))]
+
+        request = SimpleNamespace(state=SimpleNamespace(user={}))
+        conn = mock.MagicMock()
+        conn.__enter__.return_value = conn
+        with mock.patch.object(fr, "_get_conn", return_value=conn), \
+             mock.patch.object(fr, "_ensure_sublimation_tables"), \
+             mock.patch.object(fr, "q", side_effect=fake_q), \
+             mock.patch.object(fr, "_sublim_enrich_row", side_effect=lambda r: r):
+            result = fr.sublimation_costings_list(
+                request, page=page, page_size=page_size)
+        return result, calls
+
+    def test_page_metadata_and_deterministic_order(self):
+        result, calls = self._list(page=2, page_size=25)
+        self.assertEqual(result["total"], 57)
+        self.assertEqual(result["page"], 2)
+        self.assertEqual(result["total_pages"], 3)
+        self.assertEqual([row["id"] for row in result["items"]],
+                         list(range(32, 7, -1)))
+        self.assertIn("ORDER BY saved_at DESC, id DESC", calls[1][0])
+        self.assertEqual(calls[1][1], (25, 25))
+
+    def test_requested_page_past_end_is_clamped(self):
+        result, calls = self._list(page=99, page_size=25)
+        self.assertEqual(result["page"], 3)
+        self.assertEqual([row["id"] for row in result["items"]],
+                         list(range(7, 0, -1)))
+        self.assertEqual(calls[1][1], (25, 50))
+
+    def test_older_product_is_retrievable_without_skips(self):
+        result, _ = self._list(page=3, page_size=20, total=41)
+        result["items"][0]["fabric_product_id"] = 120000058
+        self.assertEqual(result["items"][0]["id"], 1)
+        self.assertEqual(result["items"][0]["fabric_product_id"], 120000058)
+
+
 class SavedCostRevisionRules(unittest.TestCase):
     """Saved-library edits keep identity/original metadata and write revisions."""
 

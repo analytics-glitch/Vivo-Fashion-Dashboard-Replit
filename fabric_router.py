@@ -16972,18 +16972,32 @@ def sublimation_fabric_search(q_: str = Query(default="", alias="q"),
         """, params + exact_order_params + [limit])
 
 @fabric_router.get("/api/fabric/sublimation/costings")
-def sublimation_costings_list(request: Request):
+def sublimation_costings_list(
+        request: Request,
+        page: int = Query(default=1, ge=1),
+        page_size: int = Query(default=25, ge=1, le=100)):
     with _get_conn() as conn:
         _ensure_sublimation_tables(conn)
+        count_rows = q(conn, "SELECT COUNT(*) AS total FROM sublimation_costings")
+        total = int(count_rows[0]["total"]) if count_rows else 0
+        total_pages = max(1, (total + page_size - 1) // page_size)
+        current_page = min(page, total_pages)
+        offset = (current_page - 1) * page_size
         items = q(conn, """
-            SELECT * FROM sublimation_costings ORDER BY saved_at DESC, id DESC
-        """)
+            SELECT * FROM sublimation_costings
+            ORDER BY saved_at DESC, id DESC
+            LIMIT %s OFFSET %s
+        """, (page_size, offset))
     # Keep the saved totals/schema unchanged, but expose the same server-derived
     # BOM lines used by the calculator for detail/print views.  These are
     # deliberately response-only: nothing client-supplied is persisted.
     for row in items:
         _sublim_enrich_row(row)
     return {"items": items,
+            "total": total,
+            "page_size": page_size,
+            "page": current_page,
+            "total_pages": total_pages,
             "can_edit": _sublimation_can_edit(
                 getattr(request.state, "user", None))}
 
