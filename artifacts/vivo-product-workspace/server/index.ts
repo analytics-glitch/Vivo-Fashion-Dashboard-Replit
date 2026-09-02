@@ -136,15 +136,17 @@ const STYLE_DEVELOPMENT_TRACKER_SEEDS = [
   ["V0626077", "Vivo Drawstring Wide Pants in Crepe", "NEW", "Waiting For Fabric", "Bottoms", "Full Length Pants", "WK37", "EQ 1441"],
   ["S0526028", "Safari by Vivo Coat in Kitenge", "NEW", "Transfer To Cad", "Outerwear", "Jackets & Coats", "WK37", "ANNINGTEX Kitenge"],
   ["V0826056", "Vivo Gathered Neck Jacket (ETSY)", "NEW", "Sampling", "Outerwear", "Jackets & Coats", "WK37", "HUAMING 2018 Medium Polyester Satin"],
-  ["V0926001", "Vivo Round Neck Maxi Kaftan in Satin", "NEW", "Sampling", "Dresses", "Kaftan Dresses", "WK37", "Huaming 2018D"],
+  ["V0926001", "Vivo Round Neck Maxi Kaftan in Satin", "RR", "Sampling", "Dresses", "Kaftan Dresses", "WK37", "Huaming 2018D"],
   ["V0826010", "Vivo Back Pleat Coat Dress in Cotton Denim Twill", "NEW", "Approved For S/S", "Dresses", "Knee Length Dresses", "WK37", "SHUNYUAN H407 Medium Cotton Denim"],
   ["V0726034", "Vivo Wastani Shirred Sleeve Shirt Dress in Crepe", "NEW", "Sampling", "Dresses", "Knee Length Dresses", "WK37", "HUAYI B865 Medium Polyester Crepe"],
   ["S0626064", "Safari by Vivo Contrast Stitch Top in Linen Blend", "NEW", "Sample Review", "Tops", "Loose & Oversized Tops", "WK37", "Xuegui 2317"],
   ["S0626071", "Safari by Vivo Nimali Top in Kitenge", "RR", "Sample Review", "Tops", "Loose & Oversized Tops", "WK37", "ANNINGTEX Kitenge"],
   ["V0626079", "Safari by Vivo Panelled Oversized Short Sleeve Top in Linen", "NEW", "Cad Processing Ss", "Tops", "Loose & Oversized Tops", "WK37", "Linen"],
   ["V0626082", "Safari by Vivo Short Sleeved Top in Cotton", "NEW", "Transfer To Cad", "Tops", "Loose & Oversized Tops", "WK37", "YIYI N272"],
-  ["V0926002", "Vivo Essi Front Slit Maxi Top in Textured Satin", "NEW", "Sampling", "Tops", "Loose & Oversized Tops", "WK37", "Yiwan 8083"],
-  ["V0326041", "Vivo Dropped Waist Maxi Dress in Cotton", "NEW", "Sample Review", "Dresses", "Maxi Dresses", "WK37", "YIYI N272 Light Cotton Poplin"],
+  ["V0926002", "Vivo Essi Front Slit Maxi Top in Textured Satin", "RR", "Sampling", "Tops", "Loose & Oversized Tops", "WK37", "Yiwan 8083"],
+  ["V0326041", "Vivo Dropped Waist Maxi Dress in Cotton", "RR", "Sample Review", "Dresses", "Maxi Dresses", "WK37", "YIYI N272 Light Cotton Poplin"],
+  ["V0526001", "Vivo Short Sleeve Midi Dress in Cotton", "NEW", "Sample Review", "Dresses", "Midi & Capri Dresses", "WK 37", "YIYI Y933 Light Cotton Poplin"],
+  ["V0526056", "Vivo Drop Shouder Dress in Crepe (Etsy Sleeveless Wrap Dress)", "NEW", "Sample Review", "Dresses", "Midi & Capri Dresses", "WK 37", ""],
   ["V0526099", "Vivo Flounce Maxi Dress In Kitenge (R)", "NEW", "Cad Processing Ss", "Dresses", "Maxi Dresses", "WK37", "Kitenge"],
   ["S0526098", "Safari by Vivo Off Shoulder Tiered Maxi Dress in Cotton", "NEW", "Set Sampling", "Dresses", "Midi & Capri Dresses", "WK37", "YIYI N272"],
 ] as const;
@@ -155,8 +157,8 @@ const STYLE_DEVELOPMENT_TRACKER_BATCH_TWO_SEEDS = [
   ["V0826005", "Vivo Side Pleat Top in Jersey", "NEW", "Buying Requisition S/S", "Tops", "Fitted Tops", "WK 38", "REEYON LY470A Medium Rayon Jersey"],
   ["V0526026", "Vivo Extra Wide Leg Pants in Denim", "NEW", "Sample Review", "Bottoms", "Full Length Pants", "WK 38", "HONG YU F8953 Light Cotton Denim"],
   ["V0826055", "Vivo Straight Leg Pants in Stretch Rib", "NEW", "Pattern", "Bottoms", "Full Length Pants", "WK 38", "GAOHENG H1031"],
-  ["V0826006", "Vivo Wide Leg Pants in Crepe", "NEW", "Set Sampling", "Bottoms", "Full Length Pants", "WK 38", "Showme 18206"],
-  ["S0726044", "Safari by Vivo Oversized Jacket in Twill (Zoe Jacket ETSY)", "NEW", "Pattern", "Outerwear", "Jackets & Coats", "WK 38", "WAN HEXIN Kata Tiao Dark Green"],
+  ["V0826006", "Vivo Wide leg Pants in Crepe", "NEW", "Set Sampling", "Bottoms", "Full Length Pants", "WK 38", "Showme 18206"],
+  ["S0726044", "Safari by Vivo Oversized Jacket in Twill  (Zoe Jacket ETSY)", "NEW", "Pattern", "Outerwear", "Jackets & Coats", "WK 38", "WAN HEXIN Kata Tiao Dark Green"],
   ["V0526086", "Vivo Reversible Tulip Coat in Corduroy (NEW)", "NEW", "Sample Review", "Outerwear", "Jackets & Coats", "WK 38", "FANGQI Microfiber High Elastic Medium Rayon Jersey Rib"],
   ["V0626048", "Vivo Sleeveless Pleat Neck Jacket in Crepe", "NEW", "Approved For S/S", "Outerwear", "Jackets & Coats", "WK 38", "YIHAO 681112 Light Polyester Crepe"],
   ["V0626050", "Vivo Sleeveless Tent Jacket in Crepe", "NEW", "Sample Review", "Outerwear", "Jackets & Coats", "WK 38", "YAT TAJ HONG CA13550 Medium Polyester Crepe"],
@@ -169,7 +171,7 @@ const STYLE_DEVELOPMENT_TRACKER_BATCH_TWO_SEEDS = [
   ["V0626081", "Vivo Shirred Sleeve Top in Cotton", "NEW", "Approved For S/S", "Tops", "Relaxed Tops", "WK 38", "YIYI N273"],
   ["V0423018", "Vivo Wastani Shirred Sleeve Easy Fit Shirt", "RR", "Sample Review", "Tops", "Relaxed Tops", "WK 38", "HUAYI B865 Medium Polyester Crepe"],
   ["V0826007", "Vivo Sleeveless Waterfall in Crepe", "NEW", "Sample Review", "Outerwear", "Waterfalls & Kimonos", "WK 38", "Showme 18206"],
-  ["V0826028", "Vivo Wide Leg Pants in Ponte to match Etsy sweatshirt", "NEW", "Pattern", "Bottoms", "Full Length Pants", "WK 39", "BAO DELI"],
+  ["V0826028", "Vivo Wide Leg Pants in Ponte TO MATCH ETSY SWEATSHIRT", "NEW", "Pattern", "Bottoms", "Full Length Pants", "WK 39", "BAO DELI"],
   ["V0826038", "Vivo Pullover in Fleece (ETSY)", "NEW", "Pattern", "Outerwear", "Hoodies & Sweatshirts", "WK 39", "Maziwa Fleece"],
   ["V0726032", "Vivo Raglan Sleeve Sweatshirt in Ponte (ETSY)", "NEW", "Pattern", "Outerwear", "Hoodies & Sweatshirts", "WK 39", "GAO SHANG 6034 Medium Rayon Ponte"],
   ["V0626072", "Vivo Asymetrical Sleeveless Coat in Twill", "NEW", "Pattern", "Outerwear", "Jackets & Coats", "WK 39", "YIWAN 8075 Medium Polyester Twill"],
@@ -191,27 +193,27 @@ const STYLE_DEVELOPMENT_TRACKER_BATCH_THREE_SEEDS = [
   ["S0826034", "Safari by Vivo Midi Dress in Linen (ETSY)", "NEW", "Pattern", "Dresses", "Knee Length Dresses", "WK 40", "Sample in Tanzania Kitenge"],
   ["S0726002", "Safari by Vivo Front Pleat Loose Shirt in Linen Blend", "NEW", "Pattern", "Tops", "Loose & Oversized Tops", "WK 40", "XINHENGSHENG 1623 Light Cotton Twill"],
   ["V0626057", "Vivo Crossed Cuff Top in Cotton", "NEW", "Pattern", "Tops", "Loose & Oversized Tops", "WK 40", "YIYI N272"],
-  ["V0826042", "Vivo Oversized Shirt (ETSY)", "NEW", "Pattern", "Tops", "Loose & Oversized Tops", "WK 40", "Yihao 118-2077 Army Green"],
-  ["S0826036", "Safari by Vivo Boho Dress in Kitenge (ETSY)", "NEW", "Pattern", "Dresses", "Maxi Dresses", "WK 40", "Sample in Tanzania Kitenge"],
+  ["V0826042", "Vivo Oversized Shirt ETSY", "NEW", "Pattern", "Tops", "Loose & Oversized Tops", "WK 40", "Yihao 118-2077 Army Green"],
+  ["S0826036", "Safari by Vivo Boho Dress in Kitenge ( ETSY)", "NEW", "Pattern", "Dresses", "Maxi Dresses", "WK 40", "Sample in Tanzania Kitenge"],
   ["S0826015", "Safari by Vivo Sleeveless Panelled Dress in Cotton", "NEW", "Pattern", "Dresses", "Maxi Dresses", "WK 40", "YIYI N272"],
   ["V0526096", "Vivo Four Tiered Maxi Dress in Chiffon (R)", "NEW", "Pattern", "Dresses", "Maxi Dresses", "WK 40", "Chiffon"],
   ["V0526033", "Vivo Halter Neck Contrast Maxi Dress in Denim", "NEW", "Pattern", "Dresses", "Maxi Dresses", "WK 40", "Denim, to be confirmed"],
   ["V0726027", "Vivo Bias Skirt in Satin (Etsy)", "NEW", "Pattern", "Skirts", "Midi & Capri Skirts", "WK 40", "Not yet identified"],
   ["V0826046", "Vivo Batwing Blouse in Crepe (ETSY)", "NEW", "Pattern", "Tops", "Relaxed Tops", "WK 40", "Hong Yu F0321"],
-  ["V0826016", "Vivo Ruffle Tie Neck Top", "NEW", "Pattern", "Tops", "Relaxed Tops", "WK 40", ""],
-  ["V0826044", "Vivo Drop Shoulder T-Shirt in Jersey (ETSY)", "NEW", "Pattern", "Tops", "T-shirts & Tank Tops", "WK 40", "Shunwang 3019"],
+  ["V0826016", "Vivo Ruffle Tie Neck Top in", "NEW", "Pattern", "Tops", "Relaxed Tops", "WK 40", ""],
+  ["V0826044", "Vivo Drop Shoulder T-Shirt in Jersey  (ETSY)", "NEW", "Pattern", "Tops", "T-shirts & Tank Tops", "WK 40", "Shunwang 3019"],
   ["V0826047", "Vivo Sleeveless T-Shirt in Jersey (ETSY)", "NEW", "Pattern", "Tops", "T-shirts & Tank Tops", "WK 40", "Shunwang 3019"],
 ] as const;
 const STYLE_DEVELOPMENT_TRACKER_BATCH_FOUR_SEEDS = [
-  ["V0826041", "Vivo Halter Top in Satin (ETSY)", "NEW", "Pattern", "Tops", "Fitted Tops", "WK 41", "Eastleigh Medium Satin"],
+  ["V0826041", "Vivo Halter Top in Satin  (ETSY)", "NEW", "Pattern", "Tops", "Fitted Tops", "WK 41", "Eastleigh Medium Satin"],
   ["V0826043", "Vivo Sleeveless Top Pattern in Cotton (ETSY)", "NEW", "Pattern", "Tops", "Fitted Tops", "WK 41", "Sample in Tanzania Kitenge"],
-  ["V0426005", "Vivo Buttoned Jumpsuit in Linen", "NEW", "Pattern", "Bottoms", "Jumpsuits & Playsuits", "WK 41", "Linen"],
+  ["V0426005", "Vivo Buttoned Jumpsuit In Linen", "NEW", "Pattern", "Bottoms", "Jumpsuits & Playsuits", "WK 41", "Linen"],
   ["V0826035", "Vivo Maxi Kaftan in Crepe (ETSY)", "NEW", "Pattern", "Dresses", "Kaftan Dresses", "WK 41", "Showme 18208"],
   ["S0626053", "Safari By Vivo Ruffle Sleeve Top in Cotton", "NEW", "Pattern", "Tops", "Loose & Oversized Tops", "WK 41", "YIYI N272"],
-  ["S0826040", "Safari by Vivo Maxi Skirt in Linen (ETSY)", "NEW", "Pattern", "Skirts", "Maxi Skirts", "WK 41", "Sample in Tanzania Kitenge"],
+  ["S0826040", "Safari by Vvo Maxi Skirt in Linen (ETSY)", "NEW", "Pattern", "Skirts", "Maxi Skirts", "WK 41", "Sample in Tanzania Kitenge"],
   ["S0626074", "Safari By Vivo Cocoon Dress in Linen Blend", "NEW", "Pattern", "Dresses", "Midi & Capri Dresses", "WK 41", "XINHENGSHENG 1623 Light Cotton Twill"],
   ["V0626060", "Vivo Drop Shoulder Tie Neck Top in Chiffon", "NEW", "Pattern", "Tops", "Relaxed Tops", "WK 41", "Huaming Coarse Hemp"],
-  ["V0826045", "Vivo Relaxed Blouse in Crepe (ETSY)", "NEW", "Pattern", "Tops", "Relaxed Tops", "WK 41", "Showme 18206"],
+  ["V0826045", "Vivo Relaxed Blouse in Crepe  (ETSY)", "NEW", "Pattern", "Tops", "Relaxed Tops", "WK 41", "Showme 18206"],
   ["V0826048", "Vivo Kimono (ETSY)", "NEW", "Pattern", "Outerwear", "Waterfalls & Kimonos", "WK 41", ""],
   ["V0326010", "Vivo V-Neck Jumpsuit in Crepe", "NEW", "Pattern", "Bottoms", "Jumpsuits & Playsuits", "WK 42", "Dexin 100D Supersoft"],
   ["V0626063", "Vivo Extra Wide Pants in Crepe", "NEW", "Sample Review", "Bottoms", "Full Length Pants", null, "Yihao 68 992"],
@@ -7353,7 +7355,31 @@ router.get("/styles", async (req, res, next) => {
   try {
     if (String(req.query.source ?? "") === "pd") {
       const values: string[] = [];
-       const clauses = [allowedBrand("s"), `LOWER(s.status) = 'active'`];
+       const clauses = [
+         allowedBrand("s"),
+         `LOWER(s.status) = 'active'`,
+         `EXISTS (
+            SELECT 1
+            FROM ${schema}.style_development_tracker tracker
+            WHERE UPPER(TRIM(tracker.style_number)) = UPPER(TRIM(s.style_number))
+          )`,
+         `s.id = (
+            SELECT candidate.id
+            FROM public.pd_styles candidate
+            JOIN ${schema}.style_development_tracker tracker
+              ON UPPER(TRIM(tracker.style_number)) = UPPER(TRIM(candidate.style_number))
+            WHERE LOWER(candidate.status) = 'active'
+              AND UPPER(TRIM(candidate.style_number)) = UPPER(TRIM(s.style_number))
+            ORDER BY
+              (LOWER(TRIM(candidate.style_name)) = LOWER(TRIM(tracker.style_name))) DESC,
+              (
+                (SELECT COUNT(*) FROM public.pd_movements movement WHERE movement.style_id=candidate.id)
+                + (SELECT COUNT(*) FROM public.pd_stage_notes note WHERE note.style_id=candidate.id)
+              ) DESC,
+              candidate.id DESC
+            LIMIT 1
+          )`,
+       ];
       const brand = String(req.query.brand ?? "").trim();
       const status = String(req.query.status ?? "").trim();
       const search = String(req.query.search ?? "").trim();
@@ -7393,8 +7419,36 @@ router.get("/styles", async (req, res, next) => {
          NULLIF(TRIM(s.style_classification),'') AS "styleClassification",
          NULLIF(TRIM(s.range_tier),'') AS "rangeTier",
          s.status,
-         COALESCE(NULLIF(TRIM(p.stage_name),''),INITCAP(REPLACE(COALESCE(NULLIF(TRIM(s.current_stage),''),'concept'),'_',' ')),'Concept') AS stage,
-         COALESCE(NULLIF(TRIM(p.stage_name),''),INITCAP(REPLACE(COALESCE(NULLIF(TRIM(s.current_stage),''),'concept'),'_',' ')),'Concept') AS "currentStage",
+          CASE COALESCE(NULLIF(TRIM(s.current_stage),''),'adopted')
+            WHEN 'adopted' THEN 'Concept'
+            WHEN 'pattern' THEN 'Pattern'
+            WHEN 'sampling' THEN 'Initial Sample'
+            WHEN 'review' THEN 'Fit Session'
+            WHEN 'pattern_transfer' THEN 'Approved'
+            WHEN 'cad' THEN 'Grading'
+            WHEN 'set_sample' THEN 'Costing Sample'
+            WHEN 'final_review' THEN 'In Development'
+            WHEN 'buying' THEN 'Production'
+            WHEN 'launched' THEN 'Launched'
+            WHEN 'on_hold' THEN 'On Hold'
+            WHEN 'dropped' THEN 'Dropped'
+            ELSE 'Concept'
+          END AS stage,
+          CASE COALESCE(NULLIF(TRIM(s.current_stage),''),'adopted')
+            WHEN 'adopted' THEN 'Concept'
+            WHEN 'pattern' THEN 'Pattern'
+            WHEN 'sampling' THEN 'Initial Sample'
+            WHEN 'review' THEN 'Fit Session'
+            WHEN 'pattern_transfer' THEN 'Approved'
+            WHEN 'cad' THEN 'Grading'
+            WHEN 'set_sample' THEN 'Costing Sample'
+            WHEN 'final_review' THEN 'In Development'
+            WHEN 'buying' THEN 'Production'
+            WHEN 'launched' THEN 'Launched'
+            WHEN 'on_hold' THEN 'On Hold'
+            WHEN 'dropped' THEN 'Dropped'
+            ELSE 'Concept'
+          END AS "currentStage",
          COALESCE(NULLIF(TRIM(s.assignee_name),''),NULLIF(TRIM(ws.owner),''),'Unassigned') AS owner,
           COALESCE(NULLIF(TRIM(s.design_owner),''),NULLIF(TRIM(s.assignee_name),''),NULLIF(TRIM(ws.designer),''),NULLIF(TRIM(ws.owner),''),'Unassigned') AS designer,
          COALESCE(NULLIF(TRIM(ws.pattern_maker),''),'') AS "patternMaker",

@@ -55,7 +55,7 @@ const MAX_ROWS = 600;
 
 const FX = {
   stock:    "Sellable SOH = stock available to sell now in Vivo, Zoya, Safari and Oasis retail stores, Online - Shop Zetu, plus Warehouse Finished Goods. Finished Goods Production, WIP, receiving, transit, raw materials, samples, QC/defects, holding/retired and unknown locations are excluded.",
-  pipeline: "Pipeline = committed units on open Odoo Buying Orders that have not yet become sellable finished goods. Broken down by Draft, BOM Pending, Ready, Partially Planned and Fully Planned. Pipeline is never added to SOH, WOC or SOR.",
+  wip:      "WIP = remaining units in pre-warehouse production stages for open Odoo Buying Orders raised in the last 60 days. Units already at Warehouse and older unresolved orders are excluded and reported separately. WIP is never added to SOH, WOC or SOR.",
   stores:   "Retail-store SOH in the shared sellable allowlist: Vivo, Zoya, Safari and The Oasis Mall. Online and warehouse are shown separately.",
   online:   "Online SOH at Online - Shop Zetu.",
   warehouse:"Warehouse SOH at Warehouse Finished Goods only.",
@@ -70,7 +70,7 @@ const FX = {
   lastOrd:  "Last Ordered = date of the most recent production/buying order for this style (style rows) or this exact colourway (colour rows). Dash = no order on record; category rows don't aggregate order dates.",
   skus:     "SKUs (stock / sold) = distinct SKUs (sizes) of this colour with stock on hand / sold in the period.",
   fullPrice:"% Full Price = achieved VAT-inclusive selling value ÷ the full retail value of units sold. Aggregates are weighted by units sold; dash means nothing sold or no valid full retail price.",
-  lastSale: "Days Since Last Sale = calendar days since the most recent recorded sale for sellable stock. A style or colourway with zero sellable SOH and open WIP is shown as Awaiting delivery instead, with buying-order age where available.",
+  lastSale: "Days Since Last Sale = calendar days since the most recent recorded sale across all history. A dash means no sale on record. A style or colourway with zero sellable SOH and open WIP is shown as Awaiting delivery instead.",
   fabricBarcode: "Exact Odoo fabric-product barcode recorded against this colourway. N/A means the historical colourway has no exact fabric mapping.",
   fabricSoh: "Exact colour: current available metres for the referenced fabric product in RMAT/Stock. Open the value to inspect that barcode in Fabric BI. Colourway only; never rolled up.",
   fabricOtherSoh: "Other colours: total current RMAT/Stock metres across the other Odoo colour products sharing this supplier fabric quality. It excludes the exact colour and is never rolled up.",
@@ -84,17 +84,20 @@ const PIPELINE_STATES = [
   ["fully_planned", "Fully Planned"],
 ];
 
-const PipelineCell = ({ node, className = "" }) => {
+const WipCell = ({ node, className = "" }) => {
   const states = node?.pipeline_by_state || {};
   const nonZero = PIPELINE_STATES.filter(([key]) => Number(states[key]) !== 0);
+  const wip = node?.wip_units ?? node?.pipeline_units;
+  const breakdown = nonZero
+    .map(([key, label]) => `${label} ${fmtNum(states[key])}`)
+    .join(" · ");
   return (
-    <td className={`text-right px-2 py-1.5 tabular-nums ${className}`} title={FX.pipeline}>
-      <div className="font-medium text-slate-700">{fmtNum(node?.pipeline_units)}</div>
-      {nonZero.length > 0 ? (
-        <div className="mt-0.5 whitespace-nowrap text-[8.5px] font-normal leading-tight text-slate-400">
-          {nonZero.map(([key, label]) => `${label} ${fmtNum(states[key])}`).join(" · ")}
-        </div>
-      ) : null}
+    <td
+      className={`text-right px-2 py-1.5 tabular-nums ${className}`}
+      title={breakdown ? `${FX.wip} Breakdown: ${breakdown}` : FX.wip}
+      aria-label={breakdown ? `${fmtNum(wip)} WIP. ${breakdown}` : `${fmtNum(wip)} WIP`}
+    >
+      <div className="font-medium text-slate-700">{fmtNum(wip)}</div>
     </td>
   );
 };
@@ -136,7 +139,17 @@ const RecencyCell = ({ node, level, className = "" }) => {
         >
           Awaiting delivery{node?.order_age_days == null ? "" : ` · ${fmtNum(node.order_age_days)}d`}
         </span>
-      ) : days == null ? <span className="text-slate-300">—</span> : (
+      ) : days == null ? (
+        stock > 0 ? (
+          <span
+            className="inline-flex min-w-6 justify-center rounded-full bg-rose-100 px-1.5 py-0.5 font-bold text-rose-700"
+            title="No sale in the selected period despite sellable stock."
+            aria-label="No sale in selected period"
+          >
+            —
+          </span>
+        ) : <span className="text-slate-300">—</span>
+      ) : (
         <span className={`inline-flex rounded-full px-1.5 py-0.5 font-semibold ${
           veryStale ? "bg-rose-100 text-rose-700"
             : stale ? "bg-amber-100 text-amber-800"
@@ -216,10 +229,11 @@ const GapPill = ({ v }) => {
 };
 
 const lifecycleStatus = (value) => {
-  const normalized = String(value || "Active").trim().toLowerCase();
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "active") return "Active";
   if (normalized === "retired") return "Retired";
   if (normalized === "archived") return "Archived";
-  return "Active";
+  return "Needs review";
 };
 
 const LifecycleBadge = ({ status, inconsistent = false }) => {
@@ -228,20 +242,40 @@ const LifecycleBadge = ({ status, inconsistent = false }) => {
     Active: "bg-emerald-50 text-emerald-700 ring-emerald-600/15",
     Retired: "bg-amber-50 text-amber-700 ring-amber-600/20",
     Archived: "bg-slate-100 text-slate-500 ring-slate-500/20",
+    "Needs review": "bg-amber-50 text-amber-800 ring-amber-600/20",
   };
   const title = inconsistent
     ? "Style is retired but this colourway shows as active — check Odoo"
-    : `${label} lifecycle status`;
+    : label === "Needs review"
+      ? "Blank or unrecognised lifecycle status — included in sellable stock and needs data review"
+      : `${label} lifecycle status`;
   return (
     <span
       className={`inline-flex h-5 items-center gap-1 rounded-full px-1.5 text-[9px] font-semibold leading-none ring-1 ring-inset ${classes[label]}`}
       title={title}
       aria-label={title}
-      data-testid={`lifecycle-badge-${label.toLowerCase()}`}
+      data-testid={`lifecycle-badge-${label.toLowerCase().replaceAll(" ", "-")}`}
     >
       {label}
       {inconsistent ? <AlertTriangle className="h-3 w-3 text-amber-600" aria-hidden="true" /> : null}
     </span>
+  );
+};
+
+const RevenueCell = ({ value, className = "" }) => {
+  const amount = Number(value) || 0;
+  const negative = amount < 0;
+  return (
+    <td
+      className={`text-right px-2 tabular-nums ${className} ${
+        negative ? "font-semibold text-rose-700 bg-rose-50/70" : ""
+      }`}
+      title={negative
+        ? "Negative net revenue: returns exceeded sales in the selected period."
+        : FX.revenue}
+    >
+      {negative ? `−${fmtKESM(Math.abs(amount))}` : fmtKESM(amount)}
+    </td>
   );
 };
 
@@ -255,9 +289,9 @@ const LEVEL_ROW_CLS = [
 const CSV_HEADERS = [
   "Level", "Category", "Sub Category", "Style", "Style Number", "Colour",
   "Tier", "Fabric Barcode", "Exact Colour Fabric Metres", "Other Colour Fabric Metres",
-  "Stores SOH", "Online SOH", "Warehouse SOH", "Sellable SOH Units",
-  "WIP Units", "Pipeline Draft", "Pipeline BOM Pending",
-  "Pipeline Ready", "Pipeline Partially Planned", "Pipeline Fully Planned",
+  "Stores", "Online", "W/H", "WIP",
+  "WIP Draft", "WIP BOM Pending",
+  "WIP Ready", "WIP Partially Planned", "WIP Fully Planned",
   "Stock Value KES", "Units Sold", "Revenue KES", "% Full Price",
   "% of SOH", "% of Units Sold", "SOR", "Gap pp", "WOC",
   "Days Since Last Sale", "Recency Status", "Last Sale Date", "Last Ordered", "Buying Order Age Days",
@@ -298,8 +332,6 @@ export default function MerchStockMix({
   data,
   loading,
   error,
-  showRetired = false,
-  onShowRetiredChange,
   rangeDays = 90,
   onRangeDaysChange,
 }) {
@@ -431,7 +463,7 @@ export default function MerchStockMix({
   // Colour-only column stays hidden until colour rows are actually on screen
   // (a style drilled open, or a search surfacing colours) — fabric behaviour.
   const showSkus = shown.some((r) => r.level === 3);
-  const nCols = 21 + (showSkus ? 1 : 0);
+  const nCols = 20 + (showSkus ? 1 : 0);
 
   const toggle = (path) => setOpen((o) => ({ ...o, [path]: !o[path] }));
 
@@ -512,15 +544,14 @@ export default function MerchStockMix({
         level === 2 ? node.style_number || "" : level > 2 ? ctx.styleNumber : "",
         level === 3 ? node.name : "",
         level >= 2 ? node.tier || "" : "",
-        level === 3 ? node.fabric_barcode || "N/A" : "",
-        level === 3 && node.fabric_stock_metres != null ? node.fabric_stock_metres : "",
-        level === 3 && node.fabric_other_colour_stock_metres != null
-          ? node.fabric_other_colour_stock_metres : "",
+         level === 3 ? node.fabric_barcode || "N/A" : "—",
+         level === 3 && node.fabric_stock_metres != null ? node.fabric_stock_metres : "—",
+         level === 3 && node.fabric_other_colour_stock_metres != null
+           ? node.fabric_other_colour_stock_metres : "—",
         Math.round(Number(node.soh_stores) || 0),
         Math.round(Number(node.soh_online) || 0),
         Math.round(Number(node.soh_warehouse) || 0),
-        Math.round(Number(node.stock_units) || 0),
-        Math.round(Number(node.pipeline_units) || 0),
+        Math.round(Number(node.wip_units ?? node.pipeline_units) || 0),
         ...PIPELINE_STATES.map(([key]) =>
           Math.round(Number(node.pipeline_by_state?.[key]) || 0)
         ),
@@ -534,7 +565,17 @@ export default function MerchStockMix({
         (pctS - pctU).toFixed(1),
         node.woc == null ? "" : node.woc,
         level >= 2 && !node.awaiting_delivery && node.last_sale_days != null ? node.last_sale_days : "",
-        level >= 2 && node.awaiting_delivery ? "Awaiting delivery" : "",
+        level >= 2
+          ? node.awaiting_delivery
+            ? "Awaiting delivery"
+            : node.last_sale_days == null && Number(node.stock_units) > 0
+              ? "No sale in selected period"
+              : Number(node.last_sale_days) >= 180
+                ? "Very stale"
+                : Number(node.last_sale_days) >= 90
+                  ? "Stale"
+                  : "Sold in selected period"
+          : "",
         level >= 2 ? node.last_sale_date || "" : "",
         level >= 2 ? node.last_order_date || "" : "",
         level >= 2 && node.order_age_days != null ? node.order_age_days : "",
@@ -608,7 +649,7 @@ export default function MerchStockMix({
             Stock Mix — where stock sits vs where sales happen
           </div>
           <div className="text-[10px] text-slate-400 mt-0.5">
-            Active styles and colourways only by default · sellable stock excludes WIP · click to drill
+            Explicit Retired/Archived rows excluded; blank statuses stay visible for review · SOH is Stores + Online + W/H and excludes WIP · click to drill
             Category → Sub Category → Style → Colour · right-click a colour (or tap its photo) for the product card
             {data?.period ? ` · units sold ${data.period.from} → ${data.period.to}` : ""}
           </div>
@@ -659,21 +700,59 @@ export default function MerchStockMix({
               </button>
             )}
           </div>
-          <label
-            className="inline-flex items-center gap-1.5 text-[11px] text-slate-500 whitespace-nowrap cursor-pointer select-none"
-            title="Include colourways whose product-master lifecycle status is Retired or Archived."
-          >
-            <input
-              type="checkbox"
-              checked={showRetired}
-              onChange={(e) => onShowRetiredChange?.(e.target.checked)}
-              data-testid="mix-show-retired-colourways"
-              className="h-3.5 w-3.5 rounded border-slate-300 text-[#1a5c38] focus:ring-[#1a5c38]/30"
-            />
-            Show retired styles & colourways
-          </label>
         </div>
       </div>
+
+      {!loading && !error && Number(data?.data_quality?.unknown_status_product_rows) > 0 ? (
+        <div
+          className="mb-3 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-900"
+          data-testid="mix-lifecycle-data-quality"
+        >
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-700" aria-hidden="true" />
+          <span>
+            Lifecycle data needs review:{" "}
+            <strong>{fmtNum(data.data_quality.unknown_status_product_rows)}</strong> product rows across{" "}
+            <strong>{fmtNum(data.data_quality.unknown_status_styles)}</strong> styles and{" "}
+            <strong>{fmtNum(data.data_quality.unknown_status_colourways)}</strong> colourways have a blank or
+            unrecognised lifecycle status. They remain included unless explicitly Retired or Archived and currently
+            contribute <strong>{fmtNum(data.data_quality.needs_review_stock_units)}</strong> SOH units.
+          </span>
+        </div>
+      ) : null}
+
+      {!loading && !error && Number(data?.wip_audit?.open_orders) > 0 ? (
+        <div
+          className="mb-3 flex items-start gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-[11px] text-blue-950"
+          data-testid="mix-wip-audit"
+        >
+          <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-blue-700" aria-hidden="true" />
+          <span>
+            WIP audit: <strong>{fmtNum(data.wip_audit.attributed_wip_units)}</strong> matched remaining units from{" "}
+            <strong>{fmtNum(data.wip_audit.included_orders)}</strong> buying orders aged 0–{fmtNum(data.wip_audit.cutoff_days)} days
+            are shown in the table. <strong>{fmtNum(data.wip_audit.unattributed_recent_wip_units)}</strong> recent remaining units
+            could not be matched to a visible product-master style. <strong>{fmtNum(data.wip_audit.stale_orders)}</strong> older open orders with{" "}
+            <strong>{fmtNum(data.wip_audit.stale_remaining_units)}</strong> remaining units are excluded for review;{" "}
+            <strong>{fmtNum(data.wip_audit.warehouse_units_excluded)}</strong> units already at Warehouse are also excluded.
+            Oldest open order: <strong>{fmtNum(data.wip_audit.oldest_open_order_days)} days</strong>.
+          </span>
+        </div>
+      ) : null}
+
+      {!loading && !error && Number(data?.data_quality?.uncategorised_stock_units) > 0 ? (
+        <div
+          className="mb-3 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-900"
+          data-testid="mix-category-data-quality"
+        >
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-700" aria-hidden="true" />
+          <span>
+            Category data needs review: <strong>{fmtNum(data.data_quality.uncategorised_stock_units)}</strong> SOH units across{" "}
+            <strong>{fmtNum(data.data_quality.uncategorised_style_count)}</strong> styles have no recognised category.
+            {data.data_quality.uncategorised_styles?.length
+              ? ` Affected styles: ${data.data_quality.uncategorised_styles.join(", ")}.`
+              : ""}
+          </span>
+        </div>
+      ) : null}
 
       {loading ? (
         <div className="animate-pulse space-y-2 py-2">
@@ -695,9 +774,8 @@ export default function MerchStockMix({
                 <SortHead sortKey="fabric_other_colour_stock_metres" title={FX.fabricOtherSoh}>Other Colours (m)</SortHead>
                 <SortHead sortKey="soh_stores" title={FX.stores}>Stores</SortHead>
                 <SortHead sortKey="soh_online" title={FX.online}>Online</SortHead>
-                <SortHead sortKey="soh_warehouse" title={FX.warehouse}>Warehouse</SortHead>
-                <SortHead sortKey="stock_units" title={FX.stock}>Sellable Total</SortHead>
-                <SortHead sortKey="pipeline_units" title={FX.pipeline}>WIP</SortHead>
+                <SortHead sortKey="soh_warehouse" title={FX.warehouse}>W/H</SortHead>
+                <SortHead sortKey="pipeline_units" title={FX.wip}>WIP</SortHead>
                 <SortHead sortKey="stock_value" title={FX.value}>Stock Value</SortHead>
                 <SortHead sortKey="units_period" title={FX.sold}>Units Sold</SortHead>
                 <SortHead sortKey="revenue_period" title={FX.revenue}>Total Revenue</SortHead>
@@ -735,13 +813,10 @@ export default function MerchStockMix({
                   <td className="text-right px-2 py-2 tabular-nums">{fmtNum(totals.soh_stores)}</td>
                   <td className="text-right px-2 py-2 tabular-nums">{fmtNum(totals.soh_online)}</td>
                   <td className="text-right px-2 py-2 tabular-nums">{fmtNum(totals.soh_warehouse)}</td>
-                  <td className="text-right px-2 py-2 tabular-nums" data-testid="mix-total-stock">
-                    {fmtNum(totals.stock_units)}
-                  </td>
-                  <PipelineCell node={totals} className="py-2" />
+                   <WipCell node={totals} className="py-2" />
                   <td className="text-right px-2 py-2 tabular-nums">{fmtKESM(totals.stock_value)}</td>
                   <td className="text-right px-2 py-2 tabular-nums">{fmtNum(totals.units_period)}</td>
-                  <td className="text-right px-2 py-2 tabular-nums">{fmtKESM(totals.revenue_period)}</td>
+                   <RevenueCell value={totals.revenue_period} className="py-2" />
                   <FullPriceCell node={totals} className="py-2" />
                   <td className="text-right px-2 py-2 tabular-nums">100.0%</td>
                   <td className="text-right px-2 py-2 tabular-nums">100.0%</td>
@@ -888,11 +963,16 @@ export default function MerchStockMix({
                           : FX.fabricSoh
                       }
                     >
-                      {r.level === 3 && n.fabric_barcode && n.fabric_stock_metres != null
+                      {r.level === 3 && n.fabric_stock_metres != null
                         ? <a
-                            href={fabricHref(n.fabric_barcode)}
-                            onClick={(e) => e.stopPropagation()}
-                            className="underline decoration-current/25 underline-offset-2"
+                             href={n.fabric_barcode ? fabricHref(n.fabric_barcode) : undefined}
+                             onClick={(e) => {
+                               if (n.fabric_barcode) e.stopPropagation();
+                               else e.preventDefault();
+                             }}
+                             className={n.fabric_barcode
+                               ? "underline decoration-current/25 underline-offset-2"
+                               : "text-slate-600"}
                           >
                             {`${Number(n.fabric_stock_metres).toLocaleString("en-US", {
                               minimumFractionDigits: 1,
@@ -919,11 +999,10 @@ export default function MerchStockMix({
                     <td className="text-right px-2 py-1.5 tabular-nums">{fmtNum(n.soh_stores)}</td>
                     <td className="text-right px-2 py-1.5 tabular-nums">{fmtNum(n.soh_online)}</td>
                     <td className="text-right px-2 py-1.5 tabular-nums">{fmtNum(n.soh_warehouse)}</td>
-                    <td className="text-right px-2 py-1.5 tabular-nums">{fmtNum(n.stock_units)}</td>
-                    <PipelineCell node={n} />
+                    <WipCell node={n} />
                     <td className="text-right px-2 py-1.5 tabular-nums">{fmtKESM(n.stock_value)}</td>
                     <td className="text-right px-2 py-1.5 tabular-nums">{fmtNum(n.units_period)}</td>
-                    <td className="text-right px-2 py-1.5 tabular-nums">{fmtKESM(n.revenue_period)}</td>
+                    <RevenueCell value={n.revenue_period} className="py-1.5" />
                     <FullPriceCell node={n} />
                     <td className="text-right px-2 py-1.5 tabular-nums">{pctS.toFixed(1)}%</td>
                     <td className="text-right px-2 py-1.5 tabular-nums">

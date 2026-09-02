@@ -114,7 +114,7 @@ class FullPriceSellThroughTests(unittest.TestCase):
                 to_date="2026-08-18",
             )
         self.assertEqual(result["full_price_units_period"], 10)
-        sql = db.call_args.args[0]
+        sql = db.call_args_list[0].args[0]
         self.assertIn("s.sale_kind IN ('sale','order')", sql)
         self.assertIn("COALESCE(s.discounts_kes, 0)::numeric = 0", sql)
 
@@ -198,7 +198,11 @@ class TestMerchRouterSchemaSmoke(unittest.TestCase):
         with _patch_db([]) as db:
             result = merch_router._fetch_stock_mix()
         self.assertEqual(result["categories"], [])
-        sql = db.call_args.args[0]
+        sql = next(
+            call.args[0]
+            for call in db.call_args_list
+            if "colour_lifecycle AS" in call.args[0]
+        )
         self.assertIn("colour_lifecycle AS", sql)
         self.assertIn("LEFT JOIN colour_lifecycle cl", sql)
         self.assertIn("cl.colour_status", sql)

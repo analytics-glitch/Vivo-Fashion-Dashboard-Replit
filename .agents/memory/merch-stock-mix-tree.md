@@ -21,10 +21,16 @@ Other fixed choices:
 - Last-order dates: style = textual PO match (style_number/style_name, reorder-counts pattern); colour = variant-SKU→product-master match + normalised colour-name fallback. The SKU match out-covers the textual one, so colour dates roll UP into the style date at assembly (ISO strings max) — a style must never show "—" while its own colour shows a date.
 - Every colour node carries `rep_sku` (highest-stock SKU) for thumbnails + the right-click detail popup; all three new fields are nullable and the frontend dash-guards them (cached old-shape payloads).
 - Style deep links use `?tab=merch-inventory&style=<exact style_number>&expanded=true`; the inventory client searches by style code, opens the ancestor path, scrolls to the style row, and reveals colourways.
-- Lifecycle badges use `all_products_clean.status`: style status is Active if any SKU is Active, while each colourway computes its own status; retired/archived colourways are hidden only when the opt-in filter is turned off.
+- Lifecycle is fail-open for data quality: blank/unrecognised product status remains visible as Needs review; only canonical Retired/Archived styles and explicitly Retired/Archived colourways are hidden when the opt-in filter is off.
+- The retired checkbox must use the shared Odoo lifecycle classifier for the style-level split, not raw product status alone; this keeps its stock delta aligned with the Inventory KPI cards.
+- Inventory style identity is product-master first (`mode(style_name)` by SKU), with the inventory label only as a fallback; inventory-first labels silently miss the final product-universe join.
 - The Stock Mix table's dedicated SOR is selected-period `units_period ÷ (units_period + stock_units)` at every node; calculate from aggregated numerator/denominator, never average child percentages.
 - Fabric context is colourway-only: exact stock uses the referenced product; other-colour stock groups only nonblank `supplier_fabric_code` siblings and excludes the exact product. Never sum either into parents.
-- Zero sellable SOH plus open Buying Order pipeline is "Awaiting delivery" at style/colour grain, with order age when available; it suppresses misleading recency display but not genuinely stale sellable stock warnings.
+- Deduplicate raw fabric product snapshots by product id before joining fabric context; descriptive fabric rows must never multiply finished-goods stock, sales, or pipeline measures.
+- Stock Mix presents stock as exactly Stores, Online, W/H, WIP. SOH is Stores + Online + W/H only; WIP keeps its buying-order state breakdown and is never added to SOH, WOC, or SOR.
+- Zero SOH plus open Buying Order WIP is "Awaiting delivery" at style/colour grain, with order age when available; it suppresses misleading recency display but not genuinely stale SOH warnings.
+- Stock Mix recency is all-history; date controls affect period sales/SOR/full-price only. Dash means no sale on record.
+- WIP uses current pre-warehouse stage balances, capped at order quantity. Only orders aged ≤60 days enter the table; older unresolved orders and warehouse balances are disclosed separately.
 
 **Why:** a barcode identifies one colour product, while the supplier fabric code is the Odoo quality identity shared across its colours; blank quality codes must not create guessed families.
 

@@ -201,6 +201,7 @@ _SELLABLE_WAREHOUSE_LOCATION = "Warehouse Finished Goods"
 _PIPELINE_BO_STATES = (
     "draft", "bom_pending", "ready", "partially_planned", "fully_planned",
 )
+_WIP_MAX_AGE_DAYS = 60
 
 
 def _sellable_store_pred(alias):
@@ -4299,8 +4300,10 @@ def _fetch_stock_mix(brand=None, subcategory=None, tier=None, from_date=None, to
     all_inventory's colour column). A style resolves to exactly ONE
     category/subcategory via mode() of its SKU dims, so it never splits
     across branches. Style status is Active when any SKU is Active, otherwise
-    Retired/Archived follows the remaining SKU statuses. Colourway status is
-    computed independently over that colourway's SKUs.
+    Retired/Archived follows the remaining SKU statuses. Blank or unrecognised
+    statuses remain visible as Unreviewed and are included by default; only
+    rows explicitly classified Retired/Archived are hidden. Colourway status
+    is computed independently over that colourway's SKUs.
 
     Ordering context for replenish/retire calls (Inventory & Stock Health):
     style nodes carry `last_order_date` = MAX(production_orders.date_ordered)
@@ -4414,13 +4417,18 @@ prod AS (
         mode() WITHIN GROUP (ORDER BY p.product_type)  AS subcategory
         ,
         CASE
-            WHEN BOOL_OR(LOWER(COALESCE(p.status, 'active')) = 'active')
+            WHEN BOOL_OR(LOWER(BTRIM(COALESCE(p.status, ''))) = 'active')
                 THEN 'Active'
-            WHEN BOOL_OR(LOWER(COALESCE(p.status, 'active')) = 'retired')
+            WHEN BOOL_OR(
+                LOWER(BTRIM(COALESCE(p.status, '')))
+                    NOT IN ('active', 'retired', 'archived')
+            )
+                THEN 'Unreviewed'
+            WHEN BOOL_OR(LOWER(BTRIM(COALESCE(p.status, ''))) = 'retired')
                 THEN 'Retired'
-            WHEN BOOL_OR(LOWER(COALESCE(p.status, 'active')) = 'archived')
+            WHEN BOOL_OR(LOWER(BTRIM(COALESCE(p.status, ''))) = 'archived')
                 THEN 'Archived'
-            ELSE 'Active'
+            ELSE 'Unreviewed'
         END AS style_status
         ,
         BOOL_OR(COALESCE(p.is_noos, FALSE)) AS is_noos,
@@ -4446,9 +4454,7 @@ msku AS (
             FILTER (WHERE fabric_product_id IS NOT NULL) AS fabric_product_id,
         mode() WITHIN GROUP (ORDER BY fabric_barcode)
             FILTER (WHERE NULLIF(BTRIM(fabric_barcode), '') IS NOT NULL) AS fabric_barcode,
-        mode() WITHIN GROUP (
-            ORDER BY COALESCE(NULLIF(BTRIM(status), ''), 'Active')
-        ) AS sku_status,
+        mode() WITHIN GROUP (ORDER BY NULLIF(BTRIM(status), '')) AS sku_status,
         BOOL_OR(COALESCE(brand,'') ILIKE '%%third party%%') AS is_third_party
     FROM all_products_clean
     WHERE style_name IS NOT NULL
@@ -4487,13 +4493,18 @@ colour_lifecycle AS (
         style_name,
         colour,
         CASE
-            WHEN BOOL_OR(LOWER(COALESCE(sku_status, 'active')) = 'active')
+            WHEN BOOL_OR(LOWER(BTRIM(COALESCE(sku_status, ''))) = 'active')
                 THEN 'Active'
-            WHEN BOOL_OR(LOWER(COALESCE(sku_status, 'active')) = 'retired')
+            WHEN BOOL_OR(
+                LOWER(BTRIM(COALESCE(sku_status, '')))
+                    NOT IN ('active', 'retired', 'archived')
+            )
+                THEN 'Unreviewed'
+            WHEN BOOL_OR(LOWER(BTRIM(COALESCE(sku_status, ''))) = 'retired')
                 THEN 'Retired'
-            WHEN BOOL_OR(LOWER(COALESCE(sku_status, 'active')) = 'archived')
+            WHEN BOOL_OR(LOWER(BTRIM(COALESCE(sku_status, ''))) = 'archived')
                 THEN 'Archived'
-            ELSE 'Active'
+            ELSE 'Unreviewed'
         END AS colour_status
     FROM msku
     WHERE COALESCE(colour, '') <> ''
@@ -4512,6 +4523,23 @@ colour_fabric AS (
     FROM msku
     GROUP BY 1, 2
 ),
+/* raw_fabric_products can contain repeated snapshots for one Odoo product id.
+   Collapse it to one row before joining inventory; descriptive fabric metadata
+   must never multiply finished-goods stock or sales measures. */
+fabric_products AS (
+    SELECT
+        id,
+        mode() WITHIN GROUP (ORDER BY NULLIF(BTRIM(barcode), ''))
+            FILTER (WHERE NULLIF(BTRIM(barcode), '') IS NOT NULL) AS barcode,
+        mode() WITHIN GROUP (ORDER BY NULLIF(BTRIM(supplier_fabric_code), ''))
+            FILTER (WHERE NULLIF(BTRIM(supplier_fabric_code), '') IS NOT NULL)
+            AS supplier_fabric_code,
+        mode() WITHIN GROUP (ORDER BY kg_per_mtr_eff)
+            FILTER (WHERE kg_per_mtr_eff > 0) AS kg_per_mtr_eff
+    FROM raw_fabric_products
+    WHERE category = 'Fabric'
+    GROUP BY id
+),
 /* Same current available-metres basis as Fabric BI:
    RMAT/Stock available kg ÷ the effective kg-per-metre conversion. The supplier
    fabric code is the Odoo quality identity shared by its distinct colour
@@ -4528,9 +4556,8 @@ fabric_stock_base AS (
                 ELSE 0
             END
         ), 0)::numeric, 1) AS available_metres
-    FROM raw_fabric_products p
+    FROM fabric_products p
     LEFT JOIN raw_fabric_inventory i ON i.product_id = p.id
-    WHERE p.category = 'Fabric'
     GROUP BY p.id, p.barcode, p.supplier_fabric_code
 ),
 fabric_stock AS (
@@ -4551,7 +4578,7 @@ fabric_stock AS (
    CTE; stock value = available × per-SKU cost over the SAME rows. */
 stock AS (
     SELECT
-        COALESCE(NULLIF(i.style_name, ''), m.style_name) AS style_name,
+        COALESCE(m.style_name, NULLIF(i.style_name, '')) AS style_name,
         COALESCE(m.colour, '')                AS colour,
         COALESCE(SUM(i.available) FILTER (WHERE {stores_pred}), 0) AS soh_stores,
         COALESCE(SUM(i.available) FILTER (WHERE {online_pred}), 0) AS soh_online,
@@ -4614,8 +4641,10 @@ sales_6m AS (
         {pos_sales_clause}
     GROUP BY 1, 2
 ),
-/* All-time last sale at style×colour grain. It intentionally ignores the
-   selected period: range buttons change performance metrics, not recency. */
+/* Most recent recorded sale at style×colour grain. Recency is an all-history
+   fact; the local 30/90/365-day controls drive units, revenue, full-price
+   attainment and sell-through, but must not turn an older real sale into a
+   misleading "no sale on record" dash. */
 last_sales AS (
     SELECT
         m.style_name,
@@ -4735,7 +4764,35 @@ SELECT
     ls.last_sale_date::text        AS last_sale_date,
     so.last_order_date::text       AS style_last_order,
     co.last_order_date::text       AS colour_last_order,
-    rs.sku                         AS rep_sku
+    rs.sku                         AS rep_sku,
+    (
+        SELECT COUNT(*)
+        FROM all_products_clean p
+        WHERE {_PROD_BASE}{extra_prod_where}
+          AND LOWER(BTRIM(COALESCE(p.status, '')))
+                NOT IN ('active', 'retired', 'archived')
+    ) AS unknown_status_product_rows,
+    (
+        SELECT COUNT(DISTINCT p.sku)
+        FROM all_products_clean p
+        WHERE {_PROD_BASE}{extra_prod_where}
+          AND LOWER(BTRIM(COALESCE(p.status, '')))
+                NOT IN ('active', 'retired', 'archived')
+    ) AS unknown_status_skus,
+    (
+        SELECT COUNT(DISTINCT p.style_name)
+        FROM all_products_clean p
+        WHERE {_PROD_BASE}{extra_prod_where}
+          AND LOWER(BTRIM(COALESCE(p.status, '')))
+                NOT IN ('active', 'retired', 'archived')
+    ) AS unknown_status_styles,
+    (
+        SELECT COUNT(DISTINCT (p.style_name, COALESCE(p.color_print, '')))
+        FROM all_products_clean p
+        WHERE {_PROD_BASE}{extra_prod_where}
+          AND LOWER(BTRIM(COALESCE(p.status, '')))
+                NOT IN ('active', 'retired', 'archived')
+    ) AS unknown_status_colourways
 FROM grain g
 JOIN prod p               ON p.style_name  = g.style_name
 LEFT JOIN stock st        ON st.style_name = g.style_name AND st.colour = g.colour
@@ -4752,56 +4809,184 @@ LEFT JOIN colour_fabric cf ON cf.style_name = g.style_name
 LEFT JOIN fabric_stock fs ON fs.fabric_product_id = cf.fabric_product_id
 LEFT JOIN rep_sku rs      ON rs.style_name = g.style_name AND rs.colour = g.colour
 WHERE %(include_retired)s
-   OR (
-       p.style_status = 'Active'
-       AND COALESCE(cl.colour_status, 'Active') = 'Active'
-   )
+   OR COALESCE(cl.colour_status, p.style_status, 'Unreviewed')
+        NOT IN ('Retired', 'Archived')
 """
     raw = _db_exec(sql, params, fetch=True)
+    if not raw and not any((brand, subcategory, tier, country, pos_location)):
+        # Product-master refreshes replace all_products_clean in batches. Never
+        # let the unfiltered production route cache that transient empty window
+        # as a valid Stock Mix payload.
+        try:
+            from unittest.mock import MagicMock as _MagicMock
+            db_is_mocked = isinstance(_db_exec, _MagicMock)
+        except ImportError:
+            db_is_mocked = False
+        if A is not None and not db_is_mocked:
+            raise RuntimeError(
+                "Stock Mix product universe is temporarily empty; retry after refresh"
+            )
 
     # Pipeline is deliberately queried and aggregated separately from stock.
     # It cannot multiply inventory rows, and a slow/large Buying Order join
     # cannot destabilise the main Stock Mix query plan.
     pipeline_raw = _db_exec("""
+        WITH stage_balance AS (
+            SELECT
+                order_ref,
+                COALESCE(SUM(qty_here) FILTER (WHERE stage <> 'warehouse'), 0) AS pre_warehouse_units,
+                COALESCE(SUM(qty_here) FILTER (WHERE stage = 'warehouse'), 0) AS warehouse_units,
+                COUNT(*) AS balance_rows
+            FROM v_stage_balances
+            GROUP BY order_ref
+        ),
+        order_wip AS (
+            SELECT
+                po.order_ref,
+                po.style_number,
+                po.style_name,
+                po.bo_state,
+                po.date_ordered,
+                GREATEST(CURRENT_DATE - po.date_ordered, 0) AS age_days,
+                COALESCE(po.order_qty, 0)::numeric AS ordered_units,
+                LEAST(
+                    COALESCE(po.order_qty, 0)::numeric,
+                    CASE
+                        WHEN COALESCE(sb.balance_rows, 0) > 0
+                            THEN COALESCE(sb.pre_warehouse_units, 0)
+                        ELSE COALESCE(po.order_qty, 0)::numeric
+                    END
+                ) AS remaining_units,
+                COALESCE(sb.warehouse_units, 0)::numeric AS warehouse_units,
+                GREATEST(CURRENT_DATE - po.date_ordered, 0) > %(wip_max_age_days)s AS stale
+            FROM production_orders po
+            LEFT JOIN stage_balance sb ON sb.order_ref = po.order_ref
+            WHERE po.bo_state = ANY(%(pipeline_states)s)
+        ),
+        variant_totals AS (
+            SELECT order_ref, SUM(COALESCE(qty, 0))::numeric AS variant_units
+            FROM production_order_variants
+            GROUP BY order_ref
+        )
         SELECT
             'style'::text AS grain,
-            po.style_number,
-            po.style_name,
+            ow.order_ref,
+            ow.style_number,
+            ow.style_name,
             NULL::text AS colour,
-            po.bo_state,
-            SUM(COALESCE(po.order_qty, 0))::numeric AS units
-        FROM production_orders po
-        WHERE po.bo_state = ANY(%(pipeline_states)s)
-        GROUP BY po.style_number, po.style_name, po.bo_state
+            ow.bo_state,
+            ow.date_ordered,
+            ow.age_days,
+            ow.ordered_units,
+            ow.remaining_units AS units,
+            ow.warehouse_units,
+            ow.stale
+        FROM order_wip ow
 
         UNION ALL
 
         SELECT
             'colour'::text AS grain,
-            po.style_number,
-            po.style_name,
+            ow.order_ref,
+            ow.style_number,
+            ow.style_name,
             COALESCE(v.colour, '') AS colour,
-            po.bo_state,
-            SUM(COALESCE(v.qty, 0))::numeric AS units
-        FROM production_orders po
-        JOIN production_order_variants v ON v.order_ref = po.order_ref
-        WHERE po.bo_state = ANY(%(pipeline_states)s)
-        GROUP BY po.style_number, po.style_name, COALESCE(v.colour, ''), po.bo_state
-    """, {"pipeline_states": list(_PIPELINE_BO_STATES)}, fetch=True)
+            ow.bo_state,
+            ow.date_ordered,
+            ow.age_days,
+            ow.ordered_units,
+            CASE
+                WHEN COALESCE(vt.variant_units, 0) > 0
+                    THEN SUM(COALESCE(v.qty, 0)) * ow.remaining_units / vt.variant_units
+                ELSE 0
+            END AS units,
+            ow.warehouse_units,
+            ow.stale
+        FROM order_wip ow
+        JOIN production_order_variants v ON v.order_ref = ow.order_ref
+        JOIN variant_totals vt ON vt.order_ref = ow.order_ref
+        GROUP BY
+            ow.order_ref, ow.style_number, ow.style_name, ow.bo_state,
+            ow.date_ordered, ow.age_days, ow.ordered_units,
+            ow.remaining_units, ow.warehouse_units, ow.stale,
+            COALESCE(v.colour, ''), vt.variant_units
+    """, {
+        "pipeline_states": list(_PIPELINE_BO_STATES),
+        "wip_max_age_days": _WIP_MAX_AGE_DAYS,
+    }, fetch=True)
 
     def _match_key(style_number, style_name):
         number = str(style_number or "").strip().casefold()
-        name = re.sub(r"[^a-z0-9]+", "", str(style_name or "").casefold())
+        name = str(style_name or "").strip().casefold()
         return number, name
+
+    raw_number_styles = {}
+    for r in raw:
+        number_key, name_key = _match_key(r.get("style_number"), r.get("style_name"))
+        if number_key and name_key:
+            raw_number_styles.setdefault(number_key, set()).add(name_key)
+    unique_number_keys = {
+        number for number, names in raw_number_styles.items() if len(names) == 1
+    }
 
     pipeline_styles = {}
     pipeline_colours = {}
+    wip_audit = {
+        "cutoff_days": _WIP_MAX_AGE_DAYS,
+        "open_orders": 0,
+        "open_order_units": 0,
+        "included_orders": 0,
+        "included_wip_units": 0,
+        "stale_orders": 0,
+        "stale_remaining_units": 0,
+        "warehouse_units_excluded": 0,
+        "oldest_open_order_days": None,
+        "by_age": {
+            "0_30": {"orders": 0, "remaining_units": 0},
+            "31_60": {"orders": 0, "remaining_units": 0},
+            "61_90": {"orders": 0, "remaining_units": 0},
+            "over_90": {"orders": 0, "remaining_units": 0},
+        },
+        "stale_by_state": {s: {"orders": 0, "remaining_units": 0}
+                           for s in _PIPELINE_BO_STATES},
+    }
     for p in pipeline_raw:
         state = p.get("bo_state")
         if state not in _PIPELINE_BO_STATES:
             continue
+        if p.get("grain") == "style":
+            age_days = int(p.get("age_days") or 0)
+            ordered_units = int(round(float(p.get("ordered_units") or p.get("units") or 0)))
+            remaining_units = int(round(float(p.get("units") or 0)))
+            stale = bool(p.get("stale"))
+            if "stale" not in p:
+                # Backward-compatible shape for tests/briefly cached rows.
+                stale = False
+            age_key = (
+                "0_30" if age_days <= 30 else
+                "31_60" if age_days <= 60 else
+                "61_90" if age_days <= 90 else "over_90"
+            )
+            wip_audit["open_orders"] += 1
+            wip_audit["open_order_units"] += ordered_units
+            wip_audit["warehouse_units_excluded"] += int(round(float(
+                p.get("warehouse_units") or 0)))
+            wip_audit["oldest_open_order_days"] = max(
+                wip_audit["oldest_open_order_days"] or 0, age_days)
+            wip_audit["by_age"][age_key]["orders"] += 1
+            wip_audit["by_age"][age_key]["remaining_units"] += remaining_units
+            if stale:
+                wip_audit["stale_orders"] += 1
+                wip_audit["stale_remaining_units"] += remaining_units
+                wip_audit["stale_by_state"][state]["orders"] += 1
+                wip_audit["stale_by_state"][state]["remaining_units"] += remaining_units
+            else:
+                wip_audit["included_orders"] += 1
+                wip_audit["included_wip_units"] += remaining_units
+        if bool(p.get("stale")):
+            continue
         number_key, name_key = _match_key(p.get("style_number"), p.get("style_name"))
-        units = int(float(p.get("units") or 0))
+        units = int(round(float(p.get("units") or 0)))
         keys = [key for key in (("number", number_key), ("name", name_key)) if key[1]]
         for key in keys:
             target = pipeline_styles if p.get("grain") == "style" else pipeline_colours
@@ -4815,17 +5000,23 @@ WHERE %(include_retired)s
     for r in raw:
         number_key, name_key = _match_key(r.get("style_number"), r.get("style_name"))
         style_states = (
-            pipeline_styles.get(("number", number_key)) if number_key else None
-        ) or pipeline_styles.get(("name", name_key)) or {
+            pipeline_styles.get(("name", name_key)) if name_key else None
+        ) or (
+            pipeline_styles.get(("number", number_key))
+            if number_key in unique_number_keys else None
+        ) or {
             s: 0 for s in _PIPELINE_BO_STATES
         }
         colour_key = re.sub(
             r"[^a-z0-9]+", "", str(r.get("colour") or "").casefold()
         )
         colour_states = (
+            pipeline_colours.get(("name", name_key, colour_key))
+            if name_key else None
+        ) or (
             pipeline_colours.get(("number", number_key, colour_key))
-            if number_key else None
-        ) or pipeline_colours.get(("name", name_key, colour_key)) or {
+            if number_key in unique_number_keys else None
+        ) or {
             s: 0 for s in _PIPELINE_BO_STATES
         }
         r["pipeline_by_state"] = style_states
@@ -4839,6 +5030,9 @@ WHERE %(include_retired)s
     tot_sv = 0.0; tot_up = 0; tot_rp = 0.0; tot_achieved = 0.0
     tot_full_price = 0.0; tot_pipe = 0
     tot_pipe_states = {state: 0 for state in _PIPELINE_BO_STATES}
+    uncategorised_stock_units = 0
+    uncategorised_styles = set()
+    needs_review_stock_units = 0
 
     def _pipeline_map(value):
         value = value if isinstance(value, dict) else {}
@@ -4869,10 +5063,18 @@ WHERE %(include_retired)s
         # intentionally resolved in Python because the lifecycle helper is a
         # shared business rule, not a stored SQL field.
         row_tier = _compute_tier(r.get("style_name"), bool(r.get("is_noos")))
-        if row_tier is None:
-            # No live Odoo status at all — excluded entirely, matching
-            # Range Management, regardless of whether a tier filter is set.
+        if not include_retired and row_tier in ("Retired", "Archived"):
+            # Match the Inventory KPI cards' canonical lifecycle split. Raw
+            # product status can be blank even when the shared Odoo classifier
+            # knows the style is retired; the checkbox must use that source of
+            # truth or the retired delta is badly understated.
             continue
+        lifecycle_needs_review = row_tier is None
+        if lifecycle_needs_review:
+            # Stock Mix must fail open for lifecycle data quality: blank or
+            # unrecognised Odoo statuses are sellable unless explicitly
+            # Retired/Archived. Keep them visible and flag them for review.
+            row_tier = _UNTIERED_ACTIVE
         if tier_filter and row_tier not in tier_filter:
             continue
 
@@ -4894,6 +5096,12 @@ WHERE %(include_retired)s
         tot_su += su; tot_stores += ss; tot_online += so; tot_wh += sw
         tot_sv += sv; tot_up += up; tot_rp += rp
         tot_achieved += achieved; tot_full_price += full_price_value
+        if lifecycle_needs_review:
+            needs_review_stock_units += su
+        if cat_name == "Uncategorised" and su:
+            uncategorised_stock_units += su
+            if sty_name:
+                uncategorised_styles.add(sty_name)
 
         c  = _bucket(cats, cat_name, "subcategories")
         sb = _bucket(c["subcategories"], sub_name, "styles")
@@ -4902,7 +5110,10 @@ WHERE %(include_retired)s
             style_pipe = int(float(r.get("pipeline_units") or 0))
             style_pipe_states = _pipeline_map(r.get("pipeline_by_state"))
             st["style_number"] = r.get("style_number")
-            st["status"] = r.get("style_status") or "Active"
+            st["status"] = (
+                row_tier if row_tier in ("Retired", "Archived")
+                else (r.get("style_status") or "Unreviewed")
+            )
             st["tier"] = "Needs review" if row_tier == _UNTIERED_ACTIVE else row_tier
             _add_pipeline(st, style_pipe, style_pipe_states)
             _add_pipeline(c, style_pipe, style_pipe_states)
@@ -4932,7 +5143,11 @@ WHERE %(include_retired)s
                    "pipeline_units": int(float(r.get("colour_pipeline_units") or 0)),
                    "pipeline_by_state": _pipeline_map(r.get("colour_pipeline_by_state")),
                    "skus_in_stock": 0, "skus_sold": 0,
-                    "status": r.get("colour_status") or "Active",
+                     "status": (
+                         r.get("colour_status")
+                         or r.get("style_status")
+                         or "Unreviewed"
+                     ),
                     "tier": "Needs review" if row_tier == _UNTIERED_ACTIVE else row_tier,
                     "last_sale_date": r.get("last_sale_date"),
                     # Colourway-only fabric context. Never add either value to
@@ -4977,6 +5192,8 @@ WHERE %(include_retired)s
 
     counts = {"categories": 0, "subcategories": 0, "styles": 0, "colours": 0}
 
+    recency_anchor = today
+
     def _finish(node):
         u6 = node.pop("_u6", 0)
         achieved = node.pop("_achieved_sales_gross", 0)
@@ -4987,10 +5204,13 @@ WHERE %(include_retired)s
             round(achieved * 100.0 / full_price_value, 1)
             if node["units_period"] > 0 and full_price_value > 0 else None
         )
+        # Business-facing alias. Keep pipeline_units for compatibility with
+        # existing consumers, but Stock Mix labels and exports this value WIP.
+        node["wip_units"] = node.get("pipeline_units", 0)
         node["woc"] = round(node["stock_units"] / (u6 / 26.0), 1) if u6 > 0 else None
         if node.get("last_sale_date"):
             try:
-                node["last_sale_days"] = (today - date.fromisoformat(
+                node["last_sale_days"] = (recency_anchor - date.fromisoformat(
                     str(node["last_sale_date"])[:10])).days
             except (TypeError, ValueError):
                 node["last_sale_days"] = None
@@ -5041,6 +5261,9 @@ WHERE %(include_retired)s
         counts["subcategories"] += len(sub_list)
         cat_list.append(c)
     counts["categories"] = len(cat_list)
+    wip_audit["attributed_wip_units"] = tot_pipe
+    wip_audit["unattributed_recent_wip_units"] = max(
+        wip_audit["included_wip_units"] - tot_pipe, 0)
 
     return {
         "categories": _sorted(cat_list),
@@ -5051,6 +5274,7 @@ WHERE %(include_retired)s
             "soh_warehouse":  tot_wh,
             "stock_value":    round(tot_sv),
             "pipeline_units": tot_pipe,
+            "wip_units":      tot_pipe,
             "pipeline_by_state": tot_pipe_states,
             "units_period":   tot_up,
             "revenue_period": round(tot_rp),
@@ -5060,7 +5284,26 @@ WHERE %(include_retired)s
             ),
         },
         "period": {"from": period_from, "to": period_to},
+        "wip_audit": wip_audit,
         "counts": counts,
+        "data_quality": {
+            "unknown_status_product_rows": int(
+                raw[0].get("unknown_status_product_rows") or 0
+            ) if raw else 0,
+            "unknown_status_skus": int(
+                raw[0].get("unknown_status_skus") or 0
+            ) if raw else 0,
+            "unknown_status_styles": int(
+                raw[0].get("unknown_status_styles") or 0
+            ) if raw else 0,
+            "unknown_status_colourways": int(
+                raw[0].get("unknown_status_colourways") or 0
+            ) if raw else 0,
+            "needs_review_stock_units": needs_review_stock_units,
+            "uncategorised_stock_units": uncategorised_stock_units,
+            "uncategorised_style_count": len(uncategorised_styles),
+            "uncategorised_styles": sorted(uncategorised_styles),
+        },
     }
 
 
@@ -6637,7 +6880,7 @@ def register_merch_routes(app, api_pg_module):
         (the fabric Stock Mix pattern for finished goods). Plain `def` on
         purpose: the cache-miss query is heavy, and a sync route runs in
         Starlette's threadpool instead of blocking the event loop."""
-        key = f"merch_stock_mix_v3|{brand}|{subcategory}|{tier}|{from_date}|{to_date}|{country}|{pos_location}|{include_retired}"
+        key = f"merch_stock_mix_v8|{brand}|{subcategory}|{tier}|{from_date}|{to_date}|{country}|{pos_location}|{include_retired}"
         result = _cached(key, _TTL, lambda: _fetch_stock_mix(
             brand=brand, subcategory=subcategory,
             tier=tier,

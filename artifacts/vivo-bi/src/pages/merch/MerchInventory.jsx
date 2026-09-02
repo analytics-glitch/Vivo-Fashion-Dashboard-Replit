@@ -146,10 +146,6 @@ const VEL_COLORS = ["#94a3b8", "#4b7bec", "#1a5c38", "#d97706", "#ef4444"];
 
 export default function MerchInventory() {
   const [localSubcat, setLocalSubcat] = useState(null);
-  // Active-only is the reliable default. The switch is owned here (rather than
-  // inside the table) because changing it must refetch server-filtered totals,
-  // categories, styles and colours — a client-only hide leaves parents wrong.
-  const [showRetiredStockMix, setShowRetiredStockMix] = useState(false);
   const [stockMixRangeDays, setStockMixRangeDays] = useState(90);
   const { summary, styles, byBrand, bySubcategory, byTier, loading, error } =
     useMerchData(["summary", "styles", "by-brand", "by-subcategory", "by-tier"], localSubcat);
@@ -168,7 +164,7 @@ export default function MerchInventory() {
     ["stock-mix"],
     localSubcat,
     {
-      include_retired: showRetiredStockMix,
+      include_retired: false,
       ...stockMixPeriod,
     },
   );
@@ -804,8 +800,6 @@ export default function MerchInventory() {
         data={mixState.stockMix}
         loading={mixState.loading}
         error={mixState.error}
-        showRetired={showRetiredStockMix}
-        onShowRetiredChange={setShowRetiredStockMix}
         rangeDays={stockMixRangeDays}
         onRangeDaysChange={setStockMixRangeDays}
       />
