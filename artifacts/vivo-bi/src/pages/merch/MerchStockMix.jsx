@@ -70,9 +70,10 @@ const FX = {
   lastOrd:  "Last Ordered = date of the most recent production/buying order for this style (style rows) or this exact colourway (colour rows). Dash = no order on record; category rows don't aggregate order dates.",
   skus:     "SKUs (stock / sold) = distinct SKUs (sizes) of this colour with stock on hand / sold in the period.",
   fullPrice:"% Full Price = achieved VAT-inclusive selling value ÷ the full retail value of units sold. Aggregates are weighted by units sold; dash means nothing sold or no valid full retail price.",
-  lastSale: "Days Since Last Sale = calendar days since the most recent recorded sale for the style or colourway. Dash means no sale on record.",
+  lastSale: "Days Since Last Sale = calendar days since the most recent recorded sale for sellable stock. A style or colourway with zero sellable SOH and open WIP is shown as Awaiting delivery instead, with buying-order age where available.",
   fabricBarcode: "Exact Odoo fabric-product barcode recorded against this colourway. N/A means the historical colourway has no exact fabric mapping.",
-  fabricSoh: "Current available metres for the referenced fabric in RMAT/Stock, using the same available ÷ kg-per-metre source as Fabric BI. Colourway only; never rolled up.",
+  fabricSoh: "Exact colour: current available metres for the referenced fabric product in RMAT/Stock. Open the value to inspect that barcode in Fabric BI. Colourway only; never rolled up.",
+  fabricOtherSoh: "Other colours: total current RMAT/Stock metres across the other Odoo colour products sharing this supplier fabric quality. It excludes the exact colour and is never rolled up.",
 };
 
 const PIPELINE_STATES = [
@@ -120,12 +121,22 @@ const FullPriceCell = ({ node, className = "" }) => (
 
 const RecencyCell = ({ node, level, className = "" }) => {
   const days = level >= 2 ? node?.last_sale_days : null;
+  const awaiting = level >= 2 && node?.awaiting_delivery;
   const stock = Number(node?.stock_units) || 0;
   const stale = stock > 0 && Number.isFinite(Number(days)) && Number(days) >= 90;
   const veryStale = stale && Number(days) >= 180;
   return (
     <td className={`text-right px-2 py-1.5 tabular-nums ${className}`} title={FX.lastSale}>
-      {days == null ? <span className="text-slate-300">—</span> : (
+      {awaiting ? (
+        <span
+          className="inline-flex whitespace-nowrap rounded-full bg-sky-100 px-1.5 py-0.5 font-semibold text-sky-700"
+          title={node?.order_age_days == null
+            ? "Zero sellable stock with open WIP"
+            : `Zero sellable stock with open WIP · buying order raised ${fmtNum(node.order_age_days)} days ago`}
+        >
+          Awaiting delivery{node?.order_age_days == null ? "" : ` · ${fmtNum(node.order_age_days)}d`}
+        </span>
+      ) : days == null ? <span className="text-slate-300">—</span> : (
         <span className={`inline-flex rounded-full px-1.5 py-0.5 font-semibold ${
           veryStale ? "bg-rose-100 text-rose-700"
             : stale ? "bg-amber-100 text-amber-800"
@@ -243,13 +254,13 @@ const LEVEL_ROW_CLS = [
 
 const CSV_HEADERS = [
   "Level", "Category", "Sub Category", "Style", "Style Number", "Colour",
-  "Tier", "Fabric Barcode", "Fabric SOH Metres",
+  "Tier", "Fabric Barcode", "Exact Colour Fabric Metres", "Other Colour Fabric Metres",
   "Stores SOH", "Online SOH", "Warehouse SOH", "Sellable SOH Units",
   "WIP Units", "Pipeline Draft", "Pipeline BOM Pending",
   "Pipeline Ready", "Pipeline Partially Planned", "Pipeline Fully Planned",
   "Stock Value KES", "Units Sold", "Revenue KES", "% Full Price",
   "% of SOH", "% of Units Sold", "SOR", "Gap pp", "WOC",
-  "Days Since Last Sale", "Last Sale Date", "Last Ordered",
+  "Days Since Last Sale", "Recency Status", "Last Sale Date", "Last Ordered", "Buying Order Age Days",
   "SKUs in Stock", "SKUs Sold",
 ];
 
@@ -420,7 +431,7 @@ export default function MerchStockMix({
   // Colour-only column stays hidden until colour rows are actually on screen
   // (a style drilled open, or a search surfacing colours) — fabric behaviour.
   const showSkus = shown.some((r) => r.level === 3);
-  const nCols = 20 + (showSkus ? 1 : 0);
+  const nCols = 21 + (showSkus ? 1 : 0);
 
   const toggle = (path) => setOpen((o) => ({ ...o, [path]: !o[path] }));
 
@@ -503,6 +514,8 @@ export default function MerchStockMix({
         level >= 2 ? node.tier || "" : "",
         level === 3 ? node.fabric_barcode || "N/A" : "",
         level === 3 && node.fabric_stock_metres != null ? node.fabric_stock_metres : "",
+        level === 3 && node.fabric_other_colour_stock_metres != null
+          ? node.fabric_other_colour_stock_metres : "",
         Math.round(Number(node.soh_stores) || 0),
         Math.round(Number(node.soh_online) || 0),
         Math.round(Number(node.soh_warehouse) || 0),
@@ -520,9 +533,11 @@ export default function MerchStockMix({
         sor == null ? "" : sor.toFixed(1),
         (pctS - pctU).toFixed(1),
         node.woc == null ? "" : node.woc,
-        level >= 2 && node.last_sale_days != null ? node.last_sale_days : "",
+        level >= 2 && !node.awaiting_delivery && node.last_sale_days != null ? node.last_sale_days : "",
+        level >= 2 && node.awaiting_delivery ? "Awaiting delivery" : "",
         level >= 2 ? node.last_sale_date || "" : "",
         level >= 2 ? node.last_order_date || "" : "",
+        level >= 2 && node.order_age_days != null ? node.order_age_days : "",
         level === 3 ? (node.skus_in_stock ?? "") : "",
         level === 3 ? (node.skus_sold ?? "") : "",
       ]);
@@ -580,6 +595,10 @@ export default function MerchStockMix({
       },
     });
   };
+
+  const fabricHref = (barcode) => (
+    barcode ? `/fabric?page=register&search=${encodeURIComponent(barcode)}` : null
+  );
 
   return (
     <div className="bg-white rounded-xl shadow-sm p-4 sm:p-5" data-testid="merch-stock-mix">
@@ -666,13 +685,14 @@ export default function MerchStockMix({
         <ErrorBox message={error} />
       ) : (
         <div className="overflow-auto max-h-[600px] rounded-lg border border-slate-100">
-          <table className="w-full min-w-[2120px] text-[11.5px] border-collapse">
+          <table className="w-full min-w-[2240px] text-[11.5px] border-collapse">
             <thead className="sticky top-0 z-10 bg-white shadow-[0_1px_0_#e2e8f0]">
               <tr className="text-[10px] uppercase tracking-wide text-slate-400">
                 <SortHead sortKey="name" align="left" sticky>Category / Sub / Style / Colour</SortHead>
                 <SortHead sortKey="tier">Tier</SortHead>
                 <SortHead sortKey="fabric_barcode" title={FX.fabricBarcode}>Fabric Barcode</SortHead>
-                <SortHead sortKey="fabric_stock_metres" title={FX.fabricSoh}>Fabric SOH (m)</SortHead>
+                <SortHead sortKey="fabric_stock_metres" title={FX.fabricSoh}>Exact Colour (m)</SortHead>
+                <SortHead sortKey="fabric_other_colour_stock_metres" title={FX.fabricOtherSoh}>Other Colours (m)</SortHead>
                 <SortHead sortKey="soh_stores" title={FX.stores}>Stores</SortHead>
                 <SortHead sortKey="soh_online" title={FX.online}>Online</SortHead>
                 <SortHead sortKey="soh_warehouse" title={FX.warehouse}>Warehouse</SortHead>
@@ -710,6 +730,7 @@ export default function MerchStockMix({
                   <td className="sticky left-0 z-20 bg-slate-50 px-2 py-2">Total</td>
                   <td className="text-right px-2 py-2 text-slate-300 font-normal">—</td>
                   <td className="text-right px-2 py-2 text-slate-300 font-normal">—</td>
+                   <td className="text-right px-2 py-2 text-slate-300 font-normal">—</td>
                   <td className="text-right px-2 py-2 text-slate-300 font-normal">—</td>
                   <td className="text-right px-2 py-2 tabular-nums">{fmtNum(totals.soh_stores)}</td>
                   <td className="text-right px-2 py-2 tabular-nums">{fmtNum(totals.soh_online)}</td>
@@ -840,17 +861,59 @@ export default function MerchStockMix({
                     </td>
                     <td className="text-right px-2 py-1.5 tabular-nums" title={FX.fabricBarcode}>
                       {r.level === 3 ? (
-                        <span className={n.fabric_barcode ? "text-slate-600" : "font-semibold text-amber-700"}>
-                          {n.fabric_barcode || "N/A"}
-                        </span>
+                        n.fabric_barcode ? (
+                          <a
+                            href={fabricHref(n.fabric_barcode)}
+                            onClick={(e) => e.stopPropagation()}
+                            className="font-medium text-[#1a5c38] underline decoration-[#1a5c38]/30 underline-offset-2 hover:decoration-[#1a5c38]"
+                            title="Open this exact fabric in Fabric BI"
+                          >
+                            {n.fabric_barcode}
+                          </a>
+                        ) : <span className="font-semibold text-amber-700">N/A</span>
                       ) : <span className="text-slate-300">—</span>}
                     </td>
-                    <td className="text-right px-2 py-1.5 tabular-nums" title={FX.fabricSoh}>
+                    <td
+                      className={`text-right px-2 py-1.5 tabular-nums ${
+                        r.level === 3
+                        && Number(n.fabric_stock_metres) === 0
+                        && Number(n.fabric_other_colour_stock_metres) > 0
+                          ? "bg-amber-50 font-semibold text-amber-800" : ""
+                      }`}
+                      title={
+                        r.level === 3
+                        && Number(n.fabric_stock_metres) === 0
+                        && Number(n.fabric_other_colour_stock_metres) > 0
+                          ? "Exact fabric colour is out of stock, but this quality is available in other colours."
+                          : FX.fabricSoh
+                      }
+                    >
                       {r.level === 3 && n.fabric_barcode && n.fabric_stock_metres != null
-                        ? `${Number(n.fabric_stock_metres).toLocaleString("en-US", {
-                            minimumFractionDigits: 1,
-                            maximumFractionDigits: 1,
-                          })} m`
+                        ? <a
+                            href={fabricHref(n.fabric_barcode)}
+                            onClick={(e) => e.stopPropagation()}
+                            className="underline decoration-current/25 underline-offset-2"
+                          >
+                            {`${Number(n.fabric_stock_metres).toLocaleString("en-US", {
+                              minimumFractionDigits: 1,
+                              maximumFractionDigits: 1,
+                            })} m`}
+                          </a>
+                        : <span className="text-slate-300">—</span>}
+                    </td>
+                    <td className="text-right px-2 py-1.5 tabular-nums" title={FX.fabricOtherSoh}>
+                      {r.level === 3 && n.fabric_other_colour_stock_metres != null
+                        ? <span className={
+                            Number(n.fabric_stock_metres) === 0
+                            && Number(n.fabric_other_colour_stock_metres) > 0
+                              ? "inline-flex rounded-full bg-amber-100 px-1.5 py-0.5 font-semibold text-amber-800"
+                              : "text-slate-600"
+                          }>
+                            {`${Number(n.fabric_other_colour_stock_metres).toLocaleString("en-US", {
+                              minimumFractionDigits: 1,
+                              maximumFractionDigits: 1,
+                            })} m`}
+                          </span>
                         : <span className="text-slate-300">—</span>}
                     </td>
                     <td className="text-right px-2 py-1.5 tabular-nums">{fmtNum(n.soh_stores)}</td>

@@ -42,6 +42,8 @@ EXTRACT_SCRIPTS = [
 TRANSFORM_SCRIPTS = [
     "transform_all_sales.py",
     "transform_all_customers.py",
+    "build_customer_identity.py",
+    "build_customer_people.py",
     "transform_all_products_clean.py",
 ]
 

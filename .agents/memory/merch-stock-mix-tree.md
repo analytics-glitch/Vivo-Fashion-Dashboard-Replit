@@ -23,7 +23,12 @@ Other fixed choices:
 - Style deep links use `?tab=merch-inventory&style=<exact style_number>&expanded=true`; the inventory client searches by style code, opens the ancestor path, scrolls to the style row, and reveals colourways.
 - Lifecycle badges use `all_products_clean.status`: style status is Active if any SKU is Active, while each colourway computes its own status; retired/archived colourways are hidden only when the opt-in filter is turned off.
 - The Stock Mix table's dedicated SOR is selected-period `units_period ÷ (units_period + stock_units)` at every node; calculate from aggregated numerator/denominator, never average child percentages.
-- Fabric context is colourway-only: use the exact Odoo fabric-product reference, then RMAT/Stock `available ÷ kg_per_mtr_eff`. Never sum barcode or metres into parent rows because fabrics can be shared.
+- Fabric context is colourway-only: exact stock uses the referenced product; other-colour stock groups only nonblank `supplier_fabric_code` siblings and excludes the exact product. Never sum either into parents.
+- Zero sellable SOH plus open Buying Order pipeline is "Awaiting delivery" at style/colour grain, with order age when available; it suppresses misleading recency display but not genuinely stale sellable stock warnings.
+
+**Why:** a barcode identifies one colour product, while the supplier fabric code is the Odoo quality identity shared across its colours; blank quality codes must not create guessed families.
+
+**How to apply:** use RMAT/Stock `available ÷ kg_per_mtr_eff` for both measures, retain exact zeroes, and deep-link valid barcodes to `/fabric?page=register&search=<barcode>`.
 
 **Why:** SOR must reconcile from Total through Category, Subcategory, Style, and Colourway while remaining comparable to the selected-period Units Sold column.
 

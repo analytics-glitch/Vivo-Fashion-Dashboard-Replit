@@ -14,7 +14,9 @@ class _LifecycleStub:
         return None
 
 
-def _row(style, colour, stock, *, tier_pipeline=0, colour_pipeline=0):
+def _row(style, colour, stock, *, tier_pipeline=0, colour_pipeline=0,
+         fabric_stock=None, other_fabric_stock=None, last_sale="2026-08-28",
+         style_last_order="2026-08-01", colour_last_order="2026-08-01"):
     return {
         "category": "Dresses" if "Dress" in style else "Bottoms",
         "subcategory": "Midi & Capri Dresses" if "Dress" in style else "Full Length Pants",
@@ -24,7 +26,11 @@ def _row(style, colour, stock, *, tier_pipeline=0, colour_pipeline=0):
         "colour": colour,
         "colour_status": "Active",
         "fabric_barcode": "FAB-001" if colour == "Black" else None,
-        "fabric_stock_metres": 125.5 if colour == "Black" else None,
+        "fabric_stock_metres": (
+            fabric_stock if fabric_stock is not None
+            else (125.5 if colour == "Black" else None)
+        ),
+        "fabric_other_colour_stock_metres": other_fabric_stock,
         "soh_stores": stock,
         "soh_online": 0,
         "soh_warehouse": 0,
@@ -34,7 +40,9 @@ def _row(style, colour, stock, *, tier_pipeline=0, colour_pipeline=0):
         "revenue_period": 10000,
         "achieved_sales_gross": 11600,
         "full_price_value": 14500,
-        "last_sale_date": "2026-08-28",
+        "last_sale_date": last_sale,
+        "style_last_order": style_last_order,
+        "colour_last_order": colour_last_order,
         "units_6m": 26,
         "pipeline_units": tier_pipeline,
         "pipeline_by_state": {
@@ -117,6 +125,7 @@ class MerchStockMixStabilityTest(unittest.TestCase):
         blue = next(c for c in first_style["colours"] if c["name"] == "Blue")
         self.assertEqual("FAB-001", black["fabric_barcode"])
         self.assertEqual(125.5, black["fabric_stock_metres"])
+        self.assertNotIn("fabric_other_colour_stock_metres", first_style)
         self.assertIsNone(blue["fabric_barcode"])
         self.assertIsNone(blue["fabric_stock_metres"])
         self.assertEqual(first["totals"], second["totals"])
@@ -127,6 +136,8 @@ class MerchStockMixStabilityTest(unittest.TestCase):
         self.assertIn("Warehouse Finished Goods", sql)
         self.assertIn("p.style_status = 'Active'", sql)
         self.assertIn("fabric_stock AS", sql)
+        self.assertIn("fabric_stock_base AS", sql)
+        self.assertIn("PARTITION BY fabric_quality_key", sql)
         self.assertIn("i.available / p.kg_per_mtr_eff", sql)
         self.assertIn("i.location_name = 'RMAT/Stock'", sql)
 
@@ -146,6 +157,58 @@ class MerchStockMixStabilityTest(unittest.TestCase):
         self.assertEqual(12, tier_1["totals"]["stock_units"])
         self.assertEqual(5, tier_2["totals"]["stock_units"])
         self.assertNotEqual(tier_1["totals"], tier_2["totals"])
+
+    @patch("merch_router._db_exec")
+    def test_colour_only_sibling_metres_and_awaiting_delivery_state(self, db_exec):
+        stock_rows = [
+            _row(
+                "Always On Dress", "Black", 0,
+                tier_pipeline=40, colour_pipeline=40,
+                fabric_stock=0.0, other_fabric_stock=86.4,
+                last_sale="2025-01-01",
+                style_last_order="2026-08-15", colour_last_order="2026-08-15",
+            ),
+            _row(
+                "Core Trouser", "Black", 5,
+                fabric_stock=20.0, other_fabric_stock=0.0,
+                last_sale="2025-01-01",
+            ),
+        ]
+        pipeline_rows = [{
+            "grain": "style", "style_number": "D100",
+            "style_name": "Always On Dress", "colour": None,
+            "bo_state": "draft", "units": 40,
+        }, {
+            "grain": "colour", "style_number": "D100",
+            "style_name": "Always On Dress", "colour": "Black",
+            "bo_state": "draft", "units": 40,
+        }]
+        db_exec.side_effect = lambda sql, *_args, **_kwargs: (
+            pipeline_rows if "FROM production_orders po" in sql else stock_rows
+        )
+
+        result = merch_router._fetch_stock_mix(
+            from_date="2026-08-01", to_date="2026-08-31"
+        )
+        styles = [
+            style
+            for category in result["categories"]
+            for subcategory in category["subcategories"]
+            for style in subcategory["styles"]
+        ]
+        awaiting = next(s for s in styles if s["name"] == "Always On Dress")
+        stale = next(s for s in styles if s["name"] == "Core Trouser")
+        colour = awaiting["colours"][0]
+
+        self.assertTrue(awaiting["awaiting_delivery"])
+        self.assertTrue(colour["awaiting_delivery"])
+        self.assertGreaterEqual(awaiting["order_age_days"], 0)
+        self.assertEqual(0.0, colour["fabric_stock_metres"])
+        self.assertEqual(86.4, colour["fabric_other_colour_stock_metres"])
+        self.assertNotIn("fabric_stock_metres", awaiting)
+        self.assertNotIn("fabric_other_colour_stock_metres", awaiting)
+        self.assertFalse(stale["awaiting_delivery"])
+        self.assertGreaterEqual(stale["last_sale_days"], 90)
 
 
 if __name__ == "__main__":

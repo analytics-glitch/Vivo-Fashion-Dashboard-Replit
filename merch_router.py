@@ -4513,11 +4513,14 @@ colour_fabric AS (
     GROUP BY 1, 2
 ),
 /* Same current available-metres basis as Fabric BI:
-   RMAT/Stock available kg ÷ the effective kg-per-metre conversion. */
-fabric_stock AS (
+   RMAT/Stock available kg ÷ the effective kg-per-metre conversion. The supplier
+   fabric code is the Odoo quality identity shared by its distinct colour
+   products; blank codes deliberately do not create speculative families. */
+fabric_stock_base AS (
     SELECT
         p.id AS fabric_product_id,
         NULLIF(BTRIM(p.barcode), '') AS fabric_barcode,
+        NULLIF(BTRIM(p.supplier_fabric_code), '') AS fabric_quality_key,
         ROUND(COALESCE(SUM(
             CASE
                 WHEN i.location_name = 'RMAT/Stock' AND p.kg_per_mtr_eff > 0
@@ -4528,7 +4531,20 @@ fabric_stock AS (
     FROM raw_fabric_products p
     LEFT JOIN raw_fabric_inventory i ON i.product_id = p.id
     WHERE p.category = 'Fabric'
-    GROUP BY p.id, p.barcode
+    GROUP BY p.id, p.barcode, p.supplier_fabric_code
+),
+fabric_stock AS (
+    SELECT
+        fabric_product_id,
+        fabric_barcode,
+        available_metres,
+        CASE WHEN fabric_quality_key IS NOT NULL THEN
+            ROUND((
+                SUM(available_metres) OVER (PARTITION BY fabric_quality_key)
+                - available_metres
+            )::numeric, 1)
+        ELSE NULL END AS other_colour_available_metres
+    FROM fabric_stock_base
 ),
 /* Stock at (style, colour) grain — pre-aggregated on its own (never join
    inventory to sales then SUM). Same row scope + filters as the KPI's stock
@@ -4699,6 +4715,10 @@ SELECT
          THEN fs.available_metres
          ELSE NULL
     END AS fabric_stock_metres,
+    CASE WHEN fs.fabric_product_id IS NOT NULL
+         THEN fs.other_colour_available_metres
+         ELSE NULL
+    END AS fabric_other_colour_stock_metres,
     COALESCE(st.soh_stores, 0) AS soh_stores,
     COALESCE(st.soh_online, 0) AS soh_online,
     COALESCE(st.soh_warehouse, 0) AS soh_warehouse,
@@ -4923,6 +4943,10 @@ WHERE %(include_retired)s
                         round(float(r["fabric_stock_metres"]), 1)
                         if r.get("fabric_stock_metres") is not None else None
                     ),
+                     "fabric_other_colour_stock_metres": (
+                         round(float(r["fabric_other_colour_stock_metres"]), 1)
+                         if r.get("fabric_other_colour_stock_metres") is not None else None
+                     ),
                    # Colour-grain ordering context + image key (nullable).
                    "last_order_date": r.get("colour_last_order"),
                    "rep_sku": r.get("rep_sku")}
@@ -4972,6 +4996,19 @@ WHERE %(include_retired)s
                 node["last_sale_days"] = None
         else:
             node["last_sale_days"] = None
+        if "last_order_date" in node and node.get("last_order_date"):
+            try:
+                node["order_age_days"] = (today - date.fromisoformat(
+                    str(node["last_order_date"])[:10])).days
+            except (TypeError, ValueError):
+                node["order_age_days"] = None
+        elif "last_order_date" in node:
+            node["order_age_days"] = None
+        node["awaiting_delivery"] = bool(
+            "last_order_date" in node
+            and node.get("stock_units", 0) == 0
+            and node.get("pipeline_units", 0) > 0
+        )
 
     def _sorted(nodes):
         return sorted(nodes, key=lambda x: (-x["stock_units"], -x["units_period"], x["name"]))
@@ -6600,7 +6637,7 @@ def register_merch_routes(app, api_pg_module):
         (the fabric Stock Mix pattern for finished goods). Plain `def` on
         purpose: the cache-miss query is heavy, and a sync route runs in
         Starlette's threadpool instead of blocking the event loop."""
-        key = f"merch_stock_mix_v2|{brand}|{subcategory}|{tier}|{from_date}|{to_date}|{country}|{pos_location}|{include_retired}"
+        key = f"merch_stock_mix_v3|{brand}|{subcategory}|{tier}|{from_date}|{to_date}|{country}|{pos_location}|{include_retired}"
         result = _cached(key, _TTL, lambda: _fetch_stock_mix(
             brand=brand, subcategory=subcategory,
             tier=tier,

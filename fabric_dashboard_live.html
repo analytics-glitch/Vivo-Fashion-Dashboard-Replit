@@ -2970,6 +2970,18 @@ const LOADERS={buyingpd:loadBuyingPD,manufacturing:loadManufacturing,dashboard:l
 const DESCS={buyingpd:'Buying & Product Development — garment fabric-efficiency KPIs from Done-DPS manufacturing orders',manufacturing:'Live component availability for open and in-progress DPS/MOs — shared requirements, stock and reservations',dashboard:'Stock Mix — each category\'s share of consumption vs share of available stock',overview:'Fabric stock, value and health across the warehouse',register:'',ageing:'Stock ageing analysis — coming soon',deadstock:'Fabric that has been sitting without movement',defects:'Roll-level quality results from the Receiving tab — pass rates, shrinkage, bleeding and width checks by supplier, fabric and month',dataquality:'Fabrics missing a kg-per-metre conversion — stock or usage that can only be shown in kg',support:'Lining, interfacing & support overrides — excluded from the main dashboard',movement:'Build your own KPI-over-time panels — fabric metrics in metres, page-local date range',pos:'Inbound purchase orders and delivery performance',suppliers:'Outstanding exposure by supplier',reservations:'Earmark fabric for a style, track how long it has been held, then mark it used',rolls:'Physical roll counts recorded by hand per fabric per location, shown next to the Odoo quantity',receiving:'Record the rolls of an arriving fabric delivery, then print the Fabric Receiving Information Sheet',sublimation:'Sublimation print-run costing — ink, paper and machine conversion per run, with the Odoo BOM per kg ready for manual entry',createprod:'Bulk-create fabric products in Odoo — enter or upload rows, review the validation preview, then confirm. Duplicates are always skipped',costing:'Per-style cost sheets — fabric, trims, CMT/labour and overheads vs the current selling price, with auto-suggestions from fabric data and Done DPS',l10:'Supply Chain L10 Meeting — weekly Level 10 meeting tracker for the Supply Chain team'};
 const loadedOnce={};
 
+/* Stock Mix escape hatch: /fabric?page=register&search=<barcode> opens the
+   existing authenticated Fabric Register and applies its native search. */
+(function applyFabricDeepLink(){
+  const q=new URLSearchParams(window.location.search);
+  if(q.get('page')!=='register')return;
+  const search=(q.get('search')||'').trim();
+  const input=document.getElementById('reg-search');
+  if(input)input.value=search;
+  const tab=document.querySelector('.nav-item[data-page="register"]');
+  if(tab)tab.click();
+})();
+
 // Bind ONLY real page tabs ([data-page]) — the "More ▾" trigger is also a
 // .nav-item but has its own toggle handler and no page to show.
 document.querySelectorAll('.nav-item[data-page]').forEach(el=>{
