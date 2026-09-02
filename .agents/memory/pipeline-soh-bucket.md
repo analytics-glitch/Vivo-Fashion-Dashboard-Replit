@@ -1,31 +1,36 @@
 ---
-name: Pipeline SOH bucket
-description: soh_warehouse = 'Finished Goods Production' ONLY; everything else in WAREHOUSE_LOCATIONS is pipeline. Total SOH = stores + warehouse (pipeline always excluded).
+name: Sellable and pipeline stock buckets
+description: Sellable warehouse is Warehouse Finished Goods; Stock Mix uses an explicit retail allowlist, and Buying Order pipeline is always separate.
 ---
 
 ## Rule (user-mandated)
 
-The 3-way SOH split across **every** SOH surface in the dashboard:
+The current finished-goods split is:
 
 | Bucket | SQL predicate |
 |---|---|
-| `soh_stores` | `pos_location_name NOT IN (WAREHOUSE_LOCATIONS)` |
-| `soh_warehouse` | `pos_location_name = 'Finished Goods Production'` ONLY |
-| `soh_pipeline` | `pos_location_name IN (WAREHOUSE_LOCATIONS) AND pos_location_name <> 'Finished Goods Production'` |
+| `soh_stores` | explicit known retail locations (Vivo, Zoya, Safari, Oasis, Shop Zetu) |
+| `soh_warehouse` | `pos_location_name = 'Warehouse Finished Goods'` ONLY |
+| Buying Order pipeline | committed units in open `production_orders`, broken down by `bo_state` |
 
 **Total SOH = Stores + Warehouse only. Pipeline is ALWAYS excluded from the total** (not sellable stock).
 
-`WH_DISPATCH_LOCATION = "'Finished Goods Production'"` is the named constant in `api_pg.py`. `PIPELINE_LOCATIONS` is kept for reference but is no longer used in SQL.
+`WH_DISPATCH_LOCATION = "'Warehouse Finished Goods'"` is the named constant in `api_pg.py`.
 
-"Finished Goods Production" = dispatch-ready finished garments awaiting store allocation. Everything else that was previously called "warehouse" (Warehouse Finished Goods, Warehouse Receiving, In Transit, Holding Warehouse Finished Goods, Buying & Merchandise, Raw Materials, Fabric Trimming, Sew/Stock, etc.) is **pipeline** — WIP, in-transit, or holding areas not ready for replenishment.
+"Warehouse Finished Goods" is dispatch-ready stock. Finished Goods Production,
+Warehouse Receiving, In Transit, holding, raw materials, Fabric Trimming,
+Sew/Stock, samples, QC/defects and unknown locations are not sellable.
 
-**Why:** the older mapping (`soh_warehouse = IN WAREHOUSE_LOCATIONS AND NOT IN PIPELINE_LOCATIONS`) incorrectly treated non-FGP locations like "Warehouse Finished Goods" as sellable warehouse stock. The user confirmed only "Finished Goods Production" is dispatch-ready stock.
+**Why:** exclusion-list logic classified new or raw Odoo locations as stores. An
+explicit retail allowlist plus exact warehouse predicate fails closed, and a
+separate Buying Order query cannot multiply sellable inventory.
 
 ## How to apply
 
 When adding any new SOH surface:
-1. Warehouse CTE/FILTER: `WHERE pos_location_name = 'Finished Goods Production'`
-2. Pipeline CTE/FILTER: `WHERE pos_location_name IN (WAREHOUSE_LOCATIONS) AND pos_location_name <> 'Finished Goods Production'`
-3. Never add pipeline into totals or replenishment eligibility (`soh_wh > 0` gate uses FGP only).
+1. Warehouse CTE/FILTER: exact `Warehouse Finished Goods`.
+2. Prefer an explicit retail allowlist over `NOT IN (WAREHOUSE_LOCATIONS)`.
+3. Query Buying Order pipeline independently by state.
+4. Never add pipeline into SOH, WOC, SOR, or replenishment eligibility.
 
 Gotcha from prior sessions: adding a CTE field without threading it through the OUTER SELECT (FULL OUTER JOIN queries) KeyErrors at runtime while compile passes.

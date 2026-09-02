@@ -82,11 +82,11 @@ const PLM_STYLE_CLASSIFICATIONS = ["Core", "Fashion", "Seasonal", "Test"] as con
 const PLM_RANGE_TIERS = ["Tier 1", "Tier 2", "Tier 3", "Tier 4"] as const;
 const PLM_SEASONS = ["Q3 2026", "Q4 2026"] as const;
 const RANGE_PLAN_SEASON_SEEDS = [
-  { seasonName: "Q4 2026", revenueTarget: 360000000, factoryCapacityUnits: 96000, cadence: "quarterly" as const, otbMonths: ["2026-10-01", "2026-11-01", "2026-12-01"] as const },
+  { seasonName: "Q4 2026", revenueTarget: 450000000, factoryCapacityUnits: 90000, cadence: "quarterly" as const, otbMonths: ["2026-10-01", "2026-11-01", "2026-12-01"] as const },
   { seasonName: "September 2026", revenueTarget: 30000000, factoryCapacityUnits: 28000, cadence: "monthly" as const, otbMonth: "2026-09-01" },
-  { seasonName: "October 2026", revenueTarget: 30000000, factoryCapacityUnits: 32000, cadence: "monthly" as const, otbMonth: "2026-10-01" },
-  { seasonName: "November 2026", revenueTarget: 30000000, factoryCapacityUnits: 32000, cadence: "monthly" as const, otbMonth: "2026-11-01" },
-  { seasonName: "December 2026", revenueTarget: 30000000, factoryCapacityUnits: 32000, cadence: "monthly" as const, otbMonth: "2026-12-01" },
+  { seasonName: "October 2026", revenueTarget: 30000000, factoryCapacityUnits: 30000, cadence: "monthly" as const, otbMonth: "2026-10-01" },
+  { seasonName: "November 2026", revenueTarget: 30000000, factoryCapacityUnits: 30000, cadence: "monthly" as const, otbMonth: "2026-11-01" },
+  { seasonName: "December 2026", revenueTarget: 30000000, factoryCapacityUnits: 30000, cadence: "monthly" as const, otbMonth: "2026-12-01" },
 ] as const;
 const SEPTEMBER_2026_MONTHLY_ROW_SEEDS = [
   ["Bottoms", "Full Length Pants", 13, 400, 4788, 1398, 4350],
@@ -115,6 +115,7 @@ const SEPTEMBER_2026_MONTHLY_ROW_SEEDS = [
   ["Tops", "Bodysuits", 1, 470, 2500, 564, 429],
   ["Tops", "Midriff & Crop Tops", 0, 400, 2524, null, 120],
 ] as const;
+const rangePlanAosDefault = () => 400;
 const WORKSPACE_BRANDS = ["Vivo", "Safari by Vivo", "Zoya"] as const;
 const ALLOWED_BRANDS_SQL = WORKSPACE_BRANDS.map((brand) => `'${brand}'`).join(",");
 const allowedBrand = (alias: string) => `${alias}.brand IN (${ALLOWED_BRANDS_SQL})`;
@@ -359,39 +360,6 @@ const L10_METRIC_SEEDS: L10MetricSeed[] = [
   { owner: "Emily", measurable: "Stores received >90% of TOTAL allocation", goal: "All 29", uom: "%", values: [93, 100, 100, 100, 100, 100, null] },
   { owner: "Maryann", measurable: "Stores received >90% of NEW allocation", goal: "All 29", uom: "%", values: [100, 100, 100, 100, 100, 100, 100] },
 ];
-
-const RANGE_PLAN_ROW_SEEDS = [
-  ["Basics/Essentials", "NOOS", 40, 30, 50],
-  ["Dresses", "Core", 50, 40, 60],
-  ["Tops", "Core", 40, 30, 50],
-  ["Trousers", "Core", 28, 20, 35],
-  ["Skirts", "Core", 20, 15, 25],
-  ["Jumpsuits", "Core", 14, 10, 18],
-  ["Blazers/Suits", "Core", 12, 8, 15],
-  ["Knitwear", "Core", 10, 8, 12],
-  ["Coords", "Core", 14, 10, 18],
-  ["Denim", "Core", 7, 5, 10],
-  ["Swimwear", "Core", 7, 5, 10],
-  ["Kitenges", "Core", 15, 10, 20],
-  ["Lounge/Casual", "Core", 12, 8, 15],
-  ["Print Dresses", "Recent", 20, 15, 25],
-  ["Shirt Dresses", "Recent", 14, 10, 18],
-  ["Wrap Dresses", "Recent", 14, 10, 18],
-  ["Co-ords Printed", "Recent", 12, 8, 15],
-  ["Wide Leg Trousers", "Recent", 10, 8, 12],
-  ["Experimental Silhouettes", "New/Test", 7, 5, 10],
-  ["New Fabrications", "New/Test", 7, 5, 10],
-  ["Collaborations", "New/Test", 5, 3, 8],
-  ["Limited Editions", "New/Test", 5, 3, 8],
-] as const;
-
-const RANGE_PLAN_AOS_DEFAULTS: Record<string, number> = {
-  NOOS: 450,
-  Core: 450,
-  Recent: 450,
-  "New/Test": 350,
-};
-const rangePlanAosDefault = (tier: string) => RANGE_PLAN_AOS_DEFAULTS[tier] ?? RANGE_PLAN_AOS_DEFAULTS.Core;
 
 const L10_AGENDA = [
   { key: "checkin", number: "①", label: "Check-In", durationMinutes: 5 },
@@ -648,10 +616,17 @@ async function computeLiveL10Values() {
 }
 
 async function rangePlanHealth() {
+  const tierTargets = [
+    { tier: "Tier 1", label: "Tier 1 NOOS", minimum: 30, maximum: 50 },
+    { tier: "Tier 2", label: "Tier 2 Core Performers", minimum: 200, maximum: 300 },
+    { tier: "Tier 3", label: "Tier 3 Recent Performers", minimum: 150, maximum: 200 },
+    { tier: "Tier 4", label: "Tier 4 New and Test", minimum: 60, maximum: 100 },
+  ] as const;
   const empty = {
     newRepeat: { newCount: 0, repeatCount: 0, total: 0 },
     subCategories: [] as Array<{ name: string; count: number }>,
     activeStyleCount: 0,
+    tiers: tierTargets.map((target) => ({ ...target, count: 0 })),
   };
   try {
     const columns = await publicTableColumns("pd_styles");
@@ -680,10 +655,21 @@ async function rangePlanHealth() {
          GROUP BY 1 ORDER BY count DESC, name LIMIT 15`,
       )
       : { rows: [] };
+    const tierCounts = await pool.query<{ tier: string; count: number }>(
+      `SELECT p.tier,COUNT(DISTINCT COALESCE(NULLIF(TRIM(p.style_number),''),NULLIF(TRIM(p.style_name),''),p.sku))::int AS count
+       FROM public.all_products_clean p
+       WHERE p.active IS TRUE
+         AND ${allowedBrand("p")}
+         AND p.tier=ANY($1::text[])
+       GROUP BY p.tier`,
+      [tierTargets.map((target) => target.tier)],
+    );
+    const countByTier = new Map(tierCounts.rows.map((row) => [row.tier, Number(row.count)]));
     return {
       newRepeat: newRepeat.rows[0] ?? empty.newRepeat,
       subCategories: subCategories.rows,
       activeStyleCount: Number(newRepeat.rows[0]?.total ?? 0),
+      tiers: tierTargets.map((target) => ({ ...target, count: countByTier.get(target.tier) ?? 0 })),
     };
   } catch {
     return empty;
@@ -983,9 +969,6 @@ async function ensureRangePlanData() {
       applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
-  const monthlyMigrationApplied = Boolean((await pool.query(
-    `SELECT 1 FROM ${schema}.range_plan_seed_migrations WHERE migration_key='monthly-category-matrix-v1'`,
-  )).rows[0]);
   await pool.query(
     `ALTER TABLE ${schema}.range_plan_seasons
      ALTER COLUMN cogs_budget_pct SET DEFAULT 32`,
@@ -1004,17 +987,6 @@ async function ensureRangePlanData() {
       [seasonSeed.seasonName],
     )).rows[0]?.id;
     if (!seasonId) continue;
-    if (seasonSeed.cadence === "quarterly" || !monthlyMigrationApplied) {
-      for (const [subCategory, tier, target, minimum, maximum] of RANGE_PLAN_ROW_SEEDS) {
-        await pool.query(
-          `INSERT INTO ${schema}.range_plan_rows
-            (season_id,sub_category,tier,style_count_target,style_count_min,style_count_max,aos_units)
-           VALUES ($1,$2,$3::${schema}.range_plan_tier,$4,$5,$6,$7)
-           ON CONFLICT (season_id,sub_category) DO NOTHING`,
-          [seasonId, subCategory, tier, target, minimum, maximum, rangePlanAosDefault(String(tier))],
-        );
-      }
-    }
     if (seasonSeed.cadence === "monthly") {
       await pool.query(
         `INSERT INTO ${schema}.range_plan_otb
@@ -1047,16 +1019,6 @@ async function ensureRangePlanData() {
       );
     }
   }
-  await pool.query(
-    `UPDATE ${schema}.range_plan_rows
-     SET aos_units=450
-     WHERE tier IN ('NOOS','Core','Recent')
-       AND season_id IN (
-         SELECT id FROM ${schema}.range_plan_seasons
-         WHERE season_name='Q4 2026'
-       )
-       AND aos_units=350`,
-  );
   await pool.query(
     `DELETE FROM ${schema}.range_plan_rows r
      USING ${schema}.range_plan_seasons s
@@ -1196,6 +1158,64 @@ async function ensureRangePlanData() {
     throw error;
   } finally {
     septemberFixClient.release();
+  }
+  const unifiedTaxonomyClient = await pool.connect();
+  try {
+    await unifiedTaxonomyClient.query("BEGIN");
+    const unifiedClaim = await unifiedTaxonomyClient.query(
+      `INSERT INTO ${schema}.range_plan_seed_migrations (migration_key)
+       VALUES ('unified-category-matrix-v3')
+       ON CONFLICT DO NOTHING
+       RETURNING migration_key`,
+    );
+    if (unifiedClaim.rows[0]) {
+      await unifiedTaxonomyClient.query(
+        `UPDATE ${schema}.range_plan_seasons
+         SET revenue_target_kes=CASE WHEN season_name='Q4 2026' THEN 450000000 ELSE revenue_target_kes END,
+             factory_capacity_units=CASE season_name
+               WHEN 'Q4 2026' THEN 90000
+               WHEN 'October 2026' THEN 30000
+               WHEN 'November 2026' THEN 30000
+               WHEN 'December 2026' THEN 30000
+               ELSE factory_capacity_units
+             END,
+             status=CASE WHEN season_name='Q4 2026' THEN 'active' ELSE status END
+         WHERE season_year=2026`,
+      );
+      await unifiedTaxonomyClient.query(
+        `UPDATE ${schema}.range_plan_otb o
+         SET revenue_target=150000000
+         FROM ${schema}.range_plan_seasons s
+         WHERE s.id=o.season_id AND s.season_name='Q4 2026' AND s.season_year=2026`,
+      );
+      const emptyPlanNames = ["Q4 2026", "October 2026", "November 2026", "December 2026"];
+      const emptyPlans = await unifiedTaxonomyClient.query<{ id: number }>(
+        `SELECT id FROM ${schema}.range_plan_seasons
+         WHERE season_year=2026 AND season_name=ANY($1::text[])
+         ORDER BY id
+         FOR UPDATE`,
+        [emptyPlanNames],
+      );
+      for (const plan of emptyPlans.rows) {
+        await unifiedTaxonomyClient.query(`DELETE FROM ${schema}.range_plan_rows WHERE season_id=$1`, [plan.id]);
+        for (const [productCategory, subCategory, , averageOrderSize, sellingPrice, expectedUnitCost] of SEPTEMBER_2026_MONTHLY_ROW_SEEDS) {
+          await unifiedTaxonomyClient.query(
+            `INSERT INTO ${schema}.range_plan_rows
+              (season_id,product_category,sub_category,tier,style_count_target,style_count_min,
+               style_count_max,aos_units,opening_stock_units,units_sold_last_month,
+               expected_unit_cost,selling_price)
+             VALUES ($1,$2,$3,'Core'::${schema}.range_plan_tier,0,0,0,$4,NULL,NULL,$5,$6)`,
+            [plan.id, productCategory, subCategory, averageOrderSize, expectedUnitCost, sellingPrice],
+          );
+        }
+      }
+    }
+    await unifiedTaxonomyClient.query("COMMIT");
+  } catch (error) {
+    await unifiedTaxonomyClient.query("ROLLBACK");
+    throw error;
+  } finally {
+    unifiedTaxonomyClient.release();
   }
 }
 
@@ -3635,7 +3655,7 @@ function rangePlanRowPayload(row: Record<string, unknown>) {
   const asp = optionalNumber(row.asp);
   const expectedUnitCost = optionalNumber(row.expectedUnitCost);
   const totalUnitsImplied = Number(row.totalUnitsImplied ?? 0);
-  const effectivePrice = row.productCategory == null ? asp : sellingPrice;
+  const effectivePrice = sellingPrice ?? asp;
   return {
     id: Number(row.id),
     seasonId: Number(row.seasonId),
@@ -3986,7 +4006,9 @@ router.get("/range-plan", async (req, res, next) => {
         FROM ${schema}.range_plan_rows r
         LEFT JOIN style_asp a ON LOWER(TRIM(a.subcategory))=LOWER(TRIM(r.sub_category))
         WHERE r.season_id=$1
-        ORDER BY CASE r.tier::text WHEN 'NOOS' THEN 1 WHEN 'Core' THEN 2 WHEN 'Recent' THEN 3 ELSE 4 END, r.id`,
+        ORDER BY CASE r.product_category
+          WHEN 'Bottoms' THEN 1 WHEN 'Dresses' THEN 2 WHEN 'Outerwear' THEN 3
+          WHEN 'Skirts' THEN 4 WHEN 'Tops' THEN 5 ELSE 99 END, r.id`,
       [season.id],
     );
     const fixedOtbMonths = rangePlanOtbMonthsForSeason(season.seasonName);
@@ -4013,9 +4035,33 @@ router.get("/range-plan", async (req, res, next) => {
       [season.id, fixedOtbMonths],
     );
      const rangeRows = rowsResult.rows.map(rangePlanRowPayload);
-     const potentialFpRevenue = rangeRows
-       .filter((row) => ["NOOS", "Core", "Recent"].includes(row.tier))
-       .reduce((sum, row) => sum + row.potentialFpRevenue, 0);
+     const potentialFpRevenue = rangeRows.reduce((sum, row) => sum + row.potentialFpRevenue, 0);
+     const quarterMonthlyRollup = season.cadence === "quarterly"
+       ? (await pool.query(
+         `SELECT s.id AS "seasonId",s.season_name AS "seasonName",
+            CASE s.season_name
+              WHEN 'October 2026' THEN '2026-10-01'
+              WHEN 'November 2026' THEN '2026-11-01'
+              WHEN 'December 2026' THEN '2026-12-01'
+            END AS "monthYear",
+            COALESCE(SUM(r.total_units_implied),0)::int AS "plannedUnits",
+            COALESCE(SUM(r.total_units_implied * COALESCE(r.selling_price,0)),0)::numeric AS "grossRevenuePotential"
+          FROM ${schema}.range_plan_seasons s
+          LEFT JOIN ${schema}.range_plan_rows r ON r.season_id=s.id
+          WHERE s.season_year=2026
+            AND s.season_name=ANY($1::text[])
+          GROUP BY s.id,s.season_name
+          ORDER BY CASE s.season_name
+            WHEN 'October 2026' THEN 1 WHEN 'November 2026' THEN 2 WHEN 'December 2026' THEN 3 END`,
+         [["October 2026", "November 2026", "December 2026"]],
+       )).rows.map((row) => ({
+         seasonId: Number(row.seasonId),
+         seasonName: String(row.seasonName),
+         monthYear: String(row.monthYear),
+         plannedUnits: Number(row.plannedUnits ?? 0),
+         grossRevenuePotential: Number(row.grossRevenuePotential ?? 0),
+       }))
+       : [];
      res.json({
       seasons,
       season,
@@ -4024,6 +4070,7 @@ router.get("/range-plan", async (req, res, next) => {
       otb: otbResult.rows.map(rangePlanOtbPayload),
       averageCostKes: 850,
       health: await rangePlanHealth(),
+       quarterMonthlyRollup,
       assortmentQuarter: quarter,
       assortmentStyles: selectedAssortment.styles,
        carryOverStyles: selectedAssortment.carryOverStyles,
@@ -4277,7 +4324,7 @@ router.post("/range-plan/seasons/:seasonId/rows", async (req, res, next) => {
     const styleCountTarget = Number(req.body?.styleCountTarget ?? 0);
     const styleCountMin = Number(req.body?.styleCountMin ?? 0);
     const styleCountMax = Number(req.body?.styleCountMax ?? 0);
-    const aosUnits = Number(req.body?.aosUnits ?? rangePlanAosDefault(tier));
+    const aosUnits = Number(req.body?.aosUnits ?? rangePlanAosDefault());
     if (!subCategory || subCategory.length > 120 || !["NOOS", "Core", "Recent", "New/Test"].includes(tier) ||
       ![styleCountTarget, styleCountMin, styleCountMax, aosUnits].every((value) => Number.isInteger(value) && value >= 0)) {
       res.status(400).json({ error: "A sub-category, valid tier and non-negative whole-number targets are required" });
@@ -4379,7 +4426,7 @@ router.post("/range-plan/add-style", async (req: AuthRequest, res, next) => {
          style_count_target AS "styleCountTarget",style_count_min AS "styleCountMin",
          style_count_max AS "styleCountMax",aos_units AS "aosUnits",
          total_units_implied AS "totalUnitsImplied",notes`,
-      [seasonId, subCategory, tier, rangePlanAosDefault(tier)],
+       [seasonId, subCategory, tier, rangePlanAosDefault()],
     );
     await client.query("COMMIT");
     res.status(201).json({ row: rangePlanRowPayload(result.rows[0]), subCategory, tier });

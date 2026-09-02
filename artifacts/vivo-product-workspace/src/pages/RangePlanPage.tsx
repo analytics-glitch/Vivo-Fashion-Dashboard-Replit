@@ -1,7 +1,7 @@
 import { Fragment, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Check, Download, Plus, RefreshCw, Save, Target, TrendingDown, TrendingUp, X } from 'lucide-react';
+import { Download, RefreshCw, Save, Target, TrendingDown, TrendingUp } from 'lucide-react';
 import {
   Bar,
   BarChart,
@@ -19,7 +19,6 @@ import {
   YAxis,
 } from 'recharts';
 
-type Tier = 'NOOS' | 'Core' | 'Recent' | 'New/Test';
 type RangePlanSeason = {
   id: number;
   seasonName: string;
@@ -35,7 +34,7 @@ type RangePlanRow = {
   seasonId: number;
   subCategory: string;
   productCategory: string | null;
-  tier: Tier;
+  tier: string;
   styleCountTarget: number;
   styleCountMin: number;
   styleCountMax: number;
@@ -61,6 +60,14 @@ type RangePlanHealth = {
   newRepeat: { newCount: number; repeatCount: number; total: number };
   subCategories: Array<{ name: string; count: number }>;
   activeStyleCount: number;
+  tiers: Array<{ tier: string; label: string; minimum: number; maximum: number; count: number }>;
+};
+type QuarterMonthlyRollup = {
+  seasonId: number;
+  seasonName: string;
+  monthYear: string;
+  plannedUnits: number;
+  grossRevenuePotential: number;
 };
 type RangePlanResponse = {
   seasons: RangePlanSeason[];
@@ -70,22 +77,10 @@ type RangePlanResponse = {
   averageCostKes: number;
   potentialFpRevenue: number;
   health: RangePlanHealth;
+  quarterMonthlyRollup: QuarterMonthlyRollup[];
 };
 
-const tierLabels: Record<Tier, string> = {
-  NOOS: 'NOOS',
-  Core: 'Core Performers',
-  Recent: 'Recent Performers',
-  'New/Test': 'New/Test',
-};
-const tierOrder: Tier[] = ['NOOS', 'Core', 'Recent', 'New/Test'];
 const monthlyCategoryOrder = ['Bottoms', 'Dresses', 'Outerwear', 'Skirts', 'Tops'];
-const tierDefaults: Record<Tier, [number, number]> = {
-  NOOS: [30, 50],
-  Core: [8, 18],
-  Recent: [8, 18],
-  'New/Test': [3, 8],
-};
 const chartColors = ['#C9A96E', '#1A1A2E', '#8974A3', '#B86B58', '#557C7A', '#A8B18F'];
 
 function numberFormat(value: number | null | undefined) {
@@ -106,10 +101,6 @@ function monthShort(value: string) {
   const date = new Date(`${value.slice(0, 10)}T00:00:00`);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString('en-GB', { month: 'short' });
 }
-function displayTier(tier: string) {
-  return tierLabels[tier as Tier] || tier;
-}
-
 async function getRangePlan(seasonId?: number) {
   const params = new URLSearchParams();
   if (seasonId) params.set('seasonId', String(seasonId));
@@ -185,8 +176,6 @@ function RangePlanPage() {
   const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<'matrix' | 'otb' | 'health'>('matrix');
   const [selectedSeasonId, setSelectedSeasonId] = useState<number | undefined>();
-  const [addingTier, setAddingTier] = useState<Tier | null>(null);
-  const [newSubCategory, setNewSubCategory] = useState('');
   const rangePlan = useQuery({
     queryKey: ['workspace', 'range-plan', selectedSeasonId],
     queryFn: () => getRangePlan(selectedSeasonId),
@@ -218,31 +207,6 @@ function RangePlanPage() {
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['workspace', 'range-plan'] }),
   });
-  const createRow = useMutation({
-    mutationFn: async ({ seasonId, tier, subCategory }: { seasonId: number; tier: Tier; subCategory: string }) => {
-      const [styleCountMin, styleCountMax] = tierDefaults[tier];
-      const response = await fetch(`/api/workspace/range-plan/seasons/${seasonId}/rows`, {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          tier,
-          subCategory,
-          styleCountMin,
-          styleCountMax,
-          styleCountTarget: Math.round((styleCountMin + styleCountMax) / 2),
-          aosUnits: 350,
-        }),
-      });
-      if (!response.ok) throw new Error(`Could not add range row (${response.status})`);
-      return response.json();
-    },
-    onSuccess: () => {
-      setAddingTier(null);
-      setNewSubCategory('');
-      queryClient.invalidateQueries({ queryKey: ['workspace', 'range-plan'] });
-    },
-  });
   const updateOtb = useMutation({
     mutationFn: async ({ seasonId, data }: { seasonId: number; data: Partial<RangePlanOtb> & { monthYear: string } }) => {
       const response = await fetch(`/api/workspace/range-plan/seasons/${seasonId}/otb`, {
@@ -265,21 +229,14 @@ function RangePlanPage() {
   const totals = useMemo(() => {
     const totalStyles = rows.reduce((sum, row) => sum + row.styleCountTarget, 0);
     const totalUnits = rows.reduce((sum, row) => sum + row.totalUnitsImplied, 0);
-    const monthly = season?.cadence === 'monthly';
     const costedRows = rows.filter((row) => row.expectedUnitCost !== null && row.sellingPrice !== null && row.sellingPrice > 0);
-    const estimatedCogs = monthly
-      ? costedRows.reduce((sum, row) => sum + row.totalUnitsImplied * Number(row.expectedUnitCost), 0)
-      : totalUnits * (payload?.averageCostKes ?? 850);
-    const potentialFpRevenue = rows
-      .filter((row) => monthly || row.tier !== 'New/Test')
-      .reduce((sum, row) => sum + row.potentialFpRevenue, 0);
-    const costedNetRevenue = monthly
-      ? costedRows.reduce((sum, row) => sum + row.totalUnitsImplied * (Number(row.sellingPrice) / 1.16), 0)
-      : potentialFpRevenue / 1.16;
+    const estimatedCogs = costedRows.reduce((sum, row) => sum + row.totalUnitsImplied * Number(row.expectedUnitCost), 0);
+    const potentialFpRevenue = rows.reduce((sum, row) => sum + row.potentialFpRevenue, 0);
+    const costedNetRevenue = costedRows.reduce((sum, row) => sum + row.totalUnitsImplied * (Number(row.sellingPrice) / 1.16), 0);
     const cogsPct = costedNetRevenue > 0 ? (estimatedCogs / costedNetRevenue) * 100 : 0;
     const capacityPct = season?.factoryCapacityUnits ? (totalUnits / season.factoryCapacityUnits) * 100 : 0;
     return { totalStyles, totalUnits, estimatedCogs, cogsPct, capacityPct, potentialFpRevenue, costedRowCount: costedRows.length };
-  }, [payload?.averageCostKes, rows, season]);
+  }, [rows, season]);
 
   const saveRow = (row: RangePlanRow, field: 'styleCountTarget' | 'aosUnits' | 'openingStockUnits' | 'unitsSoldLastMonth' | 'expectedUnitCost' | 'sellingPrice' | 'notes', value: string) => {
     const optional = field === 'openingStockUnits' || field === 'unitsSoldLastMonth' || field === 'expectedUnitCost' || field === 'sellingPrice';
@@ -306,18 +263,13 @@ function RangePlanPage() {
   };
   const exportCsv = () => {
     if (!season) return;
-     const monthly = season.cadence === 'monthly';
-     const header = monthly
-       ? ['Product Category', 'Sub-Category', 'Opening Stock Units', 'Units Sold Last Month', 'Weeks of Cover', 'Planned Styles', 'Average Order Size', 'Total Units', 'Share of Units', 'Expected Unit Cost', 'Average Selling Price', 'Gross Revenue Potential', 'Input COGS %', 'Unit Floor', 'Unit Ceiling']
-       : ['Sub-Category', 'Tier', 'Style Target', 'Min', 'Max', 'AOS Units', 'Total Units', 'ASP', 'Potential FP Revenue', 'Notes'];
+     const header = ['Product Category', 'Sub-Category', 'Opening Stock Units', 'Units Sold Last Month', 'Weeks of Cover', 'Planned Styles', 'Average Order Size', 'Total Units', 'Share of Units', 'Expected Unit Cost', 'Average Selling Price', 'Gross Revenue Potential', 'Input COGS %', 'Unit Floor', 'Unit Ceiling'];
      const lines = rows.map((row) => {
         const weeksOfCover = row.openingStockUnits !== null && row.unitsSoldLastMonth !== null && row.unitsSoldLastMonth > 0
           ? row.openingStockUnits / (row.unitsSoldLastMonth / 4.33)
           : null;
        const inputCogs = row.expectedUnitCost !== null && row.sellingPrice ? row.expectedUnitCost / (row.sellingPrice / 1.16) * 100 : null;
-       const values = monthly
-         ? [row.productCategory, row.subCategory, row.openingStockUnits, row.unitsSoldLastMonth, weeksOfCover, row.styleCountTarget, row.aosUnits, row.totalUnitsImplied, totals.totalUnits ? row.totalUnitsImplied / totals.totalUnits : 0, row.expectedUnitCost, row.sellingPrice, row.potentialFpRevenue, inputCogs, row.totalUnitsImplied * 0.9, row.totalUnitsImplied * 1.1]
-         : [row.subCategory, displayTier(row.tier), row.styleCountTarget, row.styleCountMin, row.styleCountMax, row.aosUnits, row.totalUnitsImplied, row.asp, row.potentialFpRevenue, row.notes];
+        const values = [row.productCategory, row.subCategory, row.openingStockUnits, row.unitsSoldLastMonth, weeksOfCover, row.styleCountTarget, row.aosUnits, row.totalUnitsImplied, totals.totalUnits ? row.totalUnitsImplied / totals.totalUnits : 0, row.expectedUnitCost, row.sellingPrice, row.potentialFpRevenue, inputCogs, row.totalUnitsImplied * 0.9, row.totalUnitsImplied * 1.1];
        return values.map((value) => `"${String(value ?? '').replaceAll('"', '""')}"`).join(',');
      });
     const blob = new Blob([[header.join(','), ...lines].join('\n')], { type: 'text/csv;charset=utf-8' });
@@ -332,10 +284,13 @@ function RangePlanPage() {
   if (rangePlan.isLoading) return <section className="page"><div className="range-plan-loading"><RefreshCw size={20} /><span>Loading range plan…</span></div></section>;
   if (rangePlan.isError || !payload || !season) return <section className="page"><div className="range-plan-error"><Target size={22} /><h2>Range Plan is unavailable</h2><p>We could not reach the planning data. Your saved plan is safe.</p><button className="button button-dark" onClick={() => rangePlan.refetch()}><RefreshCw size={15} /> Try again</button></div></section>;
 
-  const tierRows = (tier: Tier) => rows.filter((row) => row.tier === tier);
   const capacityTone = totals.capacityPct <= 100 ? 'success' : totals.capacityPct <= 110 ? 'warning' : 'danger';
   const cogsTone = totals.cogsPct <= season.cogsBudgetPct ? 'success' : 'danger';
   const budgetCeiling = season.revenueTargetKes * (season.cogsBudgetPct / 100);
+  const quarterMonthlyUnits = payload.quarterMonthlyRollup.reduce((sum, month) => sum + month.plannedUnits, 0);
+  const quarterMonthlyRevenue = payload.quarterMonthlyRollup.reduce((sum, month) => sum + month.grossRevenuePotential, 0);
+  const quarterTargetAsp = season.factoryCapacityUnits > 0 ? season.revenueTargetKes / season.factoryCapacityUnits : 0;
+  const augustAchievedAsp = 3897;
 
   return (
     <section className="page range-plan-page">
@@ -373,93 +328,61 @@ function RangePlanPage() {
       {activeTab === 'matrix' && (
         <>
           <div className="range-stat-grid">
-            <StatTile label="Total styles planned" value={numberFormat(totals.totalStyles)} detail={season.cadence === 'monthly' ? 'Across all product categories' : 'Across all tier groups'} icon={<Target size={16} />} />
+            <StatTile label="Total styles planned" value={numberFormat(totals.totalStyles)} detail="Across all product categories" icon={<Target size={16} />} />
             <StatTile label="Total units implied" value={numberFormat(totals.totalUnits)} detail={`${totals.capacityPct.toFixed(0)}% of ${numberFormat(season.factoryCapacityUnits)} factory capacity`} tone={capacityTone} icon={totals.capacityPct > 100 ? <TrendingUp size={16} /> : <TrendingDown size={16} />} />
-            <StatTile label="Estimated COGS" value={kesMillions(totals.estimatedCogs)} detail={season.cadence === 'monthly' ? `${totals.costedRowCount} costed rows` : `${kes(payload.averageCostKes)} average cost per unit`} icon={<TrendingDown size={16} />} />
-             <StatTile label={season.cadence === 'monthly' ? 'Gross revenue potential' : 'Potential FP Revenue'} value={kesMillions(totals.potentialFpRevenue)} detail={season.cadence === 'monthly' ? 'Total units × selling price' : 'Planned NOOS, Core and Recent styles'} tone="success" icon={<TrendingUp size={16} />} />
-              <StatTile label="COGS vs budget" value={totals.costedRowCount || season.cadence === 'quarterly' ? `${totals.cogsPct.toFixed(1)}%` : '—'} detail={season.cadence === 'monthly' ? `Blended across ${totals.costedRowCount} costed rows · ${season.cogsBudgetPct}% ceiling` : `${season.cogsBudgetPct}% ceiling · cost ÷ VAT-exclusive selling price`} tone={cogsTone} icon={<Save size={16} />} />
+            <StatTile label="Estimated COGS" value={kesMillions(totals.estimatedCogs)} detail={`${totals.costedRowCount} costed rows`} icon={<TrendingDown size={16} />} />
+            <StatTile label="Gross revenue potential" value={kesMillions(totals.potentialFpRevenue)} detail="Total units × selling price" tone="success" icon={<TrendingUp size={16} />} />
+            <StatTile label="COGS vs budget" value={totals.costedRowCount ? `${totals.cogsPct.toFixed(1)}%` : '—'} detail={`Blended across ${totals.costedRowCount} costed rows · ${season.cogsBudgetPct}% ceiling`} tone={cogsTone} icon={<Save size={16} />} />
           </div>
           <div className="range-section-toolbar">
-            <div><span className="range-eyebrow">Mix matrix</span><h2>{season.cadence === 'monthly' ? 'Plan the month by product category' : 'Plan the shape of the season'}</h2><p>Click a gold value to edit. Changes save when you leave the cell.</p></div>
+            <div><span className="range-eyebrow">Mix matrix</span><h2>Plan by product category</h2><p>Click a gold value to edit. Changes save when you leave the cell.</p></div>
             <button type="button" className="button button-outline" onClick={exportCsv}><Download size={15} /> Export CSV</button>
           </div>
           <div className="range-matrix-card">
             <div className="range-table-scroll">
-              {season.cadence === 'monthly' ? (
-                <table className="range-table range-monthly-table">
-                  <thead><tr><th>Sub-Category</th><th>Opening Stock</th><th>Sold Last Month</th><th>Weeks of Cover</th><th>Planned Styles</th><th>Average Order Size</th><th>Total Units</th><th>Share of Units</th><th>Expected Unit Cost</th><th>Average Selling Price</th><th>Gross Revenue Potential</th><th>Input COGS</th><th>Unit Floor</th><th>Unit Ceiling</th></tr></thead>
-                  <tbody>
-                    {monthlyCategoryOrder.map((category) => {
-                      const categoryRows = rows.filter((row) => row.productCategory === category);
-                      if (!categoryRows.length) return null;
-                      const categoryStyles = categoryRows.reduce((sum, row) => sum + row.styleCountTarget, 0);
-                      const categoryUnits = categoryRows.reduce((sum, row) => sum + row.totalUnitsImplied, 0);
-                      return (
-                        <Fragment key={category}>
-                          <tr className="range-tier-heading range-category-heading"><td colSpan={14}><strong>{category}</strong><span>{categoryRows.length} sub-categories</span></td></tr>
-                          {categoryRows.map((row) => {
-                            const weeksOfCover = row.openingStockUnits !== null && row.unitsSoldLastMonth !== null && row.unitsSoldLastMonth > 0
-                              ? row.openingStockUnits / (row.unitsSoldLastMonth / 4.33)
-                              : null;
-                            const shareOfUnits = totals.totalUnits ? row.totalUnitsImplied / totals.totalUnits * 100 : 0;
-                            const inputCogs = row.expectedUnitCost !== null && row.sellingPrice ? row.expectedUnitCost / (row.sellingPrice / 1.16) * 100 : null;
-                            return (
-                              <tr key={row.id} className={inputCogs !== null && inputCogs > season.cogsBudgetPct ? 'range-cogs-over' : ''}>
-                                <td><strong>{row.subCategory}</strong></td>
-                                <td><InlineCell value={row.openingStockUnits} displayValue={row.openingStockUnits === null ? '' : numberFormat(row.openingStockUnits)} kind="number" ariaLabel={`${row.subCategory} opening stock units`} onSave={(value) => saveRow(row, 'openingStockUnits', value)} /></td>
-                                <td><InlineCell value={row.unitsSoldLastMonth} kind="number" ariaLabel={`${row.subCategory} units sold last month`} onSave={(value) => saveRow(row, 'unitsSoldLastMonth', value)} /></td>
-                                <td className="range-readonly">{weeksOfCover === null ? '—' : `${weeksOfCover.toFixed(1)} wks`}</td>
-                                <td><InlineCell value={row.styleCountTarget} kind="number" ariaLabel={`${row.subCategory} planned styles`} onSave={(value) => saveRow(row, 'styleCountTarget', value)} /></td>
-                                <td><InlineCell value={row.aosUnits} kind="number" ariaLabel={`${row.subCategory} average order size`} onSave={(value) => saveRow(row, 'aosUnits', value)} /></td>
-                                <td className="range-total-cell">{numberFormat(row.totalUnitsImplied)}</td>
-                                <td className="range-readonly">{shareOfUnits.toFixed(1)}%</td>
-                                <td><InlineCell value={row.expectedUnitCost} displayValue={kes(row.expectedUnitCost)} kind="number" ariaLabel={`${row.subCategory} expected unit cost`} onSave={(value) => saveRow(row, 'expectedUnitCost', value)} /></td>
-                                <td><InlineCell value={row.sellingPrice} displayValue={kes(row.sellingPrice)} kind="number" ariaLabel={`${row.subCategory} average selling price`} onSave={(value) => saveRow(row, 'sellingPrice', value)} /></td>
-                                <td className="range-total-cell">{row.sellingPrice === null ? '—' : kes(row.potentialFpRevenue)}</td>
-                                <td className={inputCogs !== null && inputCogs > season.cogsBudgetPct ? 'range-cogs-alert' : 'range-readonly'}>{inputCogs === null ? '—' : `${inputCogs.toFixed(1)}%`}</td>
-                                <td className="range-readonly">{numberFormat(Math.round(row.totalUnitsImplied * 0.9))}</td>
-                                <td className="range-readonly">{numberFormat(Math.round(row.totalUnitsImplied * 1.1))}</td>
-                              </tr>
-                            );
-                          })}
-                          <tr className="range-subtotal"><td>Subtotal · {category}</td><td colSpan={3} /><td>{numberFormat(categoryStyles)}</td><td /><td>{numberFormat(categoryUnits)}</td><td>{totals.totalUnits ? `${(categoryUnits / totals.totalUnits * 100).toFixed(1)}%` : '—'}</td><td colSpan={6} /></tr>
-                        </Fragment>
-                      );
-                    })}
-                    <tr className="range-grand-total"><td>Grand total</td><td colSpan={3} /><td>{numberFormat(totals.totalStyles)}</td><td /><td>{numberFormat(totals.totalUnits)}</td><td>100.0%</td><td colSpan={2} /><td>{kes(totals.potentialFpRevenue)}</td><td>{totals.costedRowCount ? `${totals.cogsPct.toFixed(1)}%` : '—'}</td><td colSpan={2} /></tr>
-                  </tbody>
-                </table>
-              ) : (
-                <table className="range-table">
-                  <thead><tr><th>Sub-Category</th><th>Tier</th><th>Style Target</th><th>Min</th><th>Max</th><th>AOS (units)</th><th>Total Units</th><th>ASP</th><th>Potential FP Revenue</th><th>Notes</th></tr></thead>
-                  <tbody>
-                    {tierOrder.map((tier) => {
-                      const groupRows = tierRows(tier);
-                      const groupStyles = groupRows.reduce((sum, row) => sum + row.styleCountTarget, 0);
-                      const groupUnits = groupRows.reduce((sum, row) => sum + row.totalUnitsImplied, 0);
-                      return (
-                        <Fragment key={tier}>
-                          <tr className="range-tier-heading"><td colSpan={10}><span className={`range-tier-dot tier-${tier.replace('/', '-')}`} /><strong>{tierLabels[tier]}</strong><span>{groupRows.length} planning lines</span></td></tr>
-                          {groupRows.map((row) => (
-                            <tr key={row.id}>
-                              <td><strong>{row.subCategory}</strong></td><td><span className={`range-tier-pill tier-${row.tier.replace('/', '-')}`}>{displayTier(row.tier)}</span></td>
-                              <td><InlineCell value={row.styleCountTarget} kind="number" ariaLabel={`${row.subCategory} style target`} onSave={(value) => saveRow(row, 'styleCountTarget', value)} /></td>
-                              <td className="range-readonly">{numberFormat(row.styleCountMin)}</td><td className="range-readonly">{numberFormat(row.styleCountMax)}</td>
-                              <td><InlineCell value={row.aosUnits} kind="number" ariaLabel={`${row.subCategory} AOS`} onSave={(value) => saveRow(row, 'aosUnits', value)} /></td>
-                              <td className="range-total-cell">{numberFormat(row.totalUnitsImplied)}</td><td className="range-readonly">{kes(row.asp)}</td>
-                              <td className="range-total-cell">{row.tier === 'New/Test' ? '—' : kes(row.potentialFpRevenue)}</td>
-                              <td><InlineCell value={row.notes} ariaLabel={`${row.subCategory} notes`} placeholder="Add note" onSave={(value) => saveRow(row, 'notes', value)} /></td>
+              <table className="range-table range-monthly-table">
+                <thead><tr><th>Sub-Category</th><th>Opening Stock</th><th>Sold Last Month</th><th>Weeks of Cover</th><th>Planned Styles</th><th>Average Order Size</th><th>Total Units</th><th>Share of Units</th><th>Expected Unit Cost</th><th>Average Selling Price</th><th>Gross Revenue Potential</th><th>Input COGS</th><th>Unit Floor</th><th>Unit Ceiling</th></tr></thead>
+                <tbody>
+                  {monthlyCategoryOrder.map((category) => {
+                    const categoryRows = rows.filter((row) => row.productCategory === category);
+                    if (!categoryRows.length) return null;
+                    const categoryStyles = categoryRows.reduce((sum, row) => sum + row.styleCountTarget, 0);
+                    const categoryUnits = categoryRows.reduce((sum, row) => sum + row.totalUnitsImplied, 0);
+                    return (
+                      <Fragment key={category}>
+                        <tr className="range-tier-heading range-category-heading"><td colSpan={14}><strong>{category}</strong><span>{categoryRows.length} sub-categories</span></td></tr>
+                        {categoryRows.map((row) => {
+                          const weeksOfCover = row.openingStockUnits !== null && row.unitsSoldLastMonth !== null && row.unitsSoldLastMonth > 0
+                            ? row.openingStockUnits / (row.unitsSoldLastMonth / 4.33)
+                            : null;
+                          const shareOfUnits = totals.totalUnits ? row.totalUnitsImplied / totals.totalUnits * 100 : 0;
+                          const inputCogs = row.expectedUnitCost !== null && row.sellingPrice ? row.expectedUnitCost / (row.sellingPrice / 1.16) * 100 : null;
+                          return (
+                            <tr key={row.id} className={inputCogs !== null && inputCogs > season.cogsBudgetPct ? 'range-cogs-over' : ''}>
+                              <td><strong>{row.subCategory}</strong></td>
+                              <td><InlineCell value={row.openingStockUnits} displayValue={row.openingStockUnits === null ? '' : numberFormat(row.openingStockUnits)} kind="number" ariaLabel={`${row.subCategory} opening stock units`} onSave={(value) => saveRow(row, 'openingStockUnits', value)} /></td>
+                              <td><InlineCell value={row.unitsSoldLastMonth} kind="number" ariaLabel={`${row.subCategory} units sold last month`} onSave={(value) => saveRow(row, 'unitsSoldLastMonth', value)} /></td>
+                              <td className="range-readonly">{weeksOfCover === null ? '—' : `${weeksOfCover.toFixed(1)} wks`}</td>
+                              <td><InlineCell value={row.styleCountTarget} kind="number" ariaLabel={`${row.subCategory} planned styles`} onSave={(value) => saveRow(row, 'styleCountTarget', value)} /></td>
+                              <td><InlineCell value={row.aosUnits} kind="number" ariaLabel={`${row.subCategory} average order size`} onSave={(value) => saveRow(row, 'aosUnits', value)} /></td>
+                              <td className="range-total-cell">{numberFormat(row.totalUnitsImplied)}</td>
+                              <td className="range-readonly">{shareOfUnits.toFixed(1)}%</td>
+                              <td><InlineCell value={row.expectedUnitCost} displayValue={kes(row.expectedUnitCost)} kind="number" ariaLabel={`${row.subCategory} expected unit cost`} onSave={(value) => saveRow(row, 'expectedUnitCost', value)} /></td>
+                              <td><InlineCell value={row.sellingPrice} displayValue={kes(row.sellingPrice)} kind="number" ariaLabel={`${row.subCategory} average selling price`} onSave={(value) => saveRow(row, 'sellingPrice', value)} /></td>
+                              <td className="range-total-cell">{row.sellingPrice === null ? '—' : kes(row.potentialFpRevenue)}</td>
+                              <td className={inputCogs !== null && inputCogs > season.cogsBudgetPct ? 'range-cogs-alert' : 'range-readonly'}>{inputCogs === null ? '—' : `${inputCogs.toFixed(1)}%`}</td>
+                              <td className="range-readonly">{numberFormat(Math.round(row.totalUnitsImplied * 0.9))}</td>
+                              <td className="range-readonly">{numberFormat(Math.round(row.totalUnitsImplied * 1.1))}</td>
                             </tr>
-                          ))}
-                          <tr className="range-subtotal"><td colSpan={2}>Subtotal · {tierLabels[tier]}</td><td>{numberFormat(groupStyles)}</td><td colSpan={3} /><td>{numberFormat(groupUnits)}</td><td /></tr>
-                          {addingTier === tier ? <tr className="range-add-row"><td colSpan={10}><div className="range-add-form"><input autoFocus value={newSubCategory} onChange={(event) => setNewSubCategory(event.target.value)} placeholder="New sub-category name" onKeyDown={(event) => { if (event.key === 'Enter' && season) createRow.mutate({ seasonId: season.id, tier, subCategory: newSubCategory.trim() }); }} /><button type="button" className="button button-gold" disabled={!newSubCategory.trim() || createRow.isPending} onClick={() => createRow.mutate({ seasonId: season.id, tier, subCategory: newSubCategory.trim() })}><Plus size={14} /> Add</button><button type="button" className="icon-button" onClick={() => { setAddingTier(null); setNewSubCategory(''); }} aria-label="Cancel add row"><X size={15} /></button></div></td></tr> : <tr className="range-add-row"><td colSpan={10}><button type="button" className="range-add-button" onClick={() => { setAddingTier(tier); setNewSubCategory(''); }}><Plus size={14} /> Add row to {tierLabels[tier]}</button></td></tr>}
-                        </Fragment>
-                      );
-                    })}
-                    <tr className="range-grand-total"><td colSpan={2}>Grand total</td><td>{numberFormat(totals.totalStyles)}</td><td colSpan={3} /><td>{numberFormat(totals.totalUnits)}</td><td /><td>{kes(totals.potentialFpRevenue)}</td><td /></tr>
-                  </tbody>
-                </table>
-              )}
+                          );
+                        })}
+                        <tr className="range-subtotal"><td>Subtotal · {category}</td><td colSpan={3} /><td>{numberFormat(categoryStyles)}</td><td /><td>{numberFormat(categoryUnits)}</td><td>{totals.totalUnits ? `${(categoryUnits / totals.totalUnits * 100).toFixed(1)}%` : '—'}</td><td colSpan={6} /></tr>
+                      </Fragment>
+                    );
+                  })}
+                  <tr className="range-grand-total"><td>Grand total</td><td colSpan={3} /><td>{numberFormat(totals.totalStyles)}</td><td /><td>{numberFormat(totals.totalUnits)}</td><td>{totals.totalUnits ? '100.0%' : '—'}</td><td colSpan={2} /><td>{kes(totals.potentialFpRevenue)}</td><td>{totals.costedRowCount && totals.totalUnits ? `${totals.cogsPct.toFixed(1)}%` : '—'}</td><td colSpan={2} /></tr>
+                </tbody>
+              </table>
             </div>
           </div>
         </>
@@ -468,46 +391,98 @@ function RangePlanPage() {
       {activeTab === 'otb' && (
         <>
           <div className="range-section-toolbar">
-            <div><span className="range-eyebrow">Open to buy</span><h2>Turn the annual ambition into a monthly rhythm</h2><p>Revenue starts from the season target divided by 12. All gold cells are editable and save on blur.</p></div>
+            <div><span className="range-eyebrow">Open to buy</span><h2>{season.cadence === 'quarterly' ? 'Do the monthly plans add up to the quarter?' : 'Turn the plan into a monthly rhythm'}</h2><p>{season.cadence === 'quarterly' ? 'October, November and December are calculated directly from their category plans.' : 'All gold cells are editable and save on blur.'}</p></div>
             <span className="range-otb-assumption">COGS budget {season.cogsBudgetPct}%</span>
           </div>
-          <div className="range-otb-card">
-            <div className="range-table-scroll">
-              <table className="range-table range-otb-table">
-                <thead><tr><th>Measure</th>{payload.otb.map((month) => <th key={month.monthYear}>{monthLabel(month.monthYear)}</th>)}</tr></thead>
-                <tbody>
-                  <tr><th>Revenue Target <small>KES</small></th>{payload.otb.map((month) => <td key={month.monthYear}><InlineCell value={month.revenueTarget ?? season.revenueTargetKes / 12} displayValue={kes(month.revenueTarget ?? season.revenueTargetKes / 12)} kind="number" ariaLabel={`${monthLabel(month.monthYear)} revenue target`} onSave={(value) => saveOtb(month, 'revenueTarget', value)} /></td>)}</tr>
-                  <tr className="range-auto-row"><th>COGS Budget <small>KES</small></th>{payload.otb.map((month) => <td key={month.monthYear}>{kes((month.revenueTarget ?? season.revenueTargetKes / 12) * season.cogsBudgetPct / 100)}</td>)}</tr>
-                  <tr><th>Planned Units</th>{payload.otb.map((month) => <td key={month.monthYear}><InlineCell value={month.plannedUnits} kind="number" ariaLabel={`${monthLabel(month.monthYear)} planned units`} onSave={(value) => saveOtb(month, 'plannedUnits', value)} /></td>)}</tr>
-                  <tr><th>New Styles Launching</th>{payload.otb.map((month) => <td key={month.monthYear}><InlineCell value={month.newStylesCount} kind="number" ariaLabel={`${monthLabel(month.monthYear)} new styles`} onSave={(value) => saveOtb(month, 'newStylesCount', value)} /></td>)}</tr>
-                  <tr className="range-auto-row"><th>Carry-over Styles</th>{payload.otb.map((month) => <td key={month.monthYear}>{numberFormat(payload.health.activeStyleCount)}</td>)}</tr>
-                  <tr className={payload.otb.some((month) => month.id === null) ? 'range-otb-unset' : ''}><th>OTB Value <small>KES</small></th>{payload.otb.map((month) => <td key={month.monthYear}>{kes((month.revenueTarget ?? season.revenueTargetKes / 12) * season.cogsBudgetPct / 100)}{month.id === null && <span className="range-unset-label">Not saved</span>}</td>)}</tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-          <div className="range-otb-note"><span className="range-gold-dot" /> OTB Value is the monthly COGS budget ceiling. Enter planned units and new style launches to make the buy cadence explicit.</div>
-           <div className="range-otb-category-card">
-             <div className="range-section-toolbar"><div><span className="range-eyebrow">Category intake budget</span><h2>Where the monthly buy goes</h2><p>Category allocations follow each line's share of the planned style count.</p></div></div>
-             <div className="range-table-scroll">
-               <table className="range-table range-otb-category-table">
-                 <thead><tr><th>Sub-Category</th>{payload.otb.map((month) => <th key={month.monthYear}>{monthShort(month.monthYear)}</th>)}</tr></thead>
-                 <tbody>
-                   {rows.map((row) => (
-                     <tr key={row.id}><td><strong>{row.subCategory}</strong><small>{displayTier(row.tier)} · {numberFormat(row.styleCountTarget)} styles</small></td>{payload.otb.map((month) => { const monthlyBudget = (month.revenueTarget ?? season.revenueTargetKes / 12) * season.cogsBudgetPct / 100; const share = totals.totalStyles ? row.styleCountTarget / totals.totalStyles : 0; return <td key={`${row.id}-${month.monthYear}`}>{kes(monthlyBudget * share)}</td>; })}</tr>
-                   ))}
-                   <tr className="range-grand-total"><td>Total category intake budget</td>{payload.otb.map((month) => <td key={month.monthYear}>{kes((month.revenueTarget ?? season.revenueTargetKes / 12) * season.cogsBudgetPct / 100)}</td>)}</tr>
-                 </tbody>
-               </table>
-             </div>
-           </div>
+          {season.cadence === 'quarterly' ? (
+            <>
+              <div className="range-otb-card">
+                <div className="range-table-scroll">
+                  <table className="range-table range-otb-table range-otb-recon-table">
+                    <thead><tr><th>Measure</th>{payload.quarterMonthlyRollup.map((month) => <th key={month.monthYear}>{monthLabel(month.monthYear)}</th>)}<th>Combined</th><th>Q4 benchmark</th><th>Variance</th></tr></thead>
+                    <tbody>
+                      <tr>
+                        <th>Planned Units <small>from monthly mix matrices</small></th>
+                        {payload.quarterMonthlyRollup.map((month) => <td key={month.monthYear}>{numberFormat(month.plannedUnits)}</td>)}
+                        <td><strong>{numberFormat(quarterMonthlyUnits)}</strong></td>
+                        <td>{numberFormat(totals.totalUnits)}</td>
+                        <td className={quarterMonthlyUnits - totals.totalUnits < 0 ? 'range-negative-variance' : ''}>{numberFormat(quarterMonthlyUnits - totals.totalUnits)}</td>
+                      </tr>
+                      <tr>
+                        <th>Gross Revenue Potential <small>units × selling price</small></th>
+                        {payload.quarterMonthlyRollup.map((month) => <td key={month.monthYear}>{kes(month.grossRevenuePotential)}</td>)}
+                        <td><strong>{kes(quarterMonthlyRevenue)}</strong></td>
+                        <td>{kes(season.revenueTargetKes)}</td>
+                        <td className={quarterMonthlyRevenue - season.revenueTargetKes < 0 ? 'range-negative-variance' : ''}>{kes(quarterMonthlyRevenue - season.revenueTargetKes)}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              <div className="range-quarter-price-gap">
+                <div><span>Q4 target revenue</span><strong>{kesMillions(season.revenueTargetKes)}</strong></div>
+                <div><span>Q4 capacity</span><strong>{numberFormat(season.factoryCapacityUnits)} units</strong></div>
+                <div><span>Implied blended selling price</span><strong>{kes(quarterTargetAsp)}</strong></div>
+                <div><span>August achieved selling price</span><strong>{kes(augustAchievedAsp)}</strong></div>
+                <p>The Q4 target requires {kes(quarterTargetAsp - augustAchievedAsp)} more per unit than August. The planned November discount mix and December premium mix remain visible in the monthly totals above.</p>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="range-otb-card">
+                <div className="range-table-scroll">
+                  <table className="range-table range-otb-table">
+                    <thead><tr><th>Measure</th>{payload.otb.map((month) => <th key={month.monthYear}>{monthLabel(month.monthYear)}</th>)}</tr></thead>
+                    <tbody>
+                      <tr><th>Revenue Target <small>KES</small></th>{payload.otb.map((month) => <td key={month.monthYear}><InlineCell value={month.revenueTarget ?? season.revenueTargetKes} displayValue={kes(month.revenueTarget ?? season.revenueTargetKes)} kind="number" ariaLabel={`${monthLabel(month.monthYear)} revenue target`} onSave={(value) => saveOtb(month, 'revenueTarget', value)} /></td>)}</tr>
+                      <tr className="range-auto-row"><th>COGS Budget <small>KES</small></th>{payload.otb.map((month) => <td key={month.monthYear}>{kes((month.revenueTarget ?? season.revenueTargetKes) * season.cogsBudgetPct / 100)}</td>)}</tr>
+                      <tr className="range-auto-row"><th>Planned Units <small>from mix matrix</small></th>{payload.otb.map((month) => <td key={month.monthYear}>{numberFormat(totals.totalUnits)}</td>)}</tr>
+                      <tr><th>New Styles Launching</th>{payload.otb.map((month) => <td key={month.monthYear}><InlineCell value={month.newStylesCount} kind="number" ariaLabel={`${monthLabel(month.monthYear)} new styles`} onSave={(value) => saveOtb(month, 'newStylesCount', value)} /></td>)}</tr>
+                      <tr className="range-auto-row"><th>Gross Revenue Potential</th>{payload.otb.map((month) => <td key={month.monthYear}>{kes(totals.potentialFpRevenue)}</td>)}</tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              <div className="range-otb-note"><span className="range-gold-dot" /> Planned units and gross revenue come directly from this plan’s category matrix.</div>
+              <div className="range-otb-category-card">
+                <div className="range-section-toolbar"><div><span className="range-eyebrow">Category intake budget</span><h2>Where the monthly buy goes</h2><p>Category allocations follow each line's share of the planned style count.</p></div></div>
+                <div className="range-table-scroll">
+                  <table className="range-table range-otb-category-table">
+                    <thead><tr><th>Sub-Category</th>{payload.otb.map((month) => <th key={month.monthYear}>{monthShort(month.monthYear)}</th>)}</tr></thead>
+                    <tbody>
+                      {rows.map((row) => (
+                        <tr key={row.id}><td><strong>{row.subCategory}</strong><small>{row.productCategory} · {numberFormat(row.styleCountTarget)} styles</small></td>{payload.otb.map((month) => { const monthlyBudget = (month.revenueTarget ?? season.revenueTargetKes) * season.cogsBudgetPct / 100; const share = totals.totalStyles ? row.styleCountTarget / totals.totalStyles : 0; return <td key={`${row.id}-${month.monthYear}`}>{kes(monthlyBudget * share)}</td>; })}</tr>
+                      ))}
+                      <tr className="range-grand-total"><td>Total category intake budget</td>{payload.otb.map((month) => <td key={month.monthYear}>{kes((month.revenueTarget ?? season.revenueTargetKes) * season.cogsBudgetPct / 100)}</td>)}</tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </>
+          )}
         </>
       )}
 
       {activeTab === 'health' && (
         <>
           <div className="range-section-toolbar">
-            <div><span className="range-eyebrow">Live health check</span><h2>Is the range telling a coherent story?</h2><p>Indicators use the active style catalogue and the current mix matrix.</p></div>
+            <div><span className="range-eyebrow">Live health check</span><h2>Is the range telling a coherent story?</h2><p>Tier counts come directly from the active range and never contribute to planned units or revenue.</p></div>
+          </div>
+          <div className="range-tier-health-card">
+            <div className="range-card-heading"><span className="range-eyebrow">Range architecture</span><h3>Style Count by Tier</h3></div>
+            <div className="range-table-scroll">
+              <table className="range-table range-tier-health-table">
+                <thead><tr><th>Tier</th><th>Current styles</th><th>Minimum target</th><th>Maximum target</th><th>Health</th></tr></thead>
+                <tbody>
+                  {payload.health.tiers.map((tier) => {
+                    const status = tier.count < tier.minimum ? 'Below target' : tier.count > tier.maximum ? 'Above target' : 'Within target';
+                    const tone = tier.count < tier.minimum ? 'below' : tier.count > tier.maximum ? 'above' : 'within';
+                    return <tr key={tier.tier}><td><strong>{tier.label}</strong></td><td>{numberFormat(tier.count)}</td><td>{numberFormat(tier.minimum)}</td><td>{numberFormat(tier.maximum)}</td><td><span className={`range-tier-health-status ${tone}`}>{status}</span></td></tr>;
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <p className="range-tier-health-note">Style counts only. Average order size is not applied.</p>
           </div>
           <div className="range-health-grid">
             <ChartCard eyebrow="Pipeline composition" title="New vs Repeat Split">

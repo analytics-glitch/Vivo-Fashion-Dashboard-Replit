@@ -54,7 +54,8 @@ const LEVEL_LABEL = ["Category", "Sub Category", "Style", "Colour"];
 const MAX_ROWS = 600;
 
 const FX = {
-  stock:    "Total SOH = current stock on hand (stores + sellable warehouse; pipeline excluded) — same basis as the Total Stock on Hand KPI.",
+  stock:    "Sellable SOH = stock available to sell now in Vivo, Zoya, Safari and Oasis retail stores, Online - Shop Zetu, plus Warehouse Finished Goods. Finished Goods Production, WIP, receiving, transit, raw materials, samples, QC/defects, holding/retired and unknown locations are excluded.",
+  pipeline: "Pipeline = committed units on open Odoo Buying Orders that have not yet become sellable finished goods. Broken down by Draft, BOM Pending, Ready, Partially Planned and Fully Planned. Pipeline is never added to SOH, WOC or SOR.",
   value:    "Stock Value = stock units × unit cost (KES, at cost).",
   sold:     "Units Sold = gross units sold in the selected period (returns not netted).",
   revenue:  "Total Revenue = net sales in the selected period (after discounts & returns, ex-VAT) — same basis as the hub's revenue figures.",
@@ -65,6 +66,29 @@ const FX = {
   woc:      "Weeks of Cover = stock ÷ weekly run-rate (trailing 6 months ÷ 26) — independent of the selected period, matching the tab's WOC.",
   lastOrd:  "Last Ordered = date of the most recent production/buying order for this style (style rows) or this exact colourway (colour rows). Dash = no order on record; category rows don't aggregate order dates.",
   skus:     "SKUs (stock / sold) = distinct SKUs (sizes) of this colour with stock on hand / sold in the period.",
+};
+
+const PIPELINE_STATES = [
+  ["draft", "Draft"],
+  ["bom_pending", "BOM Pending"],
+  ["ready", "Ready"],
+  ["partially_planned", "Partially Planned"],
+  ["fully_planned", "Fully Planned"],
+];
+
+const PipelineCell = ({ node, className = "" }) => {
+  const states = node?.pipeline_by_state || {};
+  const nonZero = PIPELINE_STATES.filter(([key]) => Number(states[key]) !== 0);
+  return (
+    <td className={`text-right px-2 py-1.5 tabular-nums ${className}`} title={FX.pipeline}>
+      <div className="font-medium text-slate-700">{fmtNum(node?.pipeline_units)}</div>
+      {nonZero.length > 0 ? (
+        <div className="mt-0.5 whitespace-nowrap text-[8.5px] font-normal leading-tight text-slate-400">
+          {nonZero.map(([key, label]) => `${label} ${fmtNum(states[key])}`).join(" · ")}
+        </div>
+      ) : null}
+    </td>
+  );
 };
 
 // Selected-period sell-through at every hierarchy level: units sold in the
@@ -172,7 +196,9 @@ const LEVEL_ROW_CLS = [
 
 const CSV_HEADERS = [
   "Level", "Category", "Sub Category", "Style", "Style Number", "Colour",
-  "SOH Units", "Stock Value KES", "Units Sold", "Revenue KES",
+  "Sellable SOH Units", "Pipeline Units", "Pipeline Draft", "Pipeline BOM Pending",
+  "Pipeline Ready", "Pipeline Partially Planned", "Pipeline Fully Planned",
+  "Stock Value KES", "Units Sold", "Revenue KES",
   "% of SOH", "% of Units Sold / SOR", "Gap pp", "WOC", "Last Ordered",
   "SKUs in Stock", "SKUs Sold",
 ];
@@ -207,11 +233,16 @@ const findStyleTarget = (categories, styleNumber) => {
   return found;
 };
 
-export default function MerchStockMix({ data, loading, error }) {
+export default function MerchStockMix({
+  data,
+  loading,
+  error,
+  showRetired = false,
+  onShowRetiredChange,
+}) {
   const [searchParams, setSearchParams] = useSearchParams();
   const [open, setOpen] = useState({});
   const [query, setQuery] = useState("");
-  const [showRetiredColourways, setShowRetiredColourways] = useState(true);
   const [detail, setDetail] = useState(null);
   const [highlightedStyle, setHighlightedStyle] = useState("");
   const rowRefs = useRef(new Map());
@@ -240,9 +271,7 @@ export default function MerchStockMix({ data, loading, error }) {
     const walk = (node, level, path, ancestorMatch, styleCtx) => {
       const ck = CHILD_KEYS[level];
       const kids = ck ? node[ck] || [] : [];
-      const visibleKids = level === 2 && !showRetiredColourways
-        ? kids.filter((child) => lifecycleStatus(child.status) === "Active")
-        : kids;
+      const visibleKids = kids;
       const nextCtx = level === 2
         ? { name: node.name, number: node.style_number, status: lifecycleStatus(node.status) }
         : styleCtx;
@@ -271,7 +300,7 @@ export default function MerchStockMix({ data, loading, error }) {
     };
     for (const c of cats) out.push(...walk(c, 0, c.name, false, null).rowList);
     return out;
-  }, [cats, q, open, showRetiredColourways]);
+  }, [cats, q, open]);
 
   // A deep link is also a real table filter: this keeps the selected style
   // visible even when it would otherwise fall below the 600-row safety cap.
@@ -298,7 +327,7 @@ export default function MerchStockMix({ data, loading, error }) {
   // Colour-only column stays hidden until colour rows are actually on screen
   // (a style drilled open, or a search surfacing colours) — fabric behaviour.
   const showSkus = shown.some((r) => r.level === 3);
-  const nCols = 11 + (showSkus ? 1 : 0);
+  const nCols = 12 + (showSkus ? 1 : 0);
 
   const toggle = (path) => setOpen((o) => ({ ...o, [path]: !o[path] }));
 
@@ -354,6 +383,10 @@ export default function MerchStockMix({ data, loading, error }) {
         level === 2 ? node.style_number || "" : level > 2 ? ctx.styleNumber : "",
         level === 3 ? node.name : "",
         Math.round(Number(node.stock_units) || 0),
+        Math.round(Number(node.pipeline_units) || 0),
+        ...PIPELINE_STATES.map(([key]) =>
+          Math.round(Number(node.pipeline_by_state?.[key]) || 0)
+        ),
         Math.round(Number(node.stock_value) || 0),
         Math.round(Number(node.units_period) || 0),
         Math.round(Number(node.revenue_period) || 0),
@@ -469,12 +502,12 @@ export default function MerchStockMix({ data, loading, error }) {
           >
             <input
               type="checkbox"
-              checked={showRetiredColourways}
-              onChange={(e) => setShowRetiredColourways(e.target.checked)}
+              checked={showRetired}
+              onChange={(e) => onShowRetiredChange?.(e.target.checked)}
               data-testid="mix-show-retired-colourways"
               className="h-3.5 w-3.5 rounded border-slate-300 text-[#1a5c38] focus:ring-[#1a5c38]/30"
             />
-            Show retired colourways
+            Show retired styles & colourways
           </label>
         </div>
       </div>
@@ -495,7 +528,8 @@ export default function MerchStockMix({ data, loading, error }) {
                 <th className="text-left font-semibold px-2 py-2">
                   Category / Sub / Style / Colour
                 </th>
-                <th className="text-right font-semibold px-2 py-2" title={FX.stock}>Total SOH</th>
+                <th className="text-right font-semibold px-2 py-2" title={FX.stock}>Sellable SOH</th>
+                <th className="text-right font-semibold px-2 py-2" title={FX.pipeline}>Pipeline</th>
                 <th className="text-right font-semibold px-2 py-2" title={FX.value}>Stock Value</th>
                 <th className="text-right font-semibold px-2 py-2" title={FX.sold}>Units Sold</th>
                 <th className="text-right font-semibold px-2 py-2" title={FX.revenue}>Total Revenue</th>
@@ -527,6 +561,7 @@ export default function MerchStockMix({ data, loading, error }) {
                   <td className="text-right px-2 py-2 tabular-nums" data-testid="mix-total-stock">
                     {fmtNum(totals.stock_units)}
                   </td>
+                  <PipelineCell node={totals} className="py-2" />
                   <td className="text-right px-2 py-2 tabular-nums">{fmtKESM(totals.stock_value)}</td>
                   <td className="text-right px-2 py-2 tabular-nums">{fmtNum(totals.units_period)}</td>
                   <td className="text-right px-2 py-2 tabular-nums">{fmtKESM(totals.revenue_period)}</td>
@@ -639,6 +674,7 @@ export default function MerchStockMix({ data, loading, error }) {
                       </div>
                     </td>
                     <td className="text-right px-2 py-1.5 tabular-nums">{fmtNum(n.stock_units)}</td>
+                    <PipelineCell node={n} />
                     <td className="text-right px-2 py-1.5 tabular-nums">{fmtKESM(n.stock_value)}</td>
                     <td className="text-right px-2 py-1.5 tabular-nums">{fmtNum(n.units_period)}</td>
                     <td className="text-right px-2 py-1.5 tabular-nums">{fmtKESM(n.revenue_period)}</td>

@@ -182,6 +182,37 @@ _WAREHOUSE_LOCATIONS = (
 _HOLDING_STORES = "'MarKT/Stock','Retired Stock','ARENA/Stock'"
 _HOLDING_STORES_LOWER = "'markt/stock','retired stock','arena/stock'"
 
+# Merch Stock Mix sellable-stock contract. Keep this explicit and allowlisted:
+#   SELLABLE STORES
+#     • Vivo retail locations (`Vivo ...`)
+#     • Zoya and Safari retail locations (`Zoya ...`, `Safari ...`)
+#     • The Oasis Mall and Online - Shop Zetu
+#   SELLABLE WAREHOUSE
+#     • Warehouse Finished Goods only (WHFIN/Stock after Odoo normalisation)
+#   EXCLUDED
+#     • Finished Goods Production / FGPRD, Warehouse Receiving, In Transit,
+#       holding/retired locations, Raw Materials, Fabric Trimming, Sew/Stock,
+#       samples, QC/defects, staff purchases, and every unknown/unmapped
+#       location. Those units are not available for a customer to buy today.
+#
+# Pipeline is NOT inferred from any all_inventory location and is never added to
+# sellable SOH. It comes separately from open Odoo Buying Orders by bo_state.
+_SELLABLE_WAREHOUSE_LOCATION = "Warehouse Finished Goods"
+_PIPELINE_BO_STATES = (
+    "draft", "bom_pending", "ready", "partially_planned", "fully_planned",
+)
+
+
+def _sellable_store_pred(alias):
+    return f"""(
+        {alias}.pos_location_name = 'The Oasis Mall'
+        OR {alias}.pos_location_name = 'Online - Shop Zetu'
+        OR {alias}.pos_location_name LIKE 'Vivo %%'
+        OR {alias}.pos_location_name LIKE 'Zoya %%'
+        OR {alias}.pos_location_name LIKE 'Safari %%'
+    )"""
+
+
 _VAT_DIV = "(CASE WHEN s.country IN ('Uganda','Rwanda') THEN 1.18 ELSE 1.16 END)"
 
 _NET_SALES_EXPR = (
@@ -4233,7 +4264,7 @@ GROUP BY COALESCE(sk.store, sa.store)
 # ── Stock Mix drill-down tree ─────────────────────────────────────────────────
 
 def _fetch_stock_mix(brand=None, subcategory=None, tier=None, from_date=None, to_date=None,
-                     country=None, pos_location=None):
+                     country=None, pos_location=None, include_retired=False):
     """Nested Category → Sub Category → Style → Colour stock-mix tree.
 
     Brings the fabric Stock Mix drill-down pattern to finished goods: every
@@ -4286,6 +4317,8 @@ def _fetch_stock_mix(brand=None, subcategory=None, tier=None, from_date=None, to
         "period_to":   period_to,
         "six_mo_ago":  six_mo_ago,
         "today":       today_str,
+        "include_retired": bool(include_retired),
+        "pipeline_states": list(_PIPELINE_BO_STATES),
     }
 
     # Brand / subcategory narrow the style universe exactly like _fetch_styles:
@@ -4325,10 +4358,15 @@ def _fetch_stock_mix(brand=None, subcategory=None, tier=None, from_date=None, to
             pos_sales_clause = " AND s.pos_location_name = ANY(%(pos_locations)s)"
             pos_has_filter   = True
 
-    # Same predicates as _fetch_styles' stock CTE. When a POS location filter
-    # is active, warehouse stock doesn't belong to that store → forced to 0.
-    stores_pred = f"i.pos_location_name NOT IN ({_WAREHOUSE_LOCATIONS}){pos_store_clause}"
-    wh_pred = "FALSE" if pos_has_filter else "i.pos_location_name = 'Warehouse Finished Goods'"
+    # Sellable SOH is allowlisted, not defined as "anything not internal".
+    # This prevents a newly introduced Odoo WIP/QC/raw-material location from
+    # silently becoming a retail store. When a POS filter is active, warehouse
+    # stock does not belong to that store and is forced to zero.
+    stores_pred = f"{_sellable_store_pred('i')}{pos_store_clause}"
+    wh_pred = (
+        "FALSE" if pos_has_filter
+        else f"i.pos_location_name = '{_SELLABLE_WAREHOUSE_LOCATION}'"
+    )
     soh_warehouse_expr = (
         "0" if pos_has_filter else
         f"COALESCE(SUM(i.available) FILTER (WHERE {wh_pred}), 0)"
@@ -4400,6 +4438,30 @@ msku AS (
     WHERE style_name IS NOT NULL
     GROUP BY sku
 ),
+/* One stable inventory grain before any product-master join. all_inventory is
+   sourced from Odoo stock.quant and can contain several quant rows for one
+   SKU/location. Aggregate those source rows exactly once here, then perform
+   the one-row-per-SKU master lookup. This prevents catalogue or location
+   fan-out from multiplying finished-goods units.
+
+   Sellable locations are intentionally explicit:
+     stores    = Vivo*, Zoya*, Safari*, The Oasis Mall, Online - Shop Zetu
+     warehouse = Warehouse Finished Goods only
+   Everything else (FGPRD/Finished Goods Production, receiving, in-transit,
+   raw materials, trim, Sew/Stock, QC/defects, samples, holding/retired,
+   staff purchase and unknown locations) is excluded from sellable SOH. */
+inventory_source AS (
+    SELECT
+        i.sku,
+        i.style_name,
+        i.pos_location_name,
+        i.country,
+        SUM(i.available) AS available
+    FROM all_inventory i
+    WHERE TRUE
+    {country_inv_where}
+    GROUP BY i.sku, i.style_name, i.pos_location_name, i.country
+),
 /* Lifecycle status at colourway grain. This intentionally does not inherit
    the parent style status: an active style may contain retired colourways.
    The frontend flags the exceptional retired-style/active-colour combination
@@ -4426,7 +4488,7 @@ colour_lifecycle AS (
    CTE; stock value = available × per-SKU cost over the SAME rows. */
 stock AS (
     SELECT
-        COALESCE(m.style_name, i.style_name)  AS style_name,
+        COALESCE(NULLIF(i.style_name, ''), m.style_name) AS style_name,
         COALESCE(m.colour, '')                AS colour,
         COALESCE(SUM(i.available) FILTER (WHERE {stores_pred}), 0) AS soh_stores,
         {soh_warehouse_expr} AS soh_warehouse,
@@ -4435,8 +4497,8 @@ stock AS (
         COUNT(DISTINCT i.sku) FILTER (
             WHERE (({stores_pred}) OR {wh_pred})
               AND i.available > 0)                                 AS skus_in_stock
-    FROM all_inventory i
-    LEFT JOIN msku m ON m.sku = i.sku{country_inv_where}
+    FROM inventory_source i
+    LEFT JOIN msku m ON m.sku = i.sku
     GROUP BY 1, 2
 ),
 /* Period sales at (style, colour) grain — gross units canon
@@ -4578,18 +4640,109 @@ LEFT JOIN colour_orders co ON co.style_name = g.style_name
 LEFT JOIN colour_lifecycle cl ON cl.style_name = g.style_name
                               AND cl.colour = g.colour
 LEFT JOIN rep_sku rs      ON rs.style_name = g.style_name AND rs.colour = g.colour
+WHERE %(include_retired)s
+   OR (
+       p.style_status = 'Active'
+       AND COALESCE(cl.colour_status, 'Active') = 'Active'
+   )
 """
     raw = _db_exec(sql, params, fetch=True)
 
+    # Pipeline is deliberately queried and aggregated separately from stock.
+    # It cannot multiply inventory rows, and a slow/large Buying Order join
+    # cannot destabilise the main Stock Mix query plan.
+    pipeline_raw = _db_exec("""
+        SELECT
+            'style'::text AS grain,
+            po.style_number,
+            po.style_name,
+            NULL::text AS colour,
+            po.bo_state,
+            SUM(COALESCE(po.order_qty, 0))::numeric AS units
+        FROM production_orders po
+        WHERE po.bo_state = ANY(%(pipeline_states)s)
+        GROUP BY po.style_number, po.style_name, po.bo_state
+
+        UNION ALL
+
+        SELECT
+            'colour'::text AS grain,
+            po.style_number,
+            po.style_name,
+            COALESCE(v.colour, '') AS colour,
+            po.bo_state,
+            SUM(COALESCE(v.qty, 0))::numeric AS units
+        FROM production_orders po
+        JOIN production_order_variants v ON v.order_ref = po.order_ref
+        WHERE po.bo_state = ANY(%(pipeline_states)s)
+        GROUP BY po.style_number, po.style_name, COALESCE(v.colour, ''), po.bo_state
+    """, {"pipeline_states": list(_PIPELINE_BO_STATES)}, fetch=True)
+
+    def _match_key(style_number, style_name):
+        number = str(style_number or "").strip().casefold()
+        name = re.sub(r"[^a-z0-9]+", "", str(style_name or "").casefold())
+        return number, name
+
+    pipeline_styles = {}
+    pipeline_colours = {}
+    for p in pipeline_raw:
+        state = p.get("bo_state")
+        if state not in _PIPELINE_BO_STATES:
+            continue
+        number_key, name_key = _match_key(p.get("style_number"), p.get("style_name"))
+        units = int(float(p.get("units") or 0))
+        keys = [key for key in (("number", number_key), ("name", name_key)) if key[1]]
+        for key in keys:
+            target = pipeline_styles if p.get("grain") == "style" else pipeline_colours
+            full_key = key if p.get("grain") == "style" else (
+                key[0], key[1],
+                re.sub(r"[^a-z0-9]+", "", str(p.get("colour") or "").casefold()),
+            )
+            state_map = target.setdefault(full_key, {s: 0 for s in _PIPELINE_BO_STATES})
+            state_map[state] += units
+
+    for r in raw:
+        number_key, name_key = _match_key(r.get("style_number"), r.get("style_name"))
+        style_states = (
+            pipeline_styles.get(("number", number_key)) if number_key else None
+        ) or pipeline_styles.get(("name", name_key)) or {
+            s: 0 for s in _PIPELINE_BO_STATES
+        }
+        colour_key = re.sub(
+            r"[^a-z0-9]+", "", str(r.get("colour") or "").casefold()
+        )
+        colour_states = (
+            pipeline_colours.get(("number", number_key, colour_key))
+            if number_key else None
+        ) or pipeline_colours.get(("name", name_key, colour_key)) or {
+            s: 0 for s in _PIPELINE_BO_STATES
+        }
+        r["pipeline_by_state"] = style_states
+        r["pipeline_units"] = sum(style_states.values())
+        r["colour_pipeline_by_state"] = colour_states
+        r["colour_pipeline_units"] = sum(colour_states.values())
+
     # ── Assemble the nested tree ──────────────────────────────────────────────
     cats = {}
-    tot_su = 0; tot_sv = 0.0; tot_up = 0; tot_rp = 0.0
+    tot_su = 0; tot_sv = 0.0; tot_up = 0; tot_rp = 0.0; tot_pipe = 0
+    tot_pipe_states = {state: 0 for state in _PIPELINE_BO_STATES}
+
+    def _pipeline_map(value):
+        value = value if isinstance(value, dict) else {}
+        return {state: int(float(value.get(state) or 0)) for state in _PIPELINE_BO_STATES}
+
+    def _add_pipeline(node, units, states):
+        node["pipeline_units"] += units
+        for state, qty in states.items():
+            node["pipeline_by_state"][state] += qty
 
     def _bucket(store, name, child_key):
         node = store.get(name)
         if node is None:
             node = {"name": name, "stock_units": 0, "stock_value": 0.0,
                     "units_period": 0, "revenue_period": 0.0, "_u6": 0,
+                    "pipeline_units": 0,
+                    "pipeline_by_state": {state: 0 for state in _PIPELINE_BO_STATES},
                     child_key: {}}
             store[name] = node
         return node
@@ -4624,8 +4777,17 @@ LEFT JOIN rep_sku rs      ON rs.style_name = g.style_name AND rs.colour = g.colo
         sb = _bucket(c["subcategories"], sub_name, "styles")
         st = _bucket(sb["styles"], sty_name, "colours")
         if "style_number" not in st:
+            style_pipe = int(float(r.get("pipeline_units") or 0))
+            style_pipe_states = _pipeline_map(r.get("pipeline_by_state"))
             st["style_number"] = r.get("style_number")
             st["status"] = r.get("style_status") or "Active"
+            st["tier"] = row_tier
+            _add_pipeline(st, style_pipe, style_pipe_states)
+            _add_pipeline(c, style_pipe, style_pipe_states)
+            _add_pipeline(sb, style_pipe, style_pipe_states)
+            tot_pipe += style_pipe
+            for state, qty in style_pipe_states.items():
+                tot_pipe_states[state] += qty
             # Most recent production/buying order for the style (nullable).
             st["last_order_date"] = r.get("style_last_order")
         # The SKU-derived colour dates out-cover the textual style match
@@ -4639,6 +4801,8 @@ LEFT JOIN rep_sku rs      ON rs.style_name = g.style_name AND rs.colour = g.colo
         if col is None:
             col = {"name": col_name, "stock_units": 0, "stock_value": 0.0,
                    "units_period": 0, "revenue_period": 0.0, "_u6": 0,
+                   "pipeline_units": int(float(r.get("colour_pipeline_units") or 0)),
+                   "pipeline_by_state": _pipeline_map(r.get("colour_pipeline_by_state")),
                    "skus_in_stock": 0, "skus_sold": 0,
                     "status": r.get("colour_status") or "Active",
                    # Colour-grain ordering context + image key (nullable).
@@ -4659,7 +4823,8 @@ LEFT JOIN rep_sku rs      ON rs.style_name = g.style_name AND rs.colour = g.colo
     # unaffected; parents keep the pruned leaves' units_6m in their WOC
     # denominator (matching the tab's style-level WOC semantics).
     def _keep(n):
-        return (n["stock_units"] != 0 or n["units_period"] != 0
+        return (n["stock_units"] != 0 or n["pipeline_units"] != 0
+                or n["units_period"] != 0
                 or abs(n["stock_value"]) >= 0.5
                 or abs(n.get("revenue_period", 0)) >= 0.5)
 
@@ -4708,6 +4873,8 @@ LEFT JOIN rep_sku rs      ON rs.style_name = g.style_name AND rs.colour = g.colo
         "totals": {
             "stock_units":    tot_su,
             "stock_value":    round(tot_sv),
+            "pipeline_units": tot_pipe,
+            "pipeline_by_state": tot_pipe_states,
             "units_period":   tot_up,
             "revenue_period": round(tot_rp),
         },
@@ -6095,7 +6262,7 @@ def register_merch_routes(app, api_pg_module):
         from_date:    Optional[str] = Query(None),
         to_date:      Optional[str] = Query(None),
         country:      Optional[str] = Query(None),
-        include_retired: bool = Query(True),
+        include_retired: bool = Query(False),
     ):
         """Per-store SOH/sales for one style or the active style universe."""
         key = f"merch_style_stores|{style_number}|{from_date}|{to_date}|{country}|{include_retired}"
@@ -6283,17 +6450,19 @@ def register_merch_routes(app, api_pg_module):
         to_date:      Optional[str] = Query(None),
         country:      Optional[str] = Query(None),
         pos_location: Optional[str] = Query(None),
+        include_retired: bool = Query(True),
     ):
         """Category → Sub Category → Style → Colour stock-mix drill-down tree
         (the fabric Stock Mix pattern for finished goods). Plain `def` on
         purpose: the cache-miss query is heavy, and a sync route runs in
         Starlette's threadpool instead of blocking the event loop."""
-        key = f"merch_stock_mix|{brand}|{subcategory}|{tier}|{from_date}|{to_date}|{country}|{pos_location}"
+        key = f"merch_stock_mix|{brand}|{subcategory}|{tier}|{from_date}|{to_date}|{country}|{pos_location}|{include_retired}"
         result = _cached(key, _TTL, lambda: _fetch_stock_mix(
             brand=brand, subcategory=subcategory,
             tier=tier,
             from_date=from_date, to_date=to_date,
             country=country, pos_location=pos_location,
+            include_retired=include_retired,
         ))
         return JSONResponse(result)
 
