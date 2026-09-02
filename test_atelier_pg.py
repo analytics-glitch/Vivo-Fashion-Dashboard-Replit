@@ -69,7 +69,8 @@ class AtelierPostgresTests(unittest.TestCase):
                 total_spend_kes NUMERIC, avg_order_value_kes NUMERIC,
                 last_synced TIMESTAMPTZ, PRIMARY KEY(customer_id,store_id))""")
             cur.execute("""CREATE TABLE all_products_clean (
-                sku TEXT, product_name TEXT, size TEXT, color_print TEXT, barcode TEXT)""")
+                sku TEXT, product_name TEXT, size TEXT, color_print TEXT, barcode TEXT,
+                style_number TEXT, style_name TEXT, product_type TEXT, category TEXT)""")
             cur.execute("""CREATE TABLE user_sessions (
                 id BIGSERIAL PRIMARY KEY, user_id TEXT REFERENCES app_users(user_id),
                 token TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT now())""")
@@ -103,6 +104,7 @@ class AtelierPostgresTests(unittest.TestCase):
             cur.execute("""TRUNCATE atelier_history_imports, atelier_edit_history,
                 atelier_status_history, atelier_customer_measurements,
                 atelier_measurements, atelier_jobs, all_customers RESTART IDENTITY CASCADE""")
+            cur.execute("TRUNCATE all_products_clean")
             cur.execute("DROP TRIGGER IF EXISTS atelier_test_fail_history ON atelier_status_history")
             cur.execute("DROP FUNCTION IF EXISTS atelier_test_fail_history()")
         app = FastAPI()
@@ -112,7 +114,12 @@ class AtelierPostgresTests(unittest.TestCase):
             uid = request.headers.get("x-test-user")
             roles = {"admin": "admin", "staff": "operations", "plain": "operations", "tailor": "operations"}
             if uid:
-                request.state.user = {"user_id": uid, "role": roles[uid], "status": "active"}
+                request.state.user = {
+                    "user_id": uid,
+                    "role": roles[uid],
+                    "status": "active",
+                    "allowed_pages": ["atelier"] if uid != "plain" else [],
+                }
             return await call_next(request)
 
         atelier.register_atelier_routes(app, self.db)
@@ -206,6 +213,40 @@ class AtelierPostgresTests(unittest.TestCase):
                                                                           "name": "Hip", "value": 92}).status_code, 200)
         self.assertEqual(self._scalar("SELECT COUNT(*) FROM atelier_measurements WHERE job_id=%s", (job,)), 2)
         self.assertEqual(self._scalar("SELECT COUNT(*) FROM atelier_customer_measurements"), 2)
+
+    def test_customer_search_is_selectable_and_product_snapshot_is_variant_safe(self):
+        with self.admin.cursor() as cur:
+            cur.execute("""INSERT INTO all_customers
+                (customer_id,store_id,first_name,last_name,email,phone,last_synced)
+                VALUES
+                ('cust-b','other','Ada','Second','ada.second@example.test','+254700000002',now()),
+                ('cust-a','vivofashiongroup','Ada','First','ada.first@example.test','+254700000001',now())""")
+            cur.execute("""INSERT INTO all_products_clean
+                (sku,product_name,size,color_print,barcode,style_number,style_name,product_type,category)
+                VALUES
+                ('V100M','System Maxi M','M','Ruby','222','V100','Vivo Maxi','Maxi Dresses','Dresses'),
+                ('V100L','System Maxi L','L','Ruby','111','V100','Vivo Maxi','Maxi Dresses','Dresses')""")
+        found = self.client.get("/api/atelier/customers/lookup", headers=self._headers(),
+                                params={"q": "Ada"}).json()["customers"]
+        self.assertEqual([row["customer_id"] for row in found], ["cust-a", "cust-b"])
+        exact = self.client.get("/api/atelier/skus", headers=self._headers(),
+                                params={"q": "V100L"}).json()["items"]
+        self.assertEqual(exact[0]["sku"], "V100L")
+        self.assertEqual(exact[0]["garment_subcategory"], "Maxi Dresses")
+        keyword = self.client.get("/api/atelier/skus", headers=self._headers(),
+                                  params={"q": "Dresses"}).json()["items"]
+        self.assertEqual({row["sku"] for row in keyword}, {"V100M", "V100L"})
+        response = self.client.post("/api/atelier/intake", headers=self._headers(), json={
+            "customer_id": "cust-a", "customer_store_id": "vivofashiongroup",
+            "garments": [{"sku": "V100L", "garment_subcategory": "Wrong",
+                          "system_description": "Wrong"}],
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+        job = response.json()["jobs"][0]
+        self.assertEqual(job["garment_category"], "Dresses")
+        self.assertEqual(job["garment_subcategory"], "Maxi Dresses")
+        self.assertEqual(job["system_description"], "System Maxi L")
+        self.assertEqual((job["size"], job["colour"]), ("L", "Ruby"))
 
     def test_combined_patch_is_atomic_and_history_failure_rolls_back(self):
         job = self._intake()[0]["id"]

@@ -249,6 +249,9 @@ def ensure_atelier_tables():
         "ALTER TABLE atelier_jobs ADD COLUMN IF NOT EXISTS date_in TIMESTAMPTZ",
         "ALTER TABLE atelier_jobs ADD COLUMN IF NOT EXISTS collected_at TIMESTAMPTZ",
         "ALTER TABLE atelier_jobs ADD COLUMN IF NOT EXISTS legacy_notes TEXT",
+        "ALTER TABLE atelier_jobs ADD COLUMN IF NOT EXISTS garment_category TEXT",
+        "ALTER TABLE atelier_jobs ADD COLUMN IF NOT EXISTS garment_subcategory TEXT",
+        "ALTER TABLE atelier_jobs ADD COLUMN IF NOT EXISTS system_description TEXT",
         """CREATE TABLE IF NOT EXISTS atelier_measurements (
              id BIGSERIAL PRIMARY KEY, job_id BIGINT NOT NULL REFERENCES atelier_jobs(id) ON DELETE CASCADE,
              name TEXT NOT NULL, value NUMERIC(10,2) NOT NULL CHECK(value > 0), unit TEXT NOT NULL DEFAULT 'cm',
@@ -323,9 +326,59 @@ def _customer_by_phone(phone):
         SELECT customer_id,store_id,first_name,last_name,email,phone,city,country
         FROM all_customers
         WHERE regexp_replace(COALESCE(phone,''),'[^0-9]','','g') IN (%s,%s,%s)
-        ORDER BY CASE WHEN store_id='vivofashiongroup' THEN 0 ELSE 1 END,last_synced DESC NULLS LAST
+        ORDER BY CASE WHEN store_id='vivofashiongroup' THEN 0 ELSE 1 END,last_synced DESC NULLS LAST,
+                 customer_id,store_id
         LIMIT 20
     """, (phone[1:], "0" + phone[4:], phone[4:])) or []
+    return [_row(r) for r in rows]
+
+
+def _customer_search(query, limit=25):
+    """Search the shared customer master without choosing a row for the user."""
+    query = str(query or "").strip()
+    if not query:
+        return []
+    digits = re.sub(r"\D", "", query)
+    phone_variants = {digits}
+    if digits.startswith("00254"):
+        phone_variants.add(digits[2:])
+    if digits.startswith("254"):
+        phone_variants.add("0" + digits[3:])
+        phone_variants.add(digits[3:])
+    elif digits.startswith("0"):
+        phone_variants.add("254" + digits[1:])
+        phone_variants.add(digits[1:])
+    else:
+        phone_variants.add("254" + digits)
+        phone_variants.add("0" + digits)
+    phone_variants = tuple(v for v in phone_variants if v)
+    phone_sql = " OR ".join(
+        ["regexp_replace(COALESCE(phone,''),'[^0-9]','','g')=%s"] * len(phone_variants)
+    ) or "FALSE"
+    params = list(phone_variants)
+    text = "%" + query + "%"
+    params.extend([text] * 4)
+    rows = _db(f"""
+        SELECT customer_id,store_id,first_name,last_name,email,phone,city,country
+        FROM all_customers
+        WHERE ({phone_sql}
+          OR COALESCE(first_name,'') ILIKE %s
+          OR COALESCE(last_name,'') ILIKE %s
+          OR COALESCE(email,'') ILIKE %s
+          OR COALESCE(customer_id,'') ILIKE %s)
+        ORDER BY
+          CASE
+            WHEN customer_id ILIKE %s THEN 0
+            WHEN email ILIKE %s THEN 1
+            WHEN regexp_replace(COALESCE(phone,''),'[^0-9]','','g') = ANY(%s) THEN 2
+            WHEN first_name ILIKE %s OR last_name ILIKE %s THEN 3
+            ELSE 4
+          END,
+          CASE WHEN store_id='vivofashiongroup' THEN 0 ELSE 1 END,
+          last_synced DESC NULLS LAST, customer_id, store_id
+        LIMIT %s
+    """, tuple(params[:len(phone_variants)] + [text] * 4 +
+               [text, text, list(phone_variants), text, text, limit])) or []
     return [_row(r) for r in rows]
 
 
@@ -398,13 +451,19 @@ def register_atelier_routes(app, api_module=None):
     A = api_module
 
     @app.get("/api/atelier/customers/lookup")
-    def customer_lookup(request: Request, phone: str):
+    def customer_lookup(request: Request, phone: str = None, q: str = None, limit: int = 25):
         _staff(request)
+        query = (q if q is not None else phone) or ""
+        if len(str(query).strip()) < 2:
+            return {"customers": []}
+        limit = min(max(int(limit), 1), 50)
+        if q is not None or not re.fullmatch(r"[\s+\-()0-9]{5,}", str(query)):
+            return {"customers": _mask(_customer_search(query, limit), request, phones=("phone",))}
         try:
-            normalized = normalize_kenyan_phone(phone)
+            normalized = normalize_kenyan_phone(query)
         except ValueError as exc:
             raise HTTPException(400, str(exc))
-        return {"customers": _mask(_customer_by_phone(normalized), request)}
+        return {"customers": _mask(_customer_by_phone(normalized)[:limit], request)}
 
     @app.post("/api/atelier/customers")
     async def customer_create(request: Request):
@@ -451,12 +510,23 @@ def register_atelier_routes(app, api_module=None):
         _staff(request)
         q = _text(q, "q", 100, True)
         limit = min(max(limit, 1), 50)
-        rows = _db("""SELECT sku,MAX(product_name) AS product_name,MAX(size) AS size,
-                       MAX(color_print) AS colour,MAX(barcode) AS barcode
+        like = "%" + q + "%"
+        rows = _db("""SELECT sku,product_name,barcode,size,color_print AS colour,
+                       style_number,style_name,product_type AS garment_subcategory,
+                       category AS garment_category,product_name AS system_description
                       FROM all_products_clean
-                      WHERE sku ILIKE %s OR product_name ILIKE %s OR barcode ILIKE %s
-                      GROUP BY sku ORDER BY sku LIMIT %s""",
-                   tuple(["%" + q + "%"] * 3 + [limit])) or []
+                      WHERE sku ILIKE %s OR barcode ILIKE %s OR style_number ILIKE %s
+                         OR style_name ILIKE %s OR product_name ILIKE %s
+                         OR category ILIKE %s OR product_type ILIKE %s
+                      ORDER BY CASE
+                        WHEN LOWER(sku)=LOWER(%s) THEN 0
+                        WHEN LOWER(barcode)=LOWER(%s) THEN 1
+                        WHEN LOWER(style_number)=LOWER(%s) THEN 2
+                        WHEN LOWER(style_name)=LOWER(%s) THEN 3
+                        ELSE 4 END,
+                        sku LIMIT %s""",
+                   (like, like, like, like, like, like, like,
+                    q, q, q, q, limit)) or []
         return {"items": [_row(r) for r in rows]}
 
     @app.post("/api/atelier/intake")
@@ -480,7 +550,42 @@ def register_atelier_routes(app, api_module=None):
             for index, garment in enumerate(garments, 1):
                 if not isinstance(garment, dict):
                     raise HTTPException(400, "Each garment must be an object")
-                garment_type = _text(garment.get("garment_type"), "garment_type", 100, True)
+                garment_category = _text(
+                    garment.get("garment_category") or garment.get("garment_type"),
+                    "garment_category", 100)
+                garment_subcategory = _text(
+                    garment.get("garment_subcategory") or garment.get("subcategory"),
+                    "garment_subcategory", 150)
+                system_description = _text(
+                    garment.get("system_description") or garment.get("product_name"),
+                    "system_description", 300)
+                sku = _text(garment.get("sku"), "sku", 100)
+                # Catalogue data is snapshotted server-side. Free-typed garments
+                # remain supported for historical/manual intake compatibility.
+                if sku:
+                    cur.execute("""SELECT sku,product_name,size,color_print,product_type,
+                                          category,style_number,style_name
+                                   FROM all_products_clean WHERE sku=%s
+                                   ORDER BY sku LIMIT 1""", (sku,))
+                    product = cur.fetchone()
+                    if product:
+                        garment_category = product["category"] or garment_category
+                        garment_subcategory = product["product_type"] or garment_subcategory
+                        system_description = product["product_name"] or system_description
+                        sku = product["sku"]
+                        product_name = product["product_name"]
+                        colour = product["color_print"]
+                        size = product["size"]
+                    else:
+                        product_name = system_description
+                        colour = _text(garment.get("colour"), "colour", 100)
+                        size = _text(garment.get("size"), "size", 50)
+                else:
+                    product_name = system_description
+                    colour = _text(garment.get("colour"), "colour", 100)
+                    size = _text(garment.get("size"), "size", 50)
+                if not garment_category:
+                    raise HTTPException(400, "garment_category is required")
                 charge = _money(garment.get("service_charge"))
                 paid = _money(garment.get("amount_paid"), "amount_paid")
                 if (charge or paid) and not _pricing_enabled():
@@ -505,14 +610,13 @@ def register_atelier_routes(app, api_module=None):
                 claim = f"ATJ-{datetime.utcnow().year}-{int(cur.fetchone()['n']):07d}"
                 cur.execute("""INSERT INTO atelier_jobs
                     (claim_number,customer_id,customer_store_id,location_id,garment_index,
-                     garment_type,sku,product_name,colour,size,alteration_notes,condition_notes,alteration_type_id,promised_at,
+                     garment_type,garment_category,garment_subcategory,system_description,
+                     sku,product_name,colour,size,alteration_notes,condition_notes,alteration_type_id,promised_at,
                      service_charge,amount_paid,assigned_to,created_by)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *""",
-                    (claim, customer_id, store_id, loc["id"], index, garment_type,
-                     _text(garment.get("sku"), "sku", 100),
-                     _text(garment.get("product_name"), "product_name", 300),
-                     _text(garment.get("colour"), "colour", 100),
-                     _text(garment.get("size"), "size", 50),
+                     VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING *""",
+                    (claim, customer_id, store_id, loc["id"], index, garment_category,
+                     garment_category, garment_subcategory, system_description,
+                     sku, product_name, colour, size,
                      _text(garment.get("alteration_notes"), "alteration_notes", 4000),
                      _text(garment.get("condition_notes"), "condition_notes", 2000), alteration_type_id,
                      promised_at, charge, paid, assigned_to, _uid(user)))
@@ -585,6 +689,8 @@ def register_atelier_routes(app, api_module=None):
         body = await request.json()
         allowed = {
             "garment_type": (100, True), "sku": (100, False), "product_name": (300, False),
+            "garment_category": (100, False), "garment_subcategory": (150, False),
+            "system_description": (300, False),
             "colour": (100, False), "size": (50, False), "alteration_notes": (4000, False),
             "condition_notes": (2000, False), "alteration_type_id": (None, False),
             "assigned_to": (200, False), "promised_at": (None, False),

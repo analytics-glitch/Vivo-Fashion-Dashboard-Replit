@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useSearchParams, useNavigate } from "react-router-dom";
 import { api, fmtDate } from "@/lib/api";
 import { Card } from "@/components/ui/card";
@@ -10,7 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { Search, Plus, Scissors, Filter, ChevronRight, User, AlertCircle } from "lucide-react";
+import { Search, Plus, Scissors, Filter, ChevronRight, User, AlertCircle, X, Loader2 } from "lucide-react";
 
 const STATUS_LABELS = {
   intake: "Received",
@@ -31,6 +31,24 @@ const statusClass = (status) => {
   return "border-[#A04F2E] text-[#834026] bg-[#f4e7df]";
 };
 
+const blankGarment = () => ({
+  product_query: "",
+  garment_category: "",
+  garment_subcategory: "",
+  system_description: "",
+  garment_type: "",
+  sku: "",
+  product_name: "",
+  colour: "",
+  size: "",
+  condition_notes: "",
+  alteration_notes: "",
+  promised_at: "",
+  alteration_type_id: "none",
+  assigned_to: "unassigned",
+  condition_photo: null
+});
+
 export default function AtelierBoard() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -48,19 +66,7 @@ export default function AtelierBoard() {
   const [intakeForm, setIntakeForm] = useState({
     customer_phone: "",
     customer_name: "",
-    garments: [{
-      garment_type: "",
-      sku: "",
-      product_name: "",
-      colour: "",
-      size: "",
-      condition_notes: "",
-      alteration_notes: "",
-      promised_at: "",
-      alteration_type_id: "none",
-      assigned_to: "unassigned",
-      condition_photo: null
-    }]
+    garments: [blankGarment()]
   });
   const [intakeSaving, setIntakeSaving] = useState(false);
   const [tailors, setTailors] = useState([]);
@@ -69,26 +75,67 @@ export default function AtelierBoard() {
   
   const [skuSearchIndex, setSkuSearchIndex] = useState(null);
   const [skuSearchResults, setSkuSearchResults] = useState([]);
+  const [skuSearching, setSkuSearching] = useState(false);
+  const [skuSearchError, setSkuSearchError] = useState("");
+  const [skuActiveIndex, setSkuActiveIndex] = useState(0);
+  const [skuResultContext, setSkuResultContext] = useState(null);
+  const skuTimerRef = useRef(null);
+  const skuRequestRef = useRef(0);
 
-  const handleSkuSearch = async (index, query) => {
-    updateGarment(index, 'sku', query);
-    if (query.length > 2) {
-      try {
-        setSkuSearchIndex(index);
-        const r = await api.get('/atelier/skus', { params: { q: query } });
-        setSkuSearchResults(r.data.items || []);
-      } catch {
-        setSkuSearchResults([]);
-      }
-    } else {
+  const handleSkuSearch = (index, query) => {
+    setIntakeForm(f => {
+      const garments = [...f.garments];
+      garments[index] = {
+        ...garments[index],
+        product_query: query,
+        sku: "",
+        product_name: "",
+        garment_category: "",
+        garment_subcategory: "",
+        system_description: "",
+        garment_type: "",
+        colour: "",
+        size: ""
+      };
+      return { ...f, garments };
+    });
+    if (skuTimerRef.current) clearTimeout(skuTimerRef.current);
+    const requestId = ++skuRequestRef.current;
+    const normalizedQuery = query.trim();
+    setSkuResultContext({ index, query: normalizedQuery });
+    setSkuSearchIndex(index);
+    setSkuSearchError("");
+    setSkuActiveIndex(0);
+    if (normalizedQuery.length < 2) {
       setSkuSearchResults([]);
-      setSkuSearchIndex(null);
+      setSkuSearching(false);
+      return;
     }
+    setSkuSearching(true);
+    skuTimerRef.current = setTimeout(async () => {
+      try {
+        const r = await api.get('/atelier/skus', { params: { q: normalizedQuery }, forceFresh: true });
+        if (requestId !== skuRequestRef.current) return;
+        setSkuSearchResults(r.data.items || []);
+      } catch (e) {
+        if (requestId !== skuRequestRef.current) return;
+        setSkuSearchResults([]);
+        setSkuSearchError(e?.response?.data?.detail || "Product search failed. Try again.");
+      } finally {
+        if (requestId === skuRequestRef.current) setSkuSearching(false);
+      }
+    }, 300);
   };
 
   const selectSku = (index, match) => {
+    if (skuResultContext?.index !== index) return;
+    updateGarment(index, 'product_query', `${match.sku}${match.style_name ? ` · ${match.style_name}` : ""}`);
     updateGarment(index, 'sku', match.sku);
-    updateGarment(index, 'product_name', match.product_name || "");
+    updateGarment(index, 'product_name', match.system_description || match.product_name || "");
+    updateGarment(index, 'system_description', match.system_description || match.product_name || "");
+    updateGarment(index, 'garment_category', match.garment_category || "");
+    updateGarment(index, 'garment_type', match.garment_category || "");
+    updateGarment(index, 'garment_subcategory', match.garment_subcategory || "");
     updateGarment(index, 'colour', match.colour || "");
     updateGarment(index, 'size', match.size || "");
     setSkuSearchResults([]);
@@ -100,33 +147,79 @@ export default function AtelierBoard() {
   const [measurementSaving, setMeasurementSaving] = useState(false);
   const [activeCustomerId, setActiveCustomerId] = useState(null);
   const [activeCustomerStoreId, setActiveCustomerStoreId] = useState(null);
+  const [customerQuery, setCustomerQuery] = useState("");
+  const [customerResults, setCustomerResults] = useState([]);
+  const [customerSearching, setCustomerSearching] = useState(false);
+  const [customerSearchError, setCustomerSearchError] = useState("");
+  const [customerListOpen, setCustomerListOpen] = useState(false);
+  const [customerActiveIndex, setCustomerActiveIndex] = useState(0);
+  const customerRequestRef = useRef(0);
+  const customerHistoryRequestRef = useRef(0);
 
-  const lookupCustomer = async (phone) => {
-    if (!phone || phone.length < 5) return;
-    try {
-      const lookup = await api.get('/atelier/customers/lookup', { params: { phone } });
-      if (lookup.data?.customers?.length > 0) {
-        const c = lookup.data.customers[0];
-        setActiveCustomerId(c.customer_id);
-        setActiveCustomerStoreId(c.store_id);
-        if (c.first_name && c.first_name !== 'Walk-in') {
-          setIntakeForm(f => ({ ...f, customer_name: `${c.first_name} ${c.last_name || ''}`.trim() }));
-        }
-        
-        try {
-          const hist = await api.get(`/atelier/customers/${c.customer_id}/history`, { params: { store_id: c.store_id } });
-          setCustomerMeasurements(hist.data.measurements || []);
-        } catch { /* ignore */ }
-      } else {
-        setActiveCustomerId(null);
-        setActiveCustomerStoreId(null);
-        setCustomerMeasurements([]);
-      }
-    } catch {
-      setActiveCustomerId(null);
-      setActiveCustomerStoreId(null);
-      setCustomerMeasurements([]);
+  useEffect(() => {
+    const query = customerQuery.trim();
+    const requestId = ++customerRequestRef.current;
+    if (!intakeOpen || query.length < 2 || activeCustomerId) {
+      setCustomerResults([]);
+      setCustomerSearching(false);
+      return undefined;
     }
+    setCustomerSearching(true);
+    setCustomerSearchError("");
+    setCustomerListOpen(true);
+    const timer = setTimeout(async () => {
+      try {
+        const lookup = await api.get('/atelier/customers/lookup', {
+          params: { q: query }, forceFresh: true
+        });
+        if (requestId !== customerRequestRef.current) return;
+        setCustomerResults(lookup.data?.customers || []);
+        setCustomerActiveIndex(0);
+      } catch (e) {
+        if (requestId !== customerRequestRef.current) return;
+        setCustomerResults([]);
+        setCustomerSearchError(e?.response?.data?.detail || "Customer search failed. Try again.");
+      } finally {
+        if (requestId === customerRequestRef.current) setCustomerSearching(false);
+      }
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [customerQuery, intakeOpen, activeCustomerId]);
+
+  const selectCustomer = async (c) => {
+    customerRequestRef.current += 1;
+    const historyRequestId = ++customerHistoryRequestRef.current;
+    setActiveCustomerId(c.customer_id);
+    setActiveCustomerStoreId(c.store_id);
+    setCustomerListOpen(false);
+    setCustomerResults([]);
+    setCustomerQuery("");
+    setIntakeForm(f => ({
+      ...f,
+      customer_phone: c.phone || "",
+      customer_name: `${c.first_name || ""} ${c.last_name || ""}`.trim()
+    }));
+    setCustomerMeasurements([]);
+    try {
+      const hist = await api.get(`/atelier/customers/${c.customer_id}/history`, {
+        params: { store_id: c.store_id }, forceFresh: true
+      });
+      if (historyRequestId === customerHistoryRequestRef.current) {
+        setCustomerMeasurements(hist.data.measurements || []);
+      }
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Customer selected, but measurements could not be loaded.");
+    }
+  };
+
+  const clearCustomer = () => {
+    customerRequestRef.current += 1;
+    customerHistoryRequestRef.current += 1;
+    setActiveCustomerId(null);
+    setActiveCustomerStoreId(null);
+    setCustomerMeasurements([]);
+    setIntakeForm(f => ({ ...f, customer_phone: "", customer_name: "" }));
+    setCustomerQuery("");
   };
 
   const handleSaveMeasurement = async () => {
@@ -141,7 +234,10 @@ export default function AtelierBoard() {
       toast.success("Measurement saved");
       setMeasurementOpen(false);
       setMeasurementForm({ name: "", value: "", unit: "cm", note: "" });
-      lookupCustomer(intakeForm.customer_phone);
+      const hist = await api.get(`/atelier/customers/${activeCustomerId}/history`, {
+        params: { store_id: activeCustomerStoreId }, forceFresh: true
+      });
+      setCustomerMeasurements(hist.data.measurements || []);
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Failed to save measurement");
     } finally {
@@ -174,7 +270,7 @@ export default function AtelierBoard() {
   useEffect(() => {
     init();
     if (searchParams.get("new_job_phone")) {
-      setIntakeForm(f => ({ ...f, customer_phone: searchParams.get("new_job_phone") || "" }));
+      setCustomerQuery(searchParams.get("new_job_phone") || "");
       setIntakeOpen(true);
       const newParams = new URLSearchParams(searchParams);
       newParams.delete("new_job_phone");
@@ -207,11 +303,7 @@ export default function AtelierBoard() {
   const addGarment = () => {
     setIntakeForm(f => ({
       ...f,
-      garments: [...f.garments, {
-        garment_type: "", sku: "", product_name: "", colour: "", size: "", condition_notes: "",
-        alteration_notes: "", promised_at: "", alteration_type_id: "none", assigned_to: "unassigned",
-        condition_photo: null
-      }]
+      garments: [...f.garments, blankGarment()]
     }));
   };
 
@@ -233,36 +325,17 @@ export default function AtelierBoard() {
   };
 
   const submitIntake = async () => {
-    if (!intakeForm.customer_phone) return toast.error("Phone is required");
-    const invalidGarment = intakeForm.garments.find(g => !g.garment_type);
-    if (invalidGarment) return toast.error("Garment Type is required for all items");
+    if (!activeCustomerId || !activeCustomerStoreId) {
+      return toast.error("Search for and select the correct customer before creating the intake.");
+    }
+    const invalidGarment = intakeForm.garments.find(g => !g.garment_category);
+    if (invalidGarment) return toast.error("Garment Category is required for all items");
     
     setIntakeSaving(true);
     try {
-      let customer_id = null;
-      let store_id = "vivofashiongroup";
-      try {
-        const lookup = await api.get('/atelier/customers/lookup', { params: { phone: intakeForm.customer_phone } });
-        if (lookup.data?.customers?.length > 0) {
-          customer_id = lookup.data.customers[0].customer_id;
-          store_id = lookup.data.customers[0].store_id;
-        } else {
-          const create = await api.post('/atelier/customers', { 
-            phone: intakeForm.customer_phone, 
-            first_name: intakeForm.customer_name || "Walk-in"
-          });
-          customer_id = create.data.customer.customer_id;
-          store_id = create.data.customer.store_id;
-        }
-      } catch (e) {
-        toast.error("Failed to lookup or create customer");
-        setIntakeSaving(false);
-        return;
-      }
-
       const payload = {
-        customer_id,
-        customer_store_id: store_id,
+        customer_id: activeCustomerId,
+        customer_store_id: activeCustomerStoreId,
         location_code: selectedLocation,
         garments: intakeForm.garments.map(g => ({
           ...g,
@@ -297,12 +370,9 @@ export default function AtelierBoard() {
       setIntakeForm({
         customer_phone: "",
         customer_name: "",
-        garments: [{
-          garment_type: "", sku: "", product_name: "", colour: "", size: "", condition_notes: "",
-          alteration_notes: "", promised_at: "", alteration_type_id: "none", assigned_to: "unassigned",
-          condition_photo: null
-        }]
+        garments: [blankGarment()]
       });
+      clearCustomer();
       loadJobs(true);
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Failed to create job");
@@ -489,24 +559,84 @@ export default function AtelierBoard() {
             </DialogDescription>
           </DialogHeader>
           
-          <div className="mt-2 mb-6 grid grid-cols-1 gap-4 rounded-xl border border-[var(--border)] bg-[var(--panel)] p-4 sm:grid-cols-2">
-            <div className="min-w-0 space-y-1">
-              <Label>Customer Phone *</Label>
-              <Input 
-                value={intakeForm.customer_phone} 
-                onChange={e => setIntakeForm(f => ({ ...f, customer_phone: e.target.value }))}
-                onBlur={e => lookupCustomer(e.target.value)}
-                placeholder="+254..." className="input-pill"
-              />
-            </div>
-            <div className="min-w-0 space-y-1">
-              <Label>Customer Name</Label>
-              <Input 
-                value={intakeForm.customer_name} 
-                onChange={e => setIntakeForm(f => ({ ...f, customer_name: e.target.value }))}
-                placeholder="Walk-in name" className="input-pill"
-              />
-            </div>
+          <div className="relative mt-2 mb-6 rounded-xl border border-[var(--border)] bg-[var(--panel)] p-4">
+            <Label htmlFor="atelier-customer-search">Find existing customer *</Label>
+            {activeCustomerId ? (
+              <div className="mt-2 flex min-w-0 items-start justify-between gap-3 rounded-xl border border-[var(--accent)]/40 bg-white p-3">
+                <div className="min-w-0">
+                  <div className="font-semibold text-[var(--text)]">{intakeForm.customer_name || "Unnamed customer"}</div>
+                  <div className="mt-1 break-words text-xs text-[var(--muted)]">
+                    {intakeForm.customer_phone || "No phone"} · Customer ID {activeCustomerId}
+                  </div>
+                </div>
+                <button type="button" onClick={clearCustomer} aria-label="Clear selected customer"
+                  className="shrink-0 rounded-full p-1.5 text-[var(--muted)] hover:bg-[var(--panel)] hover:text-[var(--text)]">
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            ) : (
+              <>
+                <div className="relative mt-2">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--muted)]" />
+                  <Input id="atelier-customer-search" value={customerQuery}
+                    onChange={e => setCustomerQuery(e.target.value)}
+                    onFocus={() => customerQuery.trim().length >= 2 && setCustomerListOpen(true)}
+                    onKeyDown={e => {
+                      if (e.key === "ArrowDown") {
+                        e.preventDefault();
+                        setCustomerListOpen(true);
+                        setCustomerActiveIndex(v => Math.min(v + 1, customerResults.length - 1));
+                      } else if (e.key === "ArrowUp") {
+                        e.preventDefault();
+                        setCustomerActiveIndex(v => Math.max(v - 1, 0));
+                      } else if (e.key === "Enter" && customerResults[customerActiveIndex]) {
+                        e.preventDefault();
+                        selectCustomer(customerResults[customerActiveIndex]);
+                      } else if (e.key === "Escape") {
+                        setCustomerListOpen(false);
+                      }
+                    }}
+                    role="combobox" aria-autocomplete="list" aria-expanded={customerListOpen}
+                    aria-controls="atelier-customer-results"
+                    placeholder="Search name, phone, email, or customer ID"
+                    className="input-pill pl-9" autoComplete="off" />
+                </div>
+                {customerListOpen && customerQuery.trim().length >= 2 && (
+                  <div id="atelier-customer-results" role="listbox"
+                    className="absolute left-4 right-4 z-50 mt-1 max-h-64 overflow-y-auto rounded-xl border border-[var(--border)] bg-white shadow-xl">
+                    {customerSearching && (
+                      <div className="flex items-center gap-2 p-3 text-sm text-[var(--muted)]">
+                        <Loader2 className="h-4 w-4 animate-spin" /> Searching customers…
+                      </div>
+                    )}
+                    {!customerSearching && customerSearchError && (
+                      <div className="p-3 text-sm text-[var(--danger)]">{customerSearchError}</div>
+                    )}
+                    {!customerSearching && !customerSearchError && customerResults.length === 0 && (
+                      <div className="p-3 text-sm text-[var(--muted)]">
+                        No matching customers. Try another identifier; no customer will be created automatically.
+                      </div>
+                    )}
+                    {!customerSearching && customerResults.map((c, index) => (
+                      <button key={`${c.store_id}:${c.customer_id}`} type="button" role="option"
+                        aria-selected={index === customerActiveIndex}
+                        onMouseDown={e => { e.preventDefault(); selectCustomer(c); }}
+                        onMouseEnter={() => setCustomerActiveIndex(index)}
+                        className={`block w-full border-b border-[var(--border)] p-3 text-left last:border-0 ${
+                          index === customerActiveIndex ? "bg-[var(--panel)]" : "hover:bg-[var(--panel)]"
+                        }`}>
+                        <div className="font-medium text-[var(--text)]">
+                          {`${c.first_name || ""} ${c.last_name || ""}`.trim() || "Unnamed customer"}
+                        </div>
+                        <div className="mt-1 break-words text-xs text-[var(--muted)]">
+                          {[c.phone, c.email, `ID ${c.customer_id}`].filter(Boolean).join(" · ")}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
           </div>
 
           {activeCustomerId && (
@@ -544,33 +674,95 @@ export default function AtelierBoard() {
                 </div>
                 
                 <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                  <div className="min-w-0 space-y-1">
-                    <Label>Garment Type *</Label>
-                    <Input value={g.garment_type} onChange={e => updateGarment(i, 'garment_type', e.target.value)} placeholder="Dress, Trousers..." className="input-pill" />
-                  </div>
-                  <div className="relative min-w-0 space-y-1">
-                    <Label>SKU Lookup</Label>
+                  <div className="relative min-w-0 space-y-1 sm:col-span-2">
+                    <Label htmlFor={`atelier-product-${i}`}>Find product</Label>
                     <Input 
-                      value={g.sku} 
+                      id={`atelier-product-${i}`}
+                      value={g.product_query}
                       onChange={e => handleSkuSearch(i, e.target.value)}
-                      onFocus={() => { if (g.sku.length > 2) handleSkuSearch(i, g.sku); }}
+                      onFocus={() => {
+                        if (!g.sku && g.product_query.trim().length >= 2) {
+                          if (skuResultContext?.index === i && skuResultContext.query === g.product_query.trim()) {
+                            setSkuSearchIndex(i);
+                          } else {
+                            handleSkuSearch(i, g.product_query);
+                          }
+                        }
+                      }}
+                      onKeyDown={e => {
+                        if (e.key === "ArrowDown") {
+                          e.preventDefault();
+                          setSkuActiveIndex(v => Math.min(v + 1, skuSearchResults.length - 1));
+                        } else if (e.key === "ArrowUp") {
+                          e.preventDefault();
+                          setSkuActiveIndex(v => Math.max(v - 1, 0));
+                        } else if (e.key === "Enter" && skuSearchResults[skuActiveIndex]) {
+                          e.preventDefault();
+                          selectSku(i, skuSearchResults[skuActiveIndex]);
+                        } else if (e.key === "Escape") {
+                          setSkuSearchIndex(null);
+                        }
+                      }}
                       onBlur={() => setTimeout(() => setSkuSearchIndex(null), 200)}
-                      placeholder="e.g. V-DR-123" className="input-pill" 
+                      role="combobox" aria-autocomplete="list" aria-expanded={skuSearchIndex === i}
+                      aria-controls={`atelier-product-results-${i}`}
+                      placeholder="Search SKU, barcode, style, description, category…" className="input-pill"
                     />
-                    {skuSearchIndex === i && skuSearchResults.length > 0 && (
-                      <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-[var(--border)] shadow-lg rounded-xl z-50 max-h-48 overflow-y-auto">
-                        {skuSearchResults.map(match => (
-                          <div key={match.sku} onMouseDown={() => selectSku(i, match)} className="p-3 text-sm hover:bg-[var(--panel)] cursor-pointer border-b border-[var(--border)] last:border-0">
-                            <div className="font-medium text-[var(--text)]">{match.sku}</div>
-                            <div className="text-xs text-[var(--muted)]">{match.product_name} &middot; {match.colour} &middot; {match.size}</div>
-                          </div>
+                    {g.sku && (
+                      <button type="button" onClick={() => handleSkuSearch(i, "")}
+                        className="absolute right-2 top-7 rounded-full p-1 text-[var(--muted)] hover:text-[var(--text)]"
+                        aria-label={`Clear product for garment ${i + 1}`}><X className="h-4 w-4" /></button>
+                    )}
+                    {skuSearchIndex === i && !g.sku && g.product_query.trim().length >= 2 &&
+                      skuResultContext?.index === i &&
+                      skuResultContext.query === g.product_query.trim() && (
+                      <div id={`atelier-product-results-${i}`} role="listbox"
+                        className="absolute top-full left-0 right-0 mt-1 bg-white border border-[var(--border)] shadow-lg rounded-xl z-50 max-h-64 overflow-y-auto">
+                        {skuSearching && <div className="flex items-center gap-2 p-3 text-sm text-[var(--muted)]"><Loader2 className="h-4 w-4 animate-spin" /> Searching products…</div>}
+                        {!skuSearching && skuSearchError && <div className="p-3 text-sm text-[var(--danger)]">{skuSearchError}</div>}
+                        {!skuSearching && !skuSearchError && skuSearchResults.length === 0 && (
+                          <div className="p-3 text-sm text-[var(--muted)]">No matching catalogue variants.</div>
+                        )}
+                        {!skuSearching && skuSearchResults.map((match, index) => (
+                          <button key={match.sku} type="button" role="option"
+                            aria-selected={index === skuActiveIndex}
+                            onMouseDown={e => { e.preventDefault(); selectSku(i, match); }}
+                            onMouseEnter={() => setSkuActiveIndex(index)}
+                            className={`block w-full p-3 text-left text-sm border-b border-[var(--border)] last:border-0 ${
+                              index === skuActiveIndex ? "bg-[var(--panel)]" : "hover:bg-[var(--panel)]"
+                            }`}>
+                            <div className="font-medium text-[var(--text)]">{match.sku} {match.size ? `· ${match.size}` : ""} {match.colour ? `· ${match.colour}` : ""}</div>
+                            <div className="mt-1 text-xs text-[var(--muted)]">{match.style_number || "No style"} · {match.style_name || match.system_description || "No description"}</div>
+                            <div className="mt-1 text-[11px] text-[var(--muted)]">{[match.garment_category, match.garment_subcategory].filter(Boolean).join(" / ")}</div>
+                          </button>
                         ))}
                       </div>
                     )}
                   </div>
                   <div className="min-w-0 space-y-1">
-                    <Label>Fallback Description</Label>
-                    <Input value={g.product_name} onChange={e => updateGarment(i, 'product_name', e.target.value)} placeholder="Navy wrap dress" className="input-pill" />
+                    <Label>Garment Category *</Label>
+                    <Input value={g.garment_category}
+                      onChange={e => {
+                        updateGarment(i, 'garment_category', e.target.value);
+                        updateGarment(i, 'garment_type', e.target.value);
+                      }}
+                      readOnly={Boolean(g.sku)} placeholder="Dresses" className="input-pill" />
+                  </div>
+                  <div className="min-w-0 space-y-1">
+                    <Label>Garment Sub-category</Label>
+                    <Input value={g.garment_subcategory}
+                      onChange={e => updateGarment(i, 'garment_subcategory', e.target.value)}
+                      readOnly={Boolean(g.sku)} placeholder="Maxi Dresses" className="input-pill" />
+                  </div>
+                  <div className="min-w-0 space-y-1 sm:col-span-2">
+                    <Label>System Description</Label>
+                    <Input value={g.system_description}
+                      onChange={e => {
+                        updateGarment(i, 'system_description', e.target.value);
+                        updateGarment(i, 'product_name', e.target.value);
+                      }}
+                      readOnly={Boolean(g.sku)} placeholder="Catalogue description" className="input-pill" />
+                    {g.sku && <div className="text-xs text-[var(--muted)]">SKU {g.sku} · {g.colour || "No colour"} · {g.size || "No size"}</div>}
                   </div>
                   <div className="min-w-0 space-y-1">
                     <Label>Condition Notes</Label>

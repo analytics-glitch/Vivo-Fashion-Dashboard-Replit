@@ -239,6 +239,11 @@ export default function AtelierJobDetail() {
               <div>
                 <div className="text-[10px] uppercase tracking-wider text-[var(--muted)] mb-1">Garment</div>
                 <div className="font-medium text-sm text-[var(--text)]">{job.sku || job.product_name || job.garment_type || '—'}</div>
+                <div className="text-xs text-[var(--muted)] mt-0.5">
+                  {[job.garment_category || job.garment_type, job.garment_subcategory].filter(Boolean).join(" / ")}
+                </div>
+                {job.system_description && <div className="text-xs text-[var(--muted)] mt-0.5">{job.system_description}</div>}
+                {(job.colour || job.size) && <div className="text-xs text-[var(--muted)] mt-0.5">{[job.colour, job.size].filter(Boolean).join(" · ")}</div>}
                 {job.condition_notes && <div className="text-xs text-[var(--muted)] mt-0.5">Condition: {job.condition_notes}</div>}
               </div>
 

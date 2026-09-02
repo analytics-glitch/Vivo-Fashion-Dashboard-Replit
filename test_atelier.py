@@ -46,6 +46,26 @@ class AtelierContractTests(unittest.TestCase):
         self.assertNotIn("CREATE TABLE IF NOT EXISTS atelier_customers", self.source)
         self.assertIn("INSERT INTO all_customers", self.source)
 
+    def test_intake_lookup_and_catalogue_snapshot_contract(self):
+        self.assertIn('q: str = None', self.source)
+        self.assertIn("COALESCE(customer_id,'') ILIKE", self.source)
+        self.assertIn("style_number ILIKE", self.source)
+        self.assertIn("style_name ILIKE", self.source)
+        self.assertIn("product_type ILIKE", self.source)
+        self.assertIn("garment_subcategory TEXT", self.source)
+        self.assertIn("system_description TEXT", self.source)
+        board = pathlib.Path(
+            "artifacts/vivo-bi/src/pages/atelier/AtelierBoard.jsx"
+        ).read_text(encoding="utf-8")
+        self.assertIn("Search name, phone, email, or customer ID", board)
+        self.assertIn("Garment Category", board)
+        self.assertIn("Garment Sub-category", board)
+        self.assertIn("System Description", board)
+        self.assertNotIn("Fallback Description", board)
+        submit = board[board.index("const submitIntake"):board.index("const filteredJobs")]
+        self.assertNotIn("/atelier/customers/lookup", submit)
+        self.assertNotIn("/atelier/customers'", submit)
+
     def test_audit_and_financial_contracts(self):
         self.assertIn("CREATE TABLE IF NOT EXISTS atelier_status_history", self.source)
         self.assertIn("CREATE TABLE IF NOT EXISTS atelier_measurements", self.source)
