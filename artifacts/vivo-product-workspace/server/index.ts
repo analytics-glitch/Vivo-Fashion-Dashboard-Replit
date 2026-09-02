@@ -90,39 +90,90 @@ const PLM_STYLE_CLASSIFICATIONS = ["Core", "Fashion", "Seasonal", "Test"] as con
 const PLM_RANGE_TIERS = ["Tier 1", "Tier 2", "Tier 3", "Tier 4"] as const;
 const PLM_SEASONS = ["Q3 2026", "Q4 2026"] as const;
 const RANGE_PLAN_SEASON_SEEDS = [
+  { seasonName: "Q3 2026", revenueTarget: 0, factoryCapacityUnits: 83000, cadence: "quarterly" as const, otbMonths: ["2026-07-01", "2026-08-01", "2026-09-01"] as const },
   { seasonName: "Q4 2026", revenueTarget: 450000000, factoryCapacityUnits: 90000, cadence: "quarterly" as const, otbMonths: ["2026-10-01", "2026-11-01", "2026-12-01"] as const },
   { seasonName: "September 2026", revenueTarget: 30000000, factoryCapacityUnits: 25000, cadence: "monthly" as const, otbMonth: "2026-09-01" },
   { seasonName: "October 2026", revenueTarget: 30000000, factoryCapacityUnits: 30000, cadence: "monthly" as const, otbMonth: "2026-10-01" },
   { seasonName: "November 2026", revenueTarget: 30000000, factoryCapacityUnits: 30000, cadence: "monthly" as const, otbMonth: "2026-11-01" },
   { seasonName: "December 2026", revenueTarget: 30000000, factoryCapacityUnits: 30000, cadence: "monthly" as const, otbMonth: "2026-12-01" },
 ] as const;
-const SEPTEMBER_2026_MONTHLY_ROW_SEEDS = [
-  ["Bottoms", "Full Length Pants", 13, 400, 4788, 1398, 4350],
-  ["Bottoms", "Jumpsuits & Playsuits", 2, 400, 6669, 1869, 512],
-  ["Bottoms", "Leggings", 1, 400, 2501, null, 389],
-  ["Bottoms", "Culottes & Capri Pants", 0, 400, 2375, null, 1],
-  ["Bottoms", "Shorts & Skorts", 0, 400, 2714, null, 53],
-  ["Dresses", "Knee Length Dresses", 8, 400, 5801, 1594, 3576],
-  ["Dresses", "Maxi Dresses", 12, 400, 6877, 1830, 3087],
-  ["Dresses", "Midi & Capri Dresses", 2, 400, 5932, null, 495],
-  ["Dresses", "Short & Mini Dresses", 1, 400, 4900, 1448, 192],
-  ["Dresses", "Kaftan Dresses", 2, 400, 5500, 1435, 491],
-  ["Outerwear", "Sweaters & Ponchos", 3, 400, 5077, null, 1913],
-  ["Outerwear", "Waterfalls & Kimonos", 6, 400, 4214, 1096, 1517],
-  ["Outerwear", "Jackets & Coats", 4, 400, 5332, 1411, 379],
-  ["Outerwear", "Hoodies & Sweatshirts", 2, 400, 3705, null, 314],
-  ["Skirts", "Knee Length Skirts", 0, 400, 2900, null, 209],
-  ["Skirts", "Maxi Skirts", 1, 400, 4900, 1212, 142],
-  ["Skirts", "Midi & Capri Skirts", 0, 400, 5203, null, 192],
-  ["Skirts", "Short & Mini Skirts", 0, 400, 2934, null, 11],
-  ["Tops", "Fitted Tops", 6, 400, 3360, 731, 2015],
-  ["Tops", "Loose & Oversized Tops", 8, 400, 4351, 1384, 1666],
-  ["Tops", "T-shirts & Tank Tops", 2, 400, 2104, 464, 1424],
-  ["Tops", "Relaxed Tops", 3, 400, 3593, 1032, 1678],
-  ["Tops", "Kaftan Tops", 0, 400, null, null, 228],
-  ["Tops", "Bodysuits", 1, 400, 2500, 564, 429],
-  ["Tops", "Midriff & Crop Tops", 0, 400, 2524, null, 120],
+const Q3_2026_JUL_AUG_ACTUALS = [
+  ["Dresses", "Maxi Dresses", 32, 10306],
+  ["Bottoms", "Full Length Pants", 28, 9811],
+  ["Dresses", "Knee Length Dresses", 26, 8975],
+  ["Tops", "Loose & Oversized Tops", 20, 6593],
+  ["Tops", "Fitted Tops", 19, 5515],
+  ["Outerwear", "Waterfalls & Kimonos", 14, 4209],
+  ["Tops", "Relaxed Tops", 7, 2815],
+  ["Tops", "T-shirts & Tank Tops", 7, 2728],
+  ["Outerwear", "Jackets & Coats", 7, 1908],
+  ["Bottoms", "Jumpsuits & Playsuits", 6, 1521],
+  ["Dresses", "Short & Mini Dresses", 3, 1132],
+  ["Outerwear", "Sweaters & Ponchos", 2, 930],
+  ["Dresses", "Kaftan Dresses", 3, 813],
+  ["Tops", "Bodysuits", 2, 797],
+  ["Skirts", "Midi & Capri Skirts", 1, 528],
+  ["Dresses", "Midi & Capri Dresses", 1, 477],
+  ["Outerwear", "Hoodies & Sweatshirts", 1, 441],
+  ["Bottoms", "Leggings", 1, 430],
+  ["Skirts", "Maxi Skirts", 1, 378],
+  ["Skirts", "Knee Length Skirts", 1, 324],
+  ["Bottoms", "Culottes & Capri Pants", 0, 0],
+  ["Bottoms", "Shorts & Skorts", 0, 0],
+  ["Skirts", "Short & Mini Skirts", 0, 0],
+  ["Tops", "Kaftan Tops", 0, 0],
+  ["Tops", "Midriff & Crop Tops", 0, 0],
 ] as const;
+const Q3_2026_ACTUAL_ORDER_COUNT = 182;
+const Q3_2026_ACTUAL_UNITS = 60631;
+const Q3_2026_CAPACITY_UNITS = 83000;
+const Q3_2026_PLAN_UNITS = 25000;
+const Q3_2026_ACTUAL_COGS_PCT = 30.9;
+const Q3_2026_PLANNING_DISCLOSURE = {
+  headline: "Q3 = July–August actuals + September plan",
+  actualLabel: "July–August actuals",
+  actualOrders: Q3_2026_ACTUAL_ORDER_COUNT,
+  actualUnits: Q3_2026_ACTUAL_UNITS,
+  planLabel: "September plan",
+  planUnits: Q3_2026_PLAN_UNITS,
+  totalUnits: Q3_2026_ACTUAL_UNITS + Q3_2026_PLAN_UNITS,
+  juneBookedOrders: 4,
+  juneBookedUnits: 1351,
+  septemberPlacedOrders: 2,
+  septemberPlacedUnits: 653,
+  actualCogsPct: Q3_2026_ACTUAL_COGS_PCT,
+  capacityUnits: Q3_2026_CAPACITY_UNITS,
+  note: "The four June-booked orders and two already-placed September orders are included within the tracker totals above, not added a second time. July/August capacity was about 29,000 units per month; the 60,631 units already ordered are the production backlog the team is working through.",
+} as const;
+const SEPTEMBER_2026_MONTHLY_ROW_SEEDS = [
+  ["Bottoms", "Full Length Pants", 11, 400, 4788, 1398, 4350, 5, 6, "Business-need plan: five new and six repeat styles. Pipeline availability is shown separately."],
+  ["Bottoms", "Jumpsuits & Playsuits", 2, 400, 6669, 1869, 512, 1, 1, "Business-need plan: one new and one repeat style. Pipeline availability is shown separately."],
+  ["Bottoms", "Leggings", 1, 400, 2501, null, 389, 0, 1, "One repeat style retained from the August sell-through and cover review."],
+  ["Bottoms", "Culottes & Capri Pants", 0, 400, 2375, null, 1, 0, 0, "No September styles planned after the August sell-through and cover review."],
+  ["Bottoms", "Shorts & Skorts", 0, 400, 2714, null, 53, 0, 0, "No September styles planned after the August sell-through and cover review."],
+  ["Dresses", "Knee Length Dresses", 6, 400, 5801, 1594, 3576, 2, 4, "Business-need plan: two new and four repeat styles. Pipeline availability is shown separately."],
+  ["Dresses", "Maxi Dresses", 13, 400, 6877, 1830, 3087, 7, 6, "Business-need plan: seven new and six repeat styles. Pipeline availability is shown separately."],
+  ["Dresses", "Midi & Capri Dresses", 0, 400, 5932, null, 495, 0, 0, "No September styles planned; pipeline availability remains visible as potential surplus."],
+  ["Dresses", "Short & Mini Dresses", 0, 400, 4900, 1448, 192, 0, 0, "No September styles planned after the August sell-through and cover review."],
+  ["Dresses", "Kaftan Dresses", 4, 400, 5500, 1435, 491, 2, 2, "Business-need plan: two new and two repeat styles. Pipeline availability is shown separately."],
+  ["Outerwear", "Sweaters & Ponchos", 5, 400, 5077, null, 1913, 3, 2, "Business-need plan: three new and two repeat styles. Pipeline availability is shown separately."],
+  ["Outerwear", "Waterfalls & Kimonos", 5, 400, 4214, 1096, 1517, 2, 3, "Business-need plan: two new and three repeat styles. Pipeline availability is shown separately."],
+  ["Outerwear", "Jackets & Coats", 6, 400, 5332, 1411, 379, 4, 2, "Business-need plan: four new and two repeat styles. Pipeline availability is shown separately."],
+  ["Outerwear", "Hoodies & Sweatshirts", 1, 400, 3705, null, 314, 1, 0, "Business-need plan: one new style. Pipeline availability is shown separately."],
+  ["Skirts", "Knee Length Skirts", 0, 400, 2900, null, 209, 0, 0, "No September styles planned after the August sell-through and cover review."],
+  ["Skirts", "Maxi Skirts", 0, 400, 4900, 1212, 142, 0, 0, "No September styles planned after the August sell-through and cover review."],
+  ["Skirts", "Midi & Capri Skirts", 0, 400, 5203, null, 192, 0, 0, "No September styles planned after the August sell-through and cover review."],
+  ["Skirts", "Short & Mini Skirts", 0, 400, 2934, null, 11, 0, 0, "Dropped entirely because stock cover is 83.3 weeks."],
+  ["Tops", "Fitted Tops", 3, 400, 3360, 731, 2015, 0, 3, "Business-need plan: three repeat styles. Pipeline availability remains visible as potential surplus."],
+  ["Tops", "Loose & Oversized Tops", 9, 400, 4351, 1384, 1666, 5, 4, "Business-need plan: five new and four repeat styles. Pipeline availability is shown separately."],
+  ["Tops", "T-shirts & Tank Tops", 1, 400, 2104, 464, 1424, 0, 1, "Business-need plan: one repeat style. Pipeline availability remains visible as potential surplus."],
+  ["Tops", "Relaxed Tops", 4, 400, 3593, 1032, 1678, 2, 2, "Business-need plan: two new and two repeat styles. Pipeline availability is shown separately."],
+  ["Tops", "Kaftan Tops", 0, 400, null, null, 228, 0, 0, "No September styles planned after the August sell-through and cover review."],
+  ["Tops", "Bodysuits", 0, 400, 2500, 564, 429, 0, 0, "Dropped entirely because stock cover is 34.2 weeks."],
+  ["Tops", "Midriff & Crop Tops", 0, 400, 2524, null, 120, 0, 0, "No September styles planned after the August sell-through and cover review."],
+] as const;
+const SEPTEMBER_2026_PLAN_NOTES =
+  "September plan expresses the business requirement: 34 new and 37 repeat styles within the 25,000-unit capacity. New-style pipeline availability for target order weeks 36–39 is compared live and does not cap the plan.";
 const STYLE_DEVELOPMENT_TRACKER_SEEDS = [
   ["V0826023", "Vivo Pleated Wide Leg Pants in Twill", "NEW", "Set Sampling", "Bottoms", "Full Length Pants", "WK36", "YIHAO 681112 Light Polyester Crepe"],
   ["V0826080", "Vivo Mistari 3/4 Sleeve Kaftan Dress in Twill", "NEW", "Pattern", "Dresses", "Kaftan Dresses", "WK36", "YIHAO 57 2345"],
@@ -1344,11 +1395,6 @@ async function ensureStyleDevelopmentTrackerData() {
 }
 
 async function ensureRangePlanData() {
-  // Q3 was a placeholder-only plan. Remove it as a unit so its ON DELETE
-  // CASCADE rows go with it, while the monthly plans remain independent rows.
-  await pool.query(
-    `DELETE FROM ${schema}.range_plan_seasons WHERE season_name='Q3 2026' AND season_year=2026`,
-  );
   await pool.query(`
     CREATE TABLE IF NOT EXISTS ${schema}.range_plan_seed_migrations (
       migration_key TEXT PRIMARY KEY,
@@ -1625,6 +1671,133 @@ async function ensureRangePlanData() {
     throw error;
   } finally {
     unifiedTaxonomyClient.release();
+  }
+  const septemberAllocationClient = await pool.connect();
+  try {
+    await septemberAllocationClient.query("BEGIN");
+    const allocationClaim = await septemberAllocationClient.query(
+      `INSERT INTO ${schema}.range_plan_seed_migrations (migration_key)
+       VALUES ('september-2026-business-need-allocation-v2')
+       ON CONFLICT DO NOTHING
+       RETURNING migration_key`,
+    );
+    if (allocationClaim.rows[0]) {
+      const september = await septemberAllocationClient.query<{ id: number }>(
+        `UPDATE ${schema}.range_plan_seasons
+            SET factory_capacity_units=25000,newness_floor_pct=40
+          WHERE season_name='September 2026' AND season_year=2026
+          RETURNING id`,
+      );
+      if (september.rows[0]) {
+        const seasonId = september.rows[0].id;
+        await septemberAllocationClient.query(
+          `DELETE FROM ${schema}.range_plan_rows WHERE season_id=$1`,
+          [seasonId],
+        );
+        for (const [productCategory, subCategory, plannedStyles, averageOrderSize, sellingPrice, expectedUnitCost, unitsSoldLastMonth, newStyles, repeatStyles, notes] of SEPTEMBER_2026_MONTHLY_ROW_SEEDS) {
+          await septemberAllocationClient.query(
+            `INSERT INTO ${schema}.range_plan_rows
+              (season_id,product_category,sub_category,tier,style_count_target,new_style_count,
+               reorder_style_count,replenishment_style_count,style_count_min,style_count_max,
+               aos_units,new_style_aos_units,opening_stock_units,units_sold_last_month,
+               expected_unit_cost,selling_price,new_units,reorder_units,replenishment_units,notes)
+             VALUES ($1,$2,$3,'Core'::${schema}.range_plan_tier,$4,$5,$6,0,0,0,400,300,NULL,$7,$8,$9,$10,$11,0,$12)`,
+            [
+              seasonId,
+              productCategory,
+              subCategory,
+              plannedStyles,
+              newStyles,
+              repeatStyles,
+              unitsSoldLastMonth,
+              expectedUnitCost,
+              sellingPrice,
+              newStyles * 300,
+              repeatStyles * averageOrderSize,
+              notes,
+            ],
+          );
+        }
+        await septemberAllocationClient.query(
+          `INSERT INTO ${schema}.range_plan_otb
+            (season_id,month_year,revenue_target,planned_units,new_styles_count,notes)
+           VALUES ($1,'2026-09-01',30000000,25000,34,$2)
+           ON CONFLICT (season_id,month_year) DO UPDATE SET
+             planned_units=EXCLUDED.planned_units,
+             new_styles_count=EXCLUDED.new_styles_count,
+             notes=EXCLUDED.notes`,
+          [seasonId, SEPTEMBER_2026_PLAN_NOTES],
+        );
+      }
+    }
+    await septemberAllocationClient.query("COMMIT");
+  } catch (error) {
+    await septemberAllocationClient.query("ROLLBACK");
+    throw error;
+  } finally {
+    septemberAllocationClient.release();
+  }
+  const q3ActualPlanClient = await pool.connect();
+  try {
+    await q3ActualPlanClient.query("BEGIN");
+    const q3Claim = await q3ActualPlanClient.query(
+      `INSERT INTO ${schema}.range_plan_seed_migrations (migration_key)
+       VALUES ('q3-2026-actual-plus-september-plan-v1')
+       ON CONFLICT DO NOTHING
+       RETURNING migration_key`,
+    );
+    if (q3Claim.rows[0]) {
+      const q3 = await q3ActualPlanClient.query<{ id: number }>(
+        `UPDATE ${schema}.range_plan_seasons
+            SET revenue_target_kes=0,cogs_budget_pct=32,factory_capacity_units=$1,status='active'
+          WHERE season_name='Q3 2026' AND season_year=2026
+          RETURNING id`,
+        [Q3_2026_CAPACITY_UNITS],
+      );
+      if (q3.rows[0]) {
+        const q3Id = q3.rows[0].id;
+        await q3ActualPlanClient.query(`DELETE FROM ${schema}.range_plan_rows WHERE season_id=$1`, [q3Id]);
+        for (const [productCategory, subCategory, actualStyles, actualUnits] of Q3_2026_JUL_AUG_ACTUALS) {
+          await q3ActualPlanClient.query(
+            `INSERT INTO ${schema}.range_plan_rows
+              (season_id,product_category,sub_category,tier,style_count_target,new_style_count,
+               reorder_style_count,replenishment_style_count,style_count_min,style_count_max,
+               aos_units,new_style_aos_units,opening_stock_units,units_sold_last_month,
+               expected_unit_cost,selling_price,new_units,reorder_units,replenishment_units,notes)
+             VALUES ($1,$2,$3,'Core'::${schema}.range_plan_tier,$4,0,0,0,0,0,1,300,NULL,NULL,NULL,NULL,$5,0,0,$6)`,
+            [
+              q3Id,
+              productCategory,
+              subCategory,
+              actualStyles,
+              actualUnits,
+              `July–August tracker actual: ${actualStyles} styles / ${actualUnits} units. September values are added live from the September 2026 monthly plan.`,
+            ],
+          );
+        }
+        await q3ActualPlanClient.query(`DELETE FROM ${schema}.range_plan_otb WHERE season_id=$1`, [q3Id]);
+        await q3ActualPlanClient.query(
+          `INSERT INTO ${schema}.range_plan_otb
+            (season_id,month_year,revenue_target,planned_units,new_styles_count,notes)
+           VALUES
+            ($1,'2026-07-01',NULL,$2,$3,$4),
+            ($1,'2026-09-01',NULL,NULL,NULL,$5)`,
+          [
+            q3Id,
+            Q3_2026_ACTUAL_UNITS,
+            Q3_2026_ACTUAL_ORDER_COUNT,
+            "Combined July–August tracker actuals. Includes four orders / 1,351 units placed in June but booked into the Q3 tracker.",
+            "Read live from the September 2026 monthly plan. Includes two orders / 653 units already placed in September.",
+          ],
+        );
+      }
+    }
+    await q3ActualPlanClient.query("COMMIT");
+  } catch (error) {
+    await q3ActualPlanClient.query("ROLLBACK");
+    throw error;
+  } finally {
+    q3ActualPlanClient.release();
   }
   await pool.query(
     `UPDATE ${schema}.range_plan_seasons
@@ -4984,6 +5157,7 @@ function rangePlanRowPayload(row: Record<string, unknown>) {
   const asp = optionalNumber(row.asp);
   const expectedUnitCost = optionalNumber(row.expectedUnitCost);
   const newStyleCount = Number(row.newStyleCount ?? 0);
+  const pipelineNewStylesAvailable = Number(row.pipelineNewStylesAvailable ?? 0);
   const reorderStyleCount = Number(row.reorderStyleCount ?? 0);
   const replenishmentStyleCount = Number(row.replenishmentStyleCount ?? 0);
   const aosUnits = Number(row.aosUnits ?? rangePlanAosDefault());
@@ -4993,6 +5167,20 @@ function rangePlanRowPayload(row: Record<string, unknown>) {
   const replenishmentUnits = replenishmentStyleCount * aosUnits;
   const totalUnitsImplied = Number(row.plannedUnitsCalculated ?? (newUnits + reorderUnits + replenishmentUnits));
   const effectivePrice = sellingPrice ?? asp;
+  const orderedStyles = Number(row.orderedStyles ?? 0);
+  const orderedUnits = Number(row.orderedUnits ?? 0);
+  const committedStyles = Number(row.committedStyles ?? 0);
+  const committedUnits = Number(row.committedUnits ?? 0);
+  const orderedNewStyles = Number(row.orderedNewStyles ?? 0);
+  const committedNewStyles = Number(row.committedNewStyles ?? 0);
+  const remainingNewStyles = Math.max(0, newStyleCount - orderedNewStyles - committedNewStyles);
+  const remainingRepeatStyles = Math.max(0, reorderStyleCount + replenishmentStyleCount
+    - Math.max(0, orderedStyles - orderedNewStyles)
+    - Math.max(0, committedStyles - committedNewStyles));
+  const projectedUnits = orderedUnits + committedUnits
+    + (remainingNewStyles * 300) + (remainingRepeatStyles * 400);
+  const combinedStyles = orderedStyles + committedStyles;
+  const combinedUnits = orderedUnits + committedUnits;
   return {
     id: Number(row.id),
     seasonId: Number(row.seasonId),
@@ -5001,6 +5189,8 @@ function rangePlanRowPayload(row: Record<string, unknown>) {
     tier: String(row.tier ?? "Core"),
     styleCountTarget: Number(row.styleCountTarget ?? 0),
     newStyleCount,
+    pipelineNewStylesAvailable,
+    newStylesGap: newStyleCount - pipelineNewStylesAvailable,
     reorderStyleCount,
     replenishmentStyleCount,
     styleCountMin: Number(row.styleCountMin ?? 0),
@@ -5011,8 +5201,17 @@ function rangePlanRowPayload(row: Record<string, unknown>) {
     newUnits,
     reorderUnits,
     replenishmentUnits,
-    committedStyles: Number(row.committedStyles ?? 0),
-    committedUnits: Number(row.committedUnits ?? 0),
+    orderedStyles,
+    orderedUnits,
+    committedStyles,
+    committedUnits,
+    combinedStyles,
+    combinedUnits,
+    balanceStyles: Math.max(0, Number(row.styleCountTarget ?? 0) - combinedStyles),
+    balanceUnits: totalUnitsImplied - combinedUnits,
+    projectedUnits,
+    ceilingUnits: Math.round(totalUnitsImplied * 1.1),
+    ceilingBreached: projectedUnits > Math.round(totalUnitsImplied * 1.1),
     openingStockUnits: optionalNumber(row.openingStockUnits),
     unitsSoldLastMonth: optionalNumber(row.unitsSoldLastMonth),
     expectedUnitCost,
@@ -5306,19 +5505,21 @@ router.get("/range-plan", async (req, res, next) => {
          factory_capacity_units AS "factoryCapacityUnits",newness_floor_pct AS "newnessFloorPct",status
        FROM ${schema}.range_plan_seasons
        ORDER BY CASE season_name
-          WHEN 'Q4 2026' THEN 1
-          WHEN 'September 2026' THEN 2
-          WHEN 'October 2026' THEN 3
-          WHEN 'November 2026' THEN 4
-          WHEN 'December 2026' THEN 5
+           WHEN 'Q3 2026' THEN 1
+           WHEN 'Q4 2026' THEN 2
+           WHEN 'September 2026' THEN 3
+           WHEN 'October 2026' THEN 4
+           WHEN 'November 2026' THEN 5
+           WHEN 'December 2026' THEN 6
           ELSE 99
         END,
         CASE WHEN status='active' THEN 0 ELSE 1 END,
         season_year DESC, id DESC`,
     );
     const seasons = seasonsResult.rows.map(rangePlanSeasonPayload);
-    const quarter = String(req.query.quarter ?? "") === "Q4 2026"
-      ? String(req.query.quarter)
+    const requestedQuarter = String(req.query.quarter ?? "");
+    const quarter = PLM_SEASONS.includes(requestedQuarter as (typeof PLM_SEASONS)[number])
+      ? requestedQuarter
       : "Q4 2026";
     const requestedSeasonId = Number(req.query.seasonId);
     const season = (Number.isInteger(requestedSeasonId) && requestedSeasonId > 0
@@ -5329,8 +5530,10 @@ router.get("/range-plan", async (req, res, next) => {
       res.json({ seasons: [], season: null, rows: [], otb: [], averageCostKes: 850, health: await rangePlanHealth() });
       return;
     }
-    const selectedAssortment = await assortmentPlanData("Q4 2026");
-    const orderWindow = season.seasonName === "Q4 2026"
+    const selectedAssortment = await assortmentPlanData(quarter);
+    const orderWindow = season.seasonName === "Q3 2026"
+      ? ["2026-07-01", "2026-10-01"]
+      : season.seasonName === "Q4 2026"
       ? ["2026-10-01", "2027-01-01"]
       : season.seasonName === "September 2026"
         ? ["2026-09-01", "2026-10-01"]
@@ -5351,44 +5554,129 @@ router.get("/range-plan", async (req, res, next) => {
          ),
          style_dim AS (
            SELECT LOWER(BTRIM(COALESCE(NULLIF(style_number,''),NULLIF(sku,'')))) AS style_key,
-             MAX(COALESCE(NULLIF(BTRIM(product_type),''),NULLIF(BTRIM(category),''),'Uncategorised')) AS sub_category
+              MAX(COALESCE(NULLIF(BTRIM(product_type),''),NULLIF(BTRIM(category),''),'Uncategorised')) AS sub_category,
+              MAX(LOWER(BTRIM(style_name))) AS style_name_key
            FROM public.all_products_clean p
            WHERE ${allowedBrand("p")}
            GROUP BY LOWER(BTRIM(COALESCE(NULLIF(style_number,''),NULLIF(sku,''))))
          ),
-         committed AS (
-           SELECT d.sub_category,
-             COUNT(DISTINCT LOWER(BTRIM(COALESCE(NULLIF(o.style_number,''),NULLIF(o.product_sku,'')))))::int AS committed_styles,
-             COALESCE(SUM(o.order_qty),0)::numeric AS committed_units
+         style_dim_name AS (
+           SELECT style_name_key,MAX(style_key) AS style_key,MAX(sub_category) AS sub_category
+           FROM style_dim
+           WHERE NULLIF(style_name_key,'') IS NOT NULL
+           GROUP BY style_name_key
+         ),
+         ordered_base AS (
+           SELECT o.order_ref,o.order_qty,o.lifecycle_type,
+             LOWER(BTRIM(COALESCE(NULLIF(o.style_number,''),NULLIF(o.product_sku,''),NULLIF(o.style_name,''),o.order_ref))) AS style_key,
+             COALESCE(d.sub_category,dn.sub_category) AS sub_category
            FROM public.production_orders o
            LEFT JOIN style_dim d
              ON d.style_key=LOWER(BTRIM(COALESCE(NULLIF(o.style_number,''),NULLIF(o.product_sku,''))))
+            LEFT JOIN style_dim_name dn ON dn.style_name_key=LOWER(BTRIM(o.style_name))
            WHERE o.date_ordered >= $2::date AND o.date_ordered < $3::date
-           GROUP BY d.sub_category
+              AND LOWER(COALESCE(o.bo_state,'')) NOT IN ('cancel','cancelled','canceled')
+         ),
+         ordered AS (
+           SELECT sub_category,
+             COUNT(DISTINCT style_key)::int AS ordered_styles,
+             COUNT(DISTINCT style_key) FILTER (WHERE LOWER(COALESCE(lifecycle_type,''))='new')::int AS ordered_new_styles,
+             COALESCE(SUM(order_qty),0)::numeric AS ordered_units
+           FROM ordered_base
+           WHERE sub_category IS NOT NULL
+           GROUP BY sub_category
+         ),
+         commitment_base AS (
+           SELECT s.id,s.style_name,s.quantity,s.order_type,
+             LOWER(BTRIM(s.style_name)) AS style_name_key,
+             dn.style_key,dn.sub_category
+           FROM public.style_tracker_styles s
+           JOIN public.planning_calendar cal
+             ON cal.year=s.iso_year AND cal.week_no=s.iso_week
+            AND cal.end_date >= $2::date AND cal.end_date < $3::date
+           LEFT JOIN style_dim_name dn ON dn.style_name_key=LOWER(BTRIM(s.style_name))
+           WHERE NOT s.archived
+             AND NOT EXISTS (
+               SELECT 1
+               FROM public.production_orders o
+               WHERE LOWER(COALESCE(o.bo_state,'')) NOT IN ('cancel','cancelled','canceled')
+                 AND (
+                   (dn.style_key IS NOT NULL AND LOWER(BTRIM(COALESCE(NULLIF(o.style_number,''),NULLIF(o.product_sku,''))))=dn.style_key)
+                   OR LOWER(BTRIM(COALESCE(o.style_name,'')))=LOWER(BTRIM(s.style_name))
+                 )
+             )
+         ),
+         committed AS (
+           SELECT sub_category,
+             COUNT(DISTINCT COALESCE(style_key,style_name_key))::int AS committed_styles,
+             COUNT(DISTINCT COALESCE(style_key,style_name_key)) FILTER (WHERE LOWER(COALESCE(order_type,''))='new')::int AS committed_new_styles,
+             COALESCE(SUM(quantity),0)::numeric AS committed_units
+           FROM commitment_base
+           WHERE sub_category IS NOT NULL
+           GROUP BY sub_category
+          ),
+          pipeline_new AS (
+            SELECT sub_category,COUNT(*)::int AS available_new_styles
+            FROM ${schema}.style_development_tracker
+            WHERE style_type='NEW'
+              AND NULLIF(SUBSTRING(UPPER(COALESCE(target_order_week,'')) FROM '([0-9]{1,2})$'),'')::int BETWEEN 36 AND 39
+            GROUP BY sub_category
          )
-       SELECT r.id,r.season_id AS "seasonId",r.sub_category AS "subCategory",
+        SELECT r.id,r.season_id AS "seasonId",r.sub_category AS "subCategory",
         r.product_category AS "productCategory",r.tier::text,
-          style_count_target AS "styleCountTarget",
-          r.new_style_count AS "newStyleCount",r.reorder_style_count AS "reorderStyleCount",
-          r.replenishment_style_count AS "replenishmentStyleCount",
-          style_count_min AS "styleCountMin",
-          style_count_max AS "styleCountMax",r.aos_units AS "aosUnits",
-           r.new_style_aos_units AS "newStyleAosUnits",
-           r.planned_units_calculated AS "plannedUnitsCalculated",
-           r.total_units_implied AS "totalUnitsImplied",
+           CASE WHEN selected_season.season_name='Q3 2026'
+             THEN r.style_count_target + COALESCE(september_row.style_count_target,0)
+             ELSE r.style_count_target END AS "styleCountTarget",
+           CASE WHEN selected_season.season_name='Q3 2026'
+             THEN COALESCE(september_row.new_style_count,0) ELSE r.new_style_count END AS "newStyleCount",
+           COALESCE(pipeline_new.available_new_styles,0) AS "pipelineNewStylesAvailable",
+           CASE WHEN selected_season.season_name='Q3 2026'
+             THEN COALESCE(september_row.reorder_style_count,0) ELSE r.reorder_style_count END AS "reorderStyleCount",
+           CASE WHEN selected_season.season_name='Q3 2026'
+             THEN COALESCE(september_row.replenishment_style_count,0) ELSE r.replenishment_style_count END AS "replenishmentStyleCount",
+           r.style_count_min AS "styleCountMin",
+           r.style_count_max AS "styleCountMax",
+           CASE WHEN selected_season.season_name='Q3 2026'
+             THEN COALESCE(september_row.aos_units,400) ELSE r.aos_units END AS "aosUnits",
+           CASE WHEN selected_season.season_name='Q3 2026'
+             THEN COALESCE(september_row.new_style_aos_units,300) ELSE r.new_style_aos_units END AS "newStyleAosUnits",
+           CASE WHEN selected_season.season_name='Q3 2026'
+             THEN r.new_units + COALESCE(september_row.planned_units_calculated,0)
+             ELSE r.planned_units_calculated END AS "plannedUnitsCalculated",
+           CASE WHEN selected_season.season_name='Q3 2026'
+             THEN r.new_units + COALESCE(september_row.planned_units_calculated,0)
+             ELSE r.total_units_implied END AS "totalUnitsImplied",
            r.new_units AS "newUnits",r.reorder_units AS "reorderUnits",
            r.replenishment_units AS "replenishmentUnits",
-           COALESCE(c.committed_styles,0) AS "committedStyles",
-           COALESCE(c.committed_units,0) AS "committedUnits",
-          r.opening_stock_units AS "openingStockUnits",
-          r.units_sold_last_month AS "unitsSoldLastMonth",
-          r.expected_unit_cost AS "expectedUnitCost",
-          r.selling_price AS "sellingPrice",
-          CASE WHEN r.selling_price IS NULL THEN a.asp ELSE r.selling_price END AS asp,
+            CASE WHEN selected_season.season_name='Q3 2026'
+              THEN r.style_count_target ELSE COALESCE(o.ordered_styles,0) END AS "orderedStyles",
+            CASE WHEN selected_season.season_name='Q3 2026'
+              THEN r.new_units ELSE COALESCE(o.ordered_units,0) END AS "orderedUnits",
+            CASE WHEN selected_season.season_name='Q3 2026'
+              THEN COALESCE(september_row.new_style_count,0) ELSE COALESCE(o.ordered_new_styles,0) END AS "orderedNewStyles",
+            CASE WHEN selected_season.season_name='Q3 2026' THEN 0 ELSE COALESCE(c.committed_styles,0) END AS "committedStyles",
+            CASE WHEN selected_season.season_name='Q3 2026' THEN 0 ELSE COALESCE(c.committed_units,0) END AS "committedUnits",
+            CASE WHEN selected_season.season_name='Q3 2026' THEN 0 ELSE COALESCE(c.committed_new_styles,0) END AS "committedNewStyles",
+           CASE WHEN selected_season.season_name='Q3 2026' THEN NULL ELSE r.opening_stock_units END AS "openingStockUnits",
+           CASE WHEN selected_season.season_name='Q3 2026' THEN NULL ELSE r.units_sold_last_month END AS "unitsSoldLastMonth",
+           CASE WHEN selected_season.season_name='Q3 2026' THEN NULL ELSE r.expected_unit_cost END AS "expectedUnitCost",
+           CASE WHEN selected_season.season_name='Q3 2026' THEN NULL ELSE r.selling_price END AS "sellingPrice",
+           CASE WHEN selected_season.season_name='Q3 2026' THEN NULL
+             WHEN r.selling_price IS NULL THEN a.asp ELSE r.selling_price END AS asp,
           r.notes
         FROM ${schema}.range_plan_rows r
+         JOIN ${schema}.range_plan_seasons selected_season ON selected_season.id=r.season_id
+         LEFT JOIN ${schema}.range_plan_seasons september_season
+           ON selected_season.season_name='Q3 2026'
+          AND september_season.season_name='September 2026'
+          AND september_season.season_year=selected_season.season_year
+         LEFT JOIN ${schema}.range_plan_rows september_row
+           ON september_row.season_id=september_season.id
+          AND LOWER(TRIM(september_row.sub_category))=LOWER(TRIM(r.sub_category))
         LEFT JOIN style_asp a ON LOWER(TRIM(a.subcategory))=LOWER(TRIM(r.sub_category))
-         LEFT JOIN committed c ON LOWER(TRIM(c.sub_category))=LOWER(TRIM(r.sub_category))
+          LEFT JOIN ordered o ON LOWER(TRIM(o.sub_category))=LOWER(TRIM(r.sub_category))
+          LEFT JOIN committed c ON LOWER(TRIM(c.sub_category))=LOWER(TRIM(r.sub_category))
+         LEFT JOIN pipeline_new ON LOWER(TRIM(pipeline_new.sub_category))=LOWER(TRIM(r.sub_category))
         WHERE r.season_id=$1
         ORDER BY CASE r.product_category
           WHEN 'Bottoms' THEN 1 WHEN 'Dresses' THEN 2 WHEN 'Outerwear' THEN 3
@@ -5419,9 +5707,149 @@ router.get("/range-plan", async (req, res, next) => {
       [season.id, fixedOtbMonths],
     );
      const rangeRows = rowsResult.rows.map(rangePlanRowPayload);
+      const unmatchedResult: { rows: Array<Record<string, unknown>> } = season.cadence === "monthly"
+        ? await pool.query(
+          `WITH style_dim AS (
+             SELECT LOWER(BTRIM(COALESCE(NULLIF(style_number,''),NULLIF(sku,'')))) AS style_key,
+               MAX(LOWER(BTRIM(style_name))) AS style_name_key,
+               MAX(COALESCE(NULLIF(BTRIM(product_type),''),NULLIF(BTRIM(category),''),'Uncategorised')) AS sub_category
+             FROM public.all_products_clean p
+             WHERE ${allowedBrand("p")}
+             GROUP BY LOWER(BTRIM(COALESCE(NULLIF(style_number,''),NULLIF(sku,''))))
+           ),
+           style_dim_name AS (
+             SELECT style_name_key,MAX(style_key) AS style_key,MAX(sub_category) AS sub_category
+             FROM style_dim WHERE NULLIF(style_name_key,'') IS NOT NULL GROUP BY style_name_key
+           ),
+           plan_subcategories AS (
+             SELECT LOWER(BTRIM(sub_category)) AS sub_category
+             FROM ${schema}.range_plan_rows WHERE season_id=$1
+           ),
+           unmatched_orders AS (
+             SELECT 'Odoo order'::text AS source,o.order_ref AS reference,
+               COALESCE(NULLIF(o.style_number,''),NULLIF(o.product_sku,''),NULLIF(o.style_name,''),'Unknown style') AS style,
+               COALESCE(o.order_qty,0)::numeric AS units,o.date_ordered::text AS date,
+               CASE WHEN COALESCE(d.sub_category,dn.sub_category) IS NULL THEN 'No product-master match'
+                 ELSE 'Sub-category is not in this monthly plan' END AS reason
+             FROM public.production_orders o
+             LEFT JOIN style_dim d ON d.style_key=LOWER(BTRIM(COALESCE(NULLIF(o.style_number,''),NULLIF(o.product_sku,''))))
+             LEFT JOIN style_dim_name dn ON dn.style_name_key=LOWER(BTRIM(o.style_name))
+             WHERE o.date_ordered >= $2::date AND o.date_ordered < $3::date
+               AND LOWER(COALESCE(o.bo_state,'')) NOT IN ('cancel','cancelled','canceled')
+               AND NOT EXISTS (
+                 SELECT 1 FROM plan_subcategories p
+                 WHERE p.sub_category=LOWER(BTRIM(COALESCE(d.sub_category,dn.sub_category,'')))
+               )
+           ),
+           unmatched_commitments AS (
+             SELECT 'Weekly plan'::text AS source,('WK'||s.iso_week::text) AS reference,
+               s.style_name AS style,COALESCE(s.quantity,0)::numeric AS units,
+               cal.start_date::text AS date,
+               CASE WHEN dn.sub_category IS NULL THEN 'No product-master match'
+                 ELSE 'Sub-category is not in this monthly plan' END AS reason
+             FROM public.style_tracker_styles s
+             JOIN public.planning_calendar cal ON cal.year=s.iso_year AND cal.week_no=s.iso_week
+               AND cal.end_date >= $2::date AND cal.end_date < $3::date
+             LEFT JOIN style_dim_name dn ON dn.style_name_key=LOWER(BTRIM(s.style_name))
+             WHERE NOT s.archived
+               AND NOT EXISTS (
+                 SELECT 1 FROM plan_subcategories p
+                 WHERE p.sub_category=LOWER(BTRIM(COALESCE(dn.sub_category,'')))
+               )
+               AND NOT EXISTS (
+                 SELECT 1 FROM public.production_orders o
+                 WHERE LOWER(COALESCE(o.bo_state,'')) NOT IN ('cancel','cancelled','canceled')
+                   AND ((dn.style_key IS NOT NULL AND LOWER(BTRIM(COALESCE(NULLIF(o.style_number,''),NULLIF(o.product_sku,''))))=dn.style_key)
+                     OR LOWER(BTRIM(COALESCE(o.style_name,'')))=LOWER(BTRIM(s.style_name)))
+               )
+           )
+           SELECT * FROM unmatched_orders
+           UNION ALL SELECT * FROM unmatched_commitments
+           ORDER BY date DESC,source,style`,
+          [season.id, orderWindow[0], orderWindow[1]],
+        )
+        : { rows: [] };
+      const plannedUnitsTotal = rangeRows.reduce((sum, row) => sum + row.totalUnitsImplied, 0);
+      const orderedStylesTotal = rangeRows.reduce((sum, row) => sum + row.orderedStyles, 0);
+      const orderedUnitsTotal = rangeRows.reduce((sum, row) => sum + row.orderedUnits, 0);
+      const committedStylesTotal = rangeRows.reduce((sum, row) => sum + row.committedStyles, 0);
+      const committedUnitsTotal = rangeRows.reduce((sum, row) => sum + row.committedUnits, 0);
+      const projectedUnitsTotal = rangeRows.reduce((sum, row) => sum + row.projectedUnits, 0);
+      const monthStart = new Date(`${orderWindow[0]}T00:00:00Z`);
+      const monthEnd = new Date(`${orderWindow[1]}T00:00:00Z`);
+      const now = new Date();
+      const elapsedPct = now >= monthEnd ? 1 : now <= monthStart ? 0
+        : (now.getTime() - monthStart.getTime()) / (monthEnd.getTime() - monthStart.getTime());
+      const combinedUnitsTotal = orderedUnitsTotal + committedUnitsTotal;
+      const underOrderThreshold = plannedUnitsTotal * Math.max(0, elapsedPct - 0.15);
+      const orderTracking = season.cadence === "monthly" ? {
+        plannedStyles: rangeRows.reduce((sum, row) => sum + row.styleCountTarget, 0),
+        plannedUnits: plannedUnitsTotal,
+        orderedStyles: orderedStylesTotal,
+        orderedUnits: orderedUnitsTotal,
+        committedStyles: committedStylesTotal,
+        committedUnits: committedUnitsTotal,
+        combinedStyles: orderedStylesTotal + committedStylesTotal,
+        combinedUnits: combinedUnitsTotal,
+        balanceStyles: Math.max(0, rangeRows.reduce((sum, row) => sum + row.styleCountTarget, 0) - orderedStylesTotal - committedStylesTotal),
+        balanceUnits: plannedUnitsTotal - combinedUnitsTotal,
+        projectedUnits: projectedUnitsTotal,
+        projectedCapacityPct: season.factoryCapacityUnits > 0 ? projectedUnitsTotal / season.factoryCapacityUnits * 100 : 0,
+        ceilingUnits: Math.round(plannedUnitsTotal * 1.1),
+        ceilingBreached: projectedUnitsTotal > Math.round(plannedUnitsTotal * 1.1),
+        significantlyUnderOrdered: combinedUnitsTotal < underOrderThreshold,
+        elapsedPct: elapsedPct * 100,
+        unmatchedStyles: unmatchedResult.rows.length,
+        unmatchedUnits: unmatchedResult.rows.reduce((sum, row) => sum + Number(row.units ?? 0), 0),
+        unmatched: unmatchedResult.rows.map((row) => ({
+          source: String(row.source), reference: String(row.reference ?? ""),
+          style: String(row.style), units: Number(row.units ?? 0),
+          date: String(row.date ?? ""), reason: String(row.reason),
+        })),
+      } : null;
      const potentialFpRevenue = rangeRows.reduce((sum, row) => sum + row.potentialFpRevenue, 0);
-     const quarterMonthlyRollup = season.cadence === "quarterly"
+      const pipelineComparison = (season.seasonName === "September 2026" || season.seasonName === "Q3 2026")
+        ? {
+          plannedNewStyles: rangeRows.reduce((sum, row) => sum + row.newStyleCount, 0),
+          availableNewStyles: rangeRows.reduce((sum, row) => sum + row.pipelineNewStylesAvailable, 0),
+          shortfall: rangeRows.reduce((sum, row) => sum + Math.max(row.newStylesGap, 0), 0),
+          surplus: rangeRows.reduce((sum, row) => sum + Math.max(-row.newStylesGap, 0), 0),
+          targetOrderWeeks: "WK36–WK39",
+        }
+        : null;
+     const quarterMonthlyRollup = season.seasonName === "Q3 2026"
        ? (await pool.query(
+         `WITH q3_actual AS (
+            SELECT COALESCE(SUM(r.new_units),0)::int AS units
+            FROM ${schema}.range_plan_rows r
+            JOIN ${schema}.range_plan_seasons s ON s.id=r.season_id
+            WHERE s.season_name='Q3 2026' AND s.season_year=2026
+          ),
+          september_plan AS (
+            SELECT s.id,COALESCE(SUM(r.planned_units_calculated),0)::int AS units
+            FROM ${schema}.range_plan_seasons s
+            LEFT JOIN ${schema}.range_plan_rows r ON r.season_id=s.id
+            WHERE s.season_name='September 2026' AND s.season_year=2026
+            GROUP BY s.id
+          )
+          SELECT $1::int AS "seasonId",'July–August actuals'::text AS "seasonName",
+            'Jul–Aug 2026 actuals'::text AS "monthYear",q3_actual.units AS "plannedUnits",
+            NULL::numeric AS "grossRevenuePotential"
+          FROM q3_actual
+          UNION ALL
+          SELECT september_plan.id,'September 2026 plan','2026-09-01',
+            september_plan.units,NULL::numeric
+          FROM september_plan`,
+         [season.id],
+       )).rows.map((row) => ({
+         seasonId: Number(row.seasonId),
+         seasonName: String(row.seasonName),
+         monthYear: String(row.monthYear),
+         plannedUnits: Number(row.plannedUnits ?? 0),
+         grossRevenuePotential: null,
+       }))
+       : season.cadence === "quarterly"
+        ? (await pool.query(
          `SELECT s.id AS "seasonId",s.season_name AS "seasonName",
             CASE s.season_name
               WHEN 'October 2026' THEN '2026-10-01'
@@ -5455,11 +5883,15 @@ router.get("/range-plan", async (req, res, next) => {
       averageCostKes: 850,
       health: await rangePlanHealth(),
        quarterMonthlyRollup,
+       planningDisclosure: season.seasonName === "Q3 2026" ? Q3_2026_PLANNING_DISCLOSURE : null,
+        pipelineComparison,
+         orderTracking,
       assortmentQuarter: quarter,
       assortmentStyles: selectedAssortment.styles,
        carryOverStyles: selectedAssortment.carryOverStyles,
        newStyles: selectedAssortment.newStyles,
       quarterStyles: {
+         "Q3 2026": quarter === "Q3 2026" ? selectedAssortment.styles : [],
         "Q4 2026": selectedAssortment.styles,
       },
       assortmentSummary: {
@@ -5470,6 +5902,7 @@ router.get("/range-plan", async (req, res, next) => {
          filterOptions: selectedAssortment.filterOptions,
       },
       quarterSummaries: {
+          "Q3 2026": quarter === "Q3 2026" ? { total: selectedAssortment.total, counts: selectedAssortment.counts } : { total: 0, counts: {} },
          "Q4 2026": { total: selectedAssortment.total, counts: selectedAssortment.counts },
       },
         assortmentFilterOptions: {
@@ -5651,12 +6084,19 @@ router.put("/range-plan/rows/:id", async (req, res, next) => {
         replenishment_style_count AS "replenishmentStyleCount",
         new_units AS "newUnits",reorder_units AS "reorderUnits",replenishment_units AS "replenishmentUnits",
         opening_stock_units AS "openingStockUnits",units_sold_last_month AS "unitsSoldLastMonth",
-        expected_unit_cost AS "expectedUnitCost",selling_price AS "sellingPrice",notes
-       FROM ${schema}.range_plan_rows WHERE id=$1`,
+        expected_unit_cost AS "expectedUnitCost",selling_price AS "sellingPrice",notes,
+        s.season_name AS "seasonName"
+       FROM ${schema}.range_plan_rows r
+       JOIN ${schema}.range_plan_seasons s ON s.id=r.season_id
+       WHERE r.id=$1`,
       [rowId],
     );
     if (!existing.rows[0]) {
       res.status(404).json({ error: "Range plan row not found" });
+      return;
+    }
+    if (existing.rows[0].seasonName === "Q3 2026") {
+      res.status(409).json({ error: "Q3 rows are derived from locked July–August actuals and the live September monthly plan" });
       return;
     }
     const styleCountTarget = req.body?.styleCountTarget === undefined
