@@ -89,31 +89,31 @@ const RANGE_PLAN_SEASON_SEEDS = [
   { seasonName: "December 2026", revenueTarget: 30000000, factoryCapacityUnits: 32000, cadence: "monthly" as const, otbMonth: "2026-12-01" },
 ] as const;
 const SEPTEMBER_2026_MONTHLY_ROW_SEEDS = [
-  ["Bottoms", "Full Length Pants", 13, 400, 4788, 1398],
-  ["Bottoms", "Jumpsuits and Playsuits", 2, 400, 6669, 1869],
-  ["Bottoms", "Leggings", 1, 400, 2501, null],
-  ["Bottoms", "Culottes and Capri Pants", 0, 400, 2375, null],
-  ["Bottoms", "Shorts and Skorts", 0, 400, 2714, null],
-  ["Dresses", "Knee Length Dresses", 8, 400, 5801, 1594],
-  ["Dresses", "Maxi Dresses", 12, 440, 6877, 1830],
-  ["Dresses", "Midi and Capri Dresses", 2, 400, 5932, null],
-  ["Dresses", "Short and Mini Dresses", 1, 400, 4900, 1448],
-  ["Dresses", "Kaftan Dresses", 2, 400, 5500, 1435],
-  ["Outerwear", "Sweaters and Ponchos", 3, 400, 5077, null],
-  ["Outerwear", "Waterfalls and Kimonos", 6, 400, 4214, 1096],
-  ["Outerwear", "Jackets and Coats", 4, 440, 5332, 1411],
-  ["Outerwear", "Hoodies and Sweatshirts", 2, 400, 3705, null],
-  ["Skirts", "Knee Length Skirts", 0, 400, 2900, null],
-  ["Skirts", "Maxi Skirts", 1, 400, 4900, 1212],
-  ["Skirts", "Midi and Capri Skirts", 0, 400, 5203, null],
-  ["Skirts", "Short and Mini Skirts", 0, 400, 2934, null],
-  ["Tops", "Fitted Tops", 6, 440, 3360, 731],
-  ["Tops", "Loose and Oversized Tops", 8, 450, 4351, 1384],
-  ["Tops", "T-shirts and Tank Tops", 2, 400, 2104, 464],
-  ["Tops", "Relaxed Tops", 3, 400, 3593, 1032],
-  ["Tops", "Kaftan Tops", 0, 400, null, null],
-  ["Tops", "Bodysuits", 1, 470, 2500, 564],
-  ["Tops", "Midriff and Crop Tops", 0, 400, 2524, null],
+  ["Bottoms", "Full Length Pants", 13, 400, 4788, 1398, 4350],
+  ["Bottoms", "Jumpsuits & Playsuits", 2, 400, 6669, 1869, 512],
+  ["Bottoms", "Leggings", 1, 400, 2501, null, 389],
+  ["Bottoms", "Culottes & Capri Pants", 0, 400, 2375, null, 1],
+  ["Bottoms", "Shorts & Skorts", 0, 400, 2714, null, 53],
+  ["Dresses", "Knee Length Dresses", 8, 400, 5801, 1594, 3576],
+  ["Dresses", "Maxi Dresses", 12, 440, 6877, 1830, 3087],
+  ["Dresses", "Midi & Capri Dresses", 2, 400, 5932, null, 495],
+  ["Dresses", "Short & Mini Dresses", 1, 400, 4900, 1448, 192],
+  ["Dresses", "Kaftan Dresses", 2, 400, 5500, 1435, 491],
+  ["Outerwear", "Sweaters & Ponchos", 3, 400, 5077, null, 1913],
+  ["Outerwear", "Waterfalls & Kimonos", 6, 400, 4214, 1096, 1517],
+  ["Outerwear", "Jackets & Coats", 4, 440, 5332, 1411, 379],
+  ["Outerwear", "Hoodies & Sweatshirts", 2, 400, 3705, null, 314],
+  ["Skirts", "Knee Length Skirts", 0, 400, 2900, null, 209],
+  ["Skirts", "Maxi Skirts", 1, 400, 4900, 1212, 142],
+  ["Skirts", "Midi & Capri Skirts", 0, 400, 5203, null, 192],
+  ["Skirts", "Short & Mini Skirts", 0, 400, 2934, null, 11],
+  ["Tops", "Fitted Tops", 6, 440, 3360, 731, 2015],
+  ["Tops", "Loose & Oversized Tops", 8, 450, 4351, 1384, 1666],
+  ["Tops", "T-shirts & Tank Tops", 2, 400, 2104, 464, 1424],
+  ["Tops", "Relaxed Tops", 3, 400, 3593, 1032, 1678],
+  ["Tops", "Kaftan Tops", 0, 400, null, null, 228],
+  ["Tops", "Bodysuits", 1, 470, 2500, 564, 429],
+  ["Tops", "Midriff & Crop Tops", 0, 400, 2524, null, 120],
 ] as const;
 const WORKSPACE_BRANDS = ["Vivo", "Safari by Vivo", "Zoya"] as const;
 const ALLOWED_BRANDS_SQL = WORKSPACE_BRANDS.map((brand) => `'${brand}'`).join(",");
@@ -1099,14 +1099,14 @@ async function ensureRangePlanData() {
       );
       if (september.rows[0]) {
         await client.query(`DELETE FROM ${schema}.range_plan_rows WHERE season_id=$1`, [september.rows[0].id]);
-        for (const [productCategory, subCategory, plannedStyles, averageOrderSize, sellingPrice, expectedUnitCost] of SEPTEMBER_2026_MONTHLY_ROW_SEEDS) {
+        for (const [productCategory, subCategory, plannedStyles, averageOrderSize, sellingPrice, expectedUnitCost, unitsSoldLastMonth] of SEPTEMBER_2026_MONTHLY_ROW_SEEDS) {
           await client.query(
             `INSERT INTO ${schema}.range_plan_rows
               (season_id,product_category,sub_category,tier,style_count_target,style_count_min,
                style_count_max,aos_units,opening_stock_units,units_sold_last_month,
                expected_unit_cost,selling_price)
-             VALUES ($1,$2,$3,'Core'::${schema}.range_plan_tier,$4,0,0,$5,0,0,$6,$7)`,
-            [september.rows[0].id, productCategory, subCategory, plannedStyles, averageOrderSize, expectedUnitCost, sellingPrice],
+              VALUES ($1,$2,$3,'Core'::${schema}.range_plan_tier,$4,0,0,$5,NULL,$6,$7,$8)`,
+            [september.rows[0].id, productCategory, subCategory, plannedStyles, averageOrderSize, unitsSoldLastMonth, expectedUnitCost, sellingPrice],
           );
         }
       }
@@ -1144,6 +1144,58 @@ async function ensureRangePlanData() {
     throw error;
   } finally {
     labelClient.release();
+  }
+  const septemberFixClient = await pool.connect();
+  try {
+    await septemberFixClient.query("BEGIN");
+    const fixClaim = await septemberFixClient.query(
+      `INSERT INTO ${schema}.range_plan_seed_migrations (migration_key)
+       VALUES ('september-category-inputs-v2')
+       ON CONFLICT DO NOTHING
+       RETURNING migration_key`,
+    );
+    if (fixClaim.rows[0]) {
+      await septemberFixClient.query(
+        `UPDATE ${schema}.range_plan_seasons
+         SET cogs_budget_pct=32,
+             status=CASE WHEN season_name='Q4 2026' THEN 'active' ELSE status END,
+             factory_capacity_units=CASE WHEN season_name='September 2026' THEN 28000 ELSE factory_capacity_units END
+         WHERE season_year=2026`,
+      );
+      await septemberFixClient.query(
+        `UPDATE ${schema}.range_plan_rows r
+         SET opening_stock_units=NULL
+         FROM ${schema}.range_plan_seasons s
+         WHERE s.id=r.season_id AND s.season_year=2026 AND s.season_name NOT LIKE 'Q%'`,
+      );
+      const september = await septemberFixClient.query<{ id: number }>(
+        `SELECT id FROM ${schema}.range_plan_seasons
+         WHERE season_name='September 2026' AND season_year=2026
+         FOR UPDATE`,
+      );
+      if (september.rows[0]) {
+        await septemberFixClient.query(
+          `DELETE FROM ${schema}.range_plan_rows WHERE season_id=$1`,
+          [september.rows[0].id],
+        );
+        for (const [productCategory, subCategory, plannedStyles, averageOrderSize, sellingPrice, expectedUnitCost, unitsSoldLastMonth] of SEPTEMBER_2026_MONTHLY_ROW_SEEDS) {
+          await septemberFixClient.query(
+            `INSERT INTO ${schema}.range_plan_rows
+              (season_id,product_category,sub_category,tier,style_count_target,style_count_min,
+               style_count_max,aos_units,opening_stock_units,units_sold_last_month,
+               expected_unit_cost,selling_price)
+             VALUES ($1,$2,$3,'Core'::${schema}.range_plan_tier,$4,0,0,$5,NULL,$6,$7,$8)`,
+            [september.rows[0].id, productCategory, subCategory, plannedStyles, averageOrderSize, unitsSoldLastMonth, expectedUnitCost, sellingPrice],
+          );
+        }
+      }
+    }
+    await septemberFixClient.query("COMMIT");
+  } catch (error) {
+    await septemberFixClient.query("ROLLBACK");
+    throw error;
+  } finally {
+    septemberFixClient.release();
   }
 }
 
