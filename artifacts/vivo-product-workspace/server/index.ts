@@ -35,6 +35,11 @@ import {
   type FeedbackImageContentType,
   type FeedbackPreviewStatus,
 } from "./feedback-policy.js";
+import {
+  RANGE_PLAN_AOS_COLUMN_SQL,
+  rangePlanAosDefault,
+  rangePlanAosDefaultMigrationSql,
+} from "./range-plan-defaults.js";
 
 const { Pool } = pg;
 const databaseUrl = process.env.VIVO_DATABASE_URL ?? process.env.DATABASE_URL;
@@ -118,7 +123,6 @@ const SEPTEMBER_2026_MONTHLY_ROW_SEEDS = [
   ["Tops", "Bodysuits", 1, 470, 2500, 564, 429],
   ["Tops", "Midriff & Crop Tops", 0, 400, 2524, null, 120],
 ] as const;
-const rangePlanAosDefault = () => 400;
 const WORKSPACE_BRANDS = ["Vivo", "Safari by Vivo", "Zoya"] as const;
 const ALLOWED_BRANDS_SQL = WORKSPACE_BRANDS.map((brand) => `'${brand}'`).join(",");
 const allowedBrand = (alias: string) => `${alias}.brand IN (${ALLOWED_BRANDS_SQL})`;
@@ -976,6 +980,7 @@ async function ensureRangePlanData() {
     `ALTER TABLE ${schema}.range_plan_seasons
      ALTER COLUMN cogs_budget_pct SET DEFAULT 32`,
   );
+  await pool.query(rangePlanAosDefaultMigrationSql(schema));
   for (const seasonSeed of RANGE_PLAN_SEASON_SEEDS) {
     const seasonResult = await pool.query<{ id: number }>(
       `INSERT INTO ${schema}.range_plan_seasons
@@ -1355,7 +1360,7 @@ async function ensureRecentWorkspaceMigrations() {
         style_count_target INTEGER NOT NULL DEFAULT 0,
         style_count_min INTEGER NOT NULL DEFAULT 0,
         style_count_max INTEGER NOT NULL DEFAULT 0,
-        aos_units INTEGER NOT NULL DEFAULT 350,
+        ${RANGE_PLAN_AOS_COLUMN_SQL},
         opening_stock_units INTEGER,
         units_sold_last_month INTEGER,
         expected_unit_cost NUMERIC,
@@ -1866,7 +1871,7 @@ async function ensureSchema() {
       style_count_target INTEGER NOT NULL DEFAULT 0,
       style_count_min INTEGER NOT NULL DEFAULT 0,
       style_count_max INTEGER NOT NULL DEFAULT 0,
-      aos_units INTEGER NOT NULL DEFAULT 350,
+      ${RANGE_PLAN_AOS_COLUMN_SQL},
       opening_stock_units INTEGER,
       units_sold_last_month INTEGER,
       expected_unit_cost NUMERIC,
@@ -3867,7 +3872,7 @@ function rangePlanRowPayload(row: Record<string, unknown>) {
     styleCountTarget: Number(row.styleCountTarget ?? 0),
     styleCountMin: Number(row.styleCountMin ?? 0),
     styleCountMax: Number(row.styleCountMax ?? 0),
-    aosUnits: Number(row.aosUnits ?? 350),
+    aosUnits: Number(row.aosUnits ?? rangePlanAosDefault()),
     totalUnitsImplied,
     openingStockUnits: optionalNumber(row.openingStockUnits),
     unitsSoldLastMonth: optionalNumber(row.unitsSoldLastMonth),
@@ -4628,7 +4633,7 @@ router.post("/range-plan/add-style", async (req: AuthRequest, res, next) => {
          style_count_target AS "styleCountTarget",style_count_min AS "styleCountMin",
          style_count_max AS "styleCountMax",aos_units AS "aosUnits",
          total_units_implied AS "totalUnitsImplied",notes`,
-       [seasonId, subCategory, tier, rangePlanAosDefault()],
+      [seasonId, subCategory, tier, rangePlanAosDefault()],
     );
     await client.query("COMMIT");
     res.status(201).json({ row: rangePlanRowPayload(result.rows[0]), subCategory, tier });
