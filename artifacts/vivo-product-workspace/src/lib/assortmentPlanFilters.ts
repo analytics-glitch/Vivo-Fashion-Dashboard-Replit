@@ -21,6 +21,9 @@ export type AssortmentSortableStyle = AssortmentFilterableStyle & {
   launchDate?: string | null;
   price?: number | null;
   stockUnits?: number | null;
+  weeksOfCover?: number | null;
+  sellThroughPct?: number | null;
+  daysSinceLastSale?: number | null;
 };
 export type AssortmentSortKey =
   | 'units_desc'
@@ -31,6 +34,9 @@ export type AssortmentSortKey =
   | 'price_desc'
   | 'price_asc'
   | 'stock_desc'
+  | 'weeks_of_cover_asc'
+  | 'sell_through_desc'
+  | 'days_since_last_sale_desc'
   | 'name_asc'
   | 'name_desc';
 
@@ -104,6 +110,9 @@ export function sortAssortmentStyles<Style extends AssortmentSortableStyle>(
       case 'price_desc': primary = compareNullable(finite(left.price), finite(right.price), -1); break;
       case 'price_asc': primary = compareNullable(finite(left.price), finite(right.price), 1); break;
       case 'stock_desc': primary = compareNullable(finite(left.stockUnits), finite(right.stockUnits), -1); break;
+      case 'weeks_of_cover_asc': primary = compareNullable(finite(left.weeksOfCover), finite(right.weeksOfCover), 1); break;
+      case 'sell_through_desc': primary = compareNullable(finite(left.sellThroughPct), finite(right.sellThroughPct), -1); break;
+      case 'days_since_last_sale_desc': primary = compareNullable(finite(left.daysSinceLastSale), finite(right.daysSinceLastSale), -1); break;
       case 'name_asc': primary = collator.compare(left.name ?? '', right.name ?? ''); break;
       case 'name_desc': primary = collator.compare(right.name ?? '', left.name ?? ''); break;
     }

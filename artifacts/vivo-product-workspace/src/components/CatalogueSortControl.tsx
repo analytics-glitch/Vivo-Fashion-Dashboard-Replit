@@ -9,6 +9,9 @@ export const CATALOGUE_SORT_OPTIONS = [
   { value: 'price_desc', label: 'Price — High to Low' },
   { value: 'price_asc', label: 'Price — Low to High' },
   { value: 'stock_desc', label: 'Stock — Most Available' },
+  { value: 'weeks_of_cover_asc', label: 'Weeks of Cover — Low to High' },
+  { value: 'sell_through_desc', label: 'Sell-through — Highest' },
+  { value: 'days_since_last_sale_desc', label: 'Days Since Last Sale — Highest' },
   { value: 'name_asc', label: 'Name A–Z' },
   { value: 'name_desc', label: 'Name Z–A' },
 ] as const;

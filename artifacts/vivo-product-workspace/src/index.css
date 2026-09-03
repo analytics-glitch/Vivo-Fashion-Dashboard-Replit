@@ -1055,6 +1055,23 @@ a { color: inherit; text-decoration: none; }
 .assortment-card-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 13px; }
 .assortment-style-card { display: flex; min-width: 0; min-height: 286px; flex-direction: column; overflow: hidden; border: 1px solid var(--line); background: #fff; transition: transform .2s, box-shadow .2s, border-color .2s; }
 .assortment-style-card:hover { border-color: #cdbb9b; box-shadow: 0 12px 24px rgba(26,26,46,.07); transform: translateY(-2px); }
+.assortment-style-card.consolidated { position:relative; min-height:0; }
+.assortment-style-card.consolidated.selected { border-color:var(--gold); box-shadow:inset 0 0 0 1px var(--gold); }
+.assortment-select-card { position:absolute; z-index:2; top:9px; left:9px; padding:4px; background:#fff; border:1px solid var(--line); line-height:0; }
+.assortment-select-card input { width:15px; height:15px; accent-color:#9d7b39; }
+.assortment-decision-metrics { display:grid; grid-template-columns:repeat(3,1fr); gap:6px; margin:12px 0; }
+.assortment-decision-metrics span { color:#777; font-size:10px; line-height:1.25; }
+.assortment-decision-metrics b { display:block; color:var(--navy); font:600 16px var(--app-font-serif); }
+.assortment-details-toggle { width:100%; padding:7px 0; border:0; border-top:1px solid #eee8dd; border-bottom:1px solid #eee8dd; background:transparent; color:#755b2c; font:10px var(--app-font-mono); text-align:left; cursor:pointer; }
+.assortment-card-details { display:grid; gap:8px; padding:10px 0; color:#68717d; font-size:10px; line-height:1.45; }
+.assortment-card-details b { display:block; color:var(--navy); font:600 9px var(--app-font-mono); text-transform:uppercase; letter-spacing:.05em; }
+.assortment-selection-tools { display:flex; justify-content:flex-end; gap:12px; margin:0 0 12px; }
+.assortment-selection-tools button,.assortment-bulk-bar>button { border:0; background:transparent; color:#755b2c; font:11px var(--app-font-mono); cursor:pointer; text-decoration:underline; }
+.assortment-bulk-bar { position:sticky; bottom:14px; z-index:10; display:flex; align-items:center; gap:12px; width:max-content; max-width:calc(100vw - 34px); margin:-30px auto 18px; padding:11px 14px; border:1px solid #b99a5c; background:#1a1a2e; color:#fff; box-shadow:0 8px 22px rgba(0,0,0,.2); }
+.assortment-bulk-bar .assortment-card-button { color:#1a1a2e; background:#f7ead0; border-color:#f7ead0; }
+.assortment-bulk-bar>button { color:#fff; }
+.assortment-destination-picker { position:relative; }
+.assortment-season-menu>span { display:block; padding:8px 10px 3px; color:#8b94a1; font:9px var(--app-font-mono); text-transform:uppercase; }
 .assortment-style-image { display: grid; place-items: center; height: 178px; overflow: hidden; color: #a0927e; background: #FAFAF8; }
 .assortment-style-image img { width: 100%; height: 100%; object-fit: contain; }
 .assortment-style-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; padding: 13px 14px 12px; }
@@ -1125,6 +1142,7 @@ a { color: inherit; text-decoration: none; }
   .assortment-style-image { height: 140px; }
   .assortment-style-copy { padding: 11px; }
   .assortment-style-copy h3 { font-size: 17px; }
+  .assortment-bulk-bar { width:calc(100% - 10px); justify-content:center; bottom:8px; }
   .range-plan-season-meta { align-items: flex-start; flex-direction: column; }
   .range-plan-season-meta label + label { padding-left: 0; border-left: 0; }
 }
@@ -2512,3 +2530,35 @@ a { color: inherit; text-decoration: none; }
 .catalogue-row-shell:hover .catalogue-row-actions, .catalogue-row-shell:focus-within .catalogue-row-actions { opacity: 1; transform: translateY(0); }
 .catalogue-row-actions a, .catalogue-row-actions button { display: inline-flex; align-items: center; gap: 5px; padding: 5px 8px; border: 1px solid #D8C7A5; border-radius: 3px; background: #FCF8EE; color: #6F5C35; font-size: 10px; text-decoration: none; cursor: pointer; }
 .plm-catalogue-tools .msf { min-width: 132px; }
+
+/* Weekly order targets versus dated buying orders */
+.weekly-date-range { display: flex; align-items: center; gap: 8px; margin-top: 14px; color: #726142; }
+.weekly-date-range strong { font-size: 13px; }
+.weekly-summary-grid-five { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.weekly-summary-grid-five strong { font-family: var(--font-sans); font-size: 25px; }
+.weekly-section-heading { display: flex; align-items: end; justify-content: space-between; gap: 18px; margin: 24px 0 10px; }
+.weekly-section-heading h2 { margin: 3px 0 0; font-family: var(--font-serif); font-size: 25px; }
+.weekly-section-heading p { max-width: 520px; margin: 0; color: var(--muted); font-size: 12px; text-align: right; }
+.weekly-actual-heading { margin-top: 30px; }
+.weekly-raised-status { display: inline-flex !important; align-items: center; gap: 5px; width: max-content; padding: 5px 7px; border-radius: 999px; font-size: 10px; font-weight: 750; white-space: nowrap; }
+.weekly-raised-status.pending, .weekly-raised-status.unplanned { background: #fff0e8; color: #a34f2e; }
+.weekly-raised-status.raised { background: #e8f3ed; color: #396a52; }
+.weekly-raised-status.shifted { background: #eeeaf6; color: #6e5b87; }
+.weekly-order-detail { display: block; max-width: 270px; margin-top: 6px; color: var(--muted); font-size: 9px; line-height: 1.45; }
+.weekly-target-pending > td:first-child, .weekly-unplanned-order > td:first-child { box-shadow: inset 3px 0 #d88f65; }
+.weekly-actual-table { min-width: 900px; }
+.weekly-actual-table td > small { display: block; margin-top: 3px; color: var(--muted); }
+.weekly-unplanned-order { background: #fffaf6; }
+.weekly-balance-values-five { grid-template-columns: repeat(5, 1fr); }
+
+@media (max-width: 1180px) {
+  .weekly-summary-grid-five { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .weekly-analysis-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 720px) {
+  .weekly-summary-grid-five { grid-template-columns: 1fr 1fr; }
+  .weekly-section-heading { align-items: flex-start; flex-direction: column; }
+  .weekly-section-heading p { text-align: left; }
+  .weekly-balance-values-five { grid-template-columns: 1fr 1fr; }
+  .weekly-date-range { align-items: flex-start; }
+}

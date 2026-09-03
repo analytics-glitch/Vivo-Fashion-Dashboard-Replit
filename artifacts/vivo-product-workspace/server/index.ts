@@ -5211,18 +5211,16 @@ function rangePlanRowPayload(row: Record<string, unknown>) {
   const effectivePrice = sellingPrice ?? asp;
   const orderedStyles = Number(row.orderedStyles ?? 0);
   const orderedUnits = Number(row.orderedUnits ?? 0);
-  const committedStyles = Number(row.committedStyles ?? 0);
-  const committedUnits = Number(row.committedUnits ?? 0);
+  const plannedPendingStyles = Number(row.plannedPendingStyles ?? 0);
+  const plannedPendingUnits = Number(row.plannedPendingUnits ?? 0);
   const orderedNewStyles = Number(row.orderedNewStyles ?? 0);
-  const committedNewStyles = Number(row.committedNewStyles ?? 0);
-  const remainingNewStyles = Math.max(0, newStyleCount - orderedNewStyles - committedNewStyles);
+  const plannedPendingNewStyles = Number(row.plannedPendingNewStyles ?? 0);
+  const remainingNewStyles = Math.max(0, newStyleCount - orderedNewStyles - plannedPendingNewStyles);
   const remainingRepeatStyles = Math.max(0, reorderStyleCount + replenishmentStyleCount
     - Math.max(0, orderedStyles - orderedNewStyles)
-    - Math.max(0, committedStyles - committedNewStyles));
-  const projectedUnits = orderedUnits + committedUnits
+    - Math.max(0, plannedPendingStyles - plannedPendingNewStyles));
+  const projectedUnits = orderedUnits + plannedPendingUnits
     + (remainingNewStyles * 300) + (remainingRepeatStyles * 400);
-  const combinedStyles = orderedStyles + committedStyles;
-  const combinedUnits = orderedUnits + committedUnits;
   return {
     id: Number(row.id),
     seasonId: Number(row.seasonId),
@@ -5245,12 +5243,10 @@ function rangePlanRowPayload(row: Record<string, unknown>) {
     replenishmentUnits,
     orderedStyles,
     orderedUnits,
-    committedStyles,
-    committedUnits,
-    combinedStyles,
-    combinedUnits,
-    balanceStyles: Math.max(0, Number(row.styleCountTarget ?? 0) - combinedStyles),
-    balanceUnits: totalUnitsImplied - combinedUnits,
+    plannedPendingStyles,
+    plannedPendingUnits,
+    balanceStyles: Math.max(0, Number(row.styleCountTarget ?? 0) - orderedStyles),
+    balanceUnits: totalUnitsImplied - orderedUnits,
     projectedUnits,
     ceilingUnits: Math.round(totalUnitsImplied * 1.1),
     ceilingBreached: projectedUnits > Math.round(totalUnitsImplied * 1.1),
@@ -5307,6 +5303,17 @@ function assortmentStylePayload(row: Record<string, unknown>) {
     launchDate: launchDate == null ? null : launchDate instanceof Date ? launchDate.toISOString().slice(0, 10) : String(launchDate),
     price: row.price == null ? null : Number(row.price),
     stockUnits: row.stockUnits == null ? null : Number(row.stockUnits),
+    sohStores: row.sohStores == null ? null : Number(row.sohStores),
+    sohOnline: row.sohOnline == null ? null : Number(row.sohOnline),
+    sohWarehouse: row.sohWarehouse == null ? null : Number(row.sohWarehouse),
+    wipUnits: row.wipUnits == null ? null : Number(row.wipUnits),
+    fullPricePct: row.fullPricePct == null ? null : Number(row.fullPricePct),
+    weeksOfCover: row.weeksOfCover == null ? null : Number(row.weeksOfCover),
+    sellThroughPct: row.sellThroughPct == null ? null : Number(row.sellThroughPct),
+    daysSinceLastSale: row.daysSinceLastSale == null ? null : Number(row.daysSinceLastSale),
+    awaitingDelivery: Boolean(row.awaitingDelivery),
+    fabricMetres: row.fabricMetres == null ? null : Number(row.fabricMetres),
+    otherColourFabricMetres: row.otherColourFabricMetres == null ? null : Number(row.otherColourFabricMetres),
     image: styleNumber ? `/api/workspace/assortment-image/${encodeURIComponent(styleNumber)}` : null,
   };
 }
@@ -5323,10 +5330,10 @@ async function assortmentPlanData(quarter: string) {
      ),
      style_rollup AS (
        SELECT
-         a.style_name,
-         LOWER(TRIM(MODE() WITHIN GROUP (ORDER BY a.style_number))) AS style_key,
+          a.style_name,
+          LOWER(TRIM(MODE() WITHIN GROUP (ORDER BY a.style_number))) AS style_key,
          MODE() WITHIN GROUP (ORDER BY NULLIF(TRIM(a.style_number),'')) AS style_number,
-         a.style_name AS name,
+          a.style_name AS name,
          COALESCE(MAX(NULLIF(TRIM(a.category),'')),MAX(NULLIF(TRIM(a.product_type),'')),'Uncategorised') AS category,
          COALESCE(MAX(NULLIF(TRIM(a.product_type),'')),'') AS "subCategory",
          COALESCE(MAX(NULLIF(TRIM(a.fabric_category),'')),'') AS "fabricCategory",
@@ -5336,27 +5343,49 @@ async function assortmentPlanData(quarter: string) {
           (MODE() WITHIN GROUP (ORDER BY NULLIF(a.price,0))
             FILTER (WHERE a.price IS NOT NULL AND a.price > 0))::float AS price,
           MIN(CASE WHEN a.style_launch_date ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}'
-            THEN LEFT(a.style_launch_date,10)::date END) AS catalogue_launch_date
+             THEN LEFT(a.style_launch_date,10)::date END) AS catalogue_launch_date,
+           COUNT(DISTINCT NULLIF(TRIM(a.color_print),''))::int AS colourway_count,
+           MAX(a.fabric_product_id) AS fabric_product_id,
+           MAX(COALESCE(NULLIF(TRIM(fp.name),''),NULLIF(TRIM(a.fabric_category),''),NULLIF(TRIM(a.fabric_structure),''))) AS fabric_name,
+           CASE
+             WHEN BOOL_OR(LOWER(TRIM(COALESCE(a.status,'')))='active') THEN 'Active'
+             WHEN BOOL_OR(LOWER(TRIM(COALESCE(a.status,'')))='retired') THEN 'Retired'
+             WHEN BOOL_OR(LOWER(TRIM(COALESCE(a.status,'')))='archived') THEN 'Archived'
+             ELSE NULL
+           END AS lifecycle_status,
+           CASE
+             WHEN BOOL_OR(COALESCE(a.is_noos,FALSE) OR UPPER(TRIM(COALESCE(a.tier,'')))='NOOS' OR UPPER(TRIM(COALESCE(a.range_tier,'')))='NOOS') THEN 'Tier 1'
+             WHEN BOOL_OR(UPPER(TRIM(COALESCE(a.tier,''))) IN ('TIER 2','CORE','CORE PERFORMER') OR UPPER(TRIM(COALESCE(a.range_tier,''))) IN ('TIER 2','CORE','CORE PERFORMER')) THEN 'Tier 2'
+             WHEN BOOL_OR(UPPER(TRIM(COALESCE(a.tier,''))) IN ('TIER 3','RECENT','RECENT PERFORMER') OR UPPER(TRIM(COALESCE(a.range_tier,''))) IN ('TIER 3','RECENT','RECENT PERFORMER')) THEN 'Tier 3'
+             WHEN BOOL_OR(UPPER(TRIM(COALESCE(a.tier,''))) IN ('TIER 4','NEW') OR UPPER(TRIM(COALESCE(a.range_tier,''))) IN ('TIER 4','NEW')) THEN 'Tier 4'
+             ELSE 'Untiered'
+           END AS lifecycle_tier
        FROM public.all_products_clean a
+        LEFT JOIN public.raw_fabric_products fp ON fp.id=a.fabric_product_id
        WHERE NULLIF(TRIM(a.style_name),'') IS NOT NULL
           AND ${allowedBrand("a")}
          AND NULLIF(TRIM(a.style_number),'') IS NOT NULL
-       GROUP BY a.style_name
+          AND LOWER(TRIM(a.style_name)) NOT IN ('zz test','sample & sale items')
+        GROUP BY a.style_name
        HAVING NOT BOOL_OR(
          COALESCE(a.category,'') ILIKE '%sample%'
          OR COALESCE(a.style_number,'') ILIKE '%sample%'
          OR COALESCE(a.style_name,'') ILIKE '%sample%'
        )
      ),
-     stock AS (
+      stock AS (
        SELECT COALESCE(m.style_name,i.style_name) AS style_name,
          COALESCE(SUM(i.available) FILTER (
-           WHERE NOT (i.pos_location_name=ANY($2::text[]))
-         ),0) AS soh_stores,
+            WHERE NOT (i.pos_location_name=ANY($2::text[]))
+              AND COALESCE(i.pos_location_name,'') NOT ILIKE 'online%'
+          ),0)::float AS soh_stores,
+          COALESCE(SUM(i.available) FILTER (
+            WHERE COALESCE(i.pos_location_name,'') ILIKE 'online%'
+          ),0)::float AS soh_online,
          COALESCE(SUM(i.available) FILTER (
            WHERE i.pos_location_name=ANY($2::text[])
              AND NOT (i.pos_location_name=ANY($3::text[]))
-          ),0) AS soh_warehouse,
+          ),0)::float AS soh_warehouse,
           COALESCE(SUM(i.available) FILTER (
             WHERE COALESCE(i.pos_location_name,'') <> ALL($3::text[])
           ),0)::float AS stock_units
@@ -5365,21 +5394,46 @@ async function assortmentPlanData(quarter: string) {
        WHERE NULLIF(TRIM(COALESCE(m.style_name,i.style_name)),'') IS NOT NULL
        GROUP BY COALESCE(m.style_name,i.style_name)
      ),
-     eligible AS (
-       SELECT DISTINCT ON (r.style_key)
-         r.*,o.status AS override_status,o.tier AS override_tier
-       FROM style_rollup r
-       JOIN public.style_tier_overrides o
-         ON LOWER(TRIM(o.style_number))=r.style_key
-       LEFT JOIN stock st ON st.style_name=r.style_name
-       WHERE LOWER(TRIM(COALESCE(o.status,''))) IN ('active','retired')
-         AND LOWER(COALESCE(o.status,'')) NOT LIKE '%archive%'
-         AND (
-           LOWER(TRIM(o.status))='active'
-           OR COALESCE(st.soh_stores,0)>0
-           OR COALESCE(st.soh_warehouse,0)>0
-         )
-       ORDER BY r.style_key,r.style_name
+      eligible AS (
+        SELECT DISTINCT ON (r.style_key)
+           r.*
+        FROM style_rollup r
+        LEFT JOIN stock st ON st.style_name=r.style_name
+         WHERE r.lifecycle_status IN ('Active','Retired')
+        ORDER BY r.style_key,r.style_name
+       ),
+      sales_metrics AS (
+        SELECT r.style_key,
+          SUM(GREATEST(COALESCE(sa.ordered_item_quantity,0),0)) FILTER (WHERE LOWER(COALESCE(sa.sale_kind,'')) IN ('sale','order')
+            AND sa.sale_date >= (CURRENT_DATE - INTERVAL '182 days')::text)::float AS units_6m,
+          SUM(GREATEST(COALESCE(sa.ordered_item_quantity,0),0)) FILTER (WHERE LOWER(COALESCE(sa.sale_kind,'')) IN ('sale','order')
+            AND sa.sale_date >= (CURRENT_DATE - INTERVAL '26 weeks')::text)::float AS units_26w,
+          SUM(GREATEST(COALESCE(sa.ordered_item_quantity,0),0)) FILTER (WHERE LOWER(COALESCE(sa.sale_kind,'')) IN ('sale','order')
+            AND sa.sale_date >= (CURRENT_DATE - INTERVAL '182 days')::text
+            AND COALESCE(sa.discounts_kes,0)=0)::float AS full_price_units_6m,
+          MAX(LEFT(sa.sale_date,10)::date) FILTER (WHERE LOWER(COALESCE(sa.sale_kind,'')) IN ('sale','order')
+            AND sa.sale_date ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}') AS last_sale_date
+        FROM eligible r JOIN sku_style m ON LOWER(TRIM(m.style_number))=r.style_key
+        JOIN public.all_sales sa ON sa.variant_sku=m.sku
+        GROUP BY r.style_key
+      ),
+      wip AS (
+        SELECT LOWER(BTRIM(COALESCE(NULLIF(o.style_number,''),NULLIF(o.product_sku,'')))) AS style_key,
+          SUM(GREATEST(COALESCE(o.order_qty,0),0))::float AS wip_units
+        FROM public.production_orders o
+        WHERE LOWER(COALESCE(o.bo_state,'')) NOT IN ('cancel','cancelled','canceled','done','completed')
+        GROUP BY LOWER(BTRIM(COALESCE(NULLIF(o.style_number,''),NULLIF(o.product_sku,''))))
+      ),
+      fabric_metrics AS (
+        SELECT r.style_key,
+          SUM(i.available / NULLIF(fp.kg_per_mtr_eff,0)) FILTER (WHERE fp.id=r.fabric_product_id AND i.location_name='RMAT/Stock')::float AS fabric_metres,
+          SUM(i.available / NULLIF(fp.kg_per_mtr_eff,0)) FILTER (WHERE fp.id<>r.fabric_product_id AND i.location_name='RMAT/Stock'
+            AND NULLIF(BTRIM(fp.supplier_fabric_code),'') IS NOT NULL
+            AND fp.supplier_fabric_code=(SELECT supplier_fabric_code FROM public.raw_fabric_products WHERE id=r.fabric_product_id))::float AS sibling_metres
+        FROM eligible r
+        LEFT JOIN public.raw_fabric_products fp ON TRUE
+        LEFT JOIN public.raw_fabric_inventory i ON i.product_id=fp.id
+        GROUP BY r.style_key
       ),
       rollup_sales AS (
         SELECT r.style_key,
@@ -5455,16 +5509,17 @@ async function assortmentPlanData(quarter: string) {
        r.style_number AS "styleNumber",
        r.name,r.category,r."subCategory",r."fabricCategory",r.brand,r."primaryColour",r.edit,
        'Carry-over' AS stage,'Merchandising' AS designer,$1 AS season,
-       CASE WHEN r.override_tier IN ('Tier 1','Tier 2','Tier 3','Tier 4') THEN r.override_tier ELSE NULL END AS "rangeTier",
+        CASE WHEN r.lifecycle_tier IN ('Tier 1','Tier 2','Tier 3','Tier 4') THEN r.lifecycle_tier ELSE NULL END AS "rangeTier",
        CASE
-         WHEN LOWER(TRIM(r.override_status))='retired' THEN 'Retired'
-         WHEN r.override_tier='Tier 1' THEN 'Tier 1 · NOOS'
-         WHEN r.override_tier='Tier 2' THEN 'Tier 2 · Core'
-         WHEN r.override_tier='Tier 3' THEN 'Tier 3 · Recent'
-         WHEN r.override_tier='Tier 4' THEN 'Tier 4 · New'
+          WHEN r.lifecycle_status='Retired' THEN 'Retired'
+          WHEN r.lifecycle_tier='Tier 1' THEN 'Tier 1 · NOOS'
+          WHEN r.lifecycle_tier='Tier 2' THEN 'Tier 2 · Core'
+          WHEN r.lifecycle_tier='Tier 3' THEN 'Tier 3 · Recent'
+          WHEN r.lifecycle_tier='Tier 4' THEN 'Tier 4 · New'
+          WHEN r.lifecycle_tier='Untiered' THEN 'Untiered'
          ELSE NULL
        END AS tier,
-       INITCAP(LOWER(TRIM(r.override_status))) AS status,
+        r.lifecycle_status AS status,
         (e.style_id IS NOT NULL AND aps.style_key IS NULL) AS excluded,
         sales.units_sold AS "unitsSold",
         sales.revenue_kes AS "revenueKes",
@@ -5476,23 +5531,37 @@ async function assortmentPlanData(quarter: string) {
         END AS "sorPct",
         COALESCE(r.catalogue_launch_date,sales.first_sale_date) AS "launchDate",
         r.price,
-        st.stock_units AS "stockUnits"
+        st.stock_units AS "stockUnits",
+         st.soh_stores AS "sohStores",st.soh_online AS "sohOnline",st.soh_warehouse AS "sohWarehouse",
+         w.wip_units AS "wipUnits",
+         CASE WHEN sm.units_6m > 0 THEN ROUND((100 * sm.full_price_units_6m / sm.units_6m)::numeric,2)::float ELSE NULL END AS "fullPricePct",
+         CASE WHEN sm.units_6m > 0 THEN ROUND(((COALESCE(st.stock_units,0) / sm.units_6m) * 26)::numeric,2)::float ELSE NULL END AS "weeksOfCover",
+         CASE WHEN COALESCE(sm.units_6m,0)+COALESCE(st.stock_units,0)>0 THEN ROUND((100*COALESCE(sm.units_6m,0)/(COALESCE(sm.units_6m,0)+COALESCE(st.stock_units,0)))::numeric,2)::float ELSE NULL END AS "sellThroughPct",
+         CASE WHEN sm.last_sale_date IS NULL THEN NULL ELSE CURRENT_DATE-sm.last_sale_date END AS "daysSinceLastSale",
+         (COALESCE(st.stock_units,0)=0 AND COALESCE(w.wip_units,0)>0) AS "awaitingDelivery",
+         fm.fabric_metres AS "fabricMetres",fm.sibling_metres AS "otherColourFabricMetres",
+        r.colourway_count AS "colourwayCount",r.fabric_name AS fabric,r.fabric_product_id AS "fabricProductId"
      FROM eligible r
       LEFT JOIN stock st ON st.style_name=r.style_name
       LEFT JOIN sales_by_style sales ON sales.style_key=r.style_key
+       LEFT JOIN sales_metrics sm ON sm.style_key=r.style_key
+       LEFT JOIN wip w ON w.style_key=r.style_key
+       LEFT JOIN fabric_metrics fm ON fm.style_key=r.style_key
      LEFT JOIN ${schema}.assortment_exclusions e
        ON e.season=$1 AND e.source='all_products_clean' AND LOWER(TRIM(e.style_id))=r.style_key
      LEFT JOIN ${schema}.assortment_plan_styles aps
        ON aps.season=$1 AND aps.source='all_products_clean' AND LOWER(TRIM(aps.style_key))=r.style_key
-     ORDER BY CASE
-       WHEN LOWER(TRIM(r.override_status))='retired' THEN 5
-       WHEN r.override_tier='Tier 1' THEN 1 WHEN r.override_tier='Tier 2' THEN 2
-       WHEN r.override_tier='Tier 3' THEN 3 WHEN r.override_tier='Tier 4' THEN 4 ELSE 6
+      ORDER BY CASE
+        WHEN r.lifecycle_status='Retired' THEN 6
+        WHEN r.lifecycle_tier='Tier 1' THEN 1 WHEN r.lifecycle_tier='Tier 2' THEN 2
+        WHEN r.lifecycle_tier='Tier 3' THEN 3 WHEN r.lifecycle_tier='Tier 4' THEN 4 ELSE 5
      END,LOWER(COALESCE(r.style_number,r.name))`,
     [quarter, [...ASSORTMENT_WAREHOUSE_LOCATIONS], [...ASSORTMENT_PIPELINE_LOCATIONS]],
   );
   const allStyles = catalogueResult.rows.map(assortmentStylePayload);
-  const styles = allStyles.filter((style) => !style.excluded);
+  // Quarter exclusions are planning annotations, not lifecycle facts. Keep the
+  // complete Odoo-derived range visible so counts reconcile with BI.
+  const styles = allStyles;
   const breakdown = (field: "category" | "stage") => {
     const counts: Record<string, number> = {};
     for (const row of styles) {
@@ -5559,6 +5628,28 @@ router.get("/range-plan", async (req, res, next) => {
         season_year DESC, id DESC`,
     );
     const seasons = seasonsResult.rows.map(rangePlanSeasonPayload);
+    const weeklyDestinations = (await pool.query(
+      `WITH upcoming AS (
+         SELECT (date_trunc('week', CURRENT_DATE)::date + (n * 7))::date AS start_date
+         FROM generate_series(0,11) AS n
+       ),
+       iso_weeks AS (
+         SELECT EXTRACT(ISOYEAR FROM start_date)::int AS iso_year,
+           EXTRACT(WEEK FROM start_date)::int AS iso_week,start_date,(start_date+6)::date AS end_date
+         FROM upcoming
+       )
+       SELECT w.iso_year AS "isoYear",w.iso_week AS "isoWeek",w.start_date::text AS "startDate",
+         w.end_date::text AS "endDate",
+         'W' || lpad(w.iso_week::text,2,'0') || ' · ' || to_char(w.start_date,'DD Mon') || '–' || to_char(w.end_date,'DD Mon') AS label,
+         COALESCE(p.status,'draft') AS status
+       FROM iso_weeks w
+       LEFT JOIN ${schema}.weekly_order_plans p ON p.iso_year=w.iso_year AND p.iso_week=w.iso_week
+       ORDER BY w.start_date`,
+    )).rows.map((row) => ({
+      isoYear: Number(row.isoYear), isoWeek: Number(row.isoWeek),
+      startDate: String(row.startDate).slice(0, 10), endDate: String(row.endDate).slice(0, 10),
+      label: String(row.label), status: String(row.status),
+    }));
     const requestedQuarter = String(req.query.quarter ?? "");
     const quarter = PLM_SEASONS.includes(requestedQuarter as (typeof PLM_SEASONS)[number])
       ? requestedQuarter
@@ -5628,61 +5719,29 @@ router.get("/range-plan", async (req, res, next) => {
            WHERE sub_category IS NOT NULL
            GROUP BY sub_category
          ),
-          legacy_commitment_base AS (
-            SELECT s.id::text AS id,s.style_name,s.quantity,s.order_type,
-             LOWER(BTRIM(s.style_name)) AS style_name_key,
-             dn.style_key,dn.sub_category
-           FROM public.style_tracker_styles s
-           JOIN public.planning_calendar cal
-             ON cal.year=s.iso_year AND cal.week_no=s.iso_week
-            AND cal.end_date >= $2::date AND cal.end_date < $3::date
-           LEFT JOIN style_dim_name dn ON dn.style_name_key=LOWER(BTRIM(s.style_name))
-           WHERE NOT s.archived
-             AND NOT EXISTS (
-               SELECT 1
-               FROM ${schema}.weekly_order_plan_lines wl
-               JOIN ${schema}.weekly_order_plans wp ON wp.id=wl.plan_id AND wp.status='confirmed'
-               JOIN public.planning_calendar wc ON wc.year=wp.iso_year AND wc.week_no=wp.iso_week
-                 AND wc.end_date >= $2::date AND wc.end_date < $3::date
-               WHERE LOWER(BTRIM(wl.style_name))=LOWER(BTRIM(s.style_name))
-             )
-             AND NOT EXISTS (
-               SELECT 1
-               FROM public.production_orders o
-               WHERE LOWER(COALESCE(o.bo_state,'')) NOT IN ('cancel','cancelled','canceled')
-                 AND (
-                   (dn.style_key IS NOT NULL AND LOWER(BTRIM(COALESCE(NULLIF(o.style_number,''),NULLIF(o.product_sku,''))))=dn.style_key)
-                   OR LOWER(BTRIM(COALESCE(o.style_name,'')))=LOWER(BTRIM(s.style_name))
-                 )
-             )
-         ),
-          workspace_commitment_base AS (
+           planned_pending_base AS (
             SELECT l.id::text AS id,l.style_name,l.estimated_quantity AS quantity,l.order_type,
               LOWER(BTRIM(l.style_name)) AS style_name_key,
               LOWER(BTRIM(l.style_number)) AS style_key,l.sub_category
             FROM ${schema}.weekly_order_plan_lines l
-            JOIN ${schema}.weekly_order_plans w ON w.id=l.plan_id AND w.status='confirmed'
+             JOIN ${schema}.weekly_order_plans w ON w.id=l.plan_id
             JOIN public.planning_calendar cal
               ON cal.year=w.iso_year AND cal.week_no=w.iso_week
-             AND cal.end_date >= $2::date AND cal.end_date < $3::date
+              AND cal.start_date < $3::date AND cal.end_date >= $2::date
             WHERE NOT EXISTS (
               SELECT 1 FROM public.production_orders o
-              WHERE LOWER(COALESCE(o.bo_state,'')) NOT IN ('cancel','cancelled','canceled')
+               WHERE o.date_ordered IS NOT NULL
+                 AND LOWER(COALESCE(o.bo_state,'')) NOT IN ('cancel','cancelled','canceled')
                 AND (LOWER(BTRIM(COALESCE(NULLIF(o.style_number,''),NULLIF(o.product_sku,''))))=LOWER(BTRIM(l.style_number))
                   OR LOWER(BTRIM(COALESCE(o.style_name,'')))=LOWER(BTRIM(l.style_name)))
             )
           ),
-          commitment_base AS (
-            SELECT * FROM legacy_commitment_base
-            UNION ALL
-            SELECT * FROM workspace_commitment_base
-          ),
-          committed AS (
+           planned_pending AS (
             SELECT sub_category,
-              COUNT(DISTINCT COALESCE(style_key,style_name_key))::int AS committed_styles,
-              COUNT(DISTINCT COALESCE(style_key,style_name_key)) FILTER (WHERE LOWER(COALESCE(order_type,''))='new')::int AS committed_new_styles,
-              COALESCE(SUM(quantity),0)::numeric AS committed_units
-            FROM commitment_base
+               COUNT(DISTINCT COALESCE(style_key,style_name_key))::int AS pending_styles,
+               COUNT(DISTINCT COALESCE(style_key,style_name_key)) FILTER (WHERE LOWER(COALESCE(order_type,''))='new')::int AS pending_new_styles,
+               COALESCE(SUM(quantity),0)::numeric AS pending_units
+             FROM planned_pending_base
             WHERE sub_category IS NOT NULL
             GROUP BY sub_category
           ),
@@ -5719,15 +5778,12 @@ router.get("/range-plan", async (req, res, next) => {
              ELSE r.total_units_implied END AS "totalUnitsImplied",
            r.new_units AS "newUnits",r.reorder_units AS "reorderUnits",
            r.replenishment_units AS "replenishmentUnits",
-            CASE WHEN selected_season.season_name='Q3 2026'
-              THEN r.style_count_target ELSE COALESCE(o.ordered_styles,0) END AS "orderedStyles",
-            CASE WHEN selected_season.season_name='Q3 2026'
-              THEN r.new_units ELSE COALESCE(o.ordered_units,0) END AS "orderedUnits",
-            CASE WHEN selected_season.season_name='Q3 2026'
-              THEN COALESCE(september_row.new_style_count,0) ELSE COALESCE(o.ordered_new_styles,0) END AS "orderedNewStyles",
-            CASE WHEN selected_season.season_name='Q3 2026' THEN 0 ELSE COALESCE(c.committed_styles,0) END AS "committedStyles",
-            CASE WHEN selected_season.season_name='Q3 2026' THEN 0 ELSE COALESCE(c.committed_units,0) END AS "committedUnits",
-            CASE WHEN selected_season.season_name='Q3 2026' THEN 0 ELSE COALESCE(c.committed_new_styles,0) END AS "committedNewStyles",
+             COALESCE(o.ordered_styles,0) AS "orderedStyles",
+             COALESCE(o.ordered_units,0) AS "orderedUnits",
+             COALESCE(o.ordered_new_styles,0) AS "orderedNewStyles",
+             COALESCE(pp.pending_styles,0) AS "plannedPendingStyles",
+             COALESCE(pp.pending_units,0) AS "plannedPendingUnits",
+             COALESCE(pp.pending_new_styles,0) AS "plannedPendingNewStyles",
            CASE WHEN selected_season.season_name='Q3 2026' THEN NULL ELSE r.opening_stock_units END AS "openingStockUnits",
            CASE WHEN selected_season.season_name='Q3 2026' THEN NULL ELSE r.units_sold_last_month END AS "unitsSoldLastMonth",
            CASE WHEN selected_season.season_name='Q3 2026' THEN NULL ELSE r.expected_unit_cost END AS "expectedUnitCost",
@@ -5746,7 +5802,7 @@ router.get("/range-plan", async (req, res, next) => {
           AND LOWER(TRIM(september_row.sub_category))=LOWER(TRIM(r.sub_category))
         LEFT JOIN style_asp a ON LOWER(TRIM(a.subcategory))=LOWER(TRIM(r.sub_category))
           LEFT JOIN ordered o ON LOWER(TRIM(o.sub_category))=LOWER(TRIM(r.sub_category))
-          LEFT JOIN committed c ON LOWER(TRIM(c.sub_category))=LOWER(TRIM(r.sub_category))
+           LEFT JOIN planned_pending pp ON LOWER(TRIM(pp.sub_category))=LOWER(TRIM(r.sub_category))
          LEFT JOIN pipeline_new ON LOWER(TRIM(pipeline_new.sub_category))=LOWER(TRIM(r.sub_category))
         WHERE r.season_id=$1
         ORDER BY CASE r.product_category
@@ -5778,8 +5834,7 @@ router.get("/range-plan", async (req, res, next) => {
       [season.id, fixedOtbMonths],
     );
      const rangeRows = rowsResult.rows.map(rangePlanRowPayload);
-      const unmatchedResult: { rows: Array<Record<string, unknown>> } = season.cadence === "monthly"
-        ? await pool.query(
+      const unmatchedResult: { rows: Array<Record<string, unknown>> } = await pool.query(
           `WITH style_dim AS (
              SELECT LOWER(BTRIM(COALESCE(NULLIF(style_number,''),NULLIF(sku,'')))) AS style_key,
                MAX(LOWER(BTRIM(style_name))) AS style_name_key,
@@ -5811,73 +5866,51 @@ router.get("/range-plan", async (req, res, next) => {
                  SELECT 1 FROM plan_subcategories p
                  WHERE p.sub_category=LOWER(BTRIM(COALESCE(d.sub_category,dn.sub_category,'')))
                )
-           ),
-           unmatched_commitments AS (
-             SELECT 'Weekly plan'::text AS source,('WK'||s.iso_week::text) AS reference,
-               s.style_name AS style,COALESCE(s.quantity,0)::numeric AS units,
-               cal.start_date::text AS date,
-               CASE WHEN dn.sub_category IS NULL THEN 'No product-master match'
-                 ELSE 'Sub-category is not in this monthly plan' END AS reason
-             FROM public.style_tracker_styles s
-             JOIN public.planning_calendar cal ON cal.year=s.iso_year AND cal.week_no=s.iso_week
-               AND cal.end_date >= $2::date AND cal.end_date < $3::date
-             LEFT JOIN style_dim_name dn ON dn.style_name_key=LOWER(BTRIM(s.style_name))
-             WHERE NOT s.archived
-               AND NOT EXISTS (
-                 SELECT 1 FROM plan_subcategories p
-                 WHERE p.sub_category=LOWER(BTRIM(COALESCE(dn.sub_category,'')))
-               )
-               AND NOT EXISTS (
-                 SELECT 1 FROM public.production_orders o
-                 WHERE LOWER(COALESCE(o.bo_state,'')) NOT IN ('cancel','cancelled','canceled')
-                   AND ((dn.style_key IS NOT NULL AND LOWER(BTRIM(COALESCE(NULLIF(o.style_number,''),NULLIF(o.product_sku,''))))=dn.style_key)
-                     OR LOWER(BTRIM(COALESCE(o.style_name,'')))=LOWER(BTRIM(s.style_name)))
-               )
            )
-           SELECT * FROM unmatched_orders
-           UNION ALL SELECT * FROM unmatched_commitments
+            SELECT * FROM unmatched_orders
            ORDER BY date DESC,source,style`,
           [season.id, orderWindow[0], orderWindow[1]],
-        )
-        : { rows: [] };
+        );
       const plannedUnitsTotal = rangeRows.reduce((sum, row) => sum + row.totalUnitsImplied, 0);
-      const orderedStylesTotal = rangeRows.reduce((sum, row) => sum + row.orderedStyles, 0);
-      const orderedUnitsTotal = rangeRows.reduce((sum, row) => sum + row.orderedUnits, 0);
-      const committedStylesTotal = rangeRows.reduce((sum, row) => sum + row.committedStyles, 0);
-      const committedUnitsTotal = rangeRows.reduce((sum, row) => sum + row.committedUnits, 0);
-      const projectedUnitsTotal = rangeRows.reduce((sum, row) => sum + row.projectedUnits, 0);
+      const mappedOrderedStylesTotal = rangeRows.reduce((sum, row) => sum + row.orderedStyles, 0);
+      const mappedOrderedUnitsTotal = rangeRows.reduce((sum, row) => sum + row.orderedUnits, 0);
+      const unmatchedStyleCount = new Set(unmatchedResult.rows.map((row) => String(row.style ?? "").trim().toLowerCase()).filter(Boolean)).size;
+      const unmatchedUnitsTotal = unmatchedResult.rows.reduce((sum, row) => sum + Number(row.units ?? 0), 0);
+      const orderedStylesTotal = mappedOrderedStylesTotal + unmatchedStyleCount;
+      const orderedUnitsTotal = mappedOrderedUnitsTotal + unmatchedUnitsTotal;
+      const plannedPendingStylesTotal = rangeRows.reduce((sum, row) => sum + row.plannedPendingStyles, 0);
+      const plannedPendingUnitsTotal = rangeRows.reduce((sum, row) => sum + row.plannedPendingUnits, 0);
+      const projectedUnitsTotal = rangeRows.reduce((sum, row) => sum + row.projectedUnits, 0) + unmatchedUnitsTotal;
       const monthStart = new Date(`${orderWindow[0]}T00:00:00Z`);
       const monthEnd = new Date(`${orderWindow[1]}T00:00:00Z`);
       const now = new Date();
       const elapsedPct = now >= monthEnd ? 1 : now <= monthStart ? 0
         : (now.getTime() - monthStart.getTime()) / (monthEnd.getTime() - monthStart.getTime());
-      const combinedUnitsTotal = orderedUnitsTotal + committedUnitsTotal;
       const underOrderThreshold = plannedUnitsTotal * Math.max(0, elapsedPct - 0.15);
-      const orderTracking = season.cadence === "monthly" ? {
+      const orderTracking = {
+        periodLabel: season.cadence === "monthly" ? "Month" : "Quarter",
         plannedStyles: rangeRows.reduce((sum, row) => sum + row.styleCountTarget, 0),
         plannedUnits: plannedUnitsTotal,
         orderedStyles: orderedStylesTotal,
         orderedUnits: orderedUnitsTotal,
-        committedStyles: committedStylesTotal,
-        committedUnits: committedUnitsTotal,
-        combinedStyles: orderedStylesTotal + committedStylesTotal,
-        combinedUnits: combinedUnitsTotal,
-        balanceStyles: Math.max(0, rangeRows.reduce((sum, row) => sum + row.styleCountTarget, 0) - orderedStylesTotal - committedStylesTotal),
-        balanceUnits: plannedUnitsTotal - combinedUnitsTotal,
+        plannedPendingStyles: plannedPendingStylesTotal,
+        plannedPendingUnits: plannedPendingUnitsTotal,
+        balanceStyles: Math.max(0, rangeRows.reduce((sum, row) => sum + row.styleCountTarget, 0) - orderedStylesTotal),
+        balanceUnits: plannedUnitsTotal - orderedUnitsTotal,
         projectedUnits: projectedUnitsTotal,
         projectedCapacityPct: season.factoryCapacityUnits > 0 ? projectedUnitsTotal / season.factoryCapacityUnits * 100 : 0,
         ceilingUnits: Math.round(plannedUnitsTotal * 1.1),
         ceilingBreached: projectedUnitsTotal > Math.round(plannedUnitsTotal * 1.1),
-        significantlyUnderOrdered: combinedUnitsTotal < underOrderThreshold,
+        significantlyUnderOrdered: orderedUnitsTotal < underOrderThreshold,
         elapsedPct: elapsedPct * 100,
-        unmatchedStyles: unmatchedResult.rows.length,
-        unmatchedUnits: unmatchedResult.rows.reduce((sum, row) => sum + Number(row.units ?? 0), 0),
+        unmatchedStyles: unmatchedStyleCount,
+        unmatchedUnits: unmatchedUnitsTotal,
         unmatched: unmatchedResult.rows.map((row) => ({
           source: String(row.source), reference: String(row.reference ?? ""),
           style: String(row.style), units: Number(row.units ?? 0),
           date: String(row.date ?? ""), reason: String(row.reason),
         })),
-      } : null;
+      };
      const potentialFpRevenue = rangeRows.reduce((sum, row) => sum + row.potentialFpRevenue, 0);
       const pipelineComparison = (season.seasonName === "September 2026" || season.seasonName === "Q3 2026")
         ? {
@@ -5888,66 +5921,52 @@ router.get("/range-plan", async (req, res, next) => {
           targetOrderWeeks: "WK36–WK39",
         }
         : null;
-     const quarterMonthlyRollup = season.seasonName === "Q3 2026"
+     const quarterMonthlyRollup = season.cadence === "quarterly"
        ? (await pool.query(
-         `WITH q3_actual AS (
-            SELECT COALESCE(SUM(r.new_units),0)::int AS units
-            FROM ${schema}.range_plan_rows r
-            JOIN ${schema}.range_plan_seasons s ON s.id=r.season_id
-            WHERE s.season_name='Q3 2026' AND s.season_year=2026
+         `WITH months AS (
+            SELECT generate_series($1::date,($2::date - INTERVAL '1 month')::date,INTERVAL '1 month')::date AS month_start
           ),
-          september_plan AS (
-            SELECT s.id,COALESCE(SUM(r.planned_units_calculated),0)::int AS units
+          monthly_plans AS (
+            SELECT LOWER(s.season_name) AS season_name,s.id,
+              COALESCE(SUM(r.planned_units_calculated),0)::int AS planned_units,
+              COALESCE(SUM(r.planned_units_calculated * COALESCE(r.selling_price,0)),0)::numeric AS gross_revenue
             FROM ${schema}.range_plan_seasons s
             LEFT JOIN ${schema}.range_plan_rows r ON r.season_id=s.id
-            WHERE s.season_name='September 2026' AND s.season_year=2026
-            GROUP BY s.id
+            WHERE s.season_year=$3 AND s.season_name NOT LIKE 'Q%'
+            GROUP BY s.id,s.season_name
+          ),
+          dated_orders AS (
+            SELECT date_trunc('month',o.date_ordered)::date AS month_start,
+              COUNT(DISTINCT LOWER(BTRIM(COALESCE(NULLIF(o.style_number,''),NULLIF(o.product_sku,''),NULLIF(o.style_name,''),o.order_ref))))::int AS ordered_styles,
+              COALESCE(SUM(o.order_qty),0)::numeric AS ordered_units
+            FROM public.production_orders o
+            WHERE o.date_ordered >= $1::date AND o.date_ordered < $2::date
+              AND LOWER(COALESCE(o.bo_state,'')) NOT IN ('cancel','cancelled','canceled')
+            GROUP BY date_trunc('month',o.date_ordered)::date
           )
-          SELECT $1::int AS "seasonId",'July–August actuals'::text AS "seasonName",
-            'Jul–Aug 2026 actuals'::text AS "monthYear",q3_actual.units AS "plannedUnits",
-            NULL::numeric AS "grossRevenuePotential"
-          FROM q3_actual
-          UNION ALL
-          SELECT september_plan.id,'September 2026 plan','2026-09-01',
-            september_plan.units,NULL::numeric
-          FROM september_plan`,
-         [season.id],
+          SELECT COALESCE(mp.id,$4::int) AS "seasonId",to_char(m.month_start,'FMMonth YYYY') AS "seasonName",
+            m.month_start::text AS "monthYear",COALESCE(mp.planned_units,0) AS "plannedUnits",
+            COALESCE(mp.gross_revenue,0) AS "grossRevenuePotential",
+            COALESCE(o.ordered_styles,0) AS "orderedStyles",COALESCE(o.ordered_units,0) AS "orderedUnits"
+          FROM months m
+          LEFT JOIN monthly_plans mp ON mp.season_name=LOWER(to_char(m.month_start,'FMMonth YYYY'))
+          LEFT JOIN dated_orders o ON o.month_start=m.month_start
+          ORDER BY m.month_start`,
+         [orderWindow[0], orderWindow[1], season.seasonYear, season.id],
        )).rows.map((row) => ({
          seasonId: Number(row.seasonId),
          seasonName: String(row.seasonName),
          monthYear: String(row.monthYear),
          plannedUnits: Number(row.plannedUnits ?? 0),
-         grossRevenuePotential: null,
-       }))
-       : season.cadence === "quarterly"
-        ? (await pool.query(
-         `SELECT s.id AS "seasonId",s.season_name AS "seasonName",
-            CASE s.season_name
-              WHEN 'October 2026' THEN '2026-10-01'
-              WHEN 'November 2026' THEN '2026-11-01'
-              WHEN 'December 2026' THEN '2026-12-01'
-            END AS "monthYear",
-             COALESCE(SUM(r.planned_units_calculated),0)::int AS "plannedUnits",
-             COALESCE(SUM(r.planned_units_calculated * COALESCE(r.selling_price,0)),0)::numeric AS "grossRevenuePotential"
-          FROM ${schema}.range_plan_seasons s
-          LEFT JOIN ${schema}.range_plan_rows r ON r.season_id=s.id
-          WHERE s.season_year=2026
-            AND s.season_name=ANY($1::text[])
-          GROUP BY s.id,s.season_name
-          ORDER BY CASE s.season_name
-            WHEN 'October 2026' THEN 1 WHEN 'November 2026' THEN 2 WHEN 'December 2026' THEN 3 END`,
-         [["October 2026", "November 2026", "December 2026"]],
-       )).rows.map((row) => ({
-         seasonId: Number(row.seasonId),
-         seasonName: String(row.seasonName),
-         monthYear: String(row.monthYear),
-         plannedUnits: Number(row.plannedUnits ?? 0),
+         orderedStyles: Number(row.orderedStyles ?? 0),
+         orderedUnits: Number(row.orderedUnits ?? 0),
          grossRevenuePotential: Number(row.grossRevenuePotential ?? 0),
        }))
        : [];
      res.json({
       seasons,
       season,
+       weeklyDestinations,
        rows: rangeRows,
        potentialFpRevenue,
       otb: otbResult.rows.map(rangePlanOtbPayload),
@@ -6450,6 +6469,120 @@ router.post("/assortment-plan/add-style", async (req: AuthRequest, res, next) =>
   } catch (error) {
     await client.query("ROLLBACK").catch(() => undefined);
     next(error);
+  } finally {
+    client.release();
+  }
+});
+
+// Deliberately one transaction: the assortment picker must never partially send a
+// selection to a range row or weekly order plan.
+router.post("/assortment-plan/add-selected", async (req: AuthRequest, res, next) => {
+  const requested = Array.isArray(req.body?.styles) ? req.body.styles : [];
+  const destination = req.body?.destination ?? {};
+  const styleNumbers: string[] = requested.map((style: any) =>
+    style?.source === "all_products_clean" || style?.source === "catalogue"
+      ? String(style.styleNumber ?? "").trim() : "").filter(Boolean);
+  const uniqueStyleNumbers = [...new Set(styleNumbers.map((value) => value.toLowerCase()))];
+  if (!requested.length || requested.length > 500 || styleNumbers.length !== requested.length ||
+    uniqueStyleNumbers.length !== styleNumbers.length) {
+    res.status(400).json({ error: "Select unique catalogue styles only" });
+    return;
+  }
+  const rangeSeasonId = Number(destination.seasonId);
+  const isoYear = Number(destination.isoYear);
+  const isoWeek = Number(destination.isoWeek);
+  const isRange = destination.type === "range";
+  const isWeek = destination.type === "week";
+  if ((!isRange && !isWeek) ||
+    (isRange && (!Number.isInteger(rangeSeasonId) || rangeSeasonId <= 0)) ||
+    (isWeek && (!Number.isInteger(isoYear) || !Number.isInteger(isoWeek) || isoWeek < 1 || isoWeek > 53))) {
+    res.status(400).json({ error: "Choose a valid range season or ISO week" });
+    return;
+  }
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const styles = await client.query(
+      `SELECT LOWER(BTRIM(COALESCE(NULLIF(a.style_number,''),NULLIF(a.sku,'')))) AS style_key,
+         MAX(COALESCE(NULLIF(BTRIM(a.style_number),''),NULLIF(BTRIM(a.sku),''))) AS style_number,
+         MAX(NULLIF(BTRIM(a.style_name),'')) AS style_name,MAX(NULLIF(BTRIM(a.tier),'')) AS tier,
+         MAX(NULLIF(BTRIM(a.category),'')) AS category,
+         MAX(COALESCE(NULLIF(BTRIM(a.product_type),''),NULLIF(BTRIM(a.category),''),'Uncategorised')) AS sub_category,
+         MAX(NULLIF(BTRIM(a.brand),'')) AS brand,
+         MAX(COALESCE(NULLIF(BTRIM(fp.name),''),NULLIF(BTRIM(a.fabric_category),''),NULLIF(BTRIM(a.fabric_structure),''),'Fabric pending')) AS fabric,
+         MAX(a.fabric_product_id) AS fabric_product_id,
+         ARRAY_AGG(DISTINCT NULLIF(BTRIM(a.color_print),'')) FILTER (WHERE NULLIF(BTRIM(a.color_print),'') IS NOT NULL) AS colourways,
+         CASE WHEN BOOL_OR(COALESCE(a.is_noos,FALSE) OR UPPER(COALESCE(a.tier,''))='NOOS') THEN 'NOOS'
+           WHEN BOOL_OR(UPPER(COALESCE(a.range_tier,''))='RECENT') THEN 'Recent' ELSE 'Core' END AS range_tier
+       FROM public.all_products_clean a LEFT JOIN public.raw_fabric_products fp ON fp.id=a.fabric_product_id
+       WHERE ${allowedBrand("a")} AND LOWER(COALESCE(a.status,'')) IN ('active','retired')
+         AND LOWER(BTRIM(COALESCE(NULLIF(a.style_number,''),NULLIF(a.sku,''))))=ANY($1::text[])
+       GROUP BY LOWER(BTRIM(COALESCE(NULLIF(a.style_number,''),NULLIF(a.sku,''))))`,
+      [uniqueStyleNumbers],
+    );
+    if (styles.rows.length !== uniqueStyleNumbers.length || styles.rows.some((style) => !style.style_name || !style.style_number)) {
+      throw Object.assign(new Error("One or more catalogue styles no longer exist"), { status: 404 });
+    }
+    if (isRange) {
+      const season = await client.query(`SELECT id FROM ${schema}.range_plan_seasons WHERE id=$1 FOR UPDATE`, [rangeSeasonId]);
+      if (!season.rows[0]) throw Object.assign(new Error("Planning season not found"), { status: 404 });
+      for (const style of styles.rows) {
+        await client.query(
+          `INSERT INTO ${schema}.range_plan_rows
+            (season_id,sub_category,tier,style_count_target,style_count_min,style_count_max,aos_units,notes)
+           VALUES ($1,$2,$3::${schema}.range_plan_tier,1,0,1,$4,'')
+           ON CONFLICT (season_id,sub_category) DO UPDATE
+             SET style_count_target=${schema}.range_plan_rows.style_count_target+1`,
+          [rangeSeasonId, String(style.sub_category).slice(0, 120), style.range_tier, rangePlanAosDefault()],
+        );
+      }
+      await client.query("COMMIT");
+      res.status(201).json({ added: styles.rows.length, skipped: 0 });
+      return;
+    }
+    // Lock by ISO destination before creating/updating the plan and allocating
+    // sequence numbers, so concurrent bulk requests remain deterministic.
+    await client.query("SELECT pg_advisory_xact_lock($1::int,$2::int)", [isoYear, isoWeek]);
+    const plan = await client.query(
+      `INSERT INTO ${schema}.weekly_order_plans (iso_year,iso_week) VALUES ($1,$2)
+       ON CONFLICT (iso_year,iso_week) DO UPDATE SET updated_at=NOW()
+       RETURNING id,status`,
+      [isoYear, isoWeek],
+    );
+    if (plan.rows[0].status !== "draft") throw Object.assign(new Error("Confirmed weeks cannot be edited"), { status: 409 });
+    const duplicate = await client.query(
+      `SELECT source_id FROM ${schema}.weekly_order_plan_lines
+       WHERE plan_id=$1 AND source='catalogue' AND source_id=ANY($2::text[])`,
+      [plan.rows[0].id, uniqueStyleNumbers],
+    );
+    if (duplicate.rows.length) throw Object.assign(new Error("One or more styles are already in the week"), { status: 409 });
+    let sequence = Number((await client.query(
+      `SELECT COALESCE(MAX(sequence_no),0) AS sequence FROM ${schema}.weekly_order_plan_lines WHERE plan_id=$1`,
+      [plan.rows[0].id],
+    )).rows[0].sequence);
+    for (const style of styles.rows) {
+      sequence += 1;
+      await client.query(
+        `INSERT INTO ${schema}.weekly_order_plan_lines
+         (plan_id,sequence_no,order_number,source,source_id,style_number,style_name,style_type,tier,category,sub_category,
+          brand,fabric,fabric_product_id,target_order_week,image_url,available_colourways,selected_colourways,
+          estimated_quantity,order_type,order_stage,created_by)
+         VALUES ($1,$2,$3,'catalogue',$4,$5,$6,NULL,$7,$8,$9,$10,$11,$12,NULL,
+           $13,$14,$15,300,'Re-order','Buying Requisition',$16)`,
+        [plan.rows[0].id, sequence, `W${isoWeek}${String(sequence).padStart(3, "0")}`, style.style_key,
+          style.style_number, style.style_name, style.tier, style.category, style.sub_category, style.brand,
+          style.fabric, style.fabric_product_id,
+          `/api/workspace/garment-images/catalogue/${encodeURIComponent(String(style.style_number))}`,
+          style.colourways ?? [], [], req.workspaceUser?.id ?? null],
+      );
+    }
+    await client.query("COMMIT");
+    res.status(201).json({ added: styles.rows.length, skipped: 0 });
+  } catch (error: any) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    if (error?.status) res.status(error.status).json({ error: error.message });
+    else if (error?.code === "23505") res.status(409).json({ error: "A selected style is already in the destination" });
+    else next(error);
   } finally {
     client.release();
   }
@@ -9815,17 +9948,25 @@ router.get("/weekly-order-plan", async (req, res, next) => {
     await ensureWeek36Plan();
     const isoYear = Number(req.query.year ?? 2026);
     const isoWeek = Number(req.query.week ?? 36);
+    const datesResult = await pool.query(
+      `SELECT start_date::text AS "startDate",end_date::text AS "endDate"
+       FROM public.planning_calendar WHERE year=$1 AND week_no=$2`,
+      [isoYear, isoWeek],
+    );
+    const fallbackStart = await pool.query(
+      `SELECT to_date($1::text || lpad($2::text,2,'0'),'IYYYIW')::text AS "startDate"`,
+      [isoYear, isoWeek],
+    );
+    const startDate = String(datesResult.rows[0]?.startDate ?? fallbackStart.rows[0].startDate).slice(0, 10);
+    const endDate = String(datesResult.rows[0]?.endDate
+      ?? (await pool.query(`SELECT ($1::date + 6)::text AS "endDate"`, [startDate])).rows[0].endDate).slice(0, 10);
     const planResult = await pool.query(
       `SELECT id,iso_year AS "isoYear",iso_week AS "isoWeek",status,confirmed_at AS "confirmedAt"
        FROM ${schema}.weekly_order_plans WHERE iso_year=$1 AND iso_week=$2`,
       [isoYear, isoWeek],
     );
-    if (!planResult.rows.length) {
-      res.json({ plan: null, lines: [], summary: null, fabricSummary: [], subcategories: [] });
-      return;
-    }
-    const plan = planResult.rows[0];
-    const lines = await pool.query(
+    const plan = planResult.rows[0] ?? null;
+    const lines: { rows: Array<Record<string, any>> } = plan ? await pool.query<Record<string, any>>(
       `SELECT l.*,l.order_number AS "orderNumber",l.style_number AS "styleNumber",l.style_name AS "styleName",l.style_type AS "styleType",
         l.sub_category AS "subCategory",l.fabric_product_id AS "fabricProductId",
         l.target_order_week AS "targetOrderWeek",
@@ -9834,7 +9975,9 @@ router.get("/weekly-order-plan", async (req, res, next) => {
           encode(LOWER(BTRIM(l.style_number))::bytea,'escape') END AS "imageUrl",
         l.available_colourways AS "availableColourways",l.selected_colourways AS "selectedColourways",
         l.estimated_quantity AS "estimatedQuantity",l.order_type AS "orderType",l.order_stage AS "orderStage",
-        COALESCE(fm.metres,0)::float AS "availableMetres"
+        COALESCE(fm.metres,0)::float AS "availableMetres",
+        ao.first_order_date::text AS "firstOrderDate",COALESCE(ao.actual_quantity,0)::float AS "actualQuantity",
+        COALESCE(ao.orders,'[]'::json) AS "actualOrders"
        FROM ${schema}.weekly_order_plan_lines l
        LEFT JOIN ${schema}.garment_images gi ON gi.source=CASE WHEN l.source='development' THEN 'plm' ELSE 'catalogue' END
          AND gi.style_key=LOWER(BTRIM(l.style_number))
@@ -9844,16 +9987,65 @@ router.get("/weekly-order-plan", async (req, res, next) => {
            ON i.product_id=p.id AND i.location_name='RMAT/Stock' AND i.available>0
          WHERE p.id=l.fabric_product_id
        ) fm ON TRUE
+        LEFT JOIN LATERAL (
+          SELECT MIN(o.date_ordered) AS first_order_date,COALESCE(SUM(o.order_qty),0) AS actual_quantity,
+            JSON_AGG(JSON_BUILD_OBJECT('orderRef',o.order_ref,'orderDate',o.date_ordered,'quantity',COALESCE(o.order_qty,0))
+              ORDER BY o.date_ordered,o.order_ref) AS orders
+          FROM public.production_orders o
+          WHERE o.date_ordered IS NOT NULL
+            AND LOWER(COALESCE(o.bo_state,'')) NOT IN ('cancel','cancelled','canceled')
+            AND (LOWER(BTRIM(COALESCE(NULLIF(o.style_number,''),NULLIF(o.product_sku,''))))=LOWER(BTRIM(l.style_number))
+              OR LOWER(BTRIM(COALESCE(o.style_name,'')))=LOWER(BTRIM(l.style_name)))
+        ) ao ON TRUE
        WHERE l.plan_id=$1 ORDER BY l.sequence_no`,
       [plan.id],
+    ) : { rows: [] };
+    const actualOrders = await pool.query(
+      `WITH style_dim AS (
+         SELECT LOWER(BTRIM(COALESCE(NULLIF(style_number,''),NULLIF(sku,'')))) AS style_key,
+           MAX(NULLIF(BTRIM(style_name),'')) AS style_name,
+           MAX(COALESCE(NULLIF(BTRIM(product_type),''),NULLIF(BTRIM(category),''),'Uncategorised')) AS sub_category,
+           MAX(NULLIF(BTRIM(category),'')) AS category,MAX(NULLIF(BTRIM(brand),'')) AS brand
+         FROM public.all_products_clean p WHERE ${allowedBrand("p")}
+         GROUP BY LOWER(BTRIM(COALESCE(NULLIF(style_number,''),NULLIF(sku,''))))
+       )
+       SELECT o.order_ref AS "orderRef",o.date_ordered::text AS "orderDate",
+         COALESCE(NULLIF(o.style_number,''),NULLIF(o.product_sku,''),'Unknown style') AS "styleNumber",
+         COALESCE(NULLIF(o.style_name,''),d.style_name,NULLIF(o.product_name,''),'Unknown style') AS "styleName",
+         COALESCE(o.order_qty,0)::float AS quantity,COALESCE(d.sub_category,'Uncategorised') AS "subCategory",
+         d.category,d.brand,o.fabric,o.lifecycle_type AS "orderType",o.bo_state AS "orderState",
+         matched.id AS "plannedLineId"
+       FROM public.production_orders o
+       LEFT JOIN style_dim d ON d.style_key=LOWER(BTRIM(COALESCE(NULLIF(o.style_number,''),NULLIF(o.product_sku,''))))
+       LEFT JOIN LATERAL (
+         SELECT l.id
+         FROM ${schema}.weekly_order_plan_lines l
+         WHERE l.plan_id=$3
+           AND (LOWER(BTRIM(l.style_number))=LOWER(BTRIM(COALESCE(NULLIF(o.style_number,''),NULLIF(o.product_sku,''))))
+             OR LOWER(BTRIM(l.style_name))=LOWER(BTRIM(COALESCE(o.style_name,''))))
+         ORDER BY l.id LIMIT 1
+       ) matched ON TRUE
+       WHERE o.date_ordered >= $1::date AND o.date_ordered <= $2::date
+         AND LOWER(COALESCE(o.bo_state,'')) NOT IN ('cancel','cancelled','canceled')
+       ORDER BY o.date_ordered,o.order_ref`,
+      [startDate, endDate, plan?.id ?? null],
     );
     const summary = lines.rows.reduce((acc, line) => {
       const units = Number(line.estimatedQuantity);
       acc.units += units;
       acc.styles += 1;
       if (line.orderType === "New") acc.newUnits += units;
+      if (!line.firstOrderDate) {
+        acc.notRaisedStyles += 1;
+        acc.notRaisedUnits += units;
+      }
       return acc;
-    }, { units: 0, styles: 0, newUnits: 0 });
+    }, { units: 0, styles: 0, newUnits: 0, notRaisedStyles: 0, notRaisedUnits: 0 });
+    const actualStyleKeys = new Set(actualOrders.rows.map((order) =>
+      `${String(order.styleNumber ?? "").trim().toLowerCase()}|${String(order.styleName ?? "").trim().toLowerCase()}`));
+    const unplannedOrders = actualOrders.rows.filter((order) => order.plannedLineId == null);
+    const unplannedStyleKeys = new Set(unplannedOrders.map((order) =>
+      `${String(order.styleNumber ?? "").trim().toLowerCase()}|${String(order.styleName ?? "").trim().toLowerCase()}`));
     const fabricSummary = Array.from(lines.rows.reduce((map, line) => {
       const key = String(line.fabric || "Fabric pending");
       const current = map.get(key) ?? { fabric: key, units: 0, styles: 0, availableMetres: Number(line.availableMetres || 0) };
@@ -9863,32 +10055,78 @@ router.get("/weekly-order-plan", async (req, res, next) => {
       return map;
     }, new Map<string, { fabric: string; units: number; styles: number; availableMetres: number }>()).values());
     const subcategories = await pool.query(
-      `WITH week_date AS (SELECT to_date($1::text || lpad($2::text,2,'0'),'IYYYIW') + 3 AS d),
+      `WITH months AS (
+         SELECT generate_series(date_trunc('month',$1::date),date_trunc('month',$2::date),INTERVAL '1 month')::date AS month_start
+       ),
+       style_dim AS (
+         SELECT LOWER(BTRIM(COALESCE(NULLIF(style_number,''),NULLIF(sku,'')))) AS style_key,
+           MAX(COALESCE(NULLIF(BTRIM(product_type),''),NULLIF(BTRIM(category),''),'Uncategorised')) AS sub_category
+         FROM public.all_products_clean p WHERE ${allowedBrand("p")}
+         GROUP BY LOWER(BTRIM(COALESCE(NULLIF(style_number,''),NULLIF(sku,''))))
+       ),
+       target AS (
+         SELECT COALESCE(NULLIF(BTRIM(sub_category),''),'Uncategorised') AS sub_category,
+           COALESCE(SUM(estimated_quantity),0)::numeric AS units
+         FROM ${schema}.weekly_order_plan_lines WHERE plan_id=$3 GROUP BY COALESCE(NULLIF(BTRIM(sub_category),''),'Uncategorised')
+       ),
+       dated AS (
+         SELECT date_trunc('month',o.date_ordered)::date AS month_start,
+           COALESCE(d.sub_category,'Uncategorised') AS sub_category,COALESCE(SUM(o.order_qty),0)::numeric AS units
+         FROM public.production_orders o
+         LEFT JOIN style_dim d ON d.style_key=LOWER(BTRIM(COALESCE(NULLIF(o.style_number,''),NULLIF(o.product_sku,''))))
+         WHERE o.date_ordered >= date_trunc('month',$1::date)
+           AND o.date_ordered < date_trunc('month',$2::date) + INTERVAL '1 month'
+           AND LOWER(COALESCE(o.bo_state,'')) NOT IN ('cancel','cancelled','canceled')
+         GROUP BY date_trunc('month',o.date_ordered)::date,COALESCE(d.sub_category,'Uncategorised')
+       ),
+       this_week AS (
+         SELECT date_trunc('month',o.date_ordered)::date AS month_start,
+           COALESCE(d.sub_category,'Uncategorised') AS sub_category,COALESCE(SUM(o.order_qty),0)::numeric AS units
+         FROM public.production_orders o
+         LEFT JOIN style_dim d ON d.style_key=LOWER(BTRIM(COALESCE(NULLIF(o.style_number,''),NULLIF(o.product_sku,''))))
+         WHERE o.date_ordered >= $1::date AND o.date_ordered <= $2::date
+           AND LOWER(COALESCE(o.bo_state,'')) NOT IN ('cancel','cancelled','canceled')
+         GROUP BY date_trunc('month',o.date_ordered)::date,COALESCE(d.sub_category,'Uncategorised')
+       ),
+       represented AS (
+         SELECT sub_category FROM target
+         UNION SELECT sub_category FROM this_week
+       ),
        month_plan AS (
-         SELECT r.sub_category,r.planned_units_calculated AS planned_units
-         FROM ${schema}.range_plan_rows r JOIN ${schema}.range_plan_seasons s ON s.id=r.season_id,week_date w
-         WHERE LOWER(s.season_name)=LOWER(to_char(w.d,'FMMonth YYYY'))
-       ), committed AS (
-         SELECT l.sub_category,SUM(l.estimated_quantity)::int AS units
-         FROM ${schema}.weekly_order_plan_lines l JOIN ${schema}.weekly_order_plans p ON p.id=l.plan_id
-         WHERE p.status='confirmed' AND to_date(p.iso_year::text || lpad(p.iso_week::text,2,'0'),'IYYYIW') + 3 >= date_trunc('month',(SELECT d FROM week_date))
-           AND to_date(p.iso_year::text || lpad(p.iso_week::text,2,'0'),'IYYYIW') + 3 < date_trunc('month',(SELECT d FROM week_date)) + interval '1 month'
-         GROUP BY l.sub_category
-       ), current_week AS (
-         SELECT sub_category,SUM(estimated_quantity)::int AS units FROM ${schema}.weekly_order_plan_lines WHERE plan_id=$3 GROUP BY sub_category
+         SELECT m.month_start,r.sub_category,r.planned_units_calculated AS planned_units
+         FROM months m
+         JOIN ${schema}.range_plan_seasons s ON LOWER(s.season_name)=LOWER(to_char(m.month_start,'FMMonth YYYY'))
+         JOIN ${schema}.range_plan_rows r ON r.season_id=s.id
        )
-       SELECT m.sub_category AS "subCategory",m.planned_units AS "plannedUnits",COALESCE(c.units,0) AS "committedUnits",
-         COALESCE(w.units,0) AS "thisWeekUnits",m.planned_units-COALESCE(c.units,0) AS "remainingUnits",
-         COALESCE(w.units,0) > m.planned_units-COALESCE(c.units,0) AS "ceilingBreached"
-       FROM month_plan m LEFT JOIN committed c ON LOWER(c.sub_category)=LOWER(m.sub_category)
-       LEFT JOIN current_week w ON LOWER(w.sub_category)=LOWER(m.sub_category)
-       WHERE w.units IS NOT NULL ORDER BY m.sub_category`,
-      [isoYear, isoWeek, plan.id],
+       SELECT m.month_start::text AS month,r.sub_category AS "subCategory",COALESCE(mp.planned_units,0) AS "plannedUnits",
+         COALESCE(d.units,0)::float AS "orderedUnits",COALESCE(w.units,0)::float AS "orderedThisWeekUnits",
+         COALESCE(t.units,0)::float AS "plannedThisWeekUnits",COALESCE(mp.planned_units,0)-COALESCE(d.units,0) AS "remainingUnits",
+         COALESCE(d.units,0)>COALESCE(mp.planned_units,0)*1.1 AND COALESCE(mp.planned_units,0)>0 AS "ceilingBreached"
+       FROM months m CROSS JOIN represented r
+       LEFT JOIN month_plan mp ON mp.month_start=m.month_start AND LOWER(mp.sub_category)=LOWER(r.sub_category)
+       LEFT JOIN dated d ON d.month_start=m.month_start AND LOWER(d.sub_category)=LOWER(r.sub_category)
+       LEFT JOIN this_week w ON w.month_start=m.month_start AND LOWER(w.sub_category)=LOWER(r.sub_category)
+       LEFT JOIN target t ON LOWER(t.sub_category)=LOWER(r.sub_category)
+       WHERE mp.planned_units IS NOT NULL OR d.units IS NOT NULL OR w.units IS NOT NULL
+       ORDER BY m.month_start,r.sub_category`,
+      [startDate, endDate, plan?.id ?? null],
     );
     res.json({
-      plan: weeklyPlanPayload(plan), lines: lines.rows,
-      summary: { ...summary, newnessPct: summary.units ? 100 * summary.newUnits / summary.units : 0, newnessFloorPct: 40 },
-      fabricSummary, subcategories: subcategories.rows,
+      plan: plan ? weeklyPlanPayload(plan) : null,
+      week: { isoYear, isoWeek, startDate, endDate },
+      lines: lines.rows,
+      actualOrders: actualOrders.rows.map((order) => ({ ...order, unplanned: order.plannedLineId == null })),
+      summary: {
+        ...summary,
+        newnessPct: summary.units ? 100 * summary.newUnits / summary.units : 0,
+        newnessFloorPct: 40,
+        orderedStyles: actualStyleKeys.size,
+        orderedUnits: actualOrders.rows.reduce((sum, order) => sum + Number(order.quantity ?? 0), 0),
+        unplannedStyles: unplannedStyleKeys.size,
+        unplannedUnits: unplannedOrders.reduce((sum, order) => sum + Number(order.quantity ?? 0), 0),
+      },
+      fabricSummary,
+      subcategories: subcategories.rows,
     });
   } catch (error) {
     next(error);

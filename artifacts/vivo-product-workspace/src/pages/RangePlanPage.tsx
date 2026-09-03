@@ -50,12 +50,10 @@ type RangePlanRow = {
   newUnits: number;
   reorderUnits: number;
   replenishmentUnits: number;
-  committedStyles: number;
-  committedUnits: number;
+  plannedPendingStyles: number;
+  plannedPendingUnits: number;
   orderedStyles: number;
   orderedUnits: number;
-  combinedStyles: number;
-  combinedUnits: number;
   balanceStyles: number;
   balanceUnits: number;
   projectedUnits: number;
@@ -88,6 +86,8 @@ type QuarterMonthlyRollup = {
   seasonName: string;
   monthYear: string;
   plannedUnits: number;
+  orderedStyles: number;
+  orderedUnits: number;
   grossRevenuePotential: number | null;
 };
 type PlanningDisclosure = {
@@ -114,14 +114,13 @@ type PipelineComparison = {
   targetOrderWeeks: string;
 };
 type OrderTracking = {
+  periodLabel: 'Month' | 'Quarter';
   plannedStyles: number;
   plannedUnits: number;
   orderedStyles: number;
   orderedUnits: number;
-  committedStyles: number;
-  committedUnits: number;
-  combinedStyles: number;
-  combinedUnits: number;
+  plannedPendingStyles: number;
+  plannedPendingUnits: number;
   balanceStyles: number;
   balanceUnits: number;
   projectedUnits: number;
@@ -359,13 +358,13 @@ function RangePlanPage() {
   };
   const exportCsv = () => {
     if (!season) return;
-     const header = ['Product Category', 'Sub-Category', 'Opening Stock Units', 'Units Sold Last Month', 'Weeks of Cover', 'Planned Styles', 'New Styles Planned', 'Pipeline New Styles WK36-WK39', 'New Style Gap', 'Reorder Styles', 'Replenishment Styles', 'New Style AOS', 'Reorder / Replenishment AOS', 'New Units', 'Reorder Units', 'Replenishment Units', 'Total Units', 'Share of Units', 'Styles Ordered', 'Styles Provisionally Committed', 'Style Balance', 'Units Ordered', 'Units Provisionally Committed', 'Unit Balance', 'Projected Units', 'Ceiling Status', 'Expected Unit Cost', 'Average Selling Price', 'Gross Revenue Potential', 'Input COGS %'];
+     const header = ['Product Category', 'Sub-Category', 'Opening Stock Units', 'Units Sold Last Month', 'Weeks of Cover', 'Planned Styles', 'New Styles Planned', 'Pipeline New Styles WK36-WK39', 'New Style Gap', 'Reorder Styles', 'Replenishment Styles', 'New Style AOS', 'Reorder / Replenishment AOS', 'New Units', 'Reorder Units', 'Replenishment Units', 'Total Units', 'Share of Units', 'Styles Ordered by Date', 'Styles Planned Not Raised', 'Style Balance to Ordered', 'Units Ordered by Date', 'Units Planned Not Raised', 'Unit Balance to Ordered', 'Projected Units', 'Ceiling Status', 'Expected Unit Cost', 'Average Selling Price', 'Gross Revenue Potential', 'Input COGS %'];
      const lines = visibleRows.map((row) => {
         const weeksOfCover = row.openingStockUnits !== null && row.unitsSoldLastMonth !== null && row.unitsSoldLastMonth > 0
           ? row.openingStockUnits / (row.unitsSoldLastMonth / 4.33)
           : null;
        const inputCogs = row.expectedUnitCost !== null && row.sellingPrice ? row.expectedUnitCost / (row.sellingPrice / 1.16) * 100 : null;
-         const values = [row.productCategory, row.subCategory, row.openingStockUnits, row.unitsSoldLastMonth, weeksOfCover, row.styleCountTarget, row.newStyleCount, row.pipelineNewStylesAvailable, row.newStylesGap, row.reorderStyleCount, row.replenishmentStyleCount, row.newStyleAosUnits, row.aosUnits, row.newUnits, row.reorderUnits, row.replenishmentUnits, row.totalUnitsImplied, totals.totalUnits ? row.totalUnitsImplied / totals.totalUnits : 0, row.orderedStyles, row.committedStyles, row.balanceStyles, row.orderedUnits, row.committedUnits, row.balanceUnits, row.projectedUnits, row.ceilingBreached ? 'Ceiling breached' : 'Within ceiling', row.expectedUnitCost, row.sellingPrice, row.potentialFpRevenue, inputCogs];
+         const values = [row.productCategory, row.subCategory, row.openingStockUnits, row.unitsSoldLastMonth, weeksOfCover, row.styleCountTarget, row.newStyleCount, row.pipelineNewStylesAvailable, row.newStylesGap, row.reorderStyleCount, row.replenishmentStyleCount, row.newStyleAosUnits, row.aosUnits, row.newUnits, row.reorderUnits, row.replenishmentUnits, row.totalUnitsImplied, totals.totalUnits ? row.totalUnitsImplied / totals.totalUnits : 0, row.orderedStyles, row.plannedPendingStyles, row.balanceStyles, row.orderedUnits, row.plannedPendingUnits, row.balanceUnits, row.projectedUnits, row.ceilingBreached ? 'Ceiling breached' : 'Within ceiling', row.expectedUnitCost, row.sellingPrice, row.potentialFpRevenue, inputCogs];
        return values.map((value) => `"${String(value ?? '').replaceAll('"', '""')}"`).join(',');
      });
     const blob = new Blob([[header.join(','), ...lines].join('\n')], { type: 'text/csv;charset=utf-8' });
@@ -385,6 +384,7 @@ function RangePlanPage() {
   const cogsTone = displayedCogsPct !== null && displayedCogsPct <= season.cogsBudgetPct ? 'success' : 'danger';
   const budgetCeiling = season.revenueTargetKes * (season.cogsBudgetPct / 100);
   const quarterMonthlyUnits = payload.quarterMonthlyRollup.reduce((sum, month) => sum + month.plannedUnits, 0);
+  const quarterMonthlyOrderedUnits = payload.quarterMonthlyRollup.reduce((sum, month) => sum + month.orderedUnits, 0);
   const quarterMonthlyRevenue = payload.quarterMonthlyRollup.every((month) => month.grossRevenuePotential !== null)
     ? payload.quarterMonthlyRollup.reduce((sum, month) => sum + Number(month.grossRevenuePotential), 0)
     : null;
@@ -453,17 +453,17 @@ function RangePlanPage() {
           {orderTracking && (
             <>
               <div className="range-order-stat-grid" aria-label="Monthly order tracking">
-                <StatTile label="Monthly plan" value={`${numberFormat(orderTracking.plannedStyles)} styles`} detail={`${numberFormat(orderTracking.plannedUnits)} planned units`} icon={<Target size={16} />} />
-                <StatTile label="Ordered in Odoo" value={`${numberFormat(orderTracking.orderedStyles)} styles`} detail={`${numberFormat(orderTracking.orderedUnits)} units across every matching buying order`} tone="success" icon={<Save size={16} />} />
-                <StatTile label="Provisional committed" value={`${numberFormat(orderTracking.committedStyles)} styles`} detail={`${numberFormat(orderTracking.committedUnits)} units in weekly plans, not yet in Odoo`} tone="warning" icon={<RefreshCw size={16} />} />
-                <StatTile label="Projected month" value={numberFormat(orderTracking.projectedUnits)} detail={`Ordered + committed + remaining styles at 300 new / 400 repeat`} tone={orderTracking.ceilingBreached ? 'danger' : 'default'} icon={<TrendingUp size={16} />} />
+                <StatTile label={`${orderTracking.periodLabel} plan`} value={`${numberFormat(orderTracking.plannedStyles)} styles`} detail={`${numberFormat(orderTracking.plannedUnits)} planned units`} icon={<Target size={16} />} />
+                <StatTile label="Ordered by date" value={`${numberFormat(orderTracking.orderedStyles)} styles`} detail={`${numberFormat(orderTracking.orderedUnits)} units from orders dated inside this ${orderTracking.periodLabel.toLowerCase()}`} tone="success" icon={<Save size={16} />} />
+                <StatTile label="Planned, not raised" value={`${numberFormat(orderTracking.plannedPendingStyles)} styles`} detail={`${numberFormat(orderTracking.plannedPendingUnits)} estimated units in overlapping weekly targets`} tone="warning" icon={<RefreshCw size={16} />} />
+                <StatTile label={`Projected ${orderTracking.periodLabel.toLowerCase()}`} value={numberFormat(orderTracking.projectedUnits)} detail="Dated orders + unraised weekly intent + remaining plan" tone={orderTracking.ceilingBreached ? 'danger' : 'default'} icon={<TrendingUp size={16} />} />
                 <StatTile label="Projected capacity" value={`${orderTracking.projectedCapacityPct.toFixed(1)}%`} detail={`${numberFormat(orderTracking.balanceStyles)} styles · ${numberFormat(orderTracking.balanceUnits)} units left to order`} tone={orderTracking.ceilingBreached ? 'danger' : orderTracking.significantlyUnderOrdered ? 'warning' : 'success'} icon={orderTracking.significantlyUnderOrdered ? <TrendingDown size={16} /> : <Target size={16} />} />
               </div>
               {orderTracking.unmatchedStyles > 0 && (
                 <div className="range-order-exceptions" role="alert">
                   <div className="range-order-exceptions-heading">
                     <AlertTriangle size={18} />
-                    <div><strong>{numberFormat(orderTracking.unmatchedStyles)} order rows need classification</strong><span>{numberFormat(orderTracking.unmatchedUnits)} units are excluded from category totals until their product-master sub-category is matched to this plan.</span></div>
+                    <div><strong>{numberFormat(orderTracking.unmatchedStyles)} ordered styles need classification</strong><span>{numberFormat(orderTracking.unmatchedUnits)} dated units are included in headline actuals but cannot be allocated to a category row until their product-master sub-category is matched.</span></div>
                   </div>
                   <div className="range-order-exception-list">
                     {orderTracking.unmatched.slice(0, 20).map((item, index) => (
@@ -496,7 +496,7 @@ function RangePlanPage() {
           <div className="range-matrix-card">
             <div className="range-table-scroll">
               <table className="range-table range-monthly-table">
-                 <thead><tr><th>Sub-Category</th><th>Opening Stock</th><th>WOC</th><th>Planned Styles</th><th>New Styles <small>Plan need</small></th><th>Pipeline NEW <small>WK36–WK39</small></th><th>Pipeline Gap</th><th>Reorder Styles</th><th>Replen Styles</th><th>New AOS</th><th>Reorder / Replen AOS</th><th>Total Units</th><th>New Units</th><th>Reorder Units</th><th>Replen Units</th><th>Share</th><th>Styles Ordered <small>Odoo</small></th><th>Styles Committed <small>Provisional</small></th><th>Style Balance</th><th>Units Ordered <small>Odoo</small></th><th>Units Committed <small>Provisional</small></th><th>Unit Balance</th><th>Projected Units</th><th>Order Status</th><th>Unit Cost</th><th>Selling Price</th><th>Gross Revenue</th><th>Input COGS</th></tr></thead>
+                 <thead><tr><th>Sub-Category</th><th>Opening Stock</th><th>WOC</th><th>Planned Styles</th><th>New Styles <small>Plan need</small></th><th>Pipeline NEW <small>WK36–WK39</small></th><th>Pipeline Gap</th><th>Reorder Styles</th><th>Replen Styles</th><th>New AOS</th><th>Reorder / Replen AOS</th><th>Total Units</th><th>New Units</th><th>Reorder Units</th><th>Replen Units</th><th>Share</th><th>Styles Ordered <small>dated</small></th><th>Styles Planned <small>not raised</small></th><th>Style Balance <small>to ordered</small></th><th>Units Ordered <small>dated</small></th><th>Units Planned <small>not raised</small></th><th>Unit Balance <small>to ordered</small></th><th>Projected Units</th><th>Order Status</th><th>Unit Cost</th><th>Selling Price</th><th>Gross Revenue</th><th>Input COGS</th></tr></thead>
                 <tbody>
                   {monthlyCategoryOrder.map((category) => {
                     const categoryRows = visibleRows.filter((row) => row.productCategory === category);
@@ -515,7 +515,7 @@ function RangePlanPage() {
                           const shareOfUnits = totals.totalUnits ? row.totalUnitsImplied / totals.totalUnits * 100 : 0;
                           const inputCogs = row.expectedUnitCost !== null && row.sellingPrice ? row.expectedUnitCost / (row.sellingPrice / 1.16) * 100 : null;
                            const pacingFloor = row.totalUnitsImplied * Math.max(0, (orderTracking?.elapsedPct ?? 0) / 100 - 0.15);
-                           const significantlyUnderOrdered = row.combinedUnits < pacingFloor;
+                            const significantlyUnderOrdered = row.orderedUnits < pacingFloor;
                            const orderStatus = row.ceilingBreached ? 'CEILING BREACH' : significantlyUnderOrdered ? 'UNDER ORDER' : 'On track';
                           return (
                              <tr key={row.id} className={`${inputCogs !== null && inputCogs > season.cogsBudgetPct ? 'range-cogs-over ' : ''}${row.ceilingBreached ? 'range-ceiling-breach ' : ''}${significantlyUnderOrdered ? 'range-under-order ' : ''}${row.newStylesGap > 0 ? 'range-pipeline-shortfall' : ''}`}>
@@ -536,10 +536,10 @@ function RangePlanPage() {
                               <td className="range-readonly">{numberFormat(row.replenishmentUnits)}</td>
                               <td className="range-readonly">{shareOfUnits.toFixed(1)}%</td>
                                <td className="range-progress-cell">{numberFormat(row.orderedStyles)}</td>
-                               <td className="range-commitment-cell">{numberFormat(row.committedStyles)}</td>
+                                <td className="range-commitment-cell">{numberFormat(row.plannedPendingStyles)}</td>
                                <td className="range-readonly">{numberFormat(row.balanceStyles)}</td>
                                <td className="range-progress-cell">{numberFormat(row.orderedUnits)}</td>
-                               <td className="range-commitment-cell">{numberFormat(row.committedUnits)}</td>
+                                <td className="range-commitment-cell">{numberFormat(row.plannedPendingUnits)}</td>
                                <td className={row.balanceUnits < 0 ? 'range-negative-variance' : 'range-readonly'}>{numberFormat(row.balanceUnits)}</td>
                                <td className="range-total-cell">{numberFormat(row.projectedUnits)}</td>
                                <td className={row.ceilingBreached ? 'range-breach-alert' : significantlyUnderOrdered ? 'range-under-alert' : 'range-status-ok'}>{orderStatus}</td>
@@ -554,7 +554,7 @@ function RangePlanPage() {
                       </Fragment>
                     );
                   })}
-                  <tr className="range-grand-total"><td>Grand total</td><td colSpan={2} /><td>{numberFormat(totals.totalStyles)}</td><td>{numberFormat(totals.newStyles)}</td><td>{numberFormat(pipelineComparison?.availableNewStyles ?? 0)}</td><td className={pipelineComparison?.shortfall ? 'range-pipeline-gap shortfall' : ''}>{pipelineComparison ? `${numberFormat(pipelineComparison.shortfall)} short` : '—'}</td><td colSpan={4} /><td>{numberFormat(totals.totalUnits)}</td><td>{numberFormat(totals.newUnits)}</td><td colSpan={2} /><td>{totals.totalUnits ? '100.0%' : '—'}</td><td>{numberFormat(orderTracking?.orderedStyles)}</td><td>{numberFormat(orderTracking?.committedStyles)}</td><td>{numberFormat(orderTracking?.balanceStyles)}</td><td>{numberFormat(orderTracking?.orderedUnits)}</td><td>{numberFormat(orderTracking?.committedUnits)}</td><td>{numberFormat(orderTracking?.balanceUnits)}</td><td>{numberFormat(orderTracking?.projectedUnits)}</td><td>{orderTracking?.ceilingBreached ? 'CEILING BREACH' : orderTracking?.significantlyUnderOrdered ? 'UNDER ORDER' : orderTracking ? 'On track' : '—'}</td><td colSpan={2} /><td>{kes(totals.potentialFpRevenue)}</td><td>{totals.costedRowCount && totals.totalUnits ? `${totals.cogsPct.toFixed(1)}%` : '—'}</td></tr>
+                  <tr className="range-grand-total"><td>Grand total</td><td colSpan={2} /><td>{numberFormat(totals.totalStyles)}</td><td>{numberFormat(totals.newStyles)}</td><td>{numberFormat(pipelineComparison?.availableNewStyles ?? 0)}</td><td className={pipelineComparison?.shortfall ? 'range-pipeline-gap shortfall' : ''}>{pipelineComparison ? `${numberFormat(pipelineComparison.shortfall)} short` : '—'}</td><td colSpan={4} /><td>{numberFormat(totals.totalUnits)}</td><td>{numberFormat(totals.newUnits)}</td><td colSpan={2} /><td>{totals.totalUnits ? '100.0%' : '—'}</td><td>{numberFormat(orderTracking?.orderedStyles)}</td><td>{numberFormat(orderTracking?.plannedPendingStyles)}</td><td>{numberFormat(orderTracking?.balanceStyles)}</td><td>{numberFormat(orderTracking?.orderedUnits)}</td><td>{numberFormat(orderTracking?.plannedPendingUnits)}</td><td>{numberFormat(orderTracking?.balanceUnits)}</td><td>{numberFormat(orderTracking?.projectedUnits)}</td><td>{orderTracking?.ceilingBreached ? 'CEILING BREACH' : orderTracking?.significantlyUnderOrdered ? 'UNDER ORDER' : orderTracking ? 'On track' : '—'}</td><td colSpan={2} /><td>{kes(totals.potentialFpRevenue)}</td><td>{totals.costedRowCount && totals.totalUnits ? `${totals.cogsPct.toFixed(1)}%` : '—'}</td></tr>
                 </tbody>
               </table>
             </div>
@@ -565,7 +565,7 @@ function RangePlanPage() {
       {activeTab === 'otb' && (
         <>
           <div className="range-section-toolbar">
-            <div><span className="range-eyebrow">Open to buy</span><h2>{isActualPlusPlan ? 'How Q3 reconciles' : season.cadence === 'quarterly' ? 'Do the monthly plans add up to the quarter?' : 'Turn the plan into a monthly rhythm'}</h2><p>{isActualPlusPlan ? 'July and August are combined tracker actuals; September is read live from its monthly plan.' : season.cadence === 'quarterly' ? 'October, November and December are calculated directly from their category plans.' : 'All gold cells are editable and save on blur.'}</p></div>
+            <div><span className="range-eyebrow">Open to buy</span><h2>{season.cadence === 'quarterly' ? 'Monthly plans and dated orders roll into the quarter' : 'Turn the plan into a monthly rhythm'}</h2><p>{season.cadence === 'quarterly' ? 'Planned units come from each monthly mix matrix. Actual units come only from orders dated inside that month, and the quarter actual is their sum.' : 'All gold cells are editable and save on blur.'}</p></div>
             <span className="range-otb-assumption">COGS budget {season.cogsBudgetPct}%</span>
           </div>
           {season.cadence === 'quarterly' ? (
@@ -576,12 +576,19 @@ function RangePlanPage() {
                     <thead><tr><th>Measure</th>{payload.quarterMonthlyRollup.map((month) => <th key={month.monthYear}>{monthLabel(month.monthYear)}</th>)}<th>Combined</th><th>{season.seasonName} matrix</th><th>Variance</th></tr></thead>
                     <tbody>
                       <tr>
-                        <th>{isActualPlusPlan ? 'Units' : 'Planned Units'} <small>{isActualPlusPlan ? 'tracker actual + monthly plan' : 'from monthly mix matrices'}</small></th>
+                        <th>Planned units <small>from monthly mix matrices</small></th>
                         {payload.quarterMonthlyRollup.map((month) => <td key={month.monthYear}>{numberFormat(month.plannedUnits)}</td>)}
                         <td><strong>{numberFormat(quarterMonthlyUnits)}</strong></td>
                         <td>{numberFormat(totals.totalUnits)}</td>
                         <td className={quarterMonthlyUnits - totals.totalUnits < 0 ? 'range-negative-variance' : ''}>{numberFormat(quarterMonthlyUnits - totals.totalUnits)}</td>
                       </tr>
+                       <tr className="range-auto-row">
+                         <th>Orders raised <small>assigned by order date</small></th>
+                         {payload.quarterMonthlyRollup.map((month) => <td key={month.monthYear}><strong>{numberFormat(month.orderedUnits)}</strong><small>{numberFormat(month.orderedStyles)} styles</small></td>)}
+                         <td><strong>{numberFormat(quarterMonthlyOrderedUnits)}</strong></td>
+                         <td>{numberFormat(orderTracking?.orderedUnits)}</td>
+                         <td className={quarterMonthlyOrderedUnits !== orderTracking?.orderedUnits ? 'range-negative-variance' : ''}>{numberFormat(quarterMonthlyOrderedUnits - Number(orderTracking?.orderedUnits ?? 0))}</td>
+                       </tr>
                       <tr>
                         <th>Gross Revenue Potential <small>{isActualPlusPlan ? 'not available from the tracker input' : 'units × selling price'}</small></th>
                         {payload.quarterMonthlyRollup.map((month) => <td key={month.monthYear}>{kes(month.grossRevenuePotential)}</td>)}

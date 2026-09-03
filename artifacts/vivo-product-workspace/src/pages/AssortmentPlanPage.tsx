@@ -1,395 +1,91 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { ReactNode } from 'react';
-import { useEffect, useRef, useState } from 'react';
-import { MoveRight, RefreshCw, Target, X } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { CheckSquare, ChevronDown, RefreshCw, Target, X } from 'lucide-react';
 import CatalogueSortControl, { type CatalogueSortKey } from '../components/CatalogueSortControl';
 import MultiSelectFilter from '../components/MultiSelectFilter';
 import GarmentImage from '../components/GarmentImage';
-import {
-  countAssortmentStyles,
-  filteredAssortmentQuarterCounts,
-  matchesAssortmentFilters,
-  sortAssortmentStyles,
-  type AssortmentFilterState,
-} from '../lib/assortmentPlanFilters';
+import { countAssortmentStyles, filteredAssortmentQuarterCounts, matchesAssortmentFilters, sortAssortmentStyles, type AssortmentFilterState } from '../lib/assortmentPlanFilters';
 
-type AssortmentQuarter = 'Q3 2026' | 'Q4 2026';
-type AssortmentRangeTier = 'Tier 1' | 'Tier 2' | 'Tier 3' | 'Tier 4';
-type AssortmentTier = 'Tier 1 · NOOS' | 'Tier 2 · Core' | 'Tier 3 · Recent' | 'Tier 4 · New' | 'Retired';
-
-type AssortmentStyle = {
-  id: string;
-  pdId: number | null;
-  source: 'all_products_clean' | 'pd_styles';
-  styleNumber: string;
-  name: string;
-  category: string;
-  subCategory: string;
-  fabricCategory: string;
-  brand: string;
-  primaryColour: string;
-  edit: string;
-  stage: string;
-  designer: string;
-  season: string;
-  rangeTier: AssortmentRangeTier | null;
-  tier: AssortmentTier | null;
-  status: string;
-  excluded: boolean;
-  unitsSold: number | null;
-  revenueKes: number | null;
-  sorPct: number | null;
-  launchDate: string | null;
-  price: number | null;
-  stockUnits: number | null;
-  image: string | null;
+type Quarter = 'Q3 2026' | 'Q4 2026';
+type FilterKey = 'tier' | 'status' | 'category' | 'subCategory' | 'fabricCategory' | 'brand' | 'primaryColour' | 'edit';
+type Destination = { type: 'range'; seasonId: number } | { type: 'week'; isoYear: number; isoWeek: number };
+type Season = { id: number; seasonName: string; status: string };
+type Week = { isoYear: number; isoWeek: number; label: string; status: string };
+type Style = Record<FilterKey, string | null> & {
+  id: string; pdId: number | null; source: 'all_products_clean' | 'pd_styles'; styleNumber: string; name: string;
+  rangeTier: string | null; excluded: boolean; unitsSold: number | null; revenueKes: number | null; sorPct: number | null;
+  launchDate: string | null; price: number | null; stockUnits: number | null; image: string | null;
+  sohStores?: number | null; sohOnline?: number | null; sohWarehouse?: number | null; wipUnits?: number | null;
+  fullPricePct?: number | null; weeksOfCover?: number | null; sellThroughPct?: number | null; daysSinceLastSale?: number | null;
+  awaitingDelivery?: boolean; fabricMetres?: number | null; otherColourFabricMetres?: number | null; colourwayCount?: number | null; fabric?: string | null;
 };
+type Summary = { total: number; counts: { total: number; tier1: number; tier2: number; tier3: number; tier4: number; retired: number }; filterOptions?: Record<FilterKey, string[]> };
+type Payload = { assortmentStyles: Style[]; assortmentSummary: Summary; quarterSummaries: Record<Quarter, Summary>; quarterStyles?: Record<Quarter, Style[]>; seasons?: Season[]; weeklyDestinations?: Week[]; assortmentFilterOptions?: Record<FilterKey, string[]> };
 
-type AssortmentSummary = {
-  total: number;
-  counts: {
-    total: number;
-    tier1: number;
-    tier2: number;
-    tier3: number;
-    tier4: number;
-    retired: number;
-    noos?: number;
-    core?: number;
-    recent?: number;
-    newTest?: number;
-  };
-  filterOptions?: AssortmentFilterOptions;
-};
+const quarters: Quarter[] = ['Q3 2026', 'Q4 2026'];
+const filterDefinitions: Array<{ key: FilterKey; label: string }> = [{ key: 'tier', label: 'Tier' }, { key: 'status', label: 'Status' }, { key: 'category', label: 'Category' }, { key: 'subCategory', label: 'Sub-category' }, { key: 'fabricCategory', label: 'Fabric Category' }, { key: 'brand', label: 'Brand' }, { key: 'primaryColour', label: 'Primary Colour' }, { key: 'edit', label: 'Edit' }];
+const emptyFilters: AssortmentFilterState = { tier: [], status: ['Active'], category: [], subCategory: [], fabricCategory: [], brand: [], primaryColour: [], edit: [] };
+const n = (value: number | null | undefined, digits = 0) => value == null || !Number.isFinite(Number(value)) ? '—' : new Intl.NumberFormat('en-KE', { maximumFractionDigits: digits }).format(Number(value));
+const pct = (value: number | null | undefined) => value == null ? '—' : `${n(value, 1)}%`;
 
-type AssortmentResponse = {
-  assortmentQuarter: AssortmentQuarter;
-  assortmentStyles: AssortmentStyle[];
-  carryOverStyles: AssortmentStyle[];
-  newStyles: AssortmentStyle[];
-  assortmentSummary: AssortmentSummary;
-  quarterSummaries: Record<AssortmentQuarter, AssortmentSummary>;
-  quarterStyles?: Record<AssortmentQuarter, AssortmentStyle[]>;
-  seasons?: RangePlanSeason[];
-  assortmentFilterOptions?: AssortmentFilterOptions;
-};
-
-type RangePlanSeason = {
-  id: number;
-  seasonName: string;
-  status: string;
-  cadence?: 'quarterly' | 'monthly';
-};
-type AssortmentFilterKey = 'tier' | 'status' | 'category' | 'subCategory' | 'fabricCategory' | 'brand' | 'primaryColour' | 'edit';
-type AssortmentFilters = AssortmentFilterState;
-type AssortmentFilterOptions = Record<AssortmentFilterKey, string[]>;
-
-const quarters: AssortmentQuarter[] = ['Q3 2026', 'Q4 2026'];
-const filterDefinitions: Array<{ key: AssortmentFilterKey; label: string }> = [
-  { key: 'tier', label: 'Tier' },
-  { key: 'status', label: 'Status' },
-  { key: 'category', label: 'Category' },
-  { key: 'subCategory', label: 'Sub-category' },
-  { key: 'fabricCategory', label: 'Fabric Category' },
-  { key: 'brand', label: 'Brand' },
-  { key: 'primaryColour', label: 'Primary Colour' },
-  { key: 'edit', label: 'Edit' },
-];
-const emptyFilters: AssortmentFilters = {
-  tier: [], status: [], category: [], subCategory: [], fabricCategory: [], brand: [], primaryColour: [], edit: [],
-};
-
-function numberFormat(value: number | null | undefined) {
-  if (value === null || value === undefined || !Number.isFinite(Number(value))) return '—';
-  return new Intl.NumberFormat('en-KE', { maximumFractionDigits: 0 }).format(Number(value));
-}
-
-async function getAssortmentPlan(quarter: AssortmentQuarter) {
-  const response = await fetch(`/api/workspace/range-plan?quarter=${encodeURIComponent(quarter)}`, {
-    credentials: 'include',
-  });
-  if (!response.ok) throw new Error(`Assortment Plan request failed (${response.status})`);
-  return response.json() as Promise<AssortmentResponse>;
-}
-
-function TierBadge({ tier }: { tier: AssortmentTier | null }) {
-  const tone = tier?.startsWith('Tier 1') ? 'tier-1'
-    : tier?.startsWith('Tier 2') ? 'tier-2'
-      : tier?.startsWith('Tier 3') ? 'tier-3'
-        : tier?.startsWith('Tier 4') ? 'tier-4'
-          : tier === 'Retired' ? 'tier-retired'
-            : 'tier-unclassified';
-  return <span className={`assortment-tier-badge ${tone}`}>{tier ?? 'Unclassified'}</span>;
-}
-
-function AddToRangePlan({
-  style,
-  seasons,
-  pending,
-  onAdd,
-}: {
-  style: AssortmentStyle;
-  seasons: RangePlanSeason[];
-  pending: boolean;
-  onAdd: (seasonId: number) => void;
-}) {
+function DestinationPicker({ seasons, weeks, disabled, onPick }: { seasons: Season[]; weeks: Week[]; disabled: boolean; onPick: (d: Destination) => void }) {
   const [open, setOpen] = useState(false);
-  const pickerRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    if (!open) return;
-    const closeOnOutsideClick = (event: PointerEvent) => {
-      if (pickerRef.current && !pickerRef.current.contains(event.target as Node)) setOpen(false);
-    };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        setOpen(false);
-      }
-    };
-    document.addEventListener('pointerdown', closeOnOutsideClick);
-    document.addEventListener('keydown', closeOnEscape);
-    return () => {
-      document.removeEventListener('pointerdown', closeOnOutsideClick);
-      document.removeEventListener('keydown', closeOnEscape);
-    };
-  }, [open]);
-  return (
-    <div className="assortment-range-action" ref={pickerRef}>
-      <button
-        type="button"
-        className="assortment-card-button"
-        disabled={pending || seasons.length === 0}
-        onClick={() => setOpen((current) => !current)}
-        aria-expanded={open}
-      >
-        + Range Plan <MoveRight size={13} />
-      </button>
-      {open && seasons.length > 0 ? (
-        <div className="assortment-season-menu" role="menu">
-          <div className="assortment-season-menu-head">
-            <span>Choose season</span>
-            <button type="button" className="assortment-season-close" onClick={() => setOpen(false)} aria-label="Close season picker" data-testid="button-close-assortment-season-picker"><X size={13} /></button>
-          </div>
-          {seasons.map((season) => (
-            <button
-              key={season.id}
-              type="button"
-              role="menuitem"
-              disabled={pending}
-              onClick={() => { setOpen(false); onAdd(season.id); }}
-            >
-              {season.seasonName}
-            </button>
-          ))}
-        </div>
-      ) : null}
+  return <div className="assortment-destination-picker">
+    <button type="button" className="assortment-card-button" disabled={disabled || (!seasons.length && !weeks.length)} onClick={() => setOpen(!open)} data-testid="button-choose-plan-destination">Add to plan <ChevronDown size={13} /></button>
+    {open && <div className="assortment-season-menu" role="menu">
+      {seasons.length > 0 && <><span>Range plans</span>{seasons.map((season) => <button type="button" key={season.id} onClick={() => { setOpen(false); onPick({ type: 'range', seasonId: season.id }); }} data-testid={`button-destination-season-${season.id}`}>{season.seasonName}</button>)}</>}
+      {weeks.length > 0 && <><span>Weekly order plans</span>{weeks.map((week) => <button type="button" key={`${week.isoYear}-${week.isoWeek}`} onClick={() => { setOpen(false); onPick({ type: 'week', isoYear: week.isoYear, isoWeek: week.isoWeek }); }} data-testid={`button-destination-week-${week.isoYear}-${week.isoWeek}`}>{week.label}</button>)}</>}
+    </div>}
+  </div>;
+}
+
+function StyleCard({ style, selected, onSelect, action }: { style: Style; selected: boolean; onSelect: () => void; action: React.ReactNode }) {
+  const [expanded, setExpanded] = useState(false);
+  return <article className={`assortment-style-card consolidated ${selected ? 'selected' : ''}`}>
+    <label className="assortment-select-card"><input type="checkbox" checked={selected} onChange={onSelect} disabled={style.source !== 'all_products_clean'} aria-label={`Select ${style.name}`} data-testid={`checkbox-select-style-${style.id}`} /></label>
+    <GarmentImage className="assortment-style-image" source="catalogue" styleKey={style.styleNumber} image={style.image} alt={style.name} />
+    <div className="assortment-style-copy">
+      <div className="assortment-style-topline"><span className="assortment-tier-badge">{style.tier ?? 'Unclassified'}</span><span className="assortment-status">{style.status}</span></div>
+      <h3>{style.name || 'Unnamed style'}</h3><span className="assortment-style-identity">{style.styleNumber} · {style.primaryColour || 'Colour pending'}</span>
+      <div className="assortment-decision-metrics"><span><b>{pct(style.sellThroughPct)}</b> sell-through</span><span><b>{n(style.weeksOfCover, 1)}</b> weeks cover</span><span><b>{n(style.stockUnits)}</b> SOH</span></div>
+      <button type="button" className="assortment-details-toggle" onClick={() => setExpanded(!expanded)} aria-expanded={expanded} data-testid={`button-style-details-${style.id}`}>{expanded ? 'Hide trading & product detail' : 'View trading & product detail'}</button>
+      {expanded && <div className="assortment-card-details">
+        <div><b>Trading</b><span>Sell-through {pct(style.sellThroughPct)} · Cover {n(style.weeksOfCover, 1)} weeks · Last sale {n(style.daysSinceLastSale)} days · Full price {pct(style.fullPricePct)}</span></div>
+        <div><b>Stock</b><span>Stores {n(style.sohStores)} · Online {n(style.sohOnline)} · Warehouse {n(style.sohWarehouse)} · WIP {n(style.wipUnits)} {style.awaitingDelivery ? '· Awaiting delivery' : ''}</span></div>
+        <div><b>Product</b><span>{n(style.colourwayCount)} colourways · KES {n(style.price)} · {style.launchDate || 'Launch pending'} · {style.category} / {style.subCategory} · {style.fabric || style.fabricCategory || 'Fabric pending'}</span></div>
+        <div><b>Fabric availability</b><span>{n(style.fabricMetres, 2)} m exact · {n(style.otherColourFabricMetres, 2)} m other colours</span></div>
+      </div>}
+      <div className="assortment-card-action">{action}</div>
     </div>
-  );
+  </article>;
 }
 
-function StyleCard({
-  style,
-  action,
-}: {
-  style: AssortmentStyle;
-  action?: ReactNode;
-}) {
-  return (
-    <article className="assortment-style-card">
-      <GarmentImage className="assortment-style-image" source={style.source === 'pd_styles' ? 'plm' : 'catalogue'} styleKey={style.styleNumber || style.pdId} image={style.image} alt={style.name || 'Style'} />
-      <div className="assortment-style-copy">
-        <div className="assortment-style-topline">
-          <TierBadge tier={style.tier} />
-          <span className={`assortment-status ${style.status.toLowerCase()}`}>{style.status}</span>
-        </div>
-        <h3>{style.name || 'Unnamed style'}</h3>
-        <span className="assortment-style-identity">
-          <span className="assortment-style-number">{style.styleNumber || 'Style number pending'}</span>
-          <span className="assortment-style-soh">SOH {numberFormat(style.stockUnits ?? 0)}</span>
-        </span>
-        {action ? <div className="assortment-card-action">{action}</div> : null}
-      </div>
-    </article>
-  );
-}
-
-function SummaryBar({ summary }: { summary: AssortmentSummary }) {
-  const tiles = [
-    ['Total styles', summary.counts.total, 'total'],
-    ['Tier 1 · NOOS', summary.counts.tier1, 'noos'],
-    ['Tier 2 · Core', summary.counts.tier2, 'core'],
-    ['Tier 3 · Recent', summary.counts.tier3, 'recent'],
-    ['Tier 4 · New', summary.counts.tier4, 'new'],
-    ['Retired', summary.counts.retired, 'retired'],
-  ] as const;
-  return (
-    <div className="assortment-summary-bar">
-      <div className="assortment-summary-lead"><Target size={17} /><span>Styles on the floor</span><strong>{numberFormat(summary.counts.total)}</strong></div>
-      {tiles.slice(1).map(([label, value, tone]) => <div className={`assortment-summary-item tone-${tone}`} key={label}><span>{label}</span><strong>{numberFormat(value)}</strong></div>)}
-    </div>
-  );
-}
-
-function AssortmentPlanPage() {
-  const queryClient = useQueryClient();
-  const [quarter, setQuarter] = useState<AssortmentQuarter>('Q3 2026');
-  const [filters, setFilters] = useState<AssortmentFilters>(emptyFilters);
+export default function AssortmentPlanPage() {
+  const client = useQueryClient();
+  const [quarter, setQuarter] = useState<Quarter>('Q3 2026');
+  const [filters, setFilters] = useState<AssortmentFilterState>(emptyFilters);
   const [sort, setSort] = useState<CatalogueSortKey>('units_desc');
+  const [selected, setSelected] = useState<string[]>([]);
   const [toast, setToast] = useState('');
-  const assortment = useQuery({
-    queryKey: ['workspace', 'assortment-plan', quarter],
-    queryFn: () => getAssortmentPlan(quarter),
-    staleTime: 60_000,
-  });
-  const moveStyle = useMutation({
-    mutationFn: async ({ id, season }: { id: number; season: AssortmentQuarter }) => {
-      const response = await fetch(`/api/workspace/range-plan/styles/${id}/season`, {
-        method: 'PATCH',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ season }),
-      });
-      if (!response.ok) throw new Error(`Could not move style (${response.status})`);
-      return response.json();
-    },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['workspace', 'assortment-plan'] }),
-  });
-  const toggleExclusion = useMutation({
-    mutationFn: async ({ styleId, excluded }: { styleId: string; excluded: boolean }) => {
-      const response = await fetch('/api/workspace/range-plan/exclusions', {
-        method: 'PUT',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ season: quarter, source: 'all_products_clean', styleId, excluded }),
-      });
-      if (!response.ok) throw new Error(`Could not update assortment exclusion (${response.status})`);
-      return response.json();
-    },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['workspace', 'assortment-plan'] }),
-  });
-  const addToRangePlan = useMutation({
-    mutationFn: async ({ style, seasonId }: { style: AssortmentStyle; seasonId: number }) => {
-      const response = await fetch('/api/workspace/range-plan/add-style', {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          seasonId,
-          source: style.source,
-          styleNumber: style.styleNumber,
-          pdId: style.pdId,
-        }),
-      });
-      if (!response.ok) {
-        const body = await response.json().catch(() => null);
-        throw new Error(body?.error || `Could not add style to range plan (${response.status})`);
-      }
-      return response.json();
-    },
-    onSuccess: (_result, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['workspace', 'range-plan'] });
-      setToast(`${variables.style.name || variables.style.styleNumber} added to the range plan.`);
-    },
-  });
-  useEffect(() => {
-    if (!toast) return;
-    const timer = window.setTimeout(() => setToast(''), 4000);
-    return () => window.clearTimeout(timer);
-  }, [toast]);
-
-  if (assortment.isLoading) {
-    return <section className="page"><div className="range-plan-loading"><RefreshCw size={20} /><span>Loading assortment plan…</span></div></section>;
-  }
-  if (assortment.isError || !assortment.data) {
-    return <section className="page"><div className="range-plan-error"><Target size={22} /><h2>Assortment Plan is unavailable</h2><p>We could not reach the assortment data. Your saved range is safe.</p><button className="button button-dark" onClick={() => assortment.refetch()}><RefreshCw size={15} /> Try again</button></div></section>;
-  }
-
-  const payload = assortment.data;
-  const options = payload.assortmentFilterOptions ?? payload.assortmentSummary?.filterOptions ?? emptyFilters;
-  const quarterStyles = payload.quarterStyles ?? {
-    'Q3 2026': quarter === 'Q3 2026' ? payload.assortmentStyles : [],
-    'Q4 2026': quarter === 'Q4 2026' ? payload.assortmentStyles : [],
-  };
-  const filteredStyles = sortAssortmentStyles(
-    (quarterStyles[quarter] ?? payload.assortmentStyles)
-      .filter((style) => matchesAssortmentFilters(style, filters)),
-    sort,
-  );
-  const filteredCounts = countAssortmentStyles(filteredStyles);
-  const summary = { total: filteredStyles.length, counts: filteredCounts };
-  const filteredQuarterTotals = filteredAssortmentQuarterCounts(quarterStyles, filters);
-  const activeFilterCount = Object.values(filters).reduce((total, values) => total + values.length, 0);
-  const seasons = payload.seasons ?? [];
-  const setFilter = (key: AssortmentFilterKey, values: string[]) => setFilters((current) => ({ ...current, [key]: values }));
-  const renderStyleAction = (style: AssortmentStyle) => (
-    <div className="assortment-card-actions">
-      {style.source === 'all_products_clean'
-        ? <button type="button" className="assortment-card-button" disabled={toggleExclusion.isPending} onClick={() => toggleExclusion.mutate({ styleId: style.styleNumber, excluded: !style.excluded })}>
-            {style.excluded ? 'Include in quarter' : 'Exclude from quarter'} <X size={13} />
-          </button>
-        : quarter === 'Q3 2026' && style.pdId !== null
-          ? <button type="button" className="assortment-card-button" disabled={moveStyle.isPending} onClick={() => moveStyle.mutate({ id: style.pdId as number, season: 'Q4 2026' })}>Move to Q4 <MoveRight size={13} /></button>
-          : <span className="assortment-assigned">Assigned to {quarter.replace(' 2026', '')}</span>}
-      <AddToRangePlan style={style} seasons={seasons} pending={addToRangePlan.isPending} onAdd={(seasonId) => addToRangePlan.mutate({ style, seasonId })} />
-    </div>
-  );
-
-  return (
-    <section className="page assortment-plan-page">
-      <header className="assortment-plan-hero">
-        <div>
-          <span className="range-eyebrow">Merchandising / Store edit</span>
-          <h1>Assortment Plan</h1>
-          <p>The active and retired Vivo, Safari by Vivo, and Zoya styles available in stores by quarter.</p>
-        </div>
-        <div className="assortment-plan-hero-mark">V</div>
-      </header>
-
-      <div className="assortment-quarter-tabs" role="tablist" aria-label="Assortment quarters">
-        {quarters.map((candidate) => {
-          const candidateSummary = payload.quarterSummaries?.[candidate];
-          const filteredTotal = filteredQuarterTotals[candidate];
-          return (
-            <button key={candidate} type="button" role="tab" aria-selected={quarter === candidate} className={quarter === candidate ? 'active' : ''} onClick={() => setQuarter(candidate)}>
-              <span>{candidate}</span>
-              <strong>{numberFormat(Number.isFinite(filteredTotal) ? filteredTotal : candidateSummary?.total ?? 0)}</strong>
-              <small>styles in range</small>
-            </button>
-          );
-        })}
-      </div>
-
-      <div className="assortment-filter-toolbar" aria-label="Assortment filters">
-        <div className="assortment-filter-intro"><span>Filter range</span>{activeFilterCount ? <strong>{activeFilterCount} active</strong> : <small>All styles</small>}</div>
-        {filterDefinitions.map(({ key, label }) => (
-          <MultiSelectFilter
-            key={key}
-            label={label}
-            options={[...new Set((options[key] ?? []).map(String))]}
-            values={filters[key]}
-            onChange={(values) => setFilter(key, values)}
-            testId={`assortment-filter-${key}`}
-            variant="catalogue"
-            alwaysShowCount
-          />
-        ))}
-        <CatalogueSortControl value={sort} onChange={setSort} testId="select-assortment-sort" />
-        <button type="button" className="assortment-clear-filters" onClick={() => setFilters(emptyFilters)} disabled={!activeFilterCount}><X size={13} /> Clear all</button>
-      </div>
-
-      <SummaryBar summary={summary} />
-
-      <section className="assortment-style-section" aria-label="Assortment styles">
-        {filteredStyles.length ? (
-          <div className="assortment-card-grid">
-            {filteredStyles.map((style) => <StyleCard key={style.id} style={style} action={renderStyleAction(style)} />)}
-          </div>
-        ) : <div className="assortment-empty">No styles match the selected filters.</div>}
-      </section>
-      {toast ? <div className="assortment-toast" role="status">{toast}</div> : null}
-      {moveStyle.isError || toggleExclusion.isError || addToRangePlan.isError ? <div className="form-error">{addToRangePlan.error instanceof Error ? addToRangePlan.error.message : 'That assortment change could not be saved. Try again.'}</div> : null}
-    </section>
-  );
+  const assortment = useQuery({ queryKey: ['workspace', 'assortment-plan', quarter], queryFn: async () => { const r = await fetch(`/api/workspace/range-plan?quarter=${encodeURIComponent(quarter)}`, { credentials: 'include' }); if (!r.ok) throw new Error(`Assortment Plan request failed (${r.status})`); return r.json() as Promise<Payload>; }, staleTime: 60_000 });
+  const exclude = useMutation({ mutationFn: async ({ styleId, excluded }: { styleId: string; excluded: boolean }) => { const r = await fetch('/api/workspace/range-plan/exclusions', { method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ season: quarter, source: 'all_products_clean', styleId, excluded }) }); if (!r.ok) throw new Error('Could not update assortment exclusion'); }, onSuccess: () => client.invalidateQueries({ queryKey: ['workspace', 'assortment-plan'] }) });
+  const add = useMutation({ mutationFn: async ({ styles, destination }: { styles: Style[]; destination: Destination }) => { const r = await fetch('/api/workspace/assortment-plan/add-selected', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ styles: styles.map((s) => ({ source: 'all_products_clean', styleNumber: s.styleNumber })), destination }) }); const body = await r.json().catch(() => ({})); if (!r.ok) throw new Error(body.error || 'Could not add selected styles'); return body; }, onSuccess: (_data, variables) => { setSelected([]); setToast(`${variables.styles.length} style${variables.styles.length === 1 ? '' : 's'} added to plan.`); client.invalidateQueries({ queryKey: ['workspace'] }); } });
+  useEffect(() => { if (!toast) return; const timer = window.setTimeout(() => setToast(''), 4000); return () => window.clearTimeout(timer); }, [toast]);
+  if (assortment.isLoading) return <section className="page"><div className="range-plan-loading"><RefreshCw size={20} />Loading assortment plan…</div></section>;
+  if (assortment.isError || !assortment.data) return <section className="page"><div className="range-plan-error"><Target size={22} /><h2>Assortment Plan is unavailable</h2><button className="button button-dark" onClick={() => assortment.refetch()} data-testid="button-retry-assortment">Try again</button></div></section>;
+  const data = assortment.data; const options = data.assortmentFilterOptions ?? data.assortmentSummary.filterOptions ?? ({} as Record<FilterKey, string[]>);
+  const byQuarter = data.quarterStyles ?? { 'Q3 2026': quarter === 'Q3 2026' ? data.assortmentStyles : [], 'Q4 2026': quarter === 'Q4 2026' ? data.assortmentStyles : [] };
+  const styles = sortAssortmentStyles((byQuarter[quarter] ?? data.assortmentStyles).filter((s) => matchesAssortmentFilters(s, filters)), sort);
+  const selectedStyles = styles.filter((s) => s.source === 'all_products_clean' && selected.includes(s.id)); const counts = filteredAssortmentQuarterCounts(byQuarter, filters); const activeCount = Object.values(filters).flat().length;
+  const toggle = (id: string) => setSelected((current) => current.includes(id) ? current.filter((value) => value !== id) : [...current, id]);
+  const cardAction = (style: Style) => <div className="assortment-card-actions">{style.source === 'all_products_clean' && <><button type="button" className="assortment-card-button" disabled={exclude.isPending} onClick={() => exclude.mutate({ styleId: style.styleNumber, excluded: !style.excluded })} data-testid={`button-exclude-style-${style.id}`}>{style.excluded ? 'Include in quarter' : 'Exclude from quarter'} <X size={13} /></button><DestinationPicker seasons={data.seasons ?? []} weeks={data.weeklyDestinations ?? []} disabled={add.isPending} onPick={(destination) => add.mutate({ styles: [style], destination })} /></>}</div>;
+  return <section className="page assortment-plan-page">
+    <header className="assortment-plan-hero"><div><span className="range-eyebrow">Merchandising / Store edit</span><h1>Assortment Plan</h1><p>Make range decisions with trading, stock and product context in one working view.</p></div><div className="assortment-plan-hero-mark">V</div></header>
+    <div className="assortment-quarter-tabs" role="tablist">{quarters.map((q) => <button key={q} type="button" role="tab" aria-selected={quarter === q} className={quarter === q ? 'active' : ''} onClick={() => { setQuarter(q); setSelected([]); }} data-testid={`button-quarter-${q.replace(' ', '-')}`}><span>{q}</span><strong>{n(counts[q] ?? data.quarterSummaries[q]?.total)}</strong><small>styles in range</small></button>)}</div>
+    <div className="assortment-filter-toolbar"><div className="assortment-filter-intro"><span>Filter range</span>{activeCount ? <strong>{activeCount} active</strong> : <small>All styles</small>}</div>{filterDefinitions.map(({ key, label }) => <MultiSelectFilter key={key} label={label} options={[...new Set((options[key] ?? []).map(String))]} values={filters[key]} onChange={(values) => setFilters((current) => ({ ...current, [key]: values }))} testId={`assortment-filter-${key}`} variant="catalogue" alwaysShowCount />)}<CatalogueSortControl value={sort} onChange={setSort} testId="select-assortment-sort" /><button type="button" className="assortment-clear-filters" onClick={() => setFilters(emptyFilters)} disabled={!activeCount} data-testid="button-clear-assortment-filters"><X size={13} /> Clear all</button></div>
+    <div className="assortment-summary-bar"><div className="assortment-summary-lead"><Target size={17} /><span>Styles shown</span><strong>{n(styles.length)}</strong></div>{Object.entries(countAssortmentStyles(styles)).slice(1).map(([key, value]) => <div className="assortment-summary-item" key={key}><span>{key}</span><strong>{n(value)}</strong></div>)}</div>
+    <section className="assortment-style-section">{styles.length ? <><div className="assortment-selection-tools"><button type="button" onClick={() => setSelected(styles.filter((s) => s.source === 'all_products_clean').map((s) => s.id))} data-testid="button-select-visible">Select visible</button><button type="button" onClick={() => setSelected([])} disabled={!selected.length} data-testid="button-clear-selection">Clear selection</button></div><div className="assortment-card-grid">{styles.map((style) => <StyleCard key={style.id} style={style} selected={selected.includes(style.id)} onSelect={() => toggle(style.id)} action={cardAction(style)} />)}</div></> : <div className="assortment-empty">No styles match the selected filters.</div>}</section>
+    {selectedStyles.length > 0 && <aside className="assortment-bulk-bar"><CheckSquare size={18} /><strong>{selectedStyles.length} selected</strong><DestinationPicker seasons={data.seasons ?? []} weeks={data.weeklyDestinations ?? []} disabled={add.isPending} onPick={(destination) => add.mutate({ styles: selectedStyles, destination })} /><button type="button" onClick={() => setSelected([])} data-testid="button-clear-bulk-selection">Clear</button></aside>}
+    {toast && <div className="assortment-toast" role="status" data-testid="status-assortment-add">{toast}</div>}{(exclude.isError || add.isError) && <div className="form-error">{add.error instanceof Error ? add.error.message : 'That assortment change could not be saved.'}</div>}
+  </section>;
 }
-
-export default AssortmentPlanPage;

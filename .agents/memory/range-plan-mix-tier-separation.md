@@ -21,14 +21,20 @@ Monthly Range Plans express business need and must never cap new-style demand to
 
 **How to apply:** Count matching NEW pipeline styles in the month’s target-order-week window, calculate planned minus available by sub-category, and sum positive gaps separately from surpluses.
 
-Monthly order tracking has two mutually exclusive states: Ordered is live Odoo buying-order data; Provisional Committed is a weekly Style Tracker row with no matching, non-cancelled Odoo order. Count distinct styles but sum every order/commitment quantity. Never hide unmatched rows.
+Buying orders are atomic dated records. Weekly, monthly, and quarterly actuals must be grouped independently from non-cancelled Odoo orders by `date_ordered`; months must never be inferred from whole ISO weeks.
 
-**Why:** A weekly plan precedes Odoo creation by several days, while one style can have multiple Odoo orders. Treating order rows as styles or dropping unmatched taxonomy rows understates progress and units.
+**Why:** ISO weeks cross month boundaries, and orders can slip into a later week. Rolling a week into one month misattributes real spend and requires manual reconciliation.
 
-**How to apply:** Move a commitment to Ordered automatically as soon as its Odoo order appears. Project month-end as ordered units + provisional units + remaining new styles at 300 units + remaining repeat/replenishment styles at 400. Flag projected units above 110% of plan; only flag under-order pacing below elapsed-month expectation after a 15-point grace band.
+**How to apply:** A week shows orders whose dates fall inside its Monday–Sunday range; a month shows orders dated in that calendar month; a quarter equals its three month totals. Count distinct styles but sum every order quantity. Include unplanned orders in headline actuals and flag them rather than rejecting or hiding them. Show weekly targets with no dated match separately as planned-not-raised intent; they never contribute to actual progress.
+
+Assortment Plan is the canonical range/reorder surface. Its Active/Retired universe must use the same Odoo status precedence, tier mapping, style-name alias fold, and style-number identity as BI Range Management; quarter exclusions never change lifecycle counts.
+
+**Why:** The retired manual override table, “any active SKU” catalogue rule, and quarter exclusions produced three incompatible active-style counts.
+
+**How to apply:** Default Assortment Plan to Active. Keep retired styles opt-in. Style Development count means active rows in its dedicated tracker (`exit_status='active'`), not the separate historical `pd_styles` catalogue.
 
 Weekly Order Plan lines must be created only by selecting a confirmed Style Development record or a Style Catalogue record. Source-owned identity, taxonomy, brand, fabric, colourway options, and target week are immutable snapshots; only quantity, selected colourways, order type, and order stage belong to the week.
 
 **Why:** Re-keying style names, numbers, and taxonomy caused missing and conflicting identifiers and made weekly orders impossible to reconcile reliably to the monthly plan.
 
-**How to apply:** Never add free-text style creation to the weekly plan. Missing styles must be created and numbered in Style Development first. Draft weeks do not count as commitments; confirming locks the week and feeds monthly committed totals until a matching non-cancelled Odoo order moves the style to Ordered. Generate line numbers under a locked week row as `W<week><three-digit sequence>`.
+**How to apply:** Never add free-text style creation to the weekly plan. Missing styles must be created and numbered in Style Development first. Confirming locks only the weekly target; it does not create, date, or roll up an actual order. Generate target references under a locked week row as `W<week><three-digit sequence>`.
