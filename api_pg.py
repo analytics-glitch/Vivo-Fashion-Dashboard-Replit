@@ -3426,23 +3426,18 @@ SKU_STYLE_MAP = (
     "ORDER BY sku, (active IS TRUE) DESC, style_number)"
 )
 
-# Store Flow's daily transfer rule is destination-aware:
-#   • Acacia, Kigali Heights, and Oasis retain the existing warehouse-origin
-#     treatment (including WHREC/FGPRD/HWHFN).
-#   • Every other store is counted only on the warehouse dispatch leg, identified
-#     by a warehouse origin + warehouse_to_store.  This is the Warehouse → Store In
-#     Transit movement, rather than the subsequent transit → store leg.
-# Store-to-store, shopping-bag restocks, returns, and Sewing WIP are excluded.
-_STORE_FLOW_LEGACY_ROUTE_STORES = (
-    "'vivo acacia','vivo kigali heights','the oasis mall'"
-)
-_WAREHOUSE_ORIGIN_FILTER = (
-    "((LOWER(BTRIM(t.to_store_name)) IN (" + _STORE_FLOW_LEGACY_ROUTE_STORES + ") "
-    "AND t.from_location_name IN ('HWHFN/Stock','FGPRD/Stock','WHFIN/Stock','WHREC/Stock')) "
-    "OR (LOWER(BTRIM(t.to_store_name)) NOT IN (" + _STORE_FLOW_LEGACY_ROUTE_STORES + ") "
-    "AND t.from_location_name IN ('HWHFN/Stock','FGPRD/Stock','WHFIN/Stock','WHREC/Stock') "
-    "AND t.transfer_type = 'warehouse_to_store')) "
+# Store Flow uses the dispatch leg classified by the extractor:
+#   • normal stores: WHFIN/Stock -> store-specific Transit
+#   • Acacia, Kigali Heights, Oasis: direct warehouse -> Store exception
+# Later Transit -> Store, non-exception direct routes, store-to-store, shopping
+# bags, returns, production and holding movements never receive these route tags.
+_STORE_FLOW_ROUTE_FILTER = (
+    "t.store_flow_route IN "
+    "('warehouse_to_transit','warehouse_to_store_exception') "
     "AND t.sku NOT LIKE 'VB001%%'"
+)
+_STORE_FLOW_DIRECT_EXCEPTION_ORIGINS = (
+    "'WHFIN','WHREC','HWHFN','FGPRD'"
 )
 
 # Store Flow must place completed transfers on the day stock actually moved,
@@ -3453,6 +3448,44 @@ _STORE_FLOW_TRANSFER_DAY = (
     "THEN (t.date_done + interval '3 hours')::date "
     "ELSE (t.scheduled_date + interval '3 hours')::date END"
 )
+
+
+@_deferred_startup
+def _ensure_store_transfer_route_schema():
+    """Keep API startup compatible with stock_transfers created before routes."""
+    try:
+        _users_exec(
+            "ALTER TABLE stock_transfers "
+            "ADD COLUMN IF NOT EXISTS to_location_id BIGINT")
+        _users_exec(
+            "ALTER TABLE stock_transfers "
+            "ADD COLUMN IF NOT EXISTS to_location_name TEXT")
+        _users_exec(
+            "ALTER TABLE stock_transfers "
+            "ADD COLUMN IF NOT EXISTS store_flow_route TEXT")
+        _users_exec("""
+            UPDATE stock_transfers
+            SET store_flow_route = 'warehouse_to_store_exception'
+            WHERE LOWER(BTRIM(to_store_name)) IN
+                  ('vivo acacia', 'the oasis mall', 'vivo kigali heights')
+              AND from_location_code IN (""" +
+            _STORE_FLOW_DIRECT_EXCEPTION_ORIGINS + """)
+        """)
+        _users_exec("""
+            UPDATE stock_transfers
+            SET store_flow_route = 'non_reportable_direct'
+            WHERE store_flow_route IS NULL
+              AND transfer_type = 'warehouse_to_store'
+        """)
+        _users_exec("""
+            CREATE TABLE IF NOT EXISTS stock_transfer_sync_meta (
+                scope TEXT PRIMARY KEY,
+                route_coverage_from DATE NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
+    except Exception as e:
+        log.warning("stock transfer route schema ensure skipped: %s", e)
 
 WAREHOUSE_LOCATIONS = (
     "'Warehouse Finished Goods','Warehouse Receiving','In Transit',"
@@ -15396,10 +15429,9 @@ def analytics_store_flow(
     done rows by completion day, EAT), units still in transit toward the
     store, and Current Stock (all_inventory available, pre-aggregated).
 
-    Transfer history only ACCUMULATES from the first synced done picking
-    onward (the extract keeps a rolling 7-day done window but the table now
-    retains older done rows), so `transfer_history_from` tells the frontend
-    the earliest day with complete transfer data."""
+    Transfer history accumulates after the route-aware extractor captures it.
+    `transfer_history_from` is the explicit completeness boundary, extended
+    backwards only by a route-aware backfill."""
     where = build_filters(date_from, date_to, country)
     sales = run_query("""
         SELECT s.pos_location_name AS pos_location,
@@ -15415,24 +15447,22 @@ def analytics_store_flow(
     _EXCLUDED_POS = "'MarKT/Stock','Retired Stock'"
 
     ctry_t = " AND t.to_country IN (" + csv_to_sql(country) + ")" if country else ""
-    # Units Transferred = warehouse→store pickings in the period. Completed
-    # pickings use their actual EAT completion day; open pickings fall back to
-    # their scheduled EAT day. For done pickings use qty_done (actual); for
-    # ready/assigned use qty_planned (confirmed dispatch).
-    # Units Incoming = open pickings with no date filter (all in-transit stock).
+    # Units Transferred = completed route-correct dispatches in the period,
+    # using actual done quantity and EAT completion day only.
+    # Units Incoming = open route-correct dispatches, using planned quantity
+    # without inflating the completed period total.
     transfers = run_query("""
         SELECT t.to_store_name AS pos_location,
                MAX(t.to_country) AS country,
-               COALESCE(SUM(
-                   CASE WHEN t.state = 'done' THEN t.qty_done ELSE t.qty_planned END
-               ) FILTER (
-                    WHERE """ + _STORE_FLOW_TRANSFER_DAY + """
+               COALESCE(SUM(t.qty_done) FILTER (
+                    WHERE t.state = 'done'
+                      AND """ + _STORE_FLOW_TRANSFER_DAY + """
                          BETWEEN '""" + date_from + """' AND '""" + date_to + """'), 0) AS units_transferred,
                COALESCE(SUM(t.qty_planned) FILTER (
                    WHERE t.state != 'done'), 0) AS units_incoming
         FROM stock_transfers t
         WHERE t.to_store_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
-          AND """ + _WAREHOUSE_ORIGIN_FILTER + """
+          AND """ + _STORE_FLOW_ROUTE_FILTER + """
         """ + ctry_t + """
         GROUP BY t.to_store_name
     """, date_to=date_to)
@@ -15520,12 +15550,13 @@ def analytics_store_flow(
     daily_xfr = run_query("""
         SELECT t.to_store_name AS pos_location,
                EXTRACT(ISODOW FROM """ + _STORE_FLOW_TRANSFER_DAY + """)::int AS dow,
-               SUM(CASE WHEN t.state = 'done' THEN t.qty_done ELSE t.qty_planned END) AS units
+               SUM(t.qty_done) AS units
         FROM stock_transfers t
-        WHERE """ + _STORE_FLOW_TRANSFER_DAY + """
+        WHERE t.state = 'done'
+          AND """ + _STORE_FLOW_TRANSFER_DAY + """
               BETWEEN '""" + date_from + """' AND '""" + date_to + """'
           AND t.to_store_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
-          AND """ + _WAREHOUSE_ORIGIN_FILTER + """
+          AND """ + _STORE_FLOW_ROUTE_FILTER + """
         """ + ctry_t + """
         GROUP BY t.to_store_name, dow
     """, date_to=date_to)
@@ -15602,11 +15633,9 @@ def analytics_store_flow(
         "stores": len(rows),
     }
     cov = run_query("""
-        SELECT MIN((date_done + interval '3 hours')::date)::text AS first_done
-        FROM stock_transfers
-        WHERE state = 'done'
-          AND from_location_name IN ('HWHFN/Stock','FGPRD/Stock','WHFIN/Stock','WHREC/Stock')
-          AND sku NOT LIKE 'VB001%%'
+        SELECT route_coverage_from::text AS first_done
+        FROM stock_transfer_sync_meta
+        WHERE scope = 'store_flow_routes'
     """, date_to=date_to)
     return {
         "rows": rows,
@@ -15624,9 +15653,9 @@ def analytics_store_flow_day_transfers(
     pos_location: str = Query(default=None),
     country:   str = Query(default=None),
 ):
-    """Drill-down for a daily transfer cell on the Store Flow page: the
-    warehouse→store transfer line items whose actual completion day (or
-    scheduled day while still open) falls on the given ISO weekday
+    """Drill-down for a daily transfer cell on the Store Flow page: completed
+    route-correct dispatch line items whose actual EAT completion day
+    falls on the given ISO weekday
     (1=Mon…7=Sun) within the selected range — the exact same filter the
     daily_transfers aggregation uses, so the drill-down total always matches
     the clicked cell. pos_location omitted = all filtered stores."""
@@ -15647,7 +15676,7 @@ def analytics_store_flow_day_transfers(
                p.product_type AS sub_category,
                t.to_store_name AS pos_location,
                 (""" + _STORE_FLOW_TRANSFER_DAY + """)::text AS transfer_date,
-               SUM(CASE WHEN t.state = 'done' THEN t.qty_done ELSE t.qty_planned END)::int AS quantity
+               SUM(t.qty_done)::int AS quantity
         FROM stock_transfers t
         LEFT JOIN LATERAL (
             SELECT product_name, barcode, size, category, product_type
@@ -15656,15 +15685,16 @@ def analytics_store_flow_day_transfers(
             ORDER BY (active IS TRUE) DESC, barcode
             LIMIT 1
         ) p ON TRUE
-        WHERE """ + _STORE_FLOW_TRANSFER_DAY + """
+        WHERE t.state = 'done'
+          AND """ + _STORE_FLOW_TRANSFER_DAY + """
               BETWEEN '""" + date_from + """' AND '""" + date_to + """'
           AND EXTRACT(ISODOW FROM """ + _STORE_FLOW_TRANSFER_DAY + """)::int = """ + str(int(dow)) + """
           AND t.to_store_name NOT IN (""" + WAREHOUSE_LOCATIONS + """)
           AND t.to_store_name NOT IN ('MarKT/Stock','Retired Stock')
-          AND """ + _WAREHOUSE_ORIGIN_FILTER + """
+          AND """ + _STORE_FLOW_ROUTE_FILTER + """
         """ + ctry_t + loc_t + """
         GROUP BY 1, 2, 3, 4, 5, 6, 7, 8
-        HAVING SUM(CASE WHEN t.state = 'done' THEN t.qty_done ELSE t.qty_planned END) > 0
+        HAVING SUM(t.qty_done) > 0
         ORDER BY 8, 7, 1
     """, date_to=date_to)
     return {

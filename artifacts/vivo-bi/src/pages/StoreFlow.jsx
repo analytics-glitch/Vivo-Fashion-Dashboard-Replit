@@ -485,7 +485,7 @@ const StoreFlow = () => {
       <div className="flex flex-wrap items-end gap-3 justify-between">
         <SectionTitle
           title="Stock Movement"
-          subtitle="Per store: previous week sales vs daily transfers. Acacia, Kigali Heights and Oasis keep the existing warehouse-origin rule; all other stores count Warehouse → Store In Transit dispatches. Target: net transferred (transferred − returned) within ±10% of the previous week's sales. Click a daily number to see the products transferred."
+          subtitle="Per store: previous week sales vs completed Odoo dispatches. Most stores count Warehouse Finished Goods → store-specific Transit; Acacia, Kigali Heights and Oasis count their direct Warehouse → Store route. Open dispatches remain incoming and do not increase transferred totals. Target: net transferred (transferred − returned) within ±10% of the previous week's sales. Click a daily number to see the products transferred."
         />
         <div className="flex items-center gap-2">
           <button

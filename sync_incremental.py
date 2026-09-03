@@ -2639,10 +2639,10 @@ def main():
             log.info("✅ Odoo customer sync complete")
         except Exception as e:
             log.error("Odoo customer sync error: %s", e)
-    # ---- Stock transfers (Odoo incoming pickings -> stock_transfers) ----
-    # Runs hourly. Extract is TRUNCATE+reload (small: ~600 pickings), so nothing
-    # goes stale between runs; the interval alone gates it. Store managers see
-    # "what's on the way" freshened each hour.
+    # ---- Stock transfers (Odoo pickings -> stock_transfers) ----
+    # Runs hourly. The extract refreshes open rows and upserts recent completed
+    # rows without deleting retained done history. Store managers see both the
+    # route-correct completed dispatch and "what's on the way" each hour.
     global _LAST_TRANSFERS_SYNC
     transfers_due = (
         _LAST_TRANSFERS_SYNC is None

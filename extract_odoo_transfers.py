@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Pull incoming stock transfers from Odoo -> stock_transfers table.
+"""Pull stock transfers from Odoo -> stock_transfers table.
 
-Captures every stock.picking whose DESTINATION location is a known store's
-Stock (reusing LOCATION_COUNTRY_MAP from extract_odoo_inventory.py so store
-names stay consistent), across all in-flight states plus recently-done
-(last 7 days). Each picking's move lines are exploded into per-SKU rows so
-the store manager can see "what's coming and how many."
+For Stock Movement, most stores are attributed on the WHFIN/Stock -> named
+Transit dispatch leg. Acacia, The Oasis Mall, and Kigali Heights are direct
+WHFIN/Stock -> Store exceptions. The raw Odoo destination is retained while
+to_store_* is normalized to the final POS location used by sales/inventory.
 
 Transfer type is derived from the SOURCE location's short code:
   - Main warehouse code (WHFIN, WHREC) -> 'warehouse_to_store'
@@ -38,10 +37,49 @@ DB=os.environ["DATABASE_URL"]
 RECENT_DONE_DAYS = 7
 IN_FLIGHT_STATES = ("draft", "confirmed", "assigned", "waiting")
 WAREHOUSE_CODES = {"WHFIN", "WHREC", "HWHFN"}  # warehouse-side codes
+STORE_FLOW_DIRECT_EXCEPTIONS = {
+    "vivo acacia", "the oasis mall", "vivo kigali heights",
+}
+STORE_FLOW_DIRECT_EXCEPTION_CODES = WAREHOUSE_CODES | {"FGPRD"}
 
 # Finishing → Warehouse Finished Goods lane (IDs verified against Odoo 2026-08-04)
 FGPRD_STOCK_ID = 1757   # FGPRD/Stock — Finished Goods Production
 WHFIN_STOCK_ID = 8      # WHFIN/Stock — Warehouse Finished Goods
+
+# Odoo's store-specific transit destinations (verified 2026-09-03). Values
+# reference the final direct-store location ID below so canonical POS labels
+# remain defined in one place. Generic inter-company/inter-warehouse transit,
+# Vivo Popup, Warehouse Receiving Transit, and WHREC Transit are intentionally
+# absent: none is a supported retail destination for Stock Movement.
+TRANSIT_DEST_TO_STORE_DEST = {
+    1955: 996,   # Mombasa City Mall Transit -> Vivo City Mall
+    1956: 1004,  # Eldoret Transit
+    1957: 1012,  # Galleria Transit
+    1958: 1020,  # Garden City Transit
+    1960: 988,   # Capital Centre Transit
+    1961: 1028,  # Greenspan Transit
+    1962: 1036,  # Hub Transit
+    1963: 1044,  # Imaara Transit
+    1964: 1052,  # Junction Transit
+    1965: 1060,  # Kileleshwa Transit
+    1966: 1068,  # Kisumu Transit
+    1967: 1076,  # Mama Ngina Transit
+    1968: 1084,  # Meru Transit
+    1969: 1092,  # Moi Avenue Transit
+    1970: 1100,  # Mombasa CBD Transit -> Vivo MSA Digo Road
+    1971: 1108,  # Nakuru Transit
+    1973: 1124,  # Runda Transit
+    1974: 1140,  # Signature Mall Transit
+    1975: 1132,  # Sarit Transit
+    1976: 1148,  # T-Mall Transit
+    1977: 1156,  # Two Rivers Transit
+    1978: 1164,  # Village Market Transit
+    1979: 1180,  # Yaya Transit
+    1980: 1196,  # Safari Sarit Transit
+    1981: 1204,  # Zoya Sarit Transit
+    1982: 1386,  # Thika Road Mall Transit -> Vivo TRM
+    1983: 1585,  # ShopZetu Online Transit
+}
 
 
 def _classify_source(src_code, src_usage):
@@ -55,6 +93,26 @@ def _classify_source(src_code, src_usage):
     if src_usage == "supplier":
         return "supplier_to_store"
     return "other"
+
+
+def _store_flow_route(destination_kind, to_store_name, src_location_id, src_code):
+    """Return the Stock Movement dispatch-leg classification for one picking.
+
+    Only WHFIN -> named Transit is reportable for normal stores. The three
+    countries' direct-route exceptions remain reportable when warehouse-origin.
+    Other direct routes are retained for other consumers but never counted by
+    Stock Movement.
+    """
+    if destination_kind == "transit":
+        return "warehouse_to_transit" if src_location_id == WHFIN_STOCK_ID else None
+    if destination_kind == "store":
+        if (
+            (to_store_name or "").strip().lower() in STORE_FLOW_DIRECT_EXCEPTIONS
+            and src_code in STORE_FLOW_DIRECT_EXCEPTION_CODES
+        ):
+            return "warehouse_to_store_exception"
+        return "non_reportable_direct"
+    return None
 
 
 def ensure_table(conn):
@@ -78,12 +136,47 @@ def ensure_table(conn):
             scheduled_date       TIMESTAMP,
             date_done            TIMESTAMP,
             origin               TEXT,
+            to_location_id       BIGINT,
+            to_location_name     TEXT,
+            store_flow_route     TEXT,
             _synced_at           TIMESTAMP   NOT NULL DEFAULT now(),
             PRIMARY KEY (move_id)
         )""")
+    cur.execute("ALTER TABLE stock_transfers ADD COLUMN IF NOT EXISTS to_location_id BIGINT")
+    cur.execute("ALTER TABLE stock_transfers ADD COLUMN IF NOT EXISTS to_location_name TEXT")
+    cur.execute("ALTER TABLE stock_transfers ADD COLUMN IF NOT EXISTS store_flow_route TEXT")
+    # Existing retained done rows only contain direct destinations. Preserve
+    # the three valid historical exception routes, including the established
+    # FGPRD origin, even if an earlier route migration tagged them otherwise.
+    direct_exception_codes_sql = ",".join(
+        "'%s'" % code for code in sorted(STORE_FLOW_DIRECT_EXCEPTION_CODES))
+    cur.execute("""
+        UPDATE stock_transfers
+        SET store_flow_route = 'warehouse_to_store_exception'
+        WHERE LOWER(BTRIM(to_store_name)) IN
+              ('vivo acacia', 'the oasis mall', 'vivo kigali heights')
+          AND from_location_code IN (""" + direct_exception_codes_sql + """)
+    """)
+    # Normal-store direct rows remain retained for other consumers but are not
+    # complete Stock Movement history because the old extractor missed their
+    # earlier WHFIN -> Transit dispatch legs.
+    cur.execute("""
+        UPDATE stock_transfers
+        SET store_flow_route = 'non_reportable_direct'
+        WHERE store_flow_route IS NULL
+          AND transfer_type = 'warehouse_to_store'
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS stock_transfer_sync_meta (
+            scope               TEXT PRIMARY KEY,
+            route_coverage_from DATE NOT NULL,
+            updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+    """)
     cur.execute("CREATE INDEX IF NOT EXISTS idx_stock_transfers_to_store ON stock_transfers(to_store_name)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_stock_transfers_state ON stock_transfers(state)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_stock_transfers_sku ON stock_transfers(sku)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_stock_transfers_store_flow_route ON stock_transfers(store_flow_route)")
     conn.commit()
 
 
@@ -140,10 +233,19 @@ def run():
         log.warning("No store destinations found — aborting")
         return 0
 
-    # 2. Fetch pickings destined for those locations: in-flight OR recent-done
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=RECENT_DONE_DAYS)).strftime("%Y-%m-%d %H:%M:%S")
+    transit_dest_ids = {
+        transit_id: store_dest_ids[store_id]
+        for transit_id, store_id in TRANSIT_DEST_TO_STORE_DEST.items()
+    }
+
+    # 2. Fetch direct-store and named-transit destinations: in-flight OR
+    # recent-done. TRANSFERS_DONE_DAYS supports an explicit deeper backfill;
+    # retained done rows are never deleted after that backfill.
+    done_days = int(os.environ.get("TRANSFERS_DONE_DAYS", RECENT_DONE_DAYS))
+    cutoff_dt = datetime.now(timezone.utc) - timedelta(days=done_days)
+    cutoff = cutoff_dt.strftime("%Y-%m-%d %H:%M:%S")
     domain = [
-        ["location_dest_id", "in", list(store_dest_ids)],
+        ["location_dest_id", "in", list(store_dest_ids) + list(transit_dest_ids)],
         "|",
         ["state", "in", list(IN_FLIGHT_STATES)],
         "&", ["state", "=", "done"], ["date_done", ">=", cutoff],
@@ -152,7 +254,7 @@ def run():
         [domain],
         {"fields": ["id", "name", "state", "origin", "location_id", "location_dest_id",
                     "scheduled_date", "date_done", "move_ids_without_package"]})
-    log.info("Fetched %d pickings (in-flight + last %dd done)", len(pickings), RECENT_DONE_DAYS)
+    log.info("Fetched %d direct/transit pickings (in-flight + last %dd done)", len(pickings), done_days)
 
     # 2b. Also fetch store→warehouse (returns to WHREC id=1356) from retail stores only
     store_src_ids = list(store_dest_ids.keys())
@@ -231,6 +333,8 @@ def run():
         dst = pk.get("location_dest_id")
         src = pk.get("location_id")
         src_code, src_usage = src_info.get(src[0], (None, None)) if src else (None, None)
+        destination_kind = None
+        store_flow_route = None
         # Finishing→warehouse: FGPRD/Stock → WHFIN/Stock
         if dst and dst[0] == WHFIN_STOCK_ID and src and src[0] == FGPRD_STOCK_ID:
             code, store_name, country = ("WHFIN", "Warehouse Finished Goods", "Kenya")
@@ -239,9 +343,23 @@ def run():
         elif dst and dst[0] == 1356 and src and src[0] in store_dest_ids:
             code, store_name, country = store_dest_ids[src[0]]
             transfer_type_override = "store_to_warehouse"
+        # Normal store dispatch: only the WHFIN -> named Transit leg is useful.
+        # Store-to-store, retired, shopping-bag and other sources can share the
+        # transit tree in Odoo, so reject them at extraction time.
+        elif dst and dst[0] in transit_dest_ids:
+            destination_kind = "transit"
+            code, store_name, country = transit_dest_ids[dst[0]]
+            store_flow_route = _store_flow_route(
+                destination_kind, store_name, src[0] if src else None, src_code)
+            if store_flow_route is None:
+                continue
+            transfer_type_override = "warehouse_to_store"
         elif dst and dst[0] in store_dest_ids:
+            destination_kind = "store"
             code, store_name, country = store_dest_ids[dst[0]]
             transfer_type_override = None
+            store_flow_route = _store_flow_route(
+                destination_kind, store_name, src[0] if src else None, src_code)
         else:
             continue
         prod = m.get("product_id")
@@ -258,6 +376,9 @@ def run():
             pk.get("scheduled_date") or None,
             pk.get("date_done") or None,
             pk.get("origin"),
+            dst[0] if dst else None,
+            dst[1] if dst else None,
+            store_flow_route,
         ))
 
     # 7. Refresh while PRESERVING done history. The Odoo fetch only covers
@@ -275,7 +396,8 @@ def run():
                from_location_code, from_location_name,
                to_store_code, to_store_name, to_country,
                sku, product_name, qty_planned, qty_done,
-               move_id, scheduled_date, date_done, origin)
+                move_id, scheduled_date, date_done, origin,
+                to_location_id, to_location_name, store_flow_route)
             VALUES %s
             ON CONFLICT (move_id) DO UPDATE SET
               picking_name = EXCLUDED.picking_name,
@@ -293,8 +415,25 @@ def run():
               scheduled_date = EXCLUDED.scheduled_date,
               date_done = EXCLUDED.date_done,
               origin = EXCLUDED.origin,
+              to_location_id = EXCLUDED.to_location_id,
+              to_location_name = EXCLUDED.to_location_name,
+              store_flow_route = EXCLUDED.store_flow_route,
               _synced_at = now()
         """, rows, page_size=1000)
+    # The coverage boundary records what this route-aware extractor has actually
+    # fetched. It only moves backwards when TRANSFERS_DONE_DAYS performs a deeper
+    # backfill, never forward on later seven-day incremental runs.
+    coverage_from = (cutoff_dt + timedelta(hours=3)).date()
+    cur.execute("""
+        INSERT INTO stock_transfer_sync_meta
+            (scope, route_coverage_from, updated_at)
+        VALUES ('store_flow_routes', %s, now())
+        ON CONFLICT (scope) DO UPDATE SET
+            route_coverage_from = LEAST(
+                stock_transfer_sync_meta.route_coverage_from,
+                EXCLUDED.route_coverage_from),
+            updated_at = now()
+    """, (coverage_from,))
     conn.commit()
     cur.execute("ANALYZE stock_transfers")
     conn.commit()
