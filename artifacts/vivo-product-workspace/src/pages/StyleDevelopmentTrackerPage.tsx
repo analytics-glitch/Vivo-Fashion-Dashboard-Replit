@@ -1,6 +1,6 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { LayoutGrid, List, CheckSquare, Clock, AlertTriangle, Ban, Image as ImageIcon, Search, X, CheckCircle, BarChart2, Users } from 'lucide-react';
+import { LayoutGrid, List, CheckSquare, Clock, AlertTriangle, Ban, Image as ImageIcon, Search, X, CheckCircle, BarChart2, Users, ArrowLeft } from 'lucide-react';
 
 type TrackerStyle = {
   id: number;
@@ -215,6 +215,13 @@ export default function StyleDevelopmentTrackerPage() {
 
   const grouped = useMemo(() => {
     const values = new Map<string, TrackerStyle[]>();
+
+    if (groupBy === 'stage') {
+      for (const stage of stages) {
+        values.set(stage, []);
+      }
+    }
+
     for (const style of filtered) {
       const key = String((style as any)[groupBy] || (groupBy === 'stage' ? 'Unassigned' : 'Unknown'));
       values.set(key, [...(values.get(key) ?? []), style]);
@@ -286,13 +293,21 @@ export default function StyleDevelopmentTrackerPage() {
   if (tracker.isError) return <section className="page tracker-page"><div className="tracker-empty-state"><AlertTriangle size={24} color="var(--coral)"/><h3>Style Development Unavailable</h3><p>{tracker.error instanceof Error ? tracker.error.message : 'Could not load data'}</p><button className="button button-dark" onClick={() => tracker.refetch()}>Retry</button></div></section>;
 
   const pendingApprovalsCount = items.filter(i => i.waitingDecision !== null).length;
+  const unassignedPmCount = items.filter(i => !i.patternMaker).length;
 
   return (
     <section className="page tracker-page">
       <header className="tracker-header-row">
         <div className="tracker-header-left">
            <span className="tracker-kicker">Product Development Tracker / Q3 2026</span>
-           <h1>Style development</h1>
+           <div className="tracker-header-title-row">
+              <h1>Style development</h1>
+              {unassignedPmCount > 0 && (
+                <span className="tracker-header-metric">
+                   <strong>{unassignedPmCount}</strong> Unassigned Pattern Maker
+                </span>
+              )}
+           </div>
         </div>
         <div className="tracker-view-toggle">
            <button className={view === 'board' ? 'active' : ''} onClick={() => setView('board')}><LayoutGrid size={16}/> Board</button>
@@ -406,41 +421,42 @@ export default function StyleDevelopmentTrackerPage() {
         <div className="tracker-board">
           {grouped.length === 0 && <div className="tracker-empty-state" style={{ width: '100%' }}>No styles match filters.</div>}
           {grouped.map(([label, styles]) => (
-            <div key={label} className="tracker-col">
+            <div key={label} className={`tracker-col ${label === 'Waiting for Fabric' ? 'is-waiting-fabric' : ''}`}>
               <div className="tracker-col-header">
                 <h3>{label}</h3>
                 <span className="tracker-col-count">{styles.length}</span>
               </div>
               <div className="tracker-col-cards">
                 {styles.map(s => (
-                  <div key={s.id} className="tracker-card" onClick={() => setDetailId(s.id)}>
-                    <div className="tracker-card-head">
-                      <div className={`tracker-card-img ${!s.imageUrl ? 'placeholder' : ''}`}>
-                         {s.imageUrl ? <img src={s.imageUrl} alt={s.styleName} /> : <ImageIcon size={20} />}
-                      </div>
-                      <div className="tracker-card-info">
-                         <div className="tracker-card-title">{s.styleName}</div>
-                         <div className="tracker-card-subtitle">{s.styleNumber || 'No number'} · {s.targetOrderWeek || 'No week'}</div>
-                         <div className="tracker-card-badges">
-                            {s.blocked && <span className="tracker-badge blocked"><Ban size={10}/> Blocked</span>}
-                            {s.overStandard && <span className="tracker-badge warning"><Clock size={10}/> Over Std</span>}
-                            {s.rejectedMoreThanOnce && <span className="tracker-badge warning"><AlertTriangle size={10}/> {s.sampleRejections + s.setSampleRejections} Rej</span>}
-                            {s.waitingDecision && <span className="tracker-badge highlight"><CheckCircle size={10}/> Action Req</span>}
-                         </div>
-                      </div>
-                    </div>
-                    <div className="tracker-card-fabric" style={{ marginTop: 2 }}>
-                       {s.sampleFabricName ? (
-                          <div className="tracker-fabric-present">
-                             <span>{s.sampleFabricName}</span>
-                             <strong>{s.sampleFabricColour}</strong>
-                             {(!s.sampleFabricMetres || s.sampleFabricMetres <= 0) && <span style={{color: 'var(--coral)', marginLeft: 'auto', fontWeight: 600, fontSize: 10}}>0m / no stock</span>}
+                  <button key={s.id} className="tracker-card-compact" onClick={() => setDetailId(s.id)}>
+                    <div className="tracker-card-compact-head">
+                       <div className="tracker-card-compact-img placeholder">
+                          <ImageIcon size={14} />
+                          {s.imageUrl && (
+                            <img
+                              src={s.imageUrl}
+                              alt=""
+                              onError={(e) => {
+                                e.currentTarget.style.display = 'none';
+                              }}
+                            />
+                          )}
+                       </div>
+                       <div className="tracker-card-compact-info">
+                          <div className="tracker-card-compact-title">{s.styleName}</div>
+                          <div className="tracker-card-compact-meta">
+                             {s.styleNumber || 'No #'} · {s.targetOrderWeek || 'No WK'} · {s.workingDaysAtStage}d
                           </div>
-                       ) : (
-                          <div className="tracker-fabric-missing">Unassigned</div>
-                       )}
+                       </div>
                     </div>
-                  </div>
+                    <div className="tracker-card-compact-badges">
+                       {s.patternMaker && <span className="compact-badge pm">{s.patternMaker}</span>}
+                       {(s.type || s.tier) && <span className="compact-badge ty">{[s.type, s.tier].filter(Boolean).join('/')}</span>}
+                       {s.waitingDecision && <span className="compact-badge ac">Action</span>}
+                       {s.blocked && <span className="compact-badge bl">Blocked</span>}
+                       {s.overStandard && <span className="compact-badge wa">Over Std</span>}
+                    </div>
+                  </button>
                 ))}
               </div>
             </div>
@@ -875,14 +891,25 @@ function TrackerDetailDrawer({ id, onClose }: { id: number, onClose: () => void 
                </div>
              </div>
            )}
-           <button className="tracker-drawer-close" onClick={onClose}><X size={18}/></button>
+           <button className="tracker-drawer-close" onClick={onClose} aria-label="Back to board">
+             <ArrowLeft size={16}/> <span>Back to board</span>
+           </button>
          </div>
          <div className="tracker-drawer-content">
             {isLoading ? <div className="tracker-empty-state">Loading details...</div> : error ? <div className="tracker-empty-state">Failed to load details.</div> : data ? (
                <>
                  <div className="tracker-drawer-top-grid">
-                    <div className="tracker-drawer-image">
-                        {data.imageUrl ? <img src={data.imageUrl} alt={data.styleName} /> : <div className="placeholder"><ImageIcon size={40}/></div>}
+                    <div className="tracker-drawer-image placeholder">
+                        <ImageIcon size={40}/>
+                        {data.imageUrl && (
+                          <img
+                            src={data.imageUrl}
+                            alt=""
+                            onError={(e) => {
+                              e.currentTarget.style.display = 'none';
+                            }}
+                          />
+                        )}
                     </div>
                     <div className="tracker-drawer-facts">
                         <div className="fact-box">
@@ -1101,8 +1128,19 @@ function TrackerMasterForm({ item }: { item: TrackerDetailPayload }) {
   const [form, setForm] = useState({
      styleName: item.styleName || '',
      styleNumber: item.styleNumber || '',
+      type: item.type || 'NEW',
+      tier: item.tier || 'Tier 3',
      category: item.category || '',
      subCategory: item.subCategory || '',
+      brand: item.brand || '',
+      fabric: item.fabric || '',
+      patternMaker: item.patternMaker || '',
+      adoptionDate: item.adoptionDate || '',
+      targetOrderWeek: item.targetOrderWeek || '',
+      targetLaunchWeek: item.targetLaunchWeek || '',
+      sampleApprovalDate: item.sampleApprovalDate || '',
+      blocked: item.blocked,
+      blockerReason: item.blockerReason || '',
      season: item.season || '',
      intendedSellingPriceKes: item.intendedSellingPriceKes || '',
      exitStatus: item.exitStatus || '',
@@ -1114,8 +1152,19 @@ function TrackerMasterForm({ item }: { item: TrackerDetailPayload }) {
     mutation.mutate({
        styleName: form.styleName,
        styleNumber: form.styleNumber,
+        type: form.type,
+        tier: form.tier,
        category: form.category,
        subCategory: form.subCategory,
+        brand: form.brand,
+        fabric: form.fabric,
+        patternMaker: form.patternMaker,
+        adoptionDate: form.adoptionDate || null,
+        targetOrderWeek: form.targetOrderWeek || null,
+        targetLaunchWeek: form.targetLaunchWeek || null,
+        sampleApprovalDate: form.sampleApprovalDate || null,
+        blocked: form.blocked,
+        blockerReason: form.blocked ? form.blockerReason : '',
        season: form.season,
        intendedSellingPriceKes: form.intendedSellingPriceKes ? Number(form.intendedSellingPriceKes) : null,
        exitStatus: form.exitStatus,
@@ -1134,6 +1183,20 @@ function TrackerMasterForm({ item }: { item: TrackerDetailPayload }) {
               <span>Style Number</span>
               <input type="text" value={form.styleNumber} onChange={e => setForm({...form, styleNumber: e.target.value})} />
            </label>
+            <label className="tracker-input-wrap">
+               <span>Type</span>
+               <select value={form.type} onChange={e => setForm({...form, type: e.target.value as TrackerStyle['type']})}>
+                  <option value="NEW">NEW</option>
+                  <option value="RR">RR</option>
+               </select>
+            </label>
+            <label className="tracker-input-wrap">
+               <span>Tier</span>
+               <select value={form.tier} onChange={e => setForm({...form, tier: e.target.value as TrackerStyle['tier']})}>
+                  <option value="Tier 3">Tier 3</option>
+                  <option value="Tier 4">Tier 4</option>
+               </select>
+            </label>
            <label className="tracker-input-wrap">
               <span>Category</span>
               <input type="text" value={form.category} onChange={e => setForm({...form, category: e.target.value})} required />
@@ -1142,6 +1205,23 @@ function TrackerMasterForm({ item }: { item: TrackerDetailPayload }) {
               <span>Sub-Category</span>
               <input type="text" value={form.subCategory} onChange={e => setForm({...form, subCategory: e.target.value})} required />
            </label>
+            <label className="tracker-input-wrap">
+               <span>Brand</span>
+               <select value={form.brand} onChange={e => setForm({...form, brand: e.target.value})}>
+                  <option value="">Select...</option>
+                  <option value="Vivo">Vivo</option>
+                  <option value="Safari by Vivo">Safari by Vivo</option>
+                  <option value="Zoya">Zoya</option>
+               </select>
+            </label>
+            <label className="tracker-input-wrap">
+               <span>Fabric Description</span>
+               <input type="text" value={form.fabric} onChange={e => setForm({...form, fabric: e.target.value})} />
+            </label>
+            <label className="tracker-input-wrap">
+               <span>Pattern Maker</span>
+               <input type="text" value={form.patternMaker} onChange={e => setForm({...form, patternMaker: e.target.value})} placeholder="Unassigned" />
+            </label>
            <label className="tracker-input-wrap">
               <span>Season</span>
               <select value={form.season} onChange={e => setForm({...form, season: e.target.value})}>
@@ -1156,9 +1236,36 @@ function TrackerMasterForm({ item }: { item: TrackerDetailPayload }) {
               <span>Intended Price (KES)</span>
               <input type="number" value={form.intendedSellingPriceKes} onChange={e => setForm({...form, intendedSellingPriceKes: e.target.value})} />
            </label>
+            <label className="tracker-input-wrap">
+               <span>Adoption Date</span>
+               <input type="date" value={form.adoptionDate} onChange={e => setForm({...form, adoptionDate: e.target.value})} />
+            </label>
+            <label className="tracker-input-wrap">
+               <span>Target Order Week</span>
+               <input type="text" value={form.targetOrderWeek} onChange={e => setForm({...form, targetOrderWeek: e.target.value})} placeholder="e.g. 2026-W36" />
+            </label>
+            <label className="tracker-input-wrap">
+               <span>Target Launch Week</span>
+               <input type="text" value={form.targetLaunchWeek} onChange={e => setForm({...form, targetLaunchWeek: e.target.value})} placeholder="e.g. 2026-W40" />
+            </label>
+            <label className="tracker-input-wrap">
+               <span>Sample Approval Date</span>
+               <input type="date" value={form.sampleApprovalDate} onChange={e => setForm({...form, sampleApprovalDate: e.target.value})} />
+            </label>
         </div>
 
         <div className="tracker-field-grid" style={{ marginTop: 16, paddingTop: 16, borderTop: '1px solid #d8d0c2' }}>
+            <label className="tracker-input-wrap">
+               <span>Blocker</span>
+               <select value={form.blocked ? 'yes' : 'no'} onChange={e => setForm({...form, blocked: e.target.value === 'yes'})}>
+                  <option value="no">Not blocked</option>
+                  <option value="yes">Blocked</option>
+               </select>
+            </label>
+            <label className="tracker-input-wrap">
+               <span>Blocker Reason</span>
+               <input type="text" value={form.blockerReason} onChange={e => setForm({...form, blockerReason: e.target.value})} disabled={!form.blocked} required={form.blocked} />
+            </label>
            <label className="tracker-input-wrap">
               <span>Exit Status</span>
               <select value={form.exitStatus} onChange={e => setForm({...form, exitStatus: e.target.value})}>
@@ -1237,6 +1344,7 @@ function TrackerHistory({ history }: { history: HistoryEntry[] }) {
               </div>
               <div className="tracker-history-body">
                  {h.entryType === 'event' && <div>Recorded <strong>{h.eventType?.replace('_', ' ').toUpperCase()}</strong></div>}
+                  {h.entryType === 'event' && h.outcome && <div className="note-text">Stage: {h.outcome}</div>}
                  {h.entryType === 'update' && <div>Updated <span className="tracker-history-change">{h.oldValue} → {h.newValue}</span></div>}
                  {h.reason && <div className="note-text">Reason: {h.reason}</div>}
                  {h.note && <div className="note-text">{h.note}</div>}

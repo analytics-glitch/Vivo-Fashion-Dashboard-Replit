@@ -388,25 +388,29 @@ const STYLE_DEVELOPMENT_TRACKER_BATCH_FOUR_SEEDS = [
   ["V0526042", "Vivo Knit Tank Top (Ken Knit)", "NEW", "Set Sampling", "Outerwear", "T-shirts & Tank Tops", null, "Acrylic"],
 ] as const;
 const STYLE_DEVELOPMENT_STAGES = [
-  "Adopted",
   "Pattern",
-  "Sample",
+  "Transfer to CAD",
+  "CAD Processing SS",
+  "Sampling",
   "Sample Review",
-  "CAD and Set Sample",
-  "Set Sample Review",
-  "Ready to Order",
-  "Ordered",
+  "Set Sampling",
+  "Approved for S/S",
+  "CAD Processing Order",
+  "Buying Requisition S/S",
+  "Waiting for Fabric",
 ] as const;
 type StyleDevelopmentStage = (typeof STYLE_DEVELOPMENT_STAGES)[number];
 const STYLE_DEVELOPMENT_STAGE_STANDARD_DAYS: Record<StyleDevelopmentStage, number | null> = {
-  Adopted: 3,
   Pattern: 5,
-  Sample: 5,
+  "Transfer to CAD": 2,
+  "CAD Processing SS": 3,
+  Sampling: 5,
   "Sample Review": 2,
-  "CAD and Set Sample": 5,
-  "Set Sample Review": 2,
-  "Ready to Order": 2,
-  Ordered: null,
+  "Set Sampling": 5,
+  "Approved for S/S": 2,
+  "CAD Processing Order": 2,
+  "Buying Requisition S/S": 2,
+  "Waiting for Fabric": null,
 };
 const STYLE_DEVELOPMENT_EVENT_TYPES = [
   "adopted",
@@ -4709,23 +4713,41 @@ router.post("/feedback/public", async (req, res, next) => {
 
 router.use(requireUser);
 
+function normalizeStyleDevelopmentStage(value: unknown): StyleDevelopmentStage {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  const aliases: Record<string, StyleDevelopmentStage> = {
+    "pattern": "Pattern",
+    "transfer to cad": "Transfer to CAD",
+    "cad processing ss": "CAD Processing SS",
+    "sampling": "Sampling",
+    "sample review": "Sample Review",
+    "set sampling": "Set Sampling",
+    "approved for s/s": "Approved for S/S",
+    "cad processing order": "CAD Processing Order",
+    "buying requisition s/s": "Buying Requisition S/S",
+    "waiting for fabric": "Waiting for Fabric",
+  };
+  return aliases[normalized] ?? "Pattern";
+}
+
 function styleDevelopmentEventStage(entry: Record<string, unknown>): StyleDevelopmentStage | null {
   const eventType = String(entry.eventType ?? "");
-  if (eventType === "imported_stage") {
-    const stage = String(entry.outcome ?? "");
-    return STYLE_DEVELOPMENT_STAGES.includes(stage as StyleDevelopmentStage) ? stage as StyleDevelopmentStage : "Adopted";
-  }
+  // Imported tracker status is the canonical baseline and is read directly
+  // from the tracker row. Older imported_stage history collapsed statuses.
+  if (eventType === "imported_stage") return null;
+  if (eventType === "adopted" || eventType === "baseline") return "Pattern";
   if (eventType === "pattern_started") return "Pattern";
-  if (eventType === "pattern_done" || eventType === "tech_pack_done") return "Sample";
-  if (eventType === "sample_started" || eventType === "sample_received") return "Sample";
+  if (eventType === "pattern_done" || eventType === "tech_pack_started" || eventType === "tech_pack_done" || eventType === "cad_transfer_started") return "Transfer to CAD";
+  if (eventType === "cad_transfer_done" || eventType === "cad_grading_started" || eventType === "cad_grading_done") return "CAD Processing SS";
+  if (eventType === "sample_started" || eventType === "sample_received" || eventType === "resample_started" || eventType === "resample_received") return "Sampling";
   if (eventType === "review_started") return "Sample Review";
-  if (eventType === "sample_approved") return "CAD and Set Sample";
-  if (eventType === "sample_rejected") return "Sample";
-  if (eventType === "cad_transfer_started" || eventType === "cad_grading_started" || eventType === "set_sample_order_started" || eventType === "set_sample_production_started") return "CAD and Set Sample";
-  if (eventType === "set_sample_review_started") return "Set Sample Review";
-  if (eventType === "set_sample_approved" || eventType === "order_processing_started") return "Ready to Order";
-  if (eventType === "order_processing_done" || eventType === "order_approved") return "Ordered";
-  if (eventType === "set_sample_rejected") return "CAD and Set Sample";
+  if (eventType === "rereview_started" || eventType === "rereview_done") return "Sample Review";
+  if (eventType === "sample_approved" || eventType === "set_sample_order_started" || eventType === "set_sample_order_created" || eventType === "set_sample_production_started" || eventType === "set_sample_production_done") return "Set Sampling";
+  if (eventType === "sample_rejected" || eventType === "pattern_amendment_started" || eventType === "pattern_amendment_done") return "Sampling";
+  if (eventType === "set_sample_review_started" || eventType === "set_sample_approved") return "Approved for S/S";
+  if (eventType === "set_sample_rejected") return "Set Sampling";
+  if (eventType === "order_processing_started") return "CAD Processing Order";
+  if (eventType === "order_processing_done" || eventType === "order_approved" || eventType === "order_rejected") return "Buying Requisition S/S";
   return null;
 }
 
@@ -4781,18 +4803,13 @@ function eventAt(history: Array<Record<string, unknown>>, eventType: string, aft
 }
 
 function styleDevelopmentPayload(row: Record<string, unknown>, history: Array<Record<string, unknown>>) {
-  let stage: StyleDevelopmentStage = "Adopted";
-  let stageRank = 0;
-  let stageStartedAt: unknown = row.createdAt;
+  let stage = normalizeStyleDevelopmentStage(row.status);
+  let stageStartedAt: unknown = row.adoptionDate ?? row.createdAt;
   for (const entry of history) {
     const candidate = styleDevelopmentEventStage(entry);
     if (!candidate) continue;
-    const rank = STYLE_DEVELOPMENT_STAGES.indexOf(candidate);
-    if (rank > stageRank || rank === stageRank && new Date(String(entry.occurredAt)).getTime() >= new Date(String(stageStartedAt)).getTime()) {
-      stage = candidate;
-      stageRank = rank;
-      stageStartedAt = entry.occurredAt;
-    }
+    stage = candidate;
+    stageStartedAt = entry.occurredAt;
   }
   const workingDaysAtStage = workingDaysSince(stageStartedAt);
   const standardDays = STYLE_DEVELOPMENT_STAGE_STANDARD_DAYS[stage];
@@ -4801,9 +4818,9 @@ function styleDevelopmentPayload(row: Record<string, unknown>, history: Array<Re
   const hasOrderApproval = history.some((entry) => entry.eventType === "order_approved");
   const waitingDecision = stage === "Sample Review"
     ? "sample"
-    : stage === "Set Sample Review"
+    : stage === "Approved for S/S"
       ? "set_sample"
-      : stage === "Ready to Order" && !hasOrderApproval
+      : stage === "Buying Requisition S/S" && !hasOrderApproval
         ? "order"
         : null;
   const adoptedAt = eventAt(history, "adopted") ?? eventAt(history, "baseline") ?? row.adoptionDate ?? row.createdAt;
@@ -4916,7 +4933,7 @@ function styleDevelopmentPayload(row: Record<string, unknown>, history: Array<Re
     targetWeeksLabel: "4–5 weeks",
     actualElapsedWorkingDays,
     historyCount: history.length,
-    imageUrl: row.styleNumber ? `/api/workspace/garment-images/workspace/${encodeURIComponent(String(row.styleNumber))}` : null,
+    imageUrl: row.image ?? null,
   };
 }
 
@@ -4996,7 +5013,17 @@ async function loadStyleDevelopmentTracker(styleId?: number) {
     [fabricIds],
   ) : { rows: [] as Array<Record<string, unknown>> };
   const fabricById = new Map(selectedFabrics.rows.map((item) => [Number(item.id), item]));
-  return result.rows.map((row) => {
+  const rowsWithImages = await applyGarmentImageOverrides(
+    result.rows,
+    "plm",
+    (row) => row.styleNumber,
+  );
+  return rowsWithImages.map((row) => {
+    const styleHistory = (byStyle.get(Number(row.id)) ?? []).map((entry) =>
+      entry.eventType === "imported_stage"
+        ? { ...entry, outcome: normalizeStyleDevelopmentStage(row.status) }
+        : entry
+    );
     const selected = fabricById.get(Number(row.sampleFabricProductId));
     const mpg = metresByCategory.get(String(row.category ?? "").toLowerCase());
     const cost = selected ? Number(selected.cost_per_metre) : null;
@@ -5008,8 +5035,8 @@ async function loadStyleDevelopmentTracker(styleId?: number) {
     row.fabricMetres = selected?.metres ?? 0;
     row.indicativeCogsKes = cost !== null && mpg && mpg > 0 ? cost * mpg : row.indicativeCogsKes;
     return {
-    ...styleDevelopmentPayload(row, byStyle.get(Number(row.id)) ?? []),
-    history: styleId ? (byStyle.get(Number(row.id)) ?? []).slice().reverse() : undefined,
+    ...styleDevelopmentPayload(row, styleHistory),
+    history: styleId ? styleHistory.slice().reverse() : undefined,
     };
   });
 }
@@ -5098,11 +5125,10 @@ router.get("/style-development-tracker/reporting", async (_req, res, next) => {
     const assumptionsWrong = intervals.map((item) => ({ ...item, difference: item.workMedian === null ? null : item.workMedian - item.standard }))
       .sort((a, b) => Math.abs(b.difference ?? -Infinity) - Math.abs(a.difference ?? -Infinity));
     const active = items.filter((item) => (item as Record<string, unknown>).exitStatus === "active");
-    const readyToStart = active.filter((item) => String((item as Record<string, unknown>).stage) === "Adopted" && ((item as Record<string, unknown>).adoptionReadiness as { ready: boolean }).ready);
+    const readyToStart = active.filter((item) => String((item as Record<string, unknown>).stage) === "Pattern" && ((item as Record<string, unknown>).adoptionReadiness as { ready: boolean }).ready);
     const activePatternWork = active.filter((item) => {
       const value = item as Record<string, unknown>;
-      const events = value.intervalMetrics as Array<Record<string, unknown>>;
-      return value.stage === "Pattern" || (value.stage === "CAD and Set Sample" && !events.find((e) => e.key === "cadTransfer")?.completedAt);
+      return value.stage === "Pattern" || value.stage === "Transfer to CAD";
     });
     const queue = [...readyToStart, ...activePatternWork];
     const cutoff = Date.now() - 28 * 86400000;
@@ -5114,7 +5140,7 @@ router.get("/style-development-tracker/reporting", async (_req, res, next) => {
       const r = String((item as Record<string, unknown>).exitReason ?? "unspecified"); out[r] = (out[r] ?? 0) + 1; return out;
     }, {});
     const cancellationsByStage = items.filter((item) => (item as Record<string, unknown>).exitStatus === "cancelled").reduce((out: Record<string, number>, item) => {
-      const stage = String((item as Record<string, unknown>).stage ?? "Adopted"); out[stage] = (out[stage] ?? 0) + 1; return out;
+      const stage = String((item as Record<string, unknown>).stage ?? "Pattern"); out[stage] = (out[stage] ?? 0) + 1; return out;
     }, {});
     res.json({ intervals, totalDays: 13, whereTimeGoing, assumptionsWrong, cancellationsByReason: cancellations,
       cancellationsByStage,
@@ -5160,6 +5186,7 @@ router.patch("/style-development-tracker/:id", async (req: AuthRequest, res, nex
       adoptionDate: "adoption_date",
       targetOrderWeek: "target_order_week",
       targetLaunchWeek: "target_launch_week",
+      sampleApprovalDate: "sample_approval_date",
       blocked: "blocked",
       blockerReason: "blocker_reason",
       sampleFabricProductId: "sample_fabric_product_id",
@@ -5186,7 +5213,7 @@ router.patch("/style-development-tracker/:id", async (req: AuthRequest, res, nex
         if (sellingPrice !== null && (!Number.isFinite(sellingPrice) || sellingPrice < 0)) throw new Error("Intended selling price must be a non-negative number");
       }
       else if (key === "exitReason" || key === "reason") value = value ? String(value).trim() : null;
-      else if (key === "adoptionDate" || key === "targetOrderWeek" || key === "targetLaunchWeek") value = value ? String(value).trim() : null;
+      else if (key === "adoptionDate" || key === "targetOrderWeek" || key === "targetLaunchWeek" || key === "sampleApprovalDate") value = value ? String(value).trim() : null;
       else value = String(value ?? "").trim();
       const oldValue = current.rows[0][column];
       if (String(oldValue ?? "") === String(value ?? "")) continue;
@@ -5223,7 +5250,7 @@ router.patch("/style-development-tracker/:id", async (req: AuthRequest, res, nex
     } else if (proposedExitStatus !== "active" && changes.some((change) => change.key === "exitStatus")) {
       const currentPayload = (await loadStyleDevelopmentTracker(styleId))[0] as Record<string, unknown> | undefined;
       values.push(new Date().toISOString()); assignments.push(`exited_at=$${values.length}`);
-      values.push(currentPayload?.stage ?? "Adopted"); assignments.push(`exit_stage=$${values.length}`);
+      values.push(currentPayload?.stage ?? "Pattern"); assignments.push(`exit_stage=$${values.length}`);
     }
     if (!assignments.length) {
       await client.query("ROLLBACK");
